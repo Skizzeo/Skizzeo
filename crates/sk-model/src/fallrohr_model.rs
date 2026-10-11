@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::fallrohr::{
-    Downpipe, DownpipeSpec, Foot, Overflow, MAX_SHIFT, MIN_GAP, OUTLET_REACH, PIPE_D, REACH,
-    SPACING_MAX, SPACING_MIN, WALL_GAP,
+    Downpipe, DownpipeSpec, Foot, Overflow, TerraceDrain, MAX_SHIFT, MIN_GAP, OUTLET_REACH, PIPE_D,
+    REACH, SPACING_MAX, SPACING_MIN, WALL_GAP,
 };
 use crate::roof::FlatRoof;
 
@@ -138,7 +138,7 @@ impl Model {
         } else {
             &drainage.drains
         };
-        drains
+        let mut pipes = drains
             .iter()
             .take(MAX_DOWNPIPES as usize)
             .enumerate()
@@ -151,7 +151,101 @@ impl Model {
             })
             // alle oder keins: der Index bleibt der des Ablaufs (Review #68)
             .collect::<Option<Vec<_>>>()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // je Dachterrasse, auf die ein Rohr ausläuft, ein Ablauf am ersten
+        // (Kosten B31)
+        let mut seen = Vec::new();
+        for d in &mut pipes {
+            let Some(onto) = d.onto.filter(|o| !seen.contains(o)) else {
+                continue;
+            };
+            seen.push(onto);
+            d.terrace = self.terrace_drain(onto.0, d, b).map(Box::new);
+        }
+        pipes
+    }
+
+    /// Ablauf der Dachterrasse über dem Wandzug `run`, auf die das Rohr `d`
+    /// ausläuft (Kosten B31, DIN 1986-100: jede Dachfläche mit Attika hat
+    /// einen Ablauf und eine Notentwässerung): in der Attika an der Stelle
+    /// des Blechpfads, die der Mündung am nächsten liegt, mit Fallrohr und
+    /// Notentwässerung wie `d`, ohne Kontrollablauf. Ein DN 100 nimmt die
+    /// Terrasse und die oberen Dachflächen der auslaufenden Rohre auf.
+    fn terrace_drain(
+        &self,
+        run: RunId,
+        d: &Downpipe,
+        b: Option<BuildingId>,
+    ) -> Option<TerraceDrain> {
+        let Some(Ok(f)) = self.floor(run) else {
+            return None;
+        };
+        let (base, belag) = f.terrace_band()?;
+        let belag_dicke = (f.terrace.as_ref())
+            .and_then(|t| t.layers.first())
+            .map_or(0.0, |l| l.0)
+            .min(belag - base);
+        let floor = self.floor_of(run)?;
+        let number = self
+            .elements
+            .iter()
+            .find(|(_, e)| matches!(e.kind, ElementKind::RoofTerrace { floor: x } if x == floor))
+            .map(|(_, e)| e.number.clone())
+            .unwrap_or_default();
+        let mund = d.axis() + d.bend * OUTLET_REACH;
+        let (a, e) = f
+            .terraces
+            .coping
+            .iter()
+            .flat_map(|c| {
+                let n = c.points.len();
+                let segs = if c.closed { n } else { n.saturating_sub(1) };
+                (0..segs).map(move |i| (c.points[i], c.points[(i + 1) % n]))
+            })
+            .filter(|(a, e)| (*e - *a).length() >= 1.0)
+            .min_by(|x, y| {
+                let dist = |(a, e): &(Vec3, Vec3)| {
+                    sk_math::dist_to_segment((mund.x, mund.y), (a.x, a.y), (e.x, e.y))
+                };
+                dist(x).total_cmp(&dist(y))
+            })?;
+        // Innenfläche der Attika als Kante eines Hilfsumrisses: außen
+        // rechts, wie am Flachdach
+        let w = f.terraces.width;
+        let along = (e - a) * (1.0 / (e - a).length());
+        let aussen = crate::solid::right_of(along);
+        let (ai, ei) = (a - aussen * w, e - aussen * w);
+        let outline = vec![ai, ei, ei - aussen * 1000.0, ai - aussen * 1000.0];
+        let r = FlatRoof {
+            outline: outline.clone(),
+            base,
+            // Dachhaut ist die Abdichtung unter dem Belag (oberste Schicht
+            // des Aufbaus): Ablauf und Notüberlauf sitzen auf ihrer Höhe
+            layers: vec![(belag - base - belag_dicke, d.mat, false)],
+            ring: vec![a, e],
+            width: w,
+            crown: f.attika_band().map_or(belag, |x| x.1),
+            coping_mat: d.mat,
+            slope: None,
+            tapered: None,
+            inner: 0.0,
+            inset: outline,
+            inner_depth: 0.0,
+            cap: 0.0,
+            ins_mat: d.mat,
+            cap_mat: d.mat,
+            downpipes: Vec::new(),
+        };
+        let spec = DownpipeSpec {
+            control: false,
+            ..d.spec
+        };
+        // Ablauf auf der Innenfläche gegenüber der Mündung
+        let t = (mund - ai).dot(along).clamp(0.0, (e - a).length());
+        let ablauf = ai + along * t;
+        let foot = |p: Vec3, out: Vec3, side: Vec3| self.foot_at(floor, b, p, out, side);
+        let pipe = Downpipe::layout(&r, ablauf, foot, spec)?;
+        Some(TerraceDrain { number, pipe })
     }
 
     /// Fläche unter der Rohrachse `p` außen vor dem Flachdach über der
@@ -190,19 +284,20 @@ impl Model {
                     f.terraces
                         .outlines
                         .iter()
-                        .flat_map(|o| &o.parts)
-                        .any(|part| contains(part, q))
+                        .position(|o| o.parts.iter().any(|part| contains(part, q)))
                 };
                 let reicht = OUTLET_REACH + PIPE_D / 2.0;
-                let bend = [out, side, -side]
-                    .into_iter()
-                    .find(|&dir| belag(p + out * (PIPE_D / 2.0)) && belag(p + dir * reicht));
-                if let Some(bend) = bend {
+                let bend = [out, side, -side].into_iter().find_map(|dir| {
+                    belag(p + out * (PIPE_D / 2.0))?;
+                    belag(p + dir * reicht).map(|k| (dir, k))
+                });
+                if let Some((bend, k)) = bend {
                     return Foot {
                         z: t.1,
                         lower: true,
                         shift: 0.0,
                         bend,
+                        onto: Some((below, k)),
                     };
                 }
             }
@@ -222,6 +317,7 @@ impl Model {
                         lower: true,
                         shift: 0.0,
                         bend: out,
+                        onto: None,
                     };
                 }
                 shift = shift.max(fehlt);
@@ -233,6 +329,7 @@ impl Model {
             lower: false,
             shift,
             bend: out,
+            onto: None,
         }
     }
 
@@ -677,15 +774,34 @@ mod tests {
             }
         }
         assert!(nordseite > 0);
-        // über der Terrasse kein Standrohr, dafür ein Auslaufbogen mehr
+        // Kosten B31: die Terrasse hat einen eigenen Ablauf, am ersten Rohr,
+        // das auf sie ausläuft; er sitzt in der Terrassenattika der Mündung
+        // gegenüber (hier die Ostseite der Terrasse, Außenfläche x = 10000,
+        // auf Höhe der Mündung y = 6780) und sein Fallrohr steht im
+        // Standrohr
+        let pipes: Vec<_> = (m.downpipes_of(da).into_iter())
+            .map(|id| m.downpipe(id).unwrap())
+            .collect();
+        let mit: Vec<_> = pipes.iter().filter_map(|d| d.terrace.as_deref()).collect();
+        assert_eq!(mit.len(), 1);
+        let t = &mit[0].pipe;
+        assert!(mit[0].number.starts_with("DT-"), "{}", mit[0].number);
+        assert_eq!((t.face.x, t.face.y, t.out.x), (10000.0, 6780.0, 1.0));
+        assert!(!t.lower && t.control.is_none() && t.terrace.is_none());
+        assert!(t.stand_top < ok_og && t.box_top < ok_og + 500.0);
+        // über der Terrasse kein Standrohr, dafür ein Auslaufbogen mehr;
+        // der Terrassenablauf bringt Ablauf, Notüberlauf, Standrohr und den
+        // Bogen seines Notfallrohrs mit
         let s = crate::qto::schedule(&m);
-        let zahl = |k: &str| s.auto.iter().filter(|a| a.key == k).count();
-        let boegen: f64 = (s.auto.iter())
-            .filter(|a| a.key == crate::fallrohr::OUTLET)
-            .map(|a| a.value)
-            .sum();
-        assert_eq!(zahl(crate::fallrohr::STAND), 4 - nordseite);
-        assert_eq!(boegen, (4 + nordseite) as f64);
+        let alle = |k: &str| -> f64 { s.auto.iter().filter(|a| a.key == k).map(|a| a.value).sum() };
+        assert_eq!(alle(crate::fallrohr::STAND), (4 - nordseite + 1) as f64);
+        assert_eq!(alle(crate::fallrohr::OUTLET), (4 + nordseite + 1) as f64);
+        assert_eq!(alle(crate::fallrohr::BOX), 5.0);
+        assert_eq!(alle(crate::roof::DRAINS), 5.0);
+        assert_eq!(alle(crate::roof::OVERFLOWS), 5.0);
+        // die Formel nennt die Dachterrasse (Kosten an B31)
+        assert!(s.auto.iter().any(|a| a.key == crate::roof::DRAINS
+            && a.formula == format!("Terrassenablauf an {}: 1 Attikaablauf", mit[0].number)));
     }
 
     /// Review W12 und Kosten B30 an #68: Ein Dach ohne gespeicherte Abläufe
@@ -839,5 +955,130 @@ mod tests {
         let back = crate::szo::read(&alt, GuidGen::with_seed(3)).unwrap();
         assert_eq!(back.hints, ["Regenfallrohre an den Abläufen ergänzt"]);
         assert_eq!(back.model.downpipe_ids().len(), 4);
+    }
+
+    /// Geometrie (Prüfung #71): Der Notüberlauf des Terrassenablaufs muss
+    /// in der Terrassenattika liegen. Mit der Aufkantung der Dachterrasse
+    /// (Vorgabe 6 cm über Belag) liegt seine Öffnung (3,5 cm über Belag,
+    /// 10 cm hoch) über OK Attika und sein Kasten durchstößt das
+    /// Attikablech; das Wasser liefe vorher über die Attika.
+    #[test]
+    fn terrassen_notueberlauf_in_der_attika() {
+        for off in [-500.0, -1500.0] {
+            let mut m = Model::with_seed(12);
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let set = m.type_by_guid(crate::EXTERIOR_TYPE_GUID).unwrap();
+            let eg = m.ground_of(Some(b)).unwrap();
+            let eg = m
+                .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+                .unwrap();
+            let og = m.runs_above(eg)[0];
+            let nord = m.wall_at(og, 1).unwrap();
+            schritt(&mut m, |m| m.set_offset(nord, off).is_some());
+            let st = m.run(og).unwrap().storey;
+            schritt(&mut m, |m| m.set_flat_roof(st, true));
+            let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let ok_attika = f.attika_band().unwrap().1;
+            let mut geprueft = 0;
+            for id in m.downpipes_of(da) {
+                let d = m.downpipe(id).unwrap();
+                let Some(t) = d.terrace.as_deref() else {
+                    continue;
+                };
+                geprueft += 1;
+                let o = &t.pipe.overflow;
+                assert!(
+                    o.sill + crate::fallrohr::OVERFLOW_H <= ok_attika,
+                    "{off}: Öffnung bis {}, OK Attika {ok_attika}",
+                    o.sill + crate::fallrohr::OVERFLOW_H
+                );
+                if t.pipe.spec.overflow == Overflow::Pipe {
+                    assert!(
+                        o.box_top <= ok_attika,
+                        "{off}: Kasten bis {}, OK Attika {ok_attika}",
+                        o.box_top
+                    );
+                }
+                assert!(t.pipe.box_top <= ok_attika, "{off}");
+            }
+            assert_eq!(geprueft, 1, "{off}");
+        }
+    }
+
+    /// Geometrie (Nachprüfung #71, d0f81fa): Die Aufkantung der
+    /// Dachterrasse ist ab 0 mm einstellbar. Unter 40 mm über der
+    /// Abdichtung passt die Öffnung des Notüberlaufs (10 cm) nicht mehr in
+    /// die Attika: Sie reicht über OK Attika und über ihren Kasten hinaus.
+    /// Entweder liegt sie in der Attika und im Kasten, oder der
+    /// Terrassenablauf hat keinen eigenen Notüberlauf.
+    #[test]
+    fn terrassen_notueberlauf_bei_niedriger_aufkantung() {
+        for up in [0.0, 30.0] {
+            let mut m = Model::with_seed(12);
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let set = m.type_by_guid(crate::EXTERIOR_TYPE_GUID).unwrap();
+            let eg = m.ground_of(Some(b)).unwrap();
+            let eg = m
+                .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+                .unwrap();
+            let og = m.runs_above(eg)[0];
+            let nord = m.wall_at(og, 1).unwrap();
+            schritt(&mut m, |m| m.set_offset(nord, -1500.0).is_some());
+            let st = m.run(og).unwrap().storey;
+            schritt(&mut m, |m| m.set_flat_roof(st, true));
+            let decke = m.floor_of(eg).unwrap();
+            schritt(&mut m, |m| m.set_floor_upstand(decke, up));
+            let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let ok_attika = f.attika_band().unwrap().1;
+            let mut geprueft = 0;
+            for id in m.downpipes_of(da) {
+                let d = m.downpipe(id).unwrap();
+                let Some(t) = d.terrace.as_deref() else {
+                    continue;
+                };
+                geprueft += 1;
+                let o = &t.pipe.overflow;
+                if o.free {
+                    // Notwasser läuft frei über die Attikakante (DIN 1986-100)
+                    assert!(o.sill <= ok_attika, "{up}: {} über OK Attika", o.sill);
+                    assert_eq!(t.pipe.notueberlauf(), None, "{up}");
+                    // im LV nur die Notüberläufe des Flachdachs
+                    let s = crate::qto::schedule(&m);
+                    let n: f64 = (s.auto.iter())
+                        .filter(|a| a.key == crate::roof::OVERFLOWS)
+                        .map(|a| a.value)
+                        .sum();
+                    assert_eq!(n, 4.0, "{up}");
+                    continue;
+                }
+                let oben = o.sill + crate::fallrohr::OVERFLOW_H;
+                assert!(
+                    oben <= ok_attika,
+                    "{up}: Öffnung bis {oben}, OK Attika {ok_attika}"
+                );
+                if t.pipe.spec.overflow == Overflow::Pipe {
+                    assert!(oben <= o.box_top, "{up}: Kasten bis {}", o.box_top);
+                }
+            }
+            assert_eq!(geprueft, 1, "{up}");
+        }
     }
 }
