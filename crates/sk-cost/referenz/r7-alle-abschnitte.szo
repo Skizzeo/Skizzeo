@@ -129,7 +129,7 @@ SZO 4
 [footing] guid=3nHA8A_BD9DO6ZOQT_eAow slab=1B2HKjdUr2fuKAyeXDCzK6 number="FS-001" cat=stripfooting mat=32Ino7hAj08ufHFYBJxPyP w=350 base=3O7vAE9vbCaBKce_jdFxiR:u:0 seq=1 storey=2raHMuYTD64hQ6K56DbC_u
 [floor] guid=03G_j9QtH24weYUZg7hfM7 run=3xiy2lDvP52Abq4BhG6Py5 number="DE-001" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=2raHMuYTD64hQ6K56DbC_u:o:0 t=220 seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [floor] guid=1uoQQwZMD0FQlxxWoAvu2g run=1p3670lTrAHvYGnEx1N9U5 number="DE-004" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=1u6Z3Ee$1AKREXNwDIHnxf:o:0 t=220 seq=6 storey=1u6Z3Ee$1AKREXNwDIHnxf
-[floor] guid=3L6eke6A1BZRozYkIRHS_X run=3sFdESboT76PM$xdr$RLmu number="DE-002" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=2jO7h8fX91D9BMsRy2vkjg:o:0 t=220 seq=6 storey=2jO7h8fX91D9BMsRy2vkjg
+[floor] guid=3L6eke6A1BZRozYkIRHS_X run=3sFdESboT76PM$xdr$RLmu number="DE-002" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=2jO7h8fX91D9BMsRy2vkjg:o:0 t=220 soffit=100 soffit_mat=0y7tgIrEXB1gMowS1z6FHL soffit_clad=20 soffit_clad_mat=3wpDPQ9rX51Re1tUzckf7X soffit_drip=35 batten=600 counter=500 upstand=80 crown=50 inner=80 coping_mat=2N$fHb0Xb1UBvWkvwrJ4Rx seq=6 storey=2jO7h8fX91D9BMsRy2vkjg
 [floor] guid=3nz7HVS099Zw87s7jgMdIn run=1Xc8UTj395cxQYOYiGJh4v number="DE-003" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=0w$UUoIID0CgN5lvvTdnI6:o:0 t=220 seq=4 storey=0w$UUoIID0CgN5lvvTdnI6
 [perimeter] guid=1lHw2w$n16E9eD5Nnp0uT8 slab=1B2HKjdUr2fuKAyeXDCzK6 number="PD-001" cat=perimeterinsulation seq=2 storey=2raHMuYTD64hQ6K56DbC_u
 [coping] guid=0GuiHePUb7HfJNbpnSAaIS floor=3L6eke6A1BZRozYkIRHS_X number="AB-001" cat=coping seq=6 storey=2IDRR0Gny9r3LKj19nZ0xS
