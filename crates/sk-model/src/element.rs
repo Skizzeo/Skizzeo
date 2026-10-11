@@ -450,7 +450,8 @@ pub struct Storey {
     pub height: f64,
     /// Nur Gründung (Gelände Thema 1): gewollte Einbindetiefe (OK Gelände
     /// bis UK, mm), wenn die Schürze sie gerade nicht einhält, weil sie an
-    /// ihr Mindestmaß stößt. Folgt das Gelände zurück, gilt wieder sie.
+    /// ihr Mindestmaß stößt (Gelände, Plattendicke, Dämmung). Fällt die
+    /// Grenze weg, gilt wieder sie.
     /// `None`: die tatsächliche Einbindetiefe ist die gewollte.
     pub embed: Option<f64>,
 }

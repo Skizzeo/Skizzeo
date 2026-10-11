@@ -1284,7 +1284,7 @@ impl ElementQto {
             ElementQto::Soffit(f) => f.volume + f.cladding.as_ref().map_or(0.0, |c| c.volume),
             ElementQto::Perimeter(f) => f.volume,
             ElementQto::Terrace(t) => t.volume,
-            ElementQto::Coping(c) => c.volume,
+            ElementQto::Coping(c) => c.volume + c.insulation.iter().map(|i| i.volume).sum::<f64>(),
             ElementQto::Ext(x) => x.volume,
         }
     }
@@ -2332,7 +2332,9 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     };
                     let v = if let Some(k) = crown {
                         k.volume
-                    } else if l.core || whole || matches!(q, ElementQto::Coping(_)) {
+                    } else if let ElementQto::Coping(c) = q {
+                        c.volume
+                    } else if l.core || whole {
                         q.volume()
                     } else {
                         area * l.thickness

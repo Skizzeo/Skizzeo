@@ -790,7 +790,7 @@ impl Default for BuildingDraft {
 /// Grenzen der Dialogfelder (mm): Decke 10–60 cm (B10), Sohlplatte 10–79 cm
 /// (die Frostschürze bleibt unter der Platte, UK −0,80).
 pub const DRAFT_FLOOR: (f64, f64) = (100.0, 600.0);
-pub const DRAFT_SLAB: (f64, f64) = (100.0, 790.0);
+pub const DRAFT_SLAB: (f64, f64) = (100.0, sk_model::MAX_SLAB_THICKNESS);
 pub const DRAFT_CLEAR: (f64, f64) = (sk_model::MIN_CLEAR, 10000.0);
 /// Perimeterdämmung 2–30 cm oder 0 (keine); OK Sohle ±3 m über Gelände.
 pub const DRAFT_INSULATION: (f64, f64) = (sk_model::MIN_PERIMETER, sk_model::MAX_PERIMETER);
@@ -2133,7 +2133,13 @@ impl Scene {
         }
         self.begin(label);
         let ok = match (field, footing) {
-            (Field::SlabThickness, _) => self.model.set_slab_thickness(slab, mm),
+            // kann UK Gründung verschieben (Schürze wächst, PR #51): alle
+            // Gründungen des Gebäudes ändern sich
+            (Field::SlabThickness, _) => {
+                let ok = self.model.set_slab_thickness(slab, mm);
+                self.mark_all();
+                ok
+            }
             (Field::Recess, _) => self.model.set_slab_recess(slab, mm),
             (Field::FootingWidth, Some(fid)) => self.model.set_footing_width(fid, mm),
             // verschiebt UK Gründung: alle Gründungen ändern sich (B11)

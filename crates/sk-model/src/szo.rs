@@ -10,6 +10,8 @@
 //! `storey`, `run`, `wall`, `slab`, `footing`, `floor`, `prop`. Innerhalb eines Abschnitts nach Guid sortiert, damit Diffs
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
+mod dach;
+
 use crate::attr::{
     Attributes, Dash, Display, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen,
     Surface,
@@ -453,30 +455,6 @@ fn write_drainage(line: Line, d: &crate::gefaelle::Drainage) -> Line {
         .map(|p| format!("{},{}", p.x, p.y))
         .collect();
     line.word("drains", &pts.join(";"))
-}
-
-fn read_drainage(r: &Record) -> Result<crate::gefaelle::Drainage, LoadError> {
-    let slope = match r.opt("slope") {
-        Some(_) => r.f64("slope")?,
-        None => 0.0,
-    };
-    let mut drains = Vec::new();
-    for p in r
-        .opt("drains")
-        .unwrap_or("")
-        .split(';')
-        .filter(|t| !t.is_empty())
-    {
-        let xy: Vec<f64> = p.split(',').filter_map(|t| t.parse::<f64>().ok()).collect();
-        match xy[..] {
-            [x, y] if x.is_finite() && y.is_finite() => drains.push(sk_math::vec3(x, y, 0.0)),
-            _ => return Err(r.bad("drains", "Punkte x,y;x,y")),
-        }
-    }
-    if !(0.0..=100.0).contains(&slope) {
-        return Err(r.bad("slope", "Prozent"));
-    }
-    Ok(crate::gefaelle::Drainage { slope, drains })
 }
 
 /// Art eines Geschossbands in der Datei (`kind=`); „roof“ seit dem
@@ -2226,7 +2204,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 }
                 ElementKind::Roof {
                     floor,
-                    drainage: read_drainage(r)?,
+                    drainage: dach::read_drainage(r, &mut hints)?,
                 }
             } else if ix >= 5 {
                 // Dachterrasse, Attikablech (D1–D3): nur der Verweis auf die Decke
@@ -2317,14 +2295,22 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                             None => crate::model::TERRACE_UPSTAND,
                         },
                         // vor der Attikadämmung ohne: Vorgabe (Jörn 10.10.)
-                        crown: match r.opt("crown") {
-                            Some(_) => r.f64("crown")?,
-                            None => crate::model::TERRACE_CROWN,
-                        },
-                        inner: match r.opt("inner") {
-                            Some(_) => r.f64("inner")?,
-                            None => crate::model::ROOF_INNER,
-                        },
+                        crown: dach::attika_wert(
+                            r,
+                            "crown",
+                            "Dämmung auf der Attika",
+                            crate::model::TERRACE_CROWN,
+                            (crate::model::MIN_CROWN, crate::model::MAX_CROWN),
+                            &mut hints,
+                        )?,
+                        inner: dach::attika_wert(
+                            r,
+                            "inner",
+                            "Attikadämmung innen",
+                            crate::model::ROOF_INNER,
+                            (crate::model::MIN_INNER, crate::model::MAX_INNER),
+                            &mut hints,
+                        )?,
                         coping_mat: match r.opt("coping_mat") {
                             Some(_) => Some(r.link("coping_mat", &mat_ids)?),
                             None => None,
