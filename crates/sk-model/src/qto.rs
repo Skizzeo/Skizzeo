@@ -405,7 +405,8 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         area,
                         volume,
                         mass: volume * 1e-9 * density,
-                        pocket: (area * (h - h_own - h_ext)).max(0.0),
+                        // mit Vorzeichen wie die Fläche (Eckstück, Review 61-2)
+                        pocket: area * (h - h_own - h_ext).max(0.0),
                         side_area: lo * (h - h_ext + h_here - h_own - h_foot) + s_up + s_att,
                         attika: v_att,
                         inner_area: if air { 0.0 } else { li_len * h_here },
@@ -1048,10 +1049,11 @@ fn floor_formwork_from<'a>(
             let area: f64 = w
                 .layers
                 .iter()
-                .filter(|l| l.pocket > 1e-6)
+                .filter(|l| l.pocket.abs() > 1e-6)
                 .map(|l| l.area)
                 .sum();
-            if area <= 0.0 {
+            // Ein Eckstück kürzer als die Wand dick trägt negativ bei (#61)
+            if area == 0.0 {
                 continue;
             }
             let bearing = bearing_wall(model, wall);
