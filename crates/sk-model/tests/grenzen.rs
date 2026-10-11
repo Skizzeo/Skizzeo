@@ -24,7 +24,7 @@ const KLEIN: [&str; 3] = [
 /// eigenes Modul daneben (Pfadfinderregel). Ist eine Datei unter der Grenze,
 /// kommt sie von der Liste, ist sie kleiner geworden, wird die Zahl gesenkt.
 const UEBER: [(&str, usize); 3] = [
-    ("app/src/main.rs", 9_219),
+    ("app/src/main.rs", 9_124),
     ("app/src/schedule_view.rs", 3_101),
     ("app/src/kosten_view.rs", 3_027),
 ];
@@ -45,6 +45,7 @@ const KANTEN: [(&str, &[&str]); 10] = [
         "skizzeo",
         &[
             "sk-cost",
+            "sk-ifc",
             "sk-math",
             "sk-model",
             "sk-paint",
