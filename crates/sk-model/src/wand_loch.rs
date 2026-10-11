@@ -27,6 +27,10 @@ pub struct Hole {
     /// so viel größer ist das Loch in den Schichten hinter der äußersten.
     pub reveal_u: (f64, f64),
     pub reveal_z: (f64, f64),
+    /// Schichten von außen, die die sichtbare Öffnung bekommen (Verblender
+    /// bis vor die Luftschicht, WDVS bis vor den Kern); die übrigen bekommen
+    /// die um den Anschlag größere.
+    pub shell: usize,
 }
 
 /// Bereich eines Lochs in einer Schicht: längs (u) und Höhe (z).
@@ -219,17 +223,11 @@ fn quer(poly: &[Vec3], at: f64, uz: &impl Fn(Vec3) -> (f64, f64)) -> Option<(Vec
 }
 
 impl WallChain {
-    /// Äußerste Schicht mit Körper (ohne Luft).
-    fn erste_schicht(&self) -> Option<usize> {
-        self.layers.iter().position(|l| !l.air)
-    }
-
-    /// Bereich des Lochs `h` in Schicht `li`: die äußerste Schicht bekommt
-    /// die sichtbare Öffnung, die übrigen die um den Anschlag größere; mit nur
-    /// einer Schicht gibt es keinen Anschlag.
+    /// Bereich des Lochs `h` in Schicht `li`: die Schichten der Außenschale
+    /// bekommen die sichtbare Öffnung, die übrigen die um den Anschlag
+    /// größere.
     pub(crate) fn loch_in(&self, h: &Hole, li: usize) -> Kasten {
-        let schalen = self.layers.iter().filter(|l| !l.air).count();
-        h.kasten(schalen < 2 || Some(li) == self.erste_schicht())
+        h.kasten(li < h.shell)
     }
 
     /// Löcher des Segments `seg` in Schicht `li`.
@@ -549,6 +547,7 @@ mod tests {
             z: (875.0, 2385.0),
             reveal_u: (60.0, 60.0),
             reveal_z: (0.0, 60.0),
+            shell: 1,
         };
         assert_eq!(h.kasten(true), ((1000.0, 2000.0), (875.0, 2385.0)));
         assert_eq!(h.kasten(false), ((940.0, 2060.0), (875.0, 2445.0)));
@@ -574,6 +573,7 @@ mod tests {
             z: (z0 + 875.0, z0 + 2385.0),
             reveal_u: (30.0, 30.0),
             reveal_z: (0.0, 30.0),
+            shell: 1,
         };
         c.joints.holes.push(h.clone());
         (c, h)

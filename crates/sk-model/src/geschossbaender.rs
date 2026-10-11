@@ -413,6 +413,14 @@ impl Model {
                 ElementKind::GroundSlab(s) => refs.push(s.top),
                 ElementKind::StripFooting(f) => refs.push(f.base),
                 ElementKind::Floor(f) => refs.push(f.top),
+                ElementKind::Opening(ref o) => {
+                    for h in [o.bottom, o.top] {
+                        refs.push(match h {
+                            crate::oeffnung::HeightRef::Level(l) => l,
+                            crate::oeffnung::HeightRef::Line(st, _) => LevelRef::bottom(st),
+                        });
+                    }
+                }
                 ElementKind::Wall(_)
                 | ElementKind::PerimeterInsulation { .. }
                 | ElementKind::EdgeStrip { .. }

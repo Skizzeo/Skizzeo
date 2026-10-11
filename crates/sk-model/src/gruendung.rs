@@ -61,7 +61,7 @@ impl Model {
             | ElementKind::Coping { floor }
             | ElementKind::Roof { floor, .. } => self.run_of(floor),
             ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
-            ElementKind::Ext(_) => None,
+            ElementKind::Ext(_) | ElementKind::Opening(_) => None,
         }
     }
 

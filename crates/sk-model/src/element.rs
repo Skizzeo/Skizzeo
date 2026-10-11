@@ -203,6 +203,9 @@ pub enum ElementKind {
         /// Gefälle.
         drainage: crate::gefaelle::Drainage,
     },
+    /// Öffnung in Außenwänden (Paket O2): Pfad auf der Außenfläche, Höhen
+    /// an den Höhenlinien oder frei ([`crate::oeffnung`]).
+    Opening(crate::oeffnung::Opening),
 }
 
 /// Dachterrasse einer Decke (BIM §3). Jede Decke trägt die Werte, auch ohne
@@ -454,6 +457,8 @@ pub struct Storey {
     /// Grenze weg, gilt wieder sie.
     /// `None`: die tatsächliche Einbindetiefe ist die gewollte.
     pub embed: Option<f64>,
+    /// Höhenlinien Brüstung und Sturz (Paket O2).
+    pub lines: crate::hoehen::HeightLines,
 }
 
 impl Storey {

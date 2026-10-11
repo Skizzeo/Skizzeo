@@ -1,0 +1,227 @@
+//! Öffnungen im Modell (Paket O2): anlegen, ändern, Höhen auflösen und die
+//! Löcher je Wandzug ableiten ([`crate::oeffnung`], [`crate::wand_loch`]).
+
+use super::*;
+use crate::hoehen::HeightLines;
+use crate::oeffnung::{
+    HeightLine, HeightRef, Opening, MAX_REVEAL, MIN_OPENING, REVEAL_ETICS, REVEAL_FACING,
+};
+use crate::wall::{cross2, flat, right_of};
+use crate::wand_loch::Hole;
+
+/// So weit darf ein Pfadpunkt neben der Außenfläche liegen (mm).
+const ON_FACE: f64 = 1.0;
+
+impl Model {
+    /// Absolute Höhe einer Öffnungskante (mm).
+    pub fn height_z(&self, r: HeightRef) -> Option<f64> {
+        match r {
+            HeightRef::Line(st, line) => {
+                let s = self.storey(st)?;
+                Some(
+                    s.elevation
+                        + match line {
+                            HeightLine::Sill => s.lines.sill,
+                            HeightLine::Lintel => s.lines.lintel,
+                        },
+                )
+            }
+            HeightRef::Level(l) => self.level_z(l),
+        }
+    }
+
+    /// Unter- und Oberkante der Öffnung (z absolut, mm); `None`, wenn eine
+    /// Höhe fehlt oder die Öffnung niedriger als [`MIN_OPENING`] ist.
+    pub fn opening_band(&self, o: &Opening) -> Option<(f64, f64)> {
+        let (z0, z1) = (self.height_z(o.bottom)?, self.height_z(o.top)?);
+        (z1 >= z0 + MIN_OPENING - 1e-6).then_some((z0, z1))
+    }
+
+    /// Die Öffnung `id`, falls es eine ist.
+    pub fn opening(&self, id: ElementId) -> Option<&Opening> {
+        match &self.element(id)?.kind {
+            ElementKind::Opening(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// Kann die Öffnung so stehen? Pfad aus 2 oder 3 Punkten, mindestens
+    /// [`MIN_OPENING`] breit und hoch, an der Ecke wirklich abgeknickt,
+    /// Anschläge 0 bis [`MAX_REVEAL`].
+    pub fn opening_ok(&self, o: &Opening) -> bool {
+        let n = o.path.len();
+        let finite = o.path.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+        let legs = o
+            .path
+            .windows(2)
+            .all(|w| (flat(w[1]) - flat(w[0])).length() >= 1.0);
+        let bent = n != 3 || {
+            let (a, b) = (o.path[1] - o.path[0], o.path[2] - o.path[1]);
+            cross2(a, b).abs() > 0.1 * a.length() * b.length()
+        };
+        let reveal = o
+            .reveal
+            .is_none_or(|r| r.iter().all(|x| (0.0..=MAX_REVEAL).contains(x)));
+        (2..=3).contains(&n)
+            && finite
+            && legs
+            && bent
+            && o.width() >= MIN_OPENING - 1e-6
+            && reveal
+            && self.opening_band(o).is_some()
+    }
+
+    /// Legt eine Öffnung an; ihr Geschoss ist das der Unterkante.
+    pub fn add_opening(&mut self, o: Opening) -> Option<ElementId> {
+        if !self.opening_ok(&o) {
+            return None;
+        }
+        let storey = o.bottom.storey();
+        let id = self.new_element(Category::Opening, storey, WALL_SEQ, ElementKind::Opening(o));
+        self.touch();
+        Some(id)
+    }
+
+    /// Ändert die Öffnung `id` (Pfad, Höhen, Art, Anschlag).
+    pub fn set_opening(&mut self, id: ElementId, o: Opening) -> bool {
+        if self.opening(id).is_none() || !self.opening_ok(&o) {
+            return false;
+        }
+        if self.opening(id) == Some(&o) {
+            return true;
+        }
+        note!(self, Element, self.elements, id);
+        if let Some(e) = self.elements.get_mut(id) {
+            e.storey = o.bottom.storey();
+            e.kind = ElementKind::Opening(o);
+        }
+        self.touch();
+        true
+    }
+
+    /// Höhenlinien des Geschosses `st` setzen (Brüstung, Sturz).
+    pub fn set_height_lines(&mut self, st: StoreyId, lines: HeightLines) -> bool {
+        if !lines.valid() || self.storey(st).is_none() {
+            return false;
+        }
+        if self.storey(st).map(|s| s.lines) == Some(lines) {
+            return true;
+        }
+        note!(self, Storey, self.storeys, st);
+        if let Some(s) = self.storeys.get_mut(st) {
+            s.lines = lines;
+        }
+        self.touch();
+        true
+    }
+
+    /// Außenschale und Anschlag nach Wandtyp: vor einem Verblender bis vor
+    /// die Luftschicht bzw. Dämmung hinter ihm, mit WDVS alle Schichten vor
+    /// dem Kern; monolithisch keine Außenschale (Jörn 14:15).
+    pub(crate) fn opening_shell(&self, run: RunId) -> (usize, [f64; 4]) {
+        let layers = self
+            .run(run)
+            .and_then(|r| r.segments.first())
+            .and_then(|e| self.element(*e))
+            .and_then(|e| e.layer_set)
+            .and_then(|s| self.layer_set(s))
+            .map_or(&[][..], |s| &s.layers[..]);
+        let n = layers.len();
+        let core = layers.iter().position(|l| l.core).unwrap_or(n);
+        let outside = &layers[..core];
+        if let Some(f) = outside.iter().position(|l| crate::qto::is_facing(self, l)) {
+            return (f + 1, REVEAL_FACING);
+        }
+        if outside
+            .iter()
+            .any(|l| l.function == LayerFunction::Insulation)
+        {
+            return (core, REVEAL_ETICS);
+        }
+        (n, [0.0; 4])
+    }
+
+    /// Löcher der Öffnungen im Außenwandzug `run` mit Körper `c`: je
+    /// Pfadstück, das auf der Außenfläche eines Segments liegt, ein Loch;
+    /// zur Außenecke hin offen.
+    pub(crate) fn holes_of(&self, run: RunId, c: &WallChain) -> Vec<Hole> {
+        let mut out = Vec::new();
+        if !self.category_of(run).is_some_and(Category::is_outer_wall) {
+            return out;
+        }
+        let (Some(r), Some((pts, _, dirs))) = (self.run(run), c.layout()) else {
+            return out;
+        };
+        let building = self.storey(r.storey).and_then(|s| s.building);
+        let (shell, plan) = self.opening_shell(run);
+        let mono = shell >= c.layers.len();
+        let o = c.outer_offset();
+        let outward = (o - c.inner_offset()).signum();
+        let (zb, zt) = (c.base, c.base + c.height);
+        let reach = c.thickness();
+        for (_, e) in self.elements.iter() {
+            let ElementKind::Opening(op) = &e.kind else {
+                continue;
+            };
+            if self.storey(e.storey).and_then(|s| s.building) != building {
+                continue;
+            }
+            let Some(z) = self.opening_band(op) else {
+                continue;
+            };
+            if z.1 <= zb + 1e-6 || z.0 >= zt - 1e-6 {
+                continue;
+            }
+            let rev = if mono {
+                [0.0; 4]
+            } else {
+                op.reveal.unwrap_or(plan)
+            };
+            let n = op.path.len();
+            for k in 0..n.saturating_sub(1) {
+                let (a, b) = (flat(op.path[k]), flat(op.path[k + 1]));
+                // Enden an der Außenecke sind offen
+                let (open_a, open_b) = (k > 0, k + 2 < n);
+                let leg = b - a;
+                let len = leg.length();
+                for (i, &d) in dirs.iter().enumerate() {
+                    let nr = right_of(d);
+                    if cross2(leg, d).abs() > 1e-3 * len
+                        || (a - pts[i] - nr * o).dot(nr).abs() > ON_FACE
+                    {
+                        continue;
+                    }
+                    let seg = (pts[(i + 1) % pts.len()] - pts[i]).length();
+                    let (ua, ub) = ((a - pts[i]).dot(d), (b - pts[i]).dot(d));
+                    let (lo, hi) = (ua.min(ub), ua.max(ub));
+                    if hi < -reach || lo > seg + reach {
+                        continue;
+                    }
+                    let (open_lo, open_hi) = if ua <= ub {
+                        (open_a, open_b)
+                    } else {
+                        (open_b, open_a)
+                    };
+                    // Von außen gesehen: läuft u nach rechts?
+                    let rechts = d.dot(right_of(nr * -outward)) > 0.0;
+                    out.push(Hole {
+                        seg: i,
+                        u: (
+                            if open_lo { f64::NEG_INFINITY } else { lo },
+                            if open_hi { f64::INFINITY } else { hi },
+                        ),
+                        z,
+                        reveal_u: if rechts {
+                            (rev[0], rev[1])
+                        } else {
+                            (rev[1], rev[0])
+                        },
+                        reveal_z: (rev[3], rev[2]),
+                        shell: if mono { c.layers.len() } else { shell },
+                    });
+                }
+            }
+        }
+        out
+    }
+}

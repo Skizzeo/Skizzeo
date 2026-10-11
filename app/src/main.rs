@@ -4977,7 +4977,7 @@ impl App {
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
                 K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
                 // Thema „Erweiterungen“, siehe `sync_help`
-                K::Ext(_) => return None,
+                K::Ext(_) | K::Opening(_) => return None,
             })
         });
         help::HelpCtx {

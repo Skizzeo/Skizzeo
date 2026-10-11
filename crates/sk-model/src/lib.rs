@@ -24,6 +24,9 @@ pub mod kinds;
 pub mod library;
 pub mod matprop;
 pub mod model;
+pub mod oeffnung;
+#[cfg(test)]
+mod oeffnung_tests;
 pub mod proctex;
 pub mod qto;
 pub mod qto_dach;
@@ -67,7 +70,9 @@ pub use floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, T
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use gefaelle::{Drainage, SlopeField};
 pub use guid::{Guid, GuidGen};
-pub use hoehen::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT, PLAN_CUT_TOP_GAP};
+pub use hoehen::{
+    HeightLines, LINTEL, MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT, PLAN_CUT_TOP_GAP, SILL,
+};
 pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
