@@ -66,6 +66,13 @@ fn da_ab(s: &Scene, og: RunId) -> (ElementId, ElementId) {
     )
 }
 
+/// Neue Flachdächer haben 2 % Gefälle (Jörn 11.10.); Tests der
+/// waagerechten Geometrie stellen es auf 0.
+fn waagerecht(s: &mut Scene, og: RunId) {
+    let (da, _) = da_ab(s, og);
+    assert!(s.set_field(da, Field::RoofSlope, 0.0));
+}
+
 fn wert(s: &Scene, id: ElementId, name: &str) -> String {
     let p = selection::props(s, id).expect("Eigenschaften");
     p.values
@@ -189,6 +196,7 @@ fn a331_aufkantung_je_wandtyp() {
 #[test]
 fn a332_dachaufbau() {
     let (mut s, og) = haus(322, sk_model::EXTERIOR_TYPE_GUID);
+    waagerecht(&mut s, og);
     let (da, _) = da_ab(&s, og);
     let m = s.model();
     let t = m.layer_set(m.flat_roof_type(da).unwrap()).unwrap();
@@ -277,6 +285,7 @@ fn a333_attikablech() {
 #[test]
 fn a334_mengen_flachdach() {
     let (mut s, og) = haus(324, sk_model::EXTERIOR_TYPE_GUID);
+    waagerecht(&mut s, og);
     let st = fd(&s, og);
     let (da, ab) = da_ab(&s, og);
     let sched = schedule(&mut s);
@@ -368,6 +377,7 @@ fn a335_datei_und_rueckgaengig() {
 #[test]
 fn a336_daemmdicke_im_paneel() {
     let (mut s, og) = haus(326, sk_model::EXTERIOR_TYPE_GUID);
+    waagerecht(&mut s, og);
     let (da, _) = da_ab(&s, og);
     let p = selection::props(&s, da).unwrap();
     let f = p
@@ -450,7 +460,13 @@ fn a337_dialog_flachdach_vorgewaehlt() {
     let fd = fd(&s, og);
     assert_eq!(auf_ebene(&s, fd, Category::Parapet).len(), 4);
     let (da, ab) = da_ab(&s, og);
-    assert_eq!(wert(&s, da, "Anschlusshöhe"), "28,5 cm");
+    // 28,5 cm über der Dachhaut, abzüglich Keil am Rand: neue Flachdächer
+    // haben 2 % Gefälle (Jörn 11.10.)
+    let floor = s.model().floor_of(og).unwrap();
+    let r = s.flat_roof_over(floor).unwrap();
+    let rand = r.slope.as_ref().expect("Gefälle").wedge_edge_max();
+    assert!((r.upstand() - (285.0 - rand)).abs() < 1e-9);
+    assert_eq!(wert(&s, da, "Anschlusshöhe"), "19,1 cm");
     assert!(s.model().element(ab).is_some());
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert!(s.undo());
@@ -469,6 +485,14 @@ fn a338_gefaelle_im_paneel() {
     let (mut s, og) = haus(338, sk_model::EXTERIOR_TYPE_GUID);
     let (da, _) = da_ab(&s, og);
     let floor = s.model().floor_of(og).unwrap();
+    // Neu: 2 % mit vorgeschlagenen Abläufen (Jörn 11.10.)
+    let neu = s.model().drainage_of(floor).unwrap().clone();
+    assert_eq!(neu.slope, 2.0);
+    assert_eq!(neu.drains.len(), 2, "{:?}", neu.drains);
+    assert!(s.flat_roof_over(floor).unwrap().slope.is_some());
+    // Ab hier ein Dach von vorher: ohne Gefälle und Abläufe
+    assert!(s.edit_model("altes Dach", |m| m
+        .set_roof_drainage(da, Default::default())));
     let ohne = sk_model::szo::write(s.model());
     assert!(!ohne.contains("slope="), "kein Gefälle in alten Dächern");
     let gefaelle = |s: &Scene| {
@@ -593,6 +617,8 @@ fn a339_ablauf_ziehen() {
     let (mut s, og) = haus(339, sk_model::EXTERIOR_TYPE_GUID);
     let (da, ab) = da_ab(&s, og);
     let floor = s.model().floor_of(og).unwrap();
+    assert_eq!(s.roof_drains(da).1.len(), 2, "neu mit Gefälle und Griffen");
+    waagerecht(&mut s, og);
     assert!(s.roof_drains(da).1.is_empty(), "ohne Gefälle keine Griffe");
     assert!(s.set_field(da, Field::RoofSlope, 2.0));
     let (roof, vorher) = s.roof_drains(ab);
@@ -674,6 +700,7 @@ fn deckenzeile(s: &Scene, og: RunId) -> String {
 #[test]
 fn ad2_attikadaemmung_flachdach() {
     let (mut s, og) = haus(327, sk_model::EXTERIOR_TYPE_GUID);
+    waagerecht(&mut s, og);
     let (da, ab) = da_ab(&s, og);
     for id in [da, ab] {
         let p = selection::props(&s, id).unwrap();
