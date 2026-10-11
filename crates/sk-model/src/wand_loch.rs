@@ -95,6 +95,11 @@ fn gebiete(((u0, u1), (z0, z1)): Kasten) -> Vec<Vec<Halb>> {
     g
 }
 
+/// Feste Reihenfolge zweier Punkte (x, dann y, dann z).
+fn vor(a: Vec3, b: Vec3) -> bool {
+    (a.x, a.y, a.z) < (b.x, b.y, b.z)
+}
+
 /// Vieleck an der Halbebene `h` zuschneiden (Sutherland–Hodgman); `uz`
 /// liefert die Segmentkoordinaten eines Punkts.
 fn schneiden(poly: &[Ecke], h: Halb, uz: &impl Fn(Vec3) -> (f64, f64)) -> Vec<Ecke> {
@@ -110,12 +115,20 @@ fn schneiden(poly: &[Ecke], h: Halb, uz: &impl Fn(Vec3) -> (f64, f64)) -> Vec<Ec
             out.push(a);
         }
         if (fa >= 0.0) != (fb >= 0.0) {
-            let t = fa / (fa - fb);
+            // Immer von derselben Ecke aus rechnen: die Nachbardreiecke
+            // laufen die gemeinsame Kante gegenläufig ab und müssen genau
+            // denselben Punkt treffen (sonst ein Spalt im Netz, Test #79)
+            let ((p, fp), (q, fq)) = if vor(a.p, b.p) {
+                ((a, fa), (b, fb))
+            } else {
+                ((b, fb), (a, fa))
+            };
+            let t = fp / (fp - fq);
             out.push(Ecke {
-                p: a.p + (b.p - a.p) * t,
+                p: p.p + (q.p - p.p) * t,
                 uv: [
-                    a.uv[0] + (b.uv[0] - a.uv[0]) * t,
-                    a.uv[1] + (b.uv[1] - a.uv[1]) * t,
+                    p.uv[0] + (q.uv[0] - p.uv[0]) * t,
+                    p.uv[1] + (q.uv[1] - p.uv[1]) * t,
                 ],
             });
         }
@@ -522,6 +535,29 @@ mod tests {
         ts.iter()
             .map(|t| (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).length() * 0.5)
             .sum()
+    }
+
+    /// Zwei Dreiecke mit gemeinsamer Kante, gegenläufig abgelaufen: der
+    /// Schnittpunkt auf der Kante ist bitgleich, sonst klafft das Netz (Tür
+    /// am Wandfuß in r7, Test #79).
+    #[test]
+    fn schnitt_auf_gemeinsamer_kante_gleich() {
+        let e = |x: f64, z: f64| Ecke {
+            p: vec3(x, 8000.0, z),
+            uv: [0.0; 2],
+        };
+        let (a, b) = (e(13_017.3, 0.0), e(21_982.486_865_148_86, 2135.0));
+        let h = (-1.0, 0.0, 18_010.0);
+        let eins = schneiden(&[a, b, e(21_982.486_865_148_86, 0.0)], h, &uz);
+        let zwei = schneiden(&[b, a, e(13_017.3, 2135.0)], h, &uz);
+        let auf = |v: &[Ecke]| -> Vec3 {
+            v.iter()
+                .map(|x| x.p)
+                .find(|p| p.x == 18_010.0 && p.z > 0.0 && p.z < 2135.0)
+                .unwrap()
+        };
+        let (p, q) = (auf(&eins), auf(&zwei));
+        assert!(p.z.to_bits() == q.z.to_bits(), "{p:?} {q:?}");
     }
 
     /// Senkrechte Wandfläche 4 × 3 m mit Loch 1 × 1,5 m: 12 − 1,5 m² bleiben,

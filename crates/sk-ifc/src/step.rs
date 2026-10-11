@@ -261,7 +261,7 @@ impl<'a> Parser<'a> {
             while self.i < self.b.len() && self.b[self.i].is_ascii_whitespace() {
                 self.i += 1;
             }
-            if self.b[self.i..].starts_with(b"/*") {
+            if self.b.get(self.i..).is_some_and(|r| r.starts_with(b"/*")) {
                 match find(&self.b[self.i + 2..], b"*/") {
                     Some(k) => self.i += k + 4,
                     None => self.i = self.b.len(),
@@ -374,6 +374,9 @@ impl<'a> Parser<'a> {
                 let s = self.i;
                 while self.i < self.b.len() && self.b[self.i] != b'"' {
                     self.i += 1;
+                }
+                if self.i >= self.b.len() {
+                    return self.err("Binärwert offen");
                 }
                 let t = String::from_utf8_lossy(&self.b[s..self.i]).into_owned();
                 self.i += 1;
@@ -625,5 +628,22 @@ mod tests {
         let g = read(&t.replace("#2=IFCLABEL('x');\n", "")).unwrap();
         assert_eq!(g.get(2).unwrap().args[0], s("Größe"));
         assert!(read("ISO-10303-21;\nDATA;\n#1=X(;").is_err());
+    }
+
+    /// Abgeschnittene oder kaputte Dateien geben einen Lesefehler, nie einen
+    /// Absturz (Review Q11: offener Binärwert).
+    #[test]
+    fn kaputte_dateien_ohne_absturz() {
+        let t = "ISO-10303-21;\nHEADER;FILE_SCHEMA(('IFC4'));ENDSEC;\nDATA;\n\
+                 /* K */ #1=IFCPIXELTEXTURE($,$,$,$,$,1,1,1,(\"0AB\"));\n\
+                 #2=IFCLABEL('Gr\\X2\\00F6\\X0\\\\e');#3=IFCREAL(-1.5E-3);\n\
+                 #4=IFCWALL('x',$,.T.,(#1,#2),$);\nENDSEC;\nEND-ISO-10303-21;";
+        assert!(read(t).is_ok());
+        for n in 0..t.len() {
+            if t.is_char_boundary(n) {
+                let _ = read(&t[..n]);
+            }
+        }
+        assert!(read("ISO-10303-21;\nDATA;\n#1=X(\"0AB").is_err());
     }
 }
