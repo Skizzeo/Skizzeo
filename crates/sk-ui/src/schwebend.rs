@@ -11,7 +11,7 @@
 //! let r = Schwebend::neu((0.0, oben, w, h - oben), scale, rechts, fonts);
 //! r.abdunkeln(c);
 //! /* Inhalt ab r.inhalt_oben() zeichnen */
-//! r.leiste(c, fonts, "Seite 1 von 3", schwebend::HINWEIS, hot_zu);
+//! r.leiste(c, fonts, ("Seite 1 von 3", inhalt_x), schwebend::HINWEIS, hot_zu);
 //! match r.klick(x, y, inhalt_trifft) { Klick::Daneben | Klick::Zu => zu(), Klick::Inhalt => {} }
 //! ```
 //! Die Leiste wird nach dem Inhalt gezeichnet und deckt, was nach oben
@@ -31,7 +31,7 @@ pub const RAND: f32 = 16.0;
 pub const HINWEIS: &str = "Esc oder Klick daneben schließt";
 const ZU: &str = "Schließen";
 /// Abdunkeln und Leiste, in jedem Schema dunkel; Schrift darauf hell.
-const DUNKEL: Rgba = Rgba(0, 0, 0, 170);
+pub const DUNKEL: Rgba = Rgba(0, 0, 0, 170);
 pub const LEISTE_BG: Rgba = Rgba(34, 34, 36, 255);
 const HELL: Rgba = Rgba(255, 255, 255, 235);
 const HELL_DIM: Rgba = Rgba(255, 255, 255, 150);
