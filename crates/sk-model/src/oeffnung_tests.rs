@@ -410,6 +410,14 @@ fn oeffnungen_in_der_datei() {
     assert!(offen(&l).iter().all(|o| o.reveal.is_none()));
     let l = lies("art=door", "art=fenster");
     assert!(offen(&l).iter().all(|o| o.kind == OpeningKind::Window));
+    let l = lies("art=door ", "");
+    assert!(offen(&l).iter().all(|o| o.kind == OpeningKind::Window));
+    let l = lies(":u:2135.5", ":u:abc");
+    assert_eq!(
+        offen(&l).len(),
+        2,
+        "unlesbarer Versatz: die Öffnung fällt weg"
+    );
     let l = lies("install=100", "install=-5");
     assert!(offen(&l).iter().all(|o| o.install.outer.is_none()));
     let op = text.find("[opening]").unwrap();
@@ -484,6 +492,99 @@ fn wand_verschoben_oder_geloescht() {
     let d = m.delete_elements(&[m.wall_at(frei, 0).unwrap()]);
     m.commit();
     assert!(!d.removed.contains(&vorn) && m.opening(vorn).is_some());
+}
+
+/// Review #79, N1 und N2: Eine Öffnung über zwei Geschosse braucht in jedem
+/// Geschoss ihre Wand; verliert sie die im OG, meldet es die Prüfung, wird
+/// die EG-Wand gelöscht, geht sie mit. Auch eine schon fehlerhafte Öffnung
+/// (Überschneidung aus der Datei) geht mit ihrer Wand.
+#[test]
+fn geschossband_und_loeschen() {
+    let (mut m, eg, og) = haus(None);
+    let (s_og, s_eg) = (storey(&m, og), storey(&m, eg));
+    let hoch = Opening {
+        top: HeightRef::Line(s_og, HeightLine::Lintel),
+        ..fenster(&m, eg, (3000.0, 4000.0))
+    };
+    m.add_opening(hoch).unwrap();
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    let moved = m.chain(og).unwrap().with_segment_moved(0, 500.0).unwrap();
+    m.begin("OG verschieben");
+    assert!(m.set_run_points(og, &moved.points).is_some());
+    let t = m.commit().unwrap();
+    let befund = m.check();
+    assert!(
+        befund
+            .iter()
+            .any(|b| b.contains("nicht auf einer Außenwand")),
+        "{befund:?}"
+    );
+    m.apply(&t, Direction::Undo);
+    // Freie Wände in EG und OG übereinander, die Öffnung über beide
+    let r = m.run(eg).unwrap().clone();
+    let set = m.element(r.segments[0]).unwrap().layer_set.unwrap();
+    let pts = [vec3(14000.0, 0.0, 0.0), vec3(14000.0, 6000.0, 0.0)];
+    m.begin("Wände");
+    let unten = m
+        .add_wall_run(&pts, false, r.ref_side, s_eg, set, Category::ExteriorWall)
+        .unwrap();
+    m.add_wall_run(&pts, false, r.ref_side, s_og, set, Category::ExteriorWall)
+        .unwrap();
+    m.commit();
+    let id = m
+        .add_opening(Opening {
+            top: HeightRef::Line(s_og, HeightLine::Lintel),
+            ..fenster(&m, unten, (2000.0, 3000.0))
+        })
+        .unwrap();
+    m.begin("Löschen");
+    let d = m.delete_elements(&[m.wall_at(unten, 0).unwrap()]);
+    m.commit();
+    assert!(d.removed.contains(&id), "{d:?}");
+    // N2: zwei sich überschneidende Öffnungen aus der Datei
+    let (mut m, eg, _) = haus(None);
+    let r = m.run(eg).unwrap().clone();
+    let set = m.element(r.segments[0]).unwrap().layer_set.unwrap();
+    m.begin("Wand");
+    let frei = m
+        .add_wall_run(
+            &pts,
+            false,
+            r.ref_side,
+            r.storey,
+            set,
+            Category::ExteriorWall,
+        )
+        .unwrap();
+    m.commit();
+    m.add_opening(fenster(&m, frei, (1000.0, 2000.0))).unwrap();
+    m.add_opening(fenster(&m, frei, (3000.0, 4000.0))).unwrap();
+    let text = szo::write(&m);
+    let pfad = |o: &Opening| {
+        o.path
+            .iter()
+            .map(|p| format!("{} {}", p.x, p.y))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    let alt = pfad(&fenster(&m, frei, (3000.0, 4000.0)));
+    let neu = pfad(&fenster(&m, frei, (1500.0, 2500.0)));
+    assert!(text.contains(&alt), "{text}");
+    let mut m = szo::read(&text.replacen(&alt, &neu, 1), GuidGen::with_seed(5))
+        .unwrap()
+        .model;
+    assert!(m.check().iter().any(|b| b.contains("überschneidet")));
+    let frei = m
+        .runs()
+        .iter()
+        .find(|(_, r)| !r.closed && r.storey == storey(&m, eg))
+        .map(|(id, _)| id)
+        .unwrap();
+    m.begin("Löschen");
+    let d = m.delete_elements(&[m.wall_at(frei, 0).unwrap()]);
+    m.commit();
+    assert_eq!(d.removed.len(), 3, "Wand und beide Öffnungen: {d:?}");
+    assert!(m.check().is_empty(), "{:?}", m.check());
 }
 
 /// Review #79, Befund 2: Öffnungen dürfen sich nicht überschneiden, im WDVS

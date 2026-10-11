@@ -231,9 +231,9 @@ impl Model {
             self.remove_segments(run, &segs);
         }
         for o in seated {
-            let orphan = self.opening(o).is_some_and(|op| {
-                self.opening_fault(op, Some(o)) == Some(crate::OpeningFault::NoWall)
-            });
+            // Nur die Wandlage zählt, auch bei einer schon fehlerhaften
+            // Öffnung (Review #79, N2)
+            let orphan = self.opening(o).is_some_and(|op| !self.opening_on_walls(op));
             if orphan && !out.removed.contains(&o) {
                 note!(self, Element, self.elements, o);
                 self.elements.remove(o);
