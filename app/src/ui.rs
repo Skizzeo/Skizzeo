@@ -150,6 +150,9 @@ pub enum Id {
     /// „bündig setzen“.
     PropsLink,
     PropsFlush,
+    /// Wand im Zug (W-11, W-12): „Wand teilen“ und „an der Fuge vereinen“.
+    PropsSplit,
+    PropsMerge,
     /// „Abläufe vorschlagen“ im Abschnitt „Gefälle“ des Flachdachs (G2).
     PropsDrains,
     /// „Ablauf hinzufügen“ und „Ablauf löschen“ (den gewählten) im
@@ -807,6 +810,10 @@ pub struct Props {
     pub locked: bool,
     /// Erweiterung (E7): Typ-Chip und Parameter je Gruppe statt Aufbau.
     pub ext: Option<Vec<ExtZeile>>,
+    /// Wand im Zug: Knopf „Wand teilen“; dazu, ob sie an einer Fuge in
+    /// einer Flucht steht (Knopf „an der Fuge vereinen“).
+    pub split: bool,
+    pub joint: bool,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -1199,6 +1206,12 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     field_rows(&mut rows, &p.fields);
     if p.stack.is_some() {
         rows.push(Row::Button(Id::PropsFlush, "bündig setzen"));
+    }
+    if p.split {
+        rows.push(Row::Button(Id::PropsSplit, "Wand teilen"));
+    }
+    if p.joint {
+        rows.push(Row::Button(Id::PropsMerge, "an der Fuge vereinen"));
     }
     if p.locked {
         rows.push(Row::Locked);
@@ -2065,6 +2078,8 @@ impl Ui {
             | Id::PropsType
             | Id::PropsLink
             | Id::PropsFlush
+            | Id::PropsSplit
+            | Id::PropsMerge
             | Id::PropsDrains
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete
@@ -2099,6 +2114,7 @@ impl Ui {
             | Id::PropsDrains
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete => self.props_locked(),
+            Id::PropsSplit | Id::PropsMerge => self.props_locked(),
             _ => false,
         }
     }

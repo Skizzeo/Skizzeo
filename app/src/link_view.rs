@@ -3,6 +3,9 @@
 //! Mitte des Wandfußes. Gekoppelt erscheint es nur am Band unter der Maus,
 //! gelöst bleibt es klein stehen. Klick schaltet die Kette um.
 //!
+//! Dazu je Fuge zweier Wände in einer Flucht (W-11, W-12) ein graues,
+//! offenes Plättchen an der Fuge: „getrennt“; Klick vereint sie.
+//!
 //! Die Plättchen sind Oberflächenbilder auf eigenen Plätzen; je Bild ändern
 //! sich nur ihre Lagen, gezeichnet wird ein Plättchen nur, wenn sich sein
 //! Aussehen ändert.
@@ -16,17 +19,23 @@ use sk_render::Renderer;
 use sk_ui::theme::Theme;
 
 /// Höchstens so viele Plättchen gleichzeitig.
-pub const SLOTS: usize = 12;
+pub const SLOTS: usize = 16;
 /// Plättchen (dip): Kante, Abstand zum Band, Radius; gelöst dauerhaft kleiner.
 pub const CHIP: f64 = 22.0;
 const GAP: f64 = 12.0;
 const RADIUS: f32 = 5.0;
 const SMALL: f64 = 0.85;
 
+/// Welches Plättchen: die gestapelte Wand bzw. an einer Fuge die Wand
+/// danach und (zweites Feld) die Wand davor.
+pub type Glied = (ElementId, Option<ElementId>);
+
 /// Ein Plättchen im Fenster.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chip {
     pub wall: ElementId,
+    /// Fuge: die Wand davor in der Flucht.
+    pub fuge: Option<ElementId>,
     pub linked: bool,
     /// Gelöst und nicht unter der Maus: klein.
     pub small: bool,
@@ -39,6 +48,10 @@ impl Chip {
     /// Kantenlänge in Pixeln.
     pub fn size(&self, scale: f64) -> f64 {
         (CHIP * scale * if self.small { SMALL } else { 1.0 }).round()
+    }
+
+    pub fn glied(&self) -> Glied {
+        (self.wall, self.fuge)
     }
 
     pub fn contains(&self, x: f64, y: f64, scale: f64) -> bool {
@@ -62,7 +75,7 @@ pub struct Want<'a> {
     /// Wand unter der Maus bzw. gezogen (ihr Band leuchtet).
     pub band: Option<ElementId>,
     /// Plättchen unter der Maus.
-    pub hover: Option<ElementId>,
+    pub hover: Option<Glied>,
     /// Gilt als gekoppelt, obwohl gerade gelöst: die OG-Wand, an die beim
     /// „Bündig setzen“ die EG-Wand gleitet (Zustand vor dem Gleiten).
     pub keep_linked: Option<ElementId>,
@@ -99,7 +112,7 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
                 continue;
             };
             let linked = linked || wnt.keep_linked == Some(wall);
-            let near = wnt.band == Some(wall) || wnt.hover == Some(wall);
+            let near = wnt.band == Some(wall) || wnt.hover == Some((wall, None));
             if linked && !near {
                 continue;
             }
@@ -116,14 +129,69 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
             };
             out.push(Chip {
                 wall,
+                fuge: None,
                 linked,
                 small: !near,
-                hover: wnt.hover == Some(wall),
+                hover: wnt.hover == Some((wall, None)),
                 at,
             });
         }
     }
+    fugen(wnt, &mut out);
     out
+}
+
+/// Plättchen an den Fugen: im Grundriss die Züge des Geschosses, in 3D nur
+/// die untersten (darüber liegt dieselbe Fuge).
+fn fugen(wnt: &Want, out: &mut Vec<Chip>) {
+    let m = wnt.scene.model();
+    let feet = wnt.scene.feet();
+    let runs: Vec<_> = if wnt.plan_z.is_some() {
+        feet.chain(wnt.scene.stacked_feet()).collect()
+    } else {
+        feet.collect()
+    };
+    for (run, _, foot) in runs {
+        if let Some(z) = wnt.plan_z {
+            if foot.first().is_some_and(|(a, _)| (a.z - z).abs() >= 1.0) {
+                continue;
+            }
+        }
+        let Some(chain) = wnt.scene.chain(run) else {
+            continue;
+        };
+        let n = chain.segment_count();
+        for &k in wnt.scene.joints(run) {
+            if out.len() >= SLOTS {
+                return;
+            }
+            let (Some(a), Some(b)) = (m.wall_at(run, (k + n - 1) % n), m.wall_at(run, k)) else {
+                continue;
+            };
+            let (Some(&(p, _)), Some(nrm)) = (foot.get(k), chain.segment_normal(k)) else {
+                continue;
+            };
+            if !wnt.scene.pickable(a) || !wnt.scene.pickable(b) {
+                continue;
+            }
+            let out_n = nrm * chain.outward_sign();
+            if wnt.plan_z.is_none() && !visible(wnt, p + out_n * 60.0) {
+                continue;
+            }
+            let Some(at) = place(wnt, p, out_n) else {
+                continue;
+            };
+            let hover = wnt.hover == Some((b, Some(a)));
+            out.push(Chip {
+                wall: b,
+                fuge: Some(a),
+                linked: false,
+                small: !hover,
+                hover,
+                at,
+            });
+        }
+    }
 }
 
 /// Liegt zwischen Auge und `p` (knapp vor der Fassade) kein Bauteil?
@@ -159,13 +227,17 @@ fn place(wnt: &Want, mid: Vec3, out: Vec3) -> Option<(f64, f64)> {
 }
 
 /// Plättchen unter der Maus.
-pub fn hit(chips: &[Chip], x: f64, y: f64, scale: f64) -> Option<ElementId> {
+pub fn hit(chips: &[Chip], x: f64, y: f64, scale: f64) -> Option<Glied> {
     chips
         .iter()
         .rev()
         .find(|c| c.contains(x, y, scale))
-        .map(|c| c.wall)
+        .map(Chip::glied)
 }
+
+/// Hinweis am Plättchen einer Fuge.
+pub const FUGE_TIP: &str =
+    "Getrennt: zwei Wände in einer Flucht.\nKlick vereint sie zu einer Wand.";
 
 /// Hinweis am Plättchen, zwei Zeilen wie im Sollbild.
 pub fn tip(linked: bool) -> &'static str {
