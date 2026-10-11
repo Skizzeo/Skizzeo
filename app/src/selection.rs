@@ -435,7 +435,8 @@ fn foundation_props(
         | ElementKind::Coping { .. }
         | ElementKind::Roof { .. }
         | ElementKind::Downpipe { .. }
-        | ElementKind::Ext(_) => return None,
+        | ElementKind::Ext(_)
+        | ElementKind::Opening(_) => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);

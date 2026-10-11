@@ -166,8 +166,8 @@ impl Model {
             | ElementKind::Coping { floor }
             | ElementKind::Roof { floor, .. } => Err(Refusal::Derived { from: floor }),
             ElementKind::Downpipe { roof, .. } => Err(Refusal::Derived { from: roof }),
-            ElementKind::Ext(_) if e.locked => Err(Refusal::Locked(id)),
-            ElementKind::Ext(_) => Ok(()),
+            ElementKind::Ext(_) | ElementKind::Opening(_) if e.locked => Err(Refusal::Locked(id)),
+            ElementKind::Ext(_) | ElementKind::Opening(_) => Ok(()),
         }
     }
 
@@ -184,15 +184,19 @@ impl Model {
                 continue;
             }
             match self.can_delete(id) {
-                // Erweiterungsbauteil (E3): steht für sich
+                // Erweiterungsbauteil (E3) und Öffnung (O2): stehen für sich
                 Ok(())
-                    if matches!(self.element(id).map(|e| &e.kind), Some(ElementKind::Ext(_))) =>
+                    if matches!(
+                        self.element(id).map(|e| &e.kind),
+                        Some(ElementKind::Ext(_) | ElementKind::Opening(_))
+                    ) =>
                 {
+                    let cat = self.element(id).map_or(Category::Extension, |e| e.category);
                     note!(self, Element, self.elements, id);
                     self.elements.remove(id);
                     self.touch();
                     out.removed.push(id);
-                    out.kinds.push(Category::Extension);
+                    out.kinds.push(cat);
                 }
                 Ok(()) => {
                     let (Some((run, seg)), Some(cat)) =
@@ -211,8 +215,30 @@ impl Model {
                 Err(r) => out.refused.push((id, r)),
             }
         }
+        // Öffnungen in den betroffenen Zügen: verlieren sie ihre Wand, gehen
+        // sie mit (Review #79)
+        let mut seated: Vec<ElementId> = Vec::new();
+        for (run, _) in &by_run {
+            for h in self.chain(*run).map(|c| c.joints.holes).unwrap_or_default() {
+                if let Some(o) = h.opening.filter(|o| !seated.contains(o)) {
+                    seated.push(o);
+                }
+            }
+        }
         for (run, segs) in by_run {
             self.remove_segments(run, &segs);
+        }
+        for o in seated {
+            // Nur die Wandlage zählt, auch bei einer schon fehlerhaften
+            // Öffnung (Review #79, N2)
+            let orphan = self.opening(o).is_some_and(|op| !self.opening_on_walls(op));
+            if orphan && !out.removed.contains(&o) {
+                note!(self, Element, self.elements, o);
+                self.elements.remove(o);
+                self.touch();
+                out.removed.push(o);
+                out.kinds.push(Category::Opening);
+            }
         }
         out
     }

@@ -13,6 +13,7 @@
 mod ausbau;
 mod dach;
 mod hoehen;
+mod oeffnung;
 
 use crate::attr::{
     Attributes, Dash, Display, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen,
@@ -923,7 +924,7 @@ fn write_known(m: &Model) -> String {
             Some(e) => l.num("embed", e),
             None => l,
         };
-        l.finish(&mut out);
+        hoehen::write_lines(l, &s.lines).finish(&mut out);
     }
     // Höhenbezug als `Guid:u|o:Versatz`
     let level = |r: LevelRef| {
@@ -1167,6 +1168,7 @@ fn write_known(m: &Model) -> String {
     }
     // Regenfallrohre (Jörn 11.10.): nur, wenn es sie gibt
     dach::write_downpipes(m, &walls, &mut out);
+    oeffnung::write(m, &walls, &mut out);
     // Erweiterungsbauteile (E3): Definition vollständig, je Exemplar seine
     // Lage und eigenen Werte; unlesbare Zeilen der gelesenen Datei bleiben
     for d in m.ext_defs() {
@@ -1507,7 +1509,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 40] = [
+    const KNOWN: [&str; 41] = [
+        "opening",
         "pen",
         "linetype",
         "fill",
@@ -1744,6 +1747,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 elevation: 0.0,
                 height: crate::model::STOREY_HEIGHT,
                 embed: None,
+                lines: Default::default(),
             }
         } else {
             Storey {
@@ -1763,6 +1767,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     Some(_) => Some(r.f64("embed")?),
                     None => None,
                 },
+
+                lines: hoehen::read_lines(r, &mut hints),
             }
         };
         let g = s.guid;
@@ -1966,6 +1972,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             elevation: -crate::model::FOUNDATION_DEPTH,
             height: crate::model::FOUNDATION_DEPTH,
             embed: None,
+            lines: Default::default(),
         });
         storeys.insert(Storey {
             guid: guids.next_guid(),
@@ -1976,6 +1983,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             elevation: crate::model::STOREY_HEIGHT,
             height: crate::model::STOREY_HEIGHT,
             embed: None,
+            lines: Default::default(),
         });
         hints.push("Datei auf die neuen Geschosse umgestellt".to_string());
         (eg, gr)
@@ -2170,9 +2178,15 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         ("perimeter", 7),
         ("roof", 8),
         ("downpipe", 9),
+        ("opening", 10),
     ] {
         for r in recs(section) {
-            let kind = if ix == 7 {
+            let kind = if ix == 10 {
+                match oeffnung::read(r, &storey_ids, &mut hints)? {
+                    Some(k) => k,
+                    None => continue,
+                }
+            } else if ix == 7 {
                 // Perimeterdämmung (Gelände Thema 4): nur der Verweis auf die
                 // Sohlplatte
                 let slab = r.link("slab", &elem_ids)?;

@@ -1,10 +1,59 @@
 //! Schnitthöhe des Grundrisses in der `.szo` ([`crate::hoehen`]):
 //! `[plancut] h=1500`, nur wenn sie von der Vorgabe abweicht. Eine Zeile,
 //! die nicht zählt, gibt einen Hinweis und bleibt roh stehen (Regel 72).
+//! Dazu die Höhenlinien am `[storey]`: `sill=` und `lintel=` nur, wenn sie
+//! von der Vorgabe abweichen.
 
 use super::{ausserhalb, Line, LoadError, Record};
-use crate::hoehen::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT};
+use crate::hoehen::{HeightLines, MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT};
 use crate::Model;
+
+/// Höhenlinien eines Geschosses an seine Zeile, nur abweichende.
+pub(super) fn write_lines(l: Line, h: &HeightLines) -> Line {
+    let d = HeightLines::default();
+    let l = if h.sill != d.sill {
+        l.num("sill", h.sill)
+    } else {
+        l
+    };
+    if h.lintel != d.lintel {
+        l.num("lintel", h.lintel)
+    } else {
+        l
+    }
+}
+
+/// Höhenlinien aus einer `[storey]`-Zeile; fehlende mit der Vorgabe. Ein
+/// unlesbarer Wert gibt einen Hinweis und nimmt die Vorgabe, ebenso beide,
+/// wenn sie zusammen nicht passen (Regel 72, Review #79).
+pub(super) fn read_lines(r: &Record, hints: &mut Vec<String>) -> HeightLines {
+    let d = HeightLines::default();
+    let mut num = |k: &str, d: f64| match r.opt(k) {
+        None => d,
+        Some(v) => match v.parse::<f64>().ok().filter(|x| x.is_finite()) {
+            Some(x) => x,
+            None => {
+                hints.push(format!(
+                    "Zeile {}: „{k}={v}“ unlesbar, Vorgabe gilt",
+                    r.line
+                ));
+                d
+            }
+        },
+    };
+    let h = HeightLines {
+        sill: num("sill", d.sill),
+        lintel: num("lintel", d.lintel),
+    };
+    if !h.valid() {
+        hints.push(format!(
+            "Zeile {}: Brüstung {} und Sturz {} passen nicht (Sturz mindestens 10 cm über der Brüstung ab 0), Vorgabe gilt",
+            r.line, h.sill, h.lintel
+        ));
+        return d;
+    }
+    h
+}
 
 pub(super) fn write_plan_cut(m: &Model, out: &mut String) {
     if let Some(h) = m.plan_cut_own() {
