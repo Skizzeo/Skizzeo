@@ -30,6 +30,7 @@ mod cards;
 mod catalog;
 mod catalog_view;
 mod cli;
+mod datei_export;
 mod delete;
 mod document;
 mod draw_table;
@@ -758,8 +759,6 @@ struct App {
     /// Stand, für den das Paneel „Eigenschaften“ zuletzt gefüllt wurde
     /// (Bauteil, Modellrevision).
     props_key: Option<(sk_model::ElementId, u64)>,
-    /// Stand (Revision, aktives Geschoss) der Fangkanten des Hintergrunds.
-    snaps_key: Option<(u64, sk_model::StoreyId)>,
     w: u32,
     h: u32,
     overlay_dirty: bool,
@@ -1229,12 +1228,8 @@ impl App {
         if self.tool.set_plane(z, h) {
             self.redraw = true;
         }
-        // Fangkanten des Hintergrunds (nur bei Modell- oder Geschosswechsel neu)
-        let key = (self.scene.model().revision(), self.scene.active_storey());
-        if self.snaps_key != Some(key) {
-            self.snaps_key = Some(key);
-            self.tool.snaps = self.scene.background_snaps();
-        }
+        // Fangkanten des Hintergrunds und Wände des Geschosses (E16, G1)
+        self.tool.fang_aus(&mut self.scene);
         let l = self.scene.levels();
         self.geschoss.dirty |= self.geschoss.ui.set_levels(l.clone());
         // Im Hauptfenster steht das Diagramm nur neben dem Dialog
@@ -1765,7 +1760,6 @@ impl App {
         self.nord_fuehrung = Default::default();
         self.nord.set_aktiv(false);
         self.ui.dialog = false;
-        self.snaps_key = None;
         self.scene.set_theme(&self.theme);
         self.tool.set_enabled(self.tool.enabled);
         self.set_wall_kind(self.tool.category);
@@ -1834,6 +1828,7 @@ impl App {
             Command::Delete => self.delete_selection(),
             Command::Help => self.show_help(true),
             Command::MeasureFrameTime => self.start_frame_measure(),
+            Command::ExportIfc => self.export_ifc(surface),
         }
     }
 
@@ -3295,103 +3290,6 @@ impl App {
                 self.sync_levels();
             }
             self.sync_props();
-        }
-    }
-
-    /// Tabelle des Mengenblatts im Umfang des Blatts, die Kopfzeile zuerst
-    /// (KA-1).
-    fn quantity_csv(&mut self, by: schedule_view::Grouping) -> Vec<u8> {
-        let u = self
-            .quantity
-            .list
-            .as_ref()
-            .map_or_else(sk_model::qto::Umfang::projekt, |l| l.leiste.umfang.clone());
-        let sched = self.scene.schedule_in(&u);
-        let kopf = umfang_view::umfang_text(self.scene.model(), &u, sk_platform::local_date_time());
-        schedule_view::csv_mit_kopf(self.scene.model(), &sched, by, &kopf)
-    }
-
-    /// „Als Tabelle speichern“: Windows-Dialog, .csv für Excel.
-    fn save_csv(&mut self, surface: &Surface) {
-        let stem = self
-            .doc
-            .path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map_or("Unbenannt".to_string(), |s| {
-                s.to_string_lossy().into_owned()
-            });
-        let blatt = self.quantity.blatt();
-        let kosten = blatt == cards::Blatt::Kosten;
-        let ava = self
-            .quantity
-            .ava
-            .as_ref()
-            .filter(|_| blatt == cards::Blatt::Ava);
-        let suggested = match ava.and_then(|a| a.los_name()) {
-            // „haus LV Rohbau.csv“ (paket-ka4 §4)
-            Some(los) => format!("{stem} LV {los}.csv"),
-            None if kosten => format!("{stem} Kosten.csv"),
-            None => format!("{stem} Mengenermittlung.csv"),
-        };
-        let filters = [
-            ("Tabelle für Excel (*.csv)", "*.csv"),
-            ("Alle Dateien (*.*)", "*.*"),
-        ];
-        let Some(path) = surface.save_dialog("Als Tabelle speichern", &filters, "csv", &suggested)
-        else {
-            return;
-        };
-        let ava = self
-            .quantity
-            .ava
-            .as_ref()
-            .filter(|_| blatt == cards::Blatt::Ava);
-        let bytes = match self.quantity.kosten.as_ref().filter(|_| kosten) {
-            // Blatt AVA: das LV des gewählten Loses (ka-4-fach §3.6)
-            _ if ava.is_some() => ava.map(|a| a.csv()).unwrap_or_default(),
-            // Reiter Kosten: Kosten-CSV wie die Anzeige (ka-2-fach §2.5)
-            Some(k) => {
-                let (y, mo, d, h, mi) = sk_platform::local_date_time();
-                k.csv(&stem, &format!("{d:02}.{mo:02}.{y}, {h:02}:{mi:02}"))
-            }
-            None => {
-                let by = self.quantity.grouping;
-                self.quantity_csv(by)
-            }
-        };
-        if let Err(e) = document::tabelle_schreiben(&path, &bytes) {
-            let m = meldung::Meldung::aus_io(
-                "Tabelle nicht gespeichert",
-                "Tabelle speichern",
-                &path,
-                &e,
-            );
-            surface.message(&m, true);
-        }
-    }
-
-    /// „LV Rohbau als PDF speichern“ aus der AVA-Druckvorschau: genau die
-    /// gezeigten Seiten (kosten/lv-blatt-a4.md §9).
-    fn save_pdf(&mut self, surface: &Surface) {
-        let Some((name, bytes)) = self
-            .quantity
-            .ava
-            .as_ref()
-            .and_then(|a| a.pdf(&self.ui.fonts))
-        else {
-            return;
-        };
-        let filters = [
-            ("PDF-Dokument (*.pdf)", "*.pdf"),
-            ("Alle Dateien (*.*)", "*.*"),
-        ];
-        let Some(path) = surface.save_dialog("Als PDF speichern", &filters, "pdf", &name) else {
-            return;
-        };
-        if let Err(e) = document::tabelle_schreiben(&path, &bytes) {
-            let m = meldung::Meldung::aus_io("PDF nicht gespeichert", "PDF speichern", &path, &e);
-            surface.message(&m, true);
         }
     }
 
@@ -7852,7 +7750,6 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         sonne: Default::default(),
         sel: Selection::default(),
         props_key: None,
-        snaps_key: None,
         mouse_at: None,
         tip: None,
         notice: None,
@@ -8204,6 +8101,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 a.auto_switch = Some((left - 1, up));
             }
         }
+        // Wandwerkzeug: Fangziele nach Modelländerungen, Einrast-Puls (G1)
+        a.tool.fang_aus(&mut a.scene);
+        a.redraw |= a.tool.pulsiert();
         if !a.redraw
             && !a.overlay_dirty
             && !a.nav.is_animating()

@@ -332,6 +332,10 @@ mod stapel;
 mod teilen;
 pub use teilen::FugeError;
 
+#[path = "fang.rs"]
+mod fang;
+pub use fang::{Fangziele, Wandende, Wandflaeche};
+
 impl Default for Model {
     fn default() -> Model {
         Model::new()

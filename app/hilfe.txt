@@ -41,7 +41,9 @@ Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht den Zu
 Starten | Knopf „Innenwand“ unter „Gebäude“; Bezugsseite ist die Achse
 Geschoss | Sie entsteht im aktiven Geschoss und wird nicht gestapelt
 Zeichnen | wie Wände zeichnen: Klick, Länge tippen und **Enter**, **Tab** für den Winkel
-Beenden | **Enter** oder Doppelklick
+Fangen | der Cursor rastet an Wandflächen und freien Wandenden ein, die Fläche leuchtet
+Abstand ab Ecke | auf einer Wandfläche vor dem ersten Klick Zahl tippen, **Enter** setzt den Anfang
+Beenden | Klick auf eine quer liegende Wandfläche oder ein Wandende, sonst **Enter** oder Doppelklick
 Typ | Chip im Werkzeug: Klick öffnet die Typ-Liste
 Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
 
@@ -196,6 +198,7 @@ Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klap
 Dateimenü | Logo oben links, **F10** oder **Alt** kurz
 Neu, Öffnen | **Strg+N**, **Strg+O**
 Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
+IFC exportieren | Menü → „IFC exportieren …“; schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA
 Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
 Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
 Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**
