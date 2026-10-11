@@ -27,6 +27,8 @@ pub enum FugeError {
     Types,
     /// Der Stapel würde ungültig (Wandrest zu kurz, Umriss kreuzt sich).
     Invalid,
+    /// Die Wand ist die Stufe eines Teilrücksprungs (W-12, Review #69).
+    Step,
 }
 
 impl FugeError {
@@ -42,6 +44,9 @@ impl FugeError {
             FugeError::Types => "Die Wände haben verschiedene Typen; sie bleiben getrennt.",
             FugeError::Invalid => {
                 "Das geht hier nicht: Ein Wandstück würde zu kurz oder der Grundriss ungültig."
+            }
+            FugeError::Step => {
+                "Eine Stufe lässt sich nicht teilen; zieh sie, dann wird der Rücksprung breiter oder schmaler."
             }
         }
     }
@@ -96,6 +101,10 @@ impl Model {
     /// Teilungspunkten.
     fn split_points(&self, wall: ElementId, at: &[f64]) -> Result<(RunId, Vec<Vec3>), FugeError> {
         let (run, seg) = self.segment_of(wall).ok_or(FugeError::NoWall)?;
+        // Die Stufe steht ohne Kopplung neben der Fuge darunter
+        if self.step_joint(wall).is_some() {
+            return Err(FugeError::Step);
+        }
         let (p0, dir) = self
             .base_chain(run)
             .and_then(|c| c.segment_frame(seg))
@@ -807,6 +816,24 @@ mod tests {
         m.apply(&t, crate::txn::Direction::Undo);
         assert_eq!(zahl(&m, og), 8);
         assert_eq!(m.terrace_outlines(eg).len(), 1);
+        pruefen(&mut m);
+    }
+
+    /// Review #69: Eine Stufe lässt sich nicht teilen, sie hat keine Wand
+    /// darunter; der Stapel bleibt gültig.
+    #[test]
+    fn stufe_teilen_abgelehnt() {
+        let (mut m, eg, og) = rechteck();
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        let mitte = m.wall_at(og, 2).unwrap();
+        assert!(m.set_offset(mitte, -1500.0).is_some());
+        for k in [2, 4] {
+            let stufe = m.wall_at(og, k).unwrap();
+            assert_eq!(m.can_split(stufe, &[700.0]), Err(FugeError::Step));
+            assert_eq!(m.split_wall(stufe, &[700.0]), Err(FugeError::Step));
+        }
+        assert_eq!(zahl(&m, og), 8);
         pruefen(&mut m);
     }
 

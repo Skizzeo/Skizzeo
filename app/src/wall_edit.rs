@@ -791,7 +791,22 @@ impl WallEdit {
         if let Some((wall, o0, sign)) = d.offset {
             let want = o0 + off * sign;
             let now = scene.model().stack_offset(wall).map(|o| o.0);
-            let ok = now == Some(want) || scene.set_offset(wall, want);
+            let count = |s: &Scene| {
+                let m = s.model();
+                m.segment_of(wall)
+                    .and_then(|(r, _)| m.run(r))
+                    .map(|r| r.segments.len())
+            };
+            let before = count(scene);
+            let mut ok = now == Some(want) || scene.set_offset(wall, want);
+            // Kommt oder geht eine Stufe, von vorn wie bei put(): sonst
+            // wandern die Nummern der Stufen mit jedem Hin und Her (Review #69)
+            if ok && count(scene) != before {
+                scene.rollback();
+                scene.begin("Wand verschoben");
+                ok = scene.model().stack_offset(wall).map(|o| o.0) == Some(want)
+                    || scene.set_offset(wall, want);
+            }
             if let Some(d) = self.drag.as_mut() {
                 d.blocked = !ok;
             }
@@ -1275,6 +1290,94 @@ mod tests {
         assert_eq!(e.pill(&s).unwrap().0, "Verschiebung 1,00");
         assert!(s.undo());
         assert_eq!(s.model().run(eg).unwrap().points[2].x, 3000.0);
+    }
+
+    /// Review #69: Mit Strg ein OG-Mittelstück hin und her ziehen, die
+    /// Stufen kommen und gehen; sie behalten die Nummern vom ersten Mal,
+    /// ein Schritt im Verlauf.
+    #[test]
+    fn strg_hin_und_her_behaelt_stufennummern() {
+        let mut s = Scene::new();
+        s.edit_model("Gebäude erstellt", |m| {
+            let b = m.add_building(2);
+            let eg = m
+                .build_from_polygon(
+                    b,
+                    &[
+                        vec3(0.0, 0.0, 0.0),
+                        vec3(0.0, 8000.0, 0.0),
+                        vec3(10000.0, 8000.0, 0.0),
+                        vec3(10000.0, 0.0, 0.0),
+                    ],
+                )
+                .unwrap();
+            let nord = m.wall_at(eg, 1).unwrap();
+            m.split_wall(nord, &[3000.0, 6000.0]).is_ok()
+        });
+        let m = s.model();
+        let eg = m.runs().ids().find(|r| m.run_below(*r).is_none()).unwrap();
+        let og = m.runs_above(eg)[0];
+        let mitte = m.wall_at(og, 2).unwrap();
+        let z = s.chain(og).unwrap().base;
+        let c = Camera::looking_at(
+            vec3(5000.0, 4000.0, z + 30000.0),
+            vec3(5000.0, 4000.0, z),
+            45.0,
+        );
+        let mut e = WallEdit {
+            plan_z: Some(z),
+            ..WallEdit::default()
+        };
+        let m = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let ev = |y: f64, kind: u8| {
+            let (x, y) = at(&c, vec3(4500.0, y, z));
+            match kind {
+                0 => Event::MouseMove { x, y, mods: m },
+                1 => Event::MouseDown {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    mods: m,
+                },
+                _ => Event::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    mods: m,
+                },
+            }
+        };
+        let go = |e: &mut WallEdit, s: &mut Scene, y: f64, k: u8| {
+            e.handle(&ev(y, k), s, &c, W, H, 1.0, true);
+        };
+        let y0 = 7850.0;
+        go(&mut e, &mut s, y0, 0);
+        assert_eq!(e.hover, Some(mitte));
+        go(&mut e, &mut s, y0, 1);
+        let stufen = |s: &Scene| -> Vec<String> {
+            let m = s.model();
+            let map = m.stack_map(og);
+            let r = m.run(og).unwrap();
+            (0..r.segments.len())
+                .filter(|k| map[*k].is_none())
+                .map(|k| m.element(r.segments[k]).unwrap().number.clone())
+                .collect()
+        };
+        go(&mut e, &mut s, y0 - 1000.0, 0);
+        let erst = stufen(&s);
+        assert_eq!(erst.len(), 2, "{erst:?}");
+        for y in [y0, y0 - 1000.0, y0, y0 - 1500.0] {
+            go(&mut e, &mut s, y, 0);
+        }
+        go(&mut e, &mut s, y0 - 1500.0, 2);
+        assert_eq!(s.model().stack_offset(mitte), Some((-1500.0, true)));
+        assert_eq!(stufen(&s), erst);
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+        assert!(s.undo());
+        assert_eq!(s.model().run(og).unwrap().segments.len(), 6);
     }
 
     /// L zusammenschieben (W-11): Knapp vor der Flucht rastet der rechte
