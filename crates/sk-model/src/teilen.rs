@@ -809,4 +809,36 @@ mod tests {
         assert_eq!(m.terrace_outlines(eg).len(), 1);
         pruefen(&mut m);
     }
+
+    /// Geometrie (Prüfung #69): Ein Eckstück schmaler als die Attika
+    /// (100–139 mm bei 140 mm) springt zurück. Dort ist kein Platz für eine
+    /// Terrasse: Keine Terrassenfläche, und jedes Attikastück ist ein
+    /// einfaches Viereck (kein Überschlag an der Stufe).
+    #[test]
+    fn schmales_eckstueck_zurueck() {
+        use sk_math::polygon;
+        for x in [100.0, 120.0, 139.0] {
+            let (mut m, eg, og) = rechteck();
+            let nord = m.wall_at(eg, 1).unwrap();
+            m.split_wall(nord, &[x]).unwrap();
+            let st = m.run(og).unwrap().storey;
+            assert!(m.set_flat_roof(st, true));
+            let ecke = m.wall_at(og, 1).unwrap();
+            m.begin("Rücksprung");
+            let ok = m.set_offset(ecke, -1500.0).is_some();
+            m.commit();
+            if !ok {
+                continue;
+            }
+            pruefen(&mut m);
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let t = &f.terraces;
+            assert!(t.area() < 1.0, "{x}: Terrasse {} mm²", t.area());
+            for p in &t.attika {
+                assert!(polygon::is_simple(&p.quad), "{x}: Attika {p:?}");
+            }
+        }
+    }
 }

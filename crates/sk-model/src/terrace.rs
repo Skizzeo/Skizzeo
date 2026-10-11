@@ -246,8 +246,11 @@ fn plan(
         // Innen zurück an der Außenfläche darüber
         let cnt = (ib + 1 + mu - first) % mu;
         p.extend((0..cnt).rev().map(|i| mc[(first + i) % mu]));
+        // Umlauf wie die Decke: An einem Stück schmaler als die Attika
+        // läuft der Umriss verkehrt herum, dort ist kein Platz (Geometrie #69)
         let p = polygon::simplified(&without_spikes(p));
-        (p.len() >= 3 && polygon::is_simple(&p) && polygon::area(&p) > 1.0).then_some(p)
+        (p.len() >= 3 && polygon::is_simple(&p) && polygon::signed_area(&p) * sign > 1.0)
+            .then_some(p)
     };
     let max_depth = |segs: &[usize]| segs.iter().fold(0.0, |a: f64, k| a.max(depths[*k]));
     // Folgen (Anfang, Länge); ringsum eine
@@ -264,6 +267,8 @@ fn plan(
         width: depth,
         ..TerracePlan::default()
     };
+    // Nur Folgen mit Umriss bekommen Attika und Blech
+    let mut kept = Vec::new();
     for &(a, len) in &runs {
         let segments: Vec<usize> = (0..len).map(|i| (a + i) % n).collect();
         let parts: Option<Vec<Vec<Vec3>>> = if ring {
@@ -283,10 +288,12 @@ fn plan(
             segments,
             parts,
         });
+        kept.push((a, len));
     }
     if out.outlines.is_empty() {
         return None;
     }
+    let runs = kept;
 
     // Attika: Schichten (bzw. ihr Teil) außerhalb der Deckenkante
     let mut zones: Vec<(f64, f64, Option<usize>, u16)> = Vec::new();
