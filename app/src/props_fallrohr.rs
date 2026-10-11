@@ -11,8 +11,6 @@ use sk_model::{ElementId, ElementKind};
 /// Knöpfe unter den Abschnitten der Eigenschaften.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// „Abläufe vorschlagen“ am Flachdach (G2).
-    Drains,
     /// Notfallrohr und Wasserspeier tauschen.
     Overflow,
     /// Kontrollablauf der Dampfsperrebene ein- oder ausbauen.
@@ -85,32 +83,32 @@ pub fn downpipe_props(
                 SPACING_MAX,
             )],
             hint: "Hersteller: bis DN 100 höchstens 3 m",
-            button: None,
+            buttons: Vec::new(),
         },
         Section {
             title: "Notentwässerung",
             fields: Vec::new(),
             hint: "DIN 1986-100: frei aufs Grundstück, nicht in den Kanal",
-            button: Some((
+            buttons: vec![(
                 Id::PropsAction(Action::Overflow),
                 match spec.overflow {
                     Overflow::Pipe => "Wasserspeier statt Notfallrohr",
                     Overflow::Spout => "Notfallrohr statt Wasserspeier",
                 },
-            )),
+            )],
         },
         Section {
             title: "Kontrollablauf",
             fields: Vec::new(),
             hint: "Wasser von der Dampfsperre in den Wasserfangkasten",
-            button: Some((
+            buttons: vec![(
                 Id::PropsAction(Action::Control),
                 if spec.control {
                     "Kontrollablauf entfernen"
                 } else {
                     "Kontrollablauf einbauen"
                 },
-            )),
+            )],
         },
     ];
     Some(Props {

@@ -447,6 +447,42 @@ impl Model {
         self.set_roof_drainage(roof, d)
     }
 
+    /// Ein weiterer Ablauf am Dachaufbau `roof` mit Gefälle (Jörn 11.10.),
+    /// dort an der Aufkantung, wo er Fließweg und Einzugsfläche am meisten
+    /// entlastet. `false`, wenn das Dach kein Gefälle hat oder kein Platz
+    /// mehr frei ist.
+    pub fn add_roof_drain(&mut self, roof: ElementId) -> bool {
+        let Some(ElementKind::Roof { floor, drainage }) = self.element(roof).map(|e| &e.kind)
+        else {
+            return false;
+        };
+        let Some(r) = self.flat_roof_over(*floor).filter(|_| drainage.on()) else {
+            return false;
+        };
+        let lim = gefaelle::Limits::default();
+        let Some(p) = gefaelle::next_drain(&r.outline, &drainage.drains, &lim) else {
+            return false;
+        };
+        let mut d = drainage.clone();
+        d.drains.push(p);
+        self.set_roof_drainage(roof, d)
+    }
+
+    /// Löscht den Ablauf `k` am Dachaufbau `roof` (Jörn 11.10.). Den
+    /// letzten nicht: Ein Dach mit Gefälle braucht einen Ablauf.
+    pub fn remove_roof_drain(&mut self, roof: ElementId, k: usize) -> bool {
+        let Some(mut d) = self.drainage_of_roof(roof).cloned() else {
+            return false;
+        };
+        if k >= d.drains.len() || d.drains.len() < 2 {
+            return false;
+        }
+        d.drains.remove(k);
+        // sein Regenfallrohr geht mit, die übrigen behalten ihr Bauteil
+        self.drop_downpipe(roof, k);
+        self.set_roof_drainage(roof, d)
+    }
+
     fn proposed_drains(&self, floor: ElementId) -> Vec<Vec3> {
         self.flat_roof_over(floor).map_or_else(Vec::new, |r| {
             gefaelle::propose_drains(&r.outline, &gefaelle::Limits::default())
@@ -1244,7 +1280,7 @@ mod tests {
         // die Nummern der Aufkantung bleiben vergeben
         m.apply(&t, Direction::Undo);
         let nachher = crate::szo::write(&m);
-        let soll = vorher.replacen("\n[building]", " next=DA:1,AB:1,AK:4,RF:2\n[building]", 1);
+        let soll = vorher.replacen("\n[building]", " next=DA:1,AB:1,AK:4,RF:4\n[building]", 1);
         assert!(nachher == soll, "Datei nach Rückgängig anders");
     }
 
@@ -1284,6 +1320,44 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(back.model.drainage_of_roof(da), Some(&Drainage::default()));
+    }
+
+    /// Abläufe hinzufügen und löschen (Jörn 11.10.): je ein Schritt im
+    /// Verlauf; der letzte Ablauf bleibt.
+    #[test]
+    fn ablauf_hinzufuegen_und_loeschen() {
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let og_storey = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
+        let floor = m.floor_of(og).unwrap();
+        let da = m.flat_roof_of(floor).unwrap();
+        let vorher = m.drainage_of_roof(da).unwrap().clone();
+        let n = vorher.drains.len();
+        assert!(n >= 2, "{vorher:?}");
+        let dazu = schritt(&mut m, |m| m.add_roof_drain(da));
+        let mit = m.drainage_of_roof(da).unwrap().clone();
+        assert_eq!(mit.drains.len(), n + 1);
+        assert_eq!(mit.drains[..n], vorher.drains[..]);
+        assert!(m.flat_roof_over(floor).unwrap().slope.is_some());
+        let weg = schritt(&mut m, |m| m.remove_roof_drain(da, 0));
+        assert_eq!(m.drainage_of_roof(da).unwrap().drains, mit.drains[1..]);
+        m.apply(&weg, Direction::Undo);
+        m.apply(&dazu, Direction::Undo);
+        assert_eq!(m.drainage_of_roof(da), Some(&vorher));
+        // bis auf einen löschen, den letzten nicht
+        for _ in 1..n {
+            schritt(&mut m, |m| m.remove_roof_drain(da, 0));
+        }
+        m.begin("letzter");
+        assert!(!m.remove_roof_drain(da, 0));
+        assert!(!m.remove_roof_drain(da, 5));
+        m.rollback();
+        assert_eq!(m.drainage_of_roof(da).unwrap().drains.len(), 1);
+        // ohne Gefälle kein weiterer
+        schritt(&mut m, |m| m.set_roof_slope(da, 0.0));
+        m.begin("eben");
+        assert!(!m.add_roof_drain(da));
+        m.rollback();
     }
 
     /// Regel 114: Werte außerhalb des Bereichs an Flachdach und Decke
@@ -1808,7 +1882,7 @@ mod tests {
         m.apply(&tx, Direction::Undo);
         assert!(m.type_by_guid(ROOF_TYPE_GUID).is_none());
         let nachher = crate::szo::write(&m);
-        assert_eq!(nachher.replace(" next=DA:1,AB:1,AK:4,RF:2", ""), vorher);
+        assert_eq!(nachher.replace(" next=DA:1,AB:1,AK:4,RF:4", ""), vorher);
     }
 
     /// D3: Die Dämmdicke ändert den Typ (Paneel „Aufbau“), Grenzen 4–40 cm;

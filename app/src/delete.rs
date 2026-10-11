@@ -547,6 +547,10 @@ pub enum Action {
     Quantity,
     Delete,
     DeleteBuilding,
+    /// Nur am Ablauf eines Flachdachs (Jörn 11.10.): einen weiteren
+    /// hinzufügen bzw. den gewählten löschen.
+    AddDrain,
+    DeleteDrain,
 }
 
 /// Breite des Kontextmenüs (dip).
@@ -690,6 +694,42 @@ impl ContextMenu {
         self
     }
 
+    /// Rechtsklick auf einen Ablauf des Flachdachs `roof` (Jörn 11.10.):
+    /// „Ablauf hinzufügen“, „Ablauf löschen“ (gedimmt beim letzten) und
+    /// „Eigenschaften“.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_drain(
+        roof: ElementId,
+        can_delete: bool,
+        x: f64,
+        y: f64,
+        win: (u32, u32, u32),
+        t: &Theme,
+        s: f32,
+    ) -> ContextMenu {
+        let row = |label: &str, enabled: bool| MenuItem {
+            label: label.into(),
+            enabled,
+            ..MenuItem::default()
+        };
+        ContextMenu {
+            target: roof,
+            items: vec![
+                (row("Ablauf hinzufügen", true), Some(Action::AddDrain)),
+                (row("Ablauf löschen", can_delete), Some(Action::DeleteDrain)),
+                (menu::separator(), None),
+                (row("Eigenschaften", true), Some(Action::Properties)),
+            ],
+            x: 0.0,
+            y: 0.0,
+            sel: None,
+            hover: None,
+            pressed: false,
+            refusal: (!can_delete).then(|| "Ein Dach mit Gefälle braucht einen Ablauf".into()),
+        }
+        .at(x, y, win, t, s)
+    }
+
     /// Zeilen: Text, wählbar, Befehl (Trenner ohne Text und Befehl).
     #[cfg(test)]
     pub fn actions(&self) -> Vec<(String, bool, Option<Action>)> {
@@ -746,7 +786,7 @@ impl ContextMenu {
     pub fn tip(&self) -> Option<String> {
         let i = self.hover?;
         let (it, a) = &self.items[i];
-        (*a == Some(Action::Delete) && !it.enabled)
+        matches!(a, Some(Action::Delete | Action::DeleteDrain) if !it.enabled)
             .then(|| self.refusal.clone())
             .flatten()
     }

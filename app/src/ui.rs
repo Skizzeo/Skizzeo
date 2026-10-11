@@ -150,8 +150,14 @@ pub enum Id {
     /// „bündig setzen“.
     PropsLink,
     PropsFlush,
-    /// Knopf unter einem Abschnitt der Eigenschaften: „Abläufe vorschlagen“
-    /// (G2), Notentwässerung und Kontrollablauf des Regenfallrohrs.
+    /// „Abläufe vorschlagen“ im Abschnitt „Gefälle“ des Flachdachs (G2).
+    PropsDrains,
+    /// „Ablauf hinzufügen“ und „Ablauf löschen“ (den gewählten) im
+    /// Abschnitt „Gefälle“ (Jörn 11.10.).
+    PropsDrainAdd,
+    PropsDrainDelete,
+    /// Knopf unter einem Abschnitt der Eigenschaften des Regenfallrohrs:
+    /// Notentwässerung und Kontrollablauf.
     PropsAction(crate::selection::fallrohr::Action),
     /// „Mehr …“ unter dem Aufbau der Dachterrasse: klappt die Schichtliste
     /// auf und zu.
@@ -175,6 +181,19 @@ pub enum Id {
     /// meldet ihn.
     LevelsClose,
 }
+
+/// Muster der Knöpfe der Eigenschaften, die `App::drain_button` ausführt:
+/// Abläufe am Flachdach, Notentwässerung und Kontrollablauf am
+/// Regenfallrohr.
+macro_rules! props_button {
+    () => {
+        $crate::ui::Id::PropsDrains
+            | $crate::ui::Id::PropsDrainAdd
+            | $crate::ui::Id::PropsDrainDelete
+            | $crate::ui::Id::PropsAction(_)
+    };
+}
+pub(crate) use props_button;
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -824,8 +843,8 @@ pub struct Section {
     pub title: &'static str,
     pub fields: Vec<FieldRow>,
     pub hint: &'static str,
-    /// Knopf unter den Feldern, z. B. „Abläufe vorschlagen“.
-    pub button: Option<(Id, &'static str)>,
+    /// Knöpfe unter den Feldern, z. B. „Abläufe vorschlagen“.
+    pub buttons: Vec<(Id, &'static str)>,
 }
 
 /// Typ-Chip (K3): Kachel mit Schnittbild, Name, „Kürzel · Dicke“, Pfeil.
@@ -1205,7 +1224,11 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     for sec in &p.sections {
         rows.extend([Row::Separator, Row::Label(sec.title)]);
         field_rows(&mut rows, &sec.fields);
-        rows.extend(sec.button.map(|(id, label)| Row::Button(id, label)));
+        rows.extend(
+            sec.buttons
+                .iter()
+                .map(|&(id, label)| Row::Button(id, label)),
+        );
         rows.push(Row::Text(sec.hint.into()));
     }
     if p.more {
@@ -2060,6 +2083,9 @@ impl Ui {
             | Id::PropsType
             | Id::PropsLink
             | Id::PropsFlush
+            | Id::PropsDrains
+            | Id::PropsDrainAdd
+            | Id::PropsDrainDelete
             | Id::PropsAction(_)
             | Id::PropsMore
             | Id::PropsMaterial(_)
@@ -2087,7 +2113,12 @@ impl Ui {
             }
             // Gesperrt (Paket 4): Felder, Typ und Kette blass
             Id::Field(f) if Ui::field_panel(f) == Panel::Props => self.props_locked(),
-            Id::PropsType | Id::PropsLink | Id::PropsAction(_) => self.props_locked(),
+            Id::PropsType
+            | Id::PropsLink
+            | Id::PropsDrains
+            | Id::PropsDrainAdd
+            | Id::PropsDrainDelete
+            | Id::PropsAction(_) => self.props_locked(),
             _ => false,
         }
     }

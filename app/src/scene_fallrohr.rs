@@ -10,7 +10,6 @@ impl Scene {
     /// Knopf unter einem Abschnitt der Eigenschaften des Bauteils `id`.
     pub fn props_action(&mut self, id: ElementId, a: Action) -> bool {
         match a {
-            Action::Drains => self.propose_roof_drains(id),
             Action::Overflow => self.edit_downpipe(id, "Notentwässerung", |s| {
                 s.overflow = match s.overflow {
                     Overflow::Pipe => Overflow::Spout,

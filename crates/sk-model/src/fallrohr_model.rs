@@ -200,6 +200,31 @@ impl Model {
         }
     }
 
+    /// Der Ablauf `k` des Dachaufbaus `roof` fällt weg: sein Regenfallrohr
+    /// auch, die dahinter rücken einen Ablauf vor (Nummer und Eigenschaften
+    /// bleiben am Bauteil).
+    pub(super) fn drop_downpipe(&mut self, roof: ElementId, k: usize) {
+        for id in self.downpipes_of(roof) {
+            let Some(ElementKind::Downpipe { drain, .. }) = self.element(id).map(|e| &e.kind)
+            else {
+                continue;
+            };
+            let drain = *drain as usize;
+            if drain < k {
+                continue;
+            }
+            note!(self, Element, self.elements, id);
+            if drain == k {
+                self.elements.remove(id);
+            } else if let Some(ElementKind::Downpipe { drain: d, .. }) =
+                self.elements.get_mut(id).map(|e| &mut e.kind)
+            {
+                *d -= 1;
+            }
+            self.touch();
+        }
+    }
+
     /// Abgeleitete Merkmale des Regenfallrohrs (Bauteileigenschaften):
     /// Nennweite, Längen, Schellen, Notentwässerung, Kontrollablauf.
     pub(super) fn downpipe_props(&self, id: ElementId) -> Vec<(String, PropValue)> {
@@ -274,13 +299,14 @@ mod tests {
     }
 
     /// Sollwerte am Prüfhaus (Konzept §4): Flachdach 21,5 auf OK Rohdecke
-    /// 5,71 m, Dachhaut am Ablauf 5,925 m, Gelände ±0. Zwei Abläufe in der
-    /// Mitte der langen Seiten, je ein RF auf der Ebene des Dachs.
+    /// 5,71 m, Dachhaut am Ablauf 5,925 m, Gelände ±0. Vier Abläufe an den
+    /// langen Seiten, 60 cm von den Ecken, je ein RF auf der Ebene des
+    /// Dachs.
     #[test]
     fn sollwerte_pruefhaus() {
         let (m, da, _) = haus();
         let rf = m.downpipes_of(da);
-        assert_eq!(rf.len(), 2);
+        assert_eq!(rf.len(), 4);
         let e = m.element(rf[0]).unwrap();
         assert_eq!(e.number, "RF-001");
         assert_eq!(e.category, Category::Downpipe);
@@ -288,8 +314,8 @@ mod tests {
         assert!(m.check().is_empty(), "{:?}", m.check());
         let d = m.downpipe(rf[0]).unwrap();
         // Ablauf auf der Innenfläche der Nordseite, Kasten an der Fassade
-        assert_eq!((d.drain.x, d.drain.y), (5000.0, 7685.0));
-        assert_eq!((d.face.x, d.face.y), (5000.0, 8000.0));
+        assert_eq!((d.drain.x, d.drain.y), (9085.0, 7685.0));
+        assert_eq!((d.face.x, d.face.y), (9085.0, 8000.0));
         assert_eq!((d.out.x, d.out.y), (0.0, 1.0));
         // Auslauf 6 cm unter der Dachhaut, Kasten 10 cm darüber bis 10 cm
         // unter den Kontrollablauf (4 cm über Rohdecke)
@@ -300,17 +326,19 @@ mod tests {
         assert_eq!((d.stand_top, d.ground), (700.0, 0.0));
         assert_eq!(d.pipe_length(), 4950.0);
         assert_eq!(d.clamps, [5500.0, 4000.0, 2500.0, 1000.0]);
-        // Notüberlauf 35 mm über der Dachhaut, 55 cm neben dem Ablauf;
+        // Notüberlauf 35 mm über der Dachhaut, 55 cm neben dem Ablauf zur
+        // Mitte der Seite hin;
         // Notfallrohr bis 20 cm über Gelände
         let o = &d.overflow;
         assert_eq!(o.sill, 5960.0);
-        assert_eq!((o.face.x, o.face.y), (4450.0, 8000.0));
+        assert_eq!((o.face.x, o.face.y), (8535.0, 8000.0));
         assert_eq!(o.end, 200.0);
         assert_eq!(d.overflow_length(), 5580.0);
         assert_eq!(d.clamp_count(), 8);
-        // das zweite an der Südseite, nach außen −y
-        let d2 = m.downpipe(rf[1]).unwrap();
-        assert_eq!((d2.face.x, d2.face.y, d2.out.y), (5000.0, 0.0, -1.0));
+        // das dritte an der Südseite, nach außen −y
+        let d2 = m.downpipe(rf[2]).unwrap();
+        assert_eq!((d2.face.x, d2.face.y, d2.out.y), (915.0, 0.0, -1.0));
+        assert_eq!(d2.overflow.face.x, 1465.0);
         assert_eq!(d2.pipe_length(), 4950.0);
         // Automatikmengen je RF
         let s = crate::qto::schedule(&m);
@@ -382,37 +410,45 @@ mod tests {
     fn folgt_den_ablaeufen() {
         let (mut m, da, og) = haus();
         let rf = m.downpipes_of(da);
-        let (g1, g2) = (
-            m.element(rf[0]).unwrap().guid,
-            m.element(rf[1]).unwrap().guid,
-        );
+        let guid = |m: &Model, id| m.element(id).unwrap().guid;
+        let nummer = |m: &Model, id| m.element(id).unwrap().number.clone();
+        let g: Vec<_> = rf.iter().map(|&id| guid(&m, id)).collect();
         let speier = DownpipeSpec {
             overflow: Overflow::Spout,
             ..DownpipeSpec::default()
         };
         schritt(&mut m, |m| m.set_downpipe_spec(rf[0], speier));
         let mut d = m.drainage_of_roof(da).unwrap().clone();
-        let zwei = d.drains.clone();
-        d.drains.truncate(1);
+        let vier = d.drains.clone();
+        d.drains.truncate(3);
         let t = schritt(&mut m, |m| m.set_roof_drainage(da, d.clone()));
-        assert_eq!(m.downpipes_of(da), [rf[0]]);
+        assert_eq!(m.downpipes_of(da), rf[..3]);
         assert!(m.check().is_empty(), "{:?}", m.check());
         m.apply(&t, crate::txn::Direction::Undo);
         let wieder = m.downpipes_of(da);
-        assert_eq!(wieder.len(), 2);
-        assert_eq!(m.element(wieder[1]).unwrap().guid, g2);
-        assert_eq!(m.element(wieder[1]).unwrap().number, "RF-002");
-        // ein dritter Ablauf an der Westseite: RF-003 mit Speier
-        d.drains = zwei;
+        assert_eq!(wieder.len(), 4);
+        assert_eq!(guid(&m, wieder[3]), g[3]);
+        assert_eq!(nummer(&m, wieder[3]), "RF-004");
+        // ersten Ablauf löschen: RF-001 geht, die übrigen rücken vor und
+        // behalten Nummer und Lage
+        let t = schritt(&mut m, |m| m.remove_roof_drain(da, 0));
+        let rest = m.downpipes_of(da);
+        let n: Vec<String> = rest.iter().map(|&id| nummer(&m, id)).collect();
+        assert_eq!(n, ["RF-002", "RF-003", "RF-004"]);
+        assert_eq!(m.downpipe(rest[0]).unwrap().face.x, 915.0);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        m.apply(&t, crate::txn::Direction::Undo);
+        assert_eq!(guid(&m, m.downpipes_of(da)[0]), g[0]);
+        // ein fünfter Ablauf an der Westseite: RF-005 mit Speier
+        d.drains = vier;
         d.drains.push(vec3(315.0, 4000.0, 0.0));
         schritt(&mut m, |m| m.set_roof_drainage(da, d));
-        let drei = m.downpipes_of(da);
-        assert_eq!(drei.len(), 3);
-        assert_eq!(m.element(drei[0]).unwrap().guid, g1);
-        let e = m.element(drei[2]).unwrap();
-        assert_eq!(e.number, "RF-003");
-        assert_eq!(m.downpipe_spec(drei[2]), Some(speier));
-        let w = m.downpipe(drei[2]).unwrap();
+        let fuenf = m.downpipes_of(da);
+        assert_eq!(fuenf.len(), 5);
+        assert_eq!(guid(&m, fuenf[0]), g[0]);
+        assert_eq!(nummer(&m, fuenf[4]), "RF-005");
+        assert_eq!(m.downpipe_spec(fuenf[4]), Some(speier));
+        let w = m.downpipe(fuenf[4]).unwrap();
         assert_eq!((w.face.x, w.face.y, w.out.x), (0.0, 4000.0, -1.0));
         // Flachdach aus: alle RF weg
         schritt(&mut m, |m| m.set_flat_roof(og, false));
@@ -437,7 +473,7 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with("[downpipe] "))
             .collect();
-        assert_eq!(zeilen.len(), 2);
+        assert_eq!(zeilen.len(), 4);
         assert!(zeilen
             .iter()
             .any(|l| l.contains(" overflow=spout control=0 spacing=2500 ")));
@@ -456,6 +492,6 @@ mod tests {
             .collect();
         let back = crate::szo::read(&alt, GuidGen::with_seed(3)).unwrap();
         assert_eq!(back.hints, ["Regenfallrohre an den Abläufen ergänzt"]);
-        assert_eq!(back.model.downpipe_ids().len(), 2);
+        assert_eq!(back.model.downpipe_ids().len(), 4);
     }
 }
