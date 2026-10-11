@@ -11,6 +11,7 @@ use crate::ui::Field;
 use crate::ui::ViewKind;
 use crate::visible::{split, Class};
 use sk_math::{polygon, vec3, Vec3};
+use sk_model::koerper::{foundation_solid, part, run_solid};
 use sk_model::qto::{Schedule, Umfang};
 use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
@@ -30,12 +31,16 @@ use std::rc::Rc;
 mod gefaelle;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
+#[path = "scene_schnitt.rs"]
+mod schnitt;
+use schnitt::UnderMemo;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
 
-/// Schnitthöhe des Grundrisses über der Unterkante des aktiven Geschosses (mm).
-pub const PLAN_CUT: f64 = 1000.0;
+/// Vorgabe der Schnitthöhe des Grundrisses über OK Rohdecke (mm); das
+/// Projekt kann eine eigene haben ([`sk_model::hoehen`]).
+pub const PLAN_CUT: f64 = sk_model::PLAN_CUT;
 
 type Aabb = (Vec3, Vec3);
 /// Schnittebene: Punkt und Normale zum Betrachter.
@@ -131,10 +136,7 @@ impl RunCache {
         roof: Option<FlatRoof>,
         builds: u32,
     ) -> RunCache {
-        let mut solid = chain.solid();
-        for p in run_parts(&found, &floor, &roof) {
-            p.solid(&mut solid);
-        }
+        let solid = run_solid(&chain, found.as_ref(), floor.as_ref(), roof.as_ref());
         // Auf Höhe des Wandfußes (Wände im OG stehen auf ihrem Geschoss)
         let lift = vec3(0.0, 0.0, chain.base);
         let foot: Vec<(Vec3, Vec3)> = chain
@@ -326,13 +328,12 @@ impl RunCache {
 }
 
 /// Abgeleitete Geometrie an einem Wandzug (Gründung, Decke mit Dämmung und
-/// Streifen): hängt ihre Körper für 3D, Grundriss und senkrechten Schnitt an
-/// `out` an, jeweils mit der Teilnummer je Bauteil (Review 2a, R2). Ein neues
-/// Bauteil am Zug braucht nur eine Umsetzung und einen Eintrag in
-/// [`run_parts`].
+/// Streifen): hängt ihre Körper für Grundriss und senkrechten Schnitt an
+/// `out` an, jeweils mit der Teilnummer je Bauteil (Review 2a, R2). Der
+/// 3D-Körper kommt aus [`sk_model::koerper::run_solid`], damit Ansicht und
+/// IFC-Export dieselbe Form haben. Ein neues Bauteil am Zug braucht eine
+/// Umsetzung hier, einen Eintrag in [`run_parts`] und einen in `run_solid`.
 trait RunPart {
-    /// Körper für 3D und Ansichten.
-    fn solid(&self, out: &mut Solid);
     /// Grundriss in Schnitthöhe `cut`, je nachdem, wie der Zug zum aktiven
     /// Geschoss liegt.
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode);
@@ -354,12 +355,6 @@ fn run_parts<'a>(
 }
 
 impl RunPart for Foundation {
-    fn solid(&self, out: &mut Solid) {
-        out.append(&part(self.slab_solid(), SLAB_PART));
-        out.append(&part(self.insulation_solid(), PERIMETER_PART));
-        out.append(&part(self.footing_solid(), FOOTING_PART));
-    }
-
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
         match mode {
             // Fundament (E18): die Schürze geschnitten, der Plattenrand
@@ -375,7 +370,7 @@ impl RunPart for Foundation {
                     }));
             }
             // Die Gründung liegt unter der Schnitthöhe: Draufsicht
-            PlanMode::Cut => RunPart::solid(self, out),
+            PlanMode::Cut => foundation_solid(self, out),
             PlanMode::Lower => {}
         }
     }
@@ -389,16 +384,6 @@ impl RunPart for Foundation {
 }
 
 impl RunPart for FloorSlab {
-    fn solid(&self, out: &mut Solid) {
-        out.append(&part(FloorSlab::solid(self), FLOOR_PART));
-        out.append(&part(self.soffit_solid(), SOFFIT_PART));
-        out.append(&part(self.terrace_solid(), TERRACE_PART));
-        out.append(&part(self.coping_solid(), COPING_PART));
-        for k in 0..self.strips.len() {
-            out.append(&part(self.strip_solid(k), STRIP_PART + k as u32));
-        }
-    }
-
     /// Die Decke liegt im EG über der Schnitthöhe und bleibt leer, im OG
     /// darunter; im Fundament gibt es sie nicht.
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
@@ -436,14 +421,6 @@ impl RunPart for FloorSlab {
 /// Flachdach auf einer Aufkantung (D3, D4): Dachaufbau zwischen den
 /// Aufkantungen, Blech auf ihrer Krone.
 impl RunPart for FlatRoof {
-    fn solid(&self, out: &mut Solid) {
-        out.append(&part(FlatRoof::solid(self), ROOF_PART));
-        out.append(&part(self.coping_solid(), ROOF_COPING_PART));
-        for (k, d) in self.downpipes.iter().enumerate() {
-            out.append(&part(d.solid(), DOWNPIPE_PART - k as u32));
-        }
-    }
-
     /// Im Grundriss der Ebene Flachdach liegt der Aufbau unter der
     /// Schnitthöhe; das Blech erscheint, solange es ganz darunter liegt.
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
@@ -517,6 +494,8 @@ type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
 
 pub struct Scene {
     model: Model,
+    /// Deckendicke über den Geschossen je Modellstand ([`schnitt`]).
+    decken: schnitt::Decken,
     /// Rolle dieser Sitzung für Kostenoperationen (KA-3b1): `Nutzer`, wenn
     /// der Firmenkatalog ein Verwaltungskennwort hat und es hier nicht
     /// eingegeben ist; sonst `Admin`. Die App setzt sie.
@@ -865,6 +844,7 @@ impl Scene {
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
             model,
+            decken: Default::default(),
             undo: Vec::new(),
             serial: 0,
             redo: Vec::new(),
@@ -1348,6 +1328,12 @@ impl Scene {
         self.model.set_view_shade(i, v, vorgabe);
     }
 
+    /// Schnitthöhe des Grundrisses über OK Rohdecke (mm), Ansichtszustand
+    /// ohne Schritt; die Grundrisse schneiden beim nächsten Netz neu.
+    pub fn set_plan_cut_height(&mut self, h: f64) {
+        self.model.set_plan_cut_height(h);
+    }
+
     /// Ansicht `i`: unter dem Gelände gestrichelt oder ausgeblendet (S11),
     /// Ansichtszustand ohne Schritt.
     pub fn set_view_below(&mut self, i: usize, gestrichelt: bool) {
@@ -1369,37 +1355,6 @@ impl Scene {
             .map_or((0.0, crate::wall_tool::WALL_HEIGHT), |st| {
                 (st.elevation, st.height)
             })
-    }
-
-    /// Schnitthöhe des Grundrisses: Unterkante des aktiven Geschosses + 1 m,
-    /// im Fundament die Mitte der Frostschürze (E18).
-    pub fn plan_cut(&self) -> f64 {
-        self.plan_cut_of(self.active_storey())
-    }
-
-    /// Schnitthöhe des Grundrisses, wenn `id` aktiv ist. Im Fundament über
-    /// den Höhenbezug (Prüfregel 14): UK Fundament + halbe Tiefe bis UK
-    /// Sohlplatte (die Mitte der Frostschürze), so folgt der Schnitt
-    /// Plattendicke und Gründungstiefe.
-    fn plan_cut_of(&self, id: StoreyId) -> f64 {
-        let Some(st) = self.model.storey(id) else {
-            return PLAN_CUT;
-        };
-        let at = if st.kind == sk_model::LevelKind::Foundation {
-            let slab = self.model.max_slab_thickness(id);
-            sk_model::LevelRef {
-                storey: id,
-                edge: sk_model::LevelEdge::Bottom,
-                offset: (st.height - slab) / 2.0,
-            }
-        } else {
-            sk_model::LevelRef {
-                storey: id,
-                edge: sk_model::LevelEdge::Bottom,
-                offset: PLAN_CUT,
-            }
-        };
-        self.model.level_z(at).unwrap_or(PLAN_CUT)
     }
 
     /// Zeichentabelle zum aktuellen Stand der Attribute.
@@ -3346,23 +3301,6 @@ impl Scene {
             .collect()
     }
 
-    /// Schnitthöhe des Hintergrunds für den Zug `run`: sein Geschoss liegt
-    /// direkt unter dem aktiven (E16).
-    fn under_cut(&self, run: RunId) -> Option<f64> {
-        self.under_cut_for(run, self.active_storey())
-    }
-
-    /// Wie [`Scene::under_cut`], wenn `active` aktiv ist.
-    fn under_cut_for(&self, run: RunId, active: StoreyId) -> Option<f64> {
-        if self.is_foundation(active) {
-            return None;
-        }
-        let floor = self.model.storey(active).map_or(0.0, |st| st.elevation);
-        let st = self.model.storey(self.model.run(run)?.storey)?;
-        let below = st.kind != sk_model::LevelKind::Foundation && (st.top() - floor).abs() < 1e-6;
-        below.then_some(st.elevation + PLAN_CUT)
-    }
-
     /// Wie der Zug zum Geschoss `active` liegt (Grundriss).
     fn plan_mode(&self, run: RunId, active: StoreyId) -> PlanMode {
         if self.is_foundation(active) {
@@ -3399,10 +3337,11 @@ impl Scene {
     /// Wandzüge samt Hintergrund)?
     pub fn plan_ready(&self, id: StoreyId) -> bool {
         let cut = self.plan_cut_of(id);
+        let memo = UnderMemo::default();
         self.cache.iter().flatten().all(|c| {
             c.has_plan(cut, self.plan_mode(c.id, id))
                 && self
-                    .under_cut_for(c.id, id)
+                    .under_cut_for(c.id, id, &memo)
                     .is_none_or(|u| c.under.iter().any(|(x, _)| *x == u))
         })
     }
@@ -3427,11 +3366,15 @@ impl Scene {
     /// Grundriss des Geschosses `id` berechnen (vor einem Wechsel dorthin).
     pub fn prepare_plan(&mut self, id: StoreyId) {
         let cut = self.plan_cut_of(id);
+        let memo = UnderMemo::default();
         let jobs: Vec<(RunId, PlanMode, Option<f64>)> = self
             .cache
             .iter()
             .flatten()
-            .map(|c| (c.id, self.plan_mode(c.id, id), self.under_cut_for(c.id, id)))
+            .map(|c| {
+                let under = self.under_cut_for(c.id, id, &memo);
+                (c.id, self.plan_mode(c.id, id), under)
+            })
             .collect();
         for (run, mode, under) in jobs {
             if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
@@ -3447,11 +3390,12 @@ impl Scene {
     /// (E16). Leer, solange das EG aktiv ist.
     pub fn background_snaps(&mut self) -> Vec<(Vec3, Vec3)> {
         let floor = self.work_plane().0;
+        let memo = UnderMemo::default();
         let cuts: Vec<(RunId, f64)> = self
             .cache
             .iter()
             .flatten()
-            .filter_map(|c| Some((c.id, self.under_cut(c.id)?)))
+            .filter_map(|c| Some((c.id, self.under_cut(c.id, &memo)?)))
             .collect();
         let filter = self.filtering();
         let vis = Vis {
@@ -3523,7 +3467,8 @@ impl Scene {
             // seiner eigenen Schnitthöhe, nur Konturen, knapp über dem Boden
             // des aktiven Geschosses (unter dessen Wänden)
             let floor = self.work_plane().0;
-            let under: Vec<Option<f64>> = runs.iter().map(|r| self.under_cut(*r)).collect();
+            let memo = UnderMemo::default();
+            let under: Vec<Option<f64>> = runs.iter().map(|r| self.under_cut(*r, &memo)).collect();
             let vis = Vis {
                 model: &self.model,
                 anim: self.vis_anim.as_ref(),
@@ -4016,17 +3961,6 @@ impl Scene {
     pub fn center(&self) -> Option<Vec3> {
         self.bounds().map(|(lo, hi)| (lo + hi) * 0.5)
     }
-}
-
-/// Körper mit allen Dreiecken einem Teil zugeordnet (Treffer beim Klicken).
-fn part(mut s: Solid, part: u32) -> Solid {
-    for t in &mut s.triangles {
-        t.elem = part;
-    }
-    for e in &mut s.edges {
-        e.elem = part;
-    }
-    s
 }
 
 /// Netz eines Körpers. Es trägt nur Darstellungsschlüssel und Kantenarten;

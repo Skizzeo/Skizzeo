@@ -18,9 +18,11 @@ pub mod foundation;
 pub mod fuge;
 pub mod gefaelle;
 pub mod guid;
+pub mod hoehen;
 pub mod id;
 pub mod join;
 pub mod kinds;
+pub mod koerper;
 pub mod library;
 pub mod matprop;
 pub mod model;
@@ -66,6 +68,7 @@ pub use floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, T
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use gefaelle::{Drainage, SlopeField};
 pub use guid::{Guid, GuidGen};
+pub use hoehen::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT, PLAN_CUT_TOP_GAP};
 pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
