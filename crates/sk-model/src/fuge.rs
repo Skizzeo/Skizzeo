@@ -352,11 +352,28 @@ impl WallChain {
     /// des Zuges `below` (Bezugslinie zu Bezugslinie); `None`, wenn sie
     /// nicht in gleicher Richtung parallel liegen.
     pub fn offset_against(&self, j: usize, below: &WallChain, k: usize) -> Option<f64> {
-        let (pa, _, da) = below.layout()?;
-        let (pb, _, db) = self.layout()?;
-        let (a, b) = (*da.get(k)?, *db.get(j)?);
-        (cross2(a, b).abs() < 1e-9 && a.dot(b) > 0.0)
-            .then(|| (pb[j] - pa[k]).dot(right_of(a)) * below.outward_sign())
+        self.offsets_against(below, [(j, k)]).pop().flatten()
+    }
+
+    /// [`WallChain::offset_against`] für viele Paare (j, k): Lage und
+    /// Außenseite nur einmal, nicht je Paar (Review L9, Mengen auf „Groß“).
+    pub fn offsets_against(
+        &self,
+        below: &WallChain,
+        pairs: impl IntoIterator<Item = (usize, usize)>,
+    ) -> Vec<Option<f64>> {
+        let (Some((pa, _, da)), Some((pb, _, db))) = (below.layout(), self.layout()) else {
+            return pairs.into_iter().map(|_| None).collect();
+        };
+        let sign = below.outward_sign();
+        pairs
+            .into_iter()
+            .map(|(j, k)| {
+                let (a, b) = (*da.get(k)?, *db.get(j)?);
+                (cross2(a, b).abs() < 1e-9 && a.dot(b) > 0.0)
+                    .then(|| (pb[j] - pa[k]).dot(right_of(a)) * sign)
+            })
+            .collect()
     }
 }
 
