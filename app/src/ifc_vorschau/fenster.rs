@@ -4,8 +4,9 @@
 //! „Geschosse einzeln“ und „Ganzes Modell“. Alles in Software gezeichnet.
 
 use super::baum::{self, Sicht, Zeile, Ziel};
-use super::bild::{self, Bild, Kamera, Szene};
+use super::bild::{self, Bild, Szene};
 use super::eigenschaften::{self, Eintrag};
+use crate::camera::Camera;
 use sk_ifc::lesen::Vorschau;
 use sk_math::{vec3, Vec3};
 use sk_paint::font::Font;
@@ -54,6 +55,8 @@ enum Knopf {
 
 struct Ziehen {
     knopf: MouseButton,
+    /// Gegriffener Punkt im Modell: Drehpunkt, beim Schieben seine Tiefe.
+    griff: Vec3,
     x: f64,
     y: f64,
     bewegt: bool,
@@ -67,7 +70,7 @@ pub struct IfcFenster {
     pub dirty: bool,
     pub v: Vorschau,
     kanten: Vec<Vec<(Vec3, Vec3)>>,
-    pub kamera: Kamera,
+    pub kamera: Camera,
     pub sichtbar: Vec<bool>,
     pub gewaehlt: Option<usize>,
     /// Klappzustand des Baums (siehe [`baum::zeilen`]).
@@ -97,11 +100,11 @@ struct Lage {
 }
 
 /// Kamera auf alles Sichtbare; ohne Form ein Kasten um den Ursprung.
-fn passend(v: &Vorschau, sichtbar: &[bool]) -> Kamera {
+fn passend(v: &Vorschau, sichtbar: &[bool]) -> Camera {
     let (lo, hi) = bild::grenzen(&v.teile, sichtbar)
         .or_else(|| bild::grenzen(&v.teile, &[]))
         .unwrap_or((vec3(0.0, 0.0, 0.0), vec3(10000.0, 10000.0, 3000.0)));
-    Kamera::passend(lo, hi)
+    bild::passend(lo, hi)
 }
 
 impl IfcFenster {
@@ -275,6 +278,7 @@ impl IfcFenster {
                 Bereich::Bild => {
                     self.ziehen = Some(Ziehen {
                         knopf: button,
+                        griff: self.griff(x, y),
                         x,
                         y,
                         bewegt: false,
@@ -330,7 +334,8 @@ impl IfcFenster {
                 let schritt = 3.0 * ZEILE * self.s() * delta as f32;
                 match self.bereich(x, y) {
                     Bereich::Bild => {
-                        self.kamera.naehern(delta);
+                        let p = self.griff(x, y);
+                        self.kamera.zoom(p, delta);
                         self.neu();
                     }
                     Bereich::Baum => {
@@ -348,6 +353,21 @@ impl IfcFenster {
         None
     }
 
+    /// Punkt im Modell unter der Maus wie in der Ansicht; ins Leere in der
+    /// Tiefe des Blickpunkts.
+    fn griff(&self, x: f64, y: f64) -> Vec3 {
+        let l = self.lage();
+        let (bx, by) = (x - l.baum_r as f64, y - l.oben as f64);
+        let (w, h) = ((l.eig_l - l.baum_r) as f64, (l.fuss - l.oben) as f64);
+        self.bild
+            .as_ref()
+            .and_then(|b| b.punkt_bei(&self.kamera, bx, by))
+            .unwrap_or_else(|| {
+                let (o, r) = self.kamera.ray(bx, by, w.max(1.0), h.max(1.0));
+                o + r * self.kamera.focus
+            })
+    }
+
     fn bewegen(&mut self, x: f64, y: f64) {
         let h = (self.lage().fuss - self.lage().oben) as f64;
         let Some(z) = self.ziehen.as_mut() else {
@@ -360,8 +380,11 @@ impl IfcFenster {
         z.bewegt = true;
         (z.x, z.y) = (x, y);
         match z.knopf {
-            MouseButton::Left => self.kamera.drehen(dx, dy),
-            _ => self.kamera.schieben(dx, dy, h),
+            MouseButton::Left => self.kamera.orbit(z.griff, dx, dy),
+            _ => {
+                let tiefe = (z.griff - self.kamera.eye).dot(self.kamera.forward());
+                self.kamera.pan(tiefe, dx, dy, h);
+            }
         }
         self.neu();
     }
@@ -830,7 +853,7 @@ mod tests {
         });
         assert_eq!(f.gewaehlt, None);
         // Ziehen
-        let dreh = f.kamera.dreh;
+        let dreh = f.kamera.yaw;
         f.handle(&Event::MouseDown {
             button: MouseButton::Left,
             x,
@@ -848,17 +871,17 @@ mod tests {
             y,
             mods: M,
         });
-        assert!(f.kamera.dreh != dreh);
+        assert!(f.kamera.yaw != dreh);
         assert_eq!(f.gewaehlt, None);
         // Rad nähert, im Baum blättert es
-        let a = f.kamera.abstand;
+        let a = f.kamera.focus;
         f.handle(&Event::Wheel {
             delta: 1.0,
             x,
             y,
             mods: M,
         });
-        assert!(f.kamera.abstand < a);
+        assert!(f.kamera.focus < a);
     }
 
     /// Kästchen im Baum blendet aus; „Geschosse einzeln“ zeigt ein Geschoss
@@ -891,7 +914,7 @@ mod tests {
             let og = f.zeilen().iter().position(|z| z.text == "OG").unwrap();
             klick(&mut f, 150.0, zeile_y(og));
             assert_eq!(f.sichtbar, [false, false, false, true]);
-            let k = f.kamera;
+            let k = f.kamera.clone();
             let (gx, gw) = f
                 .knopf_lage
                 .iter()

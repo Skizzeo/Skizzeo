@@ -4,98 +4,65 @@
 //! als Pixel. Doppelt abgetastet und gemittelt, dazu ein Puffer mit dem Teil
 //! je Bildpunkt zum Wählen mit der Maus.
 
+use crate::camera::Camera;
 use sk_ifc::lesen::Teil;
-use sk_math::{vec3, Vec3};
+use sk_math::{vec3, Mat4, Vec3};
 
-/// Kamera, die um einen Zielpunkt kreist (wie die Ansicht: Ziehen dreht,
-/// Rad nähert).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Kamera {
-    pub ziel: Vec3,
-    /// Abstand des Auges vom Ziel (mm).
-    pub abstand: f64,
-    /// Drehung um die Hochachse (rad), 0 = Blick nach +y.
-    pub dreh: f64,
-    /// Neigung (rad), positiv = von oben.
-    pub neigung: f64,
-    /// Öffnungswinkel senkrecht (rad).
-    pub fov: f64,
+/// Kamera wie die Ansicht ([`Camera`], Öffnungswinkel 45°) von vorn links
+/// oben auf den ganzen Kasten `lo`..`hi`.
+pub fn passend(lo: Vec3, hi: Vec3) -> Camera {
+    let fov = 45f64;
+    let ziel = (lo + hi) * 0.5;
+    let r = ((hi - lo).length() * 0.5).max(1000.0);
+    let weite = r / (fov.to_radians() * 0.5).sin() * 1.05;
+    // Dieselbe Richtung wie die Ansicht beim Start
+    let blick = vec3(6000.0, 8000.0, -3000.0).normalized();
+    Camera::looking_at(ziel - blick * weite, ziel, fov)
 }
 
-/// Lage des Auges und Bildachsen.
-struct Basis {
+/// Projektion mit denselben Matrizen wie [`Camera::view`], in Koordinaten
+/// relativ zum Auge.
+struct Proj {
+    vp: Mat4,
     auge: Vec3,
+    vor: Vec3,
     rechts: Vec3,
     oben: Vec3,
-    vor: Vec3,
-    f: f64,
+    near: f64,
 }
 
-impl Kamera {
-    /// Blick von vorn links oben auf den ganzen Kasten `lo`..`hi`.
-    pub fn passend(lo: Vec3, hi: Vec3) -> Kamera {
-        let fov = 40f64.to_radians();
-        let r = ((hi - lo).length() * 0.5).max(1000.0);
-        Kamera {
-            ziel: (lo + hi) * 0.5,
-            abstand: r / (fov * 0.5).sin() * 1.05,
-            dreh: (-35f64).to_radians(),
-            neigung: 25f64.to_radians(),
-            fov,
-        }
-    }
-
-    fn basis(&self, h: f64) -> Basis {
-        let (sd, cd) = self.dreh.sin_cos();
-        let (sn, cn) = self.neigung.sin_cos();
-        // Blickrichtung vom Auge zum Ziel
-        let vor = vec3(sd * cn, cd * cn, -sn);
-        let rechts = vec3(cd, -sd, 0.0);
-        let oben = rechts.cross(vor);
-        Basis {
-            auge: self.ziel - vor * self.abstand,
-            rechts,
-            oben,
-            vor,
-            f: h * 0.5 / (self.fov * 0.5).tan(),
-        }
-    }
-
-    /// Bildpunkt (x nach rechts, y nach unten) und Tiefe; `None` hinter dem
-    /// Auge.
-    pub fn projizieren(&self, p: Vec3, w: f64, h: f64) -> Option<(f64, f64, f64)> {
-        let b = self.basis(h);
-        projekt(&b, p, w, h)
-    }
-
-    /// Ziehen mit der Maus um `dx`, `dy` Bildpunkte.
-    pub fn drehen(&mut self, dx: f64, dy: f64) {
-        self.dreh += dx * 0.008;
-        self.neigung = (self.neigung + dy * 0.008).clamp(-1.45, 1.45);
-    }
-
-    /// Rad: näher (positiv) oder weiter.
-    pub fn naehern(&mut self, schritte: f64) {
-        self.abstand = (self.abstand * 0.85f64.powf(schritte)).clamp(500.0, 2.0e6);
-    }
-
-    /// Ziel im Bild verschieben (rechte Maustaste).
-    pub fn schieben(&mut self, dx: f64, dy: f64, h: f64) {
-        let b = self.basis(h);
-        let k = self.abstand / b.f;
-        self.ziel = self.ziel - b.rechts * (dx * k) + b.oben * (dy * k);
+fn proj(k: &Camera, w: f64, h: f64) -> Proj {
+    let (vor, rechts, oben) = (k.forward(), k.right(), k.up());
+    let aspect = w.max(1.0) / h.max(1.0);
+    let rot = Mat4::view_rotation(vor, rechts, oben);
+    let p = match k.ortho {
+        Some(half) => Mat4::orthographic(half, aspect, k.near(), k.far()),
+        None => Mat4::perspective(k.fov_y, aspect, k.near(), k.far()),
+    };
+    Proj {
+        vp: p * rot,
+        auge: k.eye,
+        vor,
+        rechts,
+        oben,
+        near: k.near(),
     }
 }
 
-fn projekt(b: &Basis, p: Vec3, w: f64, h: f64) -> Option<(f64, f64, f64)> {
-    let d = p - b.auge;
-    let z = d.dot(b.vor);
-    if z < 10.0 {
+/// Bildpunkt (x nach rechts, y nach unten) und Tiefe entlang der
+/// Blickrichtung; `None` vor der Nahebene.
+fn projekt(b: &Proj, p: Vec3, w: f64, h: f64) -> Option<(f64, f64, f64)> {
+    let r = p - b.auge;
+    let z = r.dot(b.vor);
+    if z <= b.near {
         return None;
     }
-    let x = w * 0.5 + d.dot(b.rechts) * b.f / z;
-    let y = h * 0.5 - d.dot(b.oben) * b.f / z;
-    Some((x, y, z))
+    let c = b.vp.mul_vec4([r.x, r.y, r.z, 1.0]);
+    Some((
+        (c[0] / c[3] * 0.5 + 0.5) * w,
+        (0.5 - c[1] / c[3] * 0.5) * h,
+        z,
+    ))
 }
 
 /// Was gezeichnet wird.
@@ -116,6 +83,8 @@ pub struct Bild {
     pub h: usize,
     pub rgba: Vec<u8>,
     pub teil: Vec<u32>,
+    /// Tiefe entlang der Blickrichtung je Bildpunkt (unendlich = nichts).
+    pub tiefe: Vec<f64>,
 }
 
 impl Bild {
@@ -130,10 +99,26 @@ impl Bild {
         let t = self.teil[y * self.w + x];
         (t != u32::MAX).then_some(t as usize)
     }
+
+    /// Punkt im Modell unter dem Bildpunkt (Drehpunkt und Zoomziel wie in
+    /// der Ansicht); `k` ist die Kamera, mit der das Bild gezeichnet wurde.
+    pub fn punkt_bei(&self, k: &Camera, x: f64, y: f64) -> Option<Vec3> {
+        let (xi, yi) = (x.floor(), y.floor());
+        if xi < 0.0 || yi < 0.0 || xi >= self.w as f64 || yi >= self.h as f64 {
+            return None;
+        }
+        let d = self.tiefe[yi as usize * self.w + xi as usize];
+        if !d.is_finite() {
+            return None;
+        }
+        let (o, r) = k.ray(x, y, self.w as f64, self.h as f64);
+        let s = r.dot(k.forward());
+        (s > 1e-9).then(|| o + r * (d / s))
+    }
 }
 
 /// Licht von links oben hinter dem Betrachter, fest zur Kamera.
-fn hell(n: Vec3, b: &Basis) -> f64 {
+fn hell(n: Vec3, b: &Proj) -> f64 {
     let l = (b.oben * 0.8 - b.rechts * 0.5 - b.vor * 0.6).normalized();
     0.45 + 0.55 * n.dot(l).abs()
 }
@@ -193,13 +178,13 @@ pub fn kanten(t: &Teil) -> Vec<(Vec3, Vec3)> {
 pub fn zeichnen(
     s: &Szene,
     kanten: &[Vec<(Vec3, Vec3)>],
-    k: &Kamera,
+    k: &Camera,
     (w, h): (usize, usize),
     ss: usize,
 ) -> Bild {
     let ss = ss.max(1);
     let (bw, bh) = (w * ss, h * ss);
-    let b = k.basis(bh as f64);
+    let b = proj(k, bw as f64, bh as f64);
     let mut farbe = vec![s.hinter; bw * bh];
     let mut tiefe = vec![f64::INFINITY; bw * bh];
     let mut teil = vec![u32::MAX; bw * bh];
@@ -266,6 +251,7 @@ pub fn zeichnen(
     // Mitteln auf die Zielgröße
     let mut rgba = vec![0u8; w * h * 4];
     let mut ids = vec![u32::MAX; w * h];
+    let mut tiefen = vec![f64::INFINITY; w * h];
     for y in 0..h {
         for x in 0..w {
             let mut sum = [0u32; 3];
@@ -282,7 +268,9 @@ pub fn zeichnen(
                 rgba[o + i] = (sum[i] / (ss * ss) as u32) as u8;
             }
             rgba[o + 3] = 255;
-            ids[y * w + x] = teil[(y * ss + ss / 2) * bw + x * ss + ss / 2];
+            let m = (y * ss + ss / 2) * bw + x * ss + ss / 2;
+            ids[y * w + x] = teil[m];
+            tiefen[y * w + x] = tiefe[m];
         }
     }
     Bild {
@@ -290,6 +278,7 @@ pub fn zeichnen(
         h,
         rgba,
         teil: ids,
+        tiefe: tiefen,
     }
 }
 
@@ -409,11 +398,7 @@ pub(crate) mod tests {
         let ks: Vec<_> = teile.iter().map(kanten).collect();
         assert_eq!(ks[0].len(), 12, "nur die Würfelkanten, keine Diagonalen");
         // Blick genau entlang +y: der rote verdeckt den blauen
-        let mut k = Kamera::passend(vec3(0.0, 0.0, 0.0), vec3(1000.0, 4000.0, 1000.0));
-        k.ziel = vec3(500.0, 500.0, 500.0);
-        k.dreh = 0.0;
-        k.neigung = 0.0;
-        k.abstand = 6000.0;
+        let k = Camera::looking_at(vec3(500.0, -5500.0, 500.0), vec3(500.0, 500.0, 500.0), 45.0);
         let b = zeichnen(&s, &ks, &k, (200, 150), 2);
         let px = |x: usize, y: usize| b.rgba[(y * 200 + x) * 4..][..3].to_vec();
         assert_eq!(px(2, 2), vec![255, 255, 255]);
@@ -421,36 +406,47 @@ pub(crate) mod tests {
         assert!(m[0] > 100 && m[2] == 0, "rot vorn: {m:?}");
         assert_eq!(b.teil_bei(100.0, 75.0), Some(0));
         assert_eq!(b.teil_bei(2.0, 2.0), None);
+        // Punkt unter der Maus: auf der Vorderseite des roten
+        let p = b.punkt_bei(&k, 100.5, 75.5).unwrap();
+        assert!(p.y.abs() < 5.0 && (p.x - 500.0).abs() < 50.0, "{p:?}");
+        assert!(b.punkt_bei(&k, 2.0, 2.0).is_none());
+        // Gleiche Abbildung wie die Ansicht
+        let (x, y) = k.project(vec3(0.0, 0.0, 1000.0), 200.0, 150.0).unwrap();
+        let q = projekt(
+            &proj(&k, 200.0, 150.0),
+            vec3(0.0, 0.0, 1000.0),
+            200.0,
+            150.0,
+        )
+        .unwrap();
+        assert!((q.0 - x).abs() < 1e-9 && (q.1 - y).abs() < 1e-9);
         // Von hinten: blau vorn
-        k.dreh = std::f64::consts::PI;
-        k.ziel = vec3(500.0, 3500.0, 500.0);
+        let k = Camera::looking_at(vec3(500.0, 9500.0, 500.0), vec3(500.0, 3500.0, 500.0), 45.0);
         let b = zeichnen(&s, &ks, &k, (200, 150), 2);
         assert_eq!(b.teil_bei(100.0, 75.0), Some(1));
+        assert_eq!(
+            zeichnen(&s, &ks, &k, (200, 150), 1).teil_bei(100.0, 75.0),
+            Some(1)
+        );
     }
 
+    /// Passende Kamera: der ganze Kasten im Bild, die Mitte in der Mitte.
     #[test]
-    fn kamera_bedienen() {
-        let mut k = Kamera::passend(vec3(0.0, 0.0, 0.0), vec3(10000.0, 8000.0, 6000.0));
+    fn passende_kamera() {
+        let (lo, hi) = (vec3(0.0, 0.0, 0.0), vec3(10000.0, 8000.0, 6000.0));
+        let k = passend(lo, hi);
         let (w, h) = (800.0, 600.0);
-        let m = k.projizieren(k.ziel, w, h).unwrap();
+        let m = k.project((lo + hi) * 0.5, w, h).unwrap();
         assert!((m.0 - 400.0).abs() < 1e-6 && (m.1 - 300.0).abs() < 1e-6);
-        // Alle Ecken im Bild
         for i in 0..8 {
             let p = vec3(
                 (i & 1) as f64 * 10000.0,
                 ((i >> 1) & 1) as f64 * 8000.0,
                 ((i >> 2) & 1) as f64 * 6000.0,
             );
-            let (x, y, _) = k.projizieren(p, w, h).unwrap();
+            let (x, y) = k.project(p, w, h).unwrap();
             assert!(x > 0.0 && x < w && y > 0.0 && y < h, "{i}: {x} {y}");
         }
-        let a = k.abstand;
-        k.naehern(1.0);
-        assert!(k.abstand < a);
-        k.drehen(0.0, 10_000.0);
-        assert!(k.neigung <= 1.45);
-        let z = k.ziel;
-        k.schieben(100.0, 0.0, h);
-        assert!((k.ziel - z).length() > 0.0);
+        assert!(k.forward().z < 0.0, "von oben");
     }
 }
