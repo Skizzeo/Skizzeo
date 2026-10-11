@@ -14,6 +14,7 @@ mod ausbau;
 mod dach;
 mod hoehen;
 mod oeffnung;
+mod raum;
 
 use crate::attr::{
     Attributes, Dash, Display, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen,
@@ -1201,6 +1202,7 @@ fn write_known(m: &Model) -> String {
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
+    raum::write_spaces(m, &walls, &mut out);
     for raw in m.ext_raw() {
         out.push_str(raw);
         out.push('\n');
@@ -1509,7 +1511,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 41] = [
+    const KNOWN: [&str; 42] = [
         "opening",
         "pen",
         "linetype",
@@ -1541,6 +1543,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "downpipe",
         "extdef",
         "extpart",
+        "space",
         "prop",
         "cut",
         "sun",
@@ -2100,10 +2103,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             category: keyword(r, "cat", &Category::ALL, category)?,
             storey: r.link("storey", &storey_ids)?,
             layer_set: r.link_opt("set", &set_ids)?,
-            seq: match r.opt("seq") {
-                Some(_) => r.int("seq")?,
-                None => crate::model::WALL_SEQ,
-            },
+            seq: r
+                .opt("seq")
+                .map_or(Ok(crate::model::WALL_SEQ), |_| r.int("seq"))?,
             kind: ElementKind::Wall(Wall {
                 run,
                 seg,
@@ -2509,10 +2511,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             category: Category::Extension,
             storey: r.link("storey", &storey_ids)?,
             layer_set: None,
-            seq: match r.opt("seq") {
-                Some(_) => r.int("seq")?,
-                None => crate::EXT_SEQ,
-            },
+            seq: r.opt("seq").map_or(Ok(crate::EXT_SEQ), |_| r.int("seq"))?,
             kind: ElementKind::Ext(part),
             props: Default::default(),
             locked: false,
@@ -2520,6 +2519,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let g = e.guid;
         let id = elements.insert(e);
         register(&mut elem_ids, &mut seen, r, g, id)?;
+    }
+    for r in recs("space") {
+        let e = raum::read(r, number(r)?, r.link("storey", &storey_ids)?, &mut hints)?;
+        register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?;
     }
     for r in recs("run") {
         let id = run_ids[&r.guid("guid")?];

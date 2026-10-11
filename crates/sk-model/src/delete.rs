@@ -86,6 +86,9 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
                 "Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du im Paneel Geschosse ein.",
             ]
         }
+        Some(Category::Space) => {
+            vec!["Der Raum folgt den Wänden um ihn. Zum Entfernen eine Wand löschen oder öffnen."]
+        }
         _ => vec!["Dieses Bauteil lässt sich nicht löschen."],
     }
 }
@@ -170,6 +173,8 @@ impl Model {
             ElementKind::Downpipe { roof, .. } => Err(Refusal::Derived { from: roof }),
             ElementKind::Ext(_) | ElementKind::Opening(_) if e.locked => Err(Refusal::Locked(id)),
             ElementKind::Ext(_) | ElementKind::Opening(_) => Ok(()),
+            // Folgt den Wänden, ruht ohne Fläche
+            ElementKind::Space(_) => Err(Refusal::Derived { from: id }),
         }
     }
 

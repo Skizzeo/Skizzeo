@@ -533,10 +533,10 @@ fn a136_gebaeude_loeschen() {
     assert_eq!(gb, "GB-01");
     assert_eq!(
         gebaeude_bauteile(s.model(), b),
-        13,
-        "Rückfrage nennt die Bauteile"
+        16,
+        "Rückfrage nennt die Bauteile; dazu drei Räume (G3)"
     );
-    assert_eq!(s.model().elements().len(), 13);
+    assert_eq!(s.model().elements().len(), 16);
     let baender: Vec<_> = ["GR", "EG", "OG"].iter().map(|k| band(&s, k)).collect();
     assert_eq!(baender[1], (0.0, 2855.0), "Standardhöhen EG");
     assert_eq!(baender[2], (2855.0, 5710.0), "Standardhöhen OG");

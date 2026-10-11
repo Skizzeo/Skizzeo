@@ -356,6 +356,9 @@ pub use fang::{Fangziele, Wandende, Wandflaeche};
 #[path = "ecke.rs"]
 mod ecke;
 pub use ecke::{EckeFehler, ZugPunkte};
+#[path = "raum.rs"]
+mod raum;
+pub use raum::{Space, SPACE_SEQ};
 
 impl Default for Model {
     fn default() -> Model {
@@ -1384,7 +1387,8 @@ impl Model {
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Roof { .. }
                 | ElementKind::Downpipe { .. }
-                | ElementKind::Opening(_) => false,
+                | ElementKind::Opening(_)
+                | ElementKind::Space(_) => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -3162,7 +3166,7 @@ impl Model {
                             ElementKind::Downpipe { roof, .. } => {
                                 strips.extend(self.floor_of_roof(roof))
                             }
-                            ElementKind::Ext(_) => {}
+                            ElementKind::Ext(_) | ElementKind::Space(_) => {}
                             ElementKind::Opening(ref o) => openings.extend(self.opening_runs(o)),
                         }
                     }
@@ -3263,7 +3267,7 @@ impl Model {
                             touched.run(f.run);
                             floors.push(f.run);
                         }
-                        ElementKind::Ext(_) => {}
+                        ElementKind::Ext(_) | ElementKind::Space(_) => {}
                         ElementKind::Opening(ref o) => {
                             m.opening_runs(o).into_iter().for_each(|r| touched.run(r))
                         }
@@ -3712,6 +3716,7 @@ impl Model {
                         out.push(format!("{}: {}", e.number, f.text(self)));
                     }
                 }
+                ElementKind::Space(ref s) => out.extend(raum::pruefe(&e.number, s)),
             }
         }
         // Regel 35: unter jeder auskragenden Decke genau eine Untersichtdämmung

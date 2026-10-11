@@ -29,6 +29,8 @@ use std::rc::Rc;
 
 #[path = "scene_gefaelle.rs"]
 mod gefaelle;
+#[path = "scene_raum.rs"]
+mod raum;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
@@ -502,6 +504,8 @@ pub struct Scene {
     pub rolle: sk_cost::Rolle,
     /// Gewählter Ablauf: Dachaufbau und Index (Jörn 11.10.).
     drain: Option<(ElementId, usize)>,
+    /// Zuletzt angelegte Räume, bis die App ein Namensfeld öffnet (G4).
+    neue_raeume: Vec<ElementId>,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
     undo: Vec<Txn>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
@@ -850,6 +854,7 @@ impl Scene {
             redo: Vec::new(),
             rolle: sk_cost::Rolle::Admin,
             drain: None,
+            neue_raeume: Vec::new(),
             cache: Vec::new(),
             dirty: Vec::new(),
             all_dirty: true,
@@ -1882,6 +1887,8 @@ impl Scene {
     /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
+        // Räume folgen den Wänden im selben Schritt (G3)
+        self.raeume_abgleichen();
         match self.model.try_commit() {
             Ok(Some(t)) => {
                 self.undo.push(t);

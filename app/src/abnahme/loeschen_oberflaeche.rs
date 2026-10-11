@@ -371,7 +371,11 @@ fn rueckfrage_gebaeude_loeschen() {
         "Alle Bauteile dieses Gebäudes werden entfernt: \
              8 Außenwände, 1 Innenwand, 2 Decken, Sohlplatte, Frostschürze."
     );
-    assert_eq!(k.parts.len(), 13, "das ganze Gebäude leuchtet");
+    assert_eq!(
+        k.parts.len(),
+        16,
+        "das ganze Gebäude leuchtet, mit drei Räumen (G3)"
+    );
     assert_eq!(k.key(Key::Enter), Some(Answer::Keep), "Behalten vorgewählt");
     assert_eq!(k.key(Key::Escape), Some(Answer::Keep));
     let (t, f) = (Theme::dark(), fonts());

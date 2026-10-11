@@ -1845,7 +1845,8 @@ pub fn schedule(model: &Model) -> Schedule {
                 }
             }
             // ohne Wandzug, oben gerechnet
-            ElementKind::Ext(_) | ElementKind::Opening(_) => continue,
+            // Räume zählen in der Wohnfläche (G8), nicht in der Mengenliste
+            ElementKind::Ext(_) | ElementKind::Opening(_) | ElementKind::Space(_) => continue,
             // Mengen als Automatikmengen am Bauteil (`downpipe.*`)
             ElementKind::Downpipe { .. } => (None, None),
         };
@@ -2572,7 +2573,8 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             | ElementKind::Roof { .. }
             | ElementKind::Downpipe { .. }
             | ElementKind::Ext(_)
-            | ElementKind::Opening(_) => None,
+            | ElementKind::Opening(_)
+            | ElementKind::Space(_) => None,
         });
         match (q, mat) {
             (ElementQto::Terrace(t), _) => {
