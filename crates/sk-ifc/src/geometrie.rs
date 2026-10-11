@@ -16,10 +16,38 @@ pub struct Netz {
     pub dreiecke: Vec<[u32; 3]>,
 }
 
-/// Punkte gelten als gleich, wenn sie auf 0,0001 mm übereinstimmen (so
-/// schreibt sie auch die Datei).
-fn schluessel(p: Vec3) -> [i64; 3] {
-    [p.x, p.y, p.z].map(|v| (v * 1e4).round() as i64)
+/// Punkte gelten als gleich, wenn sie in jeder Richtung höchstens 0,001 mm
+/// auseinanderliegen. Gesucht wird in der eigenen Zelle und den Nachbarzellen,
+/// damit zwei Punkte, die nur in der letzten Stelle abweichen, nicht an einer
+/// Rundungsgrenze getrennt werden.
+const SCHWEISS: f64 = 1e-3;
+
+fn zelle(p: Vec3) -> [i64; 3] {
+    [p.x, p.y, p.z].map(|v| (v / SCHWEISS).floor() as i64)
+}
+
+/// Nummer des Punkts `q` im Netz, neu angelegt, wenn keiner nahe genug ist.
+fn punkt(netz: &mut Netz, idx: &mut HashMap<[i64; 3], Vec<u32>>, q: Vec3) -> u32 {
+    let z = zelle(q);
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                let Some(v) = idx.get(&[z[0] + dx, z[1] + dy, z[2] + dz]) else {
+                    continue;
+                };
+                for &i in v {
+                    let d = netz.punkte[i as usize] - q;
+                    if d.x.abs() <= SCHWEISS && d.y.abs() <= SCHWEISS && d.z.abs() <= SCHWEISS {
+                        return i;
+                    }
+                }
+            }
+        }
+    }
+    netz.punkte.push(q);
+    let i = (netz.punkte.len() - 1) as u32;
+    idx.entry(z).or_default().push(i);
+    i
 }
 
 /// Die Netze eines Körpers je Baustoff, um `versatz` verschoben (Lage im
@@ -27,7 +55,7 @@ fn schluessel(p: Vec3) -> [i64; 3] {
 /// Uhrzeigersinn um seine Normale (IFC: Außenseite).
 pub fn netze(s: &Solid, versatz: Vec3) -> Vec<Netz> {
     let mut out: Vec<Netz> = Vec::new();
-    let mut idx: Vec<HashMap<[i64; 3], u32>> = Vec::new();
+    let mut idx: Vec<HashMap<[i64; 3], Vec<u32>>> = Vec::new();
     for t in &s.triangles {
         let mat = t.mat & !material::CUT;
         let k = match out.iter().position(|n| n.mat == mat) {
@@ -48,11 +76,7 @@ pub fn netze(s: &Solid, versatz: Vec3) -> Vec<Netz> {
         }
         let mut ids = [0u32; 3];
         for (j, q) in p.iter().enumerate() {
-            let netz = &mut out[k];
-            ids[j] = *idx[k].entry(schluessel(*q)).or_insert_with(|| {
-                netz.punkte.push(*q);
-                (netz.punkte.len() - 1) as u32
-            });
+            ids[j] = punkt(&mut out[k], &mut idx[k], *q);
         }
         if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
             continue;
@@ -471,5 +495,32 @@ mod tests {
         let n = netze(&s, Vec3::default());
         assert!(geschlossen(&n[0]));
         assert!(volumen(&n[0]) > 0.0);
+    }
+
+    /// Befund Test zu O2: derselbe Punkt kommt aus zwei Rechnungen einmal als
+    /// 717.31875 und einmal als 717.3187499999999 an; mit Rasterrundung lagen
+    /// beide auf verschiedenen Seiten der .5-Grenze und das Netz war offen.
+    #[test]
+    fn schweissen_trennt_nicht_an_der_rundungsgrenze() {
+        let mut s = wuerfel();
+        let (a, b) = (717.31875, 717.3187499999999);
+        assert_ne!((a * 1e4_f64).round(), (b * 1e4_f64).round());
+        let mut i = 0;
+        for t in &mut s.triangles {
+            for p in &mut t.p {
+                if p.z == 1000.0 {
+                    p.z = if i % 2 == 0 { a } else { b };
+                    i += 1;
+                }
+            }
+        }
+        let n = netze(&s, Vec3::default());
+        assert_eq!(n[0].punkte.len(), 8);
+        assert!(geschlossen(&n[0]));
+        // Punkte, die weiter auseinanderliegen, bleiben getrennt
+        let (mut netz, mut idx) = (Netz::default(), HashMap::new());
+        let p = punkt(&mut netz, &mut idx, vec3(0.0, 0.0, a));
+        assert_eq!(punkt(&mut netz, &mut idx, vec3(0.0, 0.0, b)), p);
+        assert_ne!(punkt(&mut netz, &mut idx, vec3(0.0, 0.0, a + 2e-3)), p);
     }
 }
