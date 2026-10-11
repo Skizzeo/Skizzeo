@@ -813,16 +813,17 @@ const RH5: Soll = Soll {
             0,
         ),
         // Attikadämmung am Flachdach als Schichten des Blechs (Jörn 10.10.
-        // 16:07): Krone 4 cm und innen 6 cm, je m² mit Stoff nach Dicke
+        // 16:07): Krone 4 cm und innen 6 cm, je m² mit Stoff nach Dicke; seit
+        // Werksstand 14 zwei Leistungen, damit das LV beide führt (R1 B2)
         (
-            "Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau · d=40mm",
+            "Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech",
             17270,
             2100,
             36267,
             10362,
         ),
         (
-            "Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau · d=60mm",
+            "Attikadämmung innen Flachdach, EPS, Dicke nach Aufbau",
             8322,
             2400,
             19973,

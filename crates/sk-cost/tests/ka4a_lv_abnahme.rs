@@ -14,7 +14,7 @@ use sk_cost::{lesen, Cent, Umfang};
 use sk_model::{qto, szo, GuidGen};
 use std::collections::BTreeSet;
 
-fn haeuser() -> [(&'static str, &'static str); 3] {
+fn haeuser() -> [(&'static str, &'static str); 4] {
     [
         ("RH-1", include_str!("../referenz/rh1-standardhaus.szo")),
         ("RH-2", include_str!("../referenz/rh2-mehrschalig.szo")),
@@ -22,6 +22,9 @@ fn haeuser() -> [(&'static str, &'static str); 3] {
             "RH-3",
             include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
         ),
+        // Flachdach mit Attikadämmung innen und Krone in zwei Leistungen
+        // (Werksstand 14, R1 B2): auch hier LV = netto
+        ("RH-5", include_str!("../referenz/rh5-flachdach.szo")),
     ]
 }
 

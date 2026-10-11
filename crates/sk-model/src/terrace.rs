@@ -246,7 +246,7 @@ fn plan(
         // Innen zurück an der Außenfläche darüber
         let cnt = (ib + 1 + mu - first) % mu;
         p.extend((0..cnt).rev().map(|i| mc[(first + i) % mu]));
-        let p = polygon::simplified(&p);
+        let p = polygon::simplified(&without_spikes(p));
         (p.len() >= 3 && polygon::is_simple(&p) && polygon::area(&p) > 1.0).then_some(p)
     };
     let max_depth = |segs: &[usize]| segs.iter().fold(0.0, |a: f64, k| a.max(depths[*k]));
@@ -619,6 +619,27 @@ fn pieces_section_caps(
 
 /// Schnittpunkt der Geraden durch `a` (Richtung `da`) und durch `b`
 /// (Richtung `db`); parallel: Fußpunkt von `b` auf der ersten Geraden.
+/// Ohne Rückläufer: Ein Eckstück kürzer als der Abstand der Deckenkante
+/// von der Außenfläche hat seine Ecke auf der Deckenkante hinter der Ecke
+/// davor; der Umriss liefe dort auf derselben Linie zurück (Kosten #61).
+/// Ebenso die Innenfläche einer Aufkantung am kurzen Eckstück.
+pub(crate) fn without_spikes(mut p: Vec<Vec3>) -> Vec<Vec3> {
+    let mut i = 0;
+    while p.len() > 3 && i < p.len() {
+        let n = p.len();
+        let (a, b, c) = (p[(i + n - 1) % n], p[i], p[(i + 1) % n]);
+        let (u, w) = (b - a, c - b);
+        let line = (u.x * w.y - u.y * w.x).abs() <= 1e-6 * u.length() * w.length();
+        if line && u.dot(w) < 0.0 {
+            p.remove(i);
+            i = i.saturating_sub(1);
+        } else {
+            i += 1;
+        }
+    }
+    p
+}
+
 fn meet(a: Vec3, da: Vec3, b: Vec3, db: Vec3) -> Vec3 {
     let c = da.x * db.y - da.y * db.x;
     if c.abs() < 1e-9 * da.length() * db.length() {

@@ -582,6 +582,42 @@ mod tests {
         }
     }
 
+    /// Kosten #61: Ein Eckstück von 100 mm an der Wand unter einer
+    /// Dachterrasse lässt Terrasse, Attika und Blech unverändert.
+    #[test]
+    fn eckstueck_an_der_terrasse() {
+        let plan = |m: &Model, eg: RunId| {
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let t = &f.terraces;
+            let attika: f64 = t
+                .attika
+                .iter()
+                .map(|p| sk_math::polygon::signed_area(&p.quad))
+                .sum();
+            (t.area(), attika.abs(), t.coping_length())
+        };
+        for at in [vec![100.0], vec![9900.0], vec![100.0, 9900.0]] {
+            let (mut m, eg, og) = rechteck();
+            let nord = m.wall_at(og, 1).unwrap();
+            assert!(m.set_offset(nord, -1500.0).is_some());
+            pruefen(&mut m);
+            let vorher = plan(&m, eg);
+            assert!(vorher.0 > 0.0);
+            m.split_wall(m.wall_at(eg, 1).unwrap(), &at).unwrap();
+            pruefen(&mut m);
+            let nachher = plan(&m, eg);
+            for (a, b) in [
+                (vorher.0, nachher.0),
+                (vorher.1, nachher.1),
+                (vorher.2, nachher.2),
+            ] {
+                assert!((a - b).abs() < 1e-3, "{at:?}: {vorher:?} {nachher:?}");
+            }
+        }
+    }
+
     /// Nach dem Zurückschieben vereint ein Schritt am Mittelstück beide
     /// Fugen; ohne Fuge daneben abgelehnt.
     #[test]

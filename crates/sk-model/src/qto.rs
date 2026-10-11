@@ -405,7 +405,8 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         area,
                         volume,
                         mass: volume * 1e-9 * density,
-                        pocket: (area * (h - h_own - h_ext)).max(0.0),
+                        // mit Vorzeichen wie die Fläche (Eckstück, Review 61-2)
+                        pocket: area * (h - h_own - h_ext).max(0.0),
                         side_area: lo * (h - h_ext + h_here - h_own - h_foot) + s_up + s_att,
                         attika: v_att,
                         inner_area: if air { 0.0 } else { li_len * h_here },
@@ -877,28 +878,40 @@ pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> Copi
         cut: crate::qto_dach::zuschnitt(girth),
         corners: crate::qto_dach::ecken(&ring),
         ends: 0,
-        insulation: model
-            .flat_roof_insulation(floor)
-            .map(|material| {
-                let (face, vol) = r.inner_qto();
-                let cap = r.cap_area();
-                // je eingestellte Schicht ein Eintrag (Schicht i ↔ Eintrag
-                // i − 1), auch wenn die Dämmung innen nirgends aufgeht
-                [
-                    (r.inner, r.inner_depth, face, vol),
-                    (r.cap, r.cap, cap, cap * r.cap),
-                ]
-                .into_iter()
-                .filter(|x| x.0 > 0.0)
-                .map(|(_, thickness, area, volume)| CrownQto {
-                    material,
+        insulation: {
+            let (face, vol) = r.inner_qto();
+            let cap = r.cap_area();
+            // je eingestellte Schicht ein Eintrag (Schicht i ↔ Eintrag
+            // i − 1), auch wenn die Dämmung innen nirgends aufgeht; die
+            // Krone mit eigenem Baustoff (W9 an #60)
+            [
+                (
+                    r.inner,
+                    model.flat_roof_insulation(floor),
+                    r.inner_depth,
+                    face,
+                    vol,
+                ),
+                (
+                    r.cap,
+                    model.flat_roof_crown_material(floor),
+                    r.cap,
+                    cap,
+                    cap * r.cap,
+                ),
+            ]
+            .into_iter()
+            .filter(|x| x.0 > 0.0)
+            .filter_map(|(_, material, thickness, area, volume)| {
+                Some(CrownQto {
+                    material: material?,
                     thickness,
                     area,
                     volume,
                 })
-                .collect()
             })
-            .unwrap_or_default(),
+            .collect()
+        },
     }
 }
 
@@ -1048,10 +1061,11 @@ fn floor_formwork_from<'a>(
             let area: f64 = w
                 .layers
                 .iter()
-                .filter(|l| l.pocket > 1e-6)
+                .filter(|l| l.pocket.abs() > 1e-6)
                 .map(|l| l.area)
                 .sum();
-            if area <= 0.0 {
+            // Ein Eckstück kürzer als die Wand dick trägt negativ bei (#61)
+            if area == 0.0 {
                 continue;
             }
             let bearing = bearing_wall(model, wall);

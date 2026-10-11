@@ -14,6 +14,12 @@ pub const ROOF_TYPE_GUID: Guid = Guid(0x23a600a96432444383537a73429b10b9);
 pub const ROOF_SEAL_GUID: Guid = Guid(0x98ba84e68f884dc8a9afb9e5d7d744d6);
 pub const ROOF_INSULATION_GUID: Guid = Guid(0x58eea8c1e6de400c8a943c7bae55718c);
 pub const ROOF_VAPOUR_GUID: Guid = Guid(0x22943253428c444fbbaa503ccbaa312e);
+/// Eigener Baustoff des Dämmstreifens auf der Krone (W9 an #60), mit
+/// fester Oberfläche: auch beim Lesen angelegt, träfe eine Guid aus der
+/// Folge sonst eine schon in der Datei vergebene.
+pub const ROOF_CROWN_GUID: Guid = Guid(0x50741868ca4a4f23b98ac302f995e825);
+pub const ROOF_CROWN_NAME: &str = "Dämmung EPS 035 DAA dh, Attikakrone";
+const ROOF_CROWN_SURFACE_GUID: Guid = Guid(0xa7efe20a51034f36a754161b1fb7b3de);
 /// Aufbau des Werkstyps von oben nach unten (Plan Flachdach P10):
 /// Abdichtung Bitumen 2-lagig, Dämmung EPS 035 DAA dh, Dampfsperre.
 const ROOF_BUILD_UP: [(f64, LayerFunction); 3] = [
@@ -491,7 +497,12 @@ impl Model {
         let (inner, outer) = (chain.inner_offset(), chain.outer_offset());
         let dir = (outer - inner).signum();
         let inner = inner + dir * drop;
-        let outline = sk_math::polygon::to_ccw(&chain.face_corners(inner));
+        // Ohne Fugenpunkte und ohne Rückläufer an kurzen Eckstücken (#61)
+        let clean = |p: Vec<Vec3>| {
+            use sk_math::polygon;
+            polygon::to_ccw(&polygon::simplified(&crate::terrace::without_spikes(p)))
+        };
+        let outline = clean(chain.face_corners(inner));
         // Attikadämmung innen (Jörn 10.10. 16:07): Innenfläche um ihre Dicke
         // weiter zum Dach hin, aus dem Umriss selbst (die Wandflächen kappen
         // spitze Ecken jenseits ihrer Gehrungsgrenze)
@@ -513,7 +524,7 @@ impl Model {
             outline,
             base: self.level_z(f.top)?,
             layers,
-            ring: sk_math::polygon::to_ccw(&chain.face_corners(chain.outer_offset())),
+            ring: clean(chain.face_corners(chain.outer_offset())),
             width: chain.thickness() - drop,
             crown: chain.top(),
             coping_mat: self
@@ -525,6 +536,9 @@ impl Model {
             cap: crate::model::crown_of(&f.terrace),
             ins_mat: self
                 .flat_roof_insulation(floor)
+                .map_or(material::PLAIN, material_key),
+            cap_mat: self
+                .flat_roof_crown_material(floor)
                 .map_or(material::PLAIN, material_key),
         })
     }
@@ -544,6 +558,54 @@ impl Model {
                     .map(|l| l.material)
             })
             .or_else(|| self.material_by_guid(ROOF_INSULATION_GUID))
+    }
+
+    /// Baustoff des Dämmstreifens auf der Krone am Flachdach über der Decke
+    /// `floor` (W9 an #60): mit der Werksdämmung im Aufbau der eigene
+    /// Baustoff „Dämmung EPS 035 DAA dh, Attikakrone“, damit das LV Krone
+    /// und innen am Baustoff trennt; mit einer anderen Dämmung im Aufbau
+    /// diese, wie innen (die Optik bleibt). Fehlt der eigene Baustoff noch,
+    /// die Dämmung innen.
+    pub fn flat_roof_crown_material(&self, floor: ElementId) -> Option<MaterialId> {
+        let ins = self.flat_roof_insulation(floor)?;
+        if self
+            .material(ins)
+            .is_some_and(|m| m.guid == ROOF_INSULATION_GUID)
+        {
+            return self.material_by_guid(ROOF_CROWN_GUID).or(Some(ins));
+        }
+        Some(ins)
+    }
+
+    /// Eigener Baustoff der Kronendämmung am Flachdach: Darstellung, Kennwerte
+    /// und Gewerk wie „Dämmung EPS 035 DAA dh“, Oberfläche mit fester Guid.
+    /// Fehlt er, wird er angelegt; ohne die Werksdämmung keiner.
+    pub(crate) fn ensure_roof_crown_material(&mut self) -> Option<MaterialId> {
+        if let Some(id) = self.material_by_guid(ROOF_CROWN_GUID) {
+            return Some(id);
+        }
+        let eps = self
+            .material(self.material_by_guid(ROOF_INSULATION_GUID)?)?
+            .clone();
+        let surface = self.attr.surface(eps.surface)?.clone();
+        let id = self.builtin_material_with(
+            ROOF_CROWN_GUID,
+            ROOF_CROWN_NAME,
+            eps.category,
+            eps.priority,
+            eps.density,
+            eps.lambda,
+            surface.color,
+            surface.cut_color,
+            eps.trade,
+            Some(eps.cut_fill),
+            Some(ROOF_CROWN_SURFACE_GUID),
+        )?;
+        // Stifte und Kennwerte wie die Werksdämmung (Optik bleibt gleich)
+        if let Some(m) = self.materials.get_mut(id) {
+            (m.cut_fg, m.cut_bg, m.props) = (eps.cut_fg, eps.cut_bg, eps.props);
+        }
+        Some(id)
     }
 
     /// Geometrie des Flachdachs auf der Decke `floor`.
@@ -575,6 +637,14 @@ impl Model {
             .collect();
         if !want.is_empty() {
             self.ensure_roof_type();
+            // Kronendämmung mit eigenem Baustoff (W9 an #60), auch beim
+            // Lesen; ohne Dämmstreifen bleibt die Datei bytegleich
+            if want.iter().any(|w| {
+                matches!(self.element(w.0).map(|e| &e.kind),
+                    Some(ElementKind::Floor(x)) if crate::model::crown_of(&x.terrace) > 0.0)
+            }) {
+                self.ensure_roof_crown_material();
+            }
             if want.iter().any(|w| {
                 matches!(self.element(w.0).map(|e| &e.kind),
                     Some(ElementKind::Floor(x)) if x.terrace.coping_mat.is_none())
@@ -1527,6 +1597,93 @@ mod tests {
         assert!((blechzeile.volume - q.volume).abs() < 1e-6);
         let summe: f64 = zeilen.iter().map(|l| l.volume).sum();
         assert!((summe - v).abs() < 1e-6, "{summe} {v}");
+    }
+
+    /// W9 an #60: Die Kronendämmung am Flachdach trägt einen eigenen
+    /// Baustoff, innen bleibt die Dämmung des Aufbaus; Darstellung wie die
+    /// Werksdämmung, Mengen unverändert. Ältere Dateien ohne ihn bekommen
+    /// ihn beim Lesen (nur mit Dämmstreifen auf der Krone, sonst bytegleich).
+    #[test]
+    fn kronendaemmung_eigener_baustoff() {
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let st = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(st, true));
+        let (_, blech) = da_ab(&m, og);
+        let guid = |m: &Model, id: MaterialId| m.material(id).unwrap().guid;
+        let l = m.element_layers(blech);
+        assert_eq!(l.len(), 3);
+        assert_eq!(guid(&m, l[1].material), ROOF_INSULATION_GUID);
+        assert_eq!(guid(&m, l[2].material), ROOF_CROWN_GUID);
+        let q = crate::qto::coping_qto(&m, blech).unwrap();
+        assert_eq!(q.insulation.len(), 2);
+        assert_eq!(q.insulation[0].material, l[1].material);
+        assert_eq!(q.insulation[1].material, l[2].material);
+        // Optik wie die Werksdämmung
+        let (eps, krone) = (
+            m.material(l[1].material).unwrap(),
+            m.material(l[2].material).unwrap(),
+        );
+        assert_eq!(krone.name, ROOF_CROWN_NAME);
+        assert_eq!(
+            (
+                krone.cut_fill,
+                krone.cut_fg,
+                krone.cut_bg,
+                krone.density,
+                krone.lambda,
+                krone.trade
+            ),
+            (
+                eps.cut_fill,
+                eps.cut_fg,
+                eps.cut_bg,
+                eps.density,
+                eps.lambda,
+                eps.trade
+            )
+        );
+        let (se, sk) = (
+            m.attr.surface(eps.surface).unwrap(),
+            m.attr.surface(krone.surface).unwrap(),
+        );
+        assert_eq!((se.color, se.cut_color), (sk.color, sk.cut_color));
+        assert!(!m.can_remove_material(l[2].material));
+        // Datei: mit ihm bytegleich; ältere ohne ihn bekommen ihn beim
+        // Lesen und rechnen dieselben Mengen
+        let text = crate::szo::write(&m);
+        let alt: String = text
+            .lines()
+            .filter(|z| !z.contains("Attikakrone"))
+            .map(|z| format!("{z}\n"))
+            .collect();
+        assert_ne!(alt, text);
+        for t in [&text, &alt] {
+            let r = crate::szo::read(t, GuidGen::with_seed(7)).unwrap().model;
+            assert_eq!(crate::szo::write(&r), text);
+            let g = m.element(blech).unwrap().guid;
+            let b = r.elements().iter().find(|(_, e)| e.guid == g).unwrap().0;
+            let k = crate::qto::coping_qto(&r, b).unwrap();
+            for (x, y) in k.insulation.iter().zip(&q.insulation) {
+                assert_eq!(
+                    (x.thickness, x.area, x.volume),
+                    (y.thickness, y.area, y.volume)
+                );
+            }
+        }
+        // ohne Dämmstreifen auf der Krone: ältere Datei bleibt bytegleich
+        let floor = m.floor_of(og).unwrap();
+        schritt(&mut m, |m| m.set_floor_crown(floor, 0.0));
+        assert_eq!(m.element_layers(blech).len(), 2);
+        let ohne: String = crate::szo::write(&m)
+            .lines()
+            .filter(|z| !z.contains("Attikakrone"))
+            .map(|z| format!("{z}\n"))
+            .collect();
+        let r = crate::szo::read(&ohne, GuidGen::with_seed(7))
+            .unwrap()
+            .model;
+        assert!(r.material_by_guid(ROOF_CROWN_GUID).is_none());
+        assert_eq!(crate::szo::write(&r), ohne);
     }
 
     /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.

@@ -50,8 +50,11 @@ pub struct FlatRoof {
     /// Dämmstreifen auf der Krone (mm, 0 = keiner) über Aufkantung und
     /// Attikadämmung innen; das Blech liegt um ihn höher.
     pub cap: f64,
-    /// Baustoff beider Dämmungen (Darstellungsschlüssel).
+    /// Baustoff der Attikadämmung innen (Darstellungsschlüssel).
     pub ins_mat: u16,
+    /// Baustoff des Dämmstreifens auf der Krone (Darstellungsschlüssel):
+    /// eigener Baustoff, damit ihn das LV von innen trennt (W9 an #60).
+    pub cap_mat: u16,
 }
 
 impl FlatRoof {
@@ -654,7 +657,7 @@ impl FlatRoof {
     /// Grundriss des Dämmstreifens auf der Krone: Aufkantung und
     /// Attikadämmung innen.
     fn cap_pieces(&self) -> Vec<AttikaPiece> {
-        Self::pieces(&self.ring, &self.inset, self.ins_mat)
+        Self::pieces(&self.ring, &self.inset, self.cap_mat)
     }
 
     /// Unterkante der Attikadämmung innen am Punkt `p`: Dachhaut mit Keil.
@@ -980,6 +983,7 @@ mod tests {
             inner_depth: 0.0,
             cap: 0.0,
             ins_mat: 0,
+            cap_mat: 0,
             crown: 0.0,
             coping_mat: 0,
             slope: None,
@@ -1014,6 +1018,7 @@ mod tests {
             inner_depth: 0.0,
             cap: 0.0,
             ins_mat: 0,
+            cap_mat: 0,
             crown: 1600.0,
             coping_mat: 0,
         }
@@ -1111,6 +1116,7 @@ mod tests {
             inner_depth: 60.0,
             cap: 40.0,
             ins_mat: 2,
+            cap_mat: 2,
             coping_mat: 4,
             ..mit_gefaelle()
         }

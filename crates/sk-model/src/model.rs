@@ -1364,6 +1364,7 @@ impl Model {
                     COPING_MAT_GUID,
                     flachdach::ROOF_SEAL_GUID,
                     flachdach::ROOF_INSULATION_GUID,
+                    flachdach::ROOF_CROWN_GUID,
                     flachdach::ROOF_VAPOUR_GUID,
                     FOAMGLASS_MAT_GUID,
                     CLADDING_MAT_GUID,
@@ -4035,7 +4036,7 @@ pub const COPING_MAT_GUID: Guid = Guid(0x97fe946502194178be60bb9eb54c46fb);
 /// Die eingebauten Baustoffe, die erst das erste Bauteil anlegt, mit Name
 /// und Art: Der Werksbestand verweist auf sie (`mat=`), auch wenn ein
 /// Projekt sie noch nicht führt.
-pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 9] = [
+pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 10] = [
     (
         PERIMETER_MAT_GUID,
         "XPS Perimeterdämmung",
@@ -4056,6 +4057,11 @@ pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 9] = [
     (
         flachdach::ROOF_INSULATION_GUID,
         "Dämmung EPS 035 DAA dh",
+        MatCategory::Insulation,
+    ),
+    (
+        flachdach::ROOF_CROWN_GUID,
+        flachdach::ROOF_CROWN_NAME,
         MatCategory::Insulation,
     ),
     (
