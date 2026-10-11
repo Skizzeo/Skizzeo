@@ -5,6 +5,7 @@
 //! `schedule_view.rs` nicht weiter wächst (R4).
 
 use super::*;
+use sk_model::rechenweg::Rechenweg;
 
 /// Bestellmenge je Bauteil für die Gliederung nach Geschoss: Verhältnis der
 /// Bestellmenge zur Menge über alle Schichten (Volumen, Fläche). Leer in der
@@ -84,22 +85,41 @@ pub(super) fn weg_zeilen(
     else {
         return;
     };
-    row.weg = true;
     let e = r.element;
-    let n = w.terme.len();
-    let mut push = |i: usize, text: String, cell: String| {
-        let key = Key::Term(
+    let layer = r.layer.min(255) as u8;
+    let key = |i: usize| {
+        Key::Term(
             e.index(),
             e.generation(),
-            r.layer.min(255) as u8,
+            layer,
             spalte(b) as u8,
             i.min(255) as u8,
-        );
-        let mut l = Line::new(Kind::Control, row.depth + 1, key);
+        )
+    };
+    term_zeilen(&w, row, key, lines);
+}
+
+/// Zeilen eines beliebigen Rechenwegs unter `row` (Wandschicht, später
+/// Raum und Wohnfläche): eingeklappt, Terme mit Vorzeichen, der Wert in der
+/// Spalte seines Bezugs, bei mehr als einem Wert das Ergebnis. `key` gibt
+/// jeder Zeile ihren Schlüssel nach ihrer Stelle. Macht `row` aufklappbar.
+pub(super) fn term_zeilen(
+    w: &Rechenweg,
+    row: &mut Line,
+    key: impl Fn(usize) -> Key,
+    lines: &mut Vec<Line>,
+) {
+    if w.terme.is_empty() {
+        return;
+    }
+    row.weg = true;
+    let b = w.bezug;
+    let mut push = |i: usize, text: String, cell: String| {
+        let mut l = Line::new(Kind::Control, row.depth + 1, key(i));
         l.storey = row.storey;
         l.group = row.group;
         l.parent = row.key;
-        l.elements = vec![e];
+        l.elements = row.elements.clone();
         l.cells[0] = text;
         l.cells[spalte(b)] = cell;
         lines.push(l);
@@ -120,7 +140,7 @@ pub(super) fn weg_zeilen(
         push(i, text, cell);
     }
     if w.terme.iter().filter(|t| t.art != Art::Hinweis).count() > 1 {
-        push(n, "= Menge".into(), menge_zelle(w.menge(), b));
+        push(w.terme.len(), "= Menge".into(), menge_zelle(w.menge(), b));
     }
 }
 
