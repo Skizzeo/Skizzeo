@@ -3,11 +3,11 @@
 //! breit wie das Fenster (höchstens `BREIT_MAX`), untereinander zum Rollen.
 //! Esc, ein Klick daneben oder „Schließen“ schließt sie; die kleine
 //! Vorschau steht danach auf der zuletzt gezeigten Seite. Rahmen, Leiste
-//! und Klick kommen aus dem gemeinsamen Baustein [`crate::schwebend`].
+//! und Klick kommen aus dem gemeinsamen Baustein [`sk_ui::schwebend`].
 
 use super::*;
-use crate::schwebend::{self, Klick, Schwebend, LEISTE, RAND};
 use sk_paint::pdf::A4;
+use sk_ui::schwebend::{self, Klick, Schwebend, LEISTE, RAND};
 
 /// Breiteste Seite (dip), etwa anderthalbfache Papiergröße.
 const BREIT_MAX: f32 = 1200.0;

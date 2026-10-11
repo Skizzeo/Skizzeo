@@ -17,8 +17,8 @@
 //! Die Leiste wird nach dem Inhalt gezeichnet und deckt, was nach oben
 //! gerollt ist.
 
+use crate::widgets::Fonts;
 use sk_paint::{Canvas, Path, Rgba};
-use sk_ui::widgets::Fonts;
 
 /// x, y, Breite, Höhe (px).
 pub type Rect = (f32, f32, f32, f32);
