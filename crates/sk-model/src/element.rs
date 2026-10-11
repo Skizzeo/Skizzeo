@@ -60,6 +60,8 @@ pub enum Category {
     /// Aufkantung des Flachdachs (Jörn 10.10.): Wand auf der Ebene
     /// Flachdach, an die oberste Außenwand gekoppelt, im selben Wandtyp.
     Parapet,
+    /// Regenfallrohr außen an einem Ablauf des Flachdachs (Jörn 11.10.).
+    Downpipe,
     /// Erweiterungsbauteil aus einer .szb (Vertrag 0.5). Name, Präfix,
     /// IFC-Klasse und Kostengruppe kommen aus seiner Definition; deshalb
     /// nicht in [`Category::ALL`], das die Arten des Lieferumfangs nennt.
@@ -68,7 +70,7 @@ pub enum Category {
 
 impl Category {
     /// Die Arten des Lieferumfangs (ohne [`Category::Extension`]).
-    pub const ALL: [Category; 16] = [
+    pub const ALL: [Category; 17] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Floor,
@@ -85,6 +87,7 @@ impl Category {
         Category::Coping,
         Category::PerimeterInsulation,
         Category::Parapet,
+        Category::Downpipe,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -202,6 +205,14 @@ pub enum ElementKind {
         /// Gefälle und Abläufe (Gefälledämmung, Konzept §4); Standard ohne
         /// Gefälle.
         drainage: crate::gefaelle::Drainage,
+    },
+    /// Regenfallrohr (Jörn 11.10.): Verweis auf den Dachaufbau und die
+    /// Nummer seines Ablaufs (Reihenfolge in [`crate::gefaelle::Drainage`]);
+    /// Lage und Höhen folgen aus Ablauf, Aufkantung und Gelände.
+    Downpipe {
+        roof: ElementId,
+        drain: u16,
+        spec: crate::fallrohr::DownpipeSpec,
     },
     /// Öffnung in Außenwänden (Paket O2): Pfad auf der Außenfläche, Höhen
     /// an den Höhenlinien oder frei ([`crate::oeffnung`]).

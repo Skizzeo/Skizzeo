@@ -299,6 +299,8 @@ pub use lock::{edit_blocked, Locked};
 #[path = "location.rs"]
 mod location;
 
+#[path = "fallrohr_model.rs"]
+mod fallrohr_model;
 #[path = "flachdach.rs"]
 mod flachdach;
 pub use flachdach::{
@@ -1357,6 +1359,7 @@ impl Model {
                 | ElementKind::SoffitInsulation { .. }
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Roof { .. }
+                | ElementKind::Downpipe { .. }
                 | ElementKind::Opening(_) => false,
             };
             if hit {
@@ -1866,6 +1869,7 @@ impl Model {
         }
         // ... und des Flachdachs (D3, D4)
         p.extend(self.flat_roof_props(el));
+        p.extend(self.downpipe_props(el));
         p
     }
 
@@ -3127,6 +3131,9 @@ impl Model {
                             | ElementKind::RoofTerrace { floor }
                             | ElementKind::Coping { floor }
                             | ElementKind::Roof { floor, .. } => strips.push(floor),
+                            ElementKind::Downpipe { roof, .. } => {
+                                strips.extend(self.floor_of_roof(roof))
+                            }
                             ElementKind::Ext(_) => {}
                             ElementKind::Opening(_) => openings = true,
                         }
@@ -3225,6 +3232,9 @@ impl Model {
                         | ElementKind::RoofTerrace { floor }
                         | ElementKind::Coping { floor }
                         | ElementKind::Roof { floor, .. } => footings.push(floor),
+                        ElementKind::Downpipe { roof, .. } => {
+                            footings.extend(m.floor_of_roof(roof))
+                        }
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -3602,6 +3612,9 @@ impl Model {
                     }
                 }
                 ElementKind::Roof { floor, .. } => out.extend(self.check_flat_roof(id, floor)),
+                ElementKind::Downpipe { roof, drain, .. } => {
+                    out.extend(self.check_downpipe(&e.number, roof, drain))
+                }
                 ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
                     out.extend(self.check_flat_roof(id, floor))
                 }
@@ -4029,6 +4042,10 @@ pub const PERIMETER_PART: u32 = STRIP_PART - 4;
 /// passen.
 pub const ROOF_PART: u32 = STRIP_PART - 10;
 pub const ROOF_COPING_PART: u32 = STRIP_PART - 11;
+/// Teil des Körpers einer Aufkantung: Regenfallrohr am Ablauf `k` ist
+/// `DOWNPIPE_PART - k` (Jörn 11.10.), höchstens [`MAX_DOWNPIPES`].
+pub const DOWNPIPE_PART: u32 = STRIP_PART - 12;
+pub const MAX_DOWNPIPES: u32 = 64;
 /// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
 pub const TERRACE_UPSTAND: f64 = 60.0;
 pub const MAX_UPSTAND: f64 = 300.0;

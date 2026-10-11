@@ -326,14 +326,22 @@ fn lochmasse_je_schicht() {
     let (d, k) = (&q[0].layers[0], &q[0].layers[1]);
     assert_eq!((d.holes.len(), k.holes.len()), (1, 1));
     let (hd, hk) = (&d.holes[0], &k.holes[0]);
-    assert_eq!((hd.opening, hd.kind, hd.sill), (id, OpeningKind::Window, true));
+    assert_eq!(
+        (hd.opening, hd.kind, hd.sill),
+        (id, OpeningKind::Window, true)
+    );
     assert!((hd.width - 1250.0).abs() < 1e-6 && (hd.height - 1510.0).abs() < 1e-6);
     assert!((hk.width - 1310.0).abs() < 1e-6 && (hk.height - 1540.0).abs() < 1e-6);
     assert_eq!(hd.reveal, [1510.0, 1510.0, 1250.0, 1250.0]);
     assert!((hd.depth - d.thickness).abs() < 1e-9);
     for (a, b) in vorher[0].layers.iter().zip(&q[0].layers) {
         let v: f64 = b.holes.iter().map(|h| h.volume).sum();
-        assert!((a.volume - v - b.volume).abs() < 1.0, "{} {} {v}", a.volume, b.volume);
+        assert!(
+            (a.volume - v - b.volume).abs() < 1.0,
+            "{} {} {v}",
+            a.volume,
+            b.volume
+        );
     }
     assert_eq!(q[1], vorher[1], "andere Segmente unberührt");
     // Ecköffnung: zur Ecke hin keine Laibung
@@ -378,5 +386,8 @@ fn lochmasse_ueber_geschosse() {
     let z_og = m.storey(s_og).unwrap().elevation;
     let soll = z_og + 2385.0 - (z_eg + 875.0);
     assert!(ha.height + hb.height <= soll + 1e-6);
-    assert!(ha.height + hb.height > soll - 400.0, "nur das Deckenband fehlt");
+    assert!(
+        ha.height + hb.height > soll - 400.0,
+        "nur das Deckenband fehlt"
+    );
 }

@@ -1413,16 +1413,17 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 75);
-        assert_eq!(k.artikel.len(), 33);
-        assert_eq!(k.lose.len(), 17);
-        assert_eq!(k.anteile.len(), 50);
+        assert_eq!(k.leistungen.len(), 84);
+        assert_eq!(k.artikel.len(), 41);
+        assert_eq!(k.lose.len(), 18);
+        assert_eq!(k.anteile.len(), 59);
         assert_eq!(k.folgen.len(), 9);
         assert_eq!(k.werte, Firmenwerte::werk());
-        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(14));
-        // Stand 13/14: 40 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
-        // Anschluss an der Attika, Untersicht, Fußpunkt, Flachdach, Gefälledämmung)
-        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 40);
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(15));
+        // Stand 15: 49 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
+        // Anschluss an der Attika, Untersicht, Fußpunkt, Flachdach, Gefälledämmung,
+        // Dachentwässerung außen)
+        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 49);
         // jeder Schlüssel des Modells hat eine Leistung im Werk (Review
         // 9897697 Hinweis 2: sonst entsteht eine Menge, die niemand bepreist)
         for (key, _, _) in sk_model::qto::auto_schluessel() {
