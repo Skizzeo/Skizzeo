@@ -11,6 +11,7 @@
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
 mod dach;
+mod hoehen;
 
 use crate::attr::{
     Attributes, Dash, Display, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen,
@@ -1279,6 +1280,7 @@ fn write_known(m: &Model) -> String {
         out.push_str(raw);
         out.push('\n');
     }
+    hoehen::write_plan_cut(m, &mut out);
     // Ausgeblendetes (Paket 3 §3.6) nur, wenn es etwas gibt; Isolieren nie
     let v = m.visibility();
     for g in &v.hidden {
@@ -1522,7 +1524,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 39] = [
+    const KNOWN: [&str; 40] = [
         "pen",
         "linetype",
         "fill",
@@ -1558,6 +1560,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "sun",
         "viewshade",
         "viewbelow",
+        "plancut",
         "hide",
         "lock",
         "matprop",
@@ -2731,6 +2734,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             }
         }
     }
+    let (plan_cut, plan_cut_raw) = hoehen::read_plan_cut(recs("plancut"), &lines, &mut hints)?;
     for recs in by.values() {
         for r in recs {
             r.unused(&mut hints);
@@ -2755,6 +2759,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_sun(sun, sun_raw);
     model.load_view_shade(shade, shade_raw);
     model.load_view_below(below, below_raw);
+    model.load_plan_cut(plan_cut, plan_cut_raw);
     model.load_ext(ext_defs, ext_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
