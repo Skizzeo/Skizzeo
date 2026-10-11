@@ -524,6 +524,52 @@ fn istbilder_druckvorschau_gross() {
     }
 }
 
+/// Niedriges Fenster: Baumblatt schmal und Baum breit enden über der
+/// Legende, gerollt bis zur Druckvorschau.
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_baum_niedrig() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mods = sk_platform::Modifiers::default();
+    let mut s = standardhaus();
+    for (name, w, h, scale, rollen) in [
+        ("ist-lv-baum-niedrig-schmal.png", 700, 600, 1.0, 0),
+        ("ist-lv-baum-niedrig-schmal-gerollt.png", 700, 600, 1.0, 10),
+        ("ist-lv-baum-niedrig-breit-gerollt.png", 1400, 520, 1.0, 10),
+        // Befund Thema dunkel: 640 × 733 dip, Druckvorschau auf der Legende
+        ("ist-lv-baum-niedrig-150.png", 960, 1100, 1.5, 0),
+    ] {
+        b.p = Picking::default();
+        let mut q = QuantityWindow::new();
+        q.title.scale = scale;
+        (q.w, q.h) = (w, h);
+        q.sync(&mut s, &b.p, false);
+        q.waehlen(Blatt::Ava, &b.t);
+        q.sync(&mut s, &b.p, false);
+        let a = q.ava.as_mut().unwrap();
+        if let Some(xy) = a.leiste_mitte(&b.t, &b.fonts) {
+            a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+        }
+        for _ in 0..rollen {
+            a.wheel(-1.0, &b.t, 60.0);
+        }
+        q.sync(&mut s, &b.p, false);
+        b.ablegen(&mut q, name);
+    }
+}
+
 /// Bauteil ↔ Kosten und AVA (Jörn 10.10., A338–A341): Fundament gewählt,
 /// Kosten und AVA isoliert mit Leiste; eine Außenwand bei 150 % im
 /// schmalen Fenster; „Alle Positionen“ unter der Maus.

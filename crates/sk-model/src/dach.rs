@@ -105,7 +105,7 @@ impl Model {
     /// mit dieser Schraffur statt der seiner Art, mit `surface` trägt seine
     /// Oberfläche diese feste Guid.
     #[allow(clippy::too_many_arguments)]
-    fn builtin_material_with(
+    pub(super) fn builtin_material_with(
         &mut self,
         guid: Guid,
         name: &str,
@@ -734,23 +734,26 @@ impl Model {
                 // Dachterrasse der Streifen auf der Krone, am Flachdach
                 // Attikadämmung innen und Krone
                 if let Some(ElementKind::Floor(f)) = self.element(floor).map(|x| &x.kind) {
-                    let (dicken, ins) = if self.flat_roof_coping(id, floor) {
-                        (
-                            [inner_of(&f.terrace), crown_of(&f.terrace)],
-                            self.flat_roof_insulation(floor),
-                        )
+                    // am Flachdach die Krone mit eigenem Baustoff (W9 an #60)
+                    let schichten = if self.flat_roof_coping(id, floor) {
+                        [
+                            (inner_of(&f.terrace), self.flat_roof_insulation(floor)),
+                            (crown_of(&f.terrace), self.flat_roof_crown_material(floor)),
+                        ]
                     } else {
-                        (
-                            [0.0, crown_of(&f.terrace)],
-                            self.terrace_crown_material(floor),
-                        )
+                        [
+                            (0.0, None),
+                            (crown_of(&f.terrace), self.terrace_crown_material(floor)),
+                        ]
                     };
-                    if let Some(ins) = ins {
-                        out.extend(dicken.into_iter().filter(|&c| c > 0.0).map(|c| {
-                            MaterialLayer::new(ins, c, LayerFunction::Insulation)
-                                .trade(trade::roofing())
-                        }));
-                    }
+                    out.extend(schichten.into_iter().filter(|&(c, _)| c > 0.0).filter_map(
+                        |(c, ins)| {
+                            Some(
+                                MaterialLayer::new(ins?, c, LayerFunction::Insulation)
+                                    .trade(trade::roofing()),
+                            )
+                        },
+                    ));
                 }
                 return out;
             }
