@@ -326,6 +326,9 @@ mod geschossbaender;
 #[path = "gruendung.rs"]
 mod gruendung;
 
+#[path = "oeffnung_model.rs"]
+mod oeffnung_model;
+
 #[path = "stapel.rs"]
 mod stapel;
 #[path = "teilen.rs"]
@@ -462,6 +465,7 @@ impl Model {
             elevation: 0.0,
             height: STOREY_HEIGHT,
             embed: None,
+            lines: Default::default(),
         });
         let project = Project::new(guids.next_guid(), "Projekt");
         // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
@@ -488,6 +492,7 @@ impl Model {
             elevation: -FOUNDATION_DEPTH,
             height: FOUNDATION_DEPTH,
             embed: None,
+            lines: Default::default(),
         });
         storeys.insert(Storey {
             guid: guids.next_guid(),
@@ -498,6 +503,7 @@ impl Model {
             elevation: STOREY_HEIGHT,
             height: UPPER_HEIGHT,
             embed: None,
+            lines: Default::default(),
         });
         // Linientypen des Startsatzes (E4), zuletzt angelegt, damit die
         // älteren Guids gleich bleiben; die Schnittlinie A–A wird Strichpunkt
@@ -1353,7 +1359,8 @@ impl Model {
                 | ElementKind::SoffitInsulation { .. }
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Roof { .. }
-                | ElementKind::Downpipe { .. } => false,
+                | ElementKind::Downpipe { .. }
+                | ElementKind::Opening(_) => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -1989,6 +1996,7 @@ impl Model {
                 elevation: -FOUNDATION_DEPTH,
                 height: FOUNDATION_DEPTH,
                 embed: None,
+                lines: Default::default(),
             });
             let eg = self.insert_storey(Storey {
                 guid: Guid(0),
@@ -1999,6 +2007,7 @@ impl Model {
                 elevation: 0.0,
                 height: STOREY_HEIGHT,
                 embed: None,
+                lines: Default::default(),
             });
             vec![gr, eg]
         } else {
@@ -2031,6 +2040,7 @@ impl Model {
                 elevation: z,
                 height: UPPER_HEIGHT,
                 embed: None,
+                lines: Default::default(),
             });
             levels.push(id);
         }
@@ -2726,6 +2736,7 @@ impl Model {
                 });
         }
         c.joints.facing_foot = self.facing_foot(id, &c);
+        c.joints.holes = self.holes_of(id, &c);
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self
@@ -3100,6 +3111,7 @@ impl Model {
             return Vec::new();
         };
         let (mut footings, mut floors, mut strips) = (Vec::new(), Vec::new(), Vec::new());
+        let mut openings = false;
         for c in &open.changes {
             match c {
                 Change::Run { id, .. } => t.run(*id),
@@ -3123,6 +3135,7 @@ impl Model {
                                 strips.extend(self.floor_of_roof(roof))
                             }
                             ElementKind::Ext(_) => {}
+                            ElementKind::Opening(_) => openings = true,
                         }
                     }
                 }
@@ -3132,6 +3145,14 @@ impl Model {
         for slab in footings.into_iter().chain(strips) {
             if let Some(r) = self.run_of(slab) {
                 t.run(r);
+            }
+        }
+        // Öffnungen treffen jede Außenwand auf ihrem Pfad
+        if openings {
+            for r in self.runs.ids() {
+                if self.category_of(r).is_some_and(Category::is_outer_wall) {
+                    t.run(r);
+                }
             }
         }
         for r in floors {
@@ -3219,6 +3240,7 @@ impl Model {
                             floors.push(f.run);
                         }
                         ElementKind::Ext(_) => {}
+                        ElementKind::Opening(_) => touched.library = true,
                     }
                 }
                 m.elements.set(*id, pick(dir, old, new));
@@ -3657,6 +3679,11 @@ impl Model {
                         .all(|v| v.is_finite())
                     {
                         out.push(format!("{}: Lage oder Werte ungültig", e.number));
+                    }
+                }
+                ElementKind::Opening(ref o) => {
+                    if !self.opening_ok(o) {
+                        out.push(format!("{}: Öffnung ungültig", e.number));
                     }
                 }
             }
