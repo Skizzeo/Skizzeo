@@ -314,3 +314,81 @@ fn raum_am_geschoss_oeffnung_draussen() {
     }
     assert_eq!(haengt, raeume.len());
 }
+
+/// I3 (ifc/plan.md §6): Die Vorschau liest jede geschriebene Datei wieder:
+/// jedes Bauteil genau einmal in genau einem Geschoss, mit Nummer, Form mit
+/// demselben Rauminhalt wie im Export und dem Schichtaufbau seines Typs.
+#[test]
+fn vorschau_liest_den_export() {
+    for (name, t) in HAEUSER {
+        let m = laden(t);
+        let (ifc, b) = export(&m, &opt());
+        let v = sk_ifc::lesen::vorschau(&step::read(&ifc).unwrap());
+        assert_eq!(v.schema, "IFC4");
+        assert_eq!(v.teile.len(), b.bauteile, "{name}");
+        assert_eq!(v.ohne_form, 0, "{name}");
+        let mut im_baum = vec![0; v.teile.len()];
+        fn zaehlen(k: &sk_ifc::lesen::Knoten, n: &mut [u32], geschosse: &mut usize) {
+            if k.klasse == "IFCBUILDINGSTOREY" {
+                *geschosse += 1;
+            }
+            for &i in &k.teile {
+                n[i] += 1;
+            }
+            for c in &k.kinder {
+                zaehlen(c, n, geschosse);
+            }
+        }
+        let mut geschosse = 0;
+        for k in &v.baum {
+            zaehlen(k, &mut im_baum, &mut geschosse);
+        }
+        assert_eq!(geschosse, b.geschosse, "{name}");
+        assert!(im_baum.iter().all(|&n| n == 1), "{name}: {im_baum:?}");
+        let teil: HashMap<&str, &sk_ifc::lesen::Teil> =
+            v.teile.iter().map(|t| (t.guid.as_str(), t)).collect();
+        for (id, s) in m.element_solids() {
+            let el = m.element(id).unwrap();
+            let t = teil[el.guid.to_ifc().as_str()];
+            assert_eq!(t.name, el.number);
+            if let Some(ls) = el.layer_set.and_then(|l| m.layer_set(l)) {
+                assert_eq!(t.schichten.len(), ls.layers.len(), "{name}: {}", el.number);
+            }
+            assert!(
+                !t.saetze.is_empty(),
+                "{name}: {} ohne Eigenschaften",
+                el.number
+            );
+            let netze = geometrie::netze(&s, Default::default());
+            assert_eq!(
+                t.netze.iter().map(|n| n.dreiecke.len()).sum::<usize>(),
+                netze.iter().map(|n| n.dreiecke.len()).sum::<usize>(),
+                "{name}: {}",
+                el.number
+            );
+            // Der Rauminhalt hängt nur bei geschlossenen Netzen nicht von der
+            // Lage ab (Datei: im Geschoss, Vorschau: in der Welt)
+            if !netze.iter().all(geometrie::geschlossen) {
+                continue;
+            }
+            let soll: f64 = netze.iter().map(geometrie::volumen).sum();
+            let ist: f64 = t
+                .netze
+                .iter()
+                .map(|n| {
+                    geometrie::volumen(&geometrie::Netz {
+                        mat: 0,
+                        punkte: n.punkte.clone(),
+                        dreiecke: n.dreiecke.clone(),
+                    })
+                })
+                .sum();
+            assert!(
+                // Punkte stehen auf 0,0001 mm gerundet in der Datei
+                (ist - soll).abs() <= soll.abs() * 1e-5 + 1.0,
+                "{name}: {} {ist} statt {soll}",
+                el.number
+            );
+        }
+    }
+}
