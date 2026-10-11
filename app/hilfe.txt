@@ -197,6 +197,7 @@ Dateimenü | Logo oben links, **F10** oder **Alt** kurz
 Neu, Öffnen | **Strg+N**, **Strg+O**
 Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
 IFC exportieren | Menü → „IFC exportieren …“; schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA
+IFC-Vorschau | Menü → „IFC-Vorschau …“; zeigt die IFC-Datei so, wie andere Programme sie lesen: Baum, 3D-Bild und Eigenschaften
 Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
 Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
 Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**

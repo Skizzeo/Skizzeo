@@ -143,6 +143,30 @@ impl IfcFenster {
         }
     }
 
+    /// Neuer Stand derselben Vorschau: Fenstergröße, Kamera und, wenn die
+    /// Bauteile dieselben sind, Sichtbarkeit und Wahl bleiben.
+    pub fn uebernehmen(&mut self, alt: &IfcFenster) {
+        (self.w, self.h) = (alt.w, alt.h);
+        self.title.scale = alt.title.scale;
+        self.title.maximized = alt.title.maximized;
+        self.title.active = alt.title.active;
+        self.kamera = alt.kamera.clone();
+        self.einzeln = alt.einzeln;
+        let gleich = self.v.teile.len() == alt.v.teile.len()
+            && self
+                .v
+                .teile
+                .iter()
+                .zip(&alt.v.teile)
+                .all(|(a, b)| a.guid == b.guid);
+        if gleich {
+            self.sichtbar.clone_from(&alt.sichtbar);
+            self.gewaehlt = alt.gewaehlt;
+            self.umgeklappt.clone_from(&alt.umgeklappt);
+        }
+        self.neu();
+    }
+
     pub fn caption_area(&self) -> CaptionArea {
         CaptionArea {
             height: self.title.height(),
@@ -188,6 +212,30 @@ impl IfcFenster {
     fn neu(&mut self) {
         self.bild = None;
         self.dirty = true;
+    }
+
+    /// Zuletzt gezeichnetes 3D-Bild.
+    #[cfg(test)]
+    pub fn bild(&self) -> Option<&Bild> {
+        self.bild.as_ref()
+    }
+
+    /// Bauteil unter dem Fensterpunkt im zuletzt gezeichneten Bild.
+    pub fn teil_bei(&self, x: f64, y: f64) -> Option<usize> {
+        let l = self.lage();
+        self.bild
+            .as_ref()?
+            .teil_bei(x - l.baum_r as f64, y - l.oben as f64)
+    }
+
+    #[cfg(test)]
+    pub fn baum_zeilen(&self) -> Vec<Zeile> {
+        self.zeilen()
+    }
+
+    #[cfg(test)]
+    pub fn eigenschaften(&self) -> Vec<Eintrag> {
+        self.eintraege()
     }
 
     fn zeilen(&self) -> Vec<Zeile> {
@@ -320,11 +368,7 @@ impl IfcFenster {
                         // Wieder fein zeichnen
                         self.neu();
                     } else if z.knopf == button && button == MouseButton::Left {
-                        let l = self.lage();
-                        let t = self
-                            .bild
-                            .as_ref()
-                            .and_then(|b| b.teil_bei(x - l.baum_r as f64, y - l.oben as f64));
+                        let t = self.teil_bei(x, y);
                         // Nochmal auf dasselbe Teil: abwählen
                         self.waehlen(if t == self.gewaehlt { None } else { t });
                     }
@@ -935,6 +979,25 @@ mod tests {
             assert!(!f.einzeln);
             assert_eq!(f.sichtbar, [true; 4], "aus: wieder alles");
         }
+    }
+
+    /// Neuer Stand: Kamera, Größe und Wahl bleiben, solange die Bauteile
+    /// dieselben sind.
+    #[test]
+    fn neuer_stand_behaelt_die_kamera() {
+        let mut alt = fenster();
+        alt.kamera.zoom(vec3(0.0, 0.0, 0.0), 2.0);
+        alt.waehlen(Some(2));
+        let mut v = alt.v.clone();
+        let mut f = IfcFenster::new(v.clone(), "haus.ifc");
+        f.uebernehmen(&alt);
+        assert_eq!((f.w, f.h), (1200, 800));
+        assert_eq!(f.kamera, alt.kamera);
+        assert_eq!(f.gewaehlt, Some(2));
+        v.teile[0].guid = "anders".into();
+        let mut f = IfcFenster::new(v, "haus.ifc");
+        f.uebernehmen(&alt);
+        assert_eq!(f.gewaehlt, None, "andere Bauteile: Wahl verfällt");
     }
 
     /// Titelleiste: Schließen und Minimieren.

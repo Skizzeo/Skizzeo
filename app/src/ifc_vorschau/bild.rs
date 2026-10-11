@@ -8,16 +8,9 @@ use crate::camera::Camera;
 use sk_ifc::lesen::Teil;
 use sk_math::{vec3, Mat4, Vec3};
 
-/// Kamera wie die Ansicht ([`Camera`], Öffnungswinkel 45°) von vorn links
-/// oben auf den ganzen Kasten `lo`..`hi`.
+/// Kamera wie „Alles zeigen“ in der Ansicht auf den Kasten `lo`..`hi`.
 pub fn passend(lo: Vec3, hi: Vec3) -> Camera {
-    let fov = 45f64;
-    let ziel = (lo + hi) * 0.5;
-    let r = ((hi - lo).length() * 0.5).max(1000.0);
-    let weite = r / (fov.to_radians() * 0.5).sin() * 1.05;
-    // Dieselbe Richtung wie die Ansicht beim Start
-    let blick = vec3(6000.0, 8000.0, -3000.0).normalized();
-    Camera::looking_at(ziel - blick * weite, ziel, fov)
+    crate::camera::fit_perspective(lo, hi)
 }
 
 /// Projektion mit denselben Matrizen wie [`Camera::view`], in Koordinaten

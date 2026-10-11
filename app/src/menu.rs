@@ -52,6 +52,8 @@ pub enum Command {
     MeasureFrameTime,
     /// „IFC exportieren …“ (ifc/plan.md §5, I2).
     ExportIfc,
+    /// „IFC-Vorschau …“: die Datei so, wie andere sie lesen (ifc/plan.md §6).
+    IfcVorschau,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -228,6 +230,7 @@ impl FileMenu {
                 true,
             ),
             item("IFC exportieren …", "", Command::ExportIfc, true),
+            item("IFC-Vorschau …", "", Command::IfcVorschau, true),
             separator(),
             item("Einstellungen …", "Strg+Komma", Command::Settings, true),
             item("Bauteilkatalog …", "", Command::Catalog, true),

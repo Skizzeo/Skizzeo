@@ -6,7 +6,7 @@ use sk_platform::Surface;
 
 impl App {
     /// Dateiname des Hauses ohne Endung, ohne Datei „Unbenannt“.
-    fn datei_stamm(&self) -> String {
+    pub(crate) fn datei_stamm(&self) -> String {
         self.doc
             .path
             .as_ref()
