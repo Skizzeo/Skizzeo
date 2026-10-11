@@ -153,6 +153,8 @@ pub enum Topic {
     /// Rückfrage „Bauteil einlesen“ (E9).
     Einlesen,
     Drag,
+    /// Wand teilen und an der Fuge vereinen (W-11, W-12).
+    Split,
     Upper,
     Flush,
     Wall,
@@ -188,7 +190,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 36] = [
+    pub const ALL: [Topic; 37] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -197,6 +199,7 @@ impl Topic {
         Topic::Ext,
         Topic::Einlesen,
         Topic::Drag,
+        Topic::Split,
         Topic::Upper,
         Topic::Flush,
         Topic::Wall,
@@ -242,6 +245,7 @@ impl Topic {
                 Topic::Ext,
                 Topic::Einlesen,
                 Topic::Drag,
+                Topic::Split,
                 Topic::Upper,
                 Topic::Flush,
             ],
@@ -298,6 +302,7 @@ impl Topic {
             Topic::Ext => "erweiterungen",
             Topic::Einlesen => "einlesen",
             Topic::Drag => "ziehen",
+            Topic::Split => "teilen",
             Topic::Upper => "og",
             Topic::Flush => "buendig",
             Topic::Wall => "wand",

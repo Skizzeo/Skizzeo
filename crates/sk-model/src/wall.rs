@@ -306,7 +306,7 @@ impl WallChain {
     }
 
     /// Bereinigte Punkte, ob wirklich geschlossen, und Richtung jedes Segments.
-    fn layout(&self) -> Option<(Vec<Vec3>, bool, Vec<Vec3>)> {
+    pub(crate) fn layout(&self) -> Option<(Vec<Vec3>, bool, Vec<Vec3>)> {
         let pts = self.clean_points();
         if pts.len() < 2 {
             return None;
@@ -535,48 +535,13 @@ impl WallChain {
 
     /// Verschiebt Segment `i` um `d` entlang seiner Normalen. Die Nachbarsegmente
     /// behalten ihre Richtung: Die gemeinsamen Punkte gleiten auf deren Linien.
-    /// `None`, wenn dabei ein Segment verschwinden oder sich umkehren würde.
+    /// An einer Fuge (Nachbar in derselben Flucht) entsteht eine Stufe
+    /// ([`crate::fuge`]). `None`, wenn dabei ein Segment verschwinden oder
+    /// sich umkehren würde oder sich der Umriss schneidet; das Ziehen am
+    /// Gummiband lässt dort einen Nachbarn wegfallen
+    /// ([`WallChain::with_segment_moved_snap`]).
     pub fn with_segment_moved(&self, i: usize, d: f64) -> Option<WallChain> {
-        let (pts, closed, dirs) = self.layout()?;
-        let (n, m) = (pts.len(), dirs.len());
-        if i >= m {
-            return None;
-        }
-        let shift = right_of(dirs[i]) * d;
-        let (a, b) = (i, (i + 1) % n);
-        // Schnitt der verschobenen Linie mit der Linie des Nachbarn durch `pts[k]`
-        let slide = |k: usize, nd: Vec3| -> Vec3 {
-            let c = cross2(nd, dirs[i]);
-            if c.abs() < 1e-9 {
-                return pts[k] + shift;
-            }
-            // pts[k] + nd*t liegt auf pts[k] + shift + dirs[i]*u
-            let t = cross2(shift, dirs[i]) / c;
-            pts[k] + nd * t
-        };
-        let mut out = pts.clone();
-        out[a] = if closed || a > 0 {
-            slide(a, dirs[(i + m - 1) % m])
-        } else {
-            pts[a] + shift
-        };
-        out[b] = if closed || b < n - 1 {
-            slide(b, dirs[(i + 1) % m])
-        } else {
-            pts[b] + shift
-        };
-        // Kein Segment darf verschwinden oder die Richtung wechseln
-        for k in 0..m {
-            let v = out[(k + 1) % n] - out[k];
-            if v.length() < 1.0 || v.dot(dirs[k]) <= 0.0 {
-                return None;
-            }
-        }
-        Some(WallChain {
-            points: out,
-            closed,
-            ..self.clone()
-        })
+        self.moved(i, d, 0.0, false)
     }
 
     /// Richtung „nach außen“ je Segment: +1, wenn die Außenfläche rechts der

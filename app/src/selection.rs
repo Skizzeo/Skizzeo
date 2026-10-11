@@ -548,6 +548,12 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
         notes: m.warnings(id),
         chip,
         stack: stack.map(|(_, st)| st),
+        split: m.segment_of(id).is_some(),
+        joint: m.segment_of(id).is_some_and(|(run, _)| {
+            m.straight_joints(run)
+                .iter()
+                .any(|j| j.0 == id || j.1 == id)
+        }),
         ..Default::default()
     })
 }

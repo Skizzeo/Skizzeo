@@ -150,10 +150,14 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
         -1.0
     };
     let dir = |c: &[Vec3], k: usize| c[(k + 1) % n] - c[k];
+    // Richtung aus der Bezugslinie: An einem Stück kürzer als die
+    // Dämmung an der Ecke liegt die Kante auf der Deckenkante verkehrt
+    // (Review 61-2), außen wäre dort innen
+    let pts = slab.clean_points();
     let depths: Vec<f64> = (0..n)
         .map(|k| {
-            let d = dir(&lc, k);
-            if d.length() < 1e-9 || dir(&mc, k).length() < 1e-9 {
+            let d = dir(&pts, k);
+            if pts.len() != n || d.length() < 1e-9 || dir(&mc, k).length() < 1e-9 {
                 return 0.0;
             }
             let out = right_of(d.normalized()) * sign;
@@ -186,7 +190,7 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
         p.extend((0..=len).map(|i| lc[(a + i) % n]));
         p.push(end);
         p.extend((1..len).rev().map(|i| mc[(a + i) % n]));
-        let p = polygon::simplified(&p);
+        let p = polygon::simplified(&without_spikes(p));
         (p.len() >= 3 && polygon::is_simple(&p) && polygon::area(&p) > 1.0).then_some(p)
     };
     let max_depth = |segs: &[usize]| segs.iter().fold(0.0, |a: f64, k| a.max(depths[*k]));
@@ -523,6 +527,27 @@ fn pieces_section_caps(
 
 /// Schnittpunkt der Geraden durch `a` (Richtung `da`) und durch `b`
 /// (Richtung `db`); parallel: Fußpunkt von `b` auf der ersten Geraden.
+/// Ohne Rückläufer: Ein Eckstück kürzer als der Abstand der Deckenkante
+/// von der Außenfläche hat seine Ecke auf der Deckenkante hinter der Ecke
+/// davor; der Umriss liefe dort auf derselben Linie zurück (Kosten #61).
+/// Ebenso die Innenfläche einer Aufkantung am kurzen Eckstück.
+pub(crate) fn without_spikes(mut p: Vec<Vec3>) -> Vec<Vec3> {
+    let mut i = 0;
+    while p.len() > 3 && i < p.len() {
+        let n = p.len();
+        let (a, b, c) = (p[(i + n - 1) % n], p[i], p[(i + 1) % n]);
+        let (u, w) = (b - a, c - b);
+        let line = (u.x * w.y - u.y * w.x).abs() <= 1e-6 * u.length() * w.length();
+        if line && u.dot(w) < 0.0 {
+            p.remove(i);
+            i = i.saturating_sub(1);
+        } else {
+            i += 1;
+        }
+    }
+    p
+}
+
 fn meet(a: Vec3, da: Vec3, b: Vec3, db: Vec3) -> Vec3 {
     let c = da.x * db.y - da.y * db.x;
     if c.abs() < 1e-9 * da.length() * db.length() {
