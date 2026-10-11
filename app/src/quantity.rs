@@ -679,7 +679,7 @@ impl QuantityWindow {
                 };
                 self.list_out(o, t)
             }
-            Event::Wheel { delta, .. } => {
+            Event::Wheel { delta, x, .. } => {
                 // Kein ganzes Bild: `frame` verschiebt um den neuen Rollstand
                 let anim = t.size.anim_ms > 0.0;
                 match self.blatt() {
@@ -692,7 +692,7 @@ impl QuantityWindow {
                         self.list_out(o, t)
                     }
                     Blatt::Ava => {
-                        let o = self.ava.as_mut()?.wheel(delta, t);
+                        let o = self.ava.as_mut()?.wheel(delta, t, x);
                         self.list_out(o, t)
                     }
                 }

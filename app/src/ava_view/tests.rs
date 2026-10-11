@@ -1141,7 +1141,7 @@ fn druckvorschau_blaettern_und_pdf() {
         klick_auf(&mut v, &fonts, &mut p, Hot::Seite(true));
     }
     assert_eq!(v.seite_jetzt(&fonts), n - 1);
-    assert_eq!(v.wheel(1.0, &t), Some(ListOut::Repaint));
+    assert_eq!(v.wheel(1.0, &t, 2000.0), Some(ListOut::Repaint));
     assert_eq!(v.seite_jetzt(&fonts), n - 2);
     // Titelblatt und Verzeichnis: zwei Seiten mehr, die Wahl geht in die
     // Einstellungen
@@ -1395,10 +1395,10 @@ fn druckvorschau_gross_und_zurueck() {
         assert_eq!(v.hit(&t, &fonts, seite.0, seite.1), Some(Hot::GrossSeite));
         assert_eq!(v.mouse_down(&t, &fonts, &mut p, seite, mods), None);
         assert!(v.gross_offen(), "{wo}");
-        assert_eq!(v.wheel(0.0, &t), None);
+        assert_eq!(v.wheel(0.0, &t, 2000.0), None);
         // Rollen ans Ende, Schließen: die kleine Vorschau steht dort
         for _ in 0..200 {
-            v.wheel(-1.0, &t);
+            v.wheel(-1.0, &t, 2000.0);
         }
         let (l, _) = v.gross_lage(&fonts);
         assert_eq!(l.scroll, l.max, "{wo}");
@@ -1442,4 +1442,68 @@ const A4_H: f32 = sk_paint::pdf::A4.1;
 fn auf_blatt(v: &AvaView, t: &Theme, fonts: &Fonts) -> (f64, f64) {
     let (bx, by, k) = v.blatt_lage(t, fonts);
     ((bx + 0.5 * A4_W * k) as f64, (by + 0.5 * A4_H * k) as f64)
+}
+
+/// Folge zu Jörn 11.10.: Im niedrigen Fenster liegt die Legende nicht mehr
+/// über den Baumzeilen. Der Baum zeigt nur ganze Zeilen über der Legende
+/// und rollt mit dem Mausrad, bis „Druckvorschau“ erreichbar ist; schmal
+/// im offenen Baumblatt wie breit links.
+#[test]
+fn baum_im_niedrigen_fenster_rollt_ueber_der_legende() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut p = Picking::default();
+    let mods = sk_platform::Modifiers::default();
+    for (w, h, scale) in [(700, 600, 1.0_f32), (1080, 1050, 1.5), (1400, 520, 1.0)] {
+        let wo = format!("{w}×{h} bei {scale}");
+        let mut v = AvaView::new();
+        v.scale = scale;
+        (v.w, v.h) = (w, h);
+        v.top = 32.0 + crate::cards::HEIGHT;
+        v.sync(&mut s, None);
+        if v.baum_als_leiste() {
+            let xy = v.leiste_mitte(&t, &fonts).expect("Leiste");
+            v.mouse_down(&t, &fonts, &mut p, xy, mods);
+            assert!(v.baum_blatt, "{wo}");
+        }
+        let (_, oben, _, unten) = v.baum_flaeche(&t).expect("Baum");
+        let (_, max) = v.baum_ab(&t);
+        assert!(max > 0, "{wo}: der Baum passt nicht, er rollt");
+        let ueber_legende = |v: &AvaView| {
+            v.baum_lage(&t)
+                .iter()
+                .all(|(_, r)| r.1 >= oben - 0.5 && r.1 + r.3 <= unten + 0.5)
+        };
+        assert!(ueber_legende(&v), "{wo}");
+        assert!(v.knoten_mitte(&t, |k| *k == Knoten::Blatt).is_none());
+        // Über dem Baum rollt das Rad ihn, bis die Druckvorschau steht
+        let x = v.baum_lage(&t)[0].1 .0 as f64 + 10.0;
+        let mut n = 0;
+        while v.knoten_mitte(&t, |k| *k == Knoten::Blatt).is_none() {
+            assert_eq!(v.wheel(-1.0, &t, x), Some(ListOut::Repaint), "{wo}");
+            assert!(ueber_legende(&v), "{wo}");
+            n += 1;
+            assert!(n < 20, "{wo}");
+        }
+        assert_eq!(v.wheel(-1.0, &t, x), None, "{wo}: am Ende");
+        let xy = v.knoten_mitte(&t, |k| *k == Knoten::Blatt).unwrap();
+        v.mouse_down(&t, &fonts, &mut p, xy, mods);
+        assert_eq!(v.ansicht, Ansicht::Blatt, "{wo}");
+        // Zurück nach oben
+        v.zeige(Ansicht::Lv);
+        if v.baum_als_leiste() {
+            v.baum_blatt = true;
+        }
+        while v.wheel(1.0, &t, x).is_some() {}
+        assert_eq!(v.baum_ab(&t).0, 0, "{wo}");
+    }
+    // Passt der Baum, rollt das Rad über ihm die Tabelle wie bisher
+    let mut v = blatt(&mut s);
+    assert_eq!(v.baum_ab(&t).1, 0);
+    let x = v.baum_lage(&t)[0].1 .0 as f64 + 10.0;
+    v.wheel(-1.0, &t, x);
+    assert_eq!(v.baum_ab, 0);
 }
