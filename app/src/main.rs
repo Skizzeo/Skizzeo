@@ -3532,7 +3532,7 @@ impl App {
                 self.tool.ext = None;
             }
             Id::Ref(r) => self.tool.ref_side = r,
-            Id::Ortho => self.tool.ortho = !self.tool.ortho,
+            Id::Sprung(s) => self.tool.set_sprung(s),
             Id::View(v) => self.set_view(v),
             Id::Quantity => self.quantity_wanted = true,
             Id::Projektdaten => self.open_projektdaten(false),
@@ -4017,9 +4017,9 @@ impl App {
             self.upload_model();
         }
         let b = self.tool.enabled && self.tool.ext.is_none();
-        let (r, o) = (self.tool.ref_side, self.tool.ortho);
-        if (self.ui.building, self.ui.ref_side, self.ui.ortho) != (b, r, o) {
-            (self.ui.building, self.ui.ref_side, self.ui.ortho) = (b, r, o);
+        let (r, o) = (self.tool.ref_side, self.tool.sprung());
+        if (self.ui.building, self.ui.ref_side, self.ui.sprung) != (b, r, o) {
+            (self.ui.building, self.ui.ref_side, self.ui.sprung) = (b, r, o);
             self.overlay_dirty = true;
         }
         self.ext_sync();
@@ -6321,7 +6321,7 @@ impl App {
         let name = match id {
             Id::Building => "Gebäude",
             Id::Interior => "Innenwand",
-            Id::Ortho => "90°-Sprung",
+            Id::Sprung(_) => "Winkelsprung",
             Id::Ext if self.tool.ext.is_none() => "Erweiterungen",
             Id::Quantity => cards::KNOPF,
             Id::Projektdaten => "Projektdaten",

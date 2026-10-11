@@ -7,6 +7,7 @@
 use crate::ext_props::ExtZeile;
 use crate::meldung::Meldung;
 use crate::type_look::TypeLook;
+use crate::wall_tool::Sprung;
 use sk_model::{RefSide, StoreyId};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
@@ -123,7 +124,8 @@ pub enum Id {
     Building,
     Interior,
     Ref(RefSide),
-    Ortho,
+    /// Winkelsprung 90°, 45° oder frei (G2).
+    Sprung(Sprung),
     View(ViewKind),
     /// „Mengen · Kosten · AVA“ (B7, KA-2a, KA-4): öffnet das Mengenfenster oder holt es nach vorn.
     Quantity,
@@ -923,7 +925,7 @@ pub struct Ui {
     /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
     pub interior: bool,
     pub ref_side: RefSide,
-    pub ortho: bool,
+    pub sprung: Sprung,
     /// Schichten der Wand, die das Werkzeug zeichnet: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
     /// Typ, den das Werkzeug zeichnet (K3); ersetzt die Schichtzeilen.
@@ -1167,7 +1169,13 @@ fn tool_rows(
             (Id::Ref(RefSide::Center), "Achse"),
             (Id::Ref(RefSide::Right), "Innen"),
         ]),
-        Row::Button(Id::Ortho, "90°-Sprung"),
+        // Winkelsprung (G2) ohne eigene Überschrift: gleiche Höhe wie der
+        // frühere Knopf „90°-Sprung“, der Tooltip nennt ihn
+        Row::Segments([
+            (Id::Sprung(Sprung::R90), "90°"),
+            (Id::Sprung(Sprung::R45), "45°"),
+            (Id::Sprung(Sprung::Frei), "frei"),
+        ]),
         Row::Separator,
     ]);
     // Drei kurze Zeilen (Paket 8, Darstellung §2.7); mehr in der Hilfe (F1).
@@ -1388,7 +1396,7 @@ impl Ui {
             building: false,
             interior: false,
             ref_side: RefSide::Left,
-            ortho: true,
+            sprung: Sprung::R90,
             wall_layers: Vec::new(),
             tool_chip: None,
             ext_tool: None,
@@ -2066,7 +2074,7 @@ impl Ui {
             Id::Building => self.building && !self.interior,
             Id::Interior => self.building && self.interior,
             Id::Ref(r) => self.ref_side == r,
-            Id::Ortho => self.ortho,
+            Id::Sprung(s) => self.sprung == s,
             Id::View(v) => self.view == v,
             Id::Quantity => self.quantity_open,
             Id::LevelsOpen => self.levels_open,

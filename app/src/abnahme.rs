@@ -13,7 +13,7 @@ use crate::section::SectionLine;
 use crate::selection::{self, Selection};
 use crate::ui::{Id, Panel, Ui, ViewKind};
 use crate::wall_edit::WallEdit;
-use crate::wall_tool::WallTool;
+use crate::wall_tool::{Sprung, WallTool};
 use crate::{fit_parallel, fit_parallel_in, fit_perspective, plan_camera};
 use sk_math::{vec3, Vec3};
 use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
@@ -176,12 +176,14 @@ fn a01_knopf_gebaeude_im_paneel_werkzeuge() {
     // Das Paneel liegt links
     let r = ui.rect(Panel::Tools, 1440, 32);
     assert!(r.x < 50.0, "Werkzeuge links: {r:?}");
-    // Bezugsseite und 90°-Sprung lassen sich auch dort einstellen
+    // Bezugsseite und Winkelsprung lassen sich auch dort einstellen
     for id in [
         Id::Ref(RefSide::Left),
         Id::Ref(RefSide::Center),
         Id::Ref(RefSide::Right),
-        Id::Ortho,
+        Id::Sprung(Sprung::R90),
+        Id::Sprung(Sprung::R45),
+        Id::Sprung(Sprung::Frei),
     ] {
         assert!(buttons.iter().any(|b| b.0 == id), "{id:?} fehlt");
     }

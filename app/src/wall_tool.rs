@@ -4,7 +4,8 @@
 //! - Linksklick setzt Punkte. Klick auf den Startpunkt schließt den Zug.
 //! - Klick auf den letzten Punkt (Doppelklick) oder Enter beendet einen offenen Zug.
 //! - Tab wechselt die Bezugsseite: links (Standard, bei Uhrzeigersinn außen), rechts, Mitte.
-//! - R schaltet den 90°-Sprung aus/ein (Standard: ein), Umschalt gedrückt halten kehrt ihn kurz um.
+//! - R schaltet den Winkelsprung aus/ein (Standard: ein), Umschalt gedrückt halten kehrt ihn kurz um.
+//!   Er springt in 90°-Schritten, bei der Innenwand in 45°-Schritten (G2).
 //! - Spurlinien durch den Startpunkt (parallel und senkrecht zur ersten Wand sowie
 //!   entlang der Achsen) fangen den letzten Punkt rechtwinklig zum Anfang.
 //! - Rücktaste nimmt den letzten Punkt zurück, Esc bricht ab.
@@ -15,6 +16,8 @@
 //!   (Punkt, Linie, Rechteck, siehe [`crate::ext_werkzeug`]).
 //! - G1: Die Innenwand fängt an Wandflächen und freien Wandenden des aktiven
 //!   Geschosses und setzt sich dort selbst ab (siehe `grundriss/fang.rs`).
+//! - G2: Vor dem ersten Punkt nennt die Pille auf einer Wandfläche das lichte
+//!   Maß zur nächsten Wand; eine Zahl mit Enter setzt es genau.
 
 use crate::camera::Camera;
 use crate::ext_werkzeug::{Art, ExtModus};
@@ -31,13 +34,22 @@ use std::time::Instant;
 
 #[path = "grundriss/fang.rs"]
 mod fang;
-use fang::{FangStand, Ziel};
+use fang::{FangStand, Nachbar, Ziel};
 
 /// Vorschauhöhe ohne Geschoss (EG mit OK +2,855).
 pub const WALL_HEIGHT: f64 = 2855.0;
 
 /// Fangradius in Pixeln (bei 96 dpi).
 const SNAP_PX: f64 = 12.0;
+
+/// Winkelsprung beim Zeichnen (G2, Jörn 11.10. 16:47): Richtungen in 90°-
+/// oder 45°-Schritten gegen die vorige Wand oder frei.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sprung {
+    R90,
+    R45,
+    Frei,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SnapKind {
@@ -78,7 +90,10 @@ pub struct WallTool {
     points: Vec<Vec3>,
     cursor: Option<Cursor>,
     pub ref_side: RefSide,
+    /// Winkelsprung an (sonst frei).
     pub ortho: bool,
+    /// Der Winkelsprung kennt auch 45° (G2); die Innenwand beginnt damit.
+    sprung45: bool,
     shift: bool,
     mouse: Option<(f64, f64)>,
     /// Schichten des Aufbaus für die Vorschau (aus der Bibliothek des Modells).
@@ -108,9 +123,8 @@ pub struct WallTool {
     eingerastet: Option<Instant>,
     /// Richtung der Wandfläche, an der der Zug beginnt (Richtungen des ersten Segments).
     start_dir: Option<Vec3>,
-    /// Eingabe „Abstand ab Ecke“ vor dem ersten Punkt: Ecke, Richtung längs
-    /// der Fläche, Normale der Fläche.
-    abstand: Option<[Vec3; 3]>,
+    /// Eingabe „licht“ vor dem ersten Punkt: nächste Wand längs der Fläche (G2).
+    abstand: Option<Nachbar>,
 }
 
 /// Felder der Pille beim Zeichnen.
@@ -150,6 +164,7 @@ impl WallTool {
             cursor: None,
             ref_side: RefSide::Left,
             ortho: true,
+            sprung45: false,
             shift: false,
             mouse: None,
             layers: Vec::new(),
@@ -182,20 +197,23 @@ impl WallTool {
 
     /// Felder der Pille.
     pub fn labels(&self) -> [&'static str; 2] {
-        if self.abstand_offen() {
-            return ["Abstand", ""];
+        if let Some(nb) = self.abstand.filter(|_| self.abstand_offen()) {
+            return [nb.etikett(), ""];
         }
         self.ext.as_ref().map_or(LABELS, |m| m.art.labels())
     }
 
     /// Wechselt zwischen Außen- und Innenwand. Eine angefangene Eingabe geht weg;
-    /// die Bezugsseite springt auf den Standard der Art (Innenwand: Achse).
+    /// Bezugsseite und Winkelsprung springen auf den Standard der Art
+    /// (Innenwand: Achse und 45°, Außenwand: links und 90°).
     pub fn set_category(&mut self, category: Category, layers: Vec<Layer>) {
         if category != self.category {
             self.points.clear();
             self.cursor = None;
             self.input = None;
             self.category = category;
+            self.ortho = true;
+            self.sprung45 = category == Category::InteriorWall;
             self.ref_side = match category {
                 Category::InteriorWall => RefSide::Center,
                 _ => RefSide::Left,
@@ -206,6 +224,23 @@ impl WallTool {
 
     pub fn is_active(&self) -> bool {
         !self.points.is_empty()
+    }
+
+    /// Winkelsprung für den Umschalter im Paneel.
+    pub fn sprung(&self) -> Sprung {
+        match (self.ortho, self.sprung45) {
+            (false, _) => Sprung::Frei,
+            (true, false) => Sprung::R90,
+            (true, true) => Sprung::R45,
+        }
+    }
+
+    /// Stellt den Winkelsprung; „frei“ merkt sich den Winkel für R.
+    pub fn set_sprung(&mut self, s: Sprung) {
+        self.ortho = s != Sprung::Frei;
+        if s != Sprung::Frei {
+            self.sprung45 = s == Sprung::R45;
+        }
     }
 
     /// Gesetzte Punkte des Zugs (Bezugslinie), ohne den Cursorpunkt.
@@ -241,8 +276,8 @@ impl WallTool {
             return None;
         }
         let len = i.value(0)?.ok()?;
-        if let Some([ecke, dir, _]) = self.abstand.filter(|_| self.abstand_offen()) {
-            return Some(ecke + dir * len);
+        if let Some(nb) = self.abstand.filter(|_| self.abstand_offen()) {
+            return Some(self.anfang_bei(nb, len));
         }
         let last = match self.ext.as_ref() {
             Some(m) if m.art == Art::Punkt => m.zuletzt?,
@@ -389,7 +424,8 @@ impl WallTool {
     }
 
     /// Richtungen vom letzten Punkt aus: entlang und rechtwinklig zur letzten Wand,
-    /// beim ersten Segment entlang der Achsen.
+    /// beim ersten Segment entlang der Achsen und der Wandfläche am Anfang; mit
+    /// 45°-Sprung auch die Diagonalen dazu (G2).
     fn last_lines(&self) -> Vec<Line> {
         let Some(&last) = self.points.last() else {
             return Vec::new();
@@ -398,18 +434,25 @@ impl WallTool {
         if self.ext_art() == Some(Art::Rechteck) {
             return Vec::new();
         }
+        let schraeg = self.sprung45 && self.ext.is_none() && self.ortho != self.shift;
         let mut dirs = Vec::new();
-        if self.points.len() >= 2 {
-            let d = last - self.points[self.points.len() - 2];
+        let mut kreuz = |d: Vec3| {
             push_dir(&mut dirs, d);
             push_dir(&mut dirs, perp(d));
+            let d = vec3(d.x, d.y, 0.0);
+            if schraeg && d.length() > 1e-9 {
+                let d = d.normalized();
+                push_dir(&mut dirs, d + perp(d));
+                push_dir(&mut dirs, d - perp(d));
+            }
+        };
+        if self.points.len() >= 2 {
+            kreuz(last - self.points[self.points.len() - 2]);
         } else {
             if let Some(d) = self.start_dir {
-                push_dir(&mut dirs, d);
-                push_dir(&mut dirs, perp(d));
+                kreuz(d);
             }
-            push_dir(&mut dirs, Vec3::X);
-            push_dir(&mut dirs, Vec3::Y);
+            kreuz(Vec3::X);
         }
         dirs.into_iter()
             .map(|dir| Line {
@@ -515,7 +558,7 @@ impl WallTool {
         let ortho = self.ortho != self.shift;
         let mut lasts = self.last_lines();
 
-        // 90°-Sprung: Punkt auf die passendste Richtung vom letzten Punkt zwingen
+        // Winkelsprung: Punkt auf die passendste Richtung vom letzten Punkt zwingen
         if ortho && !lasts.is_empty() {
             let last = lasts[0].origin;
             let v = raw - last;
@@ -836,7 +879,7 @@ impl WallTool {
             InputOutcome::Enter => {
                 if let Some(p) = self.typed_point() {
                     if self.abstand_offen() {
-                        self.start_dir = self.abstand.map(|a| a[1]);
+                        self.start_dir = self.abstand.map(|nb| nb.dir);
                     }
                     self.input = None;
                     if self.ext.is_some() {
@@ -1062,6 +1105,43 @@ mod tests {
         assert_eq!(t.ref_side, RefSide::Center);
         t.handle(&tab, &c, 1200.0, 800.0, 1.0);
         assert_eq!(t.ref_side, RefSide::Left);
+    }
+
+    /// G2 (Jörn: 45° beim Innenwandzug): Die Innenwand springt in
+    /// 45°-Schritten, die Außenwand in 90°-Schritten; R schaltet aus und
+    /// wieder auf den gewählten Winkel.
+    #[test]
+    fn innenwand_springt_in_45_grad() {
+        let c = cam();
+        let mut t = WallTool::new();
+        t.set_enabled(true);
+        assert_eq!(t.sprung(), Sprung::R90, "Außenwand: 90°");
+        t.set_category(Category::InteriorWall, Vec::new());
+        assert_eq!(t.sprung(), Sprung::R45, "Innenwand: 45°");
+        click_at(&mut t, &c, vec3(1000.0, 1000.0, 0.0));
+        click_at(&mut t, &c, vec3(3000.0, 2900.0, 0.0));
+        let p = *t.points.last().unwrap();
+        assert!((p - vec3(2950.0, 2950.0, 0.0)).length() < 1e-6, "{p:?}");
+        // Nach der schrägen Wand: 45° dazu ist wieder waagerecht
+        click_at(&mut t, &c, vec3(5000.0, 3050.0, 0.0));
+        let p = *t.points.last().unwrap();
+        assert!((p.y - 2950.0).abs() < 1e-6, "{p:?}");
+
+        taste(&mut t, &c, Key::Char('R'));
+        assert_eq!(t.sprung(), Sprung::Frei);
+        taste(&mut t, &c, Key::Char('R'));
+        assert_eq!(t.sprung(), Sprung::R45, "R kehrt zu 45° zurück");
+
+        let mut t = WallTool::new();
+        t.set_enabled(true);
+        click_at(&mut t, &c, vec3(1000.0, 1000.0, 0.0));
+        click_at(&mut t, &c, vec3(3000.0, 2900.0, 0.0));
+        let p = *t.points.last().unwrap();
+        assert!((p - vec3(3000.0, 1000.0, 0.0)).length() < 1e-6, "{p:?}");
+        t.set_sprung(Sprung::R45);
+        assert_eq!(t.sprung(), Sprung::R45);
+        t.set_sprung(Sprung::Frei);
+        assert!(!t.ortho);
     }
     fn taste(t: &mut WallTool, c: &Camera, key: Key) -> Outcome {
         t.handle(
