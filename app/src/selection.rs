@@ -1245,8 +1245,16 @@ fn outline(
             let t = p.slab_thickness;
             match kind {
                 ElementKind::GroundSlab(_) => prism(&found.outline, -t, 0.0),
+                // Perimeterdämmung: innerhalb der Schürze unter der Platte
+                ElementKind::PerimeterInsulation { .. } => {
+                    if let Some(c) = found.insulation_outline() {
+                        prism(c, -t - p.insulation, -t);
+                    }
+                }
                 _ => {
-                    let bottom = -t - p.footing_depth;
+                    // Schürze von UK Platte bis UK Gründung, mit Dämmung um
+                    // deren Dicke höher (Review PR #48)
+                    let bottom = -t - found.footing_height();
                     prism(&found.outline, bottom, -t);
                     if let FootingShape::Ring(inset) = &found.footing {
                         prism(&inset.pts, bottom, -t);

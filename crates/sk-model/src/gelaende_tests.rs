@@ -352,8 +352,8 @@ fn gruendung_nie_flacher_als_frosttiefe() {
 }
 
 /// Dämmung 120 hebt das Haus um 12 cm über das Gelände; Schürzentiefe
-/// und Einbindetiefe bleiben; Mengen: Fläche = Platte, Volumen = Fläche
-/// × Dicke. 0 schaltet sie ab, die Dämmung verschwindet.
+/// und Einbindetiefe bleiben; Mengen: Fläche = Platte ohne den Ring der
+/// Schürze (Jörn 11.10.), Volumen = Fläche × Dicke. 0 schaltet sie ab, die Dämmung verschwindet.
 #[test]
 fn perimeterdaemmung_hebt_das_haus() {
     let (mut m, eg, gr, slab) = haus();
@@ -376,7 +376,7 @@ fn perimeterdaemmung_hebt_das_haus() {
     assert!((uk(&m, gr) - (g0.footing_bottom_z - 120.0)).abs() < 1e-6);
     let f = m.foundation(eg).unwrap().unwrap();
     let q = crate::qto::perimeter_qto_of(&f).unwrap();
-    assert!((q.area - g.slab_area).abs() < 1.0);
+    assert!((q.area - (g.slab_area - g.footing_area)).abs() < 1.0);
     assert!((q.volume - q.area * 120.0).abs() < 1.0);
     assert!(m.check().is_empty(), "{:?}", m.check());
     // ungültige Dicken
