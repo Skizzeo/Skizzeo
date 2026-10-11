@@ -35,9 +35,12 @@ const BREITE: f32 = 2.0 * PAD + NAME_W + FELD_W + GAP + VORGABE_W;
 
 // ===== Reine Funktionen =====
 
-/// Schnitthöhe (mm) als Text in m mit zwei Stellen: „1,50“.
+/// Schnitthöhe (mm) als Text in m mit zwei Stellen, mit drei bei ganzen
+/// Millimetern: „1,50“, „1,005“.
 pub fn text_m(mm: f64) -> String {
-    format!("{:.2}", mm / 1000.0).replace('.', ",")
+    let t = format!("{:.3}", mm / 1000.0);
+    let t = t.strip_suffix('0').unwrap_or(&t);
+    t.replace('.', ",")
 }
 
 /// Getippte Schnitthöhe in mm: m mit Komma oder Punkt, ab 10 cm; `None`
@@ -276,6 +279,24 @@ impl Schalter {
         out
     }
 
+    /// Ob die laufende Eingabe die Taste `key` bearbeitet (siehe
+    /// [`Schalter::key`]); andere Tasten wie Tab gehören der App.
+    pub fn nimmt(&self, key: Key) -> bool {
+        self.eingabe.is_some()
+            && matches!(
+                key,
+                Key::Char(_)
+                    | Key::Backspace
+                    | Key::Delete
+                    | Key::Left
+                    | Key::Right
+                    | Key::Home
+                    | Key::End
+                    | Key::Escape
+                    | Key::Enter
+            )
+    }
+
     /// Taste bei offenem Feld; `true`, wenn verbraucht. Ohne Eingabe nimmt
     /// es nur Esc (schließt).
     pub fn key(&mut self, key: Key, mods: Modifiers, out: &mut Ausgang) -> bool {
@@ -288,7 +309,7 @@ impl Schalter {
             return false;
         };
         match key {
-            Key::Char(c) if c.is_ascii_digit() || matches!(c, '.' | ',') => {
+            Key::Char(c) if !mods.ctrl && (c.is_ascii_digit() || matches!(c, '.' | ',')) => {
                 ed.insert(&c.to_string());
                 self.falsch = false;
             }
@@ -337,7 +358,10 @@ mod tests {
         assert_eq!(lesen(""), None);
         assert_eq!(lesen("x"), None);
         assert_eq!(text_m(1500.0), "1,50");
-        assert_eq!(text_m(1234.0), "1,23");
+        assert_eq!(text_m(1234.0), "1,234");
+        assert_eq!(text_m(1230.0), "1,23");
+        assert_eq!(text_m(1005.0), "1,005");
+        assert_eq!(lesen(&text_m(1005.0)), Some(1005.0), "ohne Änderung gleich");
     }
 
     fn klick(x: f32, y: f32) -> Event {
@@ -374,6 +398,15 @@ mod tests {
         s.key(Key::Char('1'), Modifiers::default(), &mut out);
         s.key(Key::Char('2'), Modifiers::default(), &mut out);
         s.key(Key::Char('0'), Modifiers::default(), &mut out);
+        let strg = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert!(
+            s.key(Key::Char('5'), strg, &mut out),
+            "Strg+Ziffer bleibt im Feld"
+        );
+        assert!(s.nimmt(Key::Enter) && !s.nimmt(Key::Tab));
         s.key(Key::Enter, Modifiers::default(), &mut out);
         assert_eq!(out.neu, Some(1200.0));
         assert!(s.eingabe.is_none() && s.offen);

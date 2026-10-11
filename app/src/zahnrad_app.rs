@@ -133,12 +133,22 @@ impl App {
     }
 
     /// Ob ein offenes Feld der Zahnräder die Taste `key` nimmt: Esc schließt,
-    /// die Eingabe der Schnitthöhe nimmt jede Taste.
+    /// die Eingabe der Schnitthöhe nimmt die Tasten, die sie bearbeitet.
     pub(crate) fn zahnrad_will(&self, key: Key) -> bool {
         let esc = key == Key::Escape;
         (esc && self.ansicht_schatten.offen)
-            || self.plan_schnitt.eingabe.is_some()
+            || self.plan_schnitt.nimmt(key)
             || (esc && self.plan_schnitt.offen)
+    }
+
+    /// Ein Klick in die Paneele beendet die Eingabe der Schnitthöhe, sonst
+    /// nähme sie dem Paneelfeld die Tasten (wie Review 3bx); `true`, wenn
+    /// eine lief.
+    pub(crate) fn zahnrad_ab(&mut self) -> bool {
+        self.plan_schnitt.falsch = false;
+        let lief = self.plan_schnitt.eingabe.take().is_some();
+        self.redraw |= lief;
+        lief
     }
 
     /// Taste an die Felder der Zahnräder (nach [`App::zahnrad_will`]).
@@ -153,9 +163,17 @@ impl App {
         self.schnitt_anwenden(out);
     }
 
-    /// Hand über einem Knopf der Zahnräder.
-    pub(crate) fn zahnrad_hover(&self) -> bool {
-        self.ansicht_schatten.hover.is_some() || self.plan_schnitt.hover.is_some()
+    /// Zeiger über den Zahnrädern: Textcursor über dem Wertfeld, sonst die
+    /// Hand über einem Knopf; `None` daneben.
+    pub(crate) fn zahnrad_cursor(&self) -> Option<sk_platform::Cursor> {
+        match self.plan_schnitt.hover {
+            Some(grundriss_schnitt::Teil::Wert) => Some(sk_platform::Cursor::IBeam),
+            Some(_) => Some(sk_platform::Cursor::Hand),
+            None => self
+                .ansicht_schatten
+                .hover
+                .map(|_| sk_platform::Cursor::Hand),
+        }
     }
 
     /// Tooltip an den Zahnrädern.

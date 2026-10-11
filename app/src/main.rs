@@ -4529,7 +4529,9 @@ impl App {
                 } else {
                     ev
                 };
-                let outside = self.zahnrad_handle(&sonne_ev, sc) || outside;
+                let outside = self
+                    .zahnrad_handle(if busy { &Event::MouseLeave } else { &sonne_ev }, sc)
+                    || outside;
                 let outside = self.sonne_handle(&sonne_ev, vw, vh, sc) || outside;
                 let nord_ev = if outside || chip.is_some() {
                     Event::MouseLeave
@@ -4655,10 +4657,9 @@ impl App {
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
                     self.apply_ui(&out);
-                    // Ein Klick in die Paneele schließt das Feld der
-                    // Sonnenstands-Leiste, sonst nähme es weiter jede Taste
-                    // (Review 3bx)
-                    if out.consumed && self.sonne.eingabe.take().is_some() {
+                    // Ein Klick in die Paneele beendet die Eingaben von Sonnenstand und
+                    // Schnitthöhe, sonst nähmen sie weiter die Tasten (Review 3bx)
+                    if out.consumed && (self.sonne.eingabe.take().is_some() | self.zahnrad_ab()) {
                         self.redraw = true;
                     }
                     if !out.consumed && !self.press_chip(button, x, y, sc) {
@@ -8422,8 +8423,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 sk_platform::Cursor::Hand
             }
             (None, None) if a.sonne.hover.is_some() => sk_platform::Cursor::Hand,
-            (None, None) if a.zahnrad_hover() => sk_platform::Cursor::Hand,
-            (None, None) => a.ui.cursor(),
+            (None, None) => a.zahnrad_cursor().unwrap_or_else(|| a.ui.cursor()),
         };
         surface.set_cursor(cursor);
 
