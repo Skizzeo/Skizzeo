@@ -12,7 +12,7 @@ use crate::library::{LayerFunction, LayerSet, LayerSetId, MatCategory, MaterialI
 use crate::model::Model;
 use crate::roof::FlatRoof;
 use crate::wall::WallChain;
-use sk_math::Vec3;
+use sk_math::{vec3, Vec3};
 use std::collections::HashMap;
 
 /// Mengen einer Schicht in einem Wandsegment.
@@ -332,6 +332,16 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
     (0..chain.segment_count())
         .map(|k| {
             let j = (k + 1) % n;
+            // Längen längs des Segments mit Vorzeichen: Ein Stück kürzer als
+            // die Wanddicke an einer Ecke hat eine verkehrt liegende
+            // Innenkante; sie zählt negativ, so bleibt die Summe beim
+            // Teilen gleich (Review 61-2)
+            let dir = (pts[j] - pts[k]).normalized();
+            let along = |a: Vec3, b: Vec3| (b - a).dot(dir);
+            let band = |q: [Vec3; 4]| {
+                let side = vec3(-dir.y, dir.x, 0.0);
+                0.5 * (along(q[0], q[1]) + along(q[3], q[2])) * (q[3] - q[0]).dot(side).abs()
+            };
             let foot = chain.joints.facing_foot.as_ref().filter(|f| f.at(k));
             let layers: Vec<LayerQto> = set
                 .layers
@@ -357,7 +367,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
                     // Luftschicht: ohne Körper, darum ohne Fläche und Volumen (K4)
                     let air = l.function == LayerFunction::AirGap;
-                    let area = if air { 0.0 } else { area(&quad) };
+                    let area = if air { 0.0 } else { band(quad) };
                     // netto: ohne das Band einer Geschossdecke (Auflagertasche);
                     // verlängerte Abschnitte in der Lage der Wand darüber (K4)
                     let parts = chain.layer_parts(li);
@@ -381,7 +391,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     // Attika über dem Terrassenrand (D2, BIM E2): Mehrmenge der
                     // Schicht, die sie verlängert
                     let (v_att, s_att) = attika_of(&chain, k, li);
-                    let (la, lb) = ((fa[j] - fa[k]).length(), (fb[j] - fb[k]).length());
+                    let (la, lb) = (along(fa[k], fa[j]), along(fb[k], fb[j]));
                     let (lo, li_len) = if outer_first { (la, lb) } else { (lb, la) };
                     // Fußpunkt aus Schaumglas (W2): nicht Verblender
                     let h_foot = foot.map_or(0.0, |f| if f.layer == li { f.height() } else { 0.0 });
@@ -395,7 +405,8 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         area,
                         volume,
                         mass: volume * 1e-9 * density,
-                        pocket: (area * (h - h_own - h_ext)).max(0.0),
+                        // mit Vorzeichen wie die Fläche (Eckstück, Review 61-2)
+                        pocket: area * (h - h_own - h_ext).max(0.0),
                         side_area: lo * (h - h_ext + h_here - h_own - h_foot) + s_up + s_att,
                         attika: v_att,
                         inner_area: if air { 0.0 } else { li_len * h_here },
@@ -407,9 +418,9 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 let l = layers.get(f.layer).filter(|l| l.foot > 0.0)?;
                 let (fa, fb) = &faces[f.layer];
                 let outer = if outer_first {
-                    (fa[j] - fa[k]).length()
+                    along(fa[k], fa[j])
                 } else {
-                    (fb[j] - fb[k]).length()
+                    along(fb[k], fb[j])
                 };
                 Some(FacingFootQto {
                     layer: f.layer,
@@ -427,9 +438,9 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .zip(&set.layers)
                 .take(dropped)
                 .filter(|(_, l)| l.function != LayerFunction::AirGap)
-                .map(|((fa, fb), _)| area(&[fa[k], fa[j], fb[j], fb[k]]))
+                .map(|((fa, fb), _)| band([fa[k], fa[j], fb[j], fb[k]]))
                 .sum();
-            let side_outer = (c_out[j] - c_out[k]).length() * h;
+            let side_outer = along(c_out[k], c_out[j]) * h;
             let list_length = if category.is_some_and(Category::is_outer_wall) && h > 0.0 {
                 side_outer / h
             } else {
@@ -446,7 +457,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 height: h,
                 footprint,
                 side_outer,
-                side_inner: (c_in[j] - c_in[k]).length() * h,
+                side_inner: along(c_in[k], c_in[j]) * h,
                 volume: layers.iter().map(|l| l.volume + l.foot).sum(),
                 volume_gross: footprint * h,
                 pocket: layers.iter().map(|l| l.pocket).sum(),
@@ -1050,10 +1061,11 @@ fn floor_formwork_from<'a>(
             let area: f64 = w
                 .layers
                 .iter()
-                .filter(|l| l.pocket > 1e-6)
+                .filter(|l| l.pocket.abs() > 1e-6)
                 .map(|l| l.area)
                 .sum();
-            if area <= 0.0 {
+            // Ein Eckstück kürzer als die Wand dick trägt negativ bei (#61)
+            if area == 0.0 {
                 continue;
             }
             let bearing = bearing_wall(model, wall);

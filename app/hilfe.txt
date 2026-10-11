@@ -78,6 +78,17 @@ Nur diese Wand | mit **Strg** ziehen; ohne **Strg** geht der ganze Stapel mit
 Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht das Ziehen ab
 Schnitt, Ansichten | dort an der violetten Kugel ziehen
 Gesperrt | Gesperrtes lässt sich nicht ziehen; entsperren im Baum
+Einrasten | knapp vor der Flucht der Nachbarwand rastet das Stück bündig ein; die Karte fragt: vereinen oder getrennt lassen
+
+[thema] id=teilen titel="Wand teilen und vereinen"
+Teilen | Wand wählen, im Paneel „Wand teilen“; Klick setzt den Teilungspunkt
+Genau | Zahl tippen und **Enter**: Abstand ab dem Ende, dem die Maus näher ist
+Zwei Punkte | Der zweite Punkt teilt ein Mittelstück ab; **Enter** teilt schon am ersten
+Rück- und Vorsprung | Teilstück am violetten Band rein- oder rausziehen; Stufen entstehen von selbst
+Ganzes Haus | Teilen und Ziehen gelten für alle Geschosse übereinander
+Fuge | graue, offene Kette an der Fuge; Klick vereint die beiden Wände
+Zusammenschieben | knapp vor der Flucht rastet das Stück ein; Karte: vereinen oder getrennt lassen
+Abbrechen | **Esc**; **Rücktaste** nimmt den gesetzten Punkt zurück
 
 [thema] id=og titel="Geschosse getrennt bearbeiten"
 Kette | über einen OG-Wandfuß fahren; Klick auf die Kette löst die Kopplung
@@ -139,7 +150,7 @@ Ablauf dazu, weg | Punkt anklicken, dann Rechtsklick oder im Abschnitt „Gefäl
 Ausschalten | Haken weg; **Strg+Z** holt das Dach zurück
 
 [thema] id=geschosse titel="Geschosse"
-Bearbeiten | Klick auf das Paneel „Geschosse“ öffnet es groß; nur dort wird gezogen und getippt
+Bearbeiten | Klick auf das Paneel „Geschosse“ öffnet es groß; nur dort wird gezogen und getippt, das Modell daneben zeigt jede Änderung sofort
 Schließen | **Esc**, „Schließen ×“ oder Klick daneben
 Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ in der großen Ansicht
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**

@@ -322,6 +322,10 @@ mod geschossbaender;
 #[path = "gruendung.rs"]
 mod gruendung;
 
+#[path = "teilen.rs"]
+mod teilen;
+pub use teilen::FugeError;
+
 impl Default for Model {
     fn default() -> Model {
         Model::new()
@@ -2152,7 +2156,8 @@ impl Model {
     }
 
     /// Nächste freie Nummer der Kategorie, z. B. „AW-004“. Nummern werden nie
-    /// wiederverwendet, auch nicht nach Löschen oder Rückgängig.
+    /// wiederverwendet, auch nicht nach Löschen oder Rückgängig; nur ein
+    /// verworfener Schritt ([`Model::rollback`]) gibt seine zurück.
     fn next_number(&mut self, category: Category) -> String {
         loop {
             let n = &mut self.numbers[category.index()];
@@ -2488,7 +2493,8 @@ impl Model {
             _ => None,
         };
         if usegs.len() != lsegs.len() {
-            return self.recount_offsets(&usegs, lower, lsegs);
+            let l: Vec<Option<ElementId>> = lsegs.iter().copied().map(Some).collect();
+            return self.recount_offsets(&usegs, lower, &l);
         }
         let free: Vec<bool> = usegs
             .iter()
@@ -2528,15 +2534,15 @@ impl Model {
         &self,
         usegs: &[ElementId],
         lower: &WallChain,
-        lsegs: &[ElementId],
+        lsegs: &[Option<ElementId>],
     ) -> (Vec<f64>, Vec<bool>) {
-        let partner = |e: ElementId| {
+        let partner = |e: Option<ElementId>| {
             usegs
                 .iter()
                 .find_map(|w| match self.element(*w).map(|x| &x.kind) {
                     Some(ElementKind::Wall(Wall {
                         coupling: Some(c), ..
-                    })) if c.below == e => Some((c.offset, !c.linked)),
+                    })) if Some(c.below) == e => Some((c.offset, !c.linked)),
                     _ => None,
                 })
         };
@@ -2550,14 +2556,30 @@ impl Model {
         let (mut offsets, mut free) = (vec![0.0; n], vec![false; n]);
         for k in 0..n {
             let own = partner(lsegs[k]);
+            // Sonst das nächste Stück derselben Flucht mit Partner, über
+            // gerade Fugen in beide Richtungen (beim Teilen an zwei Punkten
+            // liegt ein Stück zwei Fugen weit, Review Geometrie #61)
             let near = || {
-                let prev = (k > 0 || closed).then(|| (k + n - 1) % n);
-                let next = (k + 1 < n || closed).then(|| (k + 1) % n);
-                [prev, next]
-                    .into_iter()
-                    .flatten()
-                    .filter(|&j| j != k && straight(j, k))
-                    .find_map(|j| partner(lsegs[j]))
+                let step = |j: usize, back: bool| {
+                    let i = match back {
+                        true => (j > 0 || closed).then(|| (j + n - 1) % n)?,
+                        false => (j + 1 < n || closed).then(|| (j + 1) % n)?,
+                    };
+                    (i != k && straight(i, j)).then_some(i)
+                };
+                let (mut prev, mut next) = (Some(k), Some(k));
+                while prev.is_some() || next.is_some() {
+                    prev = prev.and_then(|j| step(j, true));
+                    next = next.and_then(|j| step(j, false));
+                    let found = [prev, next]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|j| partner(lsegs[j]));
+                    if found.is_some() {
+                        return found;
+                    }
+                }
+                None
             };
             if let Some((o, f)) = own.or_else(near) {
                 offsets[k] = o;
@@ -2576,15 +2598,25 @@ impl Model {
             return true;
         };
         lower.points = points.to_vec();
-        let Some(lsegs) = self.run(id).map(|r| r.segments.clone()) else {
+        let Some(r) = self.run(id) else {
             return true;
         };
-        // Andere Segmentzahl: die Kopplungen werden neu zugeordnet (alles bündig)
-        if lower.segment_count() != lsegs.len() {
-            return true;
-        }
+        // Die Wände nach Lage zuordnen wie beim Setzen
+        // (Regel 11), neue Stücke ohne Partner (Regel 28)
+        let new = segment_lines(&lower.clean_points(), lower.closed);
+        let lsegs: Vec<Option<ElementId>> =
+            teilen::assign_walls(&segment_lines(&r.points, r.closed), &new, lower.closed)
+                .into_iter()
+                .map(|m| m.and_then(|o| r.segments.get(o).copied()))
+                .collect();
         for up in self.runs_above(id) {
-            let (offsets, _) = self.stack_offsets(up, &lower, &lsegs);
+            let (offsets, _) = match lsegs.iter().copied().collect::<Option<Vec<_>>>() {
+                Some(l) => self.stack_offsets(up, &lower, &l),
+                None => {
+                    let usegs = self.run(up).map(|r| r.segments.clone()).unwrap_or_default();
+                    self.recount_offsets(&usegs, &lower, &lsegs)
+                }
+            };
             match lower.with_segment_offsets(&offsets) {
                 Some(c)
                     if room_inside(&c)
@@ -3028,18 +3060,21 @@ impl Model {
         }
         let old = run.segments.clone();
         note!(self, Run, self.runs, id);
-        let matched = if old.len() == count {
-            (0..count).map(Some).collect()
-        } else {
-            match_segments(
-                &segment_lines(&run.points, run.closed),
-                &segment_lines(&pts, closed),
-            )
-        };
-        let template = old.first().and_then(|e| self.elements.get(*e)).cloned();
+        let (lines_old, lines_new) = (
+            segment_lines(&run.points, run.closed),
+            segment_lines(&pts, closed),
+        );
+        let matched = teilen::assign_walls(&lines_old, &lines_new, closed);
         let mut kept = vec![false; old.len()];
         let mut segments = Vec::with_capacity(count);
-        for (k, m) in matched.into_iter().enumerate() {
+        for (k, &m) in matched.iter().enumerate() {
+            // Neues Stück: Vorlage ist die Wand, aus der es geteilt wurde,
+            // sonst der Nachbar (Stufe), sonst die erste
+            let template = teilen::template_of(&lines_old, &lines_new, &matched, k)
+                .or(Some(0))
+                .and_then(|o| old.get(o))
+                .and_then(|e| self.elements.get(*e))
+                .cloned();
             match (m, &template) {
                 (Some(o), _) => {
                     kept[o] = true;
@@ -3482,6 +3517,7 @@ impl Model {
         debug_assert!(self.txn.is_none(), "Schritt schon offen");
         self.txn = Some(Open {
             building_number: self.building_number,
+            numbers: self.numbers.to_vec(),
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3535,6 +3571,9 @@ impl Model {
     pub fn rollback(&mut self) -> Touched {
         if let Some(open) = &self.txn {
             self.building_number = open.building_number;
+            for (n, o) in self.numbers.iter_mut().zip(&open.numbers) {
+                *n = *o;
+            }
         }
         match self.close() {
             Some(t) => self.apply(&t, Direction::Undo),

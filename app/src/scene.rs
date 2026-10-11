@@ -81,6 +81,8 @@ struct RunCache {
     foot: Vec<(Vec3, Vec3)>,
     /// Umschließender Quader des Wandfußes (Vortest beim Greifen).
     foot_bounds: Option<Aabb>,
+    /// Fugen des Zugs (W-11), für die Plättchen in jedem Bild.
+    joints: Vec<usize>,
     /// Mengen je Segment; leer, solange der Zug gezogen wird.
     qto: Vec<WallQto>,
     /// Gekoppelter Zug darunter (gestapelte Außenwand, B12): kein eigenes
@@ -146,6 +148,7 @@ impl RunCache {
             .fold(None, |acc, p| union(acc, Some((p, p))));
         RunCache {
             id,
+            joints: chain.straight_joints(),
             plan: Vec::new(),
             under: Vec::new(),
             bounds: solid.bounds(),
@@ -1838,6 +1841,12 @@ impl Scene {
 
     pub fn chain(&self, run: RunId) -> Option<&WallChain> {
         self.cached(run).map(|c| &c.chain)
+    }
+
+    /// Fugen eines Wandzugs (siehe [`WallChain::straight_joints`]), mit
+    /// dem Zug berechnet.
+    pub fn joints(&self, run: RunId) -> &[usize] {
+        self.cached(run).map_or(&[], |c| c.joints.as_slice())
     }
 
     /// Äußerer Wandfuß eines Wandzugs, je Segment (Anfang, Ende).
