@@ -81,10 +81,6 @@ pub struct LayerParts {
     pub grund: f64,
     pub attika: f64,
     pub dicke: f64,
-    /// Löcher der Öffnungen in der Schicht (O2): Anzahl und ihr Volumen,
-    /// das vom Volumen abgezogen ist ([`LayerQto::holes`]).
-    pub loecher: usize,
-    pub loch_volumen: f64,
 }
 
 /// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Tagesplan P1):
@@ -492,8 +488,6 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                             grund: area,
                             attika: v_att,
                             dicke: l.thickness,
-                            loecher: holes.len(),
-                            loch_volumen: v_holes,
                         },
                         holes,
                     }
@@ -1503,6 +1497,10 @@ pub struct LayerRow {
     pub pocket: f64,
     /// Wandschicht: Bestandteile ihrer Mengen für den Rechenweg.
     pub parts: Option<LayerParts>,
+    /// Wandschicht: Löcher der Öffnungen (O2). Ihr Volumen ist geometrisch
+    /// abgezogen, von `face` (und bei Dämmung von `area`, `bill_area`) nur
+    /// die über 2,5 m² ([`crate::vob`]).
+    pub holes: Vec<crate::vob::Loch>,
 }
 
 /// Lage einer Wandschicht für die Abrechnungsfläche (Regel 84).
@@ -2302,6 +2300,7 @@ fn totals(rows: &[RowQto]) -> Totals {
 /// Sortiert nach Bauteilart, Baustoff, Dicke und Nummer.
 fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
     let mut out = Vec::new();
+    let summen = crate::vob::summen(storeys);
     for (st, row) in storeys.iter().flat_map(|s| {
         s.groups
             .iter()
@@ -2384,12 +2383,25 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             } else {
                 0.0
             };
+            // Öffnungen über 2,5 m² gehen von der Abrechnungsfläche ab
+            let holes = match q {
+                ElementQto::Wall(w) => w
+                    .layers
+                    .get(i)
+                    .map(|l| crate::vob::loecher(l, &summen))
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let abzug = crate::vob::abzug(&holes);
             let face = match q {
-                ElementQto::Wall(_) => match wall_face(model, &layers, i, interior) {
-                    Face::Mean => mean,
-                    Face::Outer => area,
-                    Face::Inner => inner,
-                },
+                ElementQto::Wall(_) => {
+                    let brutto = match wall_face(model, &layers, i, interior) {
+                        Face::Mean => mean,
+                        Face::Outer => area,
+                        Face::Inner => inner,
+                    };
+                    brutto - abzug
+                }
                 ElementQto::Floor(_) | ElementQto::Slab(_) => area,
                 ElementQto::Soffit(_) | ElementQto::Terrace(_) | ElementQto::Perimeter(_) => {
                     bill_area
@@ -2409,16 +2421,19 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 trade: model.layer_trade(row.element, i),
                 kg: model.layer_kg(row.element, i),
                 length,
-                area: if ins || !matches!(q, ElementQto::Wall(_)) {
-                    area
-                } else {
-                    0.0
+                area: match q {
+                    ElementQto::Wall(_) if ins => area - abzug,
+                    ElementQto::Wall(_) => 0.0,
+                    _ => area,
                 },
-                volume,
+                volume: volume + crate::vob::uebermessen_vol(&holes),
                 insulation: ins,
                 whole,
                 attika,
-                bill_area,
+                bill_area: match q {
+                    ElementQto::Wall(_) if ins => bill_area - abzug,
+                    _ => bill_area,
+                },
                 bill_length,
                 once,
                 face,
@@ -2427,6 +2442,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     ElementQto::Wall(w) => w.layers.get(i).map(|l| l.parts.clone()),
                     _ => None,
                 },
+                holes,
             });
         };
         match q {
@@ -2579,6 +2595,8 @@ fn kg_sums(rows: Vec<LayerRow>) -> Vec<KgSum> {
 /// Summe nach Baustoff über alle Bauteile mit Körper; Dämmung auch als Fläche.
 fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
     let mut sums: Vec<MaterialSum> = Vec::new();
+    // Öffnungen nach VOB/C wie in den Mengenzeilen
+    let summen = crate::vob::summen(storeys);
     let mut add = |m: MaterialId, v: f64, a: f64, len: Option<f64>| {
         let ins = model
             .material(m)
@@ -2648,7 +2666,13 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                         .material(l.material)
                         .is_some_and(|x| x.category == MatCategory::Air);
                     if !air {
-                        add(l.material, l.volume, l.side_area, None);
+                        let h = crate::vob::loecher(l, &summen);
+                        add(
+                            l.material,
+                            l.volume + crate::vob::uebermessen_vol(&h),
+                            l.side_area - crate::vob::abzug(&h),
+                            None,
+                        );
                     }
                 }
                 // Fußpunkt aus Schaumglas (W2): eigener Baustoff

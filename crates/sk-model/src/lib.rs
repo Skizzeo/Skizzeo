@@ -49,6 +49,9 @@ pub mod txn;
 #[cfg(test)]
 mod type_tests;
 pub mod view;
+pub mod vob;
+#[cfg(test)]
+mod vob_tests;
 pub mod wall;
 pub mod wand_loch;
 #[cfg(test)]
