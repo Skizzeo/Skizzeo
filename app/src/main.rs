@@ -3667,7 +3667,7 @@ impl App {
                 self.overlay_dirty = true;
             }
             Id::PropsMaterial(g) => self.open_materials(Some(g)),
-            Id::PropsDrains | Id::PropsDrainAdd | Id::PropsDrainDelete => self.drain_button(id),
+            ui::props_button!() => self.drain_button(id),
             Id::DialogStart => self.close_building_dialog(true),
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
@@ -5023,7 +5023,7 @@ impl App {
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
                 K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
                 // Thema „Erweiterungen“, siehe `sync_help`
-                K::Ext(_) => return None,
+                K::Ext(_) | K::Downpipe { .. } => return None,
             })
         });
         help::HelpCtx {

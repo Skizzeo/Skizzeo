@@ -17,8 +17,8 @@ use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FlatRoof, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId,
     Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain,
-    WallQto, COPING_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART, ROOF_COPING_PART, ROOF_PART,
-    SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
+    WallQto, COPING_PART, DOWNPIPE_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART,
+    ROOF_COPING_PART, ROOF_PART, SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -28,6 +28,8 @@ use std::rc::Rc;
 
 #[path = "scene_gefaelle.rs"]
 mod gefaelle;
+#[path = "scene_fallrohr.rs"]
+mod scene_fallrohr;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
@@ -437,6 +439,9 @@ impl RunPart for FlatRoof {
     fn solid(&self, out: &mut Solid) {
         out.append(&part(FlatRoof::solid(self), ROOF_PART));
         out.append(&part(self.coping_solid(), ROOF_COPING_PART));
+        for (k, d) in self.downpipes.iter().enumerate() {
+            out.append(&part(d.solid(), DOWNPIPE_PART - k as u32));
+        }
     }
 
     /// Im Grundriss der Ebene Flachdach liegt der Aufbau unter der
@@ -453,6 +458,13 @@ impl RunPart for FlatRoof {
                 // Attikadämmung geschnitten oder gesehen, das Blech nur
                 // ganz unter der Schnitthöhe
                 out.append(&part(self.coping_cut_at(cut), ROOF_COPING_PART));
+                // Regenfallrohre außen, von oben gesehen
+                for (k, d) in self.downpipes.iter().enumerate() {
+                    out.append(&part(
+                        seen_below(d.plan_below(cut)),
+                        DOWNPIPE_PART - k as u32,
+                    ));
+                }
             }
         }
     }
@@ -2099,6 +2111,9 @@ impl Scene {
         }
         if field == Field::RoofSlope {
             return self.set_roof_slope(id, mm);
+        }
+        if field == Field::DownpipeSpacing {
+            return self.set_downpipe_spacing(id, mm);
         }
         if let Field::Cladding(v) = field {
             return self.set_cladding(id, v, mm);

@@ -61,6 +61,7 @@ impl Model {
             | ElementKind::Coping { floor }
             | ElementKind::Roof { floor, .. } => self.run_of(floor),
             ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
+            ElementKind::Downpipe { roof, .. } => self.run_of(roof),
             ElementKind::Ext(_) => None,
         }
     }
@@ -206,6 +207,10 @@ impl Model {
             COPING_PART => self.coping_of(self.floor_of(run)?),
             ROOF_PART => self.flat_roof_of(self.floor_of(self.run_below(run)?)?),
             ROOF_COPING_PART => self.coping_of(self.floor_of(self.run_below(run)?)?),
+            p if (DOWNPIPE_PART + 1 - MAX_DOWNPIPES..=DOWNPIPE_PART).contains(&p) => {
+                let roof = self.flat_roof_of(self.floor_of(self.run_below(run)?)?)?;
+                self.downpipe_at(roof, (DOWNPIPE_PART - p) as usize)
+            }
             p if (STRIP_PART..STRIP_PART + MAX_STRIPS).contains(&p) => {
                 let wall = self.wall_at(run, (p - STRIP_PART) as usize)?;
                 self.edge_strip_of(wall, self.floor_of(run)?)

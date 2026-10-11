@@ -105,7 +105,7 @@ fn csv_text(s: &mut Scene) -> String {
 
 /// Die heutige Tabelle (main 637f33c): Name, Präfix, IFC, KG, IsExternal.
 #[allow(clippy::type_complexity)]
-const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 16] = [
+const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 17] = [
     (
         Category::ExteriorWall,
         "Außenwand",
@@ -222,6 +222,15 @@ const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 16] = [
         "AK",
         "IfcWall.PARAPET",
         Some(330),
+        true,
+    ),
+    // Regenfallrohr (Jörn 11.10.)
+    (
+        Category::Downpipe,
+        "Regenfallrohr",
+        "RF",
+        "IfcPipeSegment.RIGIDSEGMENT",
+        Some(363),
         true,
     ),
 ];
@@ -516,7 +525,7 @@ fn a178_loeschtexte_aus_der_tabelle() {
 
 /// Seit Paket 2a/2c: Dachterrasse und Attikablech (nicht in den
 /// Musterhäusern von A176, die den Stand 637f33c festhalten).
-const ARTEN_2A: [(Category, &str, &str, &str); 5] = [
+const ARTEN_2A: [(Category, &str, &str, &str); 6] = [
     (
         Category::RoofTerrace,
         "[terrace]",
@@ -534,6 +543,13 @@ const ARTEN_2A: [(Category, &str, &str, &str); 5] = [
     // Flachdach (Jörn 10.10.)
     (Category::Parapet, "[wall]", "parapet", "Aufkantungen"),
     (Category::Roof, "[roof]", "roof", "Flachdächer"),
+    // Regenfallrohr (Jörn 11.10.)
+    (
+        Category::Downpipe,
+        "[downpipe]",
+        "downpipe",
+        "Regenfallrohre",
+    ),
 ];
 
 /// Kategorien, die es noch nicht als Bauteil gibt (kein Beispiel).
@@ -664,7 +680,7 @@ fn beispiel(c: Category, s: &mut Scene) -> ElementId {
                 let slab = m.foundation_of(eg).unwrap().0;
                 m.set_slab_insulation(slab, 120.0)
             }
-            Category::Parapet | Category::Roof => {
+            Category::Parapet | Category::Roof | Category::Downpipe => {
                 let st = m.run(eg).unwrap().storey;
                 m.set_flat_roof(st, true)
             }
