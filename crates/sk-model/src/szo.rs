@@ -1785,7 +1785,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     None => None,
                 },
 
-                lines: hoehen::read_lines(r)?,
+                lines: hoehen::read_lines(r, &mut hints),
             }
         };
         let g = s.guid;
@@ -2199,7 +2199,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     ] {
         for r in recs(section) {
             let kind = if ix == 10 {
-                oeffnung::read(r, &storey_ids)?
+                match oeffnung::read(r, &storey_ids, &mut hints)? {
+                    Some(k) => k,
+                    None => continue,
+                }
             } else if ix == 7 {
                 // Perimeterdämmung (Gelände Thema 4): nur der Verweis auf die
                 // Sohlplatte

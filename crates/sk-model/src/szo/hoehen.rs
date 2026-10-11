@@ -23,21 +23,36 @@ pub(super) fn write_lines(l: Line, h: &HeightLines) -> Line {
     }
 }
 
-/// Höhenlinien aus einer `[storey]`-Zeile; fehlende mit der Vorgabe.
-pub(super) fn read_lines(r: &Record) -> Result<HeightLines, LoadError> {
+/// Höhenlinien aus einer `[storey]`-Zeile; fehlende mit der Vorgabe. Ein
+/// unlesbarer Wert gibt einen Hinweis und nimmt die Vorgabe, ebenso beide,
+/// wenn sie zusammen nicht passen (Regel 72, Review #79).
+pub(super) fn read_lines(r: &Record, hints: &mut Vec<String>) -> HeightLines {
     let d = HeightLines::default();
-    let num = |k: &str, d: f64| match r.opt(k) {
-        Some(_) => r.f64(k),
-        None => Ok(d),
+    let mut num = |k: &str, d: f64| match r.opt(k) {
+        None => d,
+        Some(v) => match v.parse::<f64>().ok().filter(|x| x.is_finite()) {
+            Some(x) => x,
+            None => {
+                hints.push(format!(
+                    "Zeile {}: „{k}={v}“ unlesbar, Vorgabe gilt",
+                    r.line
+                ));
+                d
+            }
+        },
     };
     let h = HeightLines {
-        sill: num("sill", d.sill)?,
-        lintel: num("lintel", d.lintel)?,
+        sill: num("sill", d.sill),
+        lintel: num("lintel", d.lintel),
     };
     if !h.valid() {
-        return Err(r.bad("lintel", "Sturz mindestens 10 cm über der Brüstung ab 0"));
+        hints.push(format!(
+            "Zeile {}: Brüstung {} und Sturz {} passen nicht (Sturz mindestens 10 cm über der Brüstung ab 0), Vorgabe gilt",
+            r.line, h.sill, h.lintel
+        ));
+        return d;
     }
-    Ok(h)
+    h
 }
 
 pub(super) fn write_plan_cut(m: &Model, out: &mut String) {

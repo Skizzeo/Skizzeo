@@ -1,7 +1,7 @@
 //! Paket O2 (Jörn 11.10.): Öffnungen im Modell, im Wandkörper und in der
 //! Datei; Höhenlinien je Geschoss.
 
-use crate::element::RunId;
+use crate::element::{Category, RunId};
 use crate::hoehen::HeightLines;
 use crate::model::{Model, CAVITY_TYPE_GUID, MONO_TYPE_GUID};
 use crate::oeffnung::{
@@ -10,7 +10,7 @@ use crate::oeffnung::{
 use crate::solid::Solid;
 use crate::txn::Direction;
 use crate::wall::right_of;
-use crate::{szo, Guid, GuidGen, LevelRef, StoreyId};
+use crate::{szo, Guid, GuidGen, LevelRef, OpeningFault, StoreyId};
 use sk_math::{vec3, Vec3};
 
 /// Prüfhaus 10 × 8 m, zwei Geschosse, Typ `typ` (`None`: WDVS).
@@ -383,9 +383,226 @@ fn oeffnungen_in_der_datei() {
     assert!(back.model.check().is_empty(), "{:?}", back.model.check());
     let n: usize = back.model.chains().map(|(_, c)| c.joints.holes.len()).sum();
     assert_eq!(n, 4);
-    // Unbekannte Höhenlinie: Fehler mit Zeile
+    // Unbekannte Höhenlinie: Fehler mit Zeile, wie jeder Verweis
     let kaputt = text.replacen(":sill", ":brüstung", 1);
     assert!(szo::read(&kaputt, GuidGen::with_seed(5)).is_err());
+    // Ungültige Werte (Review #79): Hinweis und Vorgabe, die Datei öffnet
+    let lies = |alt: &str, neu: &str| {
+        assert!(text.contains(alt), "{alt}");
+        let l = szo::read(&text.replacen(alt, neu, 1), GuidGen::with_seed(5)).unwrap();
+        assert_eq!(l.hints.len(), 1, "{neu}: {:?}", l.hints);
+        l.model
+    };
+    let offen = |m: &Model| -> Vec<Opening> {
+        m.elements()
+            .iter()
+            .filter_map(|(id, _)| m.opening(id).cloned())
+            .collect()
+    };
+    for neu in [" sill=abc", " sill=2300"] {
+        let l = lies(" sill=950", neu);
+        assert_eq!(
+            l.storey(s_og).map(|s| s.lines),
+            Some(HeightLines::default())
+        );
+    }
+    let l = lies("reveal=40,40,40,0", "reveal=1,2,3");
+    assert!(offen(&l).iter().all(|o| o.reveal.is_none()));
+    let l = lies("art=door", "art=fenster");
+    assert!(offen(&l).iter().all(|o| o.kind == OpeningKind::Window));
+    let l = lies("install=100", "install=-5");
+    assert!(offen(&l).iter().all(|o| o.install.outer.is_none()));
+    let op = text.find("[opening]").unwrap();
+    let pts = op + text[op..].find("pts=\"").unwrap() + 5;
+    let ende = pts + text[pts..].find('"').unwrap();
+    let l = lies(&text[pts - 5..=ende], "pts=\"abc\"");
+    assert_eq!(offen(&l).len(), 2, "die unlesbare Öffnung fällt weg");
+    assert!(l.check().is_empty(), "{:?}", l.check());
+}
+
+/// Σ n·A über alle Dreiecke: 0 bei geschlossenem Körper.
+fn offen(s: &Solid) -> f64 {
+    let mut v = vec3(0.0, 0.0, 0.0);
+    for t in &s.triangles {
+        v += t.n * ((t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).length() * 0.5);
+    }
+    v.length()
+}
+
+/// Review #79, Befund 1: Verschiebt man die Wand unter einer Öffnung, meldet
+/// die Prüfung die Öffnung ohne Wand (das Mitwandern kommt mit O5); löscht
+/// man die Wand, geht die Öffnung mit. Rückgängig ist alles wie vorher.
+#[test]
+fn wand_verschoben_oder_geloescht() {
+    let (mut m, eg, _) = haus(None);
+    let vorn = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    let moved = m.chain(eg).unwrap().with_segment_moved(0, 500.0).unwrap();
+    m.begin("Verschieben");
+    assert!(m.set_run_points(eg, &moved.points).is_some());
+    let t = m.commit().unwrap();
+    assert!(m.chain(eg).unwrap().joints.holes.is_empty());
+    let befund = m.check();
+    assert!(
+        befund
+            .iter()
+            .any(|b| b.contains("nicht auf einer Außenwand")),
+        "{befund:?}"
+    );
+    m.apply(&t, Direction::Undo);
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    // Löschen geht nur bei einer Wand außerhalb des Umrisses: freie
+    // Außenwand neben dem Haus
+    let r = m.run(eg).unwrap().clone();
+    let set = m.element(r.segments[0]).unwrap().layer_set.unwrap();
+    let pts = [vec3(14000.0, 0.0, 0.0), vec3(14000.0, 6000.0, 0.0)];
+    m.begin("Wand");
+    let frei = m
+        .add_wall_run(
+            &pts,
+            false,
+            r.ref_side,
+            r.storey,
+            set,
+            Category::ExteriorWall,
+        )
+        .unwrap();
+    m.commit();
+    let id = m.add_opening(fenster(&m, frei, (2000.0, 3000.0))).unwrap();
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    m.begin("Löschen");
+    let d = m.delete_elements(&[m.wall_at(frei, 0).unwrap()]);
+    let t = m.commit().unwrap();
+    assert!(d.removed.contains(&id), "{d:?}");
+    assert!(m.opening(id).is_none());
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    m.apply(&t, Direction::Undo);
+    assert!(m.opening(id).is_some());
+    assert_eq!(m.chain(frei).unwrap().joints.holes.len(), 1);
+    // Andere Öffnungen bleiben stehen
+    m.begin("Löschen");
+    let d = m.delete_elements(&[m.wall_at(frei, 0).unwrap()]);
+    m.commit();
+    assert!(!d.removed.contains(&vorn) && m.opening(vorn).is_some());
+}
+
+/// Review #79, Befund 2: Öffnungen dürfen sich nicht überschneiden, im WDVS
+/// samt Anschlag; daneben und in sich verschoben geht.
+#[test]
+fn ueberschneidende_oeffnungen() {
+    let (mut m, eg, _) = haus(Some(MONO_TYPE_GUID));
+    let a = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    let quer = fenster(&m, eg, (3500.0, 5000.0));
+    assert_eq!(m.opening_fault(&quer, None), Some(OpeningFault::Overlap(a)));
+    assert!(m.add_opening(quer).is_none());
+    let b = m.add_opening(fenster(&m, eg, (4500.0, 5500.0))).unwrap();
+    m.begin("Ändern");
+    assert!(!m.set_opening(b, fenster(&m, eg, (4000.0, 5500.0))));
+    assert!(m.set_opening(b, fenster(&m, eg, (4400.0, 5400.0))));
+    m.commit();
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    // Darüber im OG-Band überschneidet nichts
+    let (mut m, eg, _) = haus(None);
+    let a = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    // 4 cm daneben, aber 3 cm Anschlag je Seite hinter dem WDVS
+    assert_eq!(
+        m.opening_fault(&fenster(&m, eg, (4290.0, 5000.0)), None),
+        Some(OpeningFault::Overlap(a))
+    );
+    assert!(m.add_opening(fenster(&m, eg, (4320.0, 5000.0))).is_some());
+}
+
+/// Review #79, Befund 3: Ein freies Ende muss samt Anschlag in der
+/// Wandfläche liegen, also nicht an der Außenecke oder über das
+/// Segmentende hinaus; um die Ecke geht es mit drei Punkten.
+#[test]
+fn ende_an_der_ecke() {
+    for typ in [None, Some(MONO_TYPE_GUID), Some(CAVITY_TYPE_GUID)] {
+        let (mut m, eg, _) = haus(typ);
+        let bis_ecke = Opening {
+            path: vec![aussen(&m, eg, 0, 7000.0), ecke(&m, eg)],
+            ..fenster(&m, eg, (0.0, 1.0))
+        };
+        assert_eq!(m.opening_fault(&bis_ecke, None), Some(OpeningFault::AtEnd));
+        assert!(m.add_opening(bis_ecke).is_none());
+        let drueber = fenster(&m, eg, (7000.0, 9000.0));
+        assert_eq!(m.opening_fault(&drueber, None), Some(OpeningFault::AtEnd));
+        let daneben = Opening {
+            path: vec![aussen(&m, eg, 0, 3000.0), vec3(5000.0, 3000.0, 0.0)],
+            ..fenster(&m, eg, (0.0, 1.0))
+        };
+        assert_eq!(m.opening_fault(&daneben, None), Some(OpeningFault::NoWall));
+        let um_die_ecke = Opening {
+            path: vec![
+                aussen(&m, eg, 0, 7000.0),
+                ecke(&m, eg),
+                aussen(&m, eg, 1, 1500.0),
+            ],
+            ..fenster(&m, eg, (0.0, 1.0))
+        };
+        m.add_opening(um_die_ecke).unwrap();
+        let s = m.chain(eg).unwrap().solid();
+        assert!(offen(&s) < 1.0, "{typ:?}: {}", offen(&s));
+    }
+}
+
+/// Review #79, Befund 4: Eine Tür ab Unterkante Wand und eine Öffnung bis
+/// Oberkante Wand lassen keine Boden- oder Deckfläche im Loch stehen; der
+/// Grundriss genau auf Oberkante Öffnung hat dort keine Schnittfläche. Der
+/// Körper bleibt geschlossen.
+#[test]
+fn raender_der_oeffnung() {
+    for typ in [None, Some(MONO_TYPE_GUID), Some(CAVITY_TYPE_GUID)] {
+        let (mut m, eg, _) = haus(typ);
+        let st = storey(&m, eg);
+        let c = m.chain(eg).unwrap();
+        let unten = m.level_z(LevelRef::bottom(st)).unwrap();
+        let (zb, zt) = (c.base, c.base + c.height);
+        let tuer = Opening {
+            kind: OpeningKind::Door,
+            bottom: HeightRef::Level(LevelRef {
+                offset: zb - unten,
+                ..LevelRef::bottom(st)
+            }),
+            ..fenster(&m, eg, (3000.0, 4010.0))
+        };
+        m.add_opening(tuer).unwrap();
+        let hoch = Opening {
+            top: HeightRef::Level(LevelRef {
+                offset: zt - unten,
+                ..LevelRef::bottom(st)
+            }),
+            ..fenster(&m, eg, (5000.0, 6000.0))
+        };
+        m.add_opening(hoch).unwrap();
+        let c = m.chain(eg).unwrap();
+        let im_loch =
+            |p: Vec3, u: (f64, f64)| p.x.abs() < 1000.0 && p.y > u.0 + 1.0 && p.y < u.1 - 1.0;
+        let s = c.solid();
+        assert!(offen(&s) < 1.0, "{typ:?}: {}", offen(&s));
+        for t in &s.triangles {
+            let mid = (t.p[0] + t.p[1] + t.p[2]) * (1.0 / 3.0);
+            let boden = t.n.z < -0.5 && (mid.z - zb).abs() < 1.0 && im_loch(mid, (3000.0, 4010.0));
+            let decke = t.n.z > 0.5 && (mid.z - zt).abs() < 1.0 && im_loch(mid, (5000.0, 6000.0));
+            assert!(!boden && !decke, "{typ:?}: {mid:?} {:?}", t.n);
+        }
+        for e in &s.edges {
+            let mid = (e.a + e.b) * 0.5;
+            let boden = (mid.z - zb).abs() < 1.0
+                && (e.a.z - e.b.z).abs() < 1e-6
+                && im_loch(mid, (3000.0, 4010.0));
+            assert!(!boden, "{typ:?}: Kante {mid:?}");
+        }
+        let z1 = m.chain(eg).unwrap().joints.holes[0].z.1;
+        let s = c.solid_cut_at(z1);
+        for t in &s.triangles {
+            let mid = (t.p[0] + t.p[1] + t.p[2]) * (1.0 / 3.0);
+            assert!(
+                !(t.n.z > 0.5 && (mid.z - z1).abs() < 1.0 && im_loch(mid, (3000.0, 4010.0))),
+                "{typ:?}: Schnittfläche im Loch {mid:?}"
+            );
+        }
+    }
 }
 
 /// Mengen (VOB-Vorgabe §5): je getroffener Schicht das eigene Lochmaß mit

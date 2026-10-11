@@ -10,7 +10,9 @@
 
 use super::{category, err, keyword, Line, LoadError, Record};
 use crate::element::{Element, ElementKind, LevelEdge, LevelRef};
-use crate::oeffnung::{HeightLine, HeightRef, Install, Opening, OpeningKind};
+use crate::oeffnung::{
+    HeightLine, HeightRef, Install, Opening, OpeningKind, MAX_INSTALL, MAX_REVEAL,
+};
 use crate::{Guid, Model, StoreyId};
 use sk_math::vec3;
 use std::collections::HashMap;
@@ -107,12 +109,35 @@ fn read_height(
     }
 }
 
-/// Parametrik einer `[opening]`-Zeile.
+/// Hinweis zu einem Wert, der nicht zählt.
+fn verworfen(r: &Record, key: &str, folge: &str) -> String {
+    format!(
+        "Zeile {}: [opening] „{key}={}“ ungültig, {folge}",
+        r.line,
+        r.opt(key).unwrap_or("")
+    )
+}
+
+/// Parametrik einer `[opening]`-Zeile. Ein ungültiger Wert gibt einen
+/// Hinweis: Art, Anschlag und Einbautiefen nehmen die Vorgabe, ein
+/// unlesbarer Pfad verwirft die Öffnung (`None`, Review #79). Eine Höhe, die
+/// auf kein Geschoss oder keine Höhenlinie zeigt, lehnt die Datei ab wie
+/// jeder andere Verweis.
 pub(super) fn read(
     r: &Record,
     storeys: &HashMap<Guid, StoreyId>,
-) -> Result<ElementKind, LoadError> {
-    let kind = keyword(r, "art", &OpeningKind::ALL, OpeningKind::word)?;
+    hints: &mut Vec<String>,
+) -> Result<Option<ElementKind>, LoadError> {
+    let kind = match r.opt("art") {
+        Some(_) => match keyword(r, "art", &OpeningKind::ALL, OpeningKind::word) {
+            Ok(k) => k,
+            Err(_) => {
+                hints.push(verworfen(r, "art", "Fenster gilt"));
+                OpeningKind::Window
+            }
+        },
+        None => keyword(r, "art", &OpeningKind::ALL, OpeningKind::word)?,
+    };
     let path = r
         .get("pts")?
         .split(';')
@@ -126,42 +151,56 @@ pub(super) fn read(
             }
         })
         .collect::<Option<Vec<_>>>()
-        .filter(|p| (2..=3).contains(&p.len()))
-        .ok_or_else(|| r.bad("pts", "x y;x y[;x y]"))?;
-    let reveal = match r.opt("reveal") {
-        None => None,
-        Some(v) => {
-            let n: Vec<f64> = v
-                .split(',')
-                .filter_map(|x| x.parse::<f64>().ok())
-                .filter(|x| x.is_finite() && *x >= 0.0)
-                .collect();
-            let [a, b, c, d] = n[..] else {
-                return Err(r.bad("reveal", "links,rechts,oben,unten"));
-            };
-            Some([a, b, c, d])
+        .filter(|p| (2..=3).contains(&p.len()));
+    let Some(path) = path else {
+        hints.push(verworfen(r, "pts", "Öffnung verworfen"));
+        // Die übrigen Schlüssel der Zeile nicht noch einmal melden
+        for k in [
+            "guid", "bottom", "top", "reveal", "install", "element", "number", "cat", "seq",
+            "storey",
+        ] {
+            r.opt(k);
         }
+        return Ok(None);
     };
-    let mm = |key: &str| -> Result<Option<f64>, LoadError> {
-        r.opt(key)
-            .map(|v| {
-                v.parse::<f64>()
+    let reveal = r.opt("reveal").and_then(|v| {
+        let n: Vec<Option<f64>> = v
+            .split(',')
+            .map(|x| {
+                x.parse::<f64>()
                     .ok()
-                    .filter(|x| x.is_finite() && *x >= 0.0)
-                    .ok_or_else(|| r.bad(key, "Millimeter"))
+                    .filter(|x| (0.0..=MAX_REVEAL).contains(x))
             })
-            .transpose()
+            .collect();
+        match n[..] {
+            [Some(a), Some(b), Some(c), Some(d)] => Some([a, b, c, d]),
+            _ => {
+                hints.push(verworfen(r, "reveal", "Anschlag nach Wandtyp"));
+                None
+            }
+        }
+    });
+    let mut mm = |key: &str| -> Option<f64> {
+        let v = r.opt(key)?;
+        let x = v
+            .parse::<f64>()
+            .ok()
+            .filter(|x| (0.0..=MAX_INSTALL).contains(x));
+        if x.is_none() {
+            hints.push(verworfen(r, key, "Vorgabe gilt"));
+        }
+        x
     };
     let install = Install {
-        outer: mm("install")?,
-        element: mm("element")?,
+        outer: mm("install"),
+        element: mm("element"),
     };
-    Ok(ElementKind::Opening(Opening {
+    Ok(Some(ElementKind::Opening(Opening {
         kind,
         path,
         bottom: read_height(r, "bottom", storeys)?,
         top: read_height(r, "top", storeys)?,
         reveal,
         install,
-    }))
+    })))
 }

@@ -13,17 +13,25 @@
 //!   nach links); Enter setzt den Punkt genau, Esc schließt erst die Eingabe.
 //! - E6: Mit [`WallTool::ext`] setzt dieselbe Eingabe Erweiterungsbauteile
 //!   (Punkt, Linie, Rechteck, siehe [`crate::ext_werkzeug`]).
+//! - G1: Die Innenwand fängt an Wandflächen und freien Wandenden des aktiven
+//!   Geschosses und setzt sich dort selbst ab (siehe `grundriss/fang.rs`).
 
 use crate::camera::Camera;
 use crate::ext_werkzeug::{Art, ExtModus};
 use crate::measure_input::{opens, InputOutcome, MeasureInput};
+use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
 use sk_model::erweiterung::ExtPart;
-use sk_model::{Category, Layer, RefSide, WallChain};
+use sk_model::{Category, Fangziele, Layer, RefSide, StoreyId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
+use std::time::Instant;
+
+#[path = "grundriss/fang.rs"]
+mod fang;
+use fang::{FangStand, Ziel};
 
 /// Vorschauhöhe ohne Geschoss (EG mit OK +2,855).
 pub const WALL_HEIGHT: f64 = 2855.0;
@@ -44,6 +52,8 @@ enum SnapKind {
     Point,
     /// Auf einer Hintergrundkante.
     Edge,
+    /// Wandfläche oder freies Wandende im aktiven Geschoss (G1).
+    Wand,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,6 +68,8 @@ struct Cursor {
     pos: Vec3,
     kind: SnapKind,
     guides: Vec<Line>,
+    /// Gefangene Wandfläche oder gefangenes Wandende (G1).
+    ziel: Option<Ziel>,
 }
 
 pub struct WallTool {
@@ -91,6 +103,17 @@ pub struct WallTool {
     /// Werkzeug „Wandöffnung“ bzw. „Türöffnung“ (Paket O3) statt Wand;
     /// die App führt es, hier zeichnet es seine Vorschau.
     pub oeffnung: Option<crate::oeffnung_werkzeug::Werkzeug>,
+    /// Wandflächen und freie Enden des aktiven Geschosses (G1, auf z = 0).
+    fang: Fangziele,
+    /// Stand von `snaps` und `fang` (Modellrevision, Geschoss).
+    fang_stand: Option<FangStand>,
+    /// Zeitpunkt des letzten Einrastens an einer Wand (Puls).
+    eingerastet: Option<Instant>,
+    /// Richtung der Wandfläche, an der der Zug beginnt (Richtungen des ersten Segments).
+    start_dir: Option<Vec3>,
+    /// Eingabe „Abstand ab Ecke“ vor dem ersten Punkt: Ecke, Richtung längs
+    /// der Fläche, Normale der Fläche.
+    abstand: Option<[Vec3; 3]>,
 }
 
 /// Felder der Pille beim Zeichnen.
@@ -142,6 +165,11 @@ impl WallTool {
             ext: None,
             ext_fertig: Vec::new(),
             oeffnung: None,
+            fang: Fangziele::default(),
+            fang_stand: None,
+            eingerastet: None,
+            start_dir: None,
+            abstand: None,
         }
     }
 
@@ -158,6 +186,9 @@ impl WallTool {
 
     /// Felder der Pille.
     pub fn labels(&self) -> [&'static str; 2] {
+        if self.abstand_offen() {
+            return ["Abstand", ""];
+        }
         self.ext.as_ref().map_or(LABELS, |m| m.art.labels())
     }
 
@@ -214,6 +245,9 @@ impl WallTool {
             return None;
         }
         let len = i.value(0)?.ok()?;
+        if let Some([ecke, dir, _]) = self.abstand.filter(|_| self.abstand_offen()) {
+            return Some(ecke + dir * len);
+        }
         let last = match self.ext.as_ref() {
             Some(m) if m.art == Art::Punkt => m.zuletzt?,
             _ => *self.points.last()?,
@@ -266,6 +300,9 @@ impl WallTool {
         if !self.enabled {
             return None;
         }
+        if self.points.is_empty() && self.ext.is_none() {
+            return self.label_vor_start();
+        }
         let last = match self.ext.as_ref() {
             Some(m) if m.art == Art::Punkt && self.input.is_some() => m.zuletzt?,
             _ => *self.points.last()?,
@@ -286,6 +323,10 @@ impl WallTool {
             )
         } else {
             crate::ui::live_length_text((end - last).length())
+        };
+        let text = match self.ziel_name() {
+            Some(n) if self.input.is_none() => format!("{text} · an {n}"),
+            _ => text,
         };
         Some(([last, end], text))
     }
@@ -367,6 +408,10 @@ impl WallTool {
             push_dir(&mut dirs, d);
             push_dir(&mut dirs, perp(d));
         } else {
+            if let Some(d) = self.start_dir {
+                push_dir(&mut dirs, d);
+                push_dir(&mut dirs, perp(d));
+            }
             push_dir(&mut dirs, Vec3::X);
             push_dir(&mut dirs, Vec3::Y);
         }
@@ -381,12 +426,17 @@ impl WallTool {
 
     /// Berechnet den gefangenen Cursorpunkt neu (nach Mausbewegung oder Kamerawechsel).
     pub fn refresh(&mut self, cam: &Camera, w: f64, h: f64, scale: f64) {
+        let vorher = self.cursor.as_ref().and_then(|c| c.ziel);
         self.cursor = if self.enabled {
             self.mouse
                 .and_then(|(mx, my)| self.snap(cam, mx, my, w, h, scale))
         } else {
             None
         };
+        let jetzt = self.cursor.as_ref().and_then(|c| c.ziel);
+        if jetzt.is_some() && jetzt != vorher {
+            self.eingerastet = Some(Instant::now());
+        }
         let ends = self.points.last().copied().zip(self.rubber_end());
         self.rubber_dip = ends
             .and_then(|(a, b)| Some((cam.project(a, w, h)?, cam.project(b, w, h)?)))
@@ -417,6 +467,8 @@ impl WallTool {
         self.cursor = None;
         self.input = None;
         self.oeffnung = None;
+        // Neues Projekt: Fangziele beim nächsten Abgleich neu holen
+        self.fang_stand = None;
         if !on {
             self.ext = None;
         }
@@ -451,6 +503,7 @@ impl WallTool {
             pos,
             kind: SnapKind::Free,
             guides: Vec::new(),
+            ziel: None,
         };
 
         // 1. Startpunkt schließt den Zug
@@ -459,10 +512,41 @@ impl WallTool {
                 pos: self.points[0],
                 kind: SnapKind::Start,
                 guides: Vec::new(),
+                ziel: None,
             });
         }
 
-        // 2. Endpunkt einer Hintergrundkante
+        let starts = self.start_lines();
+        let ortho = self.ortho != self.shift;
+        let mut lasts = self.last_lines();
+
+        // 90°-Sprung: Punkt auf die passendste Richtung vom letzten Punkt zwingen
+        if ortho && !lasts.is_empty() {
+            let last = lasts[0].origin;
+            let v = raw - last;
+            let best = *lasts
+                .iter()
+                .max_by(|a, b| a.dir.dot(v).abs().total_cmp(&b.dir.dot(v).abs()))
+                .unwrap();
+            lasts = vec![best];
+        }
+
+        // 2. Wandende oder Wandfläche im aktiven Geschoss (G1)
+        let erzwungen = (ortho && !lasts.is_empty()).then(|| lasts[0]);
+        if let Some((pos, ziel)) = self.wand_treffer(raw, erzwungen.as_ref(), &px, scale) {
+            let guides = match ziel {
+                Ziel::Flaeche(_) => erzwungen.into_iter().collect(),
+                Ziel::Ende(_) => Vec::new(),
+            };
+            return Some(Cursor {
+                pos,
+                kind: SnapKind::Wand,
+                guides,
+                ziel: Some(ziel),
+            });
+        }
+
+        // 3. Endpunkt einer Hintergrundkante
         let near = self
             .snaps
             .iter()
@@ -475,25 +559,11 @@ impl WallTool {
                 pos: p,
                 kind: SnapKind::Point,
                 guides: Vec::new(),
+                ziel: None,
             });
         }
 
-        let starts = self.start_lines();
-        let ortho = self.ortho != self.shift;
-        let mut lasts = self.last_lines();
-
-        // 2. 90°-Sprung: Punkt auf die passendste Richtung vom letzten Punkt zwingen
-        if ortho && !lasts.is_empty() {
-            let last = lasts[0].origin;
-            let v = raw - last;
-            let best = *lasts
-                .iter()
-                .max_by(|a, b| a.dir.dot(v).abs().total_cmp(&b.dir.dot(v).abs()))
-                .unwrap();
-            lasts = vec![best];
-        }
-
-        // 3. Schnitt von Richtung am letzten Punkt mit Spurlinie vom Start
+        // 4. Schnitt von Richtung am letzten Punkt mit Spurlinie vom Start
         let mut best: Option<(f64, Cursor)> = None;
         for l in &lasts {
             for s in &starts {
@@ -511,6 +581,7 @@ impl WallTool {
                             pos: x,
                             kind: SnapKind::Crossing,
                             guides: vec![*l, *s],
+                            ziel: None,
                         },
                     ));
                 }
@@ -537,6 +608,7 @@ impl WallTool {
                             pos: x,
                             kind: SnapKind::Crossing,
                             guides: vec![*l],
+                            ziel: None,
                         },
                     ));
                 }
@@ -564,6 +636,7 @@ impl WallTool {
                     pos: p,
                     kind: SnapKind::Edge,
                     guides: Vec::new(),
+                    ziel: None,
                 });
             }
         }
@@ -575,10 +648,11 @@ impl WallTool {
                 pos,
                 kind: SnapKind::Line,
                 guides: vec![l],
+                ziel: None,
             });
         }
 
-        // 4. Einzelne Linie in Reichweite
+        // 5. Einzelne Linie in Reichweite
         let mut best: Option<(f64, Cursor)> = None;
         for l in lasts.iter().chain(starts.iter()) {
             let p = l.origin + l.dir * (raw - l.origin).dot(l.dir);
@@ -590,6 +664,7 @@ impl WallTool {
                         pos: p,
                         kind: SnapKind::Line,
                         guides: vec![*l],
+                        ziel: None,
                     },
                 ));
             }
@@ -649,8 +724,13 @@ impl WallTool {
                         out.commit = self.finish_open();
                     } else {
                         self.points.push(c.pos);
+                        // G1: an einer quer liegenden Wandfläche oder einem Wandende abgesetzt
+                        if self.setzt_ab(&c, last) {
+                            out.commit = self.finish_open();
+                        }
                     }
                 } else {
+                    self.start_dir = self.flaeche_dir(c.ziel);
                     self.points.push(c.pos);
                 }
                 self.refresh(cam, w, h, scale);
@@ -726,6 +806,10 @@ impl WallTool {
             let Key::Char(ch) = key else {
                 return false;
             };
+            if self.oeffnet_abstand(ch, mods) {
+                out.redraw = true;
+                return true;
+            }
             let bezug = match self.ext.as_ref() {
                 Some(m) if m.art == Art::Punkt => m.zuletzt.is_some(),
                 _ => !self.points.is_empty(),
@@ -756,6 +840,9 @@ impl WallTool {
             }
             InputOutcome::Enter => {
                 if let Some(p) = self.typed_point() {
+                    if self.abstand_offen() {
+                        self.start_dir = self.abstand.map(|a| a[1]);
+                    }
                     self.input = None;
                     if self.ext.is_some() {
                         self.ext_punkt(p);
@@ -835,6 +922,13 @@ impl WallTool {
             out.push(line(s[0], s[1], col.draw, 2.0, 0.0));
         }
 
+        // G1: gefangene Wandfläche leuchtet über ihre ganze Länge
+        let puls = self.puls(theme);
+        if let Some((a, b)) = self.ziel_strecke() {
+            out.push(line(a, b, col.shadow_tool, 7.0 * puls, 0.0));
+            out.push(line(a, b, col.track, 4.0 * puls, 0.0));
+        }
+
         if let Some(c) = &self.cursor {
             // Spurlinien vom Ursprung bis über den Punkt hinaus
             for g in &c.guides {
@@ -858,6 +952,7 @@ impl WallTool {
             let (color, size) = match c.kind {
                 SnapKind::Start => (col.start, 12.0),
                 SnapKind::Crossing | SnapKind::Point => (col.track, 10.0),
+                SnapKind::Wand => (col.track, 11.0 * puls),
                 SnapKind::Edge => (col.track, 7.0),
                 SnapKind::Line => (col.track, 7.0),
                 SnapKind::Free => (col.draw, 6.0),

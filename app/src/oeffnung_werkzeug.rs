@@ -30,7 +30,8 @@ const RASTER: f64 = 10.0;
 
 /// Fängt `p` auf der Fläche `face`: in der Höhe an einer Linie aus `lines`
 /// oder am Wandfuß (OK Rohdecke, `elevation`), wenn näher als `tol`; längs
-/// an den Enden der Fläche. Sonst auf [`RASTER`] gerundet.
+/// an den Enden des freien Bereichs ([`OuterFace::free`]), nie darüber
+/// hinaus. Sonst auf [`RASTER`] gerundet.
 pub fn fangen(face: &OuterFace, lines: &[FaceLine], elevation: f64, p: Vec3, tol: f64) -> Fang {
     let foot = FaceLine {
         z: elevation,
@@ -53,13 +54,16 @@ pub fn fangen(face: &OuterFace, lines: &[FaceLine], elevation: f64, p: Vec3, tol
             (elevation + off, bind, false)
         }
     };
+    // Längs: an den Enden des freien Bereichs, nicht an der Ecke selbst
+    // (dort kann eine Öffnung nicht enden, Review #79)
     let u = face.u_of(vec3(p.x, p.y, 0.0));
-    let u = if (u - face.u.0).abs() < tol {
-        face.u.0
-    } else if (u - face.u.1).abs() < tol {
-        face.u.1
+    let (f0, f1) = face.free;
+    let u = if u < f0 + tol {
+        f0
+    } else if u > f1 - tol {
+        f1
     } else {
-        (u / RASTER).round() * RASTER
+        ((u / RASTER).round() * RASTER).clamp(f0, f1)
     };
     Fang {
         face: face.clone(),
@@ -298,6 +302,25 @@ mod tests {
         assert!(c.line && (c.p.z - el).abs() < 1e-9);
         let f = m.outer_face(eg, 0).unwrap();
         assert!((f.u_of(a.p) - 3000.0).abs() < 1e-9);
+    }
+
+    /// Zur Ecke gezogen endet die Öffnung am Ende des freien Bereichs, nie an
+    /// oder hinter der Ecke; das Modell nimmt sie an (Review #79).
+    #[test]
+    fn fang_vor_der_ecke() {
+        let (mut m, eg, _) = haus();
+        let f = m.outer_face(eg, 0).unwrap();
+        let el = m.storey(f.storey).unwrap().elevation;
+        assert!(f.free.0 > f.u.0 && f.free.1 < f.u.1, "{f:?}");
+        let a = fang(&m, eg, 0, 6000.0, el + 880.0);
+        for u in [f.u.1, f.u.1 + 300.0, f.free.1 - 20.0] {
+            let b = fang(&m, eg, 0, u, el + 2380.0);
+            assert!((f.u_of(b.p) - f.free.1).abs() < 1e-9, "{u}");
+        }
+        let b = fang(&m, eg, 0, f.u.1, el + 2380.0);
+        let o = oeffnung(OpeningKind::Window, &a, &b).unwrap();
+        assert_eq!(m.opening_fault(&o, None), None);
+        assert!(m.add_opening(o).is_some());
     }
 
     /// Zwei Ecken auf derselben Fläche: Fenster an Brüstung und Sturz, das

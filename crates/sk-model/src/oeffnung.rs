@@ -150,6 +150,10 @@ pub struct OuterFace {
     pub n: Vec3,
     /// Lage der Ecken der Außenfläche längs `d`.
     pub u: (f64, f64),
+    /// Bereich längs `d`, in dem ein freies Ende einer Öffnung liegen darf:
+    /// samt Anschlag innerhalb aller Schichtflächen des Segments, also nicht
+    /// an der Ecke ([`crate::Model::opening_fault`]).
+    pub free: (f64, f64),
     /// Wandfuß und Wandkrone (z absolut).
     pub z: (f64, f64),
 }

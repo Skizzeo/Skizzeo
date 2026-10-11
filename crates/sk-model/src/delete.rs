@@ -217,8 +217,30 @@ impl Model {
                 Err(r) => out.refused.push((id, r)),
             }
         }
+        // Öffnungen in den betroffenen Zügen: verlieren sie ihre Wand, gehen
+        // sie mit (Review #79)
+        let mut seated: Vec<ElementId> = Vec::new();
+        for (run, _) in &by_run {
+            for h in self.chain(*run).map(|c| c.joints.holes).unwrap_or_default() {
+                if let Some(o) = h.opening.filter(|o| !seated.contains(o)) {
+                    seated.push(o);
+                }
+            }
+        }
         for (run, segs) in by_run {
             self.remove_segments(run, &segs);
+        }
+        for o in seated {
+            let orphan = self.opening(o).is_some_and(|op| {
+                self.opening_fault(op, Some(o)) == Some(crate::OpeningFault::NoWall)
+            });
+            if orphan && !out.removed.contains(&o) {
+                note!(self, Element, self.elements, o);
+                self.elements.remove(o);
+                self.touch();
+                out.removed.push(o);
+                out.kinds.push(Category::Opening);
+            }
         }
         out
     }
