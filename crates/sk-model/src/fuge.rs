@@ -255,10 +255,14 @@ impl WallChain {
     /// kommt später, Jörn 07.10.). Dazu je Segment des Ergebnisses das
     /// Segment von `self`, aus dem es versetzt ist; `None` für eine Stufe.
     /// Die Stufe an Punkt 0 steht am Ende, so bleibt Segment k über k, bis
-    /// die erste Stufe kommt.
+    /// die erste Stufe kommt. `face`: Versatz der Außenfläche der Wand, die
+    /// so liegt (ihr [`WallChain::outer_offset`]); die Stufe steht mit der
+    /// Außenfläche auf der Fuge, gleich wo ihre Bezugslinie liegt
+    /// (Geometrie #69).
     pub fn with_segment_offsets_stepped(
         &self,
         offsets: &[f64],
+        face: f64,
     ) -> Option<(WallChain, Vec<Option<usize>>)> {
         let (pts, closed, dirs) = self.layout()?;
         let (n, m) = (pts.len(), dirs.len());
@@ -284,7 +288,8 @@ impl WallChain {
                         } else if offsets[a] > 1e-6 || offsets[b] > 1e-6 {
                             return None;
                         } else {
-                            vec![pj + shift(a), pj + shift(b)]
+                            let back = right_of((shift(b) - shift(a)).normalized()) * -face;
+                            vec![pj + shift(a) + back, pj + shift(b) + back]
                         }
                     } else {
                         let (pa, pb) = (pj + shift(a), pj + shift(b));
@@ -418,7 +423,7 @@ mod tests {
     fn stufen_beim_versatz() {
         let w = rechteck().with_splits(1, &[3000.0, 6000.0]).unwrap();
         let o = [0.0, 0.0, -1500.0, 0.0, 0.0, 0.0];
-        let (c, map) = w.with_segment_offsets_stepped(&o).unwrap();
+        let (c, map) = w.with_segment_offsets_stepped(&o, 0.0).unwrap();
         assert_eq!(c.segment_count(), 8);
         let s = |k| Some(k);
         assert_eq!(map, vec![s(0), s(1), None, s(2), None, s(3), s(4), s(5)]);
@@ -431,14 +436,17 @@ mod tests {
         assert_eq!(c.offset_against(2, &w, 2), None);
         let mut v = o;
         v[2] = 300.0;
-        assert!(w.with_segment_offsets_stepped(&v).is_none(), "Erker später");
+        assert!(
+            w.with_segment_offsets_stepped(&v, 0.0).is_none(),
+            "Erker später"
+        );
         v[2] = 0.0;
-        let (c, map) = w.with_segment_offsets_stepped(&v).unwrap();
+        let (c, map) = w.with_segment_offsets_stepped(&v, 0.0).unwrap();
         assert_eq!(c.points, w.with_segment_offsets(&v).unwrap().points);
         assert_eq!(map, (0..6).map(Some).collect::<Vec<_>>());
         // Ganze Wand zurück: keine Stufe, Ecken geschnitten
         let v = [0.0, -500.0, -500.0, -500.0, 0.0, 0.0];
-        let (c, map) = w.with_segment_offsets_stepped(&v).unwrap();
+        let (c, map) = w.with_segment_offsets_stepped(&v, 0.0).unwrap();
         assert_eq!(c.segment_count(), 6);
         assert!(map.iter().all(|x| x.is_some()));
         // Stufe an Punkt 0: steht am Ende
@@ -450,7 +458,7 @@ mod tests {
             vec3(0.0, 8000.0, 0.0),
         ]);
         let (c, map) = z
-            .with_segment_offsets_stepped(&[-1000.0, 0.0, 0.0, 0.0, 0.0])
+            .with_segment_offsets_stepped(&[-1000.0, 0.0, 0.0, 0.0, 0.0], 0.0)
             .unwrap();
         assert_eq!(map, vec![s(0), s(1), s(2), s(3), s(4), None]);
         assert!(near(c.points[0], vec3(5000.0, 7000.0, 0.0)));

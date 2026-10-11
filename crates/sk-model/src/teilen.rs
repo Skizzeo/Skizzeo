@@ -868,4 +868,37 @@ mod tests {
             }
         }
     }
+
+    /// Geometrie (Prüfung #69, Nachprüfung): Dasselbe Mittelstück mit
+    /// Bezugslinie innen (Zug gegen den Uhrzeiger, Bezug links). Auch hier
+    /// liegt die Außenfläche jeder Stufe auf der Fuge: Terrasse und Blech
+    /// sind 3 m breit wie mit Bezug außen, nicht um zwei Wanddicken
+    /// schmaler.
+    #[test]
+    fn stufe_auf_der_fuge_auch_mit_bezug_innen() {
+        let (mut m, eg, og) = haus(&[
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ]);
+        let nord = m.wall_at(eg, 2).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        let st = m.run(og).unwrap().storey;
+        assert!(m.set_flat_roof(st, true));
+        let mitte = m.wall_at(og, 3).unwrap();
+        m.begin("Rücksprung");
+        assert!(m.set_offset(mitte, -1500.0).is_some());
+        m.commit();
+        pruefen(&mut m);
+        let Some(Ok(f)) = m.floor(eg) else {
+            panic!("Decke")
+        };
+        let t = &f.terraces;
+        assert_eq!(t.coping.len(), 1);
+        let l = t.coping[0].length();
+        assert!((l - 3000.0).abs() < 1e-6, "Blech {l}");
+        let a = t.area() / 1e6;
+        assert!((a - 3.0 * 1.36).abs() < 1e-6, "Terrasse {a}");
+    }
 }

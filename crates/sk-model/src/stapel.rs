@@ -49,6 +49,12 @@ impl Model {
             .collect()
     }
 
+    /// Versatz der Außenfläche des Zuges `up`: Daran stehen seine Stufen
+    /// auf der Fuge (W-12, Geometrie #69).
+    fn step_face(&self, up: RunId) -> f64 {
+        self.base_chain(up).map_or(0.0, |c| c.outer_offset())
+    }
+
     /// Je Segment des gestapelten Zuges `up` das Segment des Zuges darunter,
     /// auf dem es steht (über die Kopplung); `None` für eine Stufe (W-12)
     /// oder ohne Zug darunter.
@@ -213,7 +219,7 @@ impl Model {
                     self.recount_offsets(&usegs, &lower, &lsegs)
                 }
             };
-            match lower.with_segment_offsets_stepped(&offsets) {
+            match lower.with_segment_offsets_stepped(&offsets, self.step_face(up)) {
                 Some((c, map))
                     if room_inside(&c)
                         && self.lengths_fit(up, &c, &lower, &map)
@@ -380,7 +386,7 @@ impl Model {
         let mut offsets: Vec<f64> = partners.iter().map(|&j| state(j).0).collect();
         let free: Vec<bool> = partners.iter().map(|&j| !state(j).1).collect();
         offsets[seg] = offset;
-        let (chain, map) = lower.with_segment_offsets_stepped(&offsets)?;
+        let (chain, map) = lower.with_segment_offsets_stepped(&offsets, self.step_face(run))?;
         if !room_inside(&chain) || !self.lengths_fit(run, &chain, &lower, &map) {
             return None;
         }
@@ -516,7 +522,7 @@ impl Model {
             }
         }
         let recount = self.partners(up, &lsegs).iter().any(|p| p.is_none());
-        let (pts, map) = match lower.with_segment_offsets_stepped(&offsets) {
+        let (pts, map) = match lower.with_segment_offsets_stepped(&offsets, self.step_face(up)) {
             Some((c, map)) => (c.points, map),
             // Neue Segmentzahl: bündig neu auflegen, die Kopplungen folgen
             None if recount => (lower.points.clone(), (0..lsegs.len()).map(Some).collect()),
