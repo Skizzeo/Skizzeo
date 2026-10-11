@@ -1747,7 +1747,16 @@ impl App {
             self.upload_model();
         }
         self.overlay_dirty = true;
+        self.replace_discover();
         self.refresh_cursor();
+    }
+
+    /// Die Entdecken-Karte neu legen (Ansicht oder Fenstergröße geändert):
+    /// Sie weicht dem Bogen aus, wo er steht.
+    fn replace_discover(&mut self) {
+        if self.hint.as_ref().is_some_and(|h| h.discover) {
+            self.hint_dirty = true;
+        }
     }
 
     /// Kamera der aktiven Ansicht neu setzen und merken, dass sie eingepasst ist.
@@ -4514,6 +4523,7 @@ impl App {
                     self.layout_dirty = true;
                 }
                 self.refit_plan();
+                self.replace_discover();
                 self.redraw = true;
             }
             Event::ScaleChanged(s) => {
@@ -4521,6 +4531,7 @@ impl App {
                 self.ui.top = self.title.height();
                 self.ui.fit(s, self.w, self.h);
                 self.refit_plan();
+                self.replace_discover();
                 self.overlay_dirty = true;
                 self.redraw = true;
             }
@@ -5552,19 +5563,29 @@ impl App {
             let size = self
                 .hint
                 .as_ref()
-                .filter(|h| h.rect.is_none())
+                .filter(|h| h.rect.is_none() || h.discover)
                 .map(|h| (h.size(&self.theme, &self.ui.fonts, s), h.anchor.clone()));
             if let Some((size, anchor)) = size {
                 let bounds = self.screen_bounds(&anchor);
                 let win = (self.w as f32, self.h as f32, self.top() as f32);
                 let views = self.ui.rect(Panel::Views, self.w, self.top());
+                // Bogen unten rechts im Grundriss und im Schnitt
+                let wheel_top = self
+                    .wheel
+                    .visible(self.ui.view, false)
+                    .then(|| self.wheel.top(&self.ui, self.w, self.h));
                 if let Some(h) = self.hint.as_mut() {
                     h.place(size, bounds, win, s);
                     // Entdecken-Karte im Hauptfenster: unten rechts, aber
-                    // links der rechten Spalte (nicht über dem Baum)
+                    // links der rechten Spalte (nicht über dem Baum) und
+                    // über dem Bogen, wenn er steht
                     if let (true, Some(r)) = (h.discover, h.rect.as_mut()) {
                         let m = (self.theme.size.panel_margin * s).round();
                         r.x = (views.x - m - r.w).max(8.0 * s).round();
+                        if let Some(t) = wheel_top {
+                            let top = self.ui.top as f32 + 8.0 * s;
+                            r.y = r.y.min(t - m - r.h).max(top).round();
+                        }
                     }
                 }
             }
