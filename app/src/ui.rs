@@ -1,6 +1,8 @@
 //! Paneele über der 3D-Ansicht: links „Werkzeuge“ mit dem Knopf „Gebäude“ und
-//! darunter „Geschosse“ (E14), rechts „Ansichten“ (3D, Grundriss, Schnitt und vier Ansichten) und darunter,
-//! solange ein Bauteil gewählt ist, „Eigenschaften“.
+//! unten der Knopf „Geschossmanager“ (Jörn 11.10.; das Diagramm „Geschosse“,
+//! E14, steht im eigenen Fenster), rechts „Ansichten“ (3D, Grundriss, Schnitt
+//! und vier Ansichten) und darunter, solange ein Bauteil gewählt ist,
+//! „Eigenschaften“.
 
 use crate::ext_props::ExtZeile;
 use crate::meldung::Meldung;
@@ -11,7 +13,9 @@ use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
 use sk_ui::theme::{Sizes, Theme};
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
-mod gross;
+mod fenster;
+
+pub use fenster::TITEL as LEVELS_TITEL;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKind {
@@ -177,12 +181,9 @@ pub enum Id {
     ExtWahl(u8, u8),
     ExtJa(u8),
     ExtListe(u8),
-    /// Paneel „Geschosse“ im linken Rand (Jörn 11.10.): zeigt nur an, ein
-    /// Klick irgendwo darauf öffnet die schwebende Großansicht.
+    /// Knopf „Geschossmanager“ unten links (Jörn 11.10.): öffnet das
+    /// Geschossfenster links neben dem Hauptfenster oder holt es nach vorn.
     LevelsOpen,
-    /// „Schließen ×“ in der Leiste der Großansicht; auch ein Klick daneben
-    /// meldet ihn.
-    LevelsClose,
 }
 
 /// Muster der Knöpfe der Eigenschaften, die `App::drain_button` ausführt:
@@ -967,8 +968,12 @@ pub struct Ui {
     /// Paneel „Geschosse“: Inhalt und laufendes Ziehen.
     levels: Levels,
     level_drag: Option<LevelDrag>,
-    /// Schwebende Großansicht „Geschosse“ offen ([`gross`]).
-    levels_gross: bool,
+    /// Oberfläche des Geschossfensters ([`fenster`]): nur das Diagramm,
+    /// über die ganze Breite `fenster_w` (dip).
+    fenster: bool,
+    fenster_w: f32,
+    /// Geschossfenster offen: Knopf „Geschossmanager“ in `accent`.
+    pub levels_open: bool,
     /// Fensterhöhe und Höhe der Titelleiste (Pixel), für die Höhe des
     /// Paneels „Geschosse“.
     win_h: f32,
@@ -1402,7 +1407,9 @@ impl Ui {
             images: [None, None, None, None, None],
             levels: Levels::default(),
             level_drag: None,
-            levels_gross: false,
+            fenster: false,
+            fenster_w: 0.0,
+            levels_open: false,
             win_h: 1e6,
             top: 32,
             tree_slot: 0.0,
@@ -1447,7 +1454,8 @@ impl Ui {
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
                 props_rows(p, self.edit.as_ref(), self.more_open)
             }),
-            Panel::Levels => vec![Row::Title("Geschosse")],
+            Panel::Levels if self.levels_diagramm() => vec![Row::Title("Geschosse")],
+            Panel::Levels => vec![Row::Button(Id::LevelsOpen, fenster::KNOPF)],
             Panel::Dialog => Vec::new(),
         }
     }
@@ -1837,7 +1845,7 @@ impl Ui {
 
     fn natural_height(&self, p: Panel) -> f32 {
         match p {
-            Panel::Levels => return self.levels_layout().height,
+            Panel::Levels if self.levels_diagramm() => return self.levels_layout().height,
             Panel::Dialog => return (self.dialog_h() * self.scale).round(),
             _ => {}
         }
@@ -1849,13 +1857,16 @@ impl Ui {
     fn width(&self, p: Panel) -> f32 {
         match p {
             Panel::Views | Panel::Props => self.size.right_width,
-            Panel::Levels if self.levels_gross => gross::BREITE,
+            Panel::Levels if self.fenster => self.fenster_w,
             _ => self.size.panel_width,
         }
     }
 
     /// Lage eines Paneels im Fenster (ohne Schatten).
     pub fn rect(&self, p: Panel, win_w: u32, top: u32) -> Rect {
+        if self.fenster {
+            return self.fenster_rect(top);
+        }
         let s = self.scale;
         let w = (self.width(p) * s).round();
         let m = (self.size.panel_margin * s).round();
@@ -1871,8 +1882,16 @@ impl Ui {
         let y = match p {
             // Unter „Ansichten“ und dem Baum bzw. unter „Werkzeuge“
             Panel::Props => top as f32 + 2.0 * m + self.panel_height(Panel::Views) + self.tree_slot,
-            Panel::Levels if self.levels_gross => top as f32 + self.gross_oben(),
-            Panel::Levels => top as f32 + 2.0 * m + self.panel_height(Panel::Tools),
+            // Neben dem Dialog das Diagramm unter „Werkzeuge“, sonst der
+            // Knopf „Geschossmanager“ unten links (Jörn 11.10.)
+            Panel::Levels => {
+                let unter = top as f32 + 2.0 * m + self.panel_height(Panel::Tools);
+                if self.dialog {
+                    unter
+                } else {
+                    unter.max(self.win_h - m - self.panel_height(p))
+                }
+            }
             _ => top as f32 + m,
         };
         Rect::new(x, y, w, self.panel_height(p))
@@ -1944,6 +1963,9 @@ impl Ui {
     }
 
     fn panels(&self) -> Vec<Panel> {
+        if self.fenster {
+            return vec![Panel::Levels];
+        }
         if self.dialog {
             return vec![Panel::Dialog];
         }
@@ -1972,7 +1994,7 @@ impl Ui {
     /// Alle Knöpfe eines Paneels am Rollstand, auch die hinausgerollten.
     fn laid_out_buttons(&self, p: Panel) -> Vec<(Id, Rect, &'static str)> {
         match p {
-            Panel::Levels => return self.level_buttons(),
+            Panel::Levels if self.levels_diagramm() => return self.level_buttons(),
             Panel::Dialog => return self.dialog_buttons(),
             _ => {}
         }
@@ -2047,6 +2069,7 @@ impl Ui {
             Id::Ortho => self.ortho,
             Id::View(v) => self.view == v,
             Id::Quantity => self.quantity_open,
+            Id::LevelsOpen => self.levels_open,
             Id::Nord => self.nord_aktiv || self.sonne_an,
             Id::Ext => self.ext_tool.is_some(),
             Id::ExtWahl(..) | Id::ExtJa(_) => self.ext_zeilen().any(|z| match (z, id) {
@@ -2078,9 +2101,7 @@ impl Ui {
             | Id::PropsAction(_)
             | Id::PropsMore
             | Id::PropsMaterial(_)
-            | Id::ExtListe(_)
-            | Id::LevelsOpen
-            | Id::LevelsClose => false,
+            | Id::ExtListe(_) => false,
         }
     }
 
@@ -2125,9 +2146,6 @@ impl Ui {
     }
 
     fn hit(&self, x: f64, y: f64, win_w: u32, top: u32) -> Option<(Panel, Option<Id>)> {
-        if self.levels_gross {
-            return self.hit_gross(x, y, win_w, top);
-        }
         if self.dialog {
             // Modal: alles unterhalb der Titelleiste gehört dem Dialog
             let r = self.rect(Panel::Dialog, win_w, top);
@@ -2142,16 +2160,14 @@ impl Ui {
         for p in self.panels() {
             let r = self.rect(p, win_w, top);
             if r.contains(x, y) {
-                // Klein zeigt das Paneel „Geschosse“ nur an (Jörn 11.10.)
-                if p == Panel::Levels {
-                    return Some((p, Some(Id::LevelsOpen)));
-                }
                 let (lx, ly) = (x - r.x as f64, y - r.y as f64);
+                let grip = || self.fenster.then(|| self.grip_at(lx, ly)).flatten();
                 let id = self
                     .buttons(p)
                     .into_iter()
                     .find(|(_, b, _)| b.contains(lx, ly))
-                    .map(|b| b.0);
+                    .map(|b| b.0)
+                    .or_else(|| grip().map(Id::Grip));
                 return Some((p, id));
             }
         }
@@ -2178,16 +2194,6 @@ impl Ui {
                 out.changed.extend(self.hover.take());
             }
             Event::MouseDown { button, x, y, .. } => {
-                if self.levels_gross && self.gross_daneben(x, y, win_w, top) {
-                    // Klick neben die Großansicht schließt sie beim Loslassen;
-                    // eine Eingabe gilt
-                    self.finish_edit(&mut out);
-                    out.consumed = true;
-                    if button == MouseButton::Left {
-                        self.pressed = Some(Id::LevelsClose);
-                    }
-                    return out;
-                }
                 let hit = self.hit(x, y, win_w, top);
                 // Ungültige Eingabe sperrt „Zeichnen beginnen“ auch beim Klick,
                 // der die Eingabe beendet
@@ -2250,8 +2256,7 @@ impl Ui {
                 if let Some(p) = self.pressed.take() {
                     out.changed.push(p);
                     out.consumed = true;
-                    let daneben = p == Id::LevelsClose && self.gross_daneben(x, y, win_w, top);
-                    if daneben || self.hit(x, y, win_w, top).and_then(|h| h.1) == Some(p) {
+                    if self.hit(x, y, win_w, top).and_then(|h| h.1) == Some(p) {
                         out.clicked = Some(p);
                     }
                 }
@@ -2297,8 +2302,7 @@ impl Ui {
         if t.rev != self.theme_rev {
             return None;
         }
-        if matches!(id, Id::Grip(_) | Id::LevelsOpen) || matches!(id, Id::Field(f) if f.is_level())
-        {
+        if matches!(id, Id::Grip(_)) || matches!(id, Id::Field(f) if f.is_level()) {
             return self.repaint_levels(t);
         }
         // Der Hinweis zum Zähler steht im Grundbild des Dialogs
@@ -2521,8 +2525,13 @@ impl Ui {
         // vom System (Review 1x)
         let mut c = spare.unwrap_or_else(|| Canvas::new(0, 0));
         c.reuse((r.w + 2.0 * m) as usize, (r.h + 2.0 * m) as usize);
-        widgets::panel(&mut c, Rect::new(m, m, r.w, r.h), s, t);
-        if p == Panel::Levels {
+        if self.fenster {
+            // Im eigenen Fenster ohne Rahmen und Schatten
+            c.clear(col.bg);
+        } else {
+            widgets::panel(&mut c, Rect::new(m, m, r.w, r.h), s, t);
+        }
+        if p == Panel::Levels && self.levels_diagramm() {
             self.paint_levels(t, &mut c, r.h);
         }
         if p == Panel::Dialog {
@@ -2861,7 +2870,9 @@ const DIALOG_FIELD_W: f32 = 84.0;
 
 /// Paneel „Geschosse“ (E14): Diagramm der Ebenen mit Griffen, Koten und
 /// Maßketten, in jeder Fenstergröße (Jörn 11.10.: die Zahlenliste im
-/// kleinen Fenster entfällt, die Großansicht zeigt alle Werte).
+/// kleinen Fenster entfällt). Bedient wird es im Geschossfenster
+/// ([`fenster`]); im Hauptfenster steht es nur neben dem Dialog „Gebäude
+/// erstellen“.
 impl Ui {
     /// Aufteilung: größter Maßstab, bei dem das Paneel über dem Fensterrand
     /// endet. Beim Ziehen bleibt sie stehen.
@@ -2869,21 +2880,21 @@ impl Ui {
         if let Some(d) = self.level_drag {
             return d.layout;
         }
-        if self.levels_gross {
-            return self.levels_layout_gross();
+        if self.fenster {
+            return self.levels_layout_fenster();
         }
+        // Neben dem Dialog „Gebäude erstellen“ unter „Werkzeuge“
         let m = (self.size.panel_margin * self.scale).round();
         let y = self.top as f32 + 2.0 * m + self.panel_height(Panel::Tools);
-        // Das Paneel zeigt nur an, es darf dichter werden als die Großansicht
-        self.levels_layout_at(y, self.size.level_px_per_m, true)
+        self.levels_layout_at(y, self.size.level_px_per_m)
     }
 
     /// Aufteilung für ein Paneel, das bei `y` (Pixel) beginnt, mit dem
     /// Maßstab `ppm` (dip je m) als größtem. Reicht auch der kleinste nicht,
-    /// rücken mit `dicht` alle Linien auf den Zeilenabstand zusammen; was
-    /// dann noch fehlt, schneidet der Fensterrand ab, Linien und Zahlen
-    /// bleiben im Paneel.
-    fn levels_layout_at(&self, y: f32, ppm: f32, dicht: bool) -> LevelsLayout {
+    /// rücken alle Linien auf den Zeilenabstand zusammen; was dann noch
+    /// fehlt, schneidet der Fensterrand ab, Linien und Zahlen bleiben im
+    /// Paneel.
+    fn levels_layout_at(&self, y: f32, ppm: f32) -> LevelsLayout {
         let (s, z) = (self.scale, &self.size);
         let m = (z.panel_margin * s).round();
         let avail = (self.win_h - y - m).max(0.0);
@@ -2903,10 +2914,9 @@ impl Ui {
         while l.height > avail && l.ppm > z.level_px_per_m_min {
             l = layout((l.ppm - 1.0).max(z.level_px_per_m_min), foot);
         }
-        if l.height > avail && dicht {
+        if l.height > avail {
             // 1 dip je m: jeder Abstand unter 22 m wird zum Zeilenabstand;
-            // reicht auch das nicht, weicht der Fuß (Gelände steht in der
-            // Großansicht)
+            // reicht auch das nicht, weicht der Fuß mit dem Gelände
             l = layout(1.0, foot);
             if l.height > avail {
                 l = layout(1.0, 0.0);
@@ -3158,7 +3168,7 @@ impl Ui {
                 Cursor::Hand
             }
             Some(Id::Field(_)) => Cursor::IBeam,
-            Some(Id::Storey(_) | Id::FlatRoof | Id::LevelsOpen | Id::LevelsClose) => Cursor::Hand,
+            Some(Id::Storey(_) | Id::FlatRoof) => Cursor::Hand,
             _ => Cursor::Arrow,
         }
     }
@@ -3304,9 +3314,6 @@ impl Ui {
         let px = z.font_small * s;
         let px_d = z.font_detail * s;
         let w1 = s.round().max(1.0);
-        if self.hover == Some(Id::LevelsOpen) {
-            self.paint_open_ring(t, c, panel_h);
-        }
         let right_text = |c: &mut Canvas,
                           f: Option<&sk_paint::font::Font>,
                           txt: &str,
@@ -4306,12 +4313,22 @@ mod levels_tests {
         alt: false,
     };
 
+    /// Hauptfenster neben dem Dialog „Gebäude erstellen“: dort zeigt das
+    /// Paneel das Diagramm.
     fn ui_mit_geschossen() -> (Ui, Scene) {
         let s = Scene::new();
         let mut ui = Ui::new(1.0, &Theme::dark());
         ui.fit(1.0, 1440, 900);
         ui.set_levels(s.levels());
+        ui.dialog = true;
         (ui, s)
+    }
+
+    /// Dasselbe im Geschossfenster, 460 × 900 Pixel; dort wird gezogen,
+    /// getippt und ein Geschoss gewählt (Jörn 11.10.).
+    fn ins_fenster(ui: &mut Ui) {
+        (ui.fenster, ui.dialog) = (true, false);
+        ui.fit_fenster(1.0, 460, 900, 32);
     }
 
     fn band(ui: &Ui, name: &str) -> Band {
@@ -4364,8 +4381,7 @@ mod levels_tests {
     #[test]
     fn griff_ziehen_meldet_gefangene_hoehe() {
         let (mut ui, _) = ui_mit_geschossen();
-        // Gezogen wird in der Großansicht (Jörn 11.10.)
-        assert!(ui.set_levels_gross(true));
+        ins_fenster(&mut ui);
         let ppm = ui.levels_layout().ppm as f64;
         let og = band(&ui, "OG");
         let (x, y) = griff(&ui, og.top);
@@ -4390,7 +4406,7 @@ mod levels_tests {
             1440,
             32,
         );
-        // 30 px im Maßstab der Großansicht, auf 1 cm gefangen
+        // 30 px im Maßstab des Fensters, auf 1 cm gefangen
         let z = og.top + 30.0 / ppm * 1000.0;
         assert_eq!(
             out.level,
@@ -4471,7 +4487,7 @@ mod levels_tests {
     #[test]
     fn masszahl_als_zahl_in_metern() {
         let (mut ui, _) = ui_mit_geschossen();
-        ui.set_levels_gross(true);
+        ins_fenster(&mut ui);
         let eg = band(&ui, "EG").id;
         let f = Field::ClearHeight(eg);
         klick_auf(&mut ui, f);
@@ -4506,7 +4522,7 @@ mod levels_tests {
     #[test]
     fn flachdach_band_und_schalter() {
         let (mut ui, mut s) = ui_mit_geschossen();
-        ui.set_levels_gross(true);
+        ins_fenster(&mut ui);
         assert_eq!(ui.levels.flat_roof, Some(false));
         let r = ui.rect(Panel::Levels, 1440, 32);
         let b = ui.flat_roof_rect().unwrap();
@@ -4631,7 +4647,7 @@ mod levels_tests {
     #[test]
     fn zeiger_folgt_dem_hover() {
         let (mut ui, _) = ui_mit_geschossen();
-        ui.set_levels_gross(true);
+        ins_fenster(&mut ui);
         let og = band(&ui, "OG");
         let mv = |ui: &mut Ui, (x, y): (f64, f64)| {
             ui.handle(&Event::MouseMove { x, y, mods: M }, 1440, 32);
@@ -4684,7 +4700,7 @@ mod levels_tests {
     #[test]
     fn klick_auf_geschossnamen() {
         let (mut ui, mut s) = ui_mit_geschossen();
-        ui.set_levels_gross(true);
+        ins_fenster(&mut ui);
         let og = band(&ui, "OG");
         assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
         let (x, y) = name_at(&ui, og.id).unwrap();
@@ -4710,10 +4726,8 @@ mod levels_tests {
         assert!(s.set_active_storey(og.id));
         ui.set_levels(s.levels());
         assert!(band(&ui, "OG").active && !band(&ui, "EG").active);
-        // Auch im kleinen Fenster, groß wie im Paneel im linken Rand
-        ui.fit(1.0, 900, 380);
-        assert!(name_at(&ui, og.id).is_some());
-        ui.set_levels_gross(false);
+        // Auch im kleinen Fenster
+        ui.fit_fenster(1.0, 300, 380, 32);
         assert!(name_at(&ui, og.id).is_some());
         assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
     }
@@ -4740,8 +4754,10 @@ mod levels_tests {
                 .iter()
                 .any(|r| matches!(r, Row::Hint(h) if h.starts_with("Außenwände") || h.starts_with("Im Fundament")))
         };
-        // 1920 × 1040 bei 125 %: knapp genug, dass früher die Liste kam
+        // 1920 × 1040 bei 125 %: knapp genug, dass früher die Liste kam;
+        // das Diagramm steht dort neben dem Dialog „Gebäude erstellen“
         ui.fit(1.25, 1920, 1040);
+        ui.dialog = true;
         ui.set_levels(s.levels());
         for (name, h) in [
             ("OG", true),
