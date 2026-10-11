@@ -23,7 +23,9 @@ const HAEUSER: [(&str, &str); 5] = [
     // Gebäude mit Versatz, Perimeterdämmung, Bodenkennwerte, fünf
     // Erweiterungen mit je zwei Exemplaren, Bauleistungen mit `auto=`;
     // seit Briefing Fassung 3 Gebäude 1 mit Flachdach (`kind=roof`,
-    // Aufkantungen, `[roof]`, Attikablech)
+    // Aufkantungen, `[roof]`, Attikablech); seit AD2 an DE-002 alle
+    // abweichenden Deckenschlüssel (Untersicht mit Bekleidung und Lattung,
+    // `upstand`, `crown`, `inner`, `coping_mat`)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
