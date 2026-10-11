@@ -110,6 +110,8 @@ pub struct OverflowRun {
     pub clamps: Vec<f64>,
     /// Fläche unter dem Notfallrohr: Gelände oder ein tieferes Dach.
     pub foot: Foot,
+    /// Abstand der Achse des Notfallrohrs von der Außenfläche (mm).
+    pub reach: f64,
 }
 
 /// Fläche, auf der ein Rohr endet (Prüfung Geometrie #68): das Gelände
@@ -117,12 +119,29 @@ pub struct OverflowRun {
 /// davor. Auf dem tieferen Dach endet das Rohr mit Auslaufbogen über dem
 /// Belag statt im Standrohr (das Wasser nimmt dort dessen Entwässerung
 /// auf, Flachdachrichtlinie: Ableitung auf tiefere Dachflächen).
+///
+/// Springt die Fassade darunter nur wenig vor (kleiner Rücksprung ohne
+/// Dachterrasse, Nachprüfung Geometrie #68), läuft das Rohr mit größerem
+/// Wandabstand an ihr vorbei bis ins Standrohr: `shift` ist der Zuschlag
+/// zum Wandabstand, gehalten von Schellen mit längerer Stockschraube.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Foot {
     /// OK Gelände bzw. OK Belag des tieferen Dachs.
     pub z: f64,
     pub lower: bool,
+    /// Zuschlag zum Wandabstand (mm), 0 ohne Rücksprung.
+    pub shift: f64,
 }
+
+/// Kleinster lichter Abstand eines Rohrs zu einer Fassade, an der es
+/// vorbeiläuft (mm); darunter rückt es um den Rücksprung nach außen.
+pub const MIN_GAP: f64 = 20.0;
+/// Größter Zuschlag zum Wandabstand (mm). Springt die Fassade darunter
+/// weiter vor (Decke ohne Terrasse), endet das Rohr über der Decke.
+pub const MAX_SHIFT: f64 = 300.0;
+
+/// Abstand der Rohrachse von der Außenfläche ohne Rücksprung (mm).
+pub const REACH: f64 = WALL_GAP + PIPE_D / 2.0;
 
 /// Regenfallrohr eines Ablaufs, fertig ausgelegt (mm, absolut).
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +158,9 @@ pub struct Downpipe {
     pub outlet: f64,
     pub box_top: f64,
     pub box_bot: f64,
+    /// Abstand der Rohrachse von der Außenfläche (mm): [`REACH`], vor
+    /// einem kleinen Rücksprung darunter mehr.
+    pub reach: f64,
     /// Unteres Ende des Fallrohrs (OK Standrohr bzw. OK Auslaufbogen über
     /// einem tieferen Dach) und die Fläche darunter.
     pub stand_top: f64,
@@ -176,12 +198,13 @@ pub fn clamp_heights(top: f64, bot: f64, spacing: f64) -> Vec<f64> {
 
 impl Downpipe {
     /// Legt das Regenfallrohr am Ablauf `drain` des Flachdachs `r` aus;
-    /// `foot` liefert die Fläche unter einem Grundrisspunkt (Gelände oder
-    /// tieferes Dach). `None` ohne Umriss.
+    /// `foot` liefert die Fläche unter einer Rohrachse (Grundrisspunkt) vor
+    /// der Fassade mit der Richtung nach außen (Gelände oder tieferes Dach).
+    /// `None` ohne Umriss.
     pub fn layout(
         r: &FlatRoof,
         drain: Vec3,
-        foot: impl Fn(Vec3) -> Foot,
+        foot: impl Fn(Vec3, Vec3) -> Foot,
         spec: DownpipeSpec,
     ) -> Option<Downpipe> {
         let n = r.outline.len();
@@ -213,8 +236,8 @@ impl Downpipe {
         let box_bot = control.map_or(box_top - BOX_H, |c| {
             (box_top - BOX_H).min(c - CONTROL_BELOW)
         });
-        let rohr = |face: Vec3| face + out * (WALL_GAP + PIPE_D / 2.0);
-        let unten = foot(rohr(face));
+        let rohr = |face: Vec3| face + out * REACH;
+        let unten = foot(rohr(face), out);
         let ground = unten.z;
         let stand_top = if unten.lower {
             ground + OUTLET_UP
@@ -230,7 +253,7 @@ impl Downpipe {
         let sill = top + SILL;
         let ov_box_top = sill + OVERFLOW_H + 20.0;
         let ov_box_bot = ov_box_top - BOX_H;
-        let ov_foot = foot(rohr(ov));
+        let ov_foot = foot(rohr(ov), out);
         let end = (ov_foot.z + OUTLET_UP).min(ov_box_bot);
         let ov_clamps = match spec.overflow {
             Overflow::Pipe => clamp_heights(ov_box_bot, end, spec.spacing),
@@ -245,6 +268,7 @@ impl Downpipe {
             outlet,
             box_top,
             box_bot,
+            reach: REACH + unten.shift,
             stand_top,
             ground,
             lower: unten.lower,
@@ -258,6 +282,7 @@ impl Downpipe {
                 end,
                 clamps: ov_clamps,
                 foot: ov_foot,
+                reach: REACH + ov_foot.shift,
             },
             mat: r.coping_mat,
         })
@@ -284,11 +309,11 @@ impl Downpipe {
 
     /// Achse des Fallrohrs (z = 0).
     pub fn axis(&self) -> Vec3 {
-        self.face + self.out * (WALL_GAP + PIPE_D / 2.0)
+        self.face + self.out * self.reach
     }
 
     fn ov_axis(&self) -> Vec3 {
-        self.overflow.face + self.out * (WALL_GAP + PIPE_D / 2.0)
+        self.overflow.face + self.out * self.overflow.reach
     }
 
     /// Körper für 3D und Ansichten: Kasten, Fallrohr, Schellen, Standrohr,
@@ -299,18 +324,26 @@ impl Downpipe {
             edge_kind: edge_kind::VIEW,
             ..Solid::default()
         };
-        let depth = WALL_GAP + PIPE_D / 2.0;
         let r = PIPE_D / 2.0;
-        // Wasserfangkasten an der Fassade, Rohrachse in seiner Mitte
-        let c = self.face + self.out * (BOX_D / 2.0).max(depth);
-        self.cuboid(&mut s, c, BOX_W, BOX_D, self.box_bot, self.box_top);
+        // Wasserfangkasten an der Fassade, Rohrachse in seiner Mitte; mit
+        // größerem Wandabstand reicht er bis an die Fassade
+        let tief = |reach: f64| (reach + BOX_D / 2.0).max(BOX_D);
+        let c = self.face + self.out * (tief(self.reach) / 2.0);
+        self.cuboid(
+            &mut s,
+            c,
+            BOX_W,
+            tief(self.reach),
+            self.box_bot,
+            self.box_top,
+        );
         // Fallrohr, Schellen und Standrohr
         let ax = self.axis();
         if self.box_bot - self.stand_top > 1.0 {
             cylinder(&mut s, ax, r, self.stand_top, self.box_bot);
         }
         for &z in &self.clamps {
-            self.clamp(&mut s, ax, z);
+            self.clamp(&mut s, ax, self.reach, z);
         }
         if self.lower {
             self.outlet_bend(&mut s, ax, self.stand_top, self.ground);
@@ -321,14 +354,14 @@ impl Downpipe {
         let o = &self.overflow;
         match self.spec.overflow {
             Overflow::Pipe => {
-                let c = o.face + self.out * (BOX_D / 2.0).max(depth);
-                self.cuboid(&mut s, c, OV_BOX_W, BOX_D, o.box_bot, o.box_top);
+                let c = o.face + self.out * (tief(o.reach) / 2.0);
+                self.cuboid(&mut s, c, OV_BOX_W, tief(o.reach), o.box_bot, o.box_top);
                 let ax = self.ov_axis();
                 if o.box_bot - o.end > 1.0 {
                     cylinder(&mut s, ax, r, o.end, o.box_bot);
                 }
                 for &z in &o.clamps {
-                    self.clamp(&mut s, ax, z);
+                    self.clamp(&mut s, ax, o.reach, z);
                 }
                 self.outlet_bend(&mut s, ax, o.end, o.foot.z);
             }
@@ -358,12 +391,14 @@ impl Downpipe {
         prism(s, &pts, z0, z1);
     }
 
-    /// Rohrschelle: Ring um das Rohr und Stift zur Fassade.
-    fn clamp(&self, s: &mut Solid, ax: Vec3, z: f64) {
-        let r = PIPE_D / 2.0 + CLAMP_T;
-        cylinder(s, ax, r, z - CLAMP_H / 2.0, z + CLAMP_H / 2.0);
-        let c = self.face + self.out * (WALL_GAP / 2.0);
-        self.cuboid(s, c, 12.0, WALL_GAP, z - 6.0, z + 6.0);
+    /// Rohrschelle: Ring um das Rohr mit der Achse `ax` im Abstand `reach`
+    /// vor der Fassade und Stift zur Fassade.
+    fn clamp(&self, s: &mut Solid, ax: Vec3, reach: f64, z: f64) {
+        let r = PIPE_D / 2.0;
+        cylinder(s, ax, r + CLAMP_T, z - CLAMP_H / 2.0, z + CLAMP_H / 2.0);
+        let stift = reach - r;
+        let c = ax - self.out * (r + stift / 2.0);
+        self.cuboid(s, c, 12.0, stift, z - 6.0, z + 6.0);
     }
 
     /// Grundriss: was unter der Schnitthöhe `cut` liegt, als Draufsicht
@@ -489,12 +524,15 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
     }
     let n = d.clamp_count();
     if n > 0 {
-        out.push(menge(
-            CLAMPS,
-            "st",
-            n as f64,
-            format!("{n} Schellen, Abstand höchstens {}", m(d.spec.spacing)),
-        ));
+        out.push(menge(CLAMPS, "st", n as f64, {
+            let mut f = format!("{n} Schellen, Abstand höchstens {}", m(d.spec.spacing));
+            // vor einem kleinen Rücksprung mit längerer Stockschraube
+            let reach = d.reach.max(d.overflow.reach);
+            if reach > REACH + 0.5 {
+                f += &format!(", Wandabstand bis {:.0} mm", reach - PIPE_D / 2.0);
+            }
+            f
+        }));
     }
     if !d.lower {
         out.push(menge(STAND, "st", 1.0, "1 Standrohr".into()));

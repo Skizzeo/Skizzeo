@@ -3,7 +3,10 @@
 //! Ebene des Dachaufbaus; es kommt und geht mit den Abläufen.
 
 use super::*;
-use crate::fallrohr::{Downpipe, DownpipeSpec, Foot, Overflow, SPACING_MAX, SPACING_MIN};
+use crate::fallrohr::{
+    Downpipe, DownpipeSpec, Foot, Overflow, MAX_SHIFT, MIN_GAP, REACH, SPACING_MAX, SPACING_MIN,
+    WALL_GAP,
+};
 use crate::roof::FlatRoof;
 
 impl Model {
@@ -126,7 +129,7 @@ impl Model {
             return Vec::new();
         };
         let b = self.building_of_element(roof);
-        let foot = |p: Vec3| self.foot_at(floor, b, p);
+        let foot = |p: Vec3, out: Vec3| self.foot_at(floor, b, p, out);
         let vorschlag;
         let drains = if drainage.drains.is_empty() {
             vorschlag =
@@ -151,25 +154,55 @@ impl Model {
             .unwrap_or_default()
     }
 
-    /// Fläche unter dem Grundrisspunkt `p` außen vor dem Flachdach über der
-    /// Decke `floor` (Prüfung Geometrie #68): das oberste tiefere Geschoss,
-    /// dessen Außenfläche `p` umschließt (zurückgesetzte Wand, davor Dach
-    /// bzw. Dachterrasse), mit OK Belag bzw. OK Rohdecke; sonst das Gelände.
-    fn foot_at(&self, floor: ElementId, b: Option<BuildingId>, p: Vec3) -> Foot {
+    /// Fläche unter der Rohrachse `p` außen vor dem Flachdach über der
+    /// Decke `floor` (Prüfung Geometrie #68), `out` zeigt nach außen: das
+    /// oberste tiefere Geschoss mit Dachterrasse, deren Außenfläche `p`
+    /// umschließt (OK Belag); sonst das Gelände. Springt eine Fassade
+    /// darunter nur wenig vor (kleiner Rücksprung ohne Terrasse), rückt das
+    /// Rohr um so viel nach außen, dass es mit dem Wandabstand an ihr
+    /// vorbeiläuft; erst über [`MAX_SHIFT`] endet es über der Decke.
+    fn foot_at(&self, floor: ElementId, b: Option<BuildingId>, p: Vec3, out: Vec3) -> Foot {
+        let mut shift: f64 = 0.0;
         let mut cur = self.run_of(floor);
         while let Some(below) = cur.and_then(|r| self.run_below(r)) {
-            let c = self.chain(below);
-            if c.is_some_and(|c| contains(&c.face_corners(c.outer_offset()), p)) {
-                if let Some(Ok(f)) = self.floor(below) {
-                    let z = f.terrace_band().map_or(f.params.top, |t| t.1);
-                    return Foot { z, lower: true };
-                }
-            }
             cur = Some(below);
+            let (Some(c), Some(Ok(f))) = (self.chain(below), self.floor(below)) else {
+                continue;
+            };
+            let face = c.face_corners(c.outer_offset());
+            let innen = contains(&face, p);
+            if let (true, Some(t)) = (innen, f.terrace_band()) {
+                return Foot {
+                    z: t.1,
+                    lower: true,
+                    shift: 0.0,
+                };
+            }
+            // Achse vor der Fassade darunter (innen negativ)
+            let n = face.len();
+            let d = (0..n)
+                .map(|i| {
+                    let (a, b) = (face[i], face[(i + 1) % n]);
+                    sk_math::dist_to_segment((p.x, p.y), (a.x, a.y), (b.x, b.y))
+                })
+                .fold(f64::INFINITY, f64::min);
+            let fehlt = REACH - if innen { -d } else { d };
+            if fehlt > WALL_GAP - MIN_GAP {
+                if fehlt > MAX_SHIFT {
+                    return Foot {
+                        z: f.params.top,
+                        lower: true,
+                        shift: 0.0,
+                    };
+                }
+                shift = shift.max(fehlt);
+            }
         }
+        let q = p + out * shift;
         Foot {
-            z: self.terrain_z_at(b, p.x, p.y),
+            z: self.terrain_z_at(b, q.x, q.y),
             lower: false,
+            shift,
         }
     }
 
@@ -437,6 +470,70 @@ mod tests {
     /// die Dachterrasse auf der EG-Decke. Die Rohre an der Nordseite dürfen
     /// nicht durch Terrasse und EG-Decke bis aufs Gelände laufen: Wo die
     /// Achse über dem EG liegt, enden sie über der Decke darunter.
+    /// Geometrie (Nachprüfung #68): kleiner Rücksprung der OG-Nordwand
+    /// (60 bis 150 mm), keine Dachterrasse davor. Das Rohr darf weder in
+    /// der EG-Fassade stecken (bis aufs Gelände) noch auf der Wandkrone
+    /// des EG enden, wo es kein tieferes Dach gibt.
+    #[test]
+    fn kleiner_ruecksprung_nicht_in_der_fassade() {
+        for off in [-60.0, -100.0, -150.0] {
+            let mut m = Model::with_seed(12);
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let set = m.type_by_guid(crate::EXTERIOR_TYPE_GUID).unwrap();
+            let eg = m.ground_of(Some(b)).unwrap();
+            let eg = m
+                .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+                .unwrap();
+            let og = m.runs_above(eg)[0];
+            let nord = m.wall_at(og, 1).unwrap();
+            schritt(&mut m, |m| m.set_offset(nord, off).is_some());
+            let st = m.run(og).unwrap().storey;
+            schritt(&mut m, |m| m.set_flat_roof(st, true));
+            let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let terrasse = f.terrace_band().is_some();
+            let c = m.chain(eg).unwrap();
+            let unten = c.face_corners(c.outer_offset());
+            let n = unten.len();
+            // lichter Abstand des Rohrs zur EG-Außenfläche
+            let frei = |p: Vec3| {
+                (0..n)
+                    .map(|i| {
+                        let (a, b) = (unten[i], unten[(i + 1) % n]);
+                        sk_math::dist_to_segment((p.x, p.y), (a.x, a.y), (b.x, b.y))
+                    })
+                    .fold(f64::INFINITY, f64::min)
+                    - crate::fallrohr::PIPE_D / 2.0
+            };
+            for id in m.downpipes_of(da) {
+                let d = m.downpipe(id).unwrap();
+                if d.lower {
+                    assert!(terrasse, "{off}: Rohr endet auf der EG-Wandkrone");
+                } else {
+                    assert!(frei(d.axis()) >= 0.0, "{off}: Rohr in der EG-Fassade");
+                }
+                // Sollwerte: an der Nordseite mit dem Wandabstand an der
+                // EG-Fassade vorbei bis ins Standrohr, sonst wie bisher
+                let nord = d.out.y > 0.5;
+                let soll = crate::fallrohr::REACH - if nord { off } else { 0.0 };
+                assert!(!d.lower, "{off}");
+                assert!((d.reach - soll).abs() < 1e-6, "{off}: {}", d.reach);
+                assert!((d.overflow.reach - soll).abs() < 1e-6, "{off}");
+                if nord {
+                    assert!((frei(d.axis()) - WALL_GAP).abs() < 1e-6, "{off}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn nicht_durch_die_terrasse() {
         let mut m = Model::with_seed(12);
