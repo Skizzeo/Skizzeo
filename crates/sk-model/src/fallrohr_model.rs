@@ -969,7 +969,7 @@ mod tests {
         let (mut m, da, _) = haus();
         let rf = m.downpipes_of(da)[1];
         let spec = DownpipeSpec {
-            overflow: Overflow::Pipe,
+            overflow: Overflow::Spout,
             control: false,
             spacing: 2500.0,
         };
@@ -982,7 +982,23 @@ mod tests {
         assert_eq!(zeilen.len(), 4);
         assert!(zeilen
             .iter()
-            .any(|l| l.contains(" overflow=pipe control=0 spacing=2500 ")));
+            .any(|l| l.contains(" overflow=spout control=0 spacing=2500 ")));
+        // die übrigen haben die Vorgabe Wasserspeier und schreiben sie aus
+        assert_eq!(
+            (zeilen.iter())
+                .filter(|l| l.contains(" overflow=spout "))
+                .count(),
+            4
+        );
+        // Kosten H78-1: ohne `overflow=` bleibt es das Notfallrohr
+        let alt = text.replace(" overflow=spout", "");
+        let back = crate::szo::read(&alt, GuidGen::with_seed(3)).unwrap();
+        assert!(back.model.downpipe_ids().into_iter().all(|id| back
+            .model
+            .downpipe_spec(id)
+            .unwrap()
+            .overflow
+            == Overflow::Pipe));
         let back = crate::szo::read(&text, GuidGen::with_seed(3)).unwrap();
         assert!(back.hints.is_empty(), "{:?}", back.hints);
         assert_eq!(crate::szo::write(&back.model), text);
