@@ -2800,6 +2800,7 @@ fn empty_type(m: &mut Model, cat: TypeCategory) -> LayerSet {
         note: String::new(),
         changed: 1,
         bearing: sk_model::Bearing::Core,
+        height: None,
     }
 }
 
@@ -2826,6 +2827,7 @@ fn mat_look(m: &Model, t: &Theme, id: sk_model::MaterialId) -> TypeLook {
         note: String::new(),
         changed: 0,
         bearing: sk_model::Bearing::Core,
+        height: None,
     };
     type_look(m, t, &set)
 }

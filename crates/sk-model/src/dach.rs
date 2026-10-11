@@ -153,7 +153,8 @@ impl Model {
             name: name.into(),
             color,
             cut_color,
-            pattern: None,
+            // Werksmuster an fester Guid (Ausbau des Raumbuchs, Regel 60)
+            pattern: crate::proctex::factory_for(sg),
         });
         let d = MaterialDisplay {
             cut_fill,
@@ -214,6 +215,7 @@ impl Model {
             note: String::new(),
             changed: 1,
             bearing: Bearing::Core,
+            height: None,
         })
     }
 

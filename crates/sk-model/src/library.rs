@@ -26,10 +26,18 @@ pub enum MatCategory {
     Metal,
     /// Bahnen: Dampfsperre und Dachabdichtung (Flachdach, Jörn 10.10.).
     Membrane,
+    /// Estrich (Raumbuch, DIN 18353).
+    Screed,
+    /// Fliesen und Platten (DIN 18352).
+    Ceramic,
+    /// Bodenbeläge: Parkett, elastische und textile Beläge (DIN 18356, 18365).
+    Flooring,
+    /// Beschichtung: Anstrich und Tapete, Schicht ohne Dicke (DIN 18363, 18366).
+    Coating,
 }
 
 impl MatCategory {
-    pub const ALL: [MatCategory; 8] = [
+    pub const ALL: [MatCategory; 12] = [
         MatCategory::Masonry,
         MatCategory::Concrete,
         MatCategory::Insulation,
@@ -38,6 +46,10 @@ impl MatCategory {
         MatCategory::Air,
         MatCategory::Metal,
         MatCategory::Membrane,
+        MatCategory::Screed,
+        MatCategory::Ceramic,
+        MatCategory::Flooring,
+        MatCategory::Coating,
     ];
 
     pub fn name(self) -> &'static str {
@@ -50,6 +62,28 @@ impl MatCategory {
             MatCategory::Air => "Luft",
             MatCategory::Metal => "Metall",
             MatCategory::Membrane => "Abdichtung",
+            MatCategory::Screed => "Estrich",
+            MatCategory::Ceramic => "Fliesen",
+            MatCategory::Flooring => "Belag",
+            MatCategory::Coating => "Beschichtung",
+        }
+    }
+
+    /// Wort in der Datei (`cat=` am Baustoff).
+    pub fn word(self) -> &'static str {
+        match self {
+            MatCategory::Masonry => "masonry",
+            MatCategory::Concrete => "concrete",
+            MatCategory::Insulation => "insulation",
+            MatCategory::Plaster => "plaster",
+            MatCategory::Timber => "timber",
+            MatCategory::Air => "air",
+            MatCategory::Metal => "metal",
+            MatCategory::Membrane => "membrane",
+            MatCategory::Screed => "screed",
+            MatCategory::Ceramic => "ceramic",
+            MatCategory::Flooring => "flooring",
+            MatCategory::Coating => "coating",
         }
     }
 }
@@ -218,6 +252,11 @@ pub enum Bearing {
 /// [`crate::Model::element_layers`]) und können einen haben (R4). Die
 /// Dachterrasse hat immer einen, ohne Kern (Werkstyp „Dachterrasse 14“),
 /// ebenso der Dachaufbau des Flachdachs (Werkstyp „Flachdach 21,5“).
+///
+/// Ausbautypen (Raumbuch, [`TypeCategory::FINISHES`]) hängen an keinem
+/// Bauteil, sondern an den Flächen eines Raums: Boden, Wandseiten, Decke,
+/// Sockel. Sie haben keinen Kern; Bodenbelag und Estrichaufbau zählen von
+/// oben nach unten, Wand- und Deckenbekleidung vom Raum zum Rohbau.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeCategory {
     ExteriorWall,
@@ -227,10 +266,47 @@ pub enum TypeCategory {
     StripFooting,
     RoofTerrace,
     FlatRoof,
+    /// Bodenbelag: Parkett, Fliese, Belag (mit Kleber, ggf. Abdichtung).
+    FloorFinish,
+    /// Estrichaufbau unter dem Belag: Estrich, Trittschall- und
+    /// Wärmedämmung, ggf. Abdichtung.
+    Screed,
+    /// Wandbekleidung: Innenputz mit Beschichtung (Anstrich, Tapete).
+    WallFinish,
+    /// Wandfliesen als Zone vor der Wandbekleidung.
+    WallTiles,
+    /// Deckenbekleidung: Deckenputz mit Beschichtung.
+    CeilingFinish,
+    /// Sockelleiste: ein Profil mit Höhe ([`LayerSet::height`]) und Dicke.
+    Skirting,
 }
 
+/// Name, Präfix und Dateiwort der Ausbauarten (kein Bauteil, deshalb nicht
+/// in [`crate::kinds`]).
+const FINISH_NAMES: [(TypeCategory, &str, &str, &str); 6] = [
+    (TypeCategory::FloorFinish, "Bodenbelag", "BB", "floorfinish"),
+    (TypeCategory::Screed, "Estrichaufbau", "ES", "screed"),
+    (
+        TypeCategory::WallFinish,
+        "Wandbekleidung",
+        "WB",
+        "wallfinish",
+    ),
+    (TypeCategory::WallTiles, "Wandfliesen", "WF", "walltiles"),
+    (
+        TypeCategory::CeilingFinish,
+        "Deckenbekleidung",
+        "DB",
+        "ceilingfinish",
+    ),
+    (TypeCategory::Skirting, "Sockelleiste", "SL", "skirting"),
+];
+
+/// Höhe einer Sockelleiste (mm, Regel des Raumbuchs).
+pub const SKIRTING_HEIGHT: (f64, f64) = (20.0, 300.0);
+
 impl TypeCategory {
-    pub const ALL: [TypeCategory; 7] = [
+    pub const ALL: [TypeCategory; 13] = [
         TypeCategory::ExteriorWall,
         TypeCategory::InteriorWall,
         TypeCategory::Floor,
@@ -238,11 +314,27 @@ impl TypeCategory {
         TypeCategory::StripFooting,
         TypeCategory::RoofTerrace,
         TypeCategory::FlatRoof,
+        TypeCategory::FloorFinish,
+        TypeCategory::Screed,
+        TypeCategory::WallFinish,
+        TypeCategory::WallTiles,
+        TypeCategory::CeilingFinish,
+        TypeCategory::Skirting,
     ];
 
     /// Wandarten: nur sie haben Werkstypen, Standardtyp, Werkzeug und einen
     /// Platz im Katalogfenster.
     pub const WALLS: [TypeCategory; 2] = [TypeCategory::ExteriorWall, TypeCategory::InteriorWall];
+
+    /// Ausbauarten des Raumbuchs.
+    pub const FINISHES: [TypeCategory; 6] = [
+        TypeCategory::FloorFinish,
+        TypeCategory::Screed,
+        TypeCategory::WallFinish,
+        TypeCategory::WallTiles,
+        TypeCategory::CeilingFinish,
+        TypeCategory::Skirting,
+    ];
 
     /// Typart, die zu Bauteilen der Kategorie passt; `None`: ohne Typ.
     pub fn of(c: Category) -> Option<TypeCategory> {
@@ -254,10 +346,15 @@ impl TypeCategory {
         Self::WALLS.contains(&self)
     }
 
+    /// Ausbauart des Raumbuchs (ohne Bauteil, ohne Kern).
+    pub fn is_finish(self) -> bool {
+        Self::FINISHES.contains(&self)
+    }
+
     /// Waagerechte Art (Schichten von oben nach unten) mit genau einer
     /// Kernschicht, deren Dicke am Bauteil steht (Regel 38).
     pub fn variable_core(self) -> bool {
-        !self.is_wall() && !self.is_build_up()
+        !self.is_wall() && !self.is_build_up() && !self.is_finish()
     }
 
     /// Aufbau auf der Rohdecke ohne Kern (Dachterrasse, Flachdach), Schichten
@@ -266,7 +363,7 @@ impl TypeCategory {
         matches!(self, TypeCategory::RoofTerrace | TypeCategory::FlatRoof)
     }
 
-    /// Kategorie der Bauteile dieser Typart.
+    /// Kategorie der Bauteile dieser Typart; Ausbautypen hängen am Raum.
     pub fn category(self) -> Category {
         match self {
             TypeCategory::ExteriorWall => Category::ExteriorWall,
@@ -276,16 +373,36 @@ impl TypeCategory {
             TypeCategory::StripFooting => Category::StripFooting,
             TypeCategory::RoofTerrace => Category::RoofTerrace,
             TypeCategory::FlatRoof => Category::Roof,
+            TypeCategory::FloorFinish
+            | TypeCategory::Screed
+            | TypeCategory::WallFinish
+            | TypeCategory::WallTiles
+            | TypeCategory::CeilingFinish
+            | TypeCategory::Skirting => Category::Space,
         }
     }
 
+    fn finish_names(
+        self,
+    ) -> Option<&'static (TypeCategory, &'static str, &'static str, &'static str)> {
+        FINISH_NAMES.iter().find(|f| f.0 == self)
+    }
+
     pub fn name(self) -> &'static str {
-        crate::kinds::spec(self.category()).name
+        self.finish_names()
+            .map_or_else(|| crate::kinds::spec(self.category()).name, |f| f.1)
     }
 
     /// Präfix des Kurzzeichens, z. B. „AW“ für AW-1.
     pub fn prefix(self) -> &'static str {
-        crate::kinds::spec(self.category()).prefix
+        self.finish_names()
+            .map_or_else(|| crate::kinds::spec(self.category()).prefix, |f| f.2)
+    }
+
+    /// Wort in der Datei (`cat=` am Typ).
+    pub fn word(self) -> &'static str {
+        self.finish_names()
+            .map_or_else(|| crate::kinds::spec(self.category()).szo, |f| f.3)
     }
 }
 
@@ -333,6 +450,9 @@ pub struct LayerSet {
     pub changed: u32,
     /// Deckenauflager (K5).
     pub bearing: Bearing,
+    /// Höhe des Profils in mm, nur bei Sockelleisten (Raumbuch); die Dicke
+    /// ist die Schicht.
+    pub height: Option<f64>,
 }
 
 /// Kerndicke, ab der eine Innenwand trägt (Regel 100), in mm.
@@ -399,11 +519,12 @@ impl LayerSet {
         if self.layers.is_empty() {
             out.push(format!("Typ {who}: keine Schichten"));
         }
-        if self
-            .layers
-            .iter()
-            .any(|l| l.thickness <= 0.0 || !l.thickness.is_finite())
-        {
+        // Ausbautypen dürfen Schichten ohne Dicke haben (Beschichtung, Regel
+        // des Raumbuchs; welche, prüft [`crate::Model::check`])
+        let finish = self.category.is_finish();
+        if self.layers.iter().any(|l| {
+            !l.thickness.is_finite() || l.thickness < 0.0 || (l.thickness == 0.0 && !finish)
+        }) {
             out.push(format!("Typ {who}: Schichtdicke ungültig"));
         }
         let core: Vec<usize> = (0..self.layers.len())
@@ -453,6 +574,26 @@ impl LayerSet {
                     cm_de(hi)
                 ));
             }
+        }
+        // Ausbau (Raumbuch): ohne Kern; die Sockelleiste ist ein Profil aus
+        // einer Schicht mit Höhe, nur sie hat eine Höhe
+        if finish && !core.is_empty() {
+            out.push(format!("Typ {who}: Ausbau ohne Kernschicht"));
+        }
+        if self.category == TypeCategory::Skirting {
+            let (lo, hi) = SKIRTING_HEIGHT;
+            if self.layers.len() != 1 || self.thickness() <= 0.0 {
+                out.push(format!("Typ {who}: Sockelleiste aus einer Schicht"));
+            }
+            if !self.height.is_some_and(|h| (lo..=hi).contains(&h)) {
+                out.push(format!(
+                    "Typ {who}: Höhe {} bis {} cm",
+                    cm_de(lo),
+                    cm_de(hi)
+                ));
+            }
+        } else if self.height.is_some() {
+            out.push(format!("Typ {who}: Höhe nur bei Sockelleisten"));
         }
         // Regel 20: Luftschicht nie Kern, nie am Rand, nie zweimal nacheinander
         let air = |l: &MaterialLayer| l.function == LayerFunction::AirGap;

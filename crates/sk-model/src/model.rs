@@ -328,6 +328,19 @@ mod gruendung;
 
 #[path = "stapel.rs"]
 mod stapel;
+
+#[path = "ausbau.rs"]
+mod ausbau;
+pub(crate) use ausbau::finish_pattern;
+pub use ausbau::{
+    FinishType, CEILING_TYPE_GUID, FINISH_TYPES, FLOOR_INSULATION_GUID, GYPSUM_PLASTER_GUID,
+    GYPSUM_WALL_TYPE_GUID, IMPACT_INSULATION_GUID, LIME_PLASTER_GUID, LIME_WALL_TYPE_GUID,
+    OAK_SKIRTING_TYPE_GUID, PAINT_GUID, PARQUET_GUID, PARQUET_TYPE_GUID, PORCELAIN_GUID,
+    PORCELAIN_TYPE_GUID, SCREED_FLOOR_TYPE_GUID, SCREED_MAT_GUID, SCREED_SLAB_TYPE_GUID,
+    SKIRTING_MAT_GUID, SLAB_SEAL_GUID, TILE_SEAL_GUID, TILE_SKIRTING_TYPE_GUID,
+    WALL_TILES_TYPE_GUID, WALL_TILE_GUID, WET_FLOOR_TYPE_GUID, WOODCHIP_GUID,
+    WOODCHIP_WALL_TYPE_GUID,
+};
 #[path = "teilen.rs"]
 mod teilen;
 pub use teilen::FugeError;
@@ -451,6 +464,7 @@ impl Model {
                 MaterialLayer::new(insulation, 140.0, LayerFunction::Insulation),
                 MaterialLayer::new(aerated, 175.0, LayerFunction::Structure).core(),
             ],
+            height: None,
         });
         let mut storeys = Arena::new();
         let storey = storeys.insert(Storey {
@@ -600,6 +614,7 @@ impl Model {
             changed: 1,
             bearing: Bearing::Core,
             layers,
+            height: None,
         };
         layer_sets.insert(wall_type(
             ETICS_TYPE_GUID,
@@ -3782,6 +3797,7 @@ impl Model {
         for (_, set) in self.layer_sets.iter() {
             out.extend(set.problems());
             out.extend(self.bearing_problem(set));
+            out.extend(self.finish_problems(set));
             codes.push(&set.code);
         }
         // Regel 17: Kurzzeichen eindeutig
@@ -4060,8 +4076,8 @@ pub const TERRACE_INSULATION_GUID: Guid = Guid(0xd750cacad2e543e3a3e35c5c7f3d8d4
 pub const COPING_MAT_GUID: Guid = Guid(0x97fe946502194178be60bb9eb54c46fb);
 /// Die eingebauten Baustoffe, die erst das erste Bauteil anlegt, mit Name
 /// und Art: Der Werksbestand verweist auf sie (`mat=`), auch wenn ein
-/// Projekt sie noch nicht führt.
-pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 10] = [
+/// Projekt sie noch nicht führt. Dazu die des Ausbaus (Raumbuch).
+pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 23] = [
     (
         PERIMETER_MAT_GUID,
         "XPS Perimeterdämmung",
@@ -4104,6 +4120,19 @@ pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 10] = [
         "Bekleidung Faserzement",
         MatCategory::Concrete,
     ),
+    ausbau::finish_material(0),
+    ausbau::finish_material(1),
+    ausbau::finish_material(2),
+    ausbau::finish_material(3),
+    ausbau::finish_material(4),
+    ausbau::finish_material(5),
+    ausbau::finish_material(6),
+    ausbau::finish_material(7),
+    ausbau::finish_material(8),
+    ausbau::finish_material(9),
+    ausbau::finish_material(10),
+    ausbau::finish_material(11),
+    ausbau::finish_material(12),
 ];
 
 /// Fußpunkt der Verblendschale auf der Dachterrasse (W1, W2): Baustoff
@@ -4291,6 +4320,7 @@ pub(crate) fn interior_set(guid: Guid, material: MaterialId) -> LayerSet {
         changed: 1,
         bearing: Bearing::Core,
         layers: vec![MaterialLayer::new(material, 175.0, LayerFunction::Structure).core()],
+        height: None,
     }
 }
 

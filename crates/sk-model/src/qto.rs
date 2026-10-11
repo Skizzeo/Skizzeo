@@ -1622,6 +1622,10 @@ fn material_rank(c: MatCategory) -> u8 {
         MatCategory::Air => 5,
         MatCategory::Metal => 6,
         MatCategory::Membrane => 7,
+        MatCategory::Screed => 8,
+        MatCategory::Ceramic => 9,
+        MatCategory::Flooring => 10,
+        MatCategory::Coating => 11,
     }
 }
 

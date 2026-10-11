@@ -1443,7 +1443,7 @@ mod tests {
                 ..vorlage.clone()
             }));
         }
-        let [mw, sb, dae, putz, holz, luft, _blech, _abdichtung] = mats[..] else {
+        let [mw, sb, dae, putz, holz, luft, _blech, _abdichtung, .., anstrich] = mats[..] else {
             unreachable!()
         };
         let lage = |material, thickness, function, core| {
@@ -1469,7 +1469,7 @@ mod tests {
                     // waagerechte Typen: genau eine Kernschicht (Regel 38),
                     // Dachterrasse und Flachdach keine (Regeln 39, 48)
                     lage(mw, 175.0, LayerFunction::Structure, cat.is_wall()),
-                    lage(sb, 200.0, LayerFunction::Structure, !cat.is_build_up()),
+                    lage(sb, 200.0, LayerFunction::Structure, cat.variable_core()),
                     lage(holz, 20.0, LayerFunction::Finish, false),
                 ],
                 bearing: if cat.is_wall() {
@@ -1483,10 +1483,44 @@ mod tests {
                 ..vorlage.clone()
             });
         }
+        // Ausbau (Raumbuch): Beschichtung ohne Dicke, Sockelleiste mit Höhe
+        for t in lib.types.ids().collect::<Vec<_>>() {
+            let t = lib.types.get_mut(t).unwrap();
+            match t.category {
+                TypeCategory::Skirting => {
+                    t.layers = vec![lage(holz, 15.0, LayerFunction::Finish, false)];
+                    t.height = Some(60.0);
+                }
+                c if c.is_finish() => {
+                    t.layers
+                        .push(lage(anstrich, 0.0, LayerFunction::Finish, false))
+                }
+                _ => {}
+            }
+        }
         let text = write_szk(&lib);
-        for w in ["air", "concrete", "plaster", "timber", "membrane", "airgap"] {
+        for w in [
+            "air",
+            "concrete",
+            "plaster",
+            "timber",
+            "membrane",
+            "airgap",
+            "screed",
+            "ceramic",
+            "flooring",
+            "coating",
+            "floorfinish",
+            "wallfinish",
+            "walltiles",
+            "ceilingfinish",
+        ] {
             assert!(text.contains(&format!("={w} ")), "{w}");
         }
+        assert!(
+            text.contains("cat=skirting changed=1 h=60 "),
+            "Höhe der Sockelleiste"
+        );
         let back = read_szk(&text).unwrap();
         assert_eq!(back, lib);
         assert_eq!(write_szk(&back), text);

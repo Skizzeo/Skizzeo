@@ -10,6 +10,7 @@
 //! `storey`, `run`, `wall`, `slab`, `footing`, `floor`, `prop`. Innerhalb eines Abschnitts nach Guid sortiert, damit Diffs
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
+mod ausbau;
 mod dach;
 mod hoehen;
 
@@ -388,19 +389,10 @@ const EDGE_NAMES: [(&str, u8); edge_kind::COUNT] = [
 ];
 
 fn mat_category(c: MatCategory) -> &'static str {
-    match c {
-        MatCategory::Masonry => "masonry",
-        MatCategory::Concrete => "concrete",
-        MatCategory::Insulation => "insulation",
-        MatCategory::Plaster => "plaster",
-        MatCategory::Timber => "timber",
-        MatCategory::Air => "air",
-        MatCategory::Metal => "metal",
-        MatCategory::Membrane => "membrane",
-    }
+    c.word()
 }
 
-const MAT_CATEGORIES: [MatCategory; 8] = MatCategory::ALL;
+const MAT_CATEGORIES: [MatCategory; 12] = MatCategory::ALL;
 
 /// Wort der Schichtfunktion in `[layer] fn=` (auch die Regel `fn=` einer
 /// Bauleistung, KA-0).
@@ -427,7 +419,7 @@ fn category(c: Category) -> &'static str {
 }
 
 pub(crate) fn type_category(c: TypeCategory) -> &'static str {
-    crate::kinds::spec(c.category()).szo
+    c.word()
 }
 
 /// `set=` an Decke, Sohlplatte und Frostschürze nur mit Typ: Dateien ohne
@@ -696,6 +688,7 @@ pub(crate) fn write_type(
     if let Bearing::Depth { depth, strip } = s.bearing {
         line = line.num("bearing", depth).guid("strip", mat_guid(strip));
     }
+    line = ausbau::write_height(line, s);
     line.text("note", &s.note).finish(out);
     for l in &s.layers {
         let line = Line::new("layer")
@@ -3143,6 +3136,7 @@ pub(crate) fn read_types(
             note,
             changed,
             bearing,
+            height: ausbau::read_height(r)?,
         };
         let id = layer_sets.insert(s);
         register(&mut set_ids, seen, r, guid, id)?;
@@ -3907,6 +3901,7 @@ mod tests {
                 note: String::new(),
                 changed: 1,
                 bearing: Bearing::Core,
+                height: None,
             })
             .expect("Typ");
         (m, de, t)
