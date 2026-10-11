@@ -2,9 +2,9 @@
 //! freie Wandenden eines Geschosses, an denen beim Zeichnen einer Innenwand
 //! der Cursor einrastet. Methoden von `Model`, aus `model.rs` ausgelagert.
 //!
-//! Ziele sind die Oberflächen der Wandkörper mit ihren Anschlüssen: bei einem
-//! geschlossenen Zug (Außenwand) nur die Innenfläche, bei einem offenen Zug
-//! (Innenwand) beide Flächen. Schichtfugen fangen nicht.
+//! Ziele sind die Oberflächen der Wandkörper mit ihren Anschlüssen: beim
+//! geschlossenen Ring der Außenwand nur die Innenfläche, sonst beide Flächen
+//! (Innenwand, auch geschlossen als Schacht). Schichtfugen fangen nicht.
 
 use super::*;
 
@@ -72,9 +72,11 @@ impl Model {
                     .and_then(|w| self.element(*w))
                     .map_or_else(String::new, |e| e.number.clone())
             };
-            // Geschlossen: nur die Innenfläche; offen: beide Flächen
+            // Ring der Außenwand: nur die Innenfläche; sonst beide Flächen,
+            // auch bei einer geschlossen gezeichneten Innenwand (Schacht)
             let (lo, hi) = c.span();
-            let offs = if c.closed {
+            let ring = c.closed && self.category_of(id) == Some(Category::ExteriorWall);
+            let offs = if ring {
                 vec![(c.inner_offset(), " innen")]
             } else {
                 vec![(lo, ""), (hi, "")]
@@ -210,5 +212,47 @@ mod tests {
         };
         assert_eq!(f.naechster(vec3(500.0, 300.0, 0.0)), vec3(500.0, 0.0, 0.0));
         assert_eq!(f.naechster(vec3(-50.0, 10.0, 0.0)), vec3(0.0, 0.0, 0.0));
+    }
+
+    /// Geometrie (Prüfung #76): Eine geschlossen gezeichnete Innenwand
+    /// (Schacht, Kammer im Raum) ist keine Außenwand. Ihre Außenseite liegt
+    /// im Raum und muss fangen; nur die Außenwand bietet allein die
+    /// Innenfläche an.
+    #[test]
+    fn geschlossene_innenwand_faengt_aussen() {
+        let (mut m, st) = haus();
+        let iw = m.defaults().interior_wall;
+        let schacht = [
+            vec3(2000.0, 2000.0, 0.0),
+            vec3(3000.0, 2000.0, 0.0),
+            vec3(3000.0, 3000.0, 0.0),
+            vec3(2000.0, 3000.0, 0.0),
+        ];
+        m.add_wall_run(
+            &schacht,
+            true,
+            RefSide::Center,
+            st,
+            iw,
+            Category::InteriorWall,
+        )
+        .unwrap();
+        let z = m.fangziele(st);
+        // Außenseite des Schachts: Flächen außerhalb des Rings 2000…3000,
+        // Normale vom Schacht weg in den Raum
+        let aussen = z
+            .flaechen
+            .iter()
+            .filter(|f| {
+                let mitte = (f.a + f.b) * 0.5;
+                let raus = mitte + f.normale * 100.0;
+                let im_ring =
+                    |p: Vec3| p.x > 1900.0 && p.x < 3100.0 && p.y > 1900.0 && p.y < 3100.0;
+                let im_schacht =
+                    |p: Vec3| p.x > 2000.0 && p.x < 3000.0 && p.y > 2000.0 && p.y < 3000.0;
+                im_ring(mitte) && !im_schacht(mitte) && !im_ring(raus)
+            })
+            .count();
+        assert_eq!(aussen, 4, "vier Außenflächen des Schachts");
     }
 }
