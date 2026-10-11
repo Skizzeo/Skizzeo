@@ -329,7 +329,7 @@ fn vorschau_liest_den_export() {
         assert_eq!(v.ohne_form, 0, "{name}");
         let mut im_baum = vec![0; v.teile.len()];
         fn zaehlen(k: &sk_ifc::lesen::Knoten, n: &mut [u32], geschosse: &mut usize) {
-            if k.klasse == "IFCBUILDINGSTOREY" {
+            if k.klasse == "IfcBuildingStorey" {
                 *geschosse += 1;
             }
             for &i in &k.teile {

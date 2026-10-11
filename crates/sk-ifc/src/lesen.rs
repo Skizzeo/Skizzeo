@@ -386,7 +386,7 @@ pub fn vorschau(f: &File) -> Vorschau {
         index.insert(id, v.teile.len());
         v.teile.push(Teil {
             guid: text(e.args.first()),
-            klasse: e.name.clone(),
+            klasse: schreibweise(&e.name),
             name: text(e.args.get(2)),
             beschreibung: text(e.args.get(3)),
             art: text(e.args.get(4)),
@@ -511,7 +511,7 @@ pub fn vorschau(f: &File) -> Vorschau {
             } else {
                 0.0
             },
-            klasse: name,
+            klasse: schreibweise(&name),
             name: text(a.get(2)),
             langname: text(a.get(7)),
             kinder: Vec::new(),
@@ -529,7 +529,7 @@ pub fn vorschau(f: &File) -> Vorschau {
                 }
             }
         }
-        if k.klasse == "IFCBUILDINGSTOREY" {
+        if name == "IFCBUILDINGSTOREY" {
             k.kinder.sort_by(|a, b| a.name.cmp(&b.name));
         }
         k
@@ -544,6 +544,22 @@ pub fn vorschau(f: &File) -> Vorschau {
             .collect();
     }
     v
+}
+
+/// Schreibweise im Schema („IFCWALL“ → „IfcWall“) für die Klassen, die
+/// Skizzeo schreibt, und die räumlichen; andere wie in der Datei.
+pub fn schreibweise(name: &str) -> String {
+    const RAEUME: [&str; 5] = [
+        "IfcProject",
+        "IfcSite",
+        "IfcBuilding",
+        "IfcBuildingStorey",
+        "IfcSpace",
+    ];
+    crate::klassen::lookup(name)
+        .map(|k| k.name)
+        .or_else(|| RAEUME.into_iter().find(|r| r.eq_ignore_ascii_case(name)))
+        .map_or_else(|| name.to_string(), str::to_string)
 }
 
 /// Schichten oder Baustoffe einer Baustoffzuordnung.
@@ -632,7 +648,7 @@ mod tests {
         assert_eq!(v.projekt, "Haus");
         assert_eq!(v.teile.len(), 1);
         let t = &v.teile[0];
-        assert_eq!((t.klasse.as_str(), t.name.as_str()), ("IFCWALL", "AW-001"));
+        assert_eq!((t.klasse.as_str(), t.name.as_str()), ("IfcWall", "AW-001"));
         assert_eq!(t.beschreibung, "Außenwand");
         // Meter → mm; Kette: Geschoss z=3 m, Wand bei x=1 m, gedreht um 90°
         let p = &t.netze[0].punkte;

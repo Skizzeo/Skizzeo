@@ -51,6 +51,7 @@ mod geschossfenster;
 mod gpu_probe;
 mod help;
 mod hints;
+mod ifc_vorschau;
 mod kette_app;
 mod kosten_view;
 mod link_view;
