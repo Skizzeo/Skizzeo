@@ -468,7 +468,8 @@ impl Model {
     }
 
     /// Tiefe einer Frostschürze ab UK Sohlplatte (mm), abgeleitet aus UK
-    /// Gründung.
+    /// Gründung. Eine Perimeterdämmung liegt innerhalb der Schürze und
+    /// ändert die Tiefe nicht (Jörn 11.10.).
     pub fn footing_depth(&self, footing: ElementId) -> Option<f64> {
         let ElementKind::StripFooting(f) = self.element(footing)?.kind else {
             return None;
@@ -476,7 +477,7 @@ impl Model {
         let ElementKind::GroundSlab(s) = self.element(f.slab)?.kind else {
             return None;
         };
-        Some(self.level_z(s.top)? - s.thickness - s.insulation.max(0.0) - self.level_z(f.base)?)
+        Some(self.level_z(s.top)? - s.thickness - self.level_z(f.base)?)
     }
 
     /// Schürzentiefe als Zahl: verschiebt UK Gründung (B11), für alle
