@@ -83,7 +83,7 @@ pub const OVERFLOW_H: f64 = 100.0;
 const OV_BOX_W: f64 = 400.0;
 /// Notfallrohr endet so hoch über Gelände mit dem Auslaufbogen (mm).
 pub const OUTLET_UP: f64 = 200.0;
-const OUTLET_REACH: f64 = 200.0;
+pub const OUTLET_REACH: f64 = 200.0;
 /// Wasserspeier: Auskragung vor der Fassade und Höhe (mm).
 pub const SPOUT_OUT: f64 = 300.0;
 const SPOUT_H: f64 = 80.0;
@@ -131,6 +131,9 @@ pub struct Foot {
     pub lower: bool,
     /// Zuschlag zum Wandabstand (mm), 0 ohne Rücksprung.
     pub shift: f64,
+    /// Richtung des Auslaufbogens auf dem tieferen Dach (waagerecht,
+    /// Länge 1): nach außen oder, bei schmalem Belag, längs der Fassade.
+    pub bend: Vec3,
 }
 
 /// Kleinster lichter Abstand eines Rohrs zu einer Fassade, an der es
@@ -161,6 +164,8 @@ pub struct Downpipe {
     /// Abstand der Rohrachse von der Außenfläche (mm): [`REACH`], vor
     /// einem kleinen Rücksprung darunter mehr.
     pub reach: f64,
+    /// Richtung des Auslaufbogens über einem tieferen Dach.
+    pub bend: Vec3,
     /// Unteres Ende des Fallrohrs (OK Standrohr bzw. OK Auslaufbogen über
     /// einem tieferen Dach) und die Fläche darunter.
     pub stand_top: f64,
@@ -204,7 +209,7 @@ impl Downpipe {
     pub fn layout(
         r: &FlatRoof,
         drain: Vec3,
-        foot: impl Fn(Vec3, Vec3) -> Foot,
+        foot: impl Fn(Vec3, Vec3, Vec3) -> Foot,
         spec: DownpipeSpec,
     ) -> Option<Downpipe> {
         let n = r.outline.len();
@@ -236,8 +241,12 @@ impl Downpipe {
         let box_bot = control.map_or(box_top - BOX_H, |c| {
             (box_top - BOX_H).min(c - CONTROL_BELOW)
         });
+        // Notüberlauf neben dem Ablauf, zur längeren Kantenhälfte hin (wie
+        // das Zeichen im Gefälleplan); längs der Fassade biegen die
+        // Auslaufbögen voneinander weg
+        let dir = if len - t >= t { along } else { -along };
         let rohr = |face: Vec3| face + out * REACH;
-        let unten = foot(rohr(face), out);
+        let unten = foot(rohr(face), out, -dir);
         let ground = unten.z;
         let stand_top = if unten.lower {
             ground + OUTLET_UP
@@ -246,14 +255,11 @@ impl Downpipe {
         }
         .min(box_bot);
         let clamps = clamp_heights(box_bot, stand_top, spec.spacing);
-        // Notüberlauf neben dem Ablauf, zur längeren Kantenhälfte hin (wie
-        // das Zeichen im Gefälleplan)
-        let dir = if len - t >= t { along } else { -along };
         let ov = dr + dir * (OVERFLOW_GAP + OVERFLOW_W / 2.0) + out * r.width;
         let sill = top + SILL;
         let ov_box_top = sill + OVERFLOW_H + 20.0;
         let ov_box_bot = ov_box_top - BOX_H;
-        let ov_foot = foot(rohr(ov), out);
+        let ov_foot = foot(rohr(ov), out, dir);
         let end = (ov_foot.z + OUTLET_UP).min(ov_box_bot);
         let ov_clamps = match spec.overflow {
             Overflow::Pipe => clamp_heights(ov_box_bot, end, spec.spacing),
@@ -269,6 +275,7 @@ impl Downpipe {
             box_top,
             box_bot,
             reach: REACH + unten.shift,
+            bend: unten.bend,
             stand_top,
             ground,
             lower: unten.lower,
@@ -346,7 +353,7 @@ impl Downpipe {
             self.clamp(&mut s, ax, self.reach, z);
         }
         if self.lower {
-            self.outlet_bend(&mut s, ax, self.stand_top, self.ground);
+            self.outlet_bend(&mut s, ax, self.bend, self.stand_top, self.ground);
         } else if self.stand_top - self.ground > 1.0 {
             cylinder(&mut s, ax, STAND_D / 2.0, self.ground, self.stand_top);
         }
@@ -363,7 +370,7 @@ impl Downpipe {
                 for &z in &o.clamps {
                     self.clamp(&mut s, ax, o.reach, z);
                 }
-                self.outlet_bend(&mut s, ax, o.end, o.foot.z);
+                self.outlet_bend(&mut s, ax, o.foot.bend, o.end, o.foot.z);
             }
             Overflow::Spout => {
                 let c = o.face + self.out * (SPOUT_OUT / 2.0);
@@ -374,12 +381,18 @@ impl Downpipe {
     }
 
     /// Auslaufbogen am Rohrende `end` über der Fläche `ground`: kurzes
-    /// Stück von der Fassade weg.
-    fn outlet_bend(&self, s: &mut Solid, ax: Vec3, end: f64, ground: f64) {
-        let c = ax + self.out * (OUTLET_REACH / 2.0);
+    /// Stück in Richtung `bend`, von der Fassade weg oder längs.
+    fn outlet_bend(&self, s: &mut Solid, ax: Vec3, bend: Vec3, end: f64, ground: f64) {
+        let c = ax + bend * (OUTLET_REACH / 2.0);
         let lo = (end - PIPE_D).max(ground);
+        let lang = OUTLET_REACH + PIPE_D;
+        let (w, d) = if bend.dot(self.out).abs() > 0.5 {
+            (PIPE_D, lang)
+        } else {
+            (lang, PIPE_D)
+        };
         if end - lo > 1.0 {
-            self.cuboid(s, c, PIPE_D, OUTLET_REACH + PIPE_D, lo, end);
+            self.cuboid(s, c, w, d, lo, end);
         }
     }
 

@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::fallrohr::{
-    Downpipe, DownpipeSpec, Foot, Overflow, MAX_SHIFT, MIN_GAP, REACH, SPACING_MAX, SPACING_MIN,
-    WALL_GAP,
+    Downpipe, DownpipeSpec, Foot, Overflow, MAX_SHIFT, MIN_GAP, OUTLET_REACH, PIPE_D, REACH,
+    SPACING_MAX, SPACING_MIN, WALL_GAP,
 };
 use crate::roof::FlatRoof;
 
@@ -129,7 +129,7 @@ impl Model {
             return Vec::new();
         };
         let b = self.building_of_element(roof);
-        let foot = |p: Vec3, out: Vec3| self.foot_at(floor, b, p, out);
+        let foot = |p: Vec3, out: Vec3, side: Vec3| self.foot_at(floor, b, p, out, side);
         let vorschlag;
         let drains = if drainage.drains.is_empty() {
             vorschlag =
@@ -155,13 +155,25 @@ impl Model {
     }
 
     /// Fläche unter der Rohrachse `p` außen vor dem Flachdach über der
-    /// Decke `floor` (Prüfung Geometrie #68), `out` zeigt nach außen: das
-    /// oberste tiefere Geschoss mit Dachterrasse, deren Außenfläche `p`
-    /// umschließt (OK Belag); sonst das Gelände. Springt eine Fassade
-    /// darunter nur wenig vor (kleiner Rücksprung ohne Terrasse), rückt das
-    /// Rohr um so viel nach außen, dass es mit dem Wandabstand an ihr
-    /// vorbeiläuft; erst über [`MAX_SHIFT`] endet es über der Decke.
-    fn foot_at(&self, floor: ElementId, b: Option<BuildingId>, p: Vec3, out: Vec3) -> Foot {
+    /// Decke `floor` (Prüfung Geometrie #68), `out` zeigt nach außen,
+    /// `side` ist die Seite, zu der der Auslaufbogen lieber abbiegt. Die
+    /// Fälle greifen lückenlos ineinander:
+    /// - Liegt die Achse über einer Dachterrasse darunter, endet das Rohr
+    ///   dort mit Auslaufbogen, dessen Mündung über dem Belag liegt: nach
+    ///   außen, sonst längs der Fassade (zuerst zu `side`).
+    /// - Ist der Belag dafür zu schmal oder springt die Fassade darunter nur
+    ///   wenig vor (ohne Terrasse), rückt das Rohr so weit nach außen, dass
+    ///   es mit dem Wandabstand an ihr vorbei bis ins Standrohr läuft; ohne
+    ///   Terrasse höchstens um [`MAX_SHIFT`], sonst endet es über der Decke.
+    /// - Sonst steht es auf dem Gelände.
+    fn foot_at(
+        &self,
+        floor: ElementId,
+        b: Option<BuildingId>,
+        p: Vec3,
+        out: Vec3,
+        side: Vec3,
+    ) -> Foot {
         let mut shift: f64 = 0.0;
         let mut cur = self.run_of(floor);
         while let Some(below) = cur.and_then(|r| self.run_below(r)) {
@@ -171,12 +183,28 @@ impl Model {
             };
             let face = c.face_corners(c.outer_offset());
             let innen = contains(&face, p);
-            if let (true, Some(t)) = (innen, f.terrace_band()) {
-                return Foot {
-                    z: t.1,
-                    lower: true,
-                    shift: 0.0,
+            let terrasse = f.terrace_band();
+            if let (true, Some(t)) = (innen, terrasse) {
+                // Mündung des Bogens und Rohr über dem Belag
+                let belag = |q: Vec3| {
+                    f.terraces
+                        .outlines
+                        .iter()
+                        .flat_map(|o| &o.parts)
+                        .any(|part| contains(part, q))
                 };
+                let reicht = OUTLET_REACH + PIPE_D / 2.0;
+                let bend = [out, side, -side]
+                    .into_iter()
+                    .find(|&dir| belag(p + out * (PIPE_D / 2.0)) && belag(p + dir * reicht));
+                if let Some(bend) = bend {
+                    return Foot {
+                        z: t.1,
+                        lower: true,
+                        shift: 0.0,
+                        bend,
+                    };
+                }
             }
             // Achse vor der Fassade darunter (innen negativ)
             let n = face.len();
@@ -188,11 +216,12 @@ impl Model {
                 .fold(f64::INFINITY, f64::min);
             let fehlt = REACH - if innen { -d } else { d };
             if fehlt > WALL_GAP - MIN_GAP {
-                if fehlt > MAX_SHIFT {
+                if fehlt > MAX_SHIFT && terrasse.is_none() {
                     return Foot {
                         z: f.params.top,
                         lower: true,
                         shift: 0.0,
+                        bend: out,
                     };
                 }
                 shift = shift.max(fehlt);
@@ -203,6 +232,7 @@ impl Model {
             z: self.terrain_z_at(b, q.x, q.y),
             lower: false,
             shift,
+            bend: out,
         }
     }
 
@@ -474,6 +504,69 @@ mod tests {
     /// (60 bis 150 mm), keine Dachterrasse davor. Das Rohr darf weder in
     /// der EG-Fassade stecken (bis aufs Gelände) noch auf der Wandkrone
     /// des EG enden, wo es kein tieferes Dach gibt.
+    /// Geometrie (Nachprüfung #68, d3ec866): Rücksprung 200 bis 400 mm mit
+    /// schmaler Dachterrasse. Endet das Rohr dort mit Auslaufbogen, muss
+    /// dessen Mündung über dem Belag liegen, nicht über der Attika oder vor
+    /// der EG-Fassade (das Wasser liefe außen an ihr herunter).
+    #[test]
+    fn auslaufbogen_muendet_ueber_dem_belag() {
+        // lückenlos: frei vorbei, Bogen längs, Bogen nach außen
+        for off in [-200.0, -300.0, -400.0, -500.0, -1500.0] {
+            let mut m = Model::with_seed(12);
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let set = m.type_by_guid(crate::EXTERIOR_TYPE_GUID).unwrap();
+            let eg = m.ground_of(Some(b)).unwrap();
+            let eg = m
+                .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+                .unwrap();
+            let og = m.runs_above(eg)[0];
+            let nord = m.wall_at(og, 1).unwrap();
+            schritt(&mut m, |m| m.set_offset(nord, off).is_some());
+            let st = m.run(og).unwrap().storey;
+            schritt(&mut m, |m| m.set_flat_roof(st, true));
+            let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            // Belag von der OG-Fassade bis zur Attika
+            let belag = -off - f.terraces.width;
+            for id in m.downpipes_of(da) {
+                let d = m.downpipe(id).unwrap();
+                if d.lower {
+                    // Mündung: Achse + Auslauf (nach außen oder längs der
+                    // Fassade) + halber Durchmesser
+                    let mund = d.reach + 200.0 * d.bend.dot(d.out).max(0.0) + PIPE_D / 2.0;
+                    assert!(
+                        mund <= belag,
+                        "{off}: Mündung {mund} mm, Belag bis {belag} mm"
+                    );
+                }
+                // Sollwerte an der Nordseite (Belag 60, 160, 260, 360 mm):
+                // unter 130 mm frei vorbei an der Attika, bis 330 mm Bogen
+                // längs der Fassade, darüber nach außen
+                if d.out.y > 0.5 {
+                    match belag {
+                        b if b < REACH + PIPE_D / 2.0 => {
+                            assert!(!d.lower, "{off}");
+                            assert!((d.reach - (REACH - off)).abs() < 1e-6, "{off}");
+                        }
+                        b if b < REACH + OUTLET_REACH + PIPE_D / 2.0 => {
+                            assert!(d.lower, "{off}");
+                            assert!(d.bend.dot(d.along).abs() > 0.999, "{off}");
+                        }
+                        _ => assert!(d.lower && d.bend == d.out, "{off}"),
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn kleiner_ruecksprung_nicht_in_der_fassade() {
         for off in [-60.0, -100.0, -150.0] {
