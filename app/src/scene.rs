@@ -30,6 +30,9 @@ use std::rc::Rc;
 mod gefaelle;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
+#[path = "scene_schnitt.rs"]
+mod schnitt;
+use schnitt::UnderMemo;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
@@ -518,6 +521,8 @@ type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
 
 pub struct Scene {
     model: Model,
+    /// Deckendicke über den Geschossen je Modellstand ([`schnitt`]).
+    decken: schnitt::Decken,
     /// Rolle dieser Sitzung für Kostenoperationen (KA-3b1): `Nutzer`, wenn
     /// der Firmenkatalog ein Verwaltungskennwort hat und es hier nicht
     /// eingegeben ist; sonst `Admin`. Die App setzt sie.
@@ -866,6 +871,7 @@ impl Scene {
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
             model,
+            decken: Default::default(),
             undo: Vec::new(),
             serial: 0,
             redo: Vec::new(),
@@ -1376,38 +1382,6 @@ impl Scene {
             .map_or((0.0, crate::wall_tool::WALL_HEIGHT), |st| {
                 (st.elevation, st.height)
             })
-    }
-
-    /// Schnitthöhe des Grundrisses: OK Rohdecke des aktiven Geschosses plus
-    /// die Schnitthöhe des Projekts (Vorgabe 1,50 m), im Fundament die Mitte
-    /// der Frostschürze (E18).
-    pub fn plan_cut(&self) -> f64 {
-        self.plan_cut_of(self.active_storey())
-    }
-
-    /// Schnitthöhe des Grundrisses, wenn `id` aktiv ist. Im Fundament über
-    /// den Höhenbezug (Prüfregel 14): UK Fundament + halbe Tiefe bis UK
-    /// Sohlplatte (die Mitte der Frostschürze), so folgt der Schnitt
-    /// Plattendicke und Gründungstiefe.
-    fn plan_cut_of(&self, id: StoreyId) -> f64 {
-        let Some(st) = self.model.storey(id) else {
-            return PLAN_CUT;
-        };
-        let at = if st.kind == sk_model::LevelKind::Foundation {
-            let slab = self.model.max_slab_thickness(id);
-            sk_model::LevelRef {
-                storey: id,
-                edge: sk_model::LevelEdge::Bottom,
-                offset: (st.height - slab) / 2.0,
-            }
-        } else {
-            sk_model::LevelRef {
-                storey: id,
-                edge: sk_model::LevelEdge::Bottom,
-                offset: self.cut_offset(id, st),
-            }
-        };
-        self.model.level_z(at).unwrap_or(PLAN_CUT)
     }
 
     /// Zeichentabelle zum aktuellen Stand der Attribute.
@@ -3354,36 +3328,6 @@ impl Scene {
             .collect()
     }
 
-    /// Schnitthöhe des Hintergrunds für den Zug `run`: sein Geschoss liegt
-    /// direkt unter dem aktiven (E16).
-    fn under_cut(&self, run: RunId) -> Option<f64> {
-        self.under_cut_for(run, self.active_storey())
-    }
-
-    /// Wie [`Scene::under_cut`], wenn `active` aktiv ist.
-    fn under_cut_for(&self, run: RunId, active: StoreyId) -> Option<f64> {
-        if self.is_foundation(active) {
-            return None;
-        }
-        let floor = self.model.storey(active).map_or(0.0, |st| st.elevation);
-        let id = self.model.run(run)?.storey;
-        let st = self.model.storey(id)?;
-        let below = st.kind != sk_model::LevelKind::Foundation && (st.top() - floor).abs() < 1e-6;
-        below.then_some(st.elevation + self.cut_offset(id, st))
-    }
-
-    /// Schnitthöhe des Projekts über der Unterkante von `st` (Geschoss
-    /// `id`), im niedrigen Geschoss knapp unter UK Rohdecke darüber; das
-    /// Flachdach hat keine Decke und schneidet frei.
-    fn cut_offset(&self, id: StoreyId, st: &sk_model::Storey) -> f64 {
-        let h = self.model.plan_cut_height();
-        if st.kind == sk_model::LevelKind::Roof {
-            return h;
-        }
-        let clear = self.model.clear_height(id);
-        h.min(clear - sk_model::PLAN_CUT_TOP_GAP).max(0.0)
-    }
-
     /// Wie der Zug zum Geschoss `active` liegt (Grundriss).
     fn plan_mode(&self, run: RunId, active: StoreyId) -> PlanMode {
         if self.is_foundation(active) {
@@ -3420,10 +3364,11 @@ impl Scene {
     /// Wandzüge samt Hintergrund)?
     pub fn plan_ready(&self, id: StoreyId) -> bool {
         let cut = self.plan_cut_of(id);
+        let memo = UnderMemo::default();
         self.cache.iter().flatten().all(|c| {
             c.has_plan(cut, self.plan_mode(c.id, id))
                 && self
-                    .under_cut_for(c.id, id)
+                    .under_cut_for(c.id, id, &memo)
                     .is_none_or(|u| c.under.iter().any(|(x, _)| *x == u))
         })
     }
@@ -3448,11 +3393,15 @@ impl Scene {
     /// Grundriss des Geschosses `id` berechnen (vor einem Wechsel dorthin).
     pub fn prepare_plan(&mut self, id: StoreyId) {
         let cut = self.plan_cut_of(id);
+        let memo = UnderMemo::default();
         let jobs: Vec<(RunId, PlanMode, Option<f64>)> = self
             .cache
             .iter()
             .flatten()
-            .map(|c| (c.id, self.plan_mode(c.id, id), self.under_cut_for(c.id, id)))
+            .map(|c| {
+                let under = self.under_cut_for(c.id, id, &memo);
+                (c.id, self.plan_mode(c.id, id), under)
+            })
             .collect();
         for (run, mode, under) in jobs {
             if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
@@ -3468,11 +3417,12 @@ impl Scene {
     /// (E16). Leer, solange das EG aktiv ist.
     pub fn background_snaps(&mut self) -> Vec<(Vec3, Vec3)> {
         let floor = self.work_plane().0;
+        let memo = UnderMemo::default();
         let cuts: Vec<(RunId, f64)> = self
             .cache
             .iter()
             .flatten()
-            .filter_map(|c| Some((c.id, self.under_cut(c.id)?)))
+            .filter_map(|c| Some((c.id, self.under_cut(c.id, &memo)?)))
             .collect();
         let filter = self.filtering();
         let vis = Vis {
@@ -3544,7 +3494,8 @@ impl Scene {
             // seiner eigenen Schnitthöhe, nur Konturen, knapp über dem Boden
             // des aktiven Geschosses (unter dessen Wänden)
             let floor = self.work_plane().0;
-            let under: Vec<Option<f64>> = runs.iter().map(|r| self.under_cut(*r)).collect();
+            let memo = UnderMemo::default();
+            let under: Vec<Option<f64>> = runs.iter().map(|r| self.under_cut(*r, &memo)).collect();
             let vis = Vis {
                 model: &self.model,
                 anim: self.vis_anim.as_ref(),
