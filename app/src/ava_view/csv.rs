@@ -7,8 +7,12 @@ use crate::kosten_view::csv_text;
 const BUTTON_H: f32 = crate::cards::KNOPF_H;
 const BUTTON_PAD: f32 = crate::cards::KNOPF_PAD;
 const BUTTON_Y: f32 = 14.0;
-/// Knopf „Druckvorschau“ und sein Abstand zum Speichern-Knopf (dip).
+/// Knopf „Druckvorschau“ und sein Abstand zum Speichern-Knopf (dip); in
+/// der Druckvorschau steht dort der Weg zurück (Jörn 11.10.).
 const VORSCHAU: &str = "Druckvorschau";
+const ZURUECK: &str = "Zurück zum LV";
+/// Platz für den gezeichneten Pfeil „‹“ vor „Zurück zum LV“ (dip).
+const PFEIL_W: f32 = 12.0;
 const VORSCHAU_GAP: f32 = 8.0;
 
 /// Einheit als GAEB-Wort (m2, m3, m, t, St).
@@ -106,14 +110,18 @@ impl AvaView {
         ((x0 + w - bw, y, bw, BUTTON_H * s), text)
     }
 
-    /// Breite des Knopfs „Druckvorschau“ (px); nur in der Ansicht LV.
+    /// Breite des Knopfs „Druckvorschau“ bzw. in der Druckvorschau
+    /// „‹ Zurück zum LV“ (px); nicht in Zusammenstellung und Prüfen.
     pub(super) fn vorschau_breite(&self, f: Option<&Font>) -> Option<f32> {
-        if self.ansicht != Ansicht::Lv || self.lv.is_none() {
-            return None;
-        }
+        self.lv.as_ref()?;
         let s = self.scale;
-        let tw = f.map_or(80.0 * s, |f| f.width(VORSCHAU, 11.0 * s));
-        Some(tw + 2.0 * BUTTON_PAD * s)
+        let (text, pfeil) = match self.ansicht {
+            Ansicht::Lv => (VORSCHAU, 0.0),
+            Ansicht::Blatt => (ZURUECK, PFEIL_W),
+            _ => return None,
+        };
+        let tw = f.map_or(80.0 * s, |f| f.width(text, 11.0 * s));
+        Some(tw + (2.0 * BUTTON_PAD + pfeil) * s)
     }
 
     /// Knopf „Druckvorschau“ (Bedienbarkeit 26.1): links neben „als
@@ -136,19 +144,34 @@ impl AvaView {
         };
         let s = self.scale;
         let u = &t.ui;
-        let bg = if self.hot == Some(Hot::Vorschau) {
-            u.sheet_hover
-        } else {
-            u.sheet_tile
+        let hot = self.hot == Some(Hot::Vorschau);
+        // Zurück im Akzent, damit der Weg aus der Vorschau ins Auge fällt
+        let zurueck = self.ansicht == Ansicht::Blatt;
+        let (bg, col) = match (zurueck, hot) {
+            (true, true) => (u.accent_hover, u.on_accent),
+            (true, false) => (u.accent, u.on_accent),
+            (false, true) => (u.sheet_hover, u.sheet_text),
+            (false, false) => (u.sheet_tile, u.sheet_text),
         };
         let mut p = Path::new();
         p.rounded_rect(x, y, w, h, t.size.corner_radius * s);
         c.fill(&p, bg);
-        if let Some(f) = fonts.bold.as_ref() {
-            let px = 11.0 * s;
-            let base = y + (h + f.cap_height(px)) * 0.5;
-            f.draw(c, VORSCHAU, px, x + BUTTON_PAD * s, base, u.sheet_text);
+        let Some(f) = fonts.bold.as_ref() else {
+            return;
+        };
+        let px = 11.0 * s;
+        let base = y + (h + f.cap_height(px)) * 0.5;
+        if !zurueck {
+            f.draw(c, VORSCHAU, px, x + BUTTON_PAD * s, base, col);
+            return;
         }
+        // Pfeil „‹“ gezeichnet
+        let (mx, my, d) = (x + (BUTTON_PAD + 3.0) * s, y + h * 0.5, 4.0 * s);
+        let mut p = Path::new();
+        p.segment((mx + d * 0.5, my - d), (mx - d * 0.5, my), 1.5 * s);
+        p.segment((mx - d * 0.5, my), (mx + d * 0.5, my + d), 1.5 * s);
+        c.fill(&p, col);
+        f.draw(c, ZURUECK, px, x + (BUTTON_PAD + PFEIL_W) * s, base, col);
     }
 
     pub fn mouse_up(&mut self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<ListOut> {

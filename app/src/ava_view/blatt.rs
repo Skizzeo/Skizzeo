@@ -104,7 +104,7 @@ impl AvaView {
     }
 
     /// Seiten des Blatts (mindestens 1).
-    fn seiten(&self, fonts: &Fonts) -> usize {
+    pub(super) fn seiten(&self, fonts: &Fonts) -> usize {
         self.blatt(fonts).map_or(1, |b| b.seiten.len().max(1))
     }
 
@@ -216,10 +216,12 @@ impl AvaView {
         if let Some((b, _)) = l.fassung.iter().find(|(_, r)| inside(*r, x, y)) {
             return Some(Hot::Preise(*b));
         }
-        l.haken
-            .iter()
-            .find(|(r, ..)| inside(*r, x, y))
-            .map(|(_, _, v)| Hot::BlattWahl(*v))
+        if let Some((_, _, v)) = l.haken.iter().find(|(r, ..)| inside(*r, x, y)) {
+            return Some(Hot::BlattWahl(*v));
+        }
+        // Das Blatt selbst: ein Klick zeigt es groß (Jörn 11.10.)
+        let (bx, by, k) = self.blatt_lage(t, fonts);
+        inside((bx, by, A4.0 * k, A4.1 * k), x, y).then_some(Hot::Lupe)
     }
 
     pub(super) fn paint_vorschau(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
@@ -332,6 +334,11 @@ impl AvaView {
         let (x, y, k) = self.blatt_lage(t, fonts);
         let (w, h) = (A4.0 * k, A4.1 * k);
         c.fill_rect(x + 2.0 * s, y + 3.0 * s, w, h, Rgba(0, 0, 0, 40));
+        // Unter der Maus ein Rand im Akzent: ein Klick zeigt es groß
+        if self.hot == Some(Hot::Lupe) {
+            let b = 2.0 * s.max(1.0);
+            c.fill_rect(x - b, y - b, w + 2.0 * b, h + 2.0 * b, u.accent);
+        }
         c.fill_rect(x, y, w, h, Rgba(255, 255, 255, 255));
         sk_paint::pdf::zeichnen(c, seite, (x, y), k, regular, fett);
     }
