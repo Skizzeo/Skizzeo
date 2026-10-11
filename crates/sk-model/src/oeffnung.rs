@@ -77,6 +77,38 @@ pub const REVEAL_FACING: [f64; 4] = [60.0, 60.0, 60.0, 0.0];
 /// Anschlag hinter einem WDVS (mm): die Laibungsdämmung überdeckt den
 /// Rahmen um etwa 3 cm (DIN 4108 Bbl. 2).
 pub const REVEAL_ETICS: [f64; 4] = [30.0, 30.0, 30.0, 0.0];
+/// Äußere Einbautiefe in einer monolithischen Wand: Außenseite des
+/// Elements hinter der Außenseite der Wand (mm, Jörn 11.10. 17:08).
+pub const INSTALL_MONO: f64 = 120.0;
+/// Mit WDVS oder Verblendschale sitzt das Element so weit hinter der
+/// Innenseite der vorgesetzten Schale (mm, Jörn 17:08).
+pub const INSTALL_BEHIND_SHELL: f64 = 20.0;
+/// Bautiefe des Elements, solange es keine Fenster-, Terrassentür- und
+/// Außentürelemente gibt (mm, Jörn 17:09); später vom Element.
+pub const ELEMENT_DEPTH: f64 = 80.0;
+/// Größte äußere Einbautiefe und Bautiefe (mm).
+pub const MAX_INSTALL: f64 = 1000.0;
+
+/// Einbau des Elements in der Öffnung (Jörn 17:08–17:09); `None`: nach
+/// Wandtyp bzw. [`ELEMENT_DEPTH`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Install {
+    /// Äußere Einbautiefe: Außenseite der Wand bis Außenseite des Elements.
+    pub outer: Option<f64>,
+    /// Bautiefe des Elements.
+    pub element: Option<f64>,
+}
+
+/// Aufgelöster Einbau in einem Wandzug (mm): außen bis zum Element, das
+/// Element, innen vom Element bis zur Innenseite der Wand. `inner` ist die
+/// innere Einbautiefe, so tief wird die Laibung von innen verputzt,
+/// tapeziert oder gestrichen (Raumbuch).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InstallDepth {
+    pub outer: f64,
+    pub element: f64,
+    pub inner: f64,
+}
 
 /// Eine Öffnung.
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +123,8 @@ pub struct Opening {
     /// nach Wandtyp ([`REVEAL_FACING`], [`REVEAL_ETICS`], monolithisch
     /// keiner).
     pub reveal: Option<[f64; 4]>,
+    /// Einbautiefen; leer nach Wandtyp.
+    pub install: Install,
 }
 
 impl Opening {

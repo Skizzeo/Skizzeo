@@ -4,7 +4,9 @@
 use crate::element::RunId;
 use crate::hoehen::HeightLines;
 use crate::model::{Model, CAVITY_TYPE_GUID, MONO_TYPE_GUID};
-use crate::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind, REVEAL_ETICS};
+use crate::oeffnung::{
+    HeightLine, HeightRef, Install, InstallDepth, Opening, OpeningKind, REVEAL_ETICS,
+};
 use crate::solid::Solid;
 use crate::txn::Direction;
 use crate::wall::right_of;
@@ -60,6 +62,7 @@ fn fenster(m: &Model, run: RunId, u: (f64, f64)) -> Opening {
         bottom: HeightRef::Line(st, HeightLine::Sill),
         top: HeightRef::Line(st, HeightLine::Lintel),
         reveal: None,
+        install: Default::default(),
     }
 }
 
@@ -134,6 +137,54 @@ fn anschlag_nach_wandtyp() {
     assert_eq!(h.shell, c.layers.len());
 }
 
+/// Einbautiefen nach Wandtyp (Jörn 17:08–17:09): monolithisch 12 cm,
+/// sonst 2 cm hinter der Innenseite der Außenschale; das Element 8 cm,
+/// innen der Rest. Eigene Werte gelten, in der Wanddicke geklemmt; das Loch
+/// und die Lochmaße tragen sie.
+#[test]
+fn einbautiefe_nach_wandtyp() {
+    let dicke = |m: &Model, run: RunId| -> Vec<f64> {
+        let e = m.element(m.run(run).unwrap().segments[0]).unwrap();
+        let s = m.layer_set(e.layer_set.unwrap()).unwrap();
+        s.layers.iter().map(|l| l.thickness).collect()
+    };
+    let (mut m, eg, _) = haus(Some(MONO_TYPE_GUID));
+    let t: f64 = dicke(&m, eg).iter().sum();
+    let f = fenster(&m, eg, (3000.0, 4000.0));
+    assert_eq!(
+        m.install_depth(&f, eg),
+        InstallDepth {
+            outer: 120.0,
+            element: 80.0,
+            inner: t - 200.0
+        }
+    );
+    m.add_opening(f.clone()).unwrap();
+    assert_eq!(m.chain(eg).unwrap().joints.holes[0].install.outer, 120.0);
+    let mut eigen = f.clone();
+    eigen.install = Install {
+        outer: Some(5000.0),
+        element: Some(70.0),
+    };
+    let d = m.install_depth(&eigen, eg);
+    assert_eq!((d.outer, d.element, d.inner), (t - 70.0, 70.0, 0.0));
+
+    // WDVS: Dämmung (und Putz) vor dem Kern ist die Außenschale
+    let (m, eg, _) = haus(None);
+    let l = dicke(&m, eg);
+    let (shell, _) = m.opening_shell(eg);
+    let vor: f64 = l[..shell].iter().sum();
+    let d = m.install_depth(&fenster(&m, eg, (3000.0, 4000.0)), eg);
+    assert_eq!(d.outer, vor + 20.0);
+    assert_eq!(d.inner, l.iter().sum::<f64>() - vor - 20.0 - 80.0);
+
+    // Verblender: bis hinter die Vorsatzschale
+    let (m, eg, _) = haus(Some(CAVITY_TYPE_GUID));
+    let l = dicke(&m, eg);
+    let d = m.install_depth(&fenster(&m, eg, (3000.0, 4000.0)), eg);
+    assert_eq!(d.outer, l[0] + 20.0, "{l:?}");
+}
+
 /// Von außen gesehen links und rechts: Auf Segment 1 (Nordseite, von
 /// außen nach Süden geblickt) läuft u nach links.
 #[test]
@@ -143,6 +194,7 @@ fn anschlag_links_rechts() {
     let o = Opening {
         path: vec![aussen(&m, eg, 1, 2000.0), aussen(&m, eg, 1, 3000.0)],
         reveal: Some([10.0, 20.0, 30.0, 0.0]),
+        install: Default::default(),
         ..fenster(&m, eg, (0.0, 1.0))
     };
     let _ = st;
@@ -255,6 +307,7 @@ fn ungueltige_oeffnungen() {
     assert!(m.add_opening(verkehrt).is_none());
     let anschlag = Opening {
         reveal: Some([300.0, 0.0, 0.0, 0.0]),
+        install: Default::default(),
         ..fenster(&m, eg, (3000.0, 4000.0))
     };
     assert!(m.add_opening(anschlag).is_none());
@@ -278,6 +331,10 @@ fn oeffnungen_in_der_datei() {
             ..LevelRef::bottom(storey(&m, eg))
         }),
         reveal: Some([40.0, 40.0, 40.0, 0.0]),
+        install: Install {
+            outer: Some(100.0),
+            element: Some(70.0),
+        },
         ..fenster(&m, eg, (5000.0, 6010.0))
     })
     .unwrap();
@@ -302,6 +359,8 @@ fn oeffnungen_in_der_datei() {
     assert!(text.contains(" sill=950"), "{text}");
     assert!(!text.contains("lintel=2385"), "{text}");
     assert!(text.contains("art=door") && text.contains("reveal=40,40,40,0"));
+    assert!(text.contains("install=100 element=70"), "{text}");
+    assert_eq!(text.matches("install=").count(), 1, "nur wo gesetzt");
     let back = szo::read(&text, GuidGen::with_seed(5)).unwrap();
     assert!(back.hints.is_empty(), "{:?}", back.hints);
     assert_eq!(szo::write(&back.model), text);

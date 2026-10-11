@@ -4,7 +4,8 @@
 use super::*;
 use crate::hoehen::HeightLines;
 use crate::oeffnung::{
-    HeightLine, HeightRef, Opening, MAX_REVEAL, MIN_OPENING, REVEAL_ETICS, REVEAL_FACING,
+    HeightLine, HeightRef, InstallDepth, Opening, ELEMENT_DEPTH, INSTALL_BEHIND_SHELL,
+    INSTALL_MONO, MAX_INSTALL, MAX_REVEAL, MIN_OPENING, REVEAL_ETICS, REVEAL_FACING,
 };
 use crate::wall::{cross2, flat, right_of};
 use crate::wand_loch::Hole;
@@ -62,12 +63,17 @@ impl Model {
         let reveal = o
             .reveal
             .is_none_or(|r| r.iter().all(|x| (0.0..=MAX_REVEAL).contains(x)));
+        let install = [o.install.outer, o.install.element]
+            .iter()
+            .flatten()
+            .all(|x| (0.0..=MAX_INSTALL).contains(x));
         (2..=3).contains(&n)
             && finite
             && legs
             && bent
             && o.width() >= MIN_OPENING - 1e-6
             && reveal
+            && install
             && self.opening_band(o).is_some()
     }
 
@@ -139,6 +145,35 @@ impl Model {
             return (core, REVEAL_ETICS);
         }
         (n, [0.0; 4])
+    }
+
+    /// Einbautiefen der Öffnung `o` im Außenwandzug `run` (Jörn 17:08):
+    /// außen nach Wandtyp monolithisch [`INSTALL_MONO`], sonst
+    /// [`INSTALL_BEHIND_SHELL`] hinter der Innenseite der Außenschale
+    /// ([`Model::opening_shell`]); das Element [`ELEMENT_DEPTH`]; innen der
+    /// Rest bis zur Innenseite. Alles in der Wanddicke geklemmt.
+    pub fn install_depth(&self, o: &Opening, run: RunId) -> InstallDepth {
+        let layers = self
+            .run(run)
+            .and_then(|r| r.segments.first())
+            .and_then(|e| self.element(*e))
+            .and_then(|e| e.layer_set)
+            .and_then(|s| self.layer_set(s))
+            .map_or(&[][..], |s| &s.layers[..]);
+        let t: f64 = layers.iter().map(|l| l.thickness).sum();
+        let (shell, _) = self.opening_shell(run);
+        let by_wall = if shell >= layers.len() {
+            INSTALL_MONO
+        } else {
+            layers[..shell].iter().map(|l| l.thickness).sum::<f64>() + INSTALL_BEHIND_SHELL
+        };
+        let element = o.install.element.unwrap_or(ELEMENT_DEPTH).clamp(0.0, t);
+        let outer = o.install.outer.unwrap_or(by_wall).clamp(0.0, t - element);
+        InstallDepth {
+            outer,
+            element,
+            inner: (t - outer - element).max(0.0),
+        }
     }
 
     /// Löcher der Öffnungen im Außenwandzug `run` mit Körper `c`: je
@@ -220,6 +255,7 @@ impl Model {
                         shell: if mono { c.layers.len() } else { shell },
                         u_right: rechts,
                         opening: Some(id),
+                        install: self.install_depth(op, run),
                     });
                 }
             }

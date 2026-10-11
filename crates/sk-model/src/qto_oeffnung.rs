@@ -7,7 +7,7 @@
 //! entscheidet die VOB-Regel, die Teilstücke einer Ecköffnung oder einer
 //! geschossübergreifenden Öffnung über die Kennung zusammenzählt.
 
-use crate::oeffnung::OpeningKind;
+use crate::oeffnung::{InstallDepth, OpeningKind};
 use crate::wall::WallChain;
 use crate::{ElementId, Model};
 use sk_math::Vec3;
@@ -33,6 +33,10 @@ pub struct LayerHole {
     /// außen gesehen; 0, wo die Schicht dort keine Laibung zeigt (Ecke,
     /// anderes Geschoss).
     pub reveal: [f64; 4],
+    /// Einbautiefen des Elements in dieser Wand; `install.inner` ist die
+    /// Tiefe der Innenlaibung für Putz und Maler, `install.outer` die der
+    /// Außenlaibung (Jörn 17:08–17:09).
+    pub install: InstallDepth,
 }
 
 /// Löcher in Schicht `li` von Segment `k`; `fa`, `fb`: Eckpunkte der beiden
@@ -106,6 +110,7 @@ pub(crate) fn layer_holes(
                 if inside(z1) { width } else { 0.0 },
                 if inside(z0) { width } else { 0.0 },
             ],
+            install: h.install,
         });
     }
     out

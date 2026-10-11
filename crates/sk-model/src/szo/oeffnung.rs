@@ -5,11 +5,12 @@
 //!
 //! Eine Höhe ist `Guid:sill` bzw. `Guid:lintel` (an die Höhenlinie des
 //! Geschosses gebunden) oder `Guid:u|o:Versatz` (frei). `reveal=l,r,o,u`
-//! steht nur, wenn der Anschlag nicht dem Wandtyp folgt.
+//! steht nur, wenn der Anschlag nicht dem Wandtyp folgt, `install=…`
+//! (äußere Einbautiefe) und `element=…` (Bautiefe) nur, wenn gesetzt.
 
 use super::{category, err, keyword, Line, LoadError, Record};
 use crate::element::{Element, ElementKind, LevelEdge, LevelRef};
-use crate::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+use crate::oeffnung::{HeightLine, HeightRef, Install, Opening, OpeningKind};
 use crate::{Guid, Model, StoreyId};
 use sk_math::vec3;
 use std::collections::HashMap;
@@ -51,6 +52,12 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
             Some(r) => l.word("reveal", &format!("{},{},{},{}", r[0], r[1], r[2], r[3])),
             None => l,
         };
+        let mm = |l: Line, key: &str, v: Option<f64>| match v {
+            Some(v) => l.word(key, &v.to_string()),
+            None => l,
+        };
+        let l = mm(l, "install", o.install.outer);
+        let l = mm(l, "element", o.install.element);
         l.text("number", &e.number)
             .word("cat", category(e.category))
             .num("seq", e.seq)
@@ -135,11 +142,26 @@ pub(super) fn read(
             Some([a, b, c, d])
         }
     };
+    let mm = |key: &str| -> Result<Option<f64>, LoadError> {
+        r.opt(key)
+            .map(|v| {
+                v.parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite() && *x >= 0.0)
+                    .ok_or_else(|| r.bad(key, "Millimeter"))
+            })
+            .transpose()
+    };
+    let install = Install {
+        outer: mm("install")?,
+        element: mm("element")?,
+    };
     Ok(ElementKind::Opening(Opening {
         kind,
         path,
         bottom: read_height(r, "bottom", storeys)?,
         top: read_height(r, "top", storeys)?,
         reveal,
+        install,
     }))
 }

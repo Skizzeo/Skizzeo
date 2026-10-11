@@ -35,6 +35,8 @@ pub struct Hole {
     pub u_right: bool,
     /// Die Öffnung, aus der das Loch stammt (Mengen, VOB-Schwelle).
     pub opening: Option<crate::ElementId>,
+    /// Einbautiefen des Elements in dieser Wand (Laibungen, Raumbuch).
+    pub install: crate::oeffnung::InstallDepth,
 }
 
 /// Bereich eines Lochs in einer Schicht: längs (u) und Höhe (z).
@@ -554,6 +556,7 @@ mod tests {
             shell: 1,
             u_right: true,
             opening: None,
+            install: Default::default(),
         };
         assert_eq!(h.kasten(true), ((1000.0, 2000.0), (875.0, 2385.0)));
         assert_eq!(h.kasten(false), ((940.0, 2060.0), (875.0, 2445.0)));
@@ -582,6 +585,7 @@ mod tests {
             shell: 1,
             u_right: true,
             opening: None,
+            install: Default::default(),
         };
         c.joints.holes.push(h.clone());
         (c, h)
