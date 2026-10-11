@@ -3433,6 +3433,8 @@ impl Model {
     /// die Verstöße als Text.
     pub fn check(&self) -> Vec<String> {
         let mut out = Vec::new();
+        // Wandkörper für die Öffnungen, einmal je Prüfung
+        let mut koerper = oeffnung_model::Koerper::default();
         let strips_wanted = self.edge_strip_pairs();
         let soffits_wanted = self.soffit_floors();
         let terraces_wanted = self.terrace_floors();
@@ -3704,7 +3706,7 @@ impl Model {
                     }
                 }
                 ElementKind::Opening(ref o) => {
-                    if let Some(f) = self.opening_fault(o, Some(id)) {
+                    if let Some(f) = self.opening_fault_in(o, Some(id), &mut koerper) {
                         out.push(format!("{}: {}", e.number, f.text(self)));
                     }
                 }

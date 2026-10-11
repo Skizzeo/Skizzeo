@@ -53,6 +53,7 @@ mod grundriss_schnitt;
 mod help;
 mod hints;
 mod kette_app;
+mod knopf_tip;
 mod kosten_view;
 mod link_view;
 mod lohn_blatt;
@@ -64,6 +65,8 @@ mod menu;
 mod musterprobe;
 mod nav;
 mod nordpfeil;
+mod oeffnung_app;
+mod oeffnung_werkzeug;
 mod pattern_view;
 #[cfg(test)]
 mod perf;
@@ -3481,6 +3484,7 @@ impl App {
             Id::PropsType if self.ext_gewaehlt_ist() => self.ext_klick(id),
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
+            Id::Opening(k) => self.oeffnung_klick(k),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
             Id::ExtJa(i) => self.ext_prop_wert(i, None),
             Id::PropsLink | Id::PropsFlush | Id::PropsSplit | Id::PropsMerge => {
@@ -4333,6 +4337,7 @@ impl App {
                 let out = self.ui.handle(&e, self.w, self.top());
                 self.apply_ui(&out);
                 self.redraw |= self.tool.handle(&e, &self.cam, vw, vh, sc).redraw;
+                self.oeffnung_move(&e, vw, vh, sc);
                 let en = self.edit_enabled();
                 let out = self
                     .edit
@@ -4458,6 +4463,7 @@ impl App {
                     ev
                 };
                 self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
+                self.oeffnung_move(&tool_ev, vw, vh, sc);
                 // Bauteil unter der Maus: Mengenliste und Baum zeigen seine
                 // Zeile (B7, Paket 4)
                 if self.quantity.open || !self.tree.collapsed {
@@ -4536,6 +4542,7 @@ impl App {
                         camera_moved |=
                             self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
                         if self.zahnrad_handle(&ev, sc)
+                            || self.oeffnung_down(&ev)
                             || self.sonne_handle(&ev, vw, vh, sc)
                             || self.nord_handle(&ev, vw, vh, sc)
                         {
@@ -4768,6 +4775,8 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
+                } else if down && key == Key::Escape && self.oeffnung_esc() {
+                    // Öffnung: erste Ecke zurück, dann zu (Paket O3)
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
@@ -6211,52 +6220,6 @@ impl App {
             return faded.or_else(|| self.tree.tip(m)).filter(|t| !t.is_empty());
         }
         self.chain_tip()
-    }
-
-    /// Tooltip an Werkzeug- und Ansichtsknöpfen (9b): Name, Satz aus
-    /// `hilfe.txt`, „F1: mehr“; ein gesperrter Knopf nennt statt des Satzes
-    /// den Grund.
-    fn button_tip(&self) -> Option<String> {
-        let id = self.ui.hover?;
-        // Parameter einer Erweiterung: ihre `hilfe` (E7)
-        if let Some(h) = self.ui.ext_hilfe(id) {
-            return Some(tip_text(vec![h]));
-        }
-        let nord = nordpfeil::tip(self.ui.nord, self.ui.sonne_an);
-        let name = match id {
-            Id::Building => "Gebäude",
-            Id::Interior => "Innenwand",
-            Id::Ortho => "90°-Sprung",
-            Id::Ext if self.tool.ext.is_none() => "Erweiterungen",
-            Id::Quantity => cards::KNOPF,
-            Id::Projektdaten => "Projektdaten",
-            Id::Nord => nord.as_str(),
-            Id::View(v) => v.knopf(None),
-            _ => return None,
-        };
-        let reason = match id {
-            Id::Building if self.ui.upper_active => Some("Außenwände entstehen aus dem EG."),
-            Id::Building | Id::Interior if self.ui.foundation_active => {
-                Some("Im Fundament wird nicht gezeichnet.")
-            }
-            _ => None,
-        };
-        let mut lines = help::tooltip_lines(name);
-        if let (Some(r), true) = (reason, lines.len() == 3) {
-            lines[1] = r.into();
-        }
-        // Mit Nordrichtung heißt die Ansicht nach der Himmelsrichtung, der
-        // Satz („Ansicht von vorne.“) bleibt (Sonnenstand S3)
-        if let Id::View(v) = id {
-            lines[0] = v.titel(self.ui.nord);
-        }
-        // Ohne Gebäude geht die Sonne nicht an (S9)
-        let ohne_haus =
-            self.ui.nord.is_some() && !self.ui.sonne_an && self.scene.bounds().is_none();
-        if id == Id::Nord && ohne_haus {
-            lines.insert(1, sonne_view::OHNE_HAUS.into());
-        }
-        Some(tip_text(lines))
     }
 
     /// Hinweiskarte, wenn das automatische Sichern scheitert (F-13 §8):
