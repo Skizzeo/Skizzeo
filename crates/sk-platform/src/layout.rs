@@ -1,6 +1,7 @@
 //! Regeln für das Mengenfenster (F2, B7) neben dem Hauptfenster: Öffnen,
 //! Andocken, Mitwandern, Lösen, Einrasten, Teilen des Bildschirms und
-//! gemeinsames Minimieren.
+//! gemeinsames Minimieren. Links gilt dasselbe gespiegelt für das
+//! Geschossfenster ([`links`]).
 //!
 //! Reine Rechnung ohne Systemaufrufe: Jede Meldung des Systems liefert eine
 //! Liste von [`Action`]s, die die Windows-Seite ausführt. Deren Rückmeldungen
@@ -15,7 +16,12 @@ pub enum WindowId {
     /// Mengenfenster (B7): eigenes Programmfenster mit Taskleisteneintrag,
     /// ohne OpenGL.
     Quantity,
+    /// Geschossfenster links (Jörn 11.10.), gebaut wie das Mengenfenster.
+    Levels,
 }
+
+mod links;
+pub use links::LEVELS_WIDTH_DIP;
 
 /// Rechteck in Bildschirmpixeln: `(x, y, Breite, Höhe)`.
 pub type Rect = (i32, i32, i32, i32);
@@ -68,8 +74,8 @@ pub struct Windows {
     main: Rect,
     /// Bildpunkte je dip am Hauptfenster.
     scale: f32,
-    /// Minimiert: Haupt- und Mengenfenster.
-    min: [bool; 2],
+    /// Minimiert: Haupt-, Mengen- und Geschossfenster.
+    min: [bool; 3],
     /// Das Hauptfenster war maximiert und wurde zum Teilen verkleinert: beim
     /// Schließen wieder maximieren.
     restore_max: bool,
@@ -79,20 +85,23 @@ pub struct Windows {
     /// Maximieren bei angedocktem Mengenfenster: Lage vorher und Lage, die
     /// das Hauptfenster dafür bekommen hat (Rest des Arbeitsbereichs).
     filled: Option<(Rect, Rect)>,
+    /// Geschossfenster links.
+    links: links::Links,
 }
+
+const ALLE: [WindowId; 3] = [WindowId::Main, WindowId::Quantity, WindowId::Levels];
 
 fn slot(id: WindowId) -> usize {
     match id {
         WindowId::Main => 0,
         WindowId::Quantity => 1,
+        WindowId::Levels => 2,
     }
 }
 
-fn other(id: WindowId) -> WindowId {
-    match id {
-        WindowId::Main => WindowId::Quantity,
-        WindowId::Quantity => WindowId::Main,
-    }
+/// Liegt die Mitte von `r` im Arbeitsbereich `work`?
+fn inside(r: Rect, work: Rect) -> bool {
+    on_screen(r, &[work])
 }
 
 /// Platz des angedockten Mengenfensters: rechts bündig am Hauptfenster,
@@ -111,10 +120,11 @@ impl Windows {
             rect: None,
             main: (0, 0, 0, 0),
             scale: 1.0,
-            min: [false; 2],
+            min: [false; 3],
             restore_max: false,
             give_back: None,
             filled: None,
+            links: links::Links::new(),
         }
     }
 
@@ -179,7 +189,7 @@ impl Windows {
         self.scale = scale;
         self.open = true;
         self.shown = true;
-        self.min = [false; 2];
+        self.min = [false; 3];
         if !self.docked {
             if let Some(r) = self.rect {
                 self.main = main;
@@ -226,12 +236,21 @@ impl Windows {
     /// Wird Maximieren des Hauptfensters (Bildschirm `work`) zum Füllen des
     /// Rests neben dem Mengenfenster?
     pub fn fills_on_maximize(&self, work: Rect) -> bool {
-        let Some(q) = self.rect else {
-            return false;
-        };
-        let (cx, cy) = (q.0 + q.2 / 2, q.1 + q.3 / 2);
-        let same = cx >= work.0 && cx < work.0 + work.2 && cy >= work.1 && cy < work.1 + work.3;
-        self.shown && self.docked && same
+        self.right_beside(work) > 0 || self.left_beside(work) > 0
+    }
+
+    /// Breite des angedockten Mengenfensters auf dem Bildschirm `work`, sonst 0.
+    fn right_beside(&self, work: Rect) -> i32 {
+        match self.rect {
+            Some(q) if self.shown && self.docked && inside(q, work) => self.width(),
+            _ => 0,
+        }
+    }
+
+    /// Rest des Arbeitsbereichs neben den angedockten Fenstern.
+    fn fill_rect(&self, work: Rect) -> Rect {
+        let (l, r) = (self.left_beside(work), self.right_beside(work));
+        (work.0 + l, work.1, (work.2 - l - r).max(1), work.3)
     }
 
     /// Maximieren des Hauptfensters (Lage `main`, Bildschirm `work`). Bei
@@ -245,19 +264,26 @@ impl Windows {
         if !self.fills_on_maximize(work) {
             return Vec::new();
         }
-        let w = self.width();
-        let fill = (work.0, work.1, (work.2 - w).max(1), work.3);
+        let fill = self.fill_rect(work);
         self.filled = Some((main, fill));
         self.set_main(fill)
     }
 
-    /// Hauptfenster setzen, das angedockte Mengenfenster gleich mit.
+    /// Hauptfenster setzen, die angedockten Fenster gleich mit.
     fn set_main(&mut self, m: Rect) -> Vec<Action> {
         self.main = m;
         let mut out = vec![Action::Place(WindowId::Main, m)];
+        out.extend(self.follow(m));
+        out
+    }
+
+    /// Die angedockten Fenster an das Hauptfenster `m` setzen.
+    fn follow(&mut self, m: Rect) -> Vec<Action> {
+        let mut out = Vec::new();
         if self.shown && self.docked {
             out.extend(self.place(docked_at(m, self.width())));
         }
+        out.extend(self.follow_left(m));
         out
     }
 
@@ -274,11 +300,10 @@ impl Windows {
         if self.filled.is_some_and(|(_, f)| f != r) {
             self.filled = None;
         }
-        if !self.shown || !self.docked || self.min.contains(&true) {
+        if self.min.contains(&true) {
             return Vec::new();
         }
-        let to = docked_at(r, self.width());
-        self.place(to)
+        self.follow(r)
     }
 
     fn place(&mut self, to: Rect) -> Vec<Action> {
@@ -352,12 +377,23 @@ impl Windows {
             return Vec::new();
         }
         self.min[slot(id)] = true;
-        let o = other(id);
-        if !self.shown || self.min[slot(o)] {
-            return Vec::new();
+        let mut out = Vec::new();
+        for o in ALLE {
+            if o != id && self.is_shown(o) && !self.min[slot(o)] {
+                self.min[slot(o)] = true;
+                out.push(Action::Show(o, Show::Minimize));
+            }
         }
-        self.min[slot(o)] = true;
-        vec![Action::Show(o, Show::Minimize)]
+        out
+    }
+
+    /// Gibt es das Fenster gerade?
+    fn is_shown(&self, id: WindowId) -> bool {
+        match id {
+            WindowId::Main => true,
+            WindowId::Quantity => self.shown,
+            WindowId::Levels => self.links.shown,
+        }
     }
 
     /// Ein Fenster kam aus dem Minimieren zurück (Taskleiste, Alt+Tab): das
@@ -367,12 +403,14 @@ impl Windows {
             return Vec::new();
         }
         self.min[slot(id)] = false;
-        let o = other(id);
-        if !self.shown || !self.min[slot(o)] {
-            return Vec::new();
+        let mut out = Vec::new();
+        for o in ALLE {
+            if o != id && self.is_shown(o) && self.min[slot(o)] {
+                self.min[slot(o)] = false;
+                out.push(Action::Show(o, Show::RestoreNoActivate));
+            }
         }
-        self.min[slot(o)] = false;
-        vec![Action::Show(o, Show::RestoreNoActivate)]
+        out
     }
 
     /// Maximieren betrifft nur das eigene Fenster.
@@ -384,32 +422,46 @@ impl Windows {
     /// Das Mengenfenster geht ohne Frage zu, das Hauptfenster nimmt es mit.
     pub fn close_requested(&mut self, id: WindowId, changed: bool) -> Vec<Action> {
         match id {
+            WindowId::Levels => self.close_levels(),
             WindowId::Quantity => {
                 let was = self.shown;
+                let width = self.width();
                 self.open = false;
                 self.shown = false;
-                self.min = [false; 2];
+                self.min = [false; 3];
+                let restore_max = std::mem::take(&mut self.restore_max);
+                let give_back = self.give_back.take();
                 if !was {
                     return Vec::new();
                 }
                 let mut out = vec![Action::Close(WindowId::Quantity)];
                 let m = self.main;
-                if let Some((mut before, _)) = self.filled.take() {
+                let left = self.left_docked_shown();
+                if let Some((before, fill)) = self.filled.filter(|_| left) {
+                    // Links bleibt das Geschossfenster: der Rest wird breiter
+                    let fill = (fill.0, fill.1, fill.2 + width, fill.3);
+                    self.filled = Some((before, fill));
+                    out.extend(self.set_main(fill));
+                } else if let Some((mut before, _)) = self.filled.take() {
                     // Gefüllt: jetzt richtig maximieren, vorher die alte Lage
                     // (mit der Breite von vor dem Öffnen, falls es abgab)
-                    if let Some(w) = self.give_back {
+                    if let Some(w) = give_back {
                         before.2 = w;
                     }
                     out.push(Action::Place(WindowId::Main, before));
                     out.push(Action::Show(WindowId::Main, Show::Maximize));
-                    self.restore_max = false;
-                } else if std::mem::take(&mut self.restore_max) {
+                } else if restore_max && left {
+                    // Links bleibt das Geschossfenster: es maximiert beim
+                    // Schließen, bis dahin bekommt das Hauptfenster den Platz
+                    self.links.restore_max = true;
+                    self.main = (m.0, m.1, m.2 + width, m.3);
+                    out.push(Action::Place(WindowId::Main, self.main));
+                } else if restore_max {
                     out.push(Action::Show(WindowId::Main, Show::Maximize));
-                } else if let Some(w) = self.give_back.take() {
+                } else if let Some(w) = give_back {
                     self.main = (m.0, m.1, w, m.3);
                     out.push(Action::Place(WindowId::Main, self.main));
                 }
-                self.give_back = None;
                 out
             }
             WindowId::Main if changed => vec![Action::AskSave],
@@ -418,6 +470,9 @@ impl Windows {
                 let mut out = Vec::new();
                 if std::mem::take(&mut self.shown) {
                     out.push(Action::Close(WindowId::Quantity));
+                }
+                if std::mem::take(&mut self.links.shown) {
+                    out.push(Action::Close(WindowId::Levels));
                 }
                 out.push(Action::Close(WindowId::Main));
                 out
@@ -429,7 +484,7 @@ impl Windows {
     /// [`Windows::close_requested`]).
     pub fn quantity_gone(&mut self) {
         self.shown = false;
-        self.min = [false; 2];
+        self.min = [false; 3];
         self.restore_max = false;
         self.give_back = None;
         self.filled = None;
