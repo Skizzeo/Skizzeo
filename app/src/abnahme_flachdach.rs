@@ -241,8 +241,12 @@ fn a332_dachaufbau() {
 
 /// A333 (D4): Attikablech AB-001 als Ring auf der Krone der Aufkantung,
 /// außen 40 mm vor der Fassade abgekantet: Länge an der Außenkante
-/// 36,00 m, Abwicklung 315 + 40 + 50 + 50 = 455 mm, Zuschnitt 500 mm.
-/// Löschen lehnt es mit dem Satz zum Flachdach ab.
+/// 36,00 m. Mit Attikadämmung innen 6 cm und Dämmstreifen 4 cm darunter
+/// (Jörn 10.10. 16:07): Abwicklung 315 + 60 + 40 + 90 + 90 = 595 mm (beide
+/// Schenkel um den Streifen länger), Zuschnitt 625 mm, UK Blech 4 cm über
+/// OK Aufkantung; die Dämmung innen
+/// steht auf der Dachhaut (28,5 cm unter OK Aufkantung). Löschen lehnt es
+/// mit dem Satz zum Flachdach ab.
 #[test]
 fn a333_attikablech() {
     let (mut s, og) = haus(323, sk_model::EXTERIOR_TYPE_GUID);
@@ -252,11 +256,11 @@ fn a333_attikablech() {
         (lo.x + 40.0).abs() < 1.0 && (hi.x - 10040.0).abs() < 1.0,
         "{lo:?} {hi:?}"
     );
-    assert!((lo.z - (OK_AK - 50.0)).abs() < 1.0, "Schenkel {}", lo.z);
-    assert!(hi.z > OK_AK && hi.z < OK_AK + 40.0, "{}", hi.z);
+    assert!((lo.z - (OK_AK - 285.0)).abs() < 1.0, "Dachhaut {}", lo.z);
+    assert!(hi.z > OK_AK + 40.0 && hi.z < OK_AK + 80.0, "{}", hi.z);
     assert_eq!(wert(&s, ab, "Länge"), "36,00 m");
-    assert_eq!(wert(&s, ab, "Abwicklung"), "455 mm");
-    assert_eq!(wert(&s, ab, "Zuschnitt"), "500 mm");
+    assert_eq!(wert(&s, ab, "Abwicklung"), "595 mm");
+    assert_eq!(wert(&s, ab, "Zuschnitt"), "625 mm");
     let m = s.model();
     assert_eq!(m.layer_kg(ab, 0), Some(363));
     for id in [ab, da] {
@@ -623,4 +627,118 @@ fn a339_ablauf_ziehen() {
     s.undo();
     s.undo();
     assert_eq!(s.roof_drains(da).1, vorher);
+}
+
+/// Mengen der Dämmung unter dem Blech `ab`: (Dicke mm, Fläche m², Volumen
+/// m³) je Schicht ab 1.
+fn ab_daemmung(s: &mut Scene, ab: ElementId) -> Vec<(f64, f64, f64)> {
+    let r4 = |x: f64| (x * 1e4).round() / 1e4;
+    let l = schedule(s);
+    let mut v: Vec<_> = l.buildings[0]
+        .by_trade
+        .iter()
+        .flat_map(|t| &t.rows)
+        .filter(|r| r.element == ab && r.layer > 0)
+        .map(|r| (r.layer, r.thickness, r4(r.area / 1e6), r4(r.volume / 1e9)))
+        .collect();
+    v.sort_by_key(|x| x.0);
+    v.into_iter().map(|x| (x.1, x.2, x.3)).collect()
+}
+
+/// Zeile `[floor]` der Decke unter dem Flachdach.
+fn deckenzeile(s: &Scene, og: RunId) -> String {
+    let n = s
+        .model()
+        .element(s.model().floor_of(og).unwrap())
+        .unwrap()
+        .number
+        .clone();
+    sk_model::szo::write(s.model())
+        .lines()
+        .find(|l| l.starts_with("[floor]") && l.contains(&format!("number=\"{n}\"")))
+        .unwrap()
+        .to_string()
+}
+
+/// AD2 (Jörn 10.10. 16:07, planung/flachdach/konzept-attikadaemmung.md):
+/// Attikadämmung am Flachdach, je abschaltbar. Vorgabe innen 6 cm an der
+/// Aufkantung, von der Dachhaut (28,5 cm unter OK Aufkantung) bis OK
+/// Aufkantung, und 4 cm auf der Krone über Aufkantung und Dämmung innen;
+/// das Blech liegt darauf, beide Schenkel 4 cm länger (Abwicklung 595,
+/// Zuschnitt 625). Mengen als
+/// Schichten 1 und 2 des AB: innen 9,405 m² (33,00 m × 0,285 m), 0,5684 m³;
+/// Krone 12,9375 m² ((36,00 + 33,00) / 2 × 0,375 m), 0,5175 m³. Paneel DA
+/// und AB, Abschnitt „Attikadämmung“: „innen“ 2–20 cm, „auf der Attika“
+/// 2–10 cm, 0 = aus, je ein Schritt. Datei: `inner=`/`crown=` an `[floor]`
+/// nur abweichend, Rundlauf bytegleich, Rückgängig bis zur Vorgabe.
+#[test]
+fn ad2_attikadaemmung_flachdach() {
+    let (mut s, og) = haus(327, sk_model::EXTERIOR_TYPE_GUID);
+    let (da, ab) = da_ab(&s, og);
+    for id in [da, ab] {
+        let p = selection::props(&s, id).unwrap();
+        let sec = p
+            .sections
+            .iter()
+            .find(|x| x.title == "Attikadämmung")
+            .expect("Abschnitt Attikadämmung");
+        let f: Vec<_> = sec
+            .fields
+            .iter()
+            .map(|f| (f.field, f.label, f.value, f.min, f.max, f.zero))
+            .collect();
+        assert_eq!(
+            f,
+            [
+                (Field::AttikaInner, "innen", 60.0, 20.0, 200.0, true),
+                (Field::Crown, "auf der Attika", 40.0, 20.0, 100.0, true),
+            ]
+        );
+    }
+    assert_eq!(
+        ab_daemmung(&mut s, ab),
+        [(60.0, 9.405, 0.5684), (40.0, 12.9375, 0.5175)]
+    );
+    let (lo, hi) = s.element_bounds(ab).expect("Körper");
+    assert!((lo.z - (OK_AK - 285.0)).abs() < 1.0, "{}", lo.z);
+    assert!(hi.z > OK_AK + 40.0, "{}", hi.z);
+    assert_eq!(wert(&s, ab, "Abwicklung"), "595 mm");
+    assert_eq!(wert(&s, ab, "Zuschnitt"), "625 mm");
+    // Anschlusshöhe und Dachfläche bleiben
+    assert_eq!(wert(&s, da, "Anschlusshöhe"), "28,5 cm");
+    let vorgabe = sk_model::szo::write(s.model());
+    let z = deckenzeile(&s, og);
+    assert!(!z.contains("inner=") && !z.contains("crown="), "{z}");
+
+    // innen aus: Blech nur über der Aufkantung, Dämmung oben bleibt; der
+    // Außenschenkel überdeckt die Aufkantung weiter um 5 cm
+    assert!(s.set_field(da, Field::AttikaInner, 0.0));
+    assert_eq!(s.undo_label(), Some("Attikadämmung innen"));
+    assert_eq!(wert(&s, ab, "Abwicklung"), "535 mm");
+    assert_eq!(ab_daemmung(&mut s, ab).len(), 1);
+    let (lo, _) = s.element_bounds(ab).unwrap();
+    assert!((lo.z - (OK_AK - 50.0)).abs() < 1.0, "Schenkel {}", lo.z);
+    // außerhalb des Bereichs abgelehnt
+    assert!(!s.set_field(ab, Field::AttikaInner, 10.0));
+    assert!(!s.set_field(ab, Field::AttikaInner, 250.0));
+    assert!(!s.set_field(ab, Field::Crown, 150.0));
+    // oben aus: das Blech liegt wieder auf der Krone
+    assert!(s.set_field(ab, Field::Crown, 0.0));
+    assert!(ab_daemmung(&mut s, ab).is_empty());
+    let (lo, hi) = s.element_bounds(ab).unwrap();
+    assert!((lo.z - (OK_AK - 50.0)).abs() < 1.0 && hi.z < OK_AK + 40.0);
+    let z = deckenzeile(&s, og);
+    assert!(z.contains(" crown=0") && z.contains(" inner=0"), "{z}");
+    let text = sk_model::szo::write(s.model());
+    let l = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1)).unwrap();
+    assert_eq!(sk_model::szo::write(&l.model), text, "Rundlauf");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+
+    s.undo();
+    s.undo();
+    assert_eq!(
+        sk_model::szo::write(s.model()),
+        vorgabe,
+        "zurück zur Vorgabe"
+    );
 }

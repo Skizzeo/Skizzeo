@@ -217,10 +217,14 @@ pub struct Terrace {
     pub coping_mat: Option<MaterialId>,
     /// Dämmstreifen auf der Krone zwischen OK Attika und UK Blech, mm
     /// (0 = keiner, sonst [`crate::model::MIN_CROWN`] …
-    /// [`crate::model::MAX_CROWN`]; Jörn 10.10. 16:07). Nur am Blech der
-    /// Dachterrasse; das Flachdach rechnet seine Attikadämmung bis AD2 über
-    /// F50 je m.
+    /// [`crate::model::MAX_CROWN`]; Jörn 10.10. 16:07). Gilt für das Blech
+    /// der Dachterrasse (A70) und das des Flachdachs auf dieser Decke (F50,
+    /// über Aufkantung und Attikadämmung innen).
     pub crown: f64,
+    /// Attikadämmung innen an der Aufkantung des Flachdachs auf dieser
+    /// Decke, mm (0 = keine, sonst [`crate::model::MIN_INNER`] …
+    /// [`crate::model::MAX_INNER`]; Jörn 10.10. 16:07).
+    pub inner: f64,
 }
 
 impl Default for Terrace {
@@ -230,6 +234,7 @@ impl Default for Terrace {
             upstand: crate::model::TERRACE_UPSTAND,
             coping_mat: None,
             crown: crate::model::TERRACE_CROWN,
+            inner: crate::model::ROOF_INNER,
         }
     }
 }

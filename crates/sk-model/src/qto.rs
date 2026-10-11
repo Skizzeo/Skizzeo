@@ -683,16 +683,19 @@ pub struct CopingQto {
     /// Ecken und Endabschlüsse aller Blechstränge (Zulagen im LV).
     pub corners: u32,
     pub ends: u32,
-    /// Dämmstreifen auf der Krone unter dem Blech (Jörn 10.10. 16:07).
-    pub crown: Option<CrownQto>,
+    /// Dämmung unter dem Blech (Jörn 10.10. 16:07), in der Folge der
+    /// Schichten 1 … des Bauteils: an der Dachterrasse der Streifen auf der
+    /// Krone, am Flachdach Attikadämmung innen und Krone.
+    pub insulation: Vec<CrownQto>,
 }
 
-/// Mengen des Dämmstreifens auf der Attikakrone; abgerechnet nach seiner
-/// Grundfläche (A70, m²), als Schicht 1 des Blechs.
+/// Mengen einer Dämmung unter dem Attikablech (Krone, am Flachdach auch
+/// innen); abgerechnet nach Fläche (A70 bzw. F50, m²).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CrownQto {
     pub material: MaterialId,
-    /// Dicke (mm) und Grundfläche (mm²).
+    /// Dicke (mm) und Fläche (mm²): auf der Krone die Grundfläche, innen
+    /// die Ansichtsfläche zum Dach.
     pub thickness: f64,
     pub area: f64,
     /// Fläche × Dicke (mm³).
@@ -758,7 +761,7 @@ pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<C
         cut: crate::qto_dach::zuschnitt(girth),
         corners: pfade.iter().map(crate::qto_dach::ecken).sum(),
         ends: pfade.iter().map(crate::qto_dach::enden).sum(),
-        crown: f
+        insulation: f
             .terrace
             .as_ref()
             .filter(|t| t.crown > 0.0)
@@ -771,7 +774,9 @@ pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<C
                     area,
                     volume: area * t.crown,
                 }
-            }),
+            })
+            .into_iter()
+            .collect(),
     })
 }
 
@@ -861,7 +866,23 @@ pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> Copi
         cut: crate::qto_dach::zuschnitt(girth),
         corners: crate::qto_dach::ecken(&ring),
         ends: 0,
-        crown: None,
+        insulation: model
+            .flat_roof_insulation(floor)
+            .map(|material| {
+                let (face, vol) = r.inner_qto();
+                let cap = r.cap_area();
+                [(r.inner, face, vol), (r.cap, cap, cap * r.cap)]
+                    .into_iter()
+                    .filter(|x| x.0 > 0.0)
+                    .map(|(thickness, area, volume)| CrownQto {
+                        material,
+                        thickness,
+                        area,
+                        volume,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -2278,10 +2299,10 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     if air {
                         continue;
                     }
-                    // Attikablech: Schicht 0 das Blech, Schicht 1 der
-                    // Dämmstreifen auf der Krone
+                    // Attikablech: Schicht 0 das Blech, ab 1 die Dämmung
+                    // darunter
                     let crown = match q {
-                        ElementQto::Coping(c) if i > 0 => c.crown.as_ref(),
+                        ElementQto::Coping(c) if i > 0 => c.insulation.get(i - 1),
                         _ => None,
                     };
                     let area = match q {
@@ -2473,7 +2494,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             (ElementQto::Perimeter(f), Some(m)) => add(m, f.volume, f.area, None),
             (ElementQto::Coping(c), Some(m)) => {
                 add(m, c.volume, 0.0, Some(c.length));
-                if let Some(k) = &c.crown {
+                for k in &c.insulation {
                     add(k.material, k.volume, k.area, None);
                 }
             }

@@ -4012,6 +4012,7 @@ impl Model {
                         ));
                     }
                     out.extend(self.crown_problem(&e.number, &f.terrace));
+                    out.extend(self.inner_problem(&e.number, &f.terrace));
                     if f.terrace.build_up.is_some_and(|t| {
                         self.layer_set(t)
                             .is_none_or(|x| x.category != TypeCategory::RoofTerrace)
@@ -4508,6 +4509,20 @@ pub const MAX_CROWN: f64 = 100.0;
 pub(crate) fn crown_of(t: &Terrace) -> f64 {
     if (MIN_CROWN..=MAX_CROWN).contains(&t.crown) {
         t.crown
+    } else {
+        0.0
+    }
+}
+/// Attikadämmung innen am Flachdach (Jörn 10.10. 16:07,
+/// konzept-attikadaemmung.md): 6 cm, einstellbar 2 bis 20 cm oder 0.
+pub const ROOF_INNER: f64 = 60.0;
+pub const MIN_INNER: f64 = 20.0;
+pub const MAX_INNER: f64 = 200.0;
+
+/// Gültige Dicke der Attikadämmung innen (mm), sonst keine.
+pub(crate) fn inner_of(t: &Terrace) -> f64 {
+    if (MIN_INNER..=MAX_INNER).contains(&t.inner) {
+        t.inner
     } else {
         0.0
     }

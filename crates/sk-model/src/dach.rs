@@ -534,6 +534,14 @@ impl Model {
         })
     }
 
+    /// Setzt die Attikadämmung innen am Flachdach über einer Decke (mm, 0 =
+    /// keine, sonst [`MIN_INNER`] … [`MAX_INNER`]).
+    pub fn set_floor_inner(&mut self, floor: ElementId, mm: f64) -> bool {
+        self.edit_terrace(floor, |t| {
+            (mm == 0.0 || (MIN_INNER..=MAX_INNER).contains(&mm)).then(|| t.inner = mm)
+        })
+    }
+
     /// Baustoff des Dämmstreifens auf der Attika der Dachterrasse: die
     /// (erste) Dämmschicht ihres Aufbaus.
     pub fn terrace_crown_material(&self, floor: ElementId) -> Option<MaterialId> {
@@ -550,6 +558,17 @@ impl Model {
         let c = t.crown;
         (c != 0.0 && !(MIN_CROWN..=MAX_CROWN).contains(&c)).then(|| {
             format!("{number}: Dämmung auf der Attika {c} mm (erlaubt 0 oder {MIN_CROWN}…{MAX_CROWN} mm)")
+        })
+    }
+
+    /// Prüfpunkt zur Attikadämmung innen (für [`Model::check`]): Dicke 0
+    /// oder [`MIN_INNER`] … [`MAX_INNER`].
+    pub(super) fn inner_problem(&self, number: &str, t: &Terrace) -> Option<String> {
+        let c = t.inner;
+        (c != 0.0 && !(MIN_INNER..=MAX_INNER).contains(&c)).then(|| {
+            format!(
+                "{number}: Attikadämmung innen {c} mm (erlaubt 0 oder {MIN_INNER}…{MAX_INNER} mm)"
+            )
         })
     }
 
@@ -711,16 +730,26 @@ impl Model {
                 let t = crate::qto::COPING_SHEET;
                 let mut out =
                     vec![MaterialLayer::new(m, t, LayerFunction::Finish).trade(trade::roofing())];
-                // Dämmstreifen auf der Krone der Dachterrasse (Jörn 10.10.)
+                // Dämmung unter dem Blech (Jörn 10.10. 16:07): an der
+                // Dachterrasse der Streifen auf der Krone, am Flachdach
+                // Attikadämmung innen und Krone
                 if let Some(ElementKind::Floor(f)) = self.element(floor).map(|x| &x.kind) {
-                    let c = crown_of(&f.terrace);
-                    let ins = self.terrace_crown_material(floor);
-                    if let Some(ins) = ins.filter(|_| c > 0.0 && !self.flat_roof_coping(id, floor))
-                    {
-                        out.push(
+                    let (dicken, ins) = if self.flat_roof_coping(id, floor) {
+                        (
+                            [inner_of(&f.terrace), crown_of(&f.terrace)],
+                            self.flat_roof_insulation(floor),
+                        )
+                    } else {
+                        (
+                            [0.0, crown_of(&f.terrace)],
+                            self.terrace_crown_material(floor),
+                        )
+                    };
+                    if let Some(ins) = ins {
+                        out.extend(dicken.into_iter().filter(|&c| c > 0.0).map(|c| {
                             MaterialLayer::new(ins, c, LayerFunction::Insulation)
-                                .trade(trade::roofing()),
-                        );
+                                .trade(trade::roofing())
+                        }));
                     }
                 }
                 return out;

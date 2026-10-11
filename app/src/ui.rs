@@ -202,6 +202,8 @@ pub enum Field {
     Upstand,
     /// Dämmstreifen auf der Attikakrone unter dem Blech (0 = keiner).
     Crown,
+    /// Attikadämmung innen an der Aufkantung des Flachdachs (0 = keine).
+    AttikaInner,
     /// Dämmdicke im Typ des Flachdachs (D3).
     RoofInsulation,
     /// Gefälle des Flachdachs in % (0 = waagerecht; Gefälledämmung G2).

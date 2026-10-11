@@ -683,7 +683,11 @@ fn terrace_props(
         layer_set: label,
         layers,
         set_label: "Aufbau",
-        sections: terrace_section(m, floor).into_iter().collect(),
+        sections: if m.flat_roof_coping(id, floor) {
+            attika_section(m, floor).into_iter().collect()
+        } else {
+            terrace_section(m, floor).into_iter().collect()
+        },
         // Dachterrasse: vier Felder, die Schichten erst nach „Mehr …“
         more: !matches!(e.kind, ElementKind::Coping { .. }),
         notes: m.warnings(id),
@@ -792,7 +796,11 @@ fn roof_props(
         layer_set: t.map_or(String::new(), |t| t.name.clone()),
         layers,
         set_label: "Aufbau",
-        sections: section.into_iter().chain([gefaelle]).collect(),
+        sections: section
+            .into_iter()
+            .chain([gefaelle])
+            .chain(attika_section(m, floor))
+            .collect(),
         more: true,
         notes: m.warnings(id),
         ..Default::default()
@@ -855,6 +863,40 @@ fn terrace_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
             },
         ],
         hint: "folgt dem Rücksprung des OG",
+        button: None,
+    })
+}
+
+/// Abschnitt „Attikadämmung“ am Flachdach (Jörn 10.10. 16:07): innen an
+/// der Aufkantung und auf ihrer Krone, je 0 = ohne.
+fn attika_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
+    let ElementKind::Floor(f) = &m.element(floor)?.kind else {
+        return None;
+    };
+    let row = |fld, label, v, lo, hi| FieldRow {
+        zero: true,
+        einheit: None,
+        ..field(fld, label, v, lo, hi)
+    };
+    Some(crate::ui::Section {
+        title: "Attikadämmung",
+        fields: vec![
+            row(
+                Field::AttikaInner,
+                "innen",
+                f.terrace.inner,
+                sk_model::MIN_INNER,
+                sk_model::MAX_INNER,
+            ),
+            row(
+                Field::Crown,
+                "auf der Attika",
+                f.terrace.crown,
+                sk_model::MIN_CROWN,
+                sk_model::MAX_CROWN,
+            ),
+        ],
+        hint: "0 = ohne; das Blech liegt auf der Dämmung",
         button: None,
     })
 }

@@ -381,8 +381,10 @@ pub fn coping_cut_width(girth: f64) -> f64 {
         .unwrap_or(girth)
 }
 
-/// Handelsübliche Zuschnittbreiten (mm).
-pub const COPING_WIDTHS: [f64; 6] = [333.0, 400.0, 500.0, 625.0, 667.0, 750.0];
+/// Handelsübliche Zuschnittbreiten (mm). 1000 wie die oberste Zulage der
+/// Mengen (`qto_dach::ZUSCHNITTE`): das Blech am Flachdach mit Attikadämmung
+/// innen und Streifen kommt bei AW-49 auf 770.
+pub const COPING_WIDTHS: [f64; 7] = [333.0, 400.0, 500.0, 625.0, 667.0, 750.0, 1000.0];
 
 /// Maße des Attikablechs (mm, Grad; BIM E4). Tropfkante 40 mm vor der
 /// Fassade (Jörn 10.10., Flachdachrichtlinie mindestens 40; vorher 20).
