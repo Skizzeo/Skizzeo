@@ -412,7 +412,7 @@ fn perf_katalogfenster() {
         );
     }
     // Kachelflug (K3b): Bilder im Flug nach „Ins Projekt übernehmen“
-    let d = std::env::temp_dir().join("skizzeo-perf-kachelflug");
+    let d = std::env::temp_dir().join(format!("skizzeo-perf-kachelflug-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     let (company, _) = Company::load(&d.join("firmenkatalog.szk"), true);
     for scale in [1.0, 1.5] {
@@ -550,7 +550,7 @@ fn guids_der_arbeitskopie_sind_neu() {
 /// sofort weiter bearbeitbar; OK legt ihn ohne Rückfrage an.
 #[test]
 fn neu_aus_firmenkatalog() {
-    let d = std::env::temp_dir().join("skizzeo-katalog-neu");
+    let d = std::env::temp_dir().join(format!("skizzeo-katalog-neu-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     let (mut company, hints) = Company::load(&d.join("firmenkatalog.szk"), true);
     assert!(hints.is_empty(), "{hints:?}");
@@ -591,7 +591,7 @@ fn neu_aus_firmenkatalog() {
 /// Animationen wird keine Kopie gezeichnet.
 #[test]
 fn kachelflug_zum_reiter() {
-    let d = std::env::temp_dir().join("skizzeo-kachelflug");
+    let d = std::env::temp_dir().join(format!("skizzeo-kachelflug-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     let (company, _) = Company::load(&d.join("firmenkatalog.szk"), true);
     let s = szene();

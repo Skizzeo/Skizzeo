@@ -79,6 +79,21 @@ sobald der Mauszeiger über einem Wandsegment steht):
 - Im Schnitt und in den Ansichten lassen sich die Wände ziehen, die vom
   Betrachter weg laufen: Ihr Fuß erscheint beim Darüberfahren als violette
   Kugel. Verdeckte Wände hinter der Fassade sind nicht greifbar.
+- Liegt der Nachbar eines Teilstücks in derselben Flucht (Fuge), entsteht
+  beim Ziehen von selbst eine Stufe quer zur Wand: Eck- oder
+  Rechteckrück- bzw. -vorsprung, für alle Geschosse übereinander
+- Knapp (5 cm) vor der Flucht einer parallel versetzten Wand rastet das Stück
+  bündig ein, die Stufe fällt weg; die Karte fragt „Zu einer Wand vereinen“
+  oder „Getrennt lassen“
+
+Wand teilen und vereinen: Im Paneel „Eigenschaften“ einer Wand startet „Wand
+teilen“. Ein Klick auf die Wand setzt einen Teilungspunkt (Zahl + Enter: genau
+ab dem näheren Ende), ein zweiter Punkt teilt ein Mittelstück ab, Enter teilt
+schon am ersten. Jedes Stück ist mindestens 10 cm lang; das längste behält
+Nummer und Kennung. An jeder Fuge steht eine graue, offene Kette wie an einer
+gelösten Geschosskopplung; ein Klick darauf (oder „an der Fuge vereinen“ im
+Paneel) vereint die beiden Wände wieder, wenn sie in allen Geschossen in einer
+Flucht liegen und denselben Typ haben.
 
 Auswahl und Eigenschaften (ohne aktive Gebäude-Eingabe):
 

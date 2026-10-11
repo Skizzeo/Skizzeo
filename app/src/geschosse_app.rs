@@ -7,7 +7,6 @@ use crate::ui::{Id, Panel};
 use crate::{App, OVERLAY_DIALOG, OVERLAY_SCRIM};
 use sk_paint::Rgba;
 use sk_platform::{Event, Key, Surface};
-use sk_ui::schwebend;
 
 /// Vormultipliziert für `set_overlay_fill`.
 fn premul(k: Rgba) -> [u8; 4] {
@@ -18,8 +17,7 @@ fn premul(k: Rgba) -> [u8; 4] {
 
 impl App {
     /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters, sonst
-    /// die Leiste der Großansicht samt Abdunkeln wie bei der großen
-    /// LV-Vorschau, sonst nichts.
+    /// die Leiste der Großansicht, sonst nichts.
     pub(crate) fn paint_dialog(&mut self) {
         let th = self.title.height();
         let h = self.h.saturating_sub(th);
@@ -38,9 +36,8 @@ impl App {
             let px = c.to_premul_rgba8();
             self.renderer
                 .set_overlay(OVERLAY_DIALOG, 0, th as i32, w, ch, &px);
-            let scrim = premul(schwebend::DUNKEL);
-            self.renderer
-                .set_overlay_fill(OVERLAY_SCRIM, 0, th as i32, self.w, h, scrim);
+            // Ohne Abdunkeln: das Modell zeigt jede Änderung sofort (Jörn 11.10.)
+            self.renderer.set_overlay(OVERLAY_SCRIM, 0, 0, 0, 0, &[]);
         } else {
             self.renderer.set_overlay(OVERLAY_DIALOG, 0, 0, 0, 0, &[]);
             self.renderer.set_overlay(OVERLAY_SCRIM, 0, 0, 0, 0, &[]);

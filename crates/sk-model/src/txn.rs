@@ -208,6 +208,9 @@ pub(crate) struct Open {
     pub label: &'static str,
     /// Gebäudenummer beim Öffnen: ein verworfener Schritt gibt sie zurück.
     pub building_number: u32,
+    /// Zähler der Bauteilnummern beim Öffnen: ein verworfener Schritt
+    /// (Vorschau beim Ziehen) verbraucht keine Nummern (Review 61-4).
+    pub numbers: Vec<u32>,
     pub changes: Vec<Change>,
     pub noted: std::collections::HashSet<Key>,
 }
