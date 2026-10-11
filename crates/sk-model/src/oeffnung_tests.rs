@@ -175,7 +175,7 @@ fn einbautiefe_nach_wandtyp() {
         .layer_set
         .unwrap();
     let mut s = m.layer_set(id).unwrap().clone();
-    let mut putz = s.layers[0].clone();
+    let mut putz = s.layers[0];
     putz.thickness = 15.0;
     putz.core = false;
     putz.function = crate::LayerFunction::Finish;
