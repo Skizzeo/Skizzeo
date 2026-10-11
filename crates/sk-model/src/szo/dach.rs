@@ -60,3 +60,82 @@ pub(super) fn attika_wert(
         Ok(vorgabe)
     }
 }
+
+/// Je Regenfallrohr (Jörn 11.10.) ein `[downpipe]`: Dachaufbau, Nummer
+/// des Ablaufs, abweichende Eigenschaften.
+pub(super) fn write_downpipes(
+    m: &crate::model::Model,
+    els: &[&crate::element::Element],
+    out: &mut String,
+) {
+    for e in els {
+        let crate::element::ElementKind::Downpipe { roof, drain, spec } = e.kind else {
+            continue;
+        };
+        let l = super::Line::new("downpipe")
+            .guid("guid", Some(e.guid))
+            .guid("roof", m.element(roof).map(|x| x.guid))
+            .text("number", &e.number)
+            .word("cat", super::category(e.category))
+            .num("drain", drain);
+        write_downpipe_spec(l, &spec)
+            .num("seq", e.seq)
+            .guid("storey", m.storey(e.storey).map(|s| s.guid))
+            .finish(out);
+    }
+}
+
+/// Eigenschaften eines `[downpipe]` (Regenfallrohr, Jörn 11.10.), nur wenn
+/// sie von der Vorgabe abweichen: `overflow=spout`, `control=0`,
+/// `spacing=` in mm.
+fn write_downpipe_spec(line: super::Line, s: &crate::fallrohr::DownpipeSpec) -> super::Line {
+    use crate::fallrohr::{Overflow, SPACING};
+    let mut line = line;
+    if s.overflow == Overflow::Spout {
+        line = line.word("overflow", "spout");
+    }
+    if !s.control {
+        line = line.flag("control", false);
+    }
+    if s.spacing != SPACING {
+        line = line.num("spacing", s.spacing);
+    }
+    line
+}
+
+/// Liest die Eigenschaften eines `[downpipe]`; Unbekanntes und Werte
+/// außerhalb des Bereichs gelten mit Hinweis als Vorgabe (Regel 114).
+pub(super) fn read_downpipe_spec(
+    r: &Record,
+    hints: &mut Vec<String>,
+) -> Result<crate::fallrohr::DownpipeSpec, LoadError> {
+    use crate::fallrohr::{DownpipeSpec, Overflow, SPACING_MAX, SPACING_MIN};
+    let mut s = DownpipeSpec::default();
+    match r.opt("overflow") {
+        None | Some("pipe") => {}
+        Some("spout") => s.overflow = Overflow::Spout,
+        Some(w) => hints.push(format!(
+            "Zeile {}: Notentwässerung „{w}“ unbekannt, Notfallrohr",
+            r.line
+        )),
+    }
+    if r.opt("control").is_some() {
+        s.control = r.flag("control")?;
+    }
+    if r.opt("spacing").is_some() {
+        let v = r.f64("spacing")?;
+        if (SPACING_MIN..=SPACING_MAX).contains(&v) {
+            s.spacing = v;
+        } else {
+            hints.push(ausserhalb(
+                r.line,
+                "Schellenabstand",
+                v,
+                SPACING_MIN,
+                SPACING_MAX,
+                " mm",
+            ));
+        }
+    }
+    Ok(s)
+}

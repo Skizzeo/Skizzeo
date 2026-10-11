@@ -11,6 +11,9 @@ use sk_paint::Rgba;
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
+#[path = "props_fallrohr.rs"]
+pub mod fallrohr;
+
 /// Bis zu so vielen Pixeln Bewegung zwischen Drücken und Loslassen gilt als Klick.
 const CLICK_PX: f64 = 4.0;
 
@@ -431,6 +434,7 @@ fn foundation_props(
         | ElementKind::RoofTerrace { .. }
         | ElementKind::Coping { .. }
         | ElementKind::Roof { .. }
+        | ElementKind::Downpipe { .. }
         | ElementKind::Ext(_) => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
@@ -488,6 +492,9 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
             return terrace_props(scene, id, floor, values)
         }
         ElementKind::Roof { floor, .. } => return roof_props(scene, id, floor, values),
+        ElementKind::Downpipe { .. } => {
+            return crate::selection::fallrohr::downpipe_props(scene, id, values)
+        }
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -1263,6 +1270,18 @@ fn outline(
                 return Vec::new();
             }
             lines.extend(body.edges.iter().map(|e| (e.a, e.b)));
+        }
+        (None, Some(ElementKind::Downpipe { roof, drain, .. })) => {
+            // Regenfallrohr: die Kanten seines Körpers, aus dem Flachdach
+            // der Szene (zwischengespeichert, Review #68)
+            let r = m.floor_of_roof(*roof).and_then(|f| scene.flat_roof_over(f));
+            let Some(d) = r.and_then(|r| r.downpipes.get(*drain as usize).cloned()) else {
+                return Vec::new();
+            };
+            if view == ViewKind::Plan && d.box_bot >= scene.plan_cut() {
+                return Vec::new();
+            }
+            lines.extend(d.solid().edges.iter().map(|e| (e.a, e.b)));
         }
         (None, Some(kind)) => {
             let Some(found) = m.run_of(id).and_then(|r| scene.foundation(r)) else {
