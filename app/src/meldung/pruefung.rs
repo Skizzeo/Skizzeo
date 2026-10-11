@@ -322,7 +322,7 @@ fn kaputte_firma(d: &std::path::Path) -> Company {
 
 #[test]
 fn nutzersaetze_sauber() {
-    let d = std::env::temp_dir().join("skizzeo-nutzersaetze");
+    let d = std::env::temp_dir().join(format!("skizzeo-nutzersaetze-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let mut saetze: Vec<(String, String)> = Vec::new();

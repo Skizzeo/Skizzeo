@@ -334,7 +334,8 @@ mod tests {
         assert_eq!(Meldung::vorschau(&[], "Nichts."), "Nichts.");
         assert!(protokoll_im_test().is_empty());
 
-        let d = std::env::temp_dir().join("skizzeo-meldung-ohne-pfad");
+        let d =
+            std::env::temp_dir().join(format!("skizzeo-meldung-ohne-pfad-{}", std::process::id()));
         let m = sk_model::Model::new();
         let e = crate::document::save(&m, &d.join("fehlt").join("Haus.szo")).unwrap_err();
         assert!(!e.contains("skizzeo-meldung-ohne-pfad"), "{e}");
