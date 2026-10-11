@@ -33,6 +33,7 @@ SZO 4
 [surface] guid=1N_6ICGD94VvNp1f0OyLdA name="Dämmung EPS 035 DAA dh" color=ece8d6 cut=d6d0b8
 [surface] guid=1_KdO0VdzEIPirKebRD7JT name="Schaumglas-Dämmstein" color=808486 cut=b0b4b6
 [surface] guid=2I0iV4XeLFxOVLUIsiaPG9 name="Verblender (Vormauerziegel)" color=ffffff cut=96503e
+[surface] guid=2dx_8AKGDFDgTK5XiVjxFU name="Dämmung EPS 035 DAA dh, Attikakrone" color=ece8d6 cut=d6d0b8
 [surface] guid=2mDo0a4of1KAUNzv9mg0YF name="Dampfsperre Bitumen-Alu" color=787c82 cut=5a5e64
 [surface] guid=3MoId9HKv2OPcggMMyT2Nx name="Putz" color=ececed cut=c8c6c0
 [display] slot=drawing.view pen=14aAtKoCX5n9c2Nc3B4nHX lt=2tPWXx8yr62xOuexxUL_tQ
@@ -59,6 +60,7 @@ SZO 4
 [material] guid=0IMx_GM9LBJQ9vKs2JYvZu name="Luft" cat=air prio=0 rho=1.2 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Nqc$Rzfn6JB4EHC6Nzy46
 [material] guid=0Yb39JGen4JxkgK3pBgZ4k name="Dampfsperre Bitumen-Alu" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2mDo0a4of1KAUNzv9mg0YF trade=1S7Wf_00100800000004UY
 [material] guid=0isiJXaEH68fAGDc36vC$0 name="Kerndämmung (Mineralwolle)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1MI6$s1jP42ehJb$wmcr0Y trade=1S7Wf_00100800000004UQ
+[material] guid=1GT1XeoafF8xcAmmBvbUWb name="Dämmung EPS 035 DAA dh, Attikakrone" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2dx_8AKGDFDgTK5XiVjxFU trade=1S7Wf_00100800000004UY
 [material] guid=1OqECAAtX4og5C15quWKaA name="Schaumglas-Dämmstein" cat=insulation prio=300 rho=165 lambda=0.058 fill=0fATA5wWvAQQhv902iMpVy fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1_KdO0VdzEIPirKebRD7JT trade=1S7Wf_00100800000004UQ
 [material] guid=1OxgZ1vjv038gKF7kkLN6C name="Dämmung EPS 035 DAA dh" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1N_6ICGD94VvNp1f0OyLdA trade=1S7Wf_00100800000004UY
 [material] guid=1vl_pQvH1FDBsLfn5l1heC name="Terrassenbelag" cat=concrete prio=500 rho=2200 lambda=1.65 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Xfeikm$TDDhm1yA0dqkwY trade=1S7Wf_00100800000004UY

@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 32] = [
+pub const ARTIKEL: [WerkArtikel; 33] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -249,6 +249,11 @@ pub const ARTIKEL: [WerkArtikel; 32] = [
         "st",
         "Notüberlauf rechteckig für Attika, mit Anschlussflansch",
     ),
+    a(
+        "1S7bUW001008010000000X",
+        "m3",
+        "EPS-Dachdämmplatte 035 DAA dh, Streifen Attikakrone",
+    ),
 ];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
@@ -337,7 +342,7 @@ pub const ARTEN: [&str; 12] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 74] = [
+pub const LEISTUNGEN: [WerkLeistung; 75] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -726,7 +731,7 @@ pub const LEISTUNGEN: [WerkLeistung; 74] = [
         "1S7bUW0010080200000011",
         "m2",
         "area",
-        "Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau",
+        "Attikadämmung innen Flachdach, EPS, Dicke nach Aufbau",
     ),
     l(
         "1S7bUW0010080200000012",
@@ -783,6 +788,12 @@ pub const LEISTUNGEN: [WerkLeistung; 74] = [
         "m2",
         "area",
         "Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech",
+    ),
+    l(
+        "1S7bUW001008020000001B",
+        "m2",
+        "area",
+        "Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech",
     ),
 ];
 

@@ -878,28 +878,40 @@ pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> Copi
         cut: crate::qto_dach::zuschnitt(girth),
         corners: crate::qto_dach::ecken(&ring),
         ends: 0,
-        insulation: model
-            .flat_roof_insulation(floor)
-            .map(|material| {
-                let (face, vol) = r.inner_qto();
-                let cap = r.cap_area();
-                // je eingestellte Schicht ein Eintrag (Schicht i ↔ Eintrag
-                // i − 1), auch wenn die Dämmung innen nirgends aufgeht
-                [
-                    (r.inner, r.inner_depth, face, vol),
-                    (r.cap, r.cap, cap, cap * r.cap),
-                ]
-                .into_iter()
-                .filter(|x| x.0 > 0.0)
-                .map(|(_, thickness, area, volume)| CrownQto {
-                    material,
+        insulation: {
+            let (face, vol) = r.inner_qto();
+            let cap = r.cap_area();
+            // je eingestellte Schicht ein Eintrag (Schicht i ↔ Eintrag
+            // i − 1), auch wenn die Dämmung innen nirgends aufgeht; die
+            // Krone mit eigenem Baustoff (W9 an #60)
+            [
+                (
+                    r.inner,
+                    model.flat_roof_insulation(floor),
+                    r.inner_depth,
+                    face,
+                    vol,
+                ),
+                (
+                    r.cap,
+                    model.flat_roof_crown_material(floor),
+                    r.cap,
+                    cap,
+                    cap * r.cap,
+                ),
+            ]
+            .into_iter()
+            .filter(|x| x.0 > 0.0)
+            .filter_map(|(_, material, thickness, area, volume)| {
+                Some(CrownQto {
+                    material: material?,
                     thickness,
                     area,
                     volume,
                 })
-                .collect()
             })
-            .unwrap_or_default(),
+            .collect()
+        },
     }
 }
 
