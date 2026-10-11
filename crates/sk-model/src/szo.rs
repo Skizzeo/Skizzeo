@@ -2720,13 +2720,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
     }
     let (plan_cut, plan_cut_raw) = hoehen::read_plan_cut(recs("plancut"), &lines, &mut hints)?;
-    let known = |g| {
-        set_ids
-            .get(&g)
-            .and_then(|&id| layer_sets.get(id))
-            .map(|t| t.category)
-    };
-    let space_types = ausbau::read_space_types(recs("spacetype"), known, &mut hints)?;
+    let space_types = ausbau::read_space_types(recs("spacetype"), &layer_sets, &mut hints)?;
     for recs in by.values() {
         for r in recs {
             r.unused(&mut hints);

@@ -715,13 +715,7 @@ pub fn read_szk_with(text: &str, ext: &[&str]) -> Result<Library, LoadError> {
             .map_or(0, |r| r.line);
         return Err(err(line, t.problems().join(", ")));
     }
-    let known = |g| {
-        lib.types
-            .iter()
-            .find(|(_, t)| t.guid == g)
-            .map(|(_, t)| t.category)
-    };
-    lib.space_types = szo::ausbau::read_space_types(recs("spacetype"), known, &mut hints)?;
+    lib.space_types = szo::ausbau::read_space_types(recs("spacetype"), &lib.types, &mut hints)?;
     for r in recs("default") {
         // Standard einer unbekannten oder waagerechten Art: bleibt stehen
         let cat = r.get("cat")?;

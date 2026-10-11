@@ -5,6 +5,7 @@
 //! Raumvorlagen (RB2) stehen in `[spacetype]`, in `.szo` und `.szk` gleich.
 
 use super::{Line, LoadError, Record};
+use crate::id::Arena;
 use crate::library::LayerSet;
 use crate::model::{SpaceGroup, SpaceType, WallTiles, TILES_HEIGHT, WOFLV};
 use crate::{Guid, TypeCategory};
@@ -54,16 +55,22 @@ pub(crate) fn write_space_types(out: &mut String, v: &[SpaceType]) {
     }
 }
 
-/// Liest `[spacetype]`. `known`: Art des Typs mit der Guid, wenn es ihn
-/// gibt. Ein Verweis auf einen fehlenden Typ oder einen anderer Art
+/// Liest `[spacetype]`; `types` sind die Bauteiltypen derselben Datei. Ein
+/// Verweis auf einen fehlenden Typ oder einen Typ anderer Art
 /// entfällt, eine unbekannte Nutzungsgruppe gilt als NUF 7, eine andere
 /// Anrechnung als 100 %, eine Fliesenhöhe außerhalb des Bereichs als die
 /// Grenze, ein doppelter Name bekommt „ 2“; jeweils mit Hinweis.
 pub(crate) fn read_space_types(
     recs: &[Record],
-    known: impl Fn(Guid) -> Option<TypeCategory>,
+    types: &Arena<LayerSet>,
     hints: &mut Vec<String>,
 ) -> Result<Vec<SpaceType>, LoadError> {
+    let known = |g: Guid| {
+        types
+            .iter()
+            .find(|(_, t)| t.guid == g)
+            .map(|(_, t)| t.category)
+    };
     let mut out: Vec<SpaceType> = Vec::new();
     for r in recs {
         let guid = r.guid("guid")?;
