@@ -1,11 +1,14 @@
-//! Paneel „Geschosse“ in der App: das Abdunkeln hinter dem Dialog „Gebäude
-//! erstellen“ (E16) und die schwebende Großansicht (Jörn 11.10., Lage und
-//! Treffer in `ui::gross`). Beide liegen auf denselben Plätzen über
-//! „Werkzeuge“ und „Ansichten“; sie sind nie zugleich offen.
+//! Geschosse in der App: das Abdunkeln hinter dem Dialog „Gebäude
+//! erstellen“ (E16) und das Geschossfenster links neben dem Hauptfenster
+//! (Jörn 11.10., [`crate::geschossfenster`]), das der Knopf
+//! „Geschossmanager“ unten links öffnet.
 
-use crate::ui::{Id, Panel};
+use crate::geschossfenster::Out;
+use crate::menu::Command;
+use crate::ui::{Grip, Id, Panel, LEVELS_TITEL};
 use crate::{App, OVERLAY_DIALOG, OVERLAY_SCRIM};
 use sk_paint::Rgba;
+use sk_platform::layout::WindowId;
 use sk_platform::{Event, Key, Surface};
 
 /// Vormultipliziert für `set_overlay_fill`.
@@ -16,57 +19,78 @@ fn premul(k: Rgba) -> [u8; 4] {
 }
 
 impl App {
-    /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters, sonst
-    /// die Leiste der Großansicht, sonst nichts.
+    /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters.
     pub(crate) fn paint_dialog(&mut self) {
-        let th = self.title.height();
-        let h = self.h.saturating_sub(th);
-        if self.ui.dialog {
-            let (c, x, y) = self.ui.paint(&self.theme, Panel::Dialog, self.w, th);
-            c.premul_rgba8_into(&mut self.panel_px);
-            let (w, ch) = (c.width as u32, c.height as u32);
-            self.renderer
-                .set_overlay(OVERLAY_DIALOG, x, y, w, ch, &self.panel_px);
-            let scrim = premul(self.theme.env.scrim);
-            self.renderer
-                .set_overlay_fill(OVERLAY_SCRIM, 0, th as i32, self.w, h, scrim);
-        } else if self.ui.levels_gross() {
-            let c = self.ui.paint_gross_leiste(self.w);
-            let (w, ch) = (c.width as u32, c.height as u32);
-            let px = c.to_premul_rgba8();
-            self.renderer
-                .set_overlay(OVERLAY_DIALOG, 0, th as i32, w, ch, &px);
-            // Ohne Abdunkeln: das Modell zeigt jede Änderung sofort (Jörn 11.10.)
-            self.renderer.set_overlay(OVERLAY_SCRIM, 0, 0, 0, 0, &[]);
-        } else {
+        if !self.ui.dialog {
             self.renderer.set_overlay(OVERLAY_DIALOG, 0, 0, 0, 0, &[]);
             self.renderer.set_overlay(OVERLAY_SCRIM, 0, 0, 0, 0, &[]);
+            return;
+        }
+        let th = self.title.height();
+        let h = self.h.saturating_sub(th);
+        let (c, x, y) = self.ui.paint(&self.theme, Panel::Dialog, self.w, th);
+        c.premul_rgba8_into(&mut self.panel_px);
+        let (w, ch) = (c.width as u32, c.height as u32);
+        self.renderer
+            .set_overlay(OVERLAY_DIALOG, x, y, w, ch, &self.panel_px);
+        let scrim = premul(self.theme.env.scrim);
+        self.renderer
+            .set_overlay_fill(OVERLAY_SCRIM, 0, th as i32, self.w, h, scrim);
+    }
+
+    /// Eine Ebene wird im Geschossfenster gezogen.
+    pub(crate) fn level_dragging(&self) -> Option<Grip> {
+        self.geschoss.ui.level_dragging()
+    }
+
+    /// Öffnet das Geschossfenster oder holt es nach vorn.
+    fn open_geschoss(&mut self, surface: &Surface) {
+        self.geschoss.open = true;
+        self.geschoss.dirty = true;
+        surface.open_side(WindowId::Levels, LEVELS_TITEL);
+        if !self.ui.levels_open {
+            self.ui.levels_open = true;
+            self.dirty_buttons.push(Id::LevelsOpen);
         }
     }
 
-    /// Klick auf das kleine Paneel öffnet die Großansicht, „Schließen ×“
-    /// oder ein Klick daneben schließt sie.
-    pub(crate) fn gross_klick(&mut self, id: Id) {
-        if self.ui.set_levels_gross(id == Id::LevelsOpen) {
-            self.overlay_dirty = true;
-            self.refresh_cursor();
+    /// Geschossfenster schließen (✕ oder Taskleiste); ein laufendes Ziehen
+    /// gilt nicht, eine Eingabe verfällt.
+    fn close_geschoss(&mut self, surface: &Surface) {
+        self.cancel_level_drag();
+        surface.close_side(WindowId::Levels);
+        self.geschoss.open = false;
+        self.geschoss.ui.edit = None;
+        if self.ui.levels_open {
+            self.ui.levels_open = false;
+            self.dirty_buttons.push(Id::LevelsOpen);
         }
     }
 
-    /// Ereignis bei offener Großansicht: Maus und Rad unter der Titelleiste
-    /// gehören ihr, Esc schließt (eine Eingabe bricht Esc zuerst ab, das
-    /// Ziehen einer Ebene ist vorher dran). Übrige Tasten wie Rückgängig
-    /// gelten weiter. `true`, wenn das Ereignis damit erledigt ist.
-    pub(crate) fn gross_event(&mut self, e: &Event, surface: &Surface) -> bool {
-        if !self.ui.levels_gross() {
-            return false;
+    /// Bricht das Ziehen einer Ebene ab (Esc): das Modell wie vorher.
+    fn cancel_level_drag(&mut self) {
+        if self.geschoss.ui.cancel_level_drag() {
+            self.scene.rollback();
+            self.upload_model();
+            self.geschoss.dirty = true;
+            self.sync_levels();
         }
-        let th = self.top() as f64;
-        match *e {
-            Event::MouseMove { y, .. } | Event::MouseDown { y, .. } | Event::MouseUp { y, .. }
-                if y >= th =>
-            {
-                let out = self.ui.handle(e, self.w, self.top());
+    }
+
+    /// Ereignis aus dem Geschossfenster: Ziehen, Zahlen und die Wahl eines
+    /// Geschosses wirken auf das Modell wie im Hauptfenster.
+    pub(crate) fn handle_geschoss(&mut self, e: Event, surface: &Surface) {
+        if !self.geschoss.open {
+            return;
+        }
+        let Some(out) = self.geschoss.handle(&e) else {
+            return;
+        };
+        match out {
+            Out::Ui(mut out) => {
+                // Neu gezeichnet wird dieses Fenster, nicht die Paneele
+                out.changed.clear();
+                out.relayout = false;
                 self.apply_ui(&out);
                 if let Some(id) = out.clicked {
                     self.click(id);
@@ -74,20 +98,47 @@ impl App {
                 self.sync_levels();
                 self.sync_props();
                 self.sync_caption(surface);
-                true
             }
-            Event::Wheel { .. } => true,
-            Event::Key {
-                key: Key::Escape,
-                down,
-                ..
-            } if self.ui.edit.is_none() => {
-                if down {
-                    self.gross_klick(Id::LevelsClose);
-                }
-                true
+            Out::Key(Key::Escape, _) => self.cancel_level_drag(),
+            // Rückgängig, Wiederholen und Speichern auch von hier
+            Out::Key(key, mods) if mods.ctrl && !mods.alt && self.level_dragging().is_none() => {
+                let c = match key {
+                    Key::Char('Z') if mods.shift => Command::Redo,
+                    Key::Char('Z') => Command::Undo,
+                    Key::Char('Y') => Command::Redo,
+                    Key::Char('S') if !mods.shift => Command::Save,
+                    _ => return,
+                };
+                self.run_command(c, surface);
             }
-            _ => false,
+            Out::Key(..) => {}
+            Out::Command(c) => surface.side_command(WindowId::Levels, c),
+            Out::Close => self.close_geschoss(surface),
+        }
+    }
+
+    /// Geschossfenster öffnen, wenn gewünscht, und neu zeigen.
+    pub(crate) fn sync_geschoss(&mut self, surface: &Surface) {
+        if std::mem::take(&mut self.geschoss.wanted) {
+            self.open_geschoss(surface);
+        }
+        if !self.geschoss.open {
+            return;
+        }
+        let docked = surface.layout().levels_docked();
+        if docked != self.geschoss.docked {
+            self.geschoss.docked = docked;
+            self.geschoss.dirty = true;
+        }
+        surface.set_side_cursor(WindowId::Levels, self.geschoss.ui.cursor());
+        let (w, h, area) = (
+            self.geschoss.w,
+            self.geschoss.h,
+            self.geschoss.caption_area(),
+        );
+        if let Some(px) = self.geschoss.frame(&self.theme) {
+            surface.set_side_caption_area(WindowId::Levels, area);
+            surface.present_side(WindowId::Levels, w, h, px, None);
         }
     }
 }

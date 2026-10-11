@@ -33,6 +33,8 @@ fn fenster(id: WindowId) -> Fenster {
     match id {
         WindowId::Main => Fenster::Haupt,
         WindowId::Quantity => Fenster::Mengen,
+        // Das Geschossfenster (Jörn 11.10.) öffnet in diesen Abläufen nie
+        WindowId::Levels => unreachable!("Geschossfenster in F2"),
     }
 }
 

@@ -489,6 +489,9 @@ const WM_APP_RAISE: u32 = 0x8005;
 /// Vom System maximiert (Aero Snap, Win+↑) bei angedocktem Mengenfenster:
 /// stattdessen den Rest des Bildschirms füllen.
 const WM_APP_FILL: u32 = 0x8006;
+/// Geschossfenster öffnen bzw. schließen (an das Hauptfenster gesandt).
+const WM_APP_OPEN_LEVELS: u32 = 0x8007;
+const WM_APP_CLOSE_LEVELS: u32 = 0x8008;
 
 const SC_MINIMIZE: usize = 0xF020;
 const SC_MAXIMIZE: usize = 0xF030;
@@ -669,6 +672,8 @@ struct Windows {
     list: Vec<WndState>,
     /// Geteilt mit dem Zeichenthread, auch solange das Fenster zu ist.
     quantity: Arc<Shared>,
+    /// Ebenso für das Geschossfenster.
+    levels: Arc<Shared>,
     /// Regeln für das Zusammenspiel (auch der Zeichenthread liest sie).
     layout: Arc<Mutex<Layout>>,
     /// Systemzeiger in der Reihenfolge von [`Cursor`], einmal geladen.
@@ -758,6 +763,17 @@ fn peek<R: Default>(f: impl FnOnce(&Layout) -> R) -> R {
     };
     r
 }
+
+/// Geteilter Zustand eines Seitenfensters.
+fn side_of(w: &Windows, id: WindowId) -> Arc<Shared> {
+    match id {
+        WindowId::Levels => w.levels.clone(),
+        _ => w.quantity.clone(),
+    }
+}
+
+/// Die Seitenfenster neben dem Hauptfenster.
+const SIDES: [WindowId; 2] = [WindowId::Quantity, WindowId::Levels];
 
 fn main_filled() -> bool {
     peek(|l| l.main_filled())
@@ -930,8 +946,8 @@ unsafe fn run_actions(actions: Vec<Action>, from: Option<HWND>) {
     let mut actions = actions.into_iter().peekable();
     while let Some(a) = actions.next() {
         match a {
-            Action::Create(WindowId::Quantity, r) => create_quantity(r),
             Action::Create(WindowId::Main, _) | Action::AskSave => {}
+            Action::Create(id, r) => create_side(id, r),
             // Alte Lage und Maximieren in einem Schritt (sonst kurz sichtbar)
             Action::Place(id, r) if actions.peek() == Some(&Action::Show(id, Show::Maximize)) => {
                 actions.next();
@@ -983,13 +999,13 @@ unsafe fn run_actions(actions: Vec<Action>, from: Option<HWND>) {
                     SetForegroundWindow(h);
                 }
             }
-            Action::Close(WindowId::Quantity) => {
-                if let Some(h) = hwnd_of(WindowId::Quantity) {
+            // Das Hauptfenster schließt die App (Ende des Zeichenthreads)
+            Action::Close(WindowId::Main) => {}
+            Action::Close(id) => {
+                if let Some(h) = hwnd_of(id) {
                     DestroyWindow(h);
                 }
             }
-            // Das Hauptfenster schließt die App (Ende des Zeichenthreads)
-            Action::Close(WindowId::Main) => {}
         }
     }
 }
@@ -1031,26 +1047,44 @@ unsafe fn decorate(hwnd: HWND, inst: HINSTANCE, icon: Option<fn(u32) -> Vec<u8>>
     }
 }
 
-/// Legt das Mengenfenster an `r` an und zeigt es, ohne es zu aktivieren.
-unsafe fn create_quantity(r: Rect) {
-    if hwnd_of(WindowId::Quantity).is_some() {
+/// Ein Seitenfenster ist weg, ohne dass die Regeln es geschlossen haben.
+fn side_gone(id: WindowId) {
+    if let Some(l) = with(|w| w.layout.clone()) {
+        if let Ok(mut l) = l.lock() {
+            match id {
+                WindowId::Levels => l.levels_gone(),
+                _ => l.quantity_gone(),
+            }
+        }
+    }
+}
+
+/// Legt ein Seitenfenster (Mengen- oder Geschossfenster) an `r` an und
+/// zeigt es, ohne es zu aktivieren.
+unsafe fn create_side(id: WindowId, r: Rect) {
+    if hwnd_of(id).is_some() {
         return;
     }
     let Some((shared, inst, icon)) = with(|w| {
-        w.quantity.hwnd.store(0, Ordering::Relaxed);
-        w.quantity.mark_presented(0, 0);
+        let sh = side_of(w, id);
+        sh.hwnd.store(0, Ordering::Relaxed);
+        sh.mark_presented(0, 0);
         w.list.push(WndState {
-            id: WindowId::Quantity,
-            shared: w.quantity.clone(),
+            id,
+            shared: sh.clone(),
             tracking_leave: false,
             buttons_down: 0,
         });
-        (w.quantity.clone(), w.inst, w.icon)
+        (sh, w.inst, w.icon)
     }) else {
         return;
     };
     let title = wide(&shared.title.lock().map(|t| t.clone()).unwrap_or_default());
-    let class = wide(QUANTITY_CLASS);
+    let class = wide(if id == WindowId::Levels {
+        LEVELS_CLASS
+    } else {
+        QUANTITY_CLASS
+    });
     let hwnd = CreateWindowExW(
         0,
         class.as_ptr(),
@@ -1066,12 +1100,8 @@ unsafe fn create_quantity(r: Rect) {
         null_mut(),
     );
     if hwnd.is_null() {
-        with(|w| w.list.retain(|s| s.id != WindowId::Quantity));
-        if let Some(l) = with(|w| w.layout.clone()) {
-            if let Ok(mut l) = l.lock() {
-                l.quantity_gone();
-            }
-        }
+        with(|w| w.list.retain(|s| s.id != id));
+        side_gone(id);
         return;
     }
     shared.hwnd.store(hwnd as usize, Ordering::Relaxed);
@@ -1105,13 +1135,17 @@ unsafe fn create_quantity(r: Rect) {
     }
 }
 
-/// Knopf „Mengenermittlung“ (vom Zeichenthread über `WM_APP_OPEN_QUANTITY`).
-unsafe fn open_quantity(main: HWND) {
+/// Knöpfe „Mengenermittlung“ und „Geschossmanager“ (vom Zeichenthread über
+/// `WM_APP_OPEN_QUANTITY` bzw. `WM_APP_OPEN_LEVELS`).
+unsafe fn open_side(main: HWND, id: WindowId) {
     let r = window_rect(main);
     let zoomed = IsZoomed(main) != 0;
     let work = work_area(main);
     let scale = dpi_of(main) as f32 / 96.0;
-    let actions = ask(|l| l.open_quantity(r, zoomed, work, scale));
+    let actions = ask(|l| match id {
+        WindowId::Levels => l.open_levels(r, zoomed, work, scale),
+        _ => l.open_quantity(r, zoomed, work, scale),
+    });
     run_actions(actions, Some(main));
 }
 
@@ -1155,15 +1189,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let btn_w = sh.buttons_width.load(Ordering::Relaxed) as i32;
             let left_w = sh.left_width.load(Ordering::Relaxed) as i32;
             let dpi = sh.dpi.load(Ordering::Relaxed);
-            // Angedockt ändert am Mengenfenster nur der rechte Rand die Breite
-            let docked = id == WindowId::Quantity
-                && with(|w| w.layout.lock().map(|l| l.docked()).unwrap_or(false)).unwrap_or(false);
+            // Angedockt ändert am Mengenfenster nur der rechte Rand die
+            // Breite, am Geschossfenster nur der linke
+            let docked = with(|w| {
+                w.layout
+                    .lock()
+                    .map(|l| match id {
+                        WindowId::Quantity => l.docked(),
+                        WindowId::Levels => l.levels_docked(),
+                        WindowId::Main => false,
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+            let (keep_left, keep_right) = match id {
+                WindowId::Levels => (true, !docked),
+                _ => (!docked, true),
+            };
             let b = (6 * dpi / 96) as i32;
             // Knopfgruppen rechts und links (Menü, Rückgängig, E17) gehören der App
             let over_buttons = (p.x >= w - btn_w || p.x < left_w) && p.y < cap_h;
             if IsZoomed(hwnd) == 0 {
-                let left = p.x < b && !docked;
-                let right = p.x >= w - b;
+                let left = p.x < b && keep_left;
+                let right = p.x >= w - b && keep_right;
                 let top = p.y < b && !over_buttons && !docked;
                 let bottom = p.y >= h - b && !docked;
                 match (top, bottom, left, right) {
@@ -1191,25 +1239,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_ACTIVATE => {
             let active = wp & 0xFFFF != 0;
             send(hwnd, Event::Focus(active));
-            // Das andere Fenster gleich dahinter: beide zusammen vor anderen
+            // Die anderen Fenster gleich dahinter: alle zusammen vor anderen
             // Programmen (Alt+Tab, Klick in die Taskleiste)
             let minimized = (wp >> 16) & 0xFFFF != 0;
-            if active && !minimized {
-                let other = match id_of(hwnd) {
-                    Some(WindowId::Main) => hwnd_of(WindowId::Quantity),
-                    Some(WindowId::Quantity) => hwnd_of(WindowId::Main),
-                    None => None,
-                };
-                if let Some(o) = other.filter(|&o| IsIconic(o) == 0 && IsWindowVisible(o) != 0) {
-                    SetWindowPos(
-                        o,
-                        hwnd,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                    );
+            if let Some(me) = id_of(hwnd).filter(|_| active && !minimized) {
+                let mut after = hwnd;
+                for o in [WindowId::Main, WindowId::Quantity, WindowId::Levels] {
+                    let Some(o) = hwnd_of(o).filter(|_| o != me) else {
+                        continue;
+                    };
+                    if IsIconic(o) == 0 && IsWindowVisible(o) != 0 {
+                        SetWindowPos(
+                            o,
+                            after,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                        after = o;
+                    }
                 }
             }
             0
@@ -1271,14 +1321,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let q = window_rect(hwnd);
                     ask(|l| l.quantity_resized(q))
                 }
+                Some(WindowId::Levels) if IsZoomed(hwnd) == 0 => {
+                    let g = window_rect(hwnd);
+                    ask(|l| l.levels_resized(g))
+                }
                 _ => Vec::new(),
             };
             run_actions(actions, Some(hwnd));
             r
         }
         WM_MOVING => {
-            // Mengenfenster an der Titelleiste gezogen: Lösen und Einrasten
-            if id_of(hwnd) == Some(WindowId::Quantity) {
+            // Seitenfenster an der Titelleiste gezogen: Lösen und Einrasten
+            if let Some(id) = id_of(hwnd).filter(|id| SIDES.contains(id)) {
                 if let Some(main) = hwnd_of(WindowId::Main) {
                     let m = (IsZoomed(main) == 0).then(|| window_rect(main));
                     let rc = &mut *(lp as *mut RECT);
@@ -1287,10 +1341,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         if let Some(m) = m {
                             l.note_main(m);
                         }
-                        l.quantity_moved(proposed)
+                        match id {
+                            WindowId::Levels => l.levels_moved(proposed),
+                            _ => l.quantity_moved(proposed),
+                        }
                     });
                     for a in actions {
-                        if let Action::Place(WindowId::Quantity, r) = a {
+                        if let Action::Place(to, r) = a {
+                            if to != id {
+                                continue;
+                            }
                             *rc = RECT {
                                 left: r.0,
                                 top: r.1,
@@ -1325,6 +1385,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mm = &mut *(lp as *mut MINMAXINFO);
             mm.ptMinTrackSize = match id_of(hwnd) {
                 Some(WindowId::Quantity) => POINT { x: 320, y: 240 },
+                Some(WindowId::Levels) => POINT { x: 240, y: 240 },
                 _ => POINT { x: 640, y: 400 },
             };
             0
@@ -1336,7 +1397,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Nach dem Ziehen einmal neu zeichnen, wieder mit Bildsynchronisation
             send(hwnd, Event::Redraw);
             // Eingerastet: Höhe und Oberkante vom Hauptfenster übernehmen
-            if msg == WM_EXITSIZEMOVE && id_of(hwnd) == Some(WindowId::Quantity) {
+            if msg == WM_EXITSIZEMOVE && id_of(hwnd).is_some_and(|id| SIDES.contains(&id)) {
                 if let Some(main) = hwnd_of(WindowId::Main).filter(|&m| IsZoomed(m) == 0) {
                     let m = window_rect(main);
                     let actions = ask(|l| l.main_moved(m));
@@ -1554,12 +1615,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             send(hwnd, Event::CloseRequested { ask: false });
             0
         }
-        WM_APP_OPEN_QUANTITY => {
-            open_quantity(hwnd);
+        WM_APP_OPEN_QUANTITY | WM_APP_OPEN_LEVELS => {
+            let id = match msg {
+                WM_APP_OPEN_LEVELS => WindowId::Levels,
+                _ => WindowId::Quantity,
+            };
+            open_side(hwnd, id);
             0
         }
-        WM_APP_CLOSE_QUANTITY => {
-            let actions = ask(|l| l.close_requested(WindowId::Quantity, false));
+        WM_APP_CLOSE_QUANTITY | WM_APP_CLOSE_LEVELS => {
+            let id = match msg {
+                WM_APP_CLOSE_LEVELS => WindowId::Levels,
+                _ => WindowId::Quantity,
+            };
+            let actions = ask(|l| l.close_requested(id, false));
             run_actions(actions, None);
             0
         }
@@ -1573,27 +1642,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_DESTROY => {
             match id_of(hwnd) {
-                Some(WindowId::Quantity) => {
+                Some(id @ (WindowId::Quantity | WindowId::Levels)) => {
                     let closing = with(|w| {
-                        w.list.retain(|s| s.id != WindowId::Quantity);
-                        w.quantity.hwnd.store(0, Ordering::Relaxed);
+                        w.list.retain(|s| s.id != id);
+                        side_of(w, id).hwnd.store(0, Ordering::Relaxed);
                         w.closing
                     })
                     .unwrap_or(true);
                     // Nicht über die Regeln geschlossen (etwa vom System): vergessen
                     if !closing {
-                        if let Some(l) = with(|w| w.layout.clone()) {
-                            if let Ok(mut l) = l.lock() {
-                                l.quantity_gone();
-                            }
-                        }
+                        side_gone(id);
                     }
                 }
                 _ => {
-                    // Das Hauptfenster nimmt das Mengenfenster mit; offen bleibt gemerkt
+                    // Das Hauptfenster nimmt die Seitenfenster mit; offen bleibt gemerkt
                     with(|w| w.closing = true);
-                    if let Some(q) = hwnd_of(WindowId::Quantity) {
-                        DestroyWindow(q);
+                    for id in SIDES {
+                        if let Some(q) = hwnd_of(id) {
+                            DestroyWindow(q);
+                        }
                     }
                     PostQuitMessage(0);
                 }
@@ -1612,7 +1679,9 @@ pub struct Surface {
     shared: Arc<Shared>,
     /// Mengenfenster (Griff 0, solange es nicht offen ist).
     quantity: Arc<Shared>,
-    /// Zeilen für die GDI-Kopie ins Mengenfenster (BGRA).
+    /// Geschossfenster, ebenso.
+    levels: Arc<Shared>,
+    /// Zeilen für die GDI-Kopie in ein Seitenfenster (BGRA).
     quantity_buf: RefCell<Vec<u8>>,
     /// `wglSwapIntervalEXT`, falls vorhanden.
     swap_interval: Cell<usize>,
@@ -1768,25 +1837,49 @@ impl Surface {
         set_caption_area_of(&self.shared, a)
     }
 
-    pub fn open_quantity(&self, title: &str) {
-        if let Ok(mut t) = self.quantity.title.lock() {
+    fn side(&self, id: WindowId) -> &Shared {
+        match id {
+            WindowId::Levels => &self.levels,
+            _ => &self.quantity,
+        }
+    }
+
+    pub fn open_side(&self, id: WindowId, title: &str) {
+        if let Ok(mut t) = self.side(id).title.lock() {
             *t = title.to_string();
         }
+        let msg = match id {
+            WindowId::Levels => WM_APP_OPEN_LEVELS,
+            _ => WM_APP_OPEN_QUANTITY,
+        };
         unsafe {
-            PostMessageW(self.hwnd as HWND, WM_APP_OPEN_QUANTITY, 0, 0);
+            PostMessageW(self.hwnd as HWND, msg, 0, 0);
         }
     }
 
-    pub fn close_quantity(&self) {
+    pub fn close_side(&self, id: WindowId) {
+        let msg = match id {
+            WindowId::Levels => WM_APP_CLOSE_LEVELS,
+            _ => WM_APP_CLOSE_QUANTITY,
+        };
         unsafe {
-            PostMessageW(self.hwnd as HWND, WM_APP_CLOSE_QUANTITY, 0, 0);
+            PostMessageW(self.hwnd as HWND, msg, 0, 0);
         }
     }
 
-    /// Kopiert das Bild per GDI ins Mengenfenster (kein zweiter GL-Kontext:
-    /// zwei Fenster mit Bildsynchronisation würden die Bildrate halbieren).
-    pub fn present_quantity(&self, w: u32, h: u32, rgba: &[u8], rows: Option<(u32, u32)>) {
-        let hwnd = self.quantity.hwnd();
+    /// Kopiert das Bild per GDI in ein Seitenfenster (kein zweiter
+    /// GL-Kontext: zwei Fenster mit Bildsynchronisation würden die Bildrate
+    /// halbieren).
+    pub fn present_side(
+        &self,
+        id: WindowId,
+        w: u32,
+        h: u32,
+        rgba: &[u8],
+        rows: Option<(u32, u32)>,
+    ) {
+        let sh = self.side(id);
+        let hwnd = sh.hwnd();
         if hwnd.is_null() || w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return;
         }
@@ -1833,38 +1926,40 @@ impl Surface {
             ReleaseDC(hwnd, dc);
         }
         if rows.is_none() {
-            self.quantity.mark_presented(w, h);
+            sh.mark_presented(w, h);
         }
     }
 
-    pub fn quantity_size(&self) -> (u32, u32) {
+    pub fn side_size(&self, id: WindowId) -> (u32, u32) {
+        let sh = self.side(id);
         (
-            self.quantity.width.load(Ordering::Relaxed),
-            self.quantity.height.load(Ordering::Relaxed),
+            sh.width.load(Ordering::Relaxed),
+            sh.height.load(Ordering::Relaxed),
         )
     }
 
-    pub fn quantity_scale(&self) -> f32 {
-        self.quantity.dpi.load(Ordering::Relaxed) as f32 / 96.0
+    pub fn side_scale(&self, id: WindowId) -> f32 {
+        self.side(id).dpi.load(Ordering::Relaxed) as f32 / 96.0
     }
 
-    pub fn quantity_command(&self, c: WindowCommand) {
-        command_to(self.quantity.hwnd(), c)
+    pub fn side_command(&self, id: WindowId, c: WindowCommand) {
+        command_to(self.side(id).hwnd(), c)
     }
 
-    pub fn set_quantity_caption_area(&self, a: CaptionArea) {
-        set_caption_area_of(&self.quantity, a)
+    pub fn set_side_caption_area(&self, id: WindowId, a: CaptionArea) {
+        set_caption_area_of(self.side(id), a)
     }
 
-    pub fn set_quantity_cursor(&self, c: Cursor) {
-        set_cursor_of(&self.quantity, c)
+    pub fn set_side_cursor(&self, id: WindowId, c: Cursor) {
+        set_cursor_of(self.side(id), c)
     }
 
-    pub fn set_quantity_title(&self, title: &str) {
-        if let Ok(mut t) = self.quantity.title.lock() {
+    pub fn set_side_title(&self, id: WindowId, title: &str) {
+        let sh = self.side(id);
+        if let Ok(mut t) = sh.title.lock() {
             *t = title.to_string();
         }
-        set_title_of(self.quantity.hwnd(), title)
+        set_title_of(sh.hwnd(), title)
     }
 
     pub fn monitors(&self) -> Vec<Rect> {
@@ -2029,6 +2124,7 @@ fn make_icon(inst: HINSTANCE, size: i32, rgba: &[u8]) -> HICON {
 /// Mengenfenster ohne (GDI-Kopie aus dem Zeichenthread).
 const MAIN_CLASS: &str = "SkizzeoFenster";
 const QUANTITY_CLASS: &str = "SkizzeoMengenfenster";
+const LEVELS_CLASS: &str = "SkizzeoGeschossfenster";
 
 unsafe fn register_class(inst: HINSTANCE, name: &str, style: u32) -> bool {
     let class = wide(name);
@@ -2058,6 +2154,7 @@ where
         let inst = GetModuleHandleW(null());
         if !register_class(inst, MAIN_CLASS, CS_OWNDC | CS_HREDRAW | CS_VREDRAW)
             || !register_class(inst, QUANTITY_CLASS, CS_HREDRAW | CS_VREDRAW)
+            || !register_class(inst, LEVELS_CLASS, CS_HREDRAW | CS_VREDRAW)
         {
             return Err("Fensterklasse konnte nicht angelegt werden.".into());
         }
@@ -2065,6 +2162,7 @@ where
         let (tx, rx) = channel();
         let shared = Shared::new();
         let quantity = Shared::new();
+        let levels = Shared::new();
         WINDOWS.with(|s| {
             *s.borrow_mut() = Some(Windows {
                 tx,
@@ -2075,6 +2173,7 @@ where
                     buttons_down: 0,
                 }],
                 quantity: quantity.clone(),
+                levels: levels.clone(),
                 layout,
                 cursors: [IDC_ARROW, IDC_SIZENS, IDC_HAND, IDC_IBEAM]
                     .map(|c| LoadCursorW(null_mut(), c as *const u16)),
@@ -2167,6 +2266,7 @@ where
             opengl32: LoadLibraryA(c"opengl32.dll".as_ptr()) as usize,
             shared,
             quantity,
+            levels,
             quantity_buf: RefCell::new(Vec::new()),
             swap_interval: Cell::new(0),
             interval: Cell::new(1),
