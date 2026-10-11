@@ -571,8 +571,8 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 9858786,
-    material: 4301381,
+    netto: 10436062,
+    material: 4627605,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -584,7 +584,7 @@ const RH5: Soll = Soll {
         ("Gründung", 2264725),
         ("Erdgeschoss", 3340491),
         ("Obergeschoss", 2879023),
-        ("Flachdach", 1374541),
+        ("Flachdach", 1951817),
     ],
     ausgleich: 6,
     zeilen: &[
@@ -829,19 +829,78 @@ const RH5: Soll = Soll {
             19973,
             7490,
         ),
+        // vier Abläufe am Vorschlag, je mit Regenfallrohr (Review W12 und
+        // Kosten B30 an #68); die beiden an der Nordseite enden über der
+        // Dachterrasse mit Auslaufbogen statt im Standrohr (Geometrie #68)
         (
             "Attikaablauf DN 100 wärmegedämmt, waagerecht, Dampfsperranschluss",
-            1000,
+            4000,
             40000,
-            40000,
-            28000,
+            160000,
+            112000,
         ),
         (
             "Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung",
-            1000,
+            4000,
             28000,
+            112000,
+            64000,
+        ),
+        (
+            "Wasserfangkasten Titanzink 0,7mm mit Laubfangsieb, Stutzen DN 100",
+            4000,
+            13000,
+            52000,
+            34000,
+        ),
+        (
+            "Regenfallrohr Titanzink rund DN 100, 0,7mm, inkl. Verbindungen",
+            14810,
+            3400,
+            50354,
+            23696,
+        ),
+        (
+            "Rohrschelle DN 100 mit Stockschraube durch WDVS, Abstand bis 2,0m",
             28000,
-            16000,
+            2400,
+            67200,
+            25200,
+        ),
+        (
+            "Regenstandrohr Guss DN 100, 1,0m, Reinigungsöffnung, an Grundleitung",
+            2000,
+            17000,
+            34000,
+            22000,
+        ),
+        (
+            "Wasserfangkasten Notüberlauf Titanzink, Stutzen DN 100",
+            4000,
+            14000,
+            56000,
+            38000,
+        ),
+        (
+            "Notfallrohr Titanzink rund DN 100, frei auslaufend",
+            16330,
+            3400,
+            55522,
+            26128,
+        ),
+        (
+            "Auslaufbogen Titanzink DN 100 am Notfallrohr, 20cm über Gelände",
+            6000,
+            2700,
+            16200,
+            7200,
+        ),
+        (
+            "Kontrollablauf Dampfsperrebene DN 50 durch die Aufkantung",
+            4000,
+            10500,
+            42000,
+            18000,
         ),
         (
             "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",

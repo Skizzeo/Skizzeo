@@ -282,7 +282,8 @@ fn a333_attikablech() {
 /// A334 (D5): Das Mengenfenster führt die Ebene FD mit Aufkantungen,
 /// Flachdach und Attikablech; am Flachdach hängen die Automatikmengen
 /// `roof.edge` 33,48 m, `roof.corners` 4, `roof.drains` und
-/// `roof.overflows` je 1 (69 m² < 150 m²).
+/// `roof.overflows` je 4 (die Abläufe mit Regenfallrohr, Review W12 an
+/// #68).
 #[test]
 fn a334_mengen_flachdach() {
     let (mut s, og) = haus(324, sk_model::EXTERIOR_TYPE_GUID);
@@ -335,8 +336,9 @@ fn a334_mengen_flachdach() {
     };
     assert_eq!(auto("roof.edge"), Some(("m", 33_480.0)));
     assert_eq!(auto("roof.corners"), Some(("st", 4.0)));
-    assert_eq!(auto("roof.drains"), Some(("st", 1.0)));
-    assert_eq!(auto("roof.overflows"), Some(("st", 1.0)));
+    // ohne Gefälle die gespeicherten vier Abläufe, je mit Regenfallrohr
+    assert_eq!(auto("roof.drains"), Some(("st", 4.0)));
+    assert_eq!(auto("roof.overflows"), Some(("st", 4.0)));
     assert_eq!(auto("roof.taper"), None, "ohne Gefälle kein Keil");
 }
 

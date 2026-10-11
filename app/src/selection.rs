@@ -1271,9 +1271,11 @@ fn outline(
             }
             lines.extend(body.edges.iter().map(|e| (e.a, e.b)));
         }
-        (None, Some(ElementKind::Downpipe { .. })) => {
-            // Regenfallrohr: die Kanten seines Körpers
-            let Some(d) = m.downpipe(id) else {
+        (None, Some(ElementKind::Downpipe { roof, drain, .. })) => {
+            // Regenfallrohr: die Kanten seines Körpers, aus dem Flachdach
+            // der Szene (zwischengespeichert, Review #68)
+            let r = m.floor_of_roof(*roof).and_then(|f| scene.flat_roof_over(f));
+            let Some(d) = r.and_then(|r| r.downpipes.get(*drain as usize).cloned()) else {
                 return Vec::new();
             };
             if view == ViewKind::Plan && d.box_bot >= scene.plan_cut() {

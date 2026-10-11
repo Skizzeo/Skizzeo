@@ -3,7 +3,7 @@
 //! Ebene des Dachaufbaus; es kommt und geht mit den Abläufen.
 
 use super::*;
-use crate::fallrohr::{Downpipe, DownpipeSpec, Overflow, SPACING_MAX, SPACING_MIN};
+use crate::fallrohr::{Downpipe, DownpipeSpec, Foot, Overflow, SPACING_MAX, SPACING_MIN};
 use crate::roof::FlatRoof;
 
 impl Model {
@@ -57,9 +57,14 @@ impl Model {
         roof: ElementId,
         drain: u16,
     ) -> Option<String> {
-        let ok = matches!(self.element(roof).map(|e| &e.kind),
-            Some(ElementKind::Roof { drainage, .. }) if (drain as usize) < drainage.drains.len());
-        (!ok).then(|| format!("{number}: Regenfallrohr ohne Ablauf"))
+        let n = self.floor_of_roof(roof).map_or(0, |f| self.drain_count(f));
+        ((drain as usize) >= n).then(|| format!("{number}: Regenfallrohr ohne Ablauf"))
+    }
+
+    /// Abläufe des Flachdachs über der Decke `floor`, an denen die
+    /// Regenfallrohre hängen (= `roof.drains`).
+    fn drain_count(&self, floor: ElementId) -> usize {
+        self.flat_roof_over(floor).map_or(0, |r| r.downpipes.len())
     }
 
     /// Eigenschaften des Regenfallrohrs `id`.
@@ -108,7 +113,11 @@ impl Model {
 
     /// Regenfallrohre an den Abläufen des Flachdachs über der Decke
     /// `floor`, dessen Geometrie `r` gerade entsteht; Eigenschaften vom
-    /// Bauteil, sonst die Vorgabe.
+    /// Bauteil, sonst die Vorgabe. Ein Dach ohne gespeicherte Abläufe
+    /// (ohne Gefälle, Review W12 und Kosten B30 an #68) bekommt sie am
+    /// Vorschlag, wie ihn „Abläufe vorschlagen“ setzen würde; ein Dach mit
+    /// 0 % behält seine gespeicherten Abläufe. `roof.drains` zählt dieselben
+    /// Punkte.
     pub(super) fn layout_downpipes(&self, floor: ElementId, r: &FlatRoof) -> Vec<Downpipe> {
         let Some(roof) = self.flat_roof_of(floor) else {
             return Vec::new();
@@ -117,19 +126,51 @@ impl Model {
             return Vec::new();
         };
         let b = self.building_of_element(roof);
-        drainage
-            .drains
+        let foot = |p: Vec3| self.foot_at(floor, b, p);
+        let vorschlag;
+        let drains = if drainage.drains.is_empty() {
+            vorschlag =
+                crate::gefaelle::propose_drains(&r.outline, &crate::gefaelle::Limits::default());
+            &vorschlag
+        } else {
+            &drainage.drains
+        };
+        drains
             .iter()
             .take(MAX_DOWNPIPES as usize)
             .enumerate()
-            .filter_map(|(k, p)| {
+            .map(|(k, p)| {
                 let spec = self
                     .downpipe_at(roof, k)
                     .and_then(|d| self.downpipe_spec(d))
                     .unwrap_or_default();
-                Downpipe::layout(r, *p, self.terrain_z_at(b, p.x, p.y), spec)
+                Downpipe::layout(r, *p, foot, spec)
             })
-            .collect()
+            // alle oder keins: der Index bleibt der des Ablaufs (Review #68)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default()
+    }
+
+    /// Fläche unter dem Grundrisspunkt `p` außen vor dem Flachdach über der
+    /// Decke `floor` (Prüfung Geometrie #68): das oberste tiefere Geschoss,
+    /// dessen Außenfläche `p` umschließt (zurückgesetzte Wand, davor Dach
+    /// bzw. Dachterrasse), mit OK Belag bzw. OK Rohdecke; sonst das Gelände.
+    fn foot_at(&self, floor: ElementId, b: Option<BuildingId>, p: Vec3) -> Foot {
+        let mut cur = self.run_of(floor);
+        while let Some(below) = cur.and_then(|r| self.run_below(r)) {
+            let c = self.chain(below);
+            if c.is_some_and(|c| contains(&c.face_corners(c.outer_offset()), p)) {
+                if let Some(Ok(f)) = self.floor(below) {
+                    let z = f.terrace_band().map_or(f.params.top, |t| t.1);
+                    return Foot { z, lower: true };
+                }
+            }
+            cur = Some(below);
+        }
+        Foot {
+            z: self.terrain_z_at(b, p.x, p.y),
+            lower: false,
+        }
     }
 
     /// Legt fehlende Regenfallrohre an und entfernt überzählige: je Ablauf
@@ -140,9 +181,8 @@ impl Model {
             .elements
             .iter()
             .filter_map(|(id, e)| match &e.kind {
-                ElementKind::Roof { floor, drainage } if self.floor_in_scope(*floor, scope) => {
-                    let n = drainage.drains.len().min(MAX_DOWNPIPES as usize);
-                    Some((id, n, e.storey, e.seq))
+                ElementKind::Roof { floor, .. } if self.floor_in_scope(*floor, scope) => {
+                    Some((id, self.drain_count(*floor), e.storey, e.seq))
                 }
                 _ => None,
             })
@@ -193,7 +233,15 @@ impl Model {
                     drain: k,
                     spec,
                 };
-                self.new_element(Category::Downpipe, storey, seq, kind);
+                let id = self.new_element(Category::Downpipe, storey, seq, kind);
+                // beim Lesen kann die Guid-Folge schon vergebene liefern
+                // (gleicher Startwert wie beim Schreiben): weiterziehen
+                while self.guid_taken(id) {
+                    let g = self.new_guid();
+                    if let Some(e) = self.elements.get_mut(id) {
+                        e.guid = g;
+                    }
+                }
                 kept.push((roof, k, spec));
                 self.touch();
             }
@@ -223,6 +271,22 @@ impl Model {
             }
             self.touch();
         }
+    }
+
+    /// Trägt schon etwas anderes im Projekt die Guid von `id` (wie
+    /// [`Model::check`] sie sammelt)?
+    fn guid_taken(&self, id: ElementId) -> bool {
+        let Some(g) = self.element(id).map(|e| e.guid) else {
+            return false;
+        };
+        self.elements.iter().any(|(i, e)| i != id && e.guid == g)
+            || self.runs.iter().any(|(_, r)| r.guid == g)
+            || self.storeys.iter().any(|(_, s)| s.guid == g)
+            || self.buildings.iter().any(|(_, b)| b.guid == g)
+            || self.materials.iter().any(|(_, m)| m.guid == g)
+            || self.layer_sets.iter().any(|(_, t)| t.guid == g)
+            || self.attr.guids().any(|x| x == g)
+            || self.project.guid == g
     }
 
     /// Abgeleitete Merkmale des Regenfallrohrs (Bauteileigenschaften):
@@ -367,6 +431,98 @@ mod tests {
             m.can_delete(rf[0]),
             Err(crate::Refusal::Derived { .. })
         ));
+    }
+
+    /// Geometrie (Prüfung #68): OG-Nordwand 1,50 m zurückgesetzt, davor
+    /// die Dachterrasse auf der EG-Decke. Die Rohre an der Nordseite dürfen
+    /// nicht durch Terrasse und EG-Decke bis aufs Gelände laufen: Wo die
+    /// Achse über dem EG liegt, enden sie über der Decke darunter.
+    #[test]
+    fn nicht_durch_die_terrasse() {
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let set = m.type_by_guid(crate::EXTERIOR_TYPE_GUID).unwrap();
+        let eg = m.ground_of(Some(b)).unwrap();
+        let eg = m
+            .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+            .unwrap();
+        let og = m.runs_above(eg)[0];
+        let nord = m.wall_at(og, 1).unwrap();
+        schritt(&mut m, |m| m.set_offset(nord, -1500.0).is_some());
+        let st = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(st, true));
+        let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+        let ok_og = m.storey(st).unwrap().elevation;
+        let c = m.chain(eg).unwrap();
+        let unten = sk_math::polygon::to_ccw(&c.face_corners(c.outer_offset()));
+        let ueber_eg = |p: Vec3| {
+            let n = unten.len();
+            (0..n).fold(false, |inn, i| {
+                let (a, b) = (unten[i], unten[(i + 1) % n]);
+                let quer = (a.y > p.y) != (b.y > p.y)
+                    && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+                inn != quer
+            })
+        };
+        let mut nordseite = 0;
+        for id in m.downpipes_of(da) {
+            let d = m.downpipe(id).unwrap();
+            let ov = d.overflow.face + d.out * (crate::fallrohr::WALL_GAP + 50.0);
+            if ueber_eg(d.axis()) {
+                nordseite += 1;
+                assert!(d.stand_top >= ok_og, "Fallrohr bis {}", d.stand_top);
+            }
+            if ueber_eg(ov) {
+                assert!(
+                    d.overflow.end >= ok_og,
+                    "Notfallrohr bis {}",
+                    d.overflow.end
+                );
+            }
+        }
+        assert!(nordseite > 0);
+        // über der Terrasse kein Standrohr, dafür ein Auslaufbogen mehr
+        let s = crate::qto::schedule(&m);
+        let zahl = |k: &str| s.auto.iter().filter(|a| a.key == k).count();
+        let boegen: f64 = (s.auto.iter())
+            .filter(|a| a.key == crate::fallrohr::OUTLET)
+            .map(|a| a.value)
+            .sum();
+        assert_eq!(zahl(crate::fallrohr::STAND), 4 - nordseite);
+        assert_eq!(boegen, (4 + nordseite) as f64);
+    }
+
+    /// Review W12 und Kosten B30 an #68: Ein Dach ohne gespeicherte Abläufe
+    /// bekommt die Regenfallrohre am Vorschlag, und `roof.drains` und
+    /// `roof.overflows` zählen dieselben Punkte.
+    #[test]
+    fn ohne_gefaelle_am_vorschlag() {
+        let (mut m, da, _) = haus();
+        let d = crate::gefaelle::Drainage::default();
+        schritt(&mut m, |m| m.set_roof_drainage(da, d));
+        assert!(m.drainage_of_roof(da).unwrap().drains.is_empty());
+        let rf = m.downpipes_of(da);
+        assert_eq!(rf.len(), 4);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        let s = crate::qto::schedule(&m);
+        let auto = |k: &str| {
+            s.auto
+                .iter()
+                .find(|a| a.key == k && a.element == da)
+                .map(|a| a.value)
+        };
+        assert_eq!(auto("roof.drains"), Some(4.0));
+        assert_eq!(auto("roof.overflows"), Some(4.0));
+        let boxes = (s.auto.iter())
+            .filter(|a| a.key == crate::fallrohr::BOX)
+            .count();
+        assert_eq!(boxes, 4);
     }
 
     /// Wasserspeier statt Notfallrohr, ohne Kontrollablauf, Schellen

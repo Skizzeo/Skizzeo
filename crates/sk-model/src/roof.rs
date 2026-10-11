@@ -1050,7 +1050,12 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
     let m = |mm: f64| format!("{:.2} m", mm / 1000.0).replace('.', ",");
     let area = r.area();
     let geplant = r.slope.as_ref().map(|g| g.drains.len() as f64);
-    let drains = geplant.unwrap_or_else(|| (area / DRAIN_AREA).ceil().max(1.0));
+    // ohne Gefälle so viele wie Regenfallrohre (B30 an #68), sonst nach
+    // Fläche
+    let rf = (!r.downpipes.is_empty()).then_some(r.downpipes.len() as f64);
+    let drains = geplant
+        .or(rf)
+        .unwrap_or_else(|| (area / DRAIN_AREA).ceil().max(1.0));
     let menge = |key, unit, value, formula| crate::qto::AutoMenge {
         key,
         unit,
@@ -1061,9 +1066,10 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
     };
     let corners = r.corners() as f64;
     let fl = format!("{:.2} m²", area / 1e6).replace('.', ",");
-    let drain_formula = match geplant {
-        Some(n) => format!("{n} Abläufe im Gefälleplan"),
-        None => format!("{fl} ÷ 150 m², aufgerundet, mindestens 1"),
+    let drain_formula = match (geplant, rf) {
+        (Some(n), _) => format!("{n} Abläufe im Gefälleplan"),
+        (None, Some(n)) => format!("{n} Abläufe mit Regenfallrohr"),
+        (None, None) => format!("{fl} ÷ 150 m², aufgerundet, mindestens 1"),
     };
     let mut out = vec![
         menge(

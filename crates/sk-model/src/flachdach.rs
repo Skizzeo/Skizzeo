@@ -1398,9 +1398,9 @@ mod tests {
             })
             .collect();
         let back = crate::szo::read(&kaputt, GuidGen::with_seed(5)).unwrap();
-        // ohne Abläufe gehen auch die Regenfallrohre (Jörn 11.10.)
-        assert_eq!(back.hints.len(), 5, "{:?}", back.hints);
-        assert_eq!(back.hints[4], "Regenfallrohre ohne Ablauf entfernt");
+        // ohne lesbare Abläufe gelten die vorgeschlagenen, die
+        // Regenfallrohre bleiben (Review W12 an #68)
+        assert_eq!(back.hints.len(), 4, "{:?}", back.hints);
         let m = back.model;
         let (da, floor) = m
             .elements
@@ -1900,8 +1900,10 @@ mod tests {
         };
         assert_eq!(auto("roof.edge"), Some(r.edge_length()));
         assert_eq!(auto("roof.corners"), Some(4.0));
-        assert_eq!(auto("roof.drains"), Some(1.0));
-        assert_eq!(auto("roof.overflows"), Some(1.0));
+        // ohne Gefälle die gespeicherten Abläufe, je mit Regenfallrohr
+        // (Review W12 an #68), nicht mehr nach Fläche
+        assert_eq!(auto("roof.drains"), Some(4.0));
+        assert_eq!(auto("roof.overflows"), Some(4.0));
         // Abschalten nimmt beide mit, Rückgängig bringt sie mit Nummer zurück
         let num = e.number.clone();
         let aus = schritt(&mut m, |m| m.set_flat_roof(og_storey, false));

@@ -87,6 +87,8 @@ const OUTLET_REACH: f64 = 200.0;
 /// Wasserspeier: Auskragung vor der Fassade und Höhe (mm).
 pub const SPOUT_OUT: f64 = 300.0;
 const SPOUT_H: f64 = 80.0;
+/// Kleinster Abstand zweier Schellen an einem kurzen Rohr (mm).
+const CLAMP_GAP_MIN: f64 = 500.0;
 /// Rohrschelle: Höhe und Wandstärke des Rings (mm).
 const CLAMP_H: f64 = 30.0;
 const CLAMP_T: f64 = 6.0;
@@ -106,6 +108,20 @@ pub struct OverflowRun {
     pub box_bot: f64,
     pub end: f64,
     pub clamps: Vec<f64>,
+    /// Fläche unter dem Notfallrohr: Gelände oder ein tieferes Dach.
+    pub foot: Foot,
+}
+
+/// Fläche, auf der ein Rohr endet (Prüfung Geometrie #68): das Gelände
+/// oder, bei zurückgesetzter Wand, das tiefere Dach bzw. die Dachterrasse
+/// davor. Auf dem tieferen Dach endet das Rohr mit Auslaufbogen über dem
+/// Belag statt im Standrohr (das Wasser nimmt dort dessen Entwässerung
+/// auf, Flachdachrichtlinie: Ableitung auf tiefere Dachflächen).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Foot {
+    /// OK Gelände bzw. OK Belag des tieferen Dachs.
+    pub z: f64,
+    pub lower: bool,
 }
 
 /// Regenfallrohr eines Ablaufs, fertig ausgelegt (mm, absolut).
@@ -123,9 +139,11 @@ pub struct Downpipe {
     pub outlet: f64,
     pub box_top: f64,
     pub box_bot: f64,
-    /// OK Standrohr (= unteres Ende des Fallrohrs) und OK Gelände.
+    /// Unteres Ende des Fallrohrs (OK Standrohr bzw. OK Auslaufbogen über
+    /// einem tieferen Dach) und die Fläche darunter.
     pub stand_top: f64,
     pub ground: f64,
+    pub lower: bool,
     /// Höhen der Rohrschellen am Fallrohr.
     pub clamps: Vec<f64>,
     /// Achse des Kontrollablaufs, wenn es ihn gibt.
@@ -143,7 +161,9 @@ pub fn clamp_heights(top: f64, bot: f64, spacing: f64) -> Vec<f64> {
         return Vec::new();
     }
     let (z1, z0) = (top - FIRST_CLAMP, bot + LAST_CLAMP);
-    if z1 <= z0 {
+    // zu kurz für zwei Schellen mit Abstand (Review #68: nicht 1 mm
+    // übereinander): eine in der Mitte
+    if z1 - z0 < CLAMP_GAP_MIN {
         return vec![(top + bot) / 2.0];
     }
     let n = ((z1 - z0) / spacing.max(SPACING_MIN) - 1e-9)
@@ -156,23 +176,31 @@ pub fn clamp_heights(top: f64, bot: f64, spacing: f64) -> Vec<f64> {
 
 impl Downpipe {
     /// Legt das Regenfallrohr am Ablauf `drain` des Flachdachs `r` aus;
-    /// `ground` ist OK Gelände dort. `None` ohne Umriss.
-    pub fn layout(r: &FlatRoof, drain: Vec3, ground: f64, spec: DownpipeSpec) -> Option<Downpipe> {
+    /// `foot` liefert die Fläche unter einem Grundrisspunkt (Gelände oder
+    /// tieferes Dach). `None` ohne Umriss.
+    pub fn layout(
+        r: &FlatRoof,
+        drain: Vec3,
+        foot: impl Fn(Vec3) -> Foot,
+        spec: DownpipeSpec,
+    ) -> Option<Downpipe> {
         let n = r.outline.len();
         if n < 3 {
             return None;
         }
-        // Kante der Aufkantung, an der der Ablauf liegt (wie im Gefälleplan)
+        // Kante der Aufkantung, an der der Ablauf liegt (wie im Gefälleplan);
+        // Kanten ohne Länge zählen nicht, damit jeder Ablauf sein Rohr
+        // bekommt und die Nummern der Abläufe nicht verrutschen
         let dist = |i: usize| {
             let (a, b) = (r.outline[i], r.outline[(i + 1) % n]);
             sk_math::dist_to_segment((drain.x, drain.y), (a.x, a.y), (b.x, b.y))
         };
-        let i = (0..n).min_by(|&x, &y| dist(x).total_cmp(&dist(y)))?;
+        let lang = |&i: &usize| (r.outline[(i + 1) % n] - r.outline[i]).length() >= 1e-6;
+        let i = (0..n)
+            .filter(lang)
+            .min_by(|&x, &y| dist(x).total_cmp(&dist(y)))?;
         let (a, b) = (r.outline[i], r.outline[(i + 1) % n]);
         let len = (b - a).length();
-        if len < 1e-6 {
-            return None;
-        }
         let along = (b - a) * (1.0 / len);
         let t = (drain - a).dot(along).clamp(0.0, len);
         let dr = vec3(a.x + along.x * t, a.y + along.y * t, 0.0);
@@ -185,7 +213,15 @@ impl Downpipe {
         let box_bot = control.map_or(box_top - BOX_H, |c| {
             (box_top - BOX_H).min(c - CONTROL_BELOW)
         });
-        let stand_top = (ground + STAND_ABOVE).min(box_bot);
+        let rohr = |face: Vec3| face + out * (WALL_GAP + PIPE_D / 2.0);
+        let unten = foot(rohr(face));
+        let ground = unten.z;
+        let stand_top = if unten.lower {
+            ground + OUTLET_UP
+        } else {
+            ground + STAND_ABOVE
+        }
+        .min(box_bot);
         let clamps = clamp_heights(box_bot, stand_top, spec.spacing);
         // Notüberlauf neben dem Ablauf, zur längeren Kantenhälfte hin (wie
         // das Zeichen im Gefälleplan)
@@ -194,7 +230,8 @@ impl Downpipe {
         let sill = top + SILL;
         let ov_box_top = sill + OVERFLOW_H + 20.0;
         let ov_box_bot = ov_box_top - BOX_H;
-        let end = (ground + OUTLET_UP).min(ov_box_bot);
+        let ov_foot = foot(rohr(ov));
+        let end = (ov_foot.z + OUTLET_UP).min(ov_box_bot);
         let ov_clamps = match spec.overflow {
             Overflow::Pipe => clamp_heights(ov_box_bot, end, spec.spacing),
             Overflow::Spout => Vec::new(),
@@ -210,6 +247,7 @@ impl Downpipe {
             box_bot,
             stand_top,
             ground,
+            lower: unten.lower,
             clamps,
             control,
             overflow: OverflowRun {
@@ -219,6 +257,7 @@ impl Downpipe {
                 box_bot: ov_box_bot,
                 end,
                 clamps: ov_clamps,
+                foot: ov_foot,
             },
             mat: r.coping_mat,
         })
@@ -273,7 +312,9 @@ impl Downpipe {
         for &z in &self.clamps {
             self.clamp(&mut s, ax, z);
         }
-        if self.stand_top - self.ground > 1.0 {
+        if self.lower {
+            self.outlet_bend(&mut s, ax, self.stand_top, self.ground);
+        } else if self.stand_top - self.ground > 1.0 {
             cylinder(&mut s, ax, STAND_D / 2.0, self.ground, self.stand_top);
         }
         // Notentwässerung
@@ -289,12 +330,7 @@ impl Downpipe {
                 for &z in &o.clamps {
                     self.clamp(&mut s, ax, z);
                 }
-                // Auslaufbogen: kurzes Stück von der Fassade weg
-                let c = ax + self.out * (OUTLET_REACH / 2.0);
-                let lo = (o.end - PIPE_D).max(self.ground);
-                if o.end - lo > 1.0 {
-                    self.cuboid(&mut s, c, PIPE_D, OUTLET_REACH + PIPE_D, lo, o.end);
-                }
+                self.outlet_bend(&mut s, ax, o.end, o.foot.z);
             }
             Overflow::Spout => {
                 let c = o.face + self.out * (SPOUT_OUT / 2.0);
@@ -302,6 +338,16 @@ impl Downpipe {
             }
         }
         s
+    }
+
+    /// Auslaufbogen am Rohrende `end` über der Fläche `ground`: kurzes
+    /// Stück von der Fassade weg.
+    fn outlet_bend(&self, s: &mut Solid, ax: Vec3, end: f64, ground: f64) {
+        let c = ax + self.out * (OUTLET_REACH / 2.0);
+        let lo = (end - PIPE_D).max(ground);
+        if end - lo > 1.0 {
+            self.cuboid(s, c, PIPE_D, OUTLET_REACH + PIPE_D, lo, end);
+        }
     }
 
     /// Quader mit Mitte `c` (z = 0), `w` längs der Fassade, `d` nach
@@ -400,7 +446,11 @@ pub const SCHLUESSEL: [(&str, &str, &str); 9] = [
         "m",
         "Notfallrohr in der Mittellinie, frei über Gelände endend",
     ),
-    (OUTLET, "st", "Auslaufbogen am Notfallrohr"),
+    (
+        OUTLET,
+        "st",
+        "Auslaufbogen am Notfallrohr und am Fallrohr über einem tieferen Dach",
+    ),
     (SPOUT, "st", "Wasserspeier am Notüberlauf"),
     (
         CONTROL,
@@ -442,7 +492,11 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
             format!("{n} Schellen, Abstand höchstens {}", m(d.spec.spacing)),
         ));
     }
-    out.push(menge(STAND, "st", 1.0, "1 Standrohr".into()));
+    if !d.lower {
+        out.push(menge(STAND, "st", 1.0, "1 Standrohr".into()));
+    }
+    // Auslaufbögen: am Notfallrohr und am Fallrohr über einem tieferen Dach
+    let boegen = usize::from(d.spec.overflow == Overflow::Pipe) + usize::from(d.lower);
     match d.spec.overflow {
         Overflow::Pipe => {
             out.push(menge(
@@ -459,9 +513,16 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
                     format!("Kasten bis Auslaufbogen {}", m(d.overflow_length())),
                 ));
             }
-            out.push(menge(OUTLET, "st", 1.0, "1 Auslaufbogen".into()));
         }
         Overflow::Spout => out.push(menge(SPOUT, "st", 1.0, "1 Wasserspeier".into())),
+    }
+    if boegen > 0 {
+        out.push(menge(
+            OUTLET,
+            "st",
+            boegen as f64,
+            format!("{boegen} Auslaufbogen"),
+        ));
     }
     if d.control.is_some() {
         out.push(menge(CONTROL, "st", 1.0, "1 Kontrollablauf".into()));
@@ -483,8 +544,10 @@ mod tests {
         assert!(z.windows(2).all(|w| w[0] - w[1] <= 2000.0 + 1e-9));
         // genau ein Feld
         assert_eq!(clamp_heights(2450.0, 0.0, 2000.0).len(), 2);
-        // zu kurz für zwei Schellen: eine in der Mitte
+        // zu kurz für zwei Schellen: eine in der Mitte (auch bei 451 mm,
+        // nicht zwei 1 mm übereinander)
         assert_eq!(clamp_heights(400.0, 0.0, 2000.0), vec![200.0]);
+        assert_eq!(clamp_heights(451.0, 0.0, 2000.0), vec![225.5]);
         // kein Rohr
         assert!(clamp_heights(50.0, 0.0, 2000.0).is_empty());
     }
