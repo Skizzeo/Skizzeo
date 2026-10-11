@@ -664,8 +664,8 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     assert_eq!(max(edges_at_x(&plan, 0.0)), layer_w, "Dämmung außen");
     assert_eq!(max(edges_at_x(&plan, 140.0)), cut_w, "Porenbeton außen");
     assert_eq!(max(edges_at_x(&plan, 315.0)), cut_w, "Porenbeton innen");
-    // Geschnitten in 1,00 m Höhe
-    assert_eq!(PLAN_CUT, 1000.0);
+    // Geschnitten in 1,50 m Höhe (Jörn 11.10. 14:05)
+    assert_eq!(PLAN_CUT, 1500.0);
     assert!(plan.faces.iter().all(|v| v[2] <= PLAN_CUT as f32 + 1e-3));
 
     // Schnitt A–A: ebenfalls Schraffuren und dicke Kontur
@@ -2779,8 +2779,8 @@ fn a48_aktives_geschoss() {
     assert_eq!(s.plan_cut(), PLAN_CUT);
     let plan = view_mesh(&mut s, ViewKind::Plan, None);
     assert!(
-        (top(&plan) - 1000.0).abs() < 1e-2,
-        "EG: Wände bei +1,00 geschnitten"
+        (top(&plan) - 1500.0).abs() < 1e-2,
+        "EG: Wände bei +1,50 geschnitten"
     );
 
     let gr = s.levels().bands.iter().find(|b| b.foundation).unwrap().id;
@@ -2788,7 +2788,7 @@ fn a48_aktives_geschoss() {
     assert_eq!(s.plan_cut(), -510.0, "Mitte Frostschürze");
     assert!(s.set_active_storey(og));
     assert!(!s.set_active_storey(og), "schon aktiv");
-    assert_eq!(s.plan_cut(), 2855.0 + 1000.0);
+    assert_eq!(s.plan_cut(), 2855.0 + 1500.0);
     let l = s.levels();
     let active: Vec<_> = l
         .bands
@@ -2799,8 +2799,8 @@ fn a48_aktives_geschoss() {
     assert_eq!(active, ["OG"]);
     let plan = view_mesh(&mut s, ViewKind::Plan, None);
     assert!(
-        (top(&plan) - 3855.0).abs() < 1e-2,
-        "OG: Wände bei +3,855 geschnitten"
+        (top(&plan) - 4355.0).abs() < 1e-2,
+        "OG: Wände bei +4,355 geschnitten"
     );
     assert!(
         plan.faces.iter().any(|v| (v[2] - 2855.0).abs() < 1e-2),
@@ -2809,7 +2809,21 @@ fn a48_aktives_geschoss() {
 
     // Ebene ziehen verschiebt die Schnitthöhe mit
     kante_ziehen(&mut s, "EG.OK", &[3000.0], false);
+    assert_eq!(s.plan_cut(), 3000.0 + 1500.0);
+
+    // Eigene Schnitthöhe des Projekts (Zahnrad im Grundriss): gilt in jedem
+    // Geschoss, im niedrigen knapp unter OK, im Fundament nicht
+    s.set_plan_cut_height(1000.0);
     assert_eq!(s.plan_cut(), 3000.0 + 1000.0);
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
+    assert!((top(&plan) - 4000.0).abs() < 1e-2, "neu geschnitten");
+    s.set_plan_cut_height(5000.0);
+    let og_licht = s.model().clear_height(og);
+    assert_eq!(s.plan_cut(), 3000.0 + og_licht - sk_model::PLAN_CUT_TOP_GAP);
+    assert!(s.set_active_storey(gr));
+    assert_eq!(s.plan_cut(), -510.0, "Fundament bleibt");
+    assert!(s.set_active_storey(og));
+    s.set_plan_cut_height(PLAN_CUT);
 
     // Oberfläche: Hinweis unter „Gebäude“ (E16), das Werkzeug zeichnet auf
     // der Ebene des aktiven Geschosses
@@ -5262,7 +5276,7 @@ fn a81_spitzen_und_kopplung_mit_paneel() {
     assert!(!laeuft(&w, 0));
     spitze_klick(&mut w, &mut s, true, false, 0);
     assert_eq!(s.active_storey(), og, "Paneel und Grundriss sofort auf OG");
-    assert_eq!(s.plan_cut(), 2855.0 + 1000.0);
+    assert_eq!(s.plan_cut(), 2855.0 + 1500.0);
     tick(&mut w, &mut s, 1000);
     assert_eq!(bogen_text(&w, &s), t("OG", "+2,855", None, Some("EG")));
     assert!(!spitze_frei(&w, &s, true, false), "oben zu");
