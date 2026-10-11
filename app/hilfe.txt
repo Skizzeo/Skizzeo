@@ -88,7 +88,7 @@ Rück- und Vorsprung | Teilstück am violetten Band rein- oder rausziehen; Stufe
 Ganzes Haus | Teilen und Ziehen gelten für alle Geschosse übereinander
 Fuge | graue, offene Kette an der Fuge; Klick vereint die beiden Wände
 Zusammenschieben | knapp vor der Flucht rastet das Stück ein; Karte: vereinen oder getrennt lassen
-Abbrechen | **Esc**; **Zurück** nimmt den gesetzten Punkt zurück
+Abbrechen | **Esc**; **Rücktaste** nimmt den gesetzten Punkt zurück
 
 [thema] id=og titel="Geschosse getrennt bearbeiten"
 Kette | über einen OG-Wandfuß fahren; Klick auf die Kette löst die Kopplung
