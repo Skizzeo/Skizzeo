@@ -308,18 +308,56 @@ impl Model {
         if !self.opening_ok(o) {
             return Some(OpeningFault::Shape);
         }
+        let Some(l) = self.opening_lage(o, except) else {
+            return Some(OpeningFault::Shape);
+        };
+        if !l.seated {
+            return Some(OpeningFault::NoWall);
+        }
+        if let Some(x) = l.overlap {
+            return Some(OpeningFault::Overlap(x));
+        }
+        (!l.ends).then_some(OpeningFault::AtEnd)
+    }
+
+    /// Steht die Öffnung `o` auf Wänden: jedes Pfadstück in jedem Geschoss,
+    /// das ihr Höhenband schneidet, auf der Außenfläche einer Außenwand? Nur
+    /// die Wandlage, ohne Form, Enden und Überschneidung (Löschen).
+    pub(crate) fn opening_on_walls(&self, o: &Opening) -> bool {
+        self.opening_lage(o, None).is_some_and(|l| l.seated)
+    }
+
+    /// Lage der Öffnung `o` an den Außenwänden ihres Gebäudes; `None` ohne
+    /// Höhenband.
+    fn opening_lage(&self, o: &Opening, except: Option<ElementId>) -> Option<Lage> {
+        let z = self.opening_band(o)?;
         let building = self.storey(o.bottom.storey()).and_then(|s| s.building);
         let n = o.path.len();
-        let mut seated = vec![false; n - 1];
-        // Die freien Enden: erster und letzter Punkt
-        let mut ends_ok = [false; 2];
+        if n < 2 {
+            return None;
+        }
+        // Jedes Geschoss, dessen Band die Öffnung schneidet, braucht je
+        // Pfadstück eine Wand (Review #79, N1)
+        let floors: Vec<StoreyId> = self
+            .storeys
+            .iter()
+            .filter(|(_, s)| {
+                s.building == building
+                    && z.1.min(s.elevation + s.height) - z.0.max(s.elevation) > ON_FACE
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let mut seat = vec![vec![false; floors.len()]; n - 1];
+        // Die freien Enden (erster und letzter Punkt): in jedem Zug, in dem
+        // ihr Pfadstück sitzt, innerhalb der Wandfläche
+        let mut ends: [Option<bool>; 2] = [None; 2];
+        let mut overlap = None;
         for run in self.runs.ids() {
+            let Some(st) = self.run(run).map(|r| r.storey) else {
+                continue;
+            };
             if !self.category_of(run).is_some_and(Category::is_outer_wall)
-                || self
-                    .run(run)
-                    .and_then(|r| self.storey(r.storey))
-                    .and_then(|s| s.building)
-                    != building
+                || self.storey(st).and_then(|s| s.building) != building
             {
                 continue;
             }
@@ -333,19 +371,23 @@ impl Model {
             let Some((pts, _, dirs)) = c.layout() else {
                 continue;
             };
+            let fi = floors.iter().position(|f| *f == st);
+            let mut hier: [Option<bool>; 2] = [None; 2];
             for (k, h) in &legs {
-                seated[*k] = true;
+                if let Some(fi) = fi {
+                    seat[*k][fi] = true;
+                }
                 let ((u0, u1), zs) = h.kasten(false);
                 for other in &c.joints.holes {
                     let Some(oid) = other.opening else {
                         continue;
                     };
-                    if other.seg != h.seg || Some(oid) == except {
+                    if other.seg != h.seg || Some(oid) == except || overlap.is_some() {
                         continue;
                     }
                     let ((v0, v1), zo) = other.kasten(false);
                     if u1.min(v1) - u0.max(v0) > 1e-3 && zs.1.min(zo.1) - zs.0.max(zo.0) > 1e-3 {
-                        return Some(OpeningFault::Overlap(oid));
+                        overlap = Some(oid);
                     }
                 }
                 let (a, b) = face_span(&c, &pts, &dirs, h.seg);
@@ -360,17 +402,21 @@ impl Model {
                     } else {
                         u + h.reveal_u.1 <= b - ON_FACE && u >= a + ON_FACE
                     };
-                    ends_ok[e] |= ok;
+                    // Im selben Zug genügt ein Segment (Fuge, Typwechsel)
+                    hier[e] = Some(hier[e].unwrap_or(false) || ok);
+                }
+            }
+            for e in 0..2 {
+                if let Some(x) = hier[e] {
+                    ends[e] = Some(ends[e].unwrap_or(true) && x);
                 }
             }
         }
-        if seated.contains(&false) {
-            return Some(OpeningFault::NoWall);
-        }
-        if ends_ok.contains(&false) {
-            return Some(OpeningFault::AtEnd);
-        }
-        None
+        Some(Lage {
+            seated: !floors.is_empty() && seat.iter().flatten().all(|x| *x),
+            ends: ends.iter().all(|e| *e == Some(true)),
+            overlap,
+        })
     }
 
     /// Außenwandzüge, die die Öffnung `o` treffen kann: ihr Grundriss
@@ -404,6 +450,16 @@ impl Model {
 /// So weit darf eine Außenfläche von der Bezugslinie ihres Zuges liegen
 /// (mm), großzügig: [`Model::opening_runs`].
 const RUN_REACH: f64 = 2000.0;
+
+/// Lage einer Öffnung an den Wänden ([`Model::opening_fault`]).
+struct Lage {
+    /// Jedes Pfadstück steht in jedem geschnittenen Geschoss auf einer Wand.
+    seated: bool,
+    /// Beide freien Enden samt Anschlag liegen in der Wandfläche.
+    ends: bool,
+    /// Die erste Öffnung, die sie überschneidet.
+    overlap: Option<ElementId>,
+}
 
 /// Warum eine Öffnung so nicht stehen kann ([`Model::opening_fault`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

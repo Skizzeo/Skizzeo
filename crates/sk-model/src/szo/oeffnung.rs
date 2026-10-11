@@ -68,12 +68,14 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
     }
 }
 
-/// Höhe aus `key`.
+/// Höhe aus `key`; `None`, wenn der Versatz einer freien Höhe unlesbar
+/// ist (die Öffnung fällt mit Hinweis weg). Ein unbekanntes Geschoss oder
+/// eine unbekannte Höhenlinie lehnt die Datei ab.
 fn read_height(
     r: &Record,
     key: &str,
     storeys: &HashMap<Guid, StoreyId>,
-) -> Result<HeightRef, LoadError> {
+) -> Result<Option<HeightRef>, LoadError> {
     let v = r.get(key)?;
     let form = "Guid:sill|lintel oder Guid:u|o:Versatz";
     let parts: Vec<&str> = v.split(':').collect();
@@ -86,23 +88,21 @@ fn read_height(
             )
         })?;
     match parts[1..] {
-        ["sill"] => Ok(HeightRef::Line(storey, HeightLine::Sill)),
-        ["lintel"] => Ok(HeightRef::Line(storey, HeightLine::Lintel)),
+        ["sill"] => Ok(Some(HeightRef::Line(storey, HeightLine::Sill))),
+        ["lintel"] => Ok(Some(HeightRef::Line(storey, HeightLine::Lintel))),
         [e, o] => {
             let edge = match e {
-                "u" => LevelEdge::Bottom,
-                "o" => LevelEdge::Top,
-                _ => return Err(r.bad(key, form)),
+                "u" => Some(LevelEdge::Bottom),
+                "o" => Some(LevelEdge::Top),
+                _ => None,
             };
-            let offset = o
-                .parse::<f64>()
-                .ok()
-                .filter(|v| v.is_finite())
-                .ok_or_else(|| r.bad(key, form))?;
-            Ok(HeightRef::Level(LevelRef {
-                storey,
-                edge,
-                offset,
+            let offset = o.parse::<f64>().ok().filter(|v| v.is_finite());
+            Ok(edge.zip(offset).map(|(edge, offset)| {
+                HeightRef::Level(LevelRef {
+                    storey,
+                    edge,
+                    offset,
+                })
             }))
         }
         _ => Err(r.bad(key, form)),
@@ -119,10 +119,10 @@ fn verworfen(r: &Record, key: &str, folge: &str) -> String {
 }
 
 /// Parametrik einer `[opening]`-Zeile. Ein ungültiger Wert gibt einen
-/// Hinweis: Art, Anschlag und Einbautiefen nehmen die Vorgabe, ein
-/// unlesbarer Pfad verwirft die Öffnung (`None`, Review #79). Eine Höhe, die
-/// auf kein Geschoss oder keine Höhenlinie zeigt, lehnt die Datei ab wie
-/// jeder andere Verweis.
+/// Hinweis: Art (auch fehlend), Anschlag und Einbautiefen nehmen die
+/// Vorgabe, ein unlesbarer Pfad oder Versatz verwirft die Öffnung (`None`,
+/// Review #79). Eine Höhe, die auf kein Geschoss oder keine Höhenlinie
+/// zeigt, lehnt die Datei ab wie jeder andere Verweis.
 pub(super) fn read(
     r: &Record,
     storeys: &HashMap<Guid, StoreyId>,
@@ -136,7 +136,13 @@ pub(super) fn read(
                 OpeningKind::Window
             }
         },
-        None => keyword(r, "art", &OpeningKind::ALL, OpeningKind::word)?,
+        None => {
+            hints.push(format!(
+                "Zeile {}: [opening] ohne „art“, Fenster gilt",
+                r.line
+            ));
+            OpeningKind::Window
+        }
     };
     let path = r
         .get("pts")?
@@ -152,15 +158,31 @@ pub(super) fn read(
         })
         .collect::<Option<Vec<_>>>()
         .filter(|p| (2..=3).contains(&p.len()));
-    let Some(path) = path else {
-        hints.push(verworfen(r, "pts", "Öffnung verworfen"));
-        // Die übrigen Schlüssel der Zeile nicht noch einmal melden
+    // Die übrigen Schlüssel einer verworfenen Zeile nicht noch einmal melden
+    let rest = |r: &Record| {
         for k in [
             "guid", "bottom", "top", "reveal", "install", "element", "number", "cat", "seq",
             "storey",
         ] {
             r.opt(k);
         }
+    };
+    let Some(path) = path else {
+        hints.push(verworfen(r, "pts", "Öffnung verworfen"));
+        rest(r);
+        return Ok(None);
+    };
+    let (Some(bottom), Some(top)) = (
+        read_height(r, "bottom", storeys)?,
+        read_height(r, "top", storeys)?,
+    ) else {
+        hints.push(format!(
+            "Zeile {}: [opening] Höhe „bottom={}“ / „top={}“ unlesbar, Öffnung verworfen",
+            r.line,
+            r.opt("bottom").unwrap_or(""),
+            r.opt("top").unwrap_or("")
+        ));
+        rest(r);
         return Ok(None);
     };
     let reveal = r.opt("reveal").and_then(|v| {
@@ -198,8 +220,8 @@ pub(super) fn read(
     Ok(Some(ElementKind::Opening(Opening {
         kind,
         path,
-        bottom: read_height(r, "bottom", storeys)?,
-        top: read_height(r, "top", storeys)?,
+        bottom,
+        top,
         reveal,
         install,
     })))
