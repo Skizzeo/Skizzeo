@@ -1143,7 +1143,7 @@ mod tests {
     use sk_model::{compare, TypeState};
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("skizzeo-katalog-{name}"));
+        let d = std::env::temp_dir().join(format!("skizzeo-katalog-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -1634,7 +1634,7 @@ mod abnahme_ka2c2 {
     use std::time::SystemTime;
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-{name}"));
+        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -1795,7 +1795,10 @@ mod abnahme_ka2c2_haus {
     use sk_cost::{Dez, Op};
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-haus-{name}"));
+        let d = std::env::temp_dir().join(format!(
+            "skizzeo-abnahme-haus-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -2164,7 +2167,10 @@ mod abnahme_ka2d1 {
     use sk_cost::{Dez, Op};
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-ka2d1-{name}"));
+        let d = std::env::temp_dir().join(format!(
+            "skizzeo-abnahme-ka2d1-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -2367,7 +2373,7 @@ mod abnahme_bb9 {
 
     #[test]
     fn nachfrage_nach_satz() {
-        let d = std::env::temp_dir().join("skizzeo-abnahme-bb9");
+        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-bb9-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let (mut c, _) = Company::laden(&d.join(FILE_NAME), true);
         let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "14:10");
