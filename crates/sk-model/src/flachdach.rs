@@ -1383,6 +1383,16 @@ mod tests {
             }
             let q = crate::qto::coping_qto(&m, blech).unwrap();
             assert_eq!(q.insulation[0].thickness, r.inner_depth);
+            // Schichtzeile (Bauteilliste, Kosten) mit derselben Dicke
+            // (Review PR #47)
+            let s = crate::qto::schedule(&m);
+            let zeile = s
+                .layer_rows(&m)
+                .into_iter()
+                .find(|(_, l)| l.element == blech && l.layer == 1)
+                .unwrap()
+                .1;
+            assert_eq!(zeile.thickness, r.inner_depth);
         }
     }
 
