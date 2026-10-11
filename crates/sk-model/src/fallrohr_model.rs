@@ -181,6 +181,10 @@ impl Model {
             return None;
         };
         let (base, belag) = f.terrace_band()?;
+        let belag_dicke = (f.terrace.as_ref())
+            .and_then(|t| t.layers.first())
+            .map_or(0.0, |l| l.0)
+            .min(belag - base);
         let floor = self.floor_of(run)?;
         let number = self
             .elements
@@ -215,7 +219,9 @@ impl Model {
         let r = FlatRoof {
             outline: outline.clone(),
             base,
-            layers: vec![(belag - base, d.mat, false)],
+            // Dachhaut ist die Abdichtung unter dem Belag (oberste Schicht
+            // des Aufbaus): Ablauf und Notüberlauf sitzen auf ihrer Höhe
+            layers: vec![(belag - base - belag_dicke, d.mat, false)],
             ring: vec![a, e],
             width: w,
             crown: f.attika_band().map_or(belag, |x| x.1),
@@ -949,5 +955,62 @@ mod tests {
         let back = crate::szo::read(&alt, GuidGen::with_seed(3)).unwrap();
         assert_eq!(back.hints, ["Regenfallrohre an den Abläufen ergänzt"]);
         assert_eq!(back.model.downpipe_ids().len(), 4);
+    }
+
+    /// Geometrie (Prüfung #71): Der Notüberlauf des Terrassenablaufs muss
+    /// in der Terrassenattika liegen. Mit der Aufkantung der Dachterrasse
+    /// (Vorgabe 6 cm über Belag) liegt seine Öffnung (3,5 cm über Belag,
+    /// 10 cm hoch) über OK Attika und sein Kasten durchstößt das
+    /// Attikablech; das Wasser liefe vorher über die Attika.
+    #[test]
+    fn terrassen_notueberlauf_in_der_attika() {
+        for off in [-500.0, -1500.0] {
+            let mut m = Model::with_seed(12);
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let set = m.type_by_guid(crate::EXTERIOR_TYPE_GUID).unwrap();
+            let eg = m.ground_of(Some(b)).unwrap();
+            let eg = m
+                .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+                .unwrap();
+            let og = m.runs_above(eg)[0];
+            let nord = m.wall_at(og, 1).unwrap();
+            schritt(&mut m, |m| m.set_offset(nord, off).is_some());
+            let st = m.run(og).unwrap().storey;
+            schritt(&mut m, |m| m.set_flat_roof(st, true));
+            let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let ok_attika = f.attika_band().unwrap().1;
+            let mut geprueft = 0;
+            for id in m.downpipes_of(da) {
+                let d = m.downpipe(id).unwrap();
+                let Some(t) = d.terrace.as_deref() else {
+                    continue;
+                };
+                geprueft += 1;
+                let o = &t.pipe.overflow;
+                assert!(
+                    o.sill + crate::fallrohr::OVERFLOW_H <= ok_attika,
+                    "{off}: Öffnung bis {}, OK Attika {ok_attika}",
+                    o.sill + crate::fallrohr::OVERFLOW_H
+                );
+                if t.pipe.spec.overflow == Overflow::Pipe {
+                    assert!(
+                        o.box_top <= ok_attika,
+                        "{off}: Kasten bis {}, OK Attika {ok_attika}",
+                        o.box_top
+                    );
+                }
+                assert!(t.pipe.box_top <= ok_attika, "{off}");
+            }
+            assert_eq!(geprueft, 1, "{off}");
+        }
     }
 }

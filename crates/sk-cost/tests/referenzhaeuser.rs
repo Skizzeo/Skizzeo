@@ -571,8 +571,8 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 10578691,
-    material: 4713801,
+    netto: 10578164,
+    material: 4713553,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -584,7 +584,7 @@ const RH5: Soll = Soll {
         ("Gründung", 2264725),
         ("Erdgeschoss", 3340491),
         ("Obergeschoss", 2879023),
-        ("Flachdach", 2094446),
+        ("Flachdach", 2093919),
     ],
     ausgleich: 6,
     zeilen: &[
@@ -857,10 +857,10 @@ const RH5: Soll = Soll {
         ),
         (
             "Regenfallrohr Titanzink rund DN 100, 0,7mm, inkl. Verbindungen",
-            16845,
+            16785,
             3400,
-            57273,
-            26952,
+            57069,
+            26856,
         ),
         (
             "Rohrschelle DN 100 mit Stockschraube durch WDVS, Abstand bis 2,0m",
@@ -885,10 +885,10 @@ const RH5: Soll = Soll {
         ),
         (
             "Notfallrohr Titanzink rund DN 100, frei auslaufend",
-            18980,
+            18885,
             3400,
-            64532,
-            30368,
+            64209,
+            30216,
         ),
         (
             "Auslaufbogen Titanzink DN 100 am Notfallrohr, 20cm über Gelände",

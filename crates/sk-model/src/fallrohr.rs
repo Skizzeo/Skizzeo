@@ -254,7 +254,9 @@ impl Downpipe {
         let top = r.band().1 + r.wedge_at(dr);
         let outlet = top - OUTLET_DROP;
         let control = spec.control.then_some(r.base + CONTROL_UP);
-        let box_top = outlet + BOX_ABOVE;
+        // Kästen und Notüberlauf bleiben unter OK Aufkantung (unter dem
+        // Blech; Prüfung Geometrie #71 an der niedrigen Terrassenattika)
+        let box_top = (outlet + BOX_ABOVE).min(r.crown);
         let box_bot = control.map_or(box_top - BOX_H, |c| {
             (box_top - BOX_H).min(c - CONTROL_BELOW)
         });
@@ -273,8 +275,11 @@ impl Downpipe {
         .min(box_bot);
         let clamps = clamp_heights(box_bot, stand_top, spec.spacing);
         let ov = dr + dir * (OVERFLOW_GAP + OVERFLOW_W / 2.0) + out * r.width;
-        let sill = top + SILL;
-        let ov_box_top = sill + OVERFLOW_H + 20.0;
+        // Notüberlauf über der Dachhaut, bei niedriger Aufkantung so tief,
+        // dass seine Öffnung unter OK Aufkantung bleibt, nie unter der
+        // Dachhaut
+        let sill = (top + SILL).min(r.crown - OVERFLOW_H).max(top);
+        let ov_box_top = (sill + OVERFLOW_H + 20.0).min(r.crown);
         let ov_box_bot = ov_box_top - BOX_H;
         let ov_foot = foot(rohr(ov), out, dir);
         let end = (ov_foot.z + OUTLET_UP).min(ov_box_bot);
