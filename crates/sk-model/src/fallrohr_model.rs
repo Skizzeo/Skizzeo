@@ -1188,4 +1188,41 @@ mod tests {
             .iter()
             .any(|t| t.starts_with("Anschlusshöhe")));
     }
+
+    /// Geometrie (Prüfung #78): Der Wasserspeier ist die Vorgabe der
+    /// Notentwässerung. Seine Sohle muss auf der Anstauhöhe liegen (UK
+    /// Notüberlauf, `overflow.sill`), nicht darunter: Sonst steckt er unter
+    /// der Dachhaut im Dachaufbau und das Wasser liefe vor der Anstauhöhe ab.
+    #[test]
+    fn wasserspeier_auf_der_anstauhoehe() {
+        let (m, da, _) = haus();
+        let rf = m.downpipes_of(da);
+        assert!(!rf.is_empty());
+        for id in rf {
+            let d = m.downpipe(id).unwrap();
+            assert_eq!(d.notueberlauf(), Some(Overflow::Spout));
+            let o = &d.overflow;
+            let dachhaut = d.outlet + crate::fallrohr::OUTLET_DROP;
+            assert!(o.sill > dachhaut, "Anstauhöhe über der Dachhaut");
+            // Speier: neben dem Kasten, vor der Fassade (bis 300 mm)
+            let s = d.solid();
+            let im_speier = |p: Vec3| {
+                let v = p - o.face;
+                let laengs = v.dot(d.along).abs();
+                let raus = v.dot(d.out);
+                laengs <= crate::roof::OVERFLOW_W / 2.0 + 1e-6
+                    && (-1e-6..=crate::fallrohr::SPOUT_OUT + 1e-6).contains(&raus)
+            };
+            let uk = (s.triangles.iter())
+                .filter(|t| t.p.iter().all(|p| im_speier(*p)))
+                .flat_map(|t| t.p.iter().map(|p| p.z))
+                .fold(f64::INFINITY, f64::min);
+            assert!(uk.is_finite(), "Speierkörper fehlt");
+            assert!(
+                uk >= o.sill - 1e-6,
+                "UK Speier {uk} unter der Anstauhöhe {} (Dachhaut {dachhaut})",
+                o.sill
+            );
+        }
+    }
 }

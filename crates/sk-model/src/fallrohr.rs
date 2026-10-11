@@ -441,7 +441,7 @@ impl Downpipe {
             }
             Some(Overflow::Spout) => {
                 let c = o.face + self.out * (SPOUT_OUT / 2.0);
-                self.cuboid(&mut s, c, OVERFLOW_W, SPOUT_OUT, o.sill - SPOUT_H, o.sill);
+                self.cuboid(&mut s, c, OVERFLOW_W, SPOUT_OUT, o.sill, o.sill + SPOUT_H);
             }
             None => {}
         }
