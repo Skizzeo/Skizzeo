@@ -503,9 +503,12 @@ impl LayerSet {
     }
 
     /// Verstöße gegen die Regeln eines Typs: mindestens eine Schicht, jede
-    /// dicker als 0, Kernschichten zusammenhängend, Kurzzeichen nicht leer;
-    /// Luftschichten nach Regel 20; waagerechte Typen mit genau einer
-    /// Kernschicht (Regel 38).
+    /// dicker als 0 (Ausbautypen auch 0 für eine Beschichtung, Estrich,
+    /// Belag, Fliesen und Sockelleiste aber mit Dicke), Kernschichten
+    /// zusammenhängend, Kurzzeichen nicht leer; Luftschichten nach Regel 20;
+    /// waagerechte Typen mit genau einer Kernschicht (Regel 38). Ob eine
+    /// Schicht ohne Dicke eine Beschichtung ist, prüft
+    /// [`LayerSet::coat_problem`] mit dem Baustoff.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
         let who = if self.code.is_empty() {
@@ -520,7 +523,7 @@ impl LayerSet {
             out.push(format!("Typ {who}: keine Schichten"));
         }
         // Ausbautypen dürfen Schichten ohne Dicke haben (Beschichtung, Regel
-        // des Raumbuchs; welche, prüft [`crate::Model::check`])
+        // des Raumbuchs; welche, prüft [`LayerSet::coat_problem`])
         let finish = self.category.is_finish();
         if self.layers.iter().any(|l| {
             !l.thickness.is_finite() || l.thickness < 0.0 || (l.thickness == 0.0 && !finish)
@@ -580,9 +583,20 @@ impl LayerSet {
         if finish && !core.is_empty() {
             out.push(format!("Typ {who}: Ausbau ohne Kernschicht"));
         }
+        // Wand- und Deckenbekleidung dürfen nur Beschichtung sein (Anstrich
+        // auf Sichtbeton); was am Boden liegt, Fliesen und Sockelleiste nicht
+        let dick = [
+            TypeCategory::Screed,
+            TypeCategory::FloorFinish,
+            TypeCategory::WallTiles,
+            TypeCategory::Skirting,
+        ];
+        if dick.contains(&self.category) && self.thickness() <= 0.0 {
+            out.push(format!("Typ {who}: braucht eine Dicke"));
+        }
         if self.category == TypeCategory::Skirting {
             let (lo, hi) = SKIRTING_HEIGHT;
-            if self.layers.len() != 1 || self.thickness() <= 0.0 {
+            if self.layers.len() != 1 {
                 out.push(format!("Typ {who}: Sockelleiste aus einer Schicht"));
             }
             if !self.height.is_some_and(|h| (lo..=hi).contains(&h)) {
@@ -608,6 +622,27 @@ impl LayerSet {
             out.push(format!("Typ {who}: zwei Luftschichten hintereinander"));
         }
         out
+    }
+
+    /// Regel des Ausbaus, die den Baustoff kennt: eine Schicht ohne Dicke
+    /// ist eine Beschichtung (Anstrich, Tapete). `art` liefert die Art eines
+    /// Baustoffs aus dem Projekt oder dem Firmenkatalog. Andere Typarten
+    /// haben gar keine Schicht ohne Dicke ([`LayerSet::problems`]).
+    pub fn coat_problem(&self, art: impl Fn(MaterialId) -> Option<MatCategory>) -> Option<String> {
+        if !self.category.is_finish() {
+            return None;
+        }
+        let who = if self.code.is_empty() {
+            self.name.as_str()
+        } else {
+            self.code.as_str()
+        };
+        self.layers
+            .iter()
+            .any(|l| {
+                l.thickness == 0.0 && art(l.material).is_some_and(|c| c != MatCategory::Coating)
+            })
+            .then(|| format!("Typ {who}: ohne Dicke nur eine Beschichtung"))
     }
 
     /// Bereich der Auflagertiefe für „fest, Rest Randstreifen“ (mm ab

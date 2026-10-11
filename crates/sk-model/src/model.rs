@@ -1527,14 +1527,16 @@ impl Model {
 
     /// Legt einen Bauteiltyp an. `None`, wenn das Kurzzeichen leer oder
     /// schon vergeben ist, die Guid schon existiert oder der Typ gegen die
-    /// Typregeln verstößt ([`LayerSet::problems`]).
+    /// Typregeln verstößt ([`LayerSet::problems`], Deckenauflager, Schicht
+    /// ohne Dicke im Ausbau nur als Beschichtung).
     pub fn add_layer_set(&mut self, s: LayerSet) -> Option<LayerSetId> {
         self.insert_layer_set(s, true)
     }
 
     /// Wie [`Model::add_layer_set`], ein ungültiges Deckenauflager (Regel 21)
     /// bleibt aber stehen und wird wie „ganze tragende Schicht“ gebaut, wie
-    /// beim Laden einer `.szo` (Übernahme aus dem Firmenkatalog).
+    /// beim Laden einer `.szo` (Übernahme aus dem Firmenkatalog); ebenso
+    /// eine Ausbauschicht ohne Dicke, die keine Beschichtung ist.
     pub(crate) fn adopt_layer_set(&mut self, s: LayerSet) -> Option<LayerSetId> {
         self.insert_layer_set(s, false)
     }
@@ -1547,6 +1549,7 @@ impl Model {
         if taken
             || !s.problems().is_empty()
             || (strict && self.bearing_problem(&s).is_some())
+            || (strict && self.finish_problems(&s).is_some())
             || s.layers
                 .iter()
                 .map(|l| l.material)
@@ -1612,6 +1615,7 @@ impl Model {
             || category_locked
             || !s.problems().is_empty()
             || (strict && self.bearing_problem(&s).is_some())
+            || (strict && self.finish_problems(&s).is_some())
             || s.layers
                 .iter()
                 .map(|l| l.material)
@@ -4299,6 +4303,7 @@ pub(crate) fn same_type(a: &LayerSet, b: &LayerSet) -> bool {
         && a.props == b.props
         && a.note == b.note
         && a.bearing == b.bearing
+        && a.height == b.height
 }
 
 /// `code`, wenn `taken` es nicht kennt, sonst „code-2“, „code-3“ …

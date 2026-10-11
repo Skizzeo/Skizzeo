@@ -219,7 +219,7 @@ const FINISH_MATERIALS: [FinishMaterial; 13] = [
 
 /// Name und Art der eingebauten Baustoffe des Ausbaus, für
 /// [`crate::model::BUILTIN_MATERIALS`].
-pub(crate) const fn finish_material(i: usize) -> (Guid, &'static str, MatCategory) {
+pub(super) const fn finish_material(i: usize) -> (Guid, &'static str, MatCategory) {
     let m = &FINISH_MATERIALS[i];
     (m.guid, m.name, m.category)
 }
@@ -484,6 +484,21 @@ impl Model {
             return Some(id);
         }
         let t = FINISH_TYPES.iter().find(|t| t.guid == g)?;
+        // Erst prüfen, dann anlegen: Hat das Büro einen Werksbaustoff
+        // umgestellt (z. B. den Anstrich auf eine andere Art), entsteht
+        // weder ein ungültiger Typ noch ein verwaister Baustoff
+        let art = |g: Guid| match self.material_by_guid(g) {
+            Some(id) => self.material(id).map(|m| m.category),
+            None => FINISH_MATERIALS
+                .iter()
+                .find(|m| m.guid == g)
+                .map(|m| m.category),
+        };
+        if t.layers.iter().any(|&(mat, thickness, _)| {
+            art(mat).is_none_or(|c| thickness == 0.0 && c != MatCategory::Coating)
+        }) {
+            return None;
+        }
         let mut layers = Vec::new();
         for &(mat, thickness, function) in t.layers {
             let material = self.ensure_finish_material(mat)?;
@@ -501,35 +516,16 @@ impl Model {
             bearing: Bearing::Core,
             height: t.height,
         };
-        // Hat das Büro einen Werksbaustoff umgestellt (z. B. den Anstrich
-        // auf eine andere Art), entsteht kein ungültiger Typ
-        if self.finish_problems(&set).is_some() {
-            return None;
-        }
         self.add_layer_set(set)
     }
 
-    /// Regeln des Ausbaus, die den Baustoff kennen: eine Schicht ohne Dicke
-    /// ist eine Beschichtung (Anstrich, Tapete). Andere Typarten haben gar
-    /// keine Schicht ohne Dicke ([`LayerSet::problems`]).
-    pub(super) fn finish_problems(&self, set: &LayerSet) -> Option<String> {
-        if !set.category.is_finish() {
-            return None;
-        }
-        let who = if set.code.is_empty() {
-            set.name.as_str()
-        } else {
-            set.code.as_str()
-        };
-        set.layers
-            .iter()
-            .any(|l| {
-                l.thickness == 0.0
-                    && self
-                        .material(l.material)
-                        .is_some_and(|m| m.category != MatCategory::Coating)
-            })
-            .then(|| format!("Typ {who}: ohne Dicke nur eine Beschichtung"))
+    /// Regel des Ausbaus mit den Baustoffen des Projekts
+    /// ([`LayerSet::coat_problem`]): eine Schicht ohne Dicke ist eine
+    /// Beschichtung. Wie das Deckenauflager: [`Model::add_layer_set`] und
+    /// [`Model::set_layer_set`] lehnen ab, ein Typ aus Datei oder
+    /// Firmenkatalog kommt mit und wird gemeldet.
+    pub fn finish_problems(&self, set: &LayerSet) -> Option<String> {
+        set.coat_problem(|id| self.material(id).map(|m| m.category))
     }
 }
 
@@ -757,7 +753,102 @@ mod tests {
             ..m.material(a).unwrap().clone()
         };
         assert!(m.set_material(a, x));
+        let n = m.materials().len();
         assert!(m.ensure_finish_type(GYPSUM_WALL_TYPE_GUID).is_none());
+        assert_eq!(m.materials().len(), n, "kein verwaister Baustoff");
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Die Höhe der Sockelleiste gehört zum Inhalt des Typs: Ändern wirkt,
+    /// der Abgleich mit dem Firmenkatalog sieht sie, Übernehmen holt sie
+    /// (Review #80, Befund 1).
+    #[test]
+    fn sockelhoehe_aendern_und_abgleichen() {
+        use crate::catalog::{compare, import_type, Library, TypeState};
+        let mut m = Model::with_seed(71);
+        let sl = m.ensure_finish_type(OAK_SKIRTING_TYPE_GUID).unwrap();
+        let lib = Library::from_model(&m);
+        let alt = m.layer_set(sl).unwrap().clone();
+        let hoch = LayerSet {
+            height: Some(100.0),
+            ..alt.clone()
+        };
+        assert!(m.set_layer_set(sl, hoch));
+        let neu = m.layer_set(sl).unwrap();
+        assert_eq!(neu.height, Some(100.0));
+        assert_eq!(neu.changed, alt.changed + 1);
+        let stand = |m: &Model| {
+            compare(m, &lib)
+                .into_iter()
+                .find(|x| x.0 == OAK_SKIRTING_TYPE_GUID)
+                .map(|x| x.1)
+        };
+        assert_eq!(stand(&m), Some(TypeState::Differs));
+        assert_eq!(import_type(&mut m, &lib, OAK_SKIRTING_TYPE_GUID), Some(sl));
+        assert_eq!(m.layer_set(sl).unwrap().height, Some(60.0));
+        assert_eq!(stand(&m), Some(TypeState::Same));
+    }
+
+    /// „Ohne Dicke nur Beschichtung“ gilt beim Anlegen und Ändern; aus dem
+    /// Firmenkatalog kommt ein solcher Typ wie ein ungültiges
+    /// Deckenauflager mit und wird gemeldet (Review #80, Befund 2).
+    #[test]
+    fn beschichtungsregel_beim_anlegen() {
+        use crate::catalog::{import_type, read_szk, write_szk, Library};
+        let mut m = Model::with_seed(71);
+        let wb = m.ensure_finish_type(GYPSUM_WALL_TYPE_GUID).unwrap();
+        let gut = m.layer_set(wb).unwrap().clone();
+        let mut putz_ohne_dicke = gut.clone();
+        putz_ohne_dicke.layers[1].thickness = 0.0;
+        assert!(m.finish_problems(&putz_ohne_dicke).is_some());
+        assert!(!m.set_layer_set(wb, putz_ohne_dicke.clone()));
+        assert_eq!(m.layer_set(wb).unwrap().layers, gut.layers);
+        let neu = LayerSet {
+            guid: Guid(0x5151),
+            code: "WB-X".into(),
+            ..putz_ohne_dicke
+        };
+        assert!(m.add_layer_set(neu).is_none());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Firmenkatalog mit Gipsputz 0 mm: lesbar, gemeldet, übernommen
+        let mut lib = Library::from_model(&m);
+        let id = lib.type_by_guid(GYPSUM_WALL_TYPE_GUID).unwrap();
+        lib.types.get_mut(id).unwrap().layers[1].thickness = 0.0;
+        let lib = read_szk(&write_szk(&lib)).expect("lesbar");
+        assert_eq!(lib.invalid_finishes(), vec!["WB-GP".to_string()]);
+        assert_eq!(import_type(&mut m, &lib, GYPSUM_WALL_TYPE_GUID), Some(wb));
+        assert!(m
+            .check()
+            .iter()
+            .any(|p| p.contains("ohne Dicke nur eine Beschichtung")));
+    }
+
+    /// Wand- und Deckenbekleidung dürfen nur Beschichtung sein (Anstrich
+    /// auf Sichtbeton); Estrich, Belag, Fliesen und Sockelleiste brauchen
+    /// eine Dicke (Review #80, Hinweis 4).
+    #[test]
+    fn dicke_je_art() {
+        let mut m = Model::with_seed(71);
+        let anstrich = m.ensure_finish_material(PAINT_GUID).unwrap();
+        for (g, nur_anstrich) in [
+            (GYPSUM_WALL_TYPE_GUID, true),
+            (CEILING_TYPE_GUID, true),
+            (SCREED_FLOOR_TYPE_GUID, false),
+            (PARQUET_TYPE_GUID, false),
+            (WALL_TILES_TYPE_GUID, false),
+            (OAK_SKIRTING_TYPE_GUID, false),
+        ] {
+            let id = m.ensure_finish_type(g).unwrap();
+            let x = LayerSet {
+                layers: vec![MaterialLayer::new(anstrich, 0.0, LayerFunction::Finish)],
+                ..m.layer_set(id).unwrap().clone()
+            };
+            let p = x.problems();
+            let dicke = p.iter().any(|p| p.contains("braucht eine Dicke"));
+            assert_eq!(dicke, !nur_anstrich, "{}: {p:?}", x.code);
+            assert!(m.finish_problems(&x).is_none());
+            assert_eq!(m.set_layer_set(id, x), nur_anstrich);
+        }
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 

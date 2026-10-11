@@ -1974,6 +1974,7 @@ impl Catalog {
         }
         v.extend(self.draft.problems());
         v.extend(self.work.bearing_problem(&self.draft));
+        v.extend(self.work.finish_problems(&self.draft));
         if self.code_taken(&self.draft.code) {
             v.push(format!(
                 "Kurzzeichen {} ist schon vergeben",

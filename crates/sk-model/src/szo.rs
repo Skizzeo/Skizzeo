@@ -388,12 +388,6 @@ const EDGE_NAMES: [(&str, u8); edge_kind::COUNT] = [
     ("cut_layer", edge_kind::CUT_LAYER),
 ];
 
-fn mat_category(c: MatCategory) -> &'static str {
-    c.word()
-}
-
-const MAT_CATEGORIES: [MatCategory; 12] = MatCategory::ALL;
-
 /// Wort der Schichtfunktion in `[layer] fn=` (auch die Regel `fn=` einer
 /// Bauleistung, KA-0).
 pub fn layer_function(f: LayerFunction) -> &'static str {
@@ -416,10 +410,6 @@ const LAYER_FUNCTIONS: [LayerFunction; 5] = [
 
 fn category(c: Category) -> &'static str {
     crate::kinds::spec(c).szo
-}
-
-pub(crate) fn type_category(c: TypeCategory) -> &'static str {
-    c.word()
 }
 
 /// `set=` an Decke, Sohlplatte und Frostschürze nur mit Typ: Dateien ohne
@@ -599,7 +589,7 @@ pub(crate) fn write_material(
     let line = Line::new("material")
         .guid("guid", Some(x.guid))
         .text("name", &x.name)
-        .word("cat", mat_category(x.category))
+        .word("cat", x.category.word())
         .num("prio", x.priority)
         .num("rho", x.density);
     let line = match x.lambda {
@@ -682,7 +672,7 @@ pub(crate) fn write_type(
         .guid("guid", Some(s.guid))
         .text("name", &s.name)
         .text("code", &s.code)
-        .word("cat", type_category(s.category))
+        .word("cat", s.category.word())
         .num("changed", s.changed);
     // Deckenauflager nur, wenn es nicht der ganze Kern ist (K5)
     if let Bearing::Depth { depth, strip } = s.bearing {
@@ -2955,8 +2945,8 @@ pub(crate) fn read_material(
     let category = keyword_or(
         r,
         "cat",
-        &MAT_CATEGORIES,
-        mat_category,
+        &MatCategory::ALL,
+        MatCategory::word,
         MatCategory::Masonry,
     )?;
     let (priority, density) = (r.int("prio")?, r.f64("rho")?);
@@ -3022,7 +3012,7 @@ pub(crate) fn read_types(
     if typed {
         for r in recs("layerset") {
             let cat = r.get("cat")?;
-            if !TypeCategory::ALL.iter().any(|&c| type_category(c) == cat) {
+            if !TypeCategory::ALL.iter().any(|&c| c.word() == cat) {
                 passed.hints.push(format!(
                     "Zeile {}: Typ „{}“ unbekannter Art „{cat}“ übersprungen",
                     r.line,
@@ -3109,7 +3099,7 @@ pub(crate) fn read_types(
         let (code, category, changed, note) = if typed {
             (
                 r.get("code")?.to_string(),
-                keyword(r, "cat", &TypeCategory::ALL, type_category)?,
+                keyword(r, "cat", &TypeCategory::ALL, TypeCategory::word)?,
                 match r.opt("changed") {
                     Some(_) => r.int("changed")?,
                     None => 1,
