@@ -1414,7 +1414,7 @@ mod tests {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
         assert_eq!(k.leistungen.len(), 75);
-        assert_eq!(k.artikel.len(), 32);
+        assert_eq!(k.artikel.len(), 33);
         assert_eq!(k.lose.len(), 17);
         assert_eq!(k.anteile.len(), 50);
         assert_eq!(k.folgen.len(), 9);

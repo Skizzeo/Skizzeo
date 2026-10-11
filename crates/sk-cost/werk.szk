@@ -57,6 +57,7 @@ SZK 1
 [article] guid=1S7bUW001008010000000U name="Faserzementtafel 8mm inkl. Fugenband und Edelstahlschrauben" mat=2b6MkyCfr3CuSbvo_tnB5F unit=m2 price=55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW001008010000000V name="Flachdachablauf DN 100 wärmegedämmt, mit Aufstockelement" grade="DN 100" unit=st price=280 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000W name="Notüberlauf rechteckig für Attika, mit Anschlussflansch" unit=st price=160 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000X name="EPS-Dachdämmplatte 035 DAA dh, Streifen Attikakrone" mat=1GT1XeoafF8xcAmmBvbUWb grade="WLS 035" format="1000×500" unit=m3 price=150 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [service] guid=1S7bUW0010080200000001 short="Bodenplatte Stb C25/30 XC2 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=10 unit=m3 basis=volume hours=0.6 cats=groundslab mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
 [service] guid=1S7bUW0010080200000002 short="Frostschürze Stb C25/30 b=30-45cm erdgeschalt" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=20 unit=m3 basis=volume hours=1 cats=stripfooting mat=32Ino7hAj08ufHFYBJxPyP
 [service] guid=1S7bUW0010080200000003 short="Stb-Decke Ortbeton C25/30 XC1 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=30 unit=m3 basis=volume hours=0.6 cats=floor mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
@@ -121,7 +122,7 @@ SZK 1
 [service] guid=1S7bUW001008020000000_ short="Dampfsperre Bitumen-Alu-Schweißbahn Flachdach, inkl. Voranstrich" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=10 unit=m2 basis=area hours=0.15 cats=roof mat=0Yb39JGen4JxkgK3pBgZ4k
 [service] guid=1S7bUW001008020000000$ short="Dachdämmung EPS 035 DAA dh einlagig, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=20 unit=m2 basis=area hours=0.1 cats=roof mat=1OxgZ1vjv038gKF7kkLN6C
 [service] guid=1S7bUW0010080200000010 short="Abdichtung Polymerbitumen 2-lagig Flachdach, Oberlage beschiefert" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=30 unit=m2 basis=area hours=0.3 cats=roof mat=2OkeJcZuXDoAclkUNNrqJM
-[service] guid=1S7bUW0010080200000011 short="Attikadämmung innen Flachdach, EPS, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=60 unit=m2 basis=area hours=0.25 cats=coping mat=1OxgZ1vjv038gKF7kkLN6C tmin=51
+[service] guid=1S7bUW0010080200000011 short="Attikadämmung innen Flachdach, EPS, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=60 unit=m2 basis=area hours=0.25 cats=coping mat=1OxgZ1vjv038gKF7kkLN6C
 [service] guid=1S7bUW0010080200000012 short="Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=70 unit=st basis=auto hours=2 kg=363 auto=roof.drains
 [service] guid=1S7bUW0010080200000013 short="Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=80 unit=st basis=auto hours=2 kg=363 auto=roof.overflows
 [service] guid=1S7bUW0010080200000014 short="Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt" trade=1S7Wf_00100800000004Ul title=1S7bUW001008030000000G pos=60 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=2b6MkyCfr3CuSbvo_tnB5F
@@ -131,7 +132,7 @@ SZK 1
 [service] guid=1S7bUW0010080200000018 short="Zulage Gefälledämmung Kehle, Zuschnitt auf Gehrung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=24 unit=m basis=auto hours=0.1 other=2 kg=363 auto=roof.valleys
 [service] guid=1S7bUW0010080200000019 short="Zulage Gefälledämmung Grat, Zuschnitt auf Gehrung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=26 unit=m basis=auto hours=0.1 other=2 kg=363 auto=roof.ridges
 [service] guid=1S7bUW001008020000001A short="Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=70 unit=m2 basis=area hours=0.35 cats=coping mat=3NKChAqkL3uwFZN5n$FOr1
-[service] guid=1S7bUW001008020000001B short="Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=65 unit=m2 basis=area hours=0.25 cats=coping mat=1OxgZ1vjv038gKF7kkLN6C tmax=50
+[service] guid=1S7bUW001008020000001B short="Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=65 unit=m2 basis=area hours=0.25 cats=coping mat=1GT1XeoafF8xcAmmBvbUWb
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -234,6 +235,7 @@ SZK 1
 [origin] key=1S7bUW001008010000000U rec=article kind=factory status=confirmed date=2026-10-10 source="Recherche A/B §B5: Faserzement 8 mm 85–140 €/m² mit Montage" conf=rough
 [origin] key=1S7bUW001008010000000V rec=article kind=factory status=confirmed date=2026-10-10 source="Recherche B §4.1 Pos. 7: 280–550 € je Stück mit Einbau; bis Stand 10 Sonstiges" conf=rough
 [origin] key=1S7bUW001008010000000W rec=article kind=factory status=confirmed date=2026-10-10 source="Recherche B §4.1 Pos. 8: 180–400 € je Stück mit Einbau; bis Stand 10 Sonstiges" conf=rough
+[origin] key=1S7bUW001008010000000X rec=article kind=factory status=confirmed date=2026-10-10 source="wie A-FDEPS: gleiche Platte, als Streifen geschnitten" conf=rough
 [origin] key=1S7bUW0010080200000002 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt, Einbau in den Graben" conf=rough
 [origin] key=1S7bUW0010080200000004 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Baubetrieb 0,8–1,0 h/m², Systemschalung 0,4–0,6" conf=rough
 [origin] key=1S7bUW0010080200000005 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough

@@ -2572,7 +2572,7 @@ mod tests {
                 .artikel(g("0000000000000000000A99"))
                 .is_some()
         );
-        assert_eq!(k.artikel.len(), 32);
+        assert_eq!(k.artikel.len(), 33);
         assert!(k.befunde.iter().all(|b| b.regel == 87), "{:#?}", k.befunde);
         let c = k.kopie.as_ref().unwrap();
         assert_eq!(c.stand, Some(1));
