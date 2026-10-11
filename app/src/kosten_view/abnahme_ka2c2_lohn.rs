@@ -28,7 +28,10 @@ fn lohn(w: i64) -> Op {
 }
 
 fn firma(name: &str) -> (std::path::PathBuf, Company) {
-    let d = std::env::temp_dir().join(format!("skizzeo-abnahme-lohn-{name}"));
+    let d = std::env::temp_dir().join(format!(
+        "skizzeo-abnahme-lohn-{name}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&d);
     let p = d.join("firmenkatalog.szk");
     let (mut c, _) = Company::load(&p, true);

@@ -398,7 +398,7 @@ mod tabelle {
 mod abnahme_ka2d1_dialog {
     #[test]
     fn speichern_scheitert_ohne_pfad_und_systemtext() {
-        let d = std::env::temp_dir().join("skizzeo-ka2d1-dialog");
+        let d = std::env::temp_dir().join(format!("skizzeo-ka2d1-dialog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         // Elternordner ist eine Datei: Speichern muss scheitern
