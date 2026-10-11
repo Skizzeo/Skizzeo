@@ -277,7 +277,7 @@ pub fn paint(fonts: &Fonts, text: &str, s: f64, t: &Theme) -> sk_paint::Canvas {
         px,
         1.0,
         ((h as f32 + cap) * 0.5).round(),
-        t.ui.sheet_text_dim,
+        t.ui.paper_text_dim,
     );
     c
 }

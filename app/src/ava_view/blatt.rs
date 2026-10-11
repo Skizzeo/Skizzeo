@@ -290,8 +290,7 @@ impl AvaView {
                 self.blatt_wahl.0
             };
             let hot = self.hot == Some(Hot::BlattWahl(*v));
-            // Kästchen in den Farben des Blatts (das Dunkle der Felder
-            // passt nicht auf das helle Blatt)
+            // Kästchen in den Farben des Blatts
             let (kx, ky, d) = (*x, l.haken_mitte - KASTEN * s * 0.5, KASTEN * s);
             let b = s.round().max(1.0);
             let rand = if an {

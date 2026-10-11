@@ -482,6 +482,8 @@ const GROUPS: [(&str, &[&str]); 8] = [
             "ui.sheet_flash",
             "ui.sheet_select",
             "ui.sheet_select_group",
+            "ui.paper_text",
+            "ui.paper_text_dim",
         ],
     ),
 ];
