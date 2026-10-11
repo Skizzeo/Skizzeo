@@ -320,6 +320,10 @@ mod geschossbaender;
 #[path = "gruendung.rs"]
 mod gruendung;
 
+#[path = "teilen.rs"]
+mod teilen;
+pub use teilen::FugeError;
+
 impl Default for Model {
     fn default() -> Model {
         Model::new()
@@ -2483,7 +2487,8 @@ impl Model {
             _ => None,
         };
         if usegs.len() != lsegs.len() {
-            return self.recount_offsets(&usegs, lower, lsegs);
+            let l: Vec<Option<ElementId>> = lsegs.iter().copied().map(Some).collect();
+            return self.recount_offsets(&usegs, lower, &l);
         }
         let free: Vec<bool> = usegs
             .iter()
@@ -2523,15 +2528,15 @@ impl Model {
         &self,
         usegs: &[ElementId],
         lower: &WallChain,
-        lsegs: &[ElementId],
+        lsegs: &[Option<ElementId>],
     ) -> (Vec<f64>, Vec<bool>) {
-        let partner = |e: ElementId| {
+        let partner = |e: Option<ElementId>| {
             usegs
                 .iter()
                 .find_map(|w| match self.element(*w).map(|x| &x.kind) {
                     Some(ElementKind::Wall(Wall {
                         coupling: Some(c), ..
-                    })) if c.below == e => Some((c.offset, !c.linked)),
+                    })) if Some(c.below) == e => Some((c.offset, !c.linked)),
                     _ => None,
                 })
         };
@@ -2571,15 +2576,28 @@ impl Model {
             return true;
         };
         lower.points = points.to_vec();
-        let Some(lsegs) = self.run(id).map(|r| r.segments.clone()) else {
+        let Some(r) = self.run(id) else {
             return true;
         };
-        // Andere Segmentzahl: die Kopplungen werden neu zugeordnet (alles bündig)
-        if lower.segment_count() != lsegs.len() {
-            return true;
-        }
+        // Andere Segmentzahl: die Wände nach Lage zuordnen wie beim Setzen
+        // (Regel 11), neue Stücke ohne Partner (Regel 28)
+        let lsegs: Vec<Option<ElementId>> = if lower.segment_count() != r.segments.len() {
+            let new = segment_lines(&lower.clean_points(), lower.closed);
+            teilen::match_walls(&segment_lines(&r.points, r.closed), &new)
+                .into_iter()
+                .map(|m| m.and_then(|o| r.segments.get(o).copied()))
+                .collect()
+        } else {
+            r.segments.iter().copied().map(Some).collect()
+        };
         for up in self.runs_above(id) {
-            let (offsets, _) = self.stack_offsets(up, &lower, &lsegs);
+            let (offsets, _) = match lsegs.iter().copied().collect::<Option<Vec<_>>>() {
+                Some(l) => self.stack_offsets(up, &lower, &l),
+                None => {
+                    let usegs = self.run(up).map(|r| r.segments.clone()).unwrap_or_default();
+                    self.recount_offsets(&usegs, &lower, &lsegs)
+                }
+            };
             match lower.with_segment_offsets(&offsets) {
                 Some(c)
                     if room_inside(&c)
@@ -3023,18 +3041,25 @@ impl Model {
         }
         let old = run.segments.clone();
         note!(self, Run, self.runs, id);
+        let (lines_old, lines_new) = (
+            segment_lines(&run.points, run.closed),
+            segment_lines(&pts, closed),
+        );
         let matched = if old.len() == count {
             (0..count).map(Some).collect()
         } else {
-            match_segments(
-                &segment_lines(&run.points, run.closed),
-                &segment_lines(&pts, closed),
-            )
+            teilen::match_walls(&lines_old, &lines_new)
         };
-        let template = old.first().and_then(|e| self.elements.get(*e)).cloned();
         let mut kept = vec![false; old.len()];
         let mut segments = Vec::with_capacity(count);
-        for (k, m) in matched.into_iter().enumerate() {
+        for (k, &m) in matched.iter().enumerate() {
+            // Neues Stück: Vorlage ist die Wand, aus der es geteilt wurde,
+            // sonst der Nachbar (Stufe), sonst die erste
+            let template = teilen::template_of(&lines_old, &lines_new, &matched, k)
+                .or(Some(0))
+                .and_then(|o| old.get(o))
+                .and_then(|e| self.elements.get(*e))
+                .cloned();
             match (m, &template) {
                 (Some(o), _) => {
                     kept[o] = true;

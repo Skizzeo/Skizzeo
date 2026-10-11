@@ -17,6 +17,7 @@
 use crate::camera::Camera;
 use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::scene::Scene;
+use crate::teilen_edit::{self, Teilen};
 use crate::ui::MeasureKind;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{ElementId, RunId, WallChain};
@@ -28,6 +29,9 @@ use sk_ui::theme::Theme;
 const PICK_PX: f64 = 8.0;
 /// Raster beim Ziehen in Millimetern.
 const STEP: f64 = 10.0;
+/// So nah an der Flucht der Wand hinter dem Nachbarn rastet das gezogene
+/// Stück bündig ein (mm, W-11): die Stufe fällt weg, eine Fuge bleibt.
+const SNAP: f64 = 50.0;
 
 struct Drag {
     /// Gegriffene Wand (ihr Band leuchtet) und der Zug, der sich bewegt, mit
@@ -40,6 +44,8 @@ struct Drag {
     /// Höhe der Ebene, auf der gemessen wird (Fuß der gegriffenen Wand).
     z: f64,
     original: WallChain,
+    /// Die Wand, die wandert (gekoppelt der Fuß der Kette).
+    moving: ElementId,
     /// Nur den Versatz dieser gestapelten Wand ändern (gelöst, oder
     /// gekoppelt mit Strg): Wand, Versatz beim Greifen, Vorzeichen nach außen.
     offset: Option<(ElementId, f64, f64)>,
@@ -56,6 +62,7 @@ impl Drag {
             run: self.run,
             seg: self.seg,
             original: self.original.clone(),
+            moving: self.moving,
             offset: self.offset.map(|o| o.0),
             side: self.side,
         }
@@ -68,6 +75,7 @@ struct Target {
     run: RunId,
     seg: usize,
     original: WallChain,
+    moving: ElementId,
     /// Versatz dieser gestapelten Wand; sonst wandert das Segment.
     offset: Option<ElementId>,
     side: f64,
@@ -95,36 +103,73 @@ impl Target {
         if let Some(wall) = self.offset {
             return scene.set_offset(wall, v);
         }
-        match self.original.with_segment_moved(self.seg, v * self.side) {
+        match self
+            .original
+            .with_segment_moved_snap(self.seg, v * self.side, 0.0)
+        {
             Some(moved) => {
-                if scene
-                    .chain(self.run)
-                    .is_none_or(|c| c.points != moved.points)
-                {
-                    scene.set_run_points(self.run, &moved.points);
-                }
+                put(scene, self.run, &moved);
                 true
             }
             None => false,
         }
     }
 
-    /// Erreichter Wert jetzt: Versatz bzw. Betrag der Verschiebung (mm).
+    /// Erreichter Wert jetzt: Versatz bzw. Betrag der Verschiebung (mm),
+    /// gemessen an der Wand in gleicher Richtung, die die alte Lage längs
+    /// der Flucht überdeckt und ihr am nächsten liegt (Stufen verschieben
+    /// die Nummern der Segmente).
     fn value(&self, scene: &Scene) -> f64 {
         if let Some(wall) = self.offset {
             return scene.model().stack_offset(wall).map_or(0.0, |o| o.0);
         }
-        let (Some(a), Some(b)) = (
-            self.original.points.get(self.seg),
-            scene
-                .chain(self.run)
-                .and_then(|c| c.points.get(self.seg).copied()),
+        let old = self.original.clean_points();
+        let (Some(&a), Some(&b), Some(c)) = (
+            old.get(self.seg),
+            old.get((self.seg + 1) % old.len().max(1)),
+            scene.chain(self.run),
         ) else {
             return 0.0;
         };
-        let n = self.original.segment_normal(self.seg).unwrap_or(Vec3::ZERO);
-        (b - *a).dot(n).abs()
+        let len = (b - a).length();
+        let (dir, n) = (
+            (b - a) * (1.0 / len.max(1e-9)),
+            self.original.segment_normal(self.seg),
+        );
+        let n = n.unwrap_or(Vec3::ZERO);
+        let pts = c.clean_points();
+        (0..c.segment_count())
+            .filter_map(|k| {
+                let (p, q) = (pts[k], pts[(k + 1) % pts.len()]);
+                let along = (q - p).dot(dir);
+                let overlap = (q - a).dot(dir).min(len) - (p - a).dot(dir).max(0.0);
+                let parallel = (q - p).length() - along < 1e-6;
+                (parallel && overlap > 1.0).then(|| (p - a).dot(n).abs())
+            })
+            .min_by(f64::total_cmp)
+            .unwrap_or(0.0)
     }
+}
+
+/// Setzt den bewegten Zug. Entsteht oder fällt eine Stufe weg (andere Zahl
+/// der Wände), beginnt der Schritt neu beim Stand vor dem Ziehen: So
+/// behalten die Wände ihre Nummern bezogen auf den Anfang (Regel 11).
+fn put(scene: &mut Scene, run: RunId, moved: &WallChain) -> bool {
+    let Some(now) = scene.chain(run) else {
+        return false;
+    };
+    if now.points == moved.points {
+        return false;
+    }
+    if now.clean_points().len() != moved.points.len() {
+        scene.rollback();
+        scene.begin("Wand verschoben");
+        if scene.chain(run).is_some_and(|c| c.points == moved.points) {
+            return true;
+        }
+    }
+    scene.set_run_points(run, &moved.points);
+    true
 }
 
 /// Das letzte Ziehen als Schritt im Verlauf (Nachkorrektur, K3).
@@ -162,6 +207,8 @@ pub struct WallEdit {
     input: Option<MeasureInput>,
     /// Letztes Ziehen, solange die Nachkorrektur möglich ist.
     last: Option<LastDrag>,
+    /// Laufendes „Wand teilen“: nimmt Klicks und Tasten, das Band ruht.
+    pub teilen: Option<Teilen>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -177,6 +224,21 @@ pub struct EditOutcome {
     /// Greifen abgelehnt: dieses Bauteil ist gesperrt (Paket 4 §1.7),
     /// dazu die gegriffene Wand.
     pub locked: Option<(ElementId, ElementId)>,
+    /// Bündig zusammengeschoben (W-11): diese Wand steht jetzt an einer
+    /// oder zwei Fugen in einer Flucht mit ihren Nachbarn.
+    pub joined: Option<ElementId>,
+    /// Werkzeug „Wand teilen“ (W-12).
+    pub teilen: Option<teilen_edit::Outcome>,
+}
+
+/// Steht `wall` nach dem Ziehen an einer Fuge? Dann ist sie gerade bündig
+/// eingerastet (vorher hätte das Ziehen dort eine Stufe eingefügt).
+fn joined(scene: &Scene, run: RunId, wall: ElementId) -> Option<ElementId> {
+    let m = scene.model();
+    m.straight_joints(run)
+        .iter()
+        .any(|j| j.0 == wall || j.1 == wall)
+        .then_some(wall)
 }
 
 /// Wände, die das Ziehen am Fuß von `wall` ohne Strg ändern würde (Paket 4
@@ -297,7 +359,25 @@ pub fn partner_line(a: Vec3, b: Vec3, scale: f32, theme: &Theme) -> Helper {
 impl WallEdit {
     /// Offene Maßeingabe beim Ziehen bzw. in der Nachkorrektur (Paket 8b).
     pub fn input(&self) -> Option<&MeasureInput> {
-        self.input.as_ref()
+        match &self.teilen {
+            Some(t) => t.input.as_ref(),
+            None => self.input.as_ref(),
+        }
+    }
+
+    /// Läuft „Wand teilen“?
+    pub fn splitting(&self) -> bool {
+        self.teilen.is_some()
+    }
+
+    /// „Wand teilen“ an `wall` beginnen; `false`, wenn sie zu kurz ist.
+    pub fn start_split(&mut self, scene: &Scene, wall: ElementId) -> bool {
+        self.drag = None;
+        self.last = None;
+        self.input = None;
+        self.hover = None;
+        self.teilen = Teilen::start(scene, wall);
+        self.teilen.is_some()
     }
 
     /// Ist die Nachkorrektur des letzten Ziehens noch möglich (kein anderer
@@ -312,6 +392,9 @@ impl WallEdit {
     /// Beim Ziehen nur mit Eingabe, nach dem Loslassen mit dem erreichten
     /// Wert (Nachkorrektur; die App blendet sie nach 1,5 s aus).
     pub fn pill(&self, scene: &Scene) -> Option<(String, bool)> {
+        if let Some(t) = &self.teilen {
+            return t.pill();
+        }
         let label = match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
             (None, Some(l)) if self.last_valid(scene) => l.target.label(),
@@ -341,6 +424,9 @@ impl WallEdit {
 
     /// Feldname der Pille: „Versatz“ oder „Verschiebung“.
     pub fn input_label(&self) -> &'static str {
+        if self.teilen.is_some() {
+            return teilen_edit::LABEL;
+        }
         match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
             (None, Some(l)) => l.target.label(),
@@ -466,6 +552,9 @@ impl WallEdit {
                     scene.clear_redo();
                     l.target
                 };
+                if target.offset.is_none() {
+                    out.joined = joined(scene, target.run, target.moving);
+                }
                 // Die Pille bleibt wie nach dem Loslassen stehen (die App
                 // blendet sie nach 1,5 s aus); eine neue Ziffer korrigiert
                 // erneut
@@ -488,7 +577,7 @@ impl WallEdit {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.hover.is_some() || self.drag.is_some()
+        self.hover.is_some() || self.drag.is_some() || self.teilen.is_some()
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -622,7 +711,7 @@ impl WallEdit {
         if self.drag.is_some() {
             return false;
         }
-        let hover = if enabled {
+        let hover = if enabled && self.teilen.is_none() {
             self.pick(scene, cam, w, h, scale)
         } else {
             None
@@ -667,12 +756,9 @@ impl WallEdit {
             }
             return ok && now != scene.model().stack_offset(wall).map(|o| o.0);
         }
-        match d.original.with_segment_moved(d.seg, off) {
-            Some(moved) if scene.chain(d.run).is_some_and(|c| c.points != moved.points) => {
-                scene.set_run_points(d.run, &moved.points);
-                true
-            }
-            _ => false,
+        match d.original.with_segment_moved_snap(d.seg, off, SNAP) {
+            Some(moved) => put(scene, d.run, &moved),
+            None => false,
         }
     }
 
@@ -690,6 +776,17 @@ impl WallEdit {
         enabled: bool,
     ) -> EditOutcome {
         let mut out = EditOutcome::default();
+        if let Some(t) = self.teilen.as_mut() {
+            let (o, consumed) = t.handle(e, scene, cam, w, h);
+            if o.done.is_some() || o.cancelled {
+                self.teilen = None;
+            }
+            out.redraw = o.redraw || o.done.is_some() || o.cancelled;
+            out.changed = o.done.is_some();
+            out.consumed = consumed;
+            out.teilen = Some(o);
+            return out;
+        }
         match *e {
             Event::MouseMove { x, y, .. } => {
                 self.mouse = Some((x, y));
@@ -770,6 +867,7 @@ impl WallEdit {
                     normal,
                     z,
                     original: original.clone(),
+                    moving,
                     offset,
                     blocked: false,
                     side: 1.0,
@@ -806,6 +904,9 @@ impl WallEdit {
                     }
                     let serial = scene.step_serial();
                     scene.commit();
+                    if d.offset.is_none() && scene.step_serial() != serial {
+                        out.joined = joined(scene, d.run, d.moving);
+                    }
                     self.remember(scene, serial, d.target());
                     // Ohne Verlaufsschritt gibt es keine Nachkorrektur: eine
                     // offene (ungültige) Eingabe schließt, sonst bliebe sie
@@ -855,6 +956,9 @@ impl WallEdit {
         occlude: bool,
         theme: &Theme,
     ) -> Vec<Helper> {
+        if let Some(t) = &self.teilen {
+            return t.helpers(scale, occlude, theme);
+        }
         let col = &theme.interact;
         let mut out = Vec::new();
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
@@ -1034,6 +1138,100 @@ mod tests {
         assert_eq!(s.model().wall_at(run, 1), Some(wall));
         assert!(s.undo());
         assert!((s.model().run(run).unwrap().points[1].y - 4000.0).abs() < 1e-6);
+    }
+
+    /// L zusammenschieben (W-11): Knapp vor der Flucht rastet der rechte
+    /// Teil ein, die Stufe fällt weg, die Wand behält ihre Kennung und die
+    /// App bekommt die Rückfrage. Über die Flucht hinaus springt die Stufe
+    /// auf die andere Seite; Esc stellt alles wieder her.
+    #[test]
+    fn l_zusammenschieben_rastet_ein() {
+        let mut s = Scene::new();
+        s.add_wall(&WallChain {
+            base: 0.0,
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 4000.0, 0.0),
+                vec3(2000.0, 4000.0, 0.0),
+                vec3(2000.0, 3000.0, 0.0),
+                vec3(5000.0, 3000.0, 0.0),
+                vec3(5000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: RefSide::Left,
+            layers: Vec::new(),
+            height: 3500.0,
+            joints: Default::default(),
+        })
+        .unwrap();
+        let c = Camera::looking_at(
+            vec3(2500.0, -9000.0, 14000.0),
+            vec3(2500.0, 2000.0, 0.0),
+            45.0,
+        );
+        let mut e = WallEdit::default();
+        let m = Modifiers::default();
+        let run = s.model().runs().ids().next().unwrap();
+        let wall = s.model().wall_at(run, 3).unwrap();
+        let ev = |p: Vec3, kind: u8| {
+            let (x, y) = at(&c, p);
+            match kind {
+                0 => Event::MouseMove { x, y, mods: m },
+                1 => Event::MouseDown {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    mods: m,
+                },
+                _ => Event::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    mods: m,
+                },
+            }
+        };
+        let segs = |s: &Scene| s.model().run(run).unwrap().segments.len();
+        let mut go = |e: &mut WallEdit, s: &mut Scene, p: Vec3, k: u8| {
+            e.handle(&ev(p, k), s, &c, W, H, 1.0, true)
+        };
+        go(&mut e, &mut s, vec3(3500.0, 3000.0, 0.0), 0);
+        assert_eq!(e.hover, Some(wall));
+        go(&mut e, &mut s, vec3(3500.0, 3000.0, 0.0), 1);
+        go(&mut e, &mut s, vec3(3500.0, 3500.0, 0.0), 0);
+        assert_eq!(segs(&s), 6);
+        // 40 mm davor: rastet bündig ein
+        go(&mut e, &mut s, vec3(3500.0, 3960.0, 0.0), 0);
+        assert_eq!(segs(&s), 5);
+        assert_eq!(s.model().wall_at(run, 2), Some(wall));
+        // Darüber hinaus: die Stufe springt nach außen
+        go(&mut e, &mut s, vec3(3500.0, 4500.0, 0.0), 0);
+        assert_eq!(segs(&s), 6);
+        assert_eq!(s.model().wall_at(run, 3), Some(wall));
+        go(&mut e, &mut s, vec3(3500.0, 3980.0, 0.0), 0);
+        let out = go(&mut e, &mut s, vec3(3500.0, 3980.0, 0.0), 2);
+        assert_eq!(out.joined, Some(wall));
+        assert_eq!(segs(&s), 5);
+        let p = &s.model().run(run).unwrap().points;
+        assert!(p.iter().all(|q| (q.y - 3000.0).abs() > 1.0), "{p:?}");
+        assert_eq!(e.pill(&s).unwrap().0, "Verschiebung 1,00");
+        assert!(s.undo());
+        assert_eq!(segs(&s), 6);
+        assert_eq!(s.model().wall_at(run, 3), Some(wall));
+        // Esc beim Ziehen: alles wie vorher
+        go(&mut e, &mut s, vec3(3500.0, 3000.0, 0.0), 0);
+        go(&mut e, &mut s, vec3(3500.0, 3000.0, 0.0), 1);
+        go(&mut e, &mut s, vec3(3500.0, 3990.0, 0.0), 0);
+        assert_eq!(segs(&s), 5);
+        let esc = Event::Key {
+            key: Key::Escape,
+            down: true,
+            repeat: false,
+            mods: m,
+        };
+        e.handle(&esc, &mut s, &c, W, H, 1.0, true);
+        assert_eq!(segs(&s), 6);
+        assert_eq!(s.model().wall_at(run, 3), Some(wall));
     }
 
     /// Geht das Loslassen verloren (Fenster verliert die Maus beim Ziehen, z. B.
