@@ -50,6 +50,8 @@ pub enum Command {
     Help,
     /// „Bildzeit messen (10 s)“ (Paket 9, Handtest 0b).
     MeasureFrameTime,
+    /// „IFC exportieren …“ (ifc/plan.md §5, I2).
+    ExportIfc,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -225,6 +227,7 @@ impl FileMenu {
                 Command::SaveAs,
                 true,
             ),
+            item("IFC exportieren …", "", Command::ExportIfc, true),
             separator(),
             item("Einstellungen …", "Strg+Komma", Command::Settings, true),
             item("Bauteilkatalog …", "", Command::Catalog, true),
