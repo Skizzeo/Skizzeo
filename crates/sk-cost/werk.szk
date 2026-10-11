@@ -1,7 +1,7 @@
 SZK 1
-# Skizzeo-Werksbestand Stammdaten, Stand 13 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Skizzeo-Werksbestand Stammdaten, Stand 14 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=13 date=2026-10-10 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=14 date=2026-10-10 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -121,7 +121,7 @@ SZK 1
 [service] guid=1S7bUW001008020000000_ short="Dampfsperre Bitumen-Alu-Schweißbahn Flachdach, inkl. Voranstrich" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=10 unit=m2 basis=area hours=0.15 cats=roof mat=0Yb39JGen4JxkgK3pBgZ4k
 [service] guid=1S7bUW001008020000000$ short="Dachdämmung EPS 035 DAA dh einlagig, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=20 unit=m2 basis=area hours=0.1 cats=roof mat=1OxgZ1vjv038gKF7kkLN6C
 [service] guid=1S7bUW0010080200000010 short="Abdichtung Polymerbitumen 2-lagig Flachdach, Oberlage beschiefert" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=30 unit=m2 basis=area hours=0.3 cats=roof mat=2OkeJcZuXDoAclkUNNrqJM
-[service] guid=1S7bUW0010080200000011 short="Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=60 unit=m2 basis=area hours=0.25 cats=coping mat=1OxgZ1vjv038gKF7kkLN6C
+[service] guid=1S7bUW0010080200000011 short="Attikadämmung innen Flachdach, EPS, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=60 unit=m2 basis=area hours=0.25 cats=coping mat=1OxgZ1vjv038gKF7kkLN6C tmin=51
 [service] guid=1S7bUW0010080200000012 short="Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=70 unit=st basis=auto hours=2 kg=363 auto=roof.drains
 [service] guid=1S7bUW0010080200000013 short="Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=80 unit=st basis=auto hours=2 kg=363 auto=roof.overflows
 [service] guid=1S7bUW0010080200000014 short="Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt" trade=1S7Wf_00100800000004Ul title=1S7bUW001008030000000G pos=60 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=2b6MkyCfr3CuSbvo_tnB5F
@@ -131,6 +131,7 @@ SZK 1
 [service] guid=1S7bUW0010080200000018 short="Zulage Gefälledämmung Kehle, Zuschnitt auf Gehrung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=24 unit=m basis=auto hours=0.1 other=2 kg=363 auto=roof.valleys
 [service] guid=1S7bUW0010080200000019 short="Zulage Gefälledämmung Grat, Zuschnitt auf Gehrung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=26 unit=m basis=auto hours=0.1 other=2 kg=363 auto=roof.ridges
 [service] guid=1S7bUW001008020000001A short="Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=70 unit=m2 basis=area hours=0.35 cats=coping mat=3NKChAqkL3uwFZN5n$FOr1
+[service] guid=1S7bUW001008020000001B short="Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=65 unit=m2 basis=area hours=0.25 cats=coping mat=1OxgZ1vjv038gKF7kkLN6C tmax=50
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -180,6 +181,7 @@ SZK 1
 [svcpart] guid=1S7bUW001008040000000i service=1S7bUW0010080200000015 nr=1 art=1S7bUW001008010000000Q qty=0.6
 [svcpart] guid=1S7bUW001008040000000j service=1S7bUW0010080200000017 nr=1 art=1S7bUW001008010000000T qty=1.1
 [svcpart] guid=1S7bUW001008040000000m service=1S7bUW001008020000001A nr=1 layer=1 qty=1
+[svcpart] guid=1S7bUW001008040000000o service=1S7bUW001008020000001B nr=1 layer=1 qty=1
 [svcfollow] guid=1S7bUW0010080500000001 service=1S7bUW0010080200000001 nr=1 follow=1S7bUW0010080200000005
 [svcfollow] guid=1S7bUW0010080500000002 service=1S7bUW0010080200000001 nr=2 follow=1S7bUW0010080200000006
 [svcfollow] guid=1S7bUW0010080500000003 service=1S7bUW0010080200000002 nr=1 follow=1S7bUW0010080200000006
@@ -296,3 +298,4 @@ SZK 1
 [origin] key=1S7bUW0010080200000018 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: geschätzt: Zuschnitt und Anpassen 0,08–0,12 h/m" conf=rough
 [origin] key=1S7bUW0010080200000019 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: geschätzt: wie F26" conf=rough
 [origin] key=1S7bUW001008020000001A rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 6, Anteil Krone 0,08–0,12 h/m bei rund 0,3 m Breite = 0,35 h/m²; Stoff aus der Schicht (EPS der Terrasse, m³ nach Dicke)" conf=rough
+[origin] key=1S7bUW001008020000001B rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: wie F50: Recherche B §4.1 Pos. 6, 0,15–0,25 h/m bei rund 0,8 m² je m (innen und Krone) = 0,25 h/m²" conf=rough
