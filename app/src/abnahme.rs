@@ -2158,6 +2158,29 @@ fn tippe(
     out
 }
 
+/// Eine dicke Platte senkt UK Gründung (PR #51): Die Schürze eines zweiten
+/// Zugs im selben Gebäude folgt auch im Bild und in den Mengen.
+#[test]
+fn p1_dicke_platte_zweiter_zug() {
+    use crate::ui::Field;
+    let mut s = Scene::with_model(Model::with_seed(41));
+    let c = cam3d();
+    let a = zeichne_rechteck(&mut s, &c);
+    let off = vec3(0.0, 12000.0, 0.0);
+    let mut t = tool(&s);
+    for p in RECHTECK {
+        assert!(click(&mut t, &c, p + off).is_none());
+    }
+    let w = click(&mut t, &c, RECHTECK[0] + off).expect("zweiter Zug");
+    let b = s.add_wall(&w).expect("Zug B");
+    let (slab_a, _) = sohlplatte(&s, a);
+    let (_, fuss_b) = sohlplatte(&s, b);
+    assert!(s.set_field(slab_a, Field::SlabThickness, 750.0));
+    assert_eq!(s.model().footing_depth(fuss_b), Some(630.0));
+    assert_eq!(z_range(&s.foundation(b).unwrap().footing_solid()).0, -850.0);
+    assert_eq!(s.foundation_qto(b).unwrap().1.depth, 630.0);
+}
+
 /// P1: Dicke der Sohlplatte, Sockelrücksprung, Breite und Tiefe der
 /// Frostschürze als Zahlenfelder: Tippen und Enter ändern das Modell in
 /// einem Schritt, Ungültiges bleibt mit Hinweis stehen, Esc bricht ab.
@@ -2491,7 +2514,12 @@ fn a43_grenzen_ablehnen() {
     let d = decke(&s, aw).unwrap();
     assert!(!decke_dicke(&mut s, d, 2000.0), "Decke ≤ OK EG − 1,00");
     let (slab, _) = sohlplatte(&s, aw);
-    assert!(!s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 750.0)));
+    assert!(!s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 0.0)));
+    // Dicke Platte: keine Grenze mehr, die Schürze wächst unter ihr auf
+    // 10 cm (Geometrie-Hinweis zu #50); Rückgängig stellt alles zurück
+    assert!(s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 750.0)));
+    assert_eq!(band(&s, "GR"), (-850.0, 0.0));
+    assert!(s.undo());
     assert_eq!(
         (band(&s, "GR"), band(&s, "EG")),
         ((-800.0, 0.0), (0.0, 2855.0))
@@ -5135,9 +5163,9 @@ fn t(a: &str, b: &str, oben: Option<&str>, unten: Option<&str>) -> Text {
 // ===== Tests =====
 
 /// A80 (E18 §1, §2, Test 1): Bogen nur im Grundriss, ausgeblendet bei Dialog,
-/// Menü oder Einstellungsfenster; rechts am Rand mit Abstand `panel_margin`,
-/// senkrecht mittig im freien Bereich unter „Ansichten“, nie höher als die
-/// Fenstermitte. Rechts groß „EG ±0,00“, oben klein „OG“, unten „Fundament“.
+/// Menü oder Einstellungsfenster; unten rechts in der Ecke mit Abstand
+/// `panel_margin` zur rechten Spalte und zum unteren Rand (Jörn 11.10.).
+/// Rechts groß „EG ±0,00“, oben klein „OG“, unten „Fundament“.
 #[test]
 fn a80_bogen_nur_im_grundriss() {
     let th = Theme::dark();
@@ -5169,13 +5197,18 @@ fn a80_bogen_nur_im_grundriss() {
         ui.fit(1.0, bw, bh);
         let (cx, cy, r) = bogen_lage(&w, &ui, bw, bh);
         let views = ui.rect(Panel::Views, bw, 32);
-        let unten = views.y + views.h;
-        let soll = ((unten + bh as f32) / 2.0).max(bh as f32 / 2.0);
         assert_eq!(r, th.size.arc_r);
+        // Unten rechts in der Ecke (Jörn 11.10., vorher senkrecht mittig):
+        // untere Spitze samt Schild „Fundament“ mit Abstand `panel_margin`
+        // über dem unteren Rand
+        let g = w.geo(&ui, bw, bh);
+        let spitze = g.tip(false).1;
+        let schild = spitze + 6.0 + (th.size.arc_label_small * 0.72 + 9.0).ceil();
         assert!(
-            (cy - soll).abs() < 1.0,
-            "senkrecht {bw}×{bh}: {cy} ≠ {soll}"
+            (bh as f32 - th.size.panel_margin - schild).abs() < 1.0,
+            "senkrecht {bw}×{bh}: Schild unten bei {schild}"
         );
+        assert!(cy > bh as f32 / 2.0, "untere Hälfte {bw}×{bh}: {cy}");
         // Befund ac (Nachtrag 2): immer links neben der rechten Spalte
         let rechts = bogen_rechts(&w, &s, &ui, bw, bh);
         assert!(
