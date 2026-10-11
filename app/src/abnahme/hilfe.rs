@@ -190,9 +190,11 @@ const OHNE: Modifiers = Modifiers {
 
 /// Knöpfe mit Tooltip (§1.3); „90°-Sprung“ steht im Paneel Werkzeuge
 /// (Koordinator 21:45), „Erweiterungen“ dort ab E6 (Schrittplan .szb).
-const KNOEPFE: [&str; 13] = [
+const KNOEPFE: [&str; 15] = [
     "Gebäude",
     "Innenwand",
+    "Wandöffnung",
+    "Türöffnung",
     "90°-Sprung",
     "Erweiterungen",
     "3D",

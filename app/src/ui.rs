@@ -7,6 +7,7 @@
 use crate::ext_props::ExtZeile;
 use crate::meldung::Meldung;
 use crate::type_look::TypeLook;
+use sk_model::oeffnung::OpeningKind;
 use sk_model::{RefSide, StoreyId};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
@@ -184,6 +185,9 @@ pub enum Id {
     /// Knopf „Geschossmanager“ unten links (Jörn 11.10.): öffnet das
     /// Geschossfenster links neben dem Hauptfenster oder holt es nach vorn.
     LevelsOpen,
+    /// „Wandöffnung“ und „Türöffnung“ unter den Wandknöpfen (Paket O3):
+    /// schaltet das Werkzeug der Art ein und aus.
+    Opening(OpeningKind),
 }
 
 /// Muster der Knöpfe der Eigenschaften, die `App::drain_button` ausführt:
@@ -933,6 +937,8 @@ pub struct Ui {
     /// Knopf „Erweiterungen“ unter „Innenwand“: nur, wenn welche da sind,
     /// sonst wäre das Paneel ohne Nutzen eine Zeile höher.
     pub ext_knopf: bool,
+    /// Werkzeug „Wandöffnung“ bzw. „Türöffnung“ läuft (Paket O3).
+    pub opening: Option<OpeningKind>,
     /// Ein Obergeschoss ist aktiv: Außenwände entstehen aus dem EG, der Knopf
     /// „Gebäude“ ist gesperrt (E16).
     pub upper_active: bool,
@@ -1101,6 +1107,7 @@ fn tool_rows(
     foundation_active: bool,
     ext: Option<(&ExtPanel, Option<&Edit>)>,
     ext_knopf: bool,
+    opening: bool,
 ) -> Vec<Row> {
     // Projektdaten als eigener Abschnitt über den Werkzeugen (Paket PD-2)
     let mut rows = vec![Row::Button(Id::Projektdaten, "Projektdaten")];
@@ -1114,8 +1121,13 @@ fn tool_rows(
     rows.extend([
         Row::Separator,
         Row::Title("Werkzeuge"),
-        Row::Button(Id::Building, "Gebäude"),
-        Row::Button(Id::Interior, "Innenwand"),
+        // Wände und Öffnungen je ein Knopfpaar (Paket O3), damit das
+        // Diagramm der Geschosse darunter nicht schrumpft
+        Row::Pair([(Id::Building, "Gebäude"), (Id::Interior, "Innenwand")]),
+        Row::Pair([
+            (Id::Opening(OpeningKind::Window), OpeningKind::Window.name()),
+            (Id::Opening(OpeningKind::Door), OpeningKind::Door.name()),
+        ]),
     ]);
     // Werkzeug „Erweiterungen“ (E6, Vertrag §14): Knopf des Bauteils, Typ,
     // Felder, woher die Maße kommen, drei feste Hinweise
@@ -1141,6 +1153,16 @@ fn tool_rows(
     }
     if ext_knopf {
         rows.push(Row::Button(Id::Ext, "Erweiterungen"));
+    }
+    // Öffnungen (Paket O3): statt der Wandvorgaben drei kurze Zeilen
+    if opening {
+        rows.extend([
+            Row::Separator,
+            Row::Hint("Ecke auf der Außenwand,"),
+            Row::Hint("dann die Gegenecke."),
+            Row::Hint("Linien fangen, Esc: zurück"),
+        ]);
+        return rows;
     }
     // Zweizeilig ohne Abstand dazwischen, damit nichts am Rand abbricht
     if foundation_active {
@@ -1393,6 +1415,7 @@ impl Ui {
             tool_chip: None,
             ext_tool: None,
             ext_knopf: false,
+            opening: None,
             upper_active: false,
             foundation_active: false,
             projekt_zeilen: vec![PROJEKT_LEER.into()],
@@ -1449,6 +1472,7 @@ impl Ui {
                 self.foundation_active,
                 self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
                 self.ext_knopf,
+                self.opening.is_some(),
             ),
             Panel::Views => view_rows(self.nord),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
@@ -2072,6 +2096,7 @@ impl Ui {
             Id::LevelsOpen => self.levels_open,
             Id::Nord => self.nord_aktiv || self.sonne_an,
             Id::Ext => self.ext_tool.is_some(),
+            Id::Opening(k) => self.opening == Some(k),
             Id::ExtWahl(..) | Id::ExtJa(_) => self.ext_zeilen().any(|z| match (z, id) {
                 (ExtZeile::Wahl { i, an, .. }, Id::ExtWahl(j, k)) => *i == j && *an == Some(k),
                 (ExtZeile::Janein { i, an, .. }, Id::ExtJa(j)) => *i == j && *an,
@@ -2110,7 +2135,7 @@ impl Ui {
     fn is_disabled(&self, id: Id) -> bool {
         match id {
             Id::Building => self.upper_active || self.foundation_active,
-            Id::Interior => self.foundation_active,
+            Id::Interior | Id::Opening(_) => self.foundation_active,
             Id::DialogMinus | Id::DialogPlus => true,
             Id::DialogStart => self.dialog_invalid(),
             Id::PropsFlush => {
@@ -3962,7 +3987,10 @@ mod tests {
         assert!(k.y + k.h > zeile + 17.0, "neben „noch leer“");
         let (id, b, _) = ui.buttons(Panel::Tools)[2];
         assert_eq!(id, Id::Building);
-        assert_eq!(k.x + k.w, b.x + b.w, "rechtsbündig");
+        // „Innenwand“ rechts neben „Gebäude“ (Paket O3: Knopfpaar)
+        let (id, i, _) = ui.buttons(Panel::Tools)[3];
+        assert_eq!((id, i.y), (Id::Interior, b.y));
+        assert_eq!(k.x + k.w, i.x + i.w, "rechtsbündig");
         assert!(
             k.y + k.h + 3.0 + 1.0 + 10.0 + 22.0 + 12.0 <= b.y,
             "Trennstrich frei"
@@ -3977,6 +4005,12 @@ mod tests {
         assert_eq!(id, Id::Building);
         let hit = click(&mut ui, (r.x + b.x + 5.0) as f64, (r.y + b.y + 5.0) as f64);
         assert_eq!(hit, Some(Id::Building));
+        // Darunter „Wandöffnung“ und „Türöffnung“
+        let (id, o, _) = ui.buttons(Panel::Tools)[4];
+        assert_eq!(id, Id::Opening(OpeningKind::Window));
+        assert!(o.y > b.y + b.h);
+        let hit = click(&mut ui, (r.x + o.x + 5.0) as f64, (r.y + o.y + 5.0) as f64);
+        assert_eq!(hit, Some(Id::Opening(OpeningKind::Window)));
 
         let r = ui.rect(Panel::Views, 1280, 32);
         let grundriss = ui

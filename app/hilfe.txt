@@ -57,6 +57,16 @@ Beenden | **Esc** oder Klick auf den Knopf des Bauteils
 Ändern | Bauteil wählen: Typ, Felder und Knöpfe im Paneel „Eigenschaften“, jede Änderung ein Schritt
 Verwalten | Datei › „Erweiterungen …“: Ein/Aus, Aktualisieren, Entfernen; die Projektdatei trägt jedes Bauteil mit
 
+[thema] id=oeffnungen titel="Wand- und Türöffnungen"
+Starten | Knopf „Wandöffnung“ (Fenster, Terrassentür) oder „Türöffnung“ (Haustür) unter „Innenwand“
+Wo | in 3D und den vier Ansichten über einer Außenwand; Brüstung und Sturz des Geschosses erscheinen gestrichelt
+Aufziehen | Klick setzt eine Ecke, Klick die Gegenecke; die Linien und der Wandfuß fangen
+Ecke | Gegenecke auf der Nachbarwand: die Öffnung geht um die Außenecke
+Geschosse | Gegenecke auf der Wand darüber: die Öffnung geht über beide Geschosse
+Höhen | an einer Linie gefangen wandert die Kante mit, wenn die Linie im Geschossmanager gezogen wird
+Anschlag | bei WDVS und Verblender ist die gezeichnete Öffnung die sichtbare außen, innen ist sie um den Anschlag größer
+Beenden | **Esc** nimmt die erste Ecke zurück, dann schließt es
+
 [thema] id=einlesen titel="Bauteil einlesen"
 Öffnen | Datei › „Bauteil einlesen …“ und eine .szb aus der Bauteil-Werkbank wählen
 Prüfen | Skizzeo prüft die Datei; Fehler stehen mit Zeile und Grund, die Datei bleibt dann draußen
@@ -350,6 +360,8 @@ Gebäude | Außenwand als Polygon zeichnen; beim Schließen entsteht das ganze H
 Innenwand | Innenwand im aktiven Geschoss zeichnen.
 90°-Sprung | Beim Zeichnen springt die Richtung in 90°-Schritten; **R** schaltet um.
 Erweiterungen | Eingelesene Bauteile wie Stütze oder Treppe setzen, nach Gruppe geordnet.
+Wandöffnung | Fenster oder Terrassentür in eine Außenwand aufziehen.
+Türöffnung | Haustür in eine Außenwand aufziehen.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.
