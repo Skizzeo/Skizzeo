@@ -944,11 +944,9 @@ pub fn import_space_type(m: &mut Model, lib: &Library, g: Guid) -> bool {
     let Some(s) = lib.space_types.iter().find(|s| s.guid == g).cloned() else {
         return false;
     };
-    for (_, _, set) in s.slots() {
-        if let Some(set) = set {
-            if m.type_by_guid(set).is_none() && import_type(m, lib, set).is_none() {
-                return false;
-            }
+    for set in s.slots().into_iter().filter_map(|x| x.2) {
+        if m.type_by_guid(set).is_none() && import_type(m, lib, set).is_none() {
+            return false;
         }
     }
     m.put_space_type(s)
@@ -960,11 +958,9 @@ pub fn export_space_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
     let Some(s) = m.space_type(g).cloned() else {
         return false;
     };
-    for (_, _, set) in s.slots() {
-        if let Some(set) = set {
-            if lib.type_by_guid(set).is_none() {
-                export_type(m, lib, set);
-            }
+    for set in s.slots().into_iter().filter_map(|x| x.2) {
+        if lib.type_by_guid(set).is_none() {
+            export_type(m, lib, set);
         }
     }
     match lib.space_types.iter_mut().find(|x| x.guid == g) {

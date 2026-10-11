@@ -169,6 +169,25 @@ pub struct SpaceTemplate {
     pub skirting: Option<Guid>,
 }
 
+impl SpaceTemplate {
+    /// Die Vorlage, wie sie ins Projekt kommt; die Ausbautypen sind die
+    /// Werkstypen mit ihrer festen Guid.
+    pub fn space_type(&self) -> SpaceType {
+        SpaceType {
+            guid: self.guid,
+            name: self.name.into(),
+            group: self.group,
+            woflv: self.woflv,
+            floor: Some(self.floor),
+            screed: None,
+            wall: Some(self.wall),
+            tiles: self.tiles.map(|(set, height)| WallTiles { set, height }),
+            ceiling: Some(self.ceiling),
+            skirting: self.skirting,
+        }
+    }
+}
+
 pub const HALL_SPACE_GUID: Guid = Guid(0x6b4c41bb53012c4ea74e4f41656bac1e);
 pub const LIVING_SPACE_GUID: Guid = Guid(0xd5034a7735a2f43ac3d4be414ddba684);
 pub const DINING_SPACE_GUID: Guid = Guid(0x16bc60407e6653a6453ef389c7096cea);
@@ -334,36 +353,11 @@ impl Model {
             return Some(g);
         }
         let t = SPACE_TEMPLATES.iter().find(|t| t.guid == g)?;
-        let set = |m: &mut Model, g: Guid| -> Option<Guid> {
-            let id = m.ensure_finish_type(g)?;
-            m.layer_set(id).map(|s| s.guid)
-        };
-        let floor = set(self, t.floor)?;
-        let wall = set(self, t.wall)?;
-        let tiles = match t.tiles {
-            Some((g, height)) => Some(WallTiles {
-                set: set(self, g)?,
-                height,
-            }),
-            None => None,
-        };
-        let ceiling = set(self, t.ceiling)?;
-        let skirting = match t.skirting {
-            Some(g) => Some(set(self, g)?),
-            None => None,
-        };
-        let s = SpaceType {
-            guid: t.guid,
-            name: self.free_space_name(t.name),
-            group: t.group,
-            woflv: t.woflv,
-            floor: Some(floor),
-            screed: None,
-            wall: Some(wall),
-            tiles,
-            ceiling: Some(ceiling),
-            skirting,
-        };
+        let mut s = t.space_type();
+        for set in s.slots().into_iter().filter_map(|x| x.2) {
+            self.ensure_finish_type(set)?;
+        }
+        s.name = self.free_space_name(t.name);
         self.put_space_type(s).then_some(g)
     }
 
@@ -400,6 +394,28 @@ impl Model {
             Some(i) => self.space_types[i] = s,
             None => self.space_types.push(s),
         }
+        self.touch();
+        true
+    }
+
+    /// Ersetzt alle Vorlagen auf einmal (OK im Bauteilkatalog): so dürfen
+    /// zwei Vorlagen ihre Namen tauschen. `false`, wenn eine gegen eine Regel
+    /// verstößt oder Name oder Guid doppelt sind; dann bleibt alles.
+    pub fn replace_space_types(&mut self, v: Vec<SpaceType>) -> bool {
+        let bad = v.iter().enumerate().any(|(i, s)| {
+            self.space_type_problems(s).next().is_some()
+                || v[i + 1..]
+                    .iter()
+                    .any(|x| x.guid == s.guid || x.name == s.name)
+        });
+        if bad {
+            return false;
+        }
+        if v == self.space_types {
+            return true;
+        }
+        self.note_space_types();
+        self.space_types = v;
         self.touch();
         true
     }
@@ -706,6 +722,28 @@ mod tests {
         assert!(!m.type_in_space_type(id));
         assert_eq!(m.remove_type(id), Ok(()));
         assert!(m.commit().is_some());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Zwei Vorlagen tauschen ihre Namen in einem Zug; doppelte Namen
+    /// nimmt der Tausch nicht an.
+    #[test]
+    fn namen_tauschen() {
+        let (mut m, _) = mit_vorlagen();
+        let mut v = m.space_types().to_vec();
+        let a = v.iter().position(|s| s.guid == BATH_SPACE_GUID).unwrap();
+        let b = v.iter().position(|s| s.guid == WC_SPACE_GUID).unwrap();
+        let (na, nb) = (v[a].name.clone(), v[b].name.clone());
+        v[a].name = nb.clone();
+        v[b].name = na.clone();
+        let mut doppelt = v.clone();
+        doppelt[a].name = na.clone();
+        m.begin("Tausch");
+        assert!(!m.replace_space_types(doppelt));
+        assert!(m.replace_space_types(v));
+        assert!(m.commit().is_some());
+        assert_eq!(m.space_type(BATH_SPACE_GUID).unwrap().name, nb);
+        assert_eq!(m.space_type(WC_SPACE_GUID).unwrap().name, na);
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 

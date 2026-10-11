@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 /// Kopf, Fuß, Rand (dip).
 mod ext;
+mod raeume;
 
 const HEAD: f32 = 64.0;
 const FOOT: f32 = 56.0;
@@ -41,8 +42,8 @@ const MIN_W: f32 = 900.0;
 const MIN_H: f32 = 600.0;
 /// Inhalt rechts: linke Kante (ab Fenster) und rechte Spalte.
 const CONTENT_X: f32 = 302.0;
-/// Ort des Firmenkatalogs im Kopf, rechts der drei Reiter.
-const PATH_X: f32 = 568.0;
+/// Ort des Firmenkatalogs im Kopf, rechts der vier Reiter.
+const PATH_X: f32 = 676.0;
 const RIGHT_X: f32 = 752.0;
 const PROPS_X: f32 = 880.0;
 /// Schichtzeilen.
@@ -76,6 +77,8 @@ fn function_name(f: LayerFunction) -> &'static str {
 pub enum Tab {
     Project,
     Company,
+    /// Raumvorlagen (Raumbuch RB2).
+    Rooms,
     /// Eingelesene Bauteile (E6).
     Ext,
 }
@@ -91,13 +94,20 @@ enum FieldId {
     MatName,
     MatDensity,
     MatLambda,
+    /// Reiter „Räume“: Name der Vorlage, Höhe der Wandfliesen.
+    RoomName,
+    TilesHeight,
 }
 
 impl FieldId {
     fn numeric(self) -> bool {
         matches!(
             self,
-            FieldId::Thick(_) | FieldId::Depth | FieldId::MatDensity | FieldId::MatLambda
+            FieldId::Thick(_)
+                | FieldId::Depth
+                | FieldId::MatDensity
+                | FieldId::MatLambda
+                | FieldId::TilesHeight
         )
     }
 
@@ -106,6 +116,7 @@ impl FieldId {
             FieldId::Thick(_) | FieldId::Depth => "cm",
             FieldId::MatDensity => "kg/m³",
             FieldId::MatLambda => "W/mK",
+            FieldId::TilesHeight => "m",
             _ => "",
         }
     }
@@ -120,6 +131,10 @@ enum ComboId {
     Strip,
     /// Rechtsklick auf eine Schicht: „Baustoff bearbeiten …“ (Paket 5).
     Edit(usize),
+    /// Reiter „Räume“: Nutzungsgruppe, Wohnfläche, Ausbautyp je Zeile.
+    RoomGroup,
+    RoomWoflv,
+    RoomSlot(usize),
 }
 
 /// Knöpfe unter der Liste, unten und in den Karten.
@@ -151,6 +166,8 @@ enum Item {
     Company(Guid),
     /// Bauteil `i` im Reiter „Erweiterungen“.
     Ext(usize),
+    /// Raumvorlage im Reiter „Räume“.
+    Room(Guid),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,6 +374,8 @@ pub struct Catalog {
     /// Reiter „Erweiterungen“: Bauteile und das gewählte.
     ext: Vec<ext::Eintrag>,
     ext_sel: Option<usize>,
+    /// Reiter „Räume“: gewählte Raumvorlage (Projekt, Firma oder Werk).
+    room_sel: Option<Guid>,
     /// Feste Uhr für Tests: alle Bilder zeigen denselben Stand.
     #[cfg(test)]
     test_clock: Option<Instant>,
@@ -500,10 +519,12 @@ impl Catalog {
             paint_now: None,
             ext: Vec::new(),
             ext_sel: None,
+            room_sel: None,
             #[cfg(test)]
             test_clock: None,
         };
         c.set_company(company);
+        c.room_sel = c.raum_eintraege().first().map(|e| e.0);
         c.opened = c.work.revision();
         c
     }
@@ -586,7 +607,8 @@ impl Catalog {
         let (i, ww) = match tab {
             Tab::Project => (0.0, 106.0),
             Tab::Company => (1.0, 106.0),
-            Tab::Ext => (2.0, 130.0),
+            Tab::Rooms => (2.0, 106.0),
+            Tab::Ext => (3.0, 130.0),
         };
         self.r(t, w, 204.0 + i * 108.0, 18.0, ww, 28.0)
     }
@@ -634,6 +656,9 @@ impl Catalog {
         if self.tab == Tab::Ext {
             return self.ext_layout(t, w);
         }
+        if self.tab == Tab::Rooms {
+            return self.rooms_layout(t, w);
+        }
         let s = w.scale;
         let body = self.list_body(t, w);
         let tile_h = t.size.catalog_tile_h * s;
@@ -680,7 +705,7 @@ impl Catalog {
                 }
                 v
             }
-            Tab::Ext => Vec::new(),
+            Tab::Ext | Tab::Rooms => Vec::new(),
             Tab::Company => self
                 .company_items()
                 .into_iter()
@@ -726,7 +751,7 @@ impl Catalog {
         let (ww, hh) = (ww / w.scale, hh / w.scale);
         let y = hh - FOOT + 13.0;
         let action = match self.tab {
-            Tab::Project => "In Firmenkatalog speichern",
+            Tab::Project | Tab::Rooms => "In Firmenkatalog speichern",
             Tab::Company => "Ins Projekt übernehmen",
             Tab::Ext => "Bauteil einlesen …",
         };
@@ -759,6 +784,7 @@ impl Catalog {
             }
             FieldId::Depth => (self.exterior() && self.fixed())
                 .then(|| self.r(t, w, RIGHT_X + 150.0, 308.0, 90.0, 26.0)),
+            FieldId::RoomName | FieldId::TilesHeight => self.room_field_rect(t, w, f),
             FieldId::MatName | FieldId::MatDensity | FieldId::MatLambda => {
                 let card = self.new_mat_card(t, w)?;
                 let s = w.scale;
@@ -784,6 +810,9 @@ impl Catalog {
             ComboId::Function(i) => self.r(t, w, 680.0, ROWS_Y + i as f32 * ROW_H, 150.0, 26.0),
             ComboId::Strip => self.r(t, w, RIGHT_X + 150.0, 340.0, 150.0, 26.0),
             ComboId::Edit(i) => self.combo_rect(t, w, ComboId::Material(i)),
+            ComboId::RoomGroup | ComboId::RoomWoflv | ComboId::RoomSlot(_) => {
+                self.room_combo_rect(t, w, id)
+            }
         }
     }
 
@@ -1049,7 +1078,7 @@ impl Catalog {
         if self.close_rect(t, w).contains(x, y) {
             return Some(Target::Close);
         }
-        for tab in [Tab::Project, Tab::Company, Tab::Ext] {
+        for tab in [Tab::Project, Tab::Company, Tab::Rooms, Tab::Ext] {
             if self.tab_rect(t, w, tab).contains(x, y) {
                 return Some(Target::Tab(tab));
             }
@@ -1083,6 +1112,14 @@ impl Catalog {
         }
         if self.tab == Tab::Ext {
             return self.ext_hit(t, w, x, y);
+        }
+        if self.tab == Tab::Rooms {
+            for (b, r, _) in self.list_buttons(t, w) {
+                if r.contains(x, y) {
+                    return Some(Target::Btn(b));
+                }
+            }
+            return self.rooms_hit(t, w, x, y);
         }
         None
     }
@@ -1442,6 +1479,18 @@ impl Catalog {
             }
             Target::PathLink => out.pick_company = true,
             Target::Tile(it) => self.select(it),
+            Target::Btn(Btn::New) if self.tab == Tab::Rooms => {
+                self.end_edit(true);
+                self.room_new();
+            }
+            Target::Btn(Btn::Duplicate) if self.tab == Tab::Rooms => {
+                self.end_edit(true);
+                self.room_duplicate();
+            }
+            Target::Btn(Btn::Delete) if self.tab == Tab::Rooms => {
+                self.end_edit(true);
+                self.room_delete();
+            }
             Target::Btn(Btn::New) => {
                 if self.blocked() {
                     return;
@@ -1470,6 +1519,12 @@ impl Catalog {
                     self.popup = Some(Popup::Export(self.draft.guid, false));
                 }
                 Tab::Company => self.import_selected(),
+                Tab::Rooms => {
+                    if !self.nutzer && cx.company.is_some() {
+                        self.end_edit(true);
+                        self.room_export();
+                    }
+                }
                 Tab::Ext => out.ext_einlesen = true,
             },
             Target::Btn(Btn::Einfuegen) => self.ext_einfuegen(out),
@@ -1707,6 +1762,7 @@ impl Catalog {
                 },
                 _ => String::new(),
             },
+            FieldId::RoomName | FieldId::TilesHeight => self.room_field_value(f),
         }
     }
 
@@ -1750,6 +1806,7 @@ impl Catalog {
 
     fn apply_value(&mut self, f: FieldId, text: &str) -> Result<(), String> {
         match f {
+            FieldId::RoomName | FieldId::TilesHeight => return self.room_apply_value(f, text),
             FieldId::Name => {
                 if text.trim().is_empty() {
                     return Err("Name fehlt".into());
@@ -2036,6 +2093,10 @@ impl Catalog {
             }
             Item::Draft => {}
             Item::Ext(i) => self.ext_sel = Some(i),
+            Item::Room(g) => {
+                self.end_edit(true);
+                self.room_sel = Some(g);
+            }
             Item::Type(id) => {
                 if self.sel == Some(id) && !self.draft_new {
                     return;
@@ -2208,6 +2269,12 @@ impl Catalog {
                 )
             }
             ComboId::Edit(_) => (vec![("Baustoff bearbeiten …".to_string(), None)], None),
+            ComboId::RoomGroup | ComboId::RoomWoflv | ComboId::RoomSlot(_) => {
+                let Some((items, sel)) = self.room_combo_items(id) else {
+                    return;
+                };
+                (items.into_iter().map(|x| (x, None)).collect(), sel)
+            }
         };
         self.end_edit(true);
         self.popup = Some(Popup::Combo(Combo {
@@ -2255,6 +2322,9 @@ impl Catalog {
             return;
         };
         match cb.id {
+            ComboId::RoomGroup | ComboId::RoomWoflv | ComboId::RoomSlot(_) => {
+                self.room_choose(cb.id, i)
+            }
             ComboId::Category => {
                 if let Some(cat) = TypeCategory::WALLS.get(i) {
                     if *cat != self.draft.category {
@@ -2408,7 +2478,12 @@ impl Catalog {
                 }
                 let it = self.work.type_by_guid(g).map(Item::Type);
                 let old = it.and_then(|it| self.mark_of(it));
-                match company.save_type(&self.work, g) {
+                let saved = if self.tab == Tab::Rooms {
+                    company.save_space_type(&self.work, g)
+                } else {
+                    company.save_type(&self.work, g)
+                };
+                match saved {
                     SaveResult::Saved => {
                         self.popup = None;
                         self.message = Some("In den Firmenkatalog gespeichert".into());
@@ -2645,6 +2720,9 @@ impl Catalog {
             })
             .collect();
         let real_guids: Vec<Guid> = real.layer_sets().iter().map(|(_, t)| t.guid).collect();
+        // Raumvorlagen (RB2) nach den Typen, auf die sie verweisen, und vor
+        // dem Löschen der Typen, die sie nicht mehr brauchen
+        let rooms = self.work.space_types().to_vec();
         let changed = cx.scene.edit_types(crate::scene::CATALOG_STEP, |m| {
             for g in &work_guids {
                 import_type(m, &lib, *g);
@@ -2654,6 +2732,7 @@ impl Catalog {
                     m.set_default_type(*cat, id);
                 }
             }
+            m.replace_space_types(rooms);
             for g in &real_guids {
                 if !work_guids.contains(g) && !keep_old.contains(g) {
                     if let Some(id) = m.type_by_guid(*g) {
