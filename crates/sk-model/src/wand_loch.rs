@@ -71,12 +71,26 @@ type Halb = (f64, f64, f64);
 /// Die vier Gebiete außerhalb eines Kastens (unter, über, davor, dahinter),
 /// je als Schnitt von Halbebenen; leere bei unendlichen Grenzen fallen weg.
 fn gebiete(((u0, u1), (z0, z1)): Kasten) -> Vec<Vec<Halb>> {
-    let mut g = vec![vec![(0.0, -1.0, z0)], vec![(0.0, 1.0, -z1)]];
+    let mut g = Vec::with_capacity(4);
+    if z0.is_finite() {
+        g.push(vec![(0.0, -1.0, z0)]);
+    }
+    if z1.is_finite() {
+        g.push(vec![(0.0, 1.0, -z1)]);
+    }
+    // Seitlich: im Höhenband des Kastens
+    let mut band = Vec::with_capacity(3);
+    if z0.is_finite() {
+        band.push((0.0, 1.0, -z0));
+    }
+    if z1.is_finite() {
+        band.push((0.0, -1.0, z1));
+    }
     if u0.is_finite() {
-        g.push(vec![(0.0, 1.0, -z0), (0.0, -1.0, z1), (-1.0, 0.0, u0)]);
+        g.push([band.as_slice(), &[(-1.0, 0.0, u0)]].concat());
     }
     if u1.is_finite() {
-        g.push(vec![(0.0, 1.0, -z0), (0.0, -1.0, z1), (1.0, 0.0, -u1)]);
+        g.push([band.as_slice(), &[(1.0, 0.0, -u1)]].concat());
     }
     g
 }
@@ -277,12 +291,41 @@ impl WallChain {
             let (p0, d) = (pts[i], dirs[i]);
             move |p: Vec3| ((flat(p) - p0).dot(d), p.z)
         };
+        // Höhe jeder Schicht; reicht ein Loch bis an ihre Unter- oder
+        // Oberkante (Tür ab Unterkante Wand) oder an den Schnitt, ist es dort
+        // offen, damit keine Boden-, Deck- oder Schnittfläche durchs Loch
+        // läuft (Review #79)
+        let hoehen: Vec<(f64, f64)> = (0..self.layers.len())
+            .map(|li| {
+                let p = self.layer_parts(li);
+                (
+                    p.iter().map(|x| x.0).fold(f64::MAX, f64::min),
+                    p.iter().map(|x| x.1).fold(f64::MIN, f64::max).min(top),
+                )
+            })
+            .collect();
         let kaesten = |elem: u32, layer: u8| -> Vec<Kasten> {
-            let i = elem as usize;
-            if i >= dirs.len() || layer as usize >= self.layers.len() {
+            let (i, li) = (elem as usize, layer as usize);
+            if i >= dirs.len() || li >= self.layers.len() {
                 return Vec::new();
             }
-            self.loecher(i, layer as usize)
+            let (unten, oben) = hoehen[li];
+            self.loecher(i, li)
+                .into_iter()
+                .map(|(u, (z0, z1))| {
+                    (
+                        u,
+                        (
+                            if z0 <= unten + 1e-3 {
+                                f64::NEG_INFINITY
+                            } else {
+                                z0
+                            },
+                            if z1 >= oben - 1e-3 { f64::INFINITY } else { z1 },
+                        ),
+                    )
+                })
+                .collect()
         };
         let mut tris = Vec::with_capacity(s.triangles.len());
         for t in std::mem::take(&mut s.triangles) {

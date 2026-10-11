@@ -328,6 +328,7 @@ mod gruendung;
 
 #[path = "oeffnung_model.rs"]
 mod oeffnung_model;
+pub use oeffnung_model::OpeningFault;
 
 #[path = "stapel.rs"]
 mod stapel;
@@ -3115,7 +3116,7 @@ impl Model {
             return Vec::new();
         };
         let (mut footings, mut floors, mut strips) = (Vec::new(), Vec::new(), Vec::new());
-        let mut openings = false;
+        let mut openings = Vec::new();
         for c in &open.changes {
             match c {
                 Change::Run { id, .. } => t.run(*id),
@@ -3139,7 +3140,7 @@ impl Model {
                                 strips.extend(self.floor_of_roof(roof))
                             }
                             ElementKind::Ext(_) => {}
-                            ElementKind::Opening(_) => openings = true,
+                            ElementKind::Opening(ref o) => openings.extend(self.opening_runs(o)),
                         }
                     }
                 }
@@ -3151,13 +3152,9 @@ impl Model {
                 t.run(r);
             }
         }
-        // Öffnungen treffen jede Außenwand auf ihrem Pfad
-        if openings {
-            for r in self.runs.ids() {
-                if self.category_of(r).is_some_and(Category::is_outer_wall) {
-                    t.run(r);
-                }
-            }
+        // Öffnungen treffen die Außenwände an ihrem Pfad
+        for r in openings {
+            t.run(r);
         }
         for r in floors {
             self.runs_under_floor(r).into_iter().for_each(|i| t.run(i));
@@ -3244,7 +3241,9 @@ impl Model {
                             floors.push(f.run);
                         }
                         ElementKind::Ext(_) => {}
-                        ElementKind::Opening(_) => touched.library = true,
+                        ElementKind::Opening(ref o) => {
+                            m.opening_runs(o).into_iter().for_each(|r| touched.run(r))
+                        }
                     }
                 }
                 m.elements.set(*id, pick(dir, old, new));
@@ -3686,8 +3685,8 @@ impl Model {
                     }
                 }
                 ElementKind::Opening(ref o) => {
-                    if !self.opening_ok(o) {
-                        out.push(format!("{}: Öffnung ungültig", e.number));
+                    if let Some(f) = self.opening_fault(o, Some(id)) {
+                        out.push(format!("{}: {}", e.number, f.text(self)));
                     }
                 }
             }
