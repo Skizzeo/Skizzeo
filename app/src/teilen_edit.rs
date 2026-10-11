@@ -114,7 +114,7 @@ impl Teilen {
     }
 
     /// Steht die Maus näher am Ende als am Anfang?
-    fn from_end(&self) -> bool {
+    fn near_end(&self) -> bool {
         self.hover.is_some_and(|t| t > self.len * 0.5)
     }
 
@@ -256,7 +256,7 @@ impl Teilen {
                         InputOutcome::Enter => {
                             if let Some(Ok(v)) = i.value(0) {
                                 self.input = None;
-                                let t = if self.from_end() { self.len - v } else { v };
+                                let t = if self.near_end() { self.len - v } else { v };
                                 if t > 0.0 && t < self.len {
                                     self.place(scene, t, &mut out);
                                 } else {
@@ -280,7 +280,7 @@ impl Teilen {
             return Some((i.text([LABEL, ""]), true));
         }
         let t = self.hover?;
-        let (a, b) = if self.from_end() {
+        let (a, b) = if self.near_end() {
             (self.len - t, t)
         } else {
             (t, self.len - t)
@@ -336,7 +336,7 @@ impl Teilen {
             .as_ref()
             .and_then(|i| i.value(0))
             .and_then(|v| v.ok())
-            .map(|v| if self.from_end() { self.len - v } else { v });
+            .map(|v| if self.near_end() { self.len - v } else { v });
         if let Some(t) = typed.or(self.hover).filter(|t| *t > 0.0 && *t < self.len) {
             out.extend(tick(t, 2.0));
         }

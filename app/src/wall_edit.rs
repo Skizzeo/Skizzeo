@@ -1192,7 +1192,7 @@ mod tests {
             }
         };
         let segs = |s: &Scene| s.model().run(run).unwrap().segments.len();
-        let mut go = |e: &mut WallEdit, s: &mut Scene, p: Vec3, k: u8| {
+        let go = |e: &mut WallEdit, s: &mut Scene, p: Vec3, k: u8| {
             e.handle(&ev(p, k), s, &c, W, H, 1.0, true)
         };
         go(&mut e, &mut s, vec3(3500.0, 3000.0, 0.0), 0);
