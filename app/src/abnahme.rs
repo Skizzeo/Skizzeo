@@ -2158,6 +2158,29 @@ fn tippe(
     out
 }
 
+/// Eine dicke Platte senkt UK Gründung (PR #51): Die Schürze eines zweiten
+/// Zugs im selben Gebäude folgt auch im Bild und in den Mengen.
+#[test]
+fn p1_dicke_platte_zweiter_zug() {
+    use crate::ui::Field;
+    let mut s = Scene::with_model(Model::with_seed(41));
+    let c = cam3d();
+    let a = zeichne_rechteck(&mut s, &c);
+    let off = vec3(0.0, 12000.0, 0.0);
+    let mut t = tool(&s);
+    for p in RECHTECK {
+        assert!(click(&mut t, &c, p + off).is_none());
+    }
+    let w = click(&mut t, &c, RECHTECK[0] + off).expect("zweiter Zug");
+    let b = s.add_wall(&w).expect("Zug B");
+    let (slab_a, _) = sohlplatte(&s, a);
+    let (_, fuss_b) = sohlplatte(&s, b);
+    assert!(s.set_field(slab_a, Field::SlabThickness, 750.0));
+    assert_eq!(s.model().footing_depth(fuss_b), Some(630.0));
+    assert_eq!(z_range(&s.foundation(b).unwrap().footing_solid()).0, -850.0);
+    assert_eq!(s.foundation_qto(b).unwrap().1.depth, 630.0);
+}
+
 /// P1: Dicke der Sohlplatte, Sockelrücksprung, Breite und Tiefe der
 /// Frostschürze als Zahlenfelder: Tippen und Enter ändern das Modell in
 /// einem Schritt, Ungültiges bleibt mit Hinweis stehen, Esc bricht ab.
@@ -2491,7 +2514,12 @@ fn a43_grenzen_ablehnen() {
     let d = decke(&s, aw).unwrap();
     assert!(!decke_dicke(&mut s, d, 2000.0), "Decke ≤ OK EG − 1,00");
     let (slab, _) = sohlplatte(&s, aw);
-    assert!(!s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 750.0)));
+    assert!(!s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 0.0)));
+    // Dicke Platte: keine Grenze mehr, die Schürze wächst unter ihr auf
+    // 10 cm (Geometrie-Hinweis zu #50); Rückgängig stellt alles zurück
+    assert!(s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 750.0)));
+    assert_eq!(band(&s, "GR"), (-850.0, 0.0));
+    assert!(s.undo());
     assert_eq!(
         (band(&s, "GR"), band(&s, "EG")),
         ((-800.0, 0.0), (0.0, 2855.0))

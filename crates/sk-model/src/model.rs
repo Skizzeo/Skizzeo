@@ -4451,6 +4451,8 @@ pub const MAX_BATTEN: f64 = 1500.0;
 /// Sohlplatte neuer Gebäude (Jörn 10:13): 22 cm, die Frostschürze reicht
 /// darunter bis UK Gründung −0,80 (58 cm).
 pub const SLAB_THICKNESS: f64 = 220.0;
+/// Dickste Sohlplatte (mm), wie im Dialog „Gebäude erstellen“.
+pub const MAX_SLAB_THICKNESS: f64 = 790.0;
 /// Grenzen (G4): lichte Höhe jedes Geschosses, Schürzentiefe, größte
 /// Gründungstiefe.
 pub const MIN_CLEAR: f64 = 1000.0;

@@ -136,19 +136,46 @@ impl Model {
             .filter(|(_, s)| s.kind == LevelKind::Foundation && s.building == Some(b))
             .map(|(id, _)| id)
             .collect();
-        let new = self.terrain_z_of(Some(b));
-        let old = new + delta;
+        let old = self.terrain_z_of(Some(b)) + delta;
         for gr in grs {
             let Some(s) = self.storey(gr) else {
                 continue;
             };
             let want = s.embed.unwrap_or(old - s.elevation);
-            let (lo, hi) = self.foundation_bottom_range_of(gr);
-            let z = (new - want).min(hi).max(lo);
-            self.move_foundation_bottom(gr, z);
-            let embed = ((new - z) - want).abs() > 1e-6;
-            self.set_embed(gr, embed.then_some(want));
+            self.settle_foundation(gr, want);
         }
+    }
+
+    /// Legt UK Gründung `gr` auf die gewollte Einbindetiefe `want` (OK
+    /// Gelände bis UK), geklemmt auf den erlaubten Bereich. Stößt sie an
+    /// eine Grenze, merkt sich das Geschoss `want`; fällt die Grenze weg,
+    /// gilt wieder `want`. `false`, wenn kein Bereich bleibt (die Gründung
+    /// liegt dann an der unteren Grenze).
+    fn settle_foundation(&mut self, gr: StoreyId, want: f64) -> bool {
+        let t = self.terrain_z_of_level(gr);
+        let (lo, hi) = self.foundation_bottom_range_of(gr);
+        let z = (t - want).min(hi).max(lo);
+        self.move_foundation_bottom(gr, z);
+        let embed = ((t - z) - want).abs() > 1e-6;
+        self.set_embed(gr, embed.then_some(want));
+        hi >= lo - 1e-9
+    }
+
+    /// Die Tiefe unter der Sohlplatte (Plattendicke, Dämmung) hat sich
+    /// geändert: Unter Platte und Dämmung bleibt die Schürze mindestens
+    /// [`MIN_FOOTING`] tief (Jörn 11.10.). Ist sie dafür zu flach, wächst
+    /// sie nach unten; wird es wieder flacher, nimmt sie dieses Wachstum
+    /// zurück bis zur gewollten Einbindetiefe. Sonst bleibt UK Gründung.
+    /// `false`, wenn keine Schürze mehr passt.
+    pub(super) fn settle_below_slab(&mut self, slab: ElementId) -> bool {
+        let gr = self
+            .element(slab)
+            .and_then(|e| self.foundation_level_of(e.storey));
+        let Some((gr, s)) = gr.and_then(|g| Some((g, self.storey(g)?))) else {
+            return true;
+        };
+        let want = s.embed.unwrap_or(self.terrain_z_of_level(gr) - s.elevation);
+        self.settle_foundation(gr, want)
     }
 
     /// Setzt die gewollte Einbindetiefe einer Gründung (siehe
@@ -215,7 +242,8 @@ impl Model {
     /// nach unten auf (Jörn 11.10.): OK Sohlplatte, Versatz zum Gelände und
     /// UK Gründung bleiben, die Schürze behält ihre Höhe. Unter der Dämmung
     /// bleibt die Schürze mindestens [`MIN_FOOTING`] tief; ist sie dafür zu
-    /// flach, sinkt UK Gründung um den Rest.
+    /// flach, sinkt UK Gründung um den Rest, und weniger Dämmung nimmt das
+    /// wieder zurück ([`Model::settle_below_slab`]).
     pub fn set_slab_insulation(&mut self, slab: ElementId, t: f64) -> bool {
         let ok = t == 0.0 || (MIN_PERIMETER - 1e-9..=MAX_PERIMETER + 1e-9).contains(&t);
         let old = self.slab_insulation(slab);
@@ -231,27 +259,36 @@ impl Model {
         if t > 0.0 && self.ensure_perimeter_material().is_none() {
             return false;
         }
+        let gr = self.foundation_bottom_of_slab(slab);
         self.edit_slab(slab, |s| s.insulation = t);
-        // Unter der Dämmung bleibt die Schürze mindestens 10 cm tief: Ist
-        // sie zu flach, wächst sie nach unten (UK Gründung sinkt), sonst
-        // bleibt alles stehen
-        let gr = self
-            .element(slab)
-            .and_then(|e| self.foundation_level_of(e.storey));
-        if let Some(gr) = gr {
-            let (lo, hi) = self.foundation_bottom_range_of(gr);
-            let z = self.storey(gr).map_or(hi, |s| s.elevation);
-            if z > hi + 1e-9 {
-                if hi < lo - 1e-9 {
-                    self.edit_slab(slab, |s| s.insulation = old);
-                    return false;
-                }
-                self.move_foundation_bottom(gr, hi);
-            }
+        if !self.settle_below_slab(slab) {
+            self.edit_slab(slab, |s| s.insulation = old);
+            self.restore_foundation_bottom(gr);
+            return false;
         }
         self.sync_perimeter(slab);
         self.touch();
         true
+    }
+
+    /// UK und gewollte Einbindetiefe der Gründung unter einer Sohlplatte,
+    /// zum Zurücklegen nach einer abgelehnten Änderung.
+    pub(super) fn foundation_bottom_of_slab(
+        &self,
+        slab: ElementId,
+    ) -> Option<(StoreyId, f64, Option<f64>)> {
+        let gr = self
+            .element(slab)
+            .and_then(|e| self.foundation_level_of(e.storey))?;
+        self.storey(gr).map(|s| (gr, s.elevation, s.embed))
+    }
+
+    /// Legt eine Gründung zurück (siehe [`Model::foundation_bottom_of_slab`]).
+    pub(super) fn restore_foundation_bottom(&mut self, old: Option<(StoreyId, f64, Option<f64>)>) {
+        if let Some((gr, z, embed)) = old {
+            self.move_foundation_bottom(gr, z);
+            self.set_embed(gr, embed);
+        }
     }
 
     /// Perimeterdämmungen unter einer Sohlplatte (richtig: höchstens eine).
