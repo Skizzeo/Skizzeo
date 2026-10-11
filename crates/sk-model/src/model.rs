@@ -150,8 +150,9 @@ pub struct GroundBasis {
     /// OK und UK Sohlplatte.
     pub slab_top_z: f64,
     pub slab_bottom_z: f64,
-    /// Dicke der Perimeterdämmung (0 = keine) und ihre Unterkante (= OK
-    /// Schürze; ohne Dämmung UK Platte).
+    /// Dicke der Perimeterdämmung (0 = keine) und ihre Unterkante (ohne
+    /// Dämmung UK Platte). Die Dämmung liegt innerhalb der Schürze, OK
+    /// Schürze ist UK Platte.
     pub insulation: f64,
     pub insulation_bottom_z: f64,
     /// UK Frostschürze = UK Gründung, Breite der Schürze.

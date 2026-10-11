@@ -484,9 +484,10 @@ pub struct SlabQto {
 pub struct FootingQto {
     /// Länge auf der Mittellinie (mm).
     pub length: f64,
-    /// Volumen aus Ringfläche × Tiefe (mm³).
+    /// Volumen aus Ringfläche × Höhe (mm³).
     pub volume: f64,
     pub width: f64,
+    /// Höhe ab UK Platte: Tiefe ab UK Dämmung plus Dämmdicke (mm).
     pub depth: f64,
 }
 
@@ -512,7 +513,7 @@ pub fn foundation_qto_of(f: &Foundation) -> (SlabQto, FootingQto) {
             length: f.footing_axis_length(),
             volume: f.footing_volume(),
             width: p.footing_width,
-            depth: p.footing_depth,
+            depth: f.footing_height(),
         },
     )
 }
@@ -634,7 +635,7 @@ pub fn soffit_qto(model: &Model, soffit: ElementId) -> Option<SoffitQto> {
 /// Hauptmenge Fläche.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PerimeterQto {
-    /// Fläche unter der Platte (Plattenumriss, mm²).
+    /// Fläche unter der Platte innerhalb der Frostschürze (mm²).
     pub area: f64,
     pub volume: f64,
     pub thickness: f64,
@@ -1649,6 +1650,12 @@ pub fn schedule(model: &Model) -> Schedule {
                     Ok(f) => match e.kind {
                         ElementKind::PerimeterInsulation { .. } => match perimeter_qto_of(f) {
                             Some(q) => (Some(ElementQto::Perimeter(q)), None),
+                            None if f.params.insulation > 0.0 => (
+                                None,
+                                Some(
+                                    "Kein Körper: Schürze füllt die Fläche unter der Platte".into(),
+                                ),
+                            ),
                             None => (None, Some("Kein Körper: Platte ungedämmt".into())),
                         },
                         _ => {
