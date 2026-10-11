@@ -1749,6 +1749,7 @@ impl App {
             self.upload_model();
         }
         self.overlay_dirty = true;
+        self.hint_dirty |= self.hint.as_ref().is_some_and(|h| h.discover);
         self.refresh_cursor();
     }
 
@@ -1761,8 +1762,9 @@ impl App {
     /// Neue Fenstergröße (Größeziehen, Mengenfenster an- oder abgedockt):
     /// Steht der Grundriss noch so, wie er eingepasst wurde, wird er für die
     /// neue Größe neu eingepasst. Hat der Benutzer verschoben oder gezoomt,
-    /// bleibt seine Ansicht.
+    /// bleibt seine Ansicht. Die Entdecken-Karte wird neu gelegt.
     fn refit_plan(&mut self) {
+        self.hint_dirty |= self.hint.as_ref().is_some_and(|h| h.discover);
         if self.ui.view == ViewKind::Plan && self.fitted.as_ref() == Some(&self.cam) {
             self.fit_camera();
             self.redraw = true;
@@ -5556,20 +5558,18 @@ impl App {
             let size = self
                 .hint
                 .as_ref()
-                .filter(|h| h.rect.is_none())
+                .filter(|h| h.rect.is_none() || h.discover)
                 .map(|h| (h.size(&self.theme, &self.ui.fonts, s), h.anchor.clone()));
             if let Some((size, anchor)) = size {
                 let bounds = self.screen_bounds(&anchor);
                 let win = (self.w as f32, self.h as f32, self.top() as f32);
                 let views = self.ui.rect(Panel::Views, self.w, self.top());
+                let above = self.wheel.top_in(self.ui.view, &self.ui, self.w, self.h);
                 if let Some(h) = self.hint.as_mut() {
                     h.place(size, bounds, win, s);
-                    // Entdecken-Karte im Hauptfenster: unten rechts, aber
-                    // links der rechten Spalte (nicht über dem Baum)
-                    if let (true, Some(r)) = (h.discover, h.rect.as_mut()) {
-                        let m = (self.theme.size.panel_margin * s).round();
-                        r.x = (views.x - m - r.w).max(8.0 * s).round();
-                    }
+                    // Entdecken-Karte: unten rechts, über dem Bogen
+                    let m = (self.theme.size.panel_margin * s).round();
+                    h.corner(views.x - m, above.map(|t| t - m), win.2, s);
                 }
             }
             match &self.hint {
