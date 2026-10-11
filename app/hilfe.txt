@@ -138,7 +138,7 @@ Ablauf ziehen | Dachaufbau wählen, im Grundriss einen Punkt an der Aufkantung e
 Ausschalten | Haken weg; **Strg+Z** holt das Dach zurück
 
 [thema] id=geschosse titel="Geschosse"
-Bearbeiten | Klick auf das Paneel „Geschosse“ öffnet es groß; nur dort wird gezogen und getippt
+Bearbeiten | Klick auf das Paneel „Geschosse“ öffnet es groß; nur dort wird gezogen und getippt, das Modell daneben zeigt jede Änderung sofort
 Schließen | **Esc**, „Schließen ×“ oder Klick daneben
 Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ in der großen Ansicht
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**

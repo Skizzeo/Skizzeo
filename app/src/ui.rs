@@ -728,12 +728,13 @@ fn level_lines(l: &Levels) -> Vec<LevelLine> {
 /// Aufteilung des Paneels „Geschosse“, beim Ziehen eingefroren.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LevelsLayout {
-    /// Maßstab (dip je m); ohne Platz eine Liste statt des Diagramms.
+    /// Maßstab (dip je m).
     ppm: f32,
-    list: bool,
     /// Lage von ±0,00 im Paneel und Paneelhöhe (Pixel).
     anchor: f32,
     height: f32,
+    /// Höhe des Fußes (dip); im knappen Paneel 0, ohne Gelände auch.
+    fuss: f32,
 }
 
 /// Ziehen einer Ebene im Paneel „Geschosse“.
@@ -744,8 +745,6 @@ struct LevelDrag {
     y0: f64,
     z0: f64,
     layout: LevelsLayout,
-    /// Hinweis zum aktiven Geschoss in den „Werkzeuge“ (bleibt beim Ziehen).
-    hint: bool,
 }
 
 /// Was das Paneel „Geschosse“ beim Ziehen meldet.
@@ -758,11 +757,10 @@ pub enum LevelEvent {
 }
 
 /// Abstände im Diagramm (dip): Titel, Luft über der obersten und unter der
-/// untersten Linie, Zeilenhöhe der Liste.
+/// untersten Linie.
 const LEVEL_HEAD: f32 = 34.0;
 const LEVEL_TOP: f32 = 30.0;
 const LEVEL_BOTTOM: f32 = 8.0;
-const LEVEL_LIST_ROW: f32 = 22.0;
 /// Zeilen im Fuß des Paneels: OK Gelände, Einbindetiefe.
 const LEVEL_FOOTER_ROW: f32 = 20.0;
 /// Rechter Rand: Kette der Geschosshöhen und davor die der lichten Höhe.
@@ -1395,7 +1393,17 @@ impl Ui {
 
     fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
-            Panel::Tools => self.tool_rows(self.storey_hint()),
+            Panel::Tools => tool_rows(
+                &self.projekt_zeilen,
+                self.nord_aktiv,
+                self.interior,
+                self.tool_chip.is_some(),
+                &self.wall_layers,
+                self.upper_active,
+                self.foundation_active,
+                self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
+                self.ext_knopf,
+            ),
             Panel::Views => view_rows(self.nord),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
                 props_rows(p, self.edit.as_ref(), self.more_open)
@@ -1403,40 +1411,6 @@ impl Ui {
             Panel::Levels => vec![Row::Title("Geschosse")],
             Panel::Dialog => Vec::new(),
         }
-    }
-
-    /// Zeilen der „Werkzeuge“, mit oder ohne den Hinweis zum aktiven
-    /// Geschoss („Außenwände entstehen aus dem EG“).
-    fn tool_rows(&self, storey_hint: bool) -> Vec<Row> {
-        tool_rows(
-            &self.projekt_zeilen,
-            self.nord_aktiv,
-            self.interior,
-            self.tool_chip.is_some(),
-            &self.wall_layers,
-            storey_hint && self.upper_active,
-            storey_hint && self.foundation_active,
-            self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
-            self.ext_knopf,
-        )
-    }
-
-    /// Steht der Hinweis zum aktiven Geschoss in den „Werkzeuge“? Er weicht,
-    /// wenn er das Paneel „Geschosse“ vom Diagramm in die Liste drücken
-    /// würde (Jörn 11.10.: nach Klick auf „OG“ kam das Diagramm nur über
-    /// „EG“ zurück). Der Grund steht dann im Tooltip des gesperrten Knopfs.
-    fn storey_hint(&self) -> bool {
-        if !self.upper_active && !self.foundation_active {
-            return false;
-        }
-        if let Some(d) = self.level_drag {
-            return d.hint;
-        }
-        let list = |hint: bool| {
-            let h = rows_px(&self.tool_rows(hint), self.size.panel_pad, self.scale);
-            self.levels_layout_below(h).list
-        };
-        !list(true) || list(false)
     }
 
     pub fn props(&self) -> Option<&Props> {
@@ -2202,7 +2176,6 @@ impl Ui {
                             y0: y,
                             z0,
                             layout: self.levels_layout(),
-                            hint: self.storey_hint(),
                         });
                         out.level = Some(LevelEvent::Begin(g));
                         out.changed.push(Id::Grip(g));
@@ -2837,10 +2810,11 @@ const DIALOG_ROW_Y: f32 = 46.0;
 const DIALOG_FIELD_W: f32 = 84.0;
 
 /// Paneel „Geschosse“ (E14): Diagramm der Ebenen mit Griffen, Koten und
-/// Maßketten, im kleinen Fenster eine Liste.
+/// Maßketten, in jeder Fenstergröße (Jörn 11.10.: die Zahlenliste im
+/// kleinen Fenster entfällt, die Großansicht zeigt alle Werte).
 impl Ui {
     /// Aufteilung: größter Maßstab, bei dem das Paneel über dem Fensterrand
-    /// endet; sonst die Liste. Beim Ziehen bleibt sie stehen.
+    /// endet. Beim Ziehen bleibt sie stehen.
     fn levels_layout(&self) -> LevelsLayout {
         if let Some(d) = self.level_drag {
             return d.layout;
@@ -2848,51 +2822,49 @@ impl Ui {
         if self.levels_gross {
             return self.levels_layout_gross();
         }
-        self.levels_layout_below(self.panel_height(Panel::Tools))
-    }
-
-    /// Aufteilung unter „Werkzeuge“ der Höhe `tools` (Pixel).
-    fn levels_layout_below(&self, tools: f32) -> LevelsLayout {
         let m = (self.size.panel_margin * self.scale).round();
-        let y = self.top as f32 + 2.0 * m + tools;
-        self.levels_layout_at(y, self.size.level_px_per_m)
+        let y = self.top as f32 + 2.0 * m + self.panel_height(Panel::Tools);
+        // Das Paneel zeigt nur an, es darf dichter werden als die Großansicht
+        self.levels_layout_at(y, self.size.level_px_per_m, true)
     }
 
     /// Aufteilung für ein Paneel, das bei `y` (Pixel) beginnt, mit dem
-    /// Maßstab `ppm` (dip je m) als größtem.
-    fn levels_layout_at(&self, y: f32, ppm: f32) -> LevelsLayout {
+    /// Maßstab `ppm` (dip je m) als größtem. Reicht auch der kleinste nicht,
+    /// rücken mit `dicht` alle Linien auf den Zeilenabstand zusammen; was
+    /// dann noch fehlt, schneidet der Fensterrand ab, Linien und Zahlen
+    /// bleiben im Paneel.
+    fn levels_layout_at(&self, y: f32, ppm: f32, dicht: bool) -> LevelsLayout {
         let (s, z) = (self.scale, &self.size);
         let m = (z.panel_margin * s).round();
         let avail = (self.win_h - y - m).max(0.0);
         let lines = level_lines(&self.levels);
         let head = z.panel_pad + LEVEL_HEAD + LEVEL_TOP;
         let foot = self.level_footer();
-        let mut ppm = ppm;
-        loop {
+        let layout = |ppm: f32, fuss: f32| {
             let (above, below) = self.level_spans(&lines, ppm);
-            let h = ((head + above + below + LEVEL_BOTTOM + foot + z.panel_pad) * s).round();
-            if h <= avail {
-                return LevelsLayout {
-                    ppm,
-                    list: false,
-                    anchor: ((head + above) * s).round(),
-                    height: h,
-                };
+            LevelsLayout {
+                ppm,
+                anchor: ((head + above) * s).round(),
+                height: ((head + above + below + LEVEL_BOTTOM + fuss + z.panel_pad) * s).round(),
+                fuss,
             }
-            if ppm <= z.level_px_per_m_min {
-                break;
+        };
+        let mut l = layout(ppm, foot);
+        while l.height > avail && l.ppm > z.level_px_per_m_min {
+            l = layout((l.ppm - 1.0).max(z.level_px_per_m_min), foot);
+        }
+        if l.height > avail && dicht {
+            // 1 dip je m: jeder Abstand unter 22 m wird zum Zeilenabstand;
+            // reicht auch das nicht, weicht der Fuß (Gelände steht in der
+            // Großansicht)
+            l = layout(1.0, foot);
+            if l.height > avail {
+                l = layout(1.0, 0.0);
             }
-            ppm = (ppm - 1.0).max(z.level_px_per_m_min);
         }
-        let rows = self.levels.bands.len() + self.levels.clear.len();
-        let h = (2.0 * z.panel_pad + LEVEL_HEAD + rows as f32 * LEVEL_LIST_ROW + foot) * s;
-        let least = ((2.0 * z.panel_pad + LEVEL_HEAD + foot) * s).round();
-        LevelsLayout {
-            ppm: z.level_px_per_m_min,
-            list: true,
-            anchor: 0.0,
-            height: h.round().min(avail).max(least),
-        }
+        let least = ((2.0 * z.panel_pad + LEVEL_HEAD + l.fuss) * s).round();
+        l.height = l.height.min(avail).max(least);
+        l
     }
 
     /// Fuß des Paneels (dip): Kote OK Gelände und Einbindetiefe (Gelände
@@ -2923,7 +2895,7 @@ impl Ui {
 
     /// Obere Kante des Fußes (Pixel, ohne Schatten).
     fn footer_top(&self, l: &LevelsLayout) -> f32 {
-        l.height - ((self.level_footer() + self.size.panel_pad) * self.scale).round()
+        l.height - ((l.fuss + self.size.panel_pad) * self.scale).round()
     }
 
     /// Lage von OK Gelände im Diagramm (Pixel): zwischen den Linien, die
@@ -3066,32 +3038,11 @@ impl Ui {
             out.push((Id::Field(f), self.level_text_rect(f, right, base), ""));
         };
         // Fuß: Kote OK Gelände (Gelände Thema 1)
-        if self.levels.terrain.is_some() {
+        if self.levels.terrain.is_some() && l.fuss > 0.0 {
             let base = self.footer_top(&l) + self.size.level_row_base * s;
             push(Field::Terrain, xi - 6.0 * s, base);
         }
 
-        if l.list {
-            let top = (self.size.panel_pad + LEVEL_HEAD) * s;
-            let row = LEVEL_LIST_ROW * s;
-            let row_base = self.size.level_row_base * s;
-            for (k, (i, b)) in bands.iter().enumerate().rev().enumerate() {
-                let base = top + k as f32 * row + row_base;
-                if let Some(f) = lines[i].field {
-                    push(f, xi - 6.0 * s, base);
-                }
-                push(Field::StoreyHeight(b.id), xo, base);
-                if let Some(r) = self.storey_name_rect(b, x0, base) {
-                    names.push((Id::Storey(b.id), r, ""));
-                }
-            }
-            for (k, &(id, _)) in self.levels.clear.iter().rev().enumerate() {
-                let base = top + (bands.len() + k) as f32 * row + row_base;
-                push(Field::ClearHeight(id), xo, base);
-            }
-            out.extend(names);
-            return out;
-        }
         let ys = self.line_ys(&lines, &l);
         let clamp = |y: f32| y.clamp((self.size.panel_pad + LEVEL_HEAD) * s, l.height);
         for (line, &y) in lines.iter().zip(&ys) {
@@ -3186,9 +3137,6 @@ impl Ui {
     /// Griff unter der Maus (Paneelkoordinaten), nur im Diagramm.
     fn grip_at(&self, x: f64, y: f64) -> Option<Grip> {
         let l = self.levels_layout();
-        if l.list {
-            return None;
-        }
         let s = self.scale;
         let (x0, _, xo) = self.level_columns();
         if (x as f32) < x0 - 4.0 * s || (x as f32) > xo + 4.0 * s {
@@ -3319,45 +3267,6 @@ impl Ui {
             let w = f.map_or(0.0, |f| f.width(txt, px));
             widgets::text(c, f, txt, px, right - w + m, base + m, col);
         };
-        if l.list {
-            let top = (z.panel_pad + LEVEL_HEAD) * s;
-            let row = LEVEL_LIST_ROW * s;
-            for (k, (i, b)) in self.levels.bands.iter().enumerate().rev().enumerate() {
-                let base = top + k as f32 * row + z.level_row_base * s;
-                let font = if b.active { bold.or(regular) } else { regular };
-                let col = if b.active {
-                    u.level_line_active
-                } else {
-                    u.text
-                };
-                widgets::text(c, font, &b.name, px, x0 + m, base + m, col);
-                if lines[i].field.is_none() {
-                    right_text(
-                        c,
-                        regular,
-                        &kote_text(lines[i].z),
-                        px,
-                        xi - 4.0 * s,
-                        base,
-                        u.dim_text,
-                    );
-                }
-            }
-            for (k, &(id, _)) in self.levels.clear.iter().rev().enumerate() {
-                let name = self
-                    .levels
-                    .bands
-                    .iter()
-                    .find(|b| b.id == id)
-                    .map_or("", |b| b.name.as_str());
-                let base = top + (self.levels.bands.len() + k) as f32 * row + z.level_row_base * s;
-                let txt = format!("lichte Höhe {name}");
-                widgets::text(c, regular, &txt, px_d, x0 + m, base + m, u.text_dim);
-            }
-            self.paint_level_footer(t, c, &l);
-            self.paint_level_error(t, c);
-            return;
-        }
         let ys = self.line_ys(&lines, &l);
         let (lo, hi) = (
             (z.panel_pad + LEVEL_HEAD) * s,
@@ -3511,6 +3420,9 @@ impl Ui {
         let (Some(_), u, z, s) = (self.levels.terrain, &t.ui, &self.size, self.scale) else {
             return;
         };
+        if l.fuss == 0.0 {
+            return;
+        }
         let m = (z.panel_shadow * s).round();
         let (x0, _, _) = self.level_columns();
         let regular = self.fonts.regular.as_ref();
@@ -4390,7 +4302,7 @@ mod levels_tests {
         assert_eq!(kote_text(2855.0), "+2,855");
         assert_eq!(m_text(2635.0), "2,635");
         let l = ui.levels_layout();
-        assert!(!l.list && l.ppm == 40.0, "{l:?}");
+        assert_eq!(l.ppm, 40.0, "{l:?}");
         // Linien von unten nach oben im Maßstab 40 px/m (Jörn 10:13: 25 % höher)
         let ys = ui.line_ys(&lines, &l);
         assert!((ys[1] - ys[2] - 2.855 * 40.0).abs() < 1e-3);
@@ -4591,35 +4503,35 @@ mod levels_tests {
         assert_eq!(ui.levels.flat_roof, Some(false));
     }
 
-    /// A47 und Test 5 aus E14: auch im kleinen Fenster nichts abgeschnitten;
-    /// reicht der Platz nicht, wird es eine Liste mit denselben Zahlen.
-    /// Seit dem kürzeren Werkzeug-Hinweis (Paket 8, §2.7) reichte der Platz
-    /// bis knapp unter 400 px Höhe, seit dem Knopf „Projektdaten“ über den
-    /// Werkzeugen (Paket PD-2) bis knapp unter 470 px; die Liste reicht
-    /// bis 400 px (vorher 380), die Untergrenze hält der letzte Fall fest.
+    /// A47 und Test 5 aus E14: auch im kleinen Fenster nichts abgeschnitten.
+    /// Die Zahlenliste für zu wenig Platz entfällt (Jörn 11.10.); das
+    /// Paneel zeigt das Diagramm, im knappen Fenster rücken die Linien auf
+    /// den Zeilenabstand zusammen, bei 400 px weicht der Fuß mit dem Gelände.
     #[test]
-    fn kleines_fenster_diagramm_oder_liste() {
+    fn kleines_fenster_immer_das_diagramm() {
         let (mut ui, _) = ui_mit_geschossen();
-        for (w, h, list) in [
-            (900u32, 600u32, false),
-            (900, 500, false),
-            (900, 440, true),
-            (900, 400, true),
-        ] {
+        for (w, h) in [(900u32, 600u32), (900, 500), (900, 440), (900, 400)] {
             ui.fit(1.0, w, h);
             let r = ui.rect(Panel::Levels, w, 32);
             let t = ui.rect(Panel::Tools, w, 32);
             assert!(r.y >= t.y + t.h && r.y + r.h <= h as f32, "{w}×{h}: {r:?}");
-            assert_eq!(ui.levels_layout().list, list, "{w}×{h}");
-            let n = ui.level_buttons().len();
             // Zahlen (mit lichter Höhe EG und OG), die Namen von
             // Fundament, EG und OG (E18: das Fundament ist anklickbar) und
             // die Kote OK Gelände im Fuß, dazu der Schalter Flachdach in der
             // Titelzeile (Jörn 10.10.)
-            assert_eq!(n, if list { 12 } else { 13 }, "{w}×{h}");
+            let fuss = ui.levels_layout().fuss > 0.0;
+            assert_eq!(fuss, h > 400, "{w}×{h}");
+            assert_eq!(
+                ui.level_buttons().len(),
+                if fuss { 13 } else { 12 },
+                "{w}×{h}"
+            );
             for (_, b, _) in ui.level_buttons() {
                 assert!(b.y >= 0.0 && b.y + b.h <= r.h, "{w}×{h}: {b:?}");
             }
+            let l = ui.levels_layout();
+            let ys = ui.line_ys(&level_lines(&ui.levels), &l);
+            assert!(ys.iter().all(|&y| y > 0.0 && y < r.h), "{w}×{h}: {ys:?}");
         }
     }
 
@@ -4748,20 +4660,18 @@ mod levels_tests {
         assert!(s.set_active_storey(og.id));
         ui.set_levels(s.levels());
         assert!(band(&ui, "OG").active && !band(&ui, "EG").active);
-        // Auch in der Liste (kleines Fenster, Paneel im linken Rand); die
-        // Großansicht hat dort noch Platz für das Diagramm
+        // Auch im kleinen Fenster, groß wie im Paneel im linken Rand
         ui.fit(1.0, 900, 380);
-        assert!(!ui.levels_layout().list);
+        assert!(name_at(&ui, og.id).is_some());
         ui.set_levels_gross(false);
-        assert!(ui.levels_layout().list);
         assert!(name_at(&ui, og.id).is_some());
         assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
     }
 
     /// Jörn 11.10.: Nach Klick auf „OG“ wurde das Diagramm zur Liste, zurück
-    /// ging es nur über „EG“. Der Hinweis „Außenwände entstehen aus dem EG“
-    /// machte die „Werkzeuge“ zwei Zeilen höher. Jetzt weicht er, wenn er
-    /// das Diagramm in die Liste drücken würde; mit Platz bleibt er.
+    /// ging es nur über „EG“. Die Liste gibt es nicht mehr: der Hinweis zum
+    /// aktiven Geschoss in den „Werkzeuge“ steht immer, das Paneel bleibt
+    /// über dem Fensterrand und zeigt alle Namen.
     #[test]
     fn geschosswechsel_behaelt_das_diagramm() {
         let mut s = Scene::new();
@@ -4780,23 +4690,22 @@ mod levels_tests {
                 .iter()
                 .any(|r| matches!(r, Row::Hint(h) if h.starts_with("Außenwände") || h.starts_with("Im Fundament")))
         };
-        // 1920 × 1040 bei 125 %: knapp genug, dass der Hinweis kippen würde
+        // 1920 × 1040 bei 125 %: knapp genug, dass früher die Liste kam
         ui.fit(1.25, 1920, 1040);
         ui.set_levels(s.levels());
-        assert!(!ui.levels_layout().list, "EG: Diagramm");
-        for name in ["OG", "EG", "Fundament", "OG", "EG"] {
+        for (name, h) in [
+            ("OG", true),
+            ("EG", false),
+            ("Fundament", true),
+            ("OG", true),
+        ] {
             wechsel(&mut ui, &mut s, name);
-            assert!(!ui.levels_layout().list, "{name}: Diagramm");
-            assert!(!hinweis(&ui), "{name}: Hinweis weicht");
+            assert_eq!(hinweis(&ui), h, "{name}: Hinweis");
             let r = ui.rect(Panel::Levels, 1920, 32);
             assert!(r.y + r.h <= 1040.0, "{name}: {r:?}");
+            for b in ["Fundament", "EG", "OG"] {
+                assert!(name_at(&ui, band(&ui, b).id).is_some(), "{name}: {b}");
+            }
         }
-        // Mit Platz steht der Hinweis weiter da
-        ui.fit(1.0, 1920, 1200);
-        wechsel(&mut ui, &mut s, "OG");
-        assert!(!ui.levels_layout().list && hinweis(&ui));
-        // Ist es ohnehin eine Liste, bleibt er auch
-        ui.fit(1.0, 900, 400);
-        assert!(ui.levels_layout().list && hinweis(&ui));
     }
 }
