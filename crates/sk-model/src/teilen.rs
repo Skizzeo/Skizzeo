@@ -549,4 +549,81 @@ mod tests {
         let _ = og;
         pruefen(&mut m);
     }
+    /// Teilrücksprung im OG (Jörn 11.10., Tagesthema 2): Die Nordwand ist
+    /// in beiden Geschossen geteilt, nur das OG-Mittelstück springt 1,5 m
+    /// zurück. Das OG bekommt zwei Stufen, das EG bleibt; auf der Decke
+    /// liegt eine Dachterrasse genau vor dem Mittelstück.
+    #[test]
+    fn og_mittelstueck_zurueck_gibt_terrasse() {
+        let (mut m, eg, og) = rechteck();
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        let mitte = m.wall_at(og, 2).unwrap();
+        let st = m.run(og).unwrap().storey;
+        assert!(m.set_flat_roof(st, true));
+        let ak = m.parapet_above(og).unwrap();
+        m.begin("Rücksprung");
+        assert!(m.set_offset(mitte, -1500.0).is_some());
+        m.commit();
+        assert_eq!((zahl(&m, eg), zahl(&m, og)), (6, 8));
+        assert_eq!(m.stack_offset(mitte), Some((-1500.0, true)));
+        // Aufkantung und Flachdach folgen dem OG samt Stufen
+        assert_eq!(zahl(&m, ak), 8);
+        let dach = m.flat_roof(ak).unwrap();
+        assert_eq!(dach.outline.len(), 8);
+        let s = |k| Some(k);
+        assert_eq!(
+            m.stack_map(og),
+            vec![s(0), s(1), None, s(2), None, s(3), s(4), s(5)]
+        );
+        pruefen(&mut m);
+        let t = m.terrace_outlines(eg);
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert_eq!(t[0].segments, vec![2]);
+        // Zwischen den Stufen, bis zur Deckenkante: 3 m × knapp 1,5 m
+        let a = t[0].area() / 1e6;
+        assert!(a > 3.0 && a < 5.0, "{a}");
+        // Attika nur über dem Mittelstück, an beiden Stufen Stirnfläche;
+        // das Blech endet dort
+        let Some(Ok(f)) = m.floor(eg) else {
+            panic!("Decke")
+        };
+        let plan = &f.terraces;
+        assert!(!plan.attika.is_empty());
+        assert!(plan
+            .attika
+            .iter()
+            .all(|p| p.seg == 2 && p.free == [true, true]));
+        assert_eq!(plan.coping.len(), 1);
+        let c = &plan.coping[0];
+        assert_eq!(c.points.len(), 2, "{c:?}");
+        // Die Stufen stehen innen, ihre Außenfläche liegt auf der Fuge
+        assert!((c.length() - 3000.0).abs() < 1e-6, "{c:?}");
+        // Die Stufe ziehen: die Fuge darunter wandert mit, die Terrasse
+        // wird breiter
+        let stufe = m.wall_at(og, 2).unwrap();
+        assert_eq!(m.step_joint(stufe), Some((eg, 2)));
+        assert_eq!(m.step_joint(mitte), None);
+        let c = m.chain(eg).unwrap().with_joint_moved(2, -1000.0).unwrap();
+        m.begin("Fuge");
+        assert!(m.set_run_points(eg, &c.points).is_some());
+        m.commit();
+        assert_eq!((zahl(&m, eg), zahl(&m, og)), (6, 8));
+        assert_eq!(m.stack_offset(mitte), Some((-1500.0, true)));
+        let b = m.terrace_outlines(eg)[0].area() / 1e6;
+        assert!((b - a * 4.0 / 3.0).abs() < 1e-6, "{a} {b}");
+        pruefen(&mut m);
+        // Zurück auf 0: Stufen weg, keine Terrasse
+        m.begin("Bündig");
+        assert!(m.set_offset(mitte, 0.0).is_some());
+        let t = m.commit().unwrap();
+        assert_eq!(zahl(&m, og), 6);
+        assert!(m.terrace_outlines(eg).is_empty());
+        pruefen(&mut m);
+        // Rückgängig: wieder der Rücksprung
+        m.apply(&t, crate::txn::Direction::Undo);
+        assert_eq!(zahl(&m, og), 8);
+        assert_eq!(m.terrace_outlines(eg).len(), 1);
+        pruefen(&mut m);
+    }
 }

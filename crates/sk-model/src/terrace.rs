@@ -128,19 +128,60 @@ pub fn terrace_plan(
     depth: f64,
     strip: Option<u16>,
 ) -> TerracePlan {
-    plan(slab, up, depth, strip).unwrap_or_default()
+    terrace_plan_mapped(slab, up, &[], depth, strip)
 }
 
-fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Option<TerracePlan> {
-    let n = slab.segment_count();
-    if !slab.closed || !up.closed || up.segment_count() != n || n < 3 {
+/// Wie [`terrace_plan`] für einen Zug `up` mit Stufen (W-12): `map[s]` ist
+/// das Segment von `slab` unter Segment `s` von `up`, `None` für eine
+/// Stufe. Leer heißt Segment über Segment. Eine Terrasse endet an der
+/// Außenfläche der Stufe; dort endet auch die Attika (Stirnfläche) und das
+/// Blech, die Nachbarn in der Flucht bekommen keine Attika.
+pub fn terrace_plan_mapped(
+    slab: &WallChain,
+    up: &WallChain,
+    map: &[Option<usize>],
+    depth: f64,
+    strip: Option<u16>,
+) -> TerracePlan {
+    plan(slab, up, map, depth, strip).unwrap_or_default()
+}
+
+fn plan(
+    slab: &WallChain,
+    up: &WallChain,
+    map: &[Option<usize>],
+    depth: f64,
+    strip: Option<u16>,
+) -> Option<TerracePlan> {
+    let (n, mu) = (slab.segment_count(), up.segment_count());
+    if !slab.closed || !up.closed || n < 3 {
         return None;
     }
+    let ident: Vec<Option<usize>>;
+    let map = if map.is_empty() {
+        ident = (0..mu).map(Some).collect();
+        &ident[..]
+    } else {
+        map
+    };
+    if map.len() != mu {
+        return None;
+    }
+    // Je Segment darunter genau eines darüber
+    let mut inv = vec![None; n];
+    for (s, k) in map.iter().enumerate() {
+        if let Some(k) = *k {
+            if k >= n || inv[k].replace(s).is_some() {
+                return None;
+            }
+        }
+    }
+    let inv: Vec<usize> = inv.into_iter().collect::<Option<_>>()?;
     let face = |d: f64| slab.outer_offset() - slab.outward_sign() * d;
     let lc = slab.face_corners(face(depth));
     let mc = up.face_corners(up.outer_offset());
     let oc = slab.face_corners(slab.outer_offset());
-    if lc.len() != n || mc.len() != n || oc.len() != n {
+    if lc.len() != n || mc.len() != mu || oc.len() != n {
         return None;
     }
     // Außen = rechts der Laufrichtung bei Umlauf gegen den Uhrzeigersinn
@@ -149,16 +190,21 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
     } else {
         -1.0
     };
-    let dir = |c: &[Vec3], k: usize| c[(k + 1) % n] - c[k];
+    let dir = |c: &[Vec3], k: usize| c[(k + 1) % c.len()] - c[k % c.len()];
+    let line = |c: &[Vec3], k: usize| (c[k % c.len()], dir(c, k));
+    let cross = |l: (Vec3, Vec3), m: (Vec3, Vec3)| meet(l.0, l.1, m.0, m.1);
+    // Stufe oben vor bzw. nach dem Partner von Segment `k`
+    let step_before = |k: usize| map[(inv[k] + mu - 1) % mu].is_none();
+    let step_after = |k: usize| map[(inv[k] + 1) % mu].is_none();
     let depths: Vec<f64> = (0..n)
         .map(|k| {
             let d = dir(&lc, k);
-            if d.length() < 1e-9 || dir(&mc, k).length() < 1e-9 {
+            if d.length() < 1e-9 || dir(&mc, inv[k]).length() < 1e-9 {
                 return 0.0;
             }
             let out = right_of(d.normalized()) * sign;
             // M parallel zu L (Regel 29): Abstand an einem Punkt genügt
-            (lc[k] - mc[k]).dot(out)
+            (lc[k] - mc[inv[k]]).dot(out)
         })
         .collect();
     let terrace: Vec<bool> = depths.iter().map(|d| *d >= MIN_OFFSET - 1e-6).collect();
@@ -170,22 +216,32 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
     let part = |a: usize, len: usize, split: bool| -> Option<Vec<Vec3>> {
         let b = (a + len - 1) % n;
         let (prev, next) = ((a + n - 1) % n, (b + 1) % n);
-        // Anfang und Ende innen: an der Gehrung oder auf der Deckenkante des
+        let (ia, ib) = (inv[a], inv[b]);
+        let mut p = Vec::new();
+        // Anfang: an der Gehrung, an der Stufe oder auf der Deckenkante des
         // Nachbarn
-        let start = if split {
-            mc[a]
+        let first = if split {
+            let s = (inv[prev] + 1) % mu;
+            p.extend([mc[s], lc[a]]);
+            (s + 1) % mu
+        } else if step_before(a) {
+            p.extend([mc[ia], cross(line(&lc, a), line(&mc, ia + mu - 1))]);
+            (ia + 1) % mu
         } else {
-            meet(mc[a], dir(&mc, a), lc[prev], dir(&lc, prev))
+            p.extend([cross(line(&mc, ia), line(&lc, prev)), lc[a]]);
+            (ia + 1) % mu
         };
-        let end = if split {
-            mc[next]
+        p.extend((1..len).map(|i| lc[(a + i) % n]));
+        if split {
+            p.extend([lc[next], mc[(ib + 1) % mu]]);
+        } else if step_after(b) {
+            p.extend([cross(line(&lc, b), line(&mc, ib + 1)), mc[(ib + 1) % mu]]);
         } else {
-            meet(mc[b], dir(&mc, b), lc[next], dir(&lc, next))
-        };
-        let mut p = vec![start];
-        p.extend((0..=len).map(|i| lc[(a + i) % n]));
-        p.push(end);
-        p.extend((1..len).rev().map(|i| mc[(a + i) % n]));
+            p.extend([lc[next], cross(line(&mc, ib), line(&lc, next))]);
+        }
+        // Innen zurück an der Außenfläche darüber
+        let cnt = (ib + 1 + mu - first) % mu;
+        p.extend((0..cnt).rev().map(|i| mc[(first + i) % mu]));
         let p = polygon::simplified(&p);
         (p.len() >= 3 && polygon::is_simple(&p) && polygon::area(&p) > 1.0).then_some(p)
     };
@@ -246,7 +302,9 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
             }
         }
     }
-    let line = |c: &[Vec3], k: usize| (c[k], dir(c, k));
+    // Stirnfläche der Stufe vor bzw. nach der Folge `a..=b`
+    let step_in = |a: usize| step_before(a).then(|| line(&mc, inv[a] + mu - 1));
+    let step_out = |b: usize| step_after(b).then(|| line(&mc, inv[b] + 1));
     for (zi, &(d0, d1, layer, mat)) in zones.iter().enumerate() {
         let (c0, c1) = (slab.face_corners(face(d0)), slab.face_corners(face(d1)));
         if c0.len() != n || c1.len() != n {
@@ -262,55 +320,89 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
             contour,
         };
         for &(a, len) in &runs {
+            let b = (a + len - 1) % n;
+            let (si, so) = if ring {
+                (None, None)
+            } else {
+                (step_in(a), step_out(b))
+            };
             for i in 0..len {
                 let k = (a + i) % n;
                 let j = (k + 1) % n;
-                out.attika
-                    .push(piece(k, [c0[k], c0[j], c1[j], c1[k]], [false, false]));
+                let mut q = [c0[k], c0[j], c1[j], c1[k]];
+                let mut free = [false, false];
+                if let (0, Some(m)) = (i, si) {
+                    (q[0], q[3], free[0]) = (cross(line(&c0, k), m), cross(line(&c1, k), m), true);
+                }
+                if let (true, Some(m)) = (i + 1 == len, so) {
+                    (q[1], q[2], free[1]) = (cross(line(&c0, k), m), cross(line(&c1, k), m), true);
+                }
+                out.attika.push(piece(k, q, free));
             }
             if ring {
                 continue;
             }
-            // Nachbarn bis zur Außenfläche darüber
-            let b = (a + len - 1) % n;
+            // Nachbarn über Eck bis zur Außenfläche darüber
             let (prev, next) = ((a + n - 1) % n, (b + 1) % n);
-            let (ma, mb) = (line(&mc, a), line(&mc, b));
-            let cut = |c: &[Vec3], k: usize, m: (Vec3, Vec3)| {
-                let (p, d) = line(c, k);
-                meet(p, d, m.0, m.1)
-            };
-            out.attika.push(piece(
-                prev,
-                [cut(&c0, prev, ma), c0[a], c1[a], cut(&c1, prev, ma)],
-                [true, false],
-            ));
-            out.attika.push(piece(
-                next,
-                [c0[next], cut(&c0, next, mb), cut(&c1, next, mb), c1[next]],
-                [false, true],
-            ));
+            let (ma, mb) = (line(&mc, inv[a]), line(&mc, inv[b]));
+            if si.is_none() {
+                out.attika.push(piece(
+                    prev,
+                    [
+                        cross(line(&c0, prev), ma),
+                        c0[a],
+                        c1[a],
+                        cross(line(&c1, prev), ma),
+                    ],
+                    [true, false],
+                ));
+            }
+            if so.is_none() {
+                out.attika.push(piece(
+                    next,
+                    [
+                        c0[next],
+                        cross(line(&c0, next), mb),
+                        cross(line(&c1, next), mb),
+                        c1[next],
+                    ],
+                    [false, true],
+                ));
+            }
         }
     }
 
     // Blech: auf der Außenfläche, bei Rücksprung bis zur Außenfläche darüber
+    // bzw. bis zur Stufe
+    let nrm = |m: (Vec3, Vec3)| right_of(m.1.normalized());
     for &(a, len) in &runs {
         let (mut points, closed, mut ends) = if ring {
             (oc.clone(), true, [SweepEnd::Square; 2])
         } else {
             let b = (a + len - 1) % n;
             let (prev, next) = ((a + n - 1) % n, (b + 1) % n);
-            let (ma, mb) = (line(&mc, a), line(&mc, b));
-            let s = meet(oc[a], dir(&oc, prev), ma.0, ma.1);
-            let e = meet(oc[next], dir(&oc, next), mb.0, mb.1);
-            let mut p = vec![s];
-            p.extend((0..=len).map(|i| oc[(a + i) % n]));
+            let (mut p, sn) = match step_in(a) {
+                Some(m) => (vec![cross(line(&oc, a), m)], nrm(m)),
+                None => {
+                    let ma = line(&mc, inv[a]);
+                    (
+                        vec![meet(oc[a], dir(&oc, prev), ma.0, ma.1), oc[a]],
+                        nrm(ma),
+                    )
+                }
+            };
+            let s = p[0];
+            p.extend((1..len).map(|i| oc[(a + i) % n]));
+            let (e, en) = match step_out(b) {
+                Some(m) => (cross(line(&oc, b), m), nrm(m)),
+                None => {
+                    let mb = line(&mc, inv[b]);
+                    p.push(oc[next]);
+                    (meet(oc[next], dir(&oc, next), mb.0, mb.1), nrm(mb))
+                }
+            };
             p.push(e);
-            let nrm = |m: (Vec3, Vec3)| right_of(m.1.normalized());
-            (
-                p,
-                false,
-                [SweepEnd::Plane(s, nrm(ma)), SweepEnd::Plane(e, nrm(mb))],
-            )
+            (p, false, [SweepEnd::Plane(s, sn), SweepEnd::Plane(e, en)])
         };
         if sign < 0.0 {
             points.reverse();

@@ -200,7 +200,14 @@ impl Model {
                         below.layers[..core].iter().map(|l| l.thickness).sum()
                     }
                 };
-                let plan = crate::terrace::terrace_plan(below, &up, depth, strip.map(|s| s.mat));
+                let map = self.runs_above(run).first().map(|u| self.stack_map(*u));
+                let plan = crate::terrace::terrace_plan_mapped(
+                    below,
+                    &up,
+                    map.as_deref().unwrap_or_default(),
+                    depth,
+                    strip.map(|s| s.mat),
+                );
                 if !plan.is_empty() {
                     fs.terrace = Some(TerraceParams {
                         layers: self.terrace_params_layers(id, &f.terrace),
@@ -221,13 +228,18 @@ impl Model {
         Some(slab)
     }
 
-    /// Versatz nach außen je Segment des Zuges darüber gegenüber `run`, wie
-    /// er steht (gekoppelt oder gelöst). `None` ohne Zug darüber oder wenn
-    /// die Züge nicht zusammenpassen.
+    /// Versatz nach außen je Segment von `run` für die Wand darüber, wie sie
+    /// steht (gekoppelt oder gelöst; Stufen dazwischen zählen nicht, W-12).
+    /// `None` ohne Zug darüber oder wenn die Züge nicht zusammenpassen.
     fn offsets_above(&self, run: RunId) -> Option<Vec<f64>> {
         let up = *self.runs_above(run).first()?;
-        self.base_chain(up)?
-            .segment_offsets_from(&self.base_chain(run)?)
+        let (upc, low) = (self.base_chain(up)?, self.base_chain(run)?);
+        let lsegs = self.run(run)?.segments.clone();
+        self.partners(up, &lsegs)
+            .into_iter()
+            .enumerate()
+            .map(|(k, j)| upc.offset_against(j?, &low, k))
+            .collect()
     }
 
     /// Dachterrassen auf der Decke über `run` (Review 2a R8, BIM Regel 41):
@@ -263,8 +275,13 @@ impl Model {
         let Some(below) = self.run_below(run) else {
             return vec![true; n];
         };
+        // Eine Stufe (W-12) steht ganz auf der Decke, neben dem Streifen
         match self.offsets_above(below) {
-            Some(o) if o.len() == n => o.iter().map(|d| *d <= -MIN_OFFSET).collect(),
+            Some(o) => self
+                .stack_map(run)
+                .into_iter()
+                .map(|k| k.and_then(|k| o.get(k)).is_none_or(|d| *d <= -MIN_OFFSET))
+                .collect(),
             _ => vec![true; n],
         }
     }
