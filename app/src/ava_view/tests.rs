@@ -1113,10 +1113,10 @@ fn druckvorschau_blaettern_und_pdf() {
     assert_eq!(v.hit(&t, &fonts, k.0, k.1), Some(Hot::Vorschau));
     v.mouse_down(&t, &fonts, &mut p, k, mods);
     assert_eq!(v.ansicht, Ansicht::Blatt);
-    assert!(
-        v.vorschau_rect(&t, &fonts).is_none(),
-        "nur in der Ansicht LV"
-    );
+    // Jörn 11.10.: an derselben Stelle steht jetzt „Zurück zum LV“
+    let (x, y, w, h) = v.vorschau_rect(&t, &fonts).expect("Zurück zum LV");
+    let k = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+    assert_eq!(v.hit(&t, &fonts, k.0, k.1), Some(Hot::Vorschau));
     // 26.2: der Knopf nennt die Fassung, der Schalter steht auch in der
     // Leiste über dem Blatt
     assert_eq!(v.knopf_text(), "LV Rohbau mit Preisen als PDF speichern");
@@ -1255,10 +1255,15 @@ fn knoepfe_und_vorschauleiste_ueberdecken_sich_nie() {
                     },
                     "{wo}: {text}"
                 );
-                let mut teile = vec![("Titel", titel)];
+                let zurueck = v.vorschau_rect(&t, &fonts).expect("Zurück zum LV");
+                let mut teile = vec![("Titel", titel), ("Zurück", zurueck)];
                 if knopf.1 < v.top_px() {
                     teile.push(("Karten", karten));
                 }
+                assert!(
+                    zurueck.0 >= x0 - 0.5 && zurueck.0 + zurueck.2 <= x0 + cw + 0.5,
+                    "{wo}: Zurück außerhalb"
+                );
                 if v.baum_als_leiste() {
                     teile.push(("Leiste", v.leiste_rect(&t, Some(bold)).0));
                 }
@@ -1325,4 +1330,116 @@ fn kurztext_bricht_auch_im_breiten_fenster_um() {
             "{dip} dip"
         );
     }
+}
+
+/// Jörn 11.10.: Aus der Druckvorschau führt „Zurück zum LV“ an der Stelle
+/// des Knopfs „Druckvorschau“ zurück, ebenso Esc; ein Klick auf das Blatt
+/// zeigt die Seiten groß über dem Fenster, Esc, ein Klick daneben oder
+/// „Schließen“ schließt sie, die kleine Vorschau folgt der Seite.
+#[test]
+fn druckvorschau_gross_und_zurueck() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut p = Picking::default();
+    let mods = sk_platform::Modifiers::default();
+    for (w, h, scale) in [(960, 1000, 1.0_f32), (720, 1100, 1.5), (1600, 900, 1.0)] {
+        let wo = format!("{w}×{h} bei {scale}");
+        let mut v = AvaView::new();
+        v.scale = scale;
+        (v.w, v.h) = (w, h);
+        v.top = 32.0 + crate::cards::HEIGHT;
+        v.sync(&mut s, None);
+        let knopf = |v: &AvaView| {
+            let (x, y, w, h) = v.vorschau_rect(&t, &fonts).expect("Knopf");
+            ((x + w * 0.5) as f64, (y + h * 0.5) as f64)
+        };
+        // Hin über den Knopf, zurück über denselben Platz
+        v.mouse_down(&t, &fonts, &mut p, knopf(&v), mods);
+        assert_eq!(v.ansicht, Ansicht::Blatt, "{wo}");
+        v.mouse_down(&t, &fonts, &mut p, knopf(&v), mods);
+        assert_eq!(v.ansicht, Ansicht::Lv, "{wo}: Zurück zum LV");
+        // Esc verlässt die Druckvorschau, im LV ändert es nichts
+        v.zeige(Ansicht::Blatt);
+        assert!(v.druckvorschau_verlassen());
+        assert_eq!(v.ansicht, Ansicht::Lv);
+        assert!(!v.druckvorschau_verlassen());
+
+        // Klick auf das Blatt auf Seite 2: groß, auf Seite 2
+        v.zeige(Ansicht::Blatt);
+        let n = v.seiten(&fonts);
+        assert!(n >= 2, "{wo}: {n} Seiten");
+        v.seite = 1;
+        let (bx, by, k) = v.blatt_lage(&t, &fonts);
+        let auf = ((bx + 0.5 * A4_W * k) as f64, (by + 0.5 * A4_H * k) as f64);
+        assert_eq!(v.hit(&t, &fonts, auf.0, auf.1), Some(Hot::Lupe), "{wo}");
+        assert!(v.tip_at(&t, &fonts, auf.0, auf.1).is_some());
+        v.mouse_down(&t, &fonts, &mut p, auf, mods);
+        assert!(v.gross_offen(), "{wo}");
+        let l = v.gross_lage(&fonts);
+        assert_eq!(l.jetzt(h as f32), 1, "{wo}: groß auf Seite 2");
+        // Groß ist breiter als klein und bleibt im Fenster
+        assert!(l.k > k, "{wo}: {} > {k}", l.k);
+        assert!(l.x >= 0.0 && l.x + A4_W * l.k <= w as f32 + 0.5, "{wo}");
+        let (zx, zy, zw, zh) = l.zu;
+        assert!(zx >= 0.0 && zx + zw <= w as f32 + 0.5, "{wo}: Schließen");
+        // Ein Klick auf die Seite schließt nicht, nichts darunter reagiert
+        let (sx, sy, sw, sh) = l.seite(1);
+        let seite = (
+            (sx + sw * 0.5) as f64,
+            (sy.max(l.oben + 60.0 * scale) + 10.0) as f64,
+        );
+        assert!(sy < h as f32 && sy + sh > 0.0);
+        assert_eq!(v.hit(&t, &fonts, seite.0, seite.1), Some(Hot::GrossSeite));
+        assert_eq!(v.mouse_down(&t, &fonts, &mut p, seite, mods), None);
+        assert!(v.gross_offen(), "{wo}");
+        assert_eq!(v.wheel(0.0, &t), None);
+        // Rollen ans Ende, Schließen: die kleine Vorschau steht dort
+        for _ in 0..200 {
+            v.wheel(-1.0, &t);
+        }
+        let l = v.gross_lage(&fonts);
+        assert_eq!(l.scroll, l.max, "{wo}");
+        assert_eq!(l.jetzt(h as f32), n - 1, "{wo}: am Ende die letzte Seite");
+        let zu = ((zx + zw * 0.5) as f64, (zy + zh * 0.5) as f64);
+        assert_eq!(v.hit(&t, &fonts, zu.0, zu.1), Some(Hot::GrossZu));
+        v.mouse_down(&t, &fonts, &mut p, zu, mods);
+        assert!(!v.gross_offen());
+        assert_eq!(
+            v.ansicht,
+            Ansicht::Blatt,
+            "{wo}: Schließen bleibt in der Vorschau"
+        );
+        assert_eq!(v.seite_jetzt(&fonts), n - 1, "{wo}");
+        // Klick daneben (Rand links neben den Seiten bzw. unter der Leiste)
+        v.mouse_down(&t, &fonts, &mut p, auf_blatt(&v, &t, &fonts), mods);
+        assert!(v.gross_offen(), "{wo}");
+        let l = v.gross_lage(&fonts);
+        let daneben = ((l.x * 0.5) as f64, (h as f32 - 4.0) as f64);
+        assert_eq!(v.hit(&t, &fonts, daneben.0, daneben.1), None);
+        v.mouse_down(&t, &fonts, &mut p, daneben, mods);
+        assert!(!v.gross_offen(), "{wo}: Klick daneben");
+        // Esc-Kette des Fensters: zuerst groß zu, dann die Vorschau
+        v.mouse_down(&t, &fonts, &mut p, auf_blatt(&v, &t, &fonts), mods);
+        assert!(v.gross_schliessen());
+        assert!(!v.gross_schliessen());
+        assert_eq!(v.ansicht, Ansicht::Blatt);
+        // Zurück zum LV schließt auch die große Ansicht
+        v.mouse_down(&t, &fonts, &mut p, auf_blatt(&v, &t, &fonts), mods);
+        assert!(v.druckvorschau_verlassen());
+        assert!(!v.gross_offen());
+        v.zeige(Ansicht::Blatt);
+        assert!(!v.gross_offen(), "{wo}: wieder in der Vorschau klein");
+    }
+}
+
+const A4_W: f32 = sk_paint::pdf::A4.0;
+const A4_H: f32 = sk_paint::pdf::A4.1;
+
+/// Mitte des kleinen Blatts der Druckvorschau.
+fn auf_blatt(v: &AvaView, t: &Theme, fonts: &Fonts) -> (f64, f64) {
+    let (bx, by, k) = v.blatt_lage(t, fonts);
+    ((bx + 0.5 * A4_W * k) as f64, (by + 0.5 * A4_H * k) as f64)
 }

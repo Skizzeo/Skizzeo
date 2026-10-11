@@ -230,6 +230,12 @@ enum Hot {
     Oeffnen,
     /// „Alle Positionen“ in der Leiste der isolierten Tabelle.
     Alle,
+    /// Druckvorschau: das Blatt; ein Klick zeigt es groß (Jörn 11.10.).
+    Lupe,
+    /// Große Druckvorschau: „Schließen“.
+    GrossZu,
+    /// Große Druckvorschau: eine Seite (der Klick schließt nicht).
+    GrossSeite,
 }
 
 /// Punkt im Baum: grün Preis da, Akzent Preis fehlt, grau leer.
@@ -472,6 +478,9 @@ pub struct AvaView {
     fokus_stand: u64,
     fokus_text: String,
     scroll_vorher: Option<f32>,
+    /// Druckvorschau groß über dem ganzen Fenster (Jörn 11.10.): Rollstand
+    /// (px), `None` zu.
+    gross: Option<f32>,
 }
 
 impl Default for AvaView {
@@ -532,6 +541,7 @@ impl AvaView {
             fokus_stand: 0,
             fokus_text: String::new(),
             scroll_vorher: None,
+            gross: None,
         }
     }
 
@@ -1114,6 +1124,10 @@ impl AvaView {
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         self.messen(fonts);
         let (x, y) = (x as f32, y as f32);
+        // Die große Druckvorschau liegt über allem
+        if self.gross_offen() {
+            return self.gross_hit(fonts, x, y);
+        }
         // Das offene Baumblatt liegt über allem darunter
         if self.baum_als_leiste() && self.baum_blatt && inside(self.baum_blatt_rect(t), x, y) {
             return self
@@ -1247,6 +1261,14 @@ impl AvaView {
         mods: sk_platform::Modifiers,
     ) -> Option<ListOut> {
         let hot = self.hit(t, fonts, x, y);
+        // Große Druckvorschau: Klick daneben oder „Schließen“ schließt sie
+        if self.gross_offen() {
+            if hot == Some(Hot::GrossSeite) {
+                return None;
+            }
+            self.gross_schliessen();
+            return Some(ListOut::Repaint);
+        }
         // Klick neben „Mehr“ schließt es
         let mut out = None;
         if self.mehr_offen && !matches!(hot, Some(Hot::Mehr | Hot::Untertitel)) {
@@ -1289,10 +1311,20 @@ impl AvaView {
                 self.baum_blatt = !self.baum_blatt;
                 Some(ListOut::Repaint)
             }
+            // In der Druckvorschau heißt der Knopf „Zurück zum LV“
+            Hot::Vorschau if self.ansicht == Ansicht::Blatt => {
+                self.zeige(Ansicht::Lv);
+                Some(ListOut::Repaint)
+            }
             Hot::Vorschau => {
                 self.zeige(Ansicht::Blatt);
                 Some(ListOut::Repaint)
             }
+            Hot::Lupe => {
+                self.gross_oeffnen(fonts);
+                Some(ListOut::Repaint)
+            }
+            Hot::GrossZu | Hot::GrossSeite => None,
             Hot::BaumPruefen => {
                 // Auch bei offenem Blatt ein Klick: zu und „Prüfen“
                 self.baum_blatt = false;
@@ -1392,6 +1424,14 @@ impl AvaView {
         offen
     }
 
+    /// Esc und Schließen des Fensters (Jörn 11.10.): aus der Druckvorschau
+    /// zurück zum LV, wie es sich öffnet; `true`, wenn sie gezeigt war.
+    pub fn druckvorschau_verlassen(&mut self) -> bool {
+        let war = self.ansicht == Ansicht::Blatt;
+        self.zeige(Ansicht::Lv);
+        war
+    }
+
     fn waehle_los(&mut self, los: Guid) {
         if self.los != Some(los) {
             self.los = Some(los);
@@ -1405,6 +1445,7 @@ impl AvaView {
     fn zeige(&mut self, a: Ansicht) {
         if self.ansicht != a {
             self.ansicht = a;
+            self.gross = None;
             self.scroll = 0.0;
             self.seite = 0;
             if a != Ansicht::Lv {
@@ -1414,6 +1455,9 @@ impl AvaView {
     }
 
     pub fn wheel(&mut self, delta: f64, t: &Theme) -> Option<ListOut> {
+        if self.gross_offen() {
+            return self.gross_rollen(delta, t);
+        }
         if self.ansicht == Ansicht::Blatt {
             // Das Rad blättert in der Druckvorschau
             let n = self
@@ -1472,6 +1516,8 @@ impl AvaView {
                 _ => None,
             },
             Hot::BaumPruefen => Some(format!("{} offene Punkte im LV", self.befunde())),
+            Hot::Lupe => Some("Klick zeigt die Seite groß".into()),
+            Hot::GrossZu => Some("Schließen (Esc)".into()),
             _ => None,
         }
     }
@@ -2714,6 +2760,7 @@ mod blatt;
 mod csv;
 mod erweiterung;
 mod fokus_leiste;
+mod gross;
 mod kopf;
 #[cfg(test)]
 mod tests;
