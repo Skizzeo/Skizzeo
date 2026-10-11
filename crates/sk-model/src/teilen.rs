@@ -27,6 +27,8 @@ pub enum FugeError {
     Types,
     /// Der Stapel würde ungültig (Wandrest zu kurz, Umriss kreuzt sich).
     Invalid,
+    /// Die Wand ist die Stufe eines Teilrücksprungs (W-12, Review #69).
+    Step,
 }
 
 impl FugeError {
@@ -42,6 +44,9 @@ impl FugeError {
             FugeError::Types => "Die Wände haben verschiedene Typen; sie bleiben getrennt.",
             FugeError::Invalid => {
                 "Das geht hier nicht: Ein Wandstück würde zu kurz oder der Grundriss ungültig."
+            }
+            FugeError::Step => {
+                "Eine Stufe lässt sich nicht teilen; zieh sie, dann wird der Rücksprung breiter oder schmaler."
             }
         }
     }
@@ -96,6 +101,10 @@ impl Model {
     /// Teilungspunkten.
     fn split_points(&self, wall: ElementId, at: &[f64]) -> Result<(RunId, Vec<Vec3>), FugeError> {
         let (run, seg) = self.segment_of(wall).ok_or(FugeError::NoWall)?;
+        // Die Stufe steht ohne Kopplung neben der Fuge darunter
+        if self.step_joint(wall).is_some() {
+            return Err(FugeError::Step);
+        }
         let (p0, dir) = self
             .base_chain(run)
             .and_then(|c| c.segment_frame(seg))
@@ -731,5 +740,165 @@ mod tests {
         assert_eq!(probe.can_merge(a, b), Err(FugeError::Types));
         let _ = og;
         pruefen(&mut m);
+    }
+    /// Teilrücksprung im OG (Jörn 11.10., Tagesthema 2): Die Nordwand ist
+    /// in beiden Geschossen geteilt, nur das OG-Mittelstück springt 1,5 m
+    /// zurück. Das OG bekommt zwei Stufen, das EG bleibt; auf der Decke
+    /// liegt eine Dachterrasse genau vor dem Mittelstück.
+    #[test]
+    fn og_mittelstueck_zurueck_gibt_terrasse() {
+        let (mut m, eg, og) = rechteck();
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        let mitte = m.wall_at(og, 2).unwrap();
+        let st = m.run(og).unwrap().storey;
+        assert!(m.set_flat_roof(st, true));
+        let ak = m.parapet_above(og).unwrap();
+        m.begin("Rücksprung");
+        assert!(m.set_offset(mitte, -1500.0).is_some());
+        m.commit();
+        assert_eq!((zahl(&m, eg), zahl(&m, og)), (6, 8));
+        assert_eq!(m.stack_offset(mitte), Some((-1500.0, true)));
+        // Aufkantung und Flachdach folgen dem OG samt Stufen
+        assert_eq!(zahl(&m, ak), 8);
+        let dach = m.flat_roof(ak).unwrap();
+        assert_eq!(dach.outline.len(), 8);
+        let s = |k| Some(k);
+        assert_eq!(
+            m.stack_map(og),
+            vec![s(0), s(1), None, s(2), None, s(3), s(4), s(5)]
+        );
+        pruefen(&mut m);
+        let t = m.terrace_outlines(eg);
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert_eq!(t[0].segments, vec![2]);
+        // Zwischen den Stufen, bis zur Deckenkante: 3 m × knapp 1,5 m
+        let a = t[0].area() / 1e6;
+        assert!(a > 3.0 && a < 5.0, "{a}");
+        // Attika nur über dem Mittelstück, an beiden Stufen Stirnfläche;
+        // das Blech endet dort
+        let Some(Ok(f)) = m.floor(eg) else {
+            panic!("Decke")
+        };
+        let plan = &f.terraces;
+        assert!(!plan.attika.is_empty());
+        assert!(plan
+            .attika
+            .iter()
+            .all(|p| p.seg == 2 && p.free == [true, true]));
+        assert_eq!(plan.coping.len(), 1);
+        let c = &plan.coping[0];
+        assert_eq!(c.points.len(), 2, "{c:?}");
+        // Die Stufen stehen innen, ihre Außenfläche liegt auf der Fuge
+        assert!((c.length() - 3000.0).abs() < 1e-6, "{c:?}");
+        // Die Stufe ziehen: die Fuge darunter wandert mit, die Terrasse
+        // wird breiter
+        let stufe = m.wall_at(og, 2).unwrap();
+        assert_eq!(m.step_joint(stufe), Some((eg, 2)));
+        assert_eq!(m.step_joint(mitte), None);
+        let c = m.chain(eg).unwrap().with_joint_moved(2, -1000.0).unwrap();
+        m.begin("Fuge");
+        assert!(m.set_run_points(eg, &c.points).is_some());
+        m.commit();
+        assert_eq!((zahl(&m, eg), zahl(&m, og)), (6, 8));
+        assert_eq!(m.stack_offset(mitte), Some((-1500.0, true)));
+        let b = m.terrace_outlines(eg)[0].area() / 1e6;
+        assert!((b - a * 4.0 / 3.0).abs() < 1e-6, "{a} {b}");
+        pruefen(&mut m);
+        // Zurück auf 0: Stufen weg, keine Terrasse
+        m.begin("Bündig");
+        assert!(m.set_offset(mitte, 0.0).is_some());
+        let t = m.commit().unwrap();
+        assert_eq!(zahl(&m, og), 6);
+        assert!(m.terrace_outlines(eg).is_empty());
+        pruefen(&mut m);
+        // Rückgängig: wieder der Rücksprung
+        m.apply(&t, crate::txn::Direction::Undo);
+        assert_eq!(zahl(&m, og), 8);
+        assert_eq!(m.terrace_outlines(eg).len(), 1);
+        pruefen(&mut m);
+    }
+
+    /// Review #69: Eine Stufe lässt sich nicht teilen, sie hat keine Wand
+    /// darunter; der Stapel bleibt gültig.
+    #[test]
+    fn stufe_teilen_abgelehnt() {
+        let (mut m, eg, og) = rechteck();
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        let mitte = m.wall_at(og, 2).unwrap();
+        assert!(m.set_offset(mitte, -1500.0).is_some());
+        for k in [2, 4] {
+            let stufe = m.wall_at(og, k).unwrap();
+            assert_eq!(m.can_split(stufe, &[700.0]), Err(FugeError::Step));
+            assert_eq!(m.split_wall(stufe, &[700.0]), Err(FugeError::Step));
+        }
+        assert_eq!(zahl(&m, og), 8);
+        pruefen(&mut m);
+    }
+
+    /// Geometrie (Prüfung #69): Ein Eckstück schmaler als die Attika
+    /// (100–139 mm bei 140 mm) springt zurück. Dort ist kein Platz für eine
+    /// Terrasse: Keine Terrassenfläche, und jedes Attikastück ist ein
+    /// einfaches Viereck (kein Überschlag an der Stufe).
+    #[test]
+    fn schmales_eckstueck_zurueck() {
+        use sk_math::polygon;
+        for x in [100.0, 120.0, 139.0] {
+            let (mut m, eg, og) = rechteck();
+            let nord = m.wall_at(eg, 1).unwrap();
+            m.split_wall(nord, &[x]).unwrap();
+            let st = m.run(og).unwrap().storey;
+            assert!(m.set_flat_roof(st, true));
+            let ecke = m.wall_at(og, 1).unwrap();
+            m.begin("Rücksprung");
+            let ok = m.set_offset(ecke, -1500.0).is_some();
+            m.commit();
+            if !ok {
+                continue;
+            }
+            pruefen(&mut m);
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let t = &f.terraces;
+            assert!(t.area() < 1.0, "{x}: Terrasse {} mm²", t.area());
+            for p in &t.attika {
+                assert!(polygon::is_simple(&p.quad), "{x}: Attika {p:?}");
+            }
+        }
+    }
+
+    /// Geometrie (Prüfung #69, Nachprüfung): Dasselbe Mittelstück mit
+    /// Bezugslinie innen (Zug gegen den Uhrzeiger, Bezug links). Auch hier
+    /// liegt die Außenfläche jeder Stufe auf der Fuge: Terrasse und Blech
+    /// sind 3 m breit wie mit Bezug außen, nicht um zwei Wanddicken
+    /// schmaler.
+    #[test]
+    fn stufe_auf_der_fuge_auch_mit_bezug_innen() {
+        let (mut m, eg, og) = haus(&[
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ]);
+        let nord = m.wall_at(eg, 2).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        let st = m.run(og).unwrap().storey;
+        assert!(m.set_flat_roof(st, true));
+        let mitte = m.wall_at(og, 3).unwrap();
+        m.begin("Rücksprung");
+        assert!(m.set_offset(mitte, -1500.0).is_some());
+        m.commit();
+        pruefen(&mut m);
+        let Some(Ok(f)) = m.floor(eg) else {
+            panic!("Decke")
+        };
+        let t = &f.terraces;
+        assert_eq!(t.coping.len(), 1);
+        let l = t.coping[0].length();
+        assert!((l - 3000.0).abs() < 1e-6, "Blech {l}");
+        let a = t.area() / 1e6;
+        assert!((a - 3.0 * 1.36).abs() < 1e-6, "Terrasse {a}");
     }
 }

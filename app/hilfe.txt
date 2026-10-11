@@ -86,6 +86,8 @@ Genau | Zahl tippen und **Enter**: Abstand ab dem Ende, dem die Maus näher ist
 Zwei Punkte | Der zweite Punkt teilt ein Mittelstück ab; **Enter** teilt schon am ersten
 Rück- und Vorsprung | Teilstück am violetten Band rein- oder rausziehen; Stufen entstehen von selbst
 Ganzes Haus | Teilen und Ziehen gelten für alle Geschosse übereinander
+Nur OG | mit **Strg** oder gelöster Kette springt nur das OG-Stück zurück; davor entsteht eine Dachterrasse
+Breite | Stufe am Band ziehen: die Fuge darunter wandert mit, der Rücksprung wird breiter oder schmaler
 Fuge | graue, offene Kette an der Fuge; Klick vereint die beiden Wände
 Zusammenschieben | knapp vor der Flucht rastet das Stück ein; Karte: vereinen oder getrennt lassen
 Abbrechen | **Esc**; **Rücktaste** nimmt den gesetzten Punkt zurück

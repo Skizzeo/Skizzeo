@@ -102,8 +102,13 @@ impl App {
     /// abgebrochen ist.
     fn split_start(&mut self, wall: ElementId) {
         let m = self.scene.model();
+        let step = m.step_joint(wall).is_some();
         if let Some(b) = sk_model::edit_blocked(m, &m.stack_column(wall)) {
             self.show_locked(b, Some((wall, delete::Act::Field)));
+            return;
+        }
+        if step {
+            self.fuge_refused(FugeError::Step);
             return;
         }
         if !self.edit.start_split(&self.scene, wall) {

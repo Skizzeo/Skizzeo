@@ -92,6 +92,29 @@ impl WallChain {
         })
     }
 
+    /// Zug mit der Fuge vor Segment `seg` um `d` längs der Flucht verschoben
+    /// (+ in Laufrichtung): das Stück davor wird länger, das ab ihr kürzer.
+    /// `None` ohne Fuge dort oder wenn ein Stück kürzer als [`MIN_PIECE`]
+    /// würde.
+    pub fn with_joint_moved(&self, seg: usize, d: f64) -> Option<WallChain> {
+        if !d.is_finite() || !self.straight_joints().contains(&seg) {
+            return None;
+        }
+        let mut pts = self.clean_points();
+        let n = pts.len();
+        let (a, b) = (pts[(seg + n - 1) % n], pts[(seg + 1) % n]);
+        let dir = (b - a).normalized();
+        let p = pts[seg] + dir * d;
+        if (p - a).dot(dir) < MIN_PIECE - 1e-6 || (b - p).dot(dir) < MIN_PIECE - 1e-6 {
+            return None;
+        }
+        pts[seg] = p;
+        Some(WallChain {
+            points: pts,
+            ..self.clone()
+        })
+    }
+
     /// Verschiebt Segment `i` um `d` entlang seiner Normalen wie beim Ziehen
     /// am Gummiband (siehe [`WallChain::with_segment_moved`]). Dazu: Rückt es
     /// in die Flucht der Wand hinter einem schrumpfenden Nachbarn, fällt der
@@ -225,6 +248,116 @@ impl WallChain {
             ..self.clone()
         })
     }
+    /// Wie [`WallChain::with_segment_offsets`], aber zwei Nachbarn in einer
+    /// Flucht dürfen verschieden weit zurückspringen (W-12, Dachterrasse über
+    /// einem Teilstück): An ihrer Fuge entsteht eine Stufe quer zur Flucht.
+    /// Vorspringen darf dort keiner (ein Erker über einem Teil der Wand
+    /// kommt später, Jörn 07.10.). Dazu je Segment des Ergebnisses das
+    /// Segment von `self`, aus dem es versetzt ist; `None` für eine Stufe.
+    /// Die Stufe an Punkt 0 steht am Ende, so bleibt Segment k über k, bis
+    /// die erste Stufe kommt. `face`: Versatz der Außenfläche der Wand, die
+    /// so liegt (ihr [`WallChain::outer_offset`]); die Stufe steht mit der
+    /// Außenfläche auf der Fuge, gleich wo ihre Bezugslinie liegt
+    /// (Geometrie #69).
+    pub fn with_segment_offsets_stepped(
+        &self,
+        offsets: &[f64],
+        face: f64,
+    ) -> Option<(WallChain, Vec<Option<usize>>)> {
+        let (pts, closed, dirs) = self.layout()?;
+        let (n, m) = (pts.len(), dirs.len());
+        if offsets.len() != m || offsets.iter().any(|d| !d.is_finite()) {
+            return None;
+        }
+        let sign = self.outward_sign();
+        let shift = |i: usize| right_of(dirs[i]) * (sign * offsets[i]);
+        // Je Eckpunkt ein Punkt, an einer Stufe zwei
+        let mut corner: Vec<Vec<Vec3>> = Vec::with_capacity(n);
+        for (j, &pj) in pts.iter().enumerate() {
+            let prev = (closed || j > 0).then(|| (j + m - 1) % m);
+            let next = (closed || j < n - 1).then_some(j % m);
+            let p = match (prev, next) {
+                (Some(a), Some(b)) => {
+                    let c = cross2(dirs[a], dirs[b]);
+                    if c.abs() < 1e-9 {
+                        if dirs[a].dot(dirs[b]) < 0.0 {
+                            return None;
+                        }
+                        if (offsets[a] - offsets[b]).abs() <= 1e-6 {
+                            vec![pj + shift(b)]
+                        } else if offsets[a] > 1e-6 || offsets[b] > 1e-6 {
+                            return None;
+                        } else {
+                            let back = right_of((shift(b) - shift(a)).normalized()) * -face;
+                            vec![pj + shift(a) + back, pj + shift(b) + back]
+                        }
+                    } else {
+                        let (pa, pb) = (pj + shift(a), pj + shift(b));
+                        vec![pa + dirs[a] * (cross2(pb - pa, dirs[b]) / c)]
+                    }
+                }
+                (Some(a), None) => vec![pj + shift(a)],
+                (None, Some(b)) => vec![pj + shift(b)],
+                (None, None) => return None,
+            };
+            corner.push(p);
+        }
+        // Punkte und Zuordnung: Segment k läuft vom letzten Punkt der Ecke k
+        // zum ersten der Ecke k + 1
+        let mut out = Vec::new();
+        let mut map = Vec::new();
+        for (j, c) in corner.iter().enumerate() {
+            if j == 0 && closed {
+                out.push(*c.last()?);
+            } else {
+                out.extend(c.iter().copied());
+                map.extend(std::iter::repeat_n(None, c.len() - 1));
+            }
+            if j < m {
+                map.push(Some(j));
+            }
+        }
+        if closed && corner[0].len() == 2 {
+            out.push(corner[0][0]);
+            map.push(None);
+        }
+        let k = out.len();
+        for (i, src) in map.iter().enumerate() {
+            if !closed && i + 1 >= k {
+                break;
+            }
+            let v = out[(i + 1) % k] - out[i];
+            let ok = match src {
+                Some(s) => v.length() >= 1.0 && v.dot(dirs[*s]) > 0.0,
+                None => v.length() >= 1.0,
+            };
+            if !ok {
+                return None;
+            }
+        }
+        if closed && !polygon::is_simple(&out) {
+            return None;
+        }
+        Some((
+            WallChain {
+                points: out,
+                closed,
+                ..self.clone()
+            },
+            map,
+        ))
+    }
+
+    /// Versatz nach außen des Segments `j` von `self` gegenüber Segment `k`
+    /// des Zuges `below` (Bezugslinie zu Bezugslinie); `None`, wenn sie
+    /// nicht in gleicher Richtung parallel liegen.
+    pub fn offset_against(&self, j: usize, below: &WallChain, k: usize) -> Option<f64> {
+        let (pa, _, da) = below.layout()?;
+        let (pb, _, db) = self.layout()?;
+        let (a, b) = (*da.get(k)?, *db.get(j)?);
+        (cross2(a, b).abs() < 1e-9 && a.dot(b) > 0.0)
+            .then(|| (pb[j] - pa[k]).dot(right_of(a)) * below.outward_sign())
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +404,65 @@ mod tests {
             vec3(10000.0, 6000.0, 0.0),
             vec3(10000.0, 0.0, 0.0),
         ])
+    }
+
+    /// Mittelstück der Nordwand 1,5 m zurück: zwei Stufen, die Stücke
+    /// bleiben in ihrer Linie; vorspringen darf es an der Fuge nicht. Ohne
+    /// Unterschied wie `with_segment_offsets`; gemessen zurück wie gesetzt.
+    #[test]
+    fn fuge_verschieben() {
+        let w = rechteck().with_splits(1, &[3000.0, 6000.0]).unwrap();
+        let c = w.with_joint_moved(2, 500.0).unwrap();
+        assert!(near(c.points[2], vec3(3500.0, 8000.0, 0.0)));
+        assert_eq!(c.straight_joints(), vec![2, 3]);
+        assert!(w.with_joint_moved(2, -2950.0).is_none(), "zu kurz");
+        assert!(w.with_joint_moved(1, 10.0).is_none(), "keine Fuge");
+    }
+
+    #[test]
+    fn stufen_beim_versatz() {
+        let w = rechteck().with_splits(1, &[3000.0, 6000.0]).unwrap();
+        let o = [0.0, 0.0, -1500.0, 0.0, 0.0, 0.0];
+        let (c, map) = w.with_segment_offsets_stepped(&o, 0.0).unwrap();
+        assert_eq!(c.segment_count(), 8);
+        let s = |k| Some(k);
+        assert_eq!(map, vec![s(0), s(1), None, s(2), None, s(3), s(4), s(5)]);
+        assert!(near(c.points[2], vec3(3000.0, 8000.0, 0.0)));
+        assert!(near(c.points[3], vec3(3000.0, 6500.0, 0.0)));
+        assert!(near(c.points[4], vec3(6000.0, 6500.0, 0.0)));
+        assert!(near(c.points[5], vec3(6000.0, 8000.0, 0.0)));
+        assert_eq!(c.offset_against(3, &w, 2), Some(-1500.0));
+        assert_eq!(c.offset_against(1, &w, 1), Some(0.0));
+        assert_eq!(c.offset_against(2, &w, 2), None);
+        let mut v = o;
+        v[2] = 300.0;
+        assert!(
+            w.with_segment_offsets_stepped(&v, 0.0).is_none(),
+            "Erker später"
+        );
+        v[2] = 0.0;
+        let (c, map) = w.with_segment_offsets_stepped(&v, 0.0).unwrap();
+        assert_eq!(c.points, w.with_segment_offsets(&v).unwrap().points);
+        assert_eq!(map, (0..6).map(Some).collect::<Vec<_>>());
+        // Ganze Wand zurück: keine Stufe, Ecken geschnitten
+        let v = [0.0, -500.0, -500.0, -500.0, 0.0, 0.0];
+        let (c, map) = w.with_segment_offsets_stepped(&v, 0.0).unwrap();
+        assert_eq!(c.segment_count(), 6);
+        assert!(map.iter().all(|x| x.is_some()));
+        // Stufe an Punkt 0: steht am Ende
+        let z = zug(vec![
+            vec3(5000.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ]);
+        let (c, map) = z
+            .with_segment_offsets_stepped(&[-1000.0, 0.0, 0.0, 0.0, 0.0], 0.0)
+            .unwrap();
+        assert_eq!(map, vec![s(0), s(1), s(2), s(3), s(4), None]);
+        assert!(near(c.points[0], vec3(5000.0, 7000.0, 0.0)));
+        assert!(near(c.points[5], vec3(5000.0, 8000.0, 0.0)));
     }
 
     #[test]
