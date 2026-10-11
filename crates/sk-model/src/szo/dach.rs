@@ -86,13 +86,13 @@ pub(super) fn write_downpipes(
 }
 
 /// Eigenschaften eines `[downpipe]` (Regenfallrohr, Jörn 11.10.), nur wenn
-/// sie von der Vorgabe abweichen: `overflow=spout`, `control=0`,
+/// sie von der Vorgabe abweichen: `overflow=pipe`, `control=0`,
 /// `spacing=` in mm.
 fn write_downpipe_spec(line: super::Line, s: &crate::fallrohr::DownpipeSpec) -> super::Line {
     use crate::fallrohr::{Overflow, SPACING};
     let mut line = line;
-    if s.overflow == Overflow::Spout {
-        line = line.word("overflow", "spout");
+    if s.overflow == Overflow::Pipe {
+        line = line.word("overflow", "pipe");
     }
     if !s.control {
         line = line.flag("control", false);
@@ -112,10 +112,10 @@ pub(super) fn read_downpipe_spec(
     use crate::fallrohr::{DownpipeSpec, Overflow, SPACING_MAX, SPACING_MIN};
     let mut s = DownpipeSpec::default();
     match r.opt("overflow") {
-        None | Some("pipe") => {}
-        Some("spout") => s.overflow = Overflow::Spout,
+        None | Some("spout") => {}
+        Some("pipe") => s.overflow = Overflow::Pipe,
         Some(w) => hints.push(format!(
-            "Zeile {}: Notentwässerung „{w}“ unbekannt, Notfallrohr",
+            "Zeile {}: Notentwässerung „{w}“ unbekannt, Wasserspeier",
             r.line
         )),
     }

@@ -2,7 +2,7 @@
 //! regenfallrohr.md`): je Ablauf außen ein Wasserfangkasten unter dem
 //! Auslauf des Attikaablaufs, das senkrechte Fallrohr mit Rohrschellen bis
 //! ins Regenstandrohr, dazu die Notentwässerung nach DIN 1986-100 (eigenes
-//! Notfallrohr, frei über Gelände endend, oder Wasserspeier) und der
+//! Wasserspeier oder eigenes Notfallrohr frei über Gelände) und der
 //! Kontrollablauf der Dampfsperrebene in denselben Kasten.
 //!
 //! Bezug ist der Ablaufpunkt auf der Innenfläche der Aufkantung, die nächste
@@ -20,9 +20,11 @@ use sk_math::{vec3, Vec3};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overflow {
     /// Eigenes Notfallrohr mit Wasserfangkasten, endet mit Auslaufbogen
-    /// über Gelände (Vorgabe).
+    /// über Gelände.
     Pipe,
-    /// Wasserspeier vor der Fassade.
+    /// Wasserspeier vor der Fassade neben dem Kasten (Vorgabe, Jörn 11.10.:
+    /// kein zweiter Kasten mit zweitem Rohr; der Notablauf ins Fallrohr
+    /// verstieße gegen DIN 1986-100).
     Spout,
 }
 
@@ -40,7 +42,7 @@ pub struct DownpipeSpec {
 impl Default for DownpipeSpec {
     fn default() -> DownpipeSpec {
         DownpipeSpec {
-            overflow: Overflow::Pipe,
+            overflow: Overflow::Spout,
             control: true,
             spacing: SPACING,
         }

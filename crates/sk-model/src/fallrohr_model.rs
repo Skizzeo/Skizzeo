@@ -517,6 +517,18 @@ mod tests {
         (m, da, st)
     }
 
+    /// Alle RF des Flachdachs `da` mit eigenem Notfallrohr statt dem
+    /// Wasserspeier der Vorgabe.
+    fn mit_notfallrohr(m: &mut Model, da: ElementId) {
+        schritt(m, |m| {
+            m.downpipes_of(da).into_iter().all(|id| {
+                let mut s = m.downpipe_spec(id).unwrap();
+                s.overflow = Overflow::Pipe;
+                m.set_downpipe_spec(id, s)
+            })
+        });
+    }
+
     fn schritt(m: &mut Model, f: impl FnOnce(&mut Model) -> bool) -> crate::txn::Txn {
         m.begin("Regenfallrohr");
         assert!(f(m));
@@ -529,9 +541,37 @@ mod tests {
     /// Dachs.
     #[test]
     fn sollwerte_pruefhaus() {
-        let (m, da, _) = haus();
+        let (mut m, da, _) = haus();
         let rf = m.downpipes_of(da);
         assert_eq!(rf.len(), 4);
+        // Vorgabe (Jörn 11.10.): Wasserspeier neben dem Kasten, kein
+        // zweiter Kasten und kein Notfallrohr; Schellen nur am Fallrohr
+        {
+            use crate::fallrohr::*;
+            let d = m.downpipe(rf[0]).unwrap();
+            assert_eq!(d.notueberlauf(), Some(Overflow::Spout));
+            assert_eq!(d.overflow_length(), 0.0);
+            assert_eq!(d.clamp_count(), 4);
+            let s = crate::qto::schedule(&m);
+            let auto = |k: &str| {
+                (s.auto.iter())
+                    .find(|a| a.key == k && a.element == rf[0])
+                    .map(|a| a.value)
+            };
+            assert_eq!(auto(SPOUT), Some(1.0));
+            assert_eq!(auto(CLAMPS), Some(4.0));
+            assert_eq!(
+                (auto(OV_BOX), auto(OV_PIPE), auto(OUTLET)),
+                (None, None, None)
+            );
+            let p = m.props_of(rf[0]);
+            assert_eq!(
+                p.get("Notentwässerung"),
+                Some(&PropValue::Text("Wasserspeier".into()))
+            );
+        }
+        // die übrigen Sollwerte mit eigenem Notfallrohr
+        mit_notfallrohr(&mut m, da);
         let e = m.element(rf[0]).unwrap();
         assert_eq!(e.number, "RF-001");
         assert_eq!(e.category, Category::Downpipe);
@@ -629,6 +669,7 @@ mod tests {
             let st = m.run(og).unwrap().storey;
             schritt(&mut m, |m| m.set_flat_roof(st, true));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
@@ -687,6 +728,7 @@ mod tests {
             let st = m.run(og).unwrap().storey;
             schritt(&mut m, |m| m.set_flat_roof(st, true));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
@@ -746,6 +788,7 @@ mod tests {
         let st = m.run(og).unwrap().storey;
         schritt(&mut m, |m| m.set_flat_roof(st, true));
         let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+        mit_notfallrohr(&mut m, da);
         let ok_og = m.storey(st).unwrap().elevation;
         let c = m.chain(eg).unwrap();
         let unten = sk_math::polygon::to_ccw(&c.face_corners(c.outer_offset()));
@@ -876,11 +919,11 @@ mod tests {
         let guid = |m: &Model, id| m.element(id).unwrap().guid;
         let nummer = |m: &Model, id| m.element(id).unwrap().number.clone();
         let g: Vec<_> = rf.iter().map(|&id| guid(&m, id)).collect();
-        let speier = DownpipeSpec {
-            overflow: Overflow::Spout,
+        let notfallrohr = DownpipeSpec {
+            overflow: Overflow::Pipe,
             ..DownpipeSpec::default()
         };
-        schritt(&mut m, |m| m.set_downpipe_spec(rf[0], speier));
+        schritt(&mut m, |m| m.set_downpipe_spec(rf[0], notfallrohr));
         let mut d = m.drainage_of_roof(da).unwrap().clone();
         let vier = d.drains.clone();
         d.drains.truncate(3);
@@ -910,7 +953,7 @@ mod tests {
         assert_eq!(fuenf.len(), 5);
         assert_eq!(guid(&m, fuenf[0]), g[0]);
         assert_eq!(nummer(&m, fuenf[4]), "RF-005");
-        assert_eq!(m.downpipe_spec(fuenf[4]), Some(speier));
+        assert_eq!(m.downpipe_spec(fuenf[4]), Some(notfallrohr));
         let w = m.downpipe(fuenf[4]).unwrap();
         assert_eq!((w.face.x, w.face.y, w.out.x), (0.0, 4000.0, -1.0));
         // Flachdach aus: alle RF weg
@@ -926,7 +969,7 @@ mod tests {
         let (mut m, da, _) = haus();
         let rf = m.downpipes_of(da)[1];
         let spec = DownpipeSpec {
-            overflow: Overflow::Spout,
+            overflow: Overflow::Pipe,
             control: false,
             spacing: 2500.0,
         };
@@ -939,7 +982,7 @@ mod tests {
         assert_eq!(zeilen.len(), 4);
         assert!(zeilen
             .iter()
-            .any(|l| l.contains(" overflow=spout control=0 spacing=2500 ")));
+            .any(|l| l.contains(" overflow=pipe control=0 spacing=2500 ")));
         let back = crate::szo::read(&text, GuidGen::with_seed(3)).unwrap();
         assert!(back.hints.is_empty(), "{:?}", back.hints);
         assert_eq!(crate::szo::write(&back.model), text);
@@ -985,6 +1028,7 @@ mod tests {
             let st = m.run(og).unwrap().storey;
             schritt(&mut m, |m| m.set_flat_roof(st, true));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
@@ -1045,6 +1089,7 @@ mod tests {
             let decke = m.floor_of(eg).unwrap();
             schritt(&mut m, |m| m.set_floor_upstand(decke, up));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
