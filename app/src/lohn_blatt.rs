@@ -528,7 +528,7 @@ impl LohnBlatt {
         let u = &t.ui;
         let ((x, y, w, h), unten) = self.rect();
         let karte = self.form == Form::Karte;
-        // Farben: dunkle Karte wie die Hinweiskarten, sonst das helle Blatt
+        // Farben: Karte wie die Hinweiskarten, sonst die Farben des Blatts
         let (text, dim, feld_bg) = if karte {
             widgets::panel_filled(c, widgets::Rect::new(x, y, w, h), s, t, u.menu_bg);
             (u.text, u.text_dim, u.field)

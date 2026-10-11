@@ -379,8 +379,8 @@ impl AvaView {
             let y = mitte(z.kopf, bold, px) + 2.0 * s;
             c.fill_rect(z.kopf.0 + 14.0 * s, y, w, s.max(1.0), u.sheet_text_dim);
         }
-        // Verweise auf dem hellen Blatt im lesbaren Akzent (reiner Akzent
-        // hat dort 1,7 : 1, Einstellungen 09.10.)
+        // Verweise im lesbaren Akzent (reiner Akzent hatte auf dem früheren
+        // hellen Blatt 1,7 : 1, Einstellungen 09.10.)
         if let (Some(r), Some(f)) = (z.fehlt, self.fehlt_text()) {
             self.verweis(c, t, bold, &f, r, self.hot == Some(Hot::BauherrFehlt));
         }

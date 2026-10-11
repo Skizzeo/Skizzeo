@@ -191,13 +191,7 @@ impl AvaView {
         let s = self.scale;
         let u = &t.ui;
         let ((bx, by, bw, bh), text) = self.knopf_lage(t, fonts);
-        let bg = if self.knopf_down {
-            u.pressed
-        } else if self.hot == Some(Hot::Knopf) {
-            u.hover
-        } else {
-            u.bg
-        };
+        let bg = crate::cards::knopf(u, self.knopf_down, self.hot == Some(Hot::Knopf));
         let mut p = Path::new();
         p.rounded_rect(bx, by, bw, bh, t.size.corner_radius * s);
         c.fill(&p, bg);
@@ -209,7 +203,7 @@ impl AvaView {
                 px,
                 bx + BUTTON_PAD * s,
                 by + (bh + f.cap_height(px)) * 0.5,
-                u.text,
+                u.sheet_text,
             );
         }
     }

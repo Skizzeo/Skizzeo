@@ -314,11 +314,24 @@ impl Karten {
     }
 }
 
-/// Verweis auf dem hellen Blatt (Einstellungen §4): fett in
-/// mix(`accent`, `sheet_text`, 0,2), unter der Maus 0,4. Reines `accent` hat
-/// auf `sheet_bg` nur etwa 1,8:1.
+/// Verweis auf dem Blatt (Einstellungen §4): fett in mix(`accent`,
+/// `sheet_text`, 0,2), unter der Maus 0,4. Auf dem früheren hellen Blatt
+/// hatte reines `accent` nur etwa 1,8:1; die Mischung trägt beide Schemata.
 pub fn verweis(u: &sk_ui::theme::Ui, hot: bool) -> Rgba {
     mix(u.accent, u.sheet_text, if hot { 0.4 } else { 0.2 })
+}
+
+/// Fläche eines Knopfs auf dem Blatt („Als Tabelle speichern“): gehoben wie
+/// die aktive Karte, unter der Maus heller, gedrückt eingesenkt. Schrift
+/// `sheet_text`.
+pub fn knopf(u: &sk_ui::theme::Ui, gedrueckt: bool, hot: bool) -> Rgba {
+    if gedrueckt {
+        u.sheet_tile
+    } else if hot {
+        mix(u.sheet_card, u.sheet_text, 0.12)
+    } else {
+        u.sheet_card
+    }
 }
 
 /// Farbe zwischen `a` und `b` (0 = a).
