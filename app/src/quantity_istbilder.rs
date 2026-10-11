@@ -469,6 +469,61 @@ fn istbilder_ka4() {
     }
 }
 
+/// Jörn 11.10.: Druckvorschau im halben Bildschirm mit „Zurück zum LV“
+/// und dem Blatt unter der Maus, groß über dem Fenster auf Seite 2 und
+/// gerollt, dazu schmal bei 150 %.
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_druckvorschau_gross() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mods = sk_platform::Modifiers::default();
+    let mut s = standardhaus();
+    for (name, w, h, scale, gross, rollen) in [
+        ("ist-druckvorschau-klein.png", 960, 1040, 1.0, false, 0.0),
+        ("ist-druckvorschau-gross.png", 960, 1040, 1.0, true, 0.0),
+        (
+            "ist-druckvorschau-gross-gerollt.png",
+            960,
+            1040,
+            1.0,
+            true,
+            700.0,
+        ),
+        ("ist-druckvorschau-gross-150.png", 720, 1100, 1.5, true, 0.0),
+    ] {
+        b.p = Picking::default();
+        let mut q = QuantityWindow::new();
+        q.datei = "haus.szo".into();
+        q.title.scale = scale;
+        (q.w, q.h) = (w, h);
+        q.sync(&mut s, &b.p, false);
+        q.waehlen(Blatt::Ava, &b.t);
+        q.sync(&mut s, &b.p, false);
+        let a = q.ava.as_mut().unwrap();
+        a.zeige_druckvorschau(1);
+        let xy = a.blatt_mitte(&b.t, &b.fonts);
+        a.mouse_move(&b.t, &b.fonts, &mut b.p, xy.0, xy.1);
+        if gross {
+            a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+            a.gross_rollen_um(rollen);
+        }
+        q.sync(&mut s, &b.p, false);
+        b.ablegen(&mut q, name);
+    }
+}
+
 /// Bauteil ↔ Kosten und AVA (Jörn 10.10., A338–A341): Fundament gewählt,
 /// Kosten und AVA isoliert mit Leiste; eine Außenwand bei 150 % im
 /// schmalen Fenster; „Alle Positionen“ unter der Maus.

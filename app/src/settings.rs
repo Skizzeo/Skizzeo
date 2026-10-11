@@ -23,7 +23,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 68] = [
+pub const RGBA_ROLES: [RgbaRole; 70] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -149,6 +149,12 @@ pub const RGBA_ROLES: [RgbaRole; 68] = [
     }),
     ("ui.sheet_select_group", "Gruppe der Auswahl", |t| {
         &mut t.ui.sheet_select_group
+    }),
+    ("ui.paper_text", "Schrift auf Papier", |t| {
+        &mut t.ui.paper_text
+    }),
+    ("ui.paper_text_dim", "Schrift gedämpft (Papier)", |t| {
+        &mut t.ui.paper_text_dim
     }),
     ("ui.tree_hover", "Baum Zeile unter der Maus", |t| {
         &mut t.ui.tree_hover

@@ -86,7 +86,7 @@ pub fn type_look(m: &Model, theme: &Theme, set: &LayerSet) -> TypeLook {
         layers,
         exterior: set.category == TypeCategory::ExteriorWall,
         ink,
-        paper: theme.ui.sheet_bg,
+        paper: theme.env.paper_fallback,
         slab,
         strip,
     }
@@ -482,8 +482,8 @@ pub fn paint_section(
         return;
     };
     let px = theme.size.font_small * s;
-    let dim = theme.ui.sheet_text_dim;
-    let text = theme.ui.sheet_text;
+    let dim = theme.ui.paper_text_dim;
+    let text = theme.ui.paper_text;
     // Alte Grenze
     let k = if t.iter().sum::<f64>() > 0.0 {
         (g.xs[n] - g.xs[0]) / t.iter().sum::<f64>() as f32
