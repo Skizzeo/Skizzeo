@@ -496,10 +496,10 @@ impl Model {
         // weiter zum Dach hin, aus dem Umriss selbst (die Wandflächen kappen
         // spitze Ecken jenseits ihrer Gehrungsgrenze)
         let ins = crate::model::inner_of(&f.terrace);
-        let inset = if ins > 0.0 {
-            inset_of(&outline, ins)
+        let (inset, inner_depth) = if ins > 0.0 {
+            inset_depth(&outline, ins)
         } else {
-            outline.clone()
+            (outline.clone(), 0.0)
         };
         // Gefälle: der Keil liegt in der obersten Dämmschicht (Konzept F3)
         let tapered = layers.iter().position(|l| l.2);
@@ -520,6 +520,7 @@ impl Model {
                 .coping_material_of(&f.terrace)
                 .map_or(material::PLAIN, material_key),
             inner: ins,
+            inner_depth,
             inset,
             cap: crate::model::crown_of(&f.terrace),
             ins_mat: self
@@ -693,6 +694,20 @@ impl Model {
         })
     }
 
+    /// Hinweis zur Attikadämmung innen auf der Decke `floor`: Ist der
+    /// Umriss stellenweise schmaler als ihre doppelte Dicke, rückt die ganze
+    /// Innenfläche weniger weit ein (Geometrie PR #43).
+    pub fn flat_roof_inner_hint(&self, floor: ElementId) -> Option<String> {
+        let r = self.flat_roof_over(floor)?;
+        (r.inner > 0.0 && r.inner_depth < r.inner - 0.5).then(|| {
+            format!(
+                "Attikadämmung innen nur {} mm statt {} mm: Die Dachfläche ist stellenweise schmaler als die doppelte Dicke",
+                r.inner_depth,
+                r.inner
+            )
+        })
+    }
+
     /// Wärmeschutz des Flachdachs `roof` mit der Geometrie `r` (G6): R0 an
     /// der dünnsten Stelle (m²K/W, Rsi 0,10 und Rse 0,04, Wärmestrom nach
     /// oben, samt Rohdecke, wenn ihr Typ λ hat) und λ der Gefälleschicht.
@@ -855,15 +870,16 @@ impl Model {
 /// Ecken weniger weit ein und die Dämmung ist dünner als `d`. Gilt nur ein
 /// einfacher Ring, dessen Ecken im Umriss liegen; schließt ein Zahn oder
 /// Finger schmaler als 2 d auch so nicht (Review PR #43), rückt die ganze
-/// Innenfläche so weit ein, wie es noch aufgeht.
-fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
+/// Innenfläche so weit ein, wie es noch aufgeht. Liefert dazu die Dicke,
+/// um die sie tatsächlich einrückt: `d`, sonst weniger (ganze mm).
+fn inset_depth(outline: &[Vec3], d: f64) -> (Vec<Vec3>, f64) {
     let at = |d: f64| {
         inset_lines(outline, d)
             .filter(|v| inset_valid(outline, v))
             .or_else(|| Some(inset_clamped(outline, d)).filter(|v| inset_valid(outline, v)))
     };
     if let Some(v) = at(d) {
-        return v;
+        return (v, d);
     }
     let (mut lo, mut hi) = (0.0, d);
     for _ in 0..30 {
@@ -874,7 +890,11 @@ fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
             hi = m;
         }
     }
-    at(lo).unwrap_or_else(|| outline.to_vec())
+    // auf ganze mm abgerundet, damit Menge und Hinweis glatte Werte nennen
+    [lo.floor(), lo]
+        .into_iter()
+        .find_map(|t| at(t).map(|v| (v, t)))
+        .unwrap_or_else(|| (outline.to_vec(), 0.0))
 }
 
 /// Ist `pts` (Innenfläche zu `outline`, Ecke für Ecke) ein einfacher Ring,
@@ -904,7 +924,7 @@ fn inset_valid(outline: &[Vec3], pts: &[Vec3]) -> bool {
     sk_math::polygon::is_simple(&ring) && ring.iter().all(|p| inside(*p))
 }
 
-/// [`inset_of`] über die versetzten Kanten: Kanten, die sich umkehrten,
+/// [`inset_depth`] über die versetzten Kanten: Kanten, die sich umkehrten,
 /// fallen weg (die zuerst verschwindende zuerst), ihre Ecken liegen im
 /// Schnitt der versetzten Nachbarn; `None`, wenn dabei weniger als drei
 /// Kanten bleiben oder zwei Nachbarn parallel laufen.
@@ -957,7 +977,7 @@ fn inset_lines(outline: &[Vec3], d: f64) -> Option<Vec<Vec3>> {
     }
 }
 
-/// Rückfall für [`inset_of`]: Einrücktiefe je Ecke geklemmt, bis keine
+/// Rückfall für [`inset_depth`]: Einrücktiefe je Ecke geklemmt, bis keine
 /// versetzte Kante gegen ihre Kante läuft.
 fn inset_clamped(outline: &[Vec3], d: f64) -> Vec<Vec3> {
     let n = outline.len();
@@ -1026,6 +1046,10 @@ mod tests {
     use super::*;
     use crate::txn::Direction;
     use sk_math::vec3;
+
+    fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
+        inset_depth(outline, d).0
+    }
 
     /// Prüfhaus 10 × 8 m mit EG und OG im Wandtyp `typ` (Guid).
     fn haus(typ: Guid) -> (Model, RunId) {
@@ -1292,9 +1316,89 @@ mod tests {
             vec3(0.0, 3000.0, 0.0),
         ];
         assert!(inset_lines(&finger, 200.0).is_some_and(|v| v.iter().any(|p| p.y > 20_000.0)));
-        let i = inset_of(&finger, 200.0);
+        let (i, t) = inset_depth(&finger, 200.0);
         assert!(inset_valid(&finger, &i), "{i:?}");
-        assert!(inset_valid(&finger, &inset_of(&finger, 60.0)));
+        // die ganze Innenfläche rückt weniger weit ein, auf ganze mm
+        assert!(t < 200.0 && t > 100.0 && t.fract() == 0.0, "{t}");
+        assert_eq!(inset_depth(&finger, 60.0).1, 60.0);
+        assert_eq!(inset_depth(&outline, 60.0).1, 60.0);
+        assert!(inset_depth(&outline, 200.0).1 < 200.0);
+    }
+
+    /// Flachdach mit einem Finger, innen 300 mm breit: 200 mm Attikadämmung
+    /// innen gehen dort nicht auf. Die Menge nennt die tatsächliche Dicke,
+    /// und das Paneel weist darauf hin; 60 mm gehen auf, ohne Hinweis.
+    #[test]
+    fn attikadaemmung_innen_engstelle() {
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 6000.0, 0.0),
+            vec3(5150.0, 6000.0, 0.0),
+            vec3(5150.0, 9000.0, 0.0),
+            vec3(4850.0, 9000.0, 0.0),
+            vec3(4850.0, 6000.0, 0.0),
+            vec3(0.0, 6000.0, 0.0),
+        ];
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(2);
+        let set = m.type_by_guid(EXTERIOR_TYPE_GUID).unwrap();
+        let eg = m.ground_of(Some(b)).unwrap();
+        let eg = m
+            .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+            .unwrap();
+        let og = m.runs_above(eg)[0];
+        let st = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(st, true));
+        let floor = m.floor_of(og).unwrap();
+        let (roof, blech) = da_ab(&m, og);
+        // Breite des Fingers innen an der Aufkantung
+        let r = m.flat_roof_over(floor).unwrap();
+        let xs: Vec<f64> = r
+            .outline
+            .iter()
+            .filter(|p| p.y > 7000.0)
+            .map(|p| p.x)
+            .collect();
+        let breite = xs.iter().copied().fold(f64::MIN, f64::max)
+            - xs.iter().copied().fold(f64::MAX, f64::min);
+        assert!(breite > 120.0 && breite < 400.0, "{breite}");
+        let hinweis = |m: &Model| {
+            m.warnings(roof)
+                .into_iter()
+                .find(|w| w.starts_with("Attikadämmung innen"))
+        };
+        for (d, eng) in [(200.0, true), (60.0, false)] {
+            schritt(&mut m, |m| m.set_floor_inner(floor, d));
+            let r = m.flat_roof_over(floor).unwrap();
+            assert_eq!(r.inner, d);
+            assert_eq!(r.inner_depth < d, eng, "{d}: {}", r.inner_depth);
+            let w = hinweis(&m);
+            assert_eq!(w.is_some(), eng, "{d}: {w:?}");
+            if let Some(w) = w {
+                assert!(
+                    w.contains(&format!("nur {} mm statt 200 mm", r.inner_depth)),
+                    "{w}"
+                );
+            }
+            let q = crate::qto::coping_qto(&m, blech).unwrap();
+            assert_eq!(q.insulation[0].thickness, r.inner_depth);
+            // Schichtzeile (Bauteilliste, Kosten) mit derselben Dicke
+            // (Review PR #47)
+            let s = crate::qto::schedule(&m);
+            let zeile = s
+                .layer_rows(&m)
+                .into_iter()
+                .find(|(_, l)| l.element == blech && l.layer == 1)
+                .unwrap()
+                .1;
+            assert_eq!(zeile.thickness, r.inner_depth);
+            // das Blech deckt Aufkantung und die tatsächliche Dämmung, der
+            // innere Schenkel liegt an ihr an (Geometrie PR #47)
+            let (i, o) = r.coping_legs();
+            let girth = crate::terrace::coping_girth_legs(r.width + r.inner_depth, i, o);
+            assert!((q.girth - girth).abs() < 1e-9, "{d}: {} {girth}", q.girth);
+        }
     }
 
     /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.

@@ -871,16 +871,21 @@ pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> Copi
             .map(|material| {
                 let (face, vol) = r.inner_qto();
                 let cap = r.cap_area();
-                [(r.inner, face, vol), (r.cap, cap, cap * r.cap)]
-                    .into_iter()
-                    .filter(|x| x.0 > 0.0)
-                    .map(|(thickness, area, volume)| CrownQto {
-                        material,
-                        thickness,
-                        area,
-                        volume,
-                    })
-                    .collect()
+                // je eingestellte Schicht ein Eintrag (Schicht i ↔ Eintrag
+                // i − 1), auch wenn die Dämmung innen nirgends aufgeht
+                [
+                    (r.inner, r.inner_depth, face, vol),
+                    (r.cap, r.cap, cap, cap * r.cap),
+                ]
+                .into_iter()
+                .filter(|x| x.0 > 0.0)
+                .map(|(_, thickness, area, volume)| CrownQto {
+                    material,
+                    thickness,
+                    area,
+                    volume,
+                })
+                .collect()
             })
             .unwrap_or_default(),
     }
@@ -2196,6 +2201,15 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                         pocket: f64| {
             let Some(l) = layers.get(i) else { return };
             let ins = insulation(l.material);
+            // Dämmung unter dem Blech mit der Dicke ihrer Mengen: am
+            // Flachdach rückt die Attikadämmung innen an Engstellen weniger
+            // weit ein als die Schicht (Review PR #47)
+            let thickness = match q {
+                ElementQto::Coping(c) if i > 0 => {
+                    c.insulation.get(i - 1).map_or(l.thickness, |k| k.thickness)
+                }
+                _ => l.thickness,
+            };
             let (bill_area, bill_length, once) = match (bill(i), q) {
                 (Some((a, len)), _) => (a, len, true),
                 (None, ElementQto::Wall(w)) => (
@@ -2236,7 +2250,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 storey: st,
                 layer: i,
                 material: l.material,
-                thickness: l.thickness,
+                thickness,
                 trade: model.layer_trade(row.element, i),
                 kg: model.layer_kg(row.element, i),
                 length,
