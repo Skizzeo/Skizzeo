@@ -506,6 +506,8 @@ pub struct Scene {
     /// der Firmenkatalog ein Verwaltungskennwort hat und es hier nicht
     /// eingegeben ist; sonst `Admin`. Die App setzt sie.
     pub rolle: sk_cost::Rolle,
+    /// Gewählter Ablauf: Dachaufbau und Index (Jörn 11.10.).
+    drain: Option<(ElementId, usize)>,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
     undo: Vec<Txn>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
@@ -852,6 +854,7 @@ impl Scene {
             serial: 0,
             redo: Vec::new(),
             rolle: sk_cost::Rolle::Admin,
+            drain: None,
             cache: Vec::new(),
             dirty: Vec::new(),
             all_dirty: true,

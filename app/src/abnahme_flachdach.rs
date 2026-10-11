@@ -466,7 +466,7 @@ fn a337_dialog_flachdach_vorgewaehlt() {
     let r = s.flat_roof_over(floor).unwrap();
     let rand = r.slope.as_ref().expect("Gefälle").wedge_edge_max();
     assert!((r.upstand() - (285.0 - rand)).abs() < 1e-9);
-    assert_eq!(wert(&s, da, "Anschlusshöhe"), "19,1 cm");
+    assert_eq!(wert(&s, da, "Anschlusshöhe"), "20,3 cm");
     assert!(s.model().element(ab).is_some());
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert!(s.undo());
@@ -476,7 +476,8 @@ fn a337_dialog_flachdach_vorgewaehlt() {
 
 /// A338 (Gefälledämmung G2, Paneel „Gefälle“): Das Feld steht auf 0
 /// (waagerecht, 1 bis 10 %). 2 % schalten das Gefälle ein, Skizzeo schlägt
-/// zwei Abläufe in der Mitte der Langseiten vor; der Keil liegt in der
+/// je zwei Abläufe an beiden Langseiten vor, 60 cm von den Ecken (Jörn
+/// 11.10.: in der Seitenmitte säße das Fallrohr vor Fenstern); der Keil liegt in der
 /// Dämmschicht. Datei hin und zurück gleich, alte Dächer ohne Gefälle
 /// schreiben nichts Neues. Rückgängig nimmt beides; 0 schaltet aus und
 /// behält die Abläufe für das nächste Einschalten.
@@ -488,7 +489,7 @@ fn a338_gefaelle_im_paneel() {
     // Neu: 2 % mit vorgeschlagenen Abläufen (Jörn 11.10.)
     let neu = s.model().drainage_of(floor).unwrap().clone();
     assert_eq!(neu.slope, 2.0);
-    assert_eq!(neu.drains.len(), 2, "{:?}", neu.drains);
+    assert_eq!(neu.drains.len(), 4, "{:?}", neu.drains);
     assert!(s.flat_roof_over(floor).unwrap().slope.is_some());
     // Ab hier ein Dach von vorher: ohne Gefälle und Abläufe
     assert!(s.edit_model("altes Dach", |m| m
@@ -516,28 +517,26 @@ fn a338_gefaelle_im_paneel() {
     let f = &sec.fields[0];
     assert_eq!(f.field, Field::RoofSlope);
     assert_eq!((f.value, f.min, f.max, f.zero), (0.0, 1.0, 10.0, true));
-    assert!(sec.button.is_none());
+    assert!(sec.buttons.is_empty());
     assert!(s.flat_roof_over(floor).unwrap().slope.is_none());
 
     assert!(s.set_field(da, Field::RoofSlope, 2.0));
     let d = s.model().drainage_of(floor).unwrap().clone();
     assert_eq!(d.slope, 2.0);
-    assert_eq!(d.drains.len(), 2, "{:?}", d.drains);
+    assert_eq!(d.drains.len(), 4, "{:?}", d.drains);
     let r = s.flat_roof_over(floor).unwrap().clone();
     let g = r.slope.as_ref().expect("Gefälleplan");
     assert_eq!(r.tapered, r.layers.iter().position(|l| l.2));
-    // Langseiten waagerecht: beide Abläufe auf halber Länge
-    let mitte = (r.outline.iter().map(|p| p.x).fold(f64::MAX, f64::min)
-        + r.outline.iter().map(|p| p.x).fold(f64::MIN, f64::max))
-        / 2.0;
-    assert!(
-        g.drains.iter().all(|p| (p.x - mitte).abs() < 1.0),
-        "{:?}",
-        g.drains
-    );
+    // Langseiten waagerecht: je zwei Abläufe 60 cm vor den Enden
+    let x0 = r.outline.iter().map(|p| p.x).fold(f64::MAX, f64::min);
+    let x1 = r.outline.iter().map(|p| p.x).fold(f64::MIN, f64::max);
+    for x in [x0 + 600.0, x1 - 600.0] {
+        let n = g.drains.iter().filter(|p| (p.x - x).abs() < 1.0).count();
+        assert_eq!(n, 2, "{x}: {:?}", g.drains);
+    }
     assert!(g.wedge_max() > 50.0 && g.wedge_mean() < g.wedge_max());
-    assert_eq!(wert(&s, da, "Abläufe"), "2 Stück");
-    assert!(gefaelle(&s).button.is_some());
+    assert_eq!(wert(&s, da, "Abläufe"), "4 Stück");
+    assert!(!gefaelle(&s).buttons.is_empty());
     // Mengen (G5): Abläufe aus dem Plan, Keil, Kehlen, Grate, Platten
     let platten: usize = r.plates().iter().sum();
     assert!(wert(&s, da, "Keilplatten").starts_with(&format!("{platten} Stück (A ")));
@@ -551,9 +550,9 @@ fn a338_gefaelle_im_paneel() {
     };
     assert_eq!(
         auto("roof.drains"),
-        Some(("st", 2.0, "2 Abläufe im Gefälleplan".to_string()))
+        Some(("st", 4.0, "4 Abläufe im Gefälleplan".to_string()))
     );
-    assert_eq!(auto("roof.overflows").map(|a| a.1), Some(2.0));
+    assert_eq!(auto("roof.overflows").map(|a| a.1), Some(4.0));
     assert_eq!(auto("roof.taper").map(|a| a.1), Some(g.wedge_volume()));
     let (kehlen, grate) = g.crease_lengths();
     assert_eq!(auto("roof.valleys").map(|a| a.1), Some(kehlen));
@@ -617,19 +616,22 @@ fn a339_ablauf_ziehen() {
     let (mut s, og) = haus(339, sk_model::EXTERIOR_TYPE_GUID);
     let (da, ab) = da_ab(&s, og);
     let floor = s.model().floor_of(og).unwrap();
-    assert_eq!(s.roof_drains(da).1.len(), 2, "neu mit Gefälle und Griffen");
+    assert_eq!(s.roof_drains(da).1.len(), 4, "neu mit Gefälle und Griffen");
     waagerecht(&mut s, og);
     assert!(s.roof_drains(da).1.is_empty(), "ohne Gefälle keine Griffe");
     assert!(s.set_field(da, Field::RoofSlope, 2.0));
     let (roof, vorher) = s.roof_drains(ab);
     assert_eq!(roof, Some(da), "auch am Blech");
-    assert_eq!(vorher.len(), 2);
+    assert_eq!(vorher.len(), 4);
     let r = s.flat_roof_over(floor).unwrap();
     let x0 = r.outline.iter().map(|p| p.x).fold(f64::MAX, f64::min);
     let max_vorher = r.slope.as_ref().unwrap().wedge_max();
-    // bis in die Ecke und etwas nach außen: bleibt auf der Kante, 60 cm
+    // die beiden am rechten Ende der Langseiten
+    let rechts: Vec<usize> = (0..4).filter(|&k| vorher[k].x > x0 + 1000.0).collect();
+    assert_eq!(rechts.len(), 2, "{vorher:?}");
+    // bis in die linke Ecke und etwas nach außen: bleibt auf der Kante, 60 cm
     // vor der Ecke
-    let k = 0;
+    let k = rechts[0];
     let ziel = vec3(x0 + 100.0, vorher[k].y + 50.0, 0.0);
     s.begin("Ablauf verschoben");
     assert!(s.drag_drain(da, k, ziel));
@@ -640,9 +642,10 @@ fn a339_ablauf_ziehen() {
     let g = s.flat_roof_over(floor).unwrap().slope.clone().unwrap();
     assert!(g.wedge_max() > max_vorher, "längerer Fließweg");
     assert!(selection::props(&s, da).unwrap().notes.is_empty());
-    // Beide Abläufe links: der Fließweg nach rechts wird zu lang (G6)
+    // Alle Abläufe links: der Fließweg nach rechts wird zu lang (G6)
+    let k = rechts[1];
     s.begin("Ablauf verschoben");
-    assert!(s.drag_drain(da, 1, vec3(x0 + 100.0, vorher[1].y - 50.0, 0.0)));
+    assert!(s.drag_drain(da, k, vec3(x0 + 100.0, vorher[k].y - 50.0, 0.0)));
     s.commit();
     let notes = selection::props(&s, da).unwrap().notes;
     assert!(
@@ -653,6 +656,142 @@ fn a339_ablauf_ziehen() {
     s.undo();
     s.undo();
     assert_eq!(s.roof_drains(da).1, vorher);
+}
+
+/// A340 (Jörn 11.10.): Ein Ablauf auf der Schnittlinie lässt sich greifen,
+/// ein Klick wählt ihn. Kontextmenü und Abschnitt „Gefälle“ fügen einen
+/// weiteren hinzu (dort, wo er am meisten entlastet, danach gewählt) oder
+/// löschen den gewählten, je ein Schritt; der letzte bleibt.
+#[test]
+fn a340_ablauf_waehlen_hinzufuegen_loeschen() {
+    use crate::delete::{Action, ContextMenu};
+    use crate::drain_edit::DrainEdit;
+    use crate::ui::Id;
+    use sk_platform::{Event, Modifiers, MouseButton};
+    let (mut s, og) = haus(340, sk_model::EXTERIOR_TYPE_GUID);
+    let (da, ab) = da_ab(&s, og);
+    let floor = s.model().floor_of(og).unwrap();
+    let buttons = |s: &Scene| -> Vec<Id> {
+        selection::props(s, da)
+            .unwrap()
+            .sections
+            .into_iter()
+            .find(|x| x.title == "Gefälle")
+            .unwrap()
+            .buttons
+            .iter()
+            .map(|b| b.0)
+            .collect()
+    };
+    assert_eq!(buttons(&s), [Id::PropsDrains, Id::PropsDrainAdd]);
+    // einen Ablauf auf die Schnittlinie B (x = 5,00 m) legen
+    let k = 0;
+    let p = s.roof_drains(da).1[k];
+    s.begin("Ablauf verschoben");
+    assert!(s.drag_drain(da, k, vec3(5000.0, p.y, 0.0)));
+    s.commit();
+    let p = s.roof_drains(da).1[k];
+    assert!((p.x - 5000.0).abs() < 1e-6, "{p:?}");
+
+    let (w, h) = (1440.0, 778.0);
+    let c = crate::fit_parallel(ViewKind::Plan, s.bounds(), w, h);
+    let (x, y) = c.project(p, w, h).unwrap();
+    let mods = Modifiers {
+        shift: false,
+        ctrl: false,
+        alt: false,
+    };
+    let button = MouseButton::Left;
+    let down = Event::MouseDown { button, x, y, mods };
+    let up = Event::MouseUp { button, x, y, mods };
+    // dort greift auch die Schnittlinie: die App fragt die Abläufe zuerst
+    let mut sect = crate::section::Sections::default();
+    sect.ensure(&s);
+    assert!(sect.handle(&down, &s, &c, w, h, 1.0, true).consumed);
+    sect.handle(&up, &s, &c, w, h, 1.0, true);
+    let mut d = DrainEdit::default();
+    let o = d.handle(&down, &mut s, &c, w, h, 1.0, Some(da), true);
+    assert!(o.consumed && o.active);
+    let schritte = s.undo_label();
+    d.handle(&up, &mut s, &c, w, h, 1.0, Some(da), true);
+    assert_eq!(s.undo_label(), schritte, "Klick ohne Ziehen: kein Schritt");
+    assert_eq!(s.active_drain(da), Some(k));
+    assert_eq!(s.active_drain(ab), Some(k), "auch am Blech");
+    assert_eq!(
+        buttons(&s),
+        [Id::PropsDrains, Id::PropsDrainAdd, Id::PropsDrainDelete]
+    );
+    // Klick daneben: keiner mehr gewählt
+    let (x2, y2) = c.project(vec3(5000.0, 4000.0, 0.0), w, h).unwrap();
+    let o = d.handle(
+        &Event::MouseDown {
+            button,
+            x: x2,
+            y: y2,
+            mods,
+        },
+        &mut s,
+        &c,
+        w,
+        h,
+        1.0,
+        Some(da),
+        true,
+    );
+    assert!(!o.consumed && o.active);
+    assert_eq!(s.active_drain(da), None);
+
+    // Kontextmenü am Ablauf
+    let t = sk_ui::theme::Theme::dark();
+    let m = ContextMenu::for_drain(da, true, x, y, (1440, 900, 40), &t, 1.0);
+    let rows: Vec<_> = m.actions().into_iter().filter(|r| r.2.is_some()).collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "Ablauf hinzufügen".to_string(),
+                true,
+                Some(Action::AddDrain)
+            ),
+            (
+                "Ablauf löschen".to_string(),
+                true,
+                Some(Action::DeleteDrain)
+            ),
+            ("Eigenschaften".to_string(), true, Some(Action::Properties)),
+        ]
+    );
+    let m = ContextMenu::for_drain(da, false, x, y, (1440, 900, 40), &t, 1.0);
+    assert!(!m.actions()[1].1, "der letzte bleibt");
+
+    // hinzufügen: ein Schritt, der neue ist gewählt, Gefälleplan geht mit
+    let vorher = s.roof_drains(da).1;
+    assert!(s.add_roof_drain(da));
+    assert_eq!(s.undo_label(), Some("Ablauf hinzufügen"));
+    let mit = s.roof_drains(da).1;
+    assert_eq!(mit.len(), vorher.len() + 1);
+    assert_eq!(s.active_drain(da), Some(vorher.len()));
+    let g = s.flat_roof_over(floor).unwrap().slope.clone().unwrap();
+    assert_eq!(g.drains.len(), mit.len());
+    assert_eq!(wert(&s, da, "Abläufe"), format!("{} Stück", mit.len()));
+    // löschen: den gewählten
+    assert!(s.remove_roof_drain(da));
+    assert_eq!(s.undo_label(), Some("Ablauf löschen"));
+    assert_eq!(s.roof_drains(da).1, vorher);
+    assert_eq!(s.active_drain(da), None);
+    assert!(!s.remove_roof_drain(da), "ohne Wahl nichts");
+    s.undo();
+    s.undo();
+    assert_eq!(s.roof_drains(da).1, vorher);
+    // bis auf einen; den letzten nicht
+    while s.roof_drains(da).1.len() > 1 {
+        s.set_active_drain(Some((da, 0)));
+        assert!(s.remove_roof_drain(da));
+    }
+    s.set_active_drain(Some((da, 0)));
+    assert!(!s.remove_roof_drain(da));
+    assert_eq!(buttons(&s), [Id::PropsDrains, Id::PropsDrainAdd]);
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
 }
 
 /// Mengen der Dämmung unter dem Blech `ab`: (Dicke mm, Fläche m², Volumen
