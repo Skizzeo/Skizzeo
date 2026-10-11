@@ -9,7 +9,7 @@
 use crate::gefaelle::SlopeField;
 use crate::solid::{at_z, edge_kind, material, right_of, SectionFrame, Solid, SweepEnd, NO_LAYER};
 use crate::terrace::{
-    attika_section_caps, attika_solid, coping_girth_legs, coping_profile_legs, AttikaPiece,
+    attika_solid, coping_girth_legs, coping_profile_legs, crown_section_caps, AttikaPiece,
     COPING_OUTER, ROOF_COPING_INNER,
 };
 use sk_math::{polygon, vec3, Vec3};
@@ -780,7 +780,7 @@ impl FlatRoof {
         let mut s = self.inner_section_caps(p0, n);
         if self.cap > 0.0 {
             let band = (self.crown, self.coping_z());
-            s.append(&attika_section_caps(&self.cap_pieces(), band, p0, n));
+            s.append(&crown_section_caps(&self.cap_pieces(), band, p0, n));
         }
         let d = Solid::default();
         (s.mat, s.elem, s.layer, s.edge_kind) = (
@@ -1173,5 +1173,35 @@ mod tests {
                 .iter()
                 .all(|t| t.p.iter().all(|p| p.z <= cut + 1e-9)));
         }
+    }
+
+    /// Schnitt durch den Dämmstreifen auf der Krone: Schraffur längs wie
+    /// liegende Dämmung (v quer zur Schicht von UK bis OK Streifen), die
+    /// Attikadämmung innen darunter steht (Jörn 11.10.).
+    #[test]
+    fn kronendaemmung_schraffur_liegend() {
+        let r = mit_daemmung();
+        let s = r.coping_section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+        let ins = |t: &&crate::solid::Tri| t.mat == 2 | material::CUT;
+        let krone: Vec<&crate::solid::Tri> = s
+            .triangles
+            .iter()
+            .filter(ins)
+            .filter(|t| t.p.iter().all(|p| p.z >= 1600.0 - 1e-9))
+            .collect();
+        assert!(!krone.is_empty());
+        for t in &krone {
+            for k in 0..3 {
+                let v = (t.p[k].z - 1600.0) / 40.0;
+                assert!((t.uv[k][1] - v).abs() < 1e-9, "{t:?}");
+            }
+        }
+        // innen steht die Dämmung: v quer läuft waagerecht, nicht mit z
+        assert!(s
+            .triangles
+            .iter()
+            .filter(ins)
+            .filter(|t| t.p.iter().all(|p| p.z <= 1600.0 + 1e-9))
+            .any(|t| (0..3).any(|k| t.uv[k][1] > 0.5 && t.p[k].z < 1500.0)));
     }
 }
