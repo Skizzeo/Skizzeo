@@ -2551,14 +2551,30 @@ impl Model {
         let (mut offsets, mut free) = (vec![0.0; n], vec![false; n]);
         for k in 0..n {
             let own = partner(lsegs[k]);
+            // Sonst das nächste Stück derselben Flucht mit Partner, über
+            // gerade Fugen in beide Richtungen (beim Teilen an zwei Punkten
+            // liegt ein Stück zwei Fugen weit, Review Geometrie #61)
             let near = || {
-                let prev = (k > 0 || closed).then(|| (k + n - 1) % n);
-                let next = (k + 1 < n || closed).then(|| (k + 1) % n);
-                [prev, next]
-                    .into_iter()
-                    .flatten()
-                    .filter(|&j| j != k && straight(j, k))
-                    .find_map(|j| partner(lsegs[j]))
+                let step = |j: usize, back: bool| {
+                    let i = match back {
+                        true => (j > 0 || closed).then(|| (j + n - 1) % n)?,
+                        false => (j + 1 < n || closed).then(|| (j + 1) % n)?,
+                    };
+                    (i != k && straight(i, j)).then_some(i)
+                };
+                let (mut prev, mut next) = (Some(k), Some(k));
+                while prev.is_some() || next.is_some() {
+                    prev = prev.and_then(|j| step(j, true));
+                    next = next.and_then(|j| step(j, false));
+                    let found = [prev, next]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|j| partner(lsegs[j]));
+                    if found.is_some() {
+                        return found;
+                    }
+                }
+                None
             };
             if let Some((o, f)) = own.or_else(near) {
                 offsets[k] = o;

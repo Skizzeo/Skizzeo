@@ -558,6 +558,30 @@ mod tests {
         }
     }
 
+    /// Teilen unter bzw. an einer versetzten OG-Wand (Dachterrasse, Erker):
+    /// Alle Teilstücke oben behalten den Versatz, auch das zwei Fugen weit
+    /// vom Stück mit der alten Nummer (Review Geometrie #61).
+    #[test]
+    fn teilen_mit_versatz_im_og() {
+        for off in [-1500.0, 600.0] {
+            let (mut m, eg, og) = rechteck();
+            let w = m.wall_at(og, 1).unwrap();
+            assert!(m.set_offset(w, off).is_some());
+            pruefen(&mut m);
+            for wand in [m.wall_at(eg, 1).unwrap(), w] {
+                let mut p = m.clone();
+                assert_eq!(p.can_split(wand, &[3000.0, 6000.0]), Ok(()), "{off}");
+                p.split_wall(wand, &[3000.0, 6000.0]).unwrap();
+                assert_eq!((zahl(&p, eg), zahl(&p, og)), (6, 6));
+                for k in 1..4 {
+                    let up = p.wall_at(og, k).unwrap();
+                    assert_eq!(p.stack_offset(up), Some((off, true)), "{off} Stück {k}");
+                }
+                pruefen(&mut p);
+            }
+        }
+    }
+
     /// Nach dem Zurückschieben vereint ein Schritt am Mittelstück beide
     /// Fugen; ohne Fuge daneben abgelehnt.
     #[test]
