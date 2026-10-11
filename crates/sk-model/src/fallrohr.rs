@@ -149,6 +149,14 @@ pub const MAX_SHIFT: f64 = 300.0;
 /// Abstand der Rohrachse von der Außenfläche ohne Rücksprung (mm).
 pub const REACH: f64 = WALL_GAP + PIPE_D / 2.0;
 
+/// Ablauf einer Dachterrasse, auf die ein Fallrohr ausläuft (Kosten B31):
+/// Nummer der Dachterrasse (für die Formel im LV) und sein Fallrohr.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerraceDrain {
+    pub number: String,
+    pub pipe: Downpipe,
+}
+
 /// Regenfallrohr eines Ablaufs, fertig ausgelegt (mm, absolut).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Downpipe {
@@ -174,7 +182,7 @@ pub struct Downpipe {
     /// Terrassenablauf (Kosten B31, DIN 1986-100): Läuft das Rohr als
     /// erstes auf eine Dachterrasse aus, hat diese einen eigenen Ablauf in
     /// ihrer Attika mit Fallrohr und Notentwässerung, ausgelegt wie dieses.
-    pub terrace: Option<Box<Downpipe>>,
+    pub terrace: Option<Box<TerraceDrain>>,
     /// Unteres Ende des Fallrohrs (OK Standrohr bzw. OK Auslaufbogen über
     /// einem tieferen Dach) und die Fläche darunter.
     pub stand_top: f64,
@@ -389,7 +397,7 @@ impl Downpipe {
             }
         }
         if let Some(t) = &self.terrace {
-            s.append(&t.solid());
+            s.append(&t.pipe.solid());
         }
         s
     }
@@ -603,9 +611,9 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
             menge(crate::roof::DRAINS, "st", 1.0, "1 Attikaablauf".into()),
             menge(crate::roof::OVERFLOWS, "st", 1.0, "1 Notüberlauf".into()),
         ];
-        dazu.extend(mengen(vorlage, t));
+        dazu.extend(mengen(vorlage, &t.pipe));
         for z in dazu {
-            let f = format!("Terrassenablauf: {}", z.formula);
+            let f = format!("Terrassenablauf an {}: {}", t.number, z.formula);
             match out.iter_mut().find(|o| o.key == z.key) {
                 Some(o) => {
                     o.value += z.value;

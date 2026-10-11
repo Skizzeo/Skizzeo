@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::fallrohr::{
-    Downpipe, DownpipeSpec, Foot, Overflow, MAX_SHIFT, MIN_GAP, OUTLET_REACH, PIPE_D, REACH,
-    SPACING_MAX, SPACING_MIN, WALL_GAP,
+    Downpipe, DownpipeSpec, Foot, Overflow, TerraceDrain, MAX_SHIFT, MIN_GAP, OUTLET_REACH, PIPE_D,
+    REACH, SPACING_MAX, SPACING_MIN, WALL_GAP,
 };
 use crate::roof::FlatRoof;
 
@@ -171,12 +171,23 @@ impl Model {
     /// des Blechpfads, die der Mündung am nächsten liegt, mit Fallrohr und
     /// Notentwässerung wie `d`, ohne Kontrollablauf. Ein DN 100 nimmt die
     /// Terrasse und die oberen Dachflächen der auslaufenden Rohre auf.
-    fn terrace_drain(&self, run: RunId, d: &Downpipe, b: Option<BuildingId>) -> Option<Downpipe> {
+    fn terrace_drain(
+        &self,
+        run: RunId,
+        d: &Downpipe,
+        b: Option<BuildingId>,
+    ) -> Option<TerraceDrain> {
         let Some(Ok(f)) = self.floor(run) else {
             return None;
         };
         let (base, belag) = f.terrace_band()?;
         let floor = self.floor_of(run)?;
+        let number = self
+            .elements
+            .iter()
+            .find(|(_, e)| matches!(e.kind, ElementKind::RoofTerrace { floor: x } if x == floor))
+            .map(|(_, e)| e.number.clone())
+            .unwrap_or_default();
         let mund = d.axis() + d.bend * OUTLET_REACH;
         let (a, e) = f
             .terraces
@@ -227,7 +238,8 @@ impl Model {
         let t = (mund - ai).dot(along).clamp(0.0, (e - a).length());
         let ablauf = ai + along * t;
         let foot = |p: Vec3, out: Vec3, side: Vec3| self.foot_at(floor, b, p, out, side);
-        Downpipe::layout(&r, ablauf, foot, spec)
+        let pipe = Downpipe::layout(&r, ablauf, foot, spec)?;
+        Some(TerraceDrain { number, pipe })
     }
 
     /// Fläche unter der Rohrachse `p` außen vor dem Flachdach über der
@@ -766,7 +778,8 @@ mod tests {
             .collect();
         let mit: Vec<_> = pipes.iter().filter_map(|d| d.terrace.as_deref()).collect();
         assert_eq!(mit.len(), 1);
-        let t = mit[0];
+        let t = &mit[0].pipe;
+        assert!(mit[0].number.starts_with("DT-"), "{}", mit[0].number);
         assert_eq!((t.face.x, t.face.y, t.out.x), (10000.0, 6780.0, 1.0));
         assert!(!t.lower && t.control.is_none() && t.terrace.is_none());
         assert!(t.stand_top < ok_og && t.box_top < ok_og + 500.0);
@@ -780,6 +793,9 @@ mod tests {
         assert_eq!(alle(crate::fallrohr::BOX), 5.0);
         assert_eq!(alle(crate::roof::DRAINS), 5.0);
         assert_eq!(alle(crate::roof::OVERFLOWS), 5.0);
+        // die Formel nennt die Dachterrasse (Kosten an B31)
+        assert!(s.auto.iter().any(|a| a.key == crate::roof::DRAINS
+            && a.formula == format!("Terrassenablauf an {}: 1 Attikaablauf", mit[0].number)));
     }
 
     /// Review W12 und Kosten B30 an #68: Ein Dach ohne gespeicherte Abläufe
