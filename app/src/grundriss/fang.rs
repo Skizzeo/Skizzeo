@@ -4,10 +4,12 @@
 //! rastet mit einem kurzen Puls ein und haftet: Sie greift ab [`SNAP_PX`] und
 //! lässt erst ab [`HALT_PX`] wieder los. Ein Klick auf eine quer liegende
 //! Fläche oder ein freies Ende setzt den letzten Punkt und beendet den Zug.
-//! Vor dem ersten Punkt öffnet eine Ziffer auf einer Fläche die Eingabe
-//! „Abstand ab Ecke“. Teil von [`super::WallTool`].
+//! Vor dem ersten Punkt nennt die Pille auf einer Fläche das lichte Maß zur
+//! nächsten Wand (G2); eine Ziffer öffnet die Eingabe „licht“. Teil von
+//! [`super::WallTool`].
 
 use super::*;
+use sk_model::Wandflaeche;
 use std::time::Duration;
 
 /// Haftung: Ein gefangenes Ziel lässt erst ab diesem Abstand los (px bei 96 dpi).
@@ -20,6 +22,14 @@ const PULS: Duration = Duration::from_millis(160);
 /// setzt sich dort nicht ab.
 const PARALLEL_SIN: f64 = 0.17;
 
+/// Ab diesem Kosinus (etwa 10°) steht eine Wandfläche der neuen Wand
+/// gegenüber und begrenzt das lichte Maß.
+const GEGENUEBER_COS: f64 = 0.98;
+
+/// Abstand des Suchstrahls für das lichte Maß von der Fläche (mm): knapp im
+/// Raum, damit Wände, die an der Fläche stoßen, getroffen werden.
+const STRAHL_MM: f64 = 10.0;
+
 /// Gefangenes Ziel: Index in [`Fangziele::flaechen`] bzw. [`Fangziele::enden`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Ziel {
@@ -29,6 +39,32 @@ pub(super) enum Ziel {
 
 /// Stand der Fangziele: Modellrevision und Geschoss.
 pub(super) type FangStand = (u64, StoreyId);
+
+/// Nächste Wand längs der gefangenen Fläche (G2), Bezug für das lichte Maß
+/// vor dem ersten Punkt. Die neue Wand läuft senkrecht von der Fläche weg.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Nachbar {
+    /// Punkt auf der Linie der Fläche an der Wand gegenüber bzw. an der Ecke.
+    b: Vec3,
+    /// Einheitsrichtung längs der Fläche von `b` zur neuen Wand.
+    pub(super) dir: Vec3,
+    /// Normale der Fläche, die Richtung des ersten Segments.
+    n: Vec3,
+    /// `b` liegt an einer gegenüberliegenden Wandfläche (lichtes Maß), sonst
+    /// am Ende der Fläche.
+    licht: bool,
+}
+
+impl Nachbar {
+    /// Feld der Eingabe.
+    pub(super) fn etikett(self) -> &'static str {
+        if self.licht {
+            "licht"
+        } else {
+            "ab Ecke"
+        }
+    }
+}
 
 impl WallTool {
     /// Holt die Fangkanten des Hintergrunds (E16) und die Fangziele an den
@@ -41,7 +77,7 @@ impl WallTool {
         }
         self.fang_stand = Some(stand);
         self.snaps = scene.background_snaps();
-        self.fang = scene.model().fangziele(stand.1);
+        self.fang = scene.fangziele(stand.1);
     }
 
     /// Braucht die App weitere Bilder für den Einrast-Puls?
@@ -157,12 +193,17 @@ impl WallTool {
         }
     }
 
-    /// Strecke der gefangenen Wandfläche (zum Hervorheben).
+    /// Strecke der gefangenen Wandfläche zum Hervorheben: der Abschnitt
+    /// zwischen den Wänden, die an ihr stoßen (G2), sonst die ganze Fläche.
     pub(super) fn ziel_strecke(&self) -> Option<(Vec3, Vec3)> {
-        match self.cursor.as_ref()?.ziel? {
+        let c = self.cursor.as_ref()?;
+        match c.ziel? {
             Ziel::Flaeche(i) => {
                 let f = self.fang.flaechen.get(i)?;
-                Some((self.auf_ebene(f.a), self.auf_ebene(f.b)))
+                let r = f.richtung();
+                let (l, _) = self.laengs(f, c.pos, r * -1.0);
+                let (w, _) = self.laengs(f, c.pos, r);
+                Some((c.pos - r * l, c.pos + r * w))
             }
             Ziel::Ende(_) => None,
         }
@@ -177,23 +218,74 @@ impl WallTool {
         (!name.is_empty()).then_some(name.as_str())
     }
 
-    /// Ecke der gefangenen Fläche, die der Maus näher liegt, die Richtung von
-    /// ihr längs der Fläche und die Normale der Fläche.
-    fn ecke_und_richtung(&self) -> Option<[Vec3; 3]> {
+    /// Abstand der zugewandten Fläche einer neuen Wand von ihrer Bezugslinie
+    /// längs `dir`, wenn sie in Richtung `n` gezeichnet wird.
+    fn nah(&self, n: Vec3, dir: Vec3) -> f64 {
+        let dicke: f64 = self.layers.iter().map(|l| l.thickness).sum();
+        let (lo, hi) = self.ref_side.span(dicke);
+        // rechts der Zeichenrichtung (Versatz positiv), längs `dir` gemessen
+        let k = (perp(n) * -1.0).dot(dir);
+        (k * lo).min(k * hi)
+    }
+
+    /// Anfang der neuen Wand mit dem lichten Maß `licht` zum Nachbarn.
+    pub(super) fn anfang_bei(&self, nb: Nachbar, licht: f64) -> Vec3 {
+        nb.b + nb.dir * (licht - self.nah(nb.n, nb.dir))
+    }
+
+    /// Abstand von `p` auf der Fläche `f` längs `s` bis zur nächsten Wand, die
+    /// der Fläche gegenüber steht (`true`), sonst bis zum Ende der Fläche.
+    /// Gesucht wird knapp im Raum, damit Wände treffen, die an `f` stoßen.
+    fn laengs(&self, f: &Wandflaeche, p: Vec3, s: Vec3) -> (f64, bool) {
+        let ende = self.auf_ebene(if s.dot(f.richtung()) > 0.0 { f.b } else { f.a });
+        let mut weit = (ende - p).dot(s).max(0.0);
+        let mut licht = false;
+        let strahl = p + f.normale * STRAHL_MM;
+        for g in &self.fang.flaechen {
+            if g.normale.dot(s) > -GEGENUEBER_COS {
+                continue;
+            }
+            let a = self.auf_ebene(g.a);
+            let e = self.auf_ebene(g.b) - a;
+            let k = cross2(s, e);
+            if k.abs() < 1e-9 {
+                continue;
+            }
+            let t = cross2(a - strahl, e) / k;
+            let u = cross2(a - strahl, s) / k;
+            // Gleichstand mit dem Ende: die Wand an der Ecke zählt
+            if t > -1.0 && (0.0..=1.0).contains(&u) && t <= weit + 0.5 {
+                (weit, licht) = (t.max(0.0), true);
+            }
+        }
+        (weit, licht)
+    }
+
+    /// Nächste Wand längs der gefangenen Fläche auf beiden Seiten des Cursors:
+    /// eine gegenüberliegende Wandfläche oder sonst das Ende der Fläche. Die
+    /// Seite mit dem kleineren lichten Maß gewinnt; dazu das lichte Maß.
+    fn nachbar(&self) -> Option<(Nachbar, f64)> {
         let c = self.cursor.as_ref()?;
         let Ziel::Flaeche(i) = c.ziel? else {
             return None;
         };
         let f = self.fang.flaechen.get(i)?;
-        let (a, b) = (self.auf_ebene(f.a), self.auf_ebene(f.b));
-        Some(if (c.pos - a).length() <= (c.pos - b).length() {
-            [a, f.richtung(), f.normale]
-        } else {
-            [b, f.richtung() * -1.0, f.normale]
-        })
+        let (p, r, n) = (c.pos, f.richtung(), f.normale);
+        let seite = |s: Vec3| {
+            let (weit, licht) = self.laengs(f, p, s);
+            let nb = Nachbar {
+                b: p + s * weit,
+                dir: s * -1.0,
+                n,
+                licht,
+            };
+            (nb, weit + self.nah(n, nb.dir))
+        };
+        let (l, r) = (seite(r * -1.0), seite(r));
+        Some(if l.1 <= r.1 { l } else { r })
     }
 
-    /// Ist die Eingabe „Abstand ab Ecke“ offen?
+    /// Ist die Eingabe „licht“ vor dem ersten Punkt offen?
     pub(super) fn abstand_offen(&self) -> bool {
         self.abstand.is_some()
             && self.input.is_some()
@@ -202,42 +294,48 @@ impl WallTool {
     }
 
     /// Öffnet vor dem ersten Punkt auf einer Wandfläche mit einer Ziffer die
-    /// Eingabe „Abstand ab Ecke“.
+    /// Eingabe „licht“ (zur nächsten Wand, sonst „ab Ecke“).
     pub(super) fn oeffnet_abstand(&mut self, ch: char, mods: Modifiers) -> bool {
         if !self.points.is_empty() || !self.faengt_waende() || !opens(ch, MeasureKind::Length, mods)
         {
             return false;
         }
-        let Some(ecke) = self.ecke_und_richtung() else {
+        let Some((nb, _)) = self.nachbar() else {
             return false;
         };
         let mut i = MeasureInput::new(MeasureKind::Length, None);
         i.push(ch);
         self.input = Some(i);
-        self.abstand = Some(ecke);
+        self.abstand = Some(nb);
         true
     }
 
-    /// Pille vor dem ersten Punkt: Eingabe „Abstand ab Ecke“ oder, auf einer
-    /// Wandfläche, ihr Name und der Abstand ab der näheren Ecke. Die Pille
+    /// Pille vor dem ersten Punkt: Eingabe „licht“ oder, auf einer
+    /// Wandfläche, ihr Name und das lichte Maß zur nächsten Wand. Die Pille
+    /// spannt die Lücke zwischen der Wand gegenüber und der neuen Wand und
     /// steht auf der Raumseite der Fläche.
     pub(super) fn label_vor_start(&self) -> Option<([Vec3; 2], String)> {
-        let (ecke, ende, n, text) = match (&self.input, self.abstand) {
-            (Some(i), Some([ecke, _, n])) if self.abstand_offen() => {
-                let ende = self.typed_point().unwrap_or(ecke);
-                (ecke, ende, n, i.text(self.labels()))
+        let (nb, licht, text) = match (&self.input, self.abstand) {
+            (Some(i), Some(nb)) if self.abstand_offen() => {
+                let licht = i.value(0).and_then(Result::ok).unwrap_or(0.0);
+                (nb, licht, i.text(self.labels()))
             }
             _ => {
-                let [ecke, _, n] = self.ecke_und_richtung()?;
-                let pos = self.cursor.as_ref()?.pos;
-                let ab = crate::ui::live_length_text((pos - ecke).length());
-                let text = match self.ziel_name() {
-                    Some(name) => format!("an {name} · {ab} ab Ecke"),
-                    None => format!("{ab} ab Ecke"),
+                let (nb, licht) = self.nachbar()?;
+                let mass = format!("{} m", crate::ui::m_text(licht.max(0.0)));
+                let mass = if nb.licht {
+                    format!("licht {mass}")
+                } else {
+                    format!("{mass} ab Ecke")
                 };
-                (ecke, pos, n, text)
+                let text = match self.ziel_name() {
+                    Some(name) => format!("an {name} · {mass}"),
+                    None => mass,
+                };
+                (nb, licht, text)
             }
         };
+        let (von, bis) = (nb.b, nb.b + nb.dir * licht.max(0.0));
         // Die App setzt die Pille links der Richtung (bei Bezug rechts:
         // rechts); die Enden so legen, dass das die Raumseite ist
         let links = if self.ref_side == RefSide::Right {
@@ -245,14 +343,14 @@ impl WallTool {
         } else {
             1.0
         };
-        let d = ende - ecke;
+        let d = bis - von;
         if d.length() < 1.0 {
-            return Some(([ecke, ende], text));
+            return Some(([von, bis], text));
         }
-        Some(if perp(d).dot(n) * links >= 0.0 {
-            ([ecke, ende], text)
+        Some(if perp(d).dot(nb.n) * links >= 0.0 {
+            ([von, bis], text)
         } else {
-            ([ende, ecke], text)
+            ([bis, von], text)
         })
     }
 }
@@ -274,7 +372,8 @@ mod tests {
     }
 
     /// Haus 10 × 8 m (Außenwand, Bezug außen) mit einer Innenwand bei x = 5 m
-    /// von der Innenfläche unten bis 4 m hoch; Werkzeug „Innenwand“.
+    /// von der Innenfläche unten bis 4 m hoch; Werkzeug „Innenwand“ mit dem
+    /// Aufbau dieser Innenwand. Dazu die Dicke der Außenwand.
     fn haus() -> (WallTool, f64) {
         let mut m = Model::new();
         let st = m.defaults().storey;
@@ -303,7 +402,7 @@ mod tests {
         .unwrap();
         let mut w = WallTool::new();
         w.set_enabled(true);
-        w.set_category(Category::InteriorWall, Vec::new());
+        w.set_category(Category::InteriorWall, m.wall_layers(iw));
         w.fang = m.fangziele(st);
         (w, t)
     }
@@ -439,24 +538,99 @@ mod tests {
         assert_ne!(t.cursor.as_ref().unwrap().kind, SnapKind::Wand);
     }
 
-    /// Vor dem ersten Punkt: Ziffer auf einer Fläche, Abstand ab der näheren
-    /// Ecke; das erste Segment fängt senkrecht zur Fläche.
+    fn dicke(t: &WallTool) -> f64 {
+        t.layers.iter().map(|l| l.thickness).sum()
+    }
+
+    /// G2: Vor dem ersten Punkt nennt die Pille das lichte Maß zur näheren
+    /// Wand bis zur Fläche der neuen Wand; Ziffer und Enter setzen es genau,
+    /// das erste Segment fängt senkrecht zur Fläche.
     #[test]
-    fn abstand_ab_ecke() {
+    fn lichtes_mass_zur_ecke() {
         let c = cam();
         let (mut t, d) = haus();
+        let ti = dicke(&t);
+        assert!(ti > 50.0, "Innenwand mit Aufbau");
         zeige(&mut t, &c, vec3(d + 30.0, 6500.0, 0.0));
-        let (_, text) = t.label().expect("Pille auf der Fläche");
-        assert!(text.starts_with("an AW-001 innen · "), "{text}");
+        // Innenfläche oben bei y = 8000 − d; Achse bei 6500, Fläche ti/2 höher
+        let licht = 8000.0 - d - 6500.0 - ti / 2.0;
+        let ([a, b], text) = t.label().expect("Pille auf der Fläche");
+        let soll = format!("an AW-001 innen · licht {} m", crate::ui::m_text(licht));
+        assert_eq!(text, soll);
+        assert!(
+            ((b - a).length() - licht).abs() < 1e-6,
+            "Pille spannt die Lücke"
+        );
         for k in [Key::Char('1'), Key::Char(','), Key::Char('5'), Key::Enter] {
             taste(&mut t, &c, k);
         }
         let s = t.points()[0];
-        // Ecke oben links innen bei y = 8000 − d
         assert!(
-            (s.x - d).abs() < 1e-6 && (s.y - (8000.0 - d - 1500.0)).abs() < 1e-6,
+            (s.x - d).abs() < 1e-6 && (s.y - (8000.0 - d - 1500.0 - ti / 2.0)).abs() < 1e-6,
             "{s:?}"
         );
         assert_eq!(t.start_dir.map(|v| v.x.abs() < 1e-9), Some(true));
+    }
+
+    /// G2 (Hinweis Geometrie zu #76): Die Innenfläche der Außenwand leuchtet
+    /// nur zwischen den Wänden, die an ihr stoßen.
+    #[test]
+    fn flaeche_leuchtet_bis_zur_innenwand() {
+        let c = cam();
+        let (mut t, d) = haus();
+        let ti = dicke(&t);
+        zeige(&mut t, &c, vec3(4000.0, d + 30.0, 0.0));
+        let (a, b) = t.ziel_strecke().unwrap();
+        let (a, b) = if a.x < b.x { (a, b) } else { (b, a) };
+        assert!((a.x - d).abs() < 1e-6, "{a:?}");
+        assert!((b.x - (5000.0 - ti / 2.0)).abs() < 1e-6, "{b:?}");
+        zeige(&mut t, &c, vec3(7000.0, d + 30.0, 0.0));
+        let (a, b) = t.ziel_strecke().unwrap();
+        let (a, b) = if a.x < b.x { (a, b) } else { (b, a) };
+        assert!((a.x - (5000.0 + ti / 2.0)).abs() < 1e-6, "{a:?}");
+        assert!((b.x - (10000.0 - d)).abs() < 1e-6, "{b:?}");
+    }
+
+    /// G2: Steht eine Innenwand näher als die Ecke, gilt das lichte Maß zu
+    /// ihrer zugewandten Fläche; auch mit Bezugsseite links.
+    #[test]
+    fn lichtes_mass_zur_innenwand() {
+        let c = cam();
+        let (mut t, d) = haus();
+        let ti = dicke(&t);
+        zeige(&mut t, &c, vec3(4000.0, d + 30.0, 0.0));
+        let (_, text) = t.label().unwrap();
+        let licht = crate::ui::m_text(1000.0 - ti);
+        assert_eq!(text, format!("an AW-004 innen · licht {licht} m"));
+        assert_eq!(t.labels(), LABELS, "ohne Eingabe Länge und Winkel");
+        for k in [Key::Char('0'), Key::Char(','), Key::Char('5')] {
+            taste(&mut t, &c, k);
+        }
+        assert_eq!(t.labels(), ["licht", ""]);
+        taste(&mut t, &c, Key::Enter);
+        let s = t.points()[0];
+        // Ostfläche der neuen Wand 0,50 m vor der Westfläche der Innenwand
+        assert!(
+            (s.x + ti / 2.0 - (5000.0 - ti / 2.0 - 500.0)).abs() < 1e-6,
+            "{s:?}"
+        );
+        assert!((s.y - d).abs() < 1e-6, "{s:?}");
+
+        // Bezugsseite links, nach Norden gezeichnet: Körper rechts (Osten)
+        let (mut t, d) = haus();
+        t.ref_side = RefSide::Left;
+        zeige(&mut t, &c, vec3(4000.0, d + 30.0, 0.0));
+        let (_, text) = t.label().unwrap();
+        // Bezugslinie bei x = 4000, Ostfläche bei 4000 + ti
+        let licht = crate::ui::m_text(1000.0 - 1.5 * ti);
+        assert!(text.ends_with(&format!("licht {licht} m")), "{text}");
+        for k in [Key::Char('0'), Key::Char(','), Key::Char('5'), Key::Enter] {
+            taste(&mut t, &c, k);
+        }
+        let s = t.points()[0];
+        assert!(
+            (s.x + ti - (5000.0 - ti / 2.0 - 500.0)).abs() < 1e-6,
+            "{s:?}"
+        );
     }
 }
