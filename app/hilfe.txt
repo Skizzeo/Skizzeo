@@ -146,12 +146,13 @@ Einschalten | Paneel „Geschosse“ anklicken, in der großen Ansicht Haken „
 Aufkantung | Höhe in der großen Ansicht „Geschosse“: Linie „OK Aufkantung“ ziehen oder auf ihre Maßzahl klicken
 Dämmung | Dachaufbau anklicken, im Paneel unter „Aufbau“ das Feld „Dämmung“ tippen
 Gefälle | Zahlenfeld „Gefälle“ in %, 1 bis 10; 0 = ohne Gefälle
-Abläufe | „Abläufe vorschlagen“ setzt sie neu; im Grundriss stehen sie als Punkte an der Aufkantung
+Abläufe | Skizzeo schlägt sie vor, beim Rechteck je zwei an beiden Längsseiten nahe den Ecken; „Abläufe vorschlagen“ setzt sie neu; im Grundriss stehen sie als Punkte an der Aufkantung
 Ablauf ziehen | Dachaufbau wählen, im Grundriss einen Punkt an der Aufkantung entlang ziehen; der Gefälleplan geht mit, **Esc** bricht ab
+Ablauf dazu, weg | Punkt anklicken, dann Rechtsklick oder im Abschnitt „Gefälle“ „Ablauf hinzufügen“ bzw. „Ablauf löschen“; der letzte bleibt
 Ausschalten | Haken weg; **Strg+Z** holt das Dach zurück
 
 [thema] id=geschosse titel="Geschosse"
-Bearbeiten | Klick auf das Paneel „Geschosse“ öffnet es groß; nur dort wird gezogen und getippt
+Bearbeiten | Klick auf das Paneel „Geschosse“ öffnet es groß; nur dort wird gezogen und getippt, das Modell daneben zeigt jede Änderung sofort
 Schließen | **Esc**, „Schließen ×“ oder Klick daneben
 Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ in der großen Ansicht
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
