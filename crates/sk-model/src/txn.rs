@@ -79,6 +79,11 @@ pub enum Change {
         old: Vec<Trade>,
         new: Vec<Trade>,
     },
+    /// Raumvorlagen des Raumkatalogs (Raumbuch RB2), als Ganzes.
+    SpaceTypes {
+        old: Vec<crate::model::SpaceType>,
+        new: Vec<crate::model::SpaceType>,
+    },
     /// Sätze unbekannter Art aus der gelesenen Datei (F-17), als Ganzes
     /// (Review 3q/4: fremde `[pattern]`-Zeilen fallen mit Rückgängig weg).
     ForeignRecords {
@@ -134,6 +139,7 @@ impl Change {
             Change::Display { old, new } => old == new,
             Change::Defaults { old, new } => old == new,
             Change::Trades { old, new } => old == new,
+            Change::SpaceTypes { old, new } => old == new,
             Change::ForeignRecords { old, new } => old == new,
             Change::Ext { old, new, .. } => old == new,
             Change::ExtDefs { old, new } => old == new,
@@ -196,6 +202,7 @@ pub(crate) enum Key {
     Display,
     Defaults,
     Trades,
+    SpaceTypes,
     ForeignRecords,
     ExtDefs,
     Project,

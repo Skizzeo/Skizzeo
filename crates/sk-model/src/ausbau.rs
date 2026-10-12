@@ -476,6 +476,22 @@ impl Model {
         )
     }
 
+    /// Lässt sich der Werks-Ausbautyp `t` anlegen? Nicht, wenn das Büro einen
+    /// seiner Werksbaustoffe umgestellt hat (z. B. den Anstrich auf eine
+    /// andere Art): Dann entstünde ein ungültiger Typ.
+    pub(super) fn finish_type_creatable(&self, t: &FinishType) -> bool {
+        let art = |g: Guid| match self.material_by_guid(g) {
+            Some(id) => self.material(id).map(|m| m.category),
+            None => FINISH_MATERIALS
+                .iter()
+                .find(|m| m.guid == g)
+                .map(|m| m.category),
+        };
+        !t.layers.iter().any(|&(mat, thickness, _)| {
+            art(mat).is_none_or(|c| thickness == 0.0 && c != MatCategory::Coating)
+        })
+    }
+
     /// Werks-Ausbautyp mit der Guid `g` ([`FINISH_TYPES`]); fehlt er, wird
     /// er samt Baustoffen angelegt. Ein belegtes Kurzzeichen weicht auf das
     /// nächste freie aus. `None` bei fremder Guid.
@@ -484,19 +500,9 @@ impl Model {
             return Some(id);
         }
         let t = FINISH_TYPES.iter().find(|t| t.guid == g)?;
-        // Erst prüfen, dann anlegen: Hat das Büro einen Werksbaustoff
-        // umgestellt (z. B. den Anstrich auf eine andere Art), entsteht
-        // weder ein ungültiger Typ noch ein verwaister Baustoff
-        let art = |g: Guid| match self.material_by_guid(g) {
-            Some(id) => self.material(id).map(|m| m.category),
-            None => FINISH_MATERIALS
-                .iter()
-                .find(|m| m.guid == g)
-                .map(|m| m.category),
-        };
-        if t.layers.iter().any(|&(mat, thickness, _)| {
-            art(mat).is_none_or(|c| thickness == 0.0 && c != MatCategory::Coating)
-        }) {
+        // Erst prüfen, dann anlegen: kein ungültiger Typ, kein verwaister
+        // Baustoff
+        if !self.finish_type_creatable(t) {
             return None;
         }
         let mut layers = Vec::new();
