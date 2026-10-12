@@ -30,8 +30,6 @@ pub enum Modul {
 }
 
 impl Modul {
-    pub const ALLE: [Modul; 4] = [Modul::Mengen, Modul::Kosten, Modul::Ava, Modul::Gelaende];
-
     fn bit(self) -> u8 {
         1 << self as u8
     }
@@ -362,7 +360,8 @@ mod tests {
     #[test]
     fn stufen_und_abhaengigkeiten() {
         let b = stufe("basis");
-        assert!(Modul::ALLE.iter().all(|m| !b.frei(*m)));
+        let alle = [Modul::Mengen, Modul::Kosten, Modul::Ava, Modul::Gelaende];
+        assert!(alle.iter().all(|m| !b.frei(*m)));
         let p = stufe("pro");
         assert!(p.frei(Modul::Mengen) && !p.frei(Modul::Kosten) && !p.frei(Modul::Ava));
         let u = stufe("Ultimate");
