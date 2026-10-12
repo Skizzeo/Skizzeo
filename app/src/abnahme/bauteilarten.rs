@@ -340,10 +340,30 @@ fn a176_datei_schluesselwoerter_unveraendert() {
             .lines()
             .filter(|l| l.starts_with("[layerset]"))
             .collect();
-        assert_eq!(typen.len(), 7, "Werkstypen");
-        assert!(typen
+        // Die Räume des Hauses entstehen mit Vorlage und Ausbautypen ihrer
+        // Nutzung (ohne Wahl Wohnzimmer) und dem Estrich je Geschoss
+        // (Raumbuch #112, Einstellungen B1)
+        let (waende, ausbau): (Vec<&str>, Vec<&str>) = typen
             .iter()
-            .all(|l| l.contains(" cat=exterior ") || l.contains(" cat=interior ")));
+            .partition(|l| l.contains(" cat=exterior ") || l.contains(" cat=interior "));
+        assert_eq!(waende.len(), 7, "Werkstypen");
+        let mut arten: Vec<&str> = ausbau
+            .iter()
+            .filter_map(|l| l.split(" cat=").nth(1)?.split(' ').next())
+            .collect();
+        arten.sort_unstable();
+        assert_eq!(
+            arten,
+            [
+                "ceilingfinish",
+                "floorfinish",
+                "screed",
+                "screed",
+                "skirting",
+                "wallfinish"
+            ],
+            "Ausbau der Vorgabe-Nutzung"
+        );
         let m2 = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1))
             .expect("öffnen")
             .model;

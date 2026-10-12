@@ -3,7 +3,8 @@
 //! und den Ausbautypen für Boden, Estrich, Wand, Wandfliesen, Decke und
 //! Sockel. Ein Raum verweist über die Guid auf seine Vorlage (`use=`, Raum
 //! des Grundrisses); ändert sich die Vorlage „Bad“, ändern sich alle Bäder
-//! ohne eigene Abweichung.
+//! ohne eigene Abweichung. Eine Vorlage, die ein Raum nutzt, bleibt im
+//! Projekt wie ein Typ, der verbaut ist.
 //!
 //! Wie die Werks-Ausbautypen haben die 13 Werksvorlagen feste Guids und
 //! werden erst angelegt, wenn ein Raum oder der Katalog sie braucht
@@ -403,7 +404,8 @@ impl Model {
 
     /// Ersetzt alle Vorlagen auf einmal (OK im Bauteilkatalog): so dürfen
     /// zwei Vorlagen ihre Namen tauschen. `false`, wenn eine gegen eine Regel
-    /// verstößt oder Name oder Guid doppelt sind; dann bleibt alles.
+    /// verstößt, Name oder Guid doppelt sind oder eine Vorlage fehlt, die ein
+    /// Raum nutzt; dann bleibt alles.
     pub fn replace_space_types(&mut self, v: Vec<SpaceType>) -> bool {
         let bad = v.iter().enumerate().any(|(i, s)| {
             self.space_type_problems(s).next().is_some()
@@ -411,7 +413,11 @@ impl Model {
                     .iter()
                     .any(|x| x.guid == s.guid || x.name == s.name)
         });
-        if bad {
+        let genutzt_fehlt = self
+            .space_types
+            .iter()
+            .any(|s| !v.iter().any(|x| x.guid == s.guid) && self.space_type_users(s.guid) > 0);
+        if bad || genutzt_fehlt {
             return false;
         }
         if v == self.space_types {
@@ -423,17 +429,28 @@ impl Model {
         true
     }
 
-    /// Entfernt die Vorlage. Räume gibt es mit RB3; was ein Raum dann
-    /// bekommt, dessen Vorlage fehlt, regelt RB3 (plan.md §7: die Vorgabe des
-    /// Projekts).
+    /// Entfernt die Vorlage; `false`, wenn das Projekt sie nicht führt oder
+    /// ein Raum sie nutzt ([`Model::space_type_users`]).
     pub fn remove_space_type(&mut self, g: Guid) -> bool {
         let Some(i) = self.space_types.iter().position(|s| s.guid == g) else {
             return false;
         };
+        if self.space_type_users(g) > 0 {
+            return false;
+        }
         self.note_space_types();
         self.space_types.remove(i);
         self.touch();
         true
+    }
+
+    /// Zahl der Räume, die die Vorlage `g` als Nutzung gewählt haben (auch
+    /// ruhende). Ein Raum ohne Wahl nutzt keine.
+    pub fn space_type_users(&self, g: Guid) -> usize {
+        self.elements
+            .iter()
+            .filter(|(_, e)| matches!(&e.kind, ElementKind::Space(s) if s.nutzung == Some(g)))
+            .count()
     }
 
     /// Verweist eine Raumvorlage auf den Typ? Dann lässt er sich weder
@@ -800,6 +817,35 @@ mod tests {
         assert_eq!(m.space_type(BATH_SPACE_GUID).unwrap().name, nb);
         assert_eq!(m.space_type(WC_SPACE_GUID).unwrap().name, na);
         assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Eine Vorlage, die ein Raum nutzt, lässt sich weder löschen noch beim
+    /// Übernehmen aus dem Katalog weglassen; ohne Nutzung wieder schon.
+    #[test]
+    fn genutzte_vorlage_bleibt() {
+        let (mut m, _) = mit_vorlagen();
+        let st = m.defaults().storey;
+        m.begin("Raum");
+        let mut s = Space::neu(vec3(1000.0, 1000.0, 0.0), "Bad".into());
+        s.nutzung = Some(BATH_SPACE_GUID);
+        let r = m.add_space(st, s);
+        assert!(m.commit().is_some());
+        assert_eq!(m.space_type_users(BATH_SPACE_GUID), 1);
+        assert_eq!(m.space_type_users(WC_SPACE_GUID), 0);
+        let ohne: Vec<SpaceType> = m
+            .space_types()
+            .iter()
+            .filter(|t| t.guid != BATH_SPACE_GUID)
+            .cloned()
+            .collect();
+        m.begin("Löschen");
+        assert!(!m.remove_space_type(BATH_SPACE_GUID));
+        assert!(!m.replace_space_types(ohne.clone()));
+        assert!(m.remove_space_type(WC_SPACE_GUID), "ungenutzt");
+        assert!(m.set_space(r, |s| s.nutzung = None));
+        assert!(m.replace_space_types(ohne));
+        assert!(m.commit().is_some());
+        assert!(m.space_type(BATH_SPACE_GUID).is_none());
     }
 
     /// Unlesbares in `[spacetype]` gibt Hinweise, die Vorlage kommt mit

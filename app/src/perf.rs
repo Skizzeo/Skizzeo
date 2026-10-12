@@ -1716,6 +1716,129 @@ fn perf_raumstempel() {
     println!("Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen).");
 }
 
+/// Review #112 B1: Raumbuch im Paneel des Raums bei `n` Häusern: Paneel
+/// (`selection::props`), Stempel ziehen samt Auslegen, Loslassen (Schritt
+/// schließen) samt Paneel, die Teile des Raumbuchs (Rohbau mit Öffnungen,
+/// Ausbau, Zeilen) und das Raumbuch aller Räume des Geschosses.
+#[test]
+#[ignore]
+fn perf_raumbuch_paneel() {
+    use crate::raum_app::stempel::Stempel;
+    use sk_platform::MouseButton;
+    use sk_raum::ausbau::RaumAusbau;
+    use sk_raum::oeffnungen::Rohbau;
+    use sk_raum::raumbuch::{self, Regeln};
+    use sk_ui::theme::Theme;
+    use sk_ui::widgets::Fonts;
+    use std::f64::consts::FRAC_PI_2;
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8}",
+        "Häuser", "Paneel", "Stempel", "Loslassen", "Rohbau", "Ausbau", "Zeilen", "alle"
+    );
+    let fonts = Fonts::system();
+    let t = Theme::dark();
+    let mods = Modifiers::default();
+    for n in [1, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        let nah = Camera::parallel(vec3(5000.0, 4000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 6000.0);
+        let mut sp = Stempel::default();
+        let aus = |sp: &mut Stempel, s: &Scene| {
+            sp.auslegen(s, &nah, W, H, 1.0, &fonts, &t, &[]);
+        };
+        aus(&mut sp, &s);
+        let b = sp
+            .bilder
+            .iter()
+            .find(|b| b.raum.is_some() && b.punkt.x > 3500.0 && b.punkt.x < 6500.0)
+            .unwrap()
+            .clone();
+        let id = b.raum.unwrap();
+        let p = crate::selection::props(&s, id).unwrap();
+        assert!(p.values.iter().any(|v| v.0 == "Boden"), "{:?}", p.values);
+        let paneel = time(50, || {
+            std::hint::black_box(crate::selection::props(&s, id));
+        });
+        // Teile des Raumbuchs für diesen Raum
+        let m = s.model();
+        let formen = s.raumgruppen(st);
+        let form = formen
+            .flaechen()
+            .map(|f| f.form.clone())
+            .find(|f| f.raum == Some(id))
+            .unwrap();
+        let k = s.ketten();
+        let roh = Rohbau::mit(m, &k, form.clone());
+        let a = RaumAusbau::fuer(m, &roh).unwrap();
+        let rohbau = time(50, || {
+            std::hint::black_box(Rohbau::mit(m, &k, form.clone()));
+        });
+        let ausbau = time(50, || {
+            std::hint::black_box(RaumAusbau::fuer(m, &roh));
+        });
+        let zeilen = time(50, || {
+            std::hint::black_box(raumbuch::rechnen(m, &roh, &a, &Regeln::default()));
+        });
+        let t0 = Instant::now();
+        for f in formen.flaechen().filter(|f| f.form.raum.is_some()) {
+            let roh = Rohbau::mit(m, &k, f.form.clone());
+            if let Some(a) = RaumAusbau::fuer(m, &roh) {
+                std::hint::black_box(raumbuch::rechnen(m, &roh, &a, &Regeln::default()));
+            }
+        }
+        let alle = t0.elapsed().as_secs_f64() * 1000.0;
+        // Stempel des Raums ziehen; je Bewegung ein Bild
+        let (x0, y0) = (b.kasten.x + b.kasten.w * 0.5, b.kasten.y + b.kasten.h * 0.5);
+        let ev = |e: Event, sp: &mut Stempel, s: &mut Scene| {
+            sp.handle(&e, s, &nah, W, H, 1.0, &fonts, &t, true);
+        };
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x: x0,
+            y: y0,
+            mods,
+        };
+        let zu = |x: f64| Event::MouseMove { x, y: y0, mods };
+        ev(down, &mut sp, &mut s);
+        ev(zu(x0 + 10.0), &mut sp, &mut s);
+        let mut flip = false;
+        let stempel = time(20, || {
+            flip = !flip;
+            ev(
+                zu(if flip { x0 + 20.0 } else { x0 + 10.0 }),
+                &mut sp,
+                &mut s,
+            );
+            aus(&mut sp, &s);
+        });
+        let up = Event::MouseUp {
+            button: MouseButton::Left,
+            x: x0 + 10.0,
+            y: y0,
+            mods,
+        };
+        ev(up, &mut sp, &mut s);
+        // Loslassen: Schritt schließen, dann das Paneel wie `sync_props`
+        let mut los = Vec::new();
+        for k in 0..7 {
+            aus(&mut sp, &s);
+            ev(down, &mut sp, &mut s);
+            ev(zu(x0 + 10.0 + k as f64), &mut sp, &mut s);
+            ev(zu(x0 + 20.0 + k as f64), &mut sp, &mut s);
+            let t0 = Instant::now();
+            ev(up, &mut sp, &mut s);
+            std::hint::black_box(crate::selection::props(&s, id));
+            los.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        let (los, ..) = median(&mut los);
+        println!(
+            "{n:>6} {paneel:>8.3} {stempel:>8.3} {los:>9.3} {rohbau:>8.3} {ausbau:>8.3} {zeilen:>8.3} {alle:>8.1}"
+        );
+    }
+    println!("Zeiten in ms; Stempel je Mausbewegung samt Auslegen, ohne Paneel.");
+}
+
 /// G7: Raumstempel mit Türaufschlägen (je Haus zwei Innentüren) gegen
 /// dieselbe Stadt ohne Türen. Erste Auslegung mit frischem Speicher (Türen,
 /// Aufschläge, Ausweichstellen; die Erkennung der Szene ist gerechnet) und
