@@ -10,6 +10,7 @@
 
 use super::{category, err, keyword, Line, LoadError, Record};
 use crate::element::{Element, ElementKind, LevelEdge, LevelRef};
+use crate::model::RawOpening;
 use crate::oeffnung::{
     HeightLine, HeightRef, Install, Opening, OpeningKind, MAX_INSTALL, MAX_REVEAL,
 };
@@ -72,14 +73,38 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
     }
 }
 
-/// Geschosse, auf die eine verworfene Zeile zeigt (`storey`, `bottom`,
-/// `top`): Ist eines gelöscht, entfällt die Zeile beim Speichern.
-pub(super) fn storeys_of(r: &Record) -> Vec<Guid> {
-    ["storey", "bottom", "top"]
+/// Eine verworfene Zeile roh (Regel 72). Sie hält ihre Nummer und ihre
+/// Guid (Review #86 B3), und sie merkt sich die Geschosse, auf die sie
+/// zeigt (`storey`, `bottom`, `top`): Ist eines gelöscht, entfällt sie beim
+/// Speichern.
+pub(super) fn raw(
+    r: &Record,
+    line: &str,
+    number: &mut impl FnMut(&Record) -> Result<String, LoadError>,
+    seen: &mut HashMap<Guid, usize>,
+) -> Result<RawOpening, LoadError> {
+    let number = match r.opt("number") {
+        Some(_) => Some(number(r)?),
+        None => None,
+    };
+    if let Some(g) = r.opt("guid").and_then(Guid::from_ifc) {
+        if let Some(first) = seen.insert(g, r.line) {
+            return Err(err(
+                r.line,
+                format!("Guid {} doppelt (schon in Zeile {first})", g.to_ifc()),
+            ));
+        }
+    }
+    let storeys = ["storey", "bottom", "top"]
         .iter()
         .filter_map(|k| r.opt(k))
         .filter_map(|v| Guid::from_ifc(v.split(':').next().unwrap_or("")))
-        .collect()
+        .collect();
+    Ok(RawOpening {
+        line: line.to_string(),
+        storeys,
+        number,
+    })
 }
 
 /// Höhe aus `key`; `None`, wenn der Versatz einer freien Höhe unlesbar
