@@ -28,6 +28,7 @@ pub mod library;
 pub mod matprop;
 pub mod model;
 pub mod oeffnung;
+pub mod oeffnung_koerper;
 #[cfg(test)]
 mod oeffnung_tests;
 pub mod proctex;

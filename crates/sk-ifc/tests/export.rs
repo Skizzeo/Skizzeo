@@ -69,11 +69,13 @@ fn liste(v: &V) -> Vec<u32> {
 }
 
 /// Bauteile der Datei (Klassen, die Skizzeo für Bauteile schreibt) nach
-/// Kennung: (Nummer, Klasse).
+/// Kennung: (Nummer, Klasse). Öffnungen zählen nicht, sie hängen an der
+/// Wand (I5).
 fn bauteile(f: &File) -> HashMap<String, (u32, String)> {
     let klassen: HashSet<String> = sk_ifc::klassen::KLASSEN
         .iter()
         .map(|k| k.name.to_ascii_uppercase())
+        .filter(|k| k != "IFCOPENINGELEMENT")
         .collect();
     f.data
         .iter()
@@ -113,6 +115,7 @@ fn datei_ist_vollstaendig_und_eindeutig() {
                             | "IFCPROPERTYSET"
                             | "IFCELEMENTQUANTITY"
                             | "IFCELEMENTASSEMBLY"
+                            | "IFCOPENINGELEMENT"
                     )
                 {
                     assert!(sk_model::Guid::from_ifc(g).is_some(), "{name}: {g}");
@@ -123,13 +126,10 @@ fn datei_ist_vollstaendig_und_eindeutig() {
         // Jedes Bauteil mit Körper genau einmal, mit seiner Kennung
         let im = bauteile(&f);
         assert_eq!(im.len(), b.bauteile, "{name}");
-        // Ausgelassen nur Öffnungen bis I5 und Räume bis I6 (ifc/plan.md
-        // §5); mit I5 und I6 fallen die Ausnahmen weg
+        // Ausgelassen nur Räume bis I6 (ifc/plan.md §5); mit I6 fällt die
+        // Ausnahme weg
         for (nr, g) in &b.ausgelassen {
-            assert!(
-                matches!(g, sk_ifc::Grund::OeffnungBisI5 | sk_ifc::Grund::RaumBisI6),
-                "{name}: {nr} {g:?}"
-            );
+            assert_eq!(*g, sk_ifc::Grund::RaumBisI6, "{name}: {nr}");
         }
         let solids = m.element_solids();
         let draussen = |nr: &str| b.ausgelassen.iter().any(|(n, _)| n == nr);
@@ -182,6 +182,18 @@ fn datei_ist_vollstaendig_und_eindeutig() {
             }
         }
         assert_eq!(gruppen.len(), b.baugruppen, "{name}");
+        // Jede Öffnung locht genau eine Wand und steht in keinem Geschoss
+        let mut gelocht = HashMap::new();
+        for (_, e) in f.all("IFCRELVOIDSELEMENT") {
+            let (wand, loch) = (liste(&e.args[4])[0], liste(&e.args[5])[0]);
+            assert_eq!(f.get(wand).unwrap().name, "IFCWALL", "{name}");
+            assert_eq!(f.get(loch).unwrap().name, "IFCOPENINGELEMENT", "{name}");
+            assert_eq!(gelocht.insert(loch, wand), None, "{name}: #{loch} doppelt");
+        }
+        for (i, _) in f.all("IFCOPENINGELEMENT") {
+            assert!(gelocht.contains_key(&i), "{name}: #{i} lochte nichts");
+            assert_eq!(drin.get(&i), None, "{name}: #{i} im Geschoss");
+        }
         assert_eq!(f.all("IFCELEMENTASSEMBLY").count(), b.baugruppen, "{name}");
         assert_eq!(f.all("IFCBUILDINGSTOREY").count(), b.geschosse, "{name}");
         assert_eq!(f.all("IFCPROJECT").count(), 1);
@@ -336,12 +348,15 @@ fn raum_am_geschoss_oeffnung_draussen() {
     let f = step::read(&ifc).unwrap();
     let raeume: Vec<u32> = f.all("IFCSPACE").map(|(i, _)| i).collect();
     assert!(!raeume.is_empty(), "Geländer als Raum");
-    assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
     assert!(!b.ausgelassen.is_empty(), "Stütze als Öffnung");
     assert!(b
         .ausgelassen
         .iter()
-        .all(|(_, g)| *g == sk_ifc::Grund::OeffnungBisI5));
+        .all(|(_, g)| *g == sk_ifc::Grund::OhneWand));
+    // als Öffnung eingestuft lochte die Stütze keine Wand
+    for (_, e) in f.all("IFCOPENINGELEMENT") {
+        assert!(!b.ausgelassen.iter().any(|(nr, _)| nr == text(&e.args[2])));
+    }
     for (_, e) in f.all("IFCRELCONTAINEDINSPATIALSTRUCTURE") {
         for x in liste(&e.args[4]) {
             assert!(!raeume.contains(&x), "Raum #{x} enthalten statt angehängt");
@@ -438,26 +453,53 @@ fn vorschau_liest_den_export() {
     }
 }
 
-/// Befund Test zu #79: Öffnungen ohne Körper stehen als „Öffnung bis I5“ im
-/// Bericht, nicht als „ohne Form“, und nicht in der Datei. r7 hat eine Tür
-/// (OE-002), ein Fenster (OE-001) und eine Innentür (OE-003).
+/// I5 (ifc/plan.md §5): r7 hat ein Fenster (OE-001), eine Tür (OE-002)
+/// und eine Innentür (OE-003, in einer Innenwand). Jede steht als `IfcOpeningElement` mit der Kennung der Öffnung
+/// an ihrer Wand, liegt relativ zu deren Lage, hat ihre Form als
+/// `Reference` (das Wandnetz ist gelocht) und Breite, Höhe und Tiefe wie im
+/// Modell.
 #[test]
-fn oeffnungen_bis_i5() {
+fn oeffnungen_an_der_wand() {
     let m = laden(HAEUSER[5].1);
     let (ifc, b) = export(&m, &opt());
     let f = step::read(&ifc).unwrap();
-    assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
-    let mut aus = b.ausgelassen.clone();
-    aus.retain(|(_, g)| *g != sk_ifc::Grund::RaumBisI6);
-    aus.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(
-        aus,
-        vec![
-            ("OE-001".to_string(), sk_ifc::Grund::OeffnungBisI5),
-            ("OE-002".to_string(), sk_ifc::Grund::OeffnungBisI5),
-            ("OE-003".to_string(), sk_ifc::Grund::OeffnungBisI5),
-        ]
-    );
+    assert_eq!(b.oeffnungen, 3);
+    assert!(b
+        .ausgelassen
+        .iter()
+        .all(|(_, g)| *g == sk_ifc::Grund::RaumBisI6));
+    let wand_von: HashMap<u32, u32> = f
+        .all("IFCRELVOIDSELEMENT")
+        .map(|(_, e)| (liste(&e.args[5])[0], liste(&e.args[4])[0]))
+        .collect();
+    let mengen = mengen_der_datei("r7", &f);
+    for nr in ["OE-001", "OE-002", "OE-003"] {
+        let (id, el) = m.elements().iter().find(|(_, e)| e.number == nr).unwrap();
+        let voids = m.opening_voids(id);
+        assert_eq!(voids.len(), 1, "{nr}");
+        let (oi, oe) = f
+            .all("IFCOPENINGELEMENT")
+            .find(|(_, e)| text(&e.args[0]) == el.guid.to_ifc())
+            .unwrap_or_else(|| panic!("{nr} fehlt"));
+        assert_eq!(text(&oe.args[2]), nr);
+        // an der Wand, die das Modell lochte, relativ zu ihrer Lage
+        let wand = f.get(wand_von[&oi]).unwrap();
+        let w = m.element(voids[0].wall).unwrap();
+        assert_eq!(text(&wand.args[0]), w.guid.to_ifc(), "{nr}");
+        let pl = f.get(liste(&oe.args[5])[0]).unwrap();
+        assert_eq!(liste(&pl.args[0]), liste(&wand.args[5]), "{nr}");
+        // Form nur als Bezug
+        let shape = f.get(liste(&oe.args[6])[0]).unwrap();
+        for rep in liste(&shape.args[2]) {
+            assert_eq!(text(&f.get(rep).unwrap().args[1]), "Reference", "{nr}");
+        }
+        let q = &mengen[&el.guid.to_ifc()]["Qto_OpeningElementBaseQuantities"];
+        let op = m.opening(id).unwrap();
+        assert!((q["Width"] - op.width()).abs() < 1e-6, "{nr}: {q:?}");
+        assert!((q["Depth"] - voids[0].depth).abs() < 1e-6, "{nr}");
+        let (z0, z1) = m.opening_band(op).unwrap();
+        assert!((q["Height"] - (z1 - z0)).abs() < 1e-6, "{nr}");
+    }
 }
 
 /// Befund Test zu #87: Räume haben im Modell keinen Körper. Sie stehen als
@@ -490,7 +532,11 @@ fn raeume_bis_i6() {
 type Mengen = HashMap<String, BTreeMap<String, BTreeMap<String, f64>>>;
 
 fn mengen_der_datei(name: &str, f: &File) -> Mengen {
-    let kennung: HashMap<u32, String> = bauteile(f).into_iter().map(|(g, (i, _))| (i, g)).collect();
+    let mut kennung: HashMap<u32, String> =
+        bauteile(f).into_iter().map(|(g, (i, _))| (i, g)).collect();
+    for (i, e) in f.all("IFCOPENINGELEMENT") {
+        kennung.insert(i, text(&e.args[0]).to_string());
+    }
     let mut out: Mengen = HashMap::new();
     for (_, rel) in f.all("IFCRELDEFINESBYPROPERTIES") {
         let eq = f.get(liste(&rel.args[5])[0]).unwrap();

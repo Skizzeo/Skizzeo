@@ -22,6 +22,9 @@ use sk_model::{
 };
 use std::collections::{BTreeMap, HashMap};
 
+#[path = "oeffnungen.rs"]
+mod oeffnungen;
+
 /// Angaben zum Export, die nicht im Modell stehen.
 #[derive(Clone, Debug)]
 pub struct Optionen {
@@ -51,6 +54,8 @@ pub struct Bericht {
     pub bauteile: usize,
     /// Wandzüge als `IfcElementAssembly` (die Wände zählen in `bauteile`).
     pub baugruppen: usize,
+    /// Öffnungen mit mindestens einer gelochten Wand (I5).
+    pub oeffnungen: usize,
     /// Bauteile, die nicht geschrieben wurden, mit Nummer und Grund.
     pub ausgelassen: Vec<(String, Grund)>,
 }
@@ -62,9 +67,10 @@ pub enum Grund {
     OhneGeschoss,
     /// Kein Körper oder kein Dreieck.
     OhneForm,
-    /// Öffnungen brauchen das Bauteil, das sie lochen (`IfcRelVoidsElement`,
-    /// ifc/plan.md §5 I5); bis dahin nicht in der Datei.
-    OeffnungBisI5,
+    /// Eine Öffnung lochte keine Wand in der Datei (`IfcRelVoidsElement`
+    /// braucht sie), oder ein anderes Bauteil ist als `IfcOpeningElement`
+    /// eingestuft.
+    OhneWand,
     /// Räume (Grundriss G3) haben im Modell keinen Körper, ihre Form rechnet
     /// `sk-raum` aus den Wänden; als `IfcSpace` mit Form in I6 (ifc/plan.md
     /// §5), bis dahin nicht in der Datei.
@@ -76,7 +82,7 @@ impl Grund {
         match self {
             Grund::OhneGeschoss => "ohne Geschoss",
             Grund::OhneForm => "ohne Form",
-            Grund::OeffnungBisI5 => "Öffnung bis I5",
+            Grund::OhneWand => "ohne Wand",
             Grund::RaumBisI6 => "Raum bis I6",
         }
     }
@@ -183,6 +189,9 @@ struct Ctx<'a> {
     projekt: Guid,
     /// Zeilen der Mengenliste je Bauteil (I4).
     mengen: HashMap<ElementId, ElementQto>,
+    /// Bauteil → Objekt, Lage und Höhe seines Geschosses: dort hängen die
+    /// Öffnungen an (I5).
+    lage: HashMap<ElementId, (u32, u32, f64)>,
 }
 
 /// Wandzug als Baugruppe: Zug, Geschoss, Lage der Baugruppe, Wände mit
@@ -211,6 +220,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         raeume: BTreeMap::new(),
         projekt: p.guid,
         mengen: mengen_je_bauteil(m),
+        lage: HashMap::new(),
     };
     let mut bericht = Bericht::default();
     c.oh = c.owner_history(opt);
@@ -351,6 +361,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         }
     }
     let mut zuege: BTreeMap<usize, Zug> = BTreeMap::new();
+    let mut oeffnungen = Vec::new();
 
     // Bauteile in der Reihenfolge des Modells
     let mut ids: Vec<ElementId> = m.elements().ids().collect();
@@ -359,13 +370,17 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         let Some(el) = m.element(id) else {
             continue;
         };
-        // Öffnungen zuerst: sie haben (seit O2) keinen eigenen Körper und
-        // fehlen bis I5 aus diesem Grund, nicht „ohne Form“
+        // Öffnungen nach den Wänden, die sie lochen (I5); ein anderes
+        // Bauteil als Öffnung eingestuft lochte nichts
         let klasse = c.zuordnung(id).klasse.name;
         if klasse == "IfcOpeningElement" {
-            bericht
-                .ausgelassen
-                .push((el.number.clone(), Grund::OeffnungBisI5));
+            if matches!(el.kind, ElementKind::Opening(_)) {
+                oeffnungen.push(id);
+            } else {
+                bericht
+                    .ausgelassen
+                    .push((el.number.clone(), Grund::OhneWand));
+            }
             continue;
         }
         if matches!(el.kind, ElementKind::Space(_)) {
@@ -453,6 +468,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         c.inhalt.entry(si).or_default().push(gruppe);
         bericht.baugruppen += 1;
     }
+    c.oeffnungen(&oeffnungen, &mut bericht);
 
     // Beziehungen gesammelt
     let geschosse: Vec<(StoreyId, (u32, u32, f64))> =
@@ -1052,6 +1068,7 @@ impl Ctx<'_> {
             _ => args.extend([s(&el.number), e(z.predefined)]),
         }
         let pi = self.w.add(&k.name.to_ascii_uppercase(), args);
+        self.lage.insert(id, (pi, pl, elev));
 
         // Typ und Baustoff
         let mut typ_name = String::new();

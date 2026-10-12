@@ -275,7 +275,7 @@ impl Model {
 
     /// Löcher der Öffnung `op` (Kennung `id`) im Außenwandzug `run` mit
     /// Körper `c`, je mit dem Pfadstück, aus dem sie stammen.
-    fn legs_on(
+    pub(crate) fn legs_on(
         &self,
         run: RunId,
         c: &WallChain,
