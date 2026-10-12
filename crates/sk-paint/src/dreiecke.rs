@@ -43,87 +43,97 @@ fn kreuzung(a: &Kante, b: &Kante) -> Option<f64> {
 
 impl Path {
     /// Fläche des Pfades als Dreiecke (Kurven mit Toleranz `tol`), nach der
-    /// Regel „Umlaufzahl ungleich null“. Leere Streifen und entartete Dreiecke
-    /// fallen weg.
+    /// Regel „Umlaufzahl ungleich null“. Ränder mit Löchern (Glyphen) im
+    /// Ohrenschnitt ([`crate::ohren`]), sonst in Streifen. Leere Streifen und
+    /// entartete Dreiecke fallen weg.
     pub fn triangles(&self, tol: f32) -> Vec<[Pt; 3]> {
-        let mut kanten: Vec<Kante> = Vec::new();
-        for poly in self.flatten(tol) {
-            let n = poly.len();
-            for i in 0..n {
-                let (a, b) = (poly[i], poly[(i + 1) % n]);
-                let (ax, ay, bx, by) = (a.x as f64, a.y as f64, b.x as f64, b.y as f64);
-                if (ay - by).abs() < 1e-9 {
-                    continue;
-                }
-                kanten.push(if ay < by {
-                    Kante {
-                        x0: ax,
-                        y0: ay,
-                        x1: bx,
-                        y1: by,
-                        dir: 1,
-                    }
-                } else {
-                    Kante {
-                        x0: bx,
-                        y0: by,
-                        x1: ax,
-                        y1: ay,
-                        dir: -1,
-                    }
-                });
-            }
+        let polys = self.flatten(tol);
+        if let Some(t) = crate::ohren::ohrenschnitt(&polys) {
+            return t;
         }
-        if kanten.is_empty() {
-            return Vec::new();
-        }
-        let mut ys: Vec<f64> = kanten.iter().flat_map(|k| [k.y0, k.y1]).collect();
-        for i in 0..kanten.len() {
-            for j in i + 1..kanten.len() {
-                if let Some(y) = kreuzung(&kanten[i], &kanten[j]) {
-                    ys.push(y);
-                }
-            }
-        }
-        ys.sort_by(f64::total_cmp);
-        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
-
-        let mut out = Vec::new();
-        let mut aktiv: Vec<(f64, f64, f64, i32)> = Vec::new();
-        for w in ys.windows(2) {
-            let (ya, yb) = (w[0], w[1]);
-            let ym = 0.5 * (ya + yb);
-            aktiv.clear();
-            aktiv.extend(
-                kanten
-                    .iter()
-                    .filter(|k| k.y0 <= ym && k.y1 >= ym)
-                    .map(|k| (k.x_bei(ym), k.x_bei(ya), k.x_bei(yb), k.dir)),
-            );
-            aktiv.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let mut umlauf = 0;
-            let mut links: Option<(f64, f64)> = None;
-            for &(_, xa, xb, dir) in &aktiv {
-                let vorher = umlauf;
-                umlauf += dir;
-                if vorher == 0 && umlauf != 0 {
-                    links = Some((xa, xb));
-                } else if vorher != 0 && umlauf == 0 {
-                    if let Some((la, lb)) = links.take() {
-                        let p = |x: f64, y: f64| pt(x as f32, y as f32);
-                        let (a, b, c, d) = (p(la, ya), p(xa, ya), p(xb, yb), p(lb, yb));
-                        if xa - la > 1e-9 {
-                            out.push([a, b, c]);
-                        }
-                        if xb - lb > 1e-9 {
-                            out.push([a, c, d]);
-                        }
-                    }
-                }
-            }
-        }
-        out
+        streifen(&polys)
     }
+}
+
+/// Zerlegung in Streifen (siehe Modulbeschreibung).
+fn streifen(polys: &[Vec<Pt>]) -> Vec<[Pt; 3]> {
+    let mut kanten: Vec<Kante> = Vec::new();
+    for poly in polys {
+        let n = poly.len();
+        for i in 0..n {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let (ax, ay, bx, by) = (a.x as f64, a.y as f64, b.x as f64, b.y as f64);
+            if (ay - by).abs() < 1e-9 {
+                continue;
+            }
+            kanten.push(if ay < by {
+                Kante {
+                    x0: ax,
+                    y0: ay,
+                    x1: bx,
+                    y1: by,
+                    dir: 1,
+                }
+            } else {
+                Kante {
+                    x0: bx,
+                    y0: by,
+                    x1: ax,
+                    y1: ay,
+                    dir: -1,
+                }
+            });
+        }
+    }
+    if kanten.is_empty() {
+        return Vec::new();
+    }
+    let mut ys: Vec<f64> = kanten.iter().flat_map(|k| [k.y0, k.y1]).collect();
+    for i in 0..kanten.len() {
+        for j in i + 1..kanten.len() {
+            if let Some(y) = kreuzung(&kanten[i], &kanten[j]) {
+                ys.push(y);
+            }
+        }
+    }
+    ys.sort_by(f64::total_cmp);
+    ys.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
+
+    let mut out = Vec::new();
+    let mut aktiv: Vec<(f64, f64, f64, i32)> = Vec::new();
+    for w in ys.windows(2) {
+        let (ya, yb) = (w[0], w[1]);
+        let ym = 0.5 * (ya + yb);
+        aktiv.clear();
+        aktiv.extend(
+            kanten
+                .iter()
+                .filter(|k| k.y0 <= ym && k.y1 >= ym)
+                .map(|k| (k.x_bei(ym), k.x_bei(ya), k.x_bei(yb), k.dir)),
+        );
+        aktiv.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut umlauf = 0;
+        let mut links: Option<(f64, f64)> = None;
+        for &(_, xa, xb, dir) in &aktiv {
+            let vorher = umlauf;
+            umlauf += dir;
+            if vorher == 0 && umlauf != 0 {
+                links = Some((xa, xb));
+            } else if vorher != 0 && umlauf == 0 {
+                if let Some((la, lb)) = links.take() {
+                    let p = |x: f64, y: f64| pt(x as f32, y as f32);
+                    let (a, b, c, d) = (p(la, ya), p(xa, ya), p(xb, yb), p(lb, yb));
+                    if xa - la > 1e-9 {
+                        out.push([a, b, c]);
+                    }
+                    if xb - lb > 1e-9 {
+                        out.push([a, c, d]);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -91,6 +91,20 @@ impl Model {
         true
     }
 
+    /// Entfernt die Versätze des Geschosses `st`, bevor es gelöscht wird
+    /// (im selben Schritt, Rückgängig bringt sie zurück; BIM zu #116,
+    /// Regel 24).
+    pub(crate) fn massversatz_weg(&mut self, st: StoreyId) {
+        let Some(g) = self.storey(st).map(|s| s.guid) else {
+            return;
+        };
+        if !self.bemassung.versatz.keys().any(|k| k.0 == g) {
+            return;
+        }
+        self.note_bemassung();
+        self.bemassung.versatz.retain(|k, _| k.0 != g);
+    }
+
     /// Lädt Stil und Versätze aus der Datei (ohne Schritt).
     pub(crate) fn load_bemassung(&mut self, b: Bemassung, sicht: MassSicht) {
         self.bemassung = b;
@@ -163,6 +177,56 @@ mod tests {
         // Zurück auf null entfernt den Eintrag
         m.set_massversatz(st, 270, Kettenart::Wand, 0.0);
         assert!(m.bemassung().versatz.is_empty());
+    }
+
+    /// Ein gelöschtes Geschoss nimmt seine Versätze im selben Schritt mit:
+    /// Die Datei bekommt keine `[massversatz]`-Zeile ohne Geschoss, und ein
+    /// wieder eingeschaltetes Flachdach (gleiche Guid) erbt keinen alten
+    /// Versatz; Rückgängig bringt sie zurück (BIM zu #116, Regel 24).
+    #[test]
+    fn geloeschtes_geschoss_nimmt_versaetze_mit() {
+        let mut m = Model::new();
+        m.begin("Gebäude");
+        m.add_building(2);
+        let b2 = m.add_building(2);
+        m.commit();
+        let st = *m.levels_in(Some(b2)).last().unwrap();
+        m.begin("Flachdach");
+        assert!(m.set_flat_roof(st, true));
+        m.commit();
+        let fd = m.roof_level_of(Some(b2)).unwrap();
+        m.begin("Versatz");
+        assert!(m.set_massversatz(st, 0, Kettenart::Wand, 300.0));
+        assert!(m.set_massversatz(fd, 90, Kettenart::Gesamt, -200.0));
+        m.commit();
+        let zeilen = |m: &Model| crate::szo::write(m).matches("[massversatz]").count();
+        assert_eq!(zeilen(&m), 2);
+
+        // Flachdach aus: sein Versatz geht mit, Rückgängig bringt ihn zurück
+        let g_fd = m.storey(fd).unwrap().guid;
+        m.begin("Flachdach aus");
+        assert!(m.set_flat_roof(st, false));
+        let aus = m.commit().unwrap();
+        assert_eq!(zeilen(&m), 1);
+        m.apply(&aus, Direction::Undo);
+        assert_eq!(m.massversatz(fd, 90, Kettenart::Gesamt), -200.0);
+        m.apply(&aus, Direction::Redo);
+        // Wieder ein: gleiche Guid, kein geerbter Versatz
+        m.begin("Flachdach ein");
+        assert!(m.set_flat_roof(st, true));
+        m.commit();
+        let fd2 = m.roof_level_of(Some(b2)).unwrap();
+        assert_eq!(m.storey(fd2).unwrap().guid, g_fd);
+        assert_eq!(m.massversatz(fd2, 90, Kettenart::Gesamt), 0.0);
+
+        // Gebäude weg: seine Versätze auch, Rückgängig bringt sie zurück
+        m.begin("Gebäude weg");
+        assert!(m.remove_building(b2));
+        let t = m.commit().unwrap();
+        assert!(m.bemassung().versatz.is_empty());
+        assert_eq!(zeilen(&m), 0);
+        m.apply(&t, Direction::Undo);
+        assert_eq!(m.massversatz(st, 0, Kettenart::Wand), 300.0);
     }
 
     #[test]

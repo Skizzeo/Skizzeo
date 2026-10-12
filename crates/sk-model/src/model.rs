@@ -2097,6 +2097,7 @@ impl Model {
         // Obergeschosse: überzählige der Vorlage weg, fehlende obendrauf
         while levels.len() > storeys + 1 {
             if let Some(top) = levels.pop() {
+                self.massversatz_weg(top);
                 note!(self, Storey, self.storeys, top);
                 self.storeys.remove(top);
             }

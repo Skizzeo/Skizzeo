@@ -1,0 +1,337 @@
+//! Tests und Probe zu Review W30: nur geänderte Geschosse rechnen neu,
+//! Geschosse außerhalb des Bildes fehlen; die Probe misst Ziehen, Loslassen
+//! und Neuzeichnen bei 1, 10, 100 und 1000 Häusern (je ein Gebäude
+//! 10 × 8 m mit einer angeschlossenen Innenwand und einem Fenster, alle EG
+//! auf ±0,00).
+//!
+//! Probe: `cargo test --release -p skizzeo probe_bemassung -- --ignored --nocapture`
+
+use super::*;
+use crate::camera::Camera;
+use sk_math::vec3;
+use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+use sk_model::{Category, RefSide};
+use std::collections::HashSet;
+use std::time::Instant;
+
+fn siedlung(n: usize) -> Scene {
+    let mut m = Model::new();
+    m.begin("Siedlung");
+    let seite = (n as f64).sqrt().ceil() as usize;
+    for i in 0..n {
+        let (ox, oy) = ((i % seite) as f64 * 20_000.0, (i / seite) as f64 * 20_000.0);
+        let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+        let b = m.add_building(1);
+        let pts = [
+            p(0.0, 0.0),
+            p(0.0, 8000.0),
+            p(10_000.0, 8000.0),
+            p(10_000.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).expect("Haus");
+        let st = m.run(eg).unwrap().storey;
+        let set = m.defaults().interior_wall;
+        m.add_wall_run(
+            &[p(4000.0, 0.0), p(4000.0, 5000.0)],
+            false,
+            RefSide::Center,
+            st,
+            set,
+            Category::InteriorWall,
+        )
+        .expect("Innenwand");
+        m.add_opening(Opening {
+            kind: OpeningKind::Window,
+            path: vec![p(2510.0, 0.0), p(1500.0, 0.0)],
+            bottom: HeightRef::Line(st, HeightLine::Sill),
+            top: HeightRef::Line(st, HeightLine::Lintel),
+            reveal: None,
+            install: Default::default(),
+            swing: None,
+        })
+        .expect("Fenster");
+    }
+    m.commit();
+    Scene::with_model(m)
+}
+
+const W: f64 = 1600.0;
+const H: f64 = 900.0;
+
+fn schrift() -> Option<Font> {
+    std::fs::read("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf")
+        .ok()
+        .and_then(Font::parse)
+}
+
+/// Außenwandzug im Geschoss `st`.
+fn zug(s: &Scene, st: StoreyId) -> sk_model::RunId {
+    s.model()
+        .runs()
+        .iter()
+        .find(|(_, r)| r.storey == st && r.closed)
+        .map(|(id, _)| id)
+        .unwrap()
+}
+
+fn werte(g: &Geschoss) -> Vec<f64> {
+    g.b.zahlen.iter().map(|z| z.wert).collect()
+}
+
+/// Beim Ziehen rechnet nur das Geschoss des gezogenen Zugs neu, Abbrechen
+/// und Rückgängig stellen es wieder her, ein anderer Stil rechnet alle.
+#[test]
+fn nur_das_geaenderte_geschoss_rechnet_neu() {
+    let Some(f) = schrift() else {
+        eprintln!("Liberation Sans fehlt, Test übersprungen");
+        return;
+    };
+    let mut s = siedlung(3);
+    let mut mk = Massketten::default();
+    let st = geschosse(&s, ViewKind::Plan, &[]);
+    assert_eq!(st.len(), 3);
+    let a = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert_eq!(a.geschosse.len(), 3);
+    // Ohne Änderung derselbe Stand
+    assert!(Rc::ptr_eq(&a, &mk.stand(&s, st.clone(), Some(&f)).unwrap()));
+    let run = zug(&s, st[0]);
+    let c = s.chain(run).unwrap().clone();
+    s.begin("Wand verschieben");
+    s.set_run_points(run, &c.with_segment_moved(1, 500.0).unwrap().points);
+    let b = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert!(!Rc::ptr_eq(&a.geschosse[0], &b.geschosse[0]));
+    assert_ne!(werte(&a.geschosse[0]), werte(&b.geschosse[0]));
+    assert!(Rc::ptr_eq(&a.geschosse[1], &b.geschosse[1]));
+    assert!(Rc::ptr_eq(&a.geschosse[2], &b.geschosse[2]));
+    // Abbrechen: wieder die alten Maße
+    s.rollback();
+    let r = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert_eq!(werte(&a.geschosse[0]), werte(&r.geschosse[0]));
+    // Loslassen, dann Rückgängig
+    s.begin("Wand verschieben");
+    s.set_run_points(run, &c.with_segment_moved(1, 500.0).unwrap().points);
+    s.commit();
+    let l = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert_eq!(werte(&b.geschosse[0]), werte(&l.geschosse[0]));
+    assert!(s.undo());
+    let u = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert_eq!(werte(&a.geschosse[0]), werte(&u.geschosse[0]));
+    assert!(Rc::ptr_eq(&a.geschosse[2], &u.geschosse[2]));
+    // Anderer Stil: alle neu
+    s.begin_settings();
+    let mut stil = s.model().massstil().clone();
+    stil.rundung = 5;
+    assert!(s.edit_attr(|m| m.set_massstil(stil)));
+    let n = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert!((0..3).all(|i| !Rc::ptr_eq(&u.geschosse[i], &n.geschosse[i])));
+}
+
+/// Außerhalb des Bildes fehlt ein Geschoss ganz; weit herausgezoomt bleiben
+/// die Linien ohne Kreise und ohne Schrift, nah ist alles da.
+#[test]
+fn ausserhalb_und_weit_weg() {
+    let Some(f) = schrift() else {
+        return;
+    };
+    let s = siedlung(4);
+    let theme = Theme::dark();
+    let mut mk = Massketten::default();
+    let oben = |x: f64, y: f64, halb: f64| {
+        Camera::parallel(
+            vec3(x, y, 0.0),
+            90f64.to_radians(),
+            -89.9f64.to_radians(),
+            halb,
+        )
+    };
+    let mut zeichnen = |cam: &Camera| {
+        let b = Blick { cam, w: W, h: H };
+        mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &b, 1.0, &theme)
+    };
+    // Nah am ersten Haus: nur seine Schrift, mit Kreisen
+    let (l_nah, t_nah) = zeichnen(&oben(5000.0, 4000.0, 5000.0));
+    assert_eq!(t_nah.len(), 1);
+    // Weit weg von allen: nichts
+    let (l, t) = zeichnen(&oben(500_000.0, 500_000.0, 9000.0));
+    assert!(l.is_empty() && t.is_empty());
+    // Alle Häuser winzig: Linien ohne Kreise, keine Schrift
+    let (l_weit, t_weit) = zeichnen(&oben(15_000.0, 15_000.0, 400_000.0));
+    assert!(t_weit.is_empty());
+    assert!(!l_weit.is_empty() && l_weit.iter().all(|h| !h.round));
+    assert!(l_weit.len() < 4 * l_nah.len());
+}
+
+fn ms(t: Instant, reps: usize) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0 / reps as f64
+}
+
+#[test]
+#[ignore]
+fn probe_bemassung() {
+    let Some(f) = std::fs::read("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf")
+        .ok()
+        .and_then(Font::parse)
+    else {
+        eprintln!("Liberation Sans fehlt, Probe übersprungen");
+        return;
+    };
+    let theme = Theme::dark();
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
+        "Häuser",
+        "Kalt",
+        "Wand",
+        "Ziehen",
+        "ZiehNah",
+        "Hochlad.",
+        "Zeichn.",
+        "Loslass",
+        "Drehen",
+        "Linien",
+        "Dreiecke",
+        "Teile",
+        "TeilNah"
+    );
+    for n in [1, 10, 100, 1000] {
+        let mut s = siedlung(n);
+        let mut mk = Massketten::default();
+        // Ganze Siedlung im Bild, wie nach „Alles zeigen“
+        let (lo, hi) = s.bounds().unwrap();
+        let mitte = (lo + hi) * 0.5;
+        let halb = 0.5 * (hi.y - lo.y).max((hi.x - lo.x) * H / W) + 6000.0;
+        let cam = Camera::parallel(mitte, 90f64.to_radians(), -89.9f64.to_radians(), halb);
+        let cam3 = Camera::looking_at(
+            mitte + vec3(0.55, -1.0, 0.9).normalized() * (3.0 * halb),
+            mitte,
+            45.0,
+        );
+        let blick = Blick {
+            cam: &cam,
+            w: W,
+            h: H,
+        };
+        let blick3 = Blick {
+            cam: &cam3,
+            w: W,
+            h: H,
+        };
+        // Nah am ersten Haus, etwa 1:100 am Bildschirm
+        let nah = Camera::parallel(
+            vec3(5000.0, 4000.0, 0.0),
+            90f64.to_radians(),
+            -89.9f64.to_radians(),
+            12_000.0,
+        );
+        let blick_nah = Blick {
+            cam: &nah,
+            w: W,
+            h: H,
+        };
+        // Wie der Renderer: hochgeladen werden nur Teile mit neuem Schlüssel
+        let mut da: HashSet<u64> = HashSet::new();
+        let mut hoch = |ink: &[super::Teil]| -> usize {
+            let n = ink
+                .iter()
+                .filter(|(k, _)| !da.contains(k))
+                .map(|(_, t)| t.len())
+                .sum();
+            da = ink.iter().map(|(k, _)| *k).collect();
+            n
+        };
+        let t = Instant::now();
+        let (linien, ink) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick, 1.0, &theme);
+        let kalt = ms(t, 1);
+        hoch(&ink);
+        let dreiecke: usize = ink.iter().map(|(_, t)| t.len()).sum();
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        let reps = if n >= 1000 { 5 } else { 20 };
+        s.begin("Wand verschieben");
+        // Nur die Wand: Grundlast ohne Bemaßung
+        let t = Instant::now();
+        for k in 0..reps {
+            let moved = orig.with_segment_moved(1, 10.0 * (k + 1) as f64).unwrap();
+            s.set_run_points(run, &moved.points);
+        }
+        let wand = ms(t, reps);
+        // Wand und Bemaßung je Mausschritt; hochzuladen je Schritt
+        let mut hochgeladen = 0;
+        let t = Instant::now();
+        for k in 0..reps {
+            let moved = orig.with_segment_moved(1, -10.0 * (k + 1) as f64).unwrap();
+            s.set_run_points(run, &moved.points);
+            let (_, ink) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick, 1.0, &theme);
+            hochgeladen = hoch(&ink);
+        }
+        let ziehen = ms(t, reps) - wand;
+        // Dasselbe nah am Haus
+        let t = Instant::now();
+        let mut teile_nah = 0;
+        for k in 0..reps {
+            let moved = orig.with_segment_moved(1, -10.0 * (k + 1) as f64).unwrap();
+            s.set_run_points(run, &moved.points);
+            let (_, ink) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick_nah, 1.0, &theme);
+            teile_nah = ink.len();
+        }
+        let ziehen_nah = ms(t, reps) - wand;
+        // Neuzeichnen ohne Änderung (Zoomen, Verschieben)
+        let t = Instant::now();
+        for _ in 0..reps {
+            std::hint::black_box(mk.zeichnen(
+                &s,
+                ViewKind::Plan,
+                &[],
+                Some(&f),
+                &blick,
+                1.0,
+                &theme,
+            ));
+        }
+        let zeichnen = ms(t, reps);
+        let t = Instant::now();
+        s.commit();
+        std::hint::black_box(mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick, 1.0, &theme));
+        let los = ms(t, 1);
+        // In 3D: erstes Bild baut die verdeckbare Tinte, dann Drehen
+        mk.zeichnen(&s, ViewKind::Persp, &[], Some(&f), &blick3, 1.0, &theme);
+        let t = Instant::now();
+        for _ in 0..reps {
+            std::hint::black_box(mk.zeichnen(
+                &s,
+                ViewKind::Persp,
+                &[],
+                Some(&f),
+                &blick3,
+                1.0,
+                &theme,
+            ));
+        }
+        let drehen = ms(t, reps);
+        println!(
+            "{:>6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
+            n,
+            kalt,
+            wand,
+            ziehen,
+            ziehen_nah,
+            hochgeladen,
+            zeichnen,
+            los,
+            drehen,
+            linien.len(),
+            dreiecke,
+            ink.len(),
+            teile_nah
+        );
+    }
+    println!(
+        "ms je Aufruf. Kalt = erstes Bild. Wand = Wand ziehen ohne Bemaßung, Ziehen = was \
+         die Bemaßung je Mausschritt dazu kostet, Hochlad. = Dreiecke, die dabei neu zur \
+         Grafikkarte gehen; ZiehNah = Ziehen nah am Haus (etwa 1:100 am Bildschirm). \
+         Zeichn. = Bild ohne Änderung, Loslass = Loslassen und erstes \
+         Bild, Drehen = Bild in 3D ohne Änderung. Linien, Dreiecke, Teile = im Bild der ganzen \
+         Siedlung (weit weg ohne Schrift und Kreise), TeilNah = Geschosse mit Schrift nah am \
+         Haus."
+    );
+}

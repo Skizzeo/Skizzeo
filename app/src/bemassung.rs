@@ -10,22 +10,29 @@
 //! „Maßbezugspunkte zeigen“ setzt an jeden Bezugspunkt einen Punkt mit
 //! gestrichelter Linie zur Kette, in der Spurlinienfarbe.
 
-use crate::scene::Scene;
+use crate::camera::Camera;
+use crate::scene::{neuer_stand, Scene};
 use crate::ui::ViewKind;
-use sk_model::bemassung::Stil;
+use sk_math::{vec3, Vec3};
+use sk_model::bemassung::{Kettenart, Stil};
 use sk_model::{ElementId, LevelKind, Model, StoreyId};
 use sk_paint::font::Font;
-use sk_plan::aussen::{aussenmasse, Aussenmasse};
+use sk_plan::aussen::aussenmasse_aus;
 use sk_plan::bild::{bild, Bild, Strichart};
 use sk_plan::schrift::Schrift;
 use sk_render::{Helper, Ink, SOLID};
 use sk_ui::theme::Theme;
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "bemassung_istbilder.rs"]
 mod istbilder;
+#[cfg(test)]
+#[path = "bemassung_probe.rs"]
+mod probe;
 
 /// Wählbare Schriften im Reiter „Bemaßung“ und ihre Dateien im
 /// Schriftenordner (ohne Datei: Ausweichschrift Arial, dann die Schrift der
@@ -40,23 +47,99 @@ pub const SCHRIFTEN: [(&str, &[&str]); 4] = [
 /// Punkt am Bezugspunkt (dip) und Strichlänge der Bezugslinie (dip).
 const BEZUG_PUNKT: f32 = 6.0;
 const BEZUG_STRICH: f32 = 4.0;
+/// Kleiner am Bildschirm (Bildpunkte) ist die Schrift nicht mehr lesbar und
+/// der Kreis der Begrenzung kein Kreis: dann ohne Schrift bzw. ohne Kreise
+/// (Review W30, weit herausgezoomt über viele Häuser).
+const LESBAR_PX: f64 = 2.0;
+const SYMBOL_PX: f64 = 1.5;
 
-/// Gerechnete Ketten der Geschosse einer Ebene, je mit ihrem Bild.
-pub struct Stand {
-    pub geschosse: Vec<(Aussenmasse, Bild)>,
+/// Kamera und Größe der Ansicht (Bildpunkte): Geschosse außerhalb des
+/// Bildes zeichnet die Bemaßung nicht.
+pub struct Blick<'a> {
+    pub cam: &'a Camera,
+    pub w: f64,
+    pub h: f64,
 }
 
-/// Wofür ein [`Stand`] gilt: Revision des Modells, Geschosse, Stil.
-type Schluessel = (u64, Vec<StoreyId>, Stil);
+impl Blick<'_> {
+    /// Bildpunkte je mm am Bau im Rahmen `[lo, hi]`; `None`, wenn er ganz
+    /// außerhalb des Bildes liegt. Liegt er teils hinter der Kamera, zählt
+    /// er als nah.
+    fn massstab(&self, [lo, hi]: [Vec3; 2]) -> Option<f64> {
+        let (cam, w, h) = (self.cam, self.w, self.h);
+        let ecken = [lo, vec3(hi.x, lo.y, lo.z), hi, vec3(lo.x, hi.y, hi.z)];
+        let Some(p) = ecken
+            .iter()
+            .map(|&e| cam.project(e, w, h))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Some(f64::INFINITY);
+        };
+        let (x0, x1) = p
+            .iter()
+            .fold((f64::MAX, f64::MIN), |a, q| (a.0.min(q.0), a.1.max(q.0)));
+        let (y0, y1) = p
+            .iter()
+            .fold((f64::MAX, f64::MIN), |a, q| (a.0.min(q.1), a.1.max(q.1)));
+        if x1 < 0.0 || x0 > w || y1 < 0.0 || y0 > h {
+            return None;
+        }
+        let m = (lo + hi) * 0.5;
+        match (
+            cam.project(m, w, h),
+            cam.project(m + cam.right() * 1000.0, w, h),
+        ) {
+            (Some(a), Some(b)) => Some(((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt() / 1000.0),
+            _ => Some(f64::INFINITY),
+        }
+    }
+}
 
-/// Bemaßung der App: gemerkte Schriften und das zuletzt gerechnete Bild.
+/// Bild der Ketten eines Geschosses, mit Linien und Tinte, wie sie
+/// zuletzt gezeichnet wurden.
+pub struct Geschoss {
+    pub b: Bild,
+    /// Eindeutig je Rechnung: Schlüssel der Tinte im Renderer.
+    nr: u64,
+    /// Kleinster Quader um das Bild.
+    rahmen: [Vec3; 2],
+    /// Linien mit und ohne Kreise der Begrenzung; Tinte im Grundriss und
+    /// verdeckbar in 3D.
+    linien: RefCell<[Option<Linien>; 2]>,
+    tinte: RefCell<[Option<Rc<[Ink]>>; 2]>,
+}
+
+/// Wofür die gemerkten Linien eines Geschosses gelten: Maßstab der
+/// Oberfläche, Bildpunkte je mm, verdeckbar, Bezugspunkte, deren Farbe.
+type Linienart = (u32, u32, bool, bool, [u32; 4]);
+
+/// Gemerkte Linien eines Geschosses und wofür sie gelten.
+type Linien = (Linienart, Rc<[Helper]>);
+
+/// Tinte eines Geschosses unter ihrem Schlüssel im Renderer.
+pub type Teil = (u64, Rc<[Ink]>);
+
+/// Gerechnete Ketten der Geschosse einer Ebene.
+pub struct Stand {
+    pub geschosse: Vec<Rc<Geschoss>>,
+}
+
+/// Wofür die Ketten eines Geschosses gelten: Stand der Szene im Geschoss
+/// ([`Scene::mass_stand`]) und seine Versätze. Der Stil gilt für alle.
+type Schluessel = ((u64, u64), Vec<((i32, Kettenart), f64)>);
+
+/// Bemaßung der App: gemerkte Schriften und je Geschoss die zuletzt
+/// gerechneten Ketten. Beim Ziehen rechnet nur das Geschoss des gezogenen
+/// Zugs neu, beim Neuzeichnen ohne Änderung nichts (Review W30).
 #[derive(Default)]
 pub struct Massketten {
     schriften: HashMap<String, Option<Rc<Schrift>>>,
-    /// (Revision des Modells, Geschosse, Stil) und Stand dazu; der Stil
-    /// zählt mit, weil „Abbrechen“ im Einstellungsfenster die Revision
-    /// zurückstellt.
-    stand: Option<(Schluessel, Rc<Stand>)>,
+    /// Stil der gemerkten Geschosse; ein anderer rechnet alle neu (auch
+    /// „Abbrechen“ im Einstellungsfenster).
+    stil: Option<Stil>,
+    geschosse: HashMap<StoreyId, (Schluessel, Option<Rc<Geschoss>>)>,
+    /// Zuletzt zusammengestellter Stand und die Nummern seiner Geschosse.
+    stand: Option<(Vec<u64>, Rc<Stand>)>,
 }
 
 /// Ansicht mit Bemaßung (Stufe 1: Grundriss und 3D).
@@ -120,61 +203,160 @@ impl Massketten {
             .clone()
     }
 
-    /// Ketten und Bilder der Geschosse `st`, gerechnet nur bei neuer
-    /// Revision.
-    pub fn stand(&mut self, m: &Model, st: Vec<StoreyId>, ui: Option<&Font>) -> Option<Rc<Stand>> {
-        let key = (m.revision(), st, m.massstil().clone());
+    /// Ketten und Bilder der Geschosse `st`; neu gerechnet nur Geschosse,
+    /// deren Stand sich geändert hat.
+    pub fn stand(
+        &mut self,
+        scene: &Scene,
+        st: Vec<StoreyId>,
+        ui: Option<&Font>,
+    ) -> Option<Rc<Stand>> {
+        let m = scene.model();
+        let stil = m.massstil();
+        if self.stil.as_ref() != Some(stil) {
+            self.geschosse.clear();
+            self.stil = Some(stil.clone());
+        }
+        let schrift = self.schrift(&stil.schrift, ui)?;
+        self.geschosse.retain(|k, _| st.contains(k));
+        let mut liste = Vec::new();
+        for &s in &st {
+            let key = (scene.mass_stand(s), versaetze(m, s));
+            let g = match self.geschosse.get(&s) {
+                Some((k, g)) if *k == key => g.clone(),
+                _ => {
+                    let g = rechnen(scene, s, &schrift).map(Rc::new);
+                    self.geschosse.insert(s, (key, g.clone()));
+                    g
+                }
+            };
+            liste.extend(g);
+        }
+        let nr: Vec<u64> = liste.iter().map(|g| g.nr).collect();
         if let Some((k, s)) = &self.stand {
-            if *k == key {
+            if *k == nr {
                 return Some(s.clone());
             }
         }
-        let schrift = self.schrift(&key.2.schrift, ui)?;
-        let geschosse = key
-            .1
-            .iter()
-            .filter_map(|&st| aussenmasse(m, st))
-            .map(|a| {
-                let b = bild(&a, m.massstil(), &schrift);
-                (a, b)
-            })
-            .collect();
-        let s = Rc::new(Stand { geschosse });
-        self.stand = Some((key, s.clone()));
+        let s = Rc::new(Stand { geschosse: liste });
+        self.stand = Some((nr, s.clone()));
         Some(s)
     }
 
     /// Hilfslinien und Tinte der Bemaßung für die Ansicht `v` (leer, wenn
-    /// das Zahnrad sie ausblendet oder es nichts zu bemaßen gibt).
+    /// das Zahnrad sie ausblendet oder es nichts zu bemaßen gibt). Die
+    /// Tinte kommt in Teilen je Geschoss mit einem Schlüssel für ihren
+    /// Inhalt ([`sk_render::Renderer::set_ink_teile`]); Linien und Tinte
+    /// eines Geschosses werden nur neu gebaut, wenn es neu gerechnet wurde
+    /// oder Maßstab, Ansicht oder Farben wechseln. Geschosse außerhalb von
+    /// `blick` fehlen, sehr kleine ohne Schrift und Kreise.
+    #[allow(clippy::too_many_arguments)]
     pub fn zeichnen(
         &mut self,
         scene: &Scene,
         v: ViewKind,
         gewaehlt: &[ElementId],
         ui: Option<&Font>,
+        blick: &Blick,
         scale: f32,
         theme: &Theme,
-    ) -> (Vec<Helper>, Vec<Ink>) {
+    ) -> (Vec<Helper>, Vec<Teil>) {
         let m = scene.model();
         let (zeigen, bezug) = scene.mass_sicht(v);
         if !ansicht(v) || !zeigen {
             return (Vec::new(), Vec::new());
         }
         let st = geschosse(scene, v, gewaehlt);
-        let Some(stand) = self.stand(m, st, ui) else {
+        let Some(stand) = self.stand(scene, st, ui) else {
             return (Vec::new(), Vec::new());
         };
         let occlude = v == ViewKind::Persp;
+        let stil = m.massstil();
+        let art: Linienart = (
+            scale.to_bits(),
+            theme.px_per_mm.to_bits(),
+            occlude,
+            bezug,
+            theme.interact.track.map(f32::to_bits),
+        );
         let (mut out, mut ink) = (Vec::new(), Vec::new());
-        for (_, b) in &stand.geschosse {
-            out.extend(linien(b, m.massstil(), scale, theme, occlude));
-            ink.extend(tinte(b, m.massstil(), occlude));
-            if bezug {
-                out.extend(bezugspunkte(b, scale, theme, occlude));
+        for g in &stand.geschosse {
+            let Some(px) = blick.massstab(g.rahmen) else {
+                continue;
+            };
+            let kreise = stil.am_bau(stil.symbol_mm) * 0.5 * px >= SYMBOL_PX;
+            let mut l = g.linien.borrow_mut();
+            let l = &mut l[!kreise as usize];
+            if l.as_ref().is_none_or(|(a, _)| *a != art) {
+                let mut v = linien(&g.b, stil, scale, theme, occlude);
+                if !kreise {
+                    v.retain(|h| !h.round);
+                }
+                if bezug {
+                    v.extend(bezugspunkte(&g.b, scale, theme, occlude));
+                }
+                *l = Some((art, v.into()));
             }
+            out.extend_from_slice(&l.as_ref().unwrap().1);
+            if stil.am_bau(stil.schrift_mm) * px < LESBAR_PX {
+                continue;
+            }
+            let t = g.tinte.borrow_mut()[occlude as usize]
+                .get_or_insert_with(|| tinte(&g.b, stil, occlude).into())
+                .clone();
+            ink.push((g.nr << 1 | occlude as u64, t));
         }
         (out, ink)
     }
+}
+
+/// Versätze der Ketten im Geschoss `st`.
+fn versaetze(m: &Model, st: StoreyId) -> Vec<((i32, Kettenart), f64)> {
+    let Some(g) = m.storey(st).map(|s| s.guid) else {
+        return Vec::new();
+    };
+    m.bemassung()
+        .versatz
+        .iter()
+        .filter(|(k, _)| k.0 == g)
+        .map(|(k, v)| ((k.1, k.2), *v))
+        .collect()
+}
+
+/// Ketten und Bild des Geschosses `st`, die Züge aus dem Zwischenspeicher
+/// der Szene.
+fn rechnen(scene: &Scene, st: StoreyId, schrift: &Schrift) -> Option<Geschoss> {
+    let m = scene.model();
+    let a = aussenmasse_aus(m, st, |id| {
+        scene
+            .chain(id)
+            .map(Cow::Borrowed)
+            .or_else(|| m.chain(id).map(Cow::Owned))
+    })?;
+    let b = bild(&a, m.massstil(), schrift);
+    let punkte = b
+        .striche
+        .iter()
+        .flat_map(|s| [s.a, s.b])
+        .chain(b.tinte.iter().flatten().copied())
+        .chain(b.bezuege.iter().map(|r| r.am_bauteil));
+    let (lo, hi) = (
+        vec3(f64::MAX, f64::MAX, f64::MAX),
+        vec3(f64::MIN, f64::MIN, f64::MIN),
+    );
+    let rahmen = punkte.fold([lo, hi], |[lo, hi], p| {
+        [
+            vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)),
+            vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)),
+        ]
+    });
+    Some(Geschoss {
+        b,
+        nr: neuer_stand(),
+        rahmen,
+        linien: RefCell::new([None, None]),
+        tinte: RefCell::new([None, None]),
+    })
 }
 
 /// Farbe des Stils als RGBA.

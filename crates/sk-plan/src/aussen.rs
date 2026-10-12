@@ -13,6 +13,7 @@ use sk_model::{
     Category, ElementId, ElementKind, JoinEnd, JoinKind, LevelKind, Model, RunId, StoreyId,
     WallChain,
 };
+use std::borrow::Borrow;
 
 /// Gleiche Richtung bis 1°: Kosinus.
 const PARALLEL: f64 = 0.999_847_7;
@@ -170,7 +171,12 @@ pub fn kern(c: &WallChain) -> (f64, f64) {
     }
 }
 
-fn zuege(m: &Model, st: StoreyId, stil: &Stil) -> Vec<Zug> {
+fn zuege<C: Borrow<WallChain>>(
+    m: &Model,
+    st: StoreyId,
+    stil: &Stil,
+    chain: &impl Fn(RunId) -> Option<C>,
+) -> Vec<Zug> {
     let mut out = Vec::new();
     for (id, r) in m.runs().iter() {
         if r.storey != st || !r.closed {
@@ -184,8 +190,9 @@ fn zuege(m: &Model, st: StoreyId, stil: &Stil) -> Vec<Zug> {
         if !aussenwand {
             continue;
         }
-        let Some(c) = m.chain(id) else { continue };
-        let (k_aussen, k_innen) = kern(&c);
+        let Some(c) = chain(id) else { continue };
+        let c = c.borrow();
+        let (k_aussen, k_innen) = kern(c);
         let off = match stil.bezug {
             Aussenbezug::Rohbau => k_aussen,
             Aussenbezug::Wand => c.outer_offset(),
@@ -385,9 +392,25 @@ fn stueck_bei(stuecke: &[Stueck], at: f64) -> Option<&Stueck> {
         .find(|s| at >= s.t0 - GLEICH && at <= s.t1 + GLEICH)
 }
 
-/// Seiten der angeschlossenen Innenwände (Rohbau), die von innen an eine
-/// sichtbare Fläche der Seite stoßen.
-fn innenwaende(m: &Model, zuege: &[Zug], stuecke: &[Stueck], n: Vec3, t: Vec3) -> Vec<Bezug> {
+/// Eine angeschlossene Innenwand am Außenwandzug `zi`, Segment `seg`:
+/// Endpunkt, Richtung der Wand, Richtung aus der Wand heraus, Kern.
+struct Anschluss {
+    run: RunId,
+    zi: usize,
+    seg: usize,
+    p: Vec3,
+    d: Vec3,
+    raus: Vec3,
+    kern: (f64, f64),
+}
+
+/// T-Anschlüsse von Innenwänden an die Außenwandzüge, einmal je Geschoss
+/// (Review W30).
+fn anschluesse<C: Borrow<WallChain>>(
+    m: &Model,
+    zuege: &[Zug],
+    chain: &impl Fn(RunId) -> Option<C>,
+) -> Vec<Anschluss> {
     let mut out = Vec::new();
     for j in m.joins() {
         if j.kind != JoinKind::T {
@@ -402,7 +425,8 @@ fn innenwaende(m: &Model, zuege: &[Zug], stuecke: &[Stueck], n: Vec3, t: Vec3) -
         if j.a_run == host {
             continue;
         }
-        let Some(c) = m.chain(j.a_run) else { continue };
+        let Some(c) = chain(j.a_run) else { continue };
+        let c = c.borrow();
         let pts = c.clean_points();
         if pts.len() < 2 {
             continue;
@@ -418,16 +442,41 @@ fn innenwaende(m: &Model, zuege: &[Zug], stuecke: &[Stueck], n: Vec3, t: Vec3) -
                 (pts[k], d, d)
             }
         };
+        out.push(Anschluss {
+            run: j.a_run,
+            zi,
+            seg,
+            p,
+            d,
+            raus,
+            kern: kern(c),
+        });
+    }
+    out
+}
+
+/// Seiten der angeschlossenen Innenwände (Rohbau), die von innen an eine
+/// sichtbare Fläche der Seite stoßen.
+fn innenwaende(
+    anschluesse: &[Anschluss],
+    zuege: &[Zug],
+    stuecke: &[Stueck],
+    n: Vec3,
+    t: Vec3,
+) -> Vec<Bezug> {
+    let mut out = Vec::new();
+    for a in anschluesse {
         // Die Wand läuft von innen auf die Fläche zu
-        if raus.dot(n) < PARALLEL {
+        if a.raus.dot(n) < PARALLEL {
             continue;
         }
+        let (zi, seg) = (a.zi, a.seg);
         let z = &zuege[zi];
         let innen_d = 0.5 * (z.innen[seg] + z.innen[(seg + 1) % z.n()]).dot(n);
-        let r = vec3(d.y, -d.x, 0.0);
-        let (ka, ki) = kern(&c);
+        let r = vec3(a.d.y, -a.d.x, 0.0);
+        let (ka, ki) = a.kern;
         for off in [ka, ki] {
-            let at = (p + r * off).dot(t);
+            let at = (a.p + r * off).dot(t);
             let Some(s) = stueck_bei(stuecke, at) else {
                 continue;
             };
@@ -440,7 +489,7 @@ fn innenwaende(m: &Model, zuege: &[Zug], stuecke: &[Stueck], n: Vec3, t: Vec3) -
                     t: at,
                     p: t * at + n * innen_d,
                     herkunft: Herkunft::Innenwand,
-                    quelle: Some(Quelle::Innenwand { run: j.a_run }),
+                    quelle: Some(Quelle::Innenwand { run: a.run }),
                 },
             );
         }
@@ -448,11 +497,51 @@ fn innenwaende(m: &Model, zuege: &[Zug], stuecke: &[Stueck], n: Vec3, t: Vec3) -
     out
 }
 
+/// Eine Öffnung des Geschosses: Pfad im Grundriss, Band (UK, OK absolut).
+struct Oeffnung {
+    id: ElementId,
+    pfad: Vec<Vec3>,
+    band: (f64, f64),
+}
+
+/// Öffnungen des Geschosses `st`, einmal je Geschoss (Review W30).
+fn oeffnungen_von(m: &Model, st: StoreyId) -> Vec<Oeffnung> {
+    m.elements()
+        .iter()
+        .filter_map(|(id, e)| {
+            let ElementKind::Opening(o) = &e.kind else {
+                return None;
+            };
+            if e.storey != st {
+                return None;
+            }
+            let band = m.opening_band(o)?;
+            let pfad = o.path.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
+            Some(Oeffnung { id, pfad, band })
+        })
+        .collect()
+}
+
+/// Außenhaut der Kante (Zug `zi`, Kante `i`) quer (`p · n`) an der Stelle
+/// `at` längs: auf der Kante gemessen, nicht an ihrer Mitte, damit auch
+/// eine bis 1° schräge Wand ihre Öffnungen behält (Geometrie zu #116).
+fn haut_bei(z: &Zug, i: usize, at: f64, n: Vec3, t: Vec3) -> f64 {
+    let (a, b) = (z.haut[i], z.haut[(i + 1) % z.n()]);
+    let (t0, t1) = (a.dot(t), b.dot(t));
+    let (d0, d1) = (a.dot(n), b.dot(n));
+    if (t1 - t0).abs() < 1e-9 {
+        return 0.5 * (d0 + d1);
+    }
+    d0 + (d1 - d0) * (at - t0) / (t1 - t0)
+}
+
 /// Öffnungen in den sichtbaren Flächen der Seite: Kanten und Maße.
+#[allow(clippy::too_many_arguments)]
 fn oeffnungen(
     m: &Model,
     st: StoreyId,
     stil: &Stil,
+    alle: &[Oeffnung],
     zuege: &[Zug],
     stuecke: &[Stueck],
     n: Vec3,
@@ -467,18 +556,10 @@ fn oeffnungen(
         BrhBezug::Rohdecke => boden,
         BrhBezug::Estrich => m.screed_top(st).unwrap_or(boden),
     };
-    for (id, e) in m.elements().iter() {
-        let ElementKind::Opening(o) = &e.kind else {
-            continue;
-        };
-        if e.storey != st {
-            continue;
-        }
-        let Some((z0, z1)) = m.opening_band(o) else {
-            continue;
-        };
-        for w in o.path.windows(2) {
-            let (a, b) = (vec3(w[0].x, w[0].y, 0.0), vec3(w[1].x, w[1].y, 0.0));
+    for o in alle {
+        let (id, (z0, z1)) = (o.id, o.band);
+        for w in o.pfad.windows(2) {
+            let (a, b) = (w[0], w[1]);
             let l = (b - a).length();
             if l < 1.0 || ((b - a) * (1.0 / l)).dot(t).abs() < PARALLEL {
                 continue;
@@ -492,8 +573,11 @@ fn oeffnungen(
             };
             let haut = s.kanten.iter().find_map(|&(zi, i)| {
                 let z = &zuege[zi];
-                let hd = 0.5 * (z.haut[i] + z.haut[(i + 1) % z.n()]).dot(n);
-                ((a.dot(n) - hd).abs() < AUF_FLAECHE).then_some(hd)
+                let auf = (0..2).all(|k| {
+                    let p = w[k];
+                    (p.dot(n) - haut_bei(z, i, p.dot(t), n, t)).abs() < AUF_FLAECHE
+                });
+                auf.then(|| haut_bei(z, i, tm, n, t))
             });
             let Some(wand) = haut else { continue };
             for (ende, at) in [(0, t0), (1, t1)] {
@@ -521,15 +605,27 @@ fn oeffnungen(
 /// Die Außenmaßketten des Geschosses `st`; `None` ohne geschlossene
 /// Außenwand oder in der Gründung.
 pub fn aussenmasse(m: &Model, st: StoreyId) -> Option<Aussenmasse> {
+    aussenmasse_aus(m, st, |id| m.chain(id))
+}
+
+/// Wie [`aussenmasse`], die Geometrie der Züge aus `chain` (etwa dem
+/// Zwischenspeicher der App, Review W30), statt sie je Zug neu zu rechnen.
+pub fn aussenmasse_aus<C: Borrow<WallChain>>(
+    m: &Model,
+    st: StoreyId,
+    chain: impl Fn(RunId) -> Option<C>,
+) -> Option<Aussenmasse> {
     let storey = m.storey(st)?;
     if storey.kind == LevelKind::Foundation {
         return None;
     }
     let stil = m.massstil();
-    let zuege = zuege(m, st, stil);
+    let zuege = zuege(m, st, stil, &chain);
     if zuege.is_empty() {
         return None;
     }
+    let anschluesse = anschluesse(m, &zuege, &chain);
+    let alle_oeffnungen = oeffnungen_von(m, st);
     let e1 = hauptrichtung(&zuege);
     let e2 = vec3(-e1.y, e1.x, 0.0);
     let mut seiten = Vec::new();
@@ -546,7 +642,7 @@ pub fn aussenmasse(m: &Model, st: StoreyId) -> Option<Aussenmasse> {
             .fold(f64::MIN, f64::max);
         let ecken = ecken(&zuege, &stuecke, n, t);
         let nur_ecken: Vec<Bezug> = ecken.iter().map(|(b, _)| *b).collect();
-        let (kanten, masse) = oeffnungen(m, st, stil, &zuege, &stuecke, n, t);
+        let (kanten, masse) = oeffnungen(m, st, stil, &alle_oeffnungen, &zuege, &stuecke, n, t);
 
         let mut ketten: Vec<(Kettenart, Vec<Bezug>)> = Vec::new();
         // 1. Öffnungen
@@ -580,7 +676,7 @@ pub fn aussenmasse(m: &Model, st: StoreyId) -> Option<Aussenmasse> {
                 },
             );
         }
-        for b in innenwaende(m, &zuege, &stuecke, n, t) {
+        for b in innenwaende(&anschluesse, &zuege, &stuecke, n, t) {
             dazu(&mut v, b);
         }
         ketten.push((Kettenart::Wand, sortiert(v)));

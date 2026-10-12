@@ -27,6 +27,7 @@ mod autosave;
 mod ava_view;
 mod backup_card;
 mod bemassung;
+mod bemassung_app;
 mod camera;
 mod cards;
 mod catalog;
@@ -8173,10 +8174,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(p.helpers(&a.scene, a.ui.view, plane, scale, &a.theme));
             }
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
-            let (v, sel, f) = (a.ui.view, &a.picking.selected, a.ui.fonts.regular.as_ref());
-            let (mass, tinte) = a.massketten.zeichnen(&a.scene, v, sel, f, scale, &a.theme);
-            helpers.extend(mass);
-            a.renderer.set_ink(&tinte);
+            helpers.extend(a.mass_zeichnen(scale));
             if a.tool_allowed() {
                 let (width, ink) = a.scene.table().section_line;
                 let st = a.nord_stand(vh, scale as f64);

@@ -8,6 +8,7 @@
 pub mod deflate;
 mod dreiecke;
 pub mod font;
+mod ohren;
 pub mod pdf;
 mod png;
 

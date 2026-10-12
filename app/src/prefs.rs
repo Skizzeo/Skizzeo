@@ -244,6 +244,8 @@ enum BarId {
     Ui,
     /// Liste im Attributreiter.
     List,
+    /// Reiter „Bemaßung“ im kleinen Fenster.
+    Mass,
 }
 
 /// Was unter der Maus liegt.
@@ -750,6 +752,7 @@ pub struct Prefs {
     /// Stift, der beim nächsten Zeichnen sichtbar werden soll (Platz).
     pending_scroll: Option<usize>,
     ui_scroll: f32,
+    mass_scroll: f32,
     groups_open: [bool; GROUPS.len()],
     /// Attributreiter: gewählte Zeile und Bildlauf je Reiter.
     attr_sel: [usize; 4],
@@ -828,6 +831,7 @@ impl Prefs {
             pen_scroll: 0.0,
             pending_scroll: None,
             ui_scroll: 0.0,
+            mass_scroll: 0.0,
             groups_open: [false; GROUPS.len()],
             attr_sel: [0; 4],
             attr_scroll: [0.0; 4],
@@ -1426,7 +1430,7 @@ impl Prefs {
 
     // --- Treffer ------------------------------------------------------------
 
-    fn hit(&self, t: &Theme, w: &Win, s: &Scene, x: f64, y: f64) -> Option<Target> {
+    fn hit(&self, t: &Theme, w: &Win, fonts: &Fonts, s: &Scene, x: f64, y: f64) -> Option<Target> {
         if let Some(p) = &self.popup {
             if let Some(h) = self.popup_hit(p, t, w, x, y) {
                 return Some(h);
@@ -1528,12 +1532,19 @@ impl Prefs {
                 .iter()
                 .find(|(r, _)| r.contains(x, y))
                 .map(|(_, tg)| *tg),
-            Tab::Bemassung => self
-                .mass_layout(t, w)
-                .items
-                .iter()
-                .find(|(r, _)| r.contains(x, y))
-                .map(|(_, tg)| *tg),
+            Tab::Bemassung => {
+                let l = self.mass_layout(t, w, fonts, s);
+                if l.bar.is_some_and(|b| b.contains(x, y)) {
+                    return Some(Target::Bar(BarId::Mass));
+                }
+                if !l.area.contains(x, y) {
+                    return None;
+                }
+                l.items
+                    .iter()
+                    .find(|(r, _)| r.contains(x, y))
+                    .map(|(_, tg)| *tg)
+            }
             _ => self.attr_hit(t, w, s, x, y),
         }
     }
@@ -1943,7 +1954,7 @@ impl Prefs {
             }
             None => {}
         }
-        let h = self.hit(t, &w, cx.scene, x, y);
+        let h = self.hit(t, &w, cx.fonts, cx.scene, x, y);
         if h != self.hover {
             let popup = self.popup.is_some();
             self.hover = h;
@@ -1956,7 +1967,7 @@ impl Prefs {
     fn mouse_down(&mut self, x: f64, y: f64, mods: Modifiers, cx: &mut Ctx, out: &mut Out) {
         self.mouse = (x, y);
         let w = cx.win;
-        let hit = self.hit(cx.theme, &w, cx.scene, x, y);
+        let hit = self.hit(cx.theme, &w, cx.fonts, cx.scene, x, y);
         *out = Out::all();
         // Nachfrage: nur ihre Knöpfe
         if let Some(Popup::Confirm(_)) = self.popup {
@@ -2121,7 +2132,7 @@ impl Prefs {
             return;
         };
         *out = Out::all();
-        if self.hit(cx.theme, &cx.win, cx.scene, x, y) == Some(p) {
+        if self.hit(cx.theme, &cx.win, cx.fonts, cx.scene, x, y) == Some(p) {
             self.click(p, cx, out);
         }
     }
@@ -2149,6 +2160,14 @@ impl Prefs {
                     out.repaint = true;
                 }
             }
+            Tab::Bemassung => {
+                let l = self.mass_layout(t, &w, cx.fonts, cx.scene);
+                if l.area.contains(x, y) {
+                    let max = (l.content_h - l.area.h).max(0.0);
+                    self.mass_scroll = (l.scroll + step).clamp(0.0, max);
+                    out.repaint = true;
+                }
+            }
             tab => {
                 let l = self.attr_layout(t, &w, cx.scene);
                 if let (true, Some(k)) = (l.body.contains(x, y), tab.attr_slot()) {
@@ -2159,7 +2178,7 @@ impl Prefs {
             }
         }
         if out.repaint {
-            self.hover = self.hit(t, &w, cx.scene, x, y);
+            self.hover = self.hit(t, &w, cx.fonts, cx.scene, x, y);
         }
     }
 
@@ -2684,7 +2703,7 @@ impl Prefs {
                 .find(|(_, tg)| *tg == Target::Field(f))
                 .map(|(r, _)| *r),
             FieldId::Mass(_) => self
-                .mass_layout(t, &w)
+                .mass_layout(t, &w, cx.fonts, cx.scene)
                 .items
                 .iter()
                 .find(|(_, tg)| *tg == Target::Field(f))
@@ -2917,7 +2936,7 @@ impl Prefs {
         match ct {
             ColorTarget::Pen(_) => self.pens_layout(t, &w, cx.scene).color,
             ColorTarget::Mass => self
-                .mass_layout(t, &w)
+                .mass_layout(t, &w, cx.fonts, cx.scene)
                 .items
                 .iter()
                 .find(|(_, tg)| *tg == Target::Swatch(ct))
@@ -3064,6 +3083,10 @@ impl Prefs {
                 let l = self.attr_layout(t, &w, cx.scene);
                 l.bar.map(|b| (b, l.scroll, l.content_h, l.body.h))
             }
+            BarId::Mass => {
+                let l = self.mass_layout(t, &w, cx.fonts, cx.scene);
+                l.bar.map(|b| (b, l.scroll, l.content_h, l.area.h))
+            }
         }
     }
 
@@ -3095,6 +3118,7 @@ impl Prefs {
         match bar {
             BarId::Pens => self.pen_scroll = v,
             BarId::Ui => self.ui_scroll = v,
+            BarId::Mass => self.mass_scroll = v,
             BarId::List => {
                 if let Some(i) = self.tab.attr_slot() {
                     self.attr_scroll[i] = v;

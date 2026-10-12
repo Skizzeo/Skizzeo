@@ -7,9 +7,12 @@
 //! - `[massansicht] view=plan zeigen=1 bezug=1` je Ansicht, deren Wahl am
 //!   Zahnrad von der Vorgabe abweicht (Ansichtszustand).
 //!
-//! Alte Dateien bleiben bytegleich. Eine Zeile, die nicht zählt (unlesbar,
-//! doppelt, unbekanntes Geschoss), gibt einen Hinweis und bleibt roh stehen
-//! (Regel 72); ein ungültiger Wert lässt die Vorgabe gelten.
+//! Alte Dateien bleiben bytegleich. Eine unlesbare Zeile gibt einen Hinweis
+//! und bleibt roh stehen (Regel 72); eine doppelte oder eine mit
+//! unbekanntem Geschoss gibt einen Hinweis und entfällt (wie `[space]`,
+//! Regel 115). Ein ungültiger Wert im Stil lässt die Vorgabe gelten und
+//! entfällt mit Hinweis (Regel 114), die übrigen Werte gelten; so bleibt
+//! „Auf Standard zurücksetzen“ auch nach dem nächsten Öffnen (Review W30 B3).
 
 use super::{Line, Record};
 use crate::bemassung::{
@@ -18,6 +21,7 @@ use crate::bemassung::{
 use crate::guid::Guid;
 use crate::view::SICHT_VIEWS;
 use crate::Model;
+use std::collections::btree_map::Entry;
 
 /// Abschnitte der Bemaßung.
 pub(super) const SECTIONS: [&str; 3] = ["bemassung", "massversatz", "massansicht"];
@@ -146,28 +150,31 @@ pub(super) fn read<'a>(
             r.line, r.section
         ));
     };
+    let weg = |r: &Record, warum: &str, hints: &mut Vec<String>| {
+        r.skip();
+        hints.push(format!(
+            "Zeile {}: [{}] {warum}; die Zeile entfällt",
+            r.line, r.section
+        ));
+    };
     let mut raw = Vec::new();
     for (i, r) in recs("bemassung").iter().enumerate() {
         if i > 0 {
-            roh(r, "doppelt, es gilt die erste", hints, &mut raw);
+            weg(r, "doppelt, es gilt die erste", hints);
             continue;
         }
         let (stil, falsch) = read_stil(r);
         b.stil = stil;
         if !falsch.is_empty() {
-            roh(
-                r,
-                &format!("{} ungültig, Vorgabe gilt", falsch.join(", ")),
-                hints,
-                &mut raw,
-            );
+            hints.push(format!(
+                "Zeile {}: [bemassung] {} ungültig, es gilt die Vorgabe",
+                r.line,
+                falsch.join(", ")
+            ));
         }
     }
     for r in recs("massversatz") {
-        let g = r
-            .opt("storey")
-            .and_then(Guid::from_ifc)
-            .filter(|g| storeys(*g));
+        let g = r.opt("storey").and_then(Guid::from_ifc);
         let seite = r.opt("seite").and_then(|s| s.parse::<i32>().ok());
         let art = r
             .opt("kette")
@@ -176,18 +183,19 @@ pub(super) fn read<'a>(
             .opt("versatz")
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite() && v.abs() <= 100_000.0 && *v != 0.0);
-        match (g, seite, art, v) {
-            (Some(g), Some(s), Some(a), Some(v))
-                if !b.versatz.contains_key(&(g, s.rem_euclid(360), a)) =>
-            {
-                b.versatz.insert((g, s.rem_euclid(360), a), v);
-            }
-            _ => roh(
-                r,
-                "unlesbar, doppelt oder unbekanntes Geschoss",
-                hints,
-                &mut raw,
-            ),
+        // Erst lesbar, dann bekannt: Unlesbares bleibt roh stehen
+        // (Regel 72), ein lesbarer Eintrag für ein fehlendes Geschoss
+        // entfällt (Regel 115).
+        let (Some(g), Some(s), Some(a), Some(v)) = (g, seite, art, v) else {
+            roh(r, "unlesbar", hints, &mut raw);
+            continue;
+        };
+        if !storeys(g) {
+            weg(r, "Geschoss gibt es nicht", hints);
+        } else if let Entry::Vacant(e) = b.versatz.entry((g, s.rem_euclid(360), a)) {
+            e.insert(v);
+        } else {
+            weg(r, "doppelt, es gilt die erste", hints);
         }
     }
     let mut gesehen = [false; ANSICHTEN];
@@ -202,12 +210,15 @@ pub(super) fn read<'a>(
             _ => None,
         };
         match (view, flag("zeigen"), flag("bezug")) {
-            (Some(i), Some(z), Some(bz)) if !gesehen[i] => {
+            (Some(i), Some(_), Some(_)) if gesehen[i] => {
+                weg(r, "doppelt, es gilt die erste", hints)
+            }
+            (Some(i), Some(z), Some(bz)) => {
                 gesehen[i] = true;
                 sicht.zeigen[i] = z;
                 sicht.bezug[i] = bz;
             }
-            _ => roh(r, "unlesbar oder doppelt", hints, &mut raw),
+            _ => roh(r, "unlesbar", hints, &mut raw),
         }
     }
     sicht.raw = raw;
@@ -355,35 +366,90 @@ mod tests {
         assert_eq!(write(&back.model), neu);
     }
 
-    /// Unlesbares bleibt roh mit Hinweis; ein ungültiger Wert lässt die
-    /// Vorgabe gelten; der Rundlauf bleibt bytegleich.
+    /// Unlesbares bleibt roh mit Hinweis, der Rundlauf bleibt bytegleich.
     #[test]
     fn unlesbares_bleibt_stehen() {
         let alt = write(&house());
-        for (roh, hinweise) in [
-            ("[bemassung] key=project linie=9 symbol=schraeg", 1),
-            (
-                "[massversatz] storey=0000000000000000000000 seite=0 kette=wand versatz=10",
-                1,
-            ),
-            ("[massansicht] view=oben zeigen=1 bezug=1", 1),
-            ("[massansicht] view=plan zeigen=2 bezug=1", 1),
+        for roh in [
+            "[massversatz] storey=0000000000000000000000 seite=nord kette=wand versatz=10",
+            "[massversatz] storey=0000000000000000000000 seite=0 kette=wand",
+            "[massansicht] view=oben zeigen=1 bezug=1",
+            "[massansicht] view=plan zeigen=2 bezug=1",
         ] {
             let text = alt.replacen("[storey]", &format!("{roh}\n[storey]"), 1);
             let l = load(&text);
-            assert_eq!(l.hints.len(), hinweise, "{roh}: {:?}", l.hints);
+            assert_eq!(l.hints.len(), 1, "{roh}: {:?}", l.hints);
+            assert!(l.hints[0].contains("bleibt stehen"), "{:?}", l.hints);
             let w = write(&l.model);
             assert!(w.lines().any(|z| z == roh), "{roh}: roh");
             assert_eq!(write(&load(&w).model), w, "{roh}");
         }
-        // Gültiges in der Zeile gilt trotzdem
+    }
+
+    /// Unbekanntes Geschoss und Doppeltes entfallen mit Hinweis (Regel 115);
+    /// im Stil gelten die gültigen Werte, ein ungültiger entfällt, und nach
+    /// „Auf Standard zurücksetzen“ bleibt beim nächsten Öffnen das Werk
+    /// (Review W30 B3).
+    #[test]
+    fn unbekanntes_und_doppeltes_entfallen() {
+        let m = house();
+        let alt = write(&m);
+        let g = m.storeys().iter().next().unwrap().1.guid.to_ifc();
+        let versatz = format!("[massversatz] storey={g} seite=270 kette=wand versatz=10");
+        for (zeilen, rest) in [
+            (
+                vec!["[massversatz] storey=0000000000000000000000 seite=0 kette=wand versatz=10"],
+                0,
+            ),
+            (vec![versatz.as_str(), versatz.as_str()], 1),
+            (
+                vec![
+                    "[massansicht] view=plan zeigen=1 bezug=1",
+                    "[massansicht] view=plan zeigen=0 bezug=0",
+                ],
+                1,
+            ),
+            (
+                vec![
+                    "[bemassung] key=project symbol=schraeg",
+                    "[bemassung] key=project symbol=punkt",
+                ],
+                1,
+            ),
+        ] {
+            let text = alt.replacen("[storey]", &format!("{}\n[storey]", zeilen.join("\n")), 1);
+            let l = load(&text);
+            assert_eq!(l.hints.len(), 1, "{zeilen:?}: {:?}", l.hints);
+            assert!(l.hints[0].contains("entfällt"), "{:?}", l.hints);
+            let w = write(&l.model);
+            let n = w
+                .lines()
+                .filter(|z| z.starts_with("[bemassung]") || z.starts_with("[mass"))
+                .count();
+            assert_eq!(n, rest, "{zeilen:?}: {w}");
+            assert!(load(&w).hints.is_empty());
+        }
+        // Teils ungültiger Stil: das Gültige gilt, das Ungültige entfällt
         let text = alt.replacen(
             "[storey]",
             "[bemassung] key=project linie=9 symbol=schraeg\n[storey]",
             1,
         );
-        let l = load(&text);
+        let mut l = load(&text);
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
         assert_eq!(l.model.massstil().symbol, Symbol::Schraeg);
         assert_eq!(l.model.massstil().linie, 0.18);
+        let w = write(&l.model);
+        assert!(
+            w.contains("symbol=schraeg") && !w.contains("linie=9"),
+            "{w}"
+        );
+        // Zurück auf Werk: beim nächsten Öffnen keine Stilzeile mehr
+        l.model.begin("Werk");
+        assert!(l.model.set_massstil(crate::bemassung::Stil::werk()));
+        l.model.commit();
+        let w = write(&l.model);
+        assert!(!w.contains("[bemassung]"), "{w}");
+        assert_eq!(*load(&w).model.massstil(), crate::bemassung::Stil::werk());
     }
 }

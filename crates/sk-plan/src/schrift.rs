@@ -9,9 +9,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Zerlegt wird in dieser Größe (Geviert in Einheiten), mit dieser
-/// Toleranz: ein Tausendstel des Gevierts.
+/// Toleranz der Kurvenunterteilung ([`sk_paint::Path::flatten`]): Die Umrisse
+/// weichen höchstens etwa 3 Tausendstel des Gevierts ab (bei 2,5 mm Schrift
+/// rund 0,01 mm auf dem Papier), eine Ziffer hat 10 bis 100 Dreiecke
+/// (Review W30).
 const GEVIERT: f32 = 1000.0;
-const TOLERANZ: f32 = 1.0;
+const TOLERANZ: f32 = 20.0;
 
 /// Dreiecke einer Glyphe in Gevierten, Grundlinie bei y = 0, y nach oben.
 struct Glyphe {

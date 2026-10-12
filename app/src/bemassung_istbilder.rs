@@ -43,9 +43,14 @@ fn bild(r: &mut Renderer, s: &mut Scene, v: ViewKind, cam: &Camera, bezug: bool)
     let mut mk = Massketten::default();
     s.set_mass_sicht(v, true, bezug);
     let f = schrift();
-    let (h, t) = mk.zeichnen(s, v, &[], f.as_ref(), 1.0, &theme);
+    let blick = super::Blick {
+        cam,
+        w: f64::from(W),
+        h: f64::from(H),
+    };
+    let (h, t) = mk.zeichnen(s, v, &[], f.as_ref(), &blick, 1.0, &theme);
     r.set_helpers(&h);
-    r.set_ink(&t);
+    r.set_ink_teile(&t);
     let mut view = cam.view(W, H);
     if v != ViewKind::Persp {
         view.paper = Some(s.table().paper);

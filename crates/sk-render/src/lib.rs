@@ -463,7 +463,10 @@ pub struct Renderer {
     empty_vao: GLuint,
     meshes: Vec<GpuMesh>,
     helper_mesh: GpuBuffer,
-    ink_mesh: GpuBuffer,
+    /// Tinte in Teilen mit ihrem Schlüssel ([`Renderer::set_ink_teile`]) und
+    /// freie Puffer zum Wiederverwenden.
+    ink_teile: Vec<(u64, GpuBuffer)>,
+    ink_frei: Vec<GpuBuffer>,
     overlays: Vec<Overlay>,
     samples: i32,
     target: Option<Target>,
@@ -1643,7 +1646,8 @@ impl Renderer {
                 empty_vao: vao,
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
-                ink_mesh: GpuBuffer::default(),
+                ink_teile: Vec::new(),
+                ink_frei: Vec::new(),
                 overlays: Vec::new(),
                 samples: max_samples.clamp(1, 8),
                 target: None,
@@ -2011,23 +2015,44 @@ impl Renderer {
         }
     }
 
-    /// Tinte (gefüllte Dreiecke in Modellkoordinaten) für das nächste Bild.
+    /// Tinte (gefüllte Dreiecke in Modellkoordinaten) für das nächste Bild,
+    /// in einem Teil, immer neu hochgeladen.
     pub fn set_ink(&mut self, tris: &[Ink]) {
-        let mut v: Vec<[f32; 8]> = Vec::with_capacity(tris.len() * 3);
-        for t in tris {
-            let [r, g, b, a] = t.color;
-            for p in t.p {
-                v.push([p[0], p[1], p[2], r, g, b, a, t.occlude as u8 as f32]);
+        self.set_ink_teile::<&[Ink]>(&[]);
+        self.set_ink_teile(&[(u64::MAX, tris)]);
+    }
+
+    /// Tinte in Teilen, je mit einem Schlüssel für ihren Inhalt (Review W30
+    /// zu #116): hochgeladen wird nur ein Teil mit neuem Schlüssel, Teile, die
+    /// fehlen, fallen weg und geben ihren Puffer frei.
+    pub fn set_ink_teile<T: AsRef<[Ink]>>(&mut self, teile: &[(u64, T)]) {
+        // Meist dasselbe wie im letzten Bild
+        if self.ink_teile.len() == teile.len()
+            && self.ink_teile.iter().zip(teile).all(|(a, b)| a.0 == b.0)
+        {
+            return;
+        }
+        let mut alt: std::collections::HashMap<u64, GpuBuffer> =
+            std::mem::take(&mut self.ink_teile).into_iter().collect();
+        for (key, tris) in teile {
+            if let Some(b) = alt.remove(key) {
+                self.ink_teile.push((*key, b));
+                continue;
             }
+            let mut b = self.ink_frei.pop().unwrap_or_default();
+            let mut v: Vec<[f32; 8]> = Vec::with_capacity(tris.as_ref().len() * 3);
+            for t in tris.as_ref() {
+                let [r, g, bl, a] = t.color;
+                for p in t.p {
+                    v.push([p[0], p[1], p[2], r, g, bl, a, t.occlude as u8 as f32]);
+                }
+            }
+            unsafe {
+                fill(&self.gl, &mut b, &v, &[(3, 0), (4, 12), (1, 28)]);
+            }
+            self.ink_teile.push((*key, b));
         }
-        unsafe {
-            fill(
-                &self.gl,
-                &mut self.ink_mesh,
-                &v,
-                &[(3, 0), (4, 12), (1, 28)],
-            );
-        }
+        self.ink_frei.extend(alt.into_values());
     }
 
     /// Oberflächenbild Nummer `slot` an Fensterposition `(x, y)` (links oben, Pixel),
@@ -2877,7 +2902,8 @@ impl Renderer {
             // Fang hinter Blassem bleiben sichtbar (Review 3h, Hinweis). Erst
             // nach dem Boden, sonst tönt er den Geist über leerem Boden (3l);
             // ohne Hilfslinien braucht niemand die Tiefe
-            let marks = self.helper_mesh.count > 0 || self.ink_mesh.count > 0;
+            let tinte = self.ink_teile.iter().any(|(_, b)| b.count > 0);
+            let marks = self.helper_mesh.count > 0 || tinte;
             if ghost.is_some_and(|g| g.1 > 0.0) && marks {
                 gl.glClear(DEPTH_BUFFER_BIT);
                 let p = self.faces.id;
@@ -2920,7 +2946,7 @@ impl Renderer {
 
             // Tinte (Schrift der Bemaßung) über den Linien, ebenso erst
             // sichtbar, dann verdeckt blass
-            if self.ink_mesh.count > 0 {
+            if tinte {
                 gl.glDepthMask(FALSE);
                 gl.glEnable(BLEND);
                 gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
@@ -2930,11 +2956,13 @@ impl Renderer {
                 vec3(gl, p, c"u_origin", view.origin_rel);
                 let q = view.pull;
                 gl.glUniform4f(loc(gl, p, c"u_pull"), q[0], q[1], q[2], q[3]);
-                gl.glBindVertexArray(self.ink_mesh.vao);
                 for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
                     gl.glDepthFunc(func);
                     gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
-                    gl.glDrawArrays(TRIANGLES, 0, self.ink_mesh.count);
+                    for (_, b) in self.ink_teile.iter().filter(|(_, b)| b.count > 0) {
+                        gl.glBindVertexArray(b.vao);
+                        gl.glDrawArrays(TRIANGLES, 0, b.count);
+                    }
                 }
                 gl.glDisable(BLEND);
                 gl.glDepthMask(TRUE);

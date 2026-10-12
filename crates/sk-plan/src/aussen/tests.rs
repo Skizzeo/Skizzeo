@@ -273,3 +273,40 @@ fn gruendung_und_leeres_geschoss_ohne_ketten() {
     let st = m.defaults().storey;
     assert!(aussenmasse(&m, st).is_none());
 }
+
+/// Geometrie #116: Eine Außenwand, die 0,3° schräg zur Hauptrichtung
+/// steht, zählt als parallel und wird bemaßt; ihr Fenster liegt auf ihrer
+/// Außenhaut und gehört in die Öffnungskette, auch weit weg von der
+/// Wandmitte.
+#[test]
+fn fenster_in_fast_paralleler_wand() {
+    let k = 0.3f64.to_radians().tan();
+    // Nordwand am längsten (Hauptrichtung x), Südwand um 0,3° geneigt
+    let (mut m, _, st) = haus(&[
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10_300.0, 8000.0, 0.0),
+        vec3(10_000.0, 10_000.0 * k, 0.0),
+    ]);
+    m.begin("Fenster");
+    let fenster = m
+        .add_opening(Opening {
+            kind: OpeningKind::Window,
+            path: vec![vec3(3010.0, 3010.0 * k, 0.0), vec3(2000.0, 2000.0 * k, 0.0)],
+            bottom: HeightRef::Line(st, HeightLine::Sill),
+            top: HeightRef::Line(st, HeightLine::Lintel),
+            reveal: None,
+            install: Default::default(),
+            swing: None,
+        })
+        .expect("Fenster");
+    m.commit();
+    let a = aussenmasse(&m, st).unwrap();
+    let sued = seite(&a, 270);
+    assert!(kette(sued, Kettenart::Wand).is_some(), "Südwand bemaßt");
+    assert!(
+        sued.oeffnungen.iter().any(|o| o.id == fenster),
+        "Fenster fehlt in der Öffnungskette: {:?}",
+        sued.ketten.iter().map(|k| k.art).collect::<Vec<_>>()
+    );
+}
