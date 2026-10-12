@@ -2237,7 +2237,7 @@ fn build_lines(
         match by {
             Grouping::Storey => {
                 for st in &b.storeys {
-                    storey_lines(m, st, &faktor, &mut lines, &mut groups);
+                    storey_lines(m, st, &faktor, (modus, offen), &mut lines, &mut groups);
                 }
             }
             Grouping::Trade => trade_lines(m, b, (modus, offen), &mut lines),
@@ -2277,15 +2277,16 @@ fn build_lines(
         lines.push(tiles);
     }
     for st in &sched.loose {
-        storey_lines(m, st, &faktor, &mut lines, &mut groups);
+        storey_lines(m, st, &faktor, (modus, offen), &mut lines, &mut groups);
     }
     (lines, groups)
 }
 
 /// Schichten, die nach Gewerk zu aufklappbaren Gruppen zusammengefasst
-/// werden (wie die Wände nach Geschoss); die übrigen Bauteile stehen einzeln.
+/// werden (wie die Wände nach Geschoss, die Räume als „… · Räume“); die
+/// übrigen Bauteile stehen einzeln.
 fn layer_grouped(c: Category) -> bool {
-    is_wall(c) || c == Category::EdgeInsulation
+    is_wall(c) || c == Category::EdgeInsulation || c == Category::Space
 }
 
 /// ATV-Nummer gedimmt hinter dem Gewerk: „DIN 18331“; eigene Nummern der
@@ -2298,10 +2299,19 @@ fn trade_tag(code: &str) -> String {
     }
 }
 
-/// Baustoff mit Dicke ohne Einheit: „Porenbeton 17,5“.
+/// Baustoff mit Dicke ohne Einheit: „Porenbeton 17,5“; ohne Dicke
+/// (Anstrich, Tapete im Raum) nur der Baustoff.
 fn layer_name(m: &Model, r: &LayerRow) -> String {
     let name = m.material(r.material).map_or("–", |x| x.name.as_str());
+    if r.thickness <= 0.0 {
+        return name.to_string();
+    }
     format!("{name} {}", cm(r.thickness).trim_end_matches(" cm"))
+}
+
+/// Schicht ohne Volumen (Anstrich, Tapete im Raum): keine Zelle m³.
+fn ohne_volumen(r: &LayerRow) -> bool {
+    r.category == Category::Space && r.thickness <= 0.0
 }
 
 /// Titel einer Schichtgruppe: „Porenbeton 17,5 · Außenwände“, mit
@@ -2341,11 +2351,21 @@ fn layer_row_label(m: &Model, r: &LayerRow) -> String {
 }
 
 /// Mengen je Bauteil einer Schichtgruppe: Zeilen desselben Bauteils (zwei
-/// Schichten aus gleichem Baustoff und gleicher Dicke) zusammen.
-fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
+/// Schichten aus gleichem Baustoff und gleicher Dicke) zusammen. Die
+/// Flächen eines Raums mit derselben Kostengruppe (Wandseiten mit gleichem
+/// Putz) zählen zusammen, ihre Rechenwege hintereinander, je mit dem Namen
+/// der Fläche (`namen`).
+fn per_element(rows: &[LayerRow], namen: &raum::Namen) -> Vec<LayerRow> {
     let mut out: Vec<LayerRow> = Vec::new();
     for r in rows {
-        match out.iter_mut().find(|x| x.element == r.element) {
+        let mut r = r.clone();
+        if r.category == Category::Space {
+            raum::mit_namen(&mut r, namen);
+        }
+        let mit = |x: &LayerRow| {
+            x.element == r.element && (r.category != Category::Space || x.kg == r.kg)
+        };
+        match out.iter_mut().find(|x| mit(x)) {
             Some(x) => {
                 x.volume += r.volume;
                 x.area += r.area;
@@ -2353,8 +2373,13 @@ fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
                 x.bill_area += r.bill_area;
                 x.pocket += r.pocket;
                 x.attika |= r.attika;
+                if r.category == Category::Space {
+                    x.length += r.length;
+                    x.bill_length += r.bill_length;
+                    x.terms.extend(r.terms);
+                }
             }
-            None => out.push(r.clone()),
+            None => out.push(r),
         }
     }
     out
@@ -2396,7 +2421,7 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
             }
         }
         lines.push(head);
-        trade_rows(m, bi, order, tkey, t, sicht, lines);
+        trade_rows(m, b, order, tkey, t, sicht, lines);
         ext::gewerk_zeilen(m, b, Some(id), tkey, lines);
     }
     if ext_t.contains(&None) {
@@ -2411,7 +2436,7 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
 /// Schichtzeilen eines Gewerks (Paket 1b).
 fn trade_rows(
     m: &Model,
-    bi: u32,
+    b: &BuildingQto,
     order: u32,
     tkey: Key,
     t: &TradeSum,
@@ -2419,6 +2444,12 @@ fn trade_rows(
     lines: &mut Vec<Line>,
 ) {
     let zeig = |r: &LayerRow, b: Bezug| rechenweg::anzeige(m, r, b, modus);
+    let bi = b.id.index();
+    let namen = if t.rows.iter().any(|r| r.category == Category::Space) {
+        raum::namen(b)
+    } else {
+        raum::Namen::new()
+    };
     {
         let mut i = 0;
         while i < t.rows.len() {
@@ -2462,7 +2493,7 @@ fn trade_rows(
                     && (x.thickness - r.thickness).abs() < 1e-6
             };
             let n = t.rows[i..].iter().take_while(|x| same(x)).count();
-            let rows = per_element(&t.rows[i..i + n]);
+            let rows = per_element(&t.rows[i..i + n], &namen);
             i += n;
             let gkey = Key::Layer(
                 (bi << 16) | (order & 0xffff),
@@ -2493,26 +2524,42 @@ fn trade_rows(
             if area > 0.0 {
                 gl.cells[3] = m_area(area);
             }
-            gl.cells[4] = m_vol(rows.iter().map(|x| zeig(x, Bezug::Volumen)).sum());
+            if !ohne_volumen(r) {
+                gl.cells[4] = m_vol(rows.iter().map(|x| zeig(x, Bezug::Volumen)).sum());
+            }
             lines.push(gl);
             for x in &rows {
                 let mut rl = Line::new(Kind::Row, 2, row_key(x));
                 rl.storey = tkey;
                 rl.group = gkey;
                 rl.elements = vec![x.element];
-                rl.cells[0] = format!("{} · {}", x.number, storey_name(m, x.storey).1);
+                rl.cells[0] = match m.space(x.element) {
+                    Some(sp) => format!(
+                        "{} {} · {} · {}",
+                        x.number,
+                        sp.name,
+                        storey_name(m, x.storey).1,
+                        raum::flaechen(x)
+                    ),
+                    None => format!("{} · {}", x.number, storey_name(m, x.storey).1),
+                };
                 if x.length > 0.0 {
                     rl.cells[2] = m_len(x.length);
                 }
                 if rechenweg::wert(x, Bezug::Flaeche) > 0.0 {
                     rl.cells[3] = m_area(zeig(x, Bezug::Flaeche));
                 }
-                rl.cells[4] = m_vol(zeig(x, Bezug::Volumen));
+                if !ohne_volumen(x) {
+                    rl.cells[4] = m_vol(zeig(x, Bezug::Volumen));
+                }
                 // Rechenweg der Schicht dieses Bauteils (bei zwei Schichten
                 // aus gleichem Baustoff die erste)
                 let erste = t.rows.iter().find(|y| y.element == x.element && same(y));
                 let mut weg = Vec::new();
-                if let Some(y) = erste.filter(|y| {
+                // Raum: die Flächen zusammen, je mit Namen
+                if x.category == Category::Space {
+                    weg_zeilen(m, x, &mut rl, (modus, offen), &mut weg);
+                } else if let Some(y) = erste.filter(|y| {
                     t.rows
                         .iter()
                         .filter(|z| z.element == y.element && same(z))
@@ -2532,6 +2579,7 @@ fn storey_lines(
     m: &Model,
     st: &StoreyQto,
     faktor: &Faktoren,
+    sicht: (Modus, &HashSet<Key>),
     lines: &mut Vec<Line>,
     groups: &mut Vec<GroupRef>,
 ) {
@@ -2557,6 +2605,11 @@ fn storey_lines(
         ));
         if g.ext.is_some() {
             ext::gruppe(m, st.id, skey, g, lines);
+            continue;
+        }
+        // Räume: je Raum eine Gruppe mit seinem Raumbuch (RB5)
+        if g.category == Category::Space {
+            raum::gruppe(m, st, skey, g, sicht, lines);
             continue;
         }
         if is_wall(g.category) {
@@ -2707,8 +2760,8 @@ fn storey_lines(
                     rl.cells[0] = "Attikablech".into();
                     rl.cells[2] = m_len(c.length);
                 }
-                // Erweiterungen stehen in ihrer Gruppe (oben)
-                Some(ElementQto::Ext(_)) | None => {
+                // Erweiterungen und Räume stehen in ihrer Gruppe (oben)
+                Some(ElementQto::Ext(_)) | Some(ElementQto::Room(_)) | None => {
                     rl.cells[0] = g.category.name().into();
                     rl.cells[4] = "–".into();
                     rl.note = r.note.clone();
@@ -2795,6 +2848,9 @@ mod ext;
 
 #[path = "schedule_weg.rs"]
 mod weg;
+
+#[path = "schedule_raum.rs"]
+mod raum;
 use weg::*;
 
 #[path = "schedule_csv.rs"]

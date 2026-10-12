@@ -984,7 +984,9 @@ impl Scene {
         let rev = self.model.revision();
         let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
         if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
-            self.schedule = Some((rev, Rc::new(sk_model::qto::schedule(&self.model))));
+            // Mit den Räumen und ihrem Raumbuch (RB5)
+            let sched = sk_model::qto::schedule_mit(&self.model, &sk_raum::mengen::raeume);
+            self.schedule = Some((rev, Rc::new(sched)));
             self.schedule_runs += 1;
         }
         &self.schedule.as_ref().expect("gerade berechnet").1

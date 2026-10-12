@@ -124,8 +124,38 @@ fn raum(model: &Model, f: RaumForm, lagen: &Geschosse) -> Option<RaumDaten> {
     let punkte = |r: &[Kante]| r.iter().map(|k| k.a).collect::<Vec<_>>();
     let (rand, loecher) = ringe.split_first()?;
     let umriss_roh: Umriss = (punkte(rand), loecher.iter().map(|r| punkte(r)).collect());
-    let fertig = fertigumriss(&ringe, &ausbau::dicken(model, &roh, &aus));
-    let (z_ffb, z_fd) = ausbau::hoehen(model, &roh, &aus);
+    let (fertig, mengen, (z_ffb, z_fd)) = fertigmass(model, &roh, &aus);
+    let koerper_raum = fertig
+        .as_ref()
+        .map_or_else(Solid::default, |u| raumkoerper(&u.0, &u.1, (z_ffb, z_fd)));
+    Some(RaumDaten {
+        raum: id,
+        guid: e.guid,
+        nummer: e.number.clone(),
+        name: s.name.clone(),
+        nutzung,
+        gruppe,
+        geschoss: roh.form.geschoss,
+        ausbau: ausbauflaechen(model, &roh, &aus),
+        roh: umriss_roh,
+        fertig,
+        z_roh: (roh.z_boden, roh.z_decke),
+        z_fertig: (z_ffb, z_fd),
+        mengen,
+        koerper: koerper_raum,
+    })
+}
+
+/// Fertigumriss, Mengen roh und fertig und OK Fertigfußboden bzw. UK
+/// Fertigdecke (mm, absolut) eines Raums mit Ausbau.
+pub(crate) fn fertigmass(
+    model: &Model,
+    roh: &Rohbau,
+    aus: &RaumAusbau,
+) -> (Option<Umriss>, RaumMengen, (f64, f64)) {
+    let ringe: Vec<&[Kante]> = roh.ringe().collect();
+    let fertig = fertigumriss(&ringe, &ausbau::dicken(model, roh, aus));
+    let (z_ffb, z_fd) = ausbau::hoehen(model, roh, aus);
     let flaeche = |u: &Umriss| {
         sk_math::polygon::area(&u.0) - u.1.iter().map(|l| sk_math::polygon::area(l)).sum::<f64>()
     };
@@ -152,25 +182,7 @@ fn raum(model: &Model, f: RaumForm, lagen: &Geschosse) -> Option<RaumDaten> {
         volumen_roh: roh.form.flaeche * hoehe_roh,
         volumen_fertig: flaeche_fertig * hoehe_fertig,
     };
-    let koerper_raum = fertig
-        .as_ref()
-        .map_or_else(Solid::default, |u| raumkoerper(&u.0, &u.1, (z_ffb, z_fd)));
-    Some(RaumDaten {
-        raum: id,
-        guid: e.guid,
-        nummer: e.number.clone(),
-        name: s.name.clone(),
-        nutzung,
-        gruppe,
-        geschoss: roh.form.geschoss,
-        ausbau: ausbauflaechen(model, &roh, &aus),
-        roh: umriss_roh,
-        fertig,
-        z_roh: (roh.z_boden, roh.z_decke),
-        z_fertig: (z_ffb, z_fd),
-        mengen,
-        koerper: koerper_raum,
-    })
+    (fertig, mengen, (z_ffb, z_fd))
 }
 
 /// Fertigumriss: jeder Ring je Kante um `dicken` (fortlaufend gezählt)
@@ -205,7 +217,9 @@ fn ausbauflaechen(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> Vec<AusbauDa
             typ,
             typ_guid: model.layer_set(typ).map_or(Guid(0), |t| t.guid),
             schichten: Vec::new(),
-            traeger: traeger(model, roh, &kanten, flaeche),
+            traeger: traeger(model, roh, &kanten, flaeche)
+                .and_then(|id| model.element(id))
+                .map(|e| e.guid),
         });
         out.len() - 1
     };
@@ -252,10 +266,15 @@ fn ausbauflaechen(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> Vec<AusbauDa
 }
 
 /// Bekleidetes Bauteil einer Fläche.
-fn traeger(model: &Model, roh: &Rohbau, kanten: &[&Kante], f: Flaeche) -> Option<Guid> {
+pub(crate) fn traeger(
+    model: &Model,
+    roh: &Rohbau,
+    kanten: &[&Kante],
+    f: Flaeche,
+) -> Option<ElementId> {
     let wand = |k: usize| {
         let Begrenzung::Wand { wand, .. } = kanten.get(k)?.quelle;
-        model.element(wand).map(|e| e.guid)
+        Some(wand)
     };
     match f {
         Flaeche::Wand(k)
@@ -276,16 +295,16 @@ fn ueber(model: &Model, run: sk_model::RunId, form: &RaumForm) -> bool {
 }
 
 /// Die Decke über dem Geschoss `g` an der Stelle des Raums.
-fn decke(model: &Model, form: &RaumForm, g: StoreyId) -> Option<Guid> {
-    model.elements().iter().find_map(|(_, e)| match e.kind {
-        ElementKind::Floor(ref d) if e.storey == g && ueber(model, d.run, form) => Some(e.guid),
+fn decke(model: &Model, form: &RaumForm, g: StoreyId) -> Option<ElementId> {
+    model.elements().iter().find_map(|(id, e)| match e.kind {
+        ElementKind::Floor(ref d) if e.storey == g && ueber(model, d.run, form) => Some(id),
         _ => None,
     })
 }
 
 /// Unter dem Raum: die Decke des Geschosses darunter, im untersten
 /// Geschoss die Sohlplatte.
-fn boden(model: &Model, form: &RaumForm) -> Option<Guid> {
+fn boden(model: &Model, form: &RaumForm) -> Option<ElementId> {
     let ebenen = model.levels_in(model.building_of(form.geschoss));
     let i = ebenen.iter().position(|g| *g == form.geschoss)?;
     let darunter = i.checked_sub(1).map(|j| ebenen[j]);
@@ -296,20 +315,37 @@ fn boden(model: &Model, form: &RaumForm) -> Option<Guid> {
     });
     match geschoss {
         Some(g) => decke(model, form, g),
-        None => model.elements().iter().find_map(|(_, e)| match e.kind {
-            ElementKind::GroundSlab(ref p) if ueber(model, p.run, form) => Some(e.guid),
+        None => model.elements().iter().find_map(|(id, e)| match e.kind {
+            ElementKind::GroundSlab(ref p) if ueber(model, p.run, form) => Some(id),
             _ => None,
         }),
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use sk_math::vec3;
 
     /// Haus 10 × 8 m mit zwei Geschossen, je ein Raum mit Ausbau.
-    fn haus() -> Model {
+    pub(crate) fn haus() -> Model {
+        let mut m = haus_roh();
+        let geschosse: Vec<StoreyId> = m
+            .levels_in(m.buildings().iter().next().map(|b| b.0))
+            .into_iter()
+            .filter(|g| m.storey(*g).unwrap().kind == LevelKind::Storey)
+            .collect();
+        for g in geschosse {
+            let id = m.spaces(g)[0];
+            m.begin("Ausbau");
+            assert!(ausbau::typen_anlegen(&mut m, id));
+            m.commit();
+        }
+        m
+    }
+
+    /// Wie [`haus`], die Räume ohne Ausbautypen im Projekt.
+    pub(crate) fn haus_roh() -> Model {
         let mut m = Model::with_seed(9);
         let b = m.add_building(2);
         let pts = [
@@ -327,12 +363,6 @@ mod tests {
         m.begin("Räume");
         assert!(crate::abgleichen(&mut m, &geschosse) > 0);
         m.commit();
-        for g in geschosse {
-            let id = m.spaces(g)[0];
-            m.begin("Ausbau");
-            assert!(ausbau::typen_anlegen(&mut m, id));
-            m.commit();
-        }
         m
     }
 

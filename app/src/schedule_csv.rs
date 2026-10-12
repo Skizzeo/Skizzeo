@@ -155,6 +155,11 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                 ext::csv_gewerk(m, b, &gb, &trade, Some(id), &mut row);
                 continue;
             };
+            let namen = if t.rows.iter().any(|r| r.category == Category::Space) {
+                raum::namen(b)
+            } else {
+                raum::Namen::new()
+            };
             let mut i = 0;
             while i < t.rows.len() {
                 let r = &t.rows[i];
@@ -187,7 +192,7 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                             && (x.thickness - r.thickness).abs() < 1e-6
                     })
                     .count();
-                let rows = per_element(&t.rows[i..i + n]);
+                let rows = per_element(&t.rows[i..i + n], &namen);
                 i += n;
                 let title = layer_group_title(m, r, &rows);
                 let a: f64 = rows.iter().map(|x| zeig(x, Bezug::Flaeche)).sum();
@@ -199,38 +204,59 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                         format!("{} … {tail}", first.number)
                     }
                 };
+                // Räume: Kostengruppe nur, wenn alle Zeilen sie teilen
+                let kg_g = if rows.iter().all(|x| x.kg == r.kg) {
+                    kg(r)
+                } else {
+                    String::new()
+                };
                 row([
                     &gb,
                     &trade,
-                    &kg(r),
+                    &kg_g,
                     &format!("{title} (Summe, {} Stück)", rows.len()),
                     &range,
                     "",
                     &opt(rows.iter().map(|x| x.length).sum(), &len),
                     &opt(a, &area),
-                    &vol(rows.iter().map(|x| zeig(x, Bezug::Volumen)).sum()),
+                    &if ohne_volumen(r) {
+                        String::new()
+                    } else {
+                        vol(rows.iter().map(|x| zeig(x, Bezug::Volumen)).sum())
+                    },
                     "",
                 ]);
                 for x in &rows {
-                    // Rechenweg, wenn das Bauteil hier nur eine Schicht hat
+                    // Rechenweg, wenn das Bauteil hier nur eine Schicht hat;
+                    // beim Raum die Flächen zusammen, je mit Namen
                     let eigene: Vec<&LayerRow> = t.rows[i - n..i]
                         .iter()
                         .filter(|y| y.element == x.element)
                         .collect();
                     let weg = match eigene.as_slice() {
+                        _ if x.category == Category::Space => weg_text(m, x, modus),
                         [y] => weg_text(m, y, modus),
                         _ => String::new(),
+                    };
+                    let bauteil = if x.category == Category::Space {
+                        format!("{title} · {}", raum::flaechen(x))
+                    } else {
+                        title.clone()
                     };
                     row([
                         &gb,
                         &trade,
                         &kg(x),
-                        &title,
+                        &bauteil,
                         &x.number,
                         &storey_name(m, x.storey).0,
                         &opt(x.length, &len),
                         &flaeche(x),
-                        &vol(zeig(x, Bezug::Volumen)),
+                        &if ohne_volumen(x) {
+                            String::new()
+                        } else {
+                            vol(zeig(x, Bezug::Volumen))
+                        },
                         &weg,
                     ]);
                 }
@@ -247,10 +273,14 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                 }),
                 &t.area
                     .map_or(String::new(), |_| area(summe_flaeche(&t.rows, &zeig))),
-                &vol(t.volume
-                    * faktor(&t.rows, Bezug::Volumen, &|r| {
-                        !(r.once && r.bill_length > 0.0)
-                    })),
+                &if t.rows.iter().all(ohne_volumen) {
+                    String::new()
+                } else {
+                    vol(t.volume
+                        * faktor(&t.rows, Bezug::Volumen, &|r| {
+                            !(r.once && r.bill_length > 0.0)
+                        }))
+                },
                 // Die Fläche zählt nur die nach m² abgerechneten Schichten,
                 // darüber stehen auch Mauerwerk und Putz (Review #77, B)
                 if t.area.is_some() {
@@ -348,6 +378,10 @@ fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
         for g in &st.groups {
             if g.ext.is_some() {
                 ext::csv_geschoss(m, &gb, &sname, g, &mut row);
+                continue;
+            }
+            if g.category == Category::Space {
+                raum::csv_geschoss(m, (&gb, &sname), st, g, modus, &mut row);
                 continue;
             }
             let kg = g.category.din276().map_or(String::new(), |k| k.to_string());
@@ -457,8 +491,8 @@ fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                         String::new(),
                         format!("Abwicklung {} mm", c.girth.round()),
                     ),
-                    // Erweiterungen stehen in ihrer Gruppe (oben)
-                    Some(ElementQto::Ext(_)) | None => (
+                    // Erweiterungen und Räume stehen in ihrer Gruppe (oben)
+                    Some(ElementQto::Ext(_)) | Some(ElementQto::Room(_)) | None => (
                         g.category.name().to_string(),
                         String::new(),
                         String::new(),
