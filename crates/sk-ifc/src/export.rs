@@ -341,13 +341,22 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
     }
     c.aggregate(abgeleitet(p.guid, "aggregates.buildings"), site, &b_ids);
 
-    // Wandzüge mit mehr als einer Wand mit Form werden Baugruppen (I4)
+    // Wandzüge mit mehr als einer Wand, die in die Datei kommt (Geschoss
+    // und Netz), werden Baugruppen (I4); die Netze dieser Wände bleiben für
+    // die Schleife unten (Review #114 H-a)
     let mut wandzahl: HashMap<RunId, usize> = HashMap::new();
-    for &id in solids.keys() {
-        if let (Some(ElementKind::Wall(_)), Some((run, _))) =
-            (m.element(id).map(|e| &e.kind), m.segment_of(id))
-        {
+    let mut wandnetze: HashMap<ElementId, Vec<Netz>> = HashMap::new();
+    for (&id, solid) in &solids {
+        let Some(el) = m.element(id) else { continue };
+        let (ElementKind::Wall(_), Some((run, _)), Some(&(_, _, elev))) =
+            (&el.kind, m.segment_of(id), storey_of.get(&el.storey))
+        else {
+            continue;
+        };
+        let netze = geometrie::netze(solid, vec3(0.0, 0.0, elev));
+        if !netze.is_empty() {
             *wandzahl.entry(run).or_default() += 1;
+            wandnetze.insert(id, netze);
         }
     }
     let mut zuege: BTreeMap<usize, Zug> = BTreeMap::new();
@@ -386,7 +395,9 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                 .push((el.number.clone(), Grund::OhneForm));
             continue;
         };
-        let netze = geometrie::netze(solid, vec3(0.0, 0.0, elev));
+        let netze = wandnetze
+            .remove(&id)
+            .unwrap_or_else(|| geometrie::netze(solid, vec3(0.0, 0.0, elev)));
         if netze.is_empty() {
             bericht
                 .ausgelassen
@@ -427,13 +438,13 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
     for (run, si, a_pl, mut waende) in zuege.into_values() {
         let Some(w) = m.run(run) else { continue };
         waende.sort_unstable();
-        let waende: Vec<u32> = waende.into_iter().map(|x| x.1).collect();
-        let nummern: Vec<&str> = w
-            .segments
+        // nur die Wände, die Teil der Baugruppe sind (Review #114 H-c)
+        let nummern: Vec<&str> = waende
             .iter()
-            .filter_map(|e| m.element(*e))
+            .filter_map(|&(seg, _)| m.element(*w.segments.get(seg)?))
             .map(|e| e.number.as_str())
             .collect();
+        let waende: Vec<u32> = waende.into_iter().map(|x| x.1).collect();
         let gruppe = c.w.add(
             "IFCELEMENTASSEMBLY",
             vec![
