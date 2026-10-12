@@ -11,10 +11,12 @@ use crate::erkennung::{raeume, Begrenzung, Kante, RaumForm};
 use crate::oeffnungen::{Geschosse, Rohbau};
 use crate::raumbuch::koerper::{koerper, raumkoerper};
 use crate::raumbuch::{rechnen, Flaeche, Regeln};
+use crate::Ketten;
 use sk_math::Vec3;
 use sk_model::{
     ElementId, ElementKind, Guid, LayerSetId, LevelKind, Model, Solid, SpaceGroup, StoreyId,
 };
+use std::collections::HashMap;
 
 /// Umriss gegen den Uhrzeigersinn und die Löcher im Uhrzeigersinn
 /// (Grundrissebene).
@@ -100,22 +102,23 @@ pub fn raumliste(model: &Model) -> Vec<RaumDaten> {
         .filter(|(_, s)| s.kind == LevelKind::Storey)
         .map(|(id, _)| id)
         .collect();
-    // Höhen der Geschosse einmal für alle Räume (Review #137)
-    let lagen = Geschosse::aus(model);
+    // Platten und Höhen der Geschosse einmal für alle Räume (Review #137)
+    let platten = Platten::neu(model, model);
     let mut out = Vec::new();
     for g in geschosse {
         for f in raeume(model, g) {
-            out.extend(raum(model, f, &lagen));
+            out.extend(raum(model, &platten, f));
         }
     }
     out
 }
 
 /// Ein Raum, `None` ohne gespeicherten Raum oder ohne Ausbau.
-fn raum(model: &Model, f: RaumForm, lagen: &Geschosse) -> Option<RaumDaten> {
+fn raum(model: &Model, platten: &Platten, f: RaumForm) -> Option<RaumDaten> {
     let id = f.raum?;
     let e = model.element(id)?;
     let s = model.space(id)?;
+    let lagen = &platten.geschosse;
     let roh = Rohbau::mit_geschossen(model, model, f, lagen);
     let aus = RaumAusbau::fuer_in(model, &roh, lagen)?;
     let nutzung = ausbau::nutzung(model, &roh.form);
@@ -136,7 +139,7 @@ fn raum(model: &Model, f: RaumForm, lagen: &Geschosse) -> Option<RaumDaten> {
         nutzung,
         gruppe,
         geschoss: roh.form.geschoss,
-        ausbau: ausbauflaechen(model, &roh, &aus),
+        ausbau: ausbauflaechen(model, platten, &roh, &aus),
         roh: umriss_roh,
         fertig,
         z_roh: (roh.z_boden, roh.z_decke),
@@ -202,7 +205,12 @@ fn fertigumriss(ringe: &[&[Kante]], dicken: &[f64]) -> Option<Umriss> {
 
 /// Ausbauflächen nach Fläche und Typ, in der Reihenfolge der Zeilen des
 /// Raumbuchs; Körper ohne Zeile kommen dazu.
-fn ausbauflaechen(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> Vec<AusbauDaten> {
+fn ausbauflaechen(
+    model: &Model,
+    platten: &Platten,
+    roh: &Rohbau,
+    aus: &RaumAusbau,
+) -> Vec<AusbauDaten> {
     let kanten: Vec<&Kante> = roh.kanten().collect();
     let mut out: Vec<AusbauDaten> = Vec::new();
     let eintrag = |out: &mut Vec<AusbauDaten>, flaeche: Flaeche, typ: LayerSetId| -> usize {
@@ -217,7 +225,7 @@ fn ausbauflaechen(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> Vec<AusbauDa
             typ,
             typ_guid: model.layer_set(typ).map_or(Guid(0), |t| t.guid),
             schichten: Vec::new(),
-            traeger: traeger(model, roh, &kanten, flaeche)
+            traeger: traeger(model, platten, roh, &kanten, flaeche)
                 .and_then(|id| model.element(id))
                 .map(|e| e.guid),
         });
@@ -268,6 +276,7 @@ fn ausbauflaechen(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> Vec<AusbauDa
 /// Bekleidetes Bauteil einer Fläche.
 pub(crate) fn traeger(
     model: &Model,
+    platten: &Platten,
     roh: &Rohbau,
     kanten: &[&Kante],
     f: Flaeche,
@@ -281,30 +290,89 @@ pub(crate) fn traeger(
         | Flaeche::Laibung(k)
         | Flaeche::Fliesen(k)
         | Flaeche::FliesenLaibung(k) => wand(k),
-        Flaeche::Decke => decke(model, &roh.form, roh.form.geschoss),
-        Flaeche::Boden | Flaeche::Estrich => boden(model, &roh.form),
+        Flaeche::Decke => platten.decke(&roh.form, roh.form.geschoss),
+        Flaeche::Boden | Flaeche::Estrich => boden(model, platten, &roh.form),
         _ => None,
     }
 }
 
-/// Liegt der Raum über dem Zug `run` (in seiner Bezugslinie)?
-fn ueber(model: &Model, run: sk_model::RunId, form: &RaumForm) -> bool {
-    model
-        .chain(run)
-        .is_some_and(|c| sk_math::flaeche::enthaelt(&c.clean_points(), form.mitte))
+/// Decke oder Sohlplatte mit dem Umriss ihres Zugs (Bezugslinie) und dem
+/// Rechteck darum.
+struct Platte {
+    id: ElementId,
+    umriss: Vec<Vec3>,
+    kasten: [f64; 4],
 }
 
-/// Die Decke über dem Geschoss `g` an der Stelle des Raums.
-fn decke(model: &Model, form: &RaumForm, g: StoreyId) -> Option<ElementId> {
-    model.elements().iter().find_map(|(id, e)| match e.kind {
-        ElementKind::Floor(ref d) if e.storey == g && ueber(model, d.run, form) => Some(id),
-        _ => None,
-    })
+impl Platte {
+    /// Liegt der Raum über der Platte?
+    fn traegt(&self, form: &RaumForm) -> bool {
+        let (p, [x0, y0, x1, y1]) = (form.mitte, self.kasten);
+        p.x >= x0
+            && p.x <= x1
+            && p.y >= y0
+            && p.y <= y1
+            && sk_math::flaeche::enthaelt(&self.umriss, p)
+    }
+}
+
+/// Decken je Geschoss und Sohlplatten, einmal je Liste gesammelt (Review
+/// #112 H8): Vorher ging jede Bodenzeile alle Bauteile durch und rechnete
+/// je Decke die Kette ihres Zugs, quadratisch mit dem Modell. Dazu die
+/// Höhen der Geschosse, ebenfalls einmal je Liste (Review #137 B2).
+pub struct Platten {
+    decken: HashMap<StoreyId, Vec<Platte>>,
+    sohlen: Vec<Platte>,
+    pub(crate) geschosse: Geschosse,
+}
+
+impl Platten {
+    /// Die Platten des Modells, die Ketten ihrer Züge aus `k` (in der App
+    /// die berechneten der Szene).
+    pub fn neu(model: &Model, k: &(impl Ketten + ?Sized)) -> Platten {
+        let mut p = Platten {
+            decken: HashMap::new(),
+            sohlen: Vec::new(),
+            geschosse: Geschosse::aus(model),
+        };
+        for (id, e) in model.elements().iter() {
+            let (run, sohle) = match e.kind {
+                ElementKind::Floor(ref d) => (d.run, false),
+                ElementKind::GroundSlab(ref s) => (s.run, true),
+                _ => continue,
+            };
+            let Some(umriss) = k.kette(run).map(|c| c.clean_points()) else {
+                continue;
+            };
+            let mut kasten = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for q in &umriss {
+                kasten = [
+                    kasten[0].min(q.x),
+                    kasten[1].min(q.y),
+                    kasten[2].max(q.x),
+                    kasten[3].max(q.y),
+                ];
+            }
+            let platte = Platte { id, umriss, kasten };
+            if sohle {
+                p.sohlen.push(platte);
+            } else {
+                p.decken.entry(e.storey).or_default().push(platte);
+            }
+        }
+        p
+    }
+
+    /// Die Decke über dem Geschoss `g` an der Stelle des Raums.
+    fn decke(&self, form: &RaumForm, g: StoreyId) -> Option<ElementId> {
+        let d = self.decken.get(&g)?;
+        d.iter().find(|p| p.traegt(form)).map(|p| p.id)
+    }
 }
 
 /// Unter dem Raum: die Decke des Geschosses darunter, im untersten
 /// Geschoss die Sohlplatte.
-fn boden(model: &Model, form: &RaumForm) -> Option<ElementId> {
+fn boden(model: &Model, platten: &Platten, form: &RaumForm) -> Option<ElementId> {
     let ebenen = model.levels_in(model.building_of(form.geschoss));
     let i = ebenen.iter().position(|g| *g == form.geschoss)?;
     let darunter = i.checked_sub(1).map(|j| ebenen[j]);
@@ -314,11 +382,8 @@ fn boden(model: &Model, form: &RaumForm) -> Option<ElementId> {
             .is_some_and(|s| s.kind == LevelKind::Storey)
     });
     match geschoss {
-        Some(g) => decke(model, form, g),
-        None => model.elements().iter().find_map(|(id, e)| match e.kind {
-            ElementKind::GroundSlab(ref p) if ueber(model, p.run, form) => Some(id),
-            _ => None,
-        }),
+        Some(g) => platten.decke(form, g),
+        None => platten.sohlen.iter().find(|p| p.traegt(form)).map(|p| p.id),
     }
 }
 

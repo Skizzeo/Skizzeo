@@ -1647,6 +1647,41 @@ mod tests {
         assert_eq!(t.mesh(ViewKind::Section, ebene, &[]).faces.len(), mit);
     }
 
+    /// Review #112 H8: Die Mengenliste nimmt die Räume aus der Erkennung,
+    /// die Züge und Platten aus den Ketten der Szene; sie ist dieselbe wie
+    /// aus dem Modell allein, auch nach einem Wandschritt.
+    #[test]
+    fn mengen_aus_der_szene_wie_aus_dem_modell() {
+        let mut s = Scene::new();
+        let innen = haeuser(&mut s, 0, 2);
+        let gleich = |s: &mut Scene| {
+            let a = s.schedule().clone();
+            let b = sk_model::qto::schedule_mit(s.model(), &sk_raum::mengen::raeume);
+            assert_eq!(a, b);
+            a.buildings
+                .iter()
+                .flat_map(|b| &b.storeys)
+                .flat_map(|g| &g.groups)
+                .filter(|g| g.category == Category::Space)
+                .map(|g| g.rows.len())
+                .sum::<usize>()
+        };
+        assert_eq!(gleich(&mut s), 8, "drei Räume je Haus im EG, einer darüber");
+        let iw = innen[0];
+        let pts: Vec<_> = s
+            .model()
+            .run(iw)
+            .unwrap()
+            .points
+            .iter()
+            .map(|p| *p + vec3(-400.0, 0.0, 0.0))
+            .collect();
+        s.begin("Wand verschieben");
+        s.set_run_points(iw, &pts);
+        s.commit();
+        assert_eq!(gleich(&mut s), 8);
+    }
+
     /// Eine andere Nutzung baut nur diesen Raum neu; bringt sie neue Typen
     /// ins Projekt oder ändert sich ein Typ, prüft jeder Raum, gebaut wird
     /// nur, wen es trifft, und nur dessen Hausgruppe rechnet ihr Netz neu.

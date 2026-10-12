@@ -193,7 +193,10 @@ impl<'a> Raum<'a> {
             .enumerate()
             .map(|(i, k)| ausbau::putz(model, k, aus.seiten.get(i).unwrap_or(&leer)))
             .collect();
-        let roh = kanten.iter().map(|k| glatt(ring::laenge(k.a, k.b))).collect();
+        let roh = kanten
+            .iter()
+            .map(|k| glatt(ring::laenge(k.a, k.b)))
+            .collect();
         let ringe_putz: Vec<Versatz> = ringe
             .iter()
             .map(|(e, p)| ring::versetzt(p, &putz[*e..*e + p.len()]))

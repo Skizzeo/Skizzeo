@@ -11,13 +11,15 @@
 //!   Wandseite und zählen in 345 (Ecken liegen meist an Innenwänden;
 //!   Nachtregel, änderbar).
 //!
-//! Die App gibt [`raeume`] an [`sk_model::qto::schedule_mit`].
+//! Die App gibt [`raeume_mit`] an [`sk_model::qto::schedule_mit`], mit den
+//! Räumen aus ihrer Erkennung und den Wandzügen und Platten der Szene.
 
 use crate::ausbau::RaumAusbau;
 use crate::erkennung::{raeume as formen, Begrenzung, Kante, RaumForm};
 use crate::oeffnungen::Rohbau;
 use crate::raumbuch::{rechnen, Flaeche, Regeln, Zeile};
-use crate::raumliste::{fertigmass, traeger};
+use crate::raumliste::{fertigmass, traeger, Platten};
+use crate::Ketten;
 use sk_model::qto::{RoomLine, RoomQto, Side};
 use sk_model::rechenweg::Rechenweg;
 use sk_model::{Category, ElementId, LayerFunction, Model, StoreyId};
@@ -35,21 +37,43 @@ const KG_DECKENBEKLEIDUNG: u16 = 354;
 /// im Projekt) hat keine Mengen und fehlt, so bleiben Listen ohne
 /// Raumbuch, wie sie waren.
 pub fn raeume(model: &Model, geschoss: StoreyId) -> Vec<(ElementId, RoomQto)> {
-    formen(model, geschoss)
+    let platten = Platten::neu(model, model);
+    raeume_mit(model, model, &platten, formen(model, geschoss))
+}
+
+/// Wie [`raeume`] für die Räume `formen` (in der App aus der Erkennung der
+/// Szene), die Wandzüge aus `k` und Decken und Sohlplatten aus `platten`
+/// (einmal je Mengenliste), die Höhen der Geschosse ebenfalls aus
+/// `platten` (Review #137 B2). So wächst die Mengenliste mit den Räumen, nicht mit ihrem
+/// Quadrat (Review #112 H8).
+pub fn raeume_mit(
+    model: &Model,
+    k: &(impl Ketten + ?Sized),
+    platten: &Platten,
+    formen: impl IntoIterator<Item = RaumForm>,
+) -> Vec<(ElementId, RoomQto)> {
+    formen
         .into_iter()
-        .filter_map(|f| raum(model, f))
+        .filter(|f| f.raum.is_some())
+        .filter_map(|f| {
+            let roh = Rohbau::mit_geschossen(model, k, f, &platten.geschosse);
+            raum(model, platten, roh)
+        })
         .collect()
 }
 
-fn raum(model: &Model, f: RaumForm) -> Option<(ElementId, RoomQto)> {
-    let id = f.raum?;
-    let roh = Rohbau::neu(model, f);
-    let aus = RaumAusbau::fuer(model, &roh)?;
+fn raum(model: &Model, platten: &Platten, roh: Rohbau) -> Option<(ElementId, RoomQto)> {
+    let id = roh.form.raum?;
+    let aus = RaumAusbau::fuer_in(model, &roh, &platten.geschosse)?;
     let (_, m, _) = fertigmass(model, &roh, &aus);
     let kanten: Vec<&Kante> = roh.kanten().collect();
+    // Unter dem Boden: Sohlplatte oder Decke, einmal je Raum
+    let unten = traeger(model, platten, &roh, &kanten, Flaeche::Boden)
+        .and_then(|id| model.element(id))
+        .map(|e| e.category);
     let mut lines: Vec<RoomLine> = rechnen(model, &roh, &aus, &Regeln::default())
         .into_iter()
-        .map(|z| zeile(model, &roh, &kanten, z))
+        .map(|z| zeile(model, unten, &kanten, z))
         .collect();
     // Ohne Ausbautypen im Projekt keine Zeilen, dann fehlt der Raum
     if lines.is_empty() {
@@ -71,7 +95,7 @@ fn raum(model: &Model, f: RaumForm) -> Option<(ElementId, RoomQto)> {
     ))
 }
 
-fn zeile(model: &Model, roh: &Rohbau, kanten: &[&Kante], z: Zeile) -> RoomLine {
+fn zeile(model: &Model, unten: Option<Category>, kanten: &[&Kante], z: Zeile) -> RoomLine {
     let schicht = z
         .typ
         .and_then(|(t, j)| model.layer_set(t)?.layers.get(j).copied());
@@ -90,9 +114,6 @@ fn zeile(model: &Model, roh: &Rohbau, kanten: &[&Kante], z: Zeile) -> RoomLine {
         | Flaeche::FliesenLaibung(k) => wand_kg(model, kanten, k),
         Flaeche::Eckschienen | Flaeche::Silikon | Flaeche::Dichtband => KG_INNENWAND,
         Flaeche::Boden | Flaeche::Estrich | Flaeche::Sockel | Flaeche::Randstreifen => {
-            let unten = traeger(model, roh, kanten, Flaeche::Boden)
-                .and_then(|id| model.element(id))
-                .map(|e| e.category);
             match unten {
                 Some(Category::GroundSlab)
                     if schicht.is_some_and(|l| l.function == LayerFunction::Membrane) =>

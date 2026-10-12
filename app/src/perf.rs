@@ -3182,3 +3182,67 @@ fn perf_l40_budget() {
         b.1
     );
 }
+
+/// Review #112 H8: Mengenliste mit den Räumen (RB5) bei `n` Häusern mit je
+/// drei Räumen im EG und einem darüber. Ohne = `qto::schedule` ohne Räume,
+/// Szene = erste Liste der Szene (Räume aus ihrer Erkennung, Züge und
+/// Platten aus ihren Ketten), Loslassen = Liste nach dem Verschieben einer
+/// Innenwand, Modell = die Räume aus dem Modell allein (`mengen::raeume`).
+/// Bis 1000 Häuser (höchstens `SKIZZEO_PERF_BIS`), alle Spalten linear.
+#[test]
+#[ignore]
+fn perf_mengen_raeume() {
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>9} {:>9} {:>9}",
+        "Häuser", "Räume", "ohne", "Szene", "Loslassen", "Modell"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 1000].into_iter().filter(|&n| n <= bis) {
+        let mut s = town_with_interior(n);
+        let raeume = s
+            .model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| e.category == sk_model::Category::Space)
+            .count();
+        let t = Instant::now();
+        std::hint::black_box(sk_model::qto::schedule(s.model()));
+        let ohne = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        std::hint::black_box(s.schedule());
+        let szene = t.elapsed().as_secs_f64() * 1000.0;
+        let st = s.active_storey();
+        let (iw, _) = s
+            .model()
+            .runs()
+            .iter()
+            .find(|(_, r)| r.storey == st && !r.closed)
+            .unwrap();
+        let pts: Vec<sk_math::Vec3> = s
+            .model()
+            .run(iw)
+            .unwrap()
+            .points
+            .iter()
+            .map(|p| *p + vec3(-200.0, 0.0, 0.0))
+            .collect();
+        s.begin("Wand verschieben");
+        s.set_run_points(iw, &pts);
+        s.commit();
+        let t = Instant::now();
+        std::hint::black_box(s.schedule());
+        let los = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        std::hint::black_box(sk_model::qto::schedule_mit(
+            s.model(),
+            &sk_raum::mengen::raeume,
+        ));
+        let modell = t.elapsed().as_secs_f64() * 1000.0;
+        println!("{n:>6} {raeume:>6} {ohne:>9.1} {szene:>9.1} {los:>9.1} {modell:>9.1}");
+    }
+    println!("Zeiten in ms, je ein Lauf.");
+}

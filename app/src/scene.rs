@@ -984,8 +984,18 @@ impl Scene {
         let rev = self.model.revision();
         let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
         if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
-            // Mit den Räumen und ihrem Raumbuch (RB5)
-            let sched = sk_model::qto::schedule_mit(&self.model, &sk_raum::mengen::raeume);
+            // Mit den Räumen und ihrem Raumbuch (RB5): Räume aus der
+            // Erkennung der Szene, Züge und Platten aus ihren berechneten
+            // Ketten, die Platten erst beim ersten Raum (Review #112 H8)
+            let k = self.ketten();
+            let platten = std::cell::OnceCell::new();
+            let raeume = |m: &sk_model::Model, g: sk_model::StoreyId| {
+                let formen = self.raumgruppen(g);
+                let formen = formen.flaechen().map(|f| f.form.clone());
+                let p = platten.get_or_init(|| sk_raum::raumliste::Platten::neu(m, &k));
+                sk_raum::mengen::raeume_mit(m, &k, p, formen)
+            };
+            let sched = sk_model::qto::schedule_mit(&self.model, &raeume);
             self.schedule = Some((rev, Rc::new(sched)));
             self.schedule_runs += 1;
         }
