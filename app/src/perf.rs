@@ -1823,6 +1823,84 @@ fn perf_innentuer() {
     println!("Zeiten in ms je Mausbewegung bzw. je Loslassen.");
 }
 
+/// IFC-Export (I5, Review #115 B1) bei 1 bis 1000 Häusern (höchstens
+/// `SKIZZEO_PERF_BIS`) mit je zwei Innentüren und einem Fenster: Zeit für
+/// den Aufbau des Modells und für die ganze Datei.
+#[test]
+#[ignore]
+fn perf_ifc_export() {
+    use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
+    use sk_model::{Category, LevelRef};
+    println!();
+    println!(
+        "{:>6} {:>10} {:>10} {:>10}",
+        "Häuser", "Öffnungen", "Aufbau", "Export"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 300, 1000].into_iter().filter(|&n| n <= bis) {
+        let t = Instant::now();
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        assert!(s.edit_model("Öffnungen", |m| {
+            let zuege: Vec<_> = m
+                .runs()
+                .iter()
+                .map(|(r, run)| {
+                    let innen = run
+                        .segments
+                        .first()
+                        .and_then(|e| m.element(*e))
+                        .is_some_and(|e| e.category == Category::InteriorWall);
+                    (r, innen)
+                })
+                .collect();
+            // Fenster nur, wo es frei ist (der Außenzug kann doppelt
+            // auftauchen); Innentüren in jeder Innenwand
+            zuege.into_iter().all(|(r, innen)| {
+                let f = m.outer_face(r, 0).unwrap();
+                let um = (f.u.0 + f.u.1) / 2.0;
+                let o = if innen {
+                    Opening {
+                        kind: OpeningKind::Door,
+                        path: vec![f.at(um - 442.5, 0.0), f.at(um + 442.5, 0.0)],
+                        bottom: HeightRef::Level(LevelRef::bottom(st)),
+                        top: HeightRef::Line(st, HeightLine::Door),
+                        reveal: None,
+                        install: Default::default(),
+                        swing: Some(Swing {
+                            side: FaceSide::Right,
+                            din: Din::Links,
+                        }),
+                        lock: Default::default(),
+                    }
+                } else {
+                    Opening {
+                        kind: OpeningKind::Window,
+                        path: vec![f.at(f.u.0 + 1500.0, 0.0), f.at(f.u.0 + 2750.0, 0.0)],
+                        bottom: HeightRef::Line(st, HeightLine::Sill),
+                        top: HeightRef::Line(st, HeightLine::Lintel),
+                        reveal: None,
+                        install: Default::default(),
+                        swing: None,
+                        lock: Default::default(),
+                    }
+                };
+                m.add_opening(o).is_some() || !innen
+            })
+        }));
+        let aufbau = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let (ifc, b) = sk_ifc::export(s.model(), &sk_ifc::Optionen::default());
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        std::hint::black_box(ifc);
+        println!("{n:>6} {:>10} {aufbau:>10.0} {ms:>10.0}", b.oeffnungen);
+    }
+    println!("Zeiten in ms (Aufbau des Modells, Export der Datei).");
+}
+
 /// Breite am Griff (Review #109 B1, B4), Tür im zuletzt gebauten Haus:
 /// Griffe je Mausbewegung, Kettensymbole, Greifen, Ziehen je Bewegung und
 /// Loslassen.
