@@ -396,9 +396,9 @@ impl WheelView {
             return;
         };
         let slot = self.base + SLOTS - 1;
-        let key = (line.clone(), kote.clone(), th.rev, g.s.to_bits());
+        let key = (line.clone(), kote.clone(), th.rev, g.dpi.to_bits());
         if self.hint.as_ref() != Some(&key) {
-            Self::upload(r, slot, &wheel::paint_hint(fonts, &line, &kote, g.s, th));
+            Self::upload(r, slot, &wheel::paint_hint(fonts, &line, &kote, g.dpi, th));
             self.hint = Some(key);
         }
         let (w, h) = r.overlay_size(slot);
@@ -406,13 +406,13 @@ impl WheelView {
         let (x, y) = match up {
             Some(up) => {
                 let tip = g.tip(up);
-                (tip.0 - g.head_w * 0.5 - 8.0 * g.s - w, tip.1 - h * 0.5)
+                (tip.0 - g.head_w * 0.5 - 8.0 * g.dpi - w, tip.1 - h * 0.5)
             }
             // Knopf „Blickrichtung“: links daneben
             None => {
                 let (bx, by) = wheel::mirror_at(g);
                 let bh = r.overlay_size(self.base + SLOTS - 2).1 as f32;
-                (bx - 8.0 * g.s - w, by + (bh - h) * 0.5)
+                (bx - 8.0 * g.dpi - w, by + (bh - h) * 0.5)
             }
         };
         Self::place(r, placed, slot, (x.max(0.0), y, w, h), self.fade);
