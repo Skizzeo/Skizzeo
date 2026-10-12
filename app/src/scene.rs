@@ -3156,6 +3156,12 @@ impl Scene {
         ok
     }
 
+    /// Läuft gerade ein Zug: Wandzüge im offenen Schritt live verschoben
+    /// (bis Loslassen oder Esc).
+    pub fn zieht(&self) -> bool {
+        self.model.in_step() && !self.live.is_empty()
+    }
+
     /// Züge im Live-Netz, während `run` gezogen wird: er selbst und alle, die
     /// sich dabei mitändern.
     pub fn live_set(&self, run: RunId) -> Vec<RunId> {

@@ -77,6 +77,9 @@ pub struct Project {
     /// Dicke und Abstand der Geländeplatte (Gelände G0); in der Datei nur,
     /// wo sie von der Vorgabe abweichen.
     pub terrain_plate: PlateSettings,
+    /// `[terrainplate]`, deren Werte nicht galten: bleibt bytegleich, bis
+    /// neue Werte sie ersetzen (Regel 72).
+    pub terrain_plate_raw: Option<String>,
 }
 
 impl Project {
@@ -99,6 +102,7 @@ impl Project {
             soil_info: false,
             soil_legacy: [None; 5],
             terrain_plate: PlateSettings::default(),
+            terrain_plate_raw: None,
         }
     }
 
@@ -907,6 +911,7 @@ impl Model {
             soil_info: self.project.soil_info,
             soil_legacy: self.project.soil_legacy,
             terrain_plate: self.project.terrain_plate,
+            terrain_plate_raw: self.project.terrain_plate_raw.clone(),
             ..p
         };
         match self.txn.as_mut() {
@@ -951,6 +956,7 @@ impl Model {
             soil_info: self.project.soil_info,
             soil_legacy: self.project.soil_legacy,
             terrain_plate: self.project.terrain_plate,
+            terrain_plate_raw: self.project.terrain_plate_raw.clone(),
             ..p
         };
         self.touch();

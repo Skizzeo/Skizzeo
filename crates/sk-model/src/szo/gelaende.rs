@@ -21,6 +21,11 @@ pub(super) fn write(m: &Model, out: &mut String) {
     let s = m.plate_settings();
     let werte = [s.thick, s.margin];
     if werte.iter().zip(FELDER).all(|(v, f)| *v == f.2 .0) {
+        // eine Zeile, die nicht galt, bleibt roh, bis neue Werte sie ersetzen
+        if let Some(raw) = &m.project().terrain_plate_raw {
+            out.push_str(raw);
+            out.push('\n');
+        }
         return;
     }
     let mut line = Line::new("terrainplate").word("key", "project");
@@ -57,26 +62,48 @@ pub(super) fn bereich(
     None
 }
 
-pub(super) fn read(recs: &[Record], hints: &mut Vec<String>) -> Result<PlateSettings, LoadError> {
+/// Dicke und Abstand; dazu die Zeile roh, wenn ein Wert nicht gilt
+/// (Regel 72 wie `[sun]`): dann ein Hinweis, und beide Vorgaben gelten.
+pub(super) fn read(
+    recs: &[Record],
+    lines: &[&str],
+    hints: &mut Vec<String>,
+) -> Result<(PlateSettings, Option<String>), LoadError> {
     let mut s = PlateSettings::default();
     match recs {
         [] => {}
         [r] => {
             // Kennung `key=project`; gelesen, damit sie nicht als fremd gilt
             let _ = r.opt("key");
+            let mut falsch = Vec::new();
             for (i, (k, name, (_, min, max))) in FELDER.into_iter().enumerate() {
-                if let Some(v) = bereich(r, k, name, (min, max), " mm", hints) {
-                    if i == 0 {
-                        s.thick = v;
-                    } else {
-                        s.margin = v;
-                    }
+                match bereich(r, k, name, (min, max), " mm", &mut falsch) {
+                    Some(v) if i == 0 => s.thick = v,
+                    Some(v) => s.margin = v,
+                    None => {}
                 }
+            }
+            if !falsch.is_empty() {
+                r.skip();
+                let kopf = format!("Zeile {}: ", r.line);
+                let teile: Vec<&str> = falsch
+                    .iter()
+                    .map(|h| {
+                        h.trim_start_matches(kopf.as_str())
+                            .trim_end_matches(", Vorgabe gilt")
+                    })
+                    .collect();
+                hints.push(format!(
+                    "{kopf}[terrainplate] {}; die Geländeplatte hat ihre Vorgaben, die Zeile bleibt",
+                    teile.join(", ")
+                ));
+                let raw = lines.get(r.line - 1).map(|l| l.to_string());
+                return Ok((PlateSettings::default(), raw));
             }
         }
         [_, r, ..] => return Err(err(r.line, "[terrainplate] doppelt")),
     }
-    Ok(s)
+    Ok((s, None))
 }
 
 #[cfg(test)]
@@ -110,28 +137,52 @@ mod tests {
         let l = load(&neu);
         assert_eq!(l.model.plate_settings().thick, 800.0);
         assert_eq!(write(&l.model), neu, "bytegleich");
+        // ein Wert außerhalb: beide Vorgaben, ein Hinweis, die Zeile bleibt
+        // bytegleich, bis neue Werte sie ersetzen (Regel 72)
         let falsch = neu.replace("thick=800", "thick=800 margin=900");
-        let l = load(&falsch);
-        assert_eq!(l.model.plate_settings().margin, 3000.0);
-        assert!(
-            l.hints
-                .iter()
-                .any(|h| h.contains("Abstand der Geländeplatte")),
-            "{:?}",
-            l.hints
-        );
-        // unlesbar: Hinweis mit dem Wert, wie er dasteht, die Datei öffnet
+        let mut l = load(&falsch);
+        assert_eq!(l.model.plate_settings(), PlateSettings::default());
+        let platte: Vec<&String> = l
+            .hints
+            .iter()
+            .filter(|h| h.contains("terrainplate"))
+            .collect();
+        assert_eq!(platte.len(), 1, "{:?}", l.hints);
+        assert!(platte[0].ends_with("[terrainplate] Abstand der Geländeplatte 900 mm außerhalb 1500 bis 3000 mm; die Geländeplatte hat ihre Vorgaben, die Zeile bleibt"), "{}", platte[0]);
+        assert_eq!(write(&l.model), falsch, "roh behalten");
+        l.model.begin("Platte");
+        assert!(l.model.set_plate_settings(PlateSettings {
+            thick: 800.0,
+            margin: 3000.0
+        }));
+        l.model.commit();
+        assert_eq!(write(&l.model), neu, "neue Werte ersetzen die rohe Zeile");
+        // unlesbar, auch beide: ein Hinweis mit den Werten, wie sie dastehen
         for wert in ["abc", "", "NaN"] {
-            let l = load(&neu.replace("thick=800", &format!("thick={wert}")));
+            let t = neu.replace("thick=800", &format!("thick={wert} margin=x"));
+            let l = load(&t);
             assert_eq!(l.model.plate_settings().thick, 500.0, "{wert:?}");
+            let h: Vec<&String> = l
+                .hints
+                .iter()
+                .filter(|h| h.contains("terrainplate"))
+                .collect();
+            assert_eq!(h.len(), 1, "{wert:?} {:?}", l.hints);
             assert!(
-                l.hints.iter().any(|h| h.contains(&format!(
-                    "Dicke der Geländeplatte {wert} mm außerhalb 100 bis 2000 mm, Vorgabe gilt"
-                ))),
-                "{wert:?} {:?}",
-                l.hints
+                h[0].contains(&format!(
+                    "Dicke der Geländeplatte {wert} mm außerhalb 100 bis 2000 mm, Abstand der Geländeplatte x mm außerhalb 1500 bis 3000 mm;"
+                )),
+                "{wert:?} {}",
+                h[0]
             );
+            assert_eq!(write(&l.model), t);
         }
+        // doppelt: Fehler wie bei [sun] und [location]
+        let doppelt = neu.replace(
+            "[terrainplate] key=project thick=800",
+            "[terrainplate] key=project thick=800\n[terrainplate] key=project thick=900",
+        );
+        assert!(read(&doppelt, GuidGen::with_seed(99)).is_err());
     }
 
     /// Bodenkennwerte (Regel 113, 114): eine unlesbare Zahl an `[soil]` oder

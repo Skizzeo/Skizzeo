@@ -1579,7 +1579,7 @@ impl App {
         self.sect = Sections::default();
         self.sect.load(&self.scene);
         self.sel = Selection::default();
-        self.tree.reset();
+        self.baum_neu();
         self.props_key = None;
         self.ui.set_props(None);
         self.props_dirty = true;

@@ -1832,7 +1832,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     }
     project.soil = crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default();
     project.soil_legacy = legacy;
-    project.terrain_plate = gelaende::read(recs("terrainplate"), &mut hints)?;
+    (project.terrain_plate, project.terrain_plate_raw) =
+        gelaende::read(recs("terrainplate"), &lines, &mut hints)?;
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
     let alt = [text("site"), text("client"), text("author")];
     match recs("projectinfo").as_slice() {
