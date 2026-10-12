@@ -391,7 +391,8 @@ fn wand_flaeche(model: &Model, r: &LayerRow, p: &LayerParts) -> Vec<Term> {
 /// (DIN 18330, 18331), in der Bestellung nach der Regel des Baustoffs.
 fn loch_terme(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Vec<Term> {
     let ab = ab(model, r);
-    r.holes
+    let mut out: Vec<Term> = r
+        .holes
         .iter()
         .map(|h| {
             let name = model.element(h.opening).map_or("", |e| e.number.as_str());
@@ -439,7 +440,23 @@ fn loch_terme(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Vec<Term> 
                 }
             }
         })
-        .collect()
+        .collect();
+    // Innentür: Die Wand ist bis an die Öffnung verputzt, die Laibung
+    // bleibt roh, die Umfassungszarge greift um den Putz (Jörn 12.10.
+    // 06:41, vob/pruefung-innentuer.md); daher keine Laibungsmenge
+    let tuer = r.holes.iter().any(|h| {
+        model
+            .opening(h.opening)
+            .is_some_and(|o| o.kind == crate::oeffnung::OpeningKind::Door)
+    });
+    if b == Bezug::Flaeche && r.category == Category::InteriorWall && tuer {
+        out.push(Term {
+            text: "Innentür: keine Laibung, die Umfassungszarge greift um den Putz".into(),
+            wert: 0.0,
+            art: Art::Hinweis,
+        });
+    }
+    out
 }
 
 /// Volumen einer Wandschicht: Grundfläche × Höhe, Abzüge und Zuschläge.

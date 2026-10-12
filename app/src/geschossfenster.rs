@@ -41,7 +41,7 @@ pub struct GeschossFenster {
     pub docked: bool,
     /// Schnitthöhe beim Greifen ihrer Linie: Esc stellt sie zurück (sie ist
     /// Ansichtszustand, der Schritt nimmt sie nicht mit; Review #92 H3).
-    pub plan_cut_start: Option<f64>,
+    pub plan_cut_start: Option<sk_model::hoehen::PlanCutState>,
     /// Stand des Farbschemas im gezeigten Bild.
     theme_rev: u64,
     canvas: Canvas,

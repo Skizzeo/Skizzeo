@@ -113,6 +113,7 @@ pub fn oeffnung(kind: OpeningKind, a: &Fang, b: &Fang) -> Option<Opening> {
         top: hi.bind,
         reveal: None,
         install: Default::default(),
+        swing: None,
     })
 }
 
@@ -152,6 +153,8 @@ pub struct Werkzeug {
     pub erste: Option<Fang>,
     /// Zuletzt gerechnete Vorschau, die der Wandwerkzeug zeichnet.
     pub vorschau: Bild,
+    /// Innentür im Grundriss (Knopf „Tür“ dort).
+    pub innen: crate::oeffnung_app::innentuer::Innentuer,
 }
 
 /// Was ein Klick mit [`Werkzeug::setzen`] ergibt.
@@ -184,6 +187,7 @@ impl Werkzeug {
             hover: None,
             erste: None,
             vorschau: Bild::default(),
+            innen: Default::default(),
         }
     }
 
@@ -234,6 +238,7 @@ impl Werkzeug {
         self.erste = None;
         self.hover = None;
         self.vorschau = Bild::default();
+        self.innen.weg();
     }
 
     /// Esc: nimmt die erste Ecke zurück (`true`); ohne sie schließt das
