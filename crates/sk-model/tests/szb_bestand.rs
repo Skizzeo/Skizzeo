@@ -3,7 +3,9 @@
 
 use sk_model::element::Category;
 use sk_model::kinds::spec;
+use sk_model::library::MatCategory;
 use sk_szb::bestand::{ARTEN, BELEGT};
+use sk_szb::{pruefen, Bestand, Geschoss};
 
 #[test]
 fn praefixe_des_lieferumfangs_sind_belegt() {
@@ -32,4 +34,19 @@ fn arten_wie_kinds() {
     ist.sort_unstable();
     soll.sort_unstable();
     assert_eq!(ist, soll);
+}
+
+/// `kategorie=` am eigenen Baustoff: jede Kategorie des Modells außer der
+/// Luftschicht, die keinen Körper hat (Raumbuch RB1: screed, ceramic,
+/// flooring, coating).
+#[test]
+fn kategorien_wie_modell() {
+    let basis = include_str!("../../sk-szb/beispiele/werk.stuetze.szb").trim_end();
+    for k in MatCategory::ALL {
+        let w = k.word();
+        let text = format!("{basis}\n[baustoff] key=probe name=\"Probe\" kategorie={w}");
+        let p = pruefen(&text, &Bestand::werk(), &Geschoss::PROBE);
+        let abgelehnt = p.befunde.iter().any(|b| b.text.starts_with("kategorie:"));
+        assert_eq!(abgelehnt, k == MatCategory::Air, "kategorie={w}");
+    }
 }
