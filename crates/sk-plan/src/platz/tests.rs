@@ -153,3 +153,58 @@ fn verschobene_kette_bleibt() {
     assert_eq!(arten(&ohne(&al, &weg[0]), 0), arten(&al, 0));
     assert_eq!(arten(&ohne(&ar, &weg[1]), 180), [Kettenart::Oeffnung]);
 }
+
+/// Nach Änderung einiger Kästen findet [`nachbarn_neu`] dieselben Paare wie
+/// [`nachbarn`] über alle (Review L24), auch wenn ein Kasten wegfällt oder
+/// dazukommt und zwei geänderte sich überdecken.
+#[test]
+fn nachbarn_neu_wie_alle() {
+    let mut z: u64 = 7;
+    let mut zufall = move || {
+        z = z
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (z >> 33) as f64 / (1u64 << 31) as f64
+    };
+    let mut kasten = |zufall: &mut dyn FnMut() -> f64| {
+        let (x, y) = (zufall() * 100_000.0, zufall() * 100_000.0);
+        Some([
+            x,
+            y,
+            x + 5000.0 + zufall() * 15_000.0,
+            y + 5000.0 + zufall() * 15_000.0,
+        ])
+    };
+    let sortiert = |mut p: Vec<(usize, usize)>| {
+        p.sort();
+        p
+    };
+    let mut k: Vec<_> = (0..200).map(|_| kasten(&mut zufall)).collect();
+    k[17] = None;
+    let mut paare = nachbarn(&k);
+    for runde in 0..20 {
+        let mut neu: Vec<usize> = (0..1 + runde % 5)
+            .map(|_| (zufall() * 200.0) as usize % 200)
+            .collect();
+        neu.sort();
+        neu.dedup();
+        for &i in &neu {
+            k[i] = if runde % 7 == 3 {
+                None
+            } else {
+                kasten(&mut zufall)
+            };
+        }
+        // Zwei geänderte übereinander
+        if neu.len() > 1 {
+            k[neu[1]] = k[neu[0]];
+        }
+        paare = nachbarn_neu(&k, &paare, &neu);
+        assert_eq!(
+            sortiert(paare.clone()),
+            sortiert(nachbarn(&k)),
+            "Runde {runde}"
+        );
+    }
+    assert!(paare.len() > 20, "zu wenig Nachbarn: {}", paare.len());
+}

@@ -160,6 +160,48 @@ fn ebenenwechsel_rechnet_nichts_neu() {
     assert!(!mk.ketten.contains_key(&st[2]) && !mk.geschosse.contains_key(&st[2]));
 }
 
+/// Ohne Änderung kommt der gemerkte Stand, ohne die Geschosse einzeln zu
+/// prüfen (Review L24). Eine andere Szene mit denselben Geschossnummern,
+/// ein Versatz und sein Rückgängig gelten als Änderung.
+#[test]
+fn ohne_aenderung_schnell_zurueck() {
+    let Some(f) = schrift() else {
+        return;
+    };
+    let mut s = siedlung(3);
+    let t = siedlung_raster(3, 30_000.0, 30_000.0);
+    let st = geschosse(&s, ViewKind::Plan, &[]);
+    assert_eq!(geschosse(&t, ViewKind::Plan, &[]), st);
+    let rahmen = |x: &Stand| x.geschosse.iter().map(|g| g.rahmen).collect::<Vec<_>>();
+    let mut mk = Massketten::default();
+    let a = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert!(Rc::ptr_eq(&a, &mk.stand(&s, st.clone(), Some(&f)).unwrap()));
+    // Andere Szene: ihre Häuser, nicht die gemerkten
+    let b = mk.stand(&t, st.clone(), Some(&f)).unwrap();
+    let frisch = Massketten::default()
+        .stand(&t, st.clone(), Some(&f))
+        .unwrap();
+    assert_eq!(rahmen(&b), rahmen(&frisch));
+    assert_ne!(rahmen(&a), rahmen(&b));
+    assert_eq!(
+        rahmen(&a),
+        rahmen(&mk.stand(&s, st.clone(), Some(&f)).unwrap())
+    );
+    // Kette nach außen, dann Rückgängig
+    s.begin("Kette verschieben");
+    assert!(s.set_massversatz(st[0], 270, Kettenart::Gesamt, 500.0));
+    s.commit();
+    let v = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert!(v.geschosse[0].rahmen[0].y < a.geschosse[0].rahmen[0].y - 400.0);
+    assert!(Rc::ptr_eq(
+        &v.geschosse[1],
+        &mk.stand(&s, st.clone(), Some(&f)).unwrap().geschosse[1]
+    ));
+    assert!(s.undo());
+    let u = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert_eq!(rahmen(&u), rahmen(&a));
+}
+
 /// Außerhalb des Bildes fehlt ein Geschoss ganz; weit herausgezoomt bleiben
 /// die Linien ohne Kreise und ohne Schrift, nah ist alles da.
 #[test]

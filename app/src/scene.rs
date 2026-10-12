@@ -45,7 +45,7 @@ mod massstand;
 mod scene_bemassung;
 #[path = "scene_oeffnung.rs"]
 mod scene_oeffnung;
-pub use massstand::neuer_stand;
+pub use massstand::{naechster_stand, neuer_stand};
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";

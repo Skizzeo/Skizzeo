@@ -14,23 +14,23 @@
 //! [`crate::wall_edit::mass_edit`].
 
 use crate::camera::Camera;
-use crate::scene::{neuer_stand, Scene};
+use crate::scene::{naechster_stand, neuer_stand, Scene};
 use crate::ui::ViewKind;
 use crate::wall_edit::mass_edit::Hervor;
 use crate::wall_edit::mass_treffer::{finde, id_von, MassId};
 use sk_math::{vec3, Vec3};
-use sk_model::bemassung::{Kettenart, Stil};
+use sk_model::bemassung::{Kettenart, Stil, VersatzKey};
 use sk_model::{ElementId, LevelKind, Model, StoreyId};
 use sk_paint::font::Font;
 use sk_plan::aussen::{aussenmasse_mit, Aussenmasse, Verzeichnis};
 use sk_plan::bild::{bild, Bild, Strichart, Zahlart};
-use sk_plan::platz::{dazu, kasten, nachbarn, ohne, zu_zweit, Weg};
+use sk_plan::platz::{dazu, kasten, nachbarn, nachbarn_neu, ohne, zu_zweit, Weg};
 use sk_plan::schrift::Schrift;
 use sk_render::{Helper, Ink, SOLID};
 use sk_ui::theme::Theme;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -160,6 +160,14 @@ struct Ketten {
     kasten: Option<[f64; 4]>,
 }
 
+/// Zuletzt geprüfter Platz: Nummern der Ketten, Paare von Nachbarn (Plätze
+/// in den Nummern) und was je Geschoss weicht.
+struct Platz {
+    nrn: Vec<u64>,
+    paare: Vec<(usize, usize)>,
+    wege: Vec<Weg>,
+}
+
 /// Bemaßung der App: gemerkte Schriften, je Geschoss die zuletzt
 /// gerechneten Ketten und ihr Bild. Beim Ziehen rechnet nur das Geschoss
 /// des gezogenen Zugs neu, beim Neuzeichnen ohne Änderung nichts (Review
@@ -173,9 +181,7 @@ pub struct Massketten {
     /// „Abbrechen“ im Einstellungsfenster).
     stil: Option<Stil>,
     ketten: HashMap<StoreyId, (Schluessel, Option<Ketten>)>,
-    /// Zuletzt geprüfter Platz: Nummern der Ketten und was je Geschoss
-    /// weicht.
-    platz: Option<(Vec<u64>, Vec<Weg>)>,
+    platz: Option<Platz>,
     /// Was je Paar von Nachbarn weicht, nach den Nummern ihrer Ketten.
     paare: HashMap<(u64, u64), [Weg; 2]>,
     /// Ab so vielen Paaren fallen die mit nicht mehr gemerkten Ketten heraus.
@@ -184,6 +190,10 @@ pub struct Massketten {
     geschosse: HashMap<StoreyId, ((u64, Weg), Rc<Geschoss>)>,
     /// Zuletzt zusammengestellter Stand und die Nummern seiner Geschosse.
     stand: Option<(Vec<u64>, Rc<Stand>)>,
+    /// Wofür der Stand zuletzt galt: nächste Nummer ([`naechster_stand`]),
+    /// Stand aller Ketten der Szene, Geschosse und Versätze. Ist nichts davon
+    /// neu, gilt er ohne Gang durch die Geschosse (Review L24).
+    zuletzt: Option<(u64, u64, Vec<StoreyId>, BTreeMap<VersatzKey, f64>)>,
     /// Tinte hervorgehobener Geschosse beim letzten Zeichnen: Gleiche
     /// Farben behalten ihren Schlüssel, der Renderer lädt nichts neu.
     hell: Vec<HellTinte>,
@@ -266,9 +276,19 @@ impl Massketten {
             self.geschosse.clear();
             self.platz = None;
             self.paare.clear();
+            self.zuletzt = None;
             self.stil = Some(stil.clone());
         }
         let schrift = self.schrift(&stil.schrift, ui)?;
+        // Seit dem letzten Mal nichts neu (keine Nummer vergeben, dieselbe
+        // Szene, Geschosse und Versätze): derselbe Stand (Review L24)
+        let versatz = &m.bemassung().versatz;
+        if let (Some((nr, alle, alt, v)), Some((_, s))) = (&self.zuletzt, &self.stand) {
+            if *nr == naechster_stand() && *alle == scene.mass_alle() && *alt == st && v == versatz
+            {
+                return Some(s.clone());
+            }
+        }
         // Gemerkt bleiben alle Geschosse, die es noch gibt: Zurück auf eine
         // andere Ebene rechnet nichts neu (Review W33)
         if self.ketten.keys().any(|&k| m.storey(k).is_none()) {
@@ -306,10 +326,21 @@ impl Massketten {
             da.extend(k.map(|k| (s, k)));
         }
         let nrn: Vec<u64> = da.iter().map(|(_, k)| k.nr).collect();
-        if self.platz.as_ref().is_none_or(|(k, _)| *k != nrn) {
+        if self.platz.as_ref().is_none_or(|p| p.nrn != nrn) {
             let kaesten: Vec<_> = da.iter().map(|(_, k)| k.kasten).collect();
             let mut wege = vec![Weg::new(); da.len()];
-            let paare = nachbarn(&kaesten);
+            // Gleiche Nummer am gleichen Platz: dieselben Ketten, derselbe
+            // Kasten. Sind nur wenige neu (Ziehen), nur sie prüfen (Review L24)
+            let neu: Option<Vec<usize>> = self
+                .platz
+                .as_ref()
+                .filter(|p| p.nrn.len() == nrn.len())
+                .map(|p| (0..nrn.len()).filter(|&i| p.nrn[i] != nrn[i]).collect())
+                .filter(|neu: &Vec<usize>| neu.len() <= 8);
+            let paare = match (&self.platz, neu) {
+                (Some(p), Some(neu)) => nachbarn_neu(&kaesten, &p.paare, &neu),
+                _ => nachbarn(&kaesten),
+            };
             for &(i, j) in &paare {
                 let (a, b) = (&da[i].1, &da[j].1);
                 let w = self
@@ -331,9 +362,9 @@ impl Massketten {
                     .retain(|(a, b), _| lebend.contains(a) && lebend.contains(b));
                 self.paare_grenze = 2 * self.paare.len() + 16;
             }
-            self.platz = Some((nrn, wege));
+            self.platz = Some(Platz { nrn, paare, wege });
         }
-        let wege = &self.platz.as_ref()?.1;
+        let wege = &self.platz.as_ref()?.wege;
         let mut liste = Vec::new();
         for ((s, k), weg) in da.iter().zip(wege) {
             let (n, a) = (k.nr, &k.a);
@@ -353,14 +384,11 @@ impl Massketten {
             liste.push(g);
         }
         let nr: Vec<u64> = liste.iter().map(|g| g.nr).collect();
-        if let Some((k, s)) = &self.stand {
-            if *k == nr {
-                return Some(s.clone());
-            }
+        if self.stand.as_ref().is_none_or(|(k, _)| *k != nr) {
+            self.stand = Some((nr, Rc::new(Stand { geschosse: liste })));
         }
-        let s = Rc::new(Stand { geschosse: liste });
-        self.stand = Some((nr, s.clone()));
-        Some(s)
+        self.zuletzt = Some((naechster_stand(), scene.mass_alle(), st, versatz.clone()));
+        self.stand.as_ref().map(|(_, s)| s.clone())
     }
 
     /// Ketten der Ansicht `v`, wenn das Zahnrad sie zeigt.
