@@ -27,9 +27,10 @@ pub struct Location {
     /// (0 … < 360). Nicht gesetzt: Nord ist +y, die Ansichten heißen
     /// weiter „Vorne“, „Hinten“ …
     pub north: Option<f64>,
-    /// Lage des Projektnullpunkts im amtlichen Lagesystem (I4c, ifc/plan.md
-    /// §10), aus dem Lageplan des Vermessers; nur für die Georeferenz im
-    /// IFC, nicht für die Sonne.
+    /// Lage des Projektnullpunkts im amtlichen Lagesystem ETRS89/UTM, aus
+    /// dem Lageplan des Vermessers; nur für die Georeferenz im IFC, nicht
+    /// für die Sonne. In der Datei gilt sie nur ganz (Ost, Nord und Zone
+    /// 32/33 im Bereich), sonst bleibt die Zeile roh.
     pub utm: Option<Utm>,
     /// Höhe von ±0,00 in m über NHN (DHHN2016), −500 … 9000.
     pub nhn: Option<f64>,
