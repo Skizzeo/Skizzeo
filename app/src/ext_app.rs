@@ -256,6 +256,12 @@ impl App {
             self.ui.ext_knopf = knopf;
             self.overlay_dirty = true;
         }
+        // Öffnungen (Paket O3) im selben Paneel
+        let o = self.tool.oeffnung.as_ref().map(|w| w.kind);
+        if o != self.ui.opening {
+            self.ui.opening = o;
+            self.overlay_dirty = true;
+        }
     }
 
     /// Feld `i` des Werkzeugs: eigener Wert der nächsten Bauteile.
