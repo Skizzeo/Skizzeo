@@ -245,9 +245,15 @@ pub struct ReadError {
     pub what: &'static str,
 }
 
+/// Tiefste Verschachtelung von Listen; tiefer ist ein Lesefehler statt eines
+/// Stapelüberlaufs (Hauptthread unter Windows: 1 MB).
+const TIEFE: u32 = 256;
+
 struct Parser<'a> {
     b: &'a [u8],
     i: usize,
+    /// Offene Listen.
+    tiefe: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -397,6 +403,16 @@ impl<'a> Parser<'a> {
     }
 
     fn list(&mut self) -> Result<Vec<V>, ReadError> {
+        if self.tiefe >= TIEFE {
+            return self.err("Liste zu tief verschachtelt");
+        }
+        self.tiefe += 1;
+        let out = self.liste();
+        self.tiefe -= 1;
+        out
+    }
+
+    fn liste(&mut self) -> Result<Vec<V>, ReadError> {
         self.eat(b'(')?;
         let mut out = Vec::new();
         if self.peek() == Some(b')') {
@@ -478,6 +494,7 @@ pub fn read(text: &str) -> Result<File, ReadError> {
     let mut p = Parser {
         b: text.as_bytes(),
         i: 0,
+        tiefe: 0,
     };
     let mut f = File::default();
     if p.word() != "ISO-10303-21" {
@@ -645,5 +662,22 @@ mod tests {
             }
         }
         assert!(read("ISO-10303-21;\nDATA;\n#1=X(\"0AB").is_err());
+    }
+
+    /// Review B3 zu #83: tiefe Klammern geben einen Lesefehler, keinen
+    /// Stapelüberlauf; was Skizzeo und übliche Programme schreiben, bleibt
+    /// weit darunter.
+    #[test]
+    fn tiefe_klammern_ohne_ueberlauf() {
+        let kopf = "ISO-10303-21;\nHEADER;FILE_SCHEMA(('IFC4'));ENDSEC;\nDATA;\n#1=X";
+        let tief = format!("{kopf}{}", "(".repeat(10_000));
+        assert_eq!(read(&tief).unwrap_err().what, "Liste zu tief verschachtelt");
+        let n = 200;
+        let ok = format!(
+            "{kopf}{}1{};\nENDSEC;\nEND-ISO-10303-21;",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        assert_eq!(read(&ok).err(), None);
     }
 }

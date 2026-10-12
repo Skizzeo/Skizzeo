@@ -52,6 +52,8 @@ mod gpu_probe;
 mod grundriss_schnitt;
 mod help;
 mod hints;
+mod ifc_vorschau;
+mod ifc_vorschau_app;
 mod kette_app;
 mod kosten_view;
 mod link_view;
@@ -96,7 +98,7 @@ mod window_kit;
 mod windows;
 mod zahnrad_app;
 
-use camera::Camera;
+use camera::{fit_perspective, Camera};
 use document::Document;
 use draw_table::DrawTable;
 use menu::Command;
@@ -649,16 +651,6 @@ fn level_guide(
     }
 }
 
-/// 3D-Kamera schräg von vorne links, die das ganze Modell zeigt.
-fn fit_perspective(lo: Vec3, hi: Vec3) -> Camera {
-    let center = (lo + hi) * 0.5;
-    let radius = ((hi - lo).length() * 0.5).max(1000.0);
-    let fov = 45f64;
-    let dist = radius / (fov.to_radians() * 0.5).sin() * 1.15;
-    let dir = vec3(-0.55, -0.75, 0.42).normalized();
-    Camera::looking_at(center + dir * dist, center, fov)
-}
-
 /// Weiche Kamerafahrt (Doppelklick in der Mengenliste).
 struct Fly {
     from: Camera,
@@ -899,6 +891,7 @@ struct App {
     /// Mengenfenster (F2, B7) und Geschossfenster links (Jörn 11.10.).
     quantity: quantity::QuantityWindow,
     geschoss: geschossfenster::GeschossFenster,
+    ifc: Option<ifc_vorschau::fenster::IfcFenster>,
     /// Baumpanel (Paket 4) und sein Zustand in der App: Hover kommt aus dem
     /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann kein
     /// Aufklappen), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
@@ -1828,6 +1821,7 @@ impl App {
             Command::Help => self.show_help(true),
             Command::MeasureFrameTime => self.start_frame_measure(),
             Command::ExportIfc => self.export_ifc(surface),
+            Command::IfcVorschau => self.open_ifc_vorschau(surface),
         }
     }
 
@@ -7787,6 +7781,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         dirty_title: Vec::new(),
         title_img: None,
         geschoss: geschossfenster::GeschossFenster::new(&theme),
+        ifc: None,
         theme,
         redraw: true,
         mesh_dirty: true,
@@ -8162,6 +8157,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 windows::WindowId::Main => events.push(e),
                 windows::WindowId::Quantity => a.handle_quantity(e, &surface),
                 windows::WindowId::Levels => a.handle_geschoss(e, &surface),
+                windows::WindowId::Ifc => a.handle_ifc(e, &surface),
             }
         }
         coalesce_moves(&mut events);
@@ -8219,6 +8215,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         }
         a.sync_quantity(&surface);
         a.sync_geschoss(&surface);
+        a.sync_ifc(&surface);
         a.sync_tool_chip();
         a.sync_tip();
         a.sync_measure();

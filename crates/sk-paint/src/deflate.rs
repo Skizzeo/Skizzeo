@@ -179,51 +179,67 @@ pub fn zlib(data: &[u8]) -> Vec<u8> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Bitweise lesen wie Deflate: niedrigstes Bit zuerst.
+struct Leser<'a> {
+    d: &'a [u8],
+    pos: usize,
+}
 
-    /// Kleiner Entpacker für feste und gespeicherte Blöcke, nur zum Prüfen.
-    fn inflate(d: &[u8]) -> Vec<u8> {
-        let mut pos = 0usize;
-        let bit = |pos: &mut usize| -> u32 {
-            let v = (d[*pos / 8] >> (*pos % 8)) & 1;
-            *pos += 1;
-            u32::from(v)
-        };
-        let bits = |pos: &mut usize, n: u32| -> u32 {
-            let mut v = 0;
-            for k in 0..n {
-                v |= bit(pos) << k;
+impl Leser<'_> {
+    fn bit(&mut self) -> Option<u32> {
+        let v = (self.d.get(self.pos / 8)? >> (self.pos % 8)) & 1;
+        self.pos += 1;
+        Some(u32::from(v))
+    }
+
+    fn bits(&mut self, n: u32) -> Option<u32> {
+        let mut v = 0;
+        for k in 0..n {
+            v |= self.bit()? << k;
+        }
+        Some(v)
+    }
+
+    /// Huffman-Code: höchstes Bit zuerst.
+    fn huff(&mut self, n: u32) -> Option<u32> {
+        let mut v = 0;
+        for _ in 0..n {
+            v = v << 1 | self.bit()?;
+        }
+        Some(v)
+    }
+}
+
+/// Entpackt gespeicherte Blöcke und Blöcke mit festen Codes, also alles,
+/// was [`deflate`] und der PNG-Schreiber erzeugen (für Soll-Bilder in
+/// Tests). Dynamische Tabellen und kaputte Daten geben `None`.
+pub fn inflate(d: &[u8]) -> Option<Vec<u8>> {
+    let mut r = Leser { d, pos: 0 };
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let last = r.bits(1)?;
+        match r.bits(2)? {
+            0 => {
+                r.pos = r.pos.div_ceil(8) * 8;
+                let i = r.pos / 8;
+                let len = u16::from_le_bytes([*d.get(i)?, *d.get(i + 1)?]) as usize;
+                out.extend_from_slice(d.get(i + 4..i + 4 + len)?);
+                r.pos = (i + 4 + len) * 8;
             }
-            v
-        };
-        let huff = |pos: &mut usize, n: u32| -> u32 {
-            let mut v = 0;
-            for _ in 0..n {
-                v = v << 1 | bit(pos);
-            }
-            v
-        };
-        let mut out: Vec<u8> = Vec::new();
-        loop {
-            let last = bits(&mut pos, 1);
-            let typ = bits(&mut pos, 2);
-            assert_eq!(typ, 1, "nur feste Codes");
-            loop {
+            1 => loop {
                 // Literal/Länge: 7, 8 oder 9 Bit
-                let mut c = huff(&mut pos, 7);
+                let mut c = r.huff(7)?;
                 let sym = if c <= 0x17 {
                     256 + c
                 } else {
-                    c = c << 1 | bit(&mut pos);
+                    c = c << 1 | r.bit()?;
                     if (0x30..=0xBF).contains(&c) {
                         c - 0x30
                     } else if (0xC0..=0xC7).contains(&c) {
                         280 + c - 0xC0
                     } else {
-                        c = c << 1 | bit(&mut pos);
-                        144 + c - 0x190
+                        c = c << 1 | r.bit()?;
+                        144 + c.checked_sub(0x190)?
                     }
                 };
                 match sym {
@@ -231,23 +247,29 @@ mod tests {
                     256 => break,
                     _ => {
                         let i = (sym - 257) as usize;
-                        let len =
-                            LEN_BASE[i] as usize + bits(&mut pos, u32::from(LEN_EXTRA[i])) as usize;
-                        let di = huff(&mut pos, 5) as usize;
-                        let dist = DIST_BASE[di] as usize
-                            + bits(&mut pos, u32::from(DIST_EXTRA[di])) as usize;
-                        let start = out.len() - dist;
+                        let len = *LEN_BASE.get(i)? as usize
+                            + r.bits(u32::from(*LEN_EXTRA.get(i)?))? as usize;
+                        let di = r.huff(5)? as usize;
+                        let dist = *DIST_BASE.get(di)? as usize
+                            + r.bits(u32::from(*DIST_EXTRA.get(di)?))? as usize;
+                        let start = out.len().checked_sub(dist)?;
                         for k in 0..len {
                             out.push(out[start + k]);
                         }
                     }
                 }
-            }
-            if last == 1 {
-                return out;
-            }
+            },
+            _ => return None,
+        }
+        if last == 1 {
+            return Some(out);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn hin_und_zurueck() {
@@ -273,7 +295,7 @@ mod tests {
             zufall,
         ] {
             let z = deflate(&d);
-            assert_eq!(inflate(&z), d, "Länge {}", d.len());
+            assert_eq!(inflate(&z).as_deref(), Some(&d[..]), "Länge {}", d.len());
         }
         // gleichförmiger Inhalt wird kleiner
         let d = vec![b'x'; 50_000];

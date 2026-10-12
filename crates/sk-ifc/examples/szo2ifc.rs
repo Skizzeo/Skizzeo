@@ -22,8 +22,16 @@ fn main() {
     };
     let (ifc, b) = sk_ifc::export(&m, &opt);
     std::fs::write(aus, ifc).expect("IFC schreiben");
+    let liste: Vec<String> = b
+        .ausgelassen
+        .iter()
+        .map(|(nr, g)| format!("{nr} ({})", g.text()))
+        .collect();
     println!(
-        "{aus}: {} Gebäude, {} Geschosse, {} Bauteile, ausgelassen {:?}",
-        b.gebaeude, b.geschosse, b.bauteile, b.ausgelassen
+        "{aus}: {} Gebäude, {} Geschosse, {} Bauteile, ausgelassen: {}",
+        b.gebaeude,
+        b.geschosse,
+        b.bauteile,
+        liste.join(", ")
     );
 }

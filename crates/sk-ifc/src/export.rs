@@ -46,9 +46,30 @@ pub struct Bericht {
     pub gebaeude: usize,
     pub geschosse: usize,
     pub bauteile: usize,
-    /// Bauteile, die nicht geschrieben wurden (ohne Form, ohne Geschoss im
-    /// Gebäude oder Öffnung ohne gelochtes Bauteil), mit Nummer.
-    pub ausgelassen: Vec<String>,
+    /// Bauteile, die nicht geschrieben wurden, mit Nummer und Grund.
+    pub ausgelassen: Vec<(String, Grund)>,
+}
+
+/// Warum ein Bauteil nicht in der Datei steht.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grund {
+    /// Sein Geschoss gehört zu keinem Gebäude.
+    OhneGeschoss,
+    /// Kein Körper oder kein Dreieck.
+    OhneForm,
+    /// Öffnungen brauchen das Bauteil, das sie lochen (`IfcRelVoidsElement`,
+    /// ifc/plan.md §5 I5); bis dahin nicht in der Datei.
+    OeffnungBisI5,
+}
+
+impl Grund {
+    pub fn text(self) -> &'static str {
+        match self {
+            Grund::OhneGeschoss => "ohne Geschoss",
+            Grund::OhneForm => "ohne Form",
+            Grund::OeffnungBisI5 => "Öffnung bis I5",
+        }
+    }
 }
 
 /// Kennung, abgeleitet aus einer Kennung des Modells und einem Zweck.
@@ -296,24 +317,32 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         let Some(el) = m.element(id) else {
             continue;
         };
+        // Öffnungen zuerst: sie haben (seit O2) keinen eigenen Körper und
+        // fehlen bis I5 aus diesem Grund, nicht „ohne Form“
+        let klasse = c.zuordnung(id).klasse.name;
+        if klasse == "IfcOpeningElement" {
+            bericht
+                .ausgelassen
+                .push((el.number.clone(), Grund::OeffnungBisI5));
+            continue;
+        }
         let Some(&(si, s_pl, elev)) = storey_of.get(&el.storey) else {
-            bericht.ausgelassen.push(el.number.clone());
+            bericht
+                .ausgelassen
+                .push((el.number.clone(), Grund::OhneGeschoss));
             continue;
         };
         let Some(solid) = solids.get(&id) else {
-            bericht.ausgelassen.push(el.number.clone());
+            bericht
+                .ausgelassen
+                .push((el.number.clone(), Grund::OhneForm));
             continue;
         };
-        let klasse = c.zuordnung(id).klasse.name;
-        // Öffnungen brauchen das Bauteil, das sie lochen (IfcRelVoidsElement,
-        // ifc/plan.md §5 I5); bis dahin nicht in der Datei
-        if klasse == "IfcOpeningElement" {
-            bericht.ausgelassen.push(el.number.clone());
-            continue;
-        }
         let netze = geometrie::netze(solid, vec3(0.0, 0.0, elev));
         if netze.is_empty() {
-            bericht.ausgelassen.push(el.number.clone());
+            bericht
+                .ausgelassen
+                .push((el.number.clone(), Grund::OhneForm));
             continue;
         }
         let pi = c.element(id, s_pl, elev, &netze);
