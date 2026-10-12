@@ -17,6 +17,7 @@ Projektordner.
 | `sk-szb` | Erweiterungsbauteile im Format SZB 0: lesen, Formeln, prüfen wie die Werkbank, Körper und Mengen rechnen |
 | `sk-paint` | Eigene 2D-Vektorgrafik mit Kantenglättung, eigener TrueType-Leser, PNG-, SVG- und PDF-Ausgabe |
 | `sk-ui` | SK-Logo als Vektor, Farbwerte, eigene Titelleiste, Paneele, Knöpfe und Texteingabe |
+| `sk-gelaende` | Rechenkern des Geländemoduls: Höhenaufmaß lesen und prüfen, Geländenetz (Delaunay mit Bruchkanten), Höhen, Profile, Höhenlinien, Flächen und Mengen über dem Netz |
 | `sk-model` | Gebäudemodell als Datenbank: Bauteile mit Guid und Nummer, Baustoff- und Aufbau-Bibliothek, Geschosse, Gelände je Gebäude; Dateiformat `.szo`; Mengen (qto) mit Automatikmengen für Erdarbeiten und Bauvorbereitung; Erweiterungsexemplare |
 | `sk-cost` | Kosten, AVA und Stammdaten: Katalog (Projekt, Firma, Werk), Rechnung, Leistungsverzeichnis, Verwaltung des Firmenkatalogs `.szk` |
 | `sk-platform` | Windows-Fenster ohne System-Titelleiste, Eingabe, OpenGL-Kontext (eigene Win32-FFI) |
