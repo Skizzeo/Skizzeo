@@ -1400,7 +1400,9 @@ fn a272_werksmuster_je_baustoffart() {
     let text = sk_model::szo::write(m);
     assert!(text.starts_with("SZO 4\n"));
     let z = zeilen(&text, "[pattern]");
-    assert_eq!(z.len(), 3, "drei Werksmuster: {z:?}");
+    // Dazu drei aus dem Ausbau der Vorgabe-Nutzung Wohnzimmer der Räume
+    // (Raufaser, Deckenputz, Parkett; Raumbuch #112)
+    assert_eq!(z.len(), 6, "drei Werksmuster und drei des Ausbaus: {z:?}");
     for (baustoff, teile) in [
         (
             "Verblender (Vormauerziegel)",

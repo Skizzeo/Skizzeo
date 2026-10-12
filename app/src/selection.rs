@@ -17,6 +17,8 @@ pub mod fallrohr;
 mod oeffnung;
 #[path = "grundriss/raum_props.rs"]
 mod raum;
+#[path = "raumbuch/eigenschaften.rs"]
+mod raumbuch;
 
 /// Bis zu so vielen Pixeln Bewegung zwischen Drücken und Loslassen gilt als Klick.
 const CLICK_PX: f64 = 4.0;
