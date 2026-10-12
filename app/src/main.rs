@@ -2262,6 +2262,7 @@ impl App {
         let p = prefs::Prefs::open(&mut self.scene, &self.theme)
             .with_memory(&self.prefs_mem)
             .with_vorgaben(self.settings.vorgaben)
+            .with_firmenstil(self.settings.firmenstil())
             .with_pattern_error(self.renderer.pattern_error());
         self.prefs = Some(p);
         if let (Some(p), Some(c)) = (self.prefs.as_mut(), &self.company) {
@@ -2618,7 +2619,9 @@ impl App {
     fn perform(&mut self, c: Command, surface: &Surface) {
         match c {
             Command::New | Command::Close => {
-                self.replace_scene(new_model(self.company.as_ref(), self.settings.vorgaben));
+                let mut m = new_model(self.company.as_ref(), self.settings.vorgaben);
+                m.init_massstil(self.settings.firmenstil());
+                self.replace_scene(m);
                 self.doc = Document::new(self.scene.model().revision());
                 // Bei „Neu“ zuerst die Projektdaten (Paket PD-2)
                 if c == Command::New {
@@ -7386,7 +7389,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     if !hints.is_empty() && screenshot.is_none() {
         surface.message(&meldungen(&hints), false);
     }
-    let mut scene = Scene::with_model(new_model(company.as_ref(), settings.vorgaben));
+    let mut m = new_model(company.as_ref(), settings.vorgaben);
+    m.init_massstil(settings.firmenstil());
+    let mut scene = Scene::with_model(m);
     scene.set_theme(&theme);
     let mut renderer = match Renderer::new(gl, style(&theme.env)) {
         Err(e) if probe.is_some() => {

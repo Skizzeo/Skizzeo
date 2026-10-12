@@ -12,6 +12,7 @@
 
 use crate::scene::Scene;
 use crate::ui::ViewKind;
+use sk_model::bemassung::Stil;
 use sk_model::{ElementId, LevelKind, Model, StoreyId};
 use sk_paint::font::Font;
 use sk_plan::aussen::{aussenmasse, Aussenmasse};
@@ -51,8 +52,10 @@ pub struct Stand {
 #[derive(Default)]
 pub struct Massketten {
     schriften: HashMap<String, Option<Rc<Schrift>>>,
-    /// (Revision des Modells, Geschosse, Schrift) und Stand dazu.
-    stand: Option<((u64, Vec<StoreyId>, String), Rc<Stand>)>,
+    /// (Revision des Modells, Geschosse, Stil) und Stand dazu; der Stil
+    /// zählt mit, weil „Abbrechen“ im Einstellungsfenster die Revision
+    /// zurückstellt.
+    stand: Option<((u64, Vec<StoreyId>, Stil), Rc<Stand>)>,
     /// Bedienen (Stufe 2): Zahl unter der Maus, gewählte Ketten, Eingabe.
     pub bedienen: bedienen::Bedienen,
 }
@@ -121,14 +124,13 @@ impl Massketten {
     /// Ketten und Bilder der Geschosse `st`, gerechnet nur bei neuer
     /// Revision.
     pub fn stand(&mut self, m: &Model, st: Vec<StoreyId>, ui: Option<&Font>) -> Option<Rc<Stand>> {
-        let name = m.massstil().schrift.clone();
-        let key = (m.revision(), st, name.clone());
+        let key = (m.revision(), st, m.massstil().clone());
         if let Some((k, s)) = &self.stand {
             if *k == key {
                 return Some(s.clone());
             }
         }
-        let schrift = self.schrift(&name, ui)?;
+        let schrift = self.schrift(&key.2.schrift, ui)?;
         let geschosse = key
             .1
             .iter()
@@ -194,7 +196,7 @@ impl Massketten {
 }
 
 /// Farbe des Stils als RGBA.
-pub fn farbe(s: &sk_model::bemassung::Stil) -> [f32; 4] {
+pub fn farbe(s: &Stil) -> [f32; 4] {
     let [r, g, b] = s.farbe;
     [
         f32::from(r) / 255.0,
@@ -206,13 +208,7 @@ pub fn farbe(s: &sk_model::bemassung::Stil) -> [f32; 4] {
 
 /// Striche des Bildes als Hilfslinien: Strichstärke aus dem Stil (mm auf
 /// dem Papier) wie bei allen Stiften.
-pub fn linien(
-    b: &Bild,
-    s: &sk_model::bemassung::Stil,
-    scale: f32,
-    theme: &Theme,
-    occlude: bool,
-) -> Vec<Helper> {
+pub fn linien(b: &Bild, s: &Stil, scale: f32, theme: &Theme, occlude: bool) -> Vec<Helper> {
     let px = theme.px_per_mm * scale;
     let color = farbe(s);
     b.striche
@@ -238,7 +234,7 @@ pub fn linien(
 }
 
 /// Gefüllte Dreiecke des Bildes in der Farbe des Stils.
-pub fn tinte(b: &Bild, s: &sk_model::bemassung::Stil, occlude: bool) -> Vec<Ink> {
+pub fn tinte(b: &Bild, s: &Stil, occlude: bool) -> Vec<Ink> {
     let color = farbe(s);
     b.tinte
         .iter()

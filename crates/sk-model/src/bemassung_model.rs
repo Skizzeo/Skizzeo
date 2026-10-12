@@ -51,6 +51,14 @@ impl Model {
         true
     }
 
+    /// Stil eines neuen Projekts (Firmenstandard), ohne Schritt; ein
+    /// ungültiger lässt den Werksstil.
+    pub fn init_massstil(&mut self, s: Stil) {
+        if s.gueltig() {
+            self.bemassung.stil = s;
+        }
+    }
+
     /// Versatz der Kette (mm am Bau, + nach außen).
     pub fn massversatz(&self, st: StoreyId, seite: i32, art: Kettenart) -> f64 {
         self.storey(st)
@@ -166,5 +174,22 @@ mod tests {
         m.set_mass_sicht(1, true, true);
         assert_eq!(m.mass_sicht(1), (true, true));
         assert_eq!(m.revision(), rev);
+    }
+
+    /// Ein neues Projekt bekommt den Firmenstandard ohne Schritt; ein
+    /// ungültiger lässt das Werk.
+    #[test]
+    fn neues_projekt_mit_firmenstandard() {
+        let mut m = Model::new();
+        let rev = m.revision();
+        let mut f = Stil::werk();
+        f.symbol = Symbol::Schraeg;
+        f.erste = 1500.0;
+        m.init_massstil(f.clone());
+        assert_eq!(*m.massstil(), f);
+        assert_eq!(m.revision(), rev);
+        f.rundung = 2;
+        m.init_massstil(f);
+        assert_eq!(m.massstil().erste, 1500.0);
     }
 }

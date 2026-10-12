@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 #[path = "prefs_attr.rs"]
 mod attr_tabs;
+#[path = "prefs_bemassung.rs"]
+mod mass_tab;
 #[path = "prefs_pattern.rs"]
 mod pattern_win;
 #[path = "prefs_vorgaben.rs"]
@@ -44,19 +46,22 @@ pub enum Tab {
     LineTypes,
     Fills,
     Surfaces,
+    /// Stil der Maßketten des Projekts (Konzept Bemaßung §6).
+    Bemassung,
     Ui,
     /// Firmenvorgaben des Arbeitsplatzes (Sonnenstand S8).
     Vorgaben,
 }
 
 impl Tab {
-    /// Reihenfolge in der Reiterleiste: vier Projekt-, zwei Programmreiter
+    /// Reihenfolge in der Reiterleiste: fünf Projekt-, zwei Programmreiter
     /// (die Baustoffe haben seit Paket 5 ihr eigenes Fenster).
-    const ALL: [Tab; 6] = [
+    const ALL: [Tab; 7] = [
         Tab::Pens,
         Tab::LineTypes,
         Tab::Fills,
         Tab::Surfaces,
+        Tab::Bemassung,
         Tab::Ui,
         Tab::Vorgaben,
     ];
@@ -67,6 +72,7 @@ impl Tab {
             Tab::LineTypes => "Linientypen",
             Tab::Fills => "Schraffuren",
             Tab::Surfaces => "Oberflächen",
+            Tab::Bemassung => "Bemaßung",
             Tab::Ui => "Bedienoberfläche",
             Tab::Vorgaben => "Vorgaben",
         }
@@ -187,6 +193,8 @@ enum FieldId {
     /// Standardort (Reiter „Vorgaben“): Breite und Länge in Grad.
     OrtBreite,
     OrtLaenge,
+    /// Zahlenwert des Bemaßungsstils (Reiter „Bemaßung“).
+    Mass(sk_model::bemassung::Zahl),
 }
 
 /// Auswahllisten.
@@ -225,6 +233,8 @@ enum ColorTarget {
     PatJoint(SurfaceId),
     /// Holzschalung: Holzfarbe 1 und 2.
     PatWood(SurfaceId, usize),
+    /// Farbe der Bemaßung (Reiter „Bemaßung“).
+    Mass,
 }
 
 /// Bildlaufleisten.
@@ -276,6 +286,8 @@ enum Target {
     /// Dicke der H-Linie (Reiter „Vorgaben“, S13): Stelle in
     /// [`crate::settings::vorgaben::H_LINIEN`].
     HLinie(usize),
+    /// Knopf im Reiter „Bemaßung“.
+    Mass(mass_tab::Knopf),
     /// Aufklapper: Zeile der Auswahlliste, Farbwähler.
     Item(usize),
     PickSv,
@@ -514,6 +526,7 @@ fn role_label(c: ColorTarget) -> &'static str {
         ColorTarget::PatHead(..) => "Kopffarbe",
         ColorTarget::PatJoint(_) => "Fugenfarbe",
         ColorTarget::PatWood(..) => "Holzfarbe",
+        ColorTarget::Mass => "Farbe der Bemaßung",
     }
 }
 
@@ -648,7 +661,8 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         | FieldId::PatNum(_)
         | FieldId::PresetName
         | FieldId::OrtBreite
-        | FieldId::OrtLaenge => None,
+        | FieldId::OrtLaenge
+        | FieldId::Mass(_) => None,
     }
 }
 
@@ -679,6 +693,7 @@ fn field_label(f: FieldId) -> &'static str {
         FieldId::PresetName => "Name",
         FieldId::OrtBreite => "Breite",
         FieldId::OrtLaenge => "Länge",
+        FieldId::Mass(z) => z.label(),
     }
 }
 
@@ -713,7 +728,8 @@ fn role_color(t: &Theme, c: ColorTarget) -> Rgba {
         | ColorTarget::PatStone(..)
         | ColorTarget::PatHead(..)
         | ColorTarget::PatJoint(_)
-        | ColorTarget::PatWood(..) => t.ui.text,
+        | ColorTarget::PatWood(..)
+        | ColorTarget::Mass => t.ui.text,
     }
 }
 
@@ -791,6 +807,9 @@ pub struct Prefs {
     /// Firmenvorgaben in Arbeit (Reiter „Vorgaben“); `None`: nicht
     /// geladen, „OK“ lässt die Einstellungen dann, wie sie sind.
     vorgaben: Option<crate::settings::vorgaben::Vorgaben>,
+    /// Firmenstandard der Bemaßung in Arbeit (Reiter „Bemaßung“); `None`:
+    /// nicht geladen, „OK“ lässt ihn dann, wie er ist.
+    firmenstil: Option<sk_model::bemassung::Stil>,
 }
 
 impl Prefs {
@@ -841,6 +860,7 @@ impl Prefs {
             company_presets: Vec::new(),
             save_preset: None,
             vorgaben: None,
+            firmenstil: None,
         }
     }
 
@@ -855,6 +875,12 @@ impl Prefs {
     /// Firmenvorgaben des Arbeitsplatzes für den Reiter „Vorgaben“.
     pub fn with_vorgaben(mut self, v: crate::settings::vorgaben::Vorgaben) -> Prefs {
         self.vorgaben = Some(v);
+        self
+    }
+
+    /// Firmenstandard der Bemaßung für den Reiter „Bemaßung“.
+    pub fn with_firmenstil(mut self, s: sk_model::bemassung::Stil) -> Prefs {
+        self.firmenstil = Some(s);
         self
     }
 
@@ -878,18 +904,24 @@ impl Prefs {
         s.commit();
         self.start_rev = s.begin_settings();
         self.saved = th.clone();
+        self.programm_setzen(st);
+        self.error = st.save_if_changed(th).err();
+    }
+
+    /// Firmenvorgaben und Firmenstandard der Bemaßung in die Einstellungen.
+    fn programm_setzen(&self, st: &mut Settings) {
         if let Some(v) = self.vorgaben {
             st.vorgaben = v;
         }
-        self.error = st.save_if_changed(th).err();
+        if let Some(f) = &self.firmenstil {
+            st.set_firmenstil(f);
+        }
     }
 
     /// OK: wie Übernehmen, dann schließen.
     pub fn ok(&mut self, s: &mut Scene, th: &Theme, st: &mut Settings) {
         s.commit();
-        if let Some(v) = self.vorgaben {
-            st.vorgaben = v;
-        }
+        self.programm_setzen(st);
         self.error = st.save_if_changed(th).err();
         self.close_now();
     }
@@ -939,6 +971,9 @@ impl Prefs {
                 th.rev = rev + 1;
             }
             Tab::Vorgaben => self.vorgaben = Some(crate::settings::vorgaben::Vorgaben::WERK),
+            Tab::Bemassung => {
+                s.edit_attr(|m| m.set_massstil(sk_model::bemassung::Stil::werk()));
+            }
             tab => reset_attr_tab(s, tab),
         }
         self.edit = None;
@@ -1493,6 +1528,12 @@ impl Prefs {
                 .iter()
                 .find(|(r, _)| r.contains(x, y))
                 .map(|(_, tg)| *tg),
+            Tab::Bemassung => self
+                .mass_layout(t, w)
+                .items
+                .iter()
+                .find(|(r, _)| r.contains(x, y))
+                .map(|(_, tg)| *tg),
             _ => self.attr_hit(t, w, s, x, y),
         }
     }
@@ -2020,6 +2061,7 @@ impl Prefs {
                 });
                 out.repaint = true;
             }
+            Target::Mass(k) => self.mass_klick(k, cx, out),
             Target::Patterns3d if self.pattern_error.is_some() => {}
             Target::Patterns3d => {
                 let t = &mut *cx.theme;
@@ -2416,6 +2458,7 @@ impl Prefs {
             | FieldId::PatNum(_) => self.attr_field_value(f, s),
             FieldId::PresetName => self.pw.as_ref().map_or(String::new(), |p| p.name.clone()),
             FieldId::OrtBreite | FieldId::OrtLaenge => self.vorgaben_feld(f),
+            FieldId::Mass(z) => self.mass_feld(z, s),
         }
     }
 
@@ -2473,6 +2516,9 @@ impl Prefs {
         }
         if matches!(f, FieldId::OrtBreite | FieldId::OrtLaenge) {
             return self.vorgaben_wert(f, text);
+        }
+        if let FieldId::Mass(z) = f {
+            return self.mass_wert(z, text, cx, out);
         }
         if f == FieldId::PresetName {
             if let Some(p) = self.pw.as_mut() {
@@ -2637,6 +2683,12 @@ impl Prefs {
                 .iter()
                 .find(|(_, tg)| *tg == Target::Field(f))
                 .map(|(r, _)| *r),
+            FieldId::Mass(_) => self
+                .mass_layout(t, &w)
+                .items
+                .iter()
+                .find(|(_, tg)| *tg == Target::Field(f))
+                .map(|(r, _)| *r),
             _ if is_attr_field(f) => self
                 .attr_layout(t, &w, cx.scene)
                 .items
@@ -2661,6 +2713,7 @@ impl Prefs {
 
     fn color_of(&self, ct: ColorTarget, s: &Scene, t: &Theme) -> Rgba {
         match ct {
+            ColorTarget::Mass => self.mass_farbe(s),
             ColorTarget::Pen(id) => s
                 .model()
                 .attr()
@@ -2700,8 +2753,12 @@ impl Prefs {
 
     /// Setzt die Farbe; Rollen mit Deckkraft behalten sie.
     fn set_color(&mut self, ct: ColorTarget, c: Rgba, cx: &mut Ctx, out: &mut Out) {
+        if ct == ColorTarget::Mass {
+            self.set_mass_farbe(c, cx, out);
+        }
         let t = &mut *cx.theme;
         match ct {
+            ColorTarget::Mass => {}
             ColorTarget::Pen(id) => {
                 out.model |= cx.scene.edit_attr(|m| {
                     let Some(mut p) = m.attr().pen(id).cloned() else {
@@ -2859,6 +2916,12 @@ impl Prefs {
         let (t, w) = (&*cx.theme, cx.win);
         match ct {
             ColorTarget::Pen(_) => self.pens_layout(t, &w, cx.scene).color,
+            ColorTarget::Mass => self
+                .mass_layout(t, &w)
+                .items
+                .iter()
+                .find(|(_, tg)| *tg == Target::Swatch(ct))
+                .map_or(self.frame(t, &w), |(r, _)| *r),
             ColorTarget::SurfFace(_)
             | ColorTarget::SurfCut(_)
             | ColorTarget::PatStone(..)
@@ -3077,7 +3140,8 @@ impl Prefs {
         self.full_frame = true;
     }
 
-    /// Aktiver Reiter als Zahl (0 Stifte … 4 Bedienoberfläche, 5 Vorgaben).
+    /// Aktiver Reiter als Zahl (0 Stifte … 4 Bedienoberfläche, 5 Vorgaben,
+    /// 6 Bemaßung).
     pub fn tab_index(&self) -> u8 {
         match self.tab {
             Tab::Pens => 0,
@@ -3086,6 +3150,7 @@ impl Prefs {
             Tab::Surfaces => 3,
             Tab::Ui => 4,
             Tab::Vorgaben => 5,
+            Tab::Bemassung => 6,
         }
     }
 
@@ -3415,6 +3480,7 @@ impl Prefs {
             Tab::Pens => self.paint_pens(c, t, fonts, w, sc, &at),
             Tab::Ui => self.paint_ui(c, t, fonts, w, &at),
             Tab::Vorgaben => self.paint_vorgaben(c, t, fonts, w, &at),
+            Tab::Bemassung => self.paint_mass(c, t, fonts, w, sc, &at),
             _ => self.paint_attr(c, t, fonts, w, sc, &at),
         }
         // Fuß
@@ -4190,6 +4256,7 @@ impl Prefs {
                     Tab::Surfaces => "Alle Oberflächen auf Standard zurücksetzen?",
                     Tab::Ui => "Bedienoberfläche auf Standard zurücksetzen?",
                     Tab::Vorgaben => "Vorgaben auf Werk zurücksetzen?",
+                    Tab::Bemassung => "Bemaßung des Projekts auf Werk zurücksetzen?",
                 };
                 label(
                     &mut c,
