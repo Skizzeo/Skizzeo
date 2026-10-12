@@ -80,6 +80,10 @@ impl App {
             // „haus LV Rohbau.csv“ (paket-ka4 §4)
             Some(los) => format!("{stem} LV {los}.csv"),
             None if kosten => format!("{stem} Kosten.csv"),
+            // Bestellliste schon am Namen erkennbar (Bedienbarkeit 38.3)
+            None if self.quantity.modus == sk_model::rechenweg::Modus::Bestellung => {
+                format!("{stem} Mengenermittlung Bestellung.csv")
+            }
             None => format!("{stem} Mengenermittlung.csv"),
         };
         let filters = [

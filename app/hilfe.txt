@@ -312,16 +312,16 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 Übernehmen | **OK**; Abbrechen verwirft
 
 [thema] id=mengen titel="Mengen, Kosten, AVA"
-Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“
+Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“; wegziehen löst das Fenster, an der Kante rastet es wieder ein
 Karten | Mengen, Kosten und AVA; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
 Gebäude | ab zwei Gebäuden wählt das Feld vor den Chips ein Gebäude oder das ganze Projekt
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
 Gliedern | „Gliedern“ nach Geschoss oder Gewerk, bei Kosten auch Kostengruppe
+Sicht | Umschalter „VOB | Bestellung“: „VOB“ zeigt die Abrechnungsmengen nach VOB/C, Öffnungen bis 2,5 m² übermessen; „Bestellung“ die Bestellmengen mit Verschnitt. Nach Gewerk klappt das Dreieck vor einer Schichtzeile ihren Rechenweg auf
 Gewerksumme | jede Fläche einmal je Bauteil; in m Abgerechnetes (Attikablech) zählt ohne Volumen
 Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es; Doppelklick holt es ins Bild
 Löschen | **Entf** oder Rechtsklick auf eine Zeile
-Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zeile nennt Gebäude und Geschosse
-Fenster | wegziehen löst es, an der Kante rastet es wieder ein
+Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zeile nennt Sicht, Gebäude und Geschosse
 
 [thema] id=kosten titel="Kosten"
 Preise | „Material“ oder „Material + Lohn“; die Summe zeigt netto, brutto mit MwSt. und den Lohnanteil. Referenzpreise: Stand 10/2026, unverbindlich, netto
