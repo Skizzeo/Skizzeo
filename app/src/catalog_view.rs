@@ -2851,6 +2851,15 @@ impl Catalog {
 
     pub fn tip(&self) -> Option<String> {
         match self.hover? {
+            Target::Btn(Btn::Delete) if self.tab == Tab::Rooms => {
+                let n = self.room_users();
+                let wer = if n == 1 {
+                    "einem Raum".into()
+                } else {
+                    format!("{n} Räumen")
+                };
+                (n > 0).then(|| format!("Genutzt von {wer}, Löschen erst ohne Nutzung"))
+            }
             Target::Btn(Btn::Delete) if !self.can_delete() => {
                 let id = self.sel?;
                 let n = self.work.type_users(id).len();

@@ -418,9 +418,12 @@ fn a187_datei_gewerke() {
         .collect();
     let mut sortiert = codes.clone();
     sortiert.sort();
+    // Ausbau der Vorgabe-Nutzung Wohnzimmer der Räume und Estrich
+    // (Raumbuch #112): 18336 Dämmung, 18353 Estrich, 18356 Parkett, 18363
+    // Maler, 18366 Tapezierer
     assert_eq!(
         sortiert,
-        ["18330", "18331", "18345", "18350"],
+        ["18330", "18331", "18336", "18345", "18350", "18353", "18356", "18363", "18366"],
         "verwendete Gewerke"
     );
     let erster_trade = text.find("\n[trade]").unwrap();

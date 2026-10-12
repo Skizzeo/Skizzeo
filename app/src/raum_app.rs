@@ -53,6 +53,16 @@ impl App {
         }
     }
 
+    /// Ruht das Paneel „Eigenschaften“? Beim Ziehen einer Wand, einer Ebene
+    /// oder eines Raumstempels (Review #112 B1) und beim Gleiten („Bündig
+    /// setzen“) bleibt es auf dem Stand davor.
+    pub(crate) fn paneel_ruht(&self) -> bool {
+        self.edit.is_dragging()
+            || self.level_dragging().is_some()
+            || self.flush_anim.is_some()
+            || self.stempel.s.zieht()
+    }
+
     /// Steht die Maus auf einem Stempel oder Ablauf, oder wird einer gezogen?
     pub(crate) fn griffe_busy(&self) -> bool {
         self.drains.is_busy() || self.stempel.s.is_busy()
