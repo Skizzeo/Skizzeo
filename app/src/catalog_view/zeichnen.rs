@@ -110,7 +110,7 @@ impl Catalog {
                 (lib.is_some_and(|l| l.type_by_guid(g).is_none())).then_some(Mark::OnlyProject)
             }
             Item::Draft => Some(Mark::OnlyProject),
-            Item::Ext(_) => None,
+            Item::Ext(_) | Item::Room(_) => None,
             Item::Company(g) => {
                 let lib = lib?;
                 let ct = lib.types.get(lib.type_by_guid(g)?)?;
@@ -166,7 +166,7 @@ impl Catalog {
                 0,
                 type_look(&self.work, t, &self.draft),
             )),
-            Item::Ext(_) => None,
+            Item::Ext(_) | Item::Room(_) => None,
             Item::Company(g) => {
                 let lib = self.company_lib()?;
                 let ct = lib.types.get(lib.type_by_guid(g)?)?;
@@ -186,6 +186,7 @@ impl Catalog {
             Item::Draft => self.draft_new,
             Item::Company(g) => self.tab == Tab::Company && self.csel == Some(g),
             Item::Ext(i) => self.tab == Tab::Ext && self.ext_sel == Some(i),
+            Item::Room(g) => self.tab == Tab::Rooms && self.room_sel == Some(g),
         }
     }
 
@@ -393,11 +394,11 @@ impl Catalog {
         let seg = Rect::new(
             self.tab_rect(t, w, Tab::Project).x - 2.0 * s,
             self.tab_rect(t, w, Tab::Project).y - 2.0 * s,
-            350.0 * s,
+            458.0 * s,
             32.0 * s,
         );
         rounded(c, seg, 7.0 * s, u.field);
-        for tab in [Tab::Project, Tab::Company, Tab::Ext] {
+        for tab in [Tab::Project, Tab::Company, Tab::Rooms, Tab::Ext] {
             let r = self.tab_rect(t, w, tab);
             let on = self.tab == tab;
             let hov = self.hover == Some(Target::Tab(tab));
@@ -418,6 +419,7 @@ impl Catalog {
             let text = match tab {
                 Tab::Project => "Projekt",
                 Tab::Company => "Firma",
+                Tab::Rooms => "Räume",
                 Tab::Ext => "Erweiterungen",
             };
             let font = if on { bold } else { regular };
@@ -483,6 +485,16 @@ impl Catalog {
             self.paint_project(c, t, fonts, w);
         } else if self.tab == Tab::Ext {
             self.paint_ext(c, t, fonts, w);
+        } else if self.tab == Tab::Rooms {
+            for (b, r, text) in self.list_buttons(t, w) {
+                let disabled = match b {
+                    Btn::Delete => !self.room_in_project(),
+                    Btn::Duplicate => self.room_sel.is_none(),
+                    _ => false,
+                };
+                widgets::button(c, fonts, r, text, self.btn_state(b, false, disabled), s, t);
+            }
+            self.paint_rooms(c, t, fonts, w);
         } else {
             self.paint_company(c, t, fonts, w);
         }
@@ -492,6 +504,7 @@ impl Catalog {
             let disabled = b == Btn::Action
                 && ((no_company && self.tab != Tab::Ext)
                     || (self.tab == Tab::Project && (self.draft_new || self.nutzer))
+                    || (self.tab == Tab::Rooms && (self.nutzer || !self.room_in_project()))
                     || (self.tab == Tab::Company && self.csel.is_none()));
             widgets::button(
                 c,
@@ -645,6 +658,9 @@ impl Catalog {
         );
         if let Item::Ext(i) = it {
             return self.paint_ext_tile(c, i, r, t, fonts, w, sel, hover);
+        }
+        if let Item::Room(g) = it {
+            return self.paint_room_tile(c, g, r, t, fonts, w, sel, hover);
         }
         let Some((name, detail, uses, look)) = self.tile_info(it, t) else {
             return;
@@ -1172,7 +1188,7 @@ impl Catalog {
         );
     }
 
-    fn field_state<'a>(&'a self, f: FieldId, value: &'a str) -> FieldState<'a> {
+    pub(super) fn field_state<'a>(&'a self, f: FieldId, value: &'a str) -> FieldState<'a> {
         let e = self.edit.as_ref().filter(|e| e.field == f);
         FieldState {
             text: e.map_or(value, |e| e.text.text.as_str()),
@@ -1622,15 +1638,21 @@ impl Catalog {
                 );
             }
             Popup::Export(g, changed) => {
-                let name = self
-                    .work
-                    .type_by_guid(*g)
-                    .and_then(|id| self.work.layer_set(id))
-                    .map_or("", |t| t.name.as_str());
+                let name = match self.work.space_type(*g).filter(|_| self.tab == Tab::Rooms) {
+                    Some(r) => r.name.as_str(),
+                    None => self
+                        .work
+                        .type_by_guid(*g)
+                        .and_then(|id| self.work.layer_set(id))
+                        .map_or("", |t| t.name.as_str()),
+                };
                 let (title, body) = if *changed {
                     (
                         "Der Firmenkatalog wurde inzwischen geändert.".to_string(),
-                        "Neu laden übernimmt die Änderungen der anderen und speichert den Typ dann zurück.".to_string(),
+                        format!(
+                            "Neu laden übernimmt die Änderungen der anderen und speichert {} dann zurück.",
+                            if self.tab == Tab::Rooms { "die Vorlage" } else { "den Typ" }
+                        ),
                     )
                 } else {
                     (

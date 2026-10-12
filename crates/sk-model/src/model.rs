@@ -263,6 +263,8 @@ pub struct Model {
     ext_numbers: BTreeMap<String, u32>,
     /// Unlesbare `[extdef]`- und `[extpart]`-Zeilen der Datei, roh.
     pub(crate) ext_raw: Vec<String>,
+    /// Raumvorlagen des Raumkatalogs (Raumbuch RB2).
+    space_types: Vec<raumvorlage::SpaceType>,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -350,6 +352,15 @@ pub use ausbau::{
     SKIRTING_MAT_GUID, SLAB_SEAL_GUID, TILE_SEAL_GUID, TILE_SKIRTING_TYPE_GUID,
     WALL_TILES_TYPE_GUID, WALL_TILE_GUID, WET_FLOOR_TYPE_GUID, WOODCHIP_GUID,
     WOODCHIP_WALL_TYPE_GUID,
+};
+#[path = "raumvorlage.rs"]
+mod raumvorlage;
+pub use raumvorlage::{
+    space_template_rank, SpaceGroup, SpaceTemplate, SpaceType, WallTiles, BATH_SPACE_GUID,
+    BEDROOM_SPACE_GUID, CHILD_SPACE_GUID, DEFAULT_SPACE_GUID, DINING_SPACE_GUID, GUEST_SPACE_GUID,
+    HALL_SPACE_GUID, KITCHEN_SPACE_GUID, LIVING_SPACE_GUID, SPACE_TEMPLATES, STORAGE_SPACE_GUID,
+    STUDY_SPACE_GUID, TECHNICAL_SPACE_GUID, TILES_DEFAULT, TILES_HEIGHT, UTILITY_SPACE_GUID,
+    WC_SPACE_GUID, WOFLV,
 };
 #[path = "teilen.rs"]
 mod teilen;
@@ -757,6 +768,7 @@ impl Model {
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
+            space_types: Vec::new(),
         }
     }
 
@@ -835,6 +847,7 @@ impl Model {
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
+            space_types: Vec::new(),
         };
         m.joins = m.detect_all();
         m
@@ -1632,7 +1645,9 @@ impl Model {
             .iter()
             .any(|(other, t)| other != id && t.code == s.code);
         let category_locked = s.category != old.category
-            && (self.is_default_type(id) || !self.type_users(id).is_empty());
+            && (self.is_default_type(id)
+                || !self.type_users(id).is_empty()
+                || self.type_in_space_type(id));
         if s.guid != old.guid
             || code_taken
             || category_locked
@@ -1751,7 +1766,8 @@ impl Model {
         if users > 0 {
             return Err(users);
         }
-        if self.is_default_type(id) || !self.layer_sets.contains(id) {
+        if self.is_default_type(id) || !self.layer_sets.contains(id) || self.type_in_space_type(id)
+        {
             return Err(0);
         }
         note!(self, LayerSet, self.layer_sets, id);
@@ -3233,6 +3249,7 @@ impl Model {
             Change::Display { new, .. } => *new = self.attr.display().clone(),
             Change::Defaults { new, .. } => *new = self.defaults,
             Change::Trades { new, .. } => *new = self.trades.clone(),
+            Change::SpaceTypes { new, .. } => *new = self.space_types.clone(),
             Change::ForeignRecords { new, .. } => *new = self.foreign.records.clone(),
             Change::ExtDefs { new, .. } => *new = self.ext_defs.clone(),
             // schon beim Ändern eingetragen
@@ -3327,6 +3344,10 @@ impl Model {
             }
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
             Change::Trades { old, new } => m.trades = pick(dir, old, new),
+            Change::SpaceTypes { old, new } => {
+                m.space_types = pick(dir, old, new);
+                touched.library = true;
+            }
             Change::ForeignRecords { old, new } => m.foreign.records = pick(dir, old, new),
             Change::ExtDefs { old, new } => m.ext_defs = pick(dir, old, new),
             Change::Ext {
@@ -3854,6 +3875,7 @@ impl Model {
             out.extend(self.finish_problems(set));
             codes.push(&set.code);
         }
+        out.extend(self.check_space_types());
         // Regel 17: Kurzzeichen eindeutig
         codes.sort_unstable();
         for w in codes
