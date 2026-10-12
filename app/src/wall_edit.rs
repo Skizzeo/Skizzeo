@@ -1265,10 +1265,11 @@ impl WallEdit {
                 ..
             } if self.input.is_none()
                 && self.drag.is_none()
-                && (!self.tueren.is_empty() || self.gewaehlte_tuer(scene).is_some()) =>
+                && (!self.tueren.is_empty() || enabled && self.gewaehlte_tuer(scene).is_some()) =>
             {
                 let tuer = self.tuer_bei_maus(cam, w, h);
-                if let Some(id) = tuer.or_else(|| self.gewaehlte_tuer(scene)) {
+                let gewaehlt = || self.gewaehlte_tuer(scene).filter(|_| enabled);
+                if let Some(id) = tuer.or_else(gewaehlt) {
                     out.consumed = true;
                     if let Some(l) = sk_model::edit_blocked(scene.model(), &[id]) {
                         out.locked = Some((l, id));
