@@ -8,6 +8,7 @@
 
 pub mod attr;
 pub mod catalog;
+pub mod din276;
 pub mod element;
 pub mod erweiterung;
 pub mod erweiterung_koerper;
