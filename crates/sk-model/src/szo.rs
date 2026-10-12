@@ -2454,12 +2454,21 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let id = elements.insert(e);
         register(&mut elem_ids, &mut seen, r, g, id)?;
     }
+    let mut raum_roh = Vec::new();
     for r in recs("space") {
-        if let Some(e) = raum::read(r, &mut number, &storey_ids, &seen, &mut hints) {
-            register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?;
+        match raum::read(r, &mut number, &storey_ids, &seen, &mut hints) {
+            raum::Lesung::Raum(e) => {
+                register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?
+            }
+            raum::Lesung::Roh => raum_roh.push(r),
+            raum::Lesung::Weg => {}
         }
     }
-    // Verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
+    // Rohe Räume und verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
+    let mut space_raw: Vec<_> = raum_roh
+        .into_iter()
+        .filter_map(|r| raum::raw(r, lines[r.line - 1], &mut number, &mut seen, &mut hints))
+        .collect();
     let opening_raw: Vec<_> = verworfen
         .into_iter()
         .filter_map(|r| oeffnung::raw(r, lines[r.line - 1], &mut number, &mut seen, &mut hints))
@@ -2483,6 +2492,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         run.segments = walls.into_iter().map(|w| w.1).collect();
     }
     for r in recs("prop") {
+        if raum::raw_prop(r, lines[r.line - 1], &mut space_raw) {
+            continue;
+        }
         // Eigenschaft eines Bauteils ohne lesbare Erweiterung: bleibt roh
         if r.opt("elem")
             .and_then(Guid::from_ifc)
@@ -2704,6 +2716,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.view_hide = view_hide;
     model.load_plan_cut(plan_cut, plan_cut_raw);
     model.load_opening_raw(opening_raw);
+    model.load_space_raw(space_raw);
     model.load_ausbau(ausbau);
     model.load_ext(ext_defs, ext_raw);
     for (k, n) in counters {
