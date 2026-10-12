@@ -2487,14 +2487,14 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             raum::Lesung::Raum(e) => {
                 register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(*e))?
             }
-            raum::Lesung::Roh => raum_roh.push(r),
+            raum::Lesung::Roh(grund) => raum_roh.push((r, grund)),
             raum::Lesung::Weg => {}
         }
     }
     // Rohe Räume und verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
     let mut space_raw: Vec<_> = raum_roh
         .into_iter()
-        .filter_map(|r| raum::raw(r, lines[r.line - 1], &mut number, &mut seen, &mut hints))
+        .filter_map(|(r, g)| raum::raw(r, &lines, g, &mut number, &mut seen, &mut hints))
         .collect();
     let opening_raw: Vec<_> = verworfen
         .into_iter()
