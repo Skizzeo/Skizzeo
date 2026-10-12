@@ -1159,7 +1159,7 @@ fn tool_rows(
     foundation_active: bool,
     ext: Option<(&ExtPanel, Option<&Edit>)>,
     ext_knopf: bool,
-    opening: bool,
+    opening: Option<bool>,
 ) -> Vec<Row> {
     // Projektdaten als eigener Abschnitt über den Werkzeugen (Paket PD-2)
     let mut rows = vec![Row::Button(Id::Projektdaten, "Projektdaten")];
@@ -1212,14 +1212,23 @@ fn tool_rows(
     if ext_knopf {
         rows.push(Row::Button(Id::Ext, "Erweiterungen"));
     }
-    // Öffnungen (Paket O3): statt der Wandvorgaben drei kurze Zeilen
-    if opening {
-        rows.extend([
-            Row::Separator,
-            Row::Hint("Ecke auf der Außenwand,"),
-            Row::Hint("dann die Gegenecke."),
-            Row::Hint("Linien fangen, Esc: zurück"),
-        ]);
+    // Öffnungen (Paket O3): statt der Wandvorgaben drei kurze Zeilen,
+    // im Grundriss die der Innentür
+    if let Some(innen) = opening {
+        rows.push(Row::Separator);
+        rows.extend(if innen {
+            [
+                Row::Hint("Tür über der Innenwand,"),
+                Row::Hint("Tab: Bezug, Rad: Breite."),
+                Row::Hint("Klick setzt, Esc: Ende"),
+            ]
+        } else {
+            [
+                Row::Hint("Ecke auf der Außenwand,"),
+                Row::Hint("dann die Gegenecke."),
+                Row::Hint("Linien fangen, Esc: zurück"),
+            ]
+        });
         return rows;
     }
     // Zweizeilig ohne Abstand dazwischen, damit nichts am Rand abbricht
@@ -1543,7 +1552,8 @@ impl Ui {
                 self.foundation_active,
                 self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
                 self.ext_knopf,
-                self.opening.is_some(),
+                self.opening
+                    .map(|k| k == OpeningKind::Door && self.view == ViewKind::Plan),
             ),
             Panel::Views => view_rows(self.nord),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {

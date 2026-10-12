@@ -65,8 +65,7 @@ Verwalten | Datei › „Erweiterungen …“: Ein/Aus, Aktualisieren, Entfernen
 Starten | Knopf „Fenster“ (Wandöffnung, auch Terrassentür) oder „Tür“ (Türöffnung) unter „Gebäude“ und „Innenwand“
 Wo | in 3D und den vier Ansichten über einer Außenwand; Brüstung und Sturz des Geschosses erscheinen gestrichelt
 Aufziehen | Klick setzt eine Ecke, Klick die Gegenecke; die Linien und der Wandfuß fangen
-Ecke | Gegenecke auf der Nachbarwand: die Öffnung geht um die Außenecke
-Geschosse | Gegenecke auf der Wand darüber: die Öffnung geht über beide Geschosse
+Ecke und Geschosse | Gegenecke auf der Nachbarwand: die Öffnung geht um die Außenecke; auf der Wand darüber: über beide Geschosse
 Höhen | an einer Linie gefangen wandert die Kante mit, wenn die Linie im Geschossmanager gezogen wird
 Anschlag | bei WDVS und Verblender ist die gezeichnete Öffnung die sichtbare außen, innen ist sie um den Anschlag größer
 Einbauelement | im Grundriss zeigen zwei dünn gestrichelte Linien, wo das spätere Fenster- oder Türelement sitzt: außen nach der äußeren Einbautiefe, dazwischen die Elementtiefe
