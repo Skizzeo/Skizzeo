@@ -33,6 +33,10 @@ pub const TIP: &str = "Einstellungen dieser Ansicht";
 pub const OHNE_NORD: &str = "Nordrichtung fehlt";
 /// Hinweis im Feld, wenn die Sonne zu tief steht.
 pub const UNTER: &str = "Sonne unter 2°: kein Schatten";
+/// Leise Zeile unter „Auf alle Ansichten übertragen“: der Knopf gibt
+/// Schatten und Gelände an die vier Ansichten, die Dachentwässerung an alle
+/// sieben (Einstellungen H1).
+pub const WOHIN: &str = "Schatten an vier, Dachentwässerung an alle sieben Ansichten";
 /// Stand der Ansicht gegenüber der Firmenvorgabe (S8, §8 13:00 e).
 pub const FOLGT: &str = "Folgt der Vorgabe";
 pub const EIGEN: &str = "Eigene Wahl dieser Ansicht";
@@ -195,6 +199,8 @@ pub struct Lage {
     pub teile: Vec<(Teil, Rect)>,
     /// Zeilen (Name, Grundlinie y) und die Zeile für den Hinweis.
     pub namen: Vec<(&'static str, Rect)>,
+    /// Leise Zeile [`WOHIN`] unter „Auf alle Ansichten übertragen“.
+    pub wohin: Rect,
     /// Zeile „Folgt der Vorgabe“ bzw. „Eigene Wahl dieser Ansicht“.
     pub stand: Rect,
     pub hinweis: Option<Rect>,
@@ -220,6 +226,8 @@ pub fn lage(rechts: f32, mit_hinweis: bool, s: f32, t: &Theme) -> Lage {
     let y0 = m + RAD + 4.0;
     let kx = x0 + PAD + NAME_W;
     let zeile = |i: f32| y0 + PAD + i * (h + GAP);
+    // leise Zeile unter dem Übertragen-Knopf; was darunter steht, rückt nach
+    let leise = h * 0.8;
     let mut teile = vec![(Teil::Zahnrad, zahnrad)];
     let mut namen = Vec::new();
     for (i, name) in NAMEN.iter().enumerate() {
@@ -241,11 +249,12 @@ pub fn lage(rechts: f32, mit_hinweis: bool, s: f32, t: &Theme) -> Lage {
         (Teil::Alle, r(kx, zeile(5.0), REIHE, h)),
         (
             Teil::Vorgabe,
-            r(kx + REIHE - VORGABE_W, zeile(6.0), VORGABE_W, h),
+            r(kx + REIHE - VORGABE_W, zeile(6.0) + leise, VORGABE_W, h),
         ),
     ]);
-    let stand = r(kx, zeile(6.0), REIHE - VORGABE_W - GAP, h);
-    let mut unten = zeile(7.0);
+    let wohin = r(kx, zeile(6.0) - GAP * 0.5, REIHE, leise);
+    let stand = r(kx, zeile(6.0) + leise, REIHE - VORGABE_W - GAP, h);
+    let mut unten = zeile(7.0) + leise;
     let hinweis = mit_hinweis.then(|| {
         let q = r(kx, unten - GAP * 0.5, REIHE, h * 0.8);
         unten += h * 0.8;
@@ -257,6 +266,7 @@ pub fn lage(rechts: f32, mit_hinweis: bool, s: f32, t: &Theme) -> Lage {
         feld,
         teile,
         namen,
+        wohin,
         stand,
         hinweis,
     }
@@ -417,11 +427,15 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
         };
         widgets::button(&mut c, fonts, ab(*q), text(*teil), st, s, t);
     }
-    if let (Some(q), Some(f)) = (l.hinweis, f) {
-        let q = ab(q);
+    // leise Zeilen: wohin der Knopf überträgt, der Hinweis zur tiefen Sonne
+    let leise = [Some((l.wohin, WOHIN)), l.hinweis.map(|q| (q, UNTER))];
+    if let Some(f) = f {
         let px = t.size.font_small * s;
-        let y = q.y + (q.h + f.cap_height(px)) * 0.5;
-        f.draw(&mut c, UNTER, px, q.x.round(), y.round(), t.ui.text_dim);
+        for (q, satz) in leise.into_iter().flatten() {
+            let q = ab(q);
+            let y = q.y + (q.h + f.cap_height(px)) * 0.5;
+            f.draw(&mut c, satz, px, q.x.round(), y.round(), t.ui.text_dim);
+        }
     }
     (c, dx as i32, dy as i32)
 }
@@ -722,6 +736,18 @@ mod tests {
         let o = sch.handle(&klick(mitte(Teil::Vorgabe)), &l, vs, true, true);
         assert!(o.vorgabe && o.consumed && o.wahl.is_none());
         assert!(l.stand.y == l.teile.iter().find(|p| p.0 == Teil::Vorgabe).unwrap().1.y);
+        // Leise Zeile zwischen Übertragen-Knopf und Stand (Einstellungen
+        // H1); sie passt in die Reihe
+        let alle = l.teile.iter().find(|p| p.0 == Teil::Alle).unwrap().1;
+        assert!(alle.y + alle.h < l.wohin.y && l.wohin.y + l.wohin.h < l.stand.y);
+        assert_eq!((l.wohin.x, l.wohin.w), (alle.x, alle.w));
+        let lib = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf";
+        if let Some(f) = std::fs::read(lib)
+            .ok()
+            .and_then(sk_paint::font::Font::parse)
+        {
+            assert!(f.width(WOHIN, t.size.font_small) < l.wohin.w);
+        }
         let o = sch.handle(&klick((10.0, 500.0)), &l, vs, true, false);
         assert!(!o.consumed && o.redraw && !sch.offen);
         // Bild: offen größer als zu
