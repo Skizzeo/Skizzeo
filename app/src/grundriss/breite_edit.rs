@@ -9,13 +9,18 @@
 //! Ende bis auf 5 cm an die Seitenflucht einer Öffnung im Geschoss darüber
 //! oder darunter, rastet es dort ein und eine Spurlinie quer durch die
 //! Wand zeigt es (Jörn 12.10. 05:38). Live, Loslassen ist ein Schritt, Esc
-//! bricht ab. Teil von [`crate::wall_edit`].
+//! bricht ab. Die Pille am Cursor zeigt die Breite; eine Ziffer öffnet die
+//! Eingabe „Breite“, Enter setzt sie genau (Bedienbarkeit 39.1). Teil von
+//! [`crate::wall_edit`].
 
 use super::drag_point;
 use super::ende_edit::{self, Outcome, GRIFF_PX};
 use crate::camera::Camera;
+use crate::measure_input::{opens, InputOutcome, MeasureInput};
+use crate::meldung::Meldung;
 use crate::oeffnung_app::innentuer::{nah, Koerper, DICKE};
 use crate::scene::Scene;
+use crate::ui::MeasureKind;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::hoehen::{DOOR_CATCH, DOOR_WIDTHS};
 use sk_model::oeffnung::{Opening, OpeningKind, OuterFace, MIN_OPENING};
@@ -26,6 +31,8 @@ use sk_ui::theme::Theme;
 
 /// Bezeichnung des Schritts im Verlauf.
 pub const SCHRITT: &str = "Öffnungsbreite geändert";
+/// Feldname der Eingabe.
+pub const LABEL: &str = "Breite";
 /// Raster längs der Fläche (mm).
 const STEP: f64 = 10.0;
 /// Fang an den Seitenfluchten der Öffnungen darüber und darunter (mm).
@@ -298,6 +305,10 @@ pub struct BreiteZug {
     /// Höhe des Grundrisses.
     z: f64,
     geaendert: bool,
+    /// Getippte Breite (39.1); solange sie offen ist, ruht die Maus.
+    pub input: Option<MeasureInput>,
+    /// Letzte Maus, für die Rückkehr aus der Eingabe.
+    maus: Option<(f64, f64)>,
 }
 
 impl BreiteZug {
@@ -348,6 +359,8 @@ impl BreiteZug {
             mit,
             z,
             geaendert: false,
+            input: None,
+            maus: None,
         })
     }
 
@@ -370,7 +383,101 @@ impl BreiteZug {
         o
     }
 
-    /// Maus und Esc beim Ziehen.
+    /// Setzt `o` und die gekoppelten Enden quer darunter, jedes auf seiner
+    /// Seite und breit genug (Review #109 B3). `None`, wenn eines zu schmal
+    /// würde oder das Modell ablehnt: Dann bleibt der letzte Stand. Sonst,
+    /// ob sich etwas geändert hat.
+    fn setzen(&mut self, scene: &mut Scene, o: Opening) -> Option<bool> {
+        let q = flat(o.path[self.k]);
+        let mut neu = vec![(self.id, o)];
+        for x in &self.mit {
+            let u = x.face.u_of(q);
+            if (u - x.u_nb) * x.vorz < MIN_OPENING - 1e-6 {
+                return None;
+            }
+            let mut po = x.original.clone();
+            po.path[x.k] = x.face.at(u, po.path[x.k].z);
+            neu.push((x.id, po));
+        }
+        let m = scene.model();
+        if neu.iter().all(|(id, o)| m.opening(*id) == Some(o)) {
+            return Some(false);
+        }
+        // Das Modell prüft beim Setzen; lehnt es eine ab, gehen die schon
+        // gesetzten zurück (Review #109 B4)
+        let mut alt = Vec::new();
+        for (id, o) in neu {
+            let vorher = scene.model().opening(id).cloned();
+            if !scene.set_opening(id, o) {
+                for (id, v) in alt.into_iter().rev() {
+                    scene.set_opening(id, v);
+                }
+                return None;
+            }
+            alt.extend(vorher.map(|v| (id, v)));
+        }
+        self.geaendert = true;
+        Some(true)
+    }
+
+    /// Das Ende unter der Maus (Raster, Normbreite, Seitenflucht).
+    fn zur_maus(&mut self, scene: &mut Scene, cam: &Camera, w: f64, h: f64) -> bool {
+        let Some((x, y)) = self.maus else {
+            return false;
+        };
+        let Some(p) = drag_point(cam, x, y, w, h, self.z) else {
+            return false;
+        };
+        let o = self.mit_ende(self.face.u_of(flat(p)));
+        self.setzen(scene, o) == Some(true)
+    }
+
+    /// Getippte Breite (ganze Öffnung, um die Ecke beide Schenkel): das
+    /// gezogene Ende genau dort, ohne Raster und Fang. Passt sie nicht,
+    /// wird die Eingabe rot und Enter gilt nicht.
+    fn getippt(&mut self, scene: &mut Scene) -> bool {
+        let Some(Some(Ok(v))) = self.input.as_ref().map(|i| i.value(0)) else {
+            return false;
+        };
+        let alt = self.original.path[self.k];
+        let schenkel = (self.face.u_of(flat(alt)) - self.u_nb).abs();
+        let b = v - (self.original.width() - schenkel);
+        let fehler = if b < MIN_OPENING - 1e-6 {
+            Some(Meldung::satz("Eine Öffnung ist mindestens 10 cm breit"))
+        } else {
+            let mut o = self.original.clone();
+            o.path[self.k] = self.face.at(self.u_nb + self.vorz * b, alt.z);
+            match self.setzen(scene, o) {
+                Some(geaendert) => {
+                    return geaendert;
+                }
+                None => Some(Meldung::satz(
+                    "So breit stößt die Öffnung an Wandende oder Nachbaröffnung",
+                )),
+            }
+        };
+        if let Some(i) = self.input.as_mut() {
+            i.error = fehler;
+        }
+        false
+    }
+
+    /// Loslassen bzw. Enter: ein Schritt, wenn sich etwas geändert hat und
+    /// keine ungültige Eingabe offen ist.
+    fn schliessen(&mut self, scene: &mut Scene, out: &mut Outcome) {
+        let gilt = self.input.as_ref().is_none_or(|i| i.error.is_none());
+        let zurueck = !gilt || scene.model().opening(self.id) == Some(&self.original);
+        if zurueck {
+            scene.rollback();
+        } else {
+            scene.commit();
+        }
+        out.changed = self.geaendert && zurueck;
+        out.fertig = true;
+        out.redraw = true;
+    }
+
+    /// Maus, Tasten und Esc beim Ziehen; alle gehören dem Ziehen.
     pub fn handle(
         &mut self,
         e: &Event,
@@ -382,71 +489,69 @@ impl BreiteZug {
         let mut out = Outcome::default();
         match *e {
             Event::MouseMove { x, y, .. } => {
-                let Some(p) = drag_point(cam, x, y, w, h, self.z) else {
-                    return out;
-                };
-                let o = self.mit_ende(self.face.u_of(flat(p)));
-                // Gekoppelte Enden quer auf ihre Fläche unter das neue Ende,
-                // jedes auf seiner Seite und breit genug (Review #109 B3)
-                let q = flat(o.path[self.k]);
-                let mut neu = vec![(self.id, o)];
-                for x in &self.mit {
-                    let u = x.face.u_of(q);
-                    if (u - x.u_nb) * x.vorz < MIN_OPENING - 1e-6 {
-                        return out;
-                    }
-                    let mut po = x.original.clone();
-                    po.path[x.k] = x.face.at(u, po.path[x.k].z);
-                    neu.push((x.id, po));
+                self.maus = Some((x, y));
+                // Eine getippte Breite gilt, bis die Eingabe schließt
+                if self.input.is_none() && self.zur_maus(scene, cam, w, h) {
+                    out.changed = true;
+                    out.redraw = true;
                 }
-                let m = scene.model();
-                if neu.iter().all(|(id, o)| m.opening(*id) == Some(o)) {
-                    return out;
-                }
-                // Das Modell prüft beim Setzen; lehnt es eine ab, gehen die
-                // schon gesetzten zurück (Review #109 B4)
-                let mut alt = Vec::new();
-                for (id, o) in neu {
-                    let vorher = scene.model().opening(id).cloned();
-                    if !scene.set_opening(id, o) {
-                        for (id, v) in alt.into_iter().rev() {
-                            scene.set_opening(id, v);
-                        }
-                        return out;
-                    }
-                    alt.extend(vorher.map(|v| (id, v)));
-                }
-                self.geaendert = true;
-                out.changed = true;
-                out.redraw = true;
             }
             Event::MouseUp {
                 button: MouseButton::Left,
                 ..
-            } => {
-                let gleich = scene.model().opening(self.id) == Some(&self.original);
-                if gleich {
-                    scene.rollback();
-                } else {
-                    scene.commit();
-                }
-                out.changed = self.geaendert && gleich;
-                out.fertig = true;
-                out.redraw = true;
-            }
+            } => self.schliessen(scene, &mut out),
+            // Mit offener Eingabe schließt Esc erst sie (unten)
             Event::Key {
                 key: Key::Escape,
                 down: true,
                 ..
-            } => {
+            } if self.input.is_none() => {
                 scene.rollback();
                 out.changed = self.geaendert;
                 out.fertig = true;
                 out.redraw = true;
             }
+            Event::Key {
+                key,
+                down: true,
+                mods,
+                ..
+            } => {
+                out.redraw = true;
+                let Some(i) = self.input.as_mut() else {
+                    if let Key::Char(ch) = key {
+                        if opens(ch, MeasureKind::Length, mods) {
+                            let mut i = MeasureInput::new(MeasureKind::Length, None);
+                            i.push(ch);
+                            self.input = Some(i);
+                            out.changed = self.getippt(scene);
+                        }
+                    }
+                    return out;
+                };
+                match i.key(key, mods) {
+                    InputOutcome::Enter => self.schliessen(scene, &mut out),
+                    InputOutcome::Changed => out.changed = self.getippt(scene),
+                    InputOutcome::Emptied | InputOutcome::Escape | InputOutcome::EnterEmpty => {
+                        self.input = None;
+                        out.changed = self.zur_maus(scene, cam, w, h);
+                    }
+                    InputOutcome::Ignored | InputOutcome::Refused => {}
+                }
+            }
             _ => {}
         }
         out
+    }
+
+    /// Pille am Cursor: die Eingabe, sonst die Breite, wie die Öffnung
+    /// gerade steht (wie beim Aufziehen).
+    pub fn pill(&self, scene: &Scene) -> Option<(String, bool)> {
+        if let Some(i) = &self.input {
+            return Some((i.text([LABEL, ""]), true));
+        }
+        let b = scene.model().opening(self.id)?.width();
+        Some((format!("{LABEL} {}", crate::ui::live_length_text(b)), false))
     }
 
     /// Zug des gezogenen Endes: Er wird beim Ziehen live gezeichnet, die
@@ -669,6 +774,70 @@ mod tests {
         let xmax = o.path[0].x.max(o.path[1].x);
         assert!(xmax > 9000.0 && xmax < 10000.0, "{xmax}");
         assert_eq!(s.model().opening_fault(o, Some(fenster)), None);
+    }
+
+    /// Bedienbarkeit 39.1/39.2: Beim Ziehen zeigt die Pille die Breite,
+    /// Zahl + Enter setzt sie genau, ohne Raster. Zu schmal oder zu breit
+    /// wird die Eingabe rot und Enter gilt nicht; Esc schließt erst die
+    /// Eingabe, dann das Ziehen. F1 zeigt dabei das Thema Öffnungen.
+    #[test]
+    fn breite_tippen() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(vec3(7000.0, 0.0, 20000.0), vec3(7000.0, 1.0, 0.0), 45.0);
+        let (mut s, _, fenster) = haus();
+        let mods = Default::default();
+        let taste = |z: &mut BreiteZug, s: &mut Scene, key| {
+            let e = Event::Key {
+                key,
+                down: true,
+                mods,
+                repeat: false,
+            };
+            z.handle(&e, s, &cam, W, H)
+        };
+        let tippen = |z: &mut BreiteZug, s: &mut Scene, t: &str| {
+            for ch in t.chars() {
+                taste(z, s, Key::Char(ch));
+            }
+        };
+        let breite = |s: &Scene| s.model().opening(fenster).unwrap().width();
+        let o = s.model().opening(fenster).unwrap().clone();
+        let k = usize::from(o.path[1].x > o.path[0].x);
+        let links = o.path[1 - k];
+        let z = BreiteZug::greifen(&mut s, fenster, k, 0.0).unwrap();
+        let mut e = crate::wall_edit::WallEdit {
+            breite: Some(z),
+            ..Default::default()
+        };
+        assert!(e.eigenes_thema());
+        assert_eq!(e.thema(), crate::help::Topic::Openings);
+        assert_eq!(e.input_label(), LABEL);
+        assert_eq!(e.pill(&s), Some(("Breite 1,00 m".into(), false)));
+        let mut z = e.breite.take().unwrap();
+        tippen(&mut z, &mut s, "1,234");
+        assert_eq!(z.pill(&s), Some(("Breite 1,234 m".into(), true)));
+        assert!((breite(&s) - 1234.0).abs() < 1e-6, "{}", breite(&s));
+        assert!(taste(&mut z, &mut s, Key::Enter).fertig);
+        assert_eq!(s.undo_label(), Some(SCHRITT));
+        let o = s.model().opening(fenster).unwrap();
+        assert!(
+            (o.path[1 - k] - links).length() < 1e-6,
+            "linkes Ende bleibt"
+        );
+        // Unter 10 cm und über die Hausecke hinaus gilt Enter nicht
+        let mut z = BreiteZug::greifen(&mut s, fenster, k, 0.0).unwrap();
+        for zu in ["0,05", "9"] {
+            tippen(&mut z, &mut s, zu);
+            assert!(z.input.as_ref().unwrap().error.is_some(), "{zu}");
+            assert!(!taste(&mut z, &mut s, Key::Enter).fertig, "{zu}");
+            assert!((breite(&s) - 1234.0).abs() < 1e-6, "{zu}: {}", breite(&s));
+            assert!(!taste(&mut z, &mut s, Key::Escape).fertig);
+            assert!(z.input.is_none());
+        }
+        assert!(taste(&mut z, &mut s, Key::Escape).fertig);
+        assert!((breite(&s) - 1234.0).abs() < 1e-6);
+        assert_eq!(s.undo_label(), Some(SCHRITT));
     }
 
     /// Zweigeschossiges Haus 10 × 8 m: Modell, EG- und OG-Zug.
