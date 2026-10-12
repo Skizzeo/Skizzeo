@@ -3857,6 +3857,17 @@ impl Model {
                     out.push(format!("Wandzug {id:?}: Segment {} ohne Länge", k + 1));
                 }
             }
+            // Keine Gehrung kippt einen Körper: dasselbe Prädikat wie beim
+            // Ziehen des Wandendes (Review #87 B5), hier für gezeichnete und
+            // geladene Züge
+            if let Some(c) = self.chain(id) {
+                for k in c.gekippte_segmente() {
+                    out.push(format!(
+                        "Wandzug {id:?}: Gehrung an Segment {} gekippt",
+                        k + 1
+                    ));
+                }
+            }
             if let Some(lower) = self.run_below(id).and_then(|b| self.run(b)) {
                 self.check_stack(id, r, lower, &mut out);
                 // Regel 30: der Umriss oben schneidet sich nicht selbst

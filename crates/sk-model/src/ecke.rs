@@ -1020,4 +1020,40 @@ mod tests {
         }
         assert!(erlaubt > 300, "{erlaubt} erlaubte Fälle");
     }
+
+    /// Gezeichnete spitze Ecke (Vorbefund vor I4): Außenwand, Bezug rechts,
+    /// (1000,1000) → (4000,1000) und dann unter 26,6° zurück. Mit 1,1 m
+    /// läuft die Gehrung über das kurze Stück hinaus und kippt den Körper;
+    /// die Prüfung meldet es mit demselben Prädikat wie das Ziehen. Mit 4 m
+    /// kippt nichts, und die Prüfung schweigt.
+    #[test]
+    fn pruefung_meldet_gekippte_gehrung() {
+        let (sin, cos) = 0.5f64.atan().sin_cos();
+        for (laenge, kippt) in [(1100.0, true), (4000.0, false)] {
+            let mut m = Model::new();
+            let st = m.eg_at(H);
+            let aw = m.defaults().exterior_wall;
+            let r = m
+                .add_wall_run(
+                    &[
+                        vec3(1000.0, 1000.0, 0.0),
+                        vec3(4000.0, 1000.0, 0.0),
+                        vec3(4000.0 - laenge * cos, 1000.0 + laenge * sin, 0.0),
+                    ],
+                    false,
+                    RefSide::Right,
+                    st,
+                    aw,
+                    Category::ExteriorWall,
+                )
+                .unwrap();
+            let gemeldet: Vec<String> = m
+                .check()
+                .into_iter()
+                .filter(|f| f.contains("Gehrung"))
+                .collect();
+            assert_eq!(gekippt(&m, r) > 0, kippt, "{laenge} mm");
+            assert_eq!(!gemeldet.is_empty(), kippt, "{laenge} mm: {gemeldet:?}");
+        }
+    }
 }
