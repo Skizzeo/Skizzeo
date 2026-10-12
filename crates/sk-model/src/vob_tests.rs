@@ -289,3 +289,103 @@ fn viele_oeffnungen() {
         .collect();
     assert!(tiefen.windows(2).all(|w| w[0] == w[1]), "{tiefen:?}");
 }
+
+/// Review W24 B1: Zwei Lagen aus demselben Baustoff (Dämmung 2 × halbe
+/// Dicke) haben je ihr eigenes Loch. Das Fenster 1,25 × 1,51 m bleibt in
+/// beiden übermessen, die WDVS-Laibung zählt einmal.
+#[test]
+fn zwei_lagen_gleicher_daemmung() {
+    use crate::qto_laibung::WDVS;
+    let (mut m, eg) = haus();
+    let set = m
+        .element(m.run(eg).unwrap().segments[0])
+        .unwrap()
+        .layer_set
+        .unwrap();
+    let mut s = m.layer_set(set).unwrap().clone();
+    let i = s
+        .layers
+        .iter()
+        .position(|l| {
+            m.material(l.material)
+                .is_some_and(|x| x.category == crate::MatCategory::Insulation)
+        })
+        .unwrap();
+    let mut lage = s.layers[i];
+    lage.thickness *= 0.5;
+    s.layers[i] = lage;
+    s.layers.insert(i, lage);
+    m.begin("zwei Lagen");
+    assert!(m.set_layer_set(set, s));
+    m.commit();
+    let id = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    let rows: Vec<_> = mit_loch(&m)
+        .into_iter()
+        .filter(|r| r.material == lage.material)
+        .collect();
+    assert!(rows.len() >= 2, "{}", rows.len());
+    for r in &rows {
+        assert!(
+            r.holes.iter().all(|h| !h.vob() && h.total < 2.5e6),
+            "{} Schicht {}: {:?}",
+            r.number,
+            r.layer,
+            r.holes
+        );
+        summe_stimmt(&m, r);
+    }
+    let sched = schedule(&m);
+    let wdvs: Vec<_> = sched
+        .auto
+        .iter()
+        .filter(|a| a.element == id && a.key == WDVS)
+        .collect();
+    assert_eq!(wdvs.len(), 1);
+    let q = crate::qto::run_qto(&m, eg);
+    let h = &q[0].layers[i].holes[0];
+    assert!(
+        (wdvs[0].value - (2.0 * h.height + h.width)).abs() < 1e-6,
+        "{} ≠ {}",
+        wdvs[0].value,
+        2.0 * h.height + h.width
+    );
+}
+
+/// Review W24 B2: In der Bestellsicht folgt die Summe nach Baustoff den
+/// Zeilen. Ohne „Öffnungen abziehen ab“ übermisst sie das Fenster 3,00 ×
+/// 1,51 m wie die Zeilen; der Unterschied zur VOB-Summe ist der der Zeilen.
+#[test]
+fn summe_nach_baustoff_wie_zeilen() {
+    let (mut m, eg) = haus();
+    m.add_opening(fenster(&m, eg, (3000.0, 6000.0))).unwrap();
+    let sched = schedule(&m);
+    let rows = mit_loch(&m);
+    let mut geprueft = 0;
+    for x in &sched.buildings[0].by_material {
+        let zeilen: Vec<_> = rows.iter().filter(|r| r.material == x.material).collect();
+        if zeilen.is_empty() {
+            continue;
+        }
+        let mehr = |b: Bezug| -> f64 {
+            zeilen
+                .iter()
+                .map(|r| {
+                    let z = 1.0 + crate::rechenweg::zuschlag(&m, r) / 100.0;
+                    anzeige(&m, r, b, Modus::Bestellung) / z - crate::rechenweg::wert(r, b)
+                })
+                .sum()
+        };
+        let (v0, a0) = x.in_sicht(Modus::Vob);
+        let (v1, a1) = x.in_sicht(Modus::Bestellung);
+        let dv = mehr(Bezug::Volumen);
+        assert!(dv > 0.0, "{:?}", x.material);
+        assert!((v1 - v0 - dv).abs() < 1.0, "{} ≠ {dv}", v1 - v0);
+        if let (Some(a0), Some(a1)) = (a0, a1) {
+            let da = mehr(Bezug::Flaeche);
+            assert!(da > 0.0);
+            assert!((a1 - a0 - da).abs() < 1.0, "{} ≠ {da}", a1 - a0);
+        }
+        geprueft += 1;
+    }
+    assert!(geprueft >= 2, "{geprueft}");
+}

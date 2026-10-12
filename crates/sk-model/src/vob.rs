@@ -3,11 +3,14 @@
 //! Aussparung in dieser Schicht größer als 2,5 m² ist (DIN 18330, 18345,
 //! 18350, 18363 je Abschnitt 5); kleinere werden übermessen. Teilstücke
 //! einer Ecköffnung oder einer geschossübergreifenden Öffnung sind eine
-//! Aussparung: Die Schwelle gilt für ihre Summe im selben Baustoff.
+//! Aussparung: Die Schwelle gilt für ihre Summe in derselben Schicht des
+//! Wandtyps. Jede Schicht hat ihr eigenes Loch (vob/oeffnung-vorgabe.md
+//! §2): Zwei Lagen aus demselben Baustoff, etwa Dämmung 2 × 70 mm, werden
+//! je für sich gegen die Grenze geprüft (Review W24 B1).
 //!
 //! Das Volumen der Mengenzeile verliert ein Loch nur über 0,5 m³ (DIN
 //! 18330, 18331 Abschnitt 5, Kosten H79-1), ebenfalls je Aussparung und
-//! Baustoff. Das geometrische Volumen (`LayerQto.volume`) zieht jedes Loch
+//! Schicht. Das geometrische Volumen (`LayerQto.volume`) zieht jedes Loch
 //! ab; das bleibt so.
 
 use crate::qto::{ElementQto, LayerQto, StoreyQto};
@@ -29,9 +32,9 @@ pub struct Loch {
     pub area: f64,
     /// Volumen dieses Teilstücks (mm³), geometrisch abgezogen.
     pub volume: f64,
-    /// Fläche der ganzen Aussparung im selben Baustoff, alle Teilstücke.
+    /// Fläche der ganzen Aussparung in derselben Schicht, alle Teilstücke.
     pub total: f64,
-    /// Volumen der ganzen Aussparung im selben Baustoff (mm³).
+    /// Volumen der ganzen Aussparung in derselben Schicht (mm³).
     pub total_vol: f64,
 }
 
@@ -65,9 +68,9 @@ pub fn ueber_grenze_vol(v: f64) -> bool {
     (v / 1e6).round() > UEBERMESSEN_BIS_VOL / 1e6
 }
 
-/// Lochfläche und -volumen je Öffnung und Baustoff über alle Wände der
-/// Geschosse.
-pub(crate) type Summen = HashMap<(ElementId, MaterialId), (f64, f64)>;
+/// Lochfläche und -volumen je Öffnung und Schicht (Stelle im Wandtyp und
+/// Baustoff) über alle Wände der Geschosse.
+pub(crate) type Summen = HashMap<(ElementId, usize, MaterialId), (f64, f64)>;
 
 pub(crate) fn summen(storeys: &[StoreyQto]) -> Summen {
     let mut s = Summen::new();
@@ -78,9 +81,9 @@ pub(crate) fn summen(storeys: &[StoreyQto]) -> Summen {
         let Some(ElementQto::Wall(w)) = &r.q else {
             continue;
         };
-        for l in &w.layers {
+        for (i, l) in w.layers.iter().enumerate() {
             for h in &l.holes {
-                let x = s.entry((h.opening, l.material)).or_default();
+                let x = s.entry((h.opening, i, l.material)).or_default();
                 x.0 += h.area;
                 x.1 += h.volume;
             }
@@ -89,13 +92,13 @@ pub(crate) fn summen(storeys: &[StoreyQto]) -> Summen {
     s
 }
 
-/// Die Löcher einer Wandschicht mit der Fläche ihrer ganzen Aussparung.
-pub(crate) fn loecher(l: &LayerQto, s: &Summen) -> Vec<Loch> {
+/// Die Löcher der Wandschicht `i` mit der Fläche ihrer ganzen Aussparung.
+pub(crate) fn loecher(l: &LayerQto, i: usize, s: &Summen) -> Vec<Loch> {
     l.holes
         .iter()
         .map(|h| {
             let (total, total_vol) = s
-                .get(&(h.opening, l.material))
+                .get(&(h.opening, i, l.material))
                 .copied()
                 .unwrap_or((h.area, h.volume));
             Loch {
@@ -124,6 +127,20 @@ pub fn uebermessen_vol(loecher: &[Loch]) -> f64 {
         .filter(|h| !h.vob_volumen())
         .map(|h| h.volume)
         .sum()
+}
+
+/// Mehrmenge der Bestellung gegenüber VOB/C vor dem Zuschlag (Fläche mm²,
+/// Volumen mm³): Öffnungen ab der Größe `ab` des Baustoffs abgezogen,
+/// sonst übermessen. Gilt für die Mengenzeile wie für die Summe nach
+/// Baustoff.
+pub fn bestell_mehr(loecher: &[Loch], ab: Option<f64>) -> (f64, f64) {
+    let summe = |f: &dyn Fn(&Loch) -> bool, v: &dyn Fn(&Loch) -> f64| -> f64 {
+        loecher.iter().filter(|h| f(h)).map(v).sum()
+    };
+    (
+        summe(&|h| h.vob(), &|h| h.area) - summe(&|h| h.bestellung(ab), &|h| h.area),
+        summe(&|h| !h.bestellung(ab), &|h| h.volume) - summe(&|h| !h.vob_volumen(), &|h| h.volume),
+    )
 }
 
 #[cfg(test)]

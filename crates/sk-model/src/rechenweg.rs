@@ -164,19 +164,10 @@ fn ab(model: &Model, r: &LayerRow) -> Option<f64> {
 /// Öffnungen nach der Regel des Baustoffs statt nach VOB; das Volumen
 /// mit den übermessenen Öffnungen.
 fn vor_zuschlag(model: &Model, r: &LayerRow, b: Bezug) -> f64 {
-    let ab = ab(model, r);
-    let summe = |f: &dyn Fn(&vob::Loch) -> bool, v: &dyn Fn(&vob::Loch) -> f64| -> f64 {
-        r.holes.iter().filter(|h| f(h)).map(v).sum()
-    };
+    let (da, dv) = vob::bestell_mehr(&r.holes, ab(model, r));
     match b {
-        Bezug::Flaeche => {
-            wert(r, b) + summe(&|h| h.vob(), &|h| h.area)
-                - summe(&|h| h.bestellung(ab), &|h| h.area)
-        }
-        Bezug::Volumen => {
-            wert(r, b) + summe(&|h| !h.bestellung(ab), &|h| h.volume)
-                - summe(&|h| !h.vob_volumen(), &|h| h.volume)
-        }
+        Bezug::Flaeche => wert(r, b) + da,
+        Bezug::Volumen => wert(r, b) + dv,
         Bezug::Laenge => wert(r, b),
     }
 }
@@ -400,7 +391,8 @@ fn wand_flaeche(model: &Model, r: &LayerRow, p: &LayerParts) -> Vec<Term> {
 /// (DIN 18330, 18331), in der Bestellung nach der Regel des Baustoffs.
 fn loch_terme(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Vec<Term> {
     let ab = ab(model, r);
-    r.holes
+    let mut out: Vec<Term> = r
+        .holes
         .iter()
         .map(|h| {
             let name = model.element(h.opening).map_or("", |e| e.number.as_str());
@@ -448,7 +440,17 @@ fn loch_terme(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Vec<Term> 
                 }
             }
         })
-        .collect()
+        .collect();
+    // Innentüren ohne Laibung: die Umfassungszarge deckt sie (Integration
+    // zu Review W24, Hinweis 4)
+    if b == Bezug::Flaeche && r.category == Category::InteriorWall && !r.holes.is_empty() {
+        out.push(Term {
+            text: "Innentür: keine Laibung, die Umfassungszarge deckt sie".into(),
+            wert: 0.0,
+            art: Art::Hinweis,
+        });
+    }
+    out
 }
 
 /// Volumen einer Wandschicht: Grundfläche × Höhe, Abzüge und Zuschläge.

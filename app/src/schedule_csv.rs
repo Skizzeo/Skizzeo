@@ -259,6 +259,7 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
             // in der Bestellsicht mit dem Zuschlag des Baustoffs, wie nach
             // Geschoss (Review #77, Nachtrag A)
             let zu = zu_faktor(m, x.material, modus);
+            let (v, a) = x.in_sicht(modus);
             row([
                 &gb,
                 "Summe nach Baustoff",
@@ -267,11 +268,11 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                 "",
                 "",
                 &x.length.map_or(String::new(), |l| len(l * zu)),
-                &x.area.map_or(String::new(), |a| area(a * zu)),
+                &a.map_or(String::new(), |a| area(a * zu)),
                 &if x.length.is_some() {
                     String::new()
                 } else {
-                    vol(x.volume * zu)
+                    vol(v * zu)
                 },
                 "",
             ]);
@@ -593,6 +594,7 @@ fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
             let name = m
                 .material(x.material)
                 .map_or(String::new(), |y| y.name.clone());
+            let (v, a) = x.in_sicht(modus);
             row([
                 &nr,
                 "Summe nach Baustoff",
@@ -601,11 +603,11 @@ fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                 "",
                 &x.length.map_or(String::new(), |l| len(l * zu(x.material))),
                 "",
-                &x.area.map_or(String::new(), |a| area(a * zu(x.material))),
+                &a.map_or(String::new(), |a| area(a * zu(x.material))),
                 &if x.length.is_some() {
                     String::new()
                 } else {
-                    vol(x.volume * zu(x.material))
+                    vol(v * zu(x.material))
                 },
                 "",
             ]);

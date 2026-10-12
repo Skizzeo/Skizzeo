@@ -1448,6 +1448,23 @@ pub struct MaterialSum {
     pub area: Option<f64>,
     /// Länge (mm), wenn der Baustoff nur in m abgerechnet wird (Blech).
     pub length: Option<f64>,
+    /// Mehrmenge der Bestellsicht vor dem Zuschlag (Fläche mm², Volumen
+    /// mm³): Öffnungen nach „Öffnungen abziehen ab“ des Baustoffs statt
+    /// nach VOB/C, wie in den Mengenzeilen (Review W24 B2).
+    pub bestell: (f64, f64),
+}
+
+impl MaterialSum {
+    /// Volumen und Fläche in der Sicht `modus`, vor dem Verschnittzuschlag.
+    pub fn in_sicht(&self, modus: crate::rechenweg::Modus) -> (f64, Option<f64>) {
+        match modus {
+            crate::rechenweg::Modus::Vob => (self.volume, self.area),
+            crate::rechenweg::Modus::Bestellung => (
+                self.volume + self.bestell.1,
+                self.area.map(|a| a + self.bestell.0),
+            ),
+        }
+    }
 }
 
 /// Anteil eines Bauteils an einem Gewerk bzw. einer Kostengruppe: bei
@@ -2392,7 +2409,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 ElementQto::Wall(w) => w
                     .layers
                     .get(i)
-                    .map(|l| crate::vob::loecher(l, &summen))
+                    .map(|l| crate::vob::loecher(l, i, &summen))
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };
@@ -2599,8 +2616,10 @@ fn kg_sums(rows: Vec<LayerRow>) -> Vec<KgSum> {
 /// Summe nach Baustoff über alle Bauteile mit Körper; Dämmung auch als Fläche.
 fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
     let mut sums: Vec<MaterialSum> = Vec::new();
-    // Öffnungen nach VOB/C wie in den Mengenzeilen
+    // Öffnungen nach VOB/C wie in den Mengenzeilen; in der Bestellsicht
+    // nach dem Baustoff (Mehrmenge je Baustoff)
     let summen = crate::vob::summen(storeys);
+    let mut mehr: HashMap<MaterialId, (f64, f64)> = HashMap::new();
     let mut add = |m: MaterialId, v: f64, a: f64, len: Option<f64>| {
         let ins = model
             .material(m)
@@ -2623,6 +2642,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 volume: v,
                 area,
                 length: len,
+                bestell: (0.0, 0.0),
             }),
         }
     };
@@ -2664,19 +2684,26 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 }
             }
             (ElementQto::Wall(w), _) => {
-                for l in &w.layers {
+                for (i, l) in w.layers.iter().enumerate() {
                     // Luftschicht ohne Körper: keine Summe „Luft“ (K4)
                     let air = model
                         .material(l.material)
                         .is_some_and(|x| x.category == MatCategory::Air);
                     if !air {
-                        let h = crate::vob::loecher(l, &summen);
+                        let h = crate::vob::loecher(l, i, &summen);
                         add(
                             l.material,
                             l.volume + crate::vob::uebermessen_vol(&h),
                             l.side_area - crate::vob::abzug(&h),
                             None,
                         );
+                        let ab = model
+                            .material(l.material)
+                            .and_then(crate::matprop::opening_from);
+                        let (da, dv) = crate::vob::bestell_mehr(&h, ab);
+                        let x = mehr.entry(l.material).or_insert((0.0, 0.0));
+                        x.0 += da;
+                        x.1 += dv;
                     }
                 }
                 // Fußpunkt aus Schaumglas (W2): eigener Baustoff
@@ -2705,6 +2732,11 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             }
             (q, Some(m)) => add(m, q.volume(), 0.0, None),
             _ => {}
+        }
+    }
+    for s in &mut sums {
+        if let Some(x) = mehr.get(&s.material) {
+            s.bestell = *x;
         }
     }
     sums.sort_by_key(|s| {

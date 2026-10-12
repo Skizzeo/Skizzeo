@@ -4,7 +4,8 @@
 //! gesondert abgerechnet, auch wenn die Öffnung übermessen wird; bis 1 m
 //! Tiefe in m. Unten zählt keine Laibung: dort sitzt die Fensterbank
 //! (eigene Position) oder die Schwelle. Dazu die Diagonalbewehrung des WDVS
-//! an den Öffnungsecken.
+//! an den Öffnungsecken. Innentüren bekommen keine Laibung: die
+//! Umfassungszarge deckt sie (Integration zu Review W24).
 //!
 //! Träger jeder Menge ist die Öffnung selbst; so gelten Gebäude, Geschoss
 //! und Umfang wie bei jeder Mengenzeile.
@@ -34,7 +35,7 @@ pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
     (
         INNER,
         "m",
-        "Innenlaibung der Außenwand links, rechts und oben, Tiefe bis zum Element (Putz DIN 18350, Maler 18363)",
+        "Innenlaibung der Außenwand links, rechts und oben, Tiefe bis zum Element (Putz DIN 18350, Maler 18363); Innentüren ohne Laibung, die Umfassungszarge deckt sie",
     ),
     (
         FACING,
@@ -108,6 +109,10 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             continue;
         }
         let layers = model.element_layers(r.element);
+        // je Wand, Öffnung und Art eine Laibung, auch wenn mehrere Lagen
+        // dieselbe Art zeigen (Dämmung 2 × 70 mm, Unter- und Oberputz;
+        // Review W24 B1)
+        let mut gezaehlt: Vec<(ElementId, &'static str)> = Vec::new();
         for (i, l) in w.layers.iter().enumerate() {
             let Some(key) = art(model, &layers, i) else {
                 continue;
@@ -117,6 +122,10 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
                     bruestung.push(h.opening);
                 }
                 let k = (h.opening, key);
+                if gezaehlt.contains(&k) {
+                    continue;
+                }
+                gezaehlt.push(k);
                 // `j` ist die Stelle in `sum`, `i` bleibt die Schicht
                 // (Kosten H-L1: sonst falsche Schicht und Absturz)
                 let j = match sum.iter().position(|x| x.0 == k) {
