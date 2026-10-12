@@ -2012,6 +2012,59 @@ fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
     }));
 }
 
+/// Raumbuch RB4: Ausbau innen bei `n` Häusern (je drei Räume) in 3D, mit
+/// dem Schalter aus (nur Estrich) und an: erstes Netz, Loslassen nach dem
+/// Verschieben einer Innenwand (Schritt schließen und Netz neu) und ein
+/// Netz ohne Änderung.
+#[test]
+#[ignore]
+fn perf_ausbau_innen() {
+    println!();
+    println!(
+        "{:>6} {:>6} {:>4} {:>9} {:>9} {:>8} {:>9}",
+        "Häuser", "Räume", "an", "erstes", "Loslassen", "geprüft", "gleich"
+    );
+    for n in [1, 100, 1000] {
+        for an in [false, true] {
+            let mut s = town_with_interior(n);
+            let st = s.active_storey();
+            let raeume = s.model().spaces(st).len();
+            s.set_view_finish(2, an);
+            let t0 = Instant::now();
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+            let erstes = t0.elapsed().as_secs_f64() * 1000.0;
+            let iw = s
+                .model()
+                .runs()
+                .iter()
+                .find(|(_, r)| r.storey == st && !r.closed);
+            let iw = iw.unwrap().0;
+            let orig = s.model().run(iw).unwrap().points.clone();
+            let (mut los, mut geprueft) = (Vec::new(), 0);
+            for k in 0..7 {
+                let d = vec3(-100.0 - 10.0 * k as f64, 0.0, 0.0);
+                let pts: Vec<sk_math::Vec3> = orig.iter().map(|p| *p + d).collect();
+                s.begin("Wand verschieben");
+                s.set_run_points(iw, &pts);
+                let g0 = s.ausbau_geprueft();
+                let t = Instant::now();
+                s.commit();
+                std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+                los.push(t.elapsed().as_secs_f64() * 1000.0);
+                geprueft = geprueft.max(s.ausbau_geprueft() - g0);
+            }
+            let (los, ..) = median(&mut los);
+            let gleich = time(10, || {
+                std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+            });
+            println!(
+                "{n:>6} {raeume:>6} {an:>4} {erstes:>9.2} {los:>9.3} {geprueft:>8} {gleich:>9.3}"
+            );
+        }
+    }
+    println!("Zeiten in ms; Loslassen samt Netz der 3D-Ansicht, geprüft: Räume je Loslassen.");
+}
+
 /// Review #99 B1/B2: Innentüren bei `n` Häusern (je zwei Innenwände mit
 /// einer Tür): Griffe je Mausbewegung, Fang des Innentür-Werkzeugs, Ziehen
 /// am Griff (Aufschlag wechselt je Bewegung, dazu der neue Griff) und
