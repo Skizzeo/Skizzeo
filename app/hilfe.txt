@@ -41,7 +41,7 @@ Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht den Zu
 Starten | Knopf „Innenwand“ unter „Gebäude“; sie entsteht im aktiven Geschoss, nicht gestapelt, Bezugsseite ist die Achse
 Zeichnen | wie Wände zeichnen, Richtung in 45°-Schritten („frei“ im Paneel oder **R**); Länge tippen und **Enter**, **Tab** für den Winkel
 Fangen | der Cursor rastet an Wandflächen und freien Wandenden ein, die Fläche leuchtet
-Lichtes Maß | auf einer Wandfläche vor dem ersten Klick zeigt die Pille das lichte Maß zur nächsten Wand; Zahl tippen, **Enter** setzt den Anfang genau
+Lichtes Maß | auf einer Wandfläche vor dem ersten Klick zeigt das Maßfeld am Mauszeiger das lichte Maß zur nächsten Wand; Zahl tippen, **Enter** setzt den Anfang genau
 Beenden | Klick auf eine quer liegende Wandfläche oder ein Wandende, sonst **Enter** oder Doppelklick
 Ecke bilden | Wand wählen, „Ecke bilden“ im Paneel, dann Klick auf die zweite Wand auf der Seite, die bleibt
 Verlängern | Wand wählen, „Verlängern“, Klick auf die Zielwand; weitere Klicks verlängern weitere Wände bis dorthin, **Esc** beendet
@@ -160,15 +160,15 @@ Einschalten | Knopf „Geschossmanager“ unten links, im Fenster Haken „Flach
 Aufkantung | Höhe im Geschossmanager: Linie „OK Aufkantung“ ziehen oder auf ihre Maßzahl klicken
 Dämmung | Dachaufbau anklicken, im Paneel unter „Aufbau“ das Feld „Dämmung“ tippen
 Gefälle | Zahlenfeld „Gefälle“ in %, 1 bis 10; 0 = ohne Gefälle
-Abläufe | Skizzeo schlägt sie vor, beim Rechteck je zwei an beiden Längsseiten nahe den Ecken; „Abläufe vorschlagen“ setzt sie neu; im Grundriss stehen sie als Punkte an der Aufkantung
-Ablauf ziehen | Dachaufbau wählen, im Grundriss einen Punkt an der Aufkantung entlang ziehen; der Gefälleplan geht mit, **Esc** bricht ab
+Abläufe | Skizzeo schlägt sie vor, beim Rechteck je zwei an beiden Längsseiten nahe den Ecken; „Abläufe vorschlagen“ setzt sie neu; nur im Grundriss der Ebene FD stehen sie als Punkte an der Aufkantung
+Ablauf ziehen | Dachaufbau wählen, im Grundriss der Ebene FD einen Punkt an der Aufkantung entlang ziehen; der Gefälleplan geht mit, **Esc** bricht ab
 Ablauf dazu, weg | Punkt anklicken, dann Rechtsklick oder im Abschnitt „Gefälle“ „Ablauf hinzufügen“ bzw. „Ablauf löschen“; der letzte bleibt
 Ausschalten | Haken weg; **Strg+Z** holt das Dach zurück
 
 [thema] id=geschosse titel="Geschosse"
 Bearbeiten | Knopf „Geschossmanager“ unten links öffnet das Geschossfenster links neben dem Hauptfenster; dort wird gezogen und getippt, das Modell bleibt ganz zu sehen
 Fenster | angedockt wie das Mengenfenster; wegziehen löst es, etwa auf einen zweiten Bildschirm; zurück an den Rand rastet es ein
-Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ im Geschossmanager
+Aktives Geschoss | Klick auf „Fundament“, „EG“, „OG“ oder „FD“ (Flachdach) im Geschossmanager
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
 Höhe ziehen | Griff an einer Geschosslinie; Fang 1 cm, mit **Umschalt** 5 cm, **Esc** bricht ab
 Höhe als Zahl | auf eine Maßzahl klicken, Wert in Metern, **Enter**
@@ -312,16 +312,16 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 Übernehmen | **OK**; Abbrechen verwirft
 
 [thema] id=mengen titel="Mengen, Kosten, AVA"
-Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“
+Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“; wegziehen löst das Fenster, an der Kante rastet es wieder ein
 Karten | Mengen, Kosten und AVA; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
 Gebäude | ab zwei Gebäuden wählt das Feld vor den Chips ein Gebäude oder das ganze Projekt
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
 Gliedern | „Gliedern“ nach Geschoss oder Gewerk, bei Kosten auch Kostengruppe
+Sicht | Umschalter „VOB | Bestellung“: „VOB“ zeigt die Abrechnungsmengen nach VOB/C, Öffnungen bis 2,5 m² übermessen; „Bestellung“ die Bestellmengen mit Verschnitt. Nach Gewerk klappt das Dreieck vor einer Schichtzeile ihren Rechenweg auf
 Gewerksumme | jede Fläche einmal je Bauteil; in m Abgerechnetes (Attikablech) zählt ohne Volumen
 Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es; Doppelklick holt es ins Bild
 Löschen | **Entf** oder Rechtsklick auf eine Zeile
-Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zeile nennt Gebäude und Geschosse
-Fenster | wegziehen löst es, an der Kante rastet es wieder ein
+Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zeile nennt Sicht, Gebäude und Geschosse
 
 [thema] id=kosten titel="Kosten"
 Preise | „Material“ oder „Material + Lohn“; die Summe zeigt netto, brutto mit MwSt. und den Lohnanteil. Referenzpreise: Stand 10/2026, unverbindlich, netto

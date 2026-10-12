@@ -28,7 +28,8 @@ pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
 
 /// Wie [`csv_grouped`] in der Sicht der Mengen (VOB oder Bestellung, wie
 /// der Bildschirm), mit der Kopfzeile des Umfangs als erster Zeile
-/// (paket-ka1.md §3), nach dem BOM.
+/// (paket-ka1.md §3), nach dem BOM. Vorn steht die Sicht, damit eine
+/// Bestellliste nicht als Aufmaß durchgeht (Bedienbarkeit 38.3).
 pub fn csv_mit_kopf(
     m: &Model,
     sched: &Schedule,
@@ -37,9 +38,20 @@ pub fn csv_mit_kopf(
 ) -> Vec<u8> {
     let mut b = csv_sicht(m, sched, by, modus);
     debug_assert!(b.starts_with(&[0xEF, 0xBB, 0xBF]), "CSV mit BOM");
-    let zeile = format!("{}\r\n", csv_field(kopf));
+    let zeile = format!(
+        "{}\r\n",
+        csv_field(&format!("{} · {kopf}", sicht_name(modus)))
+    );
     b.splice(3..3, zeile.into_bytes());
     b
+}
+
+/// Name der Sicht in der Kopfzeile der Tabelle.
+pub fn sicht_name(modus: Modus) -> &'static str {
+    match modus {
+        Modus::Vob => "VOB-Mengen",
+        Modus::Bestellung => "Bestellmengen mit Verschnitt",
+    }
 }
 
 /// Wie [`csv`] in der Gliederung des Mengenfensters (§12 Prüfpunkt 5).
@@ -364,14 +376,12 @@ fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                     } else {
                         String::new()
                     },
-                    &vol(match modus {
-                        Modus::Vob => t.volume,
-                        Modus::Bestellung => g
-                            .rows
-                            .iter()
-                            .filter_map(|r| Some(r.q.as_ref()?.volume() * fv(r.element)))
-                            .sum(),
-                    }),
+                    // wie die Zeilen nach VOB/C (Bedienbarkeit 38.2)
+                    &vol(g
+                        .rows
+                        .iter()
+                        .filter_map(|r| Some(wand_vol(&faktor, r.element, r.q.as_ref()?.volume())))
+                        .sum()),
                     "",
                 ]);
             }
@@ -383,7 +393,8 @@ fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                         format!("{} {}, Höhe {} m", title, r.number, de(w.height / 1e3, 3)),
                         len(w.list_length),
                         String::new(),
-                        vol(w.volume),
+                        // mit den übermessenen Öffnungen (38.2)
+                        vol(w.volume + faktor.get(&r.element).map_or(0.0, |f| f.2)),
                         offset_note(m, r.element).unwrap_or_default(),
                     ),
                     Some(ElementQto::Footing(f)) => (
