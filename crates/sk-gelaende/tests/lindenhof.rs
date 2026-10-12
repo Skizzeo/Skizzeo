@@ -7,6 +7,7 @@ use sk_gelaende::codes::Codetabelle;
 use sk_gelaende::lesen::{lesen, Lage, Spalte, Trenner, Zeichensatz};
 use sk_gelaende::linien::{hoehenlinien, strecken};
 use sk_gelaende::pruefen::pruefen;
+use sk_gelaende::volumen::mittel;
 use sk_gelaende::{netz, Netz, Rand};
 
 const CSV: &[u8] = include_bytes!("daten/hoehenaufmass-lindenhof-7.csv");
@@ -122,6 +123,11 @@ fn gelaende_wie_soll() {
                 "Hausecke {x} {y}: {z:.4} statt {soll}"
             );
         }
+        let m = mittel(&n, &[[7.0, 6.0], [17.0, 6.0], [17.0, 14.0], [7.0, 14.0]]).unwrap();
+        assert!(
+            (m - 24.753).abs() <= 0.0005,
+            "Mittel unter der Platte {m:.4}"
+        );
         assert_eq!(strecken(&n, 0.25), 139);
         let l = hoehenlinien(&n, 0.25);
         assert!(l.iter().all(|x| x.punkte.len() >= 2));
