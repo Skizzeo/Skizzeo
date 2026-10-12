@@ -12,7 +12,7 @@ use crate::App;
 use sk_math::vec3;
 use sk_model::oeffnung::OpeningKind;
 use sk_platform::{Event, MouseButton};
-use werkzeug::{fangen, Fang, Werkzeug};
+use werkzeug::{fangen, Fang, Klick, Werkzeug};
 
 /// Fangabstand an Höhenlinien und Wandenden in Bildschirmpixeln (96 dpi).
 const FANG_PX: f64 = 10.0;
@@ -103,37 +103,23 @@ impl App {
         else {
             return false;
         };
+        let m = self.scene.model();
         let Some(w) = self.tool.oeffnung.as_mut() else {
             return false;
         };
         if w.hover.is_none() {
             return false;
         }
-        let erste = w.erste.clone();
-        let mut abgelehnt = None;
-        match w.klick() {
-            Some(o) => match self.scene.add_opening(o.clone()) {
-                Some(_) => self.upload_model(),
-                // Das Modell lehnt ab (Review #86, H4): die erste Ecke
-                // bleibt, die Statuszeile sagt warum
-                None => {
-                    let m = self.scene.model();
-                    abgelehnt = Some(
-                        m.opening_fault(&o, None)
-                            .map_or("Öffnung ungültig".to_string(), |f| f.text(m)),
-                    );
-                    if let Some(w) = self.tool.oeffnung.as_mut() {
-                        w.erste = erste;
-                    }
+        // Lehnt das Modell ab, bleibt die erste Ecke und die Statuszeile
+        // sagt warum (Review #86, H4)
+        match w.setzen(m) {
+            Klick::Oeffnung(o) => {
+                if self.scene.add_opening(o).is_some() {
+                    self.upload_model();
                 }
-            },
-            None if erste.is_some() => {
-                abgelehnt = Some("Gegenecke passt nicht zur ersten Ecke".to_string());
             }
-            None => {}
-        }
-        if let Some(t) = abgelehnt {
-            self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME);
+            Klick::Abgelehnt(t) => self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME),
+            Klick::Nichts | Klick::Erste => {}
         }
         let hover = self.tool.oeffnung.as_ref().and_then(|w| w.hover.clone());
         self.oeffnung_vorschau(hover);
@@ -145,9 +131,7 @@ impl App {
     /// und die Vorschau zeigten auf Flächen, die es so nicht mehr gibt.
     pub(crate) fn oeffnung_neu(&mut self) {
         if let Some(w) = self.tool.oeffnung.as_mut() {
-            w.erste = None;
-            w.hover = None;
-            w.vorschau = Default::default();
+            w.neu();
             self.redraw = true;
         }
     }

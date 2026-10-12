@@ -11,7 +11,7 @@
 
 use sk_math::{vec3, Vec3};
 use sk_model::oeffnung::{FaceLine, HeightRef, Opening, OpeningKind, OuterFace};
-use sk_model::{LevelEdge, LevelRef};
+use sk_model::{LevelEdge, LevelRef, Model};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
@@ -154,6 +154,19 @@ pub struct Werkzeug {
     pub vorschau: Bild,
 }
 
+/// Was ein Klick mit [`Werkzeug::setzen`] ergibt.
+#[derive(Debug, PartialEq)]
+pub enum Klick {
+    /// Keine Fläche unter der Maus.
+    Nichts,
+    /// Die erste Ecke steht.
+    Erste,
+    /// Die Öffnung, die das Modell annimmt.
+    Oeffnung(Opening),
+    /// Abgelehnt, mit Grund; die erste Ecke bleibt.
+    Abgelehnt(String),
+}
+
 /// Was die Vorschau zeichnet: Höhenlinien (gestrichelt, obenauf) und den
 /// Umriss der Öffnung.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -191,6 +204,36 @@ impl Werkzeug {
                 o
             }
         }
+    }
+
+    /// Klick mit Prüfung am Modell (Review #86, H4): Lehnt das Modell die
+    /// Öffnung ab oder passt die Gegenecke nicht zur ersten Ecke, bleibt die
+    /// erste Ecke und der Grund kommt zurück.
+    pub fn setzen(&mut self, m: &Model) -> Klick {
+        let erste = self.erste.clone();
+        match self.klick() {
+            Some(o) => match m.opening_fault(&o, None) {
+                None => Klick::Oeffnung(o),
+                Some(f) => {
+                    self.erste = erste;
+                    Klick::Abgelehnt(f.text(m))
+                }
+            },
+            None if erste.is_some() => {
+                Klick::Abgelehnt("Gegenecke passt nicht zur ersten Ecke".into())
+            }
+            None if self.erste.is_some() => Klick::Erste,
+            None => Klick::Nichts,
+        }
+    }
+
+    /// Nach Rückgängig, Wiederherstellen oder Fokusverlust (Review #86,
+    /// H5): Ecke, Fang und Vorschau zeigten auf Flächen, die es so nicht
+    /// mehr gibt.
+    pub fn neu(&mut self) {
+        self.erste = None;
+        self.hover = None;
+        self.vorschau = Bild::default();
     }
 
     /// Esc: nimmt die erste Ecke zurück (`true`); ohne sie schließt das
@@ -412,5 +455,48 @@ mod tests {
         w.hover = Some(fang(&m, eg, 0, 3000.0, el));
         w.klick();
         assert!(w.esc() && !w.esc());
+    }
+
+    /// Review #86, H4 und H5: Eine abgelehnte Gegenecke behält die erste
+    /// Ecke und nennt den Grund; `neu` setzt Ecke, Fang und Vorschau zurück.
+    #[test]
+    fn ablehnung_und_neu() {
+        let (mut m, eg, _) = haus();
+        let el = m
+            .storey(m.outer_face(eg, 0).unwrap().storey)
+            .unwrap()
+            .elevation;
+        let mut w = Werkzeug::new(OpeningKind::Window);
+        assert_eq!(w.setzen(&m), Klick::Nichts);
+        w.hover = Some(fang(&m, eg, 0, 3000.0, el + 875.0));
+        assert_eq!(w.setzen(&m), Klick::Erste);
+        w.hover = Some(fang(&m, eg, 0, 4000.0, el + 2385.0));
+        let Klick::Oeffnung(o) = w.setzen(&m) else {
+            panic!("Öffnung erwartet");
+        };
+        let nr = m
+            .add_opening(o)
+            .map(|id| m.element(id).unwrap().number.clone());
+        // Dieselbe Stelle noch einmal: überschneidet die erste
+        w.hover = Some(fang(&m, eg, 0, 3500.0, el + 875.0));
+        assert_eq!(w.setzen(&m), Klick::Erste);
+        w.hover = Some(fang(&m, eg, 0, 4500.0, el + 2385.0));
+        assert_eq!(
+            w.setzen(&m),
+            Klick::Abgelehnt(format!("Öffnung überschneidet {}", nr.unwrap()))
+        );
+        assert!(w.erste.is_some(), "erste Ecke bleibt");
+        // Gegenüberliegende Wand: keine Öffnung, die erste Ecke bleibt
+        w.hover = Some(fang(&m, eg, 2, 3000.0, el + 2385.0));
+        assert_eq!(
+            w.setzen(&m),
+            Klick::Abgelehnt("Gegenecke passt nicht zur ersten Ecke".into())
+        );
+        assert!(w.erste.is_some());
+        w.vorschau = w.bild(|f| m.face_lines(f.storey));
+        assert_ne!(w.vorschau, Bild::default());
+        w.neu();
+        assert!(w.erste.is_none() && w.hover.is_none());
+        assert_eq!(w.vorschau, Bild::default());
     }
 }

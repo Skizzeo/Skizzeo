@@ -47,6 +47,12 @@ impl App {
         self.sync_levels();
     }
 
+    /// Ende des Ziehens im Geschossmanager: der Schritt geht in den Verlauf.
+    pub(crate) fn level_end(&mut self) {
+        self.scene.commit();
+        self.upload_model();
+    }
+
     /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters.
     pub(crate) fn paint_dialog(&mut self) {
         if !self.ui.dialog {

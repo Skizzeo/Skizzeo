@@ -1331,12 +1331,13 @@ impl App {
     }
 
     /// Das Band lässt sich in allen Ansichten ziehen, nur nicht während einer
-    /// Wandeingabe oder an der Schnittlinie.
+    /// Wandeingabe, im Öffnungswerkzeug oder an der Schnittlinie.
     fn edit_enabled(&self) -> bool {
         !self.tool.is_active()
             && !self.sect.is_busy()
             && self.pick.is_none()
             && !self.nord.is_busy()
+            && self.tool.oeffnung.is_none()
     }
 
     /// Schnittlinie greifen nur im Grundriss und ohne angefangenen Wandzug.
@@ -3529,10 +3530,7 @@ impl App {
         match out.level {
             Some(LevelEvent::Begin(g)) => self.level_begin(g),
             Some(LevelEvent::Move(g, z)) => self.level_move(g, z),
-            Some(LevelEvent::End) => {
-                self.scene.commit();
-                self.upload_model();
-            }
+            Some(LevelEvent::End) => self.level_end(),
             None => {}
         }
         self.redraw |= !out.changed.is_empty() || out.relayout;

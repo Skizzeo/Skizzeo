@@ -443,8 +443,9 @@ fn oeffnungen_in_der_datei() {
 }
 
 /// Review #86 B3: Eine verworfene Zeile hält ihre Nummer und ihre Guid; eine
-/// neue Öffnung bekommt nicht dieselbe Nummer, eine doppelte Guid lehnt die
-/// Datei ab wie sonst.
+/// neue Öffnung bekommt nicht dieselbe Nummer. Trägt sie eine Nummer oder
+/// Guid, die ein gültiges Bauteil hat, entfällt sie mit Hinweis, auch wenn
+/// sie vor ihm steht (L12).
 #[test]
 fn rohe_zeile_haelt_nummer_und_guid() {
     let (mut m, eg, _) = haus(None);
@@ -468,11 +469,24 @@ fn rohe_zeile_haelt_nummer_und_guid() {
     let neu = l.add_opening(fenster(&l, eg, (5000.0, 6000.0))).unwrap();
     assert_ne!(l.element(neu).unwrap().number, nr, "Nummer der rohen Zeile");
     assert_eq!(l.set_number(a, &nr), Err(NumberError::Reserved));
-    // Dieselbe Guid noch einmal: Fehler mit Zeile
-    let guid = m.element(b).unwrap().guid.to_ifc();
+    // Die rohe Zeile mit der Guid bzw. der Nummer von a: sie entfällt
     let a_guid = m.element(a).unwrap().guid.to_ifc();
-    let doppelt = text.replace(zeile, &kaputt).replace(&a_guid, &guid);
-    assert!(szo::read(&doppelt, GuidGen::with_seed(5)).is_err());
+    let a_nr = m.element(a).unwrap().number.clone();
+    let guid = m.element(b).unwrap().guid.to_ifc();
+    let mit_guid = kaputt.replace(&guid, &a_guid);
+    let mit_nr = kaputt.replace(&format!("number=\"{nr}\""), &format!("number=\"{a_nr}\""));
+    for (doppelt, was) in [(mit_guid, "Guid"), (mit_nr, "Nummer")] {
+        // vor die Zeile von a gestellt
+        let ohne = text.replace(&format!("{zeile}\n"), "");
+        let erste = ohne.find("[opening]").unwrap();
+        let datei = format!("{}{doppelt}\n{}", &ohne[..erste], &ohne[erste..]);
+        let l = szo::read(&datei, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(l.hints.len(), 2, "{:?}", l.hints);
+        let h = l.hints.iter().find(|h| h.contains("entfällt")).unwrap();
+        assert!(h.contains(&format!("{was} ")), "{h}");
+        assert_eq!(l.model.element_by_number(&a_nr), Some(a));
+        assert!(!szo::write(&l.model).contains("pts=\"abc\""));
+    }
 }
 
 /// Σ n·A über alle Dreiecke: 0 bei geschlossenem Körper.

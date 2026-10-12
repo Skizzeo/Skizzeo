@@ -4112,12 +4112,12 @@ mod tests {
         assert!(!out.consumed);
     }
 
-    /// Hover und Drücken zeichnen nur den Knopf neu; das Ergebnis gleicht dem
-    /// vollen Neuzeichnen aufs Pixel.
     /// Jede Beschriftung eines Werkzeug- oder Ansichtsknopfs passt mit
     /// echter Schrift samt Rand in ihren Knopf; sonst ragt sie in den
     /// Nachbarn, und das Einzelbild weicht vom Paneel ab (Gate #86:
-    /// „Wandöffnung“ im halben Knopf).
+    /// „Wandöffnung“ im halben Knopf). Liberation unter Linux, sonst die
+    /// Schrift des Systems (Windows: Segoe UI); ohne beide sagt der Test,
+    /// dass er nichts prüft.
     #[test]
     fn beschriftung_passt_in_den_knopf() {
         let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
@@ -4126,18 +4126,24 @@ mod tests {
                 .ok()
                 .and_then(sk_paint::font::Font::parse)
         };
+        let schrift = || match lade("LiberationSans-Bold.ttf") {
+            Some(bold) => Fonts {
+                regular: lade("LiberationSans-Regular.ttf"),
+                bold: Some(bold),
+                italic: None,
+            },
+            None => Fonts::system(),
+        };
+        if schrift().bold.is_none() {
+            eprintln!("beschriftung_passt_in_den_knopf: keine Schrift gefunden, nichts geprüft");
+            return;
+        }
         let th = Theme::dark();
         for scale in [0.6f32, 1.0, 1.25, 2.0] {
             let mut ui = Ui::new(scale, &th);
             ui.building = true;
-            ui.fonts = Fonts {
-                regular: lade("LiberationSans-Regular.ttf"),
-                bold: lade("LiberationSans-Bold.ttf"),
-                italic: None,
-            };
-            let Some(f) = ui.fonts.bold.as_ref() else {
-                return;
-            };
+            ui.fonts = schrift();
+            let f = ui.fonts.bold.as_ref().expect("oben geprüft");
             let px = th.size.font * scale;
             for p in [Panel::Tools, Panel::Views] {
                 for (id, b, label) in ui.buttons(p) {
@@ -4151,6 +4157,8 @@ mod tests {
         }
     }
 
+    /// Hover und Drücken zeichnen nur den Knopf neu; das Ergebnis gleicht dem
+    /// vollen Neuzeichnen aufs Pixel.
     #[test]
     fn knopf_einzeln_neu_gleicht_dem_ganzen_paneel() {
         let th = Theme::dark();
