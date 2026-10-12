@@ -6,17 +6,19 @@
 //! Löcher in ihrer Reihenfolge ([`Rohbau::kanten`]).
 
 use crate::erkennung::{Begrenzung, Kante, RaumForm, Seite};
+use sk_model::oeffnung::FaceSide;
 use sk_model::{ElementId, LevelKind, Model, RunId, WallChain};
 
-/// Art der Öffnung. Bis Grundriss G6 die Innentür in `sk_model::oeffnung::OpeningKind`
-/// bringt, hier mit ihr; dann entfällt dieser Typ.
+/// Art der Öffnung für das Raumbuch. Das Modell kennt die Innentür als Tür
+/// in einer Innenwand (Öffnungen #99), das Raumbuch rechnet sie anders als
+/// die Außentür: Nische über die ganze Wanddicke, keine Laibung.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpeningKind {
     /// Wandöffnung: Fenster, Terrassentür.
     Window,
     /// Türöffnung in der Außenwand: Haustür.
     Door,
-    /// Innentüröffnung.
+    /// Tür in einer Innenwand.
     InnerDoor,
 }
 
@@ -152,6 +154,9 @@ pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
             let Some(o) = model.opening(id) else {
                 continue;
             };
+            // Tür in einer Innenwand: Innentür, Laibung über die ganze
+            // Rohbaudicke (Öffnungen #99)
+            let innen = !h.outer && o.kind == sk_model::oeffnung::OpeningKind::Door;
             let ((u0, u1), (z0, z1)) = h.kasten(schicht < h.shell);
             let (lo, hi) = (u0.max(von), u1.min(bis));
             if hi - lo < 1.0 {
@@ -169,13 +174,24 @@ pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
                 bis: b.min(laenge),
                 uk: z0,
                 ok: z1,
-                tiefe: if aussen {
+                tiefe: if innen {
+                    h.install.outer + h.install.element + h.install.inner
+                } else if aussen {
                     h.install.outer
                 } else {
                     h.install.inner
                 },
-                art: o.kind.into(),
-                aufschlag_hier: None,
+                art: if innen {
+                    OpeningKind::InnerDoor
+                } else {
+                    o.kind.into()
+                },
+                // Das Blatt sitzt auf der Seite des Raums, in den die Tür
+                // aufschlägt (Jörn 12.10. 05:52); Seite wie die der Kante
+                // zur Zeichenrichtung des Segments
+                aufschlag_hier: h
+                    .leaf
+                    .map(|l| (l.side == FaceSide::Left) == (seite == Seite::Links)),
                 weiter: [weiter(z0, z1, true), weiter(z0, z1, false)],
             });
         }
@@ -233,8 +249,8 @@ mod tests {
     use super::*;
     use crate::raeume;
     use sk_math::{vec3, Vec3};
-    use sk_model::oeffnung::{HeightLine, HeightRef, Opening};
-    use sk_model::StoreyId;
+    use sk_model::oeffnung::{Din, HeightLine, HeightRef, Opening, Swing};
+    use sk_model::{Category, LevelRef, RefSide, StoreyId};
 
     /// Haus 10 × 8 m mit zwei Geschossen im Werkstyp (WDVS), Zug im EG.
     fn haus() -> (Model, RunId, StoreyId) {
@@ -265,6 +281,7 @@ mod tests {
             top: HeightRef::Line(st, HeightLine::Lintel),
             reveal: None,
             install: Default::default(),
+            swing: None,
         }
     }
 
@@ -355,6 +372,128 @@ mod tests {
         assert!((a.weiter[1] - (a.ok - oben.z_boden)).abs() < 1e-6, "{a:?}");
         assert!((b.weiter[0] - (unten.z_decke - b.uk)).abs() < 1e-6, "{b:?}");
         assert_eq!(b.weiter[1], 0.0);
+    }
+
+    /// Haus mit Innenwand bei x = 5 m und einer Innentür darin, die nach
+    /// Osten (+x) aufschlägt.
+    fn mit_innentuer() -> (Model, StoreyId, ElementId, f64) {
+        let (mut m, _, st) = haus();
+        let set = m.defaults().interior_wall;
+        let pts = [vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)];
+        let iw = m
+            .add_wall_run(
+                &pts,
+                false,
+                RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let c = m.chain(iw).unwrap();
+        let (x, t) = (5000.0 + c.outer_offset(), c.thickness());
+        let tuer = Opening {
+            kind: sk_model::oeffnung::OpeningKind::Door,
+            bottom: HeightRef::Level(LevelRef::bottom(st)),
+            top: HeightRef::Line(st, HeightLine::Door),
+            // Wand und Pfad laufen in +y, rechts ist +x
+            swing: Some(Swing {
+                side: FaceSide::Right,
+                din: Din::Links,
+            }),
+            ..oeffnung(st, vec![vec3(x, 3000.0, 0.0), vec3(x, 3885.0, 0.0)])
+        };
+        let id = m.add_opening(tuer).unwrap();
+        (m, st, id, t)
+    }
+
+    /// Die Öffnung je Raum, der Raum östlich der Innenwand zuerst.
+    fn ost_west(m: &Model, st: StoreyId) -> Vec<OeffnungAmRaum> {
+        let mut r: Vec<(bool, OeffnungAmRaum)> = raeume(m, st)
+            .into_iter()
+            .map(|f| {
+                let ost = f.mitte.x > 5000.0;
+                let r = Rohbau::neu(m, f);
+                assert_eq!(r.oeffnungen.len(), 1, "{:?}", r.oeffnungen);
+                (ost, r.oeffnungen[0])
+            })
+            .collect();
+        r.sort_by_key(|x| !x.0);
+        assert_eq!(r.len(), 2);
+        assert!(r[0].0 && !r[1].0);
+        r.into_iter().map(|x| x.1).collect()
+    }
+
+    /// Innentür in der Innenwand (Öffnungen #99): Art Innentür, Laibung über
+    /// die ganze Rohbaudicke, ohne Anschlag; aufgeschlagen in den Raum, auf
+    /// dessen Seite das Blatt liegt (Jörn 12.10. 05:52). Kippt der
+    /// Aufschlag, wechselt der Raum; ohne Blatt keiner.
+    #[test]
+    fn innentuer_mit_aufschlag() {
+        let (mut m, st, id, t) = mit_innentuer();
+        let [ost, west] = ost_west(&m, st)[..] else {
+            panic!()
+        };
+        for x in [ost, west] {
+            assert_eq!((x.oeffnung, x.art), (id, OpeningKind::InnerDoor));
+            assert!((x.tiefe - t).abs() < 1e-6, "{x:?}");
+            assert!((x.bis - x.von - 885.0).abs() < 1e-6, "{x:?}");
+            assert_eq!(x.uk, m.storey(st).unwrap().elevation);
+        }
+        assert_eq!(
+            (ost.aufschlag_hier, west.aufschlag_hier),
+            (Some(true), Some(false))
+        );
+        let mut o = m.opening(id).cloned().unwrap();
+        o.swing = o.swing.map(Swing::flipped);
+        assert!(m.set_opening(id, o.clone()));
+        let v = ost_west(&m, st);
+        assert_eq!(
+            (v[0].aufschlag_hier, v[1].aufschlag_hier),
+            (Some(false), Some(true))
+        );
+        o.swing = None;
+        assert!(m.set_opening(id, o));
+        assert!(ost_west(&m, st).iter().all(|x| x.aufschlag_hier.is_none()));
+    }
+
+    /// Die Türnische gehört dem Raum, aus dem man auf das Blatt sieht: Sein
+    /// Belag läuft durch die Laibung bis unter das Blatt, im Aufschlagraum
+    /// keine Nische (Jörn 12.10. 05:52, VOB-Prüfung im Raumbuch §5.5).
+    #[test]
+    fn tuernische_im_raum_ohne_aufschlag() {
+        let (mut m, st, _, t) = mit_innentuer();
+        m.begin("Räume");
+        assert_eq!(crate::abgleichen(&mut m, &[st]), 2);
+        m.commit();
+        for id in m.spaces(st) {
+            m.begin("Ausbau");
+            assert!(crate::ausbau::typen_anlegen(&mut m, id));
+            m.commit();
+        }
+        let formen = raeume(&m, st);
+        assert_eq!(formen.len(), 2);
+        for f in formen {
+            let ost = f.mitte.x > 5000.0;
+            let roh = Rohbau::neu(&m, f);
+            let aus = crate::ausbau::RaumAusbau::fuer(&m, &roh).unwrap();
+            let z = crate::raumbuch::rechnen(&m, &roh, &aus, &Default::default());
+            let boden = z
+                .iter()
+                .find(|z| z.flaeche == crate::raumbuch::Flaeche::Boden)
+                .unwrap();
+            let nische: Vec<_> = boden
+                .terme
+                .iter()
+                .filter(|x| x.text.starts_with("Türnische"))
+                .collect();
+            assert_eq!(nische.len(), 1, "{nische:?}");
+            if ost {
+                assert_eq!(nische[0].wert, 0.0, "{nische:?}");
+            } else {
+                assert!((nische[0].wert - 885.0 * t).abs() < 1e-3, "{nische:?}");
+            }
+        }
     }
 
     #[test]
