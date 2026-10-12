@@ -120,7 +120,7 @@ use sk_ui::{
 };
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::time::Instant;
-use ui::{Draft, Field, FieldRow, Grip, Id, LevelEvent, Panel, Ui, ViewKind};
+use ui::{Draft, Field, FieldRow, Id, LevelEvent, Panel, Ui, ViewKind};
 use wall_edit::WallEdit;
 mod drain_edit;
 use wall_tool::WallTool;
@@ -1331,12 +1331,13 @@ impl App {
     }
 
     /// Das Band lässt sich in allen Ansichten ziehen, nur nicht während einer
-    /// Wandeingabe oder an der Schnittlinie.
+    /// Wandeingabe, im Öffnungswerkzeug oder an der Schnittlinie.
     fn edit_enabled(&self) -> bool {
         !self.tool.is_active()
             && !self.sect.is_busy()
             && self.pick.is_none()
             && !self.nord.is_busy()
+            && self.tool.oeffnung.is_none()
     }
 
     /// Schnittlinie greifen nur im Grundriss und ohne angefangenen Wandzug.
@@ -3527,19 +3528,9 @@ impl App {
         }
         // Ebene ziehen: ein Schritt, das Modell folgt in jedem Bild
         match out.level {
-            Some(LevelEvent::Begin(_)) => self.scene.begin("Geschoss ziehen"),
-            Some(LevelEvent::Move(g, z)) => {
-                match g {
-                    Grip::FoundationBottom => self.scene.drag_foundation_bottom(z),
-                    Grip::Top(id) => self.scene.drag_storey_top(id, z),
-                    Grip::Terrain => self.scene.drag_terrain(z),
-                }
-                self.upload_model();
-            }
-            Some(LevelEvent::End) => {
-                self.scene.commit();
-                self.upload_model();
-            }
+            Some(LevelEvent::Begin(g)) => self.level_begin(g),
+            Some(LevelEvent::Move(g, z)) => self.level_move(g, z),
+            Some(LevelEvent::End) => self.level_end(),
             None => {}
         }
         self.redraw |= !out.changed.is_empty() || out.relayout;

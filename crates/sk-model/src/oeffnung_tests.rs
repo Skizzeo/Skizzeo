@@ -443,8 +443,9 @@ fn oeffnungen_in_der_datei() {
 }
 
 /// Review #86 B3: Eine verworfene Zeile hält ihre Nummer und ihre Guid; eine
-/// neue Öffnung bekommt nicht dieselbe Nummer, eine doppelte Guid lehnt die
-/// Datei ab wie sonst.
+/// neue Öffnung bekommt nicht dieselbe Nummer. Trägt sie eine Nummer oder
+/// Guid, die ein gültiges Bauteil hat, entfällt sie mit Hinweis, auch wenn
+/// sie vor ihm steht (L12).
 #[test]
 fn rohe_zeile_haelt_nummer_und_guid() {
     let (mut m, eg, _) = haus(None);
@@ -468,11 +469,24 @@ fn rohe_zeile_haelt_nummer_und_guid() {
     let neu = l.add_opening(fenster(&l, eg, (5000.0, 6000.0))).unwrap();
     assert_ne!(l.element(neu).unwrap().number, nr, "Nummer der rohen Zeile");
     assert_eq!(l.set_number(a, &nr), Err(NumberError::Reserved));
-    // Dieselbe Guid noch einmal: Fehler mit Zeile
-    let guid = m.element(b).unwrap().guid.to_ifc();
+    // Die rohe Zeile mit der Guid bzw. der Nummer von a: sie entfällt
     let a_guid = m.element(a).unwrap().guid.to_ifc();
-    let doppelt = text.replace(zeile, &kaputt).replace(&a_guid, &guid);
-    assert!(szo::read(&doppelt, GuidGen::with_seed(5)).is_err());
+    let a_nr = m.element(a).unwrap().number.clone();
+    let guid = m.element(b).unwrap().guid.to_ifc();
+    let mit_guid = kaputt.replace(&guid, &a_guid);
+    let mit_nr = kaputt.replace(&format!("number=\"{nr}\""), &format!("number=\"{a_nr}\""));
+    for (doppelt, was) in [(mit_guid, "Guid"), (mit_nr, "Nummer")] {
+        // vor die Zeile von a gestellt
+        let ohne = text.replace(&format!("{zeile}\n"), "");
+        let erste = ohne.find("[opening]").unwrap();
+        let datei = format!("{}{doppelt}\n{}", &ohne[..erste], &ohne[erste..]);
+        let l = szo::read(&datei, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(l.hints.len(), 2, "{:?}", l.hints);
+        let h = l.hints.iter().find(|h| h.contains("entfällt")).unwrap();
+        assert!(h.contains(&format!("{was} ")), "{h}");
+        assert_eq!(l.model.element_by_number(&a_nr), Some(a));
+        assert!(!szo::write(&l.model).contains("pts=\"abc\""));
+    }
 }
 
 /// Σ n·A über alle Dreiecke: 0 bei geschlossenem Körper.
@@ -484,9 +498,9 @@ fn offen(s: &Solid) -> f64 {
     v.length()
 }
 
-/// Review #79, Befund 1: Verschiebt man die Wand unter einer Öffnung, meldet
-/// die Prüfung die Öffnung ohne Wand (das Mitwandern kommt mit O5); löscht
-/// man die Wand, geht die Öffnung mit. Rückgängig ist alles wie vorher.
+/// Review #79, Befund 1: Verschiebt man die Wand unter einer Öffnung, wandert
+/// die Öffnung mit (O5); löscht man die Wand, geht die Öffnung mit.
+/// Rückgängig ist alles wie vorher.
 #[test]
 fn wand_verschoben_oder_geloescht() {
     let (mut m, eg, _) = haus(None);
@@ -496,14 +510,8 @@ fn wand_verschoben_oder_geloescht() {
     m.begin("Verschieben");
     assert!(m.set_run_points(eg, &moved.points).is_some());
     let t = m.commit().unwrap();
-    assert!(m.chain(eg).unwrap().joints.holes.is_empty());
-    let befund = m.check();
-    assert!(
-        befund
-            .iter()
-            .any(|b| b.contains("nicht auf einer Außenwand")),
-        "{befund:?}"
-    );
+    assert_eq!(m.chain(eg).unwrap().joints.holes.len(), 1);
+    assert!(m.check().is_empty(), "{:?}", m.check());
     m.apply(&t, Direction::Undo);
     assert!(m.check().is_empty(), "{:?}", m.check());
     // Löschen geht nur bei einer Wand außerhalb des Umrisses: freie
@@ -845,6 +853,67 @@ fn lochmasse_ueber_geschosse() {
     );
 }
 
+/// Paket O5: Wird die Außenwand am Gummiband verschoben, wandern die
+/// Öffnungen mit, auch über die Ecke; die Löcher bleiben, Rückgängig
+/// stellt die Pfade zurück.
+#[test]
+fn oeffnung_wandert_mit_der_wand() {
+    let (mut m, eg, _) = haus(None);
+    m.begin("Öffnungen");
+    let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+    let um = Opening {
+        path: vec![
+            aussen(&m, eg, 0, 7000.0),
+            ecke(&m, eg),
+            aussen(&m, eg, 1, 1500.0),
+        ],
+        ..fenster(&m, eg, (0.0, 1.0))
+    };
+    let b = m.add_opening(um).unwrap();
+    // Auf der Nachbarwand: bleibt, wo sie ist
+    let nachbar = Opening {
+        path: vec![aussen(&m, eg, 1, 5000.0), aussen(&m, eg, 1, 6000.0)],
+        ..fenster(&m, eg, (0.0, 1.0))
+    };
+    let n = m.add_opening(nachbar).unwrap();
+    m.commit();
+    let vorher = (m.opening(a).unwrap().clone(), m.opening(b).unwrap().clone());
+    let n_vorher = m.opening(n).unwrap().clone();
+    let schenkel = |m: &Model| {
+        let p = &m.opening(b).unwrap().path;
+        (p[2] - p[1]).length()
+    };
+    let s_vorher = schenkel(&m);
+    let c = m.chain(eg).unwrap();
+    let neu = c
+        .with_segment_moved(0, c.outward_sign() * 500.0)
+        .unwrap()
+        .points;
+    m.begin("Ziehen");
+    assert!(m.set_run_points(eg, &neu).is_some());
+    let t = m.commit().unwrap();
+    let pa = &m.opening(a).unwrap().path;
+    let d = pa[0] - vorher.0.path[0];
+    assert!((d.length() - 500.0).abs() < 1e-6, "{d:?}");
+    assert!(((pa[1] - pa[0]).length() - 1000.0).abs() < 1e-6);
+    let pb = &m.opening(b).unwrap().path;
+    assert!(
+        (pb[1] - ecke(&m, eg)).length() < 1e-6,
+        "Eckpunkt auf der neuen Ecke"
+    );
+    assert!(
+        (schenkel(&m) - s_vorher).abs() < 1e-6,
+        "Schenkel behält seine Länge"
+    );
+    assert_eq!(m.opening(n), Some(&n_vorher), "Nachbarwand: bleibt stehen");
+    let holes = &m.chain(eg).unwrap().joints.holes;
+    assert_eq!(holes.len(), 4, "{holes:?}");
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    m.apply(&t, Direction::Undo);
+    assert_eq!(m.opening(a), Some(&vorher.0));
+    assert_eq!(m.opening(b), Some(&vorher.1));
+}
+
 /// Kosten H79-2: Der Rechenweg des Volumens nennt jedes Loch; ihr Volumen
 /// landet nicht im Ausgleich. Das Fenster 1,25 × 1,51 m ist kleiner als
 /// 0,5 m³ je Schicht und wird nach VOB/C übermessen.
@@ -874,4 +943,151 @@ fn rechenweg_mit_oeffnung() {
         n += 1;
     }
     assert!(n >= 2, "{n} Schichten mit Loch");
+}
+
+/// Paket O5: Wandert eine Öffnung mit einer gedrehten oder gekippten Wand,
+/// behält sie ihre Breite. Bisher wird jeder Pfadpunkt einzeln quer auf die
+/// neue Fläche gelegt; dabei schrumpft die Breite mit cos(Drehwinkel)
+/// (1000 → 939,7 mm bei 20°), ohne Meldung.
+#[test]
+fn oeffnung_behaelt_breite_beim_drehen() {
+    let drehen = |p: Vec3| {
+        let (s, c) = 20f64.to_radians().sin_cos();
+        vec3(p.x * c - p.y * s, p.x * s + p.y * c, 0.0)
+    };
+    let kippen = |p: Vec3| {
+        if p.x == 0.0 && p.y == 8000.0 {
+            vec3(-1500.0, 8000.0, 0.0)
+        } else {
+            p
+        }
+    };
+    let faelle: [(&str, &dyn Fn(Vec3) -> Vec3); 2] = [("gedreht", &drehen), ("gekippt", &kippen)];
+    for (name, f) in faelle {
+        let (mut m, eg, _) = haus(None);
+        m.begin("Öffnung");
+        let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+        m.commit();
+        let neu: Vec<Vec3> = m.run(eg).unwrap().points.iter().map(|p| f(*p)).collect();
+        m.begin("Wand");
+        assert!(m.set_run_points(eg, &neu).is_some());
+        m.commit();
+        let p = &m.opening(a).unwrap().path;
+        let b = (p[1] - p[0]).length();
+        assert!((b - 1000.0).abs() < 1e-6, "{name}: Breite {b}");
+        assert!(m.check().is_empty(), "{name}: {:?}", m.check());
+    }
+}
+
+/// Paket O5, Geometrie #92: Wird der ganze Zug parallel verschoben, geht die
+/// Öffnung mit und behält ihren Abstand zum Segmentanfang.
+#[test]
+fn oeffnung_geht_mit_dem_verschobenen_zug() {
+    let (mut m, eg, _) = haus(None);
+    m.begin("Öffnung");
+    let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+    m.commit();
+    let vorher = m.opening(a).unwrap().path.clone();
+    let v = vec3(700.0, 300.0, 0.0);
+    let neu: Vec<Vec3> = m.run(eg).unwrap().points.iter().map(|p| *p + v).collect();
+    m.begin("Wand");
+    assert!(m.set_run_points(eg, &neu).is_some());
+    m.commit();
+    let p = &m.opening(a).unwrap().path;
+    for (q, r) in p.iter().zip(&vorher) {
+        assert!((*q - *r - v).length() < 1e-6, "{q:?} statt {r:?} + {v:?}");
+    }
+    assert!(m.check().is_empty(), "{:?}", m.check());
+}
+
+/// Review #92 B2: Die Endlage einer Öffnung hängt nicht vom Mausweg ab. Kippen
+/// und zurück im selben Schritt endet genau in der Ausgangslage, in einem
+/// Sprung wie in vielen Schritten, und dort steht sie in beiden Fällen gleich.
+#[test]
+fn oeffnung_haengt_nicht_vom_mausweg_ab() {
+    let mut dort = Vec::new();
+    for schritte in [1usize, 30] {
+        let (mut m, eg, _) = haus(None);
+        m.begin("Öffnung");
+        let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+        m.commit();
+        let vorher = m.opening(a).unwrap().path.clone();
+        let start = m.run(eg).unwrap().points.clone();
+        let k = start
+            .iter()
+            .position(|p| p.x == 0.0 && p.y == 8000.0)
+            .unwrap();
+        let kippen = |i: usize| {
+            let mut p = start.clone();
+            p[k].x = -3000.0 * i as f64 / schritte as f64;
+            p
+        };
+        m.begin("Ziehen");
+        for i in 1..=schritte {
+            assert!(m.set_run_points(eg, &kippen(i)).is_some());
+        }
+        dort.push(m.opening(a).unwrap().path.clone());
+        for i in (0..schritte).rev() {
+            assert!(m.set_run_points(eg, &kippen(i)).is_some());
+        }
+        m.commit();
+        assert_eq!(m.opening(a).unwrap().path, vorher, "{schritte} Schritte");
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+    for (p, q) in dort[0].iter().zip(&dort[1]) {
+        assert!((*p - *q).length() < 1e-6, "Sprung {p:?}, Schritte {q:?}");
+    }
+}
+
+/// Review #92 B1: Beim Ziehen merkt sich der Schritt nur die Züge mit
+/// Öffnungen im Gebäude des gezogenen Zugs, einmal beim Greifen. Je Bewegung
+/// rechnet er nur diese nach; weitere Häuser mit Öffnungen ändern daran
+/// nichts und bleiben stehen.
+#[test]
+fn ziehen_merkt_nur_das_eigene_gebaeude() {
+    let gemerkt = |haeuser: usize| {
+        let (mut m, eg, _) = haus(None);
+        let r = m.run(eg).unwrap().clone();
+        let set = m.element(r.segments[0]).unwrap().layer_set.unwrap();
+        m.begin("Häuser");
+        let mut fremde = Vec::new();
+        for i in 0..haeuser {
+            let x = 20000.0 + 10000.0 * i as f64;
+            let pts = [vec3(x, 0.0, 0.0), vec3(x, 6000.0, 0.0)];
+            let frei = m
+                .add_wall_run(
+                    &pts,
+                    false,
+                    r.ref_side,
+                    r.storey,
+                    set,
+                    Category::ExteriorWall,
+                )
+                .unwrap();
+            fremde.push(m.add_opening(fenster(&m, frei, (2000.0, 3000.0))).unwrap());
+        }
+        m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+        m.commit();
+        let vorher: Vec<Opening> = fremde
+            .iter()
+            .map(|f| m.opening(*f).unwrap().clone())
+            .collect();
+        let c = m.chain(eg).unwrap();
+        let mut walls = Vec::new();
+        m.begin("Ziehen");
+        for d in [100.0, 200.0, 300.0] {
+            let neu = c.with_segment_moved(0, c.outward_sign() * d).unwrap();
+            assert!(m.set_run_points(eg, &neu.points).is_some());
+            walls.push(m.grabbed_walls());
+        }
+        m.commit();
+        for (f, v) in fremde.iter().zip(&vorher) {
+            assert_eq!(m.opening(*f), Some(v));
+        }
+        assert!(walls.iter().all(|w| *w == walls[0]), "{walls:?}");
+        walls.remove(0)
+    };
+    let (ein, viele) = (gemerkt(1), gemerkt(12));
+    assert_eq!(ein, viele);
+    assert_eq!(ein.len(), 1, "{ein:?}");
 }
