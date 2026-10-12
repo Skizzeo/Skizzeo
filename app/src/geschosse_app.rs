@@ -19,6 +19,34 @@ fn premul(k: Rgba) -> [u8; 4] {
 }
 
 impl App {
+    /// Ziehen einer Ebene oder Linie im Geschossmanager beginnt einen
+    /// Schritt; die Schnitthöhe ist Ansichtszustand und hinterlässt keinen.
+    pub(crate) fn level_begin(&mut self, g: Grip) {
+        self.scene.begin(match g {
+            Grip::Sill(_) | Grip::Lintel(_) => "Höhenlinie ziehen",
+            _ => "Geschoss ziehen",
+        });
+    }
+
+    /// Ebene oder Linie auf die Kote `z` gezogen: das Modell folgt in jedem
+    /// Bild.
+    pub(crate) fn level_move(&mut self, g: Grip, z: f64) {
+        match g {
+            Grip::FoundationBottom => self.scene.drag_foundation_bottom(z),
+            Grip::Top(id) => self.scene.drag_storey_top(id, z),
+            Grip::Terrain => self.scene.drag_terrain(z),
+            Grip::Sill(id) => self.scene.drag_height_line(id, false, z),
+            Grip::Lintel(id) => self.scene.drag_height_line(id, true, z),
+            Grip::PlanCut => {
+                let st = self.scene.active_storey();
+                let el = self.scene.model().storey(st).map_or(0.0, |s| s.elevation);
+                self.scene.set_plan_cut_height(z - el);
+            }
+        }
+        self.upload_model();
+        self.sync_levels();
+    }
+
     /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters.
     pub(crate) fn paint_dialog(&mut self) {
         if !self.ui.dialog {

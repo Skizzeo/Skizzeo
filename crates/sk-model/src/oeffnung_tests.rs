@@ -484,9 +484,9 @@ fn offen(s: &Solid) -> f64 {
     v.length()
 }
 
-/// Review #79, Befund 1: Verschiebt man die Wand unter einer Öffnung, meldet
-/// die Prüfung die Öffnung ohne Wand (das Mitwandern kommt mit O5); löscht
-/// man die Wand, geht die Öffnung mit. Rückgängig ist alles wie vorher.
+/// Review #79, Befund 1: Verschiebt man die Wand unter einer Öffnung, wandert
+/// die Öffnung mit (O5); löscht man die Wand, geht die Öffnung mit.
+/// Rückgängig ist alles wie vorher.
 #[test]
 fn wand_verschoben_oder_geloescht() {
     let (mut m, eg, _) = haus(None);
@@ -496,14 +496,8 @@ fn wand_verschoben_oder_geloescht() {
     m.begin("Verschieben");
     assert!(m.set_run_points(eg, &moved.points).is_some());
     let t = m.commit().unwrap();
-    assert!(m.chain(eg).unwrap().joints.holes.is_empty());
-    let befund = m.check();
-    assert!(
-        befund
-            .iter()
-            .any(|b| b.contains("nicht auf einer Außenwand")),
-        "{befund:?}"
-    );
+    assert_eq!(m.chain(eg).unwrap().joints.holes.len(), 1);
+    assert!(m.check().is_empty(), "{:?}", m.check());
     m.apply(&t, Direction::Undo);
     assert!(m.check().is_empty(), "{:?}", m.check());
     // Löschen geht nur bei einer Wand außerhalb des Umrisses: freie
@@ -843,6 +837,67 @@ fn lochmasse_ueber_geschosse() {
         ha.height + hb.height > soll - 400.0,
         "nur das Deckenband fehlt"
     );
+}
+
+/// Paket O5: Wird die Außenwand am Gummiband verschoben, wandern die
+/// Öffnungen mit, auch über die Ecke; die Löcher bleiben, Rückgängig
+/// stellt die Pfade zurück.
+#[test]
+fn oeffnung_wandert_mit_der_wand() {
+    let (mut m, eg, _) = haus(None);
+    m.begin("Öffnungen");
+    let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+    let um = Opening {
+        path: vec![
+            aussen(&m, eg, 0, 7000.0),
+            ecke(&m, eg),
+            aussen(&m, eg, 1, 1500.0),
+        ],
+        ..fenster(&m, eg, (0.0, 1.0))
+    };
+    let b = m.add_opening(um).unwrap();
+    // Auf der Nachbarwand: bleibt, wo sie ist
+    let nachbar = Opening {
+        path: vec![aussen(&m, eg, 1, 5000.0), aussen(&m, eg, 1, 6000.0)],
+        ..fenster(&m, eg, (0.0, 1.0))
+    };
+    let n = m.add_opening(nachbar).unwrap();
+    m.commit();
+    let vorher = (m.opening(a).unwrap().clone(), m.opening(b).unwrap().clone());
+    let n_vorher = m.opening(n).unwrap().clone();
+    let schenkel = |m: &Model| {
+        let p = &m.opening(b).unwrap().path;
+        (p[2] - p[1]).length()
+    };
+    let s_vorher = schenkel(&m);
+    let c = m.chain(eg).unwrap();
+    let neu = c
+        .with_segment_moved(0, c.outward_sign() * 500.0)
+        .unwrap()
+        .points;
+    m.begin("Ziehen");
+    assert!(m.set_run_points(eg, &neu).is_some());
+    let t = m.commit().unwrap();
+    let pa = &m.opening(a).unwrap().path;
+    let d = pa[0] - vorher.0.path[0];
+    assert!((d.length() - 500.0).abs() < 1e-6, "{d:?}");
+    assert!(((pa[1] - pa[0]).length() - 1000.0).abs() < 1e-6);
+    let pb = &m.opening(b).unwrap().path;
+    assert!(
+        (pb[1] - ecke(&m, eg)).length() < 1e-6,
+        "Eckpunkt auf der neuen Ecke"
+    );
+    assert!(
+        (schenkel(&m) - s_vorher).abs() < 1e-6,
+        "Schenkel behält seine Länge"
+    );
+    assert_eq!(m.opening(n), Some(&n_vorher), "Nachbarwand: bleibt stehen");
+    let holes = &m.chain(eg).unwrap().joints.holes;
+    assert_eq!(holes.len(), 4, "{holes:?}");
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    m.apply(&t, Direction::Undo);
+    assert_eq!(m.opening(a), Some(&vorher.0));
+    assert_eq!(m.opening(b), Some(&vorher.1));
 }
 
 /// Kosten H79-2: Der Rechenweg des Volumens nennt die Löcher als Term
