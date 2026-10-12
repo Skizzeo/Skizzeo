@@ -736,6 +736,29 @@ mod tests {
         assert!(m.check().is_empty());
     }
 
+    /// Neue Typen, Baustoffe und Raumvorlagen tragen keine Wand: Rückgängig
+    /// und Wiederholen rechnen keinen Zug neu (Integration zu #116 und
+    /// #112). Ein geänderter Typ dagegen trifft alle Züge, die ihn nutzen.
+    #[test]
+    fn neue_typen_ruehren_keine_wand_an() {
+        let mut m = Model::with_seed(72);
+        m.require_steps();
+        m.begin("Ausbau");
+        assert!(m.ensure_space_type(crate::model::BATH_SPACE_GUID).is_some());
+        let tx = m.commit().expect("Schritt");
+        for dir in [Direction::Undo, Direction::Redo] {
+            let t = m.apply(&tx, dir);
+            assert!(!t.library && t.runs.is_empty(), "{dir:?}");
+        }
+        let aw = m.defaults().exterior_wall;
+        let mut typ = m.layer_set(aw).unwrap().clone();
+        typ.layers[0].thickness += 10.0;
+        m.begin("Typ geändert");
+        assert!(m.set_layer_set(aw, typ));
+        let tx = m.commit().expect("Schritt");
+        assert!(m.apply(&tx, Direction::Undo).library);
+    }
+
     /// Ein belegtes Kurzzeichen weicht aus; eine fremde Guid legt nichts an.
     #[test]
     fn kurzzeichen_belegt() {

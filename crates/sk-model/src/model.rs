@@ -3346,11 +3346,15 @@ impl Model {
             }
             Change::LayerSet { id, old, new } => {
                 m.layer_sets.set(*id, pick(dir, old, new));
-                touched.library = true;
+                // Ein neuer oder entfernter Aufbau trägt keine Wand, die nicht
+                // selbst im Schritt steht (Ausbautypen mit dem Raum, RB3):
+                // Rückgängig rechnet dann nur die Züge des Schritts
+                touched.library |= old.is_some() && new.is_some();
             }
             Change::Material { id, old, new } => {
-                // Nur Darstellungsverweise geändert: allein die Zeichentabelle
-                if bim_equal(old.as_ref(), new.as_ref()) {
+                // Nur Darstellungsverweise geändert: allein die Zeichentabelle;
+                // ebenso ein neuer oder entfernter Baustoff (wie beim Aufbau)
+                if old.is_none() || new.is_none() || bim_equal(old.as_ref(), new.as_ref()) {
                     touched.attr = true;
                 } else {
                     touched.library = true;
@@ -3386,10 +3390,8 @@ impl Model {
             }
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
             Change::Trades { old, new } => m.trades = pick(dir, old, new),
-            Change::SpaceTypes { old, new } => {
-                m.space_types = pick(dir, old, new);
-                touched.library = true;
-            }
+            // Raumvorlagen tragen keine Wand
+            Change::SpaceTypes { old, new } => m.space_types = pick(dir, old, new),
             Change::ForeignRecords { old, new } => m.foreign.records = pick(dir, old, new),
             Change::ExtDefs { old, new } => m.ext_defs = pick(dir, old, new),
             Change::Ext {
