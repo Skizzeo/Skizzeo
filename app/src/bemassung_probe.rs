@@ -1,7 +1,7 @@
 //! Tests und Probe zu Review W30 und W33: nur geänderte Geschosse rechnen
 //! neu, ein Ebenenwechsel rechnet nichts, Geschosse außerhalb des Bildes
 //! fehlen; die Probe misst das erste Bild, Ebenenwechsel, Ziehen, Loslassen
-//! und Neuzeichnen bei 1, 10, 100, 1000 und 2000 Häusern (je ein Gebäude
+//! und Neuzeichnen bei 1, 10, 100, 1000, 2000 und 4000 Häusern (je ein Gebäude
 //! 10 × 8 m mit einer angeschlossenen Innenwand und einem Fenster, alle EG
 //! auf ±0,00), dazu 1000 dicht stehende.
 //!
@@ -336,6 +336,7 @@ fn probe_bemassung() {
         (100, false),
         (1000, false),
         (2000, false),
+        (4000, false),
         (1000, true),
     ] {
         let mut s = if eng {
