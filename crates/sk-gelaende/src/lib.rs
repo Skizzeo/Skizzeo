@@ -11,6 +11,7 @@
 pub mod abfrage;
 pub mod codes;
 pub mod inflate;
+pub mod krypto;
 pub mod lesen;
 pub mod linien;
 pub mod netz;
