@@ -2186,7 +2186,24 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 match oeffnung::read(r, &storey_ids, &mut hints)? {
                     Some(k) => k,
                     None => {
-                        opening_raw.push((lines[r.line - 1].to_string(), oeffnung::storeys_of(r)));
+                        // Nummer und Guid bleiben belegt (Review #86 B3)
+                        let n = match r.opt("number") {
+                            Some(_) => Some(number(r)?),
+                            None => None,
+                        };
+                        if let Some(g) = r.opt("guid").and_then(Guid::from_ifc) {
+                            if let Some(first) = seen.insert(g, r.line) {
+                                return Err(err(
+                                    r.line,
+                                    format!("Guid {} doppelt (schon in Zeile {first})", g.to_ifc()),
+                                ));
+                            }
+                        }
+                        opening_raw.push(crate::model::RawOpening {
+                            line: lines[r.line - 1].to_string(),
+                            storeys: oeffnung::storeys_of(r),
+                            number: n,
+                        });
                         continue;
                     }
                 }

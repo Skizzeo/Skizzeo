@@ -586,21 +586,39 @@ impl Model {
     }
 }
 
+/// `[opening]`-Zeile der Datei, die nicht zählt (Regel 72): roh, mit den
+/// Geschossen, auf die sie zeigt, und ihrer Nummer, die belegt bleibt
+/// (Review #86 B3).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RawOpening {
+    pub line: String,
+    pub storeys: Vec<Guid>,
+    pub number: Option<String>,
+}
+
 impl Model {
-    /// `[opening]`-Zeilen der Datei, die nicht zählen, roh (Regel 72), ohne
-    /// die, deren Geschoss inzwischen gelöscht ist: Sie zeigten sonst ins
-    /// Leere, und die nächste Fassung lehnte die Datei ab.
-    pub(crate) fn opening_raw(&self) -> impl Iterator<Item = &str> {
-        self.opening_raw
-            .iter()
-            .filter(|(_, st)| {
-                st.iter()
-                    .all(|g| self.storeys().iter().any(|(_, s)| s.guid == *g))
-            })
-            .map(|(l, _)| l.as_str())
+    /// Die rohen `[opening]`-Zeilen, die beim Speichern bleiben: ohne die,
+    /// deren Geschoss inzwischen gelöscht ist. Sie zeigten sonst ins Leere,
+    /// und die nächste Fassung lehnte die Datei ab.
+    fn raw_openings(&self) -> impl Iterator<Item = &RawOpening> {
+        self.opening_raw.iter().filter(|r| {
+            r.storeys
+                .iter()
+                .all(|g| self.storeys().iter().any(|(_, s)| s.guid == *g))
+        })
     }
 
-    pub(crate) fn load_opening_raw(&mut self, raw: Vec<(String, Vec<Guid>)>) {
+    /// Rohe `[opening]`-Zeilen, die beim Speichern bleiben.
+    pub(crate) fn opening_raw(&self) -> impl Iterator<Item = &str> {
+        self.raw_openings().map(|r| r.line.as_str())
+    }
+
+    /// Trägt eine rohe `[opening]`-Zeile die Nummer `n`?
+    pub(crate) fn raw_number_taken(&self, n: &str) -> bool {
+        self.raw_openings().any(|r| r.number.as_deref() == Some(n))
+    }
+
+    pub(crate) fn load_opening_raw(&mut self, raw: Vec<RawOpening>) {
         self.opening_raw = raw;
     }
 }

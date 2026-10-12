@@ -39,13 +39,15 @@ impl Scene {
         (face.on_line(p) && inside).then_some((face, p))
     }
 
-    /// Legt die Öffnung `o` als einen Schritt an.
+    /// Legt die Öffnung `o` als einen Schritt an. Neu gerechnet werden nur
+    /// die Züge, die sie berührt (Review #86, B1: nicht alle Züge).
     pub fn add_opening(&mut self, o: Opening) -> Option<ElementId> {
-        let mut id = None;
-        self.edit_model("Öffnung erzeugt", |m| {
-            id = m.add_opening(o);
-            id.is_some()
-        });
+        self.begin("Öffnung erzeugt");
+        let id = self.model.add_opening(o);
+        for r in self.model.step_touched() {
+            self.mark(r);
+        }
+        self.commit();
         id
     }
 }

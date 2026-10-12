@@ -117,7 +117,7 @@ pub struct WallTool {
     pub ext_fertig: Vec<ExtPart>,
     /// Werkzeug „Wandöffnung“ bzw. „Türöffnung“ (Paket O3) statt Wand;
     /// die App führt es, hier zeichnet es seine Vorschau.
-    pub oeffnung: Option<crate::oeffnung_werkzeug::Werkzeug>,
+    pub oeffnung: Option<crate::oeffnung_app::werkzeug::Werkzeug>,
     /// Wandflächen und freie Enden des aktiven Geschosses (G1, auf z = 0).
     fang: Fangziele,
     /// Stand von `snaps` und `fang` (Modellrevision, Geschoss).
@@ -913,7 +913,7 @@ impl WallTool {
         let col = &theme.interact;
         let mut out = Vec::new();
         if let Some(w) = &self.oeffnung {
-            return crate::oeffnung_werkzeug::helpers(&w.vorschau, scale, theme);
+            return crate::oeffnung_app::werkzeug::helpers(&w.vorschau, scale, theme);
         }
         if !self.enabled {
             return out;

@@ -124,6 +124,9 @@ impl Project {
 pub enum NumberError {
     Empty,
     Taken(ElementId),
+    /// Die Nummer trägt eine `[opening]`-Zeile der Datei, die nicht zählt
+    /// (Regel 72, Review #86 B3).
+    Reserved,
     NoElement,
 }
 
@@ -211,9 +214,8 @@ pub struct Model {
     /// unlesbare Zeile roh.
     pub(crate) plan_cut: Option<f64>,
     pub(crate) plan_cut_raw: Option<String>,
-    /// `[opening]`-Zeilen der Datei, die nicht zählen, roh mit den
-    /// Geschossen, auf die sie zeigen (Regel 72).
-    pub(crate) opening_raw: Vec<(String, Vec<Guid>)>,
+    /// `[opening]`-Zeilen der Datei, die nicht zählen (Regel 72).
+    pub(crate) opening_raw: Vec<oeffnung_model::RawOpening>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -332,6 +334,7 @@ mod gruendung;
 #[path = "oeffnung_model.rs"]
 mod oeffnung_model;
 pub use oeffnung_model::OpeningFault;
+pub(crate) use oeffnung_model::RawOpening;
 
 #[path = "stapel.rs"]
 mod stapel;
@@ -2216,7 +2219,7 @@ impl Model {
             let n = &mut self.numbers[category.index()];
             *n += 1;
             let s = format!("{}-{:03}", category.prefix(), n);
-            if self.element_by_number(&s).is_none() {
+            if self.element_by_number(&s).is_none() && !self.raw_number_taken(&s) {
                 return s;
             }
         }
@@ -2232,6 +2235,9 @@ impl Model {
             Some(other) if other == id => return Ok(()),
             Some(other) => return Err(NumberError::Taken(other)),
             None => {}
+        }
+        if self.raw_number_taken(number) {
+            return Err(NumberError::Reserved);
         }
         if !self.elements.contains(id) {
             return Err(NumberError::NoElement);

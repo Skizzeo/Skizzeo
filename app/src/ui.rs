@@ -1117,6 +1117,16 @@ enum Row {
     Locked,
 }
 
+/// Beschriftung der Öffnungsknöpfe: „Wandöffnung“ passt fett nicht in einen
+/// halben Knopf (Gate #86 mit Windows-Schriften), der Tooltip nennt das
+/// Werkzeug mit vollem Namen.
+fn opening_label(k: OpeningKind) -> &'static str {
+    match k {
+        OpeningKind::Window => "Fenster",
+        OpeningKind::Door => "Haustür",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn tool_rows(
     projekt: &[String],
@@ -1146,8 +1156,14 @@ fn tool_rows(
         // Diagramm der Geschosse darunter nicht schrumpft
         Row::Pair([(Id::Building, "Gebäude"), (Id::Interior, "Innenwand")]),
         Row::Pair([
-            (Id::Opening(OpeningKind::Window), OpeningKind::Window.name()),
-            (Id::Opening(OpeningKind::Door), OpeningKind::Door.name()),
+            (
+                Id::Opening(OpeningKind::Window),
+                opening_label(OpeningKind::Window),
+            ),
+            (
+                Id::Opening(OpeningKind::Door),
+                opening_label(OpeningKind::Door),
+            ),
         ]),
     ]);
     // Werkzeug „Erweiterungen“ (E6, Vertrag §14): Knopf des Bauteils, Typ,
@@ -4081,6 +4097,43 @@ mod tests {
 
     /// Hover und Drücken zeichnen nur den Knopf neu; das Ergebnis gleicht dem
     /// vollen Neuzeichnen aufs Pixel.
+    /// Jede Beschriftung eines Werkzeug- oder Ansichtsknopfs passt mit
+    /// echter Schrift samt Rand in ihren Knopf; sonst ragt sie in den
+    /// Nachbarn, und das Einzelbild weicht vom Paneel ab (Gate #86:
+    /// „Wandöffnung“ im halben Knopf).
+    #[test]
+    fn beschriftung_passt_in_den_knopf() {
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let lade = |n: &str| {
+            std::fs::read(lib.join(n))
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+        };
+        let th = Theme::dark();
+        for scale in [0.6f32, 1.0, 1.25, 2.0] {
+            let mut ui = Ui::new(scale, &th);
+            ui.building = true;
+            ui.fonts = Fonts {
+                regular: lade("LiberationSans-Regular.ttf"),
+                bold: lade("LiberationSans-Bold.ttf"),
+                italic: None,
+            };
+            let Some(f) = ui.fonts.bold.as_ref() else {
+                return;
+            };
+            let px = th.size.font * scale;
+            for p in [Panel::Tools, Panel::Views] {
+                for (id, b, label) in ui.buttons(p) {
+                    if matches!(id, Id::Ref(_) | Id::Sprung(_)) || label.is_empty() {
+                        continue;
+                    }
+                    let w = f.width(label, px) + 6.0 * scale;
+                    assert!(w <= b.w, "{scale} {id:?} „{label}“: {w} > {}", b.w);
+                }
+            }
+        }
+    }
+
     #[test]
     fn knopf_einzeln_neu_gleicht_dem_ganzen_paneel() {
         let th = Theme::dark();

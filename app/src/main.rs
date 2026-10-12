@@ -66,7 +66,6 @@ mod musterprobe;
 mod nav;
 mod nordpfeil;
 mod oeffnung_app;
-mod oeffnung_werkzeug;
 mod pattern_view;
 #[cfg(test)]
 mod perf;
@@ -2899,6 +2898,7 @@ impl App {
             self.renderer.release_snapshot();
         }
         if changed {
+            self.oeffnung_neu();
             self.hint = None;
             self.hint_dirty = true;
             self.upload_model();
@@ -4320,6 +4320,7 @@ impl App {
             Event::Focus(f) => {
                 self.overlay_dirty |= self.title.active != f;
                 self.title.active = f;
+                self.oeffnung_fokus(f);
             }
             Event::Redraw => self.redraw = true,
             Event::MouseLeave => {
@@ -4772,7 +4773,6 @@ impl App {
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.oeffnung_esc() {
-                    // Öffnung: erste Ecke zurück, dann zu (Paket O3)
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);

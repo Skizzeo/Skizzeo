@@ -3,7 +3,7 @@
 
 use crate::element::{Category, RunId};
 use crate::hoehen::HeightLines;
-use crate::model::{Model, CAVITY_TYPE_GUID, MONO_TYPE_GUID};
+use crate::model::{Model, NumberError, CAVITY_TYPE_GUID, MONO_TYPE_GUID};
 use crate::oeffnung::{
     HeightLine, HeightRef, Install, InstallDepth, Opening, OpeningKind, REVEAL_ETICS,
 };
@@ -437,9 +437,42 @@ fn oeffnungen_in_der_datei() {
     // Ist ihr Geschoss gelöscht, entfällt sie
     let mut l = l;
     l.opening_raw[0]
-        .1
+        .storeys
         .push(Guid::from_ifc("0000000000000000000000").unwrap());
     assert!(!szo::write(&l).contains(":u:abc"));
+}
+
+/// Review #86 B3: Eine verworfene Zeile hält ihre Nummer und ihre Guid; eine
+/// neue Öffnung bekommt nicht dieselbe Nummer, eine doppelte Guid lehnt die
+/// Datei ab wie sonst.
+#[test]
+fn rohe_zeile_haelt_nummer_und_guid() {
+    let (mut m, eg, _) = haus(None);
+    let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+    let b = m.add_opening(fenster(&m, eg, (5000.0, 6000.0))).unwrap();
+    let nr = m.element(b).unwrap().number.clone();
+    let text = szo::write(&m);
+    // Die zweite (höchste Nummer) wird unlesbar
+    let zeile = text
+        .lines()
+        .find(|l| l.starts_with("[opening]") && l.contains(&format!("number=\"{nr}\"")))
+        .unwrap();
+    let pts = zeile.find("pts=\"").unwrap();
+    let ende = pts + 5 + zeile[pts + 5..].find('"').unwrap();
+    let kaputt = format!("{}pts=\"abc\"{}", &zeile[..pts], &zeile[ende + 1..]);
+    let mut l = szo::read(&text.replace(zeile, &kaputt), GuidGen::with_seed(5))
+        .unwrap()
+        .model;
+    assert!(l.element_by_number(&nr).is_none());
+    assert!(l.raw_number_taken(&nr));
+    let neu = l.add_opening(fenster(&l, eg, (5000.0, 6000.0))).unwrap();
+    assert_ne!(l.element(neu).unwrap().number, nr, "Nummer der rohen Zeile");
+    assert_eq!(l.set_number(a, &nr), Err(NumberError::Reserved));
+    // Dieselbe Guid noch einmal: Fehler mit Zeile
+    let guid = m.element(b).unwrap().guid.to_ifc();
+    let a_guid = m.element(a).unwrap().guid.to_ifc();
+    let doppelt = text.replace(zeile, &kaputt).replace(&a_guid, &guid);
+    assert!(szo::read(&doppelt, GuidGen::with_seed(5)).is_err());
 }
 
 /// Σ n·A über alle Dreiecke: 0 bei geschlossenem Körper.

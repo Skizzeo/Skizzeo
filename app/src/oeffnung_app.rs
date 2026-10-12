@@ -1,14 +1,18 @@
 //! Werkzeug „Wandöffnung“ und „Türöffnung“ in der App (Paket O3): Knopf,
 //! Maus, Esc. Die Rechnung (Fangen, Öffnung, Vorschau) steht in
-//! [`crate::oeffnung_werkzeug`], das Werkzeug selbst im
+//! [`werkzeug`], das Werkzeug selbst im
 //! [`WallTool`](crate::wall_tool::WallTool), der auch die Vorschau zeichnet.
 
-use crate::oeffnung_werkzeug::{fangen, Fang, Werkzeug};
+#[path = "oeffnung_werkzeug.rs"]
+pub(crate) mod werkzeug;
+
+use crate::meldung::Meldung;
 use crate::ui::ViewKind;
 use crate::App;
 use sk_math::vec3;
 use sk_model::oeffnung::OpeningKind;
 use sk_platform::{Event, MouseButton};
+use werkzeug::{fangen, Fang, Werkzeug};
 
 /// Fangabstand an Höhenlinien und Wandenden in Bildschirmpixeln (96 dpi).
 const FANG_PX: f64 = 10.0;
@@ -22,8 +26,8 @@ fn ansicht_ok(v: ViewKind) -> bool {
 }
 
 impl App {
-    /// Knopf „Wandöffnung“ bzw. „Türöffnung“: schaltet das Werkzeug der Art
-    /// ein, derselbe Knopf aus. Im Grundriss und Schnitt geht es nach 3D.
+    /// Knopf „Fenster“ (Wandöffnung) bzw. „Haustür“ (Türöffnung): schaltet
+    /// das Werkzeug der Art ein, derselbe Knopf aus. Im Grundriss und Schnitt geht es nach 3D.
     pub(crate) fn oeffnung_klick(&mut self, kind: OpeningKind) {
         let an = self.tool.oeffnung.as_ref().is_none_or(|w| w.kind != kind);
         if an && self.ui.foundation_active {
@@ -105,15 +109,54 @@ impl App {
         if w.hover.is_none() {
             return false;
         }
-        if let Some(o) = w.klick() {
-            if self.scene.add_opening(o).is_some() {
-                self.upload_model();
+        let erste = w.erste.clone();
+        let mut abgelehnt = None;
+        match w.klick() {
+            Some(o) => match self.scene.add_opening(o.clone()) {
+                Some(_) => self.upload_model(),
+                // Das Modell lehnt ab (Review #86, H4): die erste Ecke
+                // bleibt, die Statuszeile sagt warum
+                None => {
+                    let m = self.scene.model();
+                    abgelehnt = Some(
+                        m.opening_fault(&o, None)
+                            .map_or("Öffnung ungültig".to_string(), |f| f.text(m)),
+                    );
+                    if let Some(w) = self.tool.oeffnung.as_mut() {
+                        w.erste = erste;
+                    }
+                }
+            },
+            None if erste.is_some() => {
+                abgelehnt = Some("Gegenecke passt nicht zur ersten Ecke".to_string());
             }
+            None => {}
+        }
+        if let Some(t) = abgelehnt {
+            self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME);
         }
         let hover = self.tool.oeffnung.as_ref().and_then(|w| w.hover.clone());
         self.oeffnung_vorschau(hover);
         self.redraw = true;
         true
+    }
+
+    /// Nach Rückgängig oder Wiederherstellen (Review #86, H5): Die erste Ecke
+    /// und die Vorschau zeigten auf Flächen, die es so nicht mehr gibt.
+    pub(crate) fn oeffnung_neu(&mut self) {
+        if let Some(w) = self.tool.oeffnung.as_mut() {
+            w.erste = None;
+            w.hover = None;
+            w.vorschau = Default::default();
+            self.redraw = true;
+        }
+    }
+
+    /// Fokusverlust: wie nach einem Schritt, die Maus ist fort.
+    pub(crate) fn oeffnung_fokus(&mut self, aktiv: bool) {
+        if !aktiv {
+            self.oeffnung_neu();
+        }
     }
 
     /// Esc: nimmt die erste Ecke zurück, ohne sie schließt das Werkzeug.
