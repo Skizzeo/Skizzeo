@@ -114,6 +114,59 @@ impl Model {
         true
     }
 
+    /// Ändert nur den Aufschlag der Tür `id` (Griff im Grundriss). Lage und
+    /// Höhen bleiben, deshalb ohne die Prüfung an den Wänden (Review #99
+    /// B2); ein Aufschlag gilt nur an einer Tür mit geradem Pfad.
+    pub fn set_swing(&mut self, id: ElementId, s: Option<Swing>) -> bool {
+        let Some(o) = self.opening(id) else {
+            return false;
+        };
+        if o.swing == s {
+            return true;
+        }
+        if s.is_some() && !(o.kind == OpeningKind::Door && o.path.len() == 2) {
+            return false;
+        }
+        note!(self, Element, self.elements, id);
+        if let Some(ElementKind::Opening(o)) = self.elements.get_mut(id).map(|e| &mut e.kind) {
+            o.swing = s;
+        }
+        self.touch();
+        true
+    }
+
+    /// Ändert der offene Schritt nur Aufschläge von Türen? Dann bleibt alles
+    /// Abgeleitete (Randstreifen, Untersicht, Terrassen, Flachdächer), und
+    /// der Abgleich beim Schließen entfällt (Review #99 B2).
+    pub(crate) fn only_swings(&self) -> bool {
+        let Some(open) = &self.txn else {
+            return false;
+        };
+        !open.changes.is_empty()
+            && open.changes.iter().all(|c| {
+                let crate::txn::Change::Element {
+                    id, old: Some(a), ..
+                } = c
+                else {
+                    return false;
+                };
+                let Some(b) = self.elements.get(*id) else {
+                    return false;
+                };
+                match (&a.kind, &b.kind) {
+                    (ElementKind::Opening(x), ElementKind::Opening(y)) => {
+                        let mut a = a.clone();
+                        a.kind = ElementKind::Opening(Opening {
+                            swing: y.swing,
+                            ..x.clone()
+                        });
+                        a == *b
+                    }
+                    _ => false,
+                }
+            })
+    }
+
     /// Höhenlinien des Geschosses `st` setzen (Brüstung, Sturz).
     pub fn set_height_lines(&mut self, st: StoreyId, lines: HeightLines) -> bool {
         if !lines.valid() || self.storey(st).is_none() {
@@ -551,6 +604,20 @@ impl Model {
         self.face_in(run, seg, &self.chain(run)?)
     }
 
+    /// [`Model::outer_face`] im schon gebauten Körper `c` des Zugs `run`:
+    /// mehrere Segmente, ein Körper (Review #99 B1).
+    pub fn outer_face_in(
+        &self,
+        run: RunId,
+        seg: usize,
+        c: &WallChain,
+    ) -> Option<crate::oeffnung::OuterFace> {
+        if !self.category_of(run).is_some_and(Category::takes_openings) {
+            return None;
+        }
+        self.face_in(run, seg, c)
+    }
+
     /// Außenfläche von Segment `seg` im Körper `c` des Zugs `run`.
     fn face_in(&self, run: RunId, seg: usize, c: &WallChain) -> Option<crate::oeffnung::OuterFace> {
         let (pts, _, dirs) = c.layout()?;
@@ -588,6 +655,17 @@ impl Model {
     /// 05:54): im Wandzug ihres Geschosses, den sie trifft, auf der
     /// Rohbauflucht der Seite, in die sie aufschlägt. `None` ohne Aufschlag.
     pub fn door_leaf(&self, id: ElementId) -> Option<DoorLeaf> {
+        self.door_leaf_in(id, &|r| self.chain(r))
+    }
+
+    /// [`Model::door_leaf`] mit den Wandkörpern aus `chain_of`, z. B. aus dem
+    /// Zwischenspeicher der Szene (Review #99 B1: [`Model::chain`] wächst
+    /// mit der Zahl der Anschlüsse).
+    pub fn door_leaf_in(
+        &self,
+        id: ElementId,
+        chain_of: &dyn Fn(RunId) -> Option<WallChain>,
+    ) -> Option<DoorLeaf> {
         let o = self.opening(id)?;
         let sw = o.swing?;
         let (a, b) = (flat(*o.path.first()?), flat(*o.path.last()?));
@@ -603,7 +681,7 @@ impl Model {
             .into_iter()
             .filter(|r| self.run(*r).is_some_and(|x| x.storey == st))
             .find_map(|r| {
-                let c = self.chain(r)?;
+                let c = chain_of(r)?;
                 let (_, h) = self.legs_on(r, &c, Some(id), o).into_iter().next()?;
                 Some((r, c, h))
             })?;

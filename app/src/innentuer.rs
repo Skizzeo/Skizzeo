@@ -14,7 +14,7 @@ use sk_model::hoehen::DOOR_WIDTHS;
 use sk_model::oeffnung::{
     Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, OuterFace, Swing,
 };
-use sk_model::{Category, LevelRef, Model, StoreyId};
+use sk_model::{Category, LevelRef, Model, RunId, StoreyId, WallChain};
 
 /// Raster längs der Wand für den Bezugspunkt (mm).
 const RASTER: f64 = 10.0;
@@ -99,10 +99,33 @@ fn flaechenseite(f: &OuterFace) -> FaceSide {
     }
 }
 
+/// Wandkörper je Zug, in der App aus dem Zwischenspeicher der Szene
+/// (Review #99 B1).
+pub type Koerper<'a> = &'a dyn Fn(RunId) -> Option<WallChain>;
+
+/// Vorfilter für [`treffer`] (mm): So weit darf eine Wandfläche von der
+/// Bezugslinie ihres Zuges liegen.
+const DICKE: f64 = 1000.0;
+
+/// Liegt `p` im Rechteck um die Punkte `pts`, um `rand` vergrößert?
+fn nah(pts: &[Vec3], p: Vec3, rand: f64) -> bool {
+    let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+    for q in pts {
+        (lo.0, lo.1, hi.0, hi.1) = (lo.0.min(q.x), lo.1.min(q.y), hi.0.max(q.x), hi.1.max(q.y));
+    }
+    p.x >= lo.0 - rand && p.x <= hi.0 + rand && p.y >= lo.1 - rand && p.y <= hi.1 + rand
+}
+
 /// Innenwand des Geschosses `st` unter dem Grundrisspunkt `p` (Toleranz
 /// `tol` in mm): ihre Fläche, die Lage längs, ob `p` auf der Seite der
 /// Fläche liegt, und die Wanddicke. Die nächste Wandmitte gewinnt.
-pub fn treffer(m: &Model, st: StoreyId, p: Vec3, tol: f64) -> Option<(OuterFace, f64, bool, f64)> {
+pub fn treffer(
+    m: &Model,
+    k: Koerper,
+    st: StoreyId,
+    p: Vec3,
+    tol: f64,
+) -> Option<(OuterFace, f64, bool, f64)> {
     let p = vec3(p.x, p.y, 0.0);
     let mut best: Option<(f64, (OuterFace, f64, bool, f64))> = None;
     for (id, run) in m.runs().iter() {
@@ -111,15 +134,16 @@ pub fn treffer(m: &Model, st: StoreyId, p: Vec3, tol: f64) -> Option<(OuterFace,
             .first()
             .and_then(|e| m.element(*e))
             .is_some_and(|e| e.category == Category::InteriorWall);
-        if run.storey != st || !innen {
+        if run.storey != st || !innen || !nah(&run.points, p, tol + DICKE) {
             continue;
         }
-        let Some(c) = m.chain(id) else {
+        // Ein Körper je Zug für alle Segmente (Review #99 B1)
+        let Some(c) = k(id) else {
             continue;
         };
         let t = c.thickness();
         for seg in 0..c.segment_count() {
-            let Some(f) = m.outer_face(id, seg) else {
+            let Some(f) = m.outer_face_in(id, seg, &c) else {
                 continue;
             };
             let u = f.u_of(p);
@@ -173,15 +197,15 @@ impl Innentuer {
     /// Vorschau für den Grundrisspunkt `p` im Geschoss `st`, gezeichnet in
     /// Höhe `z`; `None` neben jeder Innenwand oder wenn die Tür dort nicht
     /// in die Wandfläche passt.
-    pub fn suchen(&mut self, m: &Model, st: StoreyId, p: Vec3, tol: f64, z: f64) {
+    pub fn suchen(&mut self, m: &Model, k: Koerper, st: StoreyId, p: Vec3, tol: f64, z: f64) {
         self.ort = Some((p, tol, z));
-        self.hover = self.vorschau(m, st, p, tol, z);
+        self.hover = self.vorschau(m, k, st, p, tol, z);
     }
 
     /// Sucht an der letzten Stelle neu (nach Tab, Mausrad oder Klick).
-    pub fn nochmal(&mut self, m: &Model, st: StoreyId) {
+    pub fn nochmal(&mut self, m: &Model, k: Koerper, st: StoreyId) {
         if let Some((p, tol, z)) = self.ort {
-            self.suchen(m, st, p, tol, z);
+            self.suchen(m, k, st, p, tol, z);
         }
     }
 
@@ -191,8 +215,16 @@ impl Innentuer {
         self.hover = None;
     }
 
-    fn vorschau(&self, m: &Model, st: StoreyId, p: Vec3, tol: f64, z: f64) -> Option<Vorschau> {
-        let (face, u, auf_flaeche, dicke) = treffer(m, st, p, tol)?;
+    fn vorschau(
+        &self,
+        m: &Model,
+        k: Koerper,
+        st: StoreyId,
+        p: Vec3,
+        tol: f64,
+        z: f64,
+    ) -> Option<Vorschau> {
+        let (face, u, auf_flaeche, dicke) = treffer(m, k, st, p, tol)?;
         let fs = flaechenseite(&face);
         // Raum auf der Seite des Cursors, zur Pfadrichtung (= Flächenrichtung)
         let raum = if auf_flaeche { fs } else { fs.other() };
@@ -317,7 +349,14 @@ mod tests {
     fn vorschau_am_cursor() {
         let (m, iw, st) = haus();
         let mut t = Innentuer::default();
-        t.suchen(&m, st, vec3(5020.0, 3004.0, 0.0), 30.0, 1500.0);
+        t.suchen(
+            &m,
+            &|r| m.chain(r),
+            st,
+            vec3(5020.0, 3004.0, 0.0),
+            30.0,
+            1500.0,
+        );
         let v = t.hover.clone().unwrap();
         assert_eq!(v.face.run, iw);
         assert_eq!(v.u.1 - v.u.0, 885.0);
@@ -330,16 +369,44 @@ mod tests {
         assert_eq!(o.top, HeightRef::Line(st, HeightLine::Door));
         assert_eq!(m.opening_fault(&o, None), None);
         // Andere Wandseite: Aufschlag nach −x
-        t.suchen(&m, st, vec3(4980.0, 3000.0, 0.0), 30.0, 1500.0);
+        t.suchen(
+            &m,
+            &|r| m.chain(r),
+            st,
+            vec3(4980.0, 3000.0, 0.0),
+            30.0,
+            1500.0,
+        );
         let v = t.hover.clone().unwrap();
         assert!(v.swing.side.normal(v.face.d).x < -0.5);
         // Neben der Wand, über der Außenwand: keine Vorschau
-        t.suchen(&m, st, vec3(4000.0, 3000.0, 0.0), 30.0, 1500.0);
+        t.suchen(
+            &m,
+            &|r| m.chain(r),
+            st,
+            vec3(4000.0, 3000.0, 0.0),
+            30.0,
+            1500.0,
+        );
         assert!(t.hover.is_none());
-        t.suchen(&m, st, vec3(0.0, 3000.0, 0.0), 30.0, 1500.0);
+        t.suchen(
+            &m,
+            &|r| m.chain(r),
+            st,
+            vec3(0.0, 3000.0, 0.0),
+            30.0,
+            1500.0,
+        );
         assert!(t.hover.is_none());
         // Umriss: zwei Pfosten, Blatt und Bogen, alles in Zeichenhöhe
-        t.suchen(&m, st, vec3(5020.0, 3000.0, 0.0), 30.0, 1500.0);
+        t.suchen(
+            &m,
+            &|r| m.chain(r),
+            st,
+            vec3(5020.0, 3000.0, 0.0),
+            30.0,
+            1500.0,
+        );
         let u = umriss(t.hover.as_ref().unwrap());
         assert_eq!(u.len(), 3 + BOGEN);
         assert!(u.iter().all(|(a, b)| a.z == 1500.0 && b.z == 1500.0));
@@ -355,7 +422,7 @@ mod tests {
         let mut t = Innentuer::default();
         let p = vec3(5020.0, 3000.0, 0.0);
         let lichte = |t: &mut Innentuer| {
-            t.suchen(&m, st, p, 30.0, 1500.0);
+            t.suchen(&m, &|r| m.chain(r), st, p, 30.0, 1500.0);
             let v = t.hover.clone().unwrap();
             let (a, b) = (v.face.at(v.u.0, 0.0).y, v.face.at(v.u.1, 0.0).y);
             (a.min(b), a.max(b))

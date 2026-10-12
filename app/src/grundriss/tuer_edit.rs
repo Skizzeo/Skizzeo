@@ -12,7 +12,7 @@ use crate::camera::Camera;
 use crate::scene::Scene;
 use sk_math::{vec3, Vec3};
 use sk_model::oeffnung::{Din, FaceSide, Swing};
-use sk_model::{ElementId, ElementKind, Model};
+use sk_model::{ElementId, ElementKind, Model, RunId, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -22,15 +22,21 @@ pub const SCHRITT: &str = "Türaufschlag geändert";
 /// Der Griff erscheint, wenn die Maus näher als so viele Türbreiten an der
 /// Türmitte steht (das offene Blattende liegt bei gut einer Breite).
 const NAH: f64 = 1.25;
+/// Vorfilter der Griffe am Pfad der Tür (mm): Das Blatt liegt auf der
+/// Rohbauflucht, höchstens eine Wanddicke neben dem Pfad (Review #99 B1).
+const DICKE: f64 = 1000.0;
 
 fn flat(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
 }
 
+/// Wandkörper je Zug (aus dem Zwischenspeicher der Szene).
+type Koerper<'a> = &'a dyn Fn(RunId) -> Option<WallChain>;
+
 /// Griff der Tür `id` (z = 0) und ihre Mitte und Breite; `None` ohne
 /// Aufschlag.
-fn griff_der_tuer(m: &Model, id: ElementId) -> Option<(Vec3, Vec3, f64)> {
-    let l = m.door_leaf(id)?;
+fn griff_der_tuer(m: &Model, id: ElementId, k: Koerper) -> Option<(Vec3, Vec3, f64)> {
+    let l = m.door_leaf_in(id, k)?;
     let w = (l.u.1 - l.u.0).abs();
     let mitte = (l.line.0 + l.line.1) * 0.5;
     Some((flat(l.hinge + l.swing_into * w), flat(mitte), w))
@@ -44,9 +50,19 @@ pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
     let p = flat(p);
     m.elements()
         .iter()
-        .filter(|(_, e)| e.storey == st && matches!(e.kind, ElementKind::Opening(_)))
-        .filter_map(|(id, _)| {
-            let (g, mitte, w) = griff_der_tuer(m, id)?;
+        .filter_map(|(id, e)| {
+            let ElementKind::Opening(o) = &e.kind else {
+                return None;
+            };
+            if e.storey != st || o.swing.is_none() || o.path.len() != 2 {
+                return None;
+            }
+            // Erst am Pfad filtern, das Blatt nur für Türen bei der Maus
+            let (a, b) = (flat(o.path[0]), flat(o.path[1]));
+            if (p - (a + b) * 0.5).length() > NAH * (b - a).length() + DICKE {
+                return None;
+            }
+            let (g, mitte, w) = griff_der_tuer(m, id, &|r| scene.koerper(r))?;
             ((p - mitte).length() <= NAH * w).then_some((id, g))
         })
         .collect()
@@ -75,22 +91,54 @@ pub fn griff_bei(
         .map(|(_, id, p)| (id, p))
 }
 
-/// Aufschlag der Tür `id`, wenn ihr Griff bei `p` (Grundriss) steht: die
-/// Wandseite von `p` zur Wandmitte gibt den Raum, die Hälfte der Lichte den
-/// Bandpfosten. Die Seite gilt zur Pfadrichtung wie in [`Swing`].
-pub fn swing_bei(m: &Model, id: ElementId, p: Vec3) -> Option<Swing> {
+/// Lage der Tür beim Greifen: Anfang und Richtung des Pfads, seine Länge,
+/// ein Punkt der Wandmitte und der Zug. Beim Ziehen ändert sich nur der
+/// Aufschlag, die Lage bleibt (Review #99 B1).
+#[derive(Clone, Copy, Debug)]
+struct Lage {
+    a: Vec3,
+    along: Vec3,
+    len: f64,
+    mitte: Vec3,
+    run: RunId,
+}
+
+fn lage(m: &Model, id: ElementId, k: Koerper) -> Option<Lage> {
     let o = m.opening(id)?;
-    let l = m.door_leaf(id)?;
+    let l = m.door_leaf_in(id, k)?;
     let (a, b) = (flat(*o.path.first()?), flat(*o.path.last()?));
     let len = (b - a).length();
     if len < 1e-9 {
         return None;
     }
-    let along = (b - a) / len;
-    let f = m.outer_face(l.run, l.seg)?;
-    let t = m.chain(l.run)?.thickness();
+    let c = k(l.run)?;
+    let f = m.outer_face_in(l.run, l.seg, &c)?;
     // Der Pfad liegt auf der Bezugsfläche, die Wand dahinter um ihre Dicke
-    let mitte = a - f.n * (t / 2.0);
+    Some(Lage {
+        a,
+        along: (b - a) / len,
+        len,
+        mitte: a - f.n * (c.thickness() / 2.0),
+        run: l.run,
+    })
+}
+
+/// Aufschlag der Tür `id`, wenn ihr Griff bei `p` (Grundriss) steht: die
+/// Wandseite von `p` zur Wandmitte gibt den Raum, die Hälfte der Lichte den
+/// Bandpfosten. Die Seite gilt zur Pfadrichtung wie in [`Swing`].
+#[cfg(test)]
+fn swing_bei(m: &Model, id: ElementId, p: Vec3) -> Option<Swing> {
+    swing_aus(&lage(m, id, &|r| m.chain(r))?, p)
+}
+
+fn swing_aus(l: &Lage, p: Vec3) -> Option<Swing> {
+    let Lage {
+        a,
+        along,
+        len,
+        mitte,
+        ..
+    } = *l;
     let p = flat(p);
     let rechts = FaceSide::Right.normal(along);
     let side = if (p - mitte).dot(rechts) > 0.0 {
@@ -114,18 +162,27 @@ pub struct TuerZug {
     jetzt: Swing,
     /// Höhe des Grundrisses.
     z: f64,
+    lage: Lage,
+    /// Griff am Blattende, neu nur, wenn der Aufschlag wechselt.
+    griff: Option<Vec3>,
 }
 
 impl TuerZug {
     /// Greift den Griff der Tür `id` und öffnet den Schritt.
     pub fn greifen(scene: &mut Scene, id: ElementId, z: f64) -> Option<TuerZug> {
-        let alt = scene.model().opening(id)?.swing?;
+        let m = scene.model();
+        let k = |r| scene.koerper(r);
+        let alt = m.opening(id)?.swing?;
+        let lage = lage(m, id, &k)?;
+        let griff = griff_der_tuer(m, id, &k).map(|g| g.0);
         scene.begin(SCHRITT);
         Some(TuerZug {
             id,
             alt,
             jetzt: alt,
             z,
+            lage,
+            griff,
         })
     }
 
@@ -141,11 +198,12 @@ impl TuerZug {
         let mut out = Outcome::default();
         match *e {
             Event::MouseMove { x, y, .. } => {
-                let s = drag_point(cam, x, y, w, h, self.z)
-                    .and_then(|p| swing_bei(scene.model(), self.id, p));
+                let s = drag_point(cam, x, y, w, h, self.z).and_then(|p| swing_aus(&self.lage, p));
                 if let Some(s) = s.filter(|s| *s != self.jetzt) {
-                    if scene.set_swing(self.id, s) {
+                    if scene.set_swing(self.id, s, self.lage.run) {
                         self.jetzt = s;
+                        let k = |r| scene.koerper(r);
+                        self.griff = griff_der_tuer(scene.model(), self.id, &k).map(|g| g.0);
                         out.changed = true;
                         out.redraw = true;
                     }
@@ -179,9 +237,9 @@ impl TuerZug {
     }
 
     /// Der Griff am freien Blattende, wie die Tür gerade steht.
-    pub fn helpers(&self, scene: &Scene, scale: f32, occlude: bool, theme: &Theme) -> Vec<Helper> {
-        griff_der_tuer(scene.model(), self.id)
-            .map(|(g, ..)| ende_edit::griff(g, self.z, scale, occlude, theme).to_vec())
+    pub fn helpers(&self, _scene: &Scene, scale: f32, occlude: bool, theme: &Theme) -> Vec<Helper> {
+        self.griff
+            .map(|g| ende_edit::griff(g, self.z, scale, occlude, theme).to_vec())
             .unwrap_or_default()
     }
 }
@@ -240,7 +298,7 @@ mod tests {
     fn griff_am_blattende() {
         let (m, id) = haus();
         let l = m.door_leaf(id).unwrap();
-        let (g, mitte, w) = griff_der_tuer(&m, id).unwrap();
+        let (g, mitte, w) = griff_der_tuer(&m, id, &|r| m.chain(r)).unwrap();
         assert_eq!(w, 885.0);
         assert!((g - flat(l.hinge) - l.swing_into * w).length() < 1e-6);
         assert!(((mitte.y) - 3000.0).abs() < 1e-6, "{mitte:?}");
@@ -264,7 +322,7 @@ mod tests {
             let l = m.door_leaf(id).unwrap();
             assert!((l.swing_into.x - x_into).abs() < 1e-9, "{p:?}: {l:?}");
             assert!((l.hinge.y - y_band).abs() < 1e-6, "{p:?}: {l:?}");
-            let (g, ..) = griff_der_tuer(&m, id).unwrap();
+            let (g, ..) = griff_der_tuer(&m, id, &|r| m.chain(r)).unwrap();
             // Der Griff landet in der Hälfte und auf der Seite der Maus
             assert!((g.x - 5000.0) * (p.x - 5000.0) > 0.0);
             assert!((g.y - 3000.0) * (p.y - 3000.0) > 0.0);

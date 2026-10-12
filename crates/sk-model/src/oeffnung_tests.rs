@@ -1450,3 +1450,70 @@ fn aufschlag_haengt_nicht_vom_mausweg_ab() {
     }
     assert_eq!(lagen[0], lagen[1], "Sprung gegen 30 Schritte");
 }
+
+/// Review #99 B2: Nur den Aufschlag ändern ist ein Schritt mit genau einer
+/// Änderung an der Tür, ohne Prüfung an den Wänden und ohne Abgleich der
+/// abgeleiteten Bauteile; an einem Fenster gibt es keinen Aufschlag.
+#[test]
+fn aufschlag_allein_ein_kleiner_schritt() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let (mut m, eg, _) = haus(None);
+    let set = m.defaults().interior_wall;
+    let st = storey(&m, eg);
+    let iw = m
+        .add_wall_run(
+            &[vec3(3000.0, 2000.0, 0.0), vec3(7000.0, 2000.0, 0.0)],
+            false,
+            crate::RefSide::Center,
+            st,
+            set,
+            Category::InteriorWall,
+        )
+        .unwrap();
+    let rechts = Swing {
+        side: FaceSide::Right,
+        din: Din::Links,
+    };
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 1500.0), aussen(&m, iw, 0, 2385.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: Some(rechts),
+    };
+    let id = m.add_opening(tuer.clone()).unwrap();
+    let links = Swing {
+        side: FaceSide::Left,
+        ..rechts
+    };
+    m.begin("Aufschlag");
+    assert!(!m.only_swings(), "leerer Schritt");
+    assert!(m.set_swing(id, Some(links)));
+    assert!(m.only_swings());
+    let t = m.commit().unwrap();
+    assert_eq!(t.changes.len(), 1);
+    assert_eq!(m.opening(id).unwrap().swing, Some(links));
+    m.apply(&t, crate::Direction::Undo);
+    assert_eq!(m.opening(id).unwrap(), &tuer);
+    // Breiter ist kein reiner Aufschlag
+    m.begin("Breite");
+    let mut breit = tuer.clone();
+    breit.path[1] = aussen(&m, iw, 0, 2500.0);
+    assert!(m.set_opening(id, breit));
+    assert!(!m.only_swings());
+    m.rollback();
+    // Fenster ohne Aufschlag
+    let fenster = Opening {
+        kind: OpeningKind::Window,
+        path: vec![aussen(&m, eg, 0, 1500.0), aussen(&m, eg, 0, 2500.0)],
+        bottom: HeightRef::Line(st, HeightLine::Sill),
+        top: HeightRef::Line(st, HeightLine::Lintel),
+        swing: None,
+        ..tuer
+    };
+    let f = m.add_opening(fenster).unwrap();
+    assert!(!m.set_swing(f, Some(links)));
+    assert!(m.check().is_empty(), "{:?}", m.check());
+}

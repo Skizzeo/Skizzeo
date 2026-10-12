@@ -82,7 +82,7 @@ impl App {
         if self.innentuer_an() {
             match *ev {
                 Event::MouseMove { x, y, .. } => self.tuer_suchen(x, y, vw, vh, sc),
-                Event::MouseLeave => self.tuer_bild(|t, _, _| t.weg()),
+                Event::MouseLeave => self.tuer_bild(|t, _, _, _| t.weg()),
                 _ => {}
             }
             return;
@@ -168,9 +168,9 @@ impl App {
         match key {
             Key::Escape => self.oeffnung_esc(),
             Key::Tab if self.innentuer_an() => {
-                self.tuer_bild(|t, m, st| {
+                self.tuer_bild(|t, m, k, st| {
                     t.tab();
-                    t.nochmal(m, st);
+                    t.nochmal(m, k, st);
                 });
                 self.tuer_anzeigen();
                 true
@@ -192,9 +192,9 @@ impl App {
         if !self.innentuer_an() || !self.tuer_hover() {
             return false;
         }
-        self.tuer_bild(|t, m, st| {
+        self.tuer_bild(|t, m, k, st| {
             t.rad(delta);
-            t.nochmal(m, st);
+            t.nochmal(m, k, st);
         });
         self.tuer_anzeigen();
         true
@@ -221,14 +221,19 @@ impl App {
     /// Ändert die Innentür mit `f` und zeichnet ihre Vorschau neu.
     fn tuer_bild(
         &mut self,
-        f: impl FnOnce(&mut innentuer::Innentuer, &sk_model::Model, sk_model::StoreyId),
+        f: impl FnOnce(
+            &mut innentuer::Innentuer,
+            &sk_model::Model,
+            innentuer::Koerper,
+            sk_model::StoreyId,
+        ),
     ) {
         let st = self.scene.active_storey();
-        let m = self.scene.model();
+        let scene = &self.scene;
         let Some(w) = self.tool.oeffnung.as_mut() else {
             return;
         };
-        f(&mut w.innen, m, st);
+        f(&mut w.innen, scene.model(), &|r| scene.koerper(r), st);
         let bild = w.innen.hover.as_ref().map_or_else(Bild::default, |v| Bild {
             linien: Vec::new(),
             umriss: innentuer::umriss(v),
@@ -248,8 +253,8 @@ impl App {
             _ => None,
         };
         let vorher = self.tuer_hover();
-        self.tuer_bild(|t, m, st| match hit {
-            Some((p, tol)) => t.suchen(m, st, p, tol, z),
+        self.tuer_bild(|t, m, k, st| match hit {
+            Some((p, tol)) => t.suchen(m, k, st, p, tol, z),
             None => t.weg(),
         });
         // Kommt die Tür an eine Innenwand, sagt die Statuszeile Breite und
@@ -283,7 +288,7 @@ impl App {
                 }
             }
         }
-        self.tuer_bild(|t, m, st| t.nochmal(m, st));
+        self.tuer_bild(|t, m, k, st| t.nochmal(m, k, st));
         self.redraw = true;
         true
     }

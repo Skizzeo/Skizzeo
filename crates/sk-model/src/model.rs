@@ -3129,7 +3129,7 @@ impl Model {
     /// und Typen im selben Schritt. Ändert er ein gesperrtes Bauteil, wird
     /// er ganz zurückgerollt (Sicherheitsnetz, Paket 4 §2.2).
     pub fn try_commit(&mut self) -> Result<Option<Txn>, Locked> {
-        if self.txn.is_some() {
+        if self.txn.is_some() && !self.only_swings() {
             let scope = self.sync_scope();
             let scope = scope.as_deref();
             self.sync_edge_strips(scope);

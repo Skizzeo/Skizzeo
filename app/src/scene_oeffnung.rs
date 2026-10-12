@@ -91,16 +91,24 @@ impl Scene {
         id
     }
 
-    /// Setzt im offenen Schritt den Aufschlag der Tür `id` (Griff im
-    /// Grundriss). `false`, wenn das Modell ihn ablehnt.
-    pub fn set_swing(&mut self, id: ElementId, s: sk_model::oeffnung::Swing) -> bool {
-        let Some(mut o) = self.model.opening(id).cloned() else {
-            return false;
-        };
-        o.swing = Some(s);
-        let ok = self.model.set_opening(id, o);
-        for r in self.model.step_touched() {
-            self.mark(r);
+    /// Körper des Wandzugs `run` aus dem Zwischenspeicher, sonst frisch aus
+    /// dem Modell (Review #99 B1).
+    pub fn koerper(&self, run: sk_model::RunId) -> Option<sk_model::WallChain> {
+        self.chain(run).cloned().or_else(|| self.model.chain(run))
+    }
+
+    /// Setzt im offenen Schritt den Aufschlag der Tür `id` im Zug `run`
+    /// (Griff im Grundriss). Neu gerechnet wird nur dieser Zug, er zeichnet
+    /// Blatt und Bogen (Review #99 B2). `false`, wenn das Modell ihn ablehnt.
+    pub fn set_swing(
+        &mut self,
+        id: ElementId,
+        s: sk_model::oeffnung::Swing,
+        run: sk_model::RunId,
+    ) -> bool {
+        let ok = self.model.set_swing(id, Some(s));
+        if ok {
+            self.mark(run);
         }
         ok
     }
