@@ -895,6 +895,7 @@ mod tests {
             an: true,
             offen: true,
             hover: Some(sz::Teil::Haken),
+            mass: Some((true, false)),
             rechts,
             scale,
         };
@@ -908,6 +909,7 @@ mod tests {
             eingabe: None,
             falsch: false,
             entw: false,
+            mass: (true, true),
             rechts,
             scale,
         };

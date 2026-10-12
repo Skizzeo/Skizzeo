@@ -364,6 +364,9 @@ impl Model {
         }
         let last = self.buildings.len() == 1;
         for &st in &levels {
+            if !last {
+                self.massversatz_weg(st);
+            }
             note!(self, Storey, self.storeys, st);
             if last {
                 if let Some(s) = self.storeys.get_mut(st) {
