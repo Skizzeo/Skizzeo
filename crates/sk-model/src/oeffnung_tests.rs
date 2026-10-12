@@ -1553,7 +1553,16 @@ fn breitenschloss_ueber_geschosse() {
     let back = szo::read(&text, GuidGen::with_seed(5)).unwrap();
     assert!(back.hints.is_empty(), "{:?}", back.hints);
     assert_eq!(szo::write(&back.model), text);
-    // Ein kaputter Eintrag gibt einen Hinweis und entfällt
+    // Einseitig gibt es einen Hinweis und entfällt (Review #109 B6)
+    let erst = text.find(" lock=\"").unwrap();
+    let ende = erst + 1 + text[erst + 1..].find("\" ").unwrap() + 1;
+    let einseitig = format!("{}{}", &text[..erst], &text[ende..]);
+    let l = szo::read(&einseitig, GuidGen::with_seed(5)).unwrap();
+    assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+    assert!(l.hints[0].contains("ohne Gegenstück"), "{:?}", l.hints);
+    assert!(!szo::write(&l.model).contains(" lock="));
+    // Ein kaputter Eintrag gibt einen Hinweis und entfällt, das
+    // Gegenstück dann mit
     let alt = text
         .split(" lock=\"")
         .nth(1)
@@ -1563,7 +1572,7 @@ fn breitenschloss_ueber_geschosse() {
         .unwrap();
     let kaputt = text.replacen(alt, "1 kein-guid", 1);
     let l = szo::read(&kaputt, GuidGen::with_seed(5)).unwrap();
-    assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+    assert_eq!(l.hints.len(), 2, "{:?}", l.hints);
     assert_eq!(szo::write(&l.model).matches(" lock=").count(), 0);
     // Rückgängig nimmt das Schloss
     m.apply(&t, Direction::Undo);
@@ -1576,4 +1585,56 @@ fn breitenschloss_ueber_geschosse() {
     m.commit();
     assert!(m.end_locks(unten, 1).is_empty() && m.end_locks(oben, 1).is_empty());
     assert!(!szo::write(&m).contains(" lock="));
+}
+
+/// Review #109 B2: Das Schloss koppelt nur das direkte Nachbargeschoss
+/// desselben Gebäudes in derselben Wandflucht, nicht das Haus nebenan,
+/// nicht die Gegenfassade und nicht über ein Geschoss hinweg.
+#[test]
+fn breitenschloss_nur_nachbargeschoss() {
+    let mut m = Model::with_seed(212);
+    let haus = |m: &mut Model, dx: f64| {
+        let b = m.add_building(3);
+        let pts = [
+            vec3(dx, 0.0, 0.0),
+            vec3(dx, 8000.0, 0.0),
+            vec3(dx + 10000.0, 8000.0, 0.0),
+            vec3(dx + 10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        (eg, og, m.runs_above(og)[0])
+    };
+    let (eg, og, dg) = haus(&mut m, 0.0);
+    let (eg2, og2, _) = haus(&mut m, 15000.0);
+    let unten = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+    let oben = m.add_opening(fenster(&m, og, (2500.0, 4000.0))).unwrap();
+    let dach = m.add_opening(fenster(&m, dg, (2000.0, 4000.0))).unwrap();
+    let nebenan = [
+        m.add_opening(fenster(&m, eg2, (3000.0, 4000.0))).unwrap(),
+        m.add_opening(fenster(&m, og2, (3000.0, 4000.0))).unwrap(),
+    ];
+    // Gegenfassade im OG mit einem Ende auf derselben Höhe längs
+    let y = m.opening(unten).unwrap().path[1].y;
+    let seg = (0..4)
+        .find(|&s| m.outer_face(og, s).is_some_and(|f| f.n.x > 0.5))
+        .unwrap();
+    let f = m.outer_face(og, seg).unwrap();
+    let mut o = fenster(&m, og, (0.0, 0.0));
+    o.path = vec![
+        f.at(f.u_of(vec3(10000.0, y - 1000.0, 0.0)), 0.0),
+        f.at(f.u_of(vec3(10000.0, y, 0.0)), 0.0),
+    ];
+    let gegen = m.add_opening(o).unwrap();
+    assert!(m.ends_aligned(unten, 1, oben, 1));
+    assert!(m.ends_aligned(oben, 1, dach, 1));
+    assert!(!m.ends_aligned(unten, 1, dach, 1), "über das OG hinweg");
+    assert!(!m.ends_aligned(unten, 1, gegen, 1), "Gegenfassade");
+    for n in nebenan {
+        assert!(!m.ends_aligned(unten, 1, n, 1), "Haus nebenan");
+    }
+    m.begin("Schloss");
+    assert!(!m.set_end_lock(unten, 1, nebenan[1], 1, true));
+    assert!(!m.set_end_lock(unten, 1, dach, 1, true));
+    m.rollback();
 }

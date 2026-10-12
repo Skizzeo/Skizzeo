@@ -105,10 +105,10 @@ pub type Koerper<'a> = &'a dyn Fn(RunId) -> Option<WallChain>;
 
 /// Vorfilter für [`treffer`] (mm): So weit darf eine Wandfläche von der
 /// Bezugslinie ihres Zuges liegen.
-const DICKE: f64 = 1000.0;
+pub(crate) const DICKE: f64 = 1000.0;
 
 /// Liegt `p` im Rechteck um die Punkte `pts`, um `rand` vergrößert?
-fn nah(pts: &[Vec3], p: Vec3, rand: f64) -> bool {
+pub(crate) fn nah(pts: &[Vec3], p: Vec3, rand: f64) -> bool {
     let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
     for q in pts {
         (lo.0, lo.1, hi.0, hi.1) = (lo.0.min(q.x), lo.1.min(q.y), hi.0.max(q.x), hi.1.max(q.y));

@@ -1,6 +1,6 @@
 //! Breitenschloss (Jörn 12.10. 05:38): Ein Pfadende einer Öffnung lässt
-//! sich an das Ende einer Öffnung im Geschoss darüber oder darunter
-//! koppeln, das in derselben Flucht liegt. Zieht man danach die Breite,
+//! sich an das Ende einer Öffnung im Geschoss direkt darüber oder darunter
+//! im selben Gebäude koppeln, das in derselben Flucht liegt. Zieht man danach die Breite,
 //! gehen die gekoppelten Enden mit, auch über mehrere Geschosse.
 //! Gespeichert ist das Schloss an beiden Öffnungen ([`Opening::lock`]); es
 //! gilt nur, wenn beide aufeinander zeigen.
@@ -11,6 +11,10 @@ use crate::wall::flat;
 
 /// So genau müssen gekoppelte Enden übereinander liegen (mm, Grundriss).
 const FLUCHT: f64 = 1.0;
+/// So weit quer zur Flucht dürfen gekoppelte Enden auseinanderliegen (mm,
+/// Grundriss): eine versetzte Wand darüber, nicht die Gegenfassade
+/// (Review #109 B2).
+const LOCK_CROSS: f64 = 1000.0;
 
 /// Richtung des Pfadendes `k` nach außen (vom Nachbarpunkt zum Ende).
 fn end_dir(o: &Opening, k: usize) -> Option<Vec3> {
@@ -63,7 +67,8 @@ impl Model {
 
     /// Liegen das Ende `ka` von `a` und das Ende `kb` von `b` übereinander
     /// in einer Flucht (Grundriss, beide Enden zeigen in dieselbe
-    /// Richtung), in verschiedenen Geschossen?
+    /// Richtung, quer höchstens [`LOCK_CROSS`] auseinander), in direkt
+    /// übereinanderliegenden Geschossen desselben Gebäudes?
     pub fn ends_aligned(&self, a: ElementId, ka: usize, b: ElementId, kb: usize) -> bool {
         let (Some(oa), Some(ob)) = (self.opening(a), self.opening(b)) else {
             return false;
@@ -74,8 +79,34 @@ impl Model {
         let (Some(da), Some(db)) = (end_dir(oa, ka), end_dir(ob, kb)) else {
             return false;
         };
-        let (pa, pb) = (flat(oa.path[ka]), flat(ob.path[kb]));
-        ea.storey != eb.storey && da.dot(db) > 0.999 && (pb - pa).dot(da).abs() < FLUCHT
+        let d = flat(ob.path[kb]) - flat(oa.path[ka]);
+        let laengs = d.dot(da);
+        da.dot(db) > 0.999
+            && laengs.abs() < FLUCHT
+            && (d - da * laengs).length() <= LOCK_CROSS
+            && self.storeys_adjacent(ea.storey, eb.storey)
+    }
+
+    /// Liegen die Geschosse `a` und `b` desselben Gebäudes direkt
+    /// übereinander, ohne ein Geschoss dazwischen?
+    pub fn storeys_adjacent(&self, a: StoreyId, b: StoreyId) -> bool {
+        let (Some(sa), Some(sb)) = (self.storey(a), self.storey(b)) else {
+            return false;
+        };
+        let (lo, hi) = (
+            sa.elevation.min(sb.elevation),
+            sa.elevation.max(sb.elevation),
+        );
+        sa.building.is_some()
+            && sa.building == sb.building
+            && hi > lo
+            && !self.storeys().iter().any(|(id, s)| {
+                id != a
+                    && id != b
+                    && s.building == sa.building
+                    && s.elevation > lo
+                    && s.elevation < hi
+            })
     }
 
     /// Koppelt (`on`) oder löst das Ende `ka` von `a` mit dem Ende `kb`

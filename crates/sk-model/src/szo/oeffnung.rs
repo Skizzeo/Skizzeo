@@ -144,15 +144,19 @@ fn read_locks(r: &Record, n: usize, hints: &mut Vec<String>) -> RawLocks {
 }
 
 /// Löst die Breitenschlösser nach dem Lesen aller Öffnungen auf: Ein
-/// Schloss, dessen Partner fehlt oder kein Pfadende hat, entfällt mit
-/// Hinweis.
+/// Schloss, dessen Partner fehlt, kein Pfadende hat oder nicht
+/// zurückzeigt, entfällt mit Hinweis.
 pub(super) fn resolve_locks(
     elements: &mut crate::id::Arena<Element>,
     ids: &HashMap<Guid, ElementId>,
     pending: Vec<(ElementId, usize, RawLocks)>,
     hints: &mut Vec<String>,
 ) {
+    let mut gelesen = Vec::new();
     for (id, line, raw) in pending {
+        if !raw.is_empty() {
+            gelesen.push((id, line));
+        }
         let mut locks = Vec::new();
         for (k, g, end) in raw {
             let partner = ids.get(&g).copied().filter(|p| {
@@ -169,6 +173,37 @@ pub(super) fn resolve_locks(
         }
         if let Some(ElementKind::Opening(o)) = elements.get_mut(id).map(|e| &mut e.kind) {
             o.lock = locks;
+        }
+    }
+    // Einseitig gilt es nicht und fiele beim Speichern still weg (Review
+    // #109 B6)
+    for (id, line) in gelesen {
+        let Some(ElementKind::Opening(o)) = elements.get(id).map(|e| &e.kind) else {
+            continue;
+        };
+        let einseitig: Vec<(usize, EndLock)> = o
+            .lock
+            .iter()
+            .copied()
+            .filter(|(k, l)| {
+                let back = (
+                    l.end,
+                    EndLock {
+                        partner: id,
+                        end: *k,
+                    },
+                );
+                !matches!(elements.get(l.partner).map(|e| &e.kind),
+                    Some(ElementKind::Opening(p)) if p.lock.contains(&back))
+            })
+            .collect();
+        for _ in &einseitig {
+            hints.push(format!(
+                "Zeile {line}: [opening] Breitenschloss ohne Gegenstück, entfällt"
+            ));
+        }
+        if let Some(ElementKind::Opening(o)) = elements.get_mut(id).map(|e| &mut e.kind) {
+            o.lock.retain(|x| !einseitig.contains(x));
         }
     }
 }

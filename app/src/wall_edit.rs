@@ -731,6 +731,8 @@ impl WallEdit {
             .as_ref()
             .map(|d| d.run)
             .or(self.ende.as_ref().map(|z| z.run))
+            .or(self.tuer.as_ref().map(|t| t.run()))
+            .or(self.breite.as_ref().map(|b| b.run()))
     }
 
     /// Ist der Fuß einer Wand, die von der Seite als Punkt erscheint, zu sehen?
@@ -1082,7 +1084,10 @@ impl WallEdit {
                 // Griff an einem Ende einer Öffnung: Breite
                 if let (Some((id, k, _)), Some(z)) = (self.breite_griff, self.plan_z) {
                     out.consumed = true;
-                    if let Some(l) = sk_model::edit_blocked(scene.model(), &[id]) {
+                    // Gekoppelte Enden gehen mit (Review #109 B5)
+                    let mut ids = vec![id];
+                    ids.extend(scene.model().locked_ends(id, k).iter().map(|e| e.0));
+                    if let Some(l) = sk_model::edit_blocked(scene.model(), &ids) {
                         out.locked = Some((l, id));
                         return out;
                     }

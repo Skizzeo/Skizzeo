@@ -88,6 +88,13 @@ impl App {
         // Breitenschloss am Öffnungsende: mit allen Partnern koppeln bzw. lösen
         if let Some(k) = chip.schloss {
             let partner = breite_edit::partner(self.scene.model(), chip.wall, k);
+            // Gesperrte Öffnungen bleiben, wie sie sind (Review #109 B5)
+            let mut ids = vec![chip.wall];
+            ids.extend(partner.iter().map(|p| p.0));
+            if let Some(l) = sk_model::edit_blocked(self.scene.model(), &ids) {
+                self.show_locked(l, Some((chip.wall, delete::Act::Field)));
+                return true;
+            }
             if self
                 .scene
                 .set_end_locks(chip.wall, k, &partner, !chip.linked)

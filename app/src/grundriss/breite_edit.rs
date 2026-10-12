@@ -14,6 +14,7 @@
 use super::drag_point;
 use super::ende_edit::{self, Outcome, GRIFF_PX};
 use crate::camera::Camera;
+use crate::oeffnung_app::innentuer::{nah, Koerper, DICKE};
 use crate::scene::Scene;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::hoehen::{DOOR_CATCH, DOOR_WIDTHS};
@@ -47,8 +48,9 @@ fn flat(p: Vec3) -> Vec3 {
 pub type Griff = (ElementId, usize, Vec3);
 
 /// Fläche einer öffnungsfähigen Wand des Geschosses `st`, auf der der Punkt
-/// `p` liegt, und die Wanddicke; `innen` bei einer Innenwand.
-fn flaeche_bei(m: &Model, st: StoreyId, p: Vec3) -> Option<(OuterFace, f64, bool)> {
+/// `p` liegt, und die Wanddicke; `innen` bei einer Innenwand. Nur Züge nahe
+/// bei `p` bauen ihren Körper, und der kommt aus `k` (Review #109 B1).
+fn flaeche_bei(m: &Model, k: Koerper, st: StoreyId, p: Vec3) -> Option<(OuterFace, f64, bool)> {
     let p = flat(p);
     for (id, run) in m.runs().iter() {
         let cat = run
@@ -56,14 +58,17 @@ fn flaeche_bei(m: &Model, st: StoreyId, p: Vec3) -> Option<(OuterFace, f64, bool
             .first()
             .and_then(|e| m.element(*e))
             .map(|e| e.category);
-        if run.storey != st || !cat.is_some_and(Category::takes_openings) {
+        if run.storey != st
+            || !cat.is_some_and(Category::takes_openings)
+            || !nah(&run.points, p, DICKE)
+        {
             continue;
         }
-        let Some(c) = m.chain(id) else {
+        let Some(c) = k(id) else {
             continue;
         };
         for seg in 0..c.segment_count() {
-            let Some(f) = m.outer_face(id, seg) else {
+            let Some(f) = m.outer_face_in(id, seg, &c) else {
                 continue;
             };
             let u = f.u_of(p);
@@ -92,6 +97,7 @@ fn zeichenpunkt(f: &OuterFace, p: Vec3, dicke: f64, innen: bool) -> Vec3 {
 /// dass die Maus das Kettensymbol daneben erreicht.
 pub fn sichtbar(scene: &Scene, p: Vec3, r_min: f64) -> Vec<Griff> {
     let m = scene.model();
+    let k = |r| scene.koerper(r);
     let st = scene.active_storey();
     let p = flat(p);
     let mut out = Vec::new();
@@ -111,27 +117,29 @@ pub fn sichtbar(scene: &Scene, p: Vec3, r_min: f64) -> Vec<Griff> {
         if !nah {
             continue;
         }
-        for k in [0, n - 1] {
-            if let Some((f, t, innen)) = flaeche_bei(m, st, o.path[k]) {
-                out.push((id, k, zeichenpunkt(&f, o.path[k], t, innen)));
+        for e in [0, n - 1] {
+            if let Some((f, t, innen)) = flaeche_bei(m, &k, st, o.path[e]) {
+                out.push((id, e, zeichenpunkt(&f, o.path[e], t, innen)));
             }
         }
     }
     out
 }
 
-/// Enden von Öffnungen in anderen Geschossen, die mit dem Ende `k` von
-/// `id` in einer Flucht liegen (Partner fürs Breitenschloss).
+/// Enden von Öffnungen im Geschoss direkt darüber oder darunter, die mit
+/// dem Ende `k` von `id` in einer Flucht liegen (Partner fürs
+/// Breitenschloss, [`Model::ends_aligned`]).
 pub fn partner(m: &Model, id: ElementId, k: usize) -> Vec<(ElementId, usize)> {
     let Some(st) = m.element(id).map(|e| e.storey) else {
         return Vec::new();
     };
+    let nachbarn = nachbargeschosse(m, st);
     let mut out = Vec::new();
     for (pid, e) in m.elements().iter() {
         let ElementKind::Opening(o) = &e.kind else {
             continue;
         };
-        if e.storey == st {
+        if !nachbarn.contains(&e.storey) {
             continue;
         }
         for pk in [0, o.path.len().saturating_sub(1)] {
@@ -148,6 +156,7 @@ pub fn partner(m: &Model, id: ElementId, k: usize) -> Vec<(ElementId, usize)> {
 /// allen Partnern gekoppelt ist.
 pub fn schloesser(scene: &Scene, griffe: &[Griff], z: f64) -> Vec<crate::link_view::Schloss> {
     let m = scene.model();
+    let koerper = |r| scene.koerper(r);
     griffe
         .iter()
         .filter_map(|&(id, k, p)| {
@@ -160,7 +169,7 @@ pub fn schloesser(scene: &Scene, griffe: &[Griff], z: f64) -> Vec<crate::link_vi
                 .iter()
                 .all(|&(pid, pk)| locks.iter().any(|l| l.partner == pid && l.end == pk));
             let st = m.element(id)?.storey;
-            let (f, ..) = flaeche_bei(m, st, *m.opening(id)?.path.get(k)?)?;
+            let (f, ..) = flaeche_bei(m, &koerper, st, *m.opening(id)?.path.get(k)?)?;
             Some(crate::link_view::Schloss {
                 id,
                 k,
@@ -256,6 +265,21 @@ pub fn spuren(m: &Model, st: StoreyId, f: &OuterFace, ohne: &[(ElementId, usize)
     out
 }
 
+/// Ein gekoppeltes Ende in einem anderen Geschoss (Breitenschloss).
+struct Mit {
+    id: ElementId,
+    k: usize,
+    /// Stand beim Greifen.
+    original: Opening,
+    /// Fläche des Endes.
+    face: OuterFace,
+    /// Lage des Nachbarpunkts und Seite des Endes dazu: Auch das
+    /// gekoppelte Ende bleibt mindestens [`MIN_OPENING`] davor (Review
+    /// #109 B3).
+    u_nb: f64,
+    vorz: f64,
+}
+
 /// Laufendes Ziehen an einem Ende einer Öffnung.
 pub struct BreiteZug {
     pub id: ElementId,
@@ -269,9 +293,8 @@ pub struct BreiteZug {
     vorz: f64,
     /// Seitenfluchten darüber und darunter ([`spuren`]).
     spuren: Vec<f64>,
-    /// Gekoppelte Enden in anderen Geschossen (Breitenschloss): Öffnung,
-    /// Pfadende, Stand beim Greifen, Fläche des Endes.
-    mit: Vec<(ElementId, usize, Opening, OuterFace)>,
+    /// Gekoppelte Enden in anderen Geschossen.
+    mit: Vec<Mit>,
     /// Höhe des Grundrisses.
     z: f64,
     geaendert: bool,
@@ -281,21 +304,33 @@ impl BreiteZug {
     /// Greift Ende `k` der Öffnung `id` und öffnet den Schritt.
     pub fn greifen(scene: &mut Scene, id: ElementId, k: usize, z: f64) -> Option<BreiteZug> {
         let m = scene.model();
+        let koerper = |r| scene.koerper(r);
+        // Fläche, Nachbarpunkt und Seite des Endes `k` der Öffnung `o`
+        let ende = |o: &Opening, st, k: usize| {
+            let p = *o.path.get(k)?;
+            let nb = if k == 0 { 1 } else { k.checked_sub(1)? };
+            let (face, dicke, innen) = flaeche_bei(m, &koerper, st, p)?;
+            let u_nb = face.u_of(flat(*o.path.get(nb)?));
+            let vorz = (face.u_of(flat(p)) - u_nb).signum();
+            Some((face, dicke, innen, u_nb, vorz))
+        };
         let original = m.opening(id)?.clone();
         let st = m.element(id)?.storey;
-        let p = *original.path.get(k)?;
-        let nb = if k == 0 { 1 } else { k.checked_sub(1)? };
-        let (face, dicke, innen) = flaeche_bei(m, st, p)?;
-        let u_nb = face.u_of(flat(*original.path.get(nb)?));
-        let vorz = (face.u_of(flat(p)) - u_nb).signum();
+        let (face, dicke, innen, u_nb, vorz) = ende(&original, st, k)?;
         let gekoppelt = m.locked_ends(id, k);
         let mit = gekoppelt
             .iter()
             .filter_map(|&(pid, pk)| {
                 let po = m.opening(pid)?.clone();
-                let pst = m.element(pid)?.storey;
-                let (pf, ..) = flaeche_bei(m, pst, *po.path.get(pk)?)?;
-                Some((pid, pk, po, pf))
+                let (pf, _, _, u_nb, vorz) = ende(&po, m.element(pid)?.storey, pk)?;
+                Some(Mit {
+                    id: pid,
+                    k: pk,
+                    original: po,
+                    face: pf,
+                    u_nb,
+                    vorz,
+                })
             })
             .collect();
         let spuren = spuren(m, st, &face, &gekoppelt);
@@ -351,27 +386,39 @@ impl BreiteZug {
                     return out;
                 };
                 let o = self.mit_ende(self.face.u_of(flat(p)));
-                // Gekoppelte Enden quer auf ihre Fläche unter das neue Ende
+                // Gekoppelte Enden quer auf ihre Fläche unter das neue Ende,
+                // jedes auf seiner Seite und breit genug (Review #109 B3)
                 let q = flat(o.path[self.k]);
                 let mut neu = vec![(self.id, o)];
-                for (pid, pk, po, pf) in &self.mit {
-                    let mut po = po.clone();
-                    po.path[*pk] = pf.at(pf.u_of(q), po.path[*pk].z);
-                    neu.push((*pid, po));
+                for x in &self.mit {
+                    let u = x.face.u_of(q);
+                    if (u - x.u_nb) * x.vorz < MIN_OPENING - 1e-6 {
+                        return out;
+                    }
+                    let mut po = x.original.clone();
+                    po.path[x.k] = x.face.at(u, po.path[x.k].z);
+                    neu.push((x.id, po));
                 }
                 let m = scene.model();
-                let anders = neu.iter().any(|(id, o)| m.opening(*id) != Some(o));
-                let gut = neu
-                    .iter()
-                    .all(|(id, o)| m.opening_fault(o, Some(*id)).is_none());
-                if anders && gut {
-                    for (id, o) in neu {
-                        scene.set_opening(id, o);
-                    }
-                    self.geaendert = true;
-                    out.changed = true;
-                    out.redraw = true;
+                if neu.iter().all(|(id, o)| m.opening(*id) == Some(o)) {
+                    return out;
                 }
+                // Das Modell prüft beim Setzen; lehnt es eine ab, gehen die
+                // schon gesetzten zurück (Review #109 B4)
+                let mut alt = Vec::new();
+                for (id, o) in neu {
+                    let vorher = scene.model().opening(id).cloned();
+                    if !scene.set_opening(id, o) {
+                        for (id, v) in alt.into_iter().rev() {
+                            scene.set_opening(id, v);
+                        }
+                        return out;
+                    }
+                    alt.extend(vorher.map(|v| (id, v)));
+                }
+                self.geaendert = true;
+                out.changed = true;
+                out.redraw = true;
             }
             Event::MouseUp {
                 button: MouseButton::Left,
@@ -400,6 +447,12 @@ impl BreiteZug {
             _ => {}
         }
         out
+    }
+
+    /// Zug des gezogenen Endes: Er wird beim Ziehen live gezeichnet, die
+    /// gekoppelten mit ([`Scene::set_opening`]).
+    pub fn run(&self) -> sk_model::RunId {
+        self.face.run
     }
 
     /// Der Griff am gezogenen Ende, wie die Öffnung gerade steht.
@@ -618,14 +671,8 @@ mod tests {
         assert_eq!(s.model().opening_fault(o, Some(fenster)), None);
     }
 
-    /// Zweigeschossiges Haus: ein Fenster im EG von 6,5 bis 7,5 m, eines im
-    /// OG von 6 bis 7 m. Das rechte Ende des EG-Fensters rastet bis 5 cm an
-    /// der Seitenflucht 7 m des OG-Fensters ein, weiter weg gilt das Raster.
-    #[test]
-    fn spur_zum_geschoss_darueber() {
-        const W: f64 = 1200.0;
-        const H: f64 = 800.0;
-        let cam = Camera::looking_at(vec3(7000.0, 0.0, 20000.0), vec3(7000.0, 1.0, 0.0), 45.0);
+    /// Zweigeschossiges Haus 10 × 8 m: Modell, EG- und OG-Zug.
+    fn zwei_geschosse() -> (Model, sk_model::RunId, sk_model::RunId) {
         let mut m = Model::with_seed(414);
         let b = m.add_building(2);
         let pts = [
@@ -636,25 +683,39 @@ mod tests {
         ];
         let eg = m.build_from_polygon(b, &pts).unwrap();
         let og = m.runs_above(eg)[0];
-        let fenster = |m: &mut Model, run, von: f64, bis: f64| {
-            let st = m.run(run).unwrap().storey;
-            let seg = (0..4)
-                .find(|&k| m.outer_face(run, k).is_some_and(|f| f.n.y < -0.5))
-                .unwrap();
-            let f = m.outer_face(run, seg).unwrap();
-            let (a, b) = (f.u_of(vec3(von, 0.0, 0.0)), f.u_of(vec3(bis, 0.0, 0.0)));
-            let o = Opening {
-                kind: OpeningKind::Window,
-                path: vec![f.at(a, 0.0), f.at(b, 0.0)],
-                bottom: HeightRef::Line(st, HeightLine::Sill),
-                top: HeightRef::Line(st, HeightLine::Lintel),
-                reveal: None,
-                install: Default::default(),
-                swing: None,
-                lock: Default::default(),
-            };
-            m.add_opening(o).unwrap()
+        (m, eg, og)
+    }
+
+    /// Fenster in der Südwand des Zugs `run` von `von` bis `bis` (x, mm).
+    fn fenster(m: &mut Model, run: sk_model::RunId, von: f64, bis: f64) -> ElementId {
+        let st = m.run(run).unwrap().storey;
+        let seg = (0..4)
+            .find(|&k| m.outer_face(run, k).is_some_and(|f| f.n.y < -0.5))
+            .unwrap();
+        let f = m.outer_face(run, seg).unwrap();
+        let (a, b) = (f.u_of(vec3(von, 0.0, 0.0)), f.u_of(vec3(bis, 0.0, 0.0)));
+        let o = Opening {
+            kind: OpeningKind::Window,
+            path: vec![f.at(a, 0.0), f.at(b, 0.0)],
+            bottom: HeightRef::Line(st, HeightLine::Sill),
+            top: HeightRef::Line(st, HeightLine::Lintel),
+            reveal: None,
+            install: Default::default(),
+            swing: None,
+            lock: Default::default(),
         };
+        m.add_opening(o).unwrap()
+    }
+
+    /// Zweigeschossiges Haus: ein Fenster im EG von 6,5 bis 7,5 m, eines im
+    /// OG von 6 bis 7 m. Das rechte Ende des EG-Fensters rastet bis 5 cm an
+    /// der Seitenflucht 7 m des OG-Fensters ein, weiter weg gilt das Raster.
+    #[test]
+    fn spur_zum_geschoss_darueber() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(vec3(7000.0, 0.0, 20000.0), vec3(7000.0, 1.0, 0.0), 45.0);
+        let (mut m, eg, og) = zwei_geschosse();
         let unten = fenster(&mut m, eg, 6500.0, 7500.0);
         let oben = fenster(&mut m, og, 6000.0, 7000.0);
         let mut s = Scene::with_model(m);
@@ -723,5 +784,44 @@ mod tests {
         assert!(s.undo());
         let x_oben = s.model().opening(oben).unwrap().path[ko].x;
         assert!((rechts(&s) - 7000.0).abs() < 1e-6 && (x_oben - 7000.0).abs() < 1e-6);
+    }
+
+    /// Review #109 B3: EG 6,0–7,0 m und OG 6,9–7,0 m bei 7 m gekoppelt.
+    /// Zieht man das EG-Ende auf 6,3 m, bliebe das OG-Fenster nicht
+    /// 10 cm breit: Beide bleiben beim letzten gültigen Stand, nichts
+    /// dreht sich um.
+    #[test]
+    fn gekoppeltes_ende_mit_grenzen() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(vec3(7000.0, 0.0, 20000.0), vec3(7000.0, 1.0, 0.0), 45.0);
+        let (mut m, eg, og) = zwei_geschosse();
+        let unten = fenster(&mut m, eg, 6000.0, 7000.0);
+        let oben = fenster(&mut m, og, 6900.0, 7000.0);
+        let mut s = Scene::with_model(m);
+        let rechts = |s: &Scene, id| {
+            let o = s.model().opening(id).unwrap();
+            let k = usize::from(o.path[1].x > o.path[0].x);
+            (k, o.path[k].x, o.path[1 - k].x)
+        };
+        let (k, ..) = rechts(&s, unten);
+        let (ko, ..) = rechts(&s, oben);
+        assert_eq!(partner(s.model(), unten, k), vec![(oben, ko)]);
+        assert!(s.set_end_locks(unten, k, &[(oben, ko)], true));
+        let mut z = BreiteZug::greifen(&mut s, unten, k, 0.0).unwrap();
+        let mods = Default::default();
+        for x_mm in [7050.0, 6300.0] {
+            let (x, y) = cam.project(vec3(x_mm, 0.0, 0.0), W, H).unwrap();
+            z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        }
+        let (_, r_unten, _) = rechts(&s, unten);
+        let (k2, r_oben, l_oben) = rechts(&s, oben);
+        assert_eq!(k2, ko, "OG-Fenster umgedreht");
+        assert!((r_unten - 7050.0).abs() < 1e-6, "{r_unten}");
+        assert!((r_oben - 7050.0).abs() < 1e-6 && (l_oben - 6900.0).abs() < 1e-6);
+        // Bis 7,0 m geht es, das OG-Fenster bleibt 10 cm breit
+        let (x, y) = cam.project(vec3(7000.0, 0.0, 0.0), W, H).unwrap();
+        z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        assert!((rechts(&s, oben).1 - 7000.0).abs() < 1e-6);
     }
 }

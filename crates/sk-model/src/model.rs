@@ -3226,10 +3226,6 @@ impl Model {
                 t.run(r);
             }
         }
-        // Öffnungen treffen die Außenwände an ihrem Pfad
-        for r in openings {
-            t.run(r);
-        }
         for r in floors {
             self.runs_under_floor(r).into_iter().for_each(|i| t.run(i));
         }
@@ -3237,6 +3233,11 @@ impl Model {
         let runs = t.runs.clone();
         for r in runs {
             self.joined_runs(r).into_iter().for_each(|p| t.run(p));
+        }
+        // Öffnungen treffen nur die Wände an ihrem Pfad: Ein Loch ändert
+        // weder die angeschlossenen Züge noch die darüber (Review #109 B4)
+        for r in openings {
+            t.run(r);
         }
         t.runs
     }

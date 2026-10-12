@@ -98,8 +98,9 @@ impl Scene {
     }
 
     /// Setzt im offenen Schritt den Aufschlag der Tür `id` im Zug `run`
-    /// (Griff im Grundriss). Neu gerechnet wird nur dieser Zug, er zeichnet
-    /// Blatt und Bogen (Review #99 B2). `false`, wenn das Modell ihn ablehnt.
+    /// (Griff im Grundriss). Neu gerechnet wird nur dieser Zug, live, er
+    /// zeichnet Blatt und Bogen (Review #99 B2). `false`, wenn das Modell
+    /// ihn ablehnt.
     pub fn set_swing(
         &mut self,
         id: ElementId,
@@ -108,7 +109,7 @@ impl Scene {
     ) -> bool {
         let ok = self.model.set_swing(id, Some(s));
         if ok {
-            self.mark(run);
+            self.mark_live(&[run]);
         }
         ok
     }
@@ -144,11 +145,30 @@ impl Scene {
     /// Ändert die Öffnung `id` im offenen Schritt (Griffe im Grundriss).
     /// `false`, wenn das Modell sie ablehnt.
     pub fn set_opening(&mut self, id: ElementId, o: Opening) -> bool {
-        let ok = self.model.set_opening(id, o);
-        for r in self.model.step_touched() {
-            self.mark(r);
-        }
+        // Körper aus dem Zwischenspeicher, sonst baut die Prüfung sie je
+        // Zug neu (Review #109 B4)
+        let cache = &self.cache;
+        let chains = |r: sk_model::RunId| {
+            let c = cache.get(r.index() as usize)?.as_ref()?;
+            (c.id == r).then(|| c.chain.clone())
+        };
+        let ok = self.model.set_opening_in(id, o, &chains);
+        let runs = self.model.step_touched();
+        self.mark_live(&runs);
         ok
+    }
+
+    /// Rechnet die Züge `runs` live neu, damit die Zeichnung beim Ziehen am
+    /// Griff mitgeht: Ohne das blieb die Tür beim alten Aufschlag stehen und
+    /// der Griff schwebte daneben (Jörn 12.10. 14:44).
+    fn mark_live(&mut self, runs: &[sk_model::RunId]) {
+        for &r in runs {
+            self.mark(r);
+            if !self.live.contains(&r) {
+                self.live.push(r);
+            }
+        }
+        self.rebuild_dirty(true);
     }
 }
 
