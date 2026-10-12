@@ -289,7 +289,10 @@ mod tests {
         // bis in die Ecke, dann die an Segment 0 ab der Ecke; zur Ecke hin
         // offen, sonst um den Anschlag 30 mm größer
         assert_eq!(k0, (k1 + 1) % 4);
-        assert!((b.bis - laenge(k1)).abs() < 1e-6 && a.von == 0.0, "{a:?} {b:?}");
+        assert!(
+            (b.bis - laenge(k1)).abs() < 1e-6 && a.von == 0.0,
+            "{a:?} {b:?}"
+        );
         let t = m.chain(run).unwrap().thickness();
         assert!((a.bis - a.von - (800.0 - t + 30.0)).abs() < 1e-6, "{a:?}");
         assert!((b.bis - b.von - (900.0 - t + 30.0)).abs() < 1e-6, "{b:?}");

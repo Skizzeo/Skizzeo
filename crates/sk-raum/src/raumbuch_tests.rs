@@ -5,15 +5,16 @@
 //! Alle Räume 2,635 m Rohbauhöhe, Putz 15 mm.
 
 use super::*;
-use crate::ausbau::{dicken, estrich_vorgabe, hoehen, laibungen};
+use crate::ausbau::{dicken, estrich_vorgabe, hoehen, laibungen, nutzung};
 use crate::erkennung::{Begrenzung, Kante, RaumForm, Seite};
 use crate::oeffnungen::{OeffnungAmRaum, OpeningKind, Rohbau};
 use sk_math::vec3;
 use sk_model::model::{
-    BATH_SPACE_GUID, CEILING_TYPE_GUID, FINISH_TYPES, GYPSUM_PLASTER_GUID, HALL_SPACE_GUID,
-    LIME_WALL_TYPE_GUID, LIVING_SPACE_GUID, OAK_SKIRTING_TYPE_GUID, PARQUET_TYPE_GUID,
-    PORCELAIN_TYPE_GUID, SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID, SPACE_TEMPLATES,
-    TILE_SKIRTING_TYPE_GUID, WALL_TILES_TYPE_GUID, WET_FLOOR_TYPE_GUID, WOODCHIP_WALL_TYPE_GUID,
+    BATH_SPACE_GUID, CEILING_TYPE_GUID, DEFAULT_SPACE_GUID, FINISH_TYPES, GYPSUM_PLASTER_GUID,
+    HALL_SPACE_GUID, LIME_WALL_TYPE_GUID, LIVING_SPACE_GUID, OAK_SKIRTING_TYPE_GUID,
+    PARQUET_TYPE_GUID, PORCELAIN_TYPE_GUID, SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID,
+    SPACE_TEMPLATES, TILE_SKIRTING_TYPE_GUID, WALL_TILES_TYPE_GUID, WET_FLOOR_TYPE_GUID,
+    WOODCHIP_WALL_TYPE_GUID,
 };
 use sk_model::{Category, ElementId, Guid, Model, RefSide, SpaceType, StoreyId};
 
@@ -628,6 +629,75 @@ fn leer_und_seite_ohne_ausbau() {
         4970.0 + 3985.0 + 3985.0,
     );
     assert_eq!(dicken(&h.m, &f, &a), vec![15.0, 15.0, 0.0, 15.0]);
+}
+
+/// Ausbau nach der Nutzung des gespeicherten Raums: ohne Wahl Wohnzimmer,
+/// dessen Typen ein frisches Projekt erst mit `anlegen` führt; gewählt das
+/// Bad samt Typen; eine geänderte Projektkopie des Wohnzimmers gilt für Räume ohne
+/// Wahl.
+#[test]
+fn ausbau_nach_der_nutzung_des_raums() {
+    let mut m = Model::with_seed(5);
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let run = m.build_from_polygon(b, &pts).unwrap();
+    let st = m.run(run).unwrap().storey;
+    m.begin("Räume");
+    assert!(crate::abgleichen(&mut m, &[st]) > 0);
+    assert!(m.commit().is_some());
+    let roh = |m: &Model| Rohbau::neu(m, crate::raeume(m, st).remove(0));
+    let r = roh(&m);
+    let id = r.form.raum.unwrap();
+    assert_eq!(nutzung(&m, &r.form), DEFAULT_SPACE_GUID);
+    let a = RaumAusbau::fuer(&m, &r).unwrap();
+    assert_eq!((a.boden, a.estrich, a.decke), (None, None, None));
+    assert_eq!(a.seiten.len(), 4);
+    // Boden, Wand, Decke, Sockel und der Estrich des Geschosses
+    assert_eq!(crate::ausbau::fehlende_typen(&m, &r.form).len(), 5);
+    // Anlegen bringt Vorlage, Ausbautypen und den Estrich des Geschosses
+    m.begin("Ausbau");
+    assert!(crate::ausbau::anlegen(&mut m, id));
+    assert!(m.commit().is_some());
+    let r = roh(&m);
+    assert!(crate::ausbau::fehlende_typen(&m, &r.form).is_empty());
+    assert!(m.space_type(DEFAULT_SPACE_GUID).is_some());
+    let a = RaumAusbau::fuer(&m, &r).unwrap();
+    assert_eq!(hoehen(&m, &r, &a).0, 160.0, "Fußbodenaufbau");
+    assert_eq!(m.space(id).unwrap().nutzung, None, "Wahl bleibt offen");
+    // Bad gewählt: Vorlage und Typen kommen ins Projekt
+    m.begin("Bad");
+    assert!(m.ensure_space_type(BATH_SPACE_GUID).is_some());
+    assert!(m.set_space(id, |s| s.nutzung = Some(BATH_SPACE_GUID)));
+    assert!(m.commit().is_some());
+    let r = roh(&m);
+    let a = RaumAusbau::fuer(&m, &r).unwrap();
+    let bad = vorlage(BATH_SPACE_GUID);
+    assert_eq!(a.boden, m.type_by_guid(bad.floor.unwrap()));
+    assert_eq!(
+        a.estrich,
+        m.type_by_guid(SCREED_SLAB_TYPE_GUID),
+        "EG auf der Sohlplatte"
+    );
+    assert!(a
+        .seiten
+        .iter()
+        .all(|s| s.fliesen.is_some() && s.sockel.is_none()));
+    // Ohne Wahl gilt die Projektkopie des Wohnzimmers
+    m.begin("Wohnzimmer");
+    assert!(m.set_space(id, |s| s.nutzung = None));
+    assert!(m.ensure_space_type(DEFAULT_SPACE_GUID).is_some());
+    let mut w = m.space_type(DEFAULT_SPACE_GUID).unwrap().clone();
+    w.floor = m.space_type(BATH_SPACE_GUID).unwrap().floor;
+    assert!(m.put_space_type(w));
+    assert!(m.commit().is_some());
+    let a = RaumAusbau::fuer(&m, &roh(&m)).unwrap();
+    assert_eq!(a.boden, m.type_by_guid(bad.floor.unwrap()));
+    assert!(a.decke.is_some() && a.seiten.iter().all(|s| s.wand.is_some()));
 }
 
 #[path = "koerper_tests.rs"]

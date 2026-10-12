@@ -5,10 +5,13 @@
 //! Kante in Fußbodenhöhe, Putzdicke je Laibung, OK Fertigfußboden und UK
 //! Fertigdecke.
 
-use crate::erkennung::Kante;
+use crate::erkennung::{Kante, RaumForm};
 use crate::oeffnungen::{OpeningKind, Rohbau};
-use sk_model::model::{SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID};
-use sk_model::{Guid, LayerFunction, LayerSetId, LevelKind, Model, SpaceType, StoreyId};
+use sk_model::model::{
+    DEFAULT_SPACE_GUID, SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID, SPACE_TEMPLATES,
+};
+use sk_model::{ElementId, Guid, LayerFunction, LayerSetId, LevelKind, Model, SpaceType, StoreyId};
+use std::borrow::Cow;
 
 /// Fußbodenaufbau (mm) von OK Rohdecke bis OK Fertigfußboden, in jedem Raum
 /// des Geschosses gleich (Jörn 11.10. 17:39); Vorgabe je Geschoss.
@@ -56,7 +59,80 @@ pub fn estrich_vorgabe(model: &Model, geschoss: StoreyId) -> Guid {
     }
 }
 
+/// Raumvorlage zur Guid: die des Projekts, sonst die des Werks.
+pub fn vorlage(model: &Model, g: Guid) -> Option<Cow<'_, SpaceType>> {
+    match model.space_type(g) {
+        Some(s) => Some(Cow::Borrowed(s)),
+        None => SPACE_TEMPLATES
+            .iter()
+            .find(|t| t.guid == g)
+            .map(|t| Cow::Owned(t.space_type())),
+    }
+}
+
+/// Nutzung des Raums: die gewählte Raumvorlage (`use=`); ohne Wahl und ohne
+/// gespeicherten Raum Wohnzimmer ([`DEFAULT_SPACE_GUID`], mit Grundriss
+/// abgestimmt 12.10.).
+pub fn nutzung(model: &Model, form: &RaumForm) -> Guid {
+    form.raum
+        .and_then(|id| model.space(id))
+        .and_then(|s| s.nutzung)
+        .unwrap_or(DEFAULT_SPACE_GUID)
+}
+
+/// Ausbautypen, die ein Raum mit der Vorlage `s` im Geschoss `geschoss`
+/// braucht: die der Vorlage und, wo sie keinen Estrich nennt, der des
+/// Geschosses ([`estrich_vorgabe`]).
+pub fn benoetigt(model: &Model, s: &SpaceType, geschoss: StoreyId) -> Vec<Guid> {
+    let mut v: Vec<Guid> = s.slots().into_iter().filter_map(|x| x.2).collect();
+    if s.screed.is_none() {
+        v.push(estrich_vorgabe(model, geschoss));
+    }
+    v
+}
+
+/// Was dem Raum nach seiner Nutzung im Projekt fehlt (Guids der Ausbautypen).
+pub fn fehlende_typen(model: &Model, form: &RaumForm) -> Vec<Guid> {
+    vorlage(model, nutzung(model, form)).map_or_else(Vec::new, |s| {
+        benoetigt(model, &s, form.geschoss)
+            .into_iter()
+            .filter(|g| model.type_by_guid(*g).is_none())
+            .collect()
+    })
+}
+
+/// Legt im offenen Schritt an, was der Raum `raum` nach seiner Nutzung
+/// braucht: die Raumvorlage (ohne Wahl Wohnzimmer) samt ihren Ausbautypen
+/// und den Estrich des Geschosses. Aufrufen, wenn ein Raum entsteht oder
+/// seine Nutzung wechselt; danach rechnet das Raumbuch mit Typen des
+/// Projekts. `false`, wenn `raum` kein Raum ist oder etwas fehlt, das weder
+/// Projekt noch Werk kennt.
+pub fn anlegen(model: &mut Model, raum: ElementId) -> bool {
+    let (Some(e), Some(s)) = (model.element(raum), model.space(raum)) else {
+        return false;
+    };
+    let geschoss = e.storey;
+    let g = s.nutzung.unwrap_or(DEFAULT_SPACE_GUID);
+    if model.ensure_space_type(g).is_none() {
+        return false;
+    }
+    let Some(s) = model.space_type(g).cloned() else {
+        return false;
+    };
+    benoetigt(model, &s, geschoss)
+        .into_iter()
+        .all(|t| model.ensure_finish_type(t).is_some())
+}
+
 impl RaumAusbau {
+    /// Ausbau des Raums nach seiner Nutzung ([`nutzung`], [`vorlage`]). Kennen
+    /// weder Projekt noch Werk die Vorlage, gilt Wohnzimmer.
+    pub fn fuer(model: &Model, roh: &Rohbau) -> Option<RaumAusbau> {
+        let s = vorlage(model, nutzung(model, &roh.form))
+            .or_else(|| vorlage(model, DEFAULT_SPACE_GUID))?;
+        Some(RaumAusbau::nach_vorlage(model, roh, &s))
+    }
+
     /// Ausbau nach der Raumvorlage `s`, jede Wandseite wie die Vorlage. Wo
     /// der Wandtyp selbst Putz zum Raum hat, setzt das Raumbuch nur Anstrich
     /// oder Tapete dazu, wo er auch die Beschichtung hat, nichts (§5.6); wo
@@ -64,7 +140,9 @@ impl RaumAusbau {
     /// Projekt nicht führt, bleiben leer.
     pub fn nach_vorlage(model: &Model, form: &Rohbau, s: &SpaceType) -> RaumAusbau {
         let typ = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g));
-        let estrich = s.screed.or(Some(estrich_vorgabe(model, form.form.geschoss)));
+        let estrich = s
+            .screed
+            .or(Some(estrich_vorgabe(model, form.form.geschoss)));
         let fliesen = s
             .tiles
             .and_then(|t| Some((model.type_by_guid(t.set)?, t.height)));
