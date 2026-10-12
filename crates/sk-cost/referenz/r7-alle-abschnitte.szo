@@ -171,6 +171,7 @@ SZO 4
 [spacetype] guid=3bIRb62BUylWXxAOWLry2z name="Arbeitszimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [spacetype] guid=3jxEtgf1$vuKf7$1opxuYG name="Gästezimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [project] guid=2YaOeyxqn6WPcq0HPeUvj0 name="Projekt" storey=2raHMuYTD64hQ6K56DbC_u wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY topsoil=250 slope=60
+[location] lat=53.0589 lon=8.591 north=12.5 x=-3500 y=21000 utm_e=472589.291 utm_n=5878900.895 utm_zone=32 nhn=28.35
 [building] guid=1tBffObw134uGxOa1UQhBN name="Gebäude 2" number="GB-02" terrain=-1000
 [building] guid=3KSRR0Gnz9rBLKj19nZ4YO name="Gebäude 1" number="GB-01" terrain=400
 [storey] guid=0w$UUoIID0CgN5lvvTdnI6 building=1tBffObw134uGxOa1UQhBN name="Erdgeschoss" short="EG" kind=storey elev=0 h=2855 sill=900 lintel=2100
