@@ -206,23 +206,23 @@ const FELDER: [Feld; N] = [
         einheit: "°",
     },
     Feld {
-        // Ostwert mit der Zone vorn, wie im Lageplan
-        name: "UTM",
-        beispiel: "32467123,456",
+        // mit der Zone vorn, wie im Lageplan
+        name: "Ostwert",
+        beispiel: "32 467 123,456",
         zeilen: 1,
         max: 24,
         breite: 110.0,
         x: 0.0,
-        einheit: "m O",
+        einheit: "m",
     },
     Feld {
-        name: "",
-        beispiel: "5878765,432",
+        name: "Nordwert",
+        beispiel: "5 878 765,432",
         zeilen: 1,
         max: 24,
         breite: 110.0,
-        x: 296.0,
-        einheit: "m N",
+        x: 0.0,
+        einheit: "m",
     },
     Feld {
         name: "Höhe ±0,00",
@@ -241,7 +241,7 @@ const GRUPPEN: [(usize, &str); 5] = [
     (4, "BAUHERR"),
     (6, "PLANUNG"),
     (10, "BAUGRUND (ERDARBEITEN)"),
-    (UTM, "LANDESKOORDINATEN (IFC)"),
+    (UTM, "LANDESKOORDINATEN (ETRS89/UTM)"),
 ];
 /// Wort des Felds für Meldungen (Bezeichnung mit Gruppe, wo doppelt).
 const WORT: [&str; N] = [
@@ -271,6 +271,9 @@ const BODEN: usize = 10;
 const BODEN_TEILER: [f64; 5] = [10.0, 1000.0, 1000.0, 10.0, 1.0];
 /// Felder der Landeskoordinaten: Ostwert, Nordwert, Höhe.
 const UTM: usize = 15;
+/// Nordwert in der Maske: Deutschland (Einstellungen B3 zu #95; fängt einen
+/// Ostwert im Nordfeld ab). Die Datei nimmt weiter 0 … 10 000 000.
+const NORD_DE: (f64, f64) = (5_200_000.0, 6_200_000.0);
 
 /// Bodenkennwert `k` als Text in der Einheit des Felds, mit Komma.
 fn boden_text(k: usize, v: f64) -> String {
@@ -360,19 +363,21 @@ fn meter(text: &str, einheit: &str) -> Result<Option<String>, ()> {
         .ok_or(())
 }
 
-/// Ostwert mit Zone: `32467123,456` (Zone vorn, wie im Lageplan) oder ohne
-/// Zone `467123,456`, dann gilt `zone`. Zerlegt wird der Text, nicht die
-/// Zahl, so dass der Ostwert genau bleibt.
-fn ostwert(text: &str, zone: u8) -> Result<Option<(f64, u8)>, ()> {
+/// Ostwert mit Zone vorn, wie im Lageplan: `32 467 123,456`. Ohne Zone
+/// gilt er nicht: östlich von 12° führen Bayern, Thüringen und
+/// Sachsen-Anhalt Zone 32, Brandenburg und Sachsen Zone 33, und eine
+/// falsche Zone legt das Haus rund 400 km daneben (Einstellungen B1 zu
+/// #95). Zerlegt wird der Text, nicht die Zahl, so dass der Ostwert genau
+/// bleibt.
+fn ostwert(text: &str) -> Result<Option<(f64, u8)>, ()> {
     let Some(t) = meter(text, FELDER[UTM].einheit)? else {
         return Ok(None);
     };
     let ganz = t.split('.').next().unwrap_or("").len();
-    let (z, rest) = if ganz >= 8 && t.is_char_boundary(2) {
-        (t[..2].parse::<u8>().map_err(|_| ())?, &t[2..])
-    } else {
-        (zone, t.as_str())
-    };
+    if ganz < 8 || !t.is_char_boundary(2) {
+        return Err(());
+    }
+    let (z, rest) = (t[..2].parse::<u8>().map_err(|_| ())?, &t[2..]);
     let e: f64 = rest.parse().map_err(|_| ())?;
     let u = sk_model::Utm { e, n: 0.0, zone: z };
     u.gueltig().then_some(Some((e, z))).ok_or(())
@@ -519,26 +524,11 @@ impl Maske {
         self
     }
 
-    /// Zone ohne Angabe im Ostwert: aus dem Längengrad der Maske, östlich
-    /// von 12° Zone 33.
-    fn zone(&self) -> u8 {
-        let l = grad(&self.felder[9].text, GRAD_MAX[1])
-            .ok()
-            .flatten()
-            .or(self.ort.lon)
-            .unwrap_or(ganderkesee(9));
-        if l >= 12.0 {
-            33
-        } else {
-            32
-        }
-    }
-
     /// Ostwert und Nordwert aus ihren Feldern: `Ok(None)` beide leer,
     /// `Err` einer fehlt oder passt nicht.
     fn utm(&self) -> Result<Option<sk_model::Utm>, ()> {
-        let ost = ostwert(&self.felder[UTM].text, self.zone())?;
-        let nord = wert_im_bereich(&self.felder[UTM + 1].text, UTM + 1, sk_model::UTM_N)?;
+        let ost = ostwert(&self.felder[UTM].text)?;
+        let nord = wert_im_bereich(&self.felder[UTM + 1].text, UTM + 1, NORD_DE)?;
         match (ost, nord) {
             (None, None) => Ok(None),
             (Some((e, zone)), Some(n)) => Ok(Some(sk_model::Utm { e, n, zone })),
@@ -621,15 +611,12 @@ impl Maske {
             } else if (8..BODEN).contains(&i) && grad(&e.text, GRAD_MAX[i - 8]).is_err() {
                 let g = GRAD_MAX[i - 8];
                 Some(format!("{wort}: Zahl von −{g} bis {g}."))
-            } else if i == UTM && ostwert(&e.text, self.zone()).is_err() {
-                Some(format!(
-                    "{wort}: Zahl wie {} (Zone 32 oder 33 vorn).",
-                    f.beispiel
-                ))
-            } else if i == UTM + 1 && wert_im_bereich(&e.text, i, sk_model::UTM_N).is_err() {
-                Some(format!("{wort}: Zahl wie {}.", f.beispiel))
+            } else if i == UTM && ostwert(&e.text).is_err() {
+                Some(format!("{wort} mit Zone vorn: {}.", f.beispiel))
+            } else if i == UTM + 1 && wert_im_bereich(&e.text, i, NORD_DE).is_err() {
+                Some(format!("{wort}: 5 200 000 bis 6 200 000 m."))
             } else if i == UTM + 2 && wert_im_bereich(&e.text, i, sk_model::NHN).is_err() {
-                Some(format!("{wort}: Zahl von −500 bis 9000 m."))
+                Some(format!("{wort}: −500 bis 9000 m."))
             } else if (BODEN..UTM).contains(&i) && boden_wert(i - BODEN, &e.text).is_err() {
                 let k = i - BODEN;
                 let (_, _, min, max) = Boden::FELDER[k];
@@ -667,7 +654,10 @@ impl Maske {
                     (true, false) => Some(UTM),
                     _ => None,
                 }
-                .map(|i| format!("{} fehlt, im IFC keine Landeskoordinaten.", WORT[i]));
+                .map(|i| match self.ort.utm {
+                    None => format!("{} fehlt, keine Georeferenz.", WORT[i]),
+                    Some(_) => format!("{} fehlt, die alten Werte bleiben.", WORT[i]),
+                });
             }
         };
         // Der Wert von Ganderkesee steht als Beispiel im leeren Feld
@@ -1403,8 +1393,9 @@ mod tests {
 
     /// I4c (ifc/plan.md §10): Ost- und Nordwert aus dem Lageplan, der
     /// Ostwert mit der Zone vorn, dazu die Höhe von ±0,00. Unverändert
-    /// übernommen bleibt die Lage genau; ohne Zone gilt die des Längengrads;
-    /// einer allein oder Unbrauchbares lässt die alten Werte stehen.
+    /// übernommen bleibt die Lage genau; ohne Zone, ein Wert allein oder
+    /// Unbrauchbares lässt die alten Werte stehen (Einstellungen B1–B3 zu
+    /// #95).
     #[test]
     fn landeskoordinaten() {
         let alt = Location {
@@ -1430,7 +1421,7 @@ mod tests {
         assert_eq!(m.fokus(), UTM);
 
         // Berlin: Zone 33 im Ostwert, Leerzeichen und Einheit erlaubt
-        m.felder[UTM] = TextEdit::new("33 389918,0415 m O");
+        m.felder[UTM] = TextEdit::new("33 389 918,0415 m");
         m.felder[UTM + 1] = TextEdit::new("5 819 699,1323");
         m.felder[UTM + 2] = TextEdit::new("−3,5 m");
         assert_eq!(m.meldung(), None);
@@ -1444,31 +1435,49 @@ mod tests {
             })
         );
         assert_eq!(l.nhn, Some(-3.5));
-        // ohne Zone: die des Längengrads (8,591° O: 32)
-        m.felder[UTM] = TextEdit::new("467123,456");
-        assert_eq!(m.ort().utm.map(|u| (u.e, u.zone)), Some((467_123.456, 32)));
 
-        // nur der Ostwert: leiser Hinweis, die alte Lage bleibt
-        m.felder[UTM + 1] = TextEdit::new("");
+        // B1: ohne Zone gilt der Ostwert nicht, auch nicht aus dem Längengrad
+        m.felder[UTM] = TextEdit::new("467123,456");
         assert_eq!(
-            m.hinweis().as_deref(),
-            Some("Nordwert fehlt, im IFC keine Landeskoordinaten.")
+            m.meldung().as_deref(),
+            Some("Ostwert mit Zone vorn: 32 467 123,456.")
         );
         assert_eq!(m.ort().utm, alt.utm);
         // Zone 34 gibt es in Deutschland nicht
         m.felder[UTM] = TextEdit::new("34467123,456");
-        m.felder[UTM + 1] = TextEdit::new("5878765,432");
+        assert!(m.meldung().unwrap().starts_with("Ostwert mit Zone"));
+        assert_eq!(m.ort().utm, alt.utm);
+
+        // B3: ein Ostwert im Nordfeld fällt auf
+        m.felder[UTM] = TextEdit::new("32467123,456");
+        m.felder[UTM + 1] = TextEdit::new("467123,456");
         assert_eq!(
             m.meldung().as_deref(),
-            Some("Ostwert: Zahl wie 32467123,456 (Zone 32 oder 33 vorn).")
+            Some("Nordwert: 5 200 000 bis 6 200 000 m.")
         );
         assert_eq!(m.ort().utm, alt.utm);
-        m.felder[UTM + 2] = TextEdit::new("hoch");
-        m.felder[UTM] = TextEdit::new("");
+
+        // B2: nur der Ostwert; mit alten Werten bleiben die
         m.felder[UTM + 1] = TextEdit::new("");
         assert_eq!(
+            m.hinweis().as_deref(),
+            Some("Nordwert fehlt, die alten Werte bleiben.")
+        );
+        assert_eq!(m.ort().utm, alt.utm);
+        // ohne alte Werte: keine im IFC
+        let mut neu = Maske::new(&ohne(), false, None).mit_ort(&Location::default());
+        neu.felder[UTM + 1] = TextEdit::new("5878765,432");
+        assert_eq!(
+            neu.hinweis().as_deref(),
+            Some("Ostwert fehlt, keine Georeferenz.")
+        );
+        assert_eq!(neu.ort().utm, None);
+
+        m.felder[UTM + 2] = TextEdit::new("hoch");
+        m.felder[UTM] = TextEdit::new("");
+        assert_eq!(
             m.meldung().as_deref(),
-            Some("Höhe über NHN: Zahl von −500 bis 9000 m.")
+            Some("Höhe über NHN: −500 bis 9000 m.")
         );
         // beide leer: keine Landeskoordinaten mehr
         let l = m.ort();
@@ -1483,14 +1492,33 @@ mod tests {
             }
         );
 
-        // Lage der Felder: Ost und Nord in einer Zeile, die Einheit frei,
-        // die Höhe darunter, alles im Blatt
+        // Jeder Satz passt ungekürzt in den Fuß
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        if let Some(f) = std::fs::read(lib.join("LiberationSans-Regular.ttf"))
+            .ok()
+            .and_then(sk_paint::font::Font::parse)
+        {
+            let platz = m.lage(1.0).knoepfe[0].x - PAD - 12.0;
+            for satz in [
+                "Ostwert mit Zone vorn: 32 467 123,456.",
+                "Nordwert: 5 200 000 bis 6 200 000 m.",
+                "Nordwert fehlt, die alten Werte bleiben.",
+                "Ostwert fehlt, keine Georeferenz.",
+                "Höhe über NHN: −500 bis 9000 m.",
+            ] {
+                assert!(
+                    f.width(satz, 11.5) < platz,
+                    "{satz}: {}",
+                    f.width(satz, 11.5)
+                );
+            }
+        }
+
+        // Lage der Felder: untereinander unter der Gruppe, alles im Blatt
         let l = m.lage(1.0);
         let [o, n, h] = [l.felder[UTM], l.felder[UTM + 1], l.felder[UTM + 2]];
-        assert_eq!(o.y, n.y);
-        assert!(o.x + o.w + 40.0 < n.x);
-        assert!(n.x + n.w + 30.0 < W - PAD / 2.0);
-        assert!(o.y + o.h < h.y && h.y + h.h < l.h);
+        assert_eq!((o.x, n.x), (h.x, h.x));
+        assert!(o.y + o.h < n.y && n.y + n.h < h.y && h.y + h.h < l.h);
         assert!(l.felder[14].y + l.felder[14].h < l.gruppen[4]);
         assert!(l.gruppen[4] < o.y);
     }
@@ -1678,6 +1706,33 @@ mod tests {
         // vorbelegt (ohne Standardort Ganderkesee)
         let m = Maske::new(&ohne(), true, None).mit_ort(&Location::default());
         ab(m.paint(&t, &fonts, 1.0), "ist-s10-lage-vorbelegt.png");
+        // e) I4c: Landeskoordinaten gesetzt; f) nur der Ostwert getippt,
+        // leiser Hinweis im Fuß; g) Ostwert ohne Zone, Meldung
+        let mut m = Maske::new(&ohne(), false, None).mit_ort(&Location {
+            lat: Some(53.0589),
+            lon: Some(8.591),
+            utm: Some(sk_model::Utm {
+                e: 467_123.456,
+                n: 5_878_765.432,
+                zone: 32,
+            }),
+            nhn: Some(14.25),
+            ..Default::default()
+        });
+        m.fokus_auf(UTM);
+        ab(
+            m.paint(&t, &fonts, 1.0),
+            "ist-projektdaten-e-landeskoordinaten.png",
+        );
+        let mut m = Maske::new(&ohne(), false, None).mit_ort(&Location::default());
+        m.fokus_auf(UTM);
+        tippen(&mut m, "32 467 123,456");
+        ab(
+            m.paint(&t, &fonts, 1.0),
+            "ist-projektdaten-f-nur-ostwert.png",
+        );
+        m.felder[UTM] = TextEdit::new("467123,456");
+        ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-g-ohne-zone.png");
         // Knopf im linken Paneel: gesetzt und leer, rechts daneben die
         // Kachel des Nordpfeils (gesetzt: Nord 12°, Sonnenstand S2)
         // (aktiv: beim Aufziehen, Hinweise unten für den Nordpfeil)
