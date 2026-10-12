@@ -63,6 +63,7 @@ fn fenster(m: &Model, run: RunId, u: (f64, f64)) -> Opening {
         top: HeightRef::Line(st, HeightLine::Lintel),
         reveal: None,
         install: Default::default(),
+        swing: None,
     }
 }
 
@@ -1178,6 +1179,7 @@ fn innentuer_in_der_innenwand() {
         top: HeightRef::Line(st, HeightLine::Door),
         reveal: None,
         install: Default::default(),
+        swing: None,
     };
     assert_eq!(m.opening_fault(&tuer, None), None);
     m.begin("Innentür");
@@ -1223,4 +1225,104 @@ fn innentuer_in_der_innenwand() {
         );
     }
     assert!(m.check().is_empty(), "{:?}", m.check());
+}
+
+/// Türblatt (Jörn 05:50–05:55, Integration 05:54): Das Blatt liegt auf der
+/// Rohbauflucht der Aufschlagseite; Kippen des Aufschlags tauscht die
+/// DIN-Hand, die Bänder bleiben am Pfosten; Umkehren der Wand lässt den
+/// Aufschlag im Raum. In der Datei `swing=` und `din=`, nur wenn gesetzt.
+#[test]
+fn tuerblatt_und_aufschlag() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let (mut m, eg, _) = haus(None);
+    let iw = innenwand(&mut m, eg);
+    let st = storey(&m, eg);
+    let ohne_tuer = szo::write(&m);
+    let swing = Swing {
+        side: FaceSide::Right,
+        din: Din::Links,
+    };
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: Some(swing),
+    };
+    let id = m.add_opening(tuer.clone()).unwrap();
+    // Wand läuft in +y, rechts ist +x; der Pfad läuft auch in +y
+    let l = m.door_leaf(id).unwrap();
+    assert_eq!((l.run, l.seg, l.face), (iw, 0, FaceSide::Right));
+    assert!((l.swing_into - vec3(1.0, 0.0, 0.0)).length() < 1e-9);
+    let t = m.chain(iw).unwrap().thickness();
+    let x = l.line.0.x;
+    assert!(x > 5000.0 && x <= 5000.0 + t / 2.0 + 1e-6, "{x}");
+    assert!((l.line.0.x - l.line.1.x).abs() < 1e-9);
+    assert!((l.line.0.y - 3000.0).abs() < 1e-6 && (l.line.1.y - 3885.0).abs() < 1e-6);
+    assert!(
+        (l.hinge.y - 3000.0).abs() < 1e-6,
+        "DIN links: Bänder am Pfadanfang"
+    );
+    // Aufschlag kippen: andere Wandseite, DIN-Hand getauscht, Bänder bleiben
+    let mut o = tuer.clone();
+    o.swing = Some(swing.flipped());
+    assert!(m.set_opening(id, o));
+    let k = m.door_leaf(id).unwrap();
+    assert_eq!((k.face, swing.flipped().din), (FaceSide::Left, Din::Rechts));
+    assert!((k.swing_into + l.swing_into).length() < 1e-9);
+    assert!(k.line.0.x < 5000.0);
+    assert!((k.hinge.y - 3000.0).abs() < 1e-6);
+    // Andere Hand: Bänder am anderen Pfosten
+    let mut o = tuer.clone();
+    o.swing = Some(swing.other_hand());
+    assert!(m.set_opening(id, o));
+    assert!((m.door_leaf(id).unwrap().hinge.y - 3885.0).abs() < 1e-6);
+    assert!(m.set_opening(id, tuer.clone()));
+    // Wand umkehren: Aufschlag bleibt im Raum (+x), DIN-Hand bleibt, die
+    // Seite zur Zeichenrichtung kippt
+    m.begin("Wand umkehren");
+    let rev = [vec3(5000.0, 8000.0, 0.0), vec3(5000.0, 0.0, 0.0)];
+    assert!(m.set_run_points(iw, &rev).is_some());
+    m.commit();
+    let u = m.door_leaf(id).unwrap();
+    assert!((u.swing_into - l.swing_into).length() < 1e-9);
+    assert_eq!(u.face, FaceSide::Left);
+    assert!((u.line.0.x - x).abs() < 1e-6, "dieselbe Rohbauflucht");
+    assert!((u.hinge.y - 3000.0).abs() < 1e-6);
+    // Der Pfad ist mit der Wand umgekehrt, die Seite zum Pfad mit ihm
+    assert_eq!(
+        m.opening(id).unwrap().swing,
+        Some(Swing {
+            side: FaceSide::Left,
+            ..swing
+        })
+    );
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    // Datei: mit Aufschlag rund, ohne bleibt sie, wie sie war
+    let text = szo::write(&m);
+    assert!(text.contains(" swing=l din=links"), "{text}");
+    let back = szo::read(&text, GuidGen::with_seed(5)).unwrap();
+    assert!(back.hints.is_empty(), "{:?}", back.hints);
+    assert_eq!(szo::write(&back.model), text);
+    for neu in [" swing=x din=links", " swing=l din=mitte", " swing=l"] {
+        let l = szo::read(
+            &text.replacen(" swing=l din=links", neu, 1),
+            GuidGen::with_seed(5),
+        )
+        .unwrap();
+        assert_eq!(l.hints.len(), 1, "{neu}: {:?}", l.hints);
+        let o = l
+            .model
+            .elements()
+            .iter()
+            .find_map(|(i, _)| l.model.opening(i).cloned());
+        assert_eq!(o.unwrap().swing, None, "{neu}");
+    }
+    assert!(!ohne_tuer.contains("swing="));
+    // Kein Aufschlag an Fenstern
+    let mut f = tuer;
+    f.kind = OpeningKind::Window;
+    assert!(!m.opening_ok(&f));
 }

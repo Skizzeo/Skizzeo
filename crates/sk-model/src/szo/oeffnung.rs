@@ -7,12 +7,15 @@
 //! Geschosses gebunden) oder `Guid:u|o:Versatz` (frei). `reveal=l,r,o,u`
 //! steht nur, wenn der Anschlag nicht dem Wandtyp folgt, `install=…`
 //! (äußere Einbautiefe) und `element=…` (Bautiefe) nur, wenn gesetzt.
+//! Eine Tür mit Blatt trägt `swing=l|r` (Aufschlagseite zur Pfadrichtung)
+//! und `din=links|rechts` (Türhand nach DIN 107).
 
 use super::{category, err, keyword, Line, LoadError, Record};
 use crate::element::{Element, ElementKind, LevelEdge, LevelRef};
 use crate::model::RawOpening;
 use crate::oeffnung::{
-    HeightLine, HeightRef, Install, Opening, OpeningKind, MAX_INSTALL, MAX_REVEAL,
+    Din, FaceSide, HeightLine, HeightRef, Install, Opening, OpeningKind, Swing, MAX_INSTALL,
+    MAX_REVEAL,
 };
 use crate::{Guid, Model, StoreyId};
 use sk_math::vec3;
@@ -62,6 +65,12 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
         };
         let l = mm(l, "install", o.install.outer);
         let l = mm(l, "element", o.install.element);
+        let l = match o.swing {
+            Some(sw) => l
+                .word("swing", side_word(sw.side))
+                .word("din", sw.din.word()),
+            None => l,
+        };
         l.text("number", &e.number)
             .word("cat", category(e.category))
             .num("seq", e.seq)
@@ -216,8 +225,8 @@ pub(super) fn read(
     // Die übrigen Schlüssel einer verworfenen Zeile nicht noch einmal melden
     let rest = |r: &Record| {
         for k in [
-            "guid", "bottom", "top", "reveal", "install", "element", "number", "cat", "seq",
-            "storey",
+            "guid", "bottom", "top", "reveal", "install", "element", "swing", "din", "number",
+            "cat", "seq", "storey",
         ] {
             r.opt(k);
         }
@@ -272,6 +281,7 @@ pub(super) fn read(
         outer: mm("install"),
         element: mm("element"),
     };
+    let swing = read_swing(r, kind, path.len(), hints);
     Ok(Some(ElementKind::Opening(Opening {
         kind,
         path,
@@ -279,5 +289,41 @@ pub(super) fn read(
         top,
         reveal,
         install,
+        swing,
     })))
+}
+
+fn side_word(s: FaceSide) -> &'static str {
+    match s {
+        FaceSide::Left => "l",
+        FaceSide::Right => "r",
+    }
+}
+
+/// Aufschlag aus `swing=` und `din=`; fehlen beide, keiner. Ein ungültiger,
+/// halber oder an einer Öffnung ohne Blatt stehender Aufschlag gibt einen
+/// Hinweis und entfällt (wie `door=`, Integration 05:54).
+fn read_swing(r: &Record, kind: OpeningKind, n: usize, hints: &mut Vec<String>) -> Option<Swing> {
+    let (s, d) = (r.opt("swing"), r.opt("din"));
+    if s.is_none() && d.is_none() {
+        return None;
+    }
+    let side = match s {
+        Some("l") => Some(FaceSide::Left),
+        Some("r") => Some(FaceSide::Right),
+        _ => None,
+    };
+    let din = Din::ALL.into_iter().find(|x| d == Some(x.word()));
+    match (side, din) {
+        (Some(side), Some(din)) if kind == OpeningKind::Door && n == 2 => Some(Swing { side, din }),
+        _ => {
+            hints.push(format!(
+                "Zeile {}: [opening] Aufschlag „swing={}“ / „din={}“ ungültig, ohne Aufschlag",
+                r.line,
+                s.unwrap_or(""),
+                d.unwrap_or("")
+            ));
+            None
+        }
+    }
 }

@@ -127,6 +127,7 @@ mod tests {
             top: HeightRef::Line(st, HeightLine::Lintel),
             reveal: None,
             install: Default::default(),
+            swing: None,
         };
         assert!(s.add_opening(op).is_some());
         assert!(s.outer_face_at(o, d).is_none(), "durch das Loch");
@@ -165,6 +166,7 @@ mod tests {
             top: HeightRef::Line(st, HeightLine::Lintel),
             reveal: None,
             install: Default::default(),
+            swing: None,
         })
         .unwrap();
         let el = s.model().storey(st).unwrap().elevation;
@@ -269,6 +271,7 @@ mod tests {
             top: HeightRef::Line(st, HeightLine::Lintel),
             reveal: None,
             install: Default::default(),
+            swing: None,
         };
         let id = s.add_opening(op.clone()).unwrap();
         let el = edge_kind::ELEMENT as f32;

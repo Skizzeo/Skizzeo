@@ -4,8 +4,9 @@
 use super::*;
 use crate::hoehen::HeightLines;
 use crate::oeffnung::{
-    HeightLine, HeightRef, InstallDepth, Opening, ELEMENT_DEPTH, INSTALL_BEHIND_SHELL,
-    INSTALL_MONO, MAX_INSTALL, MAX_REVEAL, MIN_OPENING, REVEAL_ETICS, REVEAL_FACING,
+    DoorLeaf, FaceSide, HeightLine, HeightRef, InstallDepth, Opening, OpeningKind, ELEMENT_DEPTH,
+    INSTALL_BEHIND_SHELL, INSTALL_MONO, MAX_INSTALL, MAX_REVEAL, MIN_OPENING, REVEAL_ETICS,
+    REVEAL_FACING,
 };
 use crate::wall::{cross2, flat, right_of};
 use crate::wand_loch::Hole;
@@ -64,6 +65,8 @@ impl Model {
         let reveal = o
             .reveal
             .is_none_or(|r| r.iter().all(|x| (0.0..=MAX_REVEAL).contains(x)));
+        // Aufschlag nur an einer Tür mit geradem Pfad
+        let swing = o.swing.is_none() || (o.kind == OpeningKind::Door && n == 2);
         let install = [o.install.outer, o.install.element]
             .iter()
             .flatten()
@@ -75,6 +78,7 @@ impl Model {
             && o.width() >= MIN_OPENING - 1e-6
             && reveal
             && install
+            && swing
             && self.opening_band(o).is_some()
     }
 
@@ -578,6 +582,83 @@ impl Model {
         })
     }
 
+    /// Lage des Türblatts der Tür `id` (Raumbuch und Grundriss, Integration
+    /// 05:54): im Wandzug ihres Geschosses, den sie trifft, auf der
+    /// Rohbauflucht der Seite, in die sie aufschlägt. `None` ohne Aufschlag.
+    pub fn door_leaf(&self, id: ElementId) -> Option<DoorLeaf> {
+        let o = self.opening(id)?;
+        let sw = o.swing?;
+        let (a, b) = (flat(*o.path.first()?), flat(*o.path.last()?));
+        let len = (b - a).length();
+        if o.path.len() != 2 || len < 1e-9 {
+            return None;
+        }
+        let along = (b - a) / len;
+        let into = sw.side.normal(along);
+        let st = self.element(id)?.storey;
+        let (run, c, h) = self
+            .opening_runs(o)
+            .into_iter()
+            .filter(|r| self.run(*r).is_some_and(|x| x.storey == st))
+            .find_map(|r| {
+                let c = self.chain(r)?;
+                let (_, h) = self.legs_on(r, &c, Some(id), o).into_iter().next()?;
+                Some((r, c, h))
+            })?;
+        let (pts, _, dirs) = c.layout()?;
+        let d = dirs[h.seg];
+        let nr = right_of(d);
+        let face = if into.dot(nr) > 0.0 {
+            FaceSide::Right
+        } else {
+            FaceSide::Left
+        };
+        let off = self.rough_face(run, &c, face);
+        let at = |u: f64| pts[h.seg] + d * u + nr * off;
+        let start = if along.dot(d) > 0.0 { h.u.0 } else { h.u.1 };
+        let end = h.u.0 + h.u.1 - start;
+        Some(DoorLeaf {
+            run,
+            seg: h.seg,
+            u: h.u,
+            face,
+            line: (at(h.u.0), at(h.u.1)),
+            swing_into: into,
+            hinge: at(if sw.hinge_at_start() { start } else { end }),
+        })
+    }
+
+    /// Lage der Rohbauflucht auf der Seite `side` des Zugs `run` quer zur
+    /// Bezugslinie (positiv rechts): ohne Putz und Bekleidung außerhalb
+    /// des Kerns.
+    fn rough_face(&self, run: RunId, c: &WallChain, side: FaceSide) -> f64 {
+        let layers = self
+            .run(run)
+            .and_then(|r| r.segments.first())
+            .and_then(|e| self.element(*e))
+            .and_then(|e| e.layer_set)
+            .and_then(|s| self.layer_set(s))
+            .map_or(&[][..], |s| &s.layers[..]);
+        let offs = c.layer_offsets();
+        let roh = offs.iter().enumerate().filter(|(i, _)| {
+            layers
+                .get(*i)
+                .is_none_or(|l| l.core || l.function != LayerFunction::Finish)
+        });
+        let (lo, hi) = roh.fold((f64::MAX, f64::MIN), |(lo, hi), (_, x)| {
+            (lo.min(x.0), hi.max(x.1))
+        });
+        let (lo, hi) = if lo <= hi {
+            (lo, hi)
+        } else {
+            c.ref_side.span(c.thickness())
+        };
+        match side {
+            FaceSide::Right => hi,
+            FaceSide::Left => lo,
+        }
+    }
+
     /// Höhenlinien Brüstung und Sturz des Geschosses `st`.
     pub fn face_lines(&self, st: StoreyId) -> Vec<crate::oeffnung::FaceLine> {
         [HeightLine::Sill, HeightLine::Lintel]
@@ -858,6 +939,14 @@ impl Model {
                 .all(|(p, q)| (*p - *q).length() < 1e-6);
         let same = path == o.path || (near && !back);
         let mut o = o.clone();
+        // Kehrt der Pfad sich um (Wand umgekehrt), bleibt der Aufschlag im
+        // selben Raum (Integration 05:54)
+        let dir = |p: &[Vec3]| flat(p[p.len() - 1]) - flat(p[0]);
+        if let Some(sw) = o.swing.as_mut().filter(|_| path.len() == 2) {
+            if dir(&path).dot(dir(&o.path)) < 0.0 {
+                sw.side = sw.side.other();
+            }
+        }
         o.path = path;
         if !same && (back || self.opening_ok(&o)) {
             note!(self, Element, self.elements, id);
