@@ -674,4 +674,45 @@ mod tests {
         assert!(s.undo());
         assert_eq!(wahl(&mut s, vec3(5000.0, 3000.0, 0.0)), Some(id));
     }
+
+    /// Sturz im Grundriss (G7b): eigene Stelle „Über der Schnittebene“ der
+    /// Darstellung. Im Startsatz sieht er aus wie das Einbauelement; ändert
+    /// man die Stelle, ändert sich nur der Sturz.
+    #[test]
+    fn sturz_ueber_der_schnittebene() {
+        use sk_model::edge_kind::{ABOVE, ELEMENT};
+        let (m, _) = haus();
+        let mut s = Scene::with_model(m);
+        let cut = s.plan_cut() as f32;
+        let mesh = s.mesh(crate::ui::ViewKind::Plan, None, &[]);
+        let sturz: Vec<_> = mesh.edges.iter().filter(|e| e.1 == ABOVE as f32).collect();
+        assert_eq!(sturz.len(), 2, "beide Wandfluchten");
+        assert!(sturz.iter().all(|e| e.0[0][2] == cut && e.0[1][2] == cut));
+        let art = |s: &Scene, k: u8| {
+            let l = s.table().edge_looks(true, 1.0);
+            let k = k as usize;
+            (l.width[k], l.color[k], l.dash[2 * k], l.dash[2 * k + 1])
+        };
+        assert_eq!(art(&s, ABOVE), art(&s, ELEMENT));
+        let element = art(&s, ELEMENT);
+        assert!(s.edit_model("Darstellung", |m| {
+            let a = m.attr();
+            let mittel = a.pens().iter().find(|(_, p)| p.number == 2).unwrap().0;
+            let spl = a
+                .line_types()
+                .iter()
+                .find(|(_, l)| l.name == "Strichpunktlinie");
+            let mut d = a.display().clone();
+            d.above = sk_model::EdgeStyle {
+                pen: mittel,
+                line_type: spl.unwrap().0,
+            };
+            m.set_display(d);
+            true
+        }));
+        let (w, _, [l, g, punkt, _], _) = art(&s, ABOVE);
+        assert!(w > element.0, "Stift 2 statt Fein");
+        assert!(punkt == 1.0 && (l / g - 6.0).abs() < 1e-4, "Strichpunkt");
+        assert_eq!(art(&s, ELEMENT), element, "Einbauelement bleibt");
+    }
 }

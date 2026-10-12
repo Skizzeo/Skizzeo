@@ -165,10 +165,15 @@ pub struct Display {
     pub background: EdgeStyle,
     /// Fugenmuster in den Ansichten (Paket 6), Stift „Ansichtsmuster“.
     pub pattern: EdgeStyle,
-    /// Einbauelement und Sturz über Innenöffnungen im Grundriss (Kantenart
-    /// `ELEMENT`, Jörn 12.10.):
+    /// Einbauelement im Grundriss (Kantenart `ELEMENT`, Jörn 12.10.):
     /// Startsatz Stift „Fein“ mit dem Linientyp [`ELEMENT_LINE_TYPE`].
     pub element: EdgeStyle,
+    /// Über der Schnittebene im Grundriss, etwa der Sturz über Öffnungen in
+    /// Innenwänden (Kantenart `ABOVE`, G7b): eigene Stelle, damit sie sich
+    /// ohne das Einbauelement ändern lässt (DIN 1356 zeigt Bauteile über der
+    /// Schnittebene meist strichpunktiert); Startsatz wie
+    /// [`Display::element`].
+    pub above: EdgeStyle,
     /// Papiergrund der Zeichnungsansichten.
     pub paper: [u8; 3],
 }
@@ -231,6 +236,7 @@ pub fn display_slots(d: &Display) -> Vec<(&'static str, EdgeStyle)> {
     v.push(("Hintergrund", d.background));
     v.push(("Fugen in Ansichten", d.pattern));
     v.push(("Einbauelement im Grundriss", d.element));
+    v.push(("Über der Schnittebene im Grundriss", d.above));
     v
 }
 
@@ -404,9 +410,18 @@ impl Attributes {
     /// feinen Linie, unveränderter [`ELEMENT_LINE_TYPE`])? Dann steht sie
     /// nicht in der Datei (F20).
     pub(crate) fn element_is_default(&self) -> bool {
-        let d = &self.display;
-        d.element.pen == d.drawing[edge_kind::FINE as usize].pen
-            && self.line_type(d.element.line_type) == Some(&element_line_type())
+        self.is_element_style(&self.display.element)
+    }
+
+    /// Ebenso die Stelle „Über der Schnittebene“ (G7b).
+    pub(crate) fn above_is_default(&self) -> bool {
+        self.is_element_style(&self.display.above)
+    }
+
+    /// Stift der feinen Linie und unveränderter [`ELEMENT_LINE_TYPE`]?
+    fn is_element_style(&self, s: &EdgeStyle) -> bool {
+        s.pen == self.display.drawing[edge_kind::FINE as usize].pen
+            && self.line_type(s.line_type) == Some(&element_line_type())
     }
 
     pub(crate) fn bump(&mut self) {
@@ -423,6 +438,7 @@ impl Attributes {
             &d.background,
             &d.pattern,
             &d.element,
+            &d.above,
         ]);
         let mut out = Vec::new();
         let mut numbers: Vec<u16> = self.pens.iter().map(|(_, p)| p.number).collect();
@@ -607,6 +623,7 @@ pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
             pattern: style(fine),
             // Startwert; das Modell setzt den Linientyp „Strichlinie fein“
             element: style(fine),
+            above: style(fine),
             paper: [245, 244, 239],
         },
         rev: 0,
@@ -770,5 +787,75 @@ mod tests {
         m.commit();
         let (text, _) = rund(&m);
         assert!(text.contains(&format!("guid={g}")));
+    }
+
+    /// G7b (Einstellungen): Der Sturz über Öffnungen in Innenwänden hat eine
+    /// eigene Stelle „Über der Schnittebene“, im Startsatz wie das
+    /// Einbauelement. Wie dort steht sie nur geändert in der Datei, und eine
+    /// Datei ohne sie (auch mit geändertem Einbauelement) bekommt die
+    /// Werksdarstellung.
+    #[test]
+    fn ueber_der_schnittebene_als_darstellung() {
+        use super::{display_slots, ELEMENT_LINE_TYPE_GUID};
+        use crate::guid::GuidGen;
+        let mut m = Model::with_seed(5);
+        let d = m.attr().display().clone();
+        assert_eq!(d.above, d.element);
+        assert!(display_slots(&d)
+            .iter()
+            .any(|s| s.0 == "Über der Schnittebene im Grundriss" && s.1 == d.above));
+        let rund = |m: &Model| {
+            let text = crate::szo::write(m);
+            let back = crate::szo::read(&text, GuidGen::with_seed(9)).unwrap();
+            assert!(back.hints.is_empty(), "{:?}", back.hints);
+            assert_eq!(crate::szo::write(&back.model), text, "Rundlauf");
+            assert!(back.model.check().is_empty());
+            (text, back.model)
+        };
+        let lt = |m: &Model, name: &str| {
+            let a = m.attr();
+            a.line_types()
+                .iter()
+                .find(|(_, l)| l.name == name)
+                .unwrap()
+                .0
+        };
+        let werk = |m: &Model, s: &super::EdgeStyle| {
+            let a = m.attr();
+            a.line_type(s.line_type).unwrap().guid == ELEMENT_LINE_TYPE_GUID
+                && s.pen == a.display().drawing[super::edge_kind::FINE as usize].pen
+        };
+        let (text, _) = rund(&m);
+        assert!(!text.contains("slot=above"));
+        // Strichpunkt über der Schnittebene: nur diese Stelle in der Datei
+        let mut d2 = d.clone();
+        d2.above.line_type = lt(&m, "Strichpunktlinie");
+        m.begin("Darstellung");
+        m.set_display(d2);
+        m.commit();
+        let (text, back) = rund(&m);
+        assert!(text.contains("slot=above") && !text.contains("slot=element"));
+        let b = back.attr().display();
+        assert_eq!(b.above.line_type, lt(&back, "Strichpunktlinie"));
+        assert!(werk(&back, &b.element), "Einbauelement bleibt");
+        // Einbauelement geändert, über der Schnittebene nicht (wie eine
+        // Datei von vor G7b): die Stelle bekommt den Werks-Linientyp
+        let mut d3 = d.clone();
+        d3.element.line_type = lt(&m, "Strichlinie");
+        m.begin("Darstellung");
+        m.set_display(d3);
+        m.commit();
+        let (text, back) = rund(&m);
+        assert!(text.contains("slot=element") && !text.contains("slot=above"));
+        assert!(werk(&back, &back.attr().display().above));
+        // Beide geändert: der Werks-Linientyp bleibt aus der Datei
+        let mut d4 = d.clone();
+        d4.element.line_type = lt(&m, "Strichlinie");
+        d4.above.line_type = lt(&m, "Strichpunktlinie");
+        m.begin("Darstellung");
+        m.set_display(d4);
+        m.commit();
+        let (text, _) = rund(&m);
+        assert!(!text.contains(&format!("guid={}", ELEMENT_LINE_TYPE_GUID.to_ifc())));
     }
 }
