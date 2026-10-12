@@ -22,7 +22,8 @@ struct Haus {
     m: Model,
     eg: StoreyId,
     og: StoreyId,
-    /// Bauteile, deren Nummern die Kanten und Öffnungen tragen.
+    /// Bauteile, deren Nummern die Kanten und Öffnungen tragen (Wände in EG
+    /// und OG); verschiedene Öffnungen brauchen verschiedene Bauteile.
     w: Vec<ElementId>,
 }
 
@@ -40,11 +41,13 @@ fn haus() -> Haus {
     let run = m
         .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
         .unwrap();
-    let og = m.run(m.runs_above(run)[0]).unwrap().storey;
+    let oben = m.runs_above(run)[0];
+    let og = m.run(oben).unwrap().storey;
     for t in &FINISH_TYPES {
         m.ensure_finish_type(t.guid).unwrap();
     }
-    let w = m.run(run).unwrap().segments.clone();
+    let mut w = m.run(run).unwrap().segments.clone();
+    w.extend(m.run(oben).unwrap().segments.iter().copied());
     Haus { m, eg, og, w }
 }
 
@@ -125,6 +128,7 @@ fn oe(
         tiefe,
         art,
         aufschlag_hier,
+        weiter: [0.0; 2],
     }
 }
 
@@ -402,7 +406,7 @@ fn diele(h: &Haus) -> Rohbau {
             Some(true),
         ),
         oe(
-            h.w[3],
+            h.w[4],
             2,
             800.0,
             1685.0,
@@ -413,7 +417,7 @@ fn diele(h: &Haus) -> Rohbau {
             Some(false),
         ),
         oe(
-            h.w[3],
+            h.w[5],
             3,
             1000.0,
             1885.0,
@@ -527,7 +531,163 @@ fn ecktuer() {
     gleich(m(Flaeche::Laibung(0), rf), 2385.0 + 1000.0);
     gleich(m(Flaeche::Laibung(1), rf), 2385.0 + 1000.0);
     gleich(m(Flaeche::Eckschienen, None), 2.0 * (2385.0 + 1000.0));
-    // Sockel: je 1,00 m übermessen
+    // Eine Aussparung von 4,77 m², jedes Stück an seiner Wand abgezogen
+    let putz = Some((WOODCHIP_WALL_TYPE_GUID, 0));
+    gleich(m(Flaeche::Wand(0), putz), 4000.0 * 2635.0 - 1000.0 * 2385.0);
+    gleich(m(Flaeche::Wand(1), putz), 3000.0 * 2635.0 - 1000.0 * 2385.0);
+    // Sockel: Unterbrechung 2,00 m, abgezogen; an der offenen Ecke endet
+    // die Putzfläche 15 mm vor der Rohbauecke
+    let sockel = z.iter().find(|x| x.flaeche == Flaeche::Sockel).unwrap();
+    assert!(
+        sockel
+            .terme
+            .iter()
+            .any(|t| t.text.contains("Unterbrechung gesamt 2,000")),
+        "{:#?}",
+        sockel.terme
+    );
+    gleich(
+        m(Flaeche::Sockel, Some((OAK_SKIRTING_TYPE_GUID, 0))),
+        2.0 * (3970.0 + 2970.0) - 2.0 * 985.0,
+    );
+}
+
+#[test]
+fn grenze_auf_drei_stellen() {
+    // 2,5004 m² stehen im LV als 2,500 m² und werden übermessen
+    // (`vob/oeffnung-vorgabe.md` §2), ebenso 1,0004 m an der Sockelleiste
+    assert!(uebermessen(2.5004e6, 2.5e6, QM));
+    assert!(!uebermessen(2.5006e6, 2.5e6, QM));
+    assert!(uebermessen(0.5e6, 0.5e6, QM));
+    assert!(uebermessen(1000.4, 1000.0, LM));
+    assert!(!uebermessen(1000.6, 1000.0, LM));
+}
+
+/// Raum 4,00 × 3,00 m mit einer Öffnung über die Ecke unten rechts, `a`
+/// breit auf der unteren und `b` auf der rechten Wand, von `uk` bis `ok`.
+fn eckoeffnung(h: &Haus, a: f64, b: f64, uk: f64, ok: f64) -> Rohbau {
+    let k = ring(
+        &[(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)],
+        h.w[0],
+    );
+    let o = vec![
+        oe(
+            h.w[1],
+            0,
+            4000.0 - a,
+            4000.0,
+            uk,
+            ok,
+            165.0,
+            OpeningKind::Window,
+            None,
+        ),
+        oe(h.w[1], 1, 0.0, b, uk, ok, 165.0, OpeningKind::Window, None),
+    ];
+    form(h.eg, k, Vec::new(), o)
+}
+
+#[test]
+fn eckfenster_ist_eine_aussparung() {
+    let h = haus();
+    let menge_in = |f: &Rohbau, s: Guid, fl: Flaeche, typ: (Guid, usize)| {
+        let a = RaumAusbau::nach_vorlage(&h.m, f, &vorlage(s));
+        let z = rechnen(&h.m, f, &a, &Regeln::default());
+        menge(&h.m, &z, fl, Some(typ))
+    };
+    let putz = (WOODCHIP_WALL_TYPE_GUID, 0);
+    let wohnen = |f: &Rohbau, k| menge_in(f, LIVING_SPACE_GUID, Flaeche::Wand(k), putz);
+    // Eckfenster 1,00 + 1,00 × 1,20 m: Aussparung 2,40 m², übermessen
+    let f = eckoeffnung(&h, 1000.0, 1000.0, 1000.0, 2200.0);
+    gleich(wohnen(&f, 0), 4000.0 * 2635.0);
+    gleich(wohnen(&f, 1), 3000.0 * 2635.0);
+    // 1,20 + 1,00 × 1,20 m: jedes Stück unter 2,5 m², zusammen 2,64 m²
+    let f = eckoeffnung(&h, 1200.0, 1000.0, 1000.0, 2200.0);
+    gleich(wohnen(&f, 0), 4000.0 * 2635.0 - 1200.0 * 1200.0);
+    gleich(wohnen(&f, 1), 3000.0 * 2635.0 - 1000.0 * 1200.0);
+    // Bad, Fenstertür 1,30 + 1,00 m über die Ecke: in der Fliesenzone
+    // (1,20 m hoch) 2,76 m², abgezogen an der Putzoberfläche bis zur Ecke
+    // des Putzrings, je 15 mm weniger als im Rohbau
+    let f = eckoeffnung(&h, 1300.0, 1000.0, 0.0, 2385.0);
+    let fliesen = |k| {
+        menge_in(
+            &f,
+            BATH_SPACE_GUID,
+            Flaeche::Fliesen(k),
+            (WALL_TILES_TYPE_GUID, 0),
+        )
+    };
+    gleich(fliesen(0), 3970.0 * 1200.0 - 1285.0 * 1200.0);
+    gleich(fliesen(1), 2970.0 * 1200.0 - 985.0 * 1200.0);
+    let f = eckoeffnung(&h, 1000.0, 1000.0, 0.0, 2385.0);
+    let fliesen = |k| {
+        menge_in(
+            &f,
+            BATH_SPACE_GUID,
+            Flaeche::Fliesen(k),
+            (WALL_TILES_TYPE_GUID, 0),
+        )
+    };
+    gleich(fliesen(0), 3970.0 * 1200.0);
+}
+
+/// Raum 4,00 × 3,00 m, Fenster 1,00 m breit in der unteren Wand, das über
+/// die Rohdecke in das Geschoss darüber bzw. von darunter herein reicht.
+fn galerie(h: &Haus, uk: f64, ok: f64, weiter: [f64; 2]) -> Rohbau {
+    let k = ring(
+        &[(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)],
+        h.w[0],
+    );
+    let o = OeffnungAmRaum {
+        weiter,
+        ..oe(
+            h.w[1],
+            0,
+            1500.0,
+            2500.0,
+            uk,
+            ok,
+            165.0,
+            OpeningKind::Window,
+            None,
+        )
+    };
+    form(h.eg, k, Vec::new(), vec![o])
+}
+
+#[test]
+fn geschossuebergreifend_eine_aussparung() {
+    let h = haus();
+    let zeilen = |f: &Rohbau| {
+        let a = RaumAusbau::nach_vorlage(&h.m, f, &vorlage(LIVING_SPACE_GUID));
+        rechnen(&h.m, f, &a, &Regeln::default())
+    };
+    let putz = Some((WOODCHIP_WALL_TYPE_GUID, 0));
+    let anstrich = Some((WOODCHIP_WALL_TYPE_GUID, 2));
+    // Unten: ab Brüstung 1,50 m über die Rohdecke; im Raum 1,135 m², im
+    // Geschoss darüber 1,40 m², zusammen 2,535 m²: abgezogen
+    let f = galerie(&h, 1500.0, 4335.0, [0.0, 1400.0]);
+    let z = zeilen(&f);
+    let m = |fl, typ| menge(&h.m, &z, fl, typ);
+    gleich(m(Flaeche::Wand(0), putz), 4000.0 * 2635.0 - 1000.0 * 1135.0);
+    // Laibungen und Kanten nur im Geschoss, oben keine
+    gleich(m(Flaeche::Laibung(0), anstrich), 2.0 * 1135.0);
+    gleich(m(Flaeche::Eckschienen, None), 2.0 * 1135.0);
+    // Ohne das Stück darüber wäre es übermessen
+    let z = zeilen(&galerie(&h, 1500.0, 4335.0, [0.0, 0.0]));
+    gleich(menge(&h.m, &z, Flaeche::Wand(0), putz), 4000.0 * 2635.0);
+    // Oben: von unten herein bis Sturz 1,40 m; der Boden endet an der
+    // Rohbauflucht, ohne Nische; Sockel 1,00 m übermessen
+    let f = galerie(&h, -1435.0, 1400.0, [1135.0, 0.0]);
+    let z = zeilen(&f);
+    let m = |fl, typ| menge(&h.m, &z, fl, typ);
+    gleich(m(Flaeche::Wand(0), putz), 4000.0 * 2635.0 - 1000.0 * 1400.0);
+    gleich(m(Flaeche::Laibung(0), anstrich), 2.0 * 1400.0 + 1000.0);
+    gleich(m(Flaeche::Eckschienen, None), 2.0 * 1400.0 + 1000.0);
+    gleich(
+        m(Flaeche::Boden, Some((PARQUET_TYPE_GUID, 0))),
+        3970.0 * 2970.0 + 1000.0 * 15.0,
+    );
     gleich(
         m(Flaeche::Sockel, Some((OAK_SKIRTING_TYPE_GUID, 0))),
         2.0 * (3970.0 + 2970.0),

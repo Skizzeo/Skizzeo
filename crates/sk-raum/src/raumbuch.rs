@@ -24,6 +24,14 @@
 //!   Silikon an Boden/Wand und in den Innenecken der Fliesenzone;
 //!   Dichtband unter Fliesen mit Verbundabdichtung.
 //!
+//! Übermessen wird wie in der VOB-Vorgabe für Öffnungen
+//! (`vob/oeffnung-vorgabe.md` §2): verglichen auf drei Stellen in m² bzw. m
+//! wie im LV (2,500 m² wird übermessen); eine Ecköffnung und eine
+//! geschossübergreifende Öffnung sind eine Aussparung, die Grenze gilt für
+//! die Summe ihrer Stücke, abgezogen wird jedes Stück an seiner Wandseite.
+//! Ebenso ist die Unterbrechung der Sockelleiste an einer Ecköffnung die
+//! Rohbaubreite beider Stücke.
+//!
 //! Die Grenzen stehen in [`Regeln`], bis die Tabelle `Abrechnung` des
 //! VOB-Threads sie liefert. [`Term`], [`Art`] und [`Bezug`] sind die aus
 //! `sk_model::rechenweg` (VOB, PR #77).
@@ -48,6 +56,16 @@ pub struct Regeln {
     pub wand: f64,
     /// Unterbrechungen der Sockelleiste (mm, Rohbaumaß der Öffnung).
     pub sockel: f64,
+}
+
+/// Dritte Stelle in m² bzw. m, in mm² bzw. mm.
+const QM: f64 = 1e3;
+const LM: f64 = 1.0;
+
+/// Wird eine Aussparung der Größe `wert` bei der Grenze `grenze`
+/// übermessen? Verglichen auf drei Stellen (`stelle`) wie im LV.
+fn uebermessen(wert: f64, grenze: f64, stelle: f64) -> bool {
+    (wert / stelle).round() <= (grenze / stelle).round()
 }
 
 impl Default for Regeln {
@@ -240,6 +258,55 @@ impl<'a> Raum<'a> {
         o.uk <= self.ffb + 0.5
     }
 
+    /// Hat die Öffnung am Boden eine Nische? Nicht, wenn sie aus dem
+    /// Geschoss darunter heraufreicht (geschossübergreifend): Dort endet der
+    /// Boden an der Rohbauflucht.
+    fn mit_nische(&self, o: &OeffnungAmRaum) -> bool {
+        o.uk >= self.form.z_boden - 0.5
+    }
+
+    /// Höhe der Öffnung `o` in der Zone `lo..hi` einer Wandseite; reicht die
+    /// Zone an OK oder UK Rohdecke, mit ihrem Stück in den Geschossen
+    /// darunter bzw. darüber.
+    fn hoehe_ganz(&self, o: &OeffnungAmRaum, lo: f64, hi: f64) -> f64 {
+        let mut h = ueber(o.uk, o.ok, lo, hi);
+        if lo <= self.form.z_boden + 0.5 {
+            h += o.weiter[0];
+        }
+        if hi >= self.form.z_decke - 0.5 {
+            h += o.weiter[1];
+        }
+        h
+    }
+
+    /// Fläche der ganzen Aussparung, zu der das Stück `o` gehört, in der
+    /// Zone `lo..hi` (Rohbaumaß): alle Stücke derselben Öffnung an den
+    /// Kanten des Raums und in den Geschossen darüber und darunter.
+    fn aussparung(&self, o: &OeffnungAmRaum, lo: f64, hi: f64) -> f64 {
+        self.form
+            .oeffnungen
+            .iter()
+            .filter(|p| p.oeffnung == o.oeffnung)
+            .map(|p| (p.bis - p.von) * self.hoehe_ganz(p, lo, hi))
+            .sum()
+    }
+
+    /// Breite des Stücks `o` an der Putzoberfläche: Wo die Putzfläche vor
+    /// dem Ende der Rohbaukante endet (offene Ecke einer Ecköffnung), zählt
+    /// das Stück nur bis zur Ecke des Putzrings; sonst die Rohbaubreite.
+    fn breite_an_putz(&self, o: &OeffnungAmRaum) -> f64 {
+        let (r, i) = self.im_ring(o.kante);
+        let k = self.kanten[o.kante];
+        let (u, _) = ring::richtung(k.a, k.b);
+        let a = vec3(k.a.x, k.a.y, 0.0);
+        let (s, e) = self.ringe_putz[r].enden[i];
+        let (s, e) = ((s - a).dot(u), (e - a).dot(u));
+        let (ecke_a, ecke_e) = self.ueber_ecke(o);
+        let von = if ecke_a { o.von.max(s) } else { o.von };
+        let bis = if ecke_e { o.bis.min(e) } else { o.bis };
+        (bis - von).max(0.0)
+    }
+
     /// Setzt sich die Öffnung über die Ecke am Anfang bzw. Ende ihrer Kante
     /// fort (Ecköffnung)? Dort hat sie keine seitliche Laibung.
     fn ueber_ecke(&self, o: &OeffnungAmRaum) -> (bool, bool) {
@@ -300,7 +367,7 @@ impl<'a> Raum<'a> {
         )];
         for v in &self.ringe_putz[1..] {
             let a = -v.flaeche();
-            if a <= self.regeln.boden {
+            if uebermessen(a, self.regeln.boden, QM) {
                 t.push(hinweis(format!(
                     "Aussparung {} übermessen (bis {})",
                     qm(a),
@@ -322,7 +389,11 @@ impl<'a> Raum<'a> {
                 ));
             }
             let d = o.tiefe;
+            let nische = self.mit_nische(o);
             match (o.art, o.aufschlag_hier) {
+                _ if !nische => t.push(hinweis(format!(
+                    "{n} reicht aus dem Geschoss darunter: keine Nische"
+                ))),
                 (OpeningKind::InnerDoor, Some(true)) => t.push(hinweis(format!(
                     "Türnische {n} gehört zum Nachbarraum (Tür schlägt hierher auf)"
                 ))),
@@ -354,11 +425,13 @@ impl<'a> Raum<'a> {
                     .an(k)
                     .find(|q| q.oeffnung == o.oeffnung && q.von <= 0.5)
                 {
-                    t.push(term(
-                        format!("Eckfeld {n}: {} × {}", m(d), m(q.tiefe)),
-                        d * q.tiefe,
-                        Art::Zuschlag,
-                    ));
+                    if nische {
+                        t.push(term(
+                            format!("Eckfeld {n}: {} × {}", m(d), m(q.tiefe)),
+                            d * q.tiefe,
+                            Art::Zuschlag,
+                        ));
+                    }
                     let pq = self.putz[k];
                     if p > 0.0 && pq > 0.0 {
                         t.push(term(
@@ -425,7 +498,7 @@ impl<'a> Raum<'a> {
         )];
         for (_, p) in &self.ringe[1..] {
             let a = -sk_math::polygon::signed_area(p);
-            if a <= self.regeln.wand {
+            if uebermessen(a, self.regeln.wand, QM) {
                 terme.push(hinweis(format!(
                     "Aussparung {} übermessen (bis {})",
                     qm(a),
@@ -454,27 +527,42 @@ impl<'a> Raum<'a> {
         self.seite(k).fliesen.map(|f| self.ffb + f.1)
     }
 
-    /// Öffnungen einer Zone `lo..hi` der Seite `k` (Länge im Rohbaumaß),
-    /// übermessen bis `grenze`.
-    fn oeffnungen_in(&self, k: usize, lo: f64, hi: f64, terme: &mut Vec<Term>) {
+    /// Öffnungen einer Zone `lo..hi` der Seite `k`, übermessen bis zur
+    /// Grenze für Wände; die Länge im Rohbaumaß oder mit `an_putz` an der
+    /// Putzoberfläche ([`Self::breite_an_putz`]).
+    fn oeffnungen_in(&self, k: usize, lo: f64, hi: f64, an_putz: bool, terme: &mut Vec<Term>) {
         for o in self.an(k) {
-            let w = o.bis - o.von;
             let h = ueber(o.uk, o.ok, lo, hi);
             if h <= 0.0 {
                 continue;
             }
+            let w = if an_putz {
+                self.breite_an_putz(o)
+            } else {
+                o.bis - o.von
+            };
             let a = w * h;
+            let ganz = self.aussparung(o, lo, hi);
             let n = self.name(o);
-            if a <= self.regeln.wand {
+            let teil = if (ganz - (o.bis - o.von) * h).abs() > 0.5 {
+                format!(", Aussparung gesamt {}", qm(ganz))
+            } else {
+                String::new()
+            };
+            if uebermessen(ganz, self.regeln.wand, QM) {
                 terme.push(hinweis(format!(
-                    "{n} {} × {} = {} übermessen (bis {})",
+                    "{n} {} × {} = {} übermessen{teil} (bis {})",
                     m(w),
                     m(h),
                     qm(a),
                     qm(self.regeln.wand)
                 )));
             } else {
-                terme.push(term(format!("{n} {} × {}", m(w), m(h)), -a, Art::Abzug));
+                terme.push(term(
+                    format!("{n} {} × {}{teil}", m(w), m(h)),
+                    -a,
+                    Art::Abzug,
+                ));
             }
         }
     }
@@ -542,7 +630,7 @@ impl<'a> Raum<'a> {
                 self.roh[k] * (z1 - lo),
                 Art::Basis,
             )];
-            self.oeffnungen_in(k, lo, z1, &mut terme);
+            self.oeffnungen_in(k, lo, z1, false, &mut terme);
             out.push(Zeile {
                 flaeche: Flaeche::Wand(k),
                 typ: Some((id, j)),
@@ -578,7 +666,7 @@ impl<'a> Raum<'a> {
             self.an_putz[k] * h,
             Art::Basis,
         )];
-        self.oeffnungen_in(k, lo, hi, &mut terme);
+        self.oeffnungen_in(k, lo, hi, true, &mut terme);
         let laibung = self.laibungen_in(k, lo, hi, true);
         for (j, l) in t.layers.iter().enumerate() {
             out.push(Zeile {
@@ -622,16 +710,29 @@ impl<'a> Raum<'a> {
                     Art::Basis,
                 ));
                 for o in self.an(k).filter(|o| self.am_boden(o)) {
-                    let w = o.bis - o.von;
+                    let w = self.breite_an_putz(o);
                     let n = self.name(o);
-                    if w <= self.regeln.sockel {
+                    // Unterbrechung: Rohbaubreite aller Stücke der Öffnung
+                    let ganz: f64 = self
+                        .form
+                        .oeffnungen
+                        .iter()
+                        .filter(|p| p.oeffnung == o.oeffnung && self.am_boden(p))
+                        .map(|p| p.bis - p.von)
+                        .sum();
+                    let teil = if (ganz - (o.bis - o.von)).abs() > 0.5 {
+                        format!(", Unterbrechung gesamt {}", m(ganz))
+                    } else {
+                        String::new()
+                    };
+                    if uebermessen(ganz, self.regeln.sockel, LM) {
                         terme.push(hinweis(format!(
-                            "{n} {} übermessen (bis {} m)",
+                            "{n} {} übermessen{teil} (bis {} m)",
                             m(w),
                             m(self.regeln.sockel)
                         )));
                     } else {
-                        terme.push(term(format!("{n} {}", m(w)), -w, Art::Abzug));
+                        terme.push(term(format!("{n} {}{teil}", m(w)), -w, Art::Abzug));
                     }
                 }
             }
@@ -677,17 +778,21 @@ impl<'a> Raum<'a> {
             if !laibung_behandelt(o.art) || self.putz[o.kante] <= 0.0 {
                 continue;
             }
-            let w = o.bis - o.von;
+            // im Geschoss des Raums; oben nur, wo der Sturz in ihm liegt
+            let w = if o.ok <= self.form.z_decke + 0.5 {
+                o.bis - o.von
+            } else {
+                0.0
+            };
             let n = self.seiten(o);
-            let hoch = o.ok - o.uk;
+            let hoch = ueber(o.uk, o.ok, self.form.z_boden, self.form.z_decke);
+            let oben = if w > 0.0 {
+                format!(" + {}", m(w))
+            } else {
+                String::new()
+            };
             terme.push(term(
-                format!(
-                    "Laibungskanten {}: {} × {} + {}",
-                    self.name(o),
-                    n,
-                    m(hoch),
-                    m(w)
-                ),
+                format!("Laibungskanten {}: {} × {}{oben}", self.name(o), n, m(hoch)),
                 n * hoch + w,
                 Art::Basis,
             ));
@@ -738,7 +843,7 @@ impl<'a> Raum<'a> {
                 Art::Basis,
             ));
             for o in self.an(k).filter(|o| self.am_boden(o)) {
-                let w = o.bis - o.von;
+                let w = self.breite_an_putz(o);
                 terme.push(term(format!("{} {}", self.name(o), m(w)), -w, Art::Abzug));
             }
         }

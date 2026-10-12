@@ -6,7 +6,7 @@
 //! Löcher in ihrer Reihenfolge ([`Rohbau::kanten`]).
 
 use crate::erkennung::{Begrenzung, Kante, RaumForm, Seite};
-use sk_model::{ElementId, Model, RunId, WallChain};
+use sk_model::{ElementId, LevelKind, Model, RunId, WallChain};
 
 /// Art der Öffnung. Bis Grundriss G6 die Innentür in `sk_model::oeffnung::OpeningKind`
 /// bringt, hier mit ihr; dann entfällt dieser Typ.
@@ -47,6 +47,10 @@ pub struct OeffnungAmRaum {
     pub art: OpeningKind,
     /// Die Tür schlägt in diesen Raum auf.
     pub aufschlag_hier: Option<bool>,
+    /// Höhe der Öffnung (mm) in den lichten Höhen der Geschosse darunter und
+    /// darüber. Eine geschossübergreifende Öffnung ist mit ihren Stücken dort
+    /// eine Aussparung (`vob/oeffnung-vorgabe.md` §2).
+    pub weiter: [f64; 2],
 }
 
 /// Ein Raum, wie das Raumbuch ihn braucht: die Form aus dem Grundriss, dazu
@@ -100,6 +104,21 @@ pub fn hoehen_roh(model: &Model, form: &RaumForm) -> (f64, f64) {
 /// raumseitigen Schicht (hinter einer Außenschale um den Anschlag größer).
 pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
     let mut zuege: Vec<(RunId, Option<WallChain>)> = Vec::new();
+    let (z_boden, z_decke) = hoehen_roh(model, form);
+    let andere = andere_geschosse(model, form);
+    let weiter = |z0: f64, z1: f64, unten: bool| -> f64 {
+        andere
+            .iter()
+            .filter(|g| {
+                if unten {
+                    g.1 <= z_boden + 0.5
+                } else {
+                    g.0 >= z_decke - 0.5
+                }
+            })
+            .map(|g| (z1.min(g.1) - z0.max(g.0)).max(0.0))
+            .sum()
+    };
     let mut out = Vec::new();
     for (i, k) in ringe(form).flat_map(|r| r.iter()).enumerate() {
         let Begrenzung::Wand {
@@ -157,11 +176,26 @@ pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
                 },
                 art: o.kind.into(),
                 aufschlag_hier: None,
+                weiter: [weiter(z0, z1, true), weiter(z0, z1, false)],
             });
         }
     }
     out.sort_by(|a, b| a.kante.cmp(&b.kante).then(a.von.total_cmp(&b.von)));
     out
+}
+
+/// OK Rohdecke und UK Rohdecke darüber der anderen Geschosse im Gebäude des
+/// Raums (mm, absolut).
+fn andere_geschosse(model: &Model, form: &RaumForm) -> Vec<(f64, f64)> {
+    let Some(b) = model.storey(form.geschoss).map(|s| s.building) else {
+        return Vec::new();
+    };
+    model
+        .storeys()
+        .iter()
+        .filter(|(id, s)| *id != form.geschoss && s.building == b && s.kind == LevelKind::Storey)
+        .map(|(id, s)| (s.elevation, s.elevation + model.clear_height(id)))
+        .collect()
 }
 
 /// Wandzug und Segment des Bauteils `wand` im Geschoss des Raums.
@@ -297,6 +331,30 @@ mod tests {
         assert!((a.bis - a.von - (800.0 - t + 30.0)).abs() < 1e-6, "{a:?}");
         assert!((b.bis - b.von - (900.0 - t + 30.0)).abs() < 1e-6, "{b:?}");
         assert_eq!(r.oeffnungen.len(), 2);
+    }
+
+    /// Von der Brüstung im EG bis zum Sturz im OG: Jeder Raum sieht sein
+    /// Stück und weiß, wie hoch die Öffnung im anderen Geschoss ist.
+    #[test]
+    fn ueber_zwei_geschosse() {
+        let (mut m, run, st) = haus();
+        let og = m.run(m.runs_above(run)[0]).unwrap().storey;
+        let f = aussen(&m, run);
+        let d = (f[1] - f[0]).normalized();
+        let o = Opening {
+            top: HeightRef::Line(og, HeightLine::Lintel),
+            ..oeffnung(st, vec![f[0] + d * 2000.0, f[0] + d * 3000.0])
+        };
+        m.add_opening(o).unwrap();
+        let unten = Rohbau::neu(&m, raeume(&m, st).remove(0));
+        let oben = Rohbau::neu(&m, raeume(&m, og).remove(0));
+        let (a, b) = (unten.oeffnungen[0], oben.oeffnungen[0]);
+        assert_eq!((a.uk, a.ok), (b.uk, b.ok));
+        assert!(a.uk > unten.z_boden && a.ok > oben.z_boden, "{a:?}");
+        assert_eq!(a.weiter[0], 0.0);
+        assert!((a.weiter[1] - (a.ok - oben.z_boden)).abs() < 1e-6, "{a:?}");
+        assert!((b.weiter[0] - (unten.z_decke - b.uk)).abs() < 1e-6, "{b:?}");
+        assert_eq!(b.weiter[1], 0.0);
     }
 
     #[test]

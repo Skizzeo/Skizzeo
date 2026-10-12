@@ -445,6 +445,7 @@ impl Raum<'_> {
             let k = o.kante;
             let p = self.putz[k];
             let (am_anfang, am_ende) = self.ueber_ecke(o);
+            let nische = self.mit_nische(o);
             let s0 = if am_anfang {
                 o.von + self.putz[self.vorige(k)]
             } else {
@@ -453,11 +454,15 @@ impl Raum<'_> {
             if p > 0.0 && o.bis > s0 {
                 extra.push(self.rechteck(k, (s0, o.bis), (0.0, p)));
             }
-            let d = o.tiefe * self.nische(o);
+            let d = if nische {
+                o.tiefe * self.nische(o)
+            } else {
+                0.0
+            };
             if d > 0.0 {
                 extra.push(self.rechteck(k, (o.von, o.bis), (-d, 0.0)));
             }
-            if am_ende && o.art != OpeningKind::InnerDoor {
+            if nische && am_ende && o.art != OpeningKind::InnerDoor {
                 let n = self.naechste(k);
                 if let Some(q) = self
                     .an(n)
