@@ -1800,23 +1800,14 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     // stehen bleiben. Fehlende gelten mit der Vorgabe; ein Wert außerhalb
     // seines Bereichs mit Hinweis ebenso, das Projekt öffnet
     let felder = crate::qto_earth::Boden::FELDER;
-    let mut boden_wert = |r: &Record, i: usize| -> Result<Option<f64>, LoadError> {
+    let mut boden_wert = |r: &Record, i: usize| {
         let (k, name, min, max) = felder[i];
-        if r.opt(k).is_none() {
-            return Ok(None);
-        }
-        let v = r.f64(k)?;
-        if v.is_finite() && v >= min && v <= max {
-            Ok(Some(v))
-        } else {
-            let einheit = if k == "slope" { "°" } else { " mm" };
-            hints.push(ausserhalb(r.line, name, v, min, max, einheit));
-            Ok(None)
-        }
+        let einheit = if k == "slope" { "°" } else { " mm" };
+        gelaende::bereich(r, k, name, (min, max), einheit, &mut hints)
     };
     let mut legacy = [None; 5];
     for (i, w) in legacy.iter_mut().enumerate() {
-        *w = boden_wert(p, i)?;
+        *w = boden_wert(p, i);
     }
     let mut boden = project.soil.werte();
     match recs("soil").as_slice() {
@@ -1831,7 +1822,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             // Kennung `key=project`; gelesen, damit sie nicht als fremd gilt
             let _ = r.opt("key");
             for (i, b) in boden.iter_mut().enumerate() {
-                if let Some(w) = boden_wert(r, i)? {
+                if let Some(w) = boden_wert(r, i) {
                     *b = w;
                 }
             }
