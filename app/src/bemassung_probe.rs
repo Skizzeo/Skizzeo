@@ -393,15 +393,18 @@ fn probe_bemassung() {
         hoch(&ink);
         // Stand ohne Änderung, dann auf eine andere Ebene und zurück
         let st = geschosse(&s, ViewKind::Plan, &[]);
+        // (je 50-mal: einzeln zu kurz zum Messen)
         let t = Instant::now();
-        for _ in 0..reps_von(n) {
+        for _ in 0..50 {
             std::hint::black_box(mk.stand(&s, st.clone(), Some(&f)));
         }
-        let stand = ms(t, reps_von(n));
+        let stand = ms(t, 50);
         let t = Instant::now();
-        mk.stand(&s, Vec::new(), Some(&f));
-        mk.stand(&s, st.clone(), Some(&f));
-        let ebene = ms(t, 1);
+        for _ in 0..50 {
+            mk.stand(&s, Vec::new(), Some(&f));
+            mk.stand(&s, st.clone(), Some(&f));
+        }
+        let ebene = ms(t, 50);
         let dreiecke: usize = ink.iter().map(|(_, t)| t.len()).sum();
         let run = s.model().runs().ids().next().unwrap();
         let orig = s.chain(run).unwrap().clone();
