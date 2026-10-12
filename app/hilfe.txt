@@ -188,6 +188,15 @@ Linien verschieben | im Grundriss Linie A oder B greifen und ziehen (10-mm-Raste
 Längs oder quer | steht automatisch unter dem Buchstaben
 Wand ändern | an der violetten Kugel ziehen
 
+[thema] id=bemassung titel="Bemaßung"
+Maßketten | Grundriss und 3D bemaßen jedes Gebäude außen nach DIN 1356-1, Maßstab 1:100; die Ketten rechnen sich aus dem Modell und folgen jeder Änderung
+Ketten | von der Wand nach außen: Öffnungen (Breite, darunter die Höhe, BRH in cm an der Wand), Wände mit angeschlossenen Innenwänden, Vor- und Rücksprünge, Gesamtmaß; erste Kette 2,00 m vor der Wand, dann je 1,00 m
+Maßzahlen | unter 1 m in cm, ab 1 m in m mit zwei Stellen, Millimeter hochgestellt; passt die Zahl nicht zwischen die Hilfslinien, steht sie daneben oder eine Zeile höher
+3D | die Ketten liegen flach auf der Ebene des gewählten Bauteils, sonst des aktiven Geschosses; verdeckte Teile blass
+Zahnrad | „Maßketten zeigen“ und „Maßbezugspunkte zeigen“ je Ansicht; die Bezugspunkte zeigen, an welcher Kante jede Hilfslinie misst
+Stil | Einstellungen, Reiter „Bemaßung“: Linien, Begrenzung (Kreis, Schrägstrich, Punkt, Pfeil), Schrift, Rundung 1 oder 5 mm, Farbe, Abstände, welche Ketten, BRH ab Rohdecke oder Estrich
+Firmenstandard | „Als Firmenstandard speichern“ gilt mit **OK** für neue Projekte; „Firmenstandard übernehmen“ setzt ihn in dieses Projekt
+
 [thema] id=nordpfeil titel="Nordpfeil"
 Setzen | startet nach dem ersten geschlossenen Umriss einmal von selbst (**Esc** = später), sonst Kachel rechts neben „Projektdaten“; dann im 3D-Fenster oder Grundriss den Fußpunkt (Mitte des Pfeilfußes) klicken und die Richtung zeigen; danach ist der Sonnenstand an
 Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Umschalt** in 15°
@@ -225,7 +234,7 @@ Bildzeit messen | Menü → „Bildzeit messen (10 s)“, unter „Hilfe“; Med
 
 [thema] id=einstellungen titel="Einstellungen"
 Öffnen | Dateimenü › „Einstellungen …“ oder **Strg+Komma**
-Reiter | Stifte, Linientypen, Schraffuren, Oberflächen, Bedienoberfläche
+Reiter | Stifte, Linientypen, Schraffuren, Oberflächen, Bemaßung, Bedienoberfläche, Vorgaben
 Wirkung | Jede Änderung wirkt sofort; **OK** ist ein Rückgängig-Schritt
 Abbrechen | stellt alles genau wie vorher her
 Standard | „Auf Standard zurücksetzen“ je Reiter
