@@ -55,20 +55,21 @@ fn schnitt(p: Vec3, u: Vec3, q: Vec3, v: Vec3) -> Option<Vec3> {
     Some(p + u * t)
 }
 
-/// So weit (Vielfaches des größeren Versatzes) darf die Gehrung von der
-/// Ecke liegen. Eine spitze Ecke von 10° gehrt bei gleichem Versatz
-/// 11,5-fach; weiter draußen laufen die Kanten fast in einer Flucht, und
-/// der Schnitt gäbe eine Spitze aus dem Raum (Geometrie #112).
+/// So weit (Vielfaches des größeren Versatzes) darf die Gehrung zweier
+/// Kanten fast in einer Flucht von der Ecke liegen; weiter draußen gäbe
+/// der Schnitt eine Spitze aus dem Raum (Geometrie #112).
 const GEHRUNG_MAX: f64 = 16.0;
 
 /// Gehrung der versetzten Kanten `(p, u)` und `(q, v)` an der Ecke `ecke`
 /// mit den Versätzen `d`; `None` wie in einer Flucht (dann steht eine
-/// Stufe), wenn sie parallel laufen oder ihr Schnitt weiter als
-/// [`GEHRUNG_MAX`] von der Ecke liegt.
+/// Stufe), wenn sie parallel laufen oder, solange sie um weniger als 90°
+/// knicken, ihr Schnitt weiter als [`GEHRUNG_MAX`] von der Ecke liegt.
+/// Eine spitze Ecke gehrt immer, wie weit auch (3° bei gleichem Versatz
+/// 38-fach; Review #112 H7).
 fn gehrung(p: Vec3, u: Vec3, q: Vec3, v: Vec3, ecke: Vec3, d: [f64; 2]) -> Option<Vec3> {
     let s = schnitt(p, u, q, v)?;
     let weit = GEHRUNG_MAX * d[0].abs().max(d[1].abs());
-    ((s - ecke).length() <= weit).then_some(s)
+    (u.dot(v) <= 0.0 || (s - ecke).length() <= weit).then_some(s)
 }
 
 /// Versetzt den Ring `punkte` (Anfang jeder Kante, geschlossen) je Kante um
@@ -210,24 +211,73 @@ mod tests {
         assert!((v.flaeche() - soll).abs() < 1e-6, "{}", v.flaeche());
     }
 
-    /// Eine spitze Ecke von 10° gehrt noch (11,5-facher Versatz von der
-    /// Ecke), erst fast in einer Flucht steht die Stufe.
+    /// Eine spitze Ecke gehrt, auch unter 7,2° weiter als 16-fach von der
+    /// Ecke (Review #112 H7); erst fast in einer Flucht steht die Stufe.
+    /// Mit Fliesen auf einer Seite (15 und 30) liegt die Gehrung neben der
+    /// Winkelhalbierenden, die Längen bleiben ohne Stufe.
     #[test]
     fn spitze_ecke_gehrt() {
-        let a = 10f64.to_radians();
-        let r = vec![
-            vec3(0.0, 0.0, 0.0),
-            vec3(4000.0, 0.0, 0.0),
-            vec3(4000.0, 4000.0 * a.tan(), 0.0),
-        ];
-        let v = versetzt(&r, &[15.0, 15.0, 15.0]);
-        assert_eq!(v.punkte.len(), 3, "{:?}", v.punkte);
-        let ecke = v.punkte[0];
-        assert!((ecke.length() - 15.0 / (a / 2.0).sin()).abs() < 1e-6);
-        assert!(
-            (ecke.y / ecke.x - (a / 2.0).tan()).abs() < 1e-9,
-            "auf der Winkelhalbierenden"
-        );
+        for grad in [10.0f64, 7.0, 5.0, 3.0] {
+            let a = grad.to_radians();
+            let r = vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(4000.0, 0.0, 0.0),
+                vec3(4000.0, 4000.0 * a.tan(), 0.0),
+            ];
+            let v = versetzt(&r, &[15.0, 15.0, 15.0]);
+            assert_eq!(v.punkte.len(), 3, "{grad}°: {:?}", v.punkte);
+            let ecke = v.punkte[0];
+            assert!((ecke.length() - 15.0 / (a / 2.0).sin()).abs() < 1e-6);
+            assert!(
+                (ecke.y / ecke.x - (a / 2.0).tan()).abs() < 1e-9,
+                "{grad}°: auf der Winkelhalbierenden"
+            );
+            // Unterkante 4000 bis zur Gehrung, abzüglich 15 am rechten Winkel
+            assert!((v.laengen[0] - (4000.0 - 15.0 - ecke.x)).abs() < 1e-6);
+
+            let v = versetzt(&r, &[15.0, 15.0, 30.0]);
+            assert_eq!(v.punkte.len(), 3, "{grad}°: {:?}", v.punkte);
+            let ecke = v.punkte[0];
+            assert!((ecke.y - 15.0).abs() < 1e-6, "{grad}°: auf der Unterkante");
+            let soll = (30.0 + 15.0 * a.cos()) / a.sin();
+            assert!((ecke.x - soll).abs() < 1e-6, "{grad}°: {}", ecke.x);
+        }
+    }
+
+    /// Kreuzen sich zwei nicht benachbarte Kanten des Rings?
+    fn verdreht(p: &[Vec3]) -> bool {
+        let n = p.len();
+        let seite = |a: Vec3, b: Vec3, c: Vec3| kreuz(b - a, c - a);
+        (0..n).any(|i| {
+            (i + 2..n).filter(|&j| (j + 1) % n != i).any(|j| {
+                let (a, b, c, d) = (p[i], p[(i + 1) % n], p[j], p[(j + 1) % n]);
+                seite(a, b, c) * seite(a, b, d) < 0.0 && seite(c, d, a) * seite(c, d, b) < 0.0
+            })
+        })
+    }
+
+    /// Geometrie #112: Eine spitze Bucht (3°, 5°, 7°, 2 m tief) im Raum
+    /// gibt mit Putz 15 einen einfachen Ring, die Fläche wird um den Putz
+    /// kleiner.
+    #[test]
+    fn spitze_bucht_bleibt_einfach() {
+        for grad in [3.0f64, 5.0, 7.0] {
+            let w = 2000.0 * (grad / 2.0).to_radians().tan();
+            let r = vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(4000.0, 0.0, 0.0),
+                vec3(4000.0, 3000.0, 0.0),
+                vec3(2000.0 + w, 3000.0, 0.0),
+                vec3(2000.0, 5000.0, 0.0),
+                vec3(2000.0 - w, 3000.0, 0.0),
+                vec3(0.0, 3000.0, 0.0),
+            ];
+            let v = versetzt(&r, &[15.0; 7]);
+            assert!(!verdreht(&v.punkte), "{grad}°: {:?}", v.punkte);
+            assert_eq!(v.punkte.len(), 7, "{grad}°");
+            let roh = signed_area(&r);
+            assert!(v.flaeche() > 0.0 && v.flaeche() < roh, "{grad}°");
+        }
     }
 
     /// Geometrie #112: Zwei Kanten fast in einer Flucht (Zwischenpunkt
