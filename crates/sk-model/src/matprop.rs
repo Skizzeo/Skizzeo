@@ -30,6 +30,11 @@ pub const SUBGROUP: &str = "Untergruppe";
 pub const MU: &str = "\u{3bc}";
 pub const EUROCLASS: &str = "Euroklasse";
 pub const MAKER: &str = "Hersteller";
+/// Verschnitt der Bestellmenge in % (Mengenpanel „Bestellung“, vob/plan-
+/// rechenweg-bestellmengen.md); ohne Wert gilt [`waste_default`]. War
+/// vorher ein freier eigener Kennwert: Altwerte als Text („5 %“) bleiben
+/// roh erhalten und an ihrer Stelle unter den eigenen (Review #77/4).
+pub const WASTE: &str = "Verschnittzuschlag";
 
 const fn prop(key: &'static str, unit: &'static str, kind: MatPropKind, basic: bool) -> MatProp {
     MatProp {
@@ -43,7 +48,7 @@ const fn prop(key: &'static str, unit: &'static str, kind: MatPropKind, basic: b
 /// Feste Kennwerte in Anzeige- und Dateireihenfolge. Die Einheit des
 /// Richtpreises steht am Baustoff ([`PRICE_UNIT`]); λ und Rohdichte sind
 /// Felder des Baustoffs.
-pub const MAT_PROPS: [MatProp; 11] = {
+pub const MAT_PROPS: [MatProp; 12] = {
     use MatPropKind::{Number as N, Text as T};
     [
         prop(PRICE, "", N, true),
@@ -57,6 +62,7 @@ pub const MAT_PROPS: [MatProp; 11] = {
         prop("Produkt", "", T, false),
         prop("Bemerkung", "", T, false),
         prop("Preisquelle", "", T, false),
+        prop(WASTE, "%", N, false),
     ]
 };
 
@@ -92,6 +98,38 @@ pub fn price_unit(c: MatCategory) -> Option<&'static str> {
         | MatCategory::Coating => Some("m2"),
         MatCategory::Air => None,
     }
+}
+
+/// Verschnitt der Bestellmenge in %, wenn der Baustoff keinen nennt:
+/// Spannen aus Händler-Rechnern, Herstellerangaben und Kalkulationslehre
+/// (vob/plan-rechenweg-bestellmengen.md); keine Norm.
+pub fn waste_default(c: MatCategory) -> f64 {
+    match c {
+        MatCategory::Masonry | MatCategory::Concrete | MatCategory::Insulation => 5.0,
+        MatCategory::Plaster | MatCategory::Timber | MatCategory::Metal => 10.0,
+        MatCategory::Membrane => 15.0,
+        // Raumbuch (#80, Kosten H80-1): Estrich wie Beton, Fliesen,
+        // Beläge und Beschichtung mit Zuschnitt
+        MatCategory::Screed => 5.0,
+        MatCategory::Ceramic | MatCategory::Flooring | MatCategory::Coating => 10.0,
+        MatCategory::Air => 0.0,
+    }
+}
+
+/// Verschnitt der Bestellmenge in % für diesen Baustoff; ein Altwert als
+/// Text zählt, wenn er sich als Zahl lesen lässt („5 %“, „2,5“).
+pub fn waste(m: &crate::library::Material) -> f64 {
+    match m.props.get(WASTE) {
+        Some(PropValue::Number(n)) if (0.0..=100.0).contains(n) => *n,
+        Some(PropValue::Text(t)) => waste_text(t).unwrap_or(waste_default(m.category)),
+        _ => waste_default(m.category),
+    }
+}
+
+/// Verschnitt aus freiem Text: „5 %“, „5,5%“, „7“; nur 0 bis 100.
+fn waste_text(t: &str) -> Option<f64> {
+    let n = t.trim().trim_end_matches('%').trim().replace(',', ".");
+    n.parse::<f64>().ok().filter(|n| (0.0..=100.0).contains(n))
 }
 
 /// Anzeige einer Preiseinheit: „m3“ → „€/m³“.
@@ -162,6 +200,10 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
             Ok(())
         };
     };
+    if key == WASTE && !matches!(v, PropValue::Number(_)) {
+        // Altwert aus der Zeit als eigener Kennwert, roh erhalten
+        return Ok(());
+    }
     let (num, text) = match v {
         PropValue::Number(n) if p.kind == MatPropKind::Number => (*n, ""),
         PropValue::Text(t) if p.kind == MatPropKind::Text => (0.0, t.as_str()),
@@ -183,6 +225,7 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
         MU => num >= 1.0,
         "c" => num > 0.0,
         EUROCLASS => valid_euroclass(text),
+        WASTE => (0.0..=100.0).contains(&num),
         _ => true,
     };
     if ok {
@@ -194,6 +237,7 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
         PRICE_DATE => "Preisstand als MM/JJJJ, z. B. 10/2026".into(),
         MU => "\u{3bc} ab 1".into(),
         "c" => "c größer als 0".into(),
+        WASTE => "Verschnittzuschlag von 0 bis 100 %".into(),
         _ => "Euroklasse A1, A2, B, C, D, E oder F, Zusatz wie B-s1,d0".into(),
     })
 }
@@ -223,14 +267,16 @@ pub(crate) fn write_lines(out: &mut String, g: Guid, props: &PropSet) {
     // Die Preiseinheit steht als `unit=` am Richtpreis; ohne Richtpreis in
     // einer eigenen Zeile (Review 3n/6)
     let has_price = props.contains_key(PRICE);
+    // Der Verschnitt steht wie früher als eigener Kennwert an seiner
+    // Stelle unter den eigenen, damit alte Dateien bytegleich bleiben
     let fixed = MAT_PROPS
         .iter()
-        .filter(|p| p.key != PRICE_UNIT || !has_price)
+        .filter(|p| p.key != WASTE && (p.key != PRICE_UNIT || !has_price))
         .map(|p| p.key);
     let custom = props
         .keys()
         .map(String::as_str)
-        .filter(|k| mat_prop(k).is_none());
+        .filter(|k| *k == WASTE || mat_prop(k).is_none());
     for k in fixed.chain(custom) {
         let Some(v) = props.get(k) else {
             continue;
@@ -278,7 +324,13 @@ pub(crate) fn read_line(r: &Record, c: MatCategory, props: &mut PropSet) -> Resu
         return drop(format!("„{key}“ ohne Wert"));
     };
     if let Err(why) = check_prop(c, &key, &value) {
-        return drop(format!("„{key}“: {why}"));
+        if key != WASTE {
+            return drop(format!("„{key}“: {why}"));
+        }
+        // Altwert außerhalb 0 bis 100 % roh und mit seinem Typ erhalten
+        // statt verwerfen; er zählt nicht ([`waste`])
+        props.insert(key, value);
+        return Ok(());
     }
     if key == PRICE {
         match r.opt("unit") {
@@ -346,5 +398,77 @@ mod tests {
     fn mikro_wird_my() {
         assert_eq!(normalize_key("\u{b5}"), MU);
         assert!(mat_prop(&normalize_key(" \u{b5} ")).is_some());
+    }
+
+    /// Bestellmenge: Verschnitt am Baustoff, Prüfung und Vorgabe nach Art;
+    /// übersteht Schreiben und Lesen.
+    #[test]
+    fn bestellung_kennwerte() {
+        let c = MatCategory::Masonry;
+        assert!(check_prop(c, WASTE, &PropValue::Number(5.0)).is_ok());
+        assert!(check_prop(c, WASTE, &PropValue::Number(101.0)).is_err());
+        assert_eq!(waste_default(MatCategory::Membrane), 15.0);
+        assert_eq!(waste_default(MatCategory::Screed), 5.0);
+        assert_eq!(waste_default(MatCategory::Coating), 10.0);
+        let mut props = PropSet::new();
+        props.insert(WASTE.into(), PropValue::Number(7.5));
+        let mut out = String::new();
+        write_lines(&mut out, Guid(7), &props);
+        let mut back = PropSet::new();
+        for (i, l) in out.lines().enumerate() {
+            let r = Record::parse(i + 1, l).unwrap().unwrap();
+            read_line(&r, c, &mut back).unwrap();
+        }
+        assert_eq!(back, props);
+    }
+
+    /// Review #77/4: alte freie Werte („5 %“, „2,5 m²“ unter anderem
+    /// Schlüssel, Zahlen über 100) gehen nicht verloren, die Zeilen bleiben
+    /// in alter Reihenfolge bytegleich, „5 %“ zählt als 5 %.
+    #[test]
+    fn altwerte_bleiben() {
+        let c = MatCategory::Masonry;
+        let line = |k: &str, v: &str| {
+            let mut out = String::new();
+            Line::new("matprop")
+                .guid("mat", Some(Guid(7)))
+                .text("key", k)
+                .text("value", v)
+                .finish(&mut out);
+            out
+        };
+        // eigene Kennwerte stehen in Schlüsselfolge (BTreeMap), so wie sie
+        // vor #77 geschrieben wurden
+        let alt = [
+            line("Bemerkung", "x"),
+            line(WASTE, "5 %"),
+            line("Zuschnitt", "3"),
+            line("Öffnungen abziehen ab", "2,5 m²"),
+        ]
+        .concat();
+        let mut props = PropSet::new();
+        for (i, l) in alt.lines().enumerate() {
+            let r = Record::parse(i + 1, l).unwrap().unwrap();
+            read_line(&r, c, &mut props).unwrap();
+        }
+        let mut out = String::new();
+        write_lines(&mut out, Guid(7), &props);
+        assert_eq!(out, alt);
+        assert_eq!(waste_text("5 %"), Some(5.0));
+        assert_eq!(waste_text(" 2,5% "), Some(2.5));
+        assert_eq!(waste_text("viel"), None);
+        let mut out = String::new();
+        Line::new("matprop")
+            .guid("mat", Some(Guid(7)))
+            .text("key", WASTE)
+            .num("num", 150)
+            .finish(&mut out);
+        let r = Record::parse(1, out.trim_end()).unwrap().unwrap();
+        let mut p = PropSet::new();
+        read_line(&r, c, &mut p).unwrap();
+        assert_eq!(p.get(WASTE), Some(&PropValue::Number(150.0)));
+        let mut back = String::new();
+        write_lines(&mut back, Guid(7), &p);
+        assert_eq!(back, out, "Zahl bleibt Zahl, bytegleich");
     }
 }

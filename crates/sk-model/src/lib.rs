@@ -36,6 +36,7 @@ pub mod qto_earth;
 pub mod qto_fassade;
 pub mod qto_oeffnung;
 pub mod qto_site;
+pub mod rechenweg;
 pub mod roof;
 pub mod sha256;
 pub mod solid;

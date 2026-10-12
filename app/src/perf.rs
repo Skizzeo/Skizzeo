@@ -920,6 +920,53 @@ fn perf_mengenliste() {
     );
 }
 
+/// Review #77/1: Liste „nach Gewerk“ neu aufbauen, wie `ListView::sync`
+/// nach dem Loslassen bei offenem Mengenfenster, in beiden Sichten (VOB,
+/// Bestellung). Der Rechenweg je Schichtzeile darf die Geometrie nicht neu
+/// rechnen. Budget: Listenaufbau 3 ms am gestapelten Modell 2 × 4 + 2
+/// (vor dem Rechenweg 1,1 ms, mit Neuberechnung je Zeile 52–78 ms).
+#[test]
+#[ignore]
+fn perf_liste_nach_gewerk() {
+    use crate::schedule_view::{Grouping, ListView};
+    use sk_model::rechenweg::Modus;
+    println!();
+    println!(
+        "{:<28} {:>6} {:>9} {:>11}",
+        "Modell (gestapelt)", "Zeilen", "VOB", "Bestellung"
+    );
+    for (name, houses, budget) in [
+        ("2 × 4 G. + 2 Nebengeb.", 2, Some(3.0)),
+        ("8 × 4 G. + 2 Nebengeb.", 8, None),
+    ] {
+        let mut s = reference_stacked(houses, 4, 2);
+        s.schedule_in(&Default::default());
+        let mut l = ListView::new(&mut s);
+        let mut ms = [0.0; 2];
+        for (i, modus) in [Modus::Vob, Modus::Bestellung].into_iter().enumerate() {
+            l.set_modus(modus);
+            ms[i] = time(10, || {
+                l.set_grouping(Grouping::Storey);
+                l.set_grouping(Grouping::Trade);
+                std::hint::black_box(l.sync(&mut s, false));
+            });
+        }
+        println!(
+            "{:<28} {:>6} {:>9.3} {:>11.3}",
+            name,
+            l.line_count(),
+            ms[0],
+            ms[1]
+        );
+        if let Some(b) = budget {
+            for (m, x) in ["VOB", "Bestellung"].iter().zip(ms) {
+                assert!(x <= b, "{name}, {m}: Liste nach Gewerk {x:.2} ms > {b} ms");
+            }
+        }
+    }
+    println!("Zeiten in ms je Neuaufbau der Liste nach Gewerk (Mengen schon gerechnet).");
+}
+
 /// K3b: Übergänge nach „Ändern“ im Bauteilkatalog am Referenzgebäude. Die
 /// Außenwand wird 4,5 cm dicker; je Bild mischt die Szene das Netz (und es
 /// wird ganz hochgeladen). Auslöser = einmal beim Klick (Modell, zwei Netze).

@@ -6,6 +6,7 @@
 use crate::cards::Blatt;
 use crate::document::Document;
 use crate::schedule_view::Grouping;
+use sk_model::rechenweg::Modus;
 use sk_model::szo::{Line, Record};
 pub use sk_platform::layout::{on_screen, Rect, WindowId, Windows, WIDTH_DIP};
 #[cfg(test)]
@@ -40,10 +41,22 @@ pub fn write_settings_grouped(w: &Windows, g: Grouping) -> String {
 
 /// Wie [`write_settings_grouped`], dazu das zuletzt gezeigte Blatt (KA-2a);
 /// `blatt=` steht nur, wenn es nicht das Mengenblatt ist.
+#[cfg(test)]
 pub fn write_settings_blatt(w: &Windows, g: Grouping, b: Blatt) -> String {
+    write_settings_mengen(w, g, b, Modus::Vob)
+}
+
+/// Wie [`write_settings_blatt`], dazu die Sicht der Mengen; `mengen=` steht
+/// nur, wenn es nicht die VOB-Menge ist (Jörn 11.10.).
+pub fn write_settings_mengen(w: &Windows, g: Grouping, b: Blatt, modus: Modus) -> String {
     let mut out = String::new();
     let rect = w.remembered_rect();
-    if !w.quantity_open() && rect.is_none() && g == Grouping::Storey && b == Blatt::Mengen {
+    if !w.quantity_open()
+        && rect.is_none()
+        && g == Grouping::Storey
+        && b == Blatt::Mengen
+        && modus == Modus::Vob
+    {
         write_levels(w, &mut out);
         return out;
     }
@@ -58,6 +71,9 @@ pub fn write_settings_blatt(w: &Windows, g: Grouping, b: Blatt) -> String {
     }
     if b != Blatt::Mengen {
         l = l.word("blatt", b.key());
+    }
+    if modus != Modus::Vob {
+        l = l.word("mengen", modus.key());
     }
     l.finish(&mut out);
     write_levels(w, &mut out);
@@ -86,6 +102,16 @@ pub fn read_grouping(text: &str) -> Grouping {
         .filter_map(|(i, l)| Record::parse(i + 1, l).ok().flatten())
         .filter(|r| r.section == "mengenfenster")
         .find_map(|r| r.opt("gliederung").and_then(Grouping::from_key))
+        .unwrap_or_default()
+}
+
+/// Gemerkte Sicht der Mengen; ohne Angabe die VOB-Menge.
+pub fn read_modus(text: &str) -> Modus {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, l)| Record::parse(i + 1, l).ok().flatten())
+        .filter(|r| r.section == "mengenfenster")
+        .find_map(|r| r.opt("mengen").and_then(Modus::from_key))
         .unwrap_or_default()
 }
 

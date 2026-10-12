@@ -174,7 +174,7 @@ fn csv_mit_kopfzeile() {
     let mut s = standardhaus();
     let ganz = s.schedule_in(&sk_model::qto::Umfang::projekt());
     let kopf = "Gebäude 1 · alle Geschosse · Stand 08.10.2026, 11:34";
-    let b = csv_mit_kopf(s.model(), &ganz, Grouping::Storey, kopf);
+    let b = csv_mit_kopf(s.model(), &ganz, (Grouping::Storey, Modus::Vob), kopf);
     let ohne = csv_grouped(s.model(), &ganz, Grouping::Storey);
     assert!(b.starts_with(&[0xEF, 0xBB, 0xBF]));
     let text = String::from_utf8(b[3..].to_vec()).unwrap();
@@ -331,4 +331,162 @@ fn knopf_und_umschalter_ueberlappen_nie() {
             }
         }
     }
+}
+
+/// Jörn 11.10.: Die Sicht der Mengen (VOB oder Bestellung) wird gemerkt;
+/// `mengen=` steht nur bei der Bestellung.
+#[test]
+fn mengen_sicht_wird_gemerkt() {
+    use crate::cards::Blatt;
+    use crate::windows::{read_modus, write_settings_mengen, Windows};
+    let w = Windows::new(520.0);
+    assert_eq!(
+        write_settings_mengen(&w, Grouping::Storey, Blatt::Mengen, Modus::Vob),
+        ""
+    );
+    let text = write_settings_mengen(&w, Grouping::Storey, Blatt::Mengen, Modus::Bestellung);
+    assert!(text.contains(" mengen=bestellung"), "{text}");
+    assert_eq!(read_modus(&text), Modus::Bestellung);
+    assert_eq!(read_modus(""), Modus::Vob);
+    assert_eq!(read_modus("[mengenfenster] mengen=quer\n"), Modus::Vob);
+}
+
+/// Jörn 11.10.: Unter jeder Schichtzeile nach Gewerk steht der Rechenweg,
+/// zugeklappt; aufgeklappt zeigt er Ansatz, Zu- und Abschläge und die
+/// Menge. Mauerwerk zeigt seine Abrechnungsfläche. Gerechnet wird er erst
+/// beim Aufklappen (Review #77/1).
+#[test]
+fn rechenweg_unter_der_zeile() {
+    let mut s = standardhaus();
+    let mut v = ListView::grouped(&mut s, Grouping::Trade);
+    let wege: Vec<Key> = v.lines.iter().filter(|l| l.weg).map(|l| l.key).collect();
+    assert!(!wege.is_empty(), "Zeilen mit Rechenweg");
+    let terme = |v: &ListView, k: Key| -> Vec<usize> {
+        (0..v.lines.len())
+            .filter(|&i| v.lines[i].parent == k)
+            .collect()
+    };
+    for &k in &wege {
+        assert!(terme(&v, k).is_empty(), "{k:?} zugeklappt schon gerechnet");
+    }
+    v.alles_aufklappen();
+    v.sync(&mut s, false);
+    for &k in &wege {
+        assert!(!terme(&v, k).is_empty(), "{k:?} ohne Terme");
+    }
+    // nur die Zeile wieder aufklappen: Terme erst nach dem Neuaufbau
+    let k = wege[0];
+    v.open_groups.clear();
+    v.runs = None;
+    v.sync(&mut s, false);
+    assert!(terme(&v, k).is_empty());
+    let i = v.lines.iter().position(|l| l.key == k).unwrap();
+    let g = v.lines[i].group;
+    if g != Key::None {
+        v.open_groups.insert(g);
+    }
+    assert!(v.line_visible(&v.lines[i]));
+    v.open_groups.insert(k);
+    v.runs = None;
+    v.sync(&mut s, false);
+    let t = terme(&v, k);
+    assert!(!t.is_empty());
+    assert!(t.iter().all(|&j| v.line_visible(&v.lines[j])));
+    let texte = v.line_texts();
+    assert!(
+        t.iter().any(|&j| texte[j].contains(" × ")),
+        "Ansatz: {:?}",
+        t.iter().map(|&j| &texte[j]).collect::<Vec<_>>()
+    );
+    // Mauerwerk mit Fläche
+    let mw = texte
+        .iter()
+        .find(|x| x.contains("Mauerwerk") || x.contains("Kalksandstein"))
+        .cloned();
+    if let Some(mw) = mw {
+        assert!(mw.contains(" m²"), "{mw}");
+    }
+    // auch in der Tabelle, Spalte Hinweis
+    let csv = String::from_utf8(csv_grouped(
+        s.model(),
+        &sk_model::qto::schedule(s.model()),
+        Grouping::Trade,
+    ))
+    .unwrap();
+    assert!(
+        csv.contains("− Deckenauflager") && csv.contains("× Höhe 0,580 m"),
+        "{csv}"
+    );
+}
+
+/// Jörn 11.10.: Die Bestellmenge liegt um den Verschnittzuschlag über der
+/// VOB-Menge; der Rechenweg nennt den Zuschlag.
+#[test]
+fn bestellmenge_mit_zuschlag() {
+    let mut s = standardhaus();
+    let mut v = ListView::grouped(&mut s, Grouping::Trade);
+    v.alles_aufklappen();
+    v.sync(&mut s, false);
+    let vob = v.line_texts();
+    assert!(v.set_modus(Modus::Bestellung));
+    assert!(!v.set_modus(Modus::Bestellung));
+    v.sync(&mut s, false);
+    assert_eq!(v.modus(), Modus::Bestellung);
+    let best = v.line_texts();
+    assert_ne!(vob, best);
+    assert!(best.iter().any(|x| x.contains("Verschnittzuschlag")));
+    assert!(!vob.iter().any(|x| x.contains("Verschnittzuschlag")));
+    // Summe einer Schichtzeile mit Fläche: Bestellung größer als VOB
+    let flaeche = |ls: &[Line]| -> f64 {
+        ls.iter()
+            .filter(|l| l.kind == Kind::Row && l.weg)
+            .filter_map(|l| {
+                l.cells[3]
+                    .trim_end_matches(" m²")
+                    .replace('.', "")
+                    .replace(',', ".")
+                    .parse::<f64>()
+                    .ok()
+            })
+            .sum()
+    };
+    let b = flaeche(&v.lines);
+    v.set_modus(Modus::Vob);
+    v.sync(&mut s, false);
+    let a = flaeche(&v.lines);
+    assert!(a > 0.0 && b > a * 1.03, "VOB {a} Bestellung {b}");
+}
+
+/// Review #77, Nachtrag A: In der Bestell-CSV nach Gewerk trägt auch die
+/// „Summe nach Baustoff“ den Zuschlag des Baustoffs.
+#[test]
+fn bestell_csv_summe_nach_baustoff() {
+    let s = standardhaus();
+    let sched = sk_model::qto::schedule(s.model());
+    let summen = |modus| -> Vec<f64> {
+        let csv = String::from_utf8(csv_sicht(s.model(), &sched, Grouping::Trade, modus)).unwrap();
+        csv.lines()
+            .filter(|l| l.contains("Summe nach Baustoff"))
+            .map(|l| {
+                let c: Vec<&str> = l.split(';').collect();
+                let f = |x: &str| {
+                    x.trim_matches('"')
+                        .replace(',', ".")
+                        .parse::<f64>()
+                        .unwrap_or(0.0)
+                };
+                f(c[7]) + f(c[8])
+            })
+            .collect()
+    };
+    let (vob, best) = (summen(Modus::Vob), summen(Modus::Bestellung));
+    assert_eq!(vob.len(), best.len());
+    assert!(!vob.is_empty());
+    for (a, b) in vob.iter().zip(&best) {
+        assert!(*b >= *a, "Bestellung {b} < VOB {a}");
+    }
+    assert!(
+        vob.iter().zip(&best).any(|(a, b)| *b > a * 1.04),
+        "{vob:?} {best:?}"
+    );
 }
