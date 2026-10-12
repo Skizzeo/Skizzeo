@@ -24,6 +24,7 @@ impl Model {
                         + match line {
                             HeightLine::Sill => s.lines.sill,
                             HeightLine::Lintel => s.lines.lintel,
+                            HeightLine::Door => s.lines.door,
                         },
                 )
             }

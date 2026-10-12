@@ -282,7 +282,8 @@ fn geschossuebergreifend_und_hoehenlinie() {
         s_og,
         HeightLines {
             sill: 900.0,
-            lintel: 2200.0
+            lintel: 2200.0,
+            ..HeightLines::default()
         }
     ));
     let t = m.commit().unwrap();
@@ -294,7 +295,8 @@ fn geschossuebergreifend_und_hoehenlinie() {
         s_og,
         HeightLines {
             sill: 1000.0,
-            lintel: 1050.0
+            lintel: 1050.0,
+            ..HeightLines::default()
         }
     ));
 }
@@ -327,6 +329,45 @@ fn ungueltige_oeffnungen() {
         ..fenster(&m, eg, (3000.0, 4000.0))
     };
     assert!(m.add_opening(anschlag).is_none());
+}
+
+/// Innentürlinie (Jörn 05:26): eine Tür, deren Oberkante an ihr hängt,
+/// wandert mit, wenn man sie zieht; in der Datei heißt der Verweis `door`.
+#[test]
+fn tuer_an_der_innentuerlinie() {
+    let (mut m, eg, _) = haus(None);
+    let st = storey(&m, eg);
+    let z = m.storey(st).unwrap().elevation;
+    m.add_opening(Opening {
+        kind: OpeningKind::Door,
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        ..fenster(&m, eg, (3000.0, 4000.0))
+    })
+    .unwrap();
+    let oben = |m: &Model| m.chain(eg).unwrap().joints.holes[0].z.1 - z;
+    assert!((oben(&m) - crate::hoehen::DOOR).abs() < 1e-6);
+    let lines = HeightLines {
+        door: 2260.0,
+        ..HeightLines::default()
+    };
+    assert!(m.set_height_lines(st, lines));
+    assert!((oben(&m) - 2260.0).abs() < 1e-6);
+    assert!(!m.set_height_lines(
+        st,
+        HeightLines {
+            door: 50.0,
+            ..lines
+        }
+    ));
+    let text = szo::write(&m);
+    assert!(
+        text.contains(":door") && text.contains(" door=2260"),
+        "{text}"
+    );
+    let back = szo::read(&text, GuidGen::with_seed(5)).unwrap();
+    assert!(back.hints.is_empty(), "{:?}", back.hints);
+    assert_eq!(szo::write(&back.model), text);
 }
 
 /// Datei: Öffnungen mit gebundenen und freien Höhen und eigenem Anschlag,
@@ -367,10 +408,12 @@ fn oeffnungen_in_der_datei() {
         s_og,
         HeightLines {
             sill: 950.0,
-            lintel: 2385.0
+            lintel: 2385.0,
+            door: 2130.0,
         }
     ));
     let text = szo::write(&m);
+    assert!(text.contains(" door=2130"), "{text}");
     assert_eq!(text.matches("[opening]").count(), 3, "{text}");
     assert!(text.contains(" sill=950"), "{text}");
     assert!(!text.contains("lintel=2385"), "{text}");
@@ -405,6 +448,19 @@ fn oeffnungen_in_der_datei() {
             l.storey(s_og).map(|s| s.lines),
             Some(HeightLines::default())
         );
+    }
+    // Innentür zu niedrig oder unlesbar: nur sie nimmt die Vorgabe
+    for neu in [" door=50", " door=abc"] {
+        let l = lies(" door=2130", neu);
+        let g = m.storey(s_og).unwrap().guid;
+        let h = l
+            .storeys()
+            .iter()
+            .find(|(_, s)| s.guid == g)
+            .unwrap()
+            .1
+            .lines;
+        assert_eq!((h.sill, h.door), (950.0, crate::hoehen::DOOR), "{neu}");
     }
     let l = lies("reveal=40,40,40,0", "reveal=1,2,3");
     assert!(offen(&l).iter().all(|o| o.reveal.is_none()));

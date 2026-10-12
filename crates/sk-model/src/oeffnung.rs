@@ -47,6 +47,8 @@ impl OpeningKind {
 pub enum HeightLine {
     Sill,
     Lintel,
+    /// Oberkante der Innentüren (Jörn 12.10. 05:26).
+    Door,
 }
 
 /// Höhe einer Öffnungskante: an eine Höhenlinie gebunden (sie wandert mit,

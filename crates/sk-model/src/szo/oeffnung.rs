@@ -24,6 +24,7 @@ fn height(m: &Model, h: HeightRef) -> String {
     match h {
         HeightRef::Line(st, HeightLine::Sill) => format!("{}:sill", g(st)),
         HeightRef::Line(st, HeightLine::Lintel) => format!("{}:lintel", g(st)),
+        HeightRef::Line(st, HeightLine::Door) => format!("{}:door", g(st)),
         HeightRef::Level(r) => {
             let e = match r.edge {
                 LevelEdge::Bottom => "u",
@@ -143,6 +144,7 @@ fn read_height(
     match parts[1..] {
         ["sill"] => Ok(Some(HeightRef::Line(storey, HeightLine::Sill))),
         ["lintel"] => Ok(Some(HeightRef::Line(storey, HeightLine::Lintel))),
+        ["door"] => Ok(Some(HeightRef::Line(storey, HeightLine::Door))),
         [e, o] => {
             let edge = match e {
                 "u" => Some(LevelEdge::Bottom),

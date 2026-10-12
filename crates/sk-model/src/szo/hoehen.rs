@@ -1,8 +1,8 @@
 //! Schnitthöhe des Grundrisses in der `.szo` ([`crate::hoehen`]):
 //! `[plancut] h=1500`, nur wenn sie von der Vorgabe abweicht. Eine Zeile,
 //! die nicht zählt, gibt einen Hinweis und bleibt roh stehen (Regel 72).
-//! Dazu die Höhenlinien am `[storey]`: `sill=` und `lintel=` nur, wenn sie
-//! von der Vorgabe abweichen.
+//! Dazu die Höhenlinien am `[storey]`: `sill=`, `lintel=` und `door=` nur,
+//! wenn sie von der Vorgabe abweichen.
 
 use super::{ausserhalb, Line, LoadError, Record};
 use crate::hoehen::{HeightLines, MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT};
@@ -16,8 +16,13 @@ pub(super) fn write_lines(l: Line, h: &HeightLines) -> Line {
     } else {
         l
     };
-    if h.lintel != d.lintel {
+    let l = if h.lintel != d.lintel {
         l.num("lintel", h.lintel)
+    } else {
+        l
+    };
+    if h.door != d.door {
+        l.num("door", h.door)
     } else {
         l
     }
@@ -44,15 +49,34 @@ pub(super) fn read_lines(r: &Record, hints: &mut Vec<String>) -> HeightLines {
     let h = HeightLines {
         sill: num("sill", d.sill),
         lintel: num("lintel", d.lintel),
+        door: num("door", d.door),
     };
-    if !h.valid() {
+    if h.door < crate::oeffnung::MIN_OPENING {
         hints.push(format!(
-            "Zeile {}: Brüstung {} und Sturz {} passen nicht (Sturz mindestens 10 cm über der Brüstung ab 0), Vorgabe gilt",
-            r.line, h.sill, h.lintel
+            "Zeile {}: Innentür {} zu niedrig (mindestens 10 cm), Vorgabe gilt",
+            r.line, h.door
         ));
-        return d;
+        return HeightLines { door: d.door, ..h }.checked(r, d, hints);
     }
-    h
+    h.checked(r, d, hints)
+}
+
+impl HeightLines {
+    /// Brüstung und Sturz geprüft: passen sie nicht zusammen, gilt für
+    /// beide die Vorgabe `d` mit Hinweis.
+    fn checked(self, r: &Record, d: HeightLines, hints: &mut Vec<String>) -> HeightLines {
+        if !self.valid() {
+            hints.push(format!(
+                "Zeile {}: Brüstung {} und Sturz {} passen nicht (Sturz mindestens 10 cm über der Brüstung ab 0), Vorgabe gilt",
+                r.line, self.sill, self.lintel
+            ));
+            return HeightLines {
+                door: self.door,
+                ..d
+            };
+        }
+        self
+    }
 }
 
 pub(super) fn write_plan_cut(m: &Model, out: &mut String) {

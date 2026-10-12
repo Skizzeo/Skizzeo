@@ -25,14 +25,19 @@ pub const SILL: f64 = 875.0;
 pub const LINTEL: f64 = 2385.0;
 /// Kleinster Abstand zwischen Brüstung und Sturz (mm).
 pub const MIN_LINE_GAP: f64 = 100.0;
+/// Vorgabe der Innentürlinie (mm über OK Rohdecke): Rohbaurichtmaß der
+/// Türhöhe nach DIN 18100, 2,01 m (Jörn 12.10. 05:26).
+pub const DOOR: f64 = 2010.0;
 
-/// Höhenlinien eines Geschosses: Brüstung und Sturz über OK Rohdecke
-/// (mm). Öffnungen binden ihre Unter- und Oberkante an sie; in der Datei
-/// am `[storey]` nur, wenn sie von der Vorgabe abweichen.
+/// Höhenlinien eines Geschosses über OK Rohdecke (mm): Brüstung und Sturz
+/// der Fenster, Oberkante der Innentüren. Öffnungen binden ihre Unter- und
+/// Oberkante an sie; in der Datei am `[storey]` nur, wenn sie von der
+/// Vorgabe abweichen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeightLines {
     pub sill: f64,
     pub lintel: f64,
+    pub door: f64,
 }
 
 impl Default for HeightLines {
@@ -40,17 +45,21 @@ impl Default for HeightLines {
         HeightLines {
             sill: SILL,
             lintel: LINTEL,
+            door: DOOR,
         }
     }
 }
 
 impl HeightLines {
-    /// Gültig: Brüstung ab 0, Sturz mindestens [`MIN_LINE_GAP`] darüber.
+    /// Gültig: Brüstung ab 0, Sturz mindestens [`MIN_LINE_GAP`] darüber,
+    /// Innentür mindestens [`crate::oeffnung::MIN_OPENING`] hoch.
     pub fn valid(&self) -> bool {
         self.sill.is_finite()
             && self.lintel.is_finite()
+            && self.door.is_finite()
             && self.sill >= 0.0
             && self.lintel >= self.sill + MIN_LINE_GAP
+            && self.door >= crate::oeffnung::MIN_OPENING
     }
 }
 
