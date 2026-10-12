@@ -130,7 +130,9 @@ impl Model {
         // Gruppen gleicher Geländehöhe in der Reihenfolge ihres ersten Gebäudes
         let mut groups: Vec<(f64, Vec<BuildingId>, Vec<[f64; 4]>)> = Vec::new();
         for (_, b, x) in &boxes {
-            let z = self.terrain_z_of(Some(*b));
+            // Höhenkette: Höhe über den Ort abfragen (Rechteckmitte), damit
+            // ein Geländemodell die Platte mitnimmt
+            let z = self.terrain_z_at(Some(*b), (x[0] + x[2]) / 2.0, (x[1] + x[3]) / 2.0);
             let m = s.margin;
             let r = [x[0] - m, x[1] - m, x[2] + m, x[3] + m];
             match groups.iter_mut().find(|g| (g.0 - z).abs() < 1e-6) {
@@ -447,6 +449,22 @@ mod tests {
     /// Kreuzprodukte ergibt die doppelte Fläche (geschlossener Rand).
     fn rand_flaeche(e: &[(Vec3, Vec3)]) -> f64 {
         0.5 * e.iter().map(|(a, b)| a.x * b.y - b.x * a.y).sum::<f64>()
+    }
+
+    /// Höhenkette (gelaende/schnittstelle.md): neue Höhen nur über
+    /// `terrain_z_at(building, x, y)`, damit ein späteres Geländemodell die
+    /// Platte mitnimmt; `terrain_z_of` liefert nur die Ebene des Gebäudes.
+    #[test]
+    fn hoehe_ueber_terrain_z_at() {
+        let code = include_str!("gelaende_platte.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            !code.contains(concat!("terrain_z", "_of(")),
+            "Geländeplatte fragt die Höhe ohne Ort ab"
+        );
+        assert!(code.contains(concat!("terrain_z", "_at(")));
     }
 
     /// Ein Rechteck ohne Loch: ein Trapez, Rand = Umfang, Fläche stimmt.
