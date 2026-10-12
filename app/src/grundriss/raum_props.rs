@@ -51,6 +51,7 @@ pub fn props(
         values,
         set_label: "Begrenzung",
         layer_set: nummern.join(", "),
+        set_umbruch: true,
         ..Default::default()
     })
 }
@@ -93,6 +94,7 @@ mod tests {
         assert_eq!(wert("Name").as_deref(), Some("Raum 3"), "Raum 2 ist das OG");
         assert!(wert("Fläche (Rohbau)").unwrap().ends_with(" m²"));
         assert_eq!(p.set_label, "Begrenzung");
+        assert!(p.set_umbruch, "bricht im Paneel um");
         assert!(p.layer_set.contains("IW-001"), "{}", p.layer_set);
         assert!(s.undo());
         assert_eq!(s.model().spaces(st).len(), 1, "mit der Wand zurück");

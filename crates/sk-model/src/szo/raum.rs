@@ -45,8 +45,9 @@ pub(super) fn write_spaces(m: &Model, els: &[&Element], out: &mut String) {
 /// Was aus einer `[space]`-Zeile wird.
 pub(super) enum Lesung {
     Raum(Box<Element>),
-    /// Unlesbar: Die Zeile bleibt roh in der Datei ([`raw`]).
-    Roh,
+    /// Unlesbar, mit dem Grund: Die Zeile bleibt roh in der Datei; den
+    /// Hinweis gibt erst [`raw`], wenn sie wirklich bleibt (Review #87 L22).
+    Roh(String),
     /// Guid oder Nummer doppelt, Geschoss unbekannt: Die Zeile entfällt.
     Weg,
 }
@@ -92,8 +93,7 @@ pub(super) fn read(
         Ok(t) => t,
         Err(e) => {
             r.all_used();
-            hints.push(format!("{e}; die Zeile bleibt unverändert in der Datei"));
-            return Lesung::Roh;
+            return Lesung::Roh(e.to_string());
         }
     };
     match number(r) {
@@ -117,9 +117,12 @@ pub(super) fn read(
 
 /// Rohe `[space]`-Zeile nach den gültigen Bauteilen (L12): Guid und
 /// Nummer bleiben belegt; sind sie inzwischen doppelt, entfällt die Zeile.
+/// Ein Hinweis je Zeile: `grund` aus [`read`], wenn sie bleibt, sonst der
+/// doppelte Wert.
 pub(super) fn raw(
     r: &Record,
-    line: &str,
+    lines: &[&str],
+    grund: String,
     number: &mut impl FnMut(&Record) -> Result<String, LoadError>,
     seen: &mut HashMap<Guid, usize>,
     hints: &mut Vec<String>,
@@ -148,14 +151,18 @@ pub(super) fn raw(
     if let Some(g) = guid {
         seen.insert(g, r.line);
     }
-    Some(RawSpace {
-        line: line.to_string(),
+    let roh = RawSpace {
+        line: lines[r.line - 1].to_string(),
         props: Vec::new(),
         guid,
         storey: r.guid("storey").ok()?,
         anker: r.opt("at").and_then(punkt),
         number,
-    })
+    };
+    hints.push(format!(
+        "{grund}; die Zeile bleibt unverändert in der Datei"
+    ));
+    Some(roh)
 }
 
 /// Eine `[prop]`-Zeile zu einer rohen `[space]`-Zeile bleibt mit ihr roh.
@@ -371,10 +378,25 @@ mod tests {
             .replace(" at=7000,3000", " at=x");
         let doppelt = format!("{kaputt}{zweite}\n");
         let d = read(&doppelt, GuidGen::with_seed(7)).unwrap();
-        assert!(
+        // Ein Hinweis je Zeile, nicht „bleibt“ und dann „entfällt“ (L22)
+        let zu = |n: usize| {
+            let z = format!("Zeile {n}:");
             d.hints
                 .iter()
-                .any(|h| h.ends_with("doppelt, die Zeile entfällt")),
+                .filter(|h| h.contains(&z))
+                .collect::<Vec<_>>()
+        };
+        let n = doppelt.lines().count();
+        let h = zu(n);
+        assert!(
+            h.len() == 1 && h[0].ends_with("doppelt, die Zeile entfällt"),
+            "{:?}",
+            d.hints
+        );
+        let erste = doppelt.lines().position(|l| l == ohne_name).unwrap() + 1;
+        let h = zu(erste);
+        assert!(
+            h.len() == 1 && h[0].ends_with("die Zeile bleibt unverändert in der Datei"),
             "{:?}",
             d.hints
         );
