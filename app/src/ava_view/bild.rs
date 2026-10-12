@@ -59,11 +59,30 @@ impl AvaView {
         self.seite = seite;
     }
 
-    /// Mitte des kleinen Blatts der Druckvorschau.
-    pub(crate) fn blatt_mitte(&self, t: &Theme, fonts: &Fonts) -> (f64, f64) {
-        let (x, y, k) = self.blatt_lage(t, fonts);
-        let (w, h) = sk_paint::pdf::A4;
-        ((x + 0.5 * w * k) as f64, (y + 0.5 * h * k) as f64)
+    /// Mitte der Lupe auf dem kleinen Blatt der Druckvorschau.
+    pub(crate) fn lupe_mitte(&self, t: &Theme, fonts: &Fonts) -> (f64, f64) {
+        let (x, y, w, h) = self.lupe_rect(t, fonts);
+        ((x + 0.5 * w) as f64, (y + 0.5 * h) as f64)
+    }
+
+    /// Erste Position mit Bauteilen auf Seite `seite`: ihre Mitte im
+    /// kleinen Blatt (gilt, wenn diese Seite gezeigt wird) und ihre Bauteile.
+    pub(crate) fn stelle_auf(
+        &self,
+        t: &Theme,
+        fonts: &Fonts,
+        seite: usize,
+    ) -> Option<((f64, f64), Vec<ElementId>)> {
+        let b = self.blatt(fonts)?;
+        let i = (0..b.stellen.len())
+            .find(|&i| b.stellen[i].seite == seite && !self.stelle_ids(i).is_empty())?;
+        let (bx, by, k) = self.blatt_lage(t, fonts);
+        let (fx, fy, fw, fh) = b.stellen[i].flaeche;
+        let m = (
+            (bx + (fx + fw * 0.5) * k) as f64,
+            (by + (fy + fh * 0.5) * k) as f64,
+        );
+        Some((m, self.stelle_ids(i).to_vec()))
     }
 
     /// Zeigt das Blatt die Druckvorschau?

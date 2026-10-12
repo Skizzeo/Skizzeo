@@ -10,7 +10,7 @@
 
 use crate::delete::{self, HintCard, Link};
 use crate::ui::Id;
-use crate::wall_edit::{ecke_edit, EditOutcome};
+use crate::wall_edit::{breite_edit, ecke_edit, EditOutcome};
 use crate::{link_view, meldung, relink_lines, teilen_edit, App, NOTICE_TIME};
 use sk_model::{ElementId, FugeError};
 use sk_platform::MouseButton;
@@ -30,8 +30,42 @@ const SPLIT: [&str; 2] = [
 ];
 
 impl App {
+    /// Die Kettensymbole im Bild: gestapelte Wände, Fugen und im Grundriss
+    /// die Breitenschlösser an den Öffnungsenden bei der Maus.
+    pub(crate) fn ketten_chips(
+        &self,
+        vw: f64,
+        vh: f64,
+        top: f64,
+        scale: f64,
+    ) -> Vec<link_view::Chip> {
+        let plan_z = self.plan_z();
+        let schloesser = match plan_z {
+            Some(z) if !self.edit.is_dragging() => {
+                breite_edit::schloesser(&self.scene, self.edit.oeffnungs_enden(), z)
+            }
+            _ => Vec::new(),
+        };
+        link_view::chips(&link_view::Want {
+            scene: &self.scene,
+            cam: &self.cam,
+            w: vw,
+            h: vh,
+            top,
+            scale,
+            plan_z,
+            band: self.edit.active_wall(),
+            hover: self.chip_hover,
+            keep_linked: self.flush_keep,
+            schloesser,
+        })
+    }
+
     /// Hinweis am Kettensymbol unter der Maus.
     pub(crate) fn chain_tip(&self) -> Option<String> {
+        if let Some(c) = self.chips.iter().find(|c| c.schloss.is_some() && c.hover) {
+            return Some(link_view::schloss_tip(c.linked).into());
+        }
         let (wall, fuge) = self.chip_hover?;
         if fuge.is_some() {
             return Some(link_view::FUGE_TIP.into());
@@ -48,9 +82,28 @@ impl App {
         if button != MouseButton::Left || self.tool.is_active() || self.edit.splitting() {
             return false;
         }
-        let Some((wall, fuge)) = link_view::hit(&self.chips, x, y, sc) else {
+        let Some(&chip) = link_view::chip_at(&self.chips, x, y, sc) else {
             return false;
         };
+        // Breitenschloss am Öffnungsende: mit allen Partnern koppeln bzw. lösen
+        if let Some(k) = chip.schloss {
+            let partner = breite_edit::partner(self.scene.model(), chip.wall, k);
+            // Gesperrte Öffnungen bleiben, wie sie sind (Review #109 B5)
+            let mut ids = vec![chip.wall];
+            ids.extend(partner.iter().map(|p| p.0));
+            if let Some(l) = sk_model::edit_blocked(self.scene.model(), &ids) {
+                self.show_locked(l, Some((chip.wall, delete::Act::Field)));
+                return true;
+            }
+            if self
+                .scene
+                .set_end_locks(chip.wall, k, &partner, !chip.linked)
+            {
+                self.redraw = true;
+            }
+            return true;
+        }
+        let (wall, fuge) = chip.glied();
         match fuge {
             Some(a) => self.merge(a, Some(wall)),
             None => self.toggle_link(wall),

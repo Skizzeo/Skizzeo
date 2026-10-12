@@ -1372,8 +1372,8 @@ fn druckvorschau_gross_und_zurueck() {
         let n = v.seiten(&fonts);
         assert!(n >= 2, "{wo}: {n} Seiten");
         v.seite = 1;
-        let (bx, by, k) = v.blatt_lage(&t, &fonts);
-        let auf = ((bx + 0.5 * A4_W * k) as f64, (by + 0.5 * A4_H * k) as f64);
+        let (_, _, k) = v.blatt_lage(&t, &fonts);
+        let auf = auf_blatt(&v, &t, &fonts);
         assert_eq!(v.hit(&t, &fonts, auf.0, auf.1), Some(Hot::Lupe), "{wo}");
         assert!(v.tip_at(&t, &fonts, auf.0, auf.1).is_some());
         v.mouse_down(&t, &fonts, &mut p, auf, mods);
@@ -1386,9 +1386,10 @@ fn druckvorschau_gross_und_zurueck() {
         let (zx, zy, zw, zh) = r.zu;
         assert!(zx >= 0.0 && zx + zw <= w as f32 + 0.5, "{wo}: Schließen");
         // Ein Klick auf die Seite schließt nicht, nichts darunter reagiert
-        let (sx, sy, sw, sh) = l.seite(1);
+        // (am linken Rand, neben den Positionen)
+        let (sx, sy, _, sh) = l.seite(1);
         let seite = (
-            (sx + sw * 0.5) as f64,
+            (sx + 10.0 * l.k) as f64,
             (sy.max(l.oben + 60.0 * scale) + 10.0) as f64,
         );
         assert!(sy < h as f32 && sy + sh > 0.0);
@@ -1436,12 +1437,10 @@ fn druckvorschau_gross_und_zurueck() {
 }
 
 const A4_W: f32 = sk_paint::pdf::A4.0;
-const A4_H: f32 = sk_paint::pdf::A4.1;
 
 /// Mitte des kleinen Blatts der Druckvorschau.
 fn auf_blatt(v: &AvaView, t: &Theme, fonts: &Fonts) -> (f64, f64) {
-    let (bx, by, k) = v.blatt_lage(t, fonts);
-    ((bx + 0.5 * A4_W * k) as f64, (by + 0.5 * A4_H * k) as f64)
+    v.lupe_mitte(t, fonts)
 }
 
 /// Folge zu Jörn 11.10.: Im niedrigen Fenster liegt die Legende nicht mehr
@@ -1506,4 +1505,137 @@ fn baum_im_niedrigen_fenster_rollt_ueber_der_legende() {
     let x = v.baum_lage(&t)[0].1 .0 as f64 + 10.0;
     v.wheel(-1.0, &t, x);
     assert_eq!(v.baum_ab, 0);
+}
+
+/// Jörn 12.10.: Die Druckvorschau ist mit dem Modell verknüpft wie die
+/// Tabelle. Ein Klick auf eine Position, klein oder groß, wählt ihre
+/// Bauteile; eine Auswahl im Modell markiert die Position und blättert zu
+/// ihr, klein auf ihre Seite, groß ins Sichtbare.
+#[test]
+fn druckvorschau_verknuepft_mit_dem_modell() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let mods = sk_platform::Modifiers::default();
+    for (w, h, scale) in [(960, 1000, 1.0_f32), (720, 1100, 1.5)] {
+        let wo = format!("{w}×{h} bei {scale}");
+        let mut p = Picking::default();
+        let mut v = AvaView::new();
+        v.scale = scale;
+        (v.w, v.h) = (w, h);
+        v.top = 32.0 + crate::cards::HEIGHT;
+        v.sync(&mut s, None);
+        v.zeige(Ansicht::Blatt);
+        v.sync(&mut s, None);
+        let b = v.blatt(&fonts).expect("Blatt");
+        let mit: Vec<usize> = (0..b.stellen.len())
+            .filter(|&i| !v.stelle_ids(i).is_empty())
+            .collect();
+        assert!(mit.len() >= 2, "{wo}: Positionen mit Bauteilen");
+        let (erste, letzte) = (mit[0], *mit.last().unwrap());
+        assert!(b.stellen[letzte].seite > b.stellen[erste].seite, "{wo}");
+
+        // Klein: Klick auf die erste Position wählt ihre Bauteile
+        v.seite = b.stellen[erste].seite;
+        let (bx, by, k) = v.blatt_lage(&t, &fonts);
+        let (fx, fy, fw, fh) = b.stellen[erste].flaeche;
+        let mitte = (
+            (bx + (fx + fw * 0.5) * k) as f64,
+            (by + (fy + fh * 0.5) * k) as f64,
+        );
+        assert_eq!(
+            v.hit(&t, &fonts, mitte.0, mitte.1),
+            Some(Hot::Stelle(erste)),
+            "{wo}"
+        );
+        assert!(v.tip_at(&t, &fonts, mitte.0, mitte.1).is_some());
+        let out = v.mouse_move(&t, &fonts, &mut p, mitte.0, mitte.1);
+        assert!(
+            matches!(out, Some(ListOut::Picking { .. })),
+            "{wo}: Hover im Modell"
+        );
+        assert_eq!(p.hovered().collect::<Vec<_>>(), v.stelle_ids(erste));
+        let out = v.mouse_down(&t, &fonts, &mut p, mitte, mods);
+        assert!(
+            matches!(out, Some(ListOut::Picking { selection: true })),
+            "{wo}"
+        );
+        assert_eq!(p.selected, v.stelle_ids(erste), "{wo}");
+        // Der eigene Klick blättert nicht und isoliert nichts
+        assert!(!v.follow(&p));
+        assert!(!v.blatt_folgen(&fonts));
+        // Markiert im Akzent mit Strich links
+        let mut c = Canvas::new(w as usize, h as usize);
+        v.paint(&mut c, &t, &fonts, Instant::now());
+        let px = c.to_rgba8();
+        let (sx, sy) = (
+            (bx + fx * k + 1.0) as usize,
+            (by + (fy + fh * 0.5) * k) as usize,
+        );
+        let i = (sy * w as usize + sx) * 4;
+        let a = t.ui.accent;
+        assert_eq!(&px[i..i + 3], &[a.0, a.1, a.2], "{wo}: Strich der Auswahl");
+
+        // Auswahl im Modell: blättert zur ersten Position mit diesen
+        // Bauteilen, wenn die gezeigte Seite keine hat
+        p.selected = v.stelle_ids(letzte).to_vec();
+        let treffer = |v: &AvaView, p: &Picking| -> Vec<usize> {
+            (0..b.stellen.len())
+                .filter(|&i| v.stelle_ids(i).iter().any(|e| p.selected.contains(e)))
+                .collect()
+        };
+        let auf_seite0 = treffer(&v, &p)
+            .iter()
+            .any(|&i| b.stellen[i].seite == v.seite);
+        assert!(v.follow(&p));
+        v.sync(&mut s, None);
+        assert_eq!(v.ansicht, Ansicht::Blatt, "{wo}: bleibt in der Vorschau");
+        assert_eq!(v.blatt_folgen(&fonts), !auf_seite0, "{wo}");
+        let jetzt = v.seite_jetzt(&fonts);
+        assert!(
+            treffer(&v, &p).iter().any(|&i| b.stellen[i].seite == jetzt),
+            "{wo}"
+        );
+        assert!(!v.blatt_folgen(&fonts), "{wo}: nur einmal");
+
+        // Groß, ans Ende gerollt: die Auswahl der ersten Position rollt ins
+        // Sichtbare, dort wählt ein Klick
+        v.mouse_down(&t, &fonts, &mut p, auf_blatt(&v, &t, &fonts), mods);
+        assert!(v.gross_offen(), "{wo}");
+        v.gross_rollen_um(1e6);
+        p.selected = v.stelle_ids(erste).to_vec();
+        v.follow(&p);
+        v.sync(&mut s, None);
+        v.blatt_folgen(&fonts);
+        let (l, r) = v.gross_lage(&fonts);
+        let mitte_gross = |i: usize| {
+            let (gx, gy, ..) = l.seite(b.stellen[i].seite);
+            let (fx, fy, fw, fh) = b.stellen[i].flaeche;
+            (
+                (gx + (fx + fw * 0.5) * l.k) as f64,
+                (gy + (fy + fh * 0.5) * l.k) as f64,
+            )
+        };
+        let gm = treffer(&v, &p)
+            .into_iter()
+            .map(mitte_gross)
+            .find(|m| m.1 as f32 > r.inhalt_oben() + 4.0 && (m.1 as f32) < h as f32 - 4.0)
+            .expect("Position der Auswahl groß im Sichtbaren");
+        let Some(Hot::Stelle(j)) = v.hit(&t, &fonts, gm.0, gm.1) else {
+            panic!("{wo}: Position unter der Maus");
+        };
+        p.selected.clear();
+        v.follow(&p);
+        let out = v.mouse_down(&t, &fonts, &mut p, gm, mods);
+        assert!(
+            matches!(out, Some(ListOut::Picking { selection: true })),
+            "{wo}"
+        );
+        assert_eq!(p.selected, v.stelle_ids(j), "{wo}");
+        assert!(v.gross_offen(), "{wo}: der Klick schließt nicht");
+        let mut c = Canvas::new(w as usize, h as usize);
+        v.paint_gross(&mut c, &t, &fonts);
+    }
 }
