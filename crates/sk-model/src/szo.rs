@@ -2452,8 +2452,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         register(&mut elem_ids, &mut seen, r, g, id)?;
     }
     for r in recs("space") {
-        let e = raum::read(r, number(r)?, r.link("storey", &storey_ids)?, &mut hints)?;
-        register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?;
+        if let Some(e) = raum::read(r, &mut number, &storey_ids, &seen, &mut hints) {
+            register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?;
+        }
     }
     // Verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
     let opening_raw: Vec<_> = verworfen
