@@ -562,6 +562,7 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
                 .iter()
                 .any(|j| j.0 == id || j.1 == id)
         }),
+        ende: m.freies_ende(id),
         ..Default::default()
     })
 }
@@ -807,7 +808,7 @@ fn roof_props(
         crate::ui::Section {
             title: "Aufbau",
             fields: vec![field(Field::RoofInsulation, "Dämmung", ins, lo, hi)],
-            hint: "Höhe der Aufkantung im Paneel Geschosse",
+            hint: "Höhe der Aufkantung im Geschossmanager",
             buttons: Vec::new(),
         }
     });

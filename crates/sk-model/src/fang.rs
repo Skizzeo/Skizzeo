@@ -57,14 +57,29 @@ pub struct Fangziele {
 impl Model {
     /// Wandflächen und freie Wandenden im Geschoss `storey`, auf z = 0.
     pub fn fangziele(&self, storey: StoreyId) -> Fangziele {
+        self.fangziele_aus(storey, |id| self.chain(id))
+    }
+
+    /// Wie [`Model::fangziele`], die Geometrie der Züge aus `chain` (etwa
+    /// dem Zwischenspeicher der App, Review #82 V4), statt sie je Zug neu
+    /// zu rechnen.
+    pub fn fangziele_aus<C: std::borrow::Borrow<WallChain>>(
+        &self,
+        storey: StoreyId,
+        chain: impl Fn(RunId) -> Option<C>,
+    ) -> Fangziele {
         let mut out = Fangziele::default();
+        // Angeschlossene Enden einmal, nicht je Zug alle Anschlüsse
+        let belegt: std::collections::HashSet<(RunId, JoinEnd)> =
+            self.joins.iter().map(|j| (j.a_run, j.a_end)).collect();
         for (id, r) in self.runs.iter() {
             if r.storey != storey {
                 continue;
             }
-            let Some(c) = self.chain(id) else {
+            let Some(c) = chain(id) else {
                 continue;
             };
+            let c = c.borrow();
             let frames = c.segment_frames();
             let name = |k: usize| {
                 r.segments
@@ -107,7 +122,7 @@ impl Model {
                 let Some(p) = Model::end_point(r, e) else {
                     continue;
                 };
-                let frei = !self.joins.iter().any(|j| j.a_run == id && j.a_end == e);
+                let frei = !belegt.contains(&(id, e));
                 let k = match e {
                     JoinEnd::Start => 0,
                     JoinEnd::End => r.segments.len().saturating_sub(1),

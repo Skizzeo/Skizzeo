@@ -1450,3 +1450,79 @@ fn perf_automenge() {
         }
     }
 }
+
+/// Review #82: Zeigen und Klicken bei „Verlängern“ und Greifen am Wandende
+/// wachsen nicht mit der Zahl der Häuser im Geschoss (Szenen-Cache,
+/// Vortest über die Quader, Schritt nur für die betroffenen Züge).
+#[test]
+#[ignore]
+fn perf_ecke_und_wandende() {
+    use crate::wall_edit::ecke_edit::{Art, EckeWahl};
+    use crate::wall_edit::ende_edit::EndeZug;
+    use sk_platform::MouseButton;
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8}",
+        "Häuser", "Zeigen", "Klick", "Fang", "Greifen"
+    );
+    let mods = Modifiers::default();
+    for n in [1, 100, 1000] {
+        let mut s = town_with_interior(n);
+        // Freie Innenwand im ersten Haus, Ziel: die obere Außenwand
+        let iw = WallChain {
+            base: 0.0,
+            points: vec![vec3(1500.0, 1000.0, 0.0), vec3(1500.0, 3000.0, 0.0)],
+            closed: false,
+            ref_side: RefSide::Center,
+            layers: Vec::new(),
+            height: 2750.0,
+            joints: Default::default(),
+        };
+        let run = s
+            .add_wall_as(&iw, sk_model::Category::InteriorWall)
+            .unwrap();
+        let a = s.model().wall_at(run, 0).unwrap();
+        let cam = Camera::looking_at(
+            vec3(5000.0, -6000.0, 18000.0),
+            vec3(5000.0, 4000.0, 0.0),
+            45.0,
+        );
+        let (x, y) = cam.project(vec3(1500.0, 7900.0, 0.0), W, H).unwrap();
+        let mut t = EckeWahl::start(&s, a, Art::Verlaengern).unwrap();
+        let mut flip = false;
+        let zeigen = time(50, || {
+            flip = !flip;
+            let x = if flip { x + 1.0 } else { x };
+            t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        });
+        assert!(t.pill(&s).is_some_and(|p| p.0.starts_with("bis ")));
+        let mut klick = Vec::new();
+        for _ in 0..5 {
+            let mut t = EckeWahl::start(&s, a, Art::Verlaengern).unwrap();
+            t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+            let down = Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods,
+            };
+            let t0 = Instant::now();
+            let (o, _) = t.handle(&down, &mut s, &cam, W, H);
+            klick.push(t0.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(o.schritt, Some(a));
+            assert!(s.undo());
+        }
+        let (klick, ..) = median(&mut klick);
+        let st = s.active_storey();
+        let fang = time(10, || {
+            std::hint::black_box(s.fangziele(st));
+        });
+        let greifen = time(10, || {
+            let z = EndeZug::greifen(&mut s, a, 1, 0.0).unwrap();
+            std::hint::black_box(&z);
+            s.rollback();
+        });
+        println!("{n:>6} {zeigen:>8.3} {klick:>8.3} {fang:>8.3} {greifen:>8.3}");
+    }
+    println!("Zeiten in ms; Ziel: Zeigen < 1 ms, Klick (Loslassen) < 8 ms.");
+}
