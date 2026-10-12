@@ -12,13 +12,18 @@
 
 use super::*;
 
-/// Größter Maßstab im Fenster (dip je m); neben dem Dialog gilt
-/// `level_px_per_m`.
+/// Größter Maßstab im Fenster (dip je m).
 pub(super) const PPM: f32 = 120.0;
 /// Titel des Fensters.
 pub const TITEL: &str = "Geschossmanager";
 /// Beschriftung des Knopfs im Hauptfenster.
 pub const KNOPF: &str = "Geschossmanager";
+/// Leise Zeile unter dem Titel, solange der Dialog „Gebäude erstellen“
+/// offen ist: das Fenster zeigt dessen Geschosse, nimmt aber weder Maus
+/// noch Tasten (Jörn 12.10., Einstellungen B1).
+pub const SPERRE: &str = "Gesperrt, solange „Gebäude erstellen“ offen ist.";
+/// Höhe dieser Zeile samt Luft (dip).
+const SPERRE_H: f32 = 21.0;
 
 impl Ui {
     /// Oberfläche des Geschossfensters.
@@ -49,11 +54,26 @@ impl Ui {
         out
     }
 
-    /// Zeigt das Paneel „Geschosse“ das Diagramm: im eigenen Fenster und im
-    /// Hauptfenster neben dem Dialog „Gebäude erstellen“; sonst ist es dort
-    /// der Knopf „Geschossmanager“.
+    /// Zeigt das Paneel „Geschosse“ das Diagramm: nur im eigenen Fenster;
+    /// im Hauptfenster ist es immer der Knopf „Geschossmanager“, auch neben
+    /// dem Dialog „Gebäude erstellen“ (Jörn 12.10.).
     pub(super) fn levels_diagramm(&self) -> bool {
-        self.fenster || self.dialog
+        self.fenster
+    }
+
+    /// Kopf des Diagramms: der Titel, im gesperrten Fenster darunter
+    /// [`SPERRE`].
+    pub(super) fn levels_kopf(&self) -> Vec<Row> {
+        let mut rows = vec![Row::Title("Geschosse")];
+        if self.gesperrt {
+            rows.push(Row::Hint(SPERRE));
+        }
+        rows
+    }
+
+    /// Höhe des Kopfs (dip) über der Luft zur obersten Linie.
+    pub(super) fn level_head(&self) -> f32 {
+        LEVEL_HEAD + if self.gesperrt { SPERRE_H } else { 0.0 }
     }
 
     /// Lage des Paneels im Fenster: die ganze Fläche unter der Titelleiste.
@@ -123,7 +143,7 @@ mod tests {
     }
 
     /// Im Fenster: das Paneel füllt die Fläche unter der Titelleiste, im
-    /// größeren Maßstab als neben dem Dialog; Zahlen und Namen greifen.
+    /// großen Maßstab; Zahlen und Namen greifen.
     #[test]
     fn fenster_fuellt_und_ist_bedienbar() {
         let (mut ui, _) = fenster();
@@ -153,9 +173,25 @@ mod tests {
         assert!(ui.level_buttons().iter().all(|b| b.1.y + b.1.h <= l.height));
     }
 
+    /// Gesperrt (Dialog „Gebäude erstellen“ offen): unter dem Titel die
+    /// leise Zeile, die Linien rücken um sie nach unten (Einstellungen B1).
+    #[test]
+    fn gesperrt_mit_zeile_unter_dem_titel() {
+        let (mut ui, _) = fenster();
+        let a = ui.levels_layout().anchor;
+        ui.gesperrt = true;
+        assert!(ui
+            .levels_kopf()
+            .iter()
+            .any(|r| matches!(r, Row::Hint(t) if *t == SPERRE)));
+        let b = ui.levels_layout();
+        assert!(b.anchor > a, "{a} {b:?}");
+        assert!(b.height <= 900.0 - 32.0 + 0.5, "{b:?}");
+    }
+
     /// Hauptfenster: unten links nur der Knopf, bündig unter „Werkzeuge“
-    /// und so breit; aktiv, solange das Fenster offen ist. Neben dem Dialog
-    /// steht dort das Diagramm.
+    /// und so breit; aktiv, solange das Fenster offen ist. Auch neben dem
+    /// Dialog steht dort nur der Knopf.
     #[test]
     fn knopf_unten_links() {
         let th = Theme::dark();
@@ -171,17 +207,37 @@ mod tests {
         assert!(r.y > t.y + t.h && r.y + r.h == 900.0 - 12.0, "{r:?}");
         assert!(r.h < 80.0, "nur ein Knopf: {r:?}");
         assert_eq!(ui.laid_out_buttons(Panel::Levels).len(), 1);
+        assert!(ui.line_vis_rects().is_empty());
         assert_eq!(klick(&mut ui, mitte(r), 1440), Some(Id::LevelsOpen));
+        // Jede Stelle des Paneels: höchstens der Knopf, nie ein Griff
+        let (mut x, mut treffer) = (r.x + 1.0, 0);
+        while x < r.x + r.w {
+            let mut y = r.y + 1.0;
+            while y < r.y + r.h {
+                let id = klick(&mut ui, (x as f64, y as f64), 1440);
+                assert!(
+                    id.is_none() || id == Some(Id::LevelsOpen),
+                    "{x},{y}: {id:?}"
+                );
+                assert!(!matches!(ui.hover, Some(Id::Grip(_))), "{x},{y}");
+                assert!(ui.level_dragging().is_none(), "{x},{y}");
+                treffer += usize::from(id.is_some());
+                y += 3.0;
+            }
+            x += 3.0;
+        }
+        assert!(treffer > 0);
         assert!(!ui.is_on(Id::LevelsOpen));
         ui.levels_open = true;
         assert!(ui.is_on(Id::LevelsOpen));
         let patch = ui.repaint_button(&th, Id::LevelsOpen);
         assert!(patch.is_none() || patch.is_some_and(|p| p.panel == Panel::Levels));
-        // Neben dem Dialog das Diagramm unter „Werkzeuge“
+        // Neben dem Dialog „Gebäude erstellen“ derselbe Knopf, kein
+        // Diagramm (Jörn 12.10.)
         ui.dialog = true;
-        let d = ui.rect(Panel::Levels, 1440, 32);
-        assert_eq!(d.y, t.y + t.h + 12.0);
-        assert!(ui.laid_out_buttons(Panel::Levels).len() > 1);
+        assert_eq!(ui.rect(Panel::Levels, 1440, 32), r);
+        assert_eq!(ui.laid_out_buttons(Panel::Levels).len(), 1);
+        assert!(ui.line_vis_rects().is_empty());
         // Ein kleines Fenster: der Knopf rückt nie über „Werkzeuge“
         ui.dialog = false;
         ui.fit(1.0, 900, 380);
