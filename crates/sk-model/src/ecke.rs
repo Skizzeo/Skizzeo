@@ -1056,4 +1056,54 @@ mod tests {
             assert_eq!(!gemeldet.is_empty(), kippt, "{laenge} mm: {gemeldet:?}");
         }
     }
+
+    /// Kleiner Vorsprung, schmaler als die Wand dick ist (A31, #98): Ohne
+    /// Zuschnitt liefe die Fläche an seinem Kopf rückwärts und der Körper
+    /// kippte. Mit Zuschnitt treffen sich die Nachbarflächen direkt, der
+    /// Körper ist geschlossen und ungekippt, und die Prüfung schweigt; ein
+    /// breiter Vorsprung bleibt, wie er war.
+    #[test]
+    fn kleiner_vorsprung_wird_zugeschnitten() {
+        for (b, v, roh) in [
+            (50.0, 50.0, true),
+            (200.0, 200.0, true),
+            (2000.0, 200.0, false),
+        ] {
+            for seite in [RefSide::Left, RefSide::Right, RefSide::Center] {
+                let mut m = Model::new();
+                let st = m.eg_at(H);
+                let aw = m.defaults().exterior_wall;
+                let pts = [
+                    vec3(0.0, 0.0, 0.0),
+                    vec3(0.0, 8000.0, 0.0),
+                    vec3(10000.0, 8000.0, 0.0),
+                    vec3(10000.0, 0.0, 0.0),
+                    vec3(4000.0 + b, 0.0, 0.0),
+                    vec3(4000.0 + b, -v, 0.0),
+                    vec3(4000.0, -v, 0.0),
+                    vec3(4000.0, 0.0, 0.0),
+                ];
+                let r = m
+                    .add_wall_run(&pts, true, seite, st, aw, Category::ExteriorWall)
+                    .unwrap();
+                let c = m.chain(r).unwrap();
+                let fall = format!("{b} × {v} {seite:?}");
+                if roh && seite != RefSide::Right {
+                    assert!(
+                        !c.gekippte_segmente().is_empty(),
+                        "{fall}: ohne Zuschnitt gekippt"
+                    );
+                }
+                assert_eq!(gekippt(&m, r), 0, "{fall}");
+                assert!(c.koerper_kippt().is_empty(), "{fall}");
+                let s = c.solid();
+                let sum = s.triangles.iter().fold(vec3(0.0, 0.0, 0.0), |a, t| {
+                    let [p, q, w] = t.p;
+                    a + (q - p).cross(w - p)
+                });
+                assert!(sum.length() < 1e-3, "{fall}: offen {sum:?}");
+                assert!(m.check().is_empty(), "{fall}: {:?}", m.check());
+            }
+        }
+    }
 }

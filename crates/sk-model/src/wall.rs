@@ -275,6 +275,103 @@ pub(crate) fn cross2(a: Vec3, b: Vec3) -> f64 {
     a.x * b.y - a.y * b.x
 }
 
+/// Zuschnitt einer Wandfläche im Versatz `off` (#98): Läuft die Fläche an
+/// einem inneren Segment rückwärts, fällt es weg, und die Linien der
+/// verbliebenen Nachbarn schneiden sich direkt; laufen die Nachbarn danach
+/// gegeneinander (Vorsprung schmaler als der Versatz), fallen auch sie weg.
+/// Die Ecken eines weggefallenen Stücks liegen alle auf dem neuen
+/// Schnittpunkt. Die Endsegmente eines offenen Zugs bleiben, ihre Enden
+/// bestimmt der Anschluss. Geht es nicht auf (parallele Linien mit Abstand,
+/// neuer Schnittpunkt weiter als `grenze` von den weggefallenen Ecken, zu
+/// wenig Segmente), bleiben die Ecken `roh`.
+fn zuschnitt(
+    pts: &[Vec3],
+    closed: bool,
+    dirs: &[Vec3],
+    (off, grenze): (f64, f64),
+    roh: Vec<Vec3>,
+) -> Vec<Vec3> {
+    let (n, m) = (pts.len(), dirs.len());
+    if m < 3 || roh.len() != n {
+        return roh;
+    }
+    let fest = |k: usize| !closed && (k == 0 || k == m - 1);
+    let linie = |k: usize| (pts[k] + right_of(dirs[k]) * off, dirs[k]);
+    let mut aktiv = vec![true; m];
+    for _ in 0..m {
+        if aktiv.iter().filter(|a| **a).count() < 3 {
+            return roh;
+        }
+        // Segment vor und nach Ecke j unter den verbliebenen
+        let vor = |j: usize| -> Option<usize> {
+            (1..=m)
+                .map(|s| (j + m - s) % m)
+                .find(|&k| aktiv[k] && (closed || k < j))
+        };
+        let nach = |j: usize| -> Option<usize> {
+            (0..m)
+                .map(|s| (j + s) % m)
+                .find(|&k| aktiv[k] && (closed || k >= j))
+        };
+        let mut c = roh.clone();
+        let mut gegen: Option<(usize, usize)> = None;
+        for (j, cj) in c.iter_mut().enumerate() {
+            let (Some(p), Some(q)) = (vor(j), nach(j)) else {
+                continue;
+            };
+            if (p + 1) % m == q && (closed || p + 1 == j) {
+                continue;
+            }
+            let ((a, da), (b, db)) = (linie(p), linie(q));
+            let k = cross2(da, db);
+            if k.abs() < 1e-9 {
+                if da.dot(db) < 0.0 {
+                    gegen = Some((p, q));
+                    break;
+                }
+                if cross2(b - a, da).abs() > 1e-6 {
+                    return roh;
+                }
+            }
+            // Mitte der weggefallenen Ecken
+            let w: Vec<Vec3> = (0..n)
+                .filter(|&i| vor(i) == Some(p) && nach(i) == Some(q))
+                .map(|i| flat(pts[i]))
+                .collect();
+            let mitte = w.iter().fold(Vec3::default(), |s, x| s + *x) * (1.0 / w.len() as f64);
+            // Eine Flucht: die Mitte auf der Linie, sonst der Schnittpunkt
+            let x = if k.abs() < 1e-9 {
+                a + da * (mitte - a).dot(da)
+            } else {
+                a + da * (cross2(b - a, db) / k)
+            };
+            if (flat(x) - mitte).length() > grenze {
+                return roh;
+            }
+            *cj = x;
+        }
+        if let Some((p, q)) = gegen {
+            if fest(p) || fest(q) {
+                return roh;
+            }
+            aktiv[p] = false;
+            aktiv[q] = false;
+            continue;
+        }
+        // Das am weitesten rückwärts laufende innere Segment fällt weg
+        let rueck = (0..m)
+            .filter(|&k| aktiv[k] && !fest(k))
+            .map(|k| (k, (c[(k + 1) % n] - c[k]).dot(dirs[k])))
+            .filter(|&(_, l)| l <= 0.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        match rueck {
+            Some((k, _)) => aktiv[k] = false,
+            None => return c,
+        }
+    }
+    roh
+}
+
 /// Punkte auf dem Boden ohne doppelte Nachbarn (und bei geschlossenem Zug ohne
 /// Schlusspunkt gleich Startpunkt).
 pub fn clean_points(points: &[Vec3], closed: bool) -> Vec<Vec3> {
@@ -413,14 +510,34 @@ impl WallChain {
         Some([o[seg], o[j], i[j], i[seg]])
     }
 
-    /// Segmente, an denen der Körper kippt (Review #87 B5): Je Schicht muss
-    /// jede ihrer beiden Flächen ([`WallChain::face_corners_in`], wie der
-    /// Körper sie nimmt) in Zeichenrichtung laufen, und an beiden Ecken des
+    /// Segmente, an denen die Gehrung kippt (Review #87 B5): Je Schicht muss
+    /// jede ihrer beiden Flächen (Gehrungsecken ohne den Zuschnitt aus #98)
+    /// in Zeichenrichtung laufen, und an beiden Ecken des
     /// Segments muss die Fläche mit dem größeren Versatz rechts der anderen
     /// liegen. Sonst läuft eine Gehrung über das Nachbarsegment hinaus
     /// (spitze Ecke, kurzes Segment, auch über der Gehrungsgrenze), egal auf
     /// welcher Seite die Bezugslinie liegt.
     pub fn gekippte_segmente(&self) -> Vec<usize> {
+        self.kippende(true)
+    }
+
+    /// Segmente, an denen der Körper trotz Zuschnitt kippt (#98): wie
+    /// [`WallChain::gekippte_segmente`], aber an den Flächen, wie der Körper
+    /// sie nimmt ([`WallChain::face_corners_in`]), und genau an seinen
+    /// Dreiecken. Bleibt an einem offenen Ende, dessen Gehrung über das
+    /// Endsegment hinausläuft, und wo der Zuschnitt nicht aufgeht.
+    pub fn koerper_kippt(&self) -> Vec<usize> {
+        self.kippende(false)
+    }
+
+    fn kippende(&self, roh: bool) -> Vec<usize> {
+        let ecken = |off: f64, i: usize| {
+            if roh {
+                self.face_corners_roh(off, Some(i))
+            } else {
+                self.face_corners_in(off, Some(i))
+            }
+        };
         let pts = self.clean_points();
         let flach = |p: Vec3| vec3(p.x, p.y, 0.0);
         let schichten: Vec<(Vec<Vec3>, Vec<Vec3>, bool)> = self
@@ -428,13 +545,7 @@ impl WallChain {
             .iter()
             .enumerate()
             .filter(|(i, _)| !self.layers.get(*i).is_some_and(|l| l.air))
-            .map(|(i, &(lo, hi, _))| {
-                (
-                    self.face_corners_in(lo, Some(i)),
-                    self.face_corners_in(hi, Some(i)),
-                    hi - lo > 1e-6,
-                )
-            })
+            .map(|(i, &(lo, hi, _))| (ecken(lo, i), ecken(hi, i), hi - lo > 1e-6))
             .collect();
         (0..self.segment_count())
             .filter(|&k| {
@@ -442,9 +553,19 @@ impl WallChain {
                 let d = flach(pts[j] - pts[k]);
                 let n = right_of(d.normalized());
                 schichten.iter().any(|(lo, hi, dick)| {
-                    let vor = |f: &[Vec3]| flach(f[j] - f[k]).dot(d) <= 0.0;
-                    let quer = |e: usize| flach(hi[e] - lo[e]).dot(n) <= 0.0;
-                    vor(lo) || vor(hi) || (*dick && (quer(k) || quer(j)))
+                    if roh {
+                        let vor = |f: &[Vec3]| flach(f[j] - f[k]).dot(d) <= 0.0;
+                        let quer = |e: usize| flach(hi[e] - lo[e]).dot(n) <= 0.0;
+                        return vor(lo) || vor(hi) || (*dick && (quer(k) || quer(j)));
+                    }
+                    // Nach dem Zuschnitt genau die Dreiecke des Körpers: Die
+                    // Seiten kippen, wenn eine Fläche rückwärts läuft, Boden
+                    // und Deckel, wenn eines ihrer beiden Dreiecke umklappt.
+                    // Ein auf einer Fläche ganz weggefallenes Stück zählt nicht.
+                    let vor = |f: &[Vec3]| flach(f[j] - f[k]).dot(d) < -1e-6 * d.length();
+                    let um = |p: Vec3, q: Vec3, r: Vec3| cross2(q - p, r - p) > 1e-6;
+                    let (a0, a1, b0, b1) = (lo[k], lo[j], hi[k], hi[j]);
+                    vor(lo) || vor(hi) || um(a0, a1, b1) || um(a0, b1, b0)
                 })
             })
             .collect()
@@ -478,7 +599,26 @@ impl WallChain {
     }
 
     /// Wie [`WallChain::face_corners`] für eine Fläche von Schicht `layer`.
+    /// Läuft die Fläche an einem Segment rückwärts (Segment kürzer als der
+    /// Versatz zwischen zwei Ecken, etwa ein kleiner Vorsprung), fällt es auf
+    /// dieser Fläche weg und die Nachbarn treffen sich direkt (#98).
     pub fn face_corners_in(&self, off: f64, layer: Option<usize>) -> Vec<Vec3> {
+        let roh = self.face_corners_roh(off, layer);
+        match self.layout() {
+            Some((pts, closed, dirs)) if !roh.is_empty() => zuschnitt(
+                &pts,
+                closed,
+                &dirs,
+                (off, MITER_LIMIT * self.thickness().max(1.0)),
+                roh,
+            ),
+            _ => roh,
+        }
+    }
+
+    /// Gehrungsecken der Fläche `off` ohne Zuschnitt: je Ecke der Schnitt der
+    /// beiden Nachbarlinien.
+    fn face_corners_roh(&self, off: f64, layer: Option<usize>) -> Vec<Vec3> {
         let Some((pts, closed, dirs)) = self.layout() else {
             return Vec::new();
         };
