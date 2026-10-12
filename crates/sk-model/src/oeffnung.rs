@@ -47,6 +47,8 @@ impl OpeningKind {
 pub enum HeightLine {
     Sill,
     Lintel,
+    /// Oberkante der Innentüren (Jörn 12.10. 05:26).
+    Door,
 }
 
 /// Höhe einer Öffnungskante: an eine Höhenlinie gebunden (sie wandert mit,
@@ -126,6 +128,129 @@ pub struct Opening {
     pub reveal: Option<[f64; 4]>,
     /// Einbautiefen; leer nach Wandtyp.
     pub install: Install,
+    /// Aufschlag und Türhand; nur an einer Tür mit geradem Pfad, `None`
+    /// ohne Blatt (Durchgang) und an Fenstern.
+    pub swing: Option<Swing>,
+}
+
+/// Seite quer zu einer Richtung im Grundriss.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceSide {
+    Left,
+    Right,
+}
+
+impl FaceSide {
+    pub fn other(self) -> FaceSide {
+        match self {
+            FaceSide::Left => FaceSide::Right,
+            FaceSide::Right => FaceSide::Left,
+        }
+    }
+
+    /// Normale zur Richtung `d` auf dieser Seite (Grundriss, Länge von `d`).
+    pub fn normal(self, d: Vec3) -> Vec3 {
+        let r = sk_math::vec3(d.y, -d.x, 0.0);
+        match self {
+            FaceSide::Right => r,
+            FaceSide::Left => r * -1.0,
+        }
+    }
+}
+
+/// Türhand nach DIN 107: von der Öffnungsfläche aus gesehen, also aus dem
+/// Raum, in den das Blatt aufschlägt, sitzen die Bänder links bzw. rechts
+/// (Jörn 12.10. 05:55). In der Ausschreibung das Merkmal
+/// „Öffnungsrichtung“.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Din {
+    Links,
+    Rechts,
+}
+
+impl Din {
+    pub const ALL: [Din; 2] = [Din::Links, Din::Rechts];
+
+    pub fn other(self) -> Din {
+        match self {
+            Din::Links => Din::Rechts,
+            Din::Rechts => Din::Links,
+        }
+    }
+
+    /// Schlüsselwort in der Datei.
+    pub fn word(self) -> &'static str {
+        match self {
+            Din::Links => "links",
+            Din::Rechts => "rechts",
+        }
+    }
+
+    /// Name für Menschen und Ausschreibung.
+    pub fn name(self) -> &'static str {
+        match self {
+            Din::Links => "DIN links",
+            Din::Rechts => "DIN rechts",
+        }
+    }
+}
+
+/// Aufschlag einer Tür (Jörn 12.10. 05:50–05:55): Das Blatt sitzt auf der
+/// Seite des Raums, in den es aufschlägt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Swing {
+    /// Seite des Pfads (Anfang → Ende), zu der das Blatt aufschlägt. Am
+    /// Pfad statt am Wandzug: kehrt sich der Zug um, bleibt der Aufschlag
+    /// im selben Raum (Integration 05:54).
+    pub side: FaceSide,
+    pub din: Din,
+}
+
+impl Swing {
+    /// Aufschlag in den anderen Raum: das Blatt wechselt die Wandseite,
+    /// die Bänder bleiben am selben Pfosten und sind von der neuen
+    /// Öffnungsfläche aus die andere Hand.
+    pub fn flipped(self) -> Swing {
+        Swing {
+            side: self.side.other(),
+            din: self.din.other(),
+        }
+    }
+
+    /// Bänder am anderen Pfosten, Aufschlag bleibt.
+    pub fn other_hand(self) -> Swing {
+        Swing {
+            din: self.din.other(),
+            ..self
+        }
+    }
+
+    /// Sitzen die Bänder am Anfang des Pfads? Aus dem Aufschlagraum zur
+    /// Wand geschaut liegt der Pfadanfang links, wenn das Blatt rechts des
+    /// Pfads aufschlägt.
+    pub fn hinge_at_start(self) -> bool {
+        (self.side == FaceSide::Right) == (self.din == Din::Links)
+    }
+}
+
+/// Lage des Türblatts in der Wand ([`crate::Model::door_leaf`]): für
+/// Raumbuch (Belag, Fuge) und Grundriss.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoorLeaf {
+    pub run: crate::RunId,
+    pub seg: usize,
+    /// Lichte längs des Segments, ab seinem Anfang (mm).
+    pub u: (f64, f64),
+    /// Wandseite des Aufschlags, zur Zeichenrichtung des Segments.
+    pub face: FaceSide,
+    /// Blattlinie im Grundriss (z = 0): Rohbauflucht der Aufschlagseite,
+    /// zugleich die Belagsfuge. Belagsgrenze fürs Raumbuch, nicht für die
+    /// Wohnfläche (Türnischen zählen nach WoFlV nicht, Integration 05:54).
+    pub line: (Vec3, Vec3),
+    /// Einheitsrichtung in den Raum, in den die Tür aufschlägt.
+    pub swing_into: Vec3,
+    /// Bandpfosten auf der Blattlinie.
+    pub hinge: Vec3,
 }
 
 impl Opening {

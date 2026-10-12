@@ -40,6 +40,7 @@ fn fenster(m: &Model, run: RunId, u: (f64, f64)) -> Opening {
         top: HeightRef::Line(st, HeightLine::Lintel),
         reveal: None,
         install: Default::default(),
+        swing: None,
     }
 }
 

@@ -3497,7 +3497,7 @@ impl App {
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
             // `UiOut::level`; der Zähler ist derzeit fest
-            Id::Field(_) | Id::Grip(_) | Id::DialogMinus | Id::DialogPlus => {}
+            Id::Field(_) | Id::Grip(_) | Id::LineVis(_) | Id::DialogMinus | Id::DialogPlus => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();
@@ -4635,7 +4635,7 @@ impl App {
                 self.wheel.scroll(&mut self.scene, n as i32, t);
             }
             Event::Wheel { y, .. } => {
-                if y >= th && !self.ui.dialog {
+                if y >= th && !self.ui.dialog && !self.tuer_rad(&e) {
                     camera_moved |=
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
@@ -4723,7 +4723,7 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
-                } else if down && key == Key::Escape && self.oeffnung_esc() {
+                } else if down && self.oeffnung_taste(key) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);

@@ -4,8 +4,9 @@
 use super::*;
 use crate::hoehen::HeightLines;
 use crate::oeffnung::{
-    HeightLine, HeightRef, InstallDepth, Opening, ELEMENT_DEPTH, INSTALL_BEHIND_SHELL,
-    INSTALL_MONO, MAX_INSTALL, MAX_REVEAL, MIN_OPENING, REVEAL_ETICS, REVEAL_FACING,
+    DoorLeaf, FaceSide, HeightLine, HeightRef, InstallDepth, Opening, OpeningKind, Swing,
+    ELEMENT_DEPTH, INSTALL_BEHIND_SHELL, INSTALL_MONO, MAX_INSTALL, MAX_REVEAL, MIN_OPENING,
+    REVEAL_ETICS, REVEAL_FACING,
 };
 use crate::wall::{cross2, flat, right_of};
 use crate::wand_loch::Hole;
@@ -24,6 +25,7 @@ impl Model {
                         + match line {
                             HeightLine::Sill => s.lines.sill,
                             HeightLine::Lintel => s.lines.lintel,
+                            HeightLine::Door => s.lines.door,
                         },
                 )
             }
@@ -63,6 +65,8 @@ impl Model {
         let reveal = o
             .reveal
             .is_none_or(|r| r.iter().all(|x| (0.0..=MAX_REVEAL).contains(x)));
+        // Aufschlag nur an einer Tür mit geradem Pfad
+        let swing = o.swing.is_none() || (o.kind == OpeningKind::Door && n == 2);
         let install = [o.install.outer, o.install.element]
             .iter()
             .flatten()
@@ -74,6 +78,7 @@ impl Model {
             && o.width() >= MIN_OPENING - 1e-6
             && reveal
             && install
+            && swing
             && self.opening_band(o).is_some()
     }
 
@@ -107,6 +112,59 @@ impl Model {
         }
         self.touch();
         true
+    }
+
+    /// Ändert nur den Aufschlag der Tür `id` (Griff im Grundriss). Lage und
+    /// Höhen bleiben, deshalb ohne die Prüfung an den Wänden (Review #99
+    /// B2); ein Aufschlag gilt nur an einer Tür mit geradem Pfad.
+    pub fn set_swing(&mut self, id: ElementId, s: Option<Swing>) -> bool {
+        let Some(o) = self.opening(id) else {
+            return false;
+        };
+        if o.swing == s {
+            return true;
+        }
+        if s.is_some() && !(o.kind == OpeningKind::Door && o.path.len() == 2) {
+            return false;
+        }
+        note!(self, Element, self.elements, id);
+        if let Some(ElementKind::Opening(o)) = self.elements.get_mut(id).map(|e| &mut e.kind) {
+            o.swing = s;
+        }
+        self.touch();
+        true
+    }
+
+    /// Ändert der offene Schritt nur Aufschläge von Türen? Dann bleibt alles
+    /// Abgeleitete (Randstreifen, Untersicht, Terrassen, Flachdächer), und
+    /// der Abgleich beim Schließen entfällt (Review #99 B2).
+    pub(crate) fn only_swings(&self) -> bool {
+        let Some(open) = &self.txn else {
+            return false;
+        };
+        !open.changes.is_empty()
+            && open.changes.iter().all(|c| {
+                let crate::txn::Change::Element {
+                    id, old: Some(a), ..
+                } = c
+                else {
+                    return false;
+                };
+                let Some(b) = self.elements.get(*id) else {
+                    return false;
+                };
+                match (&a.kind, &b.kind) {
+                    (ElementKind::Opening(x), ElementKind::Opening(y)) => {
+                        let mut a = a.clone();
+                        a.kind = ElementKind::Opening(Opening {
+                            swing: y.swing,
+                            ..x.clone()
+                        });
+                        a == *b
+                    }
+                    _ => false,
+                }
+            })
     }
 
     /// Höhenlinien des Geschosses `st` setzen (Brüstung, Sturz).
@@ -191,7 +249,7 @@ impl Model {
     /// Pfadstück, das auf der Außenfläche eines Segments liegt, ein Loch;
     /// zur Außenecke hin offen.
     pub(crate) fn holes_of(&self, run: RunId, c: &WallChain) -> Vec<Hole> {
-        if !self.category_of(run).is_some_and(Category::is_outer_wall) {
+        if !self.category_of(run).is_some_and(Category::takes_openings) {
             return Vec::new();
         }
         let building = self
@@ -291,6 +349,8 @@ impl Model {
                         u_right: rechts,
                         opening: id,
                         install: self.install_depth(op, run),
+                        outer: self.category_of(run).is_some_and(Category::is_outer_wall),
+                        leaf: self.leaf_in(run, c, op, d, ua, ub),
                     },
                 ));
             }
@@ -300,7 +360,7 @@ impl Model {
 
     /// Kann die Öffnung `o` so an den Wänden stehen? `except`: die Öffnung
     /// selbst, wenn sie schon im Modell steht. Neben [`Model::opening_ok`]
-    /// muss jedes Pfadstück auf der Außenfläche einer Außenwand liegen, jedes
+    /// muss jedes Pfadstück auf der Außenfläche einer Wand liegen, jedes
     /// freie Ende samt Anschlag innerhalb der Wandfläche (nicht an oder hinter
     /// der Ecke), und keine andere Öffnung darf sie überschneiden (Review
     /// #79).
@@ -332,7 +392,7 @@ impl Model {
     }
 
     /// Steht die Öffnung `o` auf Wänden: jedes Pfadstück in jedem Geschoss,
-    /// das ihr Höhenband schneidet, auf der Außenfläche einer Außenwand? Nur
+    /// das ihr Höhenband schneidet, auf der Außenfläche einer Wand? Nur
     /// die Wandlage, ohne Form, Enden und Überschneidung (Löschen).
     pub(crate) fn opening_on_walls(&self, o: &Opening) -> bool {
         self.opening_lage(o, None, &mut Koerper::default())
@@ -436,7 +496,8 @@ impl Model {
         })
     }
 
-    /// Außenwandzüge, die die Öffnung `o` treffen kann: ihr Grundriss
+    /// Wandzüge mit Öffnungen ([`Category::takes_openings`]), die die
+    /// Öffnung `o` treffen kann: ihr Grundriss
     /// kommt dem Pfad bis auf [`RUN_REACH`] nahe. Damit rechnet eine
     /// Öffnungsänderung nur diese Züge neu (Review #79).
     pub(crate) fn opening_runs(&self, o: &Opening) -> Vec<RunId> {
@@ -447,7 +508,7 @@ impl Model {
         self.runs
             .ids()
             .filter(|&r| {
-                self.category_of(r).is_some_and(Category::is_outer_wall)
+                self.category_of(r).is_some_and(Category::takes_openings)
                     && self.run(r).is_some_and(|run| {
                         let (mut a, mut b) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
                         for p in &run.points {
@@ -486,7 +547,7 @@ struct Lage {
 pub enum OpeningFault {
     /// Pfad, Maße, Höhen oder Anschläge ungültig ([`Model::opening_ok`]).
     Shape,
-    /// Ein Pfadstück liegt auf keiner Außenwand (Wand verschoben oder
+    /// Ein Pfadstück liegt auf keiner Wand (Wand verschoben oder
     /// gelöscht).
     NoWall,
     /// Ein freies Ende samt Anschlag liegt an oder hinter dem Ende der
@@ -501,7 +562,7 @@ impl OpeningFault {
     pub fn text(self, m: &Model) -> String {
         match self {
             OpeningFault::Shape => "Öffnung ungültig".into(),
-            OpeningFault::NoWall => "Öffnung liegt nicht auf einer Außenwand".into(),
+            OpeningFault::NoWall => "Öffnung liegt nicht auf einer Wand".into(),
             OpeningFault::AtEnd => "Öffnung reicht an oder über das Ende der Wandfläche".into(),
             OpeningFault::Overlap(o) => format!(
                 "Öffnung überschneidet {}",
@@ -534,12 +595,27 @@ fn face_span(c: &WallChain, pts: &[Vec3], dirs: &[Vec3], i: usize) -> (f64, f64)
 }
 
 impl Model {
-    /// Außenfläche von Segment `seg` des Außenwandzugs `run`.
+    /// Außenfläche von Segment `seg` des Zugs `run`; bei einer Innenwand
+    /// die Fläche auf der Seite von [`WallChain::outer_offset`].
     pub fn outer_face(&self, run: RunId, seg: usize) -> Option<crate::oeffnung::OuterFace> {
-        if !self.category_of(run).is_some_and(Category::is_outer_wall) {
+        if !self.category_of(run).is_some_and(Category::takes_openings) {
             return None;
         }
         self.face_in(run, seg, &self.chain(run)?)
+    }
+
+    /// [`Model::outer_face`] im schon gebauten Körper `c` des Zugs `run`:
+    /// mehrere Segmente, ein Körper (Review #99 B1).
+    pub fn outer_face_in(
+        &self,
+        run: RunId,
+        seg: usize,
+        c: &WallChain,
+    ) -> Option<crate::oeffnung::OuterFace> {
+        if !self.category_of(run).is_some_and(Category::takes_openings) {
+            return None;
+        }
+        self.face_in(run, seg, c)
     }
 
     /// Außenfläche von Segment `seg` im Körper `c` des Zugs `run`.
@@ -573,6 +649,113 @@ impl Model {
             free: (s0 + rand, s1 - rand),
             z: (c.base, c.base + c.height),
         })
+    }
+
+    /// Lage des Türblatts der Tür `id` (Raumbuch und Grundriss, Integration
+    /// 05:54): im Wandzug ihres Geschosses, den sie trifft, auf der
+    /// Rohbauflucht der Seite, in die sie aufschlägt. `None` ohne Aufschlag.
+    pub fn door_leaf(&self, id: ElementId) -> Option<DoorLeaf> {
+        self.door_leaf_in(id, &|r| self.chain(r))
+    }
+
+    /// [`Model::door_leaf`] mit den Wandkörpern aus `chain_of`, z. B. aus dem
+    /// Zwischenspeicher der Szene (Review #99 B1: [`Model::chain`] wächst
+    /// mit der Zahl der Anschlüsse).
+    pub fn door_leaf_in(
+        &self,
+        id: ElementId,
+        chain_of: &dyn Fn(RunId) -> Option<WallChain>,
+    ) -> Option<DoorLeaf> {
+        let o = self.opening(id)?;
+        let sw = o.swing?;
+        let (a, b) = (flat(*o.path.first()?), flat(*o.path.last()?));
+        let len = (b - a).length();
+        if o.path.len() != 2 || len < 1e-9 {
+            return None;
+        }
+        let along = (b - a) / len;
+        let into = sw.side.normal(along);
+        let st = self.element(id)?.storey;
+        let (run, c, h) = self
+            .opening_runs(o)
+            .into_iter()
+            .filter(|r| self.run(*r).is_some_and(|x| x.storey == st))
+            .find_map(|r| {
+                let c = chain_of(r)?;
+                let (_, h) = self.legs_on(r, &c, Some(id), o).into_iter().next()?;
+                Some((r, c, h))
+            })?;
+        let leaf = h.leaf?;
+        let (pts, _, dirs) = c.layout()?;
+        let d = dirs[h.seg];
+        let at = |u: f64| pts[h.seg] + d * u + right_of(d) * leaf.off;
+        Some(DoorLeaf {
+            run,
+            seg: h.seg,
+            u: h.u,
+            face: leaf.side,
+            line: (at(h.u.0), at(h.u.1)),
+            swing_into: into,
+            hinge: at(if leaf.hinge_lo { h.u.0 } else { h.u.1 }),
+        })
+    }
+
+    /// Türblatt der Öffnung `op` im Zug `run`, deren gerader Pfad auf dem
+    /// Segment mit Richtung `d` von `ua` nach `ub` läuft.
+    fn leaf_in(
+        &self,
+        run: RunId,
+        c: &WallChain,
+        op: &Opening,
+        d: Vec3,
+        ua: f64,
+        ub: f64,
+    ) -> Option<crate::wand_loch::Leaf> {
+        let sw = op.swing.filter(|_| op.path.len() == 2)?;
+        let along = flat(op.path[1]) - flat(op.path[0]);
+        let into = sw.side.normal(along);
+        let side = if into.dot(right_of(d)) > 0.0 {
+            FaceSide::Right
+        } else {
+            FaceSide::Left
+        };
+        let hinge = if sw.hinge_at_start() { ua } else { ub };
+        Some(crate::wand_loch::Leaf {
+            off: self.rough_face(run, c, side),
+            side,
+            hinge_lo: hinge <= ua.min(ub),
+        })
+    }
+
+    /// Lage der Rohbauflucht auf der Seite `side` des Zugs `run` quer zur
+    /// Bezugslinie (positiv rechts): ohne Putz und Bekleidung außerhalb
+    /// des Kerns.
+    fn rough_face(&self, run: RunId, c: &WallChain, side: FaceSide) -> f64 {
+        let layers = self
+            .run(run)
+            .and_then(|r| r.segments.first())
+            .and_then(|e| self.element(*e))
+            .and_then(|e| e.layer_set)
+            .and_then(|s| self.layer_set(s))
+            .map_or(&[][..], |s| &s.layers[..]);
+        let offs = c.layer_offsets();
+        let roh = offs.iter().enumerate().filter(|(i, _)| {
+            layers
+                .get(*i)
+                .is_none_or(|l| l.core || l.function != LayerFunction::Finish)
+        });
+        let (lo, hi) = roh.fold((f64::MAX, f64::MIN), |(lo, hi), (_, x)| {
+            (lo.min(x.0), hi.max(x.1))
+        });
+        let (lo, hi) = if lo <= hi {
+            (lo, hi)
+        } else {
+            c.ref_side.span(c.thickness())
+        };
+        match side {
+            FaceSide::Right => hi,
+            FaceSide::Left => lo,
+        }
     }
 
     /// Höhenlinien Brüstung und Sturz des Geschosses `st`.
@@ -611,6 +794,35 @@ struct OpeningAnchor {
     id: ElementId,
     path: Vec<Vec3>,
     at: Vec<Anchor>,
+    /// Tür mit Blatt: Aufschlag beim Greifen und seine Seite zur Richtung
+    /// des Wandsegments (Geometrie #99): Daraus kommt der Aufschlag nach
+    /// jeder Bewegung, nicht aus der vorigen Lage.
+    swing: Option<(Swing, FaceSide)>,
+}
+
+/// Richtung eines Pfads (Grundriss, nicht normiert).
+fn path_dir(p: &[Vec3]) -> Vec3 {
+    flat(p[p.len() - 1]) - flat(p[0])
+}
+
+/// Seite `side` zur Pfadrichtung als Seite zur Flächenrichtung `d` und
+/// zurück (dieselbe Umrechnung in beide Richtungen).
+fn side_to(side: FaceSide, path: &[Vec3], d: Vec3) -> FaceSide {
+    if path_dir(path).dot(d) >= 0.0 {
+        side
+    } else {
+        side.other()
+    }
+}
+
+/// Ist der Zug `now` der Zug `grab` mit umgekehrter Punktfolge?
+fn reversed(grab: &[Vec3], now: &[Vec3]) -> bool {
+    grab.len() == now.len()
+        && grab.len() > 1
+        && grab
+            .iter()
+            .zip(now.iter().rev())
+            .all(|(a, b)| (*a - *b).length() < 1e-6)
 }
 
 /// Ein Außenwandzug beim Greifen: sein Körper, der zuletzt mitgeführte und
@@ -675,7 +887,9 @@ impl Model {
 
     /// Lage der Öffnungen um den Zug `run` vor seiner Änderung: aus dem
     /// offenen Schritt, beim ersten Ziehen dieses Zugs im Schritt ergänzt.
-    /// Zurück in den Schritt mit [`Model::keep_opening_grab`].
+    /// Zurück in den Schritt mit [`Model::keep_opening_grab`]. Ändert
+    /// `set_opening` eine gemerkte Öffnung im selben Schritt, springt sie
+    /// beim nächsten Ziehen auf ihren Anker zurück (Review #92).
     pub(crate) fn opening_grab(&mut self, run: RunId) -> OpeningGrab {
         let mut g = self
             .txn
@@ -695,7 +909,7 @@ impl Model {
         }
         for r in self.opening_scope(run) {
             if g.walls.iter().any(|w| w.run == r)
-                || !self.category_of(r).is_some_and(Category::is_outer_wall)
+                || !self.category_of(r).is_some_and(Category::takes_openings)
             {
                 continue;
             }
@@ -761,6 +975,11 @@ impl Model {
                         .total_cmp(&(flat(corners[j]) - q).length())
                 })
             });
+            // Aufschlag zur Segmentrichtung beim Greifen
+            let swing = o.swing.filter(|_| n == 2).and_then(|sw| {
+                let s = seat(o.path[0])?;
+                Some((sw, side_to(sw.side, &o.path, f[s].d)))
+            });
             let sum = o.path.iter().fold(vec3(0.0, 0.0, 0.0), |a, p| a + flat(*p));
             let m = sum / n.max(1) as f64;
             let mut at = Vec::with_capacity(n);
@@ -787,6 +1006,7 @@ impl Model {
                 id,
                 path: o.path.clone(),
                 at,
+                swing,
             });
         }
         out
@@ -813,6 +1033,7 @@ impl Model {
             let back = c == w.chain;
             if back || segs(&c) == segs(&w.chain) {
                 let shift = parallel_shift(&w.chain.points, &c.points);
+                let umgekehrt = reversed(&w.chain.points, &c.points);
                 let corners = c.face_corners(c.outer_offset());
                 for a in &w.anchors {
                     let path: Option<Vec<Vec3>> = if back {
@@ -832,7 +1053,23 @@ impl Model {
                             })
                             .collect()
                     };
-                    self.put_carried(a.id, path, back);
+                    // Aufschlag aus dem Greifzustand: Seite zum Segment bleibt,
+                    // nur bei umgekehrter Punktfolge des Zugs wechselt sie
+                    // (der Raum bleibt derselbe, Integration 05:54)
+                    let swing = match (&path, a.swing, a.at.first()) {
+                        (_, Some((sw, _)), _) if back => Some(sw),
+                        (Some(p), Some((sw, seite)), Some(&Anchor::On(s, ..))) if p.len() == 2 => {
+                            self.face_in(w.run, s, &c).map(|f| {
+                                let seite = if umgekehrt { seite.other() } else { seite };
+                                Swing {
+                                    side: side_to(seite, p, f.d),
+                                    ..sw
+                                }
+                            })
+                        }
+                        _ => None,
+                    };
+                    self.put_carried(a.id, path, back, swing);
                 }
             }
             w.last = c;
@@ -842,7 +1079,14 @@ impl Model {
     /// Setzt den mitgeführten Pfad einer Öffnung, ohne die Prüfung an den
     /// Wänden: die Öffnung bleibt an ihrer Wand, auch wenn sie dort nicht
     /// mehr passt. Zurück auf die Lage beim Greifen (`back`) geht es immer.
-    fn put_carried(&mut self, id: ElementId, path: Option<Vec<Vec3>>, back: bool) {
+    /// `swing` ersetzt den Aufschlag, wenn gesetzt.
+    fn put_carried(
+        &mut self,
+        id: ElementId,
+        path: Option<Vec<Vec3>>,
+        back: bool,
+        swing: Option<Swing>,
+    ) {
         let (Some(path), Some(o)) = (path, self.opening(id)) else {
             return;
         };
@@ -851,9 +1095,11 @@ impl Model {
                 .iter()
                 .zip(&o.path)
                 .all(|(p, q)| (*p - *q).length() < 1e-6);
-        let same = path == o.path || (near && !back);
+        let swing = swing.or(o.swing);
+        let same = (path == o.path || (near && !back)) && swing == o.swing;
         let mut o = o.clone();
         o.path = path;
+        o.swing = swing;
         if !same && (back || self.opening_ok(&o)) {
             note!(self, Element, self.elements, id);
             if let Some(e) = self.elements.get_mut(id) {

@@ -538,6 +538,7 @@ fn wandzeilen_nach_vob() {
             top: HeightRef::Line(st, HeightLine::Lintel),
             reveal: None,
             install: Default::default(),
+            swing: None,
         })
         .expect("Fenster");
     }

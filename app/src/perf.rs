@@ -1715,3 +1715,102 @@ fn perf_raumstempel() {
     }
     println!("Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen).");
 }
+
+/// Review #99 B1/B2: Innentüren bei `n` Häusern (je zwei Innenwände mit
+/// einer Tür): Griffe je Mausbewegung, Fang des Innentür-Werkzeugs, Ziehen
+/// am Griff (Aufschlag wechselt je Bewegung, dazu der neue Griff) und
+/// Loslassen (Schritt schließen und neu rechnen).
+#[test]
+#[ignore]
+fn perf_innentuer() {
+    use crate::oeffnung_app::innentuer;
+    use crate::wall_edit::tuer_edit;
+    use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
+    use sk_model::{Category, LevelRef};
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>9}",
+        "Häuser", "Griffe", "Fang", "Ziehen", "Loslassen"
+    );
+    for n in [1, 10, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        let rechts = Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        };
+        assert!(s.edit_model("Türen", |m| {
+            let innen: Vec<_> = m
+                .runs()
+                .iter()
+                .filter(|(_, run)| {
+                    run.segments
+                        .first()
+                        .and_then(|e| m.element(*e))
+                        .is_some_and(|e| e.category == Category::InteriorWall)
+                })
+                .map(|(r, _)| r)
+                .collect();
+            innen.into_iter().all(|r| {
+                let f = m.outer_face(r, 0).unwrap();
+                let um = (f.u.0 + f.u.1) / 2.0;
+                let o = Opening {
+                    kind: OpeningKind::Door,
+                    path: vec![f.at(um - 442.5, 0.0), f.at(um + 442.5, 0.0)],
+                    bottom: HeightRef::Level(LevelRef::bottom(st)),
+                    top: HeightRef::Line(st, HeightLine::Door),
+                    reveal: None,
+                    install: Default::default(),
+                    swing: Some(rechts),
+                };
+                m.add_opening(o).is_some()
+            })
+        }));
+        let (id, o) = s
+            .model()
+            .elements()
+            .iter()
+            .find_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, o.clone())),
+                _ => None,
+            })
+            .unwrap();
+        let q = (o.path[0] + o.path[1]) * 0.5;
+        let griffe = time(50, || {
+            std::hint::black_box(tuer_edit::sichtbar(&s, q + vec3(300.0, 200.0, 0.0)));
+        });
+        let fang = time(50, || {
+            std::hint::black_box(innentuer::treffer(
+                s.model(),
+                &|r| s.koerper(r),
+                st,
+                q,
+                30.0,
+            ));
+        });
+        let run = s.model().door_leaf(id).unwrap().run;
+        let links = Swing {
+            side: FaceSide::Left,
+            ..rechts
+        };
+        let mut flip = false;
+        s.begin(tuer_edit::SCHRITT);
+        let ziehen = time(20, || {
+            flip = !flip;
+            assert!(s.set_swing(id, if flip { links } else { rechts }, run));
+            std::hint::black_box(s.model().door_leaf_in(id, &|r| s.koerper(r)));
+        });
+        s.commit();
+        let mut los = 0.0;
+        for k in 0..5 {
+            s.begin(tuer_edit::SCHRITT);
+            assert!(s.set_swing(id, if k % 2 == 0 { links } else { rechts }, run));
+            let t = Instant::now();
+            s.commit();
+            los += t.elapsed().as_secs_f64() * 1000.0 / 5.0;
+        }
+        assert!(s.model().check().is_empty());
+        println!("{n:>6} {griffe:>8.3} {fang:>8.3} {ziehen:>8.3} {los:>9.3}");
+    }
+    println!("Zeiten in ms je Mausbewegung bzw. je Loslassen.");
+}
