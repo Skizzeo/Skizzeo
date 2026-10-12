@@ -1407,7 +1407,7 @@ fn sturz_im_grundriss() {
     let c = m.chain(iw).unwrap();
     let e = c.lintel_edges(cut);
     assert_eq!(e.len(), 2, "beide Wandfluchten");
-    assert!(e.iter().all(|k| k.kind == crate::solid::edge_kind::ELEMENT));
+    assert!(e.iter().all(|k| k.kind == crate::solid::edge_kind::ABOVE));
     assert!(e
         .iter()
         .all(|k| ((k.b - k.a).length() - 885.0).abs() < 1e-6));
