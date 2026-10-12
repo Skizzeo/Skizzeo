@@ -41,6 +41,15 @@ impl Bezug {
             Bezug::Rechts => Bezug::Mitte,
         }
     }
+
+    /// Name in der Statuszeile.
+    pub fn name(self) -> &'static str {
+        match self {
+            Bezug::Mitte => "Mitte",
+            Bezug::Links => "links",
+            Bezug::Rechts => "rechts",
+        }
+    }
 }
 
 /// Die Tür am Cursor über einer Innenwand.
@@ -144,6 +153,16 @@ impl Innentuer {
             self.breite = self.breite.saturating_sub(1);
         }
         self.breite != alt
+    }
+
+    /// Breite und Bezugspunkt für die Statuszeile, z. B.
+    /// „Tür 88,5 cm · Bezug Mitte“.
+    pub fn anzeige(&self) -> String {
+        format!(
+            "Tür {} cm · Bezug {}",
+            crate::ui::cm_text(self.breite_mm()),
+            self.bezug.name()
+        )
     }
 
     /// **Tab**: nächster Bezugspunkt.
@@ -328,7 +347,8 @@ mod tests {
 
     /// **Tab** schaltet den Bezugspunkt Mitte, links, rechts; links und
     /// rechts wie aus dem Raum des Cursors zur Wand gesehen. Das Mausrad
-    /// blättert durch die Normbreiten und bleibt an den Enden.
+    /// blättert durch die Normbreiten und bleibt an den Enden. Die
+    /// Statuszeile sagt Breite und Bezugspunkt (Einstellungen #99, B1).
     #[test]
     fn tab_und_mausrad() {
         let (m, _, st) = haus();
@@ -341,10 +361,12 @@ mod tests {
             (a.min(b), a.max(b))
         };
         assert_eq!(lichte(&mut t), (2557.5, 3442.5));
+        assert_eq!(t.anzeige(), "Tür 88,5 cm · Bezug Mitte");
         // Aus dem Raum bei +x zur Wand geschaut (Blick nach −x) liegt
         // links −y: die linke Kante am Cursor, die Tür geht nach +y
         t.tab();
         assert_eq!(t.bezug, Bezug::Links);
+        assert_eq!(t.anzeige(), "Tür 88,5 cm · Bezug links");
         assert_eq!(lichte(&mut t), (3000.0, 3885.0));
         t.tab();
         assert_eq!(lichte(&mut t), (2115.0, 3000.0));
@@ -357,6 +379,10 @@ mod tests {
             t.rad(-1.0);
         }
         assert_eq!(t.breite_mm(), 635.0);
+        assert_eq!(t.anzeige(), "Tür 63,5 cm · Bezug Mitte");
+        t.rad(1.0);
+        assert_eq!(t.anzeige(), "Tür 76 cm · Bezug Mitte");
+        t.rad(-1.0);
         assert_eq!(lichte(&mut t), (2682.5, 3317.5));
     }
 }

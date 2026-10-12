@@ -172,6 +172,7 @@ impl App {
                     t.tab();
                     t.nochmal(m, st);
                 });
+                self.tuer_anzeigen();
                 true
             }
             _ => false,
@@ -179,24 +180,32 @@ impl App {
     }
 
     /// Mausrad über einer Innenwand mit der Innentür am Cursor: blättert die
-    /// Breiten statt zu zoomen. `true`, wenn das Werkzeug es nahm.
+    /// Breiten statt zu zoomen, mit Strg zoomt es weiter. `true`, wenn das
+    /// Werkzeug es nahm.
     pub(crate) fn tuer_rad(&mut self, ev: &Event) -> bool {
-        let Event::Wheel { delta, .. } = *ev else {
+        let Event::Wheel { delta, mods, .. } = *ev else {
             return false;
         };
-        let am_cursor = self
-            .tool
-            .oeffnung
-            .as_ref()
-            .is_some_and(|w| w.innen.hover.is_some());
-        if !self.innentuer_an() || !am_cursor {
+        if mods.ctrl {
+            return false;
+        }
+        if !self.innentuer_an() || !self.tuer_hover() {
             return false;
         }
         self.tuer_bild(|t, m, st| {
             t.rad(delta);
             t.nochmal(m, st);
         });
+        self.tuer_anzeigen();
         true
+    }
+
+    /// Statuszeile: Breite und Bezugspunkt der Innentür am Cursor.
+    fn tuer_anzeigen(&mut self) {
+        let t = self.tool.oeffnung.as_ref().map(|w| w.innen.anzeige());
+        if let Some(t) = t {
+            self.status(Meldung::mit("{}", &[&t]), crate::NOTICE_TIME);
+        }
     }
 
     /// Innentür im Grundriss: Werkzeug „Tür“ in der Grundrissansicht.
@@ -238,10 +247,24 @@ impl App {
             (Some(p), Some(q)) => Some((p, (q - p).length())),
             _ => None,
         };
+        let vorher = self.tuer_hover();
         self.tuer_bild(|t, m, st| match hit {
             Some((p, tol)) => t.suchen(m, st, p, tol, z),
             None => t.weg(),
         });
+        // Kommt die Tür an eine Innenwand, sagt die Statuszeile Breite und
+        // Bezugspunkt (Einstellungen #99, B1)
+        if !vorher && self.tuer_hover() {
+            self.tuer_anzeigen();
+        }
+    }
+
+    /// Hängt die Innentür als Vorschau an einer Innenwand?
+    fn tuer_hover(&self) -> bool {
+        self.tool
+            .oeffnung
+            .as_ref()
+            .is_some_and(|w| w.innen.hover.is_some())
     }
 
     /// Klick mit der Innentür am Cursor: setzt sie als ein Schritt; lehnt
