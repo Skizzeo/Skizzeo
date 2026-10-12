@@ -1,0 +1,881 @@
+//! Abgleich der gespeicherten Räume mit den erkannten Flächen (Grundriss G3,
+//! schnittstelle-raum.md §4).
+//!
+//! Ankerregel (gilt für jeden, der das Modell liest, ohne Vorgeschichte):
+//! Jede Fläche hat höchstens einen geltenden Raum unter den Räumen, deren
+//! Anker in ihr liegt: zuerst einen, dessen Anker auf seiner Stempellage in
+//! dieser Fläche steht (dorthin rückt ihn jeder Abgleich), sonst den
+//! ältesten. Die übrigen ruhen mit ihren Daten und leben wieder auf, wenn
+//! ihre Fläche zurückkommt.
+//!
+//! Beim Abschluss eines Schritts folgt jeder Raum seiner Fläche (Review #87
+//! B4, R1), wenn der Stand davor bekannt ist ([`Stand`]): Eine unveränderte
+//! Fläche behält ihren Raum. Die übrigen Räume gehen an die neuen Flächen,
+//! die sie überdecken, so dass möglichst viele Räume eine Fläche behalten
+//! (Wand verschoben, auch weit über den Stempel des Nachbarn: beide Seiten
+//! bleiben). Unter diesen Zuordnungen behält ein Raum möglichst die Fläche
+//! mit seinem Anker, wenn sie überwiegend aus ihm hervorgeht (geteilt: der
+//! Teil mit dem Stempel), dann gilt die größte Überdeckung (vereint: der
+//! größere Anteil). Die Anker rücken auf den Stempel in der neuen Fläche,
+//! so gibt die Ankerregel danach dasselbe. Jede Fläche ohne Raum bekommt einen neuen („Raum n“),
+//! außer es liegt der lesbare Anker einer rohen `[space]`-Zeile der Datei
+//! darin (Regel 72): Deren Raum zählt nicht, bekommt aber keinen zweiten.
+//! Nur die Hausgruppen, deren Wände der Schritt ändert, werden angesehen.
+
+use crate::speicher::{beruehren, drin, Fl, Kasten, Lage, NachSchluessel, Raster};
+use sk_math::{vec3, Vec3};
+use sk_model::{ElementId, ElementKind, Model, Space, StoreyId};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+/// So nah (mm) an seiner Stempellage gilt ein Anker als dorthin gerückt.
+const GESETZT: f64 = 0.01;
+
+/// Räume des Geschosses, deren Anker `filter` annimmt, ältere zuerst
+/// (R-002 vor R-010 vor R-1000).
+pub(crate) fn raeume_im(
+    m: &Model,
+    g: StoreyId,
+    filter: impl Fn(Vec3) -> bool,
+) -> Vec<(ElementId, &Space)> {
+    let mut v: Vec<(&str, ElementId, &Space)> = m
+        .elements()
+        .iter()
+        .filter_map(|(id, e)| match &e.kind {
+            ElementKind::Space(s) if e.storey == g && filter(s.anker) => {
+                Some((e.number.as_str(), id, &**s))
+            }
+            _ => None,
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
+    v.into_iter().map(|(_, id, s)| (id, s)).collect()
+}
+
+/// Stempellage des Raums `s` in der Fläche `f`: die verschobene, wenn sie
+/// in ihr liegt, sonst ihre Mitte.
+pub(crate) fn stempel_in(s: &Space, f: &Fl) -> Vec3 {
+    s.stempel.filter(|p| f.enthaelt(*p)).unwrap_or(f.form.mitte)
+}
+
+fn gesetzt(s: &Space, f: &Fl) -> bool {
+    let p = stempel_in(s, f);
+    (s.anker.x - p.x).abs() <= GESETZT && (s.anker.y - p.y).abs() <= GESETZT
+}
+
+/// Geltender Raum je Fläche nach der Ankerregel; `raeume` ältere zuerst.
+pub(crate) fn zuteilen(fl: &[&Fl], raeume: &[(ElementId, &Space)]) -> Vec<Option<ElementId>> {
+    let kaesten: Vec<Kasten> = fl.iter().map(|f| f.kasten).collect();
+    let raster = Raster::neu(&kaesten);
+    let mut z: Vec<Option<(ElementId, bool)>> = vec![None; fl.len()];
+    for &(id, s) in raeume {
+        let Some(i) = raster
+            .bei(s.anker)
+            .iter()
+            .map(|&i| i as usize)
+            .find(|&i| fl[i].enthaelt(s.anker))
+        else {
+            continue;
+        };
+        let g = gesetzt(s, fl[i]);
+        match z[i] {
+            None => z[i] = Some((id, g)),
+            Some((_, false)) if g => z[i] = Some((id, true)),
+            _ => {}
+        }
+    }
+    z.into_iter().map(|x| x.map(|(id, _)| id)).collect()
+}
+
+/// Geltende Räume eines Geschosses je Hausgruppe, zum Stand vor einem
+/// Schritt ([`Lage::stand`], [`abgleichen_lage`]).
+#[derive(Clone, Default)]
+pub struct Stand {
+    gruppen: NachSchluessel<Rc<StandGruppe>>,
+}
+
+/// Flächen einer Hausgruppe mit ihrem geltenden Raum.
+pub(crate) type StandGruppe = Vec<(Rc<Fl>, Option<ElementId>)>;
+
+impl Stand {
+    pub(crate) fn setzen(&mut self, schluessel: u64, raeume: Rc<StandGruppe>) {
+        self.gruppen.insert(schluessel, raeume);
+    }
+
+    /// Zahl der geltenden Räume.
+    pub fn raeume(&self) -> usize {
+        self.gruppen
+            .values()
+            .flat_map(|g| g.iter())
+            .filter(|r| r.1.is_some())
+            .count()
+    }
+
+    /// Hausgruppe, Fläche (je ihr Fingerabdruck) und geltender Raum,
+    /// geordnet: Zwei Stände mit gleicher Zuordnung sind gleich.
+    pub fn zuordnung(&self) -> Vec<(u64, u64, Option<ElementId>)> {
+        let mut v: Vec<_> = self
+            .gruppen
+            .iter()
+            .flat_map(|(&s, g)| g.iter().map(move |(f, r)| (s, f.kennung, *r)))
+            .collect();
+        v.sort_by_key(|&(s, f, r)| (s, f, r.map(|id| id.index())));
+        v
+    }
+
+    /// Der Stand vor dem Schritt, dessen Abgleich `w` ergab, aus dem
+    /// danach (Rückgängig).
+    pub fn zurueck(&mut self, w: &Wechsel) {
+        for (s, _) in &w.dazu {
+            self.gruppen.remove(s);
+        }
+        self.gruppen.extend(w.weg.iter().cloned());
+    }
+
+    /// Der Stand nach dem Schritt, dessen Abgleich `w` ergab, aus dem
+    /// davor (Wiederholen).
+    pub fn vor(&mut self, w: &Wechsel) {
+        for (s, _) in &w.weg {
+            self.gruppen.remove(s);
+        }
+        self.gruppen.extend(w.dazu.iter().cloned());
+    }
+}
+
+/// Was ein Abgleich am [`Stand`] ändert: die Hausgruppen, die der Schritt
+/// ersetzt, und die neuen. So folgt der Stand Rückgängig und Wiederholen,
+/// ohne neu gerechnet zu werden (Review #87 R5).
+#[derive(Clone, Default)]
+pub struct Wechsel {
+    weg: Vec<(u64, Rc<StandGruppe>)>,
+    dazu: Vec<(u64, Rc<StandGruppe>)>,
+}
+
+/// Räume des Geschosses, die gerade ruhen (keine Fläche oder ein anderer
+/// Raum gilt in ihrer Fläche).
+pub fn ruhende(m: &Model, geschoss: StoreyId) -> Vec<ElementId> {
+    let gelten: HashSet<ElementId> = crate::raeume(m, geschoss)
+        .iter()
+        .filter_map(|f| f.raum)
+        .collect();
+    m.spaces(geschoss)
+        .into_iter()
+        .filter(|id| !gelten.contains(id))
+        .collect()
+}
+
+/// Ergebnis von [`abgleichen_lage`].
+pub struct Abgleich {
+    /// Neu angelegte Räume mit ihrer Rohbaufläche (mm²).
+    pub neu: Vec<(ElementId, f64)>,
+    /// Geltende Räume nach dem Abgleich (Stand vor dem nächsten Schritt).
+    pub stand: Stand,
+    /// Wie der Stand davor in den danach übergeht; nur mit Stand davor.
+    pub wechsel: Option<Wechsel>,
+    /// Zahl der Änderungen am Modell (0: nichts geändert).
+    pub aenderungen: usize,
+}
+
+/// Gleicht das Geschoss der `lage` im offenen Schritt ab (siehe Modulkopf);
+/// `alt`: Stand vor dem Schritt, ohne ihn gilt nur die Ankerregel.
+pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abgleich {
+    let g = lage.geschoss;
+    let mit_stand = alt.is_some();
+    let mut alt = alt.unwrap_or_default();
+    let mut out = Abgleich {
+        neu: Vec::new(),
+        stand: Stand::default(),
+        wechsel: None,
+        aenderungen: 0,
+    };
+    // Unveränderte Hausgruppen behalten ihre Räume
+    let mut geaendert = Vec::new();
+    for (gi, gr) in lage.gruppen.iter().enumerate() {
+        match alt.gruppen.remove(&gr.schluessel) {
+            Some(sg) => {
+                out.stand.gruppen.insert(gr.schluessel, sg);
+            }
+            None => geaendert.push(gi),
+        }
+    }
+    let mut wechsel = Wechsel::default();
+    if mit_stand {
+        wechsel.weg = alt.gruppen.iter().map(|(&s, g)| (s, g.clone())).collect();
+    }
+    if geaendert.is_empty() {
+        out.wechsel = mit_stand.then_some(wechsel);
+        return out;
+    }
+    // Flächen der geänderten Gruppen, in der Ordnung der Räume
+    let mut neu: Vec<(usize, Rc<Fl>)> = geaendert
+        .iter()
+        .flat_map(|&gi| lage.gruppen[gi].formen.iter().map(move |f| (gi, f.clone())))
+        .collect();
+    neu.sort_by(|a, b| Fl::ordnung(&a.1, &b.1));
+    let fl: Vec<&Fl> = neu.iter().map(|(_, f)| f.as_ref()).collect();
+    let kaesten: Vec<Kasten> = geaendert
+        .iter()
+        .map(|&gi| lage.gruppen[gi].kasten)
+        .collect();
+    let bereich = Raster::neu(&kaesten);
+    let im_bereich = |p: Vec3| {
+        bereich
+            .bei(p)
+            .iter()
+            .any(|&i| drin(&kaesten[i as usize], p))
+    };
+    // Mit dem Stand davor folgen die Räume der weggefallenen Gruppen ihrer
+    // Fläche
+    let mut paare = Vec::new();
+    if mit_stand {
+        let mut alte: Vec<(&str, ElementId, &Fl)> = alt
+            .gruppen
+            .values()
+            .flat_map(|g| g.iter())
+            .filter_map(|(f, r)| {
+                let id = (*r)?;
+                let e = m.element(id)?;
+                (e.storey == g && m.space(id).is_some()).then_some((e.number.as_str(), id, &**f))
+            })
+            .collect();
+        alte.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
+        let alte: Vec<(ElementId, &Fl)> = alte.into_iter().map(|(_, id, f)| (id, f)).collect();
+        paare = nach_ueberdeckung(m, &alte, &fl);
+        for &(id, i) in &paare {
+            out.aenderungen += anker_auf_stempel(m, id, fl[i]);
+        }
+    }
+    let mut z = zuteilen(&fl, &raeume_im(m, g, im_bereich));
+    // Ein ruhender, älterer Raum, dessen verschobener Stempel in einer
+    // zugeordneten Fläche liegt, gibt die Stempellage ab und ruht weiter
+    let mut nochmal = false;
+    for &(id, i) in &paare {
+        if let Some(y) = z[i].filter(|y| *y != id) {
+            if m.space(y).is_some_and(|s| s.stempel.is_some()) {
+                m.set_space(y, |s| s.stempel = None);
+                out.aenderungen += 1;
+                nochmal = true;
+            }
+        }
+    }
+    if nochmal {
+        z = zuteilen(&fl, &raeume_im(m, g, im_bereich));
+    }
+    // Anker auf den Stempel; jede Fläche ohne Raum bekommt einen, außer es
+    // liegt der lesbare Anker einer rohen `[space]`-Zeile darin (Regel 72)
+    let mut namen = None;
+    let mut roh = None;
+    for (i, f) in fl.iter().enumerate() {
+        match z[i] {
+            Some(id) => out.aenderungen += anker_auf_stempel(m, id, f),
+            None if roh
+                .get_or_insert_with(|| m.raw_space_anchors(g))
+                .iter()
+                .any(|p| f.enthaelt(*p)) => {}
+            None => {
+                let name = namen
+                    .get_or_insert_with(|| m.freie_raumnamen())
+                    .next()
+                    .unwrap_or_default();
+                let id = m.add_space(g, Space::neu(f.form.mitte, name));
+                z[i] = Some(id);
+                out.neu.push((id, f.form.flaeche));
+                out.aenderungen += 1;
+            }
+        }
+    }
+    let mut je: HashMap<usize, StandGruppe> = HashMap::new();
+    for ((gi, f), r) in neu.iter().zip(&z) {
+        je.entry(*gi).or_default().push((f.clone(), *r));
+    }
+    for gi in geaendert {
+        let raeume = Rc::new(je.remove(&gi).unwrap_or_default());
+        let s = lage.gruppen[gi].schluessel;
+        wechsel.dazu.push((s, raeume.clone()));
+        out.stand.setzen(s, raeume);
+    }
+    out.wechsel = mit_stand.then_some(wechsel);
+    out
+}
+
+/// Rückt den Anker des Raums auf seine Stempellage in `f`; 1, wenn er sich
+/// bewegt hat.
+fn anker_auf_stempel(m: &mut Model, id: ElementId, f: &Fl) -> usize {
+    let Some(s) = m.space(id) else {
+        return 0;
+    };
+    let ziel = stempel_in(s, f);
+    if s.anker == ziel {
+        return 0;
+    }
+    m.set_space(id, |s| s.anker = ziel);
+    1
+}
+
+/// Paare (Raum, Nummer der neuen Fläche) nach dem Stand davor; `alte`:
+/// geltende Räume der weggefallenen Gruppen mit ihrer alten Fläche, ältere
+/// zuerst (siehe Modulkopf).
+fn nach_ueberdeckung(m: &Model, alte: &[(ElementId, &Fl)], neu: &[&Fl]) -> Vec<(ElementId, usize)> {
+    let mut frei_a = vec![true; alte.len()];
+    let mut frei_n = vec![true; neu.len()];
+    let mut paare = Vec::new();
+    // Unveränderte Fläche
+    let mut gleich: NachSchluessel<Vec<usize>> = NachSchluessel::default();
+    for (i, f) in neu.iter().enumerate() {
+        gleich.entry(f.kennung).or_default().push(i);
+    }
+    for (a, &(id, f)) in alte.iter().enumerate() {
+        let i = gleich
+            .get(&f.kennung)
+            .and_then(|v| v.iter().copied().find(|&i| frei_n[i]));
+        if let Some(i) = i {
+            frei_a[a] = false;
+            frei_n[i] = false;
+            paare.push((id, i));
+        }
+    }
+    // Anteil jeder neuen Fläche, der in einer alten liegt (Stichproben)
+    let mut anteil: Vec<(usize, usize, f64)> = Vec::new();
+    for (i, f) in neu.iter().enumerate() {
+        if !frei_n[i] {
+            continue;
+        }
+        let kand: Vec<usize> = (0..alte.len())
+            .filter(|&a| frei_a[a] && beruehren(&alte[a].1.kasten, &f.kasten))
+            .collect();
+        if kand.is_empty() {
+            continue;
+        }
+        let p = proben(f);
+        for a in kand {
+            let n = p.iter().filter(|q| alte[a].1.enthaelt(**q)).count();
+            if n > 0 {
+                anteil.push((a, i, n as f64 / p.len() as f64));
+            }
+        }
+    }
+    // Überdeckungen über 1 % der kleineren Fläche; mit Anker: die neue
+    // Fläche enthält den Anker und geht überwiegend aus dem Raum hervor
+    let kanten: Vec<Kante> = anteil
+        .iter()
+        .filter_map(|&(a, i, q)| {
+            let f = q * neu[i].form.flaeche;
+            if f <= 0.01 * alte[a].1.form.flaeche.min(neu[i].form.flaeche) {
+                return None;
+            }
+            let anker = q > 0.5 && m.space(alte[a].0).is_some_and(|s| neu[i].enthaelt(s.anker));
+            Some(Kante { a, i, f, anker })
+        })
+        .collect();
+    for teil in teile(&kanten, alte.len()) {
+        paare.extend(zuordnen(&teil).into_iter().map(|(a, i)| (alte[a].0, i)));
+    }
+    paare
+}
+
+/// Überdeckung des alten Raums `a` mit der neuen Fläche `i` (mm²).
+#[derive(Clone, Copy)]
+struct Kante {
+    a: usize,
+    i: usize,
+    f: f64,
+    anker: bool,
+}
+
+/// Die Kanten je zusammenhängendem Teil (über gemeinsame alte Räume oder
+/// neue Flächen); `na`: Zahl der alten Räume.
+fn teile(k: &[Kante], na: usize) -> Vec<Vec<Kante>> {
+    let n = na + k.iter().map(|k| k.i + 1).max().unwrap_or(0);
+    let mut eltern: Vec<usize> = (0..n).collect();
+    fn wurzel(e: &mut [usize], mut i: usize) -> usize {
+        while e[i] != i {
+            e[i] = e[e[i]];
+            i = e[i];
+        }
+        i
+    }
+    for k in k {
+        let (x, y) = (wurzel(&mut eltern, k.a), wurzel(&mut eltern, na + k.i));
+        eltern[x.max(y)] = x.min(y);
+    }
+    let mut je: HashMap<usize, Vec<Kante>> = HashMap::new();
+    for k in k {
+        je.entry(wurzel(&mut eltern, k.a)).or_default().push(*k);
+    }
+    let mut v: Vec<(usize, Vec<Kante>)> = je.into_iter().collect();
+    v.sort_by_key(|t| t.0);
+    v.into_iter().map(|t| t.1).collect()
+}
+
+/// Beste Paare (alter Raum, neue Fläche) eines Teils (siehe Modulkopf):
+/// zuerst möglichst viele Paare (eine verschobene Wand lässt beiden Räumen
+/// ihre Seite, Review #87 R1), dann möglichst viele mit Anker (geteilt: der
+/// Teil mit dem Stempel), dann die größte Überdeckung (vereint: der größere
+/// Anteil), bei Gleichstand der ältere Raum.
+fn zuordnen(k: &[Kante]) -> Vec<(usize, usize)> {
+    let mut za: Vec<usize> = k.iter().map(|k| k.a).collect();
+    let mut zi: Vec<usize> = k.iter().map(|k| k.i).collect();
+    for v in [&mut za, &mut zi] {
+        v.sort_unstable();
+        v.dedup();
+    }
+    let n = za.len().min(zi.len()) as f64;
+    // Rangfolge über die Gewichte: ein Paar mehr wiegt mehr als alle Anker
+    // und Überdeckungen, ein Anker mehr mehr als alle Überdeckungen
+    let anker = n + 1.0;
+    let paar = n * (anker + 2.0);
+    let fmax = k.iter().map(|k| k.f).fold(0.0, f64::max).max(1e-9);
+    let alt = |a: usize| 1e-6 * (za.len() - a) as f64 / za.len() as f64;
+    let quer = za.len() > zi.len();
+    let (zeilen, spalten) = if quer {
+        (zi.len(), za.len())
+    } else {
+        (za.len(), zi.len())
+    };
+    let mut w = vec![vec![0.0; spalten]; zeilen];
+    for k in k {
+        let a = za.binary_search(&k.a).unwrap_or_default();
+        let i = zi.binary_search(&k.i).unwrap_or_default();
+        let g = paar + if k.anker { anker } else { 0.0 } + k.f / fmax + alt(a);
+        if quer {
+            w[i][a] = g;
+        } else {
+            w[a][i] = g;
+        }
+    }
+    beste_zuordnung(&w)
+        .into_iter()
+        .enumerate()
+        .filter(|&(z, s)| w[z][s] > 0.0)
+        .map(|(z, s)| if quer { (za[s], zi[z]) } else { (za[z], zi[s]) })
+        .collect()
+}
+
+/// Spalte je Zeile mit der größten Summe der Gewichte (Ungarische Methode,
+/// O(n² m)); `w` hat höchstens so viele Zeilen wie Spalten.
+fn beste_zuordnung(w: &[Vec<f64>]) -> Vec<usize> {
+    let n = w.len();
+    let m = w.first().map_or(0, |r| r.len());
+    let max = w.iter().flatten().copied().fold(0.0, f64::max);
+    let mut u = vec![0.0; n + 1];
+    let mut v = vec![0.0; m + 1];
+    // Zeile (ab 1) je Spalte, 0: frei; Spalte 0 ist der Anker der Suche
+    let mut p = vec![0usize; m + 1];
+    let mut weg = vec![0usize; m + 1];
+    for i in 1..=n {
+        p[0] = i;
+        let mut j0 = 0;
+        let mut minv = vec![f64::INFINITY; m + 1];
+        let mut besucht = vec![false; m + 1];
+        loop {
+            besucht[j0] = true;
+            let i0 = p[j0];
+            let (mut delta, mut j1) = (f64::INFINITY, 0);
+            for j in 1..=m {
+                if !besucht[j] {
+                    let c = max - w[i0 - 1][j - 1] - u[i0] - v[j];
+                    if c < minv[j] {
+                        minv[j] = c;
+                        weg[j] = j0;
+                    }
+                    if minv[j] < delta {
+                        delta = minv[j];
+                        j1 = j;
+                    }
+                }
+            }
+            for j in 0..=m {
+                if besucht[j] {
+                    u[p[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    minv[j] -= delta;
+                }
+            }
+            j0 = j1;
+            if p[j0] == 0 {
+                break;
+            }
+        }
+        while j0 != 0 {
+            let j1 = weg[j0];
+            p[j0] = p[j1];
+            j0 = j1;
+        }
+    }
+    let mut zu = vec![0; n];
+    for j in 1..=m {
+        if p[j] > 0 {
+            zu[p[j] - 1] = j - 1;
+        }
+    }
+    zu
+}
+
+/// Stichproben in der Fläche: Mitten eines Gitters von etwa 1000 Zellen
+/// über ihrem Kasten, die in ihr liegen; mindestens ihre Mitte.
+fn proben(f: &Fl) -> Vec<Vec3> {
+    let k = f.kasten;
+    let (w, h) = (k[2] - k[0], k[3] - k[1]);
+    let s = (w * h / 1024.0).sqrt().max(1.0);
+    let nx = (w / s).ceil().max(1.0) as usize;
+    let ny = (h / s).ceil().max(1.0) as usize;
+    let mut v = Vec::new();
+    for y in 0..ny {
+        for x in 0..nx {
+            let p = vec3(
+                k[0] + (x as f64 + 0.5) * w / nx as f64,
+                k[1] + (y as f64 + 0.5) * h / ny as f64,
+                0.0,
+            );
+            if f.enthaelt(p) {
+                v.push(p);
+            }
+        }
+    }
+    if v.is_empty() {
+        v.push(f.form.mitte);
+    }
+    v
+}
+
+/// Gleicht die Geschosse `geschosse` im offenen Schritt nach der
+/// Ankerregel ab (ohne Stand davor, alles neu gerechnet): legt für jede
+/// Fläche ohne Raum einen an und rückt die Anker der geltenden Räume auf
+/// ihren Stempel. Gibt die Zahl der Änderungen zurück (0: nichts geändert).
+pub fn abgleichen(m: &mut Model, geschosse: &[StoreyId]) -> usize {
+    let mut n = 0;
+    for &g in geschosse {
+        let lage = crate::Erkennung::default().lage(m, m, g);
+        n += abgleichen_lage(m, &lage, None).aenderungen;
+    }
+    n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::erkennung::{raeume, RaumForm};
+    use sk_model::{Category, Direction, RefSide, RunId};
+
+    /// Haus 10 × 8 m, Außenwand Bezug außen.
+    fn haus() -> (Model, StoreyId, f64) {
+        let mut m = Model::new();
+        let st = m.defaults().storey;
+        let aw = m.defaults().exterior_wall;
+        let t: f64 = m.wall_layers(aw).iter().map(|l| l.thickness).sum();
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall)
+            .unwrap();
+        (m, st, t)
+    }
+
+    fn innenwand(m: &mut Model, st: StoreyId, t: f64, x: f64) -> RunId {
+        let iw = m.defaults().interior_wall;
+        let pts = [vec3(x, t, 0.0), vec3(x, 8000.0 - t, 0.0)];
+        m.add_wall_run(&pts, false, RefSide::Center, st, iw, Category::InteriorWall)
+            .unwrap()
+    }
+
+    /// Gleicht alle Geschosse ab.
+    fn ab(m: &mut Model) -> usize {
+        let g: Vec<StoreyId> = m.storeys().iter().map(|(id, _)| id).collect();
+        abgleichen(m, &g)
+    }
+
+    fn name(m: &Model, f: &RaumForm) -> String {
+        f.raum.and_then(|id| m.space(id)).unwrap().name.clone()
+    }
+
+    /// Regel 72 (BIM-Datenmodell zu #87): Liegt der lesbare Anker einer
+    /// rohen `[space]`-Zeile in einer Fläche, bekommt sie keinen zweiten
+    /// Raum, ohne lesbaren Anker einen neuen; die Zeile bleibt.
+    #[test]
+    fn rohe_zeile_haelt_ihre_flaeche() {
+        let (mut m, st, t) = haus();
+        m.begin("Wand");
+        innenwand(&mut m, st, t, 3000.0);
+        ab(&mut m);
+        m.commit().unwrap();
+        let rechts = |m: &Model, st| {
+            raeume(m, st)
+                .into_iter()
+                .find(|f| f.enthaelt(vec3(8000.0, 4000.0, 0.0)))
+                .unwrap()
+        };
+        let bad = rechts(&m, st).raum.unwrap();
+        m.begin("Name");
+        m.set_space(bad, |s| s.name = "Bad".into());
+        m.commit().unwrap();
+        let text = sk_model::szo::write(&m);
+        let zeile = text.lines().find(|l| l.contains("name=\"Bad\"")).unwrap();
+        let g = m.storey(st).unwrap().guid;
+        for (kaputt, neu) in [
+            (zeile.replace(" name=\"Bad\"", ""), 0),
+            (zeile.replace(" at=", " at=x"), 1),
+        ] {
+            let text = text.replace(zeile, &kaputt);
+            let mut l = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1))
+                .unwrap()
+                .model;
+            let st = l.storeys().iter().find(|(_, s)| s.guid == g).unwrap().0;
+            let n = l.spaces(st).len();
+            l.begin("Abgleich");
+            ab(&mut l);
+            l.commit();
+            assert_eq!(l.spaces(st).len(), n + neu, "{kaputt}");
+            assert_eq!(rechts(&l, st).raum.is_some(), neu == 1, "{kaputt}");
+            assert!(sk_model::szo::write(&l).contains(&kaputt), "{kaputt}");
+        }
+    }
+
+    #[test]
+    fn neuer_raum_teilen_vereinen_rueckgaengig() {
+        let (mut m, st, t) = haus();
+        assert_eq!(raeume(&m, st)[0].raum, None, "noch nicht angelegt");
+        m.begin("Raum");
+        assert_eq!(ab(&mut m), 2, "EG und OG (der Ring steht in beiden)");
+        assert_eq!(ab(&mut m), 0, "zweimal ändert nichts");
+        m.commit().unwrap();
+        let r = raeume(&m, st);
+        let r1 = r[0].raum.unwrap();
+        assert_eq!(name(&m, &r[0]), "Raum 1", "EG zuerst");
+        assert_eq!(m.space(r1).unwrap().anker, r[0].mitte, "Anker am Stempel");
+
+        // Teilen: der Teil mit dem Stempel (rechts) behält den Raum
+        m.begin("Wand");
+        let w = innenwand(&mut m, st, t, 3000.0);
+        assert_eq!(ab(&mut m), 2, "neuer Raum, der Anker des alten rückt");
+        let teilen = m.commit().unwrap();
+        let r = raeume(&m, st);
+        let rechts = r
+            .iter()
+            .find(|f| f.enthaelt(vec3(8000.0, 4000.0, 0.0)))
+            .unwrap();
+        let links = r
+            .iter()
+            .find(|f| f.enthaelt(vec3(1000.0, 4000.0, 0.0)))
+            .unwrap();
+        assert_eq!(rechts.raum, Some(r1));
+        assert_eq!(name(&m, links), "Raum 3", "Raum 2 ist das OG");
+        let r2 = links.raum.unwrap();
+
+        // Vereinen: der ältere gilt, der andere ruht mit seinen Daten
+        m.begin("Name");
+        m.set_space(r2, |s| s.name = "Küche".into());
+        m.commit().unwrap();
+        m.begin("Löschen");
+        assert!(m.remove_run(w));
+        ab(&mut m);
+        m.commit().unwrap();
+        let r = raeume(&m, st);
+        assert_eq!((r.len(), r[0].raum), (1, Some(r1)));
+        assert_eq!(ruhende(&m, st), vec![r2]);
+
+        // Kommt die Wand zurück, lebt die Küche wieder auf
+        m.begin("Wand");
+        innenwand(&mut m, st, t, 3000.0);
+        ab(&mut m);
+        m.commit().unwrap();
+        assert!(ruhende(&m, st).is_empty());
+        let r = raeume(&m, st);
+        let links = r
+            .iter()
+            .find(|f| f.enthaelt(vec3(1000.0, 4000.0, 0.0)))
+            .unwrap();
+        assert_eq!(name(&m, links), "Küche");
+        assert_eq!(m.spaces(st).len(), 2, "kein dritter Raum");
+
+        // Rückgängig nimmt den beim Teilen angelegten Raum mit
+        let mut m2 = haus().0;
+        m2.begin("Raum");
+        ab(&mut m2);
+        m2.commit().unwrap();
+        m2.begin("Wand");
+        innenwand(&mut m2, st, t, 3000.0);
+        ab(&mut m2);
+        let t2 = m2.commit().unwrap();
+        assert_eq!(m2.spaces(st).len(), 2);
+        m2.apply(&t2, Direction::Undo);
+        assert_eq!(m2.spaces(st).len(), 1);
+        assert_eq!(teilen.label, t2.label);
+    }
+
+    #[test]
+    fn nur_geschosse_mit_geaenderten_waenden() {
+        let (mut m, st, t) = haus();
+        assert!(m.wand_geschosse_im_schritt().is_empty(), "ohne Schritt");
+        m.begin("Wand");
+        assert!(m.wand_geschosse_im_schritt().is_empty());
+        let w = innenwand(&mut m, st, t, 3000.0);
+        assert_eq!(m.wand_geschosse_im_schritt(), vec![st]);
+        let g = m.wand_geschosse_im_schritt();
+        assert_eq!(abgleichen(&mut m, &g), 2, "nur das EG, zwei Räume");
+        m.commit().unwrap();
+        m.begin("Löschen");
+        m.remove_run(w);
+        assert_eq!(m.wand_geschosse_im_schritt(), vec![st], "auch gelöschte");
+        m.rollback();
+    }
+
+    #[test]
+    fn verschobener_stempel_entscheidet() {
+        let (mut m, st, t) = haus();
+        m.begin("Raum");
+        ab(&mut m);
+        m.commit().unwrap();
+        let r1 = raeume(&m, st)[0].raum.unwrap();
+        // Stempel nach links geschoben: beim Teilen behält der linke Teil
+        m.begin("Stempel");
+        m.set_space(r1, |s| s.stempel = Some(vec3(1500.0, 2000.0, 0.0)));
+        ab(&mut m);
+        m.commit().unwrap();
+        assert_eq!(m.space(r1).unwrap().anker, vec3(1500.0, 2000.0, 0.0));
+        m.begin("Wand");
+        innenwand(&mut m, st, t, 3000.0);
+        ab(&mut m);
+        m.commit().unwrap();
+        let r = raeume(&m, st);
+        let links = r.iter().find(|f| f.raum == Some(r1)).unwrap();
+        assert!(links.enthaelt(vec3(1000.0, 4000.0, 0.0)));
+        assert_eq!(links.stempel, vec3(1500.0, 2000.0, 0.0));
+    }
+
+    /// Name des Raums, der die Fläche um `p` trägt.
+    fn name_bei(m: &Model, st: StoreyId, p: Vec3) -> String {
+        let r = raeume(m, st);
+        let f = r.iter().find(|f| f.enthaelt(p)).expect("Fläche");
+        name(m, f)
+    }
+
+    /// Schritt mit Abgleich gegen den Stand davor (wie die Szene).
+    fn schritt(m: &mut Model, st: StoreyId, f: impl FnOnce(&mut Model)) -> Abgleich {
+        let vorher = crate::Erkennung::default().lage(m, m, st).stand(m);
+        m.begin("Schritt");
+        f(m);
+        let lage = crate::Erkennung::default().lage(m, m, st);
+        let a = abgleichen_lage(m, &lage, Some(vorher));
+        m.commit();
+        a
+    }
+
+    fn wand_nach(m: &mut Model, w: RunId, x: f64) {
+        let pts: Vec<Vec3> = m
+            .run(w)
+            .unwrap()
+            .points
+            .iter()
+            .map(|p| vec3(x, p.y, 0.0))
+            .collect();
+        assert!(m.set_run_points(w, &pts).is_some());
+    }
+
+    /// Haus mit Innenwand bei x = 3 m: links „Bad“, rechts „Wohnen“; das
+    /// Bad ist der ältere Raum oder der jüngere.
+    fn bad_und_wohnen(bad_aelter: bool) -> (Model, StoreyId, RunId) {
+        let (mut m, st, t) = haus();
+        m.begin("Raum");
+        if !bad_aelter {
+            ab(&mut m);
+        }
+        let w = innenwand(&mut m, st, t, 3000.0);
+        ab(&mut m);
+        m.commit().unwrap();
+        let r = raeume(&m, st);
+        m.begin("Namen");
+        for (f, n) in r.iter().filter(|f| f.geschoss == st).zip(["Bad", "Wohnen"]) {
+            m.set_space(f.raum.unwrap(), |s| s.name = n.into());
+        }
+        m.commit().unwrap();
+        let bad = r[0].raum.unwrap();
+        let wohnen = r[1].raum.unwrap();
+        let nummer = |id| m.element(id).unwrap().number.clone();
+        assert_eq!(nummer(bad) < nummer(wohnen), bad_aelter);
+        (m, st, w)
+    }
+
+    /// Review #87 B4, R1: Die Innenwand springt in einem Schritt von 3 m
+    /// auf 1,4 bis 9 m, auch über den Stempel des Wohnens; links bleibt das
+    /// Bad, rechts das Wohnen, kein neuer Raum, keiner ruht, und die
+    /// Ankerregel sagt danach dasselbe.
+    #[test]
+    fn wand_verschoben_namen_bleiben() {
+        for bad_aelter in [true, false] {
+            for x in [
+                1400.0, 2500.0, 6000.0, 6600.0, 7000.0, 8000.0, 8500.0, 9000.0,
+            ] {
+                let (mut m, st, w) = bad_und_wohnen(bad_aelter);
+                let n = m.spaces(st).len();
+                let a = schritt(&mut m, st, |m| wand_nach(m, w, x));
+                let fall = format!("x = {x}, Bad älter: {bad_aelter}");
+                assert!(a.neu.is_empty(), "{fall}");
+                assert_eq!(m.spaces(st).len(), n, "{fall}");
+                assert!(ruhende(&m, st).is_empty(), "{fall}");
+                assert_eq!(
+                    name_bei(&m, st, vec3(x - 500.0, 4000.0, 0.0)),
+                    "Bad",
+                    "{fall}"
+                );
+                assert_eq!(
+                    name_bei(&m, st, vec3(x + 500.0, 4000.0, 0.0)),
+                    "Wohnen",
+                    "{fall}"
+                );
+                assert_eq!(a.stand.raeume(), 2, "{fall}");
+            }
+        }
+    }
+
+    /// Vereint gilt der größere Anteil, auch wenn er der jüngere ist; kommt
+    /// die Wand zurück, lebt der kleinere wieder auf, auch mit einem
+    /// verschobenen Stempel.
+    #[test]
+    fn vereint_gilt_der_groessere() {
+        for stempel in [false, true] {
+            let (mut m, st, w) = bad_und_wohnen(true);
+            let bad = raeume(&m, st)[0].raum.unwrap();
+            if stempel {
+                m.begin("Stempel");
+                m.set_space(bad, |s| {
+                    s.stempel = Some(vec3(1000.0, 2000.0, 0.0));
+                    s.anker = vec3(1000.0, 2000.0, 0.0);
+                });
+                m.commit().unwrap();
+            }
+            let a = schritt(&mut m, st, |m| assert!(m.remove_run(w)));
+            assert!(a.neu.is_empty());
+            assert_eq!(name_bei(&m, st, vec3(5000.0, 4000.0, 0.0)), "Wohnen");
+            assert_eq!(ruhende(&m, st), vec![bad], "Stempel {stempel}");
+            let t = m
+                .wall_layers(m.defaults().exterior_wall)
+                .iter()
+                .map(|l| l.thickness)
+                .sum();
+            let a = schritt(&mut m, st, |m| {
+                innenwand(m, st, t, 3000.0);
+            });
+            assert!(a.neu.is_empty());
+            assert_eq!(name_bei(&m, st, vec3(1000.0, 4000.0, 0.0)), "Bad");
+            assert_eq!(name_bei(&m, st, vec3(5000.0, 4000.0, 0.0)), "Wohnen");
+            assert!(ruhende(&m, st).is_empty());
+        }
+    }
+
+    /// Ohne geänderte Wände bleibt alles, wie es ist: kein Abgleich in
+    /// unveränderten Hausgruppen.
+    #[test]
+    fn unveraenderte_gruppe_bleibt() {
+        let (mut m, st, _) = bad_und_wohnen(true);
+        let vorher = crate::Erkennung::default().lage(&m, &m, st).stand(&m);
+        m.begin("Nichts");
+        let lage = crate::Erkennung::default().lage(&m, &m, st);
+        let a = abgleichen_lage(&mut m, &lage, Some(vorher));
+        assert_eq!((a.aenderungen, a.stand.raeume()), (0, 2));
+        assert!(m.commit().is_none());
+    }
+}

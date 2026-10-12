@@ -190,7 +190,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 96] = [
+pub const SIZE_ROLES: [SizeRole; 98] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -320,6 +320,16 @@ pub const SIZE_ROLES: [SizeRole; 96] = [
     ("ghost_alpha_paper", "Isolieren: Deckkraft Zeichnung", |t| {
         &mut t.size.ghost_alpha_paper
     }),
+    (
+        "stamp_hover_alpha",
+        "Raumstempel: Hinterlegung unter der Maus",
+        |t| &mut t.size.stamp_hover_alpha,
+    ),
+    (
+        "stamp_select_alpha",
+        "Raumstempel: Hinterlegung gewählt",
+        |t| &mut t.size.stamp_select_alpha,
+    ),
     ("right_width", "Rechte Spalte: Breite", |t| {
         &mut t.size.right_width
     }),

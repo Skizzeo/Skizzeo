@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod flaeche;
 pub mod polygon;
 pub mod sonne;
 pub mod utm;

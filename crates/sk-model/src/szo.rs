@@ -15,6 +15,7 @@ mod dach;
 mod hoehen;
 mod lage;
 mod oeffnung;
+mod raum;
 mod sicht;
 
 use crate::attr::{
@@ -1192,6 +1193,7 @@ fn write_known(m: &Model) -> String {
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
+    raum::write_spaces(m, &walls, &mut out);
     for raw in m.ext_raw() {
         out.push_str(raw);
         out.push('\n');
@@ -1501,7 +1503,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 42] = [
+    const KNOWN: [&str; 43] = [
         "opening",
         "pen",
         "linetype",
@@ -1533,6 +1535,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "downpipe",
         "extdef",
         "extpart",
+        "space",
         "prop",
         "cut",
         "sun",
@@ -2053,10 +2056,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             category: keyword(r, "cat", &Category::ALL, category)?,
             storey: r.link("storey", &storey_ids)?,
             layer_set: r.link_opt("set", &set_ids)?,
-            seq: match r.opt("seq") {
-                Some(_) => r.int("seq")?,
-                None => crate::model::WALL_SEQ,
-            },
+            seq: r
+                .opt("seq")
+                .map_or(Ok(crate::model::WALL_SEQ), |_| r.int("seq"))?,
             kind: ElementKind::Wall(Wall {
                 run,
                 seg,
@@ -2475,10 +2477,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             category: Category::Extension,
             storey: r.link("storey", &storey_ids)?,
             layer_set: None,
-            seq: match r.opt("seq") {
-                Some(_) => r.int("seq")?,
-                None => crate::EXT_SEQ,
-            },
+            seq: r.opt("seq").map_or(Ok(crate::EXT_SEQ), |_| r.int("seq"))?,
             kind: ElementKind::Ext(part),
             props: Default::default(),
             locked: false,
@@ -2487,7 +2486,21 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let id = elements.insert(e);
         register(&mut elem_ids, &mut seen, r, g, id)?;
     }
-    // Verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
+    let mut raum_roh = Vec::new();
+    for r in recs("space") {
+        match raum::read(r, &mut number, &storey_ids, &seen, &mut hints) {
+            raum::Lesung::Raum(e) => {
+                register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(*e))?
+            }
+            raum::Lesung::Roh => raum_roh.push(r),
+            raum::Lesung::Weg => {}
+        }
+    }
+    // Rohe Räume und verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
+    let mut space_raw: Vec<_> = raum_roh
+        .into_iter()
+        .filter_map(|r| raum::raw(r, lines[r.line - 1], &mut number, &mut seen, &mut hints))
+        .collect();
     let opening_raw: Vec<_> = verworfen
         .into_iter()
         .filter_map(|r| oeffnung::raw(r, lines[r.line - 1], &mut number, &mut seen, &mut hints))
@@ -2511,6 +2524,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         run.segments = walls.into_iter().map(|w| w.1).collect();
     }
     for r in recs("prop") {
+        if raum::raw_prop(r, lines[r.line - 1], &mut space_raw) {
+            continue;
+        }
         // Eigenschaft eines Bauteils ohne lesbare Erweiterung: bleibt roh
         if r.opt("elem")
             .and_then(Guid::from_ifc)
@@ -2732,6 +2748,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.view_hide = view_hide;
     model.load_plan_cut(plan_cut, plan_cut_raw);
     model.load_opening_raw(opening_raw);
+    model.load_space_raw(space_raw);
     model.load_ausbau(ausbau);
     model.load_ext(ext_defs, ext_raw);
     for (k, n) in counters {

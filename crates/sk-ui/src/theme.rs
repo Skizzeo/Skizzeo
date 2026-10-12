@@ -288,6 +288,10 @@ pub struct Sizes {
     /// Zeichnungen (Grundriss, Schnitt, Ansichten); Kanten wie Flächen.
     pub ghost_alpha_3d: f32,
     pub ghost_alpha_paper: f32,
+    /// Deckkraft der Akzent-Hinterlegung eines Raumstempels im Grundriss,
+    /// unter der Maus und gewählt.
+    pub stamp_hover_alpha: f32,
+    pub stamp_select_alpha: f32,
     /// Rechte Spalte (Ansichten, Baum, Eigenschaften), Paket 4 (dip).
     pub right_width: f32,
     /// Baumpanel: Zeilenhöhe, Einzug je Ebene, Symbol (dip).
@@ -530,6 +534,8 @@ impl Theme {
                 fade_ms: 150.0,
                 ghost_alpha_3d: 0.15,
                 ghost_alpha_paper: 0.25,
+                stamp_hover_alpha: 0.15,
+                stamp_select_alpha: 0.28,
                 right_width: 220.0,
                 tree_row_h: 24.0,
                 tree_indent: 12.0,

@@ -17,7 +17,7 @@ use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FlatRoof, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId,
-    Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain,
+    Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, TypeCategory, WallChain,
     WallQto, COPING_PART, DOWNPIPE_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART,
     ROOF_COPING_PART, ROOF_PART, SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
 };
@@ -26,9 +26,12 @@ use sk_ui::theme::Theme;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "scene_gefaelle.rs"]
 mod gefaelle;
+#[path = "scene_raum.rs"]
+mod raum;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
@@ -501,8 +504,13 @@ pub type KostenLive = (Rc<sk_cost::Katalog>, Vec<Rc<sk_cost::Kostenblatt>>);
 /// Schlüssel eines gemerkten LV: Kostenblatt, Modellstand, Wahl.
 type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
 
+/// Zählt die Szenen für [`Scene::kennung`].
+static SZENEN: AtomicU64 = AtomicU64::new(0);
+
 pub struct Scene {
     model: Model,
+    /// Kennung dieser Szene ([`Scene::kennung`]).
+    kennung: u64,
     /// Deckendicke über den Geschossen je Modellstand ([`schnitt`]).
     decken: schnitt::Decken,
     /// Rolle dieser Sitzung für Kostenoperationen (KA-3b1): `Nutzer`, wenn
@@ -511,10 +519,21 @@ pub struct Scene {
     pub rolle: sk_cost::Rolle,
     /// Gewählter Ablauf: Dachaufbau und Index (Jörn 11.10.).
     drain: Option<(ElementId, usize)>,
+    /// Zuletzt angelegte Räume mit Geschoss und Fläche, bis die App ein
+    /// Namensfeld öffnet (G4).
+    neue_raeume: Vec<(ElementId, sk_model::StoreyId, f64)>,
+    /// Raumerkennung mit Zwischenspeicher je Wandzug und Hausgruppe (Review
+    /// #87 B2, B3).
+    erkennung: RefCell<sk_raum::Erkennung>,
+    /// Geltende Räume je Geschoss zum Stand vor dem offenen Schritt, für
+    /// den Abgleich nach Überdeckung (B4); Rückgängig und Wiederholen führen
+    /// ihn nach ([`Scene::staende_folgen`]), fehlt einer, rechnet ihn
+    /// [`Scene::begin`].
+    staende: HashMap<sk_model::StoreyId, sk_raum::Stand>,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
-    undo: Vec<Txn>,
+    undo: Vec<raum::Schritt>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
-    redo: Vec<Txn>,
+    redo: Vec<raum::Schritt>,
     /// Zählt jeden neuen Schritt im Verlauf (Paket 8b, K3).
     serial: u64,
     /// Zwischenspeicher je Wandzug, über den Arena-Platz der [`RunId`].
@@ -853,12 +872,16 @@ impl Scene {
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
             model,
+            kennung: SZENEN.fetch_add(1, Ordering::Relaxed),
             decken: Default::default(),
             undo: Vec::new(),
             serial: 0,
             redo: Vec::new(),
             rolle: sk_cost::Rolle::Admin,
             drain: None,
+            neue_raeume: Vec::new(),
+            erkennung: RefCell::default(),
+            staende: HashMap::new(),
             cache: Vec::new(),
             dirty: Vec::new(),
             all_dirty: true,
@@ -1078,6 +1101,12 @@ impl Scene {
 
     pub fn model(&self) -> &Model {
         &self.model
+    }
+
+    /// Unterscheidet Szenen (Neu, Öffnen, Sicherung) auch bei gleichem
+    /// Modellstand, für Zwischenspeicher außerhalb der Szene (Review #87 R4).
+    pub fn kennung(&self) -> u64 {
+        self.kennung
     }
 
     /// Aktives Geschoss; gibt es das gewählte nicht mehr, das EG des ersten
@@ -1871,6 +1900,7 @@ impl Scene {
             self.commit();
         }
         self.live.clear();
+        self.staende_fuellen();
         self.model.begin(label);
     }
 
@@ -1891,9 +1921,11 @@ impl Scene {
     /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
+        // Räume folgen den Wänden im selben Schritt (G3)
+        let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
-            Ok(Some(t)) => {
-                self.undo.push(t);
+            Ok(Some(txn)) => {
+                self.undo.push(raum::Schritt { txn, raeume });
                 self.serial += 1;
                 if self.undo.len() > HISTORY {
                     self.undo.remove(0);
@@ -1906,6 +1938,7 @@ impl Scene {
             Err(sk_model::Locked(id)) => {
                 self.locked_hit = Some(id);
                 self.mark_all();
+                self.staende.clear();
             }
         }
         self.live.clear();
@@ -3143,7 +3176,7 @@ impl Scene {
         let grow = self
             .undo
             .last()
-            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+            .is_some_and(|t| GROW_STEPS.contains(&t.txn.label));
         self.grown(grow, |s| s.step(Direction::Undo))
     }
 
@@ -3153,7 +3186,7 @@ impl Scene {
         if self.pending.is_some() {
             return Some("Gebäude erstellt");
         }
-        self.undo.last().map(|t| t.label)
+        self.undo.last().map(|t| t.txn.label)
     }
 
     /// Bezeichnung des Schritts, den „Wiederherstellen“ als Nächstes ausführt.
@@ -3161,7 +3194,7 @@ impl Scene {
         if self.pending.is_some() {
             return None;
         }
-        self.redo.last().map(|t| t.label)
+        self.redo.last().map(|t| t.txn.label)
     }
 
     pub fn redo(&mut self) -> bool {
@@ -3171,7 +3204,7 @@ impl Scene {
         let grow = self
             .redo
             .last()
-            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+            .is_some_and(|t| GROW_STEPS.contains(&t.txn.label));
         self.grown(grow, |s| s.step(Direction::Redo))
     }
 
@@ -3277,15 +3310,19 @@ impl Scene {
     }
 
     fn step(&mut self, dir: Direction) -> bool {
-        let (from, to) = match dir {
-            Direction::Undo => (&mut self.undo, &mut self.redo),
-            Direction::Redo => (&mut self.redo, &mut self.undo),
+        let from = match dir {
+            Direction::Undo => &mut self.undo,
+            Direction::Redo => &mut self.redo,
         };
         let Some(t) = from.pop() else {
             return false;
         };
-        let touched = self.model.apply(&t, dir);
-        to.push(t);
+        let touched = self.model.apply(&t.txn, dir);
+        self.staende_folgen(&t, dir);
+        match dir {
+            Direction::Undo => self.redo.push(t),
+            Direction::Redo => self.undo.push(t),
+        }
         self.mark_touched(&touched);
         self.rebuild_dirty(false);
         true

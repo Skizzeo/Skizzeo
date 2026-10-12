@@ -218,6 +218,8 @@ pub(crate) struct Open {
     /// Zähler der Bauteilnummern beim Öffnen: ein verworfener Schritt
     /// (Vorschau beim Ziehen) verbraucht keine Nummern (Review 61-4).
     pub numbers: Vec<u32>,
+    /// Revision beim Öffnen.
+    pub revision: u64,
     pub changes: Vec<Change>,
     pub noted: std::collections::HashSet<Key>,
     /// Lage der Öffnungen beim Greifen (Ziehen von Wänden, Review #92).

@@ -1196,9 +1196,10 @@ impl Model {
         self.raw_openings().map(|r| r.line.as_str())
     }
 
-    /// Trägt eine rohe `[opening]`-Zeile die Nummer `n`?
+    /// Trägt eine rohe `[opening]`- oder `[space]`-Zeile die Nummer `n`?
     pub(crate) fn raw_number_taken(&self, n: &str) -> bool {
         self.raw_openings().any(|r| r.number.as_deref() == Some(n))
+            || self.raw_spaces().any(|r| r.number.as_deref() == Some(n))
     }
 
     pub(crate) fn load_opening_raw(&mut self, raw: Vec<RawOpening>) {

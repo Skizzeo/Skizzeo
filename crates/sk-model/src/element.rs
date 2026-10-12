@@ -223,6 +223,11 @@ pub enum ElementKind {
     /// Öffnung in Außenwänden (Paket O2): Pfad auf der Außenfläche, Höhen
     /// an den Höhenlinien oder frei ([`crate::oeffnung`]).
     Opening(crate::oeffnung::Opening),
+    /// Raum (Grundriss G3): Anker, Name, Nutzung; die Form rechnet
+    /// `sk-raum` aus den Wänden ([`crate::Space`]). Geboxt, damit ein
+    /// Bauteil nicht größer wird: viele Schritte laufen über alle Bauteile
+    /// (Review #87 B3).
+    Space(Box<crate::model::Space>),
 }
 
 /// Dachterrasse einer Decke (BIM §3). Jede Decke trägt die Werte, auch ohne

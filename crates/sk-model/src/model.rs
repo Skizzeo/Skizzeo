@@ -125,7 +125,7 @@ pub enum NumberError {
     Empty,
     Taken(ElementId),
     /// Die Nummer trägt eine `[opening]`-Zeile der Datei, die nicht zählt
-    /// (Regel 72, Review #86 B3).
+    /// (Regel 72, Review #86 B3), oder eine solche `[space]`-Zeile.
     Reserved,
     NoElement,
 }
@@ -216,6 +216,8 @@ pub struct Model {
     pub(crate) plan_cut_raw: Option<String>,
     /// `[opening]`-Zeilen der Datei, die nicht zählen (Regel 72).
     pub(crate) opening_raw: Vec<oeffnung_model::RawOpening>,
+    /// `[space]`-Zeilen der Datei, die nicht zählen (Regel 72).
+    pub(crate) space_raw: Vec<raum::RawSpace>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -382,6 +384,10 @@ pub use fang::{Fangziele, Wandende, Wandflaeche};
 #[path = "ecke.rs"]
 mod ecke;
 pub use ecke::{EckeFehler, ZugPunkte};
+#[path = "raum.rs"]
+mod raum;
+pub(crate) use raum::RawSpace;
+pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
 
 impl Default for Model {
     fn default() -> Model {
@@ -754,6 +760,7 @@ impl Model {
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
+            space_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -838,6 +845,7 @@ impl Model {
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
+            space_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -1422,7 +1430,8 @@ impl Model {
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Roof { .. }
                 | ElementKind::Downpipe { .. }
-                | ElementKind::Opening(_) => false,
+                | ElementKind::Opening(_)
+                | ElementKind::Space(_) => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -3122,6 +3131,7 @@ impl Model {
         self.txn = Some(Open {
             building_number: self.building_number,
             numbers: self.numbers.to_vec(),
+            revision: self.revision,
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3131,6 +3141,11 @@ impl Model {
 
     pub fn in_step(&self) -> bool {
         self.txn.is_some()
+    }
+
+    /// Revision beim Öffnen des offenen Schritts; `None` ohne Schritt.
+    pub fn step_start_revision(&self) -> Option<u64> {
+        self.txn.as_ref().map(|t| t.revision)
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat
@@ -3218,7 +3233,7 @@ impl Model {
                             ElementKind::Downpipe { roof, .. } => {
                                 strips.extend(self.floor_of_roof(roof))
                             }
-                            ElementKind::Ext(_) => {}
+                            ElementKind::Ext(_) | ElementKind::Space(_) => {}
                             ElementKind::Opening(ref o) => openings.extend(self.opening_runs(o)),
                         }
                     }
@@ -3321,7 +3336,7 @@ impl Model {
                             touched.run(f.run);
                             floors.push(f.run);
                         }
-                        ElementKind::Ext(_) => {}
+                        ElementKind::Ext(_) | ElementKind::Space(_) => {}
                         ElementKind::Opening(ref o) => {
                             m.opening_runs(o).into_iter().for_each(|r| touched.run(r))
                         }
@@ -3776,6 +3791,7 @@ impl Model {
                         out.push(format!("{}: {}", e.number, f.text(self)));
                     }
                 }
+                ElementKind::Space(ref s) => out.extend(raum::pruefe(&e.number, s)),
             }
         }
         // Regel 35: unter jeder auskragenden Decke genau eine Untersichtdämmung

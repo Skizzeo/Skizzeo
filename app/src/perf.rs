@@ -222,11 +222,13 @@ fn town_with_interior(n: usize) -> Scene {
 fn perf_ziehen_mit_innenwaenden() {
     println!();
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8}",
-        "Häuser", "Anschl.", "Ziehen", "Live3D", "Neu"
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8}",
+        "Häuser", "Anschl.", "Ziehen", "Live3D", "Neu", "Loslassen", "Aufbau"
     );
     for n in [1, 10, 100, 1000] {
+        let t0 = std::time::Instant::now();
         let mut s = town_with_interior(n);
+        let aufbau = t0.elapsed().as_secs_f64();
         let joins = s.model().joins().len();
         assert_eq!(joins, 4 * n);
         let run = s.model().runs().ids().next().unwrap();
@@ -247,18 +249,25 @@ fn perf_ziehen_mit_innenwaenden() {
         let live = time(20, || {
             std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
         });
+        // Loslassen mit Abgleich der Räume (Review #87 B3)
+        let t1 = std::time::Instant::now();
         s.commit();
+        let commit = t1.elapsed().as_secs_f64() * 1e3;
         assert!(s.model().check().is_empty());
         println!(
-            "{:>6} {:>8} {:>8.3} {:>8.3} {:>8.3}",
+            "{:>6} {:>8} {:>8.3} {:>8.3} {:>8.3} {:>10.3} {:>8.2}",
             n,
             joins,
             drag,
             live,
-            drag + live
+            drag + live,
+            commit,
+            aufbau
         );
     }
-    println!("Zeiten in ms je Mausbewegung. Ziel B5a: Ziehen < 1 ms.");
+    println!(
+        "Zeiten in ms je Mausbewegung, Loslassen in ms, Aufbau in s. Ziel B5a: Ziehen < 1 ms."
+    );
 }
 
 /// E3: Eine Attributänderung (Stiftfarbe) bei 1000 Häusern kostet nur die
@@ -1572,6 +1581,139 @@ fn perf_ecke_und_wandende() {
         println!("{n:>6} {zeigen:>8.3} {klick:>8.3} {fang:>8.3} {greifen:>8.3}");
     }
     println!("Zeiten in ms; Ziel: Zeigen < 1 ms, Klick (Loslassen) < 8 ms.");
+}
+
+/// Review #87 R2: Raumarbeit je Bild und je Mausbewegung im Grundriss
+/// (Stempel auslegen, Stempel ziehen, Wand ziehen) wächst nicht mit der
+/// Zahl der Häuser; dazu der Schrittbeginn nach Rückgängig (Stand der
+/// Räume). Leerlauf und Ziehen je ganzem Modell im Bild und auf das erste
+/// Haus gezoomt.
+#[test]
+#[ignore]
+fn perf_raumstempel() {
+    use crate::raum_app::stempel::Stempel;
+    use sk_platform::MouseButton;
+    use sk_ui::theme::Theme;
+    use sk_ui::widgets::Fonts;
+    use std::f64::consts::FRAC_PI_2;
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "Häuser",
+        "Räume",
+        "Leer alle",
+        "Leer nah",
+        "Stempel",
+        "Wand",
+        "Wand ohne",
+        "Beginn",
+        "ohne Bild"
+    );
+    let fonts = Fonts::system();
+    let t = Theme::dark();
+    let mods = Modifiers::default();
+    for n in [1, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        let raeume = s.model().spaces(st).len();
+        let alle = crate::fit_parallel(ViewKind::Plan, s.bounds(), W, H);
+        let nah = Camera::parallel(vec3(5000.0, 4000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 6000.0);
+        let mut sp = Stempel::default();
+        let aus = |sp: &mut Stempel, s: &Scene, c: &Camera| {
+            sp.auslegen(s, c, W, H, 1.0, &fonts, &t, &[]);
+        };
+        aus(&mut sp, &s, &nah);
+        let leer_alle = time(50, || aus(&mut sp, &s, &alle));
+        let leer_nah = time(50, || aus(&mut sp, &s, &nah));
+        assert!(sp.bilder.iter().filter(|b| b.raum.is_some()).count() >= 3);
+        // Stempel des mittleren Raums ziehen
+        let b = sp
+            .bilder
+            .iter()
+            .find(|b| b.raum.is_some() && b.punkt.x > 3500.0 && b.punkt.x < 6500.0)
+            .unwrap()
+            .clone();
+        let (x0, y0) = (b.kasten.x + b.kasten.w * 0.5, b.kasten.y + b.kasten.h * 0.5);
+        let ev = |e: Event, sp: &mut Stempel, s: &mut Scene| {
+            sp.handle(&e, s, &nah, W, H, 1.0, &fonts, &t, true);
+        };
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x: x0,
+            y: y0,
+            mods,
+        };
+        ev(down, &mut sp, &mut s);
+        ev(
+            Event::MouseMove {
+                x: x0 + 10.0,
+                y: y0,
+                mods,
+            },
+            &mut sp,
+            &mut s,
+        );
+        let mut flip = false;
+        let stempel = time(20, || {
+            flip = !flip;
+            let x = if flip { x0 + 20.0 } else { x0 + 10.0 };
+            ev(Event::MouseMove { x, y: y0, mods }, &mut sp, &mut s);
+            aus(&mut sp, &s, &nah);
+        });
+        let up = Event::MouseUp {
+            button: MouseButton::Left,
+            x: x0 + 10.0,
+            y: y0,
+            mods,
+        };
+        ev(up, &mut sp, &mut s);
+        // Innenwand x = 3,5 m des ersten Hauses ziehen
+        let iw = s.model().runs().ids().nth(1).unwrap();
+        let orig = s.model().run(iw).unwrap().points.clone();
+        let auf = |dx: f64| -> Vec<sk_math::Vec3> {
+            orig.iter().map(|p| *p + vec3(dx, 0.0, 0.0)).collect()
+        };
+        s.begin("Wand verschieben");
+        let mut flip = false;
+        let wand_ohne = time(20, || {
+            flip = !flip;
+            s.set_run_points(iw, &auf(if flip { -100.0 } else { -200.0 }));
+        });
+        let wand = time(20, || {
+            flip = !flip;
+            s.set_run_points(iw, &auf(if flip { -100.0 } else { -200.0 }));
+            aus(&mut sp, &s, &nah);
+        });
+        s.commit();
+        // Schrittbeginn nach Rückgängig (Stand der Räume), mit einem Bild
+        // dazwischen wie in der App und ohne
+        let (mut beginn, mut ohne_bild) = (Vec::new(), Vec::new());
+        for k in 0..10 {
+            s.begin("Wand verschieben");
+            s.set_run_points(iw, &auf(-300.0 - 10.0 * k as f64));
+            s.commit();
+            assert!(s.undo());
+            if k % 2 == 0 {
+                aus(&mut sp, &s, &nah);
+            }
+            let t0 = Instant::now();
+            s.begin("Wand verschieben");
+            let t = t0.elapsed().as_secs_f64() * 1000.0;
+            if k % 2 == 0 {
+                &mut beginn
+            } else {
+                &mut ohne_bild
+            }
+            .push(t);
+            s.rollback();
+        }
+        let (beginn, ..) = median(&mut beginn);
+        let (ohne_bild, ..) = median(&mut ohne_bild);
+        println!(
+            "{n:>6} {raeume:>6} {leer_alle:>9.3} {leer_nah:>9.3} {stempel:>9.3} {wand:>9.3} {wand_ohne:>9.3} {beginn:>9.3} {ohne_bild:>9.3}"
+        );
+    }
+    println!("Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen).");
 }
 
 /// Eine Tür 88,5 cm mit Aufschlag `swing` mitten in jeder Innenwand.

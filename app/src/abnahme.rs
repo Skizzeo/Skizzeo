@@ -1341,8 +1341,8 @@ fn a26_zwei_getrennte_bauteile() {
     let m = s.model();
     assert_eq!(
         m.elements().len(),
-        12,
-        "4 EG- und 4 OG-Wände, Sohlplatte, Frostschürze, DE-001, DE-002"
+        14,
+        "4 EG- und 4 OG-Wände, Sohlplatte, Frostschürze, DE-001, DE-002, R-001, R-002"
     );
     let (a, b) = (m.element(slab).unwrap(), m.element(footing).unwrap());
     assert_eq!(

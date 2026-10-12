@@ -397,7 +397,7 @@ pub fn sel_kind(m: &sk_model::Model, id: sk_model::ElementId) -> Option<SelKind>
         K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
         K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
         K::Opening(_) => SelKind::Opening,
-        K::Ext(_) | K::Downpipe { .. } => return None,
+        K::Ext(_) | K::Downpipe { .. } | K::Space(_) => return None,
     })
 }
 
