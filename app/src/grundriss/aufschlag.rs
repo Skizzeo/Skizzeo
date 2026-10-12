@@ -1,22 +1,20 @@
 //! Türaufschläge für die Raumstempel (Grundriss G7, plan.md §6a): Der
 //! Viertelkreis, den ein Türblatt überstreicht, bleibt frei, wenn der Stempel
-//! anderswo im Raum Platz hat ([`super::Stempel`]). Gerechnet wird nur, was
-//! die Auslegung braucht, je Modellstand einmal: die Türen des Geschosses,
-//! ein Aufschlag erst für einen Raum im Bild, die Ausweichstelle erst, wenn
+//! anderswo im Raum Platz hat ([`super::Stempel`]). Eine Tür schlägt nur in
+//! einen Raum auf, an den ihre Wand grenzt: Gesucht wird in den Wandzügen
+//! um den Raum, nicht unter allen Türen des Geschosses. Gerechnet wird nur
+//! für Räume im Bild und je Modellstand einmal, die Ausweichstelle erst, wenn
 //! der Stempel an seiner Mitte einen Bogen überdeckt (Review #87 R2, #99 B1).
 
 use crate::scene::Scene;
 use sk_math::{vec3, Vec3};
-use sk_model::oeffnung::DoorLeaf;
-use sk_model::{ElementId, ElementKind, StoreyId};
-use sk_raum::RaumForm;
+use sk_model::wand_loch::DoorSwing;
+use sk_model::{RunId, WallChain};
+use sk_raum::{Begrenzung, RaumForm, Raumflaeche};
 use std::collections::HashMap;
 
 /// Teile des Bogens im Umriss, wie das Blatt im Grundriss gezeichnet wird.
 const BOGEN: usize = 12;
-/// Vorfilter (mm): Das Blatt liegt auf der Rohbauflucht, höchstens eine
-/// Wanddicke neben dem Pfad der Tür (wie beim Griff, `tuer_edit`).
-const DICKE: f64 = 1000.0;
 
 fn flat(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
@@ -41,20 +39,14 @@ pub struct Aufschlag {
 }
 
 impl Aufschlag {
-    /// Aufschlag des Türblatts `l`; `None` ohne Breite.
-    pub fn aus(l: &DoorLeaf) -> Option<Aufschlag> {
-        let band = flat(l.hinge);
-        let (a, b) = (flat(l.line.0), flat(l.line.1));
-        let gegen = if (a - band).length() > (b - band).length() {
-            a
-        } else {
-            b
-        };
-        let r = (gegen - band).length();
+    /// Aufschlag aus dem Wandzug ([`WallChain::door_swings`]); `None` ohne
+    /// Breite.
+    pub fn aus(s: DoorSwing) -> Option<Aufschlag> {
+        let r = s.offen.length();
         (r > 1e-6).then(|| Aufschlag {
-            band,
-            offen: flat(l.swing_into).normalized(),
-            zu: (gegen - band) / r,
+            band: flat(s.band),
+            offen: flat(s.offen) / r,
+            zu: flat(s.zu) / r,
             r,
         })
     }
@@ -92,49 +84,44 @@ impl Aufschlag {
     }
 }
 
-/// Aufschläge der Türen eines Geschosses zu einem Modellstand und die
-/// Ausweichstellen der Stempel, je erst bei Bedarf gerechnet.
+/// Aufschläge und Ausweichstellen je Fläche (Hausgruppe, Nummer) zu einem
+/// Modellstand, je erst bei Bedarf gerechnet.
 #[derive(Default)]
 pub struct Tueren {
-    /// Türen mit Aufschlag: Id und ein Kasten um ihren Pfad, der den
-    /// Aufschlag sicher enthält.
-    liste: Option<Vec<(ElementId, [f64; 4])>>,
-    boegen: HashMap<ElementId, Option<Aufschlag>>,
-    /// Je Fläche (Hausgruppe, Nummer).
+    boegen: HashMap<(usize, usize), Vec<Aufschlag>>,
     stellen: HashMap<(usize, usize), Vec3>,
 }
 
 impl Tueren {
-    /// Aufschläge der Türen des Geschosses `st`, deren Kasten den Kasten
-    /// `k` (mm) eines Raums überdeckt.
-    pub fn bei(&mut self, s: &Scene, st: StoreyId, k: [f64; 4]) -> Vec<Aufschlag> {
-        let m = s.model();
-        let liste = self.liste.get_or_insert_with(|| {
-            m.elements()
-                .iter()
-                .filter_map(|(id, e)| {
-                    let ElementKind::Opening(o) = &e.kind else {
-                        return None;
-                    };
-                    if e.storey != st || o.swing.is_none() || o.path.len() != 2 {
-                        return None;
-                    }
-                    let (a, b) = (o.path[0], o.path[1]);
-                    let r = (b - a).length() + DICKE;
-                    let k = [a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)];
-                    Some((id, [k[0] - r, k[1] - r, k[2] + r, k[3] + r]))
-                })
-                .collect()
+    /// Aufschläge der Türen in den Wandzügen um die Fläche `r` (Hausgruppe
+    /// und Nummer `form`), deren Kasten ihren Kasten überdeckt.
+    pub fn bei(&mut self, s: &Scene, form: (usize, usize), r: &Raumflaeche) -> Vec<Aufschlag> {
+        let v = self.boegen.entry(form).or_insert_with(|| {
+            let m = s.model();
+            let mut zuege: Vec<RunId> = Vec::new();
+            for k in r.form.umriss.iter().chain(r.form.loecher.iter().flatten()) {
+                let Begrenzung::Wand { wand, .. } = k.quelle;
+                if let Some(z) = m.run_of(wand).filter(|z| !zuege.contains(z)) {
+                    zuege.push(z);
+                }
+            }
+            let mut v = Vec::new();
+            let mut aus = |c: &WallChain| {
+                let a = c
+                    .door_swings()
+                    .into_iter()
+                    .filter_map(|(_, sw)| Aufschlag::aus(sw));
+                v.extend(a.filter(|a| ueber(a.kasten(), r.kasten)));
+            };
+            for z in zuege {
+                match s.chain(z) {
+                    Some(c) => aus(c),
+                    None => m.chain(z).iter().for_each(&mut aus),
+                }
+            }
+            v
         });
-        let mut v = Vec::new();
-        for &(id, _) in liste.iter().filter(|(_, kt)| ueber(*kt, k)) {
-            let a = *self.boegen.entry(id).or_insert_with(|| {
-                let l = m.door_leaf_in(id, &|r| s.koerper(r))?;
-                Aufschlag::aus(&l)
-            });
-            v.extend(a.filter(|a| ueber(a.kasten(), k)));
-        }
-        v
+        v.clone()
     }
 
     /// Stelle für den Stempel der Fläche `f` (Hausgruppe und Nummer
@@ -155,7 +142,7 @@ mod tests {
     use crate::terrace_label::touches;
     use crate::ui::ViewKind;
     use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
-    use sk_model::{Category, LevelRef, Model, RefSide, RunId};
+    use sk_model::{Category, ElementId, LevelRef, Model, RefSide, RunId};
     use sk_ui::theme::Theme;
     use sk_ui::widgets::Fonts;
 
@@ -262,9 +249,18 @@ mod tests {
             .clone()
     }
 
-    /// Bogen der Tür `id` in Pixeln.
+    /// Bogen der Tür `id` in Pixeln, aus ihrem Wandzug wie beim Auslegen;
+    /// Band und Richtung wie beim Türblatt des Modells.
     fn bogen(s: &Scene, c: &Camera, id: ElementId) -> Vec<[f64; 2]> {
-        let a = Aufschlag::aus(&s.model().door_leaf(id).unwrap()).unwrap();
+        let l = s.model().door_leaf(id).unwrap();
+        let k = s.model().chain(l.run).unwrap();
+        let sw = k
+            .door_swings()
+            .into_iter()
+            .find(|(h, _)| h.opening == Some(id));
+        let a = Aufschlag::aus(sw.unwrap().1).unwrap();
+        assert!((a.band - vec3(l.hinge.x, l.hinge.y, 0.0)).length() < 1e-6);
+        assert!((a.offen - l.swing_into).length() < 1e-9, "{a:?} {l:?}");
         let z = s.plan_cut();
         a.umriss()
             .iter()

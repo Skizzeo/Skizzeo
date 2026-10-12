@@ -440,7 +440,7 @@ impl Stempel {
             let nur = (aw + 2.0 * pad, ah + 2.0 * pad);
             // Türbögen nur um einen nicht verschobenen Stempel (G7)
             let auf = if f.stempel == f.mitte {
-                tueren.bei(s, raeume.geschoss, r.kasten)
+                tueren.bei(s, k, r)
             } else {
                 Vec::new()
             };
