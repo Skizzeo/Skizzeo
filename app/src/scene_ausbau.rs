@@ -210,13 +210,21 @@ impl Scene {
         self.model.set_view_finish(i, an);
     }
 
-    /// Ausbau innen ins Netz, deckend oder blass wie die Erweiterungen.
-    pub(super) fn ausbau_into(
+    /// Was zu den Wandzügen ins ruhende Netz kommt: Erweiterungen und
+    /// Ausbau innen. Das Live-Netz beim Ziehen ([`Scene::mesh_runs`]) trägt
+    /// nur die gezogenen Züge, sonst stünde beides doppelt im Bild.
+    pub(super) fn zusatz_into(
         &mut self,
         m: &mut [MeshData; 2],
         view: ViewKind,
         section: Option<Plane>,
     ) {
+        self.ext_into(m, view, section);
+        self.ausbau_into(m, view, section);
+    }
+
+    /// Ausbau innen ins Netz, deckend oder blass wie die Erweiterungen.
+    fn ausbau_into(&mut self, m: &mut [MeshData; 2], view: ViewKind, section: Option<Plane>) {
         let Some(i) = platz(view) else {
             return;
         };
@@ -301,6 +309,25 @@ mod tests {
             .map(|f| f[6] as u16)
             .filter(|x| (x & material::CUT != 0) == schnitt && k.contains(&(x & !material::CUT)))
             .count()
+    }
+
+    /// Das Live-Netz beim Ziehen trägt nur die gezogenen Züge: ruhendes und
+    /// Live-Netz ergeben zusammen das ganze, Ausbau und Erweiterungen
+    /// stehen nur einmal darin.
+    #[test]
+    fn nicht_doppelt_im_live_netz() {
+        let (mut s, _) = haus();
+        s.set_view_finish(2, true);
+        let estrich = schluessel(&s, SCREED_SLAB_TYPE_GUID);
+        let a = s.model().runs().iter().next().unwrap().0;
+        let live = s.live_set(a);
+        let ganz = s.mesh(ViewKind::Persp, None, &[]);
+        let rest = s.mesh(ViewKind::Persp, None, &live);
+        let gezogen = s.mesh_runs(ViewKind::Persp, None, &live);
+        assert!(flaechen(&rest, &estrich, false) > 0);
+        assert_eq!(flaechen(&gezogen, &estrich, false), 0);
+        assert_eq!(ganz.faces.len(), rest.faces.len() + gezogen.faces.len());
+        assert_eq!(ganz.edges.len(), rest.edges.len() + gezogen.edges.len());
     }
 
     /// Estrich im Schnitt und im 3D immer, Putz nur mit dem Schalter der

@@ -3375,7 +3375,9 @@ impl Scene {
 
     fn plain_mesh(&mut self, key: &MeshKey) -> MeshData {
         let runs = self.mesh_keys(key);
-        let [m, g] = self.mesh_split(key.0, key.1, &runs);
+        let mut mg = self.mesh_split(key.0, key.1, &runs);
+        self.zusatz_into(&mut mg, key.0, key.1);
+        let [m, g] = mg;
         self.ghost = if self.filtering() {
             Some((key.clone(), self.vis_stamp(), g))
         } else {
@@ -3604,8 +3606,6 @@ impl Scene {
                     }
                 }
             }
-            self.ext_into(&mut m, view, section);
-            self.ausbau_into(&mut m, view, section);
             return m;
         }
         // Gestapelte Züge: die Schale läuft ohne waagerechte Naht durch (G6,
@@ -3708,8 +3708,6 @@ impl Scene {
                 mesh_into(mk, &x, ground);
             }
         }
-        self.ext_into(&mut m, view, section);
-        self.ausbau_into(&mut m, view, section);
         m
     }
 
@@ -3783,7 +3781,9 @@ impl Scene {
             }
         }
         let runs = self.mesh_keys(&key);
-        let [_, g] = self.mesh_split(view, section, &runs);
+        let mut mg = self.mesh_split(view, section, &runs);
+        self.zusatz_into(&mut mg, view, section);
+        let [_, g] = mg;
         g
     }
 
