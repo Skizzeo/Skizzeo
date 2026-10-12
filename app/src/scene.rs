@@ -36,6 +36,8 @@ mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
 mod schnitt;
 use schnitt::UnderMemo;
+#[path = "scene_oeffnung.rs"]
+mod scene_oeffnung;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";

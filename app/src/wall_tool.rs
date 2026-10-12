@@ -115,6 +115,9 @@ pub struct WallTool {
     pub ext: Option<ExtModus>,
     /// Gesetzte Erweiterungsbauteile, die die App abholt.
     pub ext_fertig: Vec<ExtPart>,
+    /// Werkzeug „Wandöffnung“ bzw. „Türöffnung“ (Paket O3) statt Wand;
+    /// die App führt es, hier zeichnet es seine Vorschau.
+    pub oeffnung: Option<crate::oeffnung_app::werkzeug::Werkzeug>,
     /// Wandflächen und freie Enden des aktiven Geschosses (G1, auf z = 0).
     fang: Fangziele,
     /// Stand von `snaps` und `fang` (Modellrevision, Geschoss).
@@ -176,6 +179,7 @@ impl WallTool {
             rubber_dip: 0.0,
             ext: None,
             ext_fertig: Vec::new(),
+            oeffnung: None,
             fang: Fangziele::default(),
             fang_stand: None,
             eingerastet: None,
@@ -505,6 +509,7 @@ impl WallTool {
         self.points.clear();
         self.cursor = None;
         self.input = None;
+        self.oeffnung = None;
         // Neues Projekt: Fangziele beim nächsten Abgleich neu holen
         self.fang_stand = None;
         if !on {
@@ -907,6 +912,9 @@ impl WallTool {
     pub fn helpers(&self, cam: &Camera, scale: f32, theme: &Theme) -> Vec<Helper> {
         let col = &theme.interact;
         let mut out = Vec::new();
+        if let Some(w) = &self.oeffnung {
+            return crate::oeffnung_app::werkzeug::helpers(&w.vorschau, scale, theme);
+        }
         if !self.enabled {
             return out;
         }
