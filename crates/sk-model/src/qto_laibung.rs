@@ -35,7 +35,7 @@ pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
     (
         INNER,
         "m",
-        "Innenlaibung der Außenwand links, rechts und oben, Tiefe bis zum Element (Putz DIN 18350, Maler 18363); Innentüren ohne Laibung, die Umfassungszarge deckt sie",
+        "Innenlaibung der Außenwand links, rechts und oben, Tiefe bis zum Element (Putz DIN 18350, Maler 18363)",
     ),
     (
         FACING,
