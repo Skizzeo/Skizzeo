@@ -34,6 +34,7 @@ pub mod qto;
 pub mod qto_dach;
 pub mod qto_earth;
 pub mod qto_fassade;
+pub mod qto_laibung;
 pub mod qto_oeffnung;
 pub mod qto_site;
 pub mod rechenweg;
@@ -49,6 +50,9 @@ pub mod txn;
 #[cfg(test)]
 mod type_tests;
 pub mod view;
+pub mod vob;
+#[cfg(test)]
+mod vob_tests;
 pub mod wall;
 pub mod wand_loch;
 #[cfg(test)]
