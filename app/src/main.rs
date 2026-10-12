@@ -895,8 +895,8 @@ struct App {
     geschoss: geschossfenster::GeschossFenster,
     ifc: Option<ifc_vorschau::fenster::IfcFenster>,
     /// Baumpanel (Paket 4) und sein Zustand in der App: Hover kommt aus dem
-    /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann kein
-    /// Aufklappen), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
+    /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann bleiben
+    /// die Äste), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
     tree: tree_panel::TreePanel,
     hover_from_tree: bool,
     in_tree: bool,
@@ -6800,18 +6800,15 @@ impl App {
         if !self.edit.is_dragging() {
             self.tree.sync(&self.scene, &self.picking, &self.theme, s);
         }
-        // Auswahl im Modell: Ast aufklappen und hinrollen (nach dem Bau
-        // der Karten, auch beim ersten Bild); leer: alle Karten zu
+        // Auswahl im Modell: Ast auf und hinrollen, leer: alle Karten zu (auch beim ersten Bild)
         let p = self.picking.primary();
-        if p != self.tree_primary {
-            self.tree_primary = p;
-            if !self.tree_picked {
-                match p {
-                    Some(id) => self.tree.reveal(self.scene.model(), id, &self.theme, s),
-                    None => self.tree.fold(),
-                }
+        if p != self.tree_primary && !self.tree_picked {
+            match p {
+                Some(id) => self.tree.reveal(self.scene.model(), id, &self.theme, s),
+                None => self.tree.fold(),
             }
         }
+        self.tree_primary = p;
         self.tree_picked = false;
         // Befehlszeile (Bildvergleiche): überfahrene Zeile leuchtet im Modell
         let cli = self.tree.cli_hover.is_some();
@@ -6916,6 +6913,8 @@ impl App {
     /// Handlung aus dem Baumpanel ausführen.
     fn tree_action(&mut self, a: tree_panel::Action) {
         use tree_panel::Action as A;
+        // Wechselt die Auswahl dadurch (Klick, Löschen, Auge), bleiben die Äste
+        self.tree_picked = true;
         match a {
             A::Select(ids) => self.tree_select(ids),
             A::Storey(sid, ids) => {
@@ -6952,11 +6951,7 @@ impl App {
                 self.tip = None;
                 self.redraw = true;
             }
-            A::Visibility(v) => {
-                // Fällt Ausgeblendetes aus der Auswahl, bleibt der Baum offen
-                self.tree_picked = true;
-                self.fade_to(v);
-            }
+            A::Visibility(v) => self.fade_to(v),
             A::Lock(ids, on) => {
                 let label = if on { "Gesperrt" } else { "Entsperrt" };
                 self.scene.edit_model(label, |m| {
@@ -6967,7 +6962,6 @@ impl App {
             }
             A::Delete(ids) => {
                 self.picking.selected = ids;
-                self.tree_picked = true;
                 self.erase(false);
             }
             A::DeleteBuilding(b) => self.open_confirm(b),
@@ -6986,7 +6980,6 @@ impl App {
             return;
         }
         self.picking.selected = ids;
-        self.tree_picked = true;
         self.quantity.dirty = true;
         if self
             .picking
