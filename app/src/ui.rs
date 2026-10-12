@@ -2135,7 +2135,6 @@ impl Ui {
             Id::Interior | Id::Opening(_) => self.foundation_active,
             Id::DialogMinus | Id::DialogPlus => true,
             Id::DialogStart => self.dialog_invalid(),
-            Id::Gelaende(k) => self.gelaende_blass(k),
             Id::PropsFlush => {
                 self.props_locked()
                     || self

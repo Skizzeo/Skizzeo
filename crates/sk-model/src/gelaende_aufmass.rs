@@ -215,6 +215,11 @@ pub struct Terrain {
     pub points: Vec<TerrainPoint>,
     /// Grenzen als Punktnummern im Umlauf, je Flurstück eine.
     pub boundaries: Vec<Vec<String>>,
+    /// Grenzen als Landeswerte (Ost, Nord in m) im Umlauf, aus dem
+    /// Lageplan (G1c).
+    pub parcels: Vec<Vec<(f64, f64)>>,
+    /// Lageplan als Unterlage (G1c).
+    pub underlay: Option<Underlay>,
     /// Codes, deren Bedeutung von der Vorgabe abweicht.
     pub codes: Vec<(String, Bedeutung)>,
     /// Zeilen der Datei, die nicht zählen, roh (Regel 72).
@@ -230,6 +235,7 @@ impl PartialEq for Terrain {
             &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
         ) && (&self.points, &self.boundaries, &self.codes, &self.raw)
             == (&o.points, &o.boundaries, &o.codes, &o.raw)
+            && (&self.parcels, &self.underlay) == (&o.parcels, &o.underlay)
     }
 }
 
@@ -247,6 +253,8 @@ impl Terrain {
             local: None,
             points: Vec::new(),
             boundaries: Vec::new(),
+            parcels: Vec::new(),
+            underlay: None,
             codes: Vec::new(),
             raw: Vec::new(),
             mesh: Merker::default(),
@@ -264,11 +272,12 @@ impl Terrain {
 
     /// Zuschnitt, wie er gilt.
     pub fn show(&self) -> Show {
-        self.show.unwrap_or(if self.boundaries.is_empty() {
-            Show::All
-        } else {
-            Show::Parcel
-        })
+        self.show
+            .unwrap_or(if self.boundaries.is_empty() && self.parcels.is_empty() {
+                Show::All
+            } else {
+                Show::Parcel
+            })
     }
 
     /// Das Netz (einmal gerechnet, dann gemerkt).
@@ -416,7 +425,7 @@ impl Model {
     }
 
     /// Aufmaß schreiben, ohne die Gründungen nachzuführen.
-    fn put_survey(&mut self, t: Option<Terrain>) -> bool {
+    pub(super) fn put_survey(&mut self, t: Option<Terrain>) -> bool {
         if t.as_ref() == self.terrain() {
             return false;
         }
@@ -654,7 +663,8 @@ impl Terrain {
         Ok((t, a.satz(), hinweise))
     }
 
-    /// Grenzen als Landeswerte; Nummern ohne Punkt fehlen.
+    /// Grenzen als Landeswerte, aus Grenzpunkten und aus dem Lageplan;
+    /// Nummern ohne Punkt fehlen.
     pub fn boundary_rings(&self) -> Vec<Vec<(f64, f64)>> {
         self.boundaries
             .iter()
@@ -663,6 +673,7 @@ impl Terrain {
                     .filter_map(|nr| self.points.iter().find(|p| &p.nr == nr).map(|p| (p.e, p.n)))
                     .collect::<Vec<_>>()
             })
+            .chain(self.parcels.iter().cloned())
             .filter(|r| r.len() >= 3)
             .collect()
     }
@@ -693,6 +704,15 @@ impl Model {
     /// über dem höchsten Geländepunkt am Plattenrand.
     pub fn import_terrain(&mut self, mut t: Terrain) -> bool {
         let vorher = self.foundation_terrain();
+        // Grundstück und Unterlage aus dem Lageplan bleiben, wenn beide in
+        // derselben UTM-Zone liegen (sie passen von selbst zueinander)
+        if let Some(alt) = self
+            .terrain()
+            .filter(|a| a.underlay.is_some() && a.crs == t.crs && matches!(t.crs, Crs::Utm(_)))
+            .filter(|_| t.underlay.is_none())
+        {
+            super::gelaende_lageplan::plan_erben(&mut t, alt);
+        }
         let loc = self.location().normalized();
         let an_seinem_platz = matches!(t.crs, Crs::Utm(z) if loc.utm.is_some_and(|u| u.zone == z));
         // ein neues Aufmaß behält die Art der Höhenlage des alten
@@ -822,7 +842,7 @@ impl Model {
         neu
     }
 
-    fn rahmen_schreiben(&mut self, f: SurveyFrame) -> bool {
+    pub(super) fn rahmen_schreiben(&mut self, f: SurveyFrame) -> bool {
         let Some(t) = self.terrain() else {
             return false;
         };

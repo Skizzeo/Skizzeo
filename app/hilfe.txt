@@ -375,7 +375,8 @@ Erweiterungen | Eingelesene Bauteile wie Stütze oder Treppe setzen, nach Gruppe
 Wandöffnung | Fenster oder Terrassentür in eine Außenwand aufziehen.
 Türöffnung | Haustür in eine Außenwand aufziehen, im Grundriss Innentür in eine Innenwand setzen.
 Gelände | Echtes Gelände aus Höhenaufmaß und Lageplan, Grundstück und Lage des Hauses darauf.
-Lageplan | Lageplan oder Liegenschaftskarte als PDF oder PNG einlesen; kommt mit der nächsten Stufe.
+Lageplan | Lageplan oder Liegenschaftskarte als PDF einlesen; Maßstab, Lage und Flurstück erkennt Skizzeo selbst, auch in verschlüsselten Auszügen ohne Kennwort.
+Flurstück übernehmen | Das erkannte Flurstück wird die Grundstücksgrenze und der Lageplan die Unterlage im Grundriss; ohne Höhen bleibt das Gelände eben.
 Höhen | Punktliste des Vermessers einlesen (CSV, TXT); Spalten, Trennzeichen und Lage erkennt Skizzeo selbst.
 Gelände verschieben | Gelände unter dem Haus verschieben; das Haus bleibt, wo es gezeichnet ist.
 Gelände drehen | Gelände um die Mitte des Hauses drehen; ein positiver Winkel dreht gegen den Uhrzeigersinn.

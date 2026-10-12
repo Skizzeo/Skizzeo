@@ -13,6 +13,11 @@
 //! wird weiter mit allen Punkten. Bei „Umgebung blass“ liegt das ganze
 //! Netz blass da und das Grundstück knapp darüber in Rasen.
 //!
+//! Ohne Höhen (nur das Grundstück aus dem Lageplan, G1c) liegt das
+//! Gelände eben in Höhe OK Gelände, in Form des Grundstücks und mit dem
+//! Abstand der Platte als Umgebung. Der Lageplan liegt im Grundriss als
+//! blasse Unterlage darunter, die Grenzen 0,25 mm.
+//!
 //! Am Haus endet das Gelände wie die Platte (Außenumriss über der
 //! Gründung): kein Rasen, keine Höhenlinie und kein Messpunkt im Haus,
 //! im Schnitt endet die Geländelinie an der Außenwand. Darunter liegt
@@ -22,7 +27,7 @@ use crate::draw_table::{DrawTable, Stroke};
 use crate::ui::ViewKind;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame, Tri, NO_LAYER};
-use sk_model::{edge_kind, material, FootingShape, LevelKind, Model, Show, Solid};
+use sk_model::{edge_kind, material, FootingShape, LevelKind, Model, Show, Solid, UnderlayKind};
 use sk_render::Helper;
 
 /// Abstand der Höhenlinien im Grundriss (m); volle Meter sind
@@ -58,14 +63,18 @@ pub(crate) struct Gelaende {
     kern: Vec<(Vec<P2>, f64, f64)>,
     /// Unterkante des Rands: eine Geländedicke unter dem tiefsten Punkt.
     pub(crate) unten: f64,
+    /// Strecken des Lageplans im Grundriss (mm, auf dem Gelände, nicht im
+    /// Haus) und ob sie Grenzen sind.
+    unterlage: Vec<([Vec3; 2], bool)>,
 }
 
 impl Gelaende {
-    /// Das Gelände zum Modell; `None` ohne Aufmaß, Lage oder Netz.
+    /// Das Gelände zum Modell; `None` ohne Aufmaß, Lage oder Netz. Ohne
+    /// Höhen, aber mit Grundstück eben ([`Gelaende::eben`]).
     pub(crate) fn aus(m: &Model) -> Option<Gelaende> {
         let dreiecke = m.terrain_triangles();
         if dreiecke.is_empty() {
-            return None;
+            return Gelaende::eben(m);
         }
         let (t, f, h0) = (m.terrain()?, m.survey_frame()?, m.terrain_nhn()?);
         let tief = dreiecke
@@ -93,6 +102,69 @@ impl Gelaende {
                 vec3(x, y, (p.h - h0) * 1000.0)
             })
             .collect();
+        let mut g = Gelaende {
+            dreiecke,
+            ringe,
+            show,
+            linien,
+            punkte,
+            haus: Vec::new(),
+            kern: Vec::new(),
+            unten: tief - m.plate_settings().thick,
+            unterlage: Vec::new(),
+        };
+        g.am_haus(m);
+        Some(g)
+    }
+
+    /// Ebenes Gelände in Höhe OK Gelände: das Rechteck um die Grenzen mit
+    /// dem Abstand der Platte, zugeschnitten wie das Netz. `None` ohne
+    /// Grenze oder Lage.
+    fn eben(m: &Model) -> Option<Gelaende> {
+        let t = m.terrain()?;
+        let ringe = m.terrain_boundaries();
+        if ringe.is_empty() {
+            return None;
+        }
+        let (z, s) = (m.terrain_z(), m.plate_settings());
+        let mut k = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for p in ringe.iter().flatten() {
+            k = [
+                k[0].min(p[0]),
+                k[1].min(p[1]),
+                k[2].max(p[0]),
+                k[3].max(p[1]),
+            ];
+        }
+        let [x0, y0, x1, y1] = [
+            k[0] - s.margin,
+            k[1] - s.margin,
+            k[2] + s.margin,
+            k[3] + s.margin,
+        ];
+        let e = [
+            vec3(x0, y0, z),
+            vec3(x1, y0, z),
+            vec3(x1, y1, z),
+            vec3(x0, y1, z),
+        ];
+        let mut g = Gelaende {
+            dreiecke: vec![[e[0], e[1], e[2]], [e[0], e[2], e[3]]],
+            ringe,
+            show: t.show(),
+            linien: Vec::new(),
+            punkte: Vec::new(),
+            haus: Vec::new(),
+            kern: Vec::new(),
+            unten: z - s.thick,
+            unterlage: Vec::new(),
+        };
+        g.am_haus(m);
+        Some(g)
+    }
+
+    /// Umrisse der Häuser und die Innenseiten ihrer Schürzen.
+    fn am_haus(&mut self, m: &Model) {
         let uk = |b| {
             m.storeys()
                 .iter()
@@ -101,12 +173,12 @@ impl Gelaende {
                 .fold(0.0, f64::min)
         };
         let flach = |r: &[Vec3]| r.iter().map(|p| [p.x, p.y]).collect::<Vec<P2>>();
-        let haus = m
+        self.haus = m
             .plate_outlines()
             .into_iter()
             .map(|(b, r)| (flach(&r), uk(b)))
             .collect();
-        let kern = m
+        self.kern = m
             .runs()
             .iter()
             .filter_map(|(id, r)| {
@@ -120,16 +192,29 @@ impl Gelaende {
                 Some((flach(&i.pts), uk(b), uk(b) + f.params.footing_depth))
             })
             .collect();
-        Some(Gelaende {
-            dreiecke,
-            ringe,
-            show,
-            linien,
-            punkte,
-            haus,
-            kern,
-            unten: tief - m.plate_settings().thick,
-        })
+    }
+
+    /// Linien des Lageplans (Modell, mm) auf das Gelände legen.
+    pub(crate) fn mit_unterlage(mut self, l: Vec<(Vec<P2>, bool, UnderlayKind)>) -> Gelaende {
+        // außerhalb des Netzes auf seiner mittleren Höhe
+        let n = (self.dreiecke.len() * 3).max(1) as f64;
+        let mittel = self.dreiecke.iter().flatten().map(|p| p.z).sum::<f64>() / n;
+        // im Haus liegt nichts: jede Strecke einzeln, am Haus geteilt
+        let mut u = Vec::new();
+        for (mut p, zu, art) in l {
+            if zu && p.len() > 2 {
+                p.push(p[0]);
+            }
+            for w in p.windows(2) {
+                for (t0, t1, _) in self.teile(w[0], w[1]) {
+                    let q = [lerp2(w[0], w[1], t0), lerp2(w[0], w[1], t1)]
+                        .map(|p| vec3(p[0], p[1], self.hoehe(p).unwrap_or(mittel)));
+                    u.push((q, art == UnderlayKind::Boundary));
+                }
+            }
+        }
+        self.unterlage = u;
+        self
     }
 
     /// Quader um das Netz bis zur Unterkante des Rands.
@@ -700,6 +785,12 @@ pub(crate) fn linien(
     let mut out = Vec::new();
     match (view, plane.or(fassade)) {
         (ViewKind::Plan, _) => {
+            // Lageplan blass darunter, Grenzen 0,25 mm
+            let grenze = (t.ground.0 * 0.5, blass.1);
+            for ([a, b], ist_grenze) in &g.unterlage {
+                let st = if *ist_grenze { grenze } else { blass };
+                out.push(line(*a, *b, st, solid));
+            }
             for (z, p, haupt) in &g.linien {
                 let stift = if *haupt { t.ground } else { fine };
                 for w in p.windows(2) {
@@ -884,6 +975,59 @@ mod tests {
             .triangles
             .iter()
             .all(|t| t.p.iter().all(|p| p.z >= g.unten - 1e-6)));
+    }
+
+    /// Nur der Lageplan: eben in Höhe OK Gelände, zugeschnitten auf das
+    /// Grundstück ohne das Haus; die Unterlage blass im Grundriss.
+    #[test]
+    fn eben_aus_dem_lageplan() {
+        let mut m = Model::with_seed(7);
+        let b = m.add_building(1);
+        let pts = [
+            vec3(7000.0, 6000.0, 0.0),
+            vec3(7000.0, 14000.0, 0.0),
+            vec3(17000.0, 14000.0, 0.0),
+            vec3(17000.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let roh = include_bytes!("../../crates/sk-gelaende/tests/daten/lageplan-lindenhof-7.pdf");
+        let plan = sk_model::SitePlan::read(roh, 32).unwrap();
+        m.begin("Lageplan");
+        assert!(m.import_parcel(&plan, "lageplan.pdf", None));
+        m.commit();
+        let g = Gelaende::aus(&m)
+            .unwrap()
+            .mit_unterlage(m.underlay_lines(&plan));
+        assert_eq!(g.show, Show::Parcel);
+        let z = m.terrain_z();
+        assert!(g.dreiecke.iter().flatten().all(|p| p.z == z));
+        assert_eq!(g.unten, z - m.plate_settings().thick);
+        let s = koerper(&g, [10, 11, 12]);
+        let rasen: Vec<[Vec3; 3]> = s
+            .triangles
+            .iter()
+            .filter(|t| t.mat == 10)
+            .map(|t| t.p)
+            .collect();
+        let q: Vec<Vec3> = g.haus[0].0.iter().map(|p| vec3(p[0], p[1], 0.0)).collect();
+        let haus = polygon::area(&q) / 1e6;
+        assert!(
+            (flaeche(&rasen) + haus - 822.87).abs() < 0.1,
+            "{}",
+            flaeche(&rasen)
+        );
+        let t = DrawTable::resolve(&m, &sk_ui::theme::Theme::dark());
+        let l = linien(&g, ViewKind::Plan, None, None, &t, 1.0, 10.0);
+        let blass: Vec<&Helper> = l.iter().filter(|h| h.color == t.background.1).collect();
+        assert!(blass.len() > 4, "{}", blass.len());
+        for h in blass {
+            let m = [
+                f64::from(h.a[0] + h.b[0]) / 2.0,
+                f64::from(h.a[1] + h.b[1]) / 2.0,
+            ];
+            assert!(!g.im_haus(m), "Unterlage im Haus: {h:?}");
+        }
+        assert!(l.iter().any(|h| h.pattern == t.section_dash), "Grenze");
     }
 
     /// Grundriss: Höhenlinien im Zuschnitt nur im Grundstück, außerhalb

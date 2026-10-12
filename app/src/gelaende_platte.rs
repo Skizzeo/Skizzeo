@@ -52,6 +52,8 @@ pub(crate) struct Platte {
     props: Option<u64>,
     /// Leiste „Gelände“ (G1).
     pub(crate) leiste: crate::gelaende_app::Zustand,
+    /// Der Lageplan der Unterlage, gelesen (G1c).
+    pub(crate) unterlage: crate::gelaende_app::Unterlage,
 }
 
 impl Platte {
@@ -72,7 +74,8 @@ impl Platte {
         if self.stand != Some(rev) {
             self.stand = Some(rev);
             self.platten = m.terrain_plates();
-            self.gelaende = Gelaende::aus(m);
+            let u = &mut self.unterlage;
+            self.gelaende = Gelaende::aus(m).map(|g| g.mit_unterlage(u.linien(m)));
         }
     }
 }

@@ -1,7 +1,7 @@
 //! Leiste „Gelände“ in der App (plan-gelaendemodul.md §4.7, §4.8 und §5
-//! G1): Knöpfe und Felder der Leiste, das Einlesen des Höhenaufmaßes, die
-//! Höhenlage, der Zuschnitt und das Verschieben und Drehen des Geländes
-//! unter dem Haus. Jede Handlung ist ein Rückgängig-Schritt. Was die
+//! G1, G1c): Knöpfe und Felder der Leiste, das Einlesen von Lageplan und
+//! Höhenaufmaß, die Höhenlage, der Zuschnitt und das Verschieben und Drehen
+//! des Geländes unter dem Haus. Jede Handlung ist ein Rückgängig-Schritt. Was die
 //! Leiste zeigt, kommt aus dem Modell ([`leiste`]); die Zeilen baut
 //! [`crate::ui`].
 
@@ -9,13 +9,19 @@ use crate::meldung::Meldung;
 use crate::selection::de;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, GelaendeLeiste};
 use crate::App;
-use sk_model::{HeightRef, Model, Terrain};
+use sk_model::{Crs, HeightRef, Model, SitePlan, Terrain, UnderlayKind};
 use sk_platform::Surface;
 use std::path::Path;
 
 /// Größte Punktliste, die gelesen wird (Bytes); ein Aufmaß mit 100.000
 /// Punkten hat etwa 5 MB.
 const MAX_DATEI: u64 = 32 << 20;
+
+/// Dateiarten im Dialog „Lageplan einlesen“.
+const FILTER_PDF: [(&str, &str); 2] = [
+    ("Lageplan als PDF (*.pdf)", "*.pdf"),
+    ("Alle Dateien (*.*)", "*.*"),
+];
 
 /// Dateiarten im Dialog; die Endung zählt nicht, Skizzeo liest den Inhalt.
 const FILTER: [(&str, &str); 2] = [
@@ -45,6 +51,10 @@ pub(crate) struct Zustand {
     fehler: Option<Meldung>,
     /// „Höhen“ geklickt: der Dateidialog öffnet nach dem Ereignis.
     pub(crate) hoehen_wanted: bool,
+    /// „Lageplan“ geklickt: ebenso.
+    pub(crate) lageplan_wanted: bool,
+    /// Gelesener Lageplan und seine Datei, bis „Flurstück übernehmen“.
+    plan: Option<(String, SitePlan)>,
     /// Modellstand der Leiste im Paneel; `neu` erzwingt einen Abgleich.
     stand: Option<u64>,
     neu: bool,
@@ -57,7 +67,43 @@ impl Zustand {
         self.tippen = None;
         self.meldung.clear();
         self.fehler = None;
+        self.plan = None;
         self.neu = true;
+    }
+}
+
+/// Der Lageplan der Unterlage im Modell, einmal gelesen je Datei. Fehlt
+/// die Datei, bleibt die Grenze und die Unterlage fehlt.
+#[derive(Default)]
+pub(crate) struct Unterlage {
+    src: Option<String>,
+    plan: Option<SitePlan>,
+}
+
+impl Unterlage {
+    /// Der Lageplan zur Unterlage des Modells; gelesen, wenn sich die
+    /// Datei geändert hat.
+    fn plan(&mut self, m: &Model) -> Option<&SitePlan> {
+        let src = &m.terrain()?.underlay.as_ref()?.src;
+        if self.src.as_ref() != Some(src) {
+            let zone = m.location().utm.map_or(32, |u| u.zone);
+            self.plan = datei(Path::new(src))
+                .ok()
+                .and_then(|roh| SitePlan::read(&roh, zone).ok());
+            self.src = Some(src.clone());
+        }
+        self.plan.as_ref()
+    }
+
+    /// Linien der Unterlage im Modell (mm); leer ohne Lageplan.
+    pub(crate) fn linien(&mut self, m: &Model) -> Vec<(Vec<[f64; 2]>, bool, UnderlayKind)> {
+        self.plan(m).map_or(Vec::new(), |p| m.underlay_lines(p))
+    }
+
+    /// Eben gelesen: kein zweites Lesen derselben Datei.
+    fn merken(&mut self, src: &str, plan: &SitePlan) {
+        self.src = Some(src.to_string());
+        self.plan = Some(plan.clone());
     }
 }
 
@@ -67,6 +113,7 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
     match k {
         GelaendeKnopf::Leiste => "Gelände",
         GelaendeKnopf::Lageplan => "Lageplan",
+        GelaendeKnopf::Uebernehmen => "Flurstück übernehmen",
         GelaendeKnopf::Hoehen => "Höhen",
         GelaendeKnopf::Verschieben => "Gelände verschieben",
         GelaendeKnopf::Drehen => "Gelände drehen",
@@ -102,6 +149,7 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     let mut l = GelaendeLeiste {
         meldung: z.meldung.clone(),
         fehler: z.fehler.clone(),
+        uebernehmen: z.plan.as_ref().is_some_and(|(_, p)| p.parcel.is_some()),
         ..Default::default()
     };
     let Some(t) = m.terrain() else {
@@ -109,6 +157,7 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     };
     let ringe = t.boundary_rings();
     l.aufmass = true;
+    l.hoehen = !t.points.is_empty();
     l.grenze = !ringe.is_empty();
     l.absolut = t.href == HeightRef::Abs;
     l.zuschnitt = Some(t.show());
@@ -170,6 +219,50 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     l
 }
 
+/// Wie ein neues Aufmaß zum Lageplan passt.
+enum Einpassen {
+    /// Kein Lageplan allein oder schon im selben System.
+    Nicht,
+    /// Eingepasst, mit der größten Abweichung (m).
+    Mit(sk_model::Affine, f64),
+    /// Passt nicht; der Satz sagt, was mit der Grenze geschieht.
+    Geht(&'static str),
+}
+
+/// Bis zu [`HINWEISE`] Hinweise, der Rest als Anzahl.
+fn hinweise_anhaengen(meldung: &mut Vec<String>, hinweise: &[String]) {
+    meldung.extend(hinweise.iter().take(HINWEISE).cloned());
+    if hinweise.len() > HINWEISE {
+        let n = hinweise.len() - HINWEISE;
+        meldung.push(format!("und {n} weitere Hinweise"));
+    }
+}
+
+/// Was die Leiste nach dem Lesen eines Lageplans sagt.
+fn lageplan_saetze(p: &SitePlan) -> Vec<String> {
+    let mut v = Vec::new();
+    let mst = |s: f64| format!("1:{}", s.round());
+    match (p.fit, p.scale, p.residual) {
+        (Some(_), Some(s), Some(r)) => v.push(format!(
+            "Lageplan {}, Lage aus den Gitterkreuzen (Restfehler {} cm)",
+            mst(s),
+            de(r * 100.0, 1)
+        )),
+        (Some(_), Some(s), None) => v.push(format!("Lageplan {}, Norden oben", mst(s))),
+        _ => v.push("Maßstab und Lage nicht erkannt".into()),
+    }
+    match (&p.parcel, &p.number) {
+        (Some((nr, _, Some(a))), _) => v.push(format!("Flurstück {nr}, {} m²", de(*a, 2))),
+        (Some((nr, _, None)), _) => v.push(format!("Flurstück {nr}")),
+        (None, Some(nr)) => v.push(format!(
+            "Flurstück {nr}: keine geschlossene Grenze um die Nummer gefunden"
+        )),
+        (None, None) => v.push("Keine Flurstücksnummer im Kopf gefunden".into()),
+    }
+    hinweise_anhaengen(&mut v, &p.hints);
+    v
+}
+
 /// Heutiges Datum als `JJJJ-MM-TT` (Vermerk `[terrain] read=`).
 fn heute() -> String {
     let s = std::time::SystemTime::now()
@@ -208,20 +301,22 @@ impl App {
                 self.nord.set_aktiv(false);
                 self.refresh_cursor();
             }
-            // Kommt mit G1c
-            K::Lageplan => {}
+            K::Lageplan => z.lageplan_wanted = true,
+            K::Uebernehmen => self.flurstueck_uebernehmen(),
             K::Hoehen => z.hoehen_wanted = true,
             K::Verschieben | K::Drehen => z.tippen = (z.tippen != Some(k)).then_some(k),
             K::Ausrichten => {
-                self.gelaende_schritt("Gelände an Grenze ausrichten", |m| m.align_terrain())
+                self.gelaende_schritt("Gelände an Grenze ausrichten", |m| m.align_terrain());
             }
             K::Ueber => {
-                self.gelaende_schritt("Höhenlage über Gelände", |m| m.set_terrain_href(H::High))
+                self.gelaende_schritt("Höhenlage über Gelände", |m| m.set_terrain_href(H::High));
             }
             K::Absolut => {
-                self.gelaende_schritt("Höhenlage absolut", |m| m.set_terrain_href(H::Abs))
+                self.gelaende_schritt("Höhenlage absolut", |m| m.set_terrain_href(H::Abs));
             }
-            K::Zuschnitt(s) => self.gelaende_schritt("Zuschnitt", |m| m.set_terrain_show(s)),
+            K::Zuschnitt(s) => {
+                self.gelaende_schritt("Zuschnitt", |m| m.set_terrain_show(s));
+            }
         }
         self.gelaende_sync();
         self.redraw = true;
@@ -259,19 +354,30 @@ impl App {
     }
 
     /// Eine Änderung am Gelände als ein Schritt; Darstellung und
-    /// Geschossmanager folgen.
-    fn gelaende_schritt(&mut self, label: &'static str, f: impl FnOnce(&mut Model) -> bool) {
-        if self.scene.edit_model(label, f) {
+    /// Geschossmanager folgen. `true`, wenn sich etwas geändert hat.
+    fn gelaende_schritt(
+        &mut self,
+        label: &'static str,
+        f: impl FnOnce(&mut Model) -> bool,
+    ) -> bool {
+        let neu = self.scene.edit_model(label, f);
+        if neu {
             self.upload_model();
             self.sync_levels();
         }
+        neu
     }
 
     /// Dialoge, die nach einem Ereignis öffnen (sie brauchen das Fenster):
-    /// Mengenfenster und „Höhenaufmaß einlesen“.
+    /// Mengenfenster, „Lageplan einlesen“ und „Höhenaufmaß einlesen“.
     pub(crate) fn offene_dialoge(&mut self, surface: &Surface) {
         if std::mem::take(&mut self.quantity_wanted) {
             self.open_quantity(surface);
+        }
+        if std::mem::take(&mut self.platte.leiste.lageplan_wanted) {
+            if let Some(p) = surface.open_dialog("Lageplan einlesen", &FILTER_PDF) {
+                self.lageplan_einlesen(&p);
+            }
         }
         if std::mem::take(&mut self.platte.leiste.hoehen_wanted) {
             if let Some(p) = surface.open_dialog("Höhenaufmaß einlesen", &FILTER) {
@@ -301,16 +407,125 @@ impl App {
             Err(e) => z.fehler = Some(e),
             Ok((t, satz, hinweise)) => {
                 z.meldung.push(satz);
-                z.meldung.extend(hinweise.iter().take(HINWEISE).cloned());
-                if hinweise.len() > HINWEISE {
-                    let n = hinweise.len() - HINWEISE;
-                    z.meldung.push(format!("und {n} weitere Hinweise"));
+                hinweise_anhaengen(&mut z.meldung, &hinweise);
+                match self.lageplan_einpassen(&t) {
+                    Einpassen::Nicht => {
+                        self.gelaende_schritt("Höhenaufmaß eingelesen", |m| m.import_terrain(t));
+                    }
+                    Einpassen::Mit(fit, fehler) => {
+                        self.platte.leiste.meldung.push(format!(
+                            "Lageplan über die Grenzpunkte eingepasst, Abweichung bis {} cm",
+                            de(fehler * 100.0, 1)
+                        ));
+                        self.gelaende_schritt("Höhenaufmaß eingelesen", |m| {
+                            m.import_terrain_fitted(t, fit)
+                        });
+                    }
+                    Einpassen::Geht(warum) => {
+                        self.platte.leiste.meldung.push(warum.into());
+                        self.gelaende_schritt("Höhenaufmaß eingelesen", |m| m.import_terrain(t));
+                    }
                 }
-                self.gelaende_schritt("Höhenaufmaß eingelesen", |m| m.import_terrain(t));
             }
         }
         self.gelaende_sync();
         self.redraw = true;
+    }
+
+    /// Wie ein neues Aufmaß zum Grundstück aus dem Lageplan passt: Liegt
+    /// nur ein Lageplan vor, in einem anderen System, wird er über die
+    /// Grenzpunkte mit gleicher Nummer eingepasst.
+    fn lageplan_einpassen(&mut self, t: &Terrain) -> Einpassen {
+        let m = self.scene.model();
+        let Some(alt) = m.terrain().filter(|a| a.points.is_empty()) else {
+            return Einpassen::Nicht;
+        };
+        if alt.underlay.is_none()
+            || matches!((alt.crs, t.crs), (Crs::Utm(a), Crs::Utm(b)) if a == b)
+        {
+            return Einpassen::Nicht;
+        }
+        let plan = self.platte.unterlage.plan(m);
+        match plan.and_then(|p| p.fit_to(&t.points)) {
+            Some((fit, fehler)) => Einpassen::Mit(fit, fehler),
+            None => Einpassen::Geht(
+                "Lageplan und Aufmaß haben keine zwei Grenzpunkte mit gleicher Nummer; die Grenze aus dem Lageplan entfällt.",
+            ),
+        }
+    }
+
+    /// PDF `p` als Lageplan lesen: Maßstab, Lage und Flurstück stehen in
+    /// der Leiste, „Flurstück übernehmen“ macht es zur Grenze.
+    pub(crate) fn lageplan_einlesen(&mut self, p: &Path) {
+        let zone = self.scene.model().location().utm.map_or(32, |u| u.zone);
+        let gelesen = datei(p)
+            .map_err(|e| Meldung::aus_io("Lageplan nicht eingelesen", "Einlesen", p, &e))
+            .and_then(|roh| SitePlan::read(&roh, zone).map_err(|e| Meldung::mit("{}", &[&e])));
+        let z = &mut self.platte.leiste;
+        z.neu = true;
+        z.meldung.clear();
+        z.fehler = None;
+        z.plan = None;
+        match gelesen {
+            Err(e) => z.fehler = Some(e),
+            Ok(plan) => {
+                z.meldung = lageplan_saetze(&plan);
+                z.plan = Some((p.to_string_lossy().into_owned(), plan));
+            }
+        }
+        self.gelaende_sync();
+        self.redraw = true;
+    }
+
+    /// Das Flurstück des gelesenen Lageplans übernehmen (ein Schritt). Mit
+    /// Aufmaß in einem anderen System wird über die Grenzpunkte mit
+    /// gleicher Nummer eingepasst.
+    fn flurstueck_uebernehmen(&mut self) {
+        let Some((src, plan)) = self.platte.leiste.plan.take() else {
+            return;
+        };
+        let m = self.scene.model();
+        let mut fit = None;
+        let mut satz = None;
+        let gleich = |t: &Terrain| matches!((plan.fit, t.crs), (Some((Crs::Utm(a), _)), Crs::Utm(b)) if a == b);
+        if let Some(t) = m.terrain().filter(|t| !t.points.is_empty() && !gleich(t)) {
+            match plan.fit_to(&t.points) {
+                Some((f, fehler)) => {
+                    fit = Some((t.crs, f));
+                    satz = Some(format!(
+                        "Über die Grenzpunkte des Aufmaßes eingepasst, Abweichung bis {} cm",
+                        de(fehler * 100.0, 1)
+                    ));
+                }
+                None => {
+                    let z = &mut self.platte.leiste;
+                    z.fehler = Some(Meldung::satz(
+                        "Lageplan und Aufmaß liegen in verschiedenen Systemen und haben keine zwei Grenzpunkte mit gleicher Nummer.",
+                    ));
+                    z.plan = Some((src, plan));
+                    return;
+                }
+            }
+        }
+        if plan.fit.is_none() && fit.is_none() {
+            let z = &mut self.platte.leiste;
+            z.fehler = Some(Meldung::satz(
+                "Maßstab und Lage des Lageplans sind nicht erkannt; Einpassen über zwei Punkte folgt.",
+            ));
+            z.plan = Some((src, plan));
+            return;
+        }
+        self.platte.unterlage.merken(&src, &plan);
+        let ok = self.gelaende_schritt("Flurstück übernommen", |m| {
+            m.import_parcel(&plan, &src, fit)
+        });
+        let z = &mut self.platte.leiste;
+        z.meldung.clear();
+        if ok {
+            let nr = plan.parcel.as_ref().map_or("", |p| p.0.as_str());
+            z.meldung.push(format!("Flurstück {nr} übernommen"));
+            z.meldung.extend(satz);
+        }
     }
 
     /// Paneel „Werkzeuge“ an die Leiste angleichen; ein Zeichenwerkzeug
@@ -425,6 +640,7 @@ mod tests {
         for k in [
             K::Leiste,
             K::Lageplan,
+            K::Uebernehmen,
             K::Hoehen,
             K::Verschieben,
             K::Drehen,
@@ -438,5 +654,40 @@ mod tests {
             let z = crate::help::tooltip_lines(knopf_name(k));
             assert_eq!(z.len(), 3, "{k:?}");
         }
+    }
+
+    const PLAN: &[u8] =
+        include_bytes!("../../crates/sk-gelaende/tests/daten/lageplan-lindenhof-7.pdf");
+
+    /// Der Beispiel-Lageplan: Maßstab und Flurstück in der Leiste, dann
+    /// übernommen ein ebenes Grundstück ohne Höhenlage.
+    #[test]
+    fn lageplan_in_der_leiste() {
+        let plan = SitePlan::read(PLAN, 32).unwrap();
+        assert_eq!(
+            lageplan_saetze(&plan),
+            // vom Blatt (Lage auf 0,01 pt, 1,8 mm bei 1:500); das Aufmaß
+            // ergibt 822,87 m²
+            ["Lageplan 1:500, Norden oben", "Flurstück 123/4, 822,90 m²"]
+        );
+        let mut m = lindenhof();
+        let z = Zustand {
+            plan: Some(("lageplan.pdf".into(), plan.clone())),
+            ..Default::default()
+        };
+        let l = leiste(&m, &z);
+        assert!(l.uebernehmen && !l.aufmass);
+        m.begin("Lageplan");
+        assert!(m.import_parcel(&plan, "lageplan.pdf", None));
+        m.commit();
+        let l = leiste(&m, &Zustand::default());
+        assert!(l.aufmass && !l.hoehen && l.grenze && !l.uebernehmen);
+        assert!(l.hoehenlage.is_empty() && l.steckt.is_none());
+        assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,90 m²"));
+        // ohne Datei keine Unterlage, die Grenze bleibt
+        let mut u = Unterlage::default();
+        assert!(u.linien(&m).is_empty());
+        u.merken("lageplan.pdf", &plan);
+        assert!(u.linien(&m).len() > 4);
     }
 }
