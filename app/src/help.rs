@@ -196,7 +196,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 39] = [
+    pub const ALL: [Topic; 40] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
