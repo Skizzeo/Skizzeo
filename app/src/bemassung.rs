@@ -23,8 +23,6 @@ use sk_ui::theme::Theme;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-#[path = "bemassung_bedienen.rs"]
-pub mod bedienen;
 #[cfg(test)]
 #[path = "bemassung_istbilder.rs"]
 mod istbilder;
@@ -56,8 +54,6 @@ pub struct Massketten {
     /// zählt mit, weil „Abbrechen“ im Einstellungsfenster die Revision
     /// zurückstellt.
     stand: Option<((u64, Vec<StoreyId>, Stil), Rc<Stand>)>,
-    /// Bedienen (Stufe 2): Zahl unter der Maus, gewählte Ketten, Eingabe.
-    pub bedienen: bedienen::Bedienen,
 }
 
 /// Ansicht mit Bemaßung (Stufe 1: Grundriss und 3D).
@@ -145,11 +141,6 @@ impl Massketten {
         Some(s)
     }
 
-    /// Der zuletzt gezeigte Stand (zum Treffen mit der Maus).
-    pub fn gezeigt(&self) -> Option<Rc<Stand>> {
-        self.stand.as_ref().map(|(_, s)| s.clone())
-    }
-
     /// Hilfslinien und Tinte der Bemaßung für die Ansicht `v` (leer, wenn
     /// das Zahnrad sie ausblendet oder es nichts zu bemaßen gibt).
     pub fn zeichnen(
@@ -164,15 +155,12 @@ impl Massketten {
         let m = scene.model();
         let (zeigen, bezug) = scene.mass_sicht(v);
         if !ansicht(v) || !zeigen {
-            self.bedienen.sichtbar = false;
             return (Vec::new(), Vec::new());
         }
         let st = geschosse(scene, v, gewaehlt);
         let Some(stand) = self.stand(m, st, ui) else {
-            self.bedienen.sichtbar = false;
             return (Vec::new(), Vec::new());
         };
-        self.bedienen.sichtbar = true;
         let occlude = v == ViewKind::Persp;
         let (mut out, mut ink) = (Vec::new(), Vec::new());
         for (_, b) in &stand.geschosse {
@@ -182,15 +170,6 @@ impl Massketten {
                 out.extend(bezugspunkte(b, scale, theme, occlude));
             }
         }
-        self.bedienen.zeichnen(
-            &stand,
-            m.massstil(),
-            &mut out,
-            &mut ink,
-            scale,
-            theme,
-            occlude,
-        );
         (out, ink)
     }
 }
