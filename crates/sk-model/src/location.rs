@@ -27,6 +27,46 @@ pub struct Location {
     /// (0 … < 360). Nicht gesetzt: Nord ist +y, die Ansichten heißen
     /// weiter „Vorne“, „Hinten“ …
     pub north: Option<f64>,
+    /// Lage des Projektnullpunkts im amtlichen Lagesystem (I4c, ifc/plan.md
+    /// §10), aus dem Lageplan des Vermessers; nur für die Georeferenz im
+    /// IFC, nicht für die Sonne.
+    pub utm: Option<Utm>,
+    /// Höhe von ±0,00 in m über NHN (DHHN2016), −500 … 9000.
+    pub nhn: Option<f64>,
+}
+
+/// Ost- und Nordwert in m im System ETRS89/UTM (EPSG:25832 bzw. 25833).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Utm {
+    /// Ostwert ohne Zonenkennzahl, 100 000 … 900 000.
+    pub e: f64,
+    /// Nordwert, 0 … 10 000 000.
+    pub n: f64,
+    /// Zone 32 oder 33.
+    pub zone: u8,
+}
+
+/// Bereiche der Lage im Landeskoordinatensystem (Datei und Maske).
+pub const UTM_E: (f64, f64) = (100_000.0, 900_000.0);
+pub const UTM_N: (f64, f64) = (0.0, 10_000_000.0);
+pub const UTM_ZONEN: [u8; 2] = [32, 33];
+pub const NHN: (f64, f64) = (-500.0, 9000.0);
+
+/// `v` endlich und in `[lo, hi]`.
+pub fn im_bereich(v: f64, (lo, hi): (f64, f64)) -> bool {
+    v.is_finite() && v >= lo && v <= hi
+}
+
+impl Utm {
+    /// Gültig: Werte im Bereich, Zone 32 oder 33.
+    pub fn gueltig(&self) -> bool {
+        im_bereich(self.e, UTM_E) && im_bereich(self.n, UTM_N) && UTM_ZONEN.contains(&self.zone)
+    }
+
+    /// EPSG-Code des Systems, z. B. 25832.
+    pub fn epsg(&self) -> u32 {
+        25800 + self.zone as u32
+    }
 }
 
 impl Location {
@@ -63,6 +103,8 @@ impl Location {
                 .map(|v| v.rem_euclid(360.0))
                 // −1e-14 ergibt 360,0
                 .map(|v| if v >= 360.0 { 0.0 } else { v }),
+            utm: self.utm.filter(Utm::gueltig),
+            nhn: self.nhn.filter(|v| im_bereich(*v, NHN)),
         }
     }
 }
@@ -247,6 +289,7 @@ mod tests {
             lat: Some(91.0),
             lon: Some(-180.0),
             north: Some(-30.0),
+            ..Location::default()
         }
         .normalized();
         assert_eq!(l.lat, None);
@@ -269,6 +312,22 @@ mod tests {
             ..Default::default()
         };
         assert!(nan.normalized().is_unset());
+        // Landeskoordinaten nur im Bereich und mit Zone 32 oder 33
+        let utm = |e, n, zone| Location {
+            utm: Some(Utm { e, n, zone }),
+            nhn: Some(12.5),
+            ..Default::default()
+        };
+        assert!(utm(467_000.0, 5_878_000.0, 32).normalized().utm.is_some());
+        assert_eq!(utm(467_000.0, 5_878_000.0, 31).normalized().utm, None);
+        assert_eq!(utm(99_999.0, 5_878_000.0, 32).normalized().utm, None);
+        assert_eq!(utm(467_000.0, f64::NAN, 33).normalized().utm, None);
+        assert_eq!(utm(467_000.0, 5e6, 33).normalized().nhn, Some(12.5));
+        let tief = Location {
+            nhn: Some(-501.0),
+            ..Default::default()
+        };
+        assert!(tief.normalized().is_unset());
     }
 
     #[test]
@@ -278,7 +337,7 @@ mod tests {
         let l = Location {
             lat: Some(48.1),
             lon: Some(11.6),
-            north: None,
+            ..Location::default()
         };
         assert_eq!(
             l.lage(g),

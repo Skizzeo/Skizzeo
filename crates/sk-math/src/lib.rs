@@ -7,6 +7,7 @@
 
 pub mod polygon;
 pub mod sonne;
+pub mod utm;
 
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 

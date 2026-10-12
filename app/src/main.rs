@@ -7603,7 +7603,7 @@ fn new_model(
         m.init_location(sk_model::Location {
             lat: Some(ort.breite),
             lon: Some(ort.laenge),
-            north: None,
+            ..Default::default()
         });
     }
     if let Some(s) = ansicht_schatten::festschreiben(None, v.schatten) {
