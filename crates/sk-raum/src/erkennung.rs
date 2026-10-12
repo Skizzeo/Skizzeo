@@ -5,7 +5,7 @@
 //! Eine Fläche, die nur Außenseiten von Außenwänden umgrenzen (Innenhof),
 //! ist kein Raum; ohne Umschließung gibt es keinen Raum und keinen Hinweis.
 
-use sk_math::flaeche::{anordnung, innenpunkt, Bereich, Herkunft, Ring};
+use sk_math::flaeche::{anordnung, innenpunkt, innenpunkt_mit, Bereich, Herkunft, Ring};
 use sk_math::{vec3, Vec3};
 use sk_model::{Category, ElementId, LayerFunction, MaterialId, Model, RunId, StoreyId, WallChain};
 
@@ -109,6 +109,30 @@ impl RaumForm {
                 .iter()
                 .any(|l| sk_math::flaeche::enthaelt(&ring(l), p))
     }
+
+    /// Wie [`RaumForm::mitte`], doch mit Abstand auch zu dem, was frei
+    /// bleiben soll (Türaufschläge für den Stempel, Grundriss G7): `weg`
+    /// ist der Abstand dazu (mm), siehe [`innenpunkt_mit`].
+    pub fn mitte_ohne(&self, weg: impl Fn(Vec3) -> f64) -> Vec3 {
+        let ring = |k: &[Kante]| Ring {
+            punkte: k.iter().map(|k| k.a).collect(),
+            herkunft: (0..k.len())
+                .map(|kante| Herkunft { poly: 0, kante })
+                .collect(),
+        };
+        let b = Bereich {
+            rand: ring(&self.umriss),
+            inseln: self.loecher.iter().map(|l| ring(l)).collect(),
+        };
+        innenpunkt_mit(&b, genau(&b.rand.punkte), weg).0
+    }
+}
+
+/// Genauigkeit der Stempelmitte im Umriss `pts` ([`GENAU`], [`GENAU_ANTEIL`]).
+fn genau(pts: &[Vec3]) -> f64 {
+    crate::speicher::kasten_um(pts).map_or(GENAU, |k| {
+        GENAU.max(GENAU_ANTEIL * (k[2] - k[0]).min(k[3] - k[1]))
+    })
 }
 
 /// Ein Segment im Rohbauumriss: Bauteil, Bezugslinie, Rohbauflächen links
@@ -330,10 +354,7 @@ fn form(b: &Bereich, teile: &[Teil], geschoss: StoreyId) -> RaumForm {
         .chain(loecher.iter().flatten())
         .map(Kante::laenge)
         .sum();
-    let genau = crate::speicher::kasten_um(&b.rand.punkte).map_or(GENAU, |k| {
-        GENAU.max(GENAU_ANTEIL * (k[2] - k[0]).min(k[3] - k[1]))
-    });
-    let mitte = innenpunkt(b, genau).0;
+    let mitte = innenpunkt(b, genau(&b.rand.punkte)).0;
     RaumForm {
         geschoss,
         umriss,
@@ -410,6 +431,30 @@ mod tests {
             assert_eq!(*seite, Seite::Rechts, "Bezug außen links, Raum rechts");
             assert!(nah(bis - von, k.laenge()));
         }
+    }
+
+    /// Die Stempelmitte hält Abstand zu dem, was frei bleiben soll: eine
+    /// Scheibe von 1,50 m um die alte Mitte schiebt sie heraus, ohne etwas
+    /// bleibt sie, wo sie war.
+    #[test]
+    fn mitte_ohne_weicht_aus() {
+        let (m, st, _, _) = haus(true);
+        let r = raeume(&m, st);
+        let f = &r[0];
+        let gleich = f.mitte_ohne(|_| f64::INFINITY);
+        assert!(
+            (gleich - f.mitte).length() < 1.0,
+            "{gleich:?} {:?}",
+            f.mitte
+        );
+        let weg = |p: Vec3| ((p - f.mitte).length() - 1500.0).max(0.0);
+        let p = f.mitte_ohne(weg);
+        assert!(f.enthaelt(p), "{p:?}");
+        assert!(
+            (p - f.mitte).length() > 1500.0 + 500.0,
+            "{p:?} {:?}",
+            f.mitte
+        );
     }
 
     #[test]
