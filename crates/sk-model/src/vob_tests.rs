@@ -231,3 +231,61 @@ fn laibungen_je_oeffnung() {
     let f = auto.iter().find(|a| a.key == INNER).unwrap();
     assert!(f.formula.contains("Tiefe"), "{}", f.formula);
 }
+
+/// Kosten H-L1: Mehr Öffnungen als Schichten: kein Absturz, jede Öffnung
+/// hat ihre Laibungen, die Innentiefe gehört zur innersten Schicht.
+#[test]
+fn viele_oeffnungen() {
+    use crate::qto_laibung::{INNER, WDVS};
+    let (mut m, eg) = haus();
+    let ids: Vec<_> = [
+        (500.0, 1500.0),
+        (2000.0, 3000.0),
+        (3500.0, 4500.0),
+        (5000.0, 6000.0),
+        (6500.0, 7500.0),
+    ]
+    .into_iter()
+    .map(|u| m.add_opening(fenster(&m, eg, u)).unwrap())
+    .collect();
+    let schichten = crate::qto::run_qto(&m, eg)[0].layers.len();
+    assert!(
+        ids.len() > schichten,
+        "{} Öffnungen, {schichten} Schichten",
+        ids.len()
+    );
+    let s = schedule(&m);
+    let innen: Vec<f64> = ids
+        .iter()
+        .map(|id| {
+            let wert = |k: &str| {
+                s.auto
+                    .iter()
+                    .find(|a| a.element == *id && a.key == k)
+                    .map_or(0.0, |a| a.value)
+            };
+            assert!(wert(WDVS) > 0.0, "{id:?} ohne WDVS-Laibung");
+            let f = s
+                .auto
+                .iter()
+                .find(|a| a.element == *id && a.key == INNER)
+                .unwrap();
+            assert!(f.formula.contains("Tiefe"), "{}", f.formula);
+            wert(INNER)
+        })
+        .collect();
+    // gleich große Fenster: gleiche Innenlaibung, gleiche Tiefe
+    assert!(
+        innen
+            .iter()
+            .all(|v| (v - innen[0]).abs() < 1e-9 && *v > 0.0),
+        "{innen:?}"
+    );
+    let tiefen: Vec<&str> = s
+        .auto
+        .iter()
+        .filter(|a| a.key == INNER)
+        .map(|a| a.formula.rsplit("Tiefe").next().unwrap_or(""))
+        .collect();
+    assert!(tiefen.windows(2).all(|w| w[0] == w[1]), "{tiefen:?}");
+}

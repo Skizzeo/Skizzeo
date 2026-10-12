@@ -117,14 +117,16 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
                     bruestung.push(h.opening);
                 }
                 let k = (h.opening, key);
-                let i = match sum.iter().position(|x| x.0 == k) {
-                    Some(i) => i,
+                // `j` ist die Stelle in `sum`, `i` bleibt die Schicht
+                // (Kosten H-L1: sonst falsche Schicht und Absturz)
+                let j = match sum.iter().position(|x| x.0 == k) {
+                    Some(j) => j,
                     None => {
                         sum.push((k, Laibung::default()));
                         sum.len() - 1
                     }
                 };
-                let x = &mut sum[i].1;
+                let x = &mut sum[j].1;
                 x.teile
                     .extend(h.reveal[..3].iter().copied().filter(|v| *v > 0.0));
                 // innen bis zum Element, mit dem Putz der Schicht
