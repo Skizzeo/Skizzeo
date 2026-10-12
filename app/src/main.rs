@@ -241,9 +241,9 @@ const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
 /// Baumpanel (Paket 4) zwischen „Ansichten“ und „Eigenschaften“.
 const OVERLAY_TREE: usize = OVERLAY_VIEWS + 2;
 const OVERLAY_TOOLS: usize = OVERLAY_VIEWS + 3;
-const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 4;
-/// Paneel „Geschosse“.
-const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 5;
+/// Knopf „Geschossmanager“, wie „Werkzeuge“ unter dem Abdunkeln.
+const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 4;
+const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 5;
 /// Dialog „Gebäude erstellen“.
 const OVERLAY_DIALOG: usize = OVERLAY_VIEWS + 6;
 const OVERLAY_TITLE: usize = OVERLAY_VIEWS + 7;
@@ -1228,8 +1228,8 @@ impl App {
         self.tool.fang_aus(&mut self.scene);
         let l = self.scene.levels();
         self.geschoss.dirty |= self.geschoss.ui.set_levels(l.clone());
-        // Im Hauptfenster steht das Diagramm nur neben dem Dialog
-        self.overlay_dirty |= self.ui.set_levels(l) && self.ui.dialog;
+        // Im Hauptfenster steht nur der Knopf, das Diagramm im Geschossfenster
+        self.ui.set_levels(l);
     }
 
     /// Wählt das Bauteil (oder nichts). Ein Bauteil eines anderen Gebäudes
@@ -1249,7 +1249,7 @@ impl App {
     }
 
     /// Knopf „Gebäude“ ohne Gebäude im Modell: Dialog „Gebäude erstellen“
-    /// (E16). Das Gebäude steht sofort im Paneel „Geschosse“.
+    /// (E16). Das Gebäude steht sofort im Geschossfenster, wenn es offen ist.
     fn open_building_dialog(&mut self) {
         if !self.tool_allowed() {
             self.set_view(ViewKind::Persp);
@@ -4768,7 +4768,7 @@ impl App {
 
     /// Lage der App für die Themenwahl (§1.2).
     fn help_ctx(&self) -> help::HelpCtx {
-        use help::{SelKind, Window};
+        use help::Window;
         let window = if self.card.is_some() {
             Some(Window::Backups)
         } else if let Some(p) = &self.prefs {
@@ -4786,21 +4786,10 @@ impl App {
         } else {
             None
         };
-        let m = self.scene.model();
-        let selection = self.sel.id.and_then(|id| {
-            use sk_model::ElementKind as K;
-            Some(match m.element(id)?.kind {
-                K::Wall(_) if m.stack_offset(id).is_some() => SelKind::UpperWall,
-                K::Wall(_) => SelKind::Wall,
-                K::GroundSlab(_) | K::StripFooting(_) | K::PerimeterInsulation { .. } => {
-                    SelKind::Foundation
-                }
-                K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
-                K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
-                // Thema „Erweiterungen“, siehe `sync_help`
-                K::Ext(_) | K::Opening(_) | K::Downpipe { .. } | K::Space(_) => return None,
-            })
-        });
+        let selection = self
+            .sel
+            .id
+            .and_then(|id| help::sel_kind(self.scene.model(), id));
         help::HelpCtx {
             window,
             dialog: self.ui.dialog,
@@ -4812,6 +4801,7 @@ impl App {
                 .tool
                 .enabled
                 .then_some(self.tool.category == Category::InteriorWall),
+            opening: self.tool.oeffnung.is_some(),
             isolating: self.scene.isolating().is_some(),
             selection,
             view: self.ui.view,
@@ -8422,18 +8412,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let chips_on =
                 matches!(a.ui.view, ViewKind::Plan | ViewKind::Persp) && !a.tool.is_active();
             a.chips = if chips_on {
-                link_view::chips(&link_view::Want {
-                    scene: &a.scene,
-                    cam: &a.cam,
-                    w: vw,
-                    h: vh,
-                    top: th as f64,
-                    scale: scale as f64,
-                    plan_z: a.plan_z(),
-                    band: a.edit.active_wall(),
-                    hover: a.chip_hover,
-                    keep_linked: a.flush_keep,
-                })
+                a.ketten_chips(vw, vh, th as f64, scale as f64)
             } else {
                 Vec::new()
             };

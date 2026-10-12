@@ -73,7 +73,13 @@ impl AvaView {
         let hier = self.los.map_or(0, |g| zahl(s, g));
         if hier == 0 {
             if let Some(g) = lose.iter().map(|l| l.0).find(|g| zahl(s, *g) > 0) {
+                // Die Druckvorschau bleibt offen, auch groß (Jörn 12.10.)
+                let (blatt, gross) = (self.ansicht == Ansicht::Blatt, self.gross);
                 self.waehle_los(g);
+                if blatt {
+                    self.zeige(Ansicht::Blatt);
+                    self.gross = gross.map(|_| 0.0);
+                }
                 if !self.offen.contains(&g) {
                     self.offen.push(g);
                 }

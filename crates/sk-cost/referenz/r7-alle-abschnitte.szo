@@ -171,6 +171,7 @@ SZO 4
 [spacetype] guid=3bIRb62BUylWXxAOWLry2z name="Arbeitszimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [spacetype] guid=3jxEtgf1$vuKf7$1opxuYG name="Gästezimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [project] guid=2YaOeyxqn6WPcq0HPeUvj0 name="Projekt" storey=2raHMuYTD64hQ6K56DbC_u wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY topsoil=250 slope=60
+[soil] key=project topsoil=250 slope=60
 [location] lat=53.0589 lon=8.591 north=12.5 x=-3500 y=21000 utm_e=472589.291 utm_n=5878900.895 utm_zone=32 nhn=28.35
 [building] guid=1tBffObw134uGxOa1UQhBN name="Gebäude 2" number="GB-02" terrain=-1000
 [building] guid=3KSRR0Gnz9rBLKj19nZ4YO name="Gebäude 1" number="GB-01" terrain=400
@@ -241,6 +242,8 @@ SZO 4
 [extpart] guid=3BRCeVvTzBkQvU1PgK3ZD7 key=werk.stabgelaender number="GL-001" x=2500 y=2000 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [extpart] guid=3N_s4ILSj9DeczPurFRPuA key=werk.streifenfundament number="SF-001" x=4000 y=2000 typ="sf5080" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [extpart] guid=3y1kS67MD3zfAPmF4yotzT key=werk.stabgelaender number="GL-002" x=2500 y=5000 rot=90 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
+[viewhide] view=plan cat=downpipe
+[viewhide] view=front cat=downpipe
 [plancut] h=1200
 [pattern] surface=0193nkAlT2LhksTCegVeuh gen=concrete w=2500 h=500 joint=0 anchors=0 cloud=2 pores=0.5 seed=11
 [pattern] surface=0cjmYoBNs8lV6uBVR4Q0GU gen=plaster grain=0.8 spread=4 seed=7
