@@ -5226,8 +5226,10 @@ fn a80_bogen_nur_im_grundriss() {
         // über dem unteren Rand
         let g = w.geo(&ui, bw, bh);
         let spitze = g.tip(false).1;
-        let klein = (th.size.arc_label_small * 0.72 + 9.0).ceil();
-        let schild = spitze + (6.0 + klein) * crate::wheel::SCALE;
+        // kleine Schrift ungeschrumpft, Rand im Maßstab (Einstellungen B1)
+        let sc = crate::wheel::SCALE;
+        let klein = (th.size.arc_label_small * 0.72 + 9.0 * sc).ceil();
+        let schild = spitze + 6.0 * sc + klein;
         assert!(
             (bh as f32 - th.size.panel_margin - schild).abs() < 1.0,
             "senkrecht {bw}×{bh}: Schild unten bei {schild}"
