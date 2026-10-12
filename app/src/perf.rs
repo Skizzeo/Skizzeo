@@ -1716,6 +1716,83 @@ fn perf_raumstempel() {
     println!("Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen).");
 }
 
+/// G7: Raumstempel mit Türaufschlägen (je Haus zwei Innentüren) gegen
+/// dieselbe Stadt ohne Türen. Erste Auslegung mit frischem Speicher (Türen,
+/// Aufschläge, Ausweichstellen; die Erkennung der Szene ist gerechnet) und
+/// Auslegung je Bild, wenn sich die Ansicht ändert, für das ganze Modell
+/// und das erste Haus.
+#[test]
+#[ignore]
+fn perf_stempel_tueren() {
+    use crate::raum_app::stempel::Stempel;
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
+    use sk_ui::theme::Theme;
+    use sk_ui::widgets::Fonts;
+    use std::f64::consts::FRAC_PI_2;
+    println!();
+    println!(
+        "{:>6} {:>6} {:>10} {:>10} {:>10} {:>10} {:>8} {:>10}",
+        "Häuser",
+        "Türen",
+        "erst alle",
+        "erst nah",
+        "Bild alle",
+        "Bild nah",
+        "Stempel",
+        "Ausweichen"
+    );
+    let fonts = Fonts::system();
+    let t = Theme::dark();
+    for n in [1, 100, 1000] {
+        for mit in [false, true] {
+            let mut s = town_with_interior(n);
+            if mit {
+                let rechts = Swing {
+                    side: FaceSide::Right,
+                    din: Din::Links,
+                };
+                innentueren(&mut s, rechts);
+            }
+            let alle = crate::fit_parallel(ViewKind::Plan, s.bounds(), W, H);
+            let nah = Camera::parallel(vec3(5000.0, 4000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 6000.0);
+            let aus = |sp: &mut Stempel, c: &Camera, w: f64| {
+                sp.auslegen(&s, c, w, H, 1.0, &fonts, &t, &[]);
+            };
+            aus(&mut Stempel::default(), &nah, W);
+            let erst_alle = time(10, || aus(&mut Stempel::default(), &alle, W));
+            let erst_nah = time(10, || aus(&mut Stempel::default(), &nah, W));
+            // Je Bild: Die Ansicht wird abwechselnd ein Pixel schmaler
+            let mut sp = Stempel::default();
+            let mut flip = false;
+            let mut bild = |c: &Camera| {
+                time(20, || {
+                    flip = !flip;
+                    aus(&mut sp, c, if flip { W - 1.0 } else { W });
+                })
+            };
+            let (bild_alle, bild_nah) = (bild(&alle), bild(&nah));
+            let zahl = sp.bilder.len();
+            let tueren = if mit { 2 * n } else { 0 };
+            // Ausweichstelle im größten Raum, ein Bogen 88,5 cm um seine Mitte
+            let g = s.raumgruppen(s.active_storey());
+            let f = g
+                .flaechen()
+                .max_by(|a, b| a.grundflaeche.total_cmp(&b.grundflaeche))
+                .unwrap();
+            let c = f.form.mitte;
+            let weg = |p: sk_math::Vec3| ((p - c).length() - 885.0).max(0.0);
+            let ausweichen = time(20, || {
+                std::hint::black_box(f.form.mitte_ohne(weg));
+            });
+            println!(
+                "{n:>6} {tueren:>6} {erst_alle:>10.3} {erst_nah:>10.3} {bild_alle:>10.3} {bild_nah:>10.3} {zahl:>8} {ausweichen:>10.3}"
+            );
+        }
+    }
+    println!("Zeiten in ms; „Stempel“: gezeigt im ersten Haus; „Ausweichen“: je Raum,");
+    println!("einmal je Modellstand, wenn der Stempel an der Mitte einen Bogen trifft.");
+}
+
 /// Eine Tür 88,5 cm mit Aufschlag `swing` mitten in jeder Innenwand.
 fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
     use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
@@ -1821,6 +1898,84 @@ fn perf_innentuer() {
         println!("{n:>6} {griffe:>8.3} {fang:>8.3} {ziehen:>8.3} {los:>9.3}");
     }
     println!("Zeiten in ms je Mausbewegung bzw. je Loslassen.");
+}
+
+/// IFC-Export (I5, Review #115 B1) bei 1 bis 1000 Häusern (höchstens
+/// `SKIZZEO_PERF_BIS`) mit je zwei Innentüren und einem Fenster: Zeit für
+/// den Aufbau des Modells und für die ganze Datei.
+#[test]
+#[ignore]
+fn perf_ifc_export() {
+    use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
+    use sk_model::{Category, LevelRef};
+    println!();
+    println!(
+        "{:>6} {:>10} {:>10} {:>10}",
+        "Häuser", "Öffnungen", "Aufbau", "Export"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 300, 1000].into_iter().filter(|&n| n <= bis) {
+        let t = Instant::now();
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        assert!(s.edit_model("Öffnungen", |m| {
+            let zuege: Vec<_> = m
+                .runs()
+                .iter()
+                .map(|(r, run)| {
+                    let innen = run
+                        .segments
+                        .first()
+                        .and_then(|e| m.element(*e))
+                        .is_some_and(|e| e.category == Category::InteriorWall);
+                    (r, innen)
+                })
+                .collect();
+            // Fenster nur, wo es frei ist (der Außenzug kann doppelt
+            // auftauchen); Innentüren in jeder Innenwand
+            zuege.into_iter().all(|(r, innen)| {
+                let f = m.outer_face(r, 0).unwrap();
+                let um = (f.u.0 + f.u.1) / 2.0;
+                let o = if innen {
+                    Opening {
+                        kind: OpeningKind::Door,
+                        path: vec![f.at(um - 442.5, 0.0), f.at(um + 442.5, 0.0)],
+                        bottom: HeightRef::Level(LevelRef::bottom(st)),
+                        top: HeightRef::Line(st, HeightLine::Door),
+                        reveal: None,
+                        install: Default::default(),
+                        swing: Some(Swing {
+                            side: FaceSide::Right,
+                            din: Din::Links,
+                        }),
+                        lock: Default::default(),
+                    }
+                } else {
+                    Opening {
+                        kind: OpeningKind::Window,
+                        path: vec![f.at(f.u.0 + 1500.0, 0.0), f.at(f.u.0 + 2750.0, 0.0)],
+                        bottom: HeightRef::Line(st, HeightLine::Sill),
+                        top: HeightRef::Line(st, HeightLine::Lintel),
+                        reveal: None,
+                        install: Default::default(),
+                        swing: None,
+                        lock: Default::default(),
+                    }
+                };
+                m.add_opening(o).is_some() || !innen
+            })
+        }));
+        let aufbau = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let (ifc, b) = sk_ifc::export(s.model(), &sk_ifc::Optionen::default());
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        std::hint::black_box(ifc);
+        println!("{n:>6} {:>10} {aufbau:>10.0} {ms:>10.0}", b.oeffnungen);
+    }
+    println!("Zeiten in ms (Aufbau des Modells, Export der Datei).");
 }
 
 /// Breite am Griff (Review #109 B1, B4), Tür im zuletzt gebauten Haus:

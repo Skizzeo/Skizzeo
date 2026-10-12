@@ -39,8 +39,11 @@ mod schnitt;
 #[path = "scene_sicht.rs"]
 pub mod sicht;
 use schnitt::UnderMemo;
+#[path = "scene_massstand.rs"]
+mod massstand;
 #[path = "scene_oeffnung.rs"]
 mod scene_oeffnung;
+pub use massstand::neuer_stand;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
@@ -541,6 +544,9 @@ pub struct Scene {
     /// Wandzüge, die neu berechnet werden müssen.
     dirty: Vec<RunId>,
     all_dirty: bool,
+    /// Stand der Bemaßung je Geschoss und aller ([`Scene::mass_stand`]).
+    mass_stand: HashMap<StoreyId, u64>,
+    mass_alle: u64,
     /// Wandzüge, deren Mengen nach einer Live-Änderung noch fehlen.
     unsettled: Vec<RunId>,
     /// Züge, die sich im offenen Schritt live geändert haben (der gezogene und
@@ -885,6 +891,8 @@ impl Scene {
             cache: Vec::new(),
             dirty: Vec::new(),
             all_dirty: true,
+            mass_stand: HashMap::new(),
+            mass_alle: neuer_stand(),
             unsettled: Vec::new(),
             live: Vec::new(),
             bounds: None,
@@ -1589,6 +1597,7 @@ impl Scene {
     }
 
     fn mark(&mut self, id: RunId) {
+        self.mass_zug(id);
         if !self.dirty.contains(&id) {
             self.dirty.push(id);
         }
@@ -1596,6 +1605,7 @@ impl Scene {
 
     fn mark_all(&mut self) {
         self.all_dirty = true;
+        self.mass_alle = neuer_stand();
         self.unsettled.clear();
     }
 

@@ -10,7 +10,7 @@
 /// Bekannte Abschnitte, ihre Schlüssel und der Schlüssel, der einen Satz
 /// unter mehreren gleichen Abschnitts erkennt (`None`: der Abschnitt steht
 /// einmal; `Some("")`: die bekannten Schlüssel selbst, für `[env]`).
-const BEKANNT: [(&str, &[&str], Option<&str>); 16] = [
+const BEKANNT: [(&str, &[&str], Option<&str>); 17] = [
     ("theme", &["base"], None),
     ("color", &["role", "value"], Some("role")),
     ("size", &["key", "value"], Some("key")),
@@ -44,6 +44,38 @@ const BEKANNT: [(&str, &[&str], Option<&str>); 16] = [
     ("ansichtsschatten", &["on", "fill", "light"], None),
     ("standardort", &["lat", "lon"], None),
     ("hlinie", &["mm"], None),
+    (
+        "massstil",
+        &[
+            "key",
+            "farbe",
+            "linie",
+            "hilfslinie",
+            "ueberstand",
+            "hilfsueber",
+            "symbol",
+            "symbol_mm",
+            "symbol_strich",
+            "schrift",
+            "schrift_mm",
+            "hochzahl",
+            "text_abstand",
+            "brh_abstand",
+            "rundung",
+            "erste",
+            "abstand",
+            "bezug",
+            "kette_oeffnung",
+            "kette_wand",
+            "kette_sprung",
+            "kette_gesamt",
+            "hoehe",
+            "brh",
+            "brh_bezug",
+            "massstab",
+        ],
+        None,
+    ),
 ];
 
 /// Eine Zeile roh zerlegt: Abschnitt und je Schlüssel sein Text samt

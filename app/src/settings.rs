@@ -654,8 +654,9 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             // Ort des Firmenkatalogs (K2): liest [`Settings::load`]
             // Planung des letzten Projekts (Paket PD): liest [`Settings::load`]
             // Firmenvorgaben (Sonnenstand S8): liest [`Settings::load`]
+            // Firmenstandard der Bemaßung: liest [`Settings::load`]
             "mengenfenster" | "firmenkatalog" | "planung" | "lvblatt" | "ansichtsschatten"
-            | "standardort" | "hlinie" => continue,
+            | "standardort" | "hlinie" | "massstil" => continue,
             s => {
                 // Bleibt beim Speichern erhalten ([`fremd`])
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
@@ -725,6 +726,10 @@ pub struct Settings {
     /// §5): Häkchen der AVA-Druckvorschau; leer, wenn beide aus sind.
     lvblatt: String,
     loaded_lvblatt: String,
+    /// Abschnitt `[massstil] key=firma …` (Bemaßung, Konzept §6):
+    /// Firmenstandard der Maßketten für neue Projekte; leer heißt Werk.
+    massstil: String,
+    loaded_massstil: String,
     /// Ort des Firmenkatalogs aus der Datei; ohne ihn gilt der Vorgabeort.
     company: Option<PathBuf>,
     /// Firmenvorgaben (Sonnenstand S8) und ihr Stand beim Laden.
@@ -761,6 +766,8 @@ impl Settings {
             loaded_planung: String::new(),
             lvblatt: String::new(),
             loaded_lvblatt: String::new(),
+            massstil: String::new(),
+            loaded_massstil: String::new(),
             fremd: fremd::Fremd::default(),
         }
     }
@@ -808,6 +815,17 @@ impl Settings {
                 .flag("verzeichnis", verzeichnis)
                 .finish(&mut self.lvblatt);
         }
+    }
+
+    /// Firmenstandard der Bemaßung (ohne eigenen: Werk).
+    pub fn firmenstil(&self) -> sk_model::bemassung::Stil {
+        sk_model::szo::firmenstil_lesen(self.massstil.trim_end()).unwrap_or_default()
+    }
+
+    /// Neuer Firmenstandard der Bemaßung; ab dem nächsten Speichern in der
+    /// Datei (der Werksstil als leere Zeile).
+    pub fn set_firmenstil(&mut self, s: &sk_model::bemassung::Stil) {
+        self.massstil = sk_model::szo::firmenstil_text(s);
     }
 
     /// Ort des Firmenkatalogs und ob es der Vorgabeort neben den
@@ -878,6 +896,12 @@ impl Settings {
                     .take(1)
                     .map(|l| format!("{l}\n"))
                     .collect();
+                // Nur die bekannten Schlüssel; Fremdes setzt [`fremd`] wieder ein
+                self.massstil = text
+                    .lines()
+                    .find_map(sk_model::szo::firmenstil_lesen)
+                    .map(|s| sk_model::szo::firmenstil_text(&s))
+                    .unwrap_or_default();
                 self.company = text
                     .lines()
                     .enumerate()
@@ -894,6 +918,7 @@ impl Settings {
         self.loaded_panel = self.panel.clone();
         self.loaded_planung = self.planung.clone();
         self.loaded_lvblatt = self.lvblatt.clone();
+        self.loaded_massstil = self.massstil.clone();
         self.loaded_vorgaben = self.vorgaben;
         theme
     }
@@ -910,6 +935,7 @@ impl Settings {
             && self.panel == self.loaded_panel
             && self.planung == self.loaded_planung
             && self.lvblatt == self.loaded_lvblatt
+            && self.massstil == self.loaded_massstil
             && self.vorgaben == self.loaded_vorgaben
         {
             return Ok(());
@@ -926,7 +952,8 @@ impl Settings {
                         + &self.company_line
                         + &self.planung
                         + &self.lvblatt
-                        + &self.vorgaben.schreiben()),
+                        + &self.vorgaben.schreiben()
+                        + &self.massstil),
                 );
                 crate::document::write_synced(&tmp, text.as_bytes())
             })
@@ -939,6 +966,7 @@ impl Settings {
                 self.loaded_panel = self.panel.clone();
                 self.loaded_planung = self.planung.clone();
                 self.loaded_lvblatt = self.lvblatt.clone();
+                self.loaded_massstil = self.massstil.clone();
                 self.loaded_vorgaben = self.vorgaben;
                 Ok(())
             }
@@ -1301,6 +1329,38 @@ mod tests {
         neu.save_if_changed(&t).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("lvblatt"), "{text}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Firmenstandard der Bemaßung (Konzept §6): über das Speichern und
+    /// Laden; das Werk schreibt keine Zeile, ein fremder Schlüssel bleibt.
+    #[test]
+    fn firmenstandard_bemassung() {
+        use sk_model::bemassung::{Stil, Symbol};
+        let d = dir("massstil");
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        assert_eq!(s.firmenstil(), Stil::werk());
+        let mut f = Stil::werk();
+        f.symbol = Symbol::Schraeg;
+        f.schrift = "Arial".into();
+        f.erste = 1500.0;
+        s.set_firmenstil(&f);
+        s.save_if_changed(&t).unwrap();
+        let path = d.join("Skizzeo").join("einstellungen.txt");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[massstil] key=firma"), "{text}");
+        let text = text.replace("[massstil] key=firma", "[massstil] key=firma glanz=1");
+        std::fs::write(&path, text).unwrap();
+        let mut neu = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = neu.load();
+        assert!(neu.hints.is_empty(), "{:?}", neu.hints);
+        assert_eq!(neu.firmenstil(), f);
+        neu.set_firmenstil(&Stil::werk());
+        neu.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[massstil] glanz=1\n"), "{text}");
+        assert!(!text.contains("schraeg"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

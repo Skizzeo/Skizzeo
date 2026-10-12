@@ -43,6 +43,11 @@ const HAEUSER: [(&str, &str); 5] = [
     // seit #107 die Schnelloption je Ansicht (`[viewhide]` für Grundriss und
     // Vorderansicht, `cat=downpipe`) und die Bodenkennwerte als `[soil]`
     // neben den alten Werten an `[project]` (gleiche Werte, Mengen bleiben)
+    // seit G3 zwei Räume (`[space]`): einer mit `stamp`, `use` auf die
+    // Werksvorlage Wohnzimmer und `factor=0.5`, einer nur mit Anker und
+    // einem Namen mit Anführungszeichen
+    // seit #109 ein Fenster im OG von Gebäude 2 über OE-001, beide unteren
+    // Enden in einer Flucht und mit Breitenschloss gekoppelt (`lock=`)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),

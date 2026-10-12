@@ -171,8 +171,10 @@ gl_api! {
     fn glUniformMatrix4fv(l: GLint, n: GLsizei, transpose: GLboolean, v: *const GLfloat);
 
     fn glGenVertexArrays(n: GLsizei, out: *mut GLuint);
+    fn glDeleteVertexArrays(n: GLsizei, v: *const GLuint);
     fn glBindVertexArray(v: GLuint);
     fn glGenBuffers(n: GLsizei, out: *mut GLuint);
+    fn glDeleteBuffers(n: GLsizei, b: *const GLuint);
     fn glBindBuffer(t: GLenum, b: GLuint);
     fn glBufferData(t: GLenum, size: GLsizeiptr, data: *const c_void, usage: GLenum);
     fn glVertexAttribPointer(i: GLuint, n: GLint, t: GLenum, norm: GLboolean, stride: GLsizei, off: *const c_void);
