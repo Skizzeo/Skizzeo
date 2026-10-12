@@ -269,7 +269,7 @@ pub fn saetze(q: &ElementQto, klasse: &str) -> Vec<Satz> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sk_model::qto::{EdgeStripQto, ExtMenge, ExtQto};
+    use sk_model::qto::{EdgeStripQto, ExtMenge, ExtQto, TerraceQto};
 
     #[test]
     fn einheiten_der_datei() {
@@ -324,5 +324,36 @@ mod tests {
                 ("Stahl", Art::Masse, 50.0),
             ]
         );
+    }
+
+    /// Review #90 H5: die Terrasse als Dach oder als Bekleidung; in keinem
+    /// Referenzhaus ist sie Bekleidung.
+    #[test]
+    fn terrasse_als_dach_oder_bekleidung() {
+        let stoff = sk_model::Model::new().materials().ids().next().unwrap();
+        let q = ElementQto::Terrace(TerraceQto {
+            area: 12e6,
+            volume: 12e6 * 260.0,
+            insulation_volume: 12e6 * 200.0,
+            finish_volume: 12e6 * 60.0,
+            layers: vec![(stoff, 60.0, 12e6 * 60.0), (stoff, 200.0, 12e6 * 200.0)],
+            depth: 3000.0,
+        });
+        let namen = |k: &str| -> Vec<(&'static str, Vec<String>)> {
+            saetze(&q, k)
+                .into_iter()
+                .map(|s| (s.name, s.mengen.into_iter().map(|m| m.name).collect()))
+                .collect()
+        };
+        let dach = namen("IfcRoof");
+        assert_eq!(dach[0].0, "Qto_RoofBaseQuantities");
+        assert_eq!(dach[0].1, ["GrossArea", "ProjectedArea"]);
+        let bek = namen("IfcCovering");
+        assert_eq!(bek[0].0, "Qto_CoveringBaseQuantities");
+        assert_eq!(bek[0].1, ["Width", "GrossArea"]);
+        let w = &saetze(&q, "IfcCovering")[0].mengen[0];
+        assert_eq!((w.art, w.wert), (Art::Laenge, 260.0));
+        assert_eq!(bek[1].0, EIGEN);
+        assert_eq!(bek[1].1, ["Volumen", "Volumen Dämmung", "Volumen Belag"]);
     }
 }

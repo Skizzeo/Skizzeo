@@ -567,14 +567,36 @@ pub fn vorschau(f: &File) -> Vorschau {
             }
         }
     }
+    // Enthaltene Bauteile; eine Baugruppe ohne eigene Form (Wandzug) gibt
+    // ihre Teile an den Ort weiter, in dem sie steht
     let mut enthalten: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut vergeben: HashSet<u32> = HashSet::new();
     for (_, e) in f.all("IFCRELCONTAINEDINSPATIALSTRUCTURE") {
-        if let Some(s) = verweis(e.args.get(5)) {
-            for x in verweise(e.args.get(4)) {
-                if let Some(&i) = index.get(&x) {
-                    enthalten.entry(s).or_default().push(i);
-                }
+        let Some(s) = verweis(e.args.get(5)) else {
+            continue;
+        };
+        let mut offen: Vec<(u32, u32)> = verweise(e.args.get(4))
+            .into_iter()
+            .map(|x| (x, 0))
+            .collect();
+        while let Some((x, tiefe)) = offen.pop() {
+            if !vergeben.insert(x) {
+                continue;
             }
+            if let Some(&i) = index.get(&x) {
+                enthalten.entry(s).or_default().push(i);
+            } else if tiefe < BAUMTIEFE && !RAEUMLICH.contains(&l.name(x)) {
+                offen.extend(
+                    kinder
+                        .get(&x)
+                        .into_iter()
+                        .flatten()
+                        .map(|&k| (k, tiefe + 1)),
+                );
+            }
+        }
+        if let Some(v) = enthalten.get_mut(&s) {
+            v.sort_unstable();
         }
     }
     /// Ein Ort mit allem darunter. `besucht` hält jeden Ort nur einmal im
