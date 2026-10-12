@@ -910,8 +910,9 @@ impl Model {
     }
 
     /// Nach dem Laden (Paket 1a §3, §5): Dateien vor 1a (`old`, ohne
-    /// `[trade]`) bekommen still die Gewerke der Startbaustoffe bzw. nach
-    /// Baustoffart. Verweise auf unbekannte Gewerke fallen mit Hinweis weg.
+    /// `[trade]`) bekommen still die Gewerke der Start- und
+    /// Ausbaubaustoffe bzw. nach Baustoffart. Verweise auf unbekannte
+    /// Gewerke fallen mit Hinweis weg.
     /// Gilt nicht als Änderung.
     pub(crate) fn complete_trades(&mut self, old: bool) -> Vec<String> {
         let mut hints = Vec::new();
@@ -922,7 +923,8 @@ impl Model {
                 continue;
             };
             if old && x.trade.is_none() {
-                x.trade = trade::for_material(&x.name, x.category);
+                x.trade = ausbau::finish_trade(x.guid)
+                    .or_else(|| trade::for_material(&x.name, x.category));
             } else if x.trade.is_some_and(|t| !known.contains(&t)) {
                 hints.push(format!("Baustoff „{}“: Gewerk unbekannt, entfernt", x.name));
                 x.trade = None;

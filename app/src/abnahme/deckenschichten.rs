@@ -221,6 +221,7 @@ fn a182_leser_duldet_neue_woerter() {
     let mut s = Scene::with_model(Model::with_seed(182));
     gebaeude(&mut s);
     let text = sk_model::szo::write(s.model());
+    let typen = s.model().layer_sets().len();
     let g = "0Zukunft00000000000001";
     let gasbeton = guid_text(
         s.model()
@@ -252,7 +253,7 @@ fn a182_leser_duldet_neue_woerter() {
         geladen.hints
     );
     let m = &geladen.model;
-    assert_eq!(m.layer_sets().len(), 7, "Typ übersprungen");
+    assert_eq!(m.layer_sets().len(), typen, "Typ übersprungen");
     let de = m
         .elements()
         .iter()
