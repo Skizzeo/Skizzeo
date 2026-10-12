@@ -51,7 +51,7 @@ pub(super) fn read(
         seq: r
             .opt("seq")
             .map_or(Ok(crate::SPACE_SEQ), |_| r.int("seq"))?,
-        kind: ElementKind::Space(space(r, hints)?),
+        kind: ElementKind::Space(Box::new(space(r, hints)?)),
         props: Default::default(),
         locked: false,
     })

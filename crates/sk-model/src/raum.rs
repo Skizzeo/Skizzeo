@@ -46,7 +46,7 @@ impl Model {
     /// Der Raum hinter einem Bauteil.
     pub fn space(&self, id: ElementId) -> Option<&Space> {
         match &self.element(id)?.kind {
-            ElementKind::Space(s) => Some(s),
+            ElementKind::Space(s) => Some(&**s),
             _ => None,
         }
     }
@@ -65,7 +65,12 @@ impl Model {
 
     /// Legt einen Raum an (im offenen Schritt; Nummer R-…).
     pub fn add_space(&mut self, storey: StoreyId, s: Space) -> ElementId {
-        let id = self.new_element(Category::Space, storey, SPACE_SEQ, ElementKind::Space(s));
+        let id = self.new_element(
+            Category::Space,
+            storey,
+            SPACE_SEQ,
+            ElementKind::Space(Box::new(s)),
+        );
         self.touch();
         id
     }
@@ -83,7 +88,7 @@ impl Model {
         }
         note!(self, Element, self.elements, id);
         if let Some(e) = self.elements.get_mut(id) {
-            e.kind = ElementKind::Space(s);
+            e.kind = ElementKind::Space(Box::new(s));
         }
         self.touch();
         true
@@ -149,7 +154,7 @@ impl Model {
     /// Die freien Namen „Raum n“ im Projekt, kleinste zuerst (einmal über
     /// alle Bauteile, Review #87 B3).
     pub fn freie_raumnamen(&self) -> FreieRaumnamen {
-        let belegt = self
+        let mut belegt: Vec<u32> = self
             .elements
             .iter()
             .filter_map(|(_, e)| match &e.kind {
@@ -157,13 +162,17 @@ impl Model {
                 _ => None,
             })
             .collect();
-        FreieRaumnamen { belegt, n: 0 }
+        belegt.sort_unstable();
+        FreieRaumnamen { belegt, i: 0, n: 0 }
     }
 }
 
 /// Freie Namen „Raum n“ ([`Model::freie_raumnamen`]).
 pub struct FreieRaumnamen {
-    belegt: std::collections::HashSet<u32>,
+    /// Belegte Nummern, aufsteigend.
+    belegt: Vec<u32>,
+    /// Erste belegte Nummer, die nicht unter `n` liegt.
+    i: usize,
     n: u32,
 }
 
@@ -173,7 +182,10 @@ impl Iterator for FreieRaumnamen {
     fn next(&mut self) -> Option<String> {
         loop {
             self.n = self.n.checked_add(1)?;
-            if !self.belegt.contains(&self.n) {
+            while self.belegt.get(self.i).is_some_and(|&b| b < self.n) {
+                self.i += 1;
+            }
+            if self.belegt.get(self.i) != Some(&self.n) {
                 return Some(format!("Raum {}", self.n));
             }
         }
@@ -230,5 +242,18 @@ mod tests {
         let wand = m.wall_at(r, 0).unwrap();
         assert!(!m.set_space(wand, |_| {}), "keine Wand als Raum");
         assert!(m.commit().is_some());
+    }
+
+    #[test]
+    fn freie_raumnamen_ueberspringen_belegte() {
+        let mut m = Model::new();
+        let st = m.defaults().storey;
+        m.begin("Räume");
+        for n in ["Raum 3", "Raum 1", "Raum 3", "Raum 0", "Küche", "Raum 6"] {
+            m.add_space(st, Space::neu(vec3(0.0, 0.0, 0.0), n.into()));
+        }
+        let frei: Vec<String> = m.freie_raumnamen().take(4).collect();
+        assert_eq!(frei, ["Raum 2", "Raum 4", "Raum 5", "Raum 7"]);
+        m.commit();
     }
 }

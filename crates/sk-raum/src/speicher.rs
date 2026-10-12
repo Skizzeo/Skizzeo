@@ -14,8 +14,33 @@ use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::ops::Range;
 use std::rc::Rc;
+
+/// Tabelle über Schlüssel, die selbst schon Prüfsummen sind (Hausgruppen,
+/// Flächen): sie werden nicht noch einmal gestreut.
+pub(crate) type NachSchluessel<V> = HashMap<u64, V, BuildHasherDefault<Durch>>;
+
+/// Reicht einen `u64`-Schlüssel unverändert durch ([`NachSchluessel`]).
+#[derive(Default)]
+pub(crate) struct Durch(u64);
+
+impl Hasher for Durch {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+}
 
 /// Achsparalleler Kasten: x und y von–bis (mm).
 pub(crate) type Kasten = [f64; 4];
@@ -225,6 +250,7 @@ impl Lage {
 }
 
 struct RohEintrag {
+    zug: RunId,
     geschoss: StoreyId,
     fassung: u64,
     roh: Rc<Roh>,
@@ -242,8 +268,9 @@ struct GruppenEintrag {
 /// fällt aus dem Speicher.
 #[derive(Default)]
 pub struct Erkennung {
-    roh: HashMap<RunId, RohEintrag>,
-    gruppen: HashMap<u64, GruppenEintrag>,
+    /// Je Zug an der Stelle seines Index.
+    roh: Vec<Option<RohEintrag>>,
+    gruppen: NachSchluessel<GruppenEintrag>,
     lauf: u64,
     gerechnet: u64,
 }
@@ -264,8 +291,12 @@ impl Erkennung {
                 continue;
             }
             let fassung = k.fassung(id);
-            let roh = match (fassung, self.roh.get_mut(&id)) {
-                (Some(f), Some(e)) if e.fassung == f && e.geschoss == g => {
+            let platz = id.index() as usize;
+            if self.roh.len() <= platz {
+                self.roh.resize_with(platz + 1, || None);
+            }
+            let roh = match (fassung, self.roh[platz].as_mut()) {
+                (Some(f), Some(e)) if e.zug == id && e.fassung == f && e.geschoss == g => {
                     e.lauf = lauf;
                     e.roh.clone()
                 }
@@ -274,20 +305,13 @@ impl Erkennung {
                         continue;
                     };
                     let roh = Rc::new(Roh::neu(m, id, &c));
-                    match fassung {
-                        Some(fassung) => {
-                            let e = RohEintrag {
-                                geschoss: g,
-                                fassung,
-                                roh: roh.clone(),
-                                lauf,
-                            };
-                            self.roh.insert(id, e);
-                        }
-                        None => {
-                            self.roh.remove(&id);
-                        }
-                    }
+                    self.roh[platz] = fassung.map(|fassung| RohEintrag {
+                        zug: id,
+                        geschoss: g,
+                        fassung,
+                        roh: roh.clone(),
+                        lauf,
+                    });
                     roh
                 }
             };
@@ -295,19 +319,30 @@ impl Erkennung {
                 zuege.push(roh);
             }
         }
-        self.roh.retain(|_, e| e.geschoss != g || e.lauf == lauf);
+        for e in &mut self.roh {
+            if e.as_ref()
+                .is_some_and(|e| e.geschoss == g && e.lauf != lauf)
+            {
+                *e = None;
+            }
+        }
         let mut gruppen = Vec::new();
-        for zg in gruppieren(&zuege) {
+        let kaesten: Vec<Kasten> = zuege
+            .iter()
+            .map(|z| weiter(&z.kasten.unwrap_or_default(), RAND))
+            .collect();
+        let (glieder, bereiche) = gruppieren(&kaesten);
+        for b in bereiche {
+            let zg = &glieder[b];
             let mut h = DefaultHasher::new();
             g.hash(&mut h);
-            for &i in &zg {
+            for &i in zg {
                 zuege[i].kennung.hash(&mut h);
             }
             let schluessel = h.finish();
             let kasten = zg
                 .iter()
-                .filter_map(|&i| zuege[i].kasten)
-                .map(|k| weiter(&k, RAND))
+                .map(|&i| kaesten[i])
                 .reduce(|a, b| vereint(&a, &b))
                 .unwrap_or_default();
             let formen = match self.gruppen.get_mut(&schluessel) {
@@ -319,7 +354,7 @@ impl Erkennung {
                     self.gerechnet += 1;
                     let mut umrisse = Vec::new();
                     let mut teile = Vec::new();
-                    for &i in &zg {
+                    for &i in zg {
                         umrisse.extend(zuege[i].umrisse.iter().cloned());
                         teile.extend(zuege[i].teile.iter().cloned());
                     }
@@ -351,14 +386,13 @@ impl Erkennung {
     }
 }
 
-/// Hausgruppen: Züge, deren erweiterte Kästen sich berühren (auch über
-/// andere), je Gruppe in der Reihenfolge der Züge. Ein Lauf längs x über
-/// die nach links sortierten Kästen.
-fn gruppieren(zuege: &[Rc<Roh>]) -> Vec<Vec<usize>> {
-    let k: Vec<Kasten> = zuege
-        .iter()
-        .map(|z| weiter(&z.kasten.unwrap_or_default(), RAND))
-        .collect();
+/// Hausgruppen: Züge, deren erweiterte Kästen `k` sich berühren (auch
+/// über andere), je Gruppe in der Reihenfolge der Züge; als Liste der
+/// Glieder und je Gruppe ihr Bereich darin. Zwei Kästen, die sich
+/// berühren, liegen in einer gemeinsamen Zelle eines Rasters über alle;
+/// verglichen wird nur innerhalb der Zellen (Häuser in Reihen und Spalten
+/// bleiben so nahezu linear).
+fn gruppieren(k: &[Kasten]) -> (Vec<usize>, Vec<Range<usize>>) {
     let mut eltern: Vec<usize> = (0..k.len()).collect();
     fn wurzel(e: &mut [usize], mut i: usize) -> usize {
         while e[i] != i {
@@ -367,30 +401,45 @@ fn gruppieren(zuege: &[Rc<Roh>]) -> Vec<Vec<usize>> {
         }
         i
     }
-    let mut folge: Vec<usize> = (0..k.len()).collect();
-    folge.sort_by(|&a, &b| k[a][0].total_cmp(&k[b][0]));
-    let mut offen: Vec<usize> = Vec::new();
-    for &i in &folge {
-        offen.retain(|&j| k[j][2] >= k[i][0]);
-        for &j in &offen {
-            if k[j][1] <= k[i][3] && k[i][1] <= k[j][3] {
-                let (a, b) = (wurzel(&mut eltern, i), wurzel(&mut eltern, j));
-                eltern[a.max(b)] = a.min(b);
+    for zelle in Raster::neu(k).zellen() {
+        for (n, &i) in zelle.iter().enumerate() {
+            for &j in &zelle[n + 1..] {
+                let (i, j) = (i as usize, j as usize);
+                if beruehren(&k[i], &k[j]) {
+                    let (a, b) = (wurzel(&mut eltern, i), wurzel(&mut eltern, j));
+                    eltern[a.max(b)] = a.min(b);
+                }
             }
         }
-        offen.push(i);
     }
-    let mut nach_wurzel: HashMap<usize, usize> = HashMap::new();
-    let mut out: Vec<Vec<usize>> = Vec::new();
-    for i in 0..k.len() {
-        let w = wurzel(&mut eltern, i);
-        let n = *nach_wurzel.entry(w).or_insert_with(|| {
-            out.push(Vec::new());
-            out.len() - 1
-        });
-        out[n].push(i);
+    // Gruppen in der Reihenfolge ihres ersten Glieds, dann einsortiert
+    let mut nummer = vec![usize::MAX; k.len()];
+    let mut groesse: Vec<usize> = Vec::new();
+    let gruppe: Vec<usize> = (0..k.len())
+        .map(|i| {
+            let w = wurzel(&mut eltern, i);
+            if nummer[w] == usize::MAX {
+                nummer[w] = groesse.len();
+                groesse.push(0);
+            }
+            groesse[nummer[w]] += 1;
+            nummer[w]
+        })
+        .collect();
+    let mut bereiche = Vec::with_capacity(groesse.len());
+    let mut frei = Vec::with_capacity(groesse.len());
+    let mut a = 0;
+    for n in groesse {
+        bereiche.push(a..a + n);
+        frei.push(a);
+        a += n;
     }
-    out
+    let mut glieder = vec![0; k.len()];
+    for (i, &g) in gruppe.iter().enumerate() {
+        glieder[frei[g]] = i;
+        frei[g] += 1;
+    }
+    (glieder, bereiche)
 }
 
 pub(crate) fn kasten_um<'a>(pts: impl IntoIterator<Item = &'a Vec3>) -> Option<Kasten> {
@@ -424,6 +473,7 @@ fn vereint(a: &Kasten, b: &Kasten) -> Kasten {
 }
 
 /// Raster über Kästen: zu einem Punkt die Kästen, die ihn enthalten können.
+/// Die Kästen aller Zellen liegen hintereinander in einer Liste.
 pub(crate) struct Raster {
     x0: f64,
     y0: f64,
@@ -431,7 +481,9 @@ pub(crate) struct Raster {
     zy: f64,
     nx: usize,
     ny: usize,
-    zellen: Vec<Vec<u32>>,
+    /// Je Zelle der Beginn ihrer Kästen in `kaesten`, am Schluss das Ende.
+    anfang: Vec<usize>,
+    kaesten: Vec<u32>,
 }
 
 impl Raster {
@@ -445,7 +497,8 @@ impl Raster {
                 zy: 1.0,
                 nx: 0,
                 ny: 0,
-                zellen: Vec::new(),
+                anfang: Vec::new(),
+                kaesten: Vec::new(),
             };
         };
         let (w, h) = ((g[2] - g[0]).max(1.0), (g[3] - g[1]).max(1.0));
@@ -459,13 +512,32 @@ impl Raster {
             zy: h / ny as f64,
             nx,
             ny,
-            zellen: vec![Vec::new(); nx * ny],
+            anfang: vec![0; nx * ny + 1],
+            kaesten: Vec::new(),
         };
-        for (i, k) in kaesten.iter().enumerate() {
-            let (a, b) = (r.zelle(k[0], k[1]), r.zelle(k[2], k[3]));
+        // Zellen je Kasten; erst zählen, dann einsortieren
+        let bereiche: Vec<_> = kaesten
+            .iter()
+            .map(|k| (r.zelle(k[0], k[1]), r.zelle(k[2], k[3])))
+            .collect();
+        for &(a, b) in &bereiche {
             for y in a.1..=b.1 {
                 for x in a.0..=b.0 {
-                    r.zellen[y * nx + x].push(i as u32);
+                    r.anfang[y * nx + x + 1] += 1;
+                }
+            }
+        }
+        for c in 0..nx * ny {
+            r.anfang[c + 1] += r.anfang[c];
+        }
+        let mut frei = r.anfang[..nx * ny].to_vec();
+        r.kaesten = vec![0; r.anfang[nx * ny]];
+        for (i, &(a, b)) in bereiche.iter().enumerate() {
+            for y in a.1..=b.1 {
+                for x in a.0..=b.0 {
+                    let c = y * nx + x;
+                    r.kaesten[frei[c]] = i as u32;
+                    frei[c] += 1;
                 }
             }
         }
@@ -480,13 +552,19 @@ impl Raster {
         )
     }
 
+    /// Die Kästen je Zelle (Nummern wie beim Anlegen).
+    pub fn zellen(&self) -> impl Iterator<Item = &[u32]> {
+        self.anfang.windows(2).map(|w| &self.kaesten[w[0]..w[1]])
+    }
+
     /// Kästen, die `p` enthalten können (Nummern wie beim Anlegen).
     pub fn bei(&self, p: Vec3) -> &[u32] {
-        if self.zellen.is_empty() || !(p.x.is_finite() && p.y.is_finite()) {
+        if self.nx == 0 || !(p.x.is_finite() && p.y.is_finite()) {
             return &[];
         }
         let (x, y) = self.zelle(p.x, p.y);
-        &self.zellen[y * self.nx + x]
+        let c = y * self.nx + x;
+        &self.kaesten[self.anfang[c]..self.anfang[c + 1]]
     }
 }
 
@@ -602,5 +680,55 @@ mod tests {
             let ecke = vec3(k[2], k[3], 0.0);
             assert!(r.bei(ecke).contains(&(i as u32)));
         }
+    }
+
+    /// Gruppen über das Raster wie über alle Paare: Häuser in Reihen und
+    /// Spalten, Kästen, die sich nur an einer Kante oder Ecke berühren,
+    /// ein langer Kasten über mehrere Häuser.
+    #[test]
+    fn gruppen_wie_ueber_alle_paare() {
+        let mut k: Vec<Kasten> = Vec::new();
+        for i in 0..12 {
+            for j in 0..9 {
+                let (x, y) = (i as f64 * 1500.0, j as f64 * 1500.0);
+                k.push([x, y, x + 1000.0, y + 800.0]);
+                if (i + j) % 3 == 0 {
+                    // Nachbar, der genau an der Kante anliegt
+                    k.push([x + 1000.0, y, x + 1500.0, y + 300.0]);
+                }
+                if (i * j) % 5 == 1 {
+                    // nur an der Ecke
+                    k.push([x - 200.0, y - 200.0, x, y]);
+                }
+            }
+        }
+        k.push([0.0, 4400.0, 9000.0, 4600.0]);
+        let mut eltern: Vec<usize> = (0..k.len()).collect();
+        fn wurzel(e: &mut [usize], mut i: usize) -> usize {
+            while e[i] != i {
+                i = e[i];
+            }
+            i
+        }
+        for i in 0..k.len() {
+            for j in 0..i {
+                if beruehren(&k[i], &k[j]) {
+                    let (a, b) = (wurzel(&mut eltern, i), wurzel(&mut eltern, j));
+                    eltern[a.max(b)] = a.min(b);
+                }
+            }
+        }
+        let mut erwartet: Vec<Vec<usize>> = Vec::new();
+        for i in 0..k.len() {
+            let w = wurzel(&mut eltern, i);
+            match erwartet.iter_mut().find(|g| wurzel(&mut eltern, g[0]) == w) {
+                Some(g) => g.push(i),
+                None => erwartet.push(vec![i]),
+            }
+        }
+        assert!(erwartet.len() > 50 && erwartet.len() < k.len());
+        let (glieder, bereiche) = gruppieren(&k);
+        let gruppen: Vec<Vec<usize>> = bereiche.into_iter().map(|b| glieder[b].to_vec()).collect();
+        assert_eq!(gruppen, erwartet);
     }
 }

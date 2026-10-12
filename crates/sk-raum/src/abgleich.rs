@@ -18,7 +18,7 @@
 //! danach dasselbe. Jede Fläche ohne Raum bekommt einen neuen („Raum n“).
 //! Nur die Hausgruppen, deren Wände der Schritt ändert, werden angesehen.
 
-use crate::speicher::{beruehren, drin, Fl, Kasten, Lage, Raster};
+use crate::speicher::{beruehren, drin, Fl, Kasten, Lage, NachSchluessel, Raster};
 use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, ElementKind, Model, Space, StoreyId};
 use std::collections::{HashMap, HashSet};
@@ -39,7 +39,7 @@ pub(crate) fn raeume_im(
         .iter()
         .filter_map(|(id, e)| match &e.kind {
             ElementKind::Space(s) if e.storey == g && filter(s.anker) => {
-                Some((e.number.as_str(), id, s))
+                Some((e.number.as_str(), id, &**s))
             }
             _ => None,
         })
@@ -87,7 +87,7 @@ pub(crate) fn zuteilen(fl: &[&Fl], raeume: &[(ElementId, &Space)]) -> Vec<Option
 /// Schritt ([`Lage::stand`], [`abgleichen_lage`]).
 #[derive(Clone, Default)]
 pub struct Stand {
-    gruppen: HashMap<u64, StandGruppe>,
+    gruppen: NachSchluessel<StandGruppe>,
 }
 
 /// Flächen einer Hausgruppe mit ihrem geltenden Raum.
@@ -260,7 +260,7 @@ fn nach_ueberdeckung(m: &Model, alte: &[(ElementId, &Fl)], neu: &[&Fl]) -> Vec<(
     let mut frei_n = vec![true; neu.len()];
     let mut paare = Vec::new();
     // Unveränderte Fläche
-    let mut gleich: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut gleich: NachSchluessel<Vec<usize>> = NachSchluessel::default();
     for (i, f) in neu.iter().enumerate() {
         gleich.entry(f.kennung).or_default().push(i);
     }
