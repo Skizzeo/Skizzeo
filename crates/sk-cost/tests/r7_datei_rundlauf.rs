@@ -32,6 +32,10 @@ const HAEUSER: [(&str, &str); 5] = [
     // seit PR #79 im EG von Gebäude 1 abweichende Höhenlinien (`sill`,
     // `lintel`), eine Wandöffnung an den Linien und eine Türöffnung mit
     // freien Höhen, `reveal`, `install` und `element` (`[opening]`)
+    // seit RB1/RB2 die Ausbautypen aller Werksvorlagen (`cat=` floorfinish,
+    // screed, wallfinish, walltiles, ceilingfinish, skirting mit `h=`) und
+    // die 13 Werksvorlagen als `[spacetype]`, dazu eine eigene mit allen
+    // sechs Feldern, `group=nuf4`, `woflv=50` und `tiles_h=2000`
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
