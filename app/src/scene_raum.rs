@@ -45,16 +45,36 @@ impl sk_raum::Ketten for SzenenKetten<'_> {
 }
 
 impl Scene {
-    /// Erkannte Flächen des Geschosses; nur geänderte Hausgruppen werden
-    /// neu gerechnet (Review #87 B2, B3).
-    fn raumlage(&self, g: StoreyId) -> sk_raum::Lage {
-        let k = SzenenKetten {
+    fn ketten(&self) -> SzenenKetten<'_> {
+        SzenenKetten {
             model: &self.model,
             cache: &self.cache,
             dirty: &self.dirty,
             alle: self.all_dirty,
-        };
-        self.erkennung.borrow_mut().lage(&self.model, &k, g)
+        }
+    }
+
+    /// Erkannte Flächen des Geschosses; nur geänderte Hausgruppen werden
+    /// neu gerechnet (Review #87 B2, B3).
+    fn raumlage(&self, g: StoreyId) -> sk_raum::Lage {
+        self.erkennung
+            .borrow_mut()
+            .lage(&self.model, &self.ketten(), g)
+    }
+
+    /// Räume des Geschosses je Hausgruppe für die Stempel: Nur Gruppen,
+    /// deren Wände oder Räume sich geändert haben, werden neu zugeteilt
+    /// (Review #87 R2).
+    pub fn raumgruppen(&self, g: StoreyId) -> sk_raum::Raumformen {
+        self.erkennung
+            .borrow_mut()
+            .raumformen(&self.model, &self.ketten(), g)
+    }
+
+    /// Wie oft einer Hausgruppe die Räume neu zugeteilt wurden (Tests).
+    #[cfg(test)]
+    pub fn raum_zuteilungen(&self) -> u64 {
+        self.erkennung.borrow().zugeteilt()
     }
 
     /// Räume des Geschosses wie [`sk_raum::raeume`], je mit Grundfläche
@@ -65,7 +85,9 @@ impl Scene {
 
     /// Stand der Räume für jedes Geschoss, das noch keinen hat (nach dem
     /// Öffnen, Rückgängig oder einer Änderung an Räumen): der Abgleich am
-    /// Ende des Schritts vergleicht mit ihm (B4).
+    /// Ende des Schritts vergleicht mit ihm (B4). Hausgruppen, deren Wände
+    /// und Räume gleich geblieben sind, kommen aus dem Speicher der
+    /// Erkennung (Review #87, Ecke bilden nach Rückgängig).
     pub(super) fn staende_fuellen(&mut self) {
         let fehlen: Vec<StoreyId> = self
             .model
@@ -75,7 +97,10 @@ impl Scene {
             .filter(|g| !self.staende.contains_key(g))
             .collect();
         for g in fehlen {
-            let st = self.raumlage(g).stand(&self.model);
+            let st = self
+                .erkennung
+                .borrow_mut()
+                .stand(&self.model, &self.ketten(), g);
             self.staende.insert(g, st);
         }
     }
@@ -273,5 +298,26 @@ mod tests {
         s.commit();
         s.raumformen(st);
         assert_eq!(gerechnet(&s), n0 + 5, "je Bewegung das eine Haus");
+        // R2: Zuteilen ebenso nur das eine Haus, ohne Änderung keins
+        s.raumgruppen(st);
+        let z0 = s.raum_zuteilungen();
+        s.raumgruppen(st);
+        assert_eq!(s.raum_zuteilungen(), z0);
+        s.begin("Wand verschieben");
+        for k in 1..=5 {
+            wand_auf(&mut s, innen[2], 30000.0 + 3000.0 + 100.0 * k as f64);
+            let r = s.raumgruppen(st);
+            let mut v: Vec<_> = r
+                .flaechen()
+                .map(|f| (f.form.clone(), f.grundflaeche))
+                .collect();
+            let mut w = s.raumformen(st);
+            let mitte = |f: &(RaumForm, f64)| (f.0.mitte.x, f.0.mitte.y);
+            v.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            w.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            assert_eq!(v, w);
+            assert_eq!(s.raum_zuteilungen(), z0 + k, "je Bewegung das eine Haus");
+        }
+        s.commit();
     }
 }

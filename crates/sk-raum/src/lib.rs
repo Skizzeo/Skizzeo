@@ -12,4 +12,4 @@ pub mod speicher;
 
 pub use abgleich::{abgleichen, abgleichen_lage, ruhende, Abgleich, Stand};
 pub use erkennung::{raeume, Begrenzung, Ecke, Kante, RaumForm, Seite};
-pub use speicher::{Erkennung, Ketten, Lage};
+pub use speicher::{Erkennung, Ketten, Lage, Raumflaeche, Raumformen};
