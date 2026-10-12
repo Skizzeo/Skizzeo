@@ -383,7 +383,7 @@ pub const ARTEN: [&str; 13] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 84] = [
+pub const LEISTUNGEN: [WerkLeistung; 89] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -876,7 +876,7 @@ pub const LEISTUNGEN: [WerkLeistung; 84] = [
         "1S7bUW001008020000001I",
         "st",
         "auto",
-        "Auslaufbogen Titanzink DN 100 am Notfallrohr, 20cm über Gelände",
+        "Auslaufbogen Titanzink DN 100, Rohrende 20cm über Gelände oder Belag",
     ),
     l(
         "1S7bUW001008020000001J",
@@ -889,6 +889,36 @@ pub const LEISTUNGEN: [WerkLeistung; 84] = [
         "st",
         "auto",
         "Kontrollablauf Dampfsperrebene DN 50 durch die Aufkantung",
+    ),
+    l(
+        "1S7bUW001008020000001L",
+        "m",
+        "auto",
+        "Laibung WDVS bis 1,0m tief, Eckprofil mit Gewebe, Anputzleiste",
+    ),
+    l(
+        "1S7bUW001008020000001M",
+        "st",
+        "auto",
+        "Zulage Diagonalbewehrung Gewebe an Öffnungsecke",
+    ),
+    l(
+        "1S7bUW001008020000001N",
+        "m",
+        "auto",
+        "Laibung Innenputz Gips bis 1,0m tief, Kantenschutzprofil",
+    ),
+    l(
+        "1S7bUW001008020000001O",
+        "m",
+        "auto",
+        "Laibung Außenputz bis 1,0m tief, Kantenprofil",
+    ),
+    l(
+        "1S7bUW001008020000001P",
+        "m",
+        "auto",
+        "Zulage Laibung Verblendmauerwerk, Läufer und Binder verzahnt",
     ),
 ];
 

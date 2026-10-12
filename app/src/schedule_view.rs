@@ -2264,12 +2264,14 @@ fn build_lines(
                 name: m
                     .material(x.material)
                     .map_or(String::new(), |y| y.name.clone()),
-                // Blech in m statt m³ (Attikablech); Bestellung mit Zuschlag
+                // Blech in m statt m³ (Attikablech); Bestellung mit den
+                // Öffnungen nach dem Baustoff und dem Zuschlag, wie die
+                // Zeilen (Review W24 B2)
                 value: x.length.map_or_else(
-                    || m_vol(x.volume * zu(x.material)),
+                    || m_vol(x.in_sicht(modus).0 * zu(x.material)),
                     |l| m_len(l * zu(x.material)),
                 ),
-                extra: x.area.map(|a| m_area(a * zu(x.material))),
+                extra: x.in_sicht(modus).1.map(|a| m_area(a * zu(x.material))),
             })
             .collect();
         lines.push(tiles);
