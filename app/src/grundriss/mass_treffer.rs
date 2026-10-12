@@ -4,13 +4,13 @@
 //! Bild der Ketten ([`crate::bemassung::Stand`]) in Pixeln der Ansicht.
 //! Teil von [`crate::wall_edit`].
 
-use crate::bemassung::Stand;
+use crate::bemassung::{Blick, Stand};
 use crate::camera::Camera;
 use sk_math::{dist_to_segment, Vec3};
 use sk_model::bemassung::Kettenart;
 use sk_model::{RunId, StoreyId};
 use sk_plan::aussen::{Aussenmasse, Bezug, Kette, Quelle, Seite};
-use sk_plan::bild::Zahlart;
+use sk_plan::bild::{Bild, Zahlart};
 
 /// Greifabstand zur Maßlinie (px bei 96 dpi).
 pub const LINIE_PX: f64 = 6.0;
@@ -138,7 +138,7 @@ fn bp(cam: &Camera, p: Vec3, w: f64, h: f64) -> Option<(f64, f64)> {
 fn im_viereck(q: &[(f64, f64); 4], p: (f64, f64), r: f64) -> bool {
     let kreuz =
         |a: (f64, f64), b: (f64, f64)| (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
-    let s: Vec<f64> = (0..4).map(|i| kreuz(q[i], q[(i + 1) % 4])).collect();
+    let s: [f64; 4] = std::array::from_fn(|i| kreuz(q[i], q[(i + 1) % 4]));
     let innen = s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0);
     innen || (0..4).any(|i| dist_to_segment(p, q[i], q[(i + 1) % 4]) <= r)
 }
@@ -165,7 +165,23 @@ fn kette_der_zahl(a: &Aussenmasse, art: Zahlart) -> Option<KettenId> {
     }
 }
 
-/// Maßzahl oder Maßlinie bei `(x, y)` (Pixel der Ansicht).
+/// Ketten und Bild der Geschosse, von denen etwas im Blick und im
+/// Rechteck `r` liegt, und ob ihre Zahlen lesbar sind.
+fn im_bereich<'a>(
+    stand: &'a Stand,
+    blick: &Blick,
+    r: [f64; 4],
+) -> Vec<(&'a Aussenmasse, &'a Bild, bool)> {
+    stand
+        .geschosse
+        .iter()
+        .filter_map(|g| Some((&*g.a, &g.b, g.im_bereich(blick, r)?)))
+        .collect()
+}
+
+/// Maßzahl oder Maßlinie bei `(x, y)` (Pixel der Ansicht). Geprüft werden
+/// nur Geschosse im Bild, deren Rahmen unter der Maus liegt, Zahlen nur,
+/// wenn sie gezeichnet werden (lesbar, Review W36).
 #[allow(clippy::too_many_arguments)]
 pub fn treffer(
     stand: &Stand,
@@ -177,9 +193,12 @@ pub fn treffer(
     y: f64,
 ) -> Option<Treffer> {
     let p = (x, y);
+    let blick = Blick { cam, w, h };
+    let r = ZAHL_PX.max(LINIE_PX) * scale;
+    let nah = im_bereich(stand, &blick, [x - r, y - r, x + r, y + r]);
     // Zahlen zuerst, die nächste zur Mitte
     let mut best: Option<(f64, Treffer)> = None;
-    for (a, b) in stand.paare() {
+    for &(a, b, _) in nah.iter().filter(|g| g.2) {
         for z in &b.zahlen {
             let Some(q) = rahmen(cam, &z.rahmen, w, h) else {
                 continue;
@@ -214,7 +233,7 @@ pub fn treffer(
         return Some(t);
     }
     let mut best: Option<(f64, KettenId)> = None;
-    for (a, b) in stand.paare() {
+    for &(a, b, _) in &nah {
         for l in &b.linien {
             let (Some(pa), Some(pb)) = (bp(cam, l.a, w, h), bp(cam, l.b, w, h)) else {
                 continue;
@@ -250,7 +269,7 @@ fn strecke_im_rechteck(a: (f64, f64), b: (f64, f64), r: [f64; 4]) -> bool {
 }
 
 /// Ketten, die das Rechteck mit den Ecken `p` und `q` (Pixel) kreuzen:
-/// mit der Maßlinie oder einer ihrer Zahlen.
+/// mit der Maßlinie oder einer ihrer Zahlen, wenn diese gezeichnet werden.
 pub fn im_rechteck(
     stand: &Stand,
     cam: &Camera,
@@ -266,7 +285,7 @@ pub fn im_rechteck(
             out.push(k);
         }
     };
-    for (a, b) in stand.paare() {
+    for (a, b, lesbar) in im_bereich(stand, &Blick { cam, w, h }, r) {
         for l in &b.linien {
             if let (Some(pa), Some(pb)) = (bp(cam, l.a, w, h), bp(cam, l.b, w, h)) {
                 if strecke_im_rechteck(pa, pb, r) {
@@ -276,7 +295,7 @@ pub fn im_rechteck(
                 }
             }
         }
-        for z in &b.zahlen {
+        for z in b.zahlen.iter().filter(|_| lesbar) {
             let Some(c) = rahmen(cam, &z.rahmen, w, h) else {
                 continue;
             };
@@ -534,6 +553,38 @@ pub(crate) mod tests {
         );
         let (x, y) = cam.project(vec3(5000.0, 4000.0, 0.0), w, h).unwrap();
         assert_eq!(treffer(&st, &cam, w, h, 1.0, x, y), None);
+    }
+
+    /// Weit weg, wo die Zahlen nicht gezeichnet werden, trifft auch keine
+    /// (Review W36): an ihrer Stelle trifft die Maßlinie.
+    #[test]
+    fn unlesbare_zahl_trifft_nicht() {
+        let (s, ..) = haus();
+        let Some(st) = stand(&s) else {
+            return;
+        };
+        let (w, h) = (1600.0, 1000.0);
+        let cam = Camera::parallel(
+            vec3(5000.0, 4000.0, 0.0),
+            90f64.to_radians(),
+            -89.9f64.to_radians(),
+            400_000.0,
+        );
+        // Eine Zahl, die nah die Maus trifft
+        let nah = kamera();
+        let m = st.geschosse[0]
+            .b
+            .zahlen
+            .iter()
+            .map(|z| z.rahmen.iter().fold(Vec3::ZERO, |s, p| s + *p) * 0.25)
+            .find(|&m| {
+                let (x, y) = nah.project(m, w, h).unwrap();
+                matches!(treffer(&st, &nah, w, h, 1.0, x, y), Some(Treffer::Zahl(_)))
+            })
+            .unwrap();
+        let (x, y) = cam.project(m, w, h).unwrap();
+        let t = treffer(&st, &cam, w, h, 1.0, x, y);
+        assert!(matches!(t, Some(Treffer::Linie(_))), "{t:?}");
     }
 
     #[test]

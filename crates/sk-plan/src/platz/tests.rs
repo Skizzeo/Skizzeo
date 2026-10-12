@@ -166,7 +166,7 @@ fn nachbarn_neu_wie_alle() {
             .wrapping_add(1442695040888963407);
         (z >> 33) as f64 / (1u64 << 31) as f64
     };
-    let mut kasten = |zufall: &mut dyn FnMut() -> f64| {
+    let kasten = |zufall: &mut dyn FnMut() -> f64| {
         let (x, y) = (zufall() * 100_000.0, zufall() * 100_000.0);
         Some([
             x,

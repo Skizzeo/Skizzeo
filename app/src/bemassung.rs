@@ -17,7 +17,7 @@ use crate::camera::Camera;
 use crate::scene::{naechster_stand, neuer_stand, Scene};
 use crate::ui::ViewKind;
 use crate::wall_edit::mass_edit::Hervor;
-use crate::wall_edit::mass_treffer::{finde, id_von, MassId};
+use crate::wall_edit::mass_treffer::{finde, id_von, KettenId, MassId};
 use sk_math::{vec3, Vec3};
 use sk_model::bemassung::{Kettenart, Stil, VersatzKey};
 use sk_model::{ElementId, LevelKind, Model, StoreyId};
@@ -79,13 +79,13 @@ impl Blick<'_> {
     fn massstab(&self, [lo, hi]: [Vec3; 2]) -> Option<f64> {
         let (cam, w, h) = (self.cam, self.w, self.h);
         let ecken = [lo, vec3(hi.x, lo.y, lo.z), hi, vec3(lo.x, hi.y, hi.z)];
-        let Some(p) = ecken
-            .iter()
-            .map(|&e| cam.project(e, w, h))
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Some(f64::INFINITY);
-        };
+        let mut p = [(0.0, 0.0); 4];
+        for (q, &e) in p.iter_mut().zip(&ecken) {
+            match cam.project(e, w, h) {
+                Some(x) => *q = x,
+                None => return Some(f64::INFINITY),
+            }
+        }
         let (x0, x1) = p
             .iter()
             .fold((f64::MAX, f64::MIN), |a, q| (a.0.min(q.0), a.1.max(q.0)));
@@ -104,6 +104,22 @@ impl Blick<'_> {
             _ => Some(f64::INFINITY),
         }
     }
+
+    /// Rechteck im Bild (x0, y0, x1, y1) um alle acht Ecken des Quaders
+    /// `[lo, hi]`; `None`, wenn eine hinter der Kamera liegt.
+    fn rechteck(&self, [lo, hi]: [Vec3; 2]) -> Option<[f64; 4]> {
+        let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for i in 0..8 {
+            let e = vec3(
+                if i & 1 == 0 { lo.x } else { hi.x },
+                if i & 2 == 0 { lo.y } else { hi.y },
+                if i & 4 == 0 { lo.z } else { hi.z },
+            );
+            let (x, y) = self.cam.project(e, self.w, self.h)?;
+            r = [r[0].min(x), r[1].min(y), r[2].max(x), r[3].max(y)];
+        }
+        Some(r)
+    }
 }
 
 /// Ketten eines Geschosses (ohne die weichenden) und ihr Bild, mit Linien
@@ -115,10 +131,28 @@ pub struct Geschoss {
     nr: u64,
     /// Kleinster Quader um das Bild.
     rahmen: [Vec3; 2],
+    /// Schrifthöhe am Bau (mm).
+    schrift: f64,
     /// Linien mit und ohne Kreise der Begrenzung; Tinte im Grundriss und
     /// verdeckbar in 3D.
     linien: RefCell<[Option<Linien>; 2]>,
     tinte: RefCell<[Option<Rc<[Ink]>>; 2]>,
+}
+
+impl Geschoss {
+    /// Liegt etwas von diesem Geschoss im Blick und im Rechteck `r`
+    /// (Bildpunkte x0, y0, x1, y1), und sind seine Zahlen dort lesbar wie
+    /// beim Zeichnen? `None`, wenn nicht (Review W36: die Maus prüft nur,
+    /// was zu sehen ist und unter ihr liegt).
+    pub fn im_bereich(&self, blick: &Blick, r: [f64; 4]) -> Option<bool> {
+        if let Some(q) = blick.rechteck(self.rahmen) {
+            if q[2] < r[0] || q[0] > r[2] || q[3] < r[1] || q[1] > r[3] {
+                return None;
+            }
+        }
+        let px = blick.massstab(self.rahmen)?;
+        Some(self.schrift * px >= LESBAR_PX)
+    }
 }
 
 /// Wofür die gemerkten Linien eines Geschosses gelten: Maßstab der
@@ -160,6 +194,10 @@ struct Ketten {
     kasten: Option<[f64; 4]>,
 }
 
+/// Wofür ein Stand gilt: nächste Nummer ([`naechster_stand`]), Stand aller
+/// Ketten der Szene, Geschosse und Versätze.
+type Zuletzt = (u64, u64, Vec<StoreyId>, BTreeMap<VersatzKey, f64>);
+
 /// Zuletzt geprüfter Platz: Nummern der Ketten, Paare von Nachbarn (Plätze
 /// in den Nummern) und was je Geschoss weicht.
 struct Platz {
@@ -190,10 +228,9 @@ pub struct Massketten {
     geschosse: HashMap<StoreyId, ((u64, Weg), Rc<Geschoss>)>,
     /// Zuletzt zusammengestellter Stand und die Nummern seiner Geschosse.
     stand: Option<(Vec<u64>, Rc<Stand>)>,
-    /// Wofür der Stand zuletzt galt: nächste Nummer ([`naechster_stand`]),
-    /// Stand aller Ketten der Szene, Geschosse und Versätze. Ist nichts davon
-    /// neu, gilt er ohne Gang durch die Geschosse (Review L24).
-    zuletzt: Option<(u64, u64, Vec<StoreyId>, BTreeMap<VersatzKey, f64>)>,
+    /// Wofür der Stand zuletzt galt. Ist nichts davon neu, gilt er ohne Gang
+    /// durch die Geschosse (Review L24).
+    zuletzt: Option<Zuletzt>,
     /// Tinte hervorgehobener Geschosse beim letzten Zeichnen: Gleiche
     /// Farben behalten ihren Schlüssel, der Renderer lädt nichts neu.
     hell: Vec<HellTinte>,
@@ -449,7 +486,7 @@ impl Massketten {
                 continue;
             };
             let kreise = stil.am_bau(stil.symbol_mm) * 0.5 * px >= SYMBOL_PX;
-            let lesbar = stil.am_bau(stil.schrift_mm) * px >= LESBAR_PX;
+            let lesbar = g.schrift * px >= LESBAR_PX;
             let (ketten, zahlen) = farben(&g.a, &g.b, hervor, theme);
             if !ketten.is_empty() || zahlen.iter().any(Option::is_some) {
                 let mut v = linien(&g.b, stil, scale, theme, occlude, &ketten);
@@ -549,6 +586,14 @@ fn farben(
     h: &Hervor,
     theme: &Theme,
 ) -> (Kettenfarben, Vec<Option<[f32; 4]>>) {
+    // Nichts in diesem Geschoss hervorgehoben: nichts anlegen (Review W36)
+    let hier = |k: &KettenId| k.st == a.storey;
+    if !h.gewaehlt.iter().any(hier)
+        && !h.ueber.as_ref().is_some_and(hier)
+        && !h.zahl.is_some_and(|(m, _)| hier(&m.kette))
+    {
+        return (Vec::new(), Vec::new());
+    }
     let col = &theme.interact;
     let mut ketten = Vec::new();
     for (si, s) in a.seiten.iter().enumerate() {
@@ -630,6 +675,7 @@ fn geschoss(a: Rc<Aussenmasse>, stil: &Stil, schrift: &Schrift) -> Geschoss {
         .iter()
         .flat_map(|s| [s.a, s.b])
         .chain(b.tinte.iter().flatten().copied())
+        .chain(b.linien.iter().flat_map(|l| [l.a, l.b]))
         .chain(b.bezuege.iter().map(|r| r.am_bauteil));
     let (lo, hi) = (
         vec3(f64::MAX, f64::MAX, f64::MAX),
@@ -646,6 +692,7 @@ fn geschoss(a: Rc<Aussenmasse>, stil: &Stil, schrift: &Schrift) -> Geschoss {
         b,
         nr: neuer_stand(),
         rahmen,
+        schrift: stil.am_bau(stil.schrift_mm),
         linien: RefCell::new([None, None]),
         tinte: RefCell::new([None, None]),
     }

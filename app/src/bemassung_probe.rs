@@ -1,14 +1,16 @@
-//! Tests und Probe zu Review W30 und W33: nur geänderte Geschosse rechnen
-//! neu, ein Ebenenwechsel rechnet nichts, Geschosse außerhalb des Bildes
-//! fehlen; die Probe misst das erste Bild, Ebenenwechsel, Ziehen, Loslassen
-//! und Neuzeichnen bei 1, 10, 100, 1000, 2000 und 4000 Häusern (je ein Gebäude
-//! 10 × 8 m mit einer angeschlossenen Innenwand und einem Fenster, alle EG
-//! auf ±0,00), dazu 1000 dicht stehende.
+//! Tests und Probe zu Review W30, W33, L24 und W36: nur geänderte Geschosse
+//! rechnen neu, ein Ebenenwechsel rechnet nichts, Geschosse außerhalb des
+//! Bildes fehlen; die Probe misst das erste Bild, Ebenenwechsel, Maus im
+//! Freien, Ziehen, Loslassen und Neuzeichnen bei 1, 10, 100, 1000, 2000
+//! und 4000 Häusern (je ein Gebäude 10 × 8 m mit einer angeschlossenen
+//! Innenwand und einem Fenster, alle EG auf ±0,00), dazu 1000 dicht
+//! stehende.
 //!
 //! Probe: `cargo test --release -p skizzeo probe_bemassung -- --ignored --nocapture`
 
 use super::*;
 use crate::camera::Camera;
+use crate::wall_edit::mass_treffer::treffer;
 use sk_math::vec3;
 use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
 use sk_model::{Category, RefSide};
@@ -403,11 +405,12 @@ fn probe_bemassung() {
     let theme = Theme::dark();
     println!();
     println!(
-        "{:>7} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
+        "{:>7} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
         "Häuser",
         "Kalt",
         "Stand",
         "Ebene",
+        "Hover",
         "Wand",
         "Ziehen",
         "ZiehNah",
@@ -507,6 +510,15 @@ fn probe_bemassung() {
             mk.stand(&s, st.clone(), Some(&f));
         }
         let ebene = ms(t, 50);
+        // Maus im Freien zwischen den Häusern: Ketten der Ansicht vor dem
+        // Ereignis und was darunter liegt (Review W36)
+        let frei = cam.project(vec3(15_000.0, 14_000.0, 0.0), W, H).unwrap();
+        let t = Instant::now();
+        for _ in 0..50 {
+            let st = mk.gezeigt(&s, ViewKind::Plan, &[], Some(&f)).unwrap();
+            std::hint::black_box(treffer(&st, &cam, W, H, 1.0, frei.0, frei.1));
+        }
+        let hover = ms(t, 50);
         let dreiecke: usize = ink.iter().map(|(_, t)| t.len()).sum();
         let run = s.model().runs().ids().next().unwrap();
         let orig = s.chain(run).unwrap().clone();
@@ -611,11 +623,12 @@ fn probe_bemassung() {
         }
         let drehen = ms(t, reps);
         println!(
-            "{:>7} {:>8.2} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
+            "{:>7} {:>8.2} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
             format!("{n}{}", if eng { " eng" } else { "" }),
             kalt,
             stand,
             ebene,
+            hover,
             wand,
             ziehen,
             ziehen_nah,
@@ -631,7 +644,8 @@ fn probe_bemassung() {
     }
     println!(
         "ms je Aufruf. Kalt = erstes Bild. Stand = Ketten ohne Änderung, Ebene = auf eine \
-         andere Ebene und zurück. Wand = Wand ziehen ohne Bemaßung, Ziehen = was \
+         andere Ebene und zurück, Hover = Maus im Freien (Ketten der Ansicht und \
+         Treffer). Wand = Wand ziehen ohne Bemaßung, Ziehen = was \
          die Bemaßung je Mausschritt dazu kostet, Hochlad. = Dreiecke, die dabei neu zur \
          Grafikkarte gehen; ZiehNah = Ziehen nah am Haus (etwa 1:100 am Bildschirm). \
          Zeichn. = Bild ohne Änderung, Loslass = Loslassen und erstes \

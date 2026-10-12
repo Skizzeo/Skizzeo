@@ -146,12 +146,15 @@ impl Bauteil {
             Bauteil::Oeffnung { id, o, kante } => {
                 let d = vec3(t.x, t.y, 0.0) * dt;
                 let mut o = o.clone();
+                let mut bewegt = false;
                 for p in &mut o.path {
                     if kante.is_none_or(|k| (p.dot(t) - k).abs() < 1.0) {
                         *p += d;
+                        bewegt = true;
                     }
                 }
-                scene.set_opening_live(*id, o)
+                // Keine Kante an der Stelle: Fehler statt leerem Schritt
+                bewegt && scene.set_opening_live(*id, o)
             }
         }
     }
@@ -184,13 +187,19 @@ struct Eingabe {
 impl Eingabe {
     /// Setzt den getippten Wert vom Stand beim Öffnen aus; ohne Wert der
     /// Stand beim Öffnen. Gilt er nicht, bleibt das Bauteil und die Eingabe
-    /// zeigt den Fehler.
+    /// zeigt den Fehler; der Fehler gilt nur für diesen Versuch (nach Tab
+    /// kann das andere Ende den Wert annehmen, Review W36).
     fn anwenden(&mut self, scene: &mut Scene) {
         scene.rollback();
         scene.begin(SCHRITT_MASS);
+        self.input.error = self.input.value(0).and_then(Result::err);
         let Some(Ok(v)) = self.input.value(0) else {
             return;
         };
+        if v < 1.0 {
+            self.input.error = Some(Meldung::satz("Ein Maß ist mindestens 1 mm lang."));
+            return;
+        }
         let dt = if self.ende == 1 {
             v - self.wert
         } else {
@@ -949,6 +958,43 @@ mod tests {
         assert!(!e.is_dragging());
         assert_eq!(s.step_serial(), serial);
         assert!((mass(&s, 270, Kettenart::Wand, 3) - 5000.0).abs() < 0.5);
+    }
+
+    /// Nimmt das eine Ende den Wert nicht an, das andere nach Tab aber
+    /// schon, gilt er wieder: kein alter Fehler, Enter übernimmt (Review
+    /// W36). Unter 1 mm gilt nichts.
+    #[test]
+    fn fehler_gilt_nur_fuer_das_ende() {
+        let (mut s, ..) = haus();
+        if stand(&s).is_none() {
+            return;
+        }
+        let c = kamera();
+        let mut e = WallEdit::default();
+        // Von der Westecke zum Fenster: rechts wandert das Fenster
+        let (p, wert) = zahl(&s, &c, 270, Kettenart::Oeffnung, 0);
+        assert!((wert - 1380.0).abs() < 0.5);
+        klick(&mut e, &mut s, &c, p, Modifiers::default());
+        tippen(&mut e, &mut s, &c, "12");
+        assert!(
+            e.input().unwrap().error.is_some(),
+            "Fenster jenseits der Ostwand"
+        );
+        taste(&mut e, &mut s, &c, Key::Tab);
+        assert!(e.input().unwrap().error.is_none());
+        assert!((mass(&s, 270, Kettenart::Oeffnung, 0) - 12_000.0).abs() < 0.5);
+        let serial = s.step_serial();
+        taste(&mut e, &mut s, &c, Key::Enter);
+        assert!(!e.is_dragging());
+        assert_eq!(s.step_serial(), serial + 1);
+        // Unter 1 mm: Fehler, nichts bewegt sich
+        let (p, _) = zahl(&s, &c, 270, Kettenart::Wand, 3);
+        klick(&mut e, &mut s, &c, p, Modifiers::default());
+        let vorher = mass(&s, 270, Kettenart::Gesamt, 0);
+        tippen(&mut e, &mut s, &c, "0,0004");
+        assert!(e.input().unwrap().error.is_some());
+        assert!((mass(&s, 270, Kettenart::Gesamt, 0) - vorher).abs() < 0.5);
+        taste(&mut e, &mut s, &c, Key::Escape);
     }
 
     /// Öffnungsbreite: zwei Kanten derselben Öffnung, das rechte Ende
