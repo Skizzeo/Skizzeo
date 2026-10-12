@@ -312,10 +312,12 @@ impl FlatRoof {
         s
     }
 
-    /// Aufbau waagerecht geschnitten in Höhe `cut` (Grundriss).
+    /// Aufbau waagerecht geschnitten in Höhe `cut` (Grundriss). Die Zeichen
+    /// des Gefälleplans nur, wo der Aufbau selbst im Grundriss liegt, also
+    /// nicht in den Geschossen darunter (Jörn 12.10.).
     pub fn cut_at(&self, cut: f64) -> Solid {
         let mut s = self.below(cut);
-        if let Some(g) = &self.slope {
+        if let Some(g) = self.slope.as_ref().filter(|_| !s.is_empty()) {
             self.plan_symbols(&mut s, g, cut);
         }
         s
@@ -1351,6 +1353,21 @@ mod tests {
                 .triangles
                 .iter()
                 .all(|t| t.p.iter().all(|p| p.z <= cut + 1e-9)));
+            assert!(s.edges.iter().any(|e| e.kind == edge_kind::FINE), "{cut}");
+        }
+    }
+
+    /// Unter UK Aufbau geschnitten (Grundriss eines Geschosses darunter):
+    /// nichts, auch keine Gefällepfeile, Abläufe und Notüberläufe (Jörn
+    /// 12.10.).
+    #[test]
+    fn grundriss_darunter_ohne_gefaellezeichen() {
+        let r = mit_gefaelle();
+        assert!(!r.slope.as_ref().unwrap().drains.is_empty());
+        for cut in [-1000.0, 500.0, 999.0, 1000.0] {
+            let s = r.cut_at(cut);
+            assert!(s.is_empty(), "{cut}");
+            assert!(s.edges.is_empty(), "{cut}: {} Kanten", s.edges.len());
         }
     }
 
