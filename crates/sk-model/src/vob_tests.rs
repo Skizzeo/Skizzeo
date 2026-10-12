@@ -68,25 +68,26 @@ fn summe_stimmt(m: &Model, r: &LayerRow) {
     }
 }
 
-/// Ein Fenster 1,25 × 1,51 m bleibt übermessen: die Abrechnungsfläche
-/// ändert sich nicht, der Rechenweg nennt es; das Volumen zieht es ab.
+/// Ein Fenster 1,25 × 1,51 m bleibt übermessen: Abrechnungsfläche und
+/// Volumen (je Schicht unter 0,5 m³, Kosten H79-1) ändern sich nicht, der
+/// Rechenweg nennt es.
 #[test]
 fn kleines_fenster_uebermessen() {
     let (mut m, eg) = haus();
-    let vorher: Vec<f64> = schedule(&m)
-        .layer_rows(&m)
-        .into_iter()
-        .map(|(_, r)| r.face)
-        .collect();
+    let mengen = |m: &Model| -> Vec<(f64, f64)> {
+        schedule(m)
+            .layer_rows(m)
+            .into_iter()
+            .map(|(_, r)| (r.face, r.volume))
+            .collect()
+    };
+    let vorher = mengen(&m);
     m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
-    let nachher: Vec<f64> = schedule(&m)
-        .layer_rows(&m)
-        .into_iter()
-        .map(|(_, r)| r.face)
-        .collect();
+    let nachher = mengen(&m);
     assert_eq!(vorher.len(), nachher.len());
     for (a, b) in vorher.iter().zip(&nachher) {
-        assert!((a - b).abs() < 1e-3, "{a} → {b}");
+        assert!((a.0 - b.0).abs() < 1e-3, "{a:?} → {b:?}");
+        assert!((a.1 - b.1).abs() < 1.0, "{a:?} → {b:?}");
     }
     let rows = mit_loch(&m);
     assert!(!rows.is_empty());
@@ -106,7 +107,7 @@ fn kleines_fenster_uebermessen() {
         assert!(vol
             .terme
             .iter()
-            .any(|t| t.art == Art::Abzug && t.text.contains("OE-")));
+            .any(|t| t.art == Art::Hinweis && t.text.contains("bis 0,5 m³")));
     }
 }
 
@@ -121,6 +122,7 @@ fn grosses_fenster_abgezogen() {
     m.add_opening(fenster(&m, eg, (3000.0, 6000.0))).unwrap();
     let rows = mit_loch(&m);
     assert!(!rows.is_empty());
+    let mut arten = (0, 0);
     for r in &rows {
         let (_, alt) = vorher
             .iter()
@@ -148,11 +150,42 @@ fn grosses_fenster_abgezogen() {
             "{:?}",
             fl.terme
         );
+        // Volumen: Abzug je Schicht nur über 0,5 m³ (Kosten H79-1)
+        let vol = fuer(&m, r, Modus::Vob)
+            .into_iter()
+            .find(|w| w.bezug == Bezug::Volumen)
+            .unwrap();
+        let loch_vol: f64 = r.holes.iter().map(|h| h.volume).sum();
+        let gross = r.holes.iter().all(|h| h.vob_volumen());
+        let art = if gross { Art::Abzug } else { Art::Hinweis };
+        assert!(
+            vol.terme
+                .iter()
+                .any(|t| t.art == art && t.text.contains("OE-")),
+            "{} Schicht {}: {:?}",
+            r.number,
+            r.layer,
+            vol.terme
+        );
+        if gross {
+            arten.0 += 1;
+        } else {
+            arten.1 += 1;
+        }
+        let soll = if gross {
+            alt.volume - loch_vol
+        } else {
+            alt.volume
+        };
+        assert!((r.volume - soll).abs() < 1.0, "{} ≠ {soll}", r.volume);
         // Bestellung: übermessen, dann der Zuschlag
         let z = 1.0 + crate::rechenweg::zuschlag(&m, r) / 100.0;
         let best = anzeige(&m, r, Bezug::Flaeche, Modus::Bestellung);
         assert!((best - alt.face * z).abs() < 1.0, "{best} {}", alt.face * z);
     }
+    // beide Schichten (Kern, Dämmung) über 0,5 m³; das kleine Fenster
+    // deckt das Übermessen ab
+    assert_eq!(arten, (rows.len(), 0));
     // „Öffnungen abziehen ab 2 m²“ am Baustoff der ersten Zeile
     let r = &rows[0];
     let mut mat = m.material(r.material).unwrap().clone();

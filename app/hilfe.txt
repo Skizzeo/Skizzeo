@@ -274,7 +274,7 @@ Einzelne Wand anders | dafür einen neuen Typ anlegen
 Ansehen | Reiter Projekt und Firma; λ, Rohdichte, Richtpreis und „Verwendet in“
 Preise | nach Dicke und Güte; ändern unter Datei › Verwaltung
 Mehr | „Mehr“ klappt alle Kennwerte auf
-Bestellung | Verschnittzuschlag in % für die Bestellmenge; leer: Vorgabe nach Baustoffart
+Bestellung | Verschnittzuschlag in % für die Bestellmenge, leer: Vorgabe nach Baustoffart; Öffnungen ab dieser Größe (m²) von der Bestellmenge abziehen, leer: alle übermessen
 Ändern | Werte tippen; **OK** ist ein Rückgängig-Schritt
 Duplizieren | immer möglich
 Löschen | nur, solange der Baustoff nirgends verwendet wird

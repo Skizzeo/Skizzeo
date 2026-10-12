@@ -1014,6 +1014,7 @@ impl MaterialView {
             (f("Preisquelle"), "Preisquelle".into()),
             (None, "BESTELLUNG".into()),
             (f(matprop::WASTE), "Verschnittzuschlag".into()),
+            (f(matprop::OPENING_FROM), "Öffnungen abziehen ab".into()),
             (None, "DARSTELLUNG".into()),
             (
                 Some(Target::Combo(ComboId::Pick(Pick::Fill))),
@@ -1134,6 +1135,7 @@ impl MaterialView {
             Field::Key("Rohdichte") => "kg/m³",
             Field::Key("c") => "J/(kg·K)",
             Field::Key(matprop::WASTE) => "%",
+            Field::Key(matprop::OPENING_FROM) => "m²",
             Field::Key(PRICE) => {
                 let unit = x
                     .and_then(|x| stored_unit(x).or(matprop::price_unit(x.category)))
