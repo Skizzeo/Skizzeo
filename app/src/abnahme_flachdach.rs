@@ -717,7 +717,16 @@ fn a340_ablauf_waehlen_hinzufuegen_loeschen() {
     sect.ensure(&s);
     assert!(sect.handle(&down, &s, &c, w, h, 1.0, true).consumed);
     sect.handle(&up, &s, &c, w, h, 1.0, true);
+    // im OG darunter zeigt der Grundriss das Dach nicht: kein Punkt, kein
+    // Greifen (Jörn 12.10.); auf der Ebene Flachdach schon
     let mut d = DrainEdit::default();
+    let dunkel = sk_ui::theme::Theme::dark();
+    assert!(d.helpers(&s, Some(da), 1.0, &dunkel).is_empty());
+    let o = d.handle(&down, &mut s, &c, w, h, 1.0, Some(da), true);
+    assert!(!o.consumed);
+    assert_eq!(s.active_drain(da), None);
+    assert!(s.set_active_storey(fd(&s, og)));
+    assert_eq!(d.helpers(&s, Some(da), 1.0, &dunkel).len(), 4);
     let o = d.handle(&down, &mut s, &c, w, h, 1.0, Some(da), true);
     assert!(o.consumed && o.active);
     let schritte = s.undo_label();
@@ -800,6 +809,67 @@ fn a340_ablauf_waehlen_hinzufuegen_loeschen() {
     assert!(!s.remove_roof_drain(da));
     assert_eq!(buttons(&s), [Id::PropsDrains, Id::PropsDrainAdd]);
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// A341 (Jörn 12.10.): Gefällepfeile, Abläufe und Notüberläufe stehen nur
+/// im Grundriss der Ebene Flachdach. Fundament, EG und OG zeigen sie nicht,
+/// auch nicht gedimmt; die Regenfallrohre außen an der Fassade bleiben im
+/// EG und OG.
+#[test]
+fn a341_dachzeichen_nur_im_grundriss_der_dachebene() {
+    let (mut s, og) = haus(341, sk_model::EXTERIOR_TYPE_GUID);
+    let floor = s.model().floor_of(og).unwrap();
+    let r = s.flat_roof_over(floor).unwrap().clone();
+    assert!(r.slope.is_some(), "neu mit Gefälle");
+    assert_eq!(r.downpipes.len(), 4);
+    let og_st = s.model().run(og).unwrap().storey;
+    let eg_st = s.model().level_below(og_st).expect("EG");
+    let fu_st = s.model().foundation_level_of(eg_st).expect("Fundament");
+    let fd_st = fd(&s, og);
+    let rahmen = |pts: &[sk_math::Vec3]| {
+        let x = pts.iter().map(|p| p.x);
+        let y = pts.iter().map(|p| p.y);
+        (
+            x.clone().fold(f64::MAX, f64::min),
+            x.fold(f64::MIN, f64::max),
+            y.clone().fold(f64::MAX, f64::min),
+            y.fold(f64::MIN, f64::max),
+        )
+    };
+    // feine Linien innerhalb der Aufkantung: Pfeile und Ablaufkreise
+    let (x0, x1, y0, y1) = rahmen(&r.outline);
+    let innen = |p: &[f32; 3]| {
+        let (x, y) = (p[0] as f64, p[1] as f64);
+        x > x0 + 1.0 && x < x1 - 1.0 && y > y0 + 1.0 && y < y1 - 1.0
+    };
+    // vor der Außenfläche der Aufkantung (der Fassade): die Fallrohre
+    let (a0, a1, b0, b1) = rahmen(&r.ring);
+    let aussen = |p: &[f32; 3]| {
+        let (x, y) = (p[0] as f64, p[1] as f64);
+        x < a0 - 1.0 || x > a1 + 1.0 || y < b0 - 1.0 || y > b1 + 1.0
+    };
+    let fein = sk_model::edge_kind::FINE as f32;
+    let mut grundriss = |st: StoreyId| {
+        s.set_active_storey(st);
+        assert_eq!(s.active_storey(), st);
+        let m = s.mesh(ViewKind::Plan, None, &[]);
+        let zeichen = m
+            .edges
+            .iter()
+            .filter(|(e, k)| *k == fein && e.iter().all(innen))
+            .count();
+        let rohre = m.edges.iter().filter(|(e, _)| e.iter().all(aussen)).count();
+        (zeichen, rohre)
+    };
+    let (zeichen, rohre) = grundriss(fd_st);
+    assert!(zeichen > 0, "Ebene Flachdach: Gefälleplan");
+    assert!(rohre > 0, "Ebene Flachdach: Fallrohre");
+    for (name, st) in [("OG", og_st), ("EG", eg_st)] {
+        let (zeichen, rohre) = grundriss(st);
+        assert_eq!(zeichen, 0, "{name}: keine Dachzeichen");
+        assert!(rohre > 0, "{name}: Fallrohre an der Fassade");
+    }
+    assert_eq!(grundriss(fu_st).0, 0, "Fundament: keine Dachzeichen");
 }
 
 /// Mengen der Dämmung unter dem Blech `ab`: (Dicke mm, Fläche m², Volumen
