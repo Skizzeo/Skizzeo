@@ -7,7 +7,11 @@
 //! des größten Kreises im Raum), ganz im Raum, nicht unter einem Paneel und
 //! nicht über einem anderen Stempel; passt er so nicht, nur die Fläche,
 //! sonst entfällt er. Größere Räume gehen vor, das offene Namensfeld vor
-//! allen.
+//! allen. Ein nicht verschobener Stempel meidet die Türaufschläge (G7,
+//! [`aufschlag`]): Überdeckt er an der Mitte einen Bogen, rückt er an die
+//! Stelle mit dem größten Abstand zu Wänden und Bögen; passt er auch dort
+//! nicht, steht er wie bisher an der Mitte, lieber über dem Bogen als nur
+//! mit der Fläche.
 //!
 //! Bedienung, nicht bei eingeschaltetem Wandwerkzeug: Ziehen verschiebt den
 //! Stempel innerhalb des Raums, ein Schritt „Raumstempel verschoben“; ein
@@ -35,6 +39,9 @@ use sk_raum::{Raumflaeche, Raumformen};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, FieldState, Fonts, Rect};
+
+#[path = "aufschlag.rs"]
+mod aufschlag;
 
 /// Vorschläge für den Namen, bis der Raumkatalog des Raumbuchs sie liefert.
 pub const VORSCHLAEGE: [&str; 20] = [
@@ -111,6 +118,8 @@ pub struct Namen {
 struct Formen {
     rev: u64,
     raeume: Raumformen,
+    /// Türaufschläge des Geschosses, bei Bedarf.
+    tueren: aufschlag::Tueren,
 }
 
 impl Formen {
@@ -265,6 +274,7 @@ impl Stempel {
             self.formen = Some(Formen {
                 rev,
                 raeume: s.raumgruppen(g),
+                tueren: Default::default(),
             });
         }
     }
@@ -340,7 +350,7 @@ impl Stempel {
     /// in Tests.
     #[allow(clippy::too_many_arguments)]
     fn legen(
-        &self,
+        &mut self,
         s: &Scene,
         c: &Camera,
         w: f64,
@@ -351,7 +361,7 @@ impl Stempel {
         gesperrt: &[Box],
         vortest: bool,
     ) -> Vec<Bild> {
-        let Some(fo) = self.formen.as_ref() else {
+        let Some(Formen { raeume, tueren, .. }) = self.formen.as_mut() else {
             return Vec::new();
         };
         let z = s.plan_cut();
@@ -374,8 +384,7 @@ impl Stempel {
                     .is_none_or(|v| k[0] <= v[2] && v[0] <= k[2] && k[1] <= v[3] && v[1] <= k[3])
                     && px_mm.is_none_or(|p| (k[2] - k[0]).min(k[3] - k[1]) * p >= kleinst))
         };
-        let mut folge: Vec<((usize, usize), &Raumflaeche)> = fo
-            .raeume
+        let mut folge: Vec<((usize, usize), &Raumflaeche)> = raeume
             .gruppen
             .iter()
             .enumerate()
@@ -427,21 +436,49 @@ impl Stempel {
             };
             let (nw, nh) = masse(fonts, &name, true, scale, t);
             let (aw, ah) = masse(fonts, &flaeche, false, scale, t);
-            let voll = Box::around(mitte, (nw.max(aw) + 2.0 * pad, nh + ah + 2.0 * pad));
-            let nur = Box::around(mitte, (aw + 2.0 * pad, ah + 2.0 * pad));
-            let (kasten, kurz) = match self.namen.as_ref().filter(|n| f.raum == Some(n.raum)) {
-                Some(n) => (
-                    Self::feld_kasten(n, &flaeche, mitte, fonts, scale, t),
-                    false,
-                ),
-                None if frei(&voll) => (voll, false),
-                None if frei(&nur) => (nur, true),
-                None => continue,
+            let voll = (nw.max(aw) + 2.0 * pad, nh + ah + 2.0 * pad);
+            let nur = (aw + 2.0 * pad, ah + 2.0 * pad);
+            // Türbögen nur um einen nicht verschobenen Stempel (G7)
+            let auf = if f.stempel == f.mitte {
+                tueren.bei(s, k, r)
+            } else {
+                Vec::new()
+            };
+            let boegen: Vec<Vec<[f64; 2]>> = auf
+                .iter()
+                .filter_map(|a| a.umriss().into_iter().map(pt).collect())
+                .collect();
+            let ohne_bogen = |b: &Box| !boegen.iter().any(|l| touches(l, b));
+            let mut stellen = vec![(f.stempel, mitte)];
+            if !ohne_bogen(&Box::around(mitte, voll)) {
+                let p = tueren.stelle(k, f, &auf);
+                stellen.extend(pt(p).map(|q| (p, q)));
+            }
+            // Frei von den Bögen, sonst an der Mitte wie ohne sie
+            let wahl = [(voll, false), (nur, true)]
+                .into_iter()
+                .find_map(|(g, kurz)| {
+                    let da = |&(p, q): &(Vec3, [f64; 2])| (p, q, Box::around(q, g), kurz);
+                    let mut v = stellen.iter().map(da);
+                    v.find(|w| frei(&w.2) && ohne_bogen(&w.2))
+                        .or(Some(da(&stellen[0])).filter(|w| frei(&w.2)))
+                });
+            let (punkt, kasten, kurz) = match self.namen.as_ref().filter(|n| f.raum == Some(n.raum))
+            {
+                Some(n) => {
+                    let (p, q) = wahl.map_or((f.stempel, mitte), |w| (w.0, w.1));
+                    let kasten = Self::feld_kasten(n, &flaeche, q, fonts, scale, t);
+                    (p, kasten, false)
+                }
+                None => match wahl {
+                    Some((p, _, kasten, kurz)) => (p, kasten, kurz),
+                    None => continue,
+                },
             };
             belegt.push(kasten);
             bilder.push(Bild {
                 raum: f.raum,
-                punkt: f.stempel,
+                punkt,
                 name,
                 flaeche,
                 kasten,

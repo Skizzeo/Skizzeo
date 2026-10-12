@@ -888,6 +888,14 @@ pub fn abstand(b: &Bereich, p: Vec3) -> f64 {
 /// Lage des Raumstempels. Zellen absteigend nach ihrem bestmöglichen Abstand
 /// teilen, bis keine mehr besser sein kann.
 pub fn innenpunkt(b: &Bereich, genau: f64) -> (Vec3, f64) {
+    innenpunkt_mit(b, genau, |_| f64::INFINITY)
+}
+
+/// [`innenpunkt`], der außerdem Abstand zu etwas im Bereich hält, das frei
+/// bleiben soll (etwa der Aufschlag einer Tür): `weg` ist der Abstand dazu
+/// (mm). Er darf sich je mm Weg um höchstens 1 mm ändern, wie jeder Abstand
+/// zu einer Menge, sonst trägt die Schranke der Zellen nicht.
+pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Vec3, f64) {
     use std::cmp::Ordering;
     use std::collections::BinaryHeap;
 
@@ -897,13 +905,6 @@ pub fn innenpunkt(b: &Bereich, genau: f64) -> (Vec3, f64) {
         d: f64,
     }
     impl Zelle {
-        fn neu(b: &Bereich, c: Vec3, h: f64) -> Zelle {
-            Zelle {
-                c,
-                h,
-                d: abstand(b, c),
-            }
-        }
         fn hoechstens(&self) -> f64 {
             self.d + self.h * std::f64::consts::SQRT_2
         }
@@ -925,6 +926,11 @@ pub fn innenpunkt(b: &Bereich, genau: f64) -> (Vec3, f64) {
         }
     }
 
+    let neu = |c: Vec3, h: f64| Zelle {
+        c,
+        h,
+        d: abstand(b, c).min(weg(c)),
+    };
     let pts = &b.rand.punkte;
     if pts.is_empty() {
         return (Vec3::default(), 0.0);
@@ -944,14 +950,14 @@ pub fn innenpunkt(b: &Bereich, genau: f64) -> (Vec3, f64) {
     while x < x1 {
         let mut y = y0;
         while y < y1 {
-            schlange.push(Zelle::neu(b, vec3(x + h, y + h, 0.0), h));
+            schlange.push(neu(vec3(x + h, y + h, 0.0), h));
             y += seite;
         }
         x += seite;
     }
     let mitte =
         crate::polygon::centroid(pts).unwrap_or(vec3((x0 + x1) / 2.0, (y0 + y1) / 2.0, 0.0));
-    let mut best = Zelle::neu(b, vec3(mitte.x, mitte.y, 0.0), 0.0);
+    let mut best = neu(vec3(mitte.x, mitte.y, 0.0), 0.0);
     while let Some(z) = schlange.pop() {
         if z.d > best.d {
             best = Zelle { h: 0.0, ..z };
@@ -961,7 +967,7 @@ pub fn innenpunkt(b: &Bereich, genau: f64) -> (Vec3, f64) {
         }
         let h = z.h / 2.0;
         for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-            schlange.push(Zelle::neu(b, z.c + vec3(sx * h, sy * h, 0.0), h));
+            schlange.push(neu(z.c + vec3(sx * h, sy * h, 0.0), h));
         }
     }
     (best.c, best.d)
@@ -1263,6 +1269,25 @@ mod tests {
         assert!(b.enthaelt(p));
         assert!(d > 600.0 && d < 1500.0, "{d}");
         assert!((p - vec3(2000.0, 1500.0, 0.0)).length() > 400.0);
+    }
+
+    /// Viertelkreis 2,50 m um die Ecke unten links frei halten (Aufschlag
+    /// einer Tür): Die Stelle rückt auf der Diagonale nach oben rechts, bis
+    /// Bogen und Wände gleich weit weg sind.
+    #[test]
+    fn innenpunkt_mit_haelt_abstand() {
+        let b = bereich(rechteck(0.0, 0.0, 4000.0, 4000.0), vec![]);
+        let weg = |p: Vec3| (vec3(p.x, p.y, 0.0).length() - 2500.0).max(0.0);
+        let (p, d) = innenpunkt_mit(&b, 1.0, weg);
+        let t = 6500.0 / (1.0 + std::f64::consts::SQRT_2);
+        assert!((d - (4000.0 - t)).abs() < 2.0, "{d}");
+        assert!((p - vec3(t, t, 0.0)).length() < 20.0, "{p:?}");
+        assert!(weg(p) >= d - 1e-9 && abstand(&b, p) >= d - 1e-9);
+        // Ohne Weiteres wie innenpunkt
+        assert_eq!(
+            innenpunkt_mit(&b, 1.0, |_| f64::INFINITY),
+            innenpunkt(&b, 1.0)
+        );
     }
 
     /// Eine Wand, die knapp mehr als die Toleranz vor der nächsten endet,
