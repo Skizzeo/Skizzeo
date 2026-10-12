@@ -290,6 +290,9 @@ pub struct EditOutcome {
     /// Greifen abgelehnt: dieses Bauteil ist gesperrt (Paket 4 §1.7),
     /// dazu die gegriffene Wand.
     pub locked: Option<(ElementId, ElementId)>,
+    /// Ändern abgelehnt (Leertaste an der Tür): dieses Bauteil ist
+    /// gesperrt, dazu die Tür.
+    pub gesperrt: Option<(ElementId, ElementId)>,
     /// Bündig zusammengeschoben (W-11): diese Wand steht jetzt an einer
     /// oder zwei Fugen in einer Flucht mit ihren Nachbarn.
     pub joined: Option<ElementId>,
@@ -1272,22 +1275,29 @@ impl WallEdit {
                 }
             }
             // Leertaste an der Tür bei der Maus, sonst an der gewählten
-            // (plan.md §4.3)
+            // (plan.md §4.3); mit Strg oder Alt nicht (Alt+Leertaste ist
+            // unter Windows das Systemmenü), gehalten nur einmal (Review #127
+            // H1)
             Event::Key {
                 key: tuer_edit::LEERTASTE,
                 down: true,
                 mods,
-                ..
+                repeat,
             } if self.input.is_none()
                 && self.drag.is_none()
-                && (!self.tueren.is_empty() || enabled && self.gewaehlte_tuer(scene).is_some()) =>
+                && (!self.tueren.is_empty() || enabled && self.gewaehlte_tuer(scene).is_some())
+                && !mods.ctrl
+                && !mods.alt =>
             {
                 let tuer = self.tuer_bei_maus(cam, w, h);
                 let gewaehlt = || self.gewaehlte_tuer(scene).filter(|_| enabled);
                 if let Some(id) = tuer.or_else(gewaehlt) {
                     out.consumed = true;
+                    if repeat {
+                        return out;
+                    }
                     if let Some(l) = sk_model::edit_blocked(scene.model(), &[id]) {
-                        out.locked = Some((l, id));
+                        out.gesperrt = Some((l, id));
                         return out;
                     }
                     if tuer_edit::umschlagen(scene, id, mods.shift) {

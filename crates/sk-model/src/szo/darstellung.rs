@@ -68,18 +68,20 @@ pub(super) fn werk_linientyp(
 /// Zeilen der Werksstellen, die beim Lesen nicht zählten, mit ihrer Stelle.
 pub(crate) type Roh = Vec<(&'static str, String)>;
 
-/// Schreibt die Zeilen, die beim Lesen nicht zählten, zurück, solange ihre
-/// Stelle nicht neu gesetzt ist (dann steht sie gültig in der Datei).
-pub(super) fn write_raw(a: &Attributes, out: &mut String) {
-    for (stelle, zeile) in a.display_raw() {
-        let gesetzt = match *stelle {
-            "element" => !a.element_is_default(),
-            _ => !a.above_is_default(),
-        };
-        if !gesetzt {
-            out.push_str(zeile);
-            out.push('\n');
-        }
+/// Schreibt die Zeilen der Werksstelle `stelle`, die beim Lesen nicht
+/// zählten, zurück, solange die Stelle nicht neu gesetzt ist (dann steht sie
+/// gültig in der Datei).
+pub(super) fn write_raw(a: &Attributes, stelle: &str, out: &mut String) {
+    let gesetzt = match stelle {
+        "element" => !a.element_is_default(),
+        _ => !a.above_is_default(),
+    };
+    if gesetzt {
+        return;
+    }
+    for (_, zeile) in a.display_raw().iter().filter(|r| r.0 == stelle) {
+        out.push_str(zeile);
+        out.push('\n');
     }
 }
 
