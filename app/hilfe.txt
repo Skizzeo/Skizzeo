@@ -190,7 +190,7 @@ Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Um
 Drehen | an der Spitze ziehen
 Verschieben | am Pfeil ziehen; ins Gebäude geschoben rastet er 50 cm vor der Kante ein
 Platz | fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil vorne links daneben
-Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee
+Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee. Die Landeskoordinaten darunter gehen nur ins IFC, Sonne und Nordpfeil rechnen weiter mit Breite und Länge
 Abbrechen | **Esc** schließt erst die Zahl, dann den Fußpunkt, dann das Werkzeug
 Sonnenstand | mit Nordrichtung schalten die Kachel und ein Klick auf den Pfeil ihn an und aus; in 3D stehen Sonne und Tagesbahn über dem Gebäude, fein die Bahnen vom 21.06. und 21.12.; ab 2° Sonnenhöhe wirft das Gebäude Schatten auf sich und den Boden; Sonne und Schatten erscheinen mit dem Gebäude, die Nordrichtung geht auch vorher
 Sonne ziehen | an der Sonne oder am Punkt an der Schattenspitze ziehen ändert die Uhrzeit; die Sonne bleibt auf der Tagesbahn und hält bei Auf- und Untergang; der Punkt folgt der Kurve der Schattenspitze, über ihr Ende hinaus gilt Auf- bzw. Untergang
@@ -210,7 +210,7 @@ Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klap
 Dateimenü | Logo oben links, **F10** oder **Alt** kurz
 Neu, Öffnen | **Strg+N**, **Strg+O**
 Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
-IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen
+IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen. Mit den Landeskoordinaten aus „Projektdaten“ liegt das Haus im IFC an seiner Stelle in der Welt (Georeferenz): Ostwert mit der UTM-Zone vorn (in Deutschland 32 oder 33) und Nordwert im amtlichen System ETRS89/UTM, dazu die Höhe von ±0,00 über NHN (Normalhöhennull), alles aus dem Lageplan; fehlt Ost- oder Nordwert, gibt es keine Georeferenz
 Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
 Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
 Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**
