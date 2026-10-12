@@ -339,7 +339,7 @@ mod gruendung;
 #[path = "oeffnung_model.rs"]
 mod oeffnung_model;
 pub use oeffnung_model::OpeningFault;
-pub(crate) use oeffnung_model::RawOpening;
+pub(crate) use oeffnung_model::{OpeningGrab, RawOpening};
 
 #[path = "stapel.rs"]
 mod stapel;
@@ -2561,7 +2561,12 @@ impl Model {
             .filter(|(_, r)| r.closed)
             .map(|(id, r)| (id, r.points.clone()))
             .collect();
-        if !self.stack_fits(id, &flat) || !self.set_points(id, &flat) {
+        if !self.stack_fits(id, &flat) {
+            return None;
+        }
+        let mut grab = self.opening_grab(id);
+        if !self.set_points(id, &flat) {
+            self.keep_opening_grab(grab);
             return None;
         }
         fix(self);
@@ -2592,6 +2597,9 @@ impl Model {
         partners(self, &mut out);
         self.update_joins(&moved);
         partners(self, &mut out);
+        // Öffnungen wandern mit ihrer Wand (Paket O5)
+        self.carry_openings(&mut grab);
+        self.keep_opening_grab(grab);
         // Der Versatz zwischen den Geschossen formt Decke und Außenschichten
         // darunter (G7 K4) und den Fuß darüber (K3)
         for r in &moved {
@@ -3103,6 +3111,7 @@ impl Model {
             label,
             changes: Vec::new(),
             noted: Default::default(),
+            grab: Default::default(),
         });
     }
 

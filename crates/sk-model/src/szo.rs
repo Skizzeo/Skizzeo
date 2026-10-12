@@ -2094,7 +2094,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
         Ok(n)
     };
-    let mut opening_raw = Vec::new();
+    let mut verworfen = Vec::new();
     for (section, ix) in [
         ("slab", 0),
         ("footing", 1),
@@ -2113,8 +2113,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 match oeffnung::read(r, &storey_ids, &mut hints)? {
                     Some(k) => k,
                     None => {
-                        let raw = oeffnung::raw(r, lines[r.line - 1], &mut number, &mut seen)?;
-                        opening_raw.push(raw);
+                        verworfen.push(r);
                         continue;
                     }
                 }
@@ -2453,6 +2452,11 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let id = elements.insert(e);
         register(&mut elem_ids, &mut seen, r, g, id)?;
     }
+    // Verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
+    let opening_raw: Vec<_> = verworfen
+        .into_iter()
+        .filter_map(|r| oeffnung::raw(r, lines[r.line - 1], &mut number, &mut seen, &mut hints))
+        .collect();
     for r in recs("run") {
         let id = run_ids[&r.guid("guid")?];
         let run = runs.get_mut(id).expect("eben angelegt");

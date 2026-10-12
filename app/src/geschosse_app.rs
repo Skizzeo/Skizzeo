@@ -19,6 +19,47 @@ fn premul(k: Rgba) -> [u8; 4] {
 }
 
 impl App {
+    /// Ziehen einer Ebene oder Linie im Geschossmanager beginnt einen
+    /// Schritt; die Schnitthöhe ist Ansichtszustand und hinterlässt keinen.
+    pub(crate) fn level_begin(&mut self, g: Grip) {
+        self.geschoss.plan_cut_start =
+            (g == Grip::PlanCut).then(|| self.scene.model().plan_cut_height());
+        self.scene.begin(match g {
+            Grip::Sill(_) | Grip::Lintel(_) => "Höhenlinie ziehen",
+            _ => "Geschoss ziehen",
+        });
+    }
+
+    /// Ebene oder Linie auf die Kote `z` gezogen: das Modell folgt in jedem
+    /// Bild.
+    pub(crate) fn level_move(&mut self, g: Grip, z: f64) {
+        match g {
+            Grip::FoundationBottom => self.scene.drag_foundation_bottom(z),
+            Grip::Top(id) => self.scene.drag_storey_top(id, z),
+            Grip::Terrain => self.scene.drag_terrain(z),
+            Grip::Sill(id) => self.scene.drag_height_line(id, false, z),
+            Grip::Lintel(id) => self.scene.drag_height_line(id, true, z),
+            Grip::PlanCut => {
+                // Höchstens bis UK Decke: darüber fiele die Linie aus ihrem
+                // Band und wäre nicht mehr zu greifen (Review #92 H4)
+                let st = self.scene.active_storey();
+                let m = self.scene.model();
+                let el = m.storey(st).map_or(0.0, |s| s.elevation);
+                let h = (z - el).min(m.clear_height(st) - 1.0);
+                self.scene.set_plan_cut_height(h);
+            }
+        }
+        self.upload_model();
+        self.sync_levels();
+    }
+
+    /// Ende des Ziehens im Geschossmanager: der Schritt geht in den Verlauf.
+    pub(crate) fn level_end(&mut self) {
+        self.geschoss.plan_cut_start = None;
+        self.scene.commit();
+        self.upload_model();
+    }
+
     /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters.
     pub(crate) fn paint_dialog(&mut self) {
         if !self.ui.dialog {
@@ -72,6 +113,9 @@ impl App {
     fn cancel_level_drag(&mut self) {
         if self.geschoss.ui.cancel_level_drag() {
             self.scene.rollback();
+            if let Some(h) = self.geschoss.plan_cut_start.take() {
+                self.scene.set_plan_cut_height(h);
+            }
             self.upload_model();
             self.geschoss.dirty = true;
             self.sync_levels();

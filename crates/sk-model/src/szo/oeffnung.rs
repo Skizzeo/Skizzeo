@@ -76,31 +76,45 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
 /// Eine verworfene Zeile roh (Regel 72). Sie hält ihre Nummer und ihre
 /// Guid (Review #86 B3), und sie merkt sich die Geschosse, auf die sie
 /// zeigt (`storey`, `bottom`, `top`): Ist eines gelöscht, entfällt sie beim
-/// Speichern.
+/// Speichern. Trägt sie eine Nummer oder Guid, die schon vergeben ist,
+/// entfällt sie gleich mit Hinweis, statt das Laden abzubrechen (L12).
 pub(super) fn raw(
     r: &Record,
     line: &str,
     number: &mut impl FnMut(&Record) -> Result<String, LoadError>,
     seen: &mut HashMap<Guid, usize>,
-) -> Result<RawOpening, LoadError> {
+    hints: &mut Vec<String>,
+) -> Option<RawOpening> {
+    let guid = r.opt("guid").and_then(Guid::from_ifc);
+    let doppelt = |was: String| {
+        format!(
+            "Zeile {}: [opening] {was} doppelt, die Zeile entfällt",
+            r.line
+        )
+    };
+    if let Some(g) = guid.filter(|g| seen.contains_key(g)) {
+        hints.push(doppelt(format!("Guid {}", g.to_ifc())));
+        return None;
+    }
     let number = match r.opt("number") {
-        Some(_) => Some(number(r)?),
+        Some(n) => match number(r) {
+            Ok(n) => Some(n),
+            Err(_) => {
+                hints.push(doppelt(format!("Nummer {n}")));
+                return None;
+            }
+        },
         None => None,
     };
-    if let Some(g) = r.opt("guid").and_then(Guid::from_ifc) {
-        if let Some(first) = seen.insert(g, r.line) {
-            return Err(err(
-                r.line,
-                format!("Guid {} doppelt (schon in Zeile {first})", g.to_ifc()),
-            ));
-        }
+    if let Some(g) = guid {
+        seen.insert(g, r.line);
     }
     let storeys = ["storey", "bottom", "top"]
         .iter()
         .filter_map(|k| r.opt(k))
         .filter_map(|v| Guid::from_ifc(v.split(':').next().unwrap_or("")))
         .collect();
-    Ok(RawOpening {
+    Some(RawOpening {
         line: line.to_string(),
         storeys,
         number,

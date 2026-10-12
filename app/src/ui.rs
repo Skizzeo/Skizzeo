@@ -16,6 +16,7 @@ use sk_ui::theme::{Sizes, Theme};
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
 mod fenster;
+mod hoehenlinien;
 
 pub use fenster::TITEL as LEVELS_TITEL;
 
@@ -231,6 +232,12 @@ pub enum Grip {
     Top(StoreyId),
     /// OK Gelände (Gelände Thema 1).
     Terrain,
+    /// Höhenlinien eines Geschosses im Geschossmanager (Jörn 11.10.
+    /// 13:57): Brüstung und Sturz, den Ebenen untergeordnet.
+    Sill(StoreyId),
+    Lintel(StoreyId),
+    /// Schnitthöhe des Grundrisses im aktiven Geschoss (Jörn 14:12).
+    PlanCut,
 }
 
 /// Zahlenfelder im Paneel „Eigenschaften“.
@@ -710,6 +717,9 @@ pub struct Band {
     /// Ebene Flachdach: Oberkante ist OK Aufkantung.
     pub roof: bool,
     pub active: bool,
+    /// Brüstung und Sturz als Koten (mm); nur Geschosse, nicht Gründung
+    /// und Flachdach.
+    pub lines: Option<(f64, f64)>,
 }
 
 /// Inhalt des Paneels „Geschosse“.
@@ -728,6 +738,9 @@ pub struct Levels {
     /// Schalter „Flachdach“ (Jörn 10.10.): an, wenn die Ebene besteht;
     /// `None`: kein Schalter.
     pub flat_roof: Option<bool>,
+    /// Schnitthöhe des Grundrisses im aktiven Geschoss als Kote (mm);
+    /// `None` im Fundament.
+    pub plan_cut: Option<f64>,
 }
 
 /// Eine Ebene (Linie) im Diagramm.
@@ -1700,6 +1713,7 @@ impl Ui {
             Grip::FoundationBottom => b.iter().find(|b| b.foundation).map(|b| b.bottom),
             Grip::Top(id) => b.iter().find(|b| b.id == id).map(|b| b.top),
             Grip::Terrain => self.levels.terrain,
+            Grip::Sill(_) | Grip::Lintel(_) | Grip::PlanCut => self.sub_grip_z(g),
         }
     }
 
@@ -3286,11 +3300,13 @@ impl Ui {
         let terrain = self
             .terrain_y(&lines, &ys, &l)
             .map(|ty| (Grip::Terrain, (ty - y as f32).abs()));
+        let sub = self.sub_lines(&lines, &ys);
         lines
             .iter()
             .zip(ys.iter().copied())
             .filter_map(|(line, ly)| Some((line.grip?, (ly - y as f32).abs())))
             .chain(terrain)
+            .chain(sub.iter().map(|u| (u.grip, (u.y - y as f32).abs())))
             .filter(|(_, d)| *d <= hit)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(g, _)| g)
@@ -3463,6 +3479,7 @@ impl Ui {
             p.rounded_rect(x0 + m, y + m - hd * 0.5, hd, hd * 0.5 + 1.0, 1.0);
             c.fill(&p, hc);
         }
+        self.paint_sub_lines(t, c, &lines, &ys, (lo, hi));
         for (line, &y) in lines.iter().zip(&ys) {
             let y = clamp(y);
             let dragged = line.grip.is_some() && line.grip == drag;
@@ -4095,12 +4112,12 @@ mod tests {
         assert!(!out.consumed);
     }
 
-    /// Hover und Drücken zeichnen nur den Knopf neu; das Ergebnis gleicht dem
-    /// vollen Neuzeichnen aufs Pixel.
     /// Jede Beschriftung eines Werkzeug- oder Ansichtsknopfs passt mit
     /// echter Schrift samt Rand in ihren Knopf; sonst ragt sie in den
     /// Nachbarn, und das Einzelbild weicht vom Paneel ab (Gate #86:
-    /// „Wandöffnung“ im halben Knopf).
+    /// „Wandöffnung“ im halben Knopf). Liberation unter Linux, sonst die
+    /// Schrift des Systems (Windows: Segoe UI); ohne beide sagt der Test,
+    /// dass er nichts prüft.
     #[test]
     fn beschriftung_passt_in_den_knopf() {
         let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
@@ -4109,18 +4126,24 @@ mod tests {
                 .ok()
                 .and_then(sk_paint::font::Font::parse)
         };
+        let schrift = || match lade("LiberationSans-Bold.ttf") {
+            Some(bold) => Fonts {
+                regular: lade("LiberationSans-Regular.ttf"),
+                bold: Some(bold),
+                italic: None,
+            },
+            None => Fonts::system(),
+        };
+        if schrift().bold.is_none() {
+            eprintln!("beschriftung_passt_in_den_knopf: keine Schrift gefunden, nichts geprüft");
+            return;
+        }
         let th = Theme::dark();
         for scale in [0.6f32, 1.0, 1.25, 2.0] {
             let mut ui = Ui::new(scale, &th);
             ui.building = true;
-            ui.fonts = Fonts {
-                regular: lade("LiberationSans-Regular.ttf"),
-                bold: lade("LiberationSans-Bold.ttf"),
-                italic: None,
-            };
-            let Some(f) = ui.fonts.bold.as_ref() else {
-                return;
-            };
+            ui.fonts = schrift();
+            let f = ui.fonts.bold.as_ref().expect("oben geprüft");
             let px = th.size.font * scale;
             for p in [Panel::Tools, Panel::Views] {
                 for (id, b, label) in ui.buttons(p) {
@@ -4134,6 +4157,8 @@ mod tests {
         }
     }
 
+    /// Hover und Drücken zeichnen nur den Knopf neu; das Ergebnis gleicht dem
+    /// vollen Neuzeichnen aufs Pixel.
     #[test]
     fn knopf_einzeln_neu_gleicht_dem_ganzen_paneel() {
         let th = Theme::dark();
