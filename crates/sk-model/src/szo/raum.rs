@@ -44,7 +44,7 @@ pub(super) fn write_spaces(m: &Model, els: &[&Element], out: &mut String) {
 
 /// Was aus einer `[space]`-Zeile wird.
 pub(super) enum Lesung {
-    Raum(Element),
+    Raum(Box<Element>),
     /// Unlesbar: Die Zeile bleibt roh in der Datei ([`raw`]).
     Roh,
     /// Guid oder Nummer doppelt, Geschoss unbekannt: Die Zeile entfällt.
@@ -99,7 +99,7 @@ pub(super) fn read(
     match number(r) {
         Ok(number) => {
             hints.append(&mut eigene);
-            Lesung::Raum(Element {
+            Lesung::Raum(Box::new(Element {
                 guid,
                 number,
                 category: Category::Space,
@@ -109,7 +109,7 @@ pub(super) fn read(
                 kind: ElementKind::Space(Box::new(s)),
                 props: Default::default(),
                 locked: false,
-            })
+            }))
         }
         Err(e) => weg(e, hints),
     }

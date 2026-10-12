@@ -1230,7 +1230,7 @@ mod tests {
 
     impl Ketten for Teils<'_> {
         fn fassung(&self, run: RunId) -> Option<u64> {
-            let ohne = (run.index() as u64 ^ self.1) % 3 == 0;
+            let ohne = (run.index() as u64 ^ self.1).is_multiple_of(3);
             Inhalt(self.0).fassung(run).filter(|_| !ohne)
         }
 

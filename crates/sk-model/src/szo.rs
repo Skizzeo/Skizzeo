@@ -2458,7 +2458,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     for r in recs("space") {
         match raum::read(r, &mut number, &storey_ids, &seen, &mut hints) {
             raum::Lesung::Raum(e) => {
-                register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?
+                register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(*e))?
             }
             raum::Lesung::Roh => raum_roh.push(r),
             raum::Lesung::Weg => {}
