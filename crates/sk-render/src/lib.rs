@@ -292,6 +292,9 @@ struct Program {
     id: GLuint,
 }
 
+/// So viele leere Tintenpuffer bleiben zum Wiederverwenden.
+const INK_FREI: usize = 64;
+
 /// Vertex-Array mit eigenem Puffer.
 #[derive(Default)]
 struct GpuBuffer {
@@ -2053,6 +2056,16 @@ impl Renderer {
             self.ink_teile.push((*key, b));
         }
         self.ink_frei.extend(alt.into_values());
+        // Leere Puffer bleiben nur bis zu einer Obergrenze für später, der
+        // Rest wird freigegeben (Review W33)
+        while self.ink_frei.len() > INK_FREI {
+            if let Some(b) = self.ink_frei.pop() {
+                unsafe {
+                    self.gl.glDeleteBuffers(1, &b.buf);
+                    self.gl.glDeleteVertexArrays(1, &b.vao);
+                }
+            }
+        }
     }
 
     /// Oberflächenbild Nummer `slot` an Fensterposition `(x, y)` (links oben, Pixel),

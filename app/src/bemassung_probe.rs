@@ -1,8 +1,9 @@
-//! Tests und Probe zu Review W30: nur geänderte Geschosse rechnen neu,
-//! Geschosse außerhalb des Bildes fehlen; die Probe misst Ziehen, Loslassen
-//! und Neuzeichnen bei 1, 10, 100 und 1000 Häusern (je ein Gebäude
+//! Tests und Probe zu Review W30 und W33: nur geänderte Geschosse rechnen
+//! neu, ein Ebenenwechsel rechnet nichts, Geschosse außerhalb des Bildes
+//! fehlen; die Probe misst das erste Bild, Ebenenwechsel, Ziehen, Loslassen
+//! und Neuzeichnen bei 1, 10, 100, 1000 und 2000 Häusern (je ein Gebäude
 //! 10 × 8 m mit einer angeschlossenen Innenwand und einem Fenster, alle EG
-//! auf ±0,00).
+//! auf ±0,00), dazu 1000 dicht stehende.
 //!
 //! Probe: `cargo test --release -p skizzeo probe_bemassung -- --ignored --nocapture`
 
@@ -15,11 +16,16 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 fn siedlung(n: usize) -> Scene {
+    siedlung_raster(n, 20_000.0, 20_000.0)
+}
+
+/// `n` Häuser im Raster `dx` × `dy` (mm).
+fn siedlung_raster(n: usize, dx: f64, dy: f64) -> Scene {
     let mut m = Model::new();
     m.begin("Siedlung");
     let seite = (n as f64).sqrt().ceil() as usize;
     for i in 0..n {
-        let (ox, oy) = ((i % seite) as f64 * 20_000.0, (i / seite) as f64 * 20_000.0);
+        let (ox, oy) = ((i % seite) as f64 * dx, (i / seite) as f64 * dy);
         let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
         let b = m.add_building(1);
         let pts = [
@@ -125,6 +131,33 @@ fn nur_das_geaenderte_geschoss_rechnet_neu() {
     assert!(s.edit_attr(|m| m.set_massstil(stil)));
     let n = mk.stand(&s, st.clone(), Some(&f)).unwrap();
     assert!((0..3).all(|i| !Rc::ptr_eq(&u.geschosse[i], &n.geschosse[i])));
+}
+
+/// Auf eine andere Ebene und zurück rechnet und zeichnet nichts neu (Review
+/// W33 zu #116); gemerkt bleiben nur Geschosse, die es noch gibt.
+#[test]
+fn ebenenwechsel_rechnet_nichts_neu() {
+    let Some(f) = schrift() else {
+        eprintln!("Liberation Sans fehlt, Test übersprungen");
+        return;
+    };
+    let mut s = siedlung(3);
+    let mut mk = Massketten::default();
+    let st = geschosse(&s, ViewKind::Plan, &[]);
+    let a = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    // Eine Ebene ohne Ketten, dann zurück
+    let leer = mk.stand(&s, Vec::new(), Some(&f)).unwrap();
+    assert!(leer.geschosse.is_empty());
+    let b = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert!((0..3).all(|i| Rc::ptr_eq(&a.geschosse[i], &b.geschosse[i])));
+    // Ein Gebäude gelöscht: sein Geschoss fällt aus dem Gemerkten
+    let haus = s.model().storey(st[2]).and_then(|g| g.building).unwrap();
+    assert!(s.remove_building(haus));
+    let rest = geschosse(&s, ViewKind::Plan, &[]);
+    assert_eq!(rest, st[..2]);
+    mk.stand(&s, rest, Some(&f)).unwrap();
+    assert_eq!(mk.ketten.len(), 2);
+    assert!(!mk.ketten.contains_key(&st[2]) && !mk.geschosse.contains_key(&st[2]));
 }
 
 /// Außerhalb des Bildes fehlt ein Geschoss ganz; weit herausgezoomt bleiben
@@ -253,6 +286,14 @@ fn zwei_haeuser_sechs_meter() {
     assert_eq!(n.geschosse[0].b.zahlen.len(), allein[0]);
 }
 
+fn reps_von(n: usize) -> usize {
+    if n >= 1000 {
+        5
+    } else {
+        20
+    }
+}
+
 fn ms(t: Instant, reps: usize) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0 / reps as f64
 }
@@ -270,9 +311,11 @@ fn probe_bemassung() {
     let theme = Theme::dark();
     println!();
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
+        "{:>7} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
         "Häuser",
         "Kalt",
+        "Stand",
+        "Ebene",
         "Wand",
         "Ziehen",
         "ZiehNah",
@@ -285,8 +328,21 @@ fn probe_bemassung() {
         "Teile",
         "TeilNah"
     );
-    for n in [1, 10, 100, 1000] {
-        let mut s = siedlung(n);
+    // Weit: 10 m zwischen den Häusern, nichts weicht; eng: 6 m bzw. 7 m,
+    // überall weicht etwas
+    for (n, eng) in [
+        (1, false),
+        (10, false),
+        (100, false),
+        (1000, false),
+        (2000, false),
+        (1000, true),
+    ] {
+        let mut s = if eng {
+            siedlung_raster(n, 16_000.0, 15_000.0)
+        } else {
+            siedlung(n)
+        };
         let mut mk = Massketten::default();
         // Ganze Siedlung im Bild, wie nach „Alles zeigen“
         let (lo, hi) = s.bounds().unwrap();
@@ -335,10 +391,21 @@ fn probe_bemassung() {
         let (linien, ink) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick, 1.0, &theme);
         let kalt = ms(t, 1);
         hoch(&ink);
+        // Stand ohne Änderung, dann auf eine andere Ebene und zurück
+        let st = geschosse(&s, ViewKind::Plan, &[]);
+        let t = Instant::now();
+        for _ in 0..reps_von(n) {
+            std::hint::black_box(mk.stand(&s, st.clone(), Some(&f)));
+        }
+        let stand = ms(t, reps_von(n));
+        let t = Instant::now();
+        mk.stand(&s, Vec::new(), Some(&f));
+        mk.stand(&s, st.clone(), Some(&f));
+        let ebene = ms(t, 1);
         let dreiecke: usize = ink.iter().map(|(_, t)| t.len()).sum();
         let run = s.model().runs().ids().next().unwrap();
         let orig = s.chain(run).unwrap().clone();
-        let reps = if n >= 1000 { 5 } else { 20 };
+        let reps = reps_von(n);
         s.begin("Wand verschieben");
         // Nur die Wand: Grundlast ohne Bemaßung
         let t = Instant::now();
@@ -401,9 +468,11 @@ fn probe_bemassung() {
         }
         let drehen = ms(t, reps);
         println!(
-            "{:>6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
-            n,
+            "{:>7} {:>8.2} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
+            format!("{n}{}", if eng { " eng" } else { "" }),
             kalt,
+            stand,
+            ebene,
             wand,
             ziehen,
             ziehen_nah,
@@ -418,7 +487,8 @@ fn probe_bemassung() {
         );
     }
     println!(
-        "ms je Aufruf. Kalt = erstes Bild. Wand = Wand ziehen ohne Bemaßung, Ziehen = was \
+        "ms je Aufruf. Kalt = erstes Bild. Stand = Ketten ohne Änderung, Ebene = auf eine \
+         andere Ebene und zurück. Wand = Wand ziehen ohne Bemaßung, Ziehen = was \
          die Bemaßung je Mausschritt dazu kostet, Hochlad. = Dreiecke, die dabei neu zur \
          Grafikkarte gehen; ZiehNah = Ziehen nah am Haus (etwa 1:100 am Bildschirm). \
          Zeichn. = Bild ohne Änderung, Loslass = Loslassen und erstes \

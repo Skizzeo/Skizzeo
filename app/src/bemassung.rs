@@ -17,7 +17,7 @@ use sk_math::{vec3, Vec3};
 use sk_model::bemassung::{Kettenart, Stil};
 use sk_model::{ElementId, LevelKind, Model, StoreyId};
 use sk_paint::font::Font;
-use sk_plan::aussen::{aussenmasse_aus, Aussenmasse};
+use sk_plan::aussen::{aussenmasse_mit, Aussenmasse, Verzeichnis};
 use sk_plan::bild::{bild, Bild, Strichart};
 use sk_plan::platz::{dazu, kasten, nachbarn, ohne, zu_zweit, Weg};
 use sk_plan::schrift::Schrift;
@@ -156,6 +156,8 @@ pub struct Massketten {
     platz: Option<(Vec<u64>, Vec<Weg>)>,
     /// Was je Paar von Nachbarn weicht, nach den Nummern ihrer Ketten.
     paare: HashMap<(u64, u64), [Weg; 2]>,
+    /// Ab so vielen Paaren fallen die mit nicht mehr gemerkten Ketten heraus.
+    paare_grenze: usize,
     /// Bild je Geschoss und wofür es gilt: Nummer der Ketten, was weicht.
     geschosse: HashMap<StoreyId, ((u64, Weg), Rc<Geschoss>)>,
     /// Zuletzt zusammengestellter Stand und die Nummern seiner Geschosse.
@@ -242,15 +244,23 @@ impl Massketten {
             self.stil = Some(stil.clone());
         }
         let schrift = self.schrift(&stil.schrift, ui)?;
-        self.ketten.retain(|k, _| st.contains(k));
-        self.geschosse.retain(|k, _| st.contains(k));
+        // Gemerkt bleiben alle Geschosse, die es noch gibt: Zurück auf eine
+        // andere Ebene rechnet nichts neu (Review W33)
+        if self.ketten.keys().any(|&k| m.storey(k).is_none()) {
+            self.ketten.retain(|&k, _| m.storey(k).is_some());
+            self.geschosse.retain(|&k, _| m.storey(k).is_some());
+        }
+        // Züge, Öffnungen und Anschlüsse je Geschoss, erst wenn eines neu
+        // gerechnet wird, dann für alle einmal
+        let mut vz: Option<Verzeichnis> = None;
         let mut da: Vec<(StoreyId, Ketten)> = Vec::new();
         for &s in &st {
             let key = (scene.mass_stand(s), versaetze(m, s));
             let k = match self.ketten.get(&s) {
                 Some((k, a)) if *k == key => a.clone(),
                 _ => {
-                    let k = ketten(scene, s).map(|a| Ketten {
+                    let vz = vz.get_or_insert_with(|| Verzeichnis::neu(m));
+                    let k = ketten(scene, vz, s).map(|a| Ketten {
                         nr: neuer_stand(),
                         kasten: kasten(&a, stil),
                         a: Rc::new(a),
@@ -275,13 +285,17 @@ impl Massketten {
                 dazu(&mut wege[i], &w[0]);
                 dazu(&mut wege[j], &w[1]);
             }
-            // Paare mit alten Ketten fallen gelegentlich heraus
-            if self.paare.len() > 2 * paare.len() + 16 {
-                let jetzt: HashSet<(u64, u64)> = paare
-                    .iter()
-                    .map(|&(i, j)| (da[i].1.nr, da[j].1.nr))
+            // Paare mit alten Ketten fallen gelegentlich heraus; die anderer
+            // Ebenen bleiben, solange deren Ketten gemerkt sind (Review W33)
+            if self.paare.len() > self.paare_grenze.max(2 * paare.len() + 16) {
+                let lebend: HashSet<u64> = self
+                    .ketten
+                    .values()
+                    .filter_map(|(_, k)| k.as_ref().map(|k| k.nr))
                     .collect();
-                self.paare.retain(|k, _| jetzt.contains(k));
+                self.paare
+                    .retain(|(a, b), _| lebend.contains(a) && lebend.contains(b));
+                self.paare_grenze = 2 * self.paare.len() + 16;
             }
             self.platz = Some((nrn, wege));
         }
@@ -382,23 +396,24 @@ impl Massketten {
     }
 }
 
-/// Versätze der Ketten im Geschoss `st`.
+/// Versätze der Ketten im Geschoss `st` (nur dessen Abschnitt der
+/// geordneten Versätze, Review W33).
 fn versaetze(m: &Model, st: StoreyId) -> Vec<((i32, Kettenart), f64)> {
     let Some(g) = m.storey(st).map(|s| s.guid) else {
         return Vec::new();
     };
     m.bemassung()
         .versatz
-        .iter()
-        .filter(|(k, _)| k.0 == g)
+        .range((g, i32::MIN, Kettenart::Oeffnung)..)
+        .take_while(|(k, _)| k.0 == g)
         .map(|(k, v)| ((k.1, k.2), *v))
         .collect()
 }
 
 /// Ketten des Geschosses `st`, die Züge aus dem Zwischenspeicher der Szene.
-fn ketten(scene: &Scene, st: StoreyId) -> Option<Aussenmasse> {
+fn ketten(scene: &Scene, vz: &Verzeichnis, st: StoreyId) -> Option<Aussenmasse> {
     let m = scene.model();
-    aussenmasse_aus(m, st, |id| {
+    aussenmasse_mit(m, vz, st, |id| {
         scene
             .chain(id)
             .map(Cow::Borrowed)

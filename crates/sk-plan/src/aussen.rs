@@ -14,6 +14,7 @@ use sk_model::{
     WallChain,
 };
 use std::borrow::Borrow;
+use std::collections::HashMap;
 
 /// Gleiche Richtung bis 1°: Kosinus.
 const PARALLEL: f64 = 0.999_847_7;
@@ -171,25 +172,55 @@ pub fn kern(c: &WallChain) -> (f64, f64) {
     }
 }
 
+/// Was die Ketten eines Geschosses aus dem Modell brauchen, einmal für
+/// alle Geschosse gesammelt (Review W33: sonst durchsucht jedes Geschoss
+/// das ganze Modell): geschlossene Außenwandzüge und Öffnungen je Geschoss,
+/// T-Anschlüsse (Nummer in [`Model::joins`]) je Wirtszug.
+#[derive(Default)]
+pub struct Verzeichnis {
+    zuege: HashMap<StoreyId, Vec<RunId>>,
+    oeffnungen: HashMap<StoreyId, Vec<ElementId>>,
+    anschluesse: HashMap<RunId, Vec<usize>>,
+}
+
+impl Verzeichnis {
+    pub fn neu(m: &Model) -> Verzeichnis {
+        let mut v = Verzeichnis::default();
+        for (id, r) in m.runs().iter() {
+            let aussenwand = r
+                .segments
+                .first()
+                .and_then(|&e| m.element(e))
+                .is_some_and(|e| e.category == Category::ExteriorWall);
+            if r.closed && aussenwand {
+                v.zuege.entry(r.storey).or_default().push(id);
+            }
+        }
+        for (id, e) in m.elements().iter() {
+            if matches!(e.kind, ElementKind::Opening(_)) {
+                v.oeffnungen.entry(e.storey).or_default().push(id);
+            }
+        }
+        for (i, j) in m.joins().iter().enumerate() {
+            if j.kind != JoinKind::T {
+                continue;
+            }
+            if let Some((host, _)) = m.segment_of(j.b) {
+                v.anschluesse.entry(host).or_default().push(i);
+            }
+        }
+        v
+    }
+}
+
 fn zuege<C: Borrow<WallChain>>(
-    m: &Model,
+    vz: &Verzeichnis,
     st: StoreyId,
     stil: &Stil,
     chain: &impl Fn(RunId) -> Option<C>,
 ) -> Vec<Zug> {
     let mut out = Vec::new();
-    for (id, r) in m.runs().iter() {
-        if r.storey != st || !r.closed {
-            continue;
-        }
-        let aussenwand = r
-            .segments
-            .first()
-            .and_then(|&e| m.element(e))
-            .is_some_and(|e| e.category == Category::ExteriorWall);
-        if !aussenwand {
-            continue;
-        }
+    for &id in vz.zuege.get(&st).into_iter().flatten() {
         let Some(c) = chain(id) else { continue };
         let c = c.borrow();
         let (k_aussen, k_innen) = kern(c);
@@ -408,14 +439,16 @@ struct Anschluss {
 /// (Review W30).
 fn anschluesse<C: Borrow<WallChain>>(
     m: &Model,
+    vz: &Verzeichnis,
     zuege: &[Zug],
     chain: &impl Fn(RunId) -> Option<C>,
 ) -> Vec<Anschluss> {
     let mut out = Vec::new();
-    for j in m.joins() {
-        if j.kind != JoinKind::T {
-            continue;
-        }
+    let joins = zuege
+        .iter()
+        .flat_map(|z| vz.anschluesse.get(&z.run).into_iter().flatten())
+        .filter_map(|&i| m.joins().get(i));
+    for j in joins {
         let Some((host, seg)) = m.segment_of(j.b) else {
             continue;
         };
@@ -505,16 +538,16 @@ struct Oeffnung {
 }
 
 /// Öffnungen des Geschosses `st`, einmal je Geschoss (Review W30).
-fn oeffnungen_von(m: &Model, st: StoreyId) -> Vec<Oeffnung> {
-    m.elements()
-        .iter()
-        .filter_map(|(id, e)| {
+fn oeffnungen_von(m: &Model, vz: &Verzeichnis, st: StoreyId) -> Vec<Oeffnung> {
+    vz.oeffnungen
+        .get(&st)
+        .into_iter()
+        .flatten()
+        .filter_map(|&id| {
+            let e = m.element(id)?;
             let ElementKind::Opening(o) = &e.kind else {
                 return None;
             };
-            if e.storey != st {
-                return None;
-            }
             let band = m.opening_band(o)?;
             let pfad = o.path.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
             Some(Oeffnung { id, pfad, band })
@@ -615,17 +648,28 @@ pub fn aussenmasse_aus<C: Borrow<WallChain>>(
     st: StoreyId,
     chain: impl Fn(RunId) -> Option<C>,
 ) -> Option<Aussenmasse> {
+    aussenmasse_mit(m, &Verzeichnis::neu(m), st, chain)
+}
+
+/// Wie [`aussenmasse_aus`], Züge, Öffnungen und Anschlüsse aus `vz` (für
+/// viele Geschosse einmal gesammelt).
+pub fn aussenmasse_mit<C: Borrow<WallChain>>(
+    m: &Model,
+    vz: &Verzeichnis,
+    st: StoreyId,
+    chain: impl Fn(RunId) -> Option<C>,
+) -> Option<Aussenmasse> {
     let storey = m.storey(st)?;
     if storey.kind == LevelKind::Foundation {
         return None;
     }
     let stil = m.massstil();
-    let zuege = zuege(m, st, stil, &chain);
+    let zuege = zuege(vz, st, stil, &chain);
     if zuege.is_empty() {
         return None;
     }
-    let anschluesse = anschluesse(m, &zuege, &chain);
-    let alle_oeffnungen = oeffnungen_von(m, st);
+    let anschluesse = anschluesse(m, vz, &zuege, &chain);
+    let alle_oeffnungen = oeffnungen_von(m, vz, st);
     let e1 = hauptrichtung(&zuege);
     let e2 = vec3(-e1.y, e1.x, 0.0);
     let mut seiten = Vec::new();
