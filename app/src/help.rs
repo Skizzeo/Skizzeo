@@ -1126,6 +1126,12 @@ mod tests {
         assert_eq!(m.title, "Mengen, Kosten, AVA");
         assert!(zeile(m, "Gebäude").unwrap().contains("ganze Projekt"));
         assert_eq!(zeile(m, "Preise"), None);
+        // Bedienbarkeit 38.5: Umschalter und Rechenweg
+        let sicht = zeile(m, "Sicht").expect("Zeile Sicht");
+        assert!(
+            sicht.contains("„VOB | Bestellung“") && sicht.contains("Rechenweg"),
+            "{sicht}"
+        );
         assert!(m.rows.len() <= 10);
         assert_eq!(Topic::from_id("kosten"), Some(Topic::Costs));
     }

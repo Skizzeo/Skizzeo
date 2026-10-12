@@ -2567,17 +2567,17 @@ fn storey_lines(
             gl.cells[0] = group_title(m, g, true);
             gl.cells[1] = number_range(m, g);
             gl.cells[2] = format!("{} · {}", m_len(g.total.length), g.total.count);
-            gl.cells[4] = m_vol(if faktor.is_empty() {
-                g.total.volume
-            } else {
+            // Summe der Zeilen darunter, nach VOB/C wie die Summe nach
+            // Baustoff (Bedienbarkeit 38.2)
+            gl.cells[4] = m_vol(
                 g.rows
                     .iter()
                     .filter_map(|r| match &r.q {
-                        Some(ElementQto::Wall(w)) => Some(fv(r.element, w.volume)),
+                        Some(ElementQto::Wall(w)) => Some(wand_vol(faktor, r.element, w.volume)),
                         _ => None,
                     })
-                    .sum()
-            });
+                    .sum(),
+            );
             lines.push(gl);
             for r in &g.rows {
                 let mut rl = Line::new(Kind::Row, 2, elem_key(r.element));
@@ -2592,7 +2592,7 @@ fn storey_lines(
                             m_len(w.list_length),
                             de(w.height / 1e3, 3) + " m"
                         );
-                        rl.cells[4] = m_vol(fv(r.element, w.volume));
+                        rl.cells[4] = m_vol(wand_vol(faktor, r.element, w.volume));
                         // Gestapelte Wand mit Versatz (OG Phase 2)
                         rl.note = offset_note(m, r.element);
                     }
@@ -2678,7 +2678,7 @@ fn storey_lines(
                 }
                 Some(ElementQto::Wall(w)) => {
                     rl.cells[0] = g.category.name().into();
-                    rl.cells[4] = m_vol(fv(r.element, w.volume));
+                    rl.cells[4] = m_vol(wand_vol(faktor, r.element, w.volume));
                 }
                 Some(ElementQto::Strip(f)) => {
                     rl.cells[0] = format!("Randdämmstreifen {} × {}", cm(f.width), cm(f.height));
