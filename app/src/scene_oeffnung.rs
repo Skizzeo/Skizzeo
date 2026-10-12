@@ -181,4 +181,72 @@ mod tests {
         assert_eq!((l.sill, l.lintel), (sk_model::SILL, sk_model::LINTEL));
         assert!(s.outer_face_at(low, d).is_none());
     }
+
+    /// Einbauelement im Grundriss (Jörn 12.10. 05:24): zwei dünn
+    /// gestrichelte Linien längs der Wand in der geschnittenen Öffnung, im
+    /// Abstand der Elementtiefe, so breit wie das Loch hinter dem Anschlag.
+    /// Liegt die Brüstung über der Schnitthöhe, keine Linien.
+    #[test]
+    fn einbauelement_im_grundriss() {
+        use crate::ui::ViewKind;
+        use sk_model::edge_kind;
+        let mut m = Model::with_seed(313);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let st = m.run(eg).unwrap().storey;
+        let mut s = Scene::with_model(m);
+        let (o, d) = (vec3(5000.0, -9000.0, 1500.0), vec3(0.0, 1.0, 0.0));
+        let (face, p) = s.outer_face_at(o, d).unwrap();
+        let (a, c) = (
+            face.at(face.u_of(p) - 600.0, 0.0),
+            face.at(face.u_of(p) + 600.0, 0.0),
+        );
+        let op = Opening {
+            kind: OpeningKind::Window,
+            path: vec![vec3(a.x, a.y, 0.0), vec3(c.x, c.y, 0.0)],
+            bottom: HeightRef::Line(st, HeightLine::Sill),
+            top: HeightRef::Line(st, HeightLine::Lintel),
+            reveal: None,
+            install: Default::default(),
+        };
+        let id = s.add_opening(op.clone()).unwrap();
+        let el = edge_kind::ELEMENT as f32;
+        let linien = |s: &mut Scene| -> Vec<[[f32; 3]; 2]> {
+            let m = s.mesh(ViewKind::Plan, None, &[]);
+            m.edges.iter().filter(|e| e.1 == el).map(|e| e.0).collect()
+        };
+        let l = linien(&mut s);
+        assert_eq!(l.len(), 2, "{l:?}");
+        let cut = s.plan_cut() as f32;
+        assert!(l.iter().flatten().all(|q| q[2] == cut), "in Schnitthöhe");
+        // Längs der Wand (y fest), Abstand = Elementtiefe
+        let tiefe = s.model().install_depth(&op, eg);
+        let y: Vec<f32> = l.iter().map(|e| e[0][1]).collect();
+        assert!(l.iter().all(|e| e[0][1] == e[1][1]), "{l:?}");
+        assert!(
+            ((y[0] - y[1]).abs() as f64 - tiefe.element).abs() < 0.01,
+            "{y:?}"
+        );
+        let breite = (l[0][1][0] - l[0][0][0]).abs() as f64;
+        assert!(breite >= 1200.0 - 0.01, "mindestens die Öffnung: {breite}");
+        // Aussehen: Stift der feinen Linie, gestrichelt
+        let looks = s.table().edge_looks(true, 1.0);
+        let (f, k) = (edge_kind::FINE as usize, edge_kind::ELEMENT as usize);
+        assert_eq!(looks.width[k], looks.width[f]);
+        assert!(looks.dash[2 * k][1] > 0.0, "gestrichelt");
+        // Brüstung über der Schnitthöhe: die Öffnung ist nicht geschnitten
+        let el_z = s.model().storey(st).unwrap().elevation;
+        s.begin("Höhenlinie ziehen");
+        s.drag_height_line(st, false, s.plan_cut() + 200.0);
+        s.commit();
+        assert!(s.model().storey(st).unwrap().lines.sill > s.plan_cut() - el_z);
+        assert!(s.model().opening(id).is_some());
+        assert!(linien(&mut s).is_empty());
+    }
 }

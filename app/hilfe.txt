@@ -69,6 +69,7 @@ Ecke | Gegenecke auf der Nachbarwand: die Öffnung geht um die Außenecke
 Geschosse | Gegenecke auf der Wand darüber: die Öffnung geht über beide Geschosse
 Höhen | an einer Linie gefangen wandert die Kante mit, wenn die Linie im Geschossmanager gezogen wird
 Anschlag | bei WDVS und Verblender ist die gezeichnete Öffnung die sichtbare außen, innen ist sie um den Anschlag größer
+Einbauelement | im Grundriss zeigen zwei dünn gestrichelte Linien, wo das spätere Fenster- oder Türelement sitzt: außen nach der äußeren Einbautiefe, dazwischen die Elementtiefe
 Beenden | **Esc** nimmt die erste Ecke zurück, dann schließt es
 
 [thema] id=einlesen titel="Bauteil einlesen"

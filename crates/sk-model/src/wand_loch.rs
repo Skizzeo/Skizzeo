@@ -522,6 +522,67 @@ impl WallChain {
     }
 }
 
+/// Strichlänge und Lücke der Einbauelement-Linie im Grundriss (mm auf dem
+/// Papier).
+pub const ELEMENT_DASH: (f64, f64) = (1.5, 0.75);
+
+impl WallChain {
+    /// Einbauelement im Grundriss (Jörn 12.10. 05:24): je Loch, das die
+    /// Schnitthöhe `cut` trifft, zwei Linien längs der Wand in Höhe des
+    /// Schnitts, an der Außen- und Innenseite des späteren Elements (äußere
+    /// Einbautiefe und Elementtiefe aus [`Hole::install`]), so breit wie das
+    /// Loch in der Schicht, in der das Element sitzt. Zur Ecke hin offene
+    /// Löcher enden an der Ecke der Linie, so laufen sie um die Ecke.
+    pub fn element_edges(&self, cut: f64) -> Vec<Edge> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        let (o, inner) = (self.outer_offset(), self.inner_offset());
+        let sign = (o - inner).signum();
+        for h in &self.joints.holes {
+            if !(h.z.0 < cut && cut < h.z.1) {
+                continue;
+            }
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            let nr = crate::wall::right_of(d);
+            let i = &h.install;
+            let mitte = o - sign * (i.outer + i.element * 0.5);
+            let li = self.layer_at(mitte).unwrap_or(0);
+            let ((u0, u1), _) = self.loch_in(h, li);
+            for tiefe in [i.outer, i.outer + i.element] {
+                let off = o - sign * tiefe;
+                let ecken = self.face_corners(off);
+                let punkt = |u: f64, k: usize| {
+                    if u.is_finite() {
+                        let p = p0 + d * u + nr * off;
+                        Some(vec3(p.x, p.y, cut))
+                    } else {
+                        ecken
+                            .get(k % ecken.len().max(1))
+                            .map(|p| vec3(p.x, p.y, cut))
+                    }
+                };
+                let (Some(a), Some(b)) = (punkt(u0, h.seg), punkt(u1, h.seg + 1)) else {
+                    continue;
+                };
+                if (b - a).length() > EPS {
+                    out.push(Edge {
+                        a,
+                        b,
+                        kind: edge_kind::ELEMENT,
+                        elem: h.seg as u32,
+                        layer: li as u8,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +729,41 @@ mod tests {
         };
         c.joints.holes.push(h.clone());
         (c, h)
+    }
+
+    /// Einbauelement im Grundriss: je Loch zwei Linien im Abstand der
+    /// Elementtiefe; an einer Ecköffnung treffen sich die Linien beider
+    /// Schenkel an der Ecke. Über oder unter dem Loch keine.
+    #[test]
+    fn einbauelement_um_die_ecke() {
+        let (mut c, mut h) = wand_mit_loch();
+        h.install = crate::oeffnung::InstallDepth {
+            outer: 120.0,
+            element: 80.0,
+            inner: 100.0,
+        };
+        // Schenkel bis zur Ecke von Segment 0 und ab der Ecke auf Segment 1
+        h.u = (7000.0, f64::INFINITY);
+        let zwei = Hole {
+            seg: 1,
+            u: (f64::NEG_INFINITY, 1000.0),
+            ..h.clone()
+        };
+        c.joints.holes = vec![h.clone(), zwei];
+        let cut = h.z.0 + 500.0;
+        let e = c.element_edges(cut);
+        assert_eq!(e.len(), 4, "{e:?}");
+        assert!(e
+            .iter()
+            .all(|x| x.kind == edge_kind::ELEMENT && x.a.z == cut));
+        for k in 0..2 {
+            let (a, b) = (&e[k], &e[k + 2]);
+            assert!((a.b - b.a).length() < 1e-6, "Ecke: {:?} {:?}", a.b, b.a);
+        }
+        let quer = (e[0].a - e[1].a).length();
+        assert!((quer - 80.0).abs() < 1e-6, "{quer}");
+        assert!(c.element_edges(h.z.0 - 1.0).is_empty());
+        assert!(c.element_edges(h.z.1 + 1.0).is_empty());
     }
 
     fn mitte(t: &Tri) -> Vec3 {

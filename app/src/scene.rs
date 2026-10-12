@@ -294,7 +294,11 @@ impl RunCache {
     /// der Zug unter dem aktiven Geschoss, nur die Teile ohne die Wand.
     fn plan_solid(&self, cut: f64, mode: PlanMode) -> Solid {
         let mut s = match mode {
-            PlanMode::Cut => self.chain.solid_cut_at(cut),
+            PlanMode::Cut => {
+                let mut s = self.chain.solid_cut_at(cut);
+                s.edges.extend(self.chain.element_edges(cut));
+                s
+            }
             PlanMode::Foundation | PlanMode::Lower => Solid::default(),
         };
         for p in run_parts(&self.found, &self.floor, &self.roof) {

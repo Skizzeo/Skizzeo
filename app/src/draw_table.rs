@@ -84,6 +84,8 @@ pub struct DrawTable {
     pub model_dash: [DashPattern; edge_kind::COUNT],
     pub background_dash: DashPattern,
     pub section_dash: DashPattern,
+    /// Strich der Einbauelement-Linie im Grundriss (Kantenart `ELEMENT`).
+    pub element_dash: DashPattern,
     /// Was die Darstellung noch nicht kann (modellbezogene Schraffuren, mehr
     /// als zwei Scharen); gezeichnet wird ersatzweise.
     pub notes: Vec<String>,
@@ -292,6 +294,12 @@ impl DrawTable {
             model_dash: d.model3d.map(|s| dash_px(model, s.line_type, px_per_mm)),
             background_dash: dash_px(model, d.background.line_type, px_per_mm),
             section_dash: dash_px(model, d.section_line.line_type, px_per_mm),
+            element_dash: {
+                let (l, g) = sk_model::wand_loch::ELEMENT_DASH;
+                let mut p = SOLID;
+                p[0] = [l as f32 * px_per_mm, g as f32 * px_per_mm, 0.0, 0.0];
+                p
+            },
             notes,
         }
     }
@@ -347,6 +355,10 @@ impl DrawTable {
         e.width[k] = w * px_scale;
         e.color[k] = [c[0], c[1], c[2]];
         [e.dash[2 * k], e.dash[2 * k + 1]] = scaled(&self.background_dash);
+        // Einbauelement: wie die feine Linie, fest gestrichelt
+        let (f, k) = (edge_kind::FINE as usize, edge_kind::ELEMENT as usize);
+        (e.width[k], e.color[k]) = (e.width[f], e.color[f]);
+        [e.dash[2 * k], e.dash[2 * k + 1]] = scaled(&self.element_dash);
         e
     }
 
