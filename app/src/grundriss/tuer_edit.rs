@@ -287,6 +287,7 @@ mod tests {
                 side: FaceSide::Right,
                 din: Din::Links,
             }),
+            lock: Default::default(),
         };
         let id = m.add_opening(o).unwrap();
         (m, id)

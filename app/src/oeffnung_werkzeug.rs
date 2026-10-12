@@ -114,6 +114,7 @@ pub fn oeffnung(kind: OpeningKind, a: &Fang, b: &Fang) -> Option<Opening> {
         reveal: None,
         install: Default::default(),
         swing: None,
+        lock: Default::default(),
     })
 }
 

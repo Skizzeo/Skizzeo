@@ -177,20 +177,23 @@ fn nachbargeschosse(m: &Model, st: StoreyId) -> Vec<StoreyId> {
 
 /// Seitenfluchten der Öffnungen im Geschoss über und unter `st` als Lage
 /// längs der Fläche `f`: die Enden ihrer Pfade, die nahe vor oder hinter
-/// der Fläche liegen.
-pub fn spuren(m: &Model, st: StoreyId, f: &OuterFace) -> Vec<f64> {
+/// der Fläche liegen, ohne die Enden `ohne` (die gekoppelt mitgehen).
+pub fn spuren(m: &Model, st: StoreyId, f: &OuterFace, ohne: &[(ElementId, usize)]) -> Vec<f64> {
     let nachbarn = nachbargeschosse(m, st);
     let (lo, hi) = (f.u.0.min(f.u.1), f.u.0.max(f.u.1));
     let mut out = Vec::new();
-    for (_, e) in m.elements().iter() {
+    for (id, e) in m.elements().iter() {
         let ElementKind::Opening(o) = &e.kind else {
             continue;
         };
         if !nachbarn.contains(&e.storey) {
             continue;
         }
-        let enden = [o.path.first(), o.path.last()];
-        for q in enden.into_iter().flatten().map(|q| flat(*q)) {
+        let n = o.path.len();
+        let enden = [0, n.saturating_sub(1)]
+            .into_iter()
+            .filter(|k| !ohne.contains(&(id, *k)));
+        for q in enden.map(|k| flat(o.path[k])) {
             let u = f.u_of(q);
             if (q - f.a).dot(f.n).abs() <= SPUR_QUER && u > lo && u < hi {
                 out.push(u);
@@ -213,6 +216,9 @@ pub struct BreiteZug {
     vorz: f64,
     /// Seitenfluchten darüber und darunter ([`spuren`]).
     spuren: Vec<f64>,
+    /// Gekoppelte Enden in anderen Geschossen (Breitenschloss): Öffnung,
+    /// Pfadende, Stand beim Greifen, Fläche des Endes.
+    mit: Vec<(ElementId, usize, Opening, OuterFace)>,
     /// Höhe des Grundrisses.
     z: f64,
     geaendert: bool,
@@ -229,7 +235,17 @@ impl BreiteZug {
         let (face, dicke, innen) = flaeche_bei(m, st, p)?;
         let u_nb = face.u_of(flat(*original.path.get(nb)?));
         let vorz = (face.u_of(flat(p)) - u_nb).signum();
-        let spuren = spuren(m, st, &face);
+        let gekoppelt = m.locked_ends(id, k);
+        let mit = gekoppelt
+            .iter()
+            .filter_map(|&(pid, pk)| {
+                let po = m.opening(pid)?.clone();
+                let pst = m.element(pid)?.storey;
+                let (pf, ..) = flaeche_bei(m, pst, *po.path.get(pk)?)?;
+                Some((pid, pk, po, pf))
+            })
+            .collect();
+        let spuren = spuren(m, st, &face, &gekoppelt);
         scene.begin(SCHRITT);
         Some(BreiteZug {
             id,
@@ -241,6 +257,7 @@ impl BreiteZug {
             u_nb,
             vorz,
             spuren,
+            mit,
             z,
             geaendert: false,
         })
@@ -281,8 +298,23 @@ impl BreiteZug {
                     return out;
                 };
                 let o = self.mit_ende(self.face.u_of(flat(p)));
-                let jetzt = scene.model().opening(self.id).cloned();
-                if jetzt.as_ref() != Some(&o) && scene.set_opening(self.id, o) {
+                // Gekoppelte Enden quer auf ihre Fläche unter das neue Ende
+                let q = flat(o.path[self.k]);
+                let mut neu = vec![(self.id, o)];
+                for (pid, pk, po, pf) in &self.mit {
+                    let mut po = po.clone();
+                    po.path[*pk] = pf.at(pf.u_of(q), po.path[*pk].z);
+                    neu.push((*pid, po));
+                }
+                let m = scene.model();
+                let anders = neu.iter().any(|(id, o)| m.opening(*id) != Some(o));
+                let gut = neu
+                    .iter()
+                    .all(|(id, o)| m.opening_fault(o, Some(*id)).is_none());
+                if anders && gut {
+                    for (id, o) in neu {
+                        scene.set_opening(id, o);
+                    }
                     self.geaendert = true;
                     out.changed = true;
                     out.redraw = true;
@@ -405,6 +437,7 @@ mod tests {
                 side: FaceSide::Right,
                 din: Din::Links,
             }),
+            lock: Default::default(),
         };
         let tuer = m.add_opening(tuer).unwrap();
         let seg = (0..4)
@@ -423,6 +456,7 @@ mod tests {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Default::default(),
         };
         let fenster = m.add_opening(fenster).unwrap();
         (Scene::with_model(m), tuer, fenster)
@@ -564,11 +598,12 @@ mod tests {
                 reveal: None,
                 install: Default::default(),
                 swing: None,
+                lock: Default::default(),
             };
             m.add_opening(o).unwrap()
         };
         let unten = fenster(&mut m, eg, 6500.0, 7500.0);
-        fenster(&mut m, og, 6000.0, 7000.0);
+        let oben = fenster(&mut m, og, 6000.0, 7000.0);
         let mut s = Scene::with_model(m);
         let o = s.model().opening(unten).unwrap().clone();
         let k = usize::from(o.path[1].x > o.path[0].x);
@@ -586,5 +621,29 @@ mod tests {
         z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
         assert!((rechts(&s) - 7080.0).abs() < 1e-6, "{}", rechts(&s));
         assert!(!z.auf_spur(&s));
+        // Auf der Flucht loslassen, koppeln: das OG-Ende geht mit
+        let (x, y) = cam.project(vec3(7010.0, 0.0, 0.0), W, H).unwrap();
+        z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        let los = Event::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods,
+        };
+        z.handle(&los, &mut s, &cam, W, H);
+        let ob = s.model().opening(oben).unwrap().clone();
+        let ko = usize::from(ob.path[1].x > ob.path[0].x);
+        assert!(s.set_end_lock(unten, k, oben, ko, true));
+        let mut z = BreiteZug::greifen(&mut s, unten, k, 0.0).unwrap();
+        let (x, y) = cam.project(vec3(7300.0, 0.0, 0.0), W, H).unwrap();
+        z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        z.handle(&los, &mut s, &cam, W, H);
+        let x_oben = s.model().opening(oben).unwrap().path[ko].x;
+        assert!((rechts(&s) - 7300.0).abs() < 1e-6, "{}", rechts(&s));
+        assert!((x_oben - 7300.0).abs() < 1e-6, "{x_oben}");
+        // Ein Schritt für beide: Rückgängig stellt beide zurück
+        assert!(s.undo());
+        let x_oben = s.model().opening(oben).unwrap().path[ko].x;
+        assert!((rechts(&s) - 7000.0).abs() < 1e-6 && (x_oben - 7000.0).abs() < 1e-6);
     }
 }

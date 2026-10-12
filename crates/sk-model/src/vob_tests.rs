@@ -41,6 +41,7 @@ fn fenster(m: &Model, run: RunId, u: (f64, f64)) -> Opening {
         reveal: None,
         install: Default::default(),
         swing: None,
+        lock: Default::default(),
     }
 }
 

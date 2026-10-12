@@ -113,6 +113,30 @@ impl Scene {
         ok
     }
 
+    /// Koppelt (`on`) oder löst das Ende `ka` von `a` mit dem Ende `kb`
+    /// von `b` als ein Schritt (Breitenschloss). `false`, wenn nichts geht.
+    pub fn set_end_lock(
+        &mut self,
+        a: ElementId,
+        ka: usize,
+        b: ElementId,
+        kb: usize,
+        on: bool,
+    ) -> bool {
+        self.begin(if on {
+            "Breite gekoppelt"
+        } else {
+            "Breite gelöst"
+        });
+        if self.model.set_end_lock(a, ka, b, kb, on) {
+            self.commit();
+            true
+        } else {
+            self.rollback();
+            false
+        }
+    }
+
     /// Ändert die Öffnung `id` im offenen Schritt (Griffe im Grundriss).
     /// `false`, wenn das Modell sie ablehnt.
     pub fn set_opening(&mut self, id: ElementId, o: Opening) -> bool {
@@ -160,6 +184,7 @@ mod tests {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Default::default(),
         };
         assert!(s.add_opening(op).is_some());
         assert!(s.outer_face_at(o, d).is_none(), "durch das Loch");
@@ -199,6 +224,7 @@ mod tests {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Default::default(),
         })
         .unwrap();
         let el = s.model().storey(st).unwrap().elevation;
@@ -304,6 +330,7 @@ mod tests {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Default::default(),
         };
         let id = s.add_opening(op.clone()).unwrap();
         let el = edge_kind::ELEMENT as f32;

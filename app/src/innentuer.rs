@@ -270,6 +270,7 @@ impl Innentuer {
             reveal: None,
             install: Default::default(),
             swing: Some(v.swing),
+            lock: Default::default(),
         })
     }
 }

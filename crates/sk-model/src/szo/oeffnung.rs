@@ -8,16 +8,18 @@
 //! steht nur, wenn der Anschlag nicht dem Wandtyp folgt, `install=…`
 //! (äußere Einbautiefe) und `element=…` (Bautiefe) nur, wenn gesetzt.
 //! Eine Tür mit Blatt trägt `swing=l|r` (Aufschlagseite zur Pfadrichtung)
-//! und `din=links|rechts` (Türhand nach DIN 107).
+//! und `din=links|rechts` (Türhand nach DIN 107). Breitenschlösser stehen
+//! als `lock="0 Guid 1;…"` (eigenes Pfadende, Öffnung, deren Pfadende),
+//! nur wenn beide Öffnungen aufeinander zeigen.
 
 use super::{category, err, keyword, Line, LoadError, Record};
 use crate::element::{Element, ElementKind, LevelEdge, LevelRef};
 use crate::model::RawOpening;
 use crate::oeffnung::{
-    Din, FaceSide, HeightLine, HeightRef, Install, Opening, OpeningKind, Swing, MAX_INSTALL,
-    MAX_REVEAL,
+    Din, EndLock, FaceSide, HeightLine, HeightRef, Install, Opening, OpeningKind, Swing,
+    MAX_INSTALL, MAX_REVEAL,
 };
-use crate::{Guid, Model, StoreyId};
+use crate::{ElementId, Guid, Model, StoreyId};
 use sk_math::vec3;
 use std::collections::HashMap;
 
@@ -71,6 +73,10 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
                 .word("din", sw.din.word()),
             None => l,
         };
+        let l = match locks_text(m, e, o) {
+            Some(t) => l.text("lock", &t),
+            None => l,
+        };
         l.text("number", &e.number)
             .word("cat", category(e.category))
             .num("seq", e.seq)
@@ -80,6 +86,90 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
     for raw in m.opening_raw() {
         out.push_str(raw);
         out.push('\n');
+    }
+}
+
+/// Breitenschlösser als Text, nur die, deren Partner zurückzeigt.
+fn locks_text(m: &Model, e: &Element, o: &Opening) -> Option<String> {
+    let t: Vec<String> = o
+        .lock
+        .iter()
+        .filter_map(|(k, l)| {
+            let p = m.element(l.partner)?;
+            let ElementKind::Opening(po) = &p.kind else {
+                return None;
+            };
+            let back = po.lock.iter().any(|(pk, pl)| {
+                *pk == l.end
+                    && pl.end == *k
+                    && m.element(pl.partner).is_some_and(|x| x.guid == e.guid)
+            });
+            back.then(|| format!("{k} {} {}", p.guid.to_ifc(), l.end))
+        })
+        .collect();
+    (!t.is_empty()).then(|| t.join(";"))
+}
+
+/// Gelesene, noch nicht aufgelöste Breitenschlösser einer Öffnung: eigenes
+/// Pfadende, Guid der Partneröffnung, deren Pfadende.
+pub(super) type RawLocks = Vec<(usize, Guid, usize)>;
+
+/// Breitenschlösser aus `lock=`; ein unlesbarer Eintrag gibt einen
+/// Hinweis und entfällt.
+fn read_locks(r: &Record, n: usize, hints: &mut Vec<String>) -> RawLocks {
+    let Some(v) = r.opt("lock") else {
+        return Vec::new();
+    };
+    let ende = |x: &str| x.parse::<usize>().ok();
+    let mut out = Vec::new();
+    for t in v.split(';') {
+        let f: Vec<&str> = t.split_whitespace().collect();
+        let eintrag = match f[..] {
+            [k, g, e] => ende(k)
+                .filter(|k| *k == 0 || *k + 1 == n)
+                .zip(Guid::from_ifc(g))
+                .zip(ende(e))
+                .map(|((k, g), e)| (k, g, e)),
+            _ => None,
+        };
+        match eintrag {
+            Some(x) => out.push(x),
+            None => hints.push(format!(
+                "Zeile {}: [opening] Breitenschloss „{t}“ unlesbar, entfällt",
+                r.line
+            )),
+        }
+    }
+    out
+}
+
+/// Löst die Breitenschlösser nach dem Lesen aller Öffnungen auf: Ein
+/// Schloss, dessen Partner fehlt oder kein Pfadende hat, entfällt mit
+/// Hinweis.
+pub(super) fn resolve_locks(
+    elements: &mut crate::id::Arena<Element>,
+    ids: &HashMap<Guid, ElementId>,
+    pending: Vec<(ElementId, usize, RawLocks)>,
+    hints: &mut Vec<String>,
+) {
+    for (id, line, raw) in pending {
+        let mut locks = Vec::new();
+        for (k, g, end) in raw {
+            let partner = ids.get(&g).copied().filter(|p| {
+                *p != id
+                    && matches!(elements.get(*p).map(|e| &e.kind),
+                        Some(ElementKind::Opening(o)) if o.is_end(end))
+            });
+            match partner {
+                Some(partner) => locks.push((k, EndLock { partner, end })),
+                None => hints.push(format!(
+                    "Zeile {line}: [opening] Breitenschloss zeigt auf keine Öffnung, entfällt"
+                )),
+            }
+        }
+        if let Some(ElementKind::Opening(o)) = elements.get_mut(id).map(|e| &mut e.kind) {
+            o.lock = locks;
+        }
     }
 }
 
@@ -191,7 +281,7 @@ pub(super) fn read(
     r: &Record,
     storeys: &HashMap<Guid, StoreyId>,
     hints: &mut Vec<String>,
-) -> Result<Option<ElementKind>, LoadError> {
+) -> Result<Option<(ElementKind, RawLocks)>, LoadError> {
     let kind = match r.opt("art") {
         Some(_) => match keyword(r, "art", &OpeningKind::ALL, OpeningKind::word) {
             Ok(k) => k,
@@ -225,8 +315,8 @@ pub(super) fn read(
     // Die übrigen Schlüssel einer verworfenen Zeile nicht noch einmal melden
     let rest = |r: &Record| {
         for k in [
-            "guid", "bottom", "top", "reveal", "install", "element", "swing", "din", "number",
-            "cat", "seq", "storey",
+            "guid", "bottom", "top", "reveal", "install", "element", "swing", "din", "lock",
+            "number", "cat", "seq", "storey",
         ] {
             r.opt(k);
         }
@@ -282,7 +372,8 @@ pub(super) fn read(
         element: mm("element"),
     };
     let swing = read_swing(r, kind, path.len(), hints);
-    Ok(Some(ElementKind::Opening(Opening {
+    let locks = read_locks(r, path.len(), hints);
+    let o = Opening {
         kind,
         path,
         bottom,
@@ -290,7 +381,9 @@ pub(super) fn read(
         reveal,
         install,
         swing,
-    })))
+        lock: Vec::new(),
+    };
+    Ok(Some((ElementKind::Opening(o), locks)))
 }
 
 fn side_word(s: FaceSide) -> &'static str {

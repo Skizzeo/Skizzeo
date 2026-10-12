@@ -341,6 +341,9 @@ mod oeffnung_model;
 pub use oeffnung_model::OpeningFault;
 pub(crate) use oeffnung_model::{OpeningGrab, RawOpening};
 
+#[path = "oeffnung_schloss.rs"]
+mod oeffnung_schloss;
+
 #[path = "stapel.rs"]
 mod stapel;
 

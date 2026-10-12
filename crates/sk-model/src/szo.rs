@@ -2095,6 +2095,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         Ok(n)
     };
     let mut verworfen = Vec::new();
+    let mut schloesser = Vec::new();
     for (section, ix) in [
         ("slab", 0),
         ("footing", 1),
@@ -2109,9 +2110,13 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         ("opening", 10),
     ] {
         for r in recs(section) {
+            let mut locks = Vec::new();
             let kind = if ix == 10 {
                 match oeffnung::read(r, &storey_ids, &mut hints)? {
-                    Some(k) => k,
+                    Some((k, l)) => {
+                        locks = l;
+                        k
+                    }
                     None => {
                         verworfen.push(r);
                         continue;
@@ -2352,8 +2357,12 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             let g = e.guid;
             let id = elements.insert(e);
             register(&mut elem_ids, &mut seen, r, g, id)?;
+            if !locks.is_empty() {
+                schloesser.push((id, r.line, locks));
+            }
         }
     }
+    oeffnung::resolve_locks(&mut elements, &elem_ids, schloesser, &mut hints);
     // Erweiterungsbauteile (E3): die Definition aus der Datei, geprüft wie
     // beim Einlesen, aber ohne Grenzprüfung. Unlesbares bleibt roh mit
     // Hinweis, samt seiner Exemplare; das Projekt öffnet trotzdem.

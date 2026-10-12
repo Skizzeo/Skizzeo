@@ -1620,6 +1620,7 @@ fn perf_innentuer() {
                     reveal: None,
                     install: Default::default(),
                     swing: Some(rechts),
+                    lock: Default::default(),
                 };
                 m.add_opening(o).is_some()
             })

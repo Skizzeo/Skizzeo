@@ -64,6 +64,7 @@ fn fenster(m: &Model, run: RunId, u: (f64, f64)) -> Opening {
         reveal: None,
         install: Default::default(),
         swing: None,
+        lock: Default::default(),
     }
 }
 
@@ -1180,6 +1181,7 @@ fn innentuer_in_der_innenwand() {
         reveal: None,
         install: Default::default(),
         swing: None,
+        lock: Default::default(),
     };
     assert_eq!(m.opening_fault(&tuer, None), None);
     m.begin("Innentür");
@@ -1208,7 +1210,7 @@ fn innentuer_in_der_innenwand() {
     // Neben der Innenwand: keine Wand
     let daneben = Opening {
         path: vec![vec3(4000.0, 3000.0, 0.0), vec3(4000.0, 3885.0, 0.0)],
-        ..tuer
+        ..tuer.clone()
     };
     assert_eq!(m.opening_fault(&daneben, None), Some(OpeningFault::NoWall));
     // Die Innenwand wandert um 50 cm: die Tür geht mit
@@ -1250,6 +1252,7 @@ fn tuerblatt_und_aufschlag() {
         reveal: None,
         install: Default::default(),
         swing: Some(swing),
+        lock: Default::default(),
     };
     let id = m.add_opening(tuer.clone()).unwrap();
     // Wand läuft in +y, rechts ist +x; der Pfad läuft auch in +y
@@ -1348,6 +1351,7 @@ fn aufschlag_im_grundriss() {
             side: FaceSide::Right,
             din: Din::Links,
         }),
+        lock: Default::default(),
     };
     let id = m.add_opening(tuer).unwrap();
     let cut = m.storey(st).unwrap().elevation + 1500.0;
@@ -1415,6 +1419,7 @@ fn aufschlag_haengt_nicht_vom_mausweg_ab() {
                 side: FaceSide::Right,
                 din: Din::Links,
             }),
+            lock: Default::default(),
         };
         let id = m.add_opening(tuer).unwrap();
         let vorher = m.door_leaf(id).unwrap();
@@ -1482,6 +1487,7 @@ fn aufschlag_allein_ein_kleiner_schritt() {
         reveal: None,
         install: Default::default(),
         swing: Some(rechts),
+        lock: Default::default(),
     };
     let id = m.add_opening(tuer.clone()).unwrap();
     let links = Swing {
@@ -1516,4 +1522,58 @@ fn aufschlag_allein_ein_kleiner_schritt() {
     let f = m.add_opening(fenster).unwrap();
     assert!(!m.set_swing(f, Some(links)));
     assert!(m.check().is_empty(), "{:?}", m.check());
+}
+
+/// Breitenschloss (Jörn 12.10. 05:38): EG-Fenster 3–4 m, OG-Fenster
+/// 2,5–4 m; nur die Enden bei 4 m liegen in einer Flucht und lassen sich
+/// koppeln. Das Schloss steht an beiden Öffnungen, geht durch die Datei,
+/// Rückgängig nimmt es, und ohne Partner gilt es nicht mehr.
+#[test]
+fn breitenschloss_ueber_geschosse() {
+    let (mut m, eg, og) = haus(None);
+    let unten = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+    let oben = m.add_opening(fenster(&m, og, (2500.0, 4000.0))).unwrap();
+    // Pfad läuft mit u: Ende 1 liegt bei 4 m
+    assert!(m.ends_aligned(unten, 1, oben, 1));
+    assert!(!m.ends_aligned(unten, 0, oben, 0), "3 m und 2,5 m");
+    assert!(!m.ends_aligned(unten, 1, oben, 0), "andere Richtung");
+    assert!(!m.ends_aligned(unten, 1, unten, 1), "selbes Geschoss");
+    m.begin("Schloss");
+    assert!(!m.set_end_lock(unten, 0, oben, 0, true), "nicht in Flucht");
+    assert!(m.set_end_lock(unten, 1, oben, 1, true));
+    let t = m.commit().unwrap();
+    let l = m.end_locks(unten, 1);
+    assert_eq!(l.len(), 1);
+    assert_eq!((l[0].partner, l[0].end), (oben, 1));
+    assert_eq!(m.locked_ends(oben, 1), vec![(unten, 1)]);
+    assert!(m.end_locks(unten, 0).is_empty());
+    // Datei: an beiden Öffnungen, Rundlauf stabil
+    let text = szo::write(&m);
+    assert_eq!(text.matches(" lock=").count(), 2, "{text}");
+    let back = szo::read(&text, GuidGen::with_seed(5)).unwrap();
+    assert!(back.hints.is_empty(), "{:?}", back.hints);
+    assert_eq!(szo::write(&back.model), text);
+    // Ein kaputter Eintrag gibt einen Hinweis und entfällt
+    let alt = text
+        .split(" lock=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let kaputt = text.replacen(alt, "1 kein-guid", 1);
+    let l = szo::read(&kaputt, GuidGen::with_seed(5)).unwrap();
+    assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+    assert_eq!(szo::write(&l.model).matches(" lock=").count(), 0);
+    // Rückgängig nimmt das Schloss
+    m.apply(&t, Direction::Undo);
+    assert!(m.end_locks(unten, 1).is_empty());
+    m.apply(&t, Direction::Redo);
+    assert_eq!(m.end_locks(unten, 1).len(), 1);
+    // Lösen an einer Seite löst beide
+    m.begin("Lösen");
+    assert!(m.set_end_lock(oben, 1, unten, 1, false));
+    m.commit();
+    assert!(m.end_locks(unten, 1).is_empty() && m.end_locks(oben, 1).is_empty());
+    assert!(!szo::write(&m).contains(" lock="));
 }
