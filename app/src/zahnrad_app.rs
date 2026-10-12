@@ -1,13 +1,32 @@
 //! Zahnräder oben rechts in der Ansicht, links neben dem Paneel „Ansichten“:
-//! „Schatten“ in den vier Ansichten (S7, [`ansicht_schatten`]) und
-//! „Schnitthöhe“ im Grundriss ([`grundriss_schnitt`]). Hier die Verdrahtung
-//! in der App: Wahl, Lage, Ereignisse, Tasten, Tooltip und Bilder.
+//! „Schatten“ in den vier Ansichten (S7, [`ansicht_schatten`]),
+//! „Schnitthöhe“ im Grundriss ([`grundriss_schnitt`]) und die Sichtbarkeit
+//! in 3D und Schnitt ([`sicht_zahnrad`]); jedes Feld trägt das Häkchen
+//! „Dachentwässerung ausblenden“ seiner Ansicht (Jörn 12.10.). Hier die
+//! Verdrahtung in der App: Wahl, Lage, Ereignisse, Tasten, Tooltip und
+//! Bilder.
 
 use crate::ui::{Panel, ViewKind};
 use crate::{
-    ansicht_schatten, grundriss_schnitt, App, OVERLAY_ANSICHT, OVERLAY_SCHNITT, SCHATTEN_FEHLT,
+    ansicht_schatten, grundriss_schnitt, sicht_zahnrad, App, OVERLAY_ANSICHT, OVERLAY_SCHNITT,
+    SCHATTEN_FEHLT,
 };
 use sk_platform::{Event, Key, Modifiers};
+
+/// Bedienzustand der Zahnräder und ihre zuletzt hochgeladenen Bilder.
+#[derive(Default)]
+pub(crate) struct Zahnraeder {
+    /// Schatten der vier Ansichten (S7).
+    pub schatten: ansicht_schatten::Schalter,
+    pub schatten_bild: Option<ansicht_schatten::Bild>,
+    /// Schnitthöhe des Grundrisses.
+    pub schnitt: grundriss_schnitt::Schalter,
+    pub schnitt_bild: Option<grundriss_schnitt::Bild>,
+    /// Sichtbarkeit in 3D und Schnitt; ihr Bild teilt den Platz mit dem
+    /// der Ansichten.
+    pub sicht: sicht_zahnrad::Schalter,
+    pub sicht_bild: Option<sicht_zahnrad::Bild>,
+}
 
 impl App {
     /// Wahl des Schattens der aktuellen Ansicht (S7) mit ihrem Platz;
@@ -44,8 +63,8 @@ impl App {
     /// Ansichten); `true`, wenn sie es genommen haben.
     pub(crate) fn ansicht_handle(&mut self, ev: &Event, sc: f64) -> bool {
         let Some((i, vs)) = self.ansicht_wahl() else {
-            if self.ansicht_schatten.offen || self.ansicht_schatten.hover.is_some() {
-                self.ansicht_schatten.reset();
+            if self.zahnrad.schatten.offen || self.zahnrad.schatten.hover.is_some() {
+                self.zahnrad.schatten.reset();
                 self.redraw = true;
             }
             return false;
@@ -53,8 +72,9 @@ impl App {
         let lage = self.ansicht_lage(sc);
         let ok = ansicht_schatten::sonne_waehlbar(self.scene.model().location());
         let eigen = self.scene.model().view_shade_own(i).is_some();
-        let out = self.ansicht_schatten.handle(ev, &lage, vs, ok, eigen);
+        let out = self.zahnrad.schatten.handle(ev, &lage, vs, ok, eigen);
         self.redraw |= out.redraw;
+        self.entw_anwenden(out.haken, out.alle);
         let neu = out.wahl.or(out.alle.then_some(vs));
         if let Some(s) =
             neu.and_then(|w| ansicht_schatten::festschreiben(self.scene.model().sun(), w))
@@ -102,8 +122,8 @@ impl App {
     /// `true`, wenn sie es genommen haben.
     fn schnitt_handle(&mut self, ev: &Event, sc: f64) -> bool {
         if self.ui.view != ViewKind::Plan {
-            if self.plan_schnitt.offen || self.plan_schnitt.hover.is_some() {
-                self.plan_schnitt.reset();
+            if self.zahnrad.schnitt.offen || self.zahnrad.schnitt.hover.is_some() {
+                self.zahnrad.schnitt.reset();
                 self.redraw = true;
             }
             return false;
@@ -111,9 +131,53 @@ impl App {
         let lage = self.schnitt_lage(sc);
         let m = self.scene.model();
         let (mm, eigen) = (m.plan_cut_height(), m.plan_cut_own().is_some());
-        let out = self.plan_schnitt.handle(ev, &lage, mm, eigen);
+        let out = self.zahnrad.schnitt.handle(ev, &lage, mm, eigen);
         self.schnitt_anwenden(out);
+        self.entw_anwenden(out.haken, out.alle);
         out.consumed
+    }
+
+    /// Ereignis an Zahnrad und Feld „Sichtbarkeit“ (nur in 3D und Schnitt);
+    /// `true`, wenn sie es genommen haben.
+    fn sicht_handle(&mut self, ev: &Event, sc: f64) -> bool {
+        if !sicht_zahnrad::zeigt(self.ui.view) {
+            if self.zahnrad.sicht.offen || self.zahnrad.sicht.hover.is_some() {
+                self.zahnrad.sicht.reset();
+                self.redraw = true;
+            }
+            return false;
+        }
+        let rechts = self.ui.rect(Panel::Views, self.w, self.top()).x;
+        let lage = sicht_zahnrad::lage(rechts, sc as f32, &self.theme);
+        let out = self.zahnrad.sicht.handle(ev, &lage);
+        self.redraw |= out.redraw;
+        self.entw_anwenden(out.haken, out.alle);
+        out.consumed
+    }
+
+    /// Häkchen „Dachentwässerung ausblenden“ der gezeigten Ansicht
+    /// umschalten (gleitet wie im Baum) bzw. ihre Wahl in alle sieben
+    /// Ansichten übertragen (Jörn 12.10.).
+    fn entw_anwenden(&mut self, haken: bool, alle: bool) {
+        let v = self.ui.view;
+        if haken && self.scene.set_drain_hidden(v, !self.scene.drain_hidden(v)) {
+            self.upload_model();
+            self.sync_props();
+        }
+        if alle {
+            self.scene.drain_to_all(v);
+        }
+    }
+
+    /// Beim Wechsel der Ansicht: Felder zu, die Schnelloption der neuen
+    /// Ansicht gilt sofort.
+    pub(crate) fn zahnrad_reset(&mut self) {
+        self.zahnrad.schatten.reset();
+        self.zahnrad.schnitt.reset();
+        self.zahnrad.sicht.reset();
+        if self.scene.sicht_fuer(self.ui.view) {
+            self.upload_model();
+        }
     }
 
     /// Neue Schnitthöhe übernehmen: Grundrisse neu schneiden.
@@ -129,59 +193,61 @@ impl App {
 
     /// Ereignis an den Zahnrädern der Ansicht; `true`, wenn eins es nahm.
     pub(crate) fn zahnrad_handle(&mut self, ev: &Event, sc: f64) -> bool {
-        self.ansicht_handle(ev, sc) | self.schnitt_handle(ev, sc)
+        self.ansicht_handle(ev, sc) | self.schnitt_handle(ev, sc) | self.sicht_handle(ev, sc)
     }
 
     /// Ob ein offenes Feld der Zahnräder die Taste `key` nimmt: Esc schließt,
     /// die Eingabe der Schnitthöhe nimmt die Tasten, die sie bearbeitet.
     pub(crate) fn zahnrad_will(&self, key: Key) -> bool {
         let esc = key == Key::Escape;
-        (esc && self.ansicht_schatten.offen)
-            || self.plan_schnitt.nimmt(key)
-            || (esc && self.plan_schnitt.offen)
+        (esc && (self.zahnrad.schatten.offen || self.zahnrad.sicht.offen))
+            || self.zahnrad.schnitt.nimmt(key)
+            || (esc && self.zahnrad.schnitt.offen)
     }
 
     /// Ein Klick in die Paneele beendet die Eingabe der Schnitthöhe, sonst
     /// nähme sie dem Paneelfeld die Tasten (wie Review 3bx); `true`, wenn
     /// eine lief.
     pub(crate) fn zahnrad_ab(&mut self) -> bool {
-        self.plan_schnitt.falsch = false;
-        let lief = self.plan_schnitt.eingabe.take().is_some();
+        self.zahnrad.schnitt.falsch = false;
+        let lief = self.zahnrad.schnitt.eingabe.take().is_some();
         self.redraw |= lief;
         lief
     }
 
     /// Taste an die Felder der Zahnräder (nach [`App::zahnrad_will`]).
     pub(crate) fn zahnrad_key(&mut self, key: Key, mods: Modifiers) {
-        if key == Key::Escape && self.ansicht_schatten.offen {
-            self.ansicht_schatten.offen = false;
+        if key == Key::Escape && (self.zahnrad.schatten.offen || self.zahnrad.sicht.offen) {
+            self.zahnrad.schatten.offen = false;
+            self.zahnrad.sicht.offen = false;
             self.redraw = true;
             return;
         }
         let mut out = grundriss_schnitt::Ausgang::default();
-        self.plan_schnitt.key(key, mods, &mut out);
+        self.zahnrad.schnitt.key(key, mods, &mut out);
         self.schnitt_anwenden(out);
     }
 
     /// Zeiger über den Zahnrädern: Textcursor über dem Wertfeld, sonst die
     /// Hand über einem Knopf; `None` daneben.
     pub(crate) fn zahnrad_cursor(&self) -> Option<sk_platform::Cursor> {
-        match self.plan_schnitt.hover {
+        match self.zahnrad.schnitt.hover {
             Some(grundriss_schnitt::Teil::Wert) => Some(sk_platform::Cursor::IBeam),
             Some(_) => Some(sk_platform::Cursor::Hand),
-            None => self
-                .ansicht_schatten
-                .hover
-                .map(|_| sk_platform::Cursor::Hand),
+            None => (self.zahnrad.schatten.hover.is_some() || self.zahnrad.sicht.hover.is_some())
+                .then_some(sk_platform::Cursor::Hand),
         }
     }
 
     /// Tooltip an den Zahnrädern.
     pub(crate) fn zahnrad_tip(&self) -> Option<String> {
-        if self.plan_schnitt.hover == Some(grundriss_schnitt::Teil::Zahnrad) {
+        if self.zahnrad.schnitt.hover == Some(grundriss_schnitt::Teil::Zahnrad) {
             return Some(grundriss_schnitt::TIP.into());
         }
-        match self.ansicht_schatten.unter {
+        if self.zahnrad.sicht.hover == Some(sicht_zahnrad::Teil::Zahnrad) {
+            return Some(ansicht_schatten::TIP.into());
+        }
+        match self.zahnrad.schatten.unter {
             Some(ansicht_schatten::Teil::Zahnrad) => {
                 let t = if self.renderer.shadow_failed() {
                     SCHATTEN_FEHLT
@@ -207,9 +273,10 @@ impl App {
         let bild = wahl.map(|(i, vs)| ansicht_schatten::Bild {
             vs,
             gestrichelt: self.scene.model().view_below(i),
+            entw: self.scene.drain_hidden(self.ui.view),
             eigen: self.scene.model().view_shade_own(i).is_some(),
-            offen: self.ansicht_schatten.offen,
-            hover: self.ansicht_schatten.hover,
+            offen: self.zahnrad.schatten.offen,
+            hover: self.zahnrad.schatten.hover,
             sonne_ok: ansicht_schatten::sonne_waehlbar(loc),
             zu_tief: vs.light == sk_model::ShadeLight::Sun
                 && ansicht_schatten::sonne_waehlbar(loc)
@@ -217,10 +284,23 @@ impl App {
             rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
             scale: scale.to_bits(),
         });
-        if bild != self.schatten_bild {
-            match &bild {
-                Some(b) => {
-                    let (c, x, y) = ansicht_schatten::malen(b, &self.ui.fonts, &self.theme);
+        let sicht = sicht_zahnrad::zeigt(self.ui.view).then(|| sicht_zahnrad::Bild {
+            an: self.scene.drain_hidden(self.ui.view),
+            offen: self.zahnrad.sicht.offen,
+            hover: self.zahnrad.sicht.hover,
+            rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
+            scale: scale.to_bits(),
+        });
+        // Ansichten und 3D/Schnitt schließen einander aus: ein Platz
+        if bild != self.zahnrad.schatten_bild || sicht != self.zahnrad.sicht_bild {
+            let (f, t) = (&self.ui.fonts, &self.theme);
+            let neu = match (&bild, &sicht) {
+                (Some(b), _) => Some(ansicht_schatten::malen(b, f, t)),
+                (None, Some(b)) => Some(sicht_zahnrad::malen(b, f, t)),
+                (None, None) => None,
+            };
+            match neu {
+                Some((c, x, y)) => {
                     let px = c.to_premul_rgba8();
                     let (w, h) = (c.width as u32, c.height as u32);
                     self.renderer
@@ -228,20 +308,22 @@ impl App {
                 }
                 None => self.renderer.set_overlay(OVERLAY_ANSICHT, 0, 0, 0, 0, &[]),
             }
-            self.schatten_bild = bild;
+            self.zahnrad.schatten_bild = bild;
+            self.zahnrad.sicht_bild = sicht;
         }
         let m = self.scene.model();
         let bild = (self.ui.view == ViewKind::Plan).then(|| grundriss_schnitt::Bild {
             mm: m.plan_cut_height().to_bits(),
             eigen: m.plan_cut_own().is_some(),
-            offen: self.plan_schnitt.offen,
-            hover: self.plan_schnitt.hover,
-            eingabe: self.plan_schnitt.eingabe.clone(),
-            falsch: self.plan_schnitt.falsch,
+            offen: self.zahnrad.schnitt.offen,
+            hover: self.zahnrad.schnitt.hover,
+            eingabe: self.zahnrad.schnitt.eingabe.clone(),
+            falsch: self.zahnrad.schnitt.falsch,
+            entw: self.scene.drain_hidden(ViewKind::Plan),
             rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
             scale: scale.to_bits(),
         });
-        if bild != self.plan_schnitt_bild {
+        if bild != self.zahnrad.schnitt_bild {
             match &bild {
                 Some(b) => {
                     let (c, x, y) = grundriss_schnitt::malen(b, &self.ui.fonts, &self.theme);
@@ -252,7 +334,7 @@ impl App {
                 }
                 None => self.renderer.set_overlay(OVERLAY_SCHNITT, 0, 0, 0, 0, &[]),
             }
-            self.plan_schnitt_bild = bild;
+            self.zahnrad.schnitt_bild = bild;
         }
     }
 }

@@ -3,6 +3,10 @@
 //! isolieren. Ansichtszustand wie die Schnitte: kein Rückgängig-Schritt,
 //! keine neue Revision, ändert nie Mengen; das Ausgeblendete steht in der
 //! Datei (`[hide]`), das Isolieren nie (Entscheidung 11).
+//!
+//! Dazu je Ansicht eine Schnelloption am Zahnrad (Jörn 12.10.): Arten, die
+//! nur diese Ansicht ausblendet, heute die Dachentwässerung. Sie wirken wie
+//! im Baum ausgeblendet, ändern den Baum aber nicht (`[viewhide]`).
 
 use crate::element::{Category, ElementId};
 use crate::guid::Guid;
@@ -24,6 +28,10 @@ pub struct Visibility {
     pub terrain_hidden: bool,
     /// Nur Sitzung, nie in der Datei.
     pub isolate: Option<Isolate>,
+    /// Arten, die die gezeigte Ansicht dazu ausblendet (Schnelloption am
+    /// Zahnrad); setzt die Szene aus [`Model::view_hidden`] der Ansicht,
+    /// nur Sitzung.
+    pub view_cat: BTreeSet<Category>,
 }
 
 impl Visibility {
@@ -33,8 +41,38 @@ impl Visibility {
             && self.hidden_cat.is_empty()
             && self.hidden_trade.is_empty()
             && self.isolate.is_none()
+            && self.view_cat.is_empty()
+    }
+
+    /// Was der Baum zeigt: ohne Isolieren und ohne die Schnelloption der
+    /// Ansicht (Augen, Zeile im Mengenfenster).
+    pub fn of_tree(&self) -> Visibility {
+        Visibility {
+            isolate: None,
+            view_cat: BTreeSet::new(),
+            ..self.clone()
+        }
     }
 }
+
+/// Plätze der Ansichten für die Schnelloption am Zahnrad, wie ihre Namen
+/// in der Datei: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts.
+pub const SICHT_VIEWS: [&str; 7] = ["persp", "plan", "section", "front", "back", "left", "right"];
+
+/// Dachentwässerung (Jörn 12.10.): das Regenfallrohr mit Wasserfangkasten,
+/// Schellen, Standrohr und Notentwässerung (Wasserspeier bzw. Notfallrohr).
+/// Die Zeichen des Gefälleplans auf dem Dach gehören zum Dach und bleiben.
+pub const ENTWAESSERUNG: [Category; 1] = [Category::Downpipe];
+
+/// Schnelloption je Ansicht: ausgeblendete Arten je Platz in
+/// [`SICHT_VIEWS`], dazu `[viewhide]`-Zeilen, die nicht zählen, roh.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ViewHide {
+    pub(crate) cats: [BTreeSet<Category>; 7],
+    pub(crate) raw: Vec<String>,
+}
+
+static KEINE: BTreeSet<Category> = BTreeSet::new();
 
 /// Der isolierte Ast: nur er bleibt deckend, alles andere blass.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +142,44 @@ impl Model {
         self.visibility = v;
     }
 
+    /// Arten, die die Ansicht `i` (Platz in [`SICHT_VIEWS`]) dazu
+    /// ausblendet; leer für einen unbekannten Platz.
+    pub fn view_hidden(&self, i: usize) -> &BTreeSet<Category> {
+        self.view_hide.cats.get(i).unwrap_or(&KEINE)
+    }
+
+    /// Blendet die Ansicht `i` die ganze Dachentwässerung aus?
+    pub fn view_drain_hidden(&self, i: usize) -> bool {
+        let h = self.view_hidden(i);
+        ENTWAESSERUNG.iter().all(|c| h.contains(c))
+    }
+
+    /// Schnelloption der Ansicht `i` setzen: Ansichtszustand ohne Schritt
+    /// wie [`Model::set_view_below`]; eine unlesbare Zeile dieser Ansicht
+    /// entfällt damit.
+    pub fn set_view_hidden(&mut self, i: usize, cats: BTreeSet<Category>) {
+        if let Some(v) = self.view_hide.cats.get_mut(i) {
+            *v = cats;
+            let name = format!("view={}", SICHT_VIEWS[i]);
+            self.view_hide
+                .raw
+                .retain(|l| !l.split_whitespace().any(|w| w == name));
+        }
+    }
+
+    /// Dachentwässerung der Ansicht `i` aus- (`true`) oder einblenden.
+    pub fn set_view_drain_hidden(&mut self, i: usize, hide: bool) {
+        let mut cats = self.view_hidden(i).clone();
+        for c in ENTWAESSERUNG {
+            if hide {
+                cats.insert(c);
+            } else {
+                cats.remove(&c);
+            }
+        }
+        self.set_view_hidden(i, cats);
+    }
+
     /// Gewerk je Schicht des Aufbaus ([`Model::layer_trade`] für alle).
     fn layer_trades(&self, id: ElementId) -> Vec<Option<TradeId>> {
         (0..self.element_layers(id).len())
@@ -145,7 +221,10 @@ impl Model {
             }
             m
         };
-        let base = if v.hidden.contains(&e.guid) || v.hidden_cat.contains(&e.category) {
+        let base = if v.hidden.contains(&e.guid)
+            || v.hidden_cat.contains(&e.category)
+            || v.view_cat.contains(&e.category)
+        {
             0
         } else if v.hidden_trade.is_empty() {
             all

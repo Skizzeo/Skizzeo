@@ -1225,4 +1225,32 @@ mod tests {
             );
         }
     }
+
+    /// Schnelloption „Dachentwässerung ausblenden“ (Jörn 12.10.): Die Art
+    /// der Ansicht blendet alle RF samt Kasten und Notentwässerung aus wie
+    /// im Baum, sonst nichts; der Baum und die Zeile im Mengenfenster
+    /// bleiben, die Mengen auch.
+    #[test]
+    fn dachentwaesserung_je_ansicht_ausblenden() {
+        use crate::view::{Masks, Visibility};
+        let (mut m, da, _) = haus();
+        let rf = m.downpipes_of(da);
+        assert_eq!(rf.len(), 4);
+        let mengen = crate::qto::schedule(&m);
+        let v = Visibility {
+            view_cat: crate::ENTWAESSERUNG.into_iter().collect(),
+            ..Visibility::default()
+        };
+        assert!(!v.is_plain() && v.of_tree().is_plain());
+        m.set_visibility(v);
+        let ids: Vec<ElementId> = m.elements().iter().map(|(id, _)| id).collect();
+        for id in ids {
+            let Masks { solid, ghost } = m.masks(id);
+            let c = m.element(id).map(|e| e.category);
+            assert_eq!(solid == 0, rf.contains(&id), "{c:?}");
+            assert_eq!(ghost, 0, "{c:?}");
+        }
+        assert_eq!(crate::tree::hidden_count(&m), 0, "Baum unverändert");
+        assert_eq!(crate::qto::schedule(&m), mengen);
+    }
 }

@@ -8,6 +8,9 @@
 //! Eingabe: Klick ins Feld, Zahl tippen, Enter. „1,2“ heißt 1,20 m, ab 10
 //! gilt die Zahl als cm („120“ ist 1,20 m). Esc bricht die Eingabe ab und
 //! schließt danach das Feld.
+//!
+//! Darunter die Schnelloption „Dachentwässerung ausblenden“ des Grundrisses
+//! mit „Auf alle Ansichten übertragen“ ([`crate::sicht_zahnrad`]).
 
 use sk_model::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT};
 use sk_paint::Canvas;
@@ -58,6 +61,10 @@ pub enum Teil {
     Zahnrad,
     Wert,
     Vorgabe,
+    /// Häkchen „Dachentwässerung ausblenden“ und „Auf alle Ansichten
+    /// übertragen“ ([`crate::sicht_zahnrad`]).
+    Haken,
+    Alle,
 }
 
 /// Lage von Zahnrad und Feld in der Ansicht (Pixel).
@@ -70,6 +77,10 @@ pub struct Lage {
     pub vorgabe: Rect,
     /// Zeile unter dem Wert ([`BEZUG`] oder [`FALSCH`]).
     pub bezug: Rect,
+    /// Zeile „Sichtbarkeit“: Name, Häkchen, „Auf alle Ansichten übertragen“.
+    pub sicht: Rect,
+    pub haken: Rect,
+    pub alle: Rect,
 }
 
 /// Zahnrad oben links neben dem Paneel „Ansichten“ (`rechts`: dessen linker
@@ -91,13 +102,18 @@ pub fn lage(rechts: f32, s: f32, t: &Theme) -> Lage {
     let y0 = m + RAD + 4.0;
     let y = y0 + PAD;
     let kx = x0 + PAD + NAME_W;
+    let ys = y + 2.0 * h + GAP * 1.5;
+    let sw = FELD_W + GAP + VORGABE_W;
     Lage {
         zahnrad: r(x1 - RAD, m, RAD, RAD),
-        feld: r(x0, y0, BREITE, 2.0 * PAD + 2.0 * h + GAP * 0.5),
+        feld: r(x0, y0, BREITE, 2.0 * PAD + 4.0 * h + GAP * 2.5),
         name: r(x0 + PAD, y, NAME_W, h),
         wert: r(kx, y, FELD_W, h),
         vorgabe: r(kx + FELD_W + GAP, y, VORGABE_W, h),
         bezug: r(x0 + PAD, y + h + GAP * 0.5, BREITE - 2.0 * PAD, h),
+        sicht: r(x0 + PAD, ys, NAME_W, h),
+        haken: r(kx, ys, sw, h),
+        alle: r(kx, ys + h + GAP, sw, h),
     }
 }
 
@@ -108,6 +124,7 @@ impl Lage {
         let mut teile = vec![(Teil::Zahnrad, self.zahnrad)];
         if offen {
             teile.push((Teil::Wert, self.wert));
+            teile.extend([(Teil::Haken, self.haken), (Teil::Alle, self.alle)]);
             if eigen {
                 teile.push((Teil::Vorgabe, self.vorgabe));
             }
@@ -129,6 +146,8 @@ pub struct Bild {
     pub hover: Option<Teil>,
     pub eingabe: Option<TextEdit>,
     pub falsch: bool,
+    /// Der Grundriss blendet die Dachentwässerung aus.
+    pub entw: bool,
     /// Linker Rand des Paneels „Ansichten“ (Bits) und Skalierung (Bits).
     pub rechts: u32,
     pub scale: u32,
@@ -198,6 +217,16 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
         (BEZUG, t.ui.text_dim)
     };
     zeile(&mut c, hinweis, l.bezug, t.size.font_small * s, farbe);
+    let sicht = crate::sicht_zahnrad::NAME;
+    zeile(&mut c, sicht, l.sicht, t.size.font * s, t.ui.text);
+    let hover = b.hover == Some(Teil::Haken);
+    crate::sicht_zahnrad::haken(&mut c, fonts, ab(l.haken), b.entw, hover, s, t);
+    let st = ButtonState {
+        hover: b.hover == Some(Teil::Alle),
+        ..Default::default()
+    };
+    let alle = crate::sicht_zahnrad::ALLE;
+    widgets::button(&mut c, fonts, ab(l.alle), alle, st, s, t);
     (c, dx as i32, dy as i32)
 }
 
@@ -217,6 +246,10 @@ pub struct Ausgang {
     pub redraw: bool,
     /// Neue Schnitthöhe (mm).
     pub neu: Option<f64>,
+    /// Klick aufs Häkchen „Dachentwässerung ausblenden“ bzw. auf „Auf alle
+    /// Ansichten übertragen“.
+    pub haken: bool,
+    pub alle: bool,
 }
 
 impl Schalter {
@@ -261,6 +294,12 @@ impl Schalter {
                         self.eingabe = None;
                         self.falsch = false;
                         out.neu = Some(PLAN_CUT);
+                    }
+                    Some(t @ (Teil::Haken | Teil::Alle)) => {
+                        self.eingabe = None;
+                        self.falsch = false;
+                        out.haken = t == Teil::Haken;
+                        out.alle = t == Teil::Alle;
                     }
                     None if out.consumed => {
                         self.eingabe = None;
@@ -424,6 +463,16 @@ mod tests {
         assert!(s.key(Key::Escape, Modifiers::default(), &mut out));
         assert!(!s.offen);
         s.handle(&mitte(l.zahnrad), &l, 1500.0, false);
+        // Dachentwässerung (Jörn 12.10.): Häkchen und „auf alle“ unter der
+        // Höhe, im Feld; ein Klick dort beendet die Eingabe
+        for q in [l.sicht, l.haken, l.alle] {
+            assert!(q.y > l.bezug.y && q.y + q.h <= l.feld.y + l.feld.h);
+        }
+        s.handle(&mitte(l.wert), &l, 1500.0, false);
+        let h = s.handle(&mitte(l.haken), &l, 1500.0, false);
+        assert!(h.consumed && h.haken && !h.alle && s.eingabe.is_none());
+        let a = s.handle(&mitte(l.alle), &l, 1500.0, false);
+        assert!(a.consumed && a.alle && !a.haken && a.neu.is_none());
         let d = s.handle(&klick(5.0, 400.0), &l, 1500.0, false);
         assert!(!d.consumed && !s.offen, "Klick daneben");
     }

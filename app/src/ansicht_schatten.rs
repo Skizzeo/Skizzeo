@@ -5,8 +5,9 @@
 //! unter 45° von vorne oben oder von der Sonne des Sonnenstands-Systems.
 //!
 //! Bedienung: ein Zahnrad links neben dem Paneel „Ansichten“ öffnet ein
-//! kleines Feld mit Schatten an/aus, Fläche/Schraffur, Licht und „Auf alle
-//! Ansichten übertragen“. Die Wahl steht je Ansicht im Modell
+//! kleines Feld mit Schatten an/aus, Fläche/Schraffur, Licht, der
+//! Schnelloption „Dachentwässerung ausblenden“ ([`crate::sicht_zahnrad`])
+//! und „Auf alle Ansichten übertragen“. Die Wahl steht je Ansicht im Modell
 //! ([`ViewShade`], `[viewshade]`) als Ansichtszustand, ohne
 //! Rückgängig-Schritt, und nur, wo sie von der Vorgabe abweicht.
 
@@ -161,6 +162,8 @@ pub enum Teil {
     Vorgabe,
     /// Teile unter dem Gelände gestrichelt (`true`) oder ausgeblendet (S11).
     Unter(bool),
+    /// Häkchen „Dachentwässerung ausblenden“ (Jörn 12.10.).
+    Haken,
 }
 
 /// Maße (dip).
@@ -175,7 +178,13 @@ const REIHE: f32 = 4.0 * KNOPF_W + 3.0 * GAP;
 const VORGABE_W: f32 = 2.0 * KNOPF_W + GAP;
 
 /// Zeilennamen im Feld.
-const NAMEN: [&str; 4] = ["Schatten", "Darstellung", "Licht", "Unter Gelände"];
+const NAMEN: [&str; 5] = [
+    "Schatten",
+    "Darstellung",
+    "Licht",
+    "Unter Gelände",
+    crate::sicht_zahnrad::NAME,
+];
 
 /// Lage von Zahnrad und Feld in der Ansicht (Pixel).
 #[derive(Clone, Debug, PartialEq)]
@@ -228,14 +237,15 @@ pub fn lage(rechts: f32, mit_hinweis: bool, s: f32, t: &Theme) -> Lage {
         (Teil::Licht(ShadeLight::Sun), k(3.0, 2.0)),
         (Teil::Unter(true), k(0.0, 3.0)),
         (Teil::Unter(false), k(1.0, 3.0)),
-        (Teil::Alle, r(kx, zeile(4.0), REIHE, h)),
+        (Teil::Haken, r(kx, zeile(4.0), REIHE, h)),
+        (Teil::Alle, r(kx, zeile(5.0), REIHE, h)),
         (
             Teil::Vorgabe,
-            r(kx + REIHE - VORGABE_W, zeile(5.0), VORGABE_W, h),
+            r(kx + REIHE - VORGABE_W, zeile(6.0), VORGABE_W, h),
         ),
     ]);
-    let stand = r(kx, zeile(5.0), REIHE - VORGABE_W - GAP, h);
-    let mut unten = zeile(6.0);
+    let stand = r(kx, zeile(6.0), REIHE - VORGABE_W - GAP, h);
+    let mut unten = zeile(7.0);
     let hinweis = mit_hinweis.then(|| {
         let q = r(kx, unten - GAP * 0.5, REIHE, h * 0.8);
         unten += h * 0.8;
@@ -268,6 +278,7 @@ pub fn text(t: Teil) -> &'static str {
         Teil::Vorgabe => "Vorgabe übernehmen",
         Teil::Unter(true) => "Gestrichelt",
         Teil::Unter(false) => "Ausblenden",
+        Teil::Haken => crate::sicht_zahnrad::HAKEN,
     }
 }
 
@@ -303,6 +314,8 @@ pub struct Bild {
     pub eigen: bool,
     /// Unter dem Gelände gestrichelt (S11).
     pub gestrichelt: bool,
+    /// Die Ansicht blendet die Dachentwässerung aus.
+    pub entw: bool,
     /// Linker Rand des Paneels „Ansichten“ (Bits) und Skalierung (Bits).
     pub rechts: u32,
     pub scale: u32,
@@ -387,6 +400,11 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
     }
     let zeigen = |p: &&(Teil, Rect)| p.0 != Teil::Zahnrad && (b.eigen || p.0 != Teil::Vorgabe);
     for (teil, q) in l.teile.iter().filter(zeigen) {
+        if *teil == Teil::Haken {
+            let hover = b.hover == Some(Teil::Haken);
+            crate::sicht_zahnrad::haken(&mut c, fonts, ab(*q), b.entw, hover, s, t);
+            continue;
+        }
         let gesperrt = *teil == Teil::Licht(ShadeLight::Sun) && !b.sonne_ok;
         let st = ButtonState {
             hover: b.hover == Some(*teil) && !gesperrt,
@@ -424,8 +442,11 @@ pub struct Ausgang {
     pub redraw: bool,
     /// Neue Wahl für diese Ansicht.
     pub wahl: Option<ViewShade>,
-    /// Die Wahl dieser Ansicht in alle vier übertragen.
+    /// Die Wahl dieser Ansicht übertragen: Schatten und Gelände in alle
+    /// vier, die Dachentwässerung in alle sieben Ansichten.
     pub alle: bool,
+    /// Klick aufs Häkchen „Dachentwässerung ausblenden“.
+    pub haken: bool,
     /// Die eigene Wahl dieser Ansicht entfällt.
     pub vorgabe: bool,
     /// Unter Gelände: gestrichelt (`true`) oder ausgeblendet (S11).
@@ -494,6 +515,11 @@ impl Schalter {
                 }
                 Some(Teil::Unter(g)) => {
                     out.unter = Some(g);
+                    out.consumed = true;
+                    out.redraw = true;
+                }
+                Some(Teil::Haken) => {
+                    out.haken = true;
                     out.consumed = true;
                     out.redraw = true;
                 }
@@ -654,6 +680,10 @@ mod tests {
         assert_eq!(o.unter, Some(true));
         let o = sch.handle(&klick(mitte(Teil::Unter(false))), &l, vs, false, false);
         assert_eq!(o.unter, Some(false));
+        // Jörn 12.10.: Häkchen „Dachentwässerung ausblenden“ über „auf alle“
+        let o = sch.handle(&klick(mitte(Teil::Haken)), &l, vs, false, false);
+        assert!(o.consumed && o.haken && o.wahl.is_none() && !o.alle);
+        assert!(mitte(Teil::Haken).1 < mitte(Teil::Alle).1);
         assert_eq!(text(Teil::Unter(true)), "Gestrichelt");
         let o = sch.handle(
             &klick(mitte(Teil::Licht(ShadeLight::Sun))),
@@ -703,6 +733,7 @@ mod tests {
         let mut b = Bild {
             vs,
             gestrichelt: false,
+            entw: false,
             offen: false,
             hover: None,
             sonne_ok: true,
