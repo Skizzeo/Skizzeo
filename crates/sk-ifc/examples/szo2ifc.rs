@@ -28,11 +28,13 @@ fn main() {
         .map(|(nr, g)| format!("{nr} ({})", g.text()))
         .collect();
     println!(
-        "{aus}: {} Gebäude, {} Geschosse, {} Bauteile, {} Wandzüge, ausgelassen: {}",
+        "{aus}: {} Gebäude, {} Geschosse, {} Bauteile, {} Wandzüge, {} Öffnungen, {} Türen, ausgelassen: {}",
         b.gebaeude,
         b.geschosse,
         b.bauteile,
         b.baugruppen,
+        b.oeffnungen,
+        b.tueren,
         liste.join(", ")
     );
 }

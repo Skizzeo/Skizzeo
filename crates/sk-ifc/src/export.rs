@@ -56,6 +56,8 @@ pub struct Bericht {
     pub baugruppen: usize,
     /// Öffnungen mit mindestens einer gelochten Wand (I5).
     pub oeffnungen: usize,
+    /// Türen mit Blatt als `IfcDoor` in ihrer Öffnung (I5).
+    pub tueren: usize,
     /// Bauteile, die nicht geschrieben wurden, mit Nummer und Grund.
     pub ausgelassen: Vec<(String, Grund)>,
 }
@@ -468,7 +470,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         c.inhalt.entry(si).or_default().push(gruppe);
         bericht.baugruppen += 1;
     }
-    c.oeffnungen(&oeffnungen, &mut bericht);
+    c.oeffnungen(&oeffnungen, &storey_of, &mut bericht);
 
     // Beziehungen gesammelt
     let geschosse: Vec<(StoreyId, (u32, u32, f64))> =

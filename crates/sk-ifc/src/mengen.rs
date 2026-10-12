@@ -117,6 +117,16 @@ pub fn oeffnung(breite: f64, hoehe: f64, tiefe: f64) -> Option<Satz> {
         .satz("Qto_OpeningElementBaseQuantities")
 }
 
+/// Mengen einer Tür in ihrer Öffnung (I5): Breite, Höhe und Fläche der
+/// Öffnung in der Wand des Blatts.
+pub fn tuer(breite: f64, hoehe: f64) -> Option<Satz> {
+    bau()
+        .mm("Width", breite)
+        .mm("Height", hoehe)
+        .m2("Area", breite * hoehe)
+        .satz("Qto_DoorBaseQuantities")
+}
+
 /// Mengensätze eines Bauteils der IFC-Klasse `klasse` aus seiner Zeile der
 /// Mengenliste.
 pub fn saetze(q: &ElementQto, klasse: &str) -> Vec<Satz> {
