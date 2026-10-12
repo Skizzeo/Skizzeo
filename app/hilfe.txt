@@ -224,7 +224,7 @@ Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klap
 Dateimenü | Logo oben links, **F10** oder **Alt** kurz
 Neu, Öffnen | **Strg+N**, **Strg+O**
 Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
-IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen. Mit den Landeskoordinaten aus „Projektdaten“ liegt das Haus im IFC an seiner Stelle in der Welt (Georeferenz): Ostwert mit der UTM-Zone vorn (in Deutschland 32 oder 33) und Nordwert im amtlichen System ETRS89/UTM, dazu die Höhe von ±0,00 über NHN (Normalhöhennull), alles aus dem Lageplan; fehlt Ost- oder Nordwert, gibt es keine Georeferenz
+IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen. Öffnungen stehen dort an ihrer Wand, eine Tür mit Aufschlag als Tür darin, mit der Türhand nach DIN 107. Mit den Landeskoordinaten aus „Projektdaten“ liegt das Haus im IFC an seiner Stelle in der Welt (Georeferenz): Ostwert mit der UTM-Zone vorn (in Deutschland 32 oder 33) und Nordwert im amtlichen System ETRS89/UTM, dazu die Höhe von ±0,00 über NHN (Normalhöhennull), alles aus dem Lageplan; fehlt Ost- oder Nordwert, gibt es keine Georeferenz
 Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
 Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
 Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**
