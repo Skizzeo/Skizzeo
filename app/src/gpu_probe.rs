@@ -843,6 +843,94 @@ mod tests {
         r.set_grass(0);
     }
 
+    /// Ist-Bilder Gelände G1: RH-1 auf dem Höhenaufmaß „Am Lindenhof 7“
+    /// (ohne Lage: das Grundstück mittig unter dem Haus), in 3D von
+    /// Südwesten mit Zuschnitt alles, blass und Grundstück; Grundriss mit
+    /// Höhenlinien, Punkten und Grenze; Schnitt und Vorne mit der
+    /// Geländelinie.
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_aufmass -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_aufmass() {
+        use crate::gelaende_netz::{self as gn, Gelaende};
+        use crate::gelaende_platte as gp;
+        use sk_model::Show;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let csv =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
+        let (t, ..) = sk_model::Terrain::lesen(csv, "aufmass.csv", "2026-10-12", 32).unwrap();
+        let mut h = haus();
+        assert!(h.edit_model("Höhenaufmaß", |m| m.import_terrain(t)));
+        let sun = sonne(6, 21, 15 * 60);
+        for (show, n) in [
+            (Show::All, "alles"),
+            (Show::Fade, "blass"),
+            (Show::Parcel, "grundstueck"),
+        ] {
+            h.edit_model("Zuschnitt", |m| m.set_terrain_show(show));
+            h.set_theme(&theme);
+            let g = Gelaende::aus(h.model()).unwrap();
+            let keys = h.table().terrain;
+            r.set_ground_z(Some(g.unten as f32));
+            r.set_grass(keys[0]);
+            let netz = crate::scene::mesh_of(&gn::koerper(&g, keys));
+            r.set_mesh(gp::MESH_PLATE, &netz);
+            let cam = blick(&h, vec3(-1.0, -1.3, 0.8), 52_000.0);
+            let px = bild(&mut r, &mut h, sun, &cam);
+            ab(&px, &format!("ist-aufmass-3d-{n}.png"));
+        }
+        r.set_mesh(gp::MESH_PLATE, &Default::default());
+        // Grundriss, Schnitt und Vorne auf Papier
+        h.edit_model("Zuschnitt", |m| m.set_terrain_show(Show::Fade));
+        let g = Gelaende::aus(h.model()).unwrap();
+        let (lo, hi) = g.rahmen();
+        let (hlo, hhi) = h.bounds().unwrap();
+        let c = (hlo + hhi) * 0.5;
+        let plane = (vec3(c.x, c.y, 0.0), vec3(0.0, -1.0, 0.0));
+        for (v, n) in [
+            (ViewKind::Plan, "grundriss-blass"),
+            (ViewKind::Section, "schnitt"),
+            (ViewKind::Front, "vorne"),
+        ] {
+            h.set_theme(&theme);
+            r.set_style(crate::style(&theme.env));
+            r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
+            let p = (v == ViewKind::Section).then_some(plane);
+            r.set_mesh(crate::MESH_MODEL, &h.mesh(v, p, &[]));
+            let keys = h.table().terrain;
+            let kappe = match p {
+                Some((p0, nn)) => {
+                    let f = sk_model::solid::SectionFrame::new(p0, nn);
+                    crate::scene::mesh_of(&gn::kappen(&g, &f, p0, keys[1]))
+                }
+                None => Default::default(),
+            };
+            r.set_mesh(gp::MESH_PLATE, &kappe);
+            let b = Some((vec3(lo.x, lo.y, lo.z), vec3(hi.x, hi.y, hhi.z)));
+            let cam = crate::fit_parallel(v, b, W as f64, H as f64);
+            let mm_px = cam.ortho.map_or(10.0, |half| 2.0 * half / H as f64);
+            let f = gn::fassade(&g, v, h.bounds());
+            r.set_helpers(&gn::linien(&g, v, p, f, h.table(), 1.0, mm_px));
+            let mut view = cam.view(W, H);
+            view.paper = Some(h.table().paper);
+            view.patterns = crate::draw_table::pattern_mode(v, theme.env.patterns_3d);
+            r.draw(W, H, 0, &view).unwrap();
+            ab(&r.read_pixels(W, H), &format!("ist-aufmass-{n}.png"));
+        }
+        r.set_helpers(&[]);
+        r.set_mesh(gp::MESH_PLATE, &Default::default());
+        r.set_ground_z(None);
+        r.set_grass(0);
+    }
+
     /// Ist-Bilder E4: die fünf Beispiel-Erweiterungen vor RH-1 in 3D, im
     /// Grundriss des EG und in „Vorne“; dazu die Treppe allein in „Vorne“
     /// (schaut in +Y) zum Vergleich mit der Werkbank.

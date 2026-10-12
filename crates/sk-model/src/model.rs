@@ -353,8 +353,8 @@ pub use gelaende_platte::{PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK
 #[path = "gelaende_aufmass.rs"]
 mod gelaende_aufmass;
 pub use gelaende_aufmass::{
-    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainMesh,
-    TerrainPoint, Trim,
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
+    TerrainMesh, TerrainPoint, Trim,
 };
 
 #[path = "geschossbaender.rs"]

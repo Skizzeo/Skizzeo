@@ -1285,6 +1285,7 @@ impl Prefs {
         for (name, role) in [
             ("Gelände Rasen", "env.terrain_grass"),
             ("Gelände Erdreich", "env.terrain_soil"),
+            ("Gelände Umgebung blass", "env.terrain_fade"),
         ] {
             swatch_row(&mut texts, &mut items, &mut y, name, role_target(role));
         }

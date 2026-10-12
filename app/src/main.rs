@@ -46,6 +46,8 @@ mod flush_pick;
 mod fokus;
 mod frame_time;
 mod freischaltung;
+mod gelaende_app;
+mod gelaende_netz;
 mod gelaende_platte;
 mod geschosse_app;
 mod geschossfenster;
@@ -3301,6 +3303,7 @@ impl App {
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
             Id::Opening(k) => self.oeffnung_klick(k),
+            Id::Gelaende(k) => self.gelaende_klick(k),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
             Id::ExtJa(i) => self.ext_prop_wert(i, None),
             ui::kette_button!() => self.kette_klick(id),
@@ -7892,9 +7895,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
 
-        if std::mem::take(&mut a.quantity_wanted) {
-            a.open_quantity(&surface);
-        }
+        a.offene_dialoge(&surface);
         // Automatisch sichern (F-13), nicht mitten im Ziehen
         if !a.edit.is_dragging() {
             let now = a.clock.elapsed();
@@ -8057,14 +8058,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let scale = a.title.scale;
             let mut helpers = Vec::new();
             let mut nord_bild = None;
-            match a.ui.view {
-                ViewKind::Plan => {
-                    helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme))
-                }
-                ViewKind::Persp => {}
-                // Geländeplatte statt Geländelinie (Gelände G0)
-                _ => helpers.extend(a.platte_linien(scale)),
+            if a.ui.view == ViewKind::Plan {
+                helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme));
             }
+            // Gelände statt Geländelinie (G0), Höhenlinien und Grenze (G1)
+            helpers.extend(a.platte_linien(vh, scale));
             let plane = a.plane();
             // Hover aus der Mengenliste: leuchtender Umriss mit weichem Schein
             if a.hover_from_list {

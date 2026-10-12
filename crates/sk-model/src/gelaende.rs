@@ -113,6 +113,8 @@ impl Model {
         }
         let vorher = self.foundation_terrain();
         self.put_terrain(b, offset);
+        // Mit Aufmaß wandert ±0,00 mit dem Versatz (§4.3)
+        self.terrain_nhn_merken();
         self.resettle_foundations(vorher);
         true
     }

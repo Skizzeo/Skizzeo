@@ -5,9 +5,11 @@
 //! Band (Oberkante mit dem Stift „Gelände“, Unterkante und Enden fein). Sie
 //! ist kein Bauteil: kein Hover und keine Auswahl im Bild (sie läge sonst
 //! unter jeder Maßkette); gewählt wird sie nur im Objektbaum, dort stehen
-//! Dicke und Außenoffset.
+//! Dicke und Außenoffset. Mit Höhenaufmaß steht statt der Platte das echte
+//! Gelände da ([`crate::gelaende_netz`], G1).
 
 use crate::draw_table::{fallback_look, fill_kind, DrawTable, LineLook, MatLook, Stroke};
+use crate::gelaende_netz::{self, Gelaende};
 use crate::selection::de;
 use crate::ui::{kote_text, Field, FieldRow, Props, Section, ViewKind};
 use crate::App;
@@ -35,7 +37,7 @@ pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)>
 
 /// Was im Renderer liegt: Modellstand, Ansicht, Schnittebene (Bits),
 /// Schlüssel von Rasen und Erdreich, ausgeblendet.
-type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 2], bool);
+type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool);
 
 /// Platten des Modells und was davon gezeigt wird.
 #[derive(Default)]
@@ -43,33 +45,50 @@ pub(crate) struct Platte {
     /// Modellstand, zu dem `platten` gehört.
     stand: Option<u64>,
     platten: Vec<TerrainPlate>,
+    /// Gelände aus dem Höhenaufmaß; statt der Platten, wenn da.
+    gelaende: Option<Gelaende>,
     netz: Option<NetzKey>,
     /// Das Paneel „Eigenschaften“ zeigt die Platte (zum Modellstand).
     props: Option<u64>,
+    /// Leiste „Gelände“ (G1).
+    pub(crate) leiste: crate::gelaende_app::Zustand,
 }
 
 impl Platte {
     /// Die Platten zum Modell; gerechnet nur, wenn es sich geändert hat.
     pub(crate) fn platten(&mut self, m: &Model) -> &[TerrainPlate] {
+        self.abgleich(m);
+        &self.platten
+    }
+
+    /// Das echte Gelände zum Modell, wenn ein Aufmaß da ist.
+    pub(crate) fn gelaende(&mut self, m: &Model) -> Option<&Gelaende> {
+        self.abgleich(m);
+        self.gelaende.as_ref()
+    }
+
+    fn abgleich(&mut self, m: &Model) {
         let rev = m.revision();
         if self.stand != Some(rev) {
             self.stand = Some(rev);
             self.platten = m.terrain_plates();
+            self.gelaende = Gelaende::aus(m);
         }
-        &self.platten
     }
 }
 
-/// Aussehen von Rasen und Erdreich (Schlüssel hinter den Baustoffen der
-/// Zeichentabelle): Rasen ohne Schnitt; Erdreich im Schnitt auf Papier mit
-/// der Schraffur „gewachsener Boden“ (45°, durchgezogen und gestrichelt im
-/// Wechsel) in der Farbe des Stifts „Gelände“.
-pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 2] {
+/// Aussehen von Rasen, Erdreich und blassem Rasen (Schlüssel hinter den
+/// Baustoffen der Zeichentabelle): Rasen ohne Schnitt; Erdreich im Schnitt
+/// auf Papier mit der Schraffur „gewachsener Boden“ (45°, durchgezogen und
+/// gestrichelt im Wechsel) in der Farbe des Stifts „Gelände“; blasser
+/// Rasen außerhalb der Grenze bei „Umgebung blass“ (G1).
+pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 3] {
     let rgb = |c: sk_paint::Rgba| {
         let [r, g, b, _] = c.to_f32();
         [r, g, b]
     };
     let (grass, soil) = (rgb(theme.env.terrain_grass), rgb(theme.env.terrain_soil));
+    let fade = rgb(theme.env.terrain_fade);
     let mm = theme.px_per_mm;
     let base = MatLook {
         cut: soil,
@@ -97,6 +116,7 @@ pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 
             line_count: 2,
             ..base
         },
+        MatLook { face: fade, ..base },
     ]
 }
 
@@ -147,7 +167,7 @@ fn at(q: Vec3, z: f64) -> Vec3 {
 /// Körper einer Platte in 3D bis hinunter auf `bot` (den Boden): Rasen
 /// oben, Erdreich unten und an den Seiten; Kanten am oberen und unteren
 /// Rand und senkrecht dort, wo der Rand die Richtung wechselt.
-fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 2]) -> Solid {
+fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3]) -> Solid {
     let top = p.top;
     let up = vec3(0.0, 0.0, 1.0);
     let mut s = Solid {
@@ -219,7 +239,7 @@ pub(crate) fn netz(
     plates: &[TerrainPlate],
     view: ViewKind,
     plane: Option<(Vec3, Vec3)>,
-    keys: [u16; 2],
+    keys: [u16; 3],
 ) -> MeshData {
     let mut s = Solid::default();
     match (view, plane) {
@@ -363,25 +383,44 @@ impl App {
             return;
         }
         self.platte.netz = Some(key);
-        let netz = if hidden {
-            MeshData::default()
-        } else {
-            netz(self.platte.platten(m), view, plane, keys)
+        self.platte.abgleich(m);
+        let netz = match (&self.platte.gelaende, view, plane) {
+            _ if hidden => MeshData::default(),
+            (Some(g), ViewKind::Persp, _) => {
+                crate::scene::mesh_of(&gelaende_netz::koerper(g, keys))
+            }
+            (Some(g), ViewKind::Section, Some((p0, n))) => {
+                let f = SectionFrame::new(p0, n);
+                crate::scene::mesh_of(&gelaende_netz::kappen(g, &f, p0, keys[1]))
+            }
+            (Some(_), ..) => MeshData::default(),
+            (None, ..) => netz(&self.platte.platten, view, plane, keys),
         };
         self.renderer.set_mesh(MESH_PLATE, &netz);
         self.renderer.set_grass(keys[0]);
     }
 
-    /// Linien der Platte in Ansicht und Schnitt; ausgeblendet keine.
-    pub(crate) fn platte_linien(&mut self, scale: f32) -> Vec<Helper> {
+    /// Linien der Platte in Ansicht und Schnitt, mit Aufmaß die des
+    /// Geländes, im Grundriss nur im Erdgeschoss; ausgeblendet keine. `vh`:
+    /// Höhe der Ansicht in Bildpunkten.
+    pub(crate) fn platte_linien(&mut self, vh: f64, scale: f32) -> Vec<Helper> {
         if self.scene.terrain_hidden() {
             return Vec::new();
         }
         let plane = self.plane();
-        let m = self.scene.model();
-        let plates = self.platte.platten(m);
+        let view = self.ui.view;
         let b = self.scene.bounds();
-        linien(plates, self.ui.view, plane, b, self.scene.table(), scale)
+        let t = self.scene.table();
+        let m = self.scene.model();
+        if let Some(g) = self.platte.gelaende(m) {
+            if view == ViewKind::Plan && !self.scene.ground_active() {
+                return Vec::new();
+            }
+            let mm_px = self.cam.ortho.map_or(10.0, |half| 2.0 * half / vh.max(1.0));
+            let f = gelaende_netz::fassade(g, view, b);
+            return gelaende_netz::linien(g, view, plane, f, t, scale, mm_px);
+        }
+        linien(self.platte.platten(m), view, plane, b, t, scale)
     }
 
     /// Gelände im Renderer: OK Gelände je Gebäude für „unter Gelände“ und
@@ -394,6 +433,8 @@ impl App {
             .set_terrain_boxes(&terrain_boxes(&m.terrain_patches(TERRAIN_MARGIN)));
         let unten = if self.scene.terrain_hidden() {
             None
+        } else if let Some(g) = self.platte.gelaende(m) {
+            Some(g.unten as f32)
         } else {
             let p = self.platte.platten(m);
             p.iter().map(|p| p.bottom as f32).reduce(f32::min)
@@ -437,7 +478,12 @@ impl App {
 
     /// Feld der Platte im Paneel übernommen (ein Schritt); `false`, wenn
     /// das Feld nicht zur Platte gehört.
+    /// Felder der Leiste „Gelände“ gehen weiter an [`App::gelaende_feld`].
     pub(crate) fn platte_feld(&mut self, submit: Option<(Field, f64)>) -> bool {
+        if let Some((Field::Gelaende(g), v)) = submit {
+            self.gelaende_feld(g, v);
+            return true;
+        }
         let Some((f @ (Field::PlateThick | Field::PlateMargin), mm)) = submit else {
             return false;
         };
@@ -480,7 +526,7 @@ mod tests {
     fn koerper_in_3d() {
         let m = haus();
         let p = m.terrain_plates();
-        let keys = [40, 41];
+        let keys = [40, 41, 42];
         let s = koerper(&p[0], p[0].bottom, keys);
         let flaeche = |k: u16| -> f64 {
             s.triangles
@@ -516,7 +562,7 @@ mod tests {
         for (a, b) in &iv {
             assert!((b - a - 3000.0).abs() < 1e-6, "{a} {b}");
         }
-        let n = netz(&p, ViewKind::Section, Some(plane), [40, 41]);
+        let n = netz(&p, ViewKind::Section, Some(plane), [40, 41, 42]);
         assert_eq!(n.faces.len(), 2 * 6);
         assert!(n
             .faces
@@ -597,9 +643,11 @@ mod tests {
         let m = haus();
         let theme = Theme::dark();
         let t = DrawTable::resolve(&m, &theme);
-        let [g, s] = t.terrain;
-        assert_eq!(s, g + 1);
-        assert_eq!(s as usize + 1, t.mats.len());
+        let [g, s, blass] = t.terrain;
+        assert_eq!((s, blass), (g + 1, g + 2));
+        assert_eq!(blass as usize + 1, t.mats.len());
+        let [r, gr, b, _] = theme.env.terrain_fade.to_f32();
+        assert_eq!(t.mats[blass as usize].face, [r, gr, b]);
         assert!(m
             .materials()
             .iter()

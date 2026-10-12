@@ -540,6 +540,20 @@ impl Model {
     }
 }
 
+/// Folgen der Höhenlage ([`Model::terrain_folgen`]), mm.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainFolgen {
+    /// OK Sohle über Gelände am Plattenrand, kleinster und größter Wert;
+    /// unter 0 steckt das Haus im Gelände.
+    pub sockel: (f64, f64),
+    /// Gelände am Plattenrand bis UK Gründung.
+    pub einbindung: (f64, f64),
+    /// Höhe von ±0,00 in m ü. NHN.
+    pub nhn: f64,
+    /// Die Gründung bindet überall mindestens frostfrei ein.
+    pub frostfrei: bool,
+}
+
 /// Ecken eines Umrisses gegen den Uhrzeigersinn um ihren Schwerpunkt.
 fn im_umlauf(p: &[(f64, f64)]) -> Vec<usize> {
     let n = p.len().max(1) as f64;
@@ -614,6 +628,30 @@ impl Terrain {
             );
         }
         t
+    }
+
+    /// Eine Punktliste lesen, wie „Höhen“ in der Werkzeugleiste sie
+    /// übernimmt (§5 G1): das Aufmaß, der Satz, was erkannt wurde, und die
+    /// Hinweise aus Lesen, Prüfen und Netz. Ohne Zonenkennzahl gilt
+    /// `zone`. `Err` mit einem Satz, wenn kein Gelände entsteht.
+    pub fn lesen(
+        roh: &[u8],
+        src: &str,
+        read: &str,
+        zone: u8,
+    ) -> Result<(Terrain, String, Vec<String>), String> {
+        let a = sk_gelaende::lesen::lesen(roh)?;
+        let t = Terrain::from_survey(&a, src, read, zone);
+        let m = t.mesh();
+        if m.netz.dreiecke.is_empty() {
+            return Err(
+                "Aus den Punkten entsteht kein Gelände: Es braucht drei Punkte, die nicht auf einer Linie liegen."
+                    .into(),
+            );
+        }
+        let mut hinweise = a.hinweise.clone();
+        hinweise.extend(m.hinweise.iter().cloned());
+        Ok((t, a.satz(), hinweise))
     }
 
     /// Grenzen als Landeswerte; Nummern ohne Punkt fehlen.
@@ -762,7 +800,7 @@ impl Model {
     /// Schreibt die Höhe von ±0,00 nach `[location] nhn`, wenn sie über dem
     /// Gelände liegt (für IFC und Projektdaten; „beide schreiben am Ende
     /// nhn“, §4.3).
-    fn terrain_nhn_merken(&mut self) {
+    pub(super) fn terrain_nhn_merken(&mut self) {
         if self.terrain().is_some_and(|t| t.href == HeightRef::High) {
             if let Some(h) = self.terrain_nhn() {
                 let h = (h * 1000.0).round() / 1000.0;
@@ -903,6 +941,94 @@ impl Model {
         let b = self.put_location(l);
         self.resettle_foundations(vorher);
         a || b
+    }
+
+    /// Zuschnitt setzen (im offenen Schritt, §4.5).
+    pub fn set_terrain_show(&mut self, show: Show) -> bool {
+        let Some(t) = self.terrain() else {
+            return false;
+        };
+        if t.show() == show {
+            return false;
+        }
+        let mut t = t.clone();
+        t.show = Some(show);
+        self.put_survey(Some(t))
+    }
+
+    /// Gelände um die Hausmitte so drehen, dass die längste Grenze
+    /// parallel zur nächstliegenden Hauswand liegt, um den kleinsten Winkel
+    /// (§4.8 „An Grenze ausrichten“; im offenen Schritt). `false` ohne
+    /// Grenze, Haus oder wenn sie schon parallel liegt.
+    pub fn align_terrain(&mut self) -> bool {
+        let grenze = self
+            .terrain_boundaries()
+            .iter()
+            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+            .map(|(a, b)| {
+                (
+                    (b[0] - a[0]).hypot(b[1] - a[1]),
+                    (b[1] - a[1]).atan2(b[0] - a[0]),
+                )
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        let umrisse = self.plate_outlines();
+        let Some((_, wg)) = grenze else {
+            return false;
+        };
+        let um = umrisse
+            .iter()
+            .flat_map(|(_, r)| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+            .filter(|(a, b)| (b.x - a.x).hypot(b.y - a.y) > 1.0)
+            .map(|(a, b)| gefaltet((b.y - a.y).atan2(b.x - a.x) - wg))
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
+        let (Some(um), Some(mitte)) = (um.filter(|u| u.abs() > 1e-9), self.house_center()) else {
+            return false;
+        };
+        self.rotate_terrain(mitte, um)
+    }
+
+    /// Mitte des Hauses im Grundriss (mm): Mitte des Rechtecks um alle
+    /// Plattenumrisse, um sie dreht „Drehen“ (§4.8). `None` ohne Haus.
+    pub fn house_center(&self) -> Option<[f64; 2]> {
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for (_, r) in self.plate_outlines() {
+            for p in r {
+                lo = [lo[0].min(p.x), lo[1].min(p.y)];
+                hi = [hi[0].max(p.x), hi[1].max(p.y)];
+            }
+        }
+        (lo[0] <= hi[0]).then(|| [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0])
+    }
+
+    /// Folgen der Höhenlage am bestimmenden Gebäude (§4.3): Sockel (OK
+    /// Sohle über Gelände) und Einbindung der Schürze (Gelände bis UK
+    /// Gründung) am Plattenrand, je kleinster und größter Wert in mm.
+    /// `None` ohne Aufmaß oder Haus.
+    pub fn terrain_folgen(&self) -> Option<TerrainFolgen> {
+        let t = self.terrain()?;
+        let f = self.survey_frame()?;
+        let h0 = self.terrain_nhn()?;
+        let b = self.level_building()?;
+        let mut hoehen: Vec<f64> = Vec::new();
+        for (_, ring) in self.plate_outlines().into_iter().filter(|o| o.0 == b) {
+            let r: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
+            hoehen.extend(t.along(&r).into_iter().map(|h| (h - h0) * 1000.0));
+        }
+        let lo = hoehen.iter().copied().reduce(f64::min)?;
+        let hi = hoehen.iter().copied().reduce(f64::max)?;
+        let (gr, uk) = self
+            .storeys
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Foundation && s.building == Some(b))
+            .map(|(id, s)| (id, s.elevation))
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        Some(TerrainFolgen {
+            sockel: (-hi, -lo),
+            einbindung: (lo - uk, hi - uk),
+            nhn: h0,
+            frostfrei: self.frost_safe(gr),
+        })
     }
 
     /// Dreiecke des Geländes im Modell (mm, z relativ zu ±0,00), gegen den
