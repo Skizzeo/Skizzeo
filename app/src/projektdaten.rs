@@ -58,14 +58,15 @@ struct Feld {
 }
 
 /// Felder der Maske.
-const N: usize = 15;
+const N: usize = 18;
 
 /// Gruppen ab 0 (Bauvorhaben), 4 (Bauherr), 6 (Planung), 10 (Baugrund:
 /// Bodenkennwerte der Erdarbeiten, je zwei in einer Zeile). Breite und Länge
 /// (Sonnenstand S1) stehen hinten, damit die Nummern 0–7 bleiben (der
 /// AVA-Kopf öffnet die Maske an einem Feld); gezeigt und mit Tab erreicht
 /// werden sie unter dem Bauort ([`REIHE`]). Leise vorbelegt ist der
-/// Standardort Ganderkesee.
+/// Standardort Ganderkesee. Ab 15 die Landeskoordinaten aus dem Lageplan
+/// für die Georeferenz im IFC (ifc/plan.md §10).
 const FELDER: [Feld; N] = [
     Feld {
         name: "Projektart",
@@ -204,14 +205,43 @@ const FELDER: [Feld; N] = [
         x: 0.0,
         einheit: "°",
     },
+    Feld {
+        // Ostwert mit der Zone vorn, wie im Lageplan
+        name: "UTM",
+        beispiel: "32467123,456",
+        zeilen: 1,
+        max: 24,
+        breite: 110.0,
+        x: 0.0,
+        einheit: "m O",
+    },
+    Feld {
+        name: "",
+        beispiel: "5878765,432",
+        zeilen: 1,
+        max: 24,
+        breite: 110.0,
+        x: 296.0,
+        einheit: "m N",
+    },
+    Feld {
+        name: "Höhe ±0,00",
+        beispiel: "14,25",
+        zeilen: 1,
+        max: 10,
+        breite: 64.0,
+        x: 0.0,
+        einheit: "m ü. NHN",
+    },
 ];
 /// Felder in Lese- und Tab-Reihenfolge.
-const REIHE: [usize; N] = [0, 1, 2, 8, 9, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14];
-const GRUPPEN: [(usize, &str); 4] = [
+const REIHE: [usize; N] = [0, 1, 2, 8, 9, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17];
+const GRUPPEN: [(usize, &str); 5] = [
     (0, "BAUVORHABEN"),
     (4, "BAUHERR"),
     (6, "PLANUNG"),
     (10, "BAUGRUND (ERDARBEITEN)"),
+    (UTM, "LANDESKOORDINATEN (IFC)"),
 ];
 /// Wort des Felds für Meldungen (Bezeichnung mit Gruppe, wo doppelt).
 const WORT: [&str; N] = [
@@ -230,12 +260,17 @@ const WORT: [&str; N] = [
     "Arbeitsraum",
     "Kiesschicht",
     "Böschungswinkel",
+    "Ostwert",
+    "Nordwert",
+    "Höhe über NHN",
 ];
 
 /// Erstes Feld der Bodenkennwerte (Reihenfolge wie [`Boden::FELDER`]) und
 /// mm bzw. Grad je Einheit im Feld.
 const BODEN: usize = 10;
 const BODEN_TEILER: [f64; 5] = [10.0, 1000.0, 1000.0, 10.0, 1.0];
+/// Felder der Landeskoordinaten: Ostwert, Nordwert, Höhe.
+const UTM: usize = 15;
 
 /// Bodenkennwert `k` als Text in der Einheit des Felds, mit Komma.
 fn boden_text(k: usize, v: f64) -> String {
@@ -299,6 +334,68 @@ fn ganderkesee(i: usize) -> f64 {
     }
 }
 
+/// Zahl aus einem Feld der Landeskoordinaten: Komma oder Punkt, Minus,
+/// Leerzeichen als Tausendertrenner, die Einheit dahinter erlaubt. `Ok(None)`
+/// für leer.
+fn meter(text: &str, einheit: &str) -> Result<Option<String>, ()> {
+    let t = text.trim();
+    let t = t.strip_suffix(einheit).unwrap_or(t);
+    let t: String = t
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| match c {
+            ',' => '.',
+            '−' => '-',
+            c => c,
+        })
+        .collect();
+    let t = t.strip_suffix('m').unwrap_or(&t).to_string();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    t.parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .map(|_| Some(t))
+        .ok_or(())
+}
+
+/// Ostwert mit Zone: `32467123,456` (Zone vorn, wie im Lageplan) oder ohne
+/// Zone `467123,456`, dann gilt `zone`. Zerlegt wird der Text, nicht die
+/// Zahl, so dass der Ostwert genau bleibt.
+fn ostwert(text: &str, zone: u8) -> Result<Option<(f64, u8)>, ()> {
+    let Some(t) = meter(text, FELDER[UTM].einheit)? else {
+        return Ok(None);
+    };
+    let ganz = t.split('.').next().unwrap_or("").len();
+    let (z, rest) = if ganz >= 8 && t.is_char_boundary(2) {
+        (t[..2].parse::<u8>().map_err(|_| ())?, &t[2..])
+    } else {
+        (zone, t.as_str())
+    };
+    let e: f64 = rest.parse().map_err(|_| ())?;
+    let u = sk_model::Utm { e, n: 0.0, zone: z };
+    u.gueltig().then_some(Some((e, z))).ok_or(())
+}
+
+/// Nordwert bzw. Höhe aus ihrem Feld im Bereich.
+fn wert_im_bereich(text: &str, i: usize, bereich: (f64, f64)) -> Result<Option<f64>, ()> {
+    match meter(text, FELDER[i].einheit)? {
+        None => Ok(None),
+        Some(t) => {
+            let v: f64 = t.parse().map_err(|_| ())?;
+            sk_model::im_bereich(v, bereich)
+                .then_some(Some(v))
+                .ok_or(())
+        }
+    }
+}
+
+/// Zahl mit Komma, ohne überflüssige Stellen.
+fn komma(v: f64) -> String {
+    v.to_string().replace('.', ",")
+}
+
 /// Gradzahl für ein Feld, mit Komma.
 fn grad_text(v: Option<f64>) -> String {
     v.map_or_else(String::new, |v| v.to_string().replace('.', ","))
@@ -329,7 +426,7 @@ pub enum Antwort {
 /// Lage der Teile, relativ zum Blatt (Pixel).
 struct Lage {
     felder: [Rect; N],
-    gruppen: [f32; 4],
+    gruppen: [f32; 5],
     knoepfe: [Rect; 2],
     schliessen: Rect,
     h: f32,
@@ -409,8 +506,44 @@ impl Maske {
             self.felder[i] = TextEdit::new(&grad_text(v.or(Some(ganderkesee(i)))));
             self.felder[i].end(false);
         }
+        let utm = l
+            .utm
+            .map(|u| (format!("{}{}", u.zone, komma(u.e)), komma(u.n)));
+        let (ost, nord) = utm.unwrap_or_default();
+        let nhn = l.nhn.map_or_else(String::new, komma);
+        for (i, t) in [(UTM, ost), (UTM + 1, nord), (UTM + 2, nhn)] {
+            self.felder[i] = TextEdit::new(&t);
+            self.felder[i].end(false);
+        }
         self.ort = *l;
         self
+    }
+
+    /// Zone ohne Angabe im Ostwert: aus dem Längengrad der Maske, östlich
+    /// von 12° Zone 33.
+    fn zone(&self) -> u8 {
+        let l = grad(&self.felder[9].text, GRAD_MAX[1])
+            .ok()
+            .flatten()
+            .or(self.ort.lon)
+            .unwrap_or(ganderkesee(9));
+        if l >= 12.0 {
+            33
+        } else {
+            32
+        }
+    }
+
+    /// Ostwert und Nordwert aus ihren Feldern: `Ok(None)` beide leer,
+    /// `Err` einer fehlt oder passt nicht.
+    fn utm(&self) -> Result<Option<sk_model::Utm>, ()> {
+        let ost = ostwert(&self.felder[UTM].text, self.zone())?;
+        let nord = wert_im_bereich(&self.felder[UTM + 1].text, UTM + 1, sk_model::UTM_N)?;
+        match (ost, nord) {
+            (None, None) => Ok(None),
+            (Some((e, zone)), Some(n)) => Ok(Some(sk_model::Utm { e, n, zone })),
+            _ => Err(()),
+        }
     }
 
     /// Die Lage aus Breite und Länge; ein Wert, der keine Zahl im Bereich
@@ -425,9 +558,12 @@ impl Maske {
             }
             grad(t, GRAD_MAX[i - 8]).unwrap_or(alt)
         };
+        let nhn = &self.felder[UTM + 2].text;
         Location {
             lat: w(8, self.ort.lat),
             lon: w(9, self.ort.lon),
+            utm: self.utm().unwrap_or(self.ort.utm),
+            nhn: wert_im_bereich(nhn, UTM + 2, sk_model::NHN).unwrap_or(self.ort.nhn),
             ..self.ort
         }
     }
@@ -485,7 +621,16 @@ impl Maske {
             } else if (8..BODEN).contains(&i) && grad(&e.text, GRAD_MAX[i - 8]).is_err() {
                 let g = GRAD_MAX[i - 8];
                 Some(format!("{wort}: Zahl von −{g} bis {g}."))
-            } else if i >= BODEN && boden_wert(i - BODEN, &e.text).is_err() {
+            } else if i == UTM && ostwert(&e.text, self.zone()).is_err() {
+                Some(format!(
+                    "{wort}: Zahl wie {} (Zone 32 oder 33 vorn).",
+                    f.beispiel
+                ))
+            } else if i == UTM + 1 && wert_im_bereich(&e.text, i, sk_model::UTM_N).is_err() {
+                Some(format!("{wort}: Zahl wie {}.", f.beispiel))
+            } else if i == UTM + 2 && wert_im_bereich(&e.text, i, sk_model::NHN).is_err() {
+                Some(format!("{wort}: Zahl von −500 bis 9000 m."))
+            } else if (BODEN..UTM).contains(&i) && boden_wert(i - BODEN, &e.text).is_err() {
                 let k = i - BODEN;
                 let (_, _, min, max) = Boden::FELDER[k];
                 Some(format!(
@@ -512,8 +657,17 @@ impl Maske {
             _ => {
                 let werk = (8..10).all(|i| self.felder[i].text == grad_text(Some(ganderkesee(i))));
                 let ort = self.felder[2].text.trim();
-                return (werk && !ort.is_empty() && !ort.contains("Ganderkesee"))
-                    .then(|| "Lage gilt noch für Ganderkesee.".into());
+                if werk && !ort.is_empty() && !ort.contains("Ganderkesee") {
+                    return Some("Lage gilt noch für Ganderkesee.".into());
+                }
+                // Ostwert ohne Nordwert oder umgekehrt
+                let leer = |i: usize| self.felder[i].text.trim().is_empty();
+                return match (leer(UTM), leer(UTM + 1)) {
+                    (false, true) => Some(UTM + 1),
+                    (true, false) => Some(UTM),
+                    _ => None,
+                }
+                .map(|i| format!("{} fehlt, im IFC keine Landeskoordinaten.", WORT[i]));
             }
         };
         // Der Wert von Ganderkesee steht als Beispiel im leeren Feld
@@ -559,7 +713,7 @@ impl Maske {
     fn lage(&self, s: f32) -> Lage {
         let mut y = KOPF_H + 12.0;
         let mut felder = [Rect::new(0.0, 0.0, 0.0, 0.0); N];
-        let mut gruppen = [0.0; 4];
+        let mut gruppen = [0.0; 5];
         for i in REIHE {
             let f = &FELDER[i];
             if let Some(g) = GRUPPEN.iter().position(|(a, _)| *a == i) {
@@ -1089,7 +1243,7 @@ mod tests {
     #[test]
     fn baugrund_felder() {
         let mut m = Maske::new(&ohne(), false, None);
-        let werte: Vec<&str> = (BODEN..N).map(|i| m.wert(i)).collect();
+        let werte: Vec<&str> = (BODEN..UTM).map(|i| m.wert(i)).collect();
         assert_eq!(werte, ["30", "1,50", "0,50", "15", "45"]);
         m.felder[10] = TextEdit::new("40");
         m.felder[11] = TextEdit::new("2 m");
@@ -1103,11 +1257,15 @@ mod tests {
             Some("Böschungswinkel: Zahl von 30 bis 90 °.")
         );
         assert_eq!(m.projekt().soil.boeschung, 45.0);
-        // Tab läuft von der Planung in den Baugrund und zurück zum Anfang
+        // Tab läuft von der Planung in den Baugrund, über die
+        // Landeskoordinaten zurück zum Anfang
         m.fokus_auf(7);
         m.key(Key::Tab, Modifiers::default());
         assert_eq!(m.fokus(), 10);
         m.fokus_auf(14);
+        m.key(Key::Tab, Modifiers::default());
+        assert_eq!(m.fokus(), UTM);
+        m.fokus_auf(UTM + 2);
         m.key(Key::Tab, Modifiers::default());
         assert_eq!(m.fokus(), 0);
     }
@@ -1241,6 +1399,100 @@ mod tests {
             assert_eq!(grad(t, 180.0), v, "{t}");
         }
         assert_eq!(grad_text(Some(-0.5)), "-0,5");
+    }
+
+    /// I4c (ifc/plan.md §10): Ost- und Nordwert aus dem Lageplan, der
+    /// Ostwert mit der Zone vorn, dazu die Höhe von ±0,00. Unverändert
+    /// übernommen bleibt die Lage genau; ohne Zone gilt die des Längengrads;
+    /// einer allein oder Unbrauchbares lässt die alten Werte stehen.
+    #[test]
+    fn landeskoordinaten() {
+        let alt = Location {
+            lat: Some(53.0589),
+            lon: Some(8.591),
+            north: Some(12.0),
+            utm: Some(sk_model::Utm {
+                e: 467_123.456,
+                n: 5_878_765.432,
+                zone: 32,
+            }),
+            nhn: Some(14.25),
+        };
+        let mut m = Maske::new(&ohne(), false, None).mit_ort(&alt);
+        assert_eq!(
+            (m.wert(UTM), m.wert(UTM + 1), m.wert(UTM + 2)),
+            ("32467123,456", "5878765,432", "14,25")
+        );
+        assert_eq!(m.ort(), alt);
+        // nach der Böschung, am Ende der Maske
+        m.fokus_auf(14);
+        tab(&mut m);
+        assert_eq!(m.fokus(), UTM);
+
+        // Berlin: Zone 33 im Ostwert, Leerzeichen und Einheit erlaubt
+        m.felder[UTM] = TextEdit::new("33 389918,0415 m O");
+        m.felder[UTM + 1] = TextEdit::new("5 819 699,1323");
+        m.felder[UTM + 2] = TextEdit::new("−3,5 m");
+        assert_eq!(m.meldung(), None);
+        let l = m.ort();
+        assert_eq!(
+            l.utm,
+            Some(sk_model::Utm {
+                e: 389_918.0415,
+                n: 5_819_699.1323,
+                zone: 33
+            })
+        );
+        assert_eq!(l.nhn, Some(-3.5));
+        // ohne Zone: die des Längengrads (8,591° O: 32)
+        m.felder[UTM] = TextEdit::new("467123,456");
+        assert_eq!(m.ort().utm.map(|u| (u.e, u.zone)), Some((467_123.456, 32)));
+
+        // nur der Ostwert: leiser Hinweis, die alte Lage bleibt
+        m.felder[UTM + 1] = TextEdit::new("");
+        assert_eq!(
+            m.hinweis().as_deref(),
+            Some("Nordwert fehlt, im IFC keine Landeskoordinaten.")
+        );
+        assert_eq!(m.ort().utm, alt.utm);
+        // Zone 34 gibt es in Deutschland nicht
+        m.felder[UTM] = TextEdit::new("34467123,456");
+        m.felder[UTM + 1] = TextEdit::new("5878765,432");
+        assert_eq!(
+            m.meldung().as_deref(),
+            Some("Ostwert: Zahl wie 32467123,456 (Zone 32 oder 33 vorn).")
+        );
+        assert_eq!(m.ort().utm, alt.utm);
+        m.felder[UTM + 2] = TextEdit::new("hoch");
+        m.felder[UTM] = TextEdit::new("");
+        m.felder[UTM + 1] = TextEdit::new("");
+        assert_eq!(
+            m.meldung().as_deref(),
+            Some("Höhe über NHN: Zahl von −500 bis 9000 m.")
+        );
+        // beide leer: keine Landeskoordinaten mehr
+        let l = m.ort();
+        assert_eq!((l.utm, l.nhn), (None, Some(14.25)));
+        m.felder[UTM + 2] = TextEdit::new("");
+        assert_eq!(
+            m.ort(),
+            Location {
+                utm: None,
+                nhn: None,
+                ..alt
+            }
+        );
+
+        // Lage der Felder: Ost und Nord in einer Zeile, die Einheit frei,
+        // die Höhe darunter, alles im Blatt
+        let l = m.lage(1.0);
+        let [o, n, h] = [l.felder[UTM], l.felder[UTM + 1], l.felder[UTM + 2]];
+        assert_eq!(o.y, n.y);
+        assert!(o.x + o.w + 40.0 < n.x);
+        assert!(n.x + n.w + 30.0 < W - PAD / 2.0);
+        assert!(o.y + o.h < h.y && h.y + h.h < l.h);
+        assert!(l.felder[14].y + l.felder[14].h < l.gruppen[4]);
+        assert!(l.gruppen[4] < o.y);
     }
 
     /// Abnahme S1, Punkt 1: Nur Breite oder nur Länge gesetzt sagt der Fuß
