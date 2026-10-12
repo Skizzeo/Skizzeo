@@ -63,6 +63,7 @@ fn fenster(m: &Model, run: RunId, u: (f64, f64)) -> Opening {
         top: HeightRef::Line(st, HeightLine::Lintel),
         reveal: None,
         install: Default::default(),
+        swing: None,
     }
 }
 
@@ -282,7 +283,8 @@ fn geschossuebergreifend_und_hoehenlinie() {
         s_og,
         HeightLines {
             sill: 900.0,
-            lintel: 2200.0
+            lintel: 2200.0,
+            ..HeightLines::default()
         }
     ));
     let t = m.commit().unwrap();
@@ -294,7 +296,8 @@ fn geschossuebergreifend_und_hoehenlinie() {
         s_og,
         HeightLines {
             sill: 1000.0,
-            lintel: 1050.0
+            lintel: 1050.0,
+            ..HeightLines::default()
         }
     ));
 }
@@ -327,6 +330,45 @@ fn ungueltige_oeffnungen() {
         ..fenster(&m, eg, (3000.0, 4000.0))
     };
     assert!(m.add_opening(anschlag).is_none());
+}
+
+/// Innentürlinie (Jörn 05:26): eine Tür, deren Oberkante an ihr hängt,
+/// wandert mit, wenn man sie zieht; in der Datei heißt der Verweis `door`.
+#[test]
+fn tuer_an_der_innentuerlinie() {
+    let (mut m, eg, _) = haus(None);
+    let st = storey(&m, eg);
+    let z = m.storey(st).unwrap().elevation;
+    m.add_opening(Opening {
+        kind: OpeningKind::Door,
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        ..fenster(&m, eg, (3000.0, 4000.0))
+    })
+    .unwrap();
+    let oben = |m: &Model| m.chain(eg).unwrap().joints.holes[0].z.1 - z;
+    assert!((oben(&m) - crate::hoehen::DOOR).abs() < 1e-6);
+    let lines = HeightLines {
+        door: 2260.0,
+        ..HeightLines::default()
+    };
+    assert!(m.set_height_lines(st, lines));
+    assert!((oben(&m) - 2260.0).abs() < 1e-6);
+    assert!(!m.set_height_lines(
+        st,
+        HeightLines {
+            door: 50.0,
+            ..lines
+        }
+    ));
+    let text = szo::write(&m);
+    assert!(
+        text.contains(":door") && text.contains(" door=2260"),
+        "{text}"
+    );
+    let back = szo::read(&text, GuidGen::with_seed(5)).unwrap();
+    assert!(back.hints.is_empty(), "{:?}", back.hints);
+    assert_eq!(szo::write(&back.model), text);
 }
 
 /// Datei: Öffnungen mit gebundenen und freien Höhen und eigenem Anschlag,
@@ -367,10 +409,12 @@ fn oeffnungen_in_der_datei() {
         s_og,
         HeightLines {
             sill: 950.0,
-            lintel: 2385.0
+            lintel: 2385.0,
+            door: 2130.0,
         }
     ));
     let text = szo::write(&m);
+    assert!(text.contains(" door=2130"), "{text}");
     assert_eq!(text.matches("[opening]").count(), 3, "{text}");
     assert!(text.contains(" sill=950"), "{text}");
     assert!(!text.contains("lintel=2385"), "{text}");
@@ -405,6 +449,19 @@ fn oeffnungen_in_der_datei() {
             l.storey(s_og).map(|s| s.lines),
             Some(HeightLines::default())
         );
+    }
+    // Innentür zu niedrig oder unlesbar: nur sie nimmt die Vorgabe
+    for neu in [" door=50", " door=abc"] {
+        let l = lies(" door=2130", neu);
+        let g = m.storey(s_og).unwrap().guid;
+        let h = l
+            .storeys()
+            .iter()
+            .find(|(_, s)| s.guid == g)
+            .unwrap()
+            .1
+            .lines;
+        assert_eq!((h.sill, h.door), (950.0, crate::hoehen::DOOR), "{neu}");
     }
     let l = lies("reveal=40,40,40,0", "reveal=1,2,3");
     assert!(offen(&l).iter().all(|o| o.reveal.is_none()));
@@ -569,9 +626,7 @@ fn geschossband_und_loeschen() {
     let t = m.commit().unwrap();
     let befund = m.check();
     assert!(
-        befund
-            .iter()
-            .any(|b| b.contains("nicht auf einer Außenwand")),
+        befund.iter().any(|b| b.contains("nicht auf einer Wand")),
         "{befund:?}"
     );
     m.apply(&t, Direction::Undo);
@@ -1090,4 +1145,375 @@ fn ziehen_merkt_nur_das_eigene_gebaeude() {
     let (ein, viele) = (gemerkt(1), gemerkt(12));
     assert_eq!(ein, viele);
     assert_eq!(ein.len(), 1, "{ein:?}");
+}
+
+/// Innenwand quer durch das Prüfhaus bei x = 5 m, im Geschoss von `run`.
+fn innenwand(m: &mut Model, run: RunId) -> RunId {
+    let set = m.defaults().interior_wall;
+    let pts = [vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)];
+    let st = storey(m, run);
+    m.add_wall_run(
+        &pts,
+        false,
+        crate::RefSide::Center,
+        st,
+        set,
+        Category::InteriorWall,
+    )
+    .unwrap()
+}
+
+/// Innentür (Integration 05:24): eine Öffnung in der Innenwand, Oberkante
+/// an der Innentürlinie; Loch ohne Anschlag, keine Laibungsmengen, die
+/// Prüfung bleibt leer; rückgängig ist die Wand wieder zu.
+#[test]
+fn innentuer_in_der_innenwand() {
+    let (mut m, eg, _) = haus(None);
+    let iw = innenwand(&mut m, eg);
+    let st = storey(&m, eg);
+    let z = m.storey(st).unwrap().elevation;
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: None,
+    };
+    assert_eq!(m.opening_fault(&tuer, None), None);
+    m.begin("Innentür");
+    let id = m.add_opening(tuer.clone()).unwrap();
+    let t = m.commit().unwrap();
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    let c = m.chain(iw).unwrap();
+    assert_eq!(c.joints.holes.len(), 1, "{:?}", c.joints.holes);
+    let h = &c.joints.holes[0];
+    assert!((h.u.1 - h.u.0 - 885.0).abs() < 1e-6, "{:?}", h.u);
+    assert!((h.z.1 - z - crate::hoehen::DOOR).abs() < 1e-6);
+    assert_eq!((h.reveal_u, h.reveal_z), ((0.0, 0.0), (0.0, 0.0)));
+    assert!(m.chain(eg).unwrap().joints.holes.is_empty(), "Außenwand zu");
+    let laibung = crate::qto::schedule(&m)
+        .auto
+        .iter()
+        .filter(|a| a.element == id && a.key.starts_with("opening.reveal"))
+        .count();
+    assert_eq!(laibung, 0, "Innentüren ohne Laibung");
+    let rows = crate::qto::schedule(&m).layer_rows(&m);
+    assert!(rows
+        .iter()
+        .any(|(_, r)| r.holes.iter().any(|x| x.opening == id)));
+    m.apply(&t, Direction::Undo);
+    assert!(m.chain(iw).unwrap().joints.holes.is_empty());
+    // Neben der Innenwand: keine Wand
+    let daneben = Opening {
+        path: vec![vec3(4000.0, 3000.0, 0.0), vec3(4000.0, 3885.0, 0.0)],
+        ..tuer
+    };
+    assert_eq!(m.opening_fault(&daneben, None), Some(OpeningFault::NoWall));
+    // Die Innenwand wandert um 50 cm: die Tür geht mit
+    let id = m.add_opening(tuer.clone()).unwrap();
+    m.begin("Innenwand verschieben");
+    let pts = [vec3(5500.0, 0.0, 0.0), vec3(5500.0, 8000.0, 0.0)];
+    assert!(m.set_run_points(iw, &pts).is_some());
+    m.commit();
+    let p = &m.opening(id).unwrap().path;
+    for (a, b) in p.iter().zip(&tuer.path) {
+        assert!(
+            (a.x - b.x - 500.0).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6,
+            "{p:?}"
+        );
+    }
+    assert!(m.check().is_empty(), "{:?}", m.check());
+}
+
+/// Türblatt (Jörn 05:50–05:55, Integration 05:54): Das Blatt liegt auf der
+/// Rohbauflucht der Aufschlagseite; Kippen des Aufschlags tauscht die
+/// DIN-Hand, die Bänder bleiben am Pfosten; Umkehren der Wand lässt den
+/// Aufschlag im Raum. In der Datei `swing=` und `din=`, nur wenn gesetzt.
+#[test]
+fn tuerblatt_und_aufschlag() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let (mut m, eg, _) = haus(None);
+    let iw = innenwand(&mut m, eg);
+    let st = storey(&m, eg);
+    let ohne_tuer = szo::write(&m);
+    let swing = Swing {
+        side: FaceSide::Right,
+        din: Din::Links,
+    };
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: Some(swing),
+    };
+    let id = m.add_opening(tuer.clone()).unwrap();
+    // Wand läuft in +y, rechts ist +x; der Pfad läuft auch in +y
+    let l = m.door_leaf(id).unwrap();
+    assert_eq!((l.run, l.seg, l.face), (iw, 0, FaceSide::Right));
+    assert!((l.swing_into - vec3(1.0, 0.0, 0.0)).length() < 1e-9);
+    let t = m.chain(iw).unwrap().thickness();
+    let x = l.line.0.x;
+    assert!(x > 5000.0 && x <= 5000.0 + t / 2.0 + 1e-6, "{x}");
+    assert!((l.line.0.x - l.line.1.x).abs() < 1e-9);
+    assert!((l.line.0.y - 3000.0).abs() < 1e-6 && (l.line.1.y - 3885.0).abs() < 1e-6);
+    assert!(
+        (l.hinge.y - 3000.0).abs() < 1e-6,
+        "DIN links: Bänder am Pfadanfang"
+    );
+    // Aufschlag kippen: andere Wandseite, DIN-Hand getauscht, Bänder bleiben
+    let mut o = tuer.clone();
+    o.swing = Some(swing.flipped());
+    assert!(m.set_opening(id, o));
+    let k = m.door_leaf(id).unwrap();
+    assert_eq!((k.face, swing.flipped().din), (FaceSide::Left, Din::Rechts));
+    assert!((k.swing_into + l.swing_into).length() < 1e-9);
+    assert!(k.line.0.x < 5000.0);
+    assert!((k.hinge.y - 3000.0).abs() < 1e-6);
+    // Andere Hand: Bänder am anderen Pfosten
+    let mut o = tuer.clone();
+    o.swing = Some(swing.other_hand());
+    assert!(m.set_opening(id, o));
+    assert!((m.door_leaf(id).unwrap().hinge.y - 3885.0).abs() < 1e-6);
+    assert!(m.set_opening(id, tuer.clone()));
+    // Wand umkehren: Aufschlag bleibt im Raum (+x), DIN-Hand bleibt, die
+    // Seite zur Zeichenrichtung kippt
+    m.begin("Wand umkehren");
+    let rev = [vec3(5000.0, 8000.0, 0.0), vec3(5000.0, 0.0, 0.0)];
+    assert!(m.set_run_points(iw, &rev).is_some());
+    m.commit();
+    let u = m.door_leaf(id).unwrap();
+    assert!((u.swing_into - l.swing_into).length() < 1e-9);
+    assert_eq!(u.face, FaceSide::Left);
+    assert!((u.line.0.x - x).abs() < 1e-6, "dieselbe Rohbauflucht");
+    assert!((u.hinge.y - 3000.0).abs() < 1e-6);
+    // Der Pfad ist mit der Wand umgekehrt, die Seite zum Pfad mit ihm
+    assert_eq!(
+        m.opening(id).unwrap().swing,
+        Some(Swing {
+            side: FaceSide::Left,
+            ..swing
+        })
+    );
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    // Datei: mit Aufschlag rund, ohne bleibt sie, wie sie war
+    let text = szo::write(&m);
+    assert!(text.contains(" swing=l din=links"), "{text}");
+    let back = szo::read(&text, GuidGen::with_seed(5)).unwrap();
+    assert!(back.hints.is_empty(), "{:?}", back.hints);
+    assert_eq!(szo::write(&back.model), text);
+    for neu in [" swing=x din=links", " swing=l din=mitte", " swing=l"] {
+        let l = szo::read(
+            &text.replacen(" swing=l din=links", neu, 1),
+            GuidGen::with_seed(5),
+        )
+        .unwrap();
+        assert_eq!(l.hints.len(), 1, "{neu}: {:?}", l.hints);
+        let o = l
+            .model
+            .elements()
+            .iter()
+            .find_map(|(i, _)| l.model.opening(i).cloned());
+        assert_eq!(o.unwrap().swing, None, "{neu}");
+    }
+    assert!(!ohne_tuer.contains("swing="));
+    // Kein Aufschlag an Fenstern
+    let mut f = tuer;
+    f.kind = OpeningKind::Window;
+    assert!(!m.opening_ok(&f));
+}
+
+/// Aufschlag im Grundriss (Jörn 06:35, Skizze): das offene Blatt steht
+/// senkrecht am Bandpfosten im Aufschlagraum, der Viertelkreis läuft von
+/// seinem freien Ende zum Gegenpfosten; ohne Aufschlag nichts, und in der
+/// Innenwand kein Einbauelement.
+#[test]
+fn aufschlag_im_grundriss() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let (mut m, eg, _) = haus(None);
+    let iw = innenwand(&mut m, eg);
+    let st = storey(&m, eg);
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: Some(Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        }),
+    };
+    let id = m.add_opening(tuer).unwrap();
+    let cut = m.storey(st).unwrap().elevation + 1500.0;
+    let c = m.chain(iw).unwrap();
+    assert!(
+        c.element_edges(cut).is_empty(),
+        "Innentür ohne Einbauelement"
+    );
+    let e = c.swing_edges(cut);
+    assert_eq!(e.len(), 13, "Blatt und zwölf Bogenstücke");
+    assert!(e.iter().all(|k| k.kind == crate::solid::edge_kind::FINE));
+    let l = m.door_leaf(id).unwrap();
+    let flach = |p: Vec3| vec3(p.x, p.y, 0.0);
+    // Blatt: vom Band (y = 3000) 885 mm nach +x
+    assert!((flach(e[0].a) - l.hinge).length() < 1e-6);
+    let frei = l.hinge + l.swing_into * 885.0;
+    assert!((flach(e[0].b) - frei).length() < 1e-6, "{:?}", e[0]);
+    // Bogen endet am Gegenpfosten
+    let ende = flach(e[12].b);
+    assert!(
+        (ende - vec3(l.hinge.x, 3885.0, 0.0)).length() < 1e-6,
+        "{ende:?}"
+    );
+    assert!(e.iter().all(|k| (k.a.z - cut).abs() < 1e-9));
+    // Über der Tür kein Aufschlag
+    assert!(c.swing_edges(cut + 2000.0).is_empty());
+    let mut o = m.opening(id).cloned().unwrap();
+    o.swing = None;
+    assert!(m.set_opening(id, o));
+    assert!(m.chain(iw).unwrap().swing_edges(cut).is_empty());
+}
+
+/// Geometrie #99: Der Aufschlag hängt nicht vom Mausweg ab (wie #92 B2).
+/// Eine freie Innenwand mit Tür um 120° gedreht, in einem Sprung und in 30
+/// Schritten im selben Schritt: Die Tür schlägt beide Male in denselben
+/// Raum der Wand auf (zur Wand gesehen auf derselben Seite wie vorher), und
+/// die Bänder sitzen am selben Pfosten.
+#[test]
+fn aufschlag_haengt_nicht_vom_mausweg_ab() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let mut lagen = Vec::new();
+    for schritte in [1usize, 30] {
+        let (mut m, eg, _) = haus(None);
+        let set = m.defaults().interior_wall;
+        let st = storey(&m, eg);
+        let start = [vec3(3000.0, 2000.0, 0.0), vec3(7000.0, 2000.0, 0.0)];
+        let iw = m
+            .add_wall_run(
+                &start,
+                false,
+                crate::RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let tuer = Opening {
+            kind: OpeningKind::Door,
+            path: vec![aussen(&m, iw, 0, 1500.0), aussen(&m, iw, 0, 2385.0)],
+            bottom: HeightRef::Level(LevelRef::bottom(st)),
+            top: HeightRef::Line(st, HeightLine::Door),
+            reveal: None,
+            install: Default::default(),
+            swing: Some(Swing {
+                side: FaceSide::Right,
+                din: Din::Links,
+            }),
+        };
+        let id = m.add_opening(tuer).unwrap();
+        let vorher = m.door_leaf(id).unwrap();
+        let mitte = (start[0] + start[1]) * 0.5;
+        m.begin("Drehen");
+        for k in 1..=schritte {
+            let (s, c) = (120f64 * k as f64 / schritte as f64).to_radians().sin_cos();
+            let neu: Vec<Vec3> = start
+                .iter()
+                .map(|p| {
+                    let r = *p - mitte;
+                    mitte + vec3(r.x * c - r.y * s, r.x * s + r.y * c, 0.0)
+                })
+                .collect();
+            assert!(m.set_run_points(iw, &neu).is_some());
+        }
+        m.commit();
+        let p = m.run(iw).unwrap().points.clone();
+        let d = (p[1] - p[0]).normalized();
+        let l = m.door_leaf(id).unwrap();
+        // Seite zur Wand und Pfosten der Bänder (Anfang oder Ende der Lichte)
+        let seite = l.swing_into.dot(right_of(d)) > 0.0;
+        let am_anfang = (l.hinge - l.line.0).length() < (l.hinge - l.line.1).length();
+        let seite_vorher = vorher.swing_into.dot(vec3(0.0, -1.0, 0.0)) > 0.0;
+        let anfang_vorher =
+            (vorher.hinge - vorher.line.0).length() < (vorher.hinge - vorher.line.1).length();
+        assert_eq!(
+            (seite, am_anfang),
+            (seite_vorher, anfang_vorher),
+            "{schritte} Schritte: Aufschlag oder Bänder gewechselt"
+        );
+        lagen.push((seite, am_anfang));
+    }
+    assert_eq!(lagen[0], lagen[1], "Sprung gegen 30 Schritte");
+}
+
+/// Review #99 B2: Nur den Aufschlag ändern ist ein Schritt mit genau einer
+/// Änderung an der Tür, ohne Prüfung an den Wänden und ohne Abgleich der
+/// abgeleiteten Bauteile; an einem Fenster gibt es keinen Aufschlag.
+#[test]
+fn aufschlag_allein_ein_kleiner_schritt() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let (mut m, eg, _) = haus(None);
+    let set = m.defaults().interior_wall;
+    let st = storey(&m, eg);
+    let iw = m
+        .add_wall_run(
+            &[vec3(3000.0, 2000.0, 0.0), vec3(7000.0, 2000.0, 0.0)],
+            false,
+            crate::RefSide::Center,
+            st,
+            set,
+            Category::InteriorWall,
+        )
+        .unwrap();
+    let rechts = Swing {
+        side: FaceSide::Right,
+        din: Din::Links,
+    };
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 1500.0), aussen(&m, iw, 0, 2385.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: Some(rechts),
+    };
+    let id = m.add_opening(tuer.clone()).unwrap();
+    let links = Swing {
+        side: FaceSide::Left,
+        ..rechts
+    };
+    m.begin("Aufschlag");
+    assert!(!m.only_swings(), "leerer Schritt");
+    assert!(m.set_swing(id, Some(links)));
+    assert!(m.only_swings());
+    let t = m.commit().unwrap();
+    assert_eq!(t.changes.len(), 1);
+    assert_eq!(m.opening(id).unwrap().swing, Some(links));
+    m.apply(&t, crate::Direction::Undo);
+    assert_eq!(m.opening(id).unwrap(), &tuer);
+    // Breiter ist kein reiner Aufschlag
+    m.begin("Breite");
+    let mut breit = tuer.clone();
+    breit.path[1] = aussen(&m, iw, 0, 2500.0);
+    assert!(m.set_opening(id, breit));
+    assert!(!m.only_swings());
+    m.rollback();
+    // Fenster ohne Aufschlag
+    let fenster = Opening {
+        kind: OpeningKind::Window,
+        path: vec![aussen(&m, eg, 0, 1500.0), aussen(&m, eg, 0, 2500.0)],
+        bottom: HeightRef::Line(st, HeightLine::Sill),
+        top: HeightRef::Line(st, HeightLine::Lintel),
+        swing: None,
+        ..tuer
+    };
+    let f = m.add_opening(fenster).unwrap();
+    assert!(!m.set_swing(f, Some(links)));
+    assert!(m.check().is_empty(), "{:?}", m.check());
 }

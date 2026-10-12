@@ -33,6 +33,8 @@ mod gefaelle;
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
 mod schnitt;
+#[path = "scene_sicht.rs"]
+pub mod sicht;
 use schnitt::UnderMemo;
 #[path = "scene_oeffnung.rs"]
 mod scene_oeffnung;
@@ -294,7 +296,12 @@ impl RunCache {
     /// der Zug unter dem aktiven Geschoss, nur die Teile ohne die Wand.
     fn plan_solid(&self, cut: f64, mode: PlanMode) -> Solid {
         let mut s = match mode {
-            PlanMode::Cut => self.chain.solid_cut_at(cut),
+            PlanMode::Cut => {
+                let mut s = self.chain.solid_cut_at(cut);
+                s.edges.extend(self.chain.element_edges(cut));
+                s.edges.extend(self.chain.swing_edges(cut));
+                s
+            }
             PlanMode::Foundation | PlanMode::Lower => Solid::default(),
         };
         for p in run_parts(&self.found, &self.floor, &self.roof) {
@@ -2204,8 +2211,10 @@ impl Scene {
                 foundation,
                 roof,
                 active: id == active,
-                lines: (!foundation && !roof)
-                    .then_some((st.elevation + st.lines.sill, st.elevation + st.lines.lintel)),
+                lines: (!foundation && !roof).then(|| {
+                    let (l, e) = (st.lines, st.elevation);
+                    (e + l.sill, e + l.lintel, e + l.door)
+                }),
             });
             if foundation {
                 // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)
@@ -3286,6 +3295,7 @@ impl Scene {
     /// gezogenen). Beim Schnitt: Ebene `section` (Punkt, Normale zum Betrachter),
     /// alles davor wird weggeschnitten.
     pub fn mesh(&mut self, view: ViewKind, section: Option<Plane>, except: &[RunId]) -> MeshData {
+        self.sicht_fuer(view);
         let key = (view, section, except.to_vec());
         self.shown_key = Some(key.clone());
         let m = self.grow_mesh(&key);
@@ -3456,6 +3466,7 @@ impl Scene {
         section: Option<Plane>,
         runs: &[RunId],
     ) -> MeshData {
+        self.sicht_fuer(view);
         let [m, _] = self.mesh_split(view, section, runs);
         m
     }
@@ -3704,6 +3715,7 @@ impl Scene {
         section: Option<Plane>,
         except: &[RunId],
     ) -> MeshData {
+        self.sicht_fuer(view);
         if !self.filtering() {
             return MeshData::default();
         }
@@ -3730,8 +3742,14 @@ impl Scene {
     // --- Sichtbarkeit (Paket 3) -------------------------------------------
 
     /// Ändert die Sichtbarkeit sofort: kein Schritt, keine Revision, Mengen
-    /// bleiben. `false`, wenn sich nichts ändert.
+    /// bleiben; die Schnelloption der Ansicht bleibt. `false`, wenn sich
+    /// nichts ändert.
     pub fn set_visibility(&mut self, v: Visibility) -> bool {
+        let view_cat = self.model.visibility().view_cat.clone();
+        self.set_vis(Visibility { view_cat, ..v })
+    }
+
+    fn set_vis(&mut self, v: Visibility) -> bool {
         if *self.model.visibility() == v {
             return false;
         }
@@ -3746,8 +3764,13 @@ impl Scene {
     /// Isolieren wird der Rest blass bzw. wieder deckend.
     #[cfg_attr(not(test), allow(dead_code))] // Baumpanel (Paket 4)
     pub fn fade_visibility(&mut self, v: Visibility) -> bool {
+        let view_cat = self.model.visibility().view_cat.clone();
+        self.fade_vis(Visibility { view_cat, ..v })
+    }
+
+    fn fade_vis(&mut self, v: Visibility) -> bool {
         let old = self.model.visibility().clone();
-        if !self.set_visibility(v) {
+        if !self.set_vis(v) {
             return false;
         }
         let new = self.model.visibility();
@@ -3925,6 +3948,7 @@ impl Scene {
         origin: Vec3,
         dir: Vec3,
     ) -> Option<ElementId> {
+        self.sicht_fuer(view);
         let cut = self.plan_cut();
         let active = self.active_storey();
         let modes: Vec<(RunId, PlanMode)> = self

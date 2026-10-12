@@ -2,7 +2,10 @@
 //! Maus, Esc. Die Rechnung (Fangen, Öffnung, Vorschau) steht in
 //! [`werkzeug`], das Werkzeug selbst im
 //! [`WallTool`](crate::wall_tool::WallTool), der auch die Vorschau zeichnet.
+//! Im Grundriss setzt „Tür“ eine Innentür ([`innentuer`]).
 
+#[path = "innentuer.rs"]
+pub(crate) mod innentuer;
 #[path = "oeffnung_werkzeug.rs"]
 pub(crate) mod werkzeug;
 
@@ -11,23 +14,28 @@ use crate::ui::ViewKind;
 use crate::App;
 use sk_math::vec3;
 use sk_model::oeffnung::OpeningKind;
-use sk_platform::{Event, MouseButton};
-use werkzeug::{fangen, Fang, Klick, Werkzeug};
+use sk_platform::{Event, Key, MouseButton};
+use werkzeug::{fangen, Bild, Fang, Klick, Werkzeug};
 
 /// Fangabstand an Höhenlinien und Wandenden in Bildschirmpixeln (96 dpi).
 const FANG_PX: f64 = 10.0;
 
-/// Ansichten, in denen das Werkzeug Außenwandflächen trifft.
-fn ansicht_ok(v: ViewKind) -> bool {
-    matches!(
-        v,
-        ViewKind::Persp | ViewKind::Front | ViewKind::Back | ViewKind::Left | ViewKind::Right
-    )
+/// Ansichten, in denen das Werkzeug der Art `kind` arbeitet: Außenwand-
+/// flächen in 3D und den Ansichten, die Innentür im Grundriss.
+fn ansicht_ok(v: ViewKind, kind: OpeningKind) -> bool {
+    match v {
+        ViewKind::Persp | ViewKind::Front | ViewKind::Back | ViewKind::Left | ViewKind::Right => {
+            true
+        }
+        ViewKind::Plan => kind == OpeningKind::Door,
+        ViewKind::Section => false,
+    }
 }
 
 impl App {
     /// Knopf „Fenster“ (Wandöffnung) bzw. „Tür“ (Türöffnung): schaltet
-    /// das Werkzeug der Art ein, derselbe Knopf aus. Im Grundriss und Schnitt geht es nach 3D.
+    /// das Werkzeug der Art ein, derselbe Knopf aus. Im Schnitt geht es nach
+    /// 3D, im Grundriss das Fenster auch; die Tür bleibt dort als Innentür.
     pub(crate) fn oeffnung_klick(&mut self, kind: OpeningKind) {
         let an = self.tool.oeffnung.as_ref().is_none_or(|w| w.kind != kind);
         if an && self.ui.foundation_active {
@@ -37,7 +45,7 @@ impl App {
         self.tool.oeffnung = an.then(|| Werkzeug::new(kind));
         if an {
             self.nord.set_aktiv(false);
-            if !ansicht_ok(self.ui.view) {
+            if !ansicht_ok(self.ui.view, kind) {
                 self.set_view(ViewKind::Persp);
             }
         }
@@ -68,11 +76,19 @@ impl App {
     /// Mausbewegung (Ansichtskoordinaten); `MouseLeave` über Paneelen und
     /// Bändern nimmt die Ecke weg.
     pub(crate) fn oeffnung_move(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) {
-        if self.tool.oeffnung.is_none() {
+        let Some(kind) = self.tool.oeffnung.as_ref().map(|w| w.kind) else {
+            return;
+        };
+        if self.innentuer_an() {
+            match *ev {
+                Event::MouseMove { x, y, .. } => self.tuer_suchen(x, y, vw, vh, sc),
+                Event::MouseLeave => self.tuer_bild(|t, _, _, _| t.weg()),
+                _ => {}
+            }
             return;
         }
         let hover = match *ev {
-            Event::MouseMove { x, y, .. } if ansicht_ok(self.ui.view) => {
+            Event::MouseMove { x, y, .. } if ansicht_ok(self.ui.view, kind) => {
                 self.oeffnung_fang(x, y, vw, vh, sc)
             }
             Event::MouseMove { .. } | Event::MouseLeave => None,
@@ -103,6 +119,9 @@ impl App {
         else {
             return false;
         };
+        if self.innentuer_an() {
+            return self.tuer_setzen();
+        }
         let m = self.scene.model();
         let Some(w) = self.tool.oeffnung.as_mut() else {
             return false;
@@ -141,6 +160,137 @@ impl App {
         if !aktiv {
             self.oeffnung_neu();
         }
+    }
+
+    /// Taste gedrückt: **Esc** wie [`App::oeffnung_esc`], **Tab** schaltet
+    /// den Bezugspunkt der Innentür. `true`, wenn das Werkzeug sie nahm.
+    pub(crate) fn oeffnung_taste(&mut self, key: Key) -> bool {
+        match key {
+            Key::Escape => self.oeffnung_esc(),
+            Key::Tab if self.innentuer_an() => {
+                self.tuer_bild(|t, m, k, st| {
+                    t.tab();
+                    t.nochmal(m, k, st);
+                });
+                self.tuer_anzeigen();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Mausrad über einer Innenwand mit der Innentür am Cursor: blättert die
+    /// Breiten statt zu zoomen, mit Strg zoomt es weiter. `true`, wenn das
+    /// Werkzeug es nahm.
+    pub(crate) fn tuer_rad(&mut self, ev: &Event) -> bool {
+        let Event::Wheel { delta, mods, .. } = *ev else {
+            return false;
+        };
+        if mods.ctrl {
+            return false;
+        }
+        if !self.innentuer_an() || !self.tuer_hover() {
+            return false;
+        }
+        self.tuer_bild(|t, m, k, st| {
+            t.rad(delta);
+            t.nochmal(m, k, st);
+        });
+        self.tuer_anzeigen();
+        true
+    }
+
+    /// Statuszeile: Breite und Bezugspunkt der Innentür am Cursor.
+    fn tuer_anzeigen(&mut self) {
+        let t = self.tool.oeffnung.as_ref().map(|w| w.innen.anzeige());
+        if let Some(t) = t {
+            self.status(Meldung::mit("{}", &[&t]), crate::NOTICE_TIME);
+        }
+    }
+
+    /// Innentür im Grundriss: Werkzeug „Tür“ in der Grundrissansicht.
+    fn innentuer_an(&self) -> bool {
+        self.ui.view == ViewKind::Plan
+            && self
+                .tool
+                .oeffnung
+                .as_ref()
+                .is_some_and(|w| w.kind == OpeningKind::Door)
+    }
+
+    /// Ändert die Innentür mit `f` und zeichnet ihre Vorschau neu.
+    fn tuer_bild(
+        &mut self,
+        f: impl FnOnce(
+            &mut innentuer::Innentuer,
+            &sk_model::Model,
+            innentuer::Koerper,
+            sk_model::StoreyId,
+        ),
+    ) {
+        let st = self.scene.active_storey();
+        let scene = &self.scene;
+        let Some(w) = self.tool.oeffnung.as_mut() else {
+            return;
+        };
+        f(&mut w.innen, scene.model(), &|r| scene.koerper(r), st);
+        let bild = w.innen.hover.as_ref().map_or_else(Bild::default, |v| Bild {
+            linien: Vec::new(),
+            umriss: innentuer::umriss(v),
+            punkt: Some((v.punkt, false)),
+        });
+        self.redraw |= w.vorschau != bild;
+        w.vorschau = bild;
+    }
+
+    /// Mausbewegung im Grundriss (Ansichtspixel): Punkt in Schnitthöhe,
+    /// Fangabstand in mm aus [`FANG_PX`].
+    fn tuer_suchen(&mut self, x: f64, y: f64, vw: f64, vh: f64, sc: f64) {
+        let z = self.scene.plan_cut();
+        let at = |dx: f64| self.cam.plane_point(x + dx, y, vw, vh, z);
+        let hit = match (at(0.0), at(FANG_PX * sc)) {
+            (Some(p), Some(q)) => Some((p, (q - p).length())),
+            _ => None,
+        };
+        let vorher = self.tuer_hover();
+        self.tuer_bild(|t, m, k, st| match hit {
+            Some((p, tol)) => t.suchen(m, k, st, p, tol, z),
+            None => t.weg(),
+        });
+        // Kommt die Tür an eine Innenwand, sagt die Statuszeile Breite und
+        // Bezugspunkt (Einstellungen #99, B1)
+        if !vorher && self.tuer_hover() {
+            self.tuer_anzeigen();
+        }
+    }
+
+    /// Hängt die Innentür als Vorschau an einer Innenwand?
+    fn tuer_hover(&self) -> bool {
+        self.tool
+            .oeffnung
+            .as_ref()
+            .is_some_and(|w| w.innen.hover.is_some())
+    }
+
+    /// Klick mit der Innentür am Cursor: setzt sie als ein Schritt; lehnt
+    /// das Modell ab, sagt die Statuszeile warum.
+    fn tuer_setzen(&mut self) -> bool {
+        let o = self.tool.oeffnung.as_ref().and_then(|w| w.innen.oeffnung());
+        let Some(o) = o else {
+            return false;
+        };
+        let m = self.scene.model();
+        match m.opening_fault(&o, None).map(|f| f.text(m)) {
+            Some(t) => self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME),
+            None => {
+                if self.scene.add_opening(o).is_some() {
+                    self.upload_model();
+                }
+            }
+        }
+        self.tuer_bild(|t, m, k, st| t.nochmal(m, k, st));
+        self.redraw = true;
+        true
     }
 
     /// Esc: nimmt die erste Ecke zurück, ohne sie schließt das Werkzeug.

@@ -125,4 +125,5 @@ pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri, NO_LAYER};
 pub use terrace::{AttikaPiece, CopingPath, TerraceOutline, TerracePlan, COPING_DRIP};
 pub use trade::{Trade, TradeId};
 pub use txn::{step_label, Change, Direction, Touched, Txn};
+pub use view::{ENTWAESSERUNG, SICHT_VIEWS};
 pub use wall::{Attika, EndCut, Gap, Joints, Layer, Line2, Overhang, RefSide, WallChain};

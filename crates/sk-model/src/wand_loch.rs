@@ -37,6 +37,23 @@ pub struct Hole {
     pub opening: Option<crate::ElementId>,
     /// Einbautiefen des Elements in dieser Wand (Laibungen, Raumbuch).
     pub install: crate::oeffnung::InstallDepth,
+    /// In einer Außenwand oder Aufkantung; sonst in einer Innenwand
+    /// (Innentür: ohne Einbauelement im Grundriss).
+    pub outer: bool,
+    /// Türblatt, wenn die Öffnung einen Aufschlag hat.
+    pub leaf: Option<Leaf>,
+}
+
+/// Türblatt einer Öffnung im Wandzug (Jörn 12.10. 05:50): Lage der
+/// Blattlinie quer zur Bezugslinie (Rohbauflucht der Aufschlagseite,
+/// positiv rechts der Zeichenrichtung), Seite des Aufschlagraums und
+/// Pfosten der Bänder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Leaf {
+    pub off: f64,
+    pub side: crate::oeffnung::FaceSide,
+    /// Bänder am kleineren `u` des Lochs.
+    pub hinge_lo: bool,
 }
 
 /// Bereich eines Lochs in einer Schicht: längs (u) und Höhe (z).
@@ -522,6 +539,117 @@ impl WallChain {
     }
 }
 
+/// Strichlänge und Lücke der Einbauelement-Linie im Grundriss (mm auf dem
+/// Papier).
+pub const ELEMENT_DASH: (f64, f64) = (1.5, 0.75);
+
+impl WallChain {
+    /// Einbauelement im Grundriss (Jörn 12.10. 05:24): je Loch, das die
+    /// Schnitthöhe `cut` trifft, zwei Linien längs der Wand in Höhe des
+    /// Schnitts, an der Außen- und Innenseite des späteren Elements (äußere
+    /// Einbautiefe und Elementtiefe aus [`Hole::install`]), so breit wie das
+    /// Loch in der Schicht, in der das Element sitzt. Zur Ecke hin offene
+    /// Löcher enden an der Ecke der Linie, so laufen sie um die Ecke.
+    pub fn element_edges(&self, cut: f64) -> Vec<Edge> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        let (o, inner) = (self.outer_offset(), self.inner_offset());
+        let sign = (o - inner).signum();
+        for h in &self.joints.holes {
+            if !(h.outer && h.z.0 < cut && cut < h.z.1) {
+                continue;
+            }
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            let nr = crate::wall::right_of(d);
+            let i = &h.install;
+            let mitte = o - sign * (i.outer + i.element * 0.5);
+            let li = self.layer_at(mitte).unwrap_or(0);
+            let ((u0, u1), _) = self.loch_in(h, li);
+            for tiefe in [i.outer, i.outer + i.element] {
+                let off = o - sign * tiefe;
+                let ecken = self.face_corners(off);
+                let punkt = |u: f64, k: usize| {
+                    if u.is_finite() {
+                        let p = p0 + d * u + nr * off;
+                        Some(vec3(p.x, p.y, cut))
+                    } else {
+                        ecken
+                            .get(k % ecken.len().max(1))
+                            .map(|p| vec3(p.x, p.y, cut))
+                    }
+                };
+                let (Some(a), Some(b)) = (punkt(u0, h.seg), punkt(u1, h.seg + 1)) else {
+                    continue;
+                };
+                if (b - a).length() > EPS {
+                    out.push(Edge {
+                        a,
+                        b,
+                        kind: edge_kind::ELEMENT,
+                        elem: h.seg as u32,
+                        layer: li as u8,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Aufschlag der Türen im Grundriss in Höhe `cut` (Jörn 05:50): das
+    /// offene Blatt senkrecht vom Bandpfosten in den Aufschlagraum, so lang
+    /// wie die Lichte, und der Viertelkreis bis zum Gegenpfosten, dünn.
+    pub fn swing_edges(&self, cut: f64) -> Vec<Edge> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        for h in &self.joints.holes {
+            let Some(l) = h.leaf else {
+                continue;
+            };
+            if !(h.z.0 < cut && cut < h.z.1 && h.u.0.is_finite() && h.u.1.is_finite()) {
+                continue;
+            }
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            let at = |u: f64| {
+                let p = p0 + d * u + crate::wall::right_of(d) * l.off;
+                vec3(p.x, p.y, cut)
+            };
+            let (uh, uo) = if l.hinge_lo { h.u } else { (h.u.1, h.u.0) };
+            let w = (uo - uh).abs();
+            let (band, offen, zu) = (at(uh), l.side.normal(d) * w, d * (uo - uh));
+            let mut punkte = vec![band + offen];
+            for k in 1..=BOGEN {
+                let t = std::f64::consts::FRAC_PI_2 * k as f64 / BOGEN as f64;
+                punkte.push(band + offen * t.cos() + zu * t.sin());
+            }
+            let mut kante = |a: Vec3, b: Vec3| {
+                out.push(Edge {
+                    a,
+                    b,
+                    kind: edge_kind::FINE,
+                    elem: h.seg as u32,
+                    layer: 0,
+                });
+            };
+            kante(band, punkte[0]);
+            for p in punkte.windows(2) {
+                kante(p[0], p[1]);
+            }
+        }
+        out
+    }
+}
+
+/// Stücke des Viertelkreises im Türaufschlag.
+const BOGEN: usize = 12;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +764,8 @@ mod tests {
             u_right: true,
             opening: None,
             install: Default::default(),
+            outer: true,
+            leaf: None,
         };
         assert_eq!(h.kasten(true), ((1000.0, 2000.0), (875.0, 2385.0)));
         assert_eq!(h.kasten(false), ((940.0, 2060.0), (875.0, 2445.0)));
@@ -665,9 +795,46 @@ mod tests {
             u_right: true,
             opening: None,
             install: Default::default(),
+            outer: true,
+            leaf: None,
         };
         c.joints.holes.push(h.clone());
         (c, h)
+    }
+
+    /// Einbauelement im Grundriss: je Loch zwei Linien im Abstand der
+    /// Elementtiefe; an einer Ecköffnung treffen sich die Linien beider
+    /// Schenkel an der Ecke. Über oder unter dem Loch keine.
+    #[test]
+    fn einbauelement_um_die_ecke() {
+        let (mut c, mut h) = wand_mit_loch();
+        h.install = crate::oeffnung::InstallDepth {
+            outer: 120.0,
+            element: 80.0,
+            inner: 100.0,
+        };
+        // Schenkel bis zur Ecke von Segment 0 und ab der Ecke auf Segment 1
+        h.u = (7000.0, f64::INFINITY);
+        let zwei = Hole {
+            seg: 1,
+            u: (f64::NEG_INFINITY, 1000.0),
+            ..h.clone()
+        };
+        c.joints.holes = vec![h.clone(), zwei];
+        let cut = h.z.0 + 500.0;
+        let e = c.element_edges(cut);
+        assert_eq!(e.len(), 4, "{e:?}");
+        assert!(e
+            .iter()
+            .all(|x| x.kind == edge_kind::ELEMENT && x.a.z == cut));
+        for k in 0..2 {
+            let (a, b) = (&e[k], &e[k + 2]);
+            assert!((a.b - b.a).length() < 1e-6, "Ecke: {:?} {:?}", a.b, b.a);
+        }
+        let quer = (e[0].a - e[1].a).length();
+        assert!((quer - 80.0).abs() < 1e-6, "{quer}");
+        assert!(c.element_edges(h.z.0 - 1.0).is_empty());
+        assert!(c.element_edges(h.z.1 + 1.0).is_empty());
     }
 
     fn mitte(t: &Tri) -> Vec3 {
