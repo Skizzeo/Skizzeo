@@ -1,7 +1,7 @@
 SZK 1
 # Skizzeo-Werksbestand Stammdaten, Stand 16 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=16 date=2026-10-10 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=16 date=2026-10-12 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -351,8 +351,8 @@ SZK 1
 [origin] key=1S7bUW001008020000001I rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Konzept Regenfallrohr §5 Pos. 70: 0,25 h" conf=rough
 [origin] key=1S7bUW001008020000001J rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Konzept Regenfallrohr §5 Pos. 80 (Variante zu 50–70): 1,0 h" conf=rough
 [origin] key=1S7bUW001008020000001K rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Konzept Regenfallrohr §5 Pos. 90: 1,0 h" conf=rough
-[origin] key=1S7bUW001008020000001L rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Marktspanne 25–40 €/m; 0,3–0,4 h/m, Profil und Dämmstreifen 7–10 €/m" conf=rough
-[origin] key=1S7bUW001008020000001M rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Marktspanne 3–8 €/St; Gewebepfeil 1–2 €" conf=rough
-[origin] key=1S7bUW001008020000001N rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Marktspanne 10–20 €/m; Kantenschutz und Putz 2–3 €/m" conf=rough
-[origin] key=1S7bUW001008020000001O rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Marktspanne 15–25 €/m; Kantenprofil und Putz 3 €/m" conf=rough
-[origin] key=1S7bUW001008020000001P rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Marktspanne 20–45 €/m Zulage; Formsteine und Schnitt 4 €/m" conf=rough
+[origin] key=1S7bUW001008020000001L rec=service kind=factory status=confirmed date=2026-10-12 source="Aufwandswert: Marktspanne 25–40 €/m; 0,3–0,4 h/m, Profil und Dämmstreifen 7–10 €/m" conf=rough
+[origin] key=1S7bUW001008020000001M rec=service kind=factory status=confirmed date=2026-10-12 source="Aufwandswert: Marktspanne 3–8 €/St; Gewebepfeil 1–2 €" conf=rough
+[origin] key=1S7bUW001008020000001N rec=service kind=factory status=confirmed date=2026-10-12 source="Aufwandswert: Marktspanne 10–20 €/m; Kantenschutz und Putz 2–3 €/m" conf=rough
+[origin] key=1S7bUW001008020000001O rec=service kind=factory status=confirmed date=2026-10-12 source="Aufwandswert: Marktspanne 15–25 €/m; Kantenprofil und Putz 3 €/m" conf=rough
+[origin] key=1S7bUW001008020000001P rec=service kind=factory status=confirmed date=2026-10-12 source="Aufwandswert: Marktspanne 20–45 €/m Zulage; Formsteine und Schnitt 4 €/m" conf=rough
