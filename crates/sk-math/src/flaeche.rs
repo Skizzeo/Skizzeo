@@ -2,15 +2,20 @@
 //! Umrisse der Wände eines Geschosses werden vereinigt; jede Fläche, die sie
 //! ganz umschließen, ist ein Bereich (später ein Raum). Alles auf z = 0, in mm.
 //!
-//! Vorgehen: Kanten aller Umrisse an Schnitt- und Berührpunkten teilen, die
-//! Teilstücke behalten, die auf genau einer Seite innen liegen (so gedreht,
-//! dass innen links ist; das trägt auch verdrehte Umrisse kurzer Wände mit
-//! Gehrung), Punkte innerhalb der Toleranz zusammenlegen und die Teilstücke
-//! zu Ringen verbinden, an jeder Ecke mit der am weitesten links abbiegenden
-//! Fortsetzung. Ringe gegen den Uhrzeigersinn sind Außenränder der Vereinigung,
-//! Ringe im Uhrzeigersinn umschließen einen Bereich.
+//! Vorgehen: Kanten aller Umrisse an Schnitt- und Berührpunkten teilen (ein
+//! Punkt höchstens `tol` vor einer Kante teilt sie), Punkte höchstens `tol`
+//! voneinander zusammenlegen und aus den Teilstücken ein ebenes Netz bilden.
+//! Seine Flächen ergeben sich aus der Reihenfolge der Kanten um jede Ecke; je
+//! Fläche zählt, welche Umrisse sie umlaufen (Umlaufzahl, von außen über die
+//! Kanten hinweg). Ränder sind die Kanten zwischen bedeckter und freier
+//! Fläche, innen links; sie verbinden sich an jeder Ecke mit der am weitesten
+//! links abbiegenden Fortsetzung. Ringe gegen den Uhrzeigersinn sind
+//! Außenränder der Vereinigung, Ringe im Uhrzeigersinn umschließen einen
+//! Bereich. Innen und außen entscheiden so dieselben Ecken und Kanten, aus
+//! denen die Ringe entstehen; auch verdrehte Umrisse kurzer Wände mit Gehrung
+//! tragen.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::polygon::signed_area;
 use crate::{vec3, Vec3};
@@ -104,37 +109,10 @@ pub fn enthaelt(pts: &[Vec3], p: Vec3) -> bool {
 pub fn anordnung(umrisse: &[Vec<Vec3>], tol: f64) -> Anordnung {
     let tol = tol.max(1e-6);
     let polys = gegen_uhrzeiger(umrisse, tol);
-    let kanten = teilen(&polys, tol);
-    let mut ecken = Ecken::new(tol);
-    // Prüfabstand links und rechts einer Randkante: knapp über der Fangweite.
-    // Was bis `tol` nah ist, liegt nach dem Zusammenlegen auf der Kante, der
-    // Prüfpunkt muss über diesen Rest hinaus. Was weiter weg ist, bleibt ein
-    // Spalt, und der Prüfpunkt darf ihn nicht überspringen; ein größerer
-    // Abstand ließ Stirn- und Gegenkante eines solchen Spalts wegfallen.
-    let probe = tol * (1.0 + 1e-6);
-    let mut gesehen = HashSet::new();
-    let mut rand: Vec<(usize, usize, Herkunft)> = Vec::new();
-    for (a, b, h) in kanten {
-        let (ia, ib) = (ecken.id(a), ecken.id(b));
-        if ia == ib || !gesehen.insert((ia.min(ib), ia.max(ib))) {
-            continue;
-        }
-        let (a, b) = (ecken.p[ia], ecken.p[ib]);
-        let d = (b - a).normalized();
-        let m = (a + b) * 0.5;
-        let links = m + vec3(-d.y, d.x, 0.0) * probe;
-        let rechts = m - vec3(-d.y, d.x, 0.0) * probe;
-        let drin = |q: Vec3| polys.iter().any(|(p, _)| enthaelt(p, q));
-        match (drin(links), drin(rechts)) {
-            (true, false) => rand.push((ia, ib, h)),
-            (false, true) => rand.push((ib, ia, h)),
-            _ => {}
-        }
-    }
-    let ringe = verbinden(&ecken.p, &rand);
+    let netz = Netz::neu(&polys, tol);
     let (mut aussen, mut loecher) = (Vec::new(), Vec::new());
-    for r in ringe {
-        let f = signed_area(&r.punkte);
+    for r in netz.raender() {
+        let f = signed_area(&r.ring.punkte);
         if f.abs() < tol * tol {
             continue;
         }
@@ -147,27 +125,35 @@ pub fn anordnung(umrisse: &[Vec<Vec3>], tol: f64) -> Anordnung {
     let mut bereiche: Vec<Bereich> = loecher
         .iter()
         .map(|l| Bereich {
-            rand: l.umgekehrt(),
+            rand: l.ring.umgekehrt(),
             inseln: Vec::new(),
         })
         .collect();
     // Jeder Außenrand, der in einem Bereich liegt, ist dort eine Insel (im
-    // kleinsten, der ihn enthält; Prüfpunkt knapp außerhalb seiner ersten Kante)
+    // kleinsten, der ihn enthält; geprüft an einer seiner Ecken, die nicht
+    // auf dem Rand des Bereichs liegt)
     for o in &aussen {
-        let (a, b) = (o.punkte[0], o.punkte[1 % o.punkte.len()]);
-        let d = (b - a).normalized();
-        let q = (a + b) * 0.5 + vec3(d.y, -d.x, 0.0) * probe;
-        let ziel = bereiche
+        let ziel = loecher
             .iter()
             .enumerate()
-            .filter(|(_, b)| b.rand.enthaelt(q))
-            .min_by(|x, y| x.1.rand.flaeche().total_cmp(&y.1.rand.flaeche()))
-            .map(|(i, _)| i);
+            .filter_map(|(i, l)| {
+                let j = o.ecken.iter().position(|e| !l.alle.contains(e))?;
+                bereiche[i].rand.enthaelt(o.ring.punkte[j]).then_some(i)
+            })
+            .min_by(|&x, &y| {
+                bereiche[x]
+                    .rand
+                    .flaeche()
+                    .total_cmp(&bereiche[y].rand.flaeche())
+            });
         if let Some(i) = ziel {
-            bereiche[i].inseln.push(o.umgekehrt());
+            bereiche[i].inseln.push(o.ring.umgekehrt());
         }
     }
-    Anordnung { aussen, bereiche }
+    Anordnung {
+        aussen: aussen.into_iter().map(|r| r.ring).collect(),
+        bereiche,
+    }
 }
 
 /// Umrisse flach und gegen den Uhrzeigersinn, mit der ursprünglichen
@@ -209,12 +195,28 @@ fn teilen(polys: &[(Vec<Vec3>, Vec<Herkunft>)], tol: f64) -> Vec<(Vec3, Vec3, He
             }
         }
     }
+    let kaesten: Vec<[f64; 4]> = alle
+        .iter()
+        .map(|&(a, b, _)| {
+            [
+                a.x.min(b.x) - tol,
+                a.y.min(b.y) - tol,
+                a.x.max(b.x) + tol,
+                a.y.max(b.y) + tol,
+            ]
+        })
+        .collect();
+    let raster = Raster::neu(&kaesten);
+    let mut marke = vec![false; alle.len()];
+    let mut nahe = Vec::new();
     let mut out = Vec::new();
     for (i, &(a, b, h)) in alle.iter().enumerate() {
         let e = b - a;
         let len = e.length();
         let mut ts = vec![0.0, 1.0];
-        for (j, &(c, d, _)) in alle.iter().enumerate() {
+        raster.um(&kaesten[i], &mut marke, &mut nahe);
+        for &j in &nahe {
+            let (c, d, _) = alle[j];
             if i == j || !kasten_nah(a, b, c, d, tol) {
                 continue;
             }
@@ -236,15 +238,77 @@ fn teilen(polys: &[(Vec<Vec3>, Vec<Herkunft>)], tol: f64) -> Vec<(Vec3, Vec3, He
             }
         }
         ts.sort_by(f64::total_cmp);
+        // Jeder Teilpunkt bleibt, auch dicht am nächsten: Zusammengelegt wird
+        // nur in [`Ecken`], an denselben Punkten, an denen das Fangen
+        // entschieden hat. Ein übersprungener Teilpunkt ließ eine Kante über
+        // eine andere laufen, ohne dass sich beide trafen.
         let mut von = 0.0;
         for &t in &ts[1..] {
-            if (t - von) * len >= tol || t == 1.0 {
+            if t > von {
                 out.push((a + e * von, a + e * t, h));
                 von = t;
             }
         }
     }
     out
+}
+
+/// Raster über achsenparallele Kästen `[x0, y0, x1, y1]`: findet die Kästen,
+/// die einen gegebenen berühren können, ohne alle zu prüfen. So wächst die
+/// Arbeit mit der Zahl der Wände, nicht mit ihrem Quadrat.
+struct Raster {
+    zelle: f64,
+    karte: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl Raster {
+    fn neu(kaesten: &[[f64; 4]]) -> Raster {
+        // Zellgröße: mittlere Seitenlänge der Kästen, höchstens 4096 Zellen
+        // je Richtung über alles
+        let n = kaesten.len().max(1) as f64;
+        let mittel = kaesten
+            .iter()
+            .map(|k| (k[2] - k[0]).max(k[3] - k[1]))
+            .sum::<f64>()
+            / n;
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for k in kaesten {
+            lo = [lo[0].min(k[0]), lo[1].min(k[1])];
+            hi = [hi[0].max(k[2]), hi[1].max(k[3])];
+        }
+        let weite = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(0.0);
+        let zelle = mittel.max(weite / 4096.0).max(1e-3);
+        let mut karte: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        for (i, k) in kaesten.iter().enumerate() {
+            for z in Raster::zellen(zelle, k) {
+                karte.entry(z).or_default().push(i);
+            }
+        }
+        Raster { zelle, karte }
+    }
+
+    fn zellen(zelle: f64, k: &[f64; 4]) -> impl Iterator<Item = (i64, i64)> {
+        let z = |v: f64| (v / zelle).floor() as i64;
+        let (x0, y0, x1, y1) = (z(k[0]), z(k[1]), z(k[2]), z(k[3]));
+        (x0..=x1).flat_map(move |x| (y0..=y1).map(move |y| (x, y)))
+    }
+
+    /// Die Kästen in den Zellen von `k`, jeder einmal; `marke` hat je Kasten
+    /// einen Platz und ist danach wieder leer.
+    fn um(&self, k: &[f64; 4], marke: &mut [bool], out: &mut Vec<usize>) {
+        out.clear();
+        for z in Raster::zellen(self.zelle, k) {
+            for &i in self.karte.get(&z).into_iter().flatten() {
+                if !marke[i] {
+                    marke[i] = true;
+                    out.push(i);
+                }
+            }
+        }
+        for &i in out.iter() {
+            marke[i] = false;
+        }
+    }
 }
 
 fn kasten_nah(a: Vec3, b: Vec3, c: Vec3, d: Vec3, tol: f64) -> bool {
@@ -254,119 +318,436 @@ fn kasten_nah(a: Vec3, b: Vec3, c: Vec3, d: Vec3, tol: f64) -> bool {
         && c.y.min(d.y) - tol <= a.y.max(b.y)
 }
 
-/// Punkte, zusammengelegt innerhalb der Toleranz (Raster mit Nachbarzellen).
+/// Punkte, zusammengelegt innerhalb der Toleranz: Je zwei Punkte höchstens
+/// `tol` voneinander kommen in dieselbe Gruppe, auch über einen dritten
+/// hinweg. Das hängt nicht von der Reihenfolge ab, und derselbe Punkt landet
+/// immer in derselben Gruppe; so trifft jede Entscheidung des Teilens (ein
+/// Punkt höchstens `tol` vor einer Kante) auch hier zu. Die Gruppe liegt am
+/// zuerst übergebenen ihrer Punkte.
 struct Ecken {
     p: Vec<Vec3>,
-    raster: HashMap<(i64, i64), Vec<usize>>,
-    tol: f64,
+    nummer: HashMap<(u64, u64), usize>,
 }
 
 impl Ecken {
-    fn new(tol: f64) -> Ecken {
-        Ecken {
-            p: Vec::new(),
-            raster: HashMap::new(),
-            tol,
+    fn neu(tol: f64, punkte: impl IntoIterator<Item = Vec3>) -> Ecken {
+        let schluessel = |p: Vec3| (p.x.to_bits(), p.y.to_bits());
+        let mut roh: Vec<Vec3> = Vec::new();
+        let mut index: HashMap<(u64, u64), usize> = HashMap::new();
+        for p in punkte {
+            index.entry(schluessel(p)).or_insert_with(|| {
+                roh.push(p);
+                roh.len() - 1
+            });
         }
-    }
-
-    fn zelle(&self, p: Vec3) -> (i64, i64) {
-        (
-            (p.x / self.tol).floor() as i64,
-            (p.y / self.tol).floor() as i64,
-        )
-    }
-
-    fn id(&mut self, p: Vec3) -> usize {
-        let (cx, cy) = self.zelle(p);
-        for x in cx - 1..=cx + 1 {
-            for y in cy - 1..=cy + 1 {
-                let Some(v) = self.raster.get(&(x, y)) else {
-                    continue;
-                };
-                if let Some(&i) = v.iter().find(|&&i| (self.p[i] - p).length() <= self.tol) {
-                    return i;
+        let zelle = |p: Vec3| ((p.x / tol).floor() as i64, (p.y / tol).floor() as i64);
+        let mut raster: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        for (i, &p) in roh.iter().enumerate() {
+            raster.entry(zelle(p)).or_default().push(i);
+        }
+        fn wurzel(t: &mut [usize], mut i: usize) -> usize {
+            while t[i] != i {
+                t[i] = t[t[i]];
+                i = t[i];
+            }
+            i
+        }
+        let mut teil: Vec<usize> = (0..roh.len()).collect();
+        for (i, &p) in roh.iter().enumerate() {
+            let (cx, cy) = zelle(p);
+            for x in cx - 1..=cx + 1 {
+                for y in cy - 1..=cy + 1 {
+                    for &j in raster.get(&(x, y)).into_iter().flatten() {
+                        if j > i && (roh[j] - p).length() <= tol {
+                            let (a, b) = (wurzel(&mut teil, i), wurzel(&mut teil, j));
+                            // Die kleinere Nummer bleibt Wurzel: die Gruppe
+                            // liegt am ersten ihrer Punkte
+                            teil[a.max(b)] = a.min(b);
+                        }
+                    }
                 }
             }
         }
-        self.p.push(p);
-        let i = self.p.len() - 1;
-        self.raster.entry((cx, cy)).or_default().push(i);
-        i
+        let mut gruppe = vec![usize::MAX; roh.len()];
+        let mut p = Vec::new();
+        for i in 0..roh.len() {
+            let w = wurzel(&mut teil, i);
+            if gruppe[w] == usize::MAX {
+                gruppe[w] = p.len();
+                p.push(roh[w]);
+            }
+            gruppe[i] = gruppe[w];
+        }
+        let nummer = index.into_iter().map(|(k, i)| (k, gruppe[i])).collect();
+        Ecken { p, nummer }
+    }
+
+    fn id(&self, p: Vec3) -> usize {
+        self.nummer[&(p.x.to_bits(), p.y.to_bits())]
     }
 }
 
-/// Randkanten zu Ringen: an jeder Ecke weiter mit der Kante, die am
-/// weitesten links abbiegt (so trennen sich Umrisse, die sich nur in einem
-/// Punkt berühren). Folgekanten derselben Herkunft werden eine Kante.
-fn verbinden(p: &[Vec3], rand: &[(usize, usize, Herkunft)]) -> Vec<Ring> {
-    let mut ab: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (k, &(a, _, _)) in rand.iter().enumerate() {
-        ab.entry(a).or_default().push(k);
-    }
-    let richtung = |k: usize| (p[rand[k].1] - p[rand[k].0]).normalized();
-    let mut benutzt = vec![false; rand.len()];
-    let mut ringe = Vec::new();
-    for k0 in 0..rand.len() {
-        if benutzt[k0] {
-            continue;
-        }
-        let mut folge = vec![k0];
-        benutzt[k0] = true;
-        let mut k = k0;
-        let geschlossen = loop {
-            let din = richtung(k);
-            let weiter = ab.get(&rand[k].1).and_then(|v| {
-                v.iter().copied().max_by(|&x, &y| {
-                    let w = |e: usize| {
-                        let d = richtung(e);
-                        let t = (din.x * d.y - din.y * d.x).atan2(din.dot(d));
-                        // Umkehr zuletzt
-                        if t > std::f64::consts::PI - 1e-9 {
-                            -t
-                        } else {
-                            t
-                        }
-                    };
-                    w(x).total_cmp(&w(y))
-                })
-            });
-            match weiter {
-                Some(n) if n == k0 => break true,
-                Some(n) if !benutzt[n] => {
-                    benutzt[n] = true;
-                    folge.push(n);
-                    k = n;
-                }
-                _ => break false,
+/// Umlaufzahlen der Umrisse an einer Stelle: je Umriss (Nummer wie in
+/// [`Herkunft::poly`]) die Zahl ungleich null, nach Umriss geordnet.
+type Umlauf = Vec<(usize, i32)>;
+
+fn addieren(w: &mut Umlauf, poly: usize, d: i32) {
+    match w.binary_search_by_key(&poly, |&(q, _)| q) {
+        Ok(i) => {
+            w[i].1 += d;
+            if w[i].1 == 0 {
+                w.remove(i);
             }
-        };
-        // An jeder Ecke kommen so viele Randkanten an, wie abgehen; ein Ring,
-        // der nicht schließt, heißt, die Prüfung links/rechts passt nicht zum
-        // Zusammenlegen, und die Bereiche daran fehlen.
-        debug_assert!(geschlossen, "Randkanten ohne Ring ab {:?}", p[rand[k0].0]);
-        if !geschlossen {
-            continue;
         }
-        // Folgekanten gleicher Herkunft zusammenfassen
-        let m = folge.len();
-        let start = (0..m)
-            .find(|&i| rand[folge[i]].2 != rand[folge[(i + m - 1) % m]].2)
-            .unwrap_or(0);
-        let mut ring = Ring::default();
-        for s in 0..m {
-            let e = folge[(start + s) % m];
-            if s > 0 && ring.herkunft.last() == Some(&rand[e].2) {
+        Err(i) if d != 0 => w.insert(i, (poly, d)),
+        Err(_) => {}
+    }
+}
+
+fn hat(w: &[(usize, i32)], poly: usize) -> bool {
+    w.binary_search_by_key(&poly, |&(q, _)| q).is_ok()
+}
+
+/// Beitrag der Kante `a` → `b` zur Umlaufzahl um `x` (Strahl nach +x).
+fn kreuzung(a: Vec3, b: Vec3, x: Vec3) -> i32 {
+    let links = (b.x - a.x) * (x.y - a.y) - (x.x - a.x) * (b.y - a.y);
+    if a.y <= x.y {
+        i32::from(b.y > x.y && links > 0.0)
+    } else {
+        -i32::from(b.y <= x.y && links < 0.0)
+    }
+}
+
+/// Die gefangenen Teilstücke aller Umrisse als ebenes Netz. Innen und außen
+/// werden hier entschieden, an denselben Ecken und Kanten, aus denen die
+/// Ringe entstehen: Die Flächen des Netzes ergeben sich aus der Reihenfolge
+/// der Kanten um jede Ecke, ihre Umlaufzahlen von außen nach innen über die
+/// Kanten hinweg. So können Fangen und Prüfen an der Toleranzgrenze nicht
+/// verschieden entscheiden.
+///
+/// Kante `k` verbindet die Ecken `u < v`; Halbkante `2k` läuft von `u` nach
+/// `v`, `2k + 1` zurück.
+struct Netz {
+    p: Vec<Vec3>,
+    kanten: Vec<NetzKante>,
+    /// Abgehende Halbkanten je Ecke, gegen den Uhrzeigersinn nach Richtung.
+    ab: Vec<Vec<usize>>,
+    /// Stelle jeder Halbkante in `ab` ihrer Anfangsecke.
+    stelle: Vec<usize>,
+}
+
+struct NetzKante {
+    u: usize,
+    v: usize,
+    /// Herkunft der Teilstücke darauf, mit 1, wenn das Stück von `u` nach
+    /// `v` lief, sonst -1.
+    herkunft: Vec<(Herkunft, i32)>,
+    /// Je Umriss: wie oft er die Kante von `u` nach `v` läuft, abzüglich
+    /// zurück (nur ungleich null).
+    lauf: Umlauf,
+}
+
+/// Rand der Vereinigung mit den Nummern seiner Ecken: `ecken` zu
+/// `ring.punkte`, `alle` auch die zwischen Kanten gleicher Herkunft.
+struct RandRing {
+    ring: Ring,
+    ecken: Vec<usize>,
+    alle: Vec<usize>,
+}
+
+impl Netz {
+    fn neu(polys: &[(Vec<Vec3>, Vec<Herkunft>)], tol: f64) -> Netz {
+        let stuecke = teilen(polys, tol);
+        let ecken = Ecken::neu(tol, stuecke.iter().flat_map(|&(a, b, _)| [a, b]));
+        let mut index: HashMap<(usize, usize), usize> = HashMap::new();
+        let mut kanten: Vec<NetzKante> = Vec::new();
+        for (a, b, h) in stuecke {
+            let (ia, ib) = (ecken.id(a), ecken.id(b));
+            if ia == ib {
                 continue;
             }
-            ring.punkte.push(p[rand[e].0]);
-            ring.herkunft.push(rand[e].2);
+            let (u, v, s) = if ia < ib { (ia, ib, 1) } else { (ib, ia, -1) };
+            let k = *index.entry((u, v)).or_insert_with(|| {
+                kanten.push(NetzKante {
+                    u,
+                    v,
+                    herkunft: Vec::new(),
+                    lauf: Vec::new(),
+                });
+                kanten.len() - 1
+            });
+            kanten[k].herkunft.push((h, s));
+            addieren(&mut kanten[k].lauf, h.poly, s);
         }
-        if ring.punkte.len() >= 3 {
-            ringe.push(ring);
+        let p = ecken.p;
+        let winkel: Vec<f64> = (0..2 * kanten.len())
+            .map(|h| {
+                let e = &kanten[h / 2];
+                let d = if h.is_multiple_of(2) {
+                    p[e.v] - p[e.u]
+                } else {
+                    p[e.u] - p[e.v]
+                };
+                d.y.atan2(d.x)
+            })
+            .collect();
+        let mut ab = vec![Vec::new(); p.len()];
+        for (k, e) in kanten.iter().enumerate() {
+            ab[e.u].push(2 * k);
+            ab[e.v].push(2 * k + 1);
+        }
+        let mut stelle = vec![0; winkel.len()];
+        for v in &mut ab {
+            v.sort_by(|&x, &y| winkel[x].total_cmp(&winkel[y]).then(x.cmp(&y)));
+            for (i, &h) in v.iter().enumerate() {
+                stelle[h] = i;
+            }
+        }
+        Netz {
+            p,
+            kanten,
+            ab,
+            stelle,
         }
     }
-    ringe
+
+    fn von(&self, h: usize) -> usize {
+        let e = &self.kanten[h / 2];
+        if h.is_multiple_of(2) {
+            e.u
+        } else {
+            e.v
+        }
+    }
+
+    /// Nächste Halbkante derselben Fläche (die Fläche liegt links): an der
+    /// Endecke die erste im Uhrzeigersinn nach der Gegenrichtung, also die am
+    /// weitesten links abbiegende.
+    fn weiter(&self, h: usize) -> usize {
+        let t = h ^ 1;
+        let liste = &self.ab[self.von(t)];
+        liste[(self.stelle[t] + liste.len() - 1) % liste.len()]
+    }
+
+    /// Flächen des Netzes: je Halbkante die Fläche links von ihr, je Fläche
+    /// ihre Halbkanten.
+    fn flaechen(&self) -> (Vec<usize>, Vec<Vec<usize>>) {
+        let n = 2 * self.kanten.len();
+        let mut flaeche = vec![usize::MAX; n];
+        let mut zyklen = Vec::new();
+        for h0 in 0..n {
+            if flaeche[h0] != usize::MAX {
+                continue;
+            }
+            let mut z = Vec::new();
+            let mut h = h0;
+            while flaeche[h] == usize::MAX {
+                flaeche[h] = zyklen.len();
+                z.push(h);
+                h = self.weiter(h);
+            }
+            zyklen.push(z);
+        }
+        (flaeche, zyklen)
+    }
+
+    /// Umlaufzahlen je Fläche. Je zusammenhängendem Teil des Netzes beginnt
+    /// es an der Fläche um seine linkeste Ecke: Dort zählen nur die Umrisse
+    /// der anderen Teile, die eigenen liegen alle innerhalb. Von dort über
+    /// jede Kante: rechts ist, was links ist, minus ihr Lauf.
+    fn umlaeufe(&self, flaeche: &[usize], zyklen: &[Vec<usize>]) -> Vec<Umlauf> {
+        let mut teil: Vec<usize> = (0..self.p.len()).collect();
+        fn wurzel(t: &mut [usize], mut i: usize) -> usize {
+            while t[i] != i {
+                t[i] = t[t[i]];
+                i = t[i];
+            }
+            i
+        }
+        for e in &self.kanten {
+            let (a, b) = (wurzel(&mut teil, e.u), wurzel(&mut teil, e.v));
+            teil[a] = b;
+        }
+        let mut links_unten: HashMap<usize, usize> = HashMap::new();
+        for v in 0..self.p.len() {
+            if self.ab[v].is_empty() {
+                continue;
+            }
+            let w = wurzel(&mut teil, v);
+            let q = self.p[v];
+            let besser = |o: usize| (q.x, q.y) < (self.p[o].x, self.p[o].y);
+            match links_unten.get(&w) {
+                Some(&o) if !besser(o) => {}
+                _ => {
+                    links_unten.insert(w, v);
+                }
+            }
+        }
+        // Je Umriss seine Kanten mit Lauf und sein Kasten: Nur ein Umriss,
+        // dessen Kasten den Startpunkt enthält, kann ihn umlaufen
+        let mut je_umriss: HashMap<usize, Vec<(usize, i32)>> = HashMap::new();
+        for (k, e) in self.kanten.iter().enumerate() {
+            for &(poly, n) in &e.lauf {
+                je_umriss.entry(poly).or_default().push((k, n));
+            }
+        }
+        let mut laeufe: Vec<(usize, Vec<(usize, i32)>)> = je_umriss.into_iter().collect();
+        laeufe.sort_by_key(|(poly, _)| *poly);
+        let kaesten: Vec<[f64; 4]> = laeufe
+            .iter()
+            .map(|(_, kk)| {
+                let mut k = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+                for &(e, _) in kk {
+                    for q in [self.p[self.kanten[e].u], self.p[self.kanten[e].v]] {
+                        k = [k[0].min(q.x), k[1].min(q.y), k[2].max(q.x), k[3].max(q.y)];
+                    }
+                }
+                k
+            })
+            .collect();
+        let umrisse = Raster::neu(&kaesten);
+        let mut marke = vec![false; laeufe.len()];
+        let mut nahe = Vec::new();
+        let mut umlauf: Vec<Option<Umlauf>> = vec![None; zyklen.len()];
+        let mut start: Vec<(usize, usize)> = links_unten.into_iter().collect();
+        start.sort();
+        for (w, v) in start {
+            // Alle abgehenden Kanten zeigen nach rechts (oder senkrecht nach
+            // oben): Die Fläche um die Richtung nach links liegt links der
+            // letzten.
+            let f0 = flaeche[*self.ab[v].last().unwrap()];
+            if umlauf[f0].is_some() {
+                continue;
+            }
+            let x = self.p[v];
+            let mut w0 = Umlauf::new();
+            umrisse.um(&[x.x, x.y, x.x, x.y], &mut marke, &mut nahe);
+            for &i in &nahe {
+                let (poly, ref kk) = laeufe[i];
+                let k = kaesten[i];
+                if wurzel(&mut teil, self.kanten[kk[0].0].u) == w
+                    || x.x < k[0]
+                    || x.x > k[2]
+                    || x.y < k[1]
+                    || x.y > k[3]
+                {
+                    continue;
+                }
+                let mut z = 0;
+                for &(e, n) in kk {
+                    let e = &self.kanten[e];
+                    z += n * kreuzung(self.p[e.u], self.p[e.v], x);
+                }
+                addieren(&mut w0, poly, z);
+            }
+            umlauf[f0] = Some(w0);
+            let mut offen = vec![f0];
+            while let Some(f) = offen.pop() {
+                for &h in &zyklen[f] {
+                    let g = flaeche[h ^ 1];
+                    if umlauf[g].is_some() {
+                        continue;
+                    }
+                    let mut w = umlauf[f].clone().unwrap_or_default();
+                    let vz = if h.is_multiple_of(2) { -1 } else { 1 };
+                    for &(poly, n) in &self.kanten[h / 2].lauf {
+                        addieren(&mut w, poly, vz * n);
+                    }
+                    umlauf[g] = Some(w);
+                    offen.push(g);
+                }
+            }
+        }
+        umlauf.into_iter().map(Option::unwrap_or_default).collect()
+    }
+
+    /// Ränder der Vereinigung: Halbkanten mit bedeckter Fläche links und
+    /// freier rechts, an jeder Ecke weiter mit der nächsten solchen im
+    /// Uhrzeigersinn. Folgekanten derselben Herkunft werden eine Kante.
+    fn raender(&self) -> Vec<RandRing> {
+        let (flaeche, zyklen) = self.flaechen();
+        let umlauf = self.umlaeufe(&flaeche, &zyklen);
+        let bedeckt = |h: usize| !umlauf[flaeche[h]].is_empty();
+        let rand = |h: usize| bedeckt(h) && !bedeckt(h ^ 1);
+        let folgende = |h: usize| {
+            let mut g = self.weiter(h);
+            for _ in 0..self.ab[self.von(g)].len() {
+                if rand(g) {
+                    return Some(g);
+                }
+                g = self.weiter(g ^ 1);
+            }
+            None
+        };
+        // Herkunft: ein Umriss, der links innen und rechts außen ist, in
+        // Laufrichtung, wenn möglich
+        let herkunft = |h: usize| {
+            let e = &self.kanten[h / 2];
+            let vz = if h.is_multiple_of(2) { 1 } else { -1 };
+            let traegt =
+                |poly| hat(&umlauf[flaeche[h]], poly) && !hat(&umlauf[flaeche[h ^ 1]], poly);
+            e.herkunft
+                .iter()
+                .find(|(k, s)| *s == vz && traegt(k.poly))
+                .or_else(|| e.herkunft.iter().find(|(k, _)| traegt(k.poly)))
+                .unwrap_or(&e.herkunft[0])
+                .0
+        };
+        let n = 2 * self.kanten.len();
+        let mut benutzt = vec![false; n];
+        let mut ringe = Vec::new();
+        for h0 in 0..n {
+            if benutzt[h0] || !rand(h0) {
+                continue;
+            }
+            let mut folge = vec![h0];
+            benutzt[h0] = true;
+            let mut h = h0;
+            let geschlossen = loop {
+                match folgende(h) {
+                    Some(g) if g == h0 => break true,
+                    Some(g) if !benutzt[g] => {
+                        benutzt[g] = true;
+                        folge.push(g);
+                        h = g;
+                    }
+                    _ => break false,
+                }
+            };
+            // Jede Randkante hat genau eine Nachfolgerin und eine Vorgängerin;
+            // ein offener Ring hieße, das Netz widerspricht sich
+            debug_assert!(
+                geschlossen,
+                "Randkanten ohne Ring ab {:?}",
+                self.p[self.von(h0)]
+            );
+            if !geschlossen {
+                continue;
+            }
+            let m = folge.len();
+            let hk: Vec<Herkunft> = folge.iter().map(|&h| herkunft(h)).collect();
+            let start = (0..m).find(|&i| hk[i] != hk[(i + m - 1) % m]).unwrap_or(0);
+            let mut r = RandRing {
+                ring: Ring::default(),
+                ecken: Vec::new(),
+                alle: folge.iter().map(|&h| self.von(h)).collect(),
+            };
+            for s in 0..m {
+                let i = (start + s) % m;
+                if s > 0 && r.ring.herkunft.last() == Some(&hk[i]) {
+                    continue;
+                }
+                let v = self.von(folge[i]);
+                r.ring.punkte.push(self.p[v]);
+                r.ring.herkunft.push(hk[i]);
+                r.ecken.push(v);
+            }
+            if r.ring.punkte.len() >= 3 {
+                ringe.push(r);
+            }
+        }
+        ringe
+    }
 }
 
 /// Ring mit jeder Kante um ihren eigenen Abstand nach links versetzt: beim
@@ -933,5 +1314,75 @@ mod tests {
             "{:?}",
             flaechen(&a)
         );
+    }
+
+    /// Genau auf der Fangweite (Spalt oder Überdeckung ≈ `tol`, schräg)
+    /// entscheidet die Rundung. Beide Ausgänge sind recht, solange Fangen
+    /// und Prüfen gleich entscheiden; sonst schließt kein Ring und alle
+    /// Räume des Geschosses fehlen (release) bzw. greift das debug_assert.
+    #[test]
+    fn auf_der_fangweite_bleiben_die_raeume() {
+        let um = vec3(5000.0, 4000.0, 0.0);
+        // (Drehung in Grad, Spalt der Querwand; die Längswand endet unten
+        // g/2 vor bzw. in der Außenwand und oben 0,7·g vor der Querwand)
+        for (grad, g) in [(0.123_f64, 0.5), (0.123, -1.0), (90.6, 1.0)] {
+            let (sin, cos) = grad.to_radians().sin_cos();
+            let drehen = |p: &Vec3| {
+                let d = *p - um;
+                um + vec3(d.x * cos - d.y * sin, d.x * sin + d.y * cos, 0.0)
+                    + vec3(1234.5678, -987.654, 0.0)
+            };
+            let mut u = aussen();
+            u.push(rechteck(300.0, 3950.0, 9700.0 - g, 4050.0));
+            u.push(rechteck(4950.0, 300.0 - g * 0.5, 5050.0, 3950.0 - g * 0.7));
+            let u: Vec<Vec<Vec3>> = u.iter().map(|r| r.iter().map(drehen).collect()).collect();
+            let a = anordnung(&u, TOL);
+            let summe: f64 = a.bereiche.iter().map(Bereich::flaeche).sum();
+            let soll = 9400.0 * 7400.0
+                - (9400.0 - g.max(0.0)) * 100.0
+                - (3650.0 - g.max(0.0) * 1.2) * 100.0;
+            assert!(
+                (summe - soll).abs() < 2e3,
+                "{grad}°, Spalt {g} mm: {:?}",
+                flaechen(&a)
+            );
+        }
+    }
+
+    /// Durchlauf der Geometrie zu #87: Querwand und Längswand mit Spalt
+    /// bzw. Überdeckung von −1 bis 2 mm, gedreht von 0 bis 91°, mit den
+    /// Fällen genau auf der Fangweite. Die Fläche bleibt, jeder Ring schließt
+    /// (sonst greift das debug_assert).
+    #[test]
+    fn spalt_und_drehung_durchlauf() {
+        let um = vec3(5000.0, 4000.0, 0.0);
+        let mut grade: Vec<f64> = (0..=13).map(|i| i as f64 * 7.0).collect();
+        grade.extend([0.123, 1.0, 45.5, 89.9, 90.6, 91.0]);
+        let mut spalte: Vec<f64> = (0..=12).map(|i| -1.0 + i as f64 * 0.25).collect();
+        spalte.extend([-0.51, -0.49, 0.49, 0.51, 0.7, 0.71, 1.4]);
+        for &grad in &grade {
+            let (sin, cos) = grad.to_radians().sin_cos();
+            let drehen = |p: &Vec3| {
+                let d = *p - um;
+                um + vec3(d.x * cos - d.y * sin, d.x * sin + d.y * cos, 0.0)
+                    + vec3(1234.5678, -987.654, 0.0)
+            };
+            for &g in &spalte {
+                let mut u = aussen();
+                u.push(rechteck(300.0, 3950.0, 9700.0 - g, 4050.0));
+                u.push(rechteck(4950.0, 300.0 - g * 0.5, 5050.0, 3950.0 - g * 0.7));
+                let u: Vec<Vec<Vec3>> = u.iter().map(|r| r.iter().map(drehen).collect()).collect();
+                let a = anordnung(&u, TOL);
+                let summe: f64 = a.bereiche.iter().map(Bereich::flaeche).sum();
+                let soll = 9400.0 * 7400.0
+                    - (9400.0 - g.max(0.0)) * 100.0
+                    - (3650.0 - g.max(0.0) * 1.2) * 100.0;
+                assert!(
+                    (summe - soll).abs() < 2e3,
+                    "{grad}°, Spalt {g} mm: {:?}",
+                    flaechen(&a)
+                );
+            }
+        }
     }
 }
