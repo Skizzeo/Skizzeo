@@ -8,6 +8,8 @@
 pub mod abgleich;
 pub mod erkennung;
 pub mod flaechen;
+pub mod speicher;
 
-pub use abgleich::{abgleichen, ruhende};
+pub use abgleich::{abgleichen, abgleichen_lage, ruhende, Abgleich, Stand};
 pub use erkennung::{raeume, Begrenzung, Ecke, Kante, RaumForm, Seite};
+pub use speicher::{Erkennung, Ketten, Lage};

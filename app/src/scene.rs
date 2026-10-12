@@ -504,8 +504,16 @@ pub struct Scene {
     pub rolle: sk_cost::Rolle,
     /// Gewählter Ablauf: Dachaufbau und Index (Jörn 11.10.).
     drain: Option<(ElementId, usize)>,
-    /// Zuletzt angelegte Räume, bis die App ein Namensfeld öffnet (G4).
-    neue_raeume: Vec<ElementId>,
+    /// Zuletzt angelegte Räume mit Geschoss und Fläche, bis die App ein
+    /// Namensfeld öffnet (G4).
+    neue_raeume: Vec<(ElementId, sk_model::StoreyId, f64)>,
+    /// Raumerkennung mit Zwischenspeicher je Wandzug und Hausgruppe (Review
+    /// #87 B2, B3).
+    erkennung: RefCell<sk_raum::Erkennung>,
+    /// Geltende Räume je Geschoss zum Stand vor dem offenen Schritt, für
+    /// den Abgleich nach Überdeckung (B4); fehlt einer, rechnet ihn
+    /// [`Scene::begin`].
+    staende: HashMap<sk_model::StoreyId, sk_raum::Stand>,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
     undo: Vec<Txn>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
@@ -855,6 +863,8 @@ impl Scene {
             rolle: sk_cost::Rolle::Admin,
             drain: None,
             neue_raeume: Vec::new(),
+            erkennung: RefCell::default(),
+            staende: HashMap::new(),
             cache: Vec::new(),
             dirty: Vec::new(),
             all_dirty: true,
@@ -1867,6 +1877,7 @@ impl Scene {
             self.commit();
         }
         self.live.clear();
+        self.staende_fuellen();
         self.model.begin(label);
     }
 
@@ -1904,6 +1915,7 @@ impl Scene {
             Err(sk_model::Locked(id)) => {
                 self.locked_hit = Some(id);
                 self.mark_all();
+                self.staende.clear();
             }
         }
         self.live.clear();
@@ -3277,6 +3289,7 @@ impl Scene {
         };
         let touched = self.model.apply(&t, dir);
         to.push(t);
+        self.staende.clear();
         self.mark_touched(&touched);
         self.rebuild_dirty(false);
         true

@@ -188,8 +188,9 @@ impl Stempel {
         self.hover.is_some() || self.zug.is_some()
     }
 
-    /// Erkennt die Flächen des aktiven Geschosses neu, wenn sich Modell
-    /// oder Geschoss geändert haben.
+    /// Holt die Flächen des aktiven Geschosses, wenn sich Modell oder
+    /// Geschoss geändert haben; die Szene rechnet dabei nur Hausgruppen
+    /// neu, deren Wände sich geändert haben (Review #87 B2).
     fn formen(&mut self, s: &Scene) {
         let (m, g) = (s.model(), s.active_storey());
         let rev = m.revision();
@@ -198,14 +199,7 @@ impl Stempel {
             .as_ref()
             .is_none_or(|(r, gg, _)| *r != rev || *gg != g)
         {
-            let f = sk_raum::raeume(m, g)
-                .into_iter()
-                .map(|f| {
-                    let a = sk_raum::flaechen::grundflaeche(&f);
-                    (f, a)
-                })
-                .collect();
-            self.formen = Some((rev, g, f));
+            self.formen = Some((rev, g, s.raumformen(g)));
         }
     }
 

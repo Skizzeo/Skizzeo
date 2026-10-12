@@ -131,11 +131,27 @@ pub fn anordnung(umrisse: &[Vec<Vec3>], tol: f64) -> Anordnung {
         .collect();
     // Jeder Außenrand, der in einem Bereich liegt, ist dort eine Insel (im
     // kleinsten, der ihn enthält; geprüft an einer seiner Ecken, die nicht
-    // auf dem Rand des Bereichs liegt)
+    // auf dem Rand des Bereichs liegt). Vortest über die Kästen (Review #87
+    // B3: sonst Außenränder mal Bereiche mal Ecken)
+    let kasten = |pts: &[Vec3]| {
+        pts.iter().fold(
+            [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            |[x0, y0, x1, y1], p| [x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)],
+        )
+    };
+    let kaesten: Vec<[f64; 4]> = loecher.iter().map(|l| kasten(&l.ring.punkte)).collect();
     for o in &aussen {
+        let ko = kasten(&o.ring.punkte);
         let ziel = loecher
             .iter()
             .enumerate()
+            .filter(|(i, _)| {
+                let k = &kaesten[*i];
+                k[0] - tol <= ko[0]
+                    && k[1] - tol <= ko[1]
+                    && ko[2] <= k[2] + tol
+                    && ko[3] <= k[3] + tol
+            })
             .filter_map(|(i, l)| {
                 let j = o.ecken.iter().position(|e| !l.alle.contains(e))?;
                 bereiche[i].rand.enthaelt(o.ring.punkte[j]).then_some(i)

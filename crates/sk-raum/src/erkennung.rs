@@ -21,7 +21,7 @@ const GENAU: f64 = 10.0;
 
 /// Seite des Wandsegments, an der der Raum liegt: links oder rechts der
 /// Zeichenrichtung, oder an der Stirn am Anfang bzw. Ende (freies Wandende).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Seite {
     Links,
     Rechts,
@@ -84,8 +84,8 @@ pub struct RaumForm {
     pub flaeche: f64,
     /// mm, Rohbau (Umriss und Löcher).
     pub umfang: f64,
-    /// Gespeicherter Raum dieser Fläche: der älteste, dessen Anker in ihr
-    /// liegt; `None`: eben erkannt, noch nicht angelegt.
+    /// Gespeicherter Raum dieser Fläche (Ankerregel, siehe
+    /// [`crate::abgleich`]); `None`: eben erkannt, noch nicht angelegt.
     pub raum: Option<ElementId>,
     /// Mitte des größten Kreises in der Fläche (Vorgabe für den Stempel).
     pub mitte: Vec3,
@@ -108,7 +108,8 @@ impl RaumForm {
 
 /// Ein Segment im Rohbauumriss: Bauteil, Bezugslinie, Rohbauflächen links
 /// und rechts mit ihrer Schicht, und welche Seite außen liegt (Außenwand).
-struct Teil {
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Teil {
     wand: ElementId,
     p0: Vec3,
     d: Vec3,
@@ -118,45 +119,53 @@ struct Teil {
     ausbau: [Vec<(f64, MaterialId)>; 2],
 }
 
-/// Räume im Geschoss `geschoss`, geordnet nach ihrem tiefsten, dann
-/// linkesten Punkt.
-pub fn raeume(model: &Model, geschoss: StoreyId) -> Vec<RaumForm> {
-    let mut umrisse = Vec::new();
-    let mut teile = Vec::new();
-    for (id, r) in model.runs().iter() {
-        if r.storey != geschoss {
-            continue;
+impl Teil {
+    pub(crate) fn hash_in(&self, h: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        self.wand.hash(h);
+        for v in [self.p0, self.d] {
+            [v.x, v.y, v.z].map(f64::to_bits).hash(h);
         }
-        let Some(c) = model.chain(id) else {
-            continue;
-        };
-        rohbau(model, id, &c, &mut umrisse, &mut teile);
+        self.schicht.hash(h);
+        self.aussen.hash(h);
+        for a in self.ausbau.iter() {
+            a.len().hash(h);
+            for (d, m) in a {
+                d.to_bits().hash(h);
+                m.hash(h);
+            }
+        }
     }
-    let mut out: Vec<RaumForm> = anordnung(&umrisse, TOL)
+}
+
+/// Räume im Geschoss `geschoss`, geordnet nach ihrem tiefsten, dann
+/// linkesten Punkt. Rechnet alles neu; die Szene nimmt die Erkennung mit
+/// Zwischenspeicher ([`crate::Erkennung`]), mit demselben Ergebnis.
+pub fn raeume(model: &Model, geschoss: StoreyId) -> Vec<RaumForm> {
+    crate::Erkennung::default()
+        .lage(model, model, geschoss)
+        .raeume(model)
+}
+
+/// Räume aus den Rohbauumrissen einer Hausgruppe (ein Teil je Umriss),
+/// ohne Innenhöfe, Reste und Spalten; noch ohne Raum und Ordnung.
+pub(crate) fn formen_aus(
+    umrisse: &[Vec<Vec3>],
+    teile: &[Teil],
+    geschoss: StoreyId,
+) -> Vec<RaumForm> {
+    anordnung(umrisse, TOL)
         .bereiche
         .iter()
-        .filter(|b| !innenhof(b, &teile))
-        .map(|b| form(b, &teile, geschoss))
+        .filter(|b| !innenhof(b, teile))
+        .map(|b| form(b, teile, geschoss))
         .filter(|f| f.flaeche >= MIN_FLAECHE && 2.0 * f.flaeche / f.umfang >= MIN_BREITE)
-        .collect();
-    out.sort_by(|x, y| {
-        let p = |f: &RaumForm| {
-            f.umriss
-                .iter()
-                .map(|k| k.a)
-                .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
-                .unwrap_or_default()
-        };
-        let (a, b) = (p(x), p(y));
-        a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x))
-    });
-    crate::abgleich::zuordnen(model, geschoss, &mut out);
-    out
+        .collect()
 }
 
 /// Rohbauumriss je Segment eines Zuges: Viereck aus der linken und rechten
 /// Rohbaufläche (Kanten 0 links, 1 Stirn am Ende, 2 rechts, 3 Stirn am Anfang).
-fn rohbau(
+pub(crate) fn rohbau(
     m: &Model,
     run: RunId,
     c: &WallChain,

@@ -222,11 +222,13 @@ fn town_with_interior(n: usize) -> Scene {
 fn perf_ziehen_mit_innenwaenden() {
     println!();
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8}",
-        "Häuser", "Anschl.", "Ziehen", "Live3D", "Neu"
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8}",
+        "Häuser", "Anschl.", "Ziehen", "Live3D", "Neu", "Loslassen", "Aufbau"
     );
     for n in [1, 10, 100, 1000] {
+        let t0 = std::time::Instant::now();
         let mut s = town_with_interior(n);
+        let aufbau = t0.elapsed().as_secs_f64();
         let joins = s.model().joins().len();
         assert_eq!(joins, 4 * n);
         let run = s.model().runs().ids().next().unwrap();
@@ -247,18 +249,25 @@ fn perf_ziehen_mit_innenwaenden() {
         let live = time(20, || {
             std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
         });
+        // Loslassen mit Abgleich der Räume (Review #87 B3)
+        let t1 = std::time::Instant::now();
         s.commit();
+        let commit = t1.elapsed().as_secs_f64() * 1e3;
         assert!(s.model().check().is_empty());
         println!(
-            "{:>6} {:>8} {:>8.3} {:>8.3} {:>8.3}",
+            "{:>6} {:>8} {:>8.3} {:>8.3} {:>8.3} {:>10.3} {:>8.2}",
             n,
             joins,
             drag,
             live,
-            drag + live
+            drag + live,
+            commit,
+            aufbau
         );
     }
-    println!("Zeiten in ms je Mausbewegung. Ziel B5a: Ziehen < 1 ms.");
+    println!(
+        "Zeiten in ms je Mausbewegung, Loslassen in ms, Aufbau in s. Ziel B5a: Ziehen < 1 ms."
+    );
 }
 
 /// E3: Eine Attributänderung (Stiftfarbe) bei 1000 Häusern kostet nur die

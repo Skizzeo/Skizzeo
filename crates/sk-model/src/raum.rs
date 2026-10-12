@@ -119,9 +119,37 @@ impl Model {
         v
     }
 
+    /// Geschosse, deren Räume der offene Schritt ändert (anlegen, Anker,
+    /// Stempel, Name): Die Szene rechnet dort den Stand der Räume neu. Leer
+    /// ohne offenen Schritt.
+    pub fn raum_geschosse_im_schritt(&self) -> Vec<StoreyId> {
+        let mut v: Vec<StoreyId> = Vec::new();
+        let Some(open) = &self.txn else {
+            return v;
+        };
+        for c in &open.changes {
+            if let Change::Element { id, old, .. } = c {
+                for e in old.iter().chain(self.elements.get(*id)) {
+                    if matches!(e.kind, ElementKind::Space(_)) && !v.contains(&e.storey) {
+                        v.push(e.storey);
+                    }
+                }
+            }
+        }
+        v
+    }
+
     /// Kleinster freie Name „Raum n“ im Projekt (auch ruhende zählen).
     pub fn naechster_raumname(&self) -> String {
-        let belegt: Vec<u32> = self
+        self.freie_raumnamen()
+            .next()
+            .unwrap_or_else(|| "Raum 1".into())
+    }
+
+    /// Die freien Namen „Raum n“ im Projekt, kleinste zuerst (einmal über
+    /// alle Bauteile, Review #87 B3).
+    pub fn freie_raumnamen(&self) -> FreieRaumnamen {
+        let belegt = self
             .elements
             .iter()
             .filter_map(|(_, e)| match &e.kind {
@@ -129,8 +157,26 @@ impl Model {
                 _ => None,
             })
             .collect();
-        let n = (1..).find(|n| !belegt.contains(n)).unwrap_or(1);
-        format!("Raum {n}")
+        FreieRaumnamen { belegt, n: 0 }
+    }
+}
+
+/// Freie Namen „Raum n“ ([`Model::freie_raumnamen`]).
+pub struct FreieRaumnamen {
+    belegt: std::collections::HashSet<u32>,
+    n: u32,
+}
+
+impl Iterator for FreieRaumnamen {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        loop {
+            self.n = self.n.checked_add(1)?;
+            if !self.belegt.contains(&self.n) {
+                return Some(format!("Raum {}", self.n));
+            }
+        }
     }
 }
 

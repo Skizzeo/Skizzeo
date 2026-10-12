@@ -369,7 +369,7 @@ mod ecke;
 pub use ecke::{EckeFehler, ZugPunkte};
 #[path = "raum.rs"]
 mod raum;
-pub use raum::{Space, SPACE_SEQ};
+pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
 
 impl Default for Model {
     fn default() -> Model {

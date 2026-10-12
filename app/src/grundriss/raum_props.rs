@@ -16,8 +16,10 @@ pub fn props(
     let m = scene.model();
     let e = m.element(id)?;
     values.push(("Name", m.space(id)?.name.clone()));
-    let form = sk_raum::raeume(m, e.storey)
+    let form = scene
+        .raumformen(e.storey)
         .into_iter()
+        .map(|(f, _)| f)
         .find(|f| f.raum == Some(id));
     let Some(f) = form else {
         values.push(("Zustand", "ruht, keine Fläche".into()));
