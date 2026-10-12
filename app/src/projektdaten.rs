@@ -66,7 +66,7 @@ const N: usize = 18;
 /// AVA-Kopf öffnet die Maske an einem Feld); gezeigt und mit Tab erreicht
 /// werden sie unter dem Bauort ([`REIHE`]). Leise vorbelegt ist der
 /// Standardort Ganderkesee. Ab 15 die Landeskoordinaten aus dem Lageplan
-/// für die Georeferenz im IFC (ifc/plan.md §10).
+/// für die Georeferenz im IFC.
 const FELDER: [Feld; N] = [
     Feld {
         name: "Projektart",
@@ -211,7 +211,7 @@ const FELDER: [Feld; N] = [
         beispiel: "32 467 123,456",
         zeilen: 1,
         max: 24,
-        breite: 110.0,
+        breite: 124.0,
         x: 0.0,
         einheit: "m",
     },
@@ -220,7 +220,7 @@ const FELDER: [Feld; N] = [
         beispiel: "5 878 765,432",
         zeilen: 1,
         max: 24,
-        breite: 110.0,
+        breite: 124.0,
         x: 0.0,
         einheit: "m",
     },
@@ -396,6 +396,26 @@ fn wert_im_bereich(text: &str, i: usize, bereich: (f64, f64)) -> Result<Option<f
     }
 }
 
+/// Zahl mit Komma und Dreiergruppen vor dem Komma: `5 878 765,432`.
+fn gruppiert(v: f64) -> String {
+    let t = komma(v);
+    let (ganz, rest) = t.split_once(',').map_or((t.as_str(), ""), |(g, r)| (g, r));
+    let (vz, ziffern) = ganz.strip_prefix('-').map_or(("", ganz), |z| ("−", z));
+    let n = ziffern.len();
+    let mut out = String::from(vz);
+    for (k, c) in ziffern.chars().enumerate() {
+        if k > 0 && (n - k) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    if !rest.is_empty() {
+        out.push(',');
+        out.push_str(rest);
+    }
+    out
+}
+
 /// Zahl mit Komma, ohne überflüssige Stellen.
 fn komma(v: f64) -> String {
     v.to_string().replace('.', ",")
@@ -511,9 +531,10 @@ impl Maske {
             self.felder[i] = TextEdit::new(&grad_text(v.or(Some(ganderkesee(i)))));
             self.felder[i].end(false);
         }
+        // gruppiert wie im Lageplan und im Beispiel (Einstellungen F18)
         let utm = l
             .utm
-            .map(|u| (format!("{}{}", u.zone, komma(u.e)), komma(u.n)));
+            .map(|u| (format!("{} {}", u.zone, gruppiert(u.e)), gruppiert(u.n)));
         let (ost, nord) = utm.unwrap_or_default();
         let nhn = l.nhn.map_or_else(String::new, komma);
         for (i, t) in [(UTM, ost), (UTM + 1, nord), (UTM + 2, nhn)] {
@@ -524,11 +545,22 @@ impl Maske {
         self
     }
 
+    /// Nordwert aus seinem Feld. Der Bereich für Deutschland gilt beim
+    /// Eingeben; ein gespeicherter Wert außerhalb, unverändert im Feld,
+    /// bleibt ohne Meldung (Review #95).
+    fn nordwert(&self) -> Result<Option<f64>, ()> {
+        let t = &self.felder[UTM + 1].text;
+        match self.ort.utm {
+            Some(u) if *t == gruppiert(u.n) => Ok(Some(u.n)),
+            _ => wert_im_bereich(t, UTM + 1, NORD_DE),
+        }
+    }
+
     /// Ostwert und Nordwert aus ihren Feldern: `Ok(None)` beide leer,
     /// `Err` einer fehlt oder passt nicht.
     fn utm(&self) -> Result<Option<sk_model::Utm>, ()> {
         let ost = ostwert(&self.felder[UTM].text)?;
-        let nord = wert_im_bereich(&self.felder[UTM + 1].text, UTM + 1, NORD_DE)?;
+        let nord = self.nordwert()?;
         match (ost, nord) {
             (None, None) => Ok(None),
             (Some((e, zone)), Some(n)) => Ok(Some(sk_model::Utm { e, n, zone })),
@@ -613,7 +645,7 @@ impl Maske {
                 Some(format!("{wort}: Zahl von −{g} bis {g}."))
             } else if i == UTM && ostwert(&e.text).is_err() {
                 Some(format!("{wort} mit Zone vorn: {}.", f.beispiel))
-            } else if i == UTM + 1 && wert_im_bereich(&e.text, i, NORD_DE).is_err() {
+            } else if i == UTM + 1 && self.nordwert().is_err() {
                 Some(format!("{wort}: 5 200 000 bis 6 200 000 m."))
             } else if i == UTM + 2 && wert_im_bereich(&e.text, i, sk_model::NHN).is_err() {
                 Some(format!("{wort}: −500 bis 9000 m."))
@@ -657,11 +689,29 @@ impl Maske {
                 .map(|i| match self.ort.utm {
                     None => format!("{} fehlt, keine Georeferenz.", WORT[i]),
                     Some(_) => format!("{} fehlt, die alten Werte bleiben.", WORT[i]),
-                });
+                })
+                .or_else(|| self.abgleich());
             }
         };
         // Der Wert von Ganderkesee steht als Beispiel im leeren Feld
         Some(format!("{} fehlt, es gilt Ganderkesee.", WORT[fehlt]))
+    }
+
+    /// Breite und Länge gegen die Landeskoordinaten (Review #95 H2): mehr
+    /// als 1 km auseinander ist eher ein Tippfehler oder die falsche Zone
+    /// als Absicht. Nur gegen eine eingegebene Lage: die Vorgabe
+    /// Ganderkesee ist kein Ort des Projekts (Integration zu #96).
+    fn abgleich(&self) -> Option<String> {
+        let u = self.utm().ok().flatten()?;
+        let l = self.ort();
+        let (b, la) = l.lat.zip(l.lon)?;
+        let (ub, ul) = sk_math::utm::von_utm(u.e, u.n, u.zone);
+        // auf der Kugel genügt hier: es geht um Kilometer
+        let r = 6_371.0;
+        let dy = (ub - b).to_radians() * r;
+        let dx = (ul - la).to_radians() * r * ((ub + b) * 0.5).to_radians().cos();
+        let km = dx.hypot(dy);
+        (km > 1.0).then(|| format!("Lage und UTM {} km auseinander.", km.round()))
     }
 
     /// Vorschläge zur Projektart, nach dem Getippten gefiltert (leer: alle).
@@ -1391,7 +1441,7 @@ mod tests {
         assert_eq!(grad_text(Some(-0.5)), "-0,5");
     }
 
-    /// I4c (ifc/plan.md §10): Ost- und Nordwert aus dem Lageplan, der
+    /// I4c: Ost- und Nordwert aus dem Lageplan, der
     /// Ostwert mit der Zone vorn, dazu die Höhe von ±0,00. Unverändert
     /// übernommen bleibt die Lage genau; ohne Zone, ein Wert allein oder
     /// Unbrauchbares lässt die alten Werte stehen (Einstellungen B1–B3 zu
@@ -1412,9 +1462,31 @@ mod tests {
         let mut m = Maske::new(&ohne(), false, None).mit_ort(&alt);
         assert_eq!(
             (m.wert(UTM), m.wert(UTM + 1), m.wert(UTM + 2)),
-            ("32467123,456", "5878765,432", "14,25")
+            ("32 467 123,456", "5 878 765,432", "14,25")
         );
         assert_eq!(m.ort(), alt);
+        assert_eq!(gruppiert(5_878_765.0), "5 878 765");
+        assert_eq!(gruppiert(-123_456.5), "−123 456,5");
+        assert_eq!(gruppiert(14.25), "14,25");
+        // 467 123 liegt gut 5 km westlich von 8,591° O
+        assert_eq!(
+            m.hinweis().as_deref(),
+            Some("Lage und UTM 5 km auseinander.")
+        );
+        // Lage leer, UTM in Berlin: die Vorgabe zählt nicht
+        let leer = Location {
+            lat: None,
+            lon: None,
+            utm: Some(sk_model::Utm {
+                e: 389_918.04,
+                n: 5_819_699.13,
+                zone: 33,
+            }),
+            ..alt
+        };
+        let b = Maske::new(&ohne(), false, None).mit_ort(&leer);
+        assert_eq!((b.ort().lat, b.ort().lon), (None, None));
+        assert_eq!(b.hinweis(), None);
         // nach der Böschung, am Ende der Maske
         m.fokus_auf(14);
         tab(&mut m);
@@ -1465,6 +1537,22 @@ mod tests {
         );
         assert_eq!(m.ort().utm, alt.utm);
         // ohne alte Werte: keine im IFC
+        // gespeichert außerhalb Deutschlands (Datei nimmt 0 … 10 Mio.):
+        // angezeigt, unverändert übernommen, ohne Dauermeldung
+        let fern = Location {
+            utm: Some(sk_model::Utm {
+                e: 500_000.0,
+                n: 4_000_000.0,
+                zone: 32,
+            }),
+            ..Default::default()
+        };
+        let mut f = Maske::new(&ohne(), false, None).mit_ort(&fern);
+        assert_eq!(f.meldung(), None);
+        assert_eq!(f.ort(), fern);
+        f.felder[UTM + 1] = TextEdit::new("4 000 001");
+        assert!(f.meldung().unwrap().starts_with("Nordwert: 5 200 000"));
+        assert_eq!(f.ort(), fern);
         let mut neu = Maske::new(&ohne(), false, None).mit_ort(&Location::default());
         neu.felder[UTM + 1] = TextEdit::new("5878765,432");
         assert_eq!(
@@ -1505,6 +1593,7 @@ mod tests {
                 "Nordwert fehlt, die alten Werte bleiben.",
                 "Ostwert fehlt, keine Georeferenz.",
                 "Höhe über NHN: −500 bis 9000 m.",
+                "Lage und UTM 1234 km auseinander.",
             ] {
                 assert!(
                     f.width(satz, 11.5) < platz,
@@ -1638,6 +1727,17 @@ mod tests {
                 // Die zweite Zahl hat keine eigene Bezeichnung
                 assert!(einheit + 8.0 * s < la.x, "{einheit} {}", la.x);
                 assert!(la.x + la.w + 6.0 * s + f.width("° O", px) < (W - PAD / 2.0) * s);
+                // gegliedert mit vier Nachkommastellen passt ins Feld
+                // (Einstellungen F19), die Einheit ins Blatt
+                for (i, z, e) in [
+                    (UTM, "32 472 589,2915", "m"),
+                    (UTM + 1, "5 878 900,8954", "m"),
+                ] {
+                    let r = l.felder[i];
+                    let innen = r.x + r.w - 8.0 * s - widgets::text_field_x(r, s, &t);
+                    assert!(f.width(z, px) < innen, "{z}: {} ≥ {innen}", f.width(z, px));
+                    assert!(r.x + r.w + 6.0 * s + f.width(e, px) < (W - PAD / 2.0) * s);
+                }
             }
         }
     }
@@ -1712,8 +1812,8 @@ mod tests {
             lat: Some(53.0589),
             lon: Some(8.591),
             utm: Some(sk_model::Utm {
-                e: 467_123.456,
-                n: 5_878_765.432,
+                e: 472_589.291,
+                n: 5_878_900.895,
                 zone: 32,
             }),
             nhn: Some(14.25),
