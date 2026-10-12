@@ -11,6 +11,12 @@
 use super::*;
 use crate::proctex::{Palette, Pattern};
 
+/// Gewerk des eingebauten Ausbaubaustoffs mit der Guid `g` (`None`: keiner).
+pub(super) fn finish_trade(g: Guid) -> Option<TradeId> {
+    let m = FINISH_MATERIALS.iter().find(|m| m.guid == g)?;
+    trade::start_id(m.trade)
+}
+
 /// Ein eingebauter Baustoff des Ausbaus mit seiner Darstellung.
 struct FinishMaterial {
     guid: Guid,
