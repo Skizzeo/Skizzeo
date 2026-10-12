@@ -96,6 +96,32 @@ impl Model {
         true
     }
 
+    /// Außenumriss jedes Hauses über seiner Gründung, gegen den
+    /// Uhrzeigersinn (z = 0): die Außenfläche der Wände mit allen Schichten,
+    /// auch bei Sockelrücksprung, sonst der Plattenumriss. Hier endet das
+    /// Gelände am Haus (Loch der Platte, Plattenrand der Höhenlage).
+    pub fn plate_outlines(&self) -> Vec<(BuildingId, Vec<Vec3>)> {
+        self.runs
+            .iter()
+            .filter_map(|(id, r)| Some((self.building_of(r.storey)?, self.plate_outline(id)?)))
+            .collect()
+    }
+
+    /// Außenumriss über der Gründung des Wandzugs `run` (siehe
+    /// [`Model::plate_outlines`]); `None` ohne Gründung.
+    pub(super) fn plate_outline(&self, run: RunId) -> Option<Vec<Vec3>> {
+        self.foundation_of(run)?;
+        let face = self
+            .base_chain(run)
+            .map(|c| c.face_corners(c.outer_offset()))
+            .filter(|f| f.len() >= 3 && sk_math::polygon::area(f) > 1.0);
+        let outline = face.or_else(|| match self.foundation(run) {
+            Some(Ok(f)) if f.outline.len() >= 3 => Some(f.outline),
+            _ => None,
+        })?;
+        Some(sk_math::polygon::to_ccw(&outline))
+    }
+
     /// Die Geländeplatten des Projekts, nach dem ersten Gebäude geordnet;
     /// leer ohne Wandzüge.
     pub fn terrain_plates(&self) -> Vec<TerrainPlate> {
@@ -143,25 +169,7 @@ impl Model {
                 None => groups.push((z, vec![*b], vec![r])),
             }
         }
-        // Löcher: Außenfläche der Wände über jeder Gründung (mit allen
-        // Schichten, auch bei Sockelrücksprung), sonst der Plattenumriss
-        let mut holes: Vec<Vec<Vec3>> = Vec::new();
-        for (id, r) in self.runs.iter() {
-            if self.building_of(r.storey).is_none() || self.foundation_of(id).is_none() {
-                continue;
-            }
-            let face = self
-                .base_chain(id)
-                .map(|c| c.face_corners(c.outer_offset()))
-                .filter(|f| f.len() >= 3 && sk_math::polygon::area(f) > 1.0);
-            let outline = face.or_else(|| match self.foundation(id) {
-                Some(Ok(f)) if f.outline.len() >= 3 => Some(f.outline),
-                _ => None,
-            });
-            if let Some(o) = outline {
-                holes.push(sk_math::polygon::to_ccw(&o));
-            }
-        }
+        let holes: Vec<Vec<Vec3>> = self.plate_outlines().into_iter().map(|o| o.1).collect();
         let rects: Vec<Vec<[f64; 4]>> = groups.iter().map(|g| g.2.clone()).collect();
         let (pieces, edges) = streifen(&rects, &holes);
         groups

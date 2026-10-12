@@ -77,6 +77,8 @@ pub struct Project {
     /// Dicke und Abstand der Geländeplatte (Gelände G0); in der Datei nur,
     /// wo sie von der Vorgabe abweichen.
     pub terrain_plate: PlateSettings,
+    /// Höhenaufmaß (Gelände G1); ändert sich nur über [`Model::set_terrain`].
+    pub terrain: Option<std::sync::Arc<Terrain>>,
 }
 
 impl Project {
@@ -99,6 +101,7 @@ impl Project {
             soil_info: false,
             soil_legacy: [None; 5],
             terrain_plate: PlateSettings::default(),
+            terrain: None,
         }
     }
 
@@ -152,8 +155,11 @@ pub struct GroundBasis {
     pub slab: ElementId,
     pub footing: ElementId,
     pub building: Option<BuildingId>,
-    /// OK Gelände.
+    /// OK Gelände; mit Höhenaufmaß das Flächenmittel unter der Platte (die
+    /// Ebene der Erdmengen in G1).
     pub terrain_z: f64,
+    /// Mit Höhenaufmaß die Höhe von ±0,00 in m ü. NHN, sonst `None`.
+    pub terrain_nhn: Option<f64>,
     /// OK und UK Sohlplatte.
     pub slab_top_z: f64,
     pub slab_bottom_z: f64,
@@ -165,7 +171,8 @@ pub struct GroundBasis {
     /// UK Frostschürze = UK Gründung, Breite der Schürze.
     pub footing_bottom_z: f64,
     pub footing_width: f64,
-    /// OK Gelände bis UK Gründung.
+    /// OK Gelände bis UK Gründung; mit Höhenaufmaß ab dem tiefsten
+    /// Geländepunkt am Plattenrand.
     pub embedment: f64,
     /// Plattenumriss gegen den Uhrzeigersinn auf z = 0.
     pub outline: Vec<Vec3>,
@@ -342,6 +349,13 @@ mod gelaende;
 #[path = "gelaende_platte.rs"]
 mod gelaende_platte;
 pub use gelaende_platte::{PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
+
+#[path = "gelaende_aufmass.rs"]
+mod gelaende_aufmass;
+pub use gelaende_aufmass::{
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainMesh,
+    TerrainPoint, Trim,
+};
 
 #[path = "geschossbaender.rs"]
 mod geschossbaender;

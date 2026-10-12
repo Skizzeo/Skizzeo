@@ -6,4 +6,5 @@ publish.workspace = true
 
 [dependencies]
 sk-math = { path = "../sk-math" }
+sk-gelaende = { path = "../sk-gelaende" }
 sk-szb = { path = "../sk-szb" }

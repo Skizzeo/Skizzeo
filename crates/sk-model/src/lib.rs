@@ -106,6 +106,10 @@ pub use model::{
     STRIP_PART, TERRACE_CROWN, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, UTM_N,
     WALKABLE_DEPTH,
 };
+pub use model::{
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainMesh,
+    TerrainPoint, Trim,
+};
 pub use model::{EckeFehler, Fangziele, OpeningFault, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{FreieRaumnamen, Space, SPACE_SEQ};
 pub use model::{PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};

@@ -150,6 +150,9 @@ pub struct ErdBasis {
     pub slab_perimeter: f64,
     /// Ring der Frostschürze im Grundriss.
     pub footing_area: f64,
+    /// Mit Höhenaufmaß: die mittlere Geländehöhe in m ü. NHN, die
+    /// `terrain_z` ist (G1 rechnet mit dieser Ebene, G2 mit dem Netz).
+    pub aufmass: Option<f64>,
 }
 
 impl ErdBasis {
@@ -165,6 +168,7 @@ impl ErdBasis {
             slab_area: g.slab_area,
             slab_perimeter: g.slab_perimeter,
             footing_area: g.footing_area,
+            aufmass: g.terrain_nhn.map(|h| h + g.terrain_z / 1000.0),
         }
     }
 
@@ -181,6 +185,7 @@ impl ErdBasis {
             slab_area: f.slab_area(),
             slab_perimeter: f.slab_perimeter(),
             footing_area: f.footing_area(),
+            aufmass: None,
         }
     }
 }
@@ -218,6 +223,18 @@ fn zahl(x: f64, teiler: f64) -> String {
 /// Erdmengen einer Gründung (Bauteil `element`, Nummer `number` der
 /// Sohlplatte). Mengen ≤ 0 entstehen nicht.
 pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static str, f64, String)) {
+    // Mit Aufmaß nennt jeder Ansatz, der an der Geländehöhe hängt, die
+    // Ebene (plan-gelaendemodul.md §5 G1)
+    let gelaende = b.aufmass.map_or(String::new(), |h| {
+        format!("; Gelände aus Aufmaß, Mittel {}", zahl(h, 1.0))
+    });
+    let mut menge = |key: &'static str, wert: f64, ansatz: String| {
+        if matches!(key, TOPSOIL | SUBGRADE | GRAVEL) {
+            menge(key, wert, ansatz)
+        } else {
+            menge(key, wert, ansatz + &gelaende)
+        }
+    };
     let o = boden.oberboden.max(0.0);
     let a = boden.arbeitsraum.max(0.0);
     let g = boden.tragschicht.max(0.0);
@@ -420,6 +437,7 @@ mod tests {
             slab_area: w * d,
             slab_perimeter: 2.0 * (w + d),
             footing_area: ring,
+            aufmass: None,
         }
     }
 

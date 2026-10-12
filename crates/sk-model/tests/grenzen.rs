@@ -38,7 +38,7 @@ const KANTEN: [(&str, &[&str]); 12] = [
     ("sk-platform", &[]),
     ("sk-render", &["sk-math"]),
     ("sk-ui", &["sk-paint"]),
-    ("sk-model", &["sk-math", "sk-szb"]),
+    ("sk-model", &["sk-gelaende", "sk-math", "sk-szb"]),
     ("sk-cost", &["sk-math", "sk-model", "sk-szb"]),
     ("sk-ifc", &["sk-math", "sk-model"]),
     ("sk-raum", &["sk-math", "sk-model"]),

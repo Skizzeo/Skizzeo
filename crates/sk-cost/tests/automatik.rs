@@ -164,3 +164,72 @@ fn unbekannter_auto_schluessel_gibt_befund() {
         bf.iter().map(|b| &b.satz).collect::<Vec<_>>()
     );
 }
+
+/// Mit Höhenaufmaß rechnen die Erdmengen in G1 aus der mittleren
+/// Geländehöhe unter der Platte: der Mengenansatz nennt sie, Kostenblatt
+/// und LV geben den Hinweis (plan-gelaendemodul.md §5 G1). Ohne Aufmaß
+/// bleibt alles wie bisher.
+#[test]
+fn erdmengen_aus_dem_aufmass_geben_hinweis() {
+    use sk_cost::befund::Ort;
+    use sk_cost::lv::{lv_aus, LvWahl};
+    use sk_cost::rechnung::ERDE_AUS_MITTEL;
+    let aushub = leistung(AUSHUB, "Aushub", 20, "unit=m3 basis=auto auto=earth.trench");
+    let mut z = vec![aushub.clone()];
+    z.extend(
+        [
+            "[terrain] src=\"aufmass.txt\" crs=local hsys=DHHN2016 local=1 e0=100 n0=100 rot=0",
+            "[tpoint] nr=1 e=0 n=0 h=10",
+            "[tpoint] nr=2 e=200 n=0 h=11",
+            "[tpoint] nr=3 e=200 n=200 h=12",
+            "[tpoint] nr=4 e=0 n=200 h=11",
+        ]
+        .map(String::from),
+    );
+    let m = haus(&z);
+    assert!(m.terrain().is_some());
+    let b = blatt(&m);
+    let hinweis = |v: &[sk_cost::Befund]| v.iter().filter(|x| x.satz == ERDE_AUS_MITTEL).count();
+    assert_eq!(hinweis(&b.befunde), 1, "{:?}", b.befunde);
+    let a = Guid::from_ifc(AUSHUB).unwrap();
+    let q = b
+        .positionen
+        .iter()
+        .find(|p| p.quelle == Quelle::Leistung(a))
+        .expect("Graben als Position");
+    assert!(q.ansatz.iter().all(|x| x
+        .formel
+        .as_deref()
+        .is_some_and(|f| f.contains("; Gelände aus Aufmaß, Mittel "))));
+    let k = lesen::katalog(&m, None);
+    let w = LvWahl {
+        los: Guid::from_ifc("1S7bUW001008030000000A").unwrap(),
+        untertitel: false,
+        preise: false,
+        heute: None,
+    };
+    let lv = lv_aus(&m, &b, &k, &w);
+    let im_lv: Vec<_> = lv
+        .befunde
+        .iter()
+        .filter(|x| x.satz == ERDE_AUS_MITTEL)
+        .collect();
+    assert_eq!(im_lv.len(), 1, "{:?}", lv.befunde);
+    // Ort: die Position im LV (OZ ohne Los)
+    let lv_pos = lv
+        .titel
+        .iter()
+        .flat_map(|t| &t.positionen)
+        .find(|p| p.quelle == a)
+        .expect("Graben im LV");
+    assert_eq!(im_lv[0].ort, Ort::Position(lv_pos.oz.clone()));
+
+    let ohne = haus(&[aushub]);
+    let b = blatt(&ohne);
+    assert_eq!(hinweis(&b.befunde), 0);
+    assert!(b.positionen.iter().all(|p| p.ansatz.iter().all(|x| !x
+        .formel
+        .as_deref()
+        .unwrap_or("")
+        .contains("Aufmaß"))));
+}

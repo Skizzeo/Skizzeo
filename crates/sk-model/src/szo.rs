@@ -10,6 +10,7 @@
 //! `storey`, `run`, `wall`, `slab`, `footing`, `floor`, `prop`. Innerhalb eines Abschnitts nach Guid sortiert, damit Diffs
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
+mod aufmass;
 pub(crate) mod ausbau;
 mod dach;
 mod gelaende;
@@ -885,6 +886,7 @@ fn write_known(m: &Model) -> String {
         }
     }
     gelaende::write(m, &mut out);
+    aufmass::write(m, &mut out);
     lage::write(m, &mut out);
     for b in sorted(m.buildings().iter(), |b| b.guid) {
         let l = Line::new("building")
@@ -1505,7 +1507,11 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 44] = [
+    const KNOWN: [&str; 48] = [
+        "terrain",
+        "tpoint",
+        "tline",
+        "tcode",
         "opening",
         "pen",
         "linetype",
@@ -1833,6 +1839,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     project.soil = crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default();
     project.soil_legacy = legacy;
     project.terrain_plate = gelaende::read(recs("terrainplate"), &mut hints)?;
+    project.terrain =
+        aufmass::read(&|k| recs(k).as_slice(), &lines, &mut hints)?.map(std::sync::Arc::new);
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
     let alt = [text("site"), text("client"), text("author")];
     match recs("projectinfo").as_slice() {

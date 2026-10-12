@@ -25,11 +25,11 @@ impl Model {
     }
 
     /// OK Gelände an der Stelle `(x, y)` (mm, relativ zu ±0,00), wie sie
-    /// Gebäude `b` sieht. Heute eine Ebene je Gebäude; ein späteres
-    /// Geländemodell (Höhenlinien) ersetzt nur diese Abfrage.
+    /// Gebäude `b` sieht: aus dem Netz des Höhenaufmaßes (G1), ohne Aufmaß
+    /// eine Ebene je Gebäude.
     pub fn terrain_z_at(&self, b: Option<BuildingId>, x: f64, y: f64) -> f64 {
-        let _ = (x, y);
-        self.terrain_z_of(b)
+        self.terrain_z_survey(x, y)
+            .unwrap_or_else(|| self.terrain_z_of(b))
     }
 
     /// Geländeflächen für die Darstellung: je Gebäude mit Wänden das
@@ -75,9 +75,12 @@ impl Model {
             .collect()
     }
 
-    /// OK Gelände an der Gründung `gr` (ihr Gebäude).
+    /// OK Gelände an der Gründung `gr`: ohne Aufmaß die Ebene ihres
+    /// Gebäudes, mit Aufmaß der tiefste Geländepunkt am Plattenrand; die
+    /// Einbindetiefe zählt ab dort (plan-gelaendemodul.md §5 G1).
     pub(super) fn terrain_z_of_level(&self, gr: StoreyId) -> f64 {
-        self.terrain_z_of(self.building_of(gr))
+        self.terrain_low_survey(gr)
+            .unwrap_or_else(|| self.terrain_z_of(self.building_of(gr)))
     }
 
     /// Einbindetiefe der Gründung `gr`: OK Gelände bis UK Gründung (mm).
@@ -105,12 +108,12 @@ impl Model {
         let Some(old) = self.building(b).map(|x| x.terrain) else {
             return false;
         };
-        let delta = offset - old;
-        if delta == 0.0 {
+        if offset == old {
             return false;
         }
+        let vorher = self.foundation_terrain();
         self.put_terrain(b, offset);
-        self.follow_terrain(b, delta);
+        self.resettle_foundations(vorher);
         true
     }
 
@@ -123,25 +126,36 @@ impl Model {
         self.touch();
     }
 
-    /// Die Gründungen von Gebäude `b` folgen seinem um `delta` gesunkenen
-    /// Gelände (Versatz um `delta` gewachsen): UK Gründung liegt wieder um
-    /// die gewollte Einbindetiefe unter OK Gelände, geklemmt auf den
-    /// erlaubten Bereich (Schürze mindestens 10 cm, nie flacher als die
-    /// Frosttiefe). Stößt sie an eine Grenze, merkt sich das Geschoss die
-    /// gewollte Tiefe; Hin und zurück ergibt so dieselbe Gründung.
-    fn follow_terrain(&mut self, b: BuildingId, delta: f64) {
+    /// OK Gelände je Gründung, vor einer Änderung des Geländes gemerkt
+    /// (für [`Model::resettle_foundations`]).
+    pub(super) fn foundation_terrain(&self) -> Vec<(StoreyId, f64)> {
         let grs: Vec<StoreyId> = self
             .storeys
             .iter()
-            .filter(|(_, s)| s.kind == LevelKind::Foundation && s.building == Some(b))
+            .filter(|(_, s)| s.kind == LevelKind::Foundation)
             .map(|(id, _)| id)
             .collect();
-        let old = self.terrain_z_of(Some(b)) + delta;
-        for gr in grs {
+        grs.into_iter()
+            .map(|gr| (gr, self.terrain_z_of_level(gr)))
+            .collect()
+    }
+
+    /// Die Gründungen folgen ihrem geänderten Gelände (Versatz, Aufmaß,
+    /// Lage, Höhenlage): UK Gründung liegt wieder um die gewollte
+    /// Einbindetiefe unter OK Gelände, geklemmt auf den erlaubten Bereich
+    /// (Schürze mindestens 10 cm, nie flacher als die Frosttiefe). Stößt sie
+    /// an eine Grenze, merkt sich das Geschoss die gewollte Tiefe; Hin und
+    /// zurück ergibt so dieselbe Gründung. Wo sich das Gelände nicht
+    /// bewegt hat, bleibt alles.
+    pub(super) fn resettle_foundations(&mut self, vorher: Vec<(StoreyId, f64)>) {
+        for (gr, alt) in vorher {
+            if (self.terrain_z_of_level(gr) - alt).abs() <= 1e-6 {
+                continue;
+            }
             let Some(s) = self.storey(gr) else {
                 continue;
             };
-            let want = s.embed.unwrap_or(old - s.elevation);
+            let want = s.embed.unwrap_or(alt - s.elevation);
             self.settle_foundation(gr, want);
         }
     }
@@ -405,20 +419,34 @@ impl Model {
         let insulation = s.insulation.max(0.0);
         let footing_bottom_z = self.level_z(sf.base)?;
         let building = self.element(slab).and_then(|e| self.building_of(e.storey));
-        let terrain_z = self.terrain_z_of(building);
+        // mit Aufmaß: Erdmengen über das Flächenmittel unter der Platte, die
+        // Einbindetiefe ab dem tiefsten Gelände am Rand (§5 G1)
+        let (terrain_z, terrain_nhn, tief) = match self.terrain_mean_survey(&f.outline) {
+            Some((z, h0)) => {
+                let gr = self
+                    .element(slab)
+                    .and_then(|e| self.foundation_level_of(e.storey));
+                (z, Some(h0), gr.map_or(z, |g| self.terrain_z_of_level(g)))
+            }
+            None => {
+                let z = self.terrain_z_of(building);
+                (z, None, z)
+            }
+        };
         Some(GroundBasis {
             run,
             slab,
             footing,
             building,
             terrain_z,
+            terrain_nhn,
             slab_top_z,
             slab_bottom_z,
             insulation,
             insulation_bottom_z: slab_bottom_z - insulation,
             footing_bottom_z,
             footing_width: sf.width,
-            embedment: terrain_z - footing_bottom_z,
+            embedment: tief - footing_bottom_z,
             slab_area: f.slab_area(),
             slab_perimeter: f.slab_perimeter(),
             footing_area: f.footing_area(),
