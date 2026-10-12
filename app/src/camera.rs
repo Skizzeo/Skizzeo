@@ -219,6 +219,16 @@ impl Camera {
     }
 }
 
+/// 3D-Kamera schräg von vorne links, die das ganze Modell zeigt.
+pub fn fit_perspective(lo: Vec3, hi: Vec3) -> Camera {
+    let center = (lo + hi) * 0.5;
+    let radius = ((hi - lo).length() * 0.5).max(1000.0);
+    let fov = 45f64;
+    let dist = radius / (fov.to_radians() * 0.5).sin() * 1.15;
+    let dir = vec3(-0.55, -0.75, 0.42).normalized();
+    Camera::looking_at(center + dir * dist, center, fov)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

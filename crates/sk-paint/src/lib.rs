@@ -10,7 +10,7 @@ pub mod font;
 pub mod pdf;
 mod png;
 
-pub use png::encode_png;
+pub use png::{decode_png, encode_png, encode_png_gepackt};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pt {

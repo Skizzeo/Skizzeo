@@ -34,6 +34,32 @@ const HAEUSER: [(&str, &str); 6] = [
     ),
 ];
 
+/// r7 mit einer Tür und einem Fenster als Öffnung in der Wand (wie Tests
+/// r7-oeffnungen.patch): Öffnungen haben keinen eigenen Körper. Hat r7
+/// sie schon (Patch eingespielt), bleibt es, wie es ist.
+fn r7_mit_oeffnungen() -> String {
+    if HAEUSER[5].1.contains("[opening]") {
+        return HAEUSER[5].1.to_string();
+    }
+    HAEUSER[5]
+        .1
+        .replace(
+            "short=\"EG\" kind=storey elev=0 h=2855",
+            "short=\"EG\" kind=storey elev=0 h=2855 sill=900 lintel=2100",
+        )
+        .replacen(
+            "[extdef]",
+            "[opening] guid=0spFV0l_51hO$YNK6PnHQX art=door pts=\"17000 8000;18010 8000\" \
+             bottom=0w$UUoIID0CgN5lvvTdnI6:u:0 top=0w$UUoIID0CgN5lvvTdnI6:u:2135 \
+             reveal=40,40,40,0 install=100 element=90 number=\"OE-002\" cat=opening seq=3 \
+             storey=0w$UUoIID0CgN5lvvTdnI6\n\
+             [opening] guid=3t_3k23BnDIBGTyz4qQuwQ art=window pts=\"16000 1500;16000 2750\" \
+             bottom=0w$UUoIID0CgN5lvvTdnI6:sill top=0w$UUoIID0CgN5lvvTdnI6:lintel \
+             number=\"OE-001\" cat=opening seq=3 storey=0w$UUoIID0CgN5lvvTdnI6\n[extdef]",
+            1,
+        )
+}
+
 fn laden(text: &str) -> Model {
     szo::read(text, GuidGen::with_seed(1)).expect("lädt").model
 }
@@ -84,7 +110,11 @@ fn bauteile(f: &File) -> HashMap<String, (u32, String)> {
 
 #[test]
 fn datei_ist_vollstaendig_und_eindeutig() {
-    for (name, t) in HAEUSER {
+    let r7o = r7_mit_oeffnungen();
+    let alle = HAEUSER
+        .into_iter()
+        .chain([("r7 mit Öffnungen", r7o.as_str())]);
+    for (name, t) in alle {
         let m = laden(t);
         let (ifc, b) = export(&m, &opt());
         let f = step::read(&ifc).unwrap_or_else(|e| panic!("{name}: {e:?}"));
@@ -121,12 +151,27 @@ fn datei_ist_vollstaendig_und_eindeutig() {
         // Jedes Bauteil mit Körper genau einmal, mit seiner Kennung
         let im = bauteile(&f);
         assert_eq!(im.len(), b.bauteile, "{name}");
-        assert!(b.ausgelassen.is_empty(), "{name}: {:?}", b.ausgelassen);
+        // Ausgelassen nur Öffnungen bis I5 (ifc/plan.md §5), mit I5 fällt
+        // die Ausnahme weg
+        for (nr, g) in &b.ausgelassen {
+            assert_eq!(*g, sk_ifc::Grund::OeffnungBisI5, "{name}: {nr}");
+        }
         let solids = m.element_solids();
-        assert_eq!(solids.len(), b.bauteile, "{name}");
+        let draussen = |nr: &str| b.ausgelassen.iter().any(|(n, _)| n == nr);
+        let mit_koerper = solids
+            .iter()
+            .filter(|(id, _)| !draussen(&m.element(*id).unwrap().number))
+            .count();
+        assert_eq!(mit_koerper, b.bauteile, "{name}");
         for (id, _) in &solids {
             let el = m.element(*id).unwrap();
-            assert!(im.contains_key(&el.guid.to_ifc()), "{name}: {}", el.number);
+            let draussen = b.ausgelassen.iter().any(|(nr, _)| *nr == el.number);
+            assert_eq!(
+                im.contains_key(&el.guid.to_ifc()),
+                !draussen,
+                "{name}: {}",
+                el.number
+            );
         }
         // Jedes Bauteil in genau einem Geschoss
         let mut drin: HashMap<u32, usize> = HashMap::new();
@@ -297,6 +342,10 @@ fn raum_am_geschoss_oeffnung_draussen() {
     assert!(!raeume.is_empty(), "Geländer als Raum");
     assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
     assert!(!b.ausgelassen.is_empty(), "Stütze als Öffnung");
+    assert!(b
+        .ausgelassen
+        .iter()
+        .all(|(_, g)| *g == sk_ifc::Grund::OeffnungBisI5));
     for (_, e) in f.all("IFCRELCONTAINEDINSPATIALSTRUCTURE") {
         for x in liste(&e.args[4]) {
             assert!(!raeume.contains(&x), "Raum #{x} enthalten statt angehängt");
@@ -313,4 +362,101 @@ fn raum_am_geschoss_oeffnung_draussen() {
         }
     }
     assert_eq!(haengt, raeume.len());
+}
+
+/// I3 (ifc/plan.md §6): Die Vorschau liest jede geschriebene Datei wieder:
+/// jedes Bauteil genau einmal in genau einem Geschoss, mit Nummer, Form mit
+/// demselben Rauminhalt wie im Export und dem Schichtaufbau seines Typs.
+#[test]
+fn vorschau_liest_den_export() {
+    for (name, t) in HAEUSER {
+        let m = laden(t);
+        let (ifc, b) = export(&m, &opt());
+        let v = sk_ifc::lesen::vorschau(&step::read(&ifc).unwrap());
+        assert_eq!(v.schema, "IFC4");
+        assert_eq!(v.teile.len(), b.bauteile, "{name}");
+        assert_eq!(v.ohne_form, 0, "{name}");
+        let mut im_baum = vec![0; v.teile.len()];
+        fn zaehlen(k: &sk_ifc::lesen::Knoten, n: &mut [u32], geschosse: &mut usize) {
+            if k.klasse == "IfcBuildingStorey" {
+                *geschosse += 1;
+            }
+            for &i in &k.teile {
+                n[i] += 1;
+            }
+            for c in &k.kinder {
+                zaehlen(c, n, geschosse);
+            }
+        }
+        let mut geschosse = 0;
+        for k in &v.baum {
+            zaehlen(k, &mut im_baum, &mut geschosse);
+        }
+        assert_eq!(geschosse, b.geschosse, "{name}");
+        assert!(im_baum.iter().all(|&n| n == 1), "{name}: {im_baum:?}");
+        let teil: HashMap<&str, &sk_ifc::lesen::Teil> =
+            v.teile.iter().map(|t| (t.guid.as_str(), t)).collect();
+        for (id, s) in m.element_solids() {
+            let el = m.element(id).unwrap();
+            let t = teil[el.guid.to_ifc().as_str()];
+            assert_eq!(t.name, el.number);
+            if let Some(ls) = el.layer_set.and_then(|l| m.layer_set(l)) {
+                assert_eq!(t.schichten.len(), ls.layers.len(), "{name}: {}", el.number);
+            }
+            assert!(
+                !t.saetze.is_empty(),
+                "{name}: {} ohne Eigenschaften",
+                el.number
+            );
+            let netze = geometrie::netze(&s, Default::default());
+            assert_eq!(
+                t.netze.iter().map(|n| n.dreiecke.len()).sum::<usize>(),
+                netze.iter().map(|n| n.dreiecke.len()).sum::<usize>(),
+                "{name}: {}",
+                el.number
+            );
+            // Der Rauminhalt hängt nur bei geschlossenen Netzen nicht von der
+            // Lage ab (Datei: im Geschoss, Vorschau: in der Welt)
+            if !netze.iter().all(geometrie::geschlossen) {
+                continue;
+            }
+            let soll: f64 = netze.iter().map(geometrie::volumen).sum();
+            let ist: f64 = t
+                .netze
+                .iter()
+                .map(|n| {
+                    geometrie::volumen(&geometrie::Netz {
+                        mat: 0,
+                        punkte: n.punkte.clone(),
+                        dreiecke: n.dreiecke.clone(),
+                    })
+                })
+                .sum();
+            assert!(
+                // Punkte stehen auf 0,0001 mm gerundet in der Datei
+                (ist - soll).abs() <= soll.abs() * 1e-5 + 1.0,
+                "{name}: {} {ist} statt {soll}",
+                el.number
+            );
+        }
+    }
+}
+
+/// Befund Test zu #79: Öffnungen ohne Körper stehen als „Öffnung bis I5“ im
+/// Bericht, nicht als „ohne Form“, und nicht in der Datei.
+#[test]
+fn oeffnungen_bis_i5() {
+    let m = laden(&r7_mit_oeffnungen());
+    let (ifc, b) = export(&m, &opt());
+    let f = step::read(&ifc).unwrap();
+    assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
+    let mut aus = b.ausgelassen.clone();
+    aus.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        aus,
+        vec![
+            ("OE-001".to_string(), sk_ifc::Grund::OeffnungBisI5),
+            ("OE-002".to_string(), sk_ifc::Grund::OeffnungBisI5),
+        ]
+    );
 }
