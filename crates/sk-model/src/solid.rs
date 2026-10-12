@@ -26,6 +26,10 @@ pub mod edge_kind {
     /// Hintergrund: Grundriss des Geschosses unter dem aktiven (E16); Stil aus
     /// [`crate::Display::background`], nicht aus den Tabellen je Art.
     pub const BACKGROUND: u8 = 4;
+    /// Einbauelement im Grundriss (dünn gestrichelt, Jörn 12.10.): Stift der
+    /// feinen Linie mit festem Strich
+    /// ([`crate::wand_loch::ELEMENT_DASH`]), nicht aus den Tabellen je Art.
+    pub const ELEMENT: u8 = 5;
 }
 
 /// Punkt `p` auf Höhe `z`.

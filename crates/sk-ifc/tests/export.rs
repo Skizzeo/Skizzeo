@@ -414,7 +414,7 @@ fn vorschau_liest_den_export() {
 
 /// Befund Test zu #79: Öffnungen ohne Körper stehen als „Öffnung bis I5“ im
 /// Bericht, nicht als „ohne Form“, und nicht in der Datei. r7 hat eine Tür
-/// (OE-002) und ein Fenster (OE-001).
+/// (OE-002), ein Fenster (OE-001) und eine Innentür (OE-003).
 #[test]
 fn oeffnungen_bis_i5() {
     let m = laden(HAEUSER[5].1);
@@ -428,6 +428,7 @@ fn oeffnungen_bis_i5() {
         vec![
             ("OE-001".to_string(), sk_ifc::Grund::OeffnungBisI5),
             ("OE-002".to_string(), sk_ifc::Grund::OeffnungBisI5),
+            ("OE-003".to_string(), sk_ifc::Grund::OeffnungBisI5),
         ]
     );
 }

@@ -1,9 +1,11 @@
 //! Höhenlinien im Geschossmanager (Jörn 11.10. 13:57–14:12): In jedem
 //! Geschoss stehen Brüstung und Sturz der Öffnungen als untergeordnete,
-//! gestrichelte Linien mit kleinem Griff zwischen den Ebenen; im aktiven
-//! Geschoss dazu die Schnitthöhe des Grundrisses. Ziehen meldet wie bei
-//! den Ebenen `LevelEvent::Move` mit der neuen Kote. Nur im Fenster, das
-//! Paneel neben dem Dialog „Gebäude erstellen“ hat dafür keinen Platz.
+//! gestrichelte Linien mit kleinem Griff zwischen den Ebenen, dazu die
+//! Oberkante der Innentüren (12.10. 05:26); im aktiven Geschoss die
+//! Schnitthöhe des Grundrisses. Zwei Schalter in der Titelzeile blenden
+//! Fenster- und Innentürlinien getrennt aus. Ziehen meldet wie bei
+//! den Ebenen `LevelEvent::Move` mit der neuen Kote. Das Diagramm steht
+//! nur im Geschossfenster (Jörn 12.10.).
 
 use super::*;
 
@@ -23,9 +25,6 @@ impl Ui {
     /// Bands (die Darstellung ist gespreizt); `lines`, `ys` wie im Diagramm.
     pub(super) fn sub_lines(&self, lines: &[LevelLine], ys: &[f32]) -> Vec<SubLine> {
         let mut out = Vec::new();
-        if !self.fenster {
-            return out;
-        }
         let s = self.scale;
         for (i, b) in self.levels.bands.iter().enumerate() {
             let (Some(l0), Some(l1), Some(&y0), Some(&y1)) =
@@ -42,9 +41,14 @@ impl Ui {
                     out.push(SubLine { grip, z, y: at(z) });
                 }
             };
-            if let Some((sill, lintel)) = b.lines {
-                push(Grip::Sill(b.id), sill);
-                push(Grip::Lintel(b.id), lintel);
+            if let Some((sill, lintel, door)) = b.lines {
+                if self.line_vis[0] {
+                    push(Grip::Sill(b.id), sill);
+                    push(Grip::Lintel(b.id), lintel);
+                }
+                if self.line_vis[1] {
+                    push(Grip::Door(b.id), door);
+                }
             }
             if let Some(z) = self.levels.plan_cut.filter(|_| b.active) {
                 push(Grip::PlanCut, z);
@@ -65,9 +69,45 @@ impl Ui {
         match g {
             Grip::Sill(id) => lines(id).map(|l| l.0),
             Grip::Lintel(id) => lines(id).map(|l| l.1),
+            Grip::Door(id) => lines(id).map(|l| l.2),
             Grip::PlanCut => self.levels.plan_cut,
             _ => None,
         }
+    }
+
+    /// Klickflächen der Schalter „Fenster“ und „Innentüren“ in der
+    /// Titelzeile, links vom Schalter „Flachdach“; nur im Fenster und nur,
+    /// wenn rechts vom Titel Platz ist.
+    pub(super) fn line_vis_rects(&self) -> Vec<(Id, Rect)> {
+        let mut out = Vec::new();
+        if !self.fenster {
+            return out;
+        }
+        let (s, z) = (self.scale, &self.size);
+        let font = self.fonts.regular.as_ref();
+        let gap = 14.0 * s;
+        let mut right = match self.flat_roof_rect() {
+            Some(r) => r.x - gap,
+            None => (self.width(Panel::Levels) - z.panel_pad) * s,
+        };
+        // Titel „Geschosse“ links
+        let least = (z.panel_pad + 90.0) * s;
+        for k in [1, 0] {
+            let id = Id::LineVis(k);
+            let word = check_word(id).unwrap_or_default();
+            let tw = font.map_or(60.0 * s, |f| f.width(word, z.font_small * s));
+            let w = 20.0 * s + tw;
+            if right - w < least {
+                return Vec::new();
+            }
+            out.push((
+                id,
+                Rect::new(right - w, z.panel_pad * s + 2.0 * s, w, 16.0 * s),
+            ));
+            right -= w + gap;
+        }
+        out.reverse();
+        out
     }
 
     /// Zeichnet die untergeordneten Linien: dünn gestrichelt bis vor die
@@ -112,16 +152,24 @@ impl Ui {
                 x += dash + gap;
             }
             let band = self.levels.bands.iter().find(|b| match sub.grip {
-                Grip::Sill(id) | Grip::Lintel(id) => b.id == id,
+                Grip::Sill(id) | Grip::Lintel(id) | Grip::Door(id) => b.id == id,
                 _ => b.active,
             });
             let ab = band.map_or(0.0, |b| sub.z - b.bottom);
             let name = match sub.grip {
                 Grip::Sill(_) => "Brüstung",
                 Grip::Lintel(_) => "Sturz",
+                Grip::Door(_) => "Innentür",
                 _ => "Schnitt",
             };
-            let txt = format!("{name} {}", m_text(ab));
+            let txt = match sub.grip {
+                // Fertighöhe ab OK Fertigfußboden, dazu die Rohbauhöhe
+                Grip::Door(_) => {
+                    let fertig = ab - sk_model::hoehen::FLOOR_BUILDUP;
+                    format!("{name} {} (roh {})", m_text(fertig), m_text(ab))
+                }
+                _ => format!("{name} {}", m_text(ab)),
+            };
             let nx = x0 + (z.level_handle + z.level_label_gap) * s;
             widgets::text(c, regular, &txt, px, nx + m, sub.y - 3.0 * s + m, col);
             let hc = if dragged {
@@ -141,6 +189,17 @@ impl Ui {
             p.close();
             c.fill(&p, hc);
         }
+    }
+}
+
+/// Wort neben dem Kästchen eines Schalters in der Titelzeile des Paneels
+/// „Geschosse“.
+pub(super) fn check_word(id: Id) -> Option<&'static str> {
+    match id {
+        Id::FlatRoof => Some("Flachdach"),
+        Id::LineVis(0) => Some("Fenster"),
+        Id::LineVis(_) => Some("Innentüren"),
+        _ => None,
     }
 }
 
@@ -164,8 +223,7 @@ mod tests {
     }
 
     /// Je Geschoss Brüstung und Sturz, im aktiven die Schnitthöhe; der Griff
-    /// der Brüstung lässt sich ziehen und meldet die gefangene Kote. Neben
-    /// dem Dialog im Hauptfenster keine Linien.
+    /// der Brüstung lässt sich ziehen und meldet die gefangene Kote.
     #[test]
     fn linien_und_griffe_im_fenster() {
         let (mut ui, s) = fenster();
@@ -182,7 +240,11 @@ mod tests {
         let grips: Vec<Grip> = subs.iter().map(|u| u.grip).collect();
         assert!(grips.contains(&Grip::Sill(eg.id)) && grips.contains(&Grip::Lintel(eg.id)));
         assert!(grips.contains(&Grip::PlanCut));
-        assert_eq!(subs.len(), 5, "EG, OG je zwei und die Schnitthöhe");
+        assert!(grips.contains(&Grip::Door(eg.id)));
+        assert_eq!(subs.len(), 7, "EG, OG je drei und die Schnitthöhe");
+        let door = subs.iter().find(|u| u.grip == Grip::Door(eg.id)).unwrap();
+        assert_eq!(door.z, eg.bottom + sk_model::hoehen::DOOR);
+        assert_eq!(ui.sub_grip_z(Grip::Door(eg.id)), Some(door.z));
         let sill = subs.iter().find(|u| u.grip == Grip::Sill(eg.id)).unwrap();
         assert_eq!(sill.z, eg.bottom + sk_model::SILL);
         let cut = subs.iter().find(|u| u.grip == Grip::PlanCut).unwrap();
@@ -220,13 +282,50 @@ mod tests {
                 (z / 10.0).round() * 10.0
             ))
         );
+    }
 
-        let mut haupt = Ui::new(1.0, &Theme::dark());
-        haupt.fit(1.0, 1440, 900);
-        haupt.set_levels(s.levels());
-        haupt.dialog = true;
-        let lines = level_lines(&haupt.levels);
-        let ys = haupt.line_ys(&lines, &haupt.levels_layout());
-        assert!(haupt.sub_lines(&lines, &ys).is_empty());
+    /// Die Schalter „Fenster“ und „Innentüren“ (Jörn 05:26) stehen links vom
+    /// Schalter „Flachdach“ und blenden ihre Linien je mit einem Klick aus
+    /// und wieder ein.
+    #[test]
+    fn schalter_blenden_linien_aus() {
+        let (mut ui, _) = fenster();
+        let zahl = |ui: &Ui, f: fn(&Grip) -> bool| {
+            let lines = level_lines(&ui.levels);
+            let ys = ui.line_ys(&lines, &ui.levels_layout());
+            ui.sub_lines(&lines, &ys)
+                .iter()
+                .filter(|u| f(&u.grip))
+                .count()
+        };
+        let fenster = |g: &Grip| matches!(g, Grip::Sill(_) | Grip::Lintel(_));
+        let tuer = |g: &Grip| matches!(g, Grip::Door(_));
+        assert_eq!((zahl(&ui, fenster), zahl(&ui, tuer)), (4, 2));
+        let rects = ui.line_vis_rects();
+        let ids: Vec<Id> = rects.iter().map(|r| r.0).collect();
+        assert_eq!(ids, [Id::LineVis(0), Id::LineVis(1)]);
+        assert!(rects[0].1.x + rects[0].1.w < rects[1].1.x);
+        if let Some(f) = ui.flat_roof_rect() {
+            assert!(rects[1].1.x + rects[1].1.w < f.x);
+        }
+        let r = ui.rect(Panel::Levels, 460, 32);
+        let klick = |ui: &mut Ui, k: usize| {
+            let b = rects[k].1;
+            let (x, y) = ((r.x + b.x + 4.0) as f64, (r.y + b.y + 8.0) as f64);
+            ui.handle(&Event::MouseMove { x, y, mods: M }, 460, 32);
+            assert_eq!(ui.hover, Some(Id::LineVis(k as u8)));
+            assert_eq!(ui.cursor(), Cursor::Hand);
+            let (button, mods) = (MouseButton::Left, M);
+            ui.handle(&Event::MouseDown { button, x, y, mods }, 460, 32);
+            let up = ui.handle(&Event::MouseUp { button, x, y, mods }, 460, 32);
+            assert_eq!(up.clicked, Some(Id::LineVis(k as u8)));
+        };
+        klick(&mut ui, 0);
+        assert!(!ui.is_on(Id::LineVis(0)) && ui.is_on(Id::LineVis(1)));
+        assert_eq!((zahl(&ui, fenster), zahl(&ui, tuer)), (0, 2));
+        klick(&mut ui, 1);
+        assert_eq!((zahl(&ui, fenster), zahl(&ui, tuer)), (0, 0));
+        klick(&mut ui, 0);
+        assert_eq!((zahl(&ui, fenster), zahl(&ui, tuer)), (4, 0));
     }
 }

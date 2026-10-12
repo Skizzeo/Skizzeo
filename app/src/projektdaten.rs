@@ -8,10 +8,11 @@
 use sk_model::qto_earth::Boden;
 use sk_model::{Location, Project};
 use sk_paint::{Canvas, Path};
-use sk_platform::{Key, Modifiers};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, Fonts, Rect};
+use std::cell::Cell;
 
 /// Breite des Blatts und Ränder (dip).
 const W: f32 = 520.0;
@@ -31,6 +32,10 @@ const KNOPF_H: f32 = 30.0;
 const KNOPF_W: [f32; 2] = [110.0, 130.0];
 /// Zeile der Vorschlagsliste.
 const LISTE_ZEILE: f32 = 26.0;
+/// Abstand des Blatts zum Fensterrand oben und unten, wenn es rollt (dip).
+const RAND: f32 = 12.0;
+/// So weit rollt eine Raste des Mausrads (dip).
+const RASTE: f32 = 48.0;
 
 pub const LEER_SATZ: &str = "Jedes Feld darf leer bleiben.";
 pub const VOM_LETZTEN: &str = "vom letzten Projekt";
@@ -440,6 +445,13 @@ pub enum Ziel {
     Schliessen,
 }
 
+/// Was ein Ereignis an der Maske bewirkt hat ([`Maske::ereignis`]).
+#[derive(Debug, Default)]
+pub struct Wirkung {
+    pub neu_zeichnen: bool,
+    pub antwort: Option<Antwort>,
+}
+
 /// Ausgang der Maske.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Antwort {
@@ -471,6 +483,12 @@ pub struct Maske {
     ort: Location,
     hover: Option<Ziel>,
     pressed: Option<Ziel>,
+    /// Gerollt um so viel (dip), wenn das Blatt nicht ins Fenster passt
+    /// (Bedienbarkeit 38.1).
+    rollen: f32,
+    /// Sichtbare Höhe des Blatts (dip), aus [`Maske::rect`]; unendlich, bis
+    /// das Fenster sie nennt.
+    sicht: Cell<f32>,
 }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -520,6 +538,8 @@ impl Maske {
             ort: Location::default(),
             hover: None,
             pressed: None,
+            rollen: 0.0,
+            sicht: Cell::new(f32::INFINITY),
         }
     }
 
@@ -746,6 +766,82 @@ impl Maske {
             self.felder[i].select_all();
         }
         self.liste = None;
+        self.zeige(i);
+    }
+
+    /// Rollt so, dass Feld `i` zwischen Kopf und Fuß ganz zu sehen ist.
+    fn zeige(&mut self, i: usize) {
+        let sicht = self.sicht.get();
+        let l = self.lage(1.0);
+        if sicht >= l.h {
+            return;
+        }
+        let f = l.felder[i];
+        let (oben, unten) = (KOPF_H + LUFT, sicht - FUSS_H - LUFT);
+        // Beginnt das Feld eine Gruppe, kommt ihre Überschrift mit
+        let erst = if GRUPPEN.iter().any(|(a, _)| *a == i) {
+            f.y - GRUPPE_H - 2.0
+        } else {
+            f.y
+        };
+        if erst - self.rollen < oben {
+            self.rollen = erst - oben;
+        } else if f.y + f.h - self.rollen > unten {
+            self.rollen = f.y + f.h - unten;
+        }
+        self.rollen = self.rollen.clamp(0.0, l.h - sicht);
+    }
+
+    /// Mausrad (Rasten, positiv vom Benutzer weg: nach oben); `true`, wenn
+    /// das Blatt anders steht.
+    pub fn rad(&mut self, s: f32, delta: f64) -> bool {
+        let max = (self.lage(s).h.round() - self.sicht_px(s)).max(0.0) / s;
+        let neu = (self.rollen - delta as f32 * RASTE).clamp(0.0, max);
+        let anders = (neu - self.rollen).abs() > 1e-3;
+        self.rollen = neu;
+        anders
+    }
+
+    /// Sichtbare Höhe (Pixel): das ganze Blatt oder so viel, wie ins
+    /// Fenster passt.
+    fn sicht_px(&self, s: f32) -> f32 {
+        let voll = self.lage(s).h.round();
+        (self.sicht.get() * s).round().min(voll)
+    }
+
+    /// Gerollt um so viele Pixel.
+    fn versatz(&self, s: f32) -> f32 {
+        let max = (self.lage(s).h.round() - self.sicht_px(s)).max(0.0);
+        (self.rollen * s).round().clamp(0.0, max)
+    }
+
+    /// Lage der Teile, wie sie zu sehen sind: Felder und Gruppen um den
+    /// Versatz nach oben, der Fuß mit den Knöpfen unten am sichtbaren Blatt.
+    fn sicht_lage(&self, s: f32) -> Lage {
+        let mut l = self.lage(s);
+        let (voll, h) = (l.h.round(), self.sicht_px(s));
+        if h >= voll {
+            return l;
+        }
+        let d = self.versatz(s);
+        for f in &mut l.felder {
+            f.y -= d;
+        }
+        for g in &mut l.gruppen {
+            *g -= d;
+        }
+        for k in &mut l.knoepfe {
+            k.y -= voll - h;
+        }
+        l.h = h;
+        l
+    }
+
+    /// Zeilen zwischen Kopf und Fuß (Pixel, relativ zum Blatt): dort
+    /// stehen die rollenden Felder.
+    fn inhalt(&self, s: f32) -> (f32, f32) {
+        let h = self.sicht_px(s);
+        ((KOPF_H * s).round(), h - (FUSS_H * s).round())
     }
 
     // --- Lage ----------------------------------------------------------------
@@ -802,9 +898,15 @@ impl Maske {
         ((W * s).round(), self.lage(s).h.round())
     }
 
-    /// Lage im Fenster: mittig unter der Titelleiste.
+    /// Lage im Fenster: mittig unter der Titelleiste. Passt das Blatt
+    /// nicht in die Höhe, wird es so hoch wie der Platz und rollt; Kopf und
+    /// Fuß mit den Knöpfen bleiben stehen (Bedienbarkeit 38.1).
     pub fn rect(&self, s: f32, win_w: u32, win_h: u32, top: u32) -> Rect {
-        let (w, h) = self.size(s);
+        let (w, voll) = self.size(s);
+        let platz = (win_h as f32 - top as f32 - 2.0 * RAND * s).round();
+        let kleinst = ((KOPF_H + FUSS_H + 2.0 * ZEILE_H) * s).round();
+        let h = voll.min(platz.max(kleinst));
+        self.sicht.set(if h < voll { h / s } else { f32::INFINITY });
         let x = ((win_w as f32 - w) * 0.5).round().max(0.0);
         let y = (top as f32 + (win_h as f32 - top as f32 - h) * 0.4)
             .round()
@@ -832,10 +934,16 @@ impl Maske {
 
     fn ziel(&self, r: Rect, s: f32, x: f64, y: f64) -> Option<Ziel> {
         let (lx, ly) = (x - r.x as f64, y - r.y as f64);
-        if let Some(k) = self.liste_rects(s).iter().position(|z| z.contains(lx, ly)) {
+        let d = self.versatz(s);
+        let (oben, unten) = self.inhalt(s);
+        let im_inhalt = ly >= oben as f64 && ly < unten as f64;
+        if let Some(k) = self.liste_rects(s).iter().position(|z| {
+            let z = Rect::new(z.x, z.y - d, z.w, z.h);
+            im_inhalt && z.contains(lx, ly)
+        }) {
             return Some(Ziel::Vorschlag(k));
         }
-        let l = self.lage(s);
+        let l = self.sicht_lage(s);
         if l.schliessen.contains(lx, ly) {
             return Some(Ziel::Schliessen);
         }
@@ -845,6 +953,9 @@ impl Maske {
         if l.knoepfe[1].contains(lx, ly) {
             return Some(Ziel::Uebernehmen);
         }
+        if !im_inhalt {
+            return None;
+        }
         let f0 = l.felder[0];
         if f0.contains(lx, ly) && lx >= (f0.x + f0.w - 26.0 * s) as f64 {
             return Some(Ziel::Pfeil);
@@ -853,6 +964,61 @@ impl Maske {
             .iter()
             .position(|f| f.contains(lx, ly))
             .map(Ziel::Feld)
+    }
+
+    // --- Ereignisse ----------------------------------------------------------
+
+    /// Ein Ereignis des Fensters an der Maske in `r`; `None`, wenn sie es
+    /// nicht nimmt (fremde Ereignisse, Klicks in die Titelleiste über `kopf`).
+    pub fn ereignis(
+        &mut self,
+        e: Event,
+        r: Rect,
+        s: f32,
+        kopf: f64,
+        fonts: &Fonts,
+        t: &Theme,
+    ) -> Option<Wirkung> {
+        let mut w = Wirkung::default();
+        match e {
+            Event::MouseMove { x, y, .. } => w.neu_zeichnen = self.mouse_move(r, s, x, y),
+            // Die Titelleiste bleibt bedienbar (Fensterknöpfe, Ziehen)
+            Event::MouseDown { y, .. } | Event::MouseUp { y, .. } if y < kopf => return None,
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                self.press(r, s, fonts, t, x, y);
+                w.neu_zeichnen = true;
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                w.neu_zeichnen = true;
+                w.antwort = self.release(r, s, x, y);
+            }
+            Event::Key {
+                key, down, mods, ..
+            } => {
+                if down {
+                    w.neu_zeichnen = true;
+                    w.antwort = self.key(key, mods);
+                }
+            }
+            Event::Text(ch) => {
+                self.text(ch);
+                w.neu_zeichnen = true;
+            }
+            Event::Wheel { delta, .. } => w.neu_zeichnen = self.rad(s, delta),
+            Event::MouseDown { .. } | Event::MouseUp { .. } => {}
+            _ => return None,
+        }
+        Some(w)
     }
 
     // --- Maus ----------------------------------------------------------------
@@ -879,7 +1045,7 @@ impl Maske {
                     self.fokus = i;
                 }
                 self.liste = None;
-                let l = self.lage(s);
+                let l = self.sicht_lage(s);
                 let f = l.felder[i];
                 let (lx, ly) = ((x - r.x as f64) as f32, (y - r.y as f64) as f32);
                 let at = self.stelle(fonts, t, s, f, i, lx, ly);
@@ -1015,7 +1181,51 @@ impl Maske {
     // --- Zeichnen ------------------------------------------------------------
 
     /// Bild samt Schatten; Lage links oben = `rect` minus Schatten.
+    /// Das Blatt, so hoch wie es ins Fenster passt: Kopf und Fuß aus dem
+    /// ganzen Blatt, dazwischen der gerollte Ausschnitt und eine
+    /// Bildlaufleiste.
     pub fn paint(&self, t: &Theme, fonts: &Fonts, s: f32) -> Canvas {
+        let voll = self.paint_voll(t, fonts, s);
+        let (h_voll, h) = (self.lage(s).h.round(), self.sicht_px(s));
+        if h >= h_voll {
+            return voll;
+        }
+        let m = (t.size.panel_shadow * s).round();
+        let mut c = Canvas::new(voll.width, (h + 2.0 * m) as usize);
+        let (oben, unten) = self.inhalt(s);
+        let linie = s.max(1.0).round();
+        let kopf = (m + oben + linie) as usize;
+        let fuss = (FUSS_H * s).round() + m;
+        c.copy_rows_at(&voll, 0, 0, kopf);
+        let d = self.versatz(s) as usize;
+        c.copy_rows_at(&voll, kopf + d, kopf, (m + unten) as usize - kopf);
+        c.copy_rows_at(
+            &voll,
+            (m + h_voll - fuss + m) as usize,
+            (m + unten) as usize,
+            fuss as usize,
+        );
+        let leiste = Rect::new(
+            m + (W - 9.0) * s,
+            m + oben + 4.0 * s,
+            4.0 * s,
+            unten - oben - 8.0 * s,
+        );
+        // Anteile am ganzen rollenden Inhalt zwischen Kopf und Fuß
+        let ganz = h_voll - oben - (FUSS_H * s).round();
+        widgets::scrollbar(
+            &mut c,
+            leiste,
+            d as f32 / ganz,
+            (unten - oben) / ganz,
+            false,
+            s,
+            t,
+        );
+        c
+    }
+
+    fn paint_voll(&self, t: &Theme, fonts: &Fonts, s: f32) -> Canvas {
         let u = &t.ui;
         let (w, h) = self.size(s);
         let m = (t.size.panel_shadow * s).round();
@@ -1742,6 +1952,91 @@ mod tests {
         }
     }
 
+    /// Bedienbarkeit 38.1: Auf 1366 × 768 bei 125 % passt das Blatt mit den
+    /// Landeskoordinaten nicht. Es wird so hoch wie der Platz; Kopf und Fuß
+    /// mit den Knöpfen bleiben stehen, dazwischen rollt es mit dem Rad und
+    /// mit Tab zum Feld; verdeckte Felder nehmen keinen Klick.
+    #[test]
+    fn rollt_wenn_es_nicht_passt() {
+        let mut m = Maske::new(&ohne(), false, None);
+        let s = 1.25;
+        let voll = m.size(s).1;
+        // Großes Fenster: wie bisher, nichts rollt
+        let r = m.rect(s, 2560, 1600, 40);
+        assert_eq!(r.h, voll);
+        assert!(!m.rad(s, -1.0));
+        // 768 Pixel hoch, Titelleiste 40
+        let r = m.rect(s, 1366, 768, 40);
+        assert!(r.h < voll && r.y >= 40.0 && r.y + r.h <= 768.0, "{r:?}");
+        let l = m.sicht_lage(s);
+        assert_eq!(l.h, r.h);
+        for k in l.knoepfe {
+            assert!(k.y + k.h <= r.h - 10.0 * s, "Knopf im Blatt");
+        }
+        let mitte = |k: Rect| {
+            (
+                (r.x + k.x + k.w * 0.5) as f64,
+                (r.y + k.y + k.h * 0.5) as f64,
+            )
+        };
+        let (x, y) = mitte(l.knoepfe[1]);
+        assert_eq!(m.ziel(r, s, x, y), Some(Ziel::Uebernehmen));
+        // Rad nach unten bis ans Ende, weiter geht es nicht
+        while m.rad(s, -1.0) {}
+        assert_eq!(m.versatz(s), voll - r.h);
+        assert!(!m.rad(s, -1.0));
+        let (x, y) = mitte(m.sicht_lage(s).knoepfe[1]);
+        assert_eq!(m.ziel(r, s, x, y), Some(Ziel::Uebernehmen), "Knöpfe stehen");
+        // Ein Feld halb unter dem Kopf nimmt dort keinen Klick
+        m.rollen = m.lage(1.0).felder[1].y - KOPF_H + ZEILE_H * 0.5;
+        let f = m.sicht_lage(s).felder[1];
+        let (oben, unten) = m.inhalt(s);
+        assert!(f.y < oben && f.y + f.h > oben);
+        let x = (r.x + f.x + 20.0 * s) as f64;
+        assert_ne!(
+            m.ziel(r, s, x, (r.y + oben - 2.0) as f64),
+            Some(Ziel::Feld(1))
+        );
+        assert_eq!(
+            m.ziel(r, s, x, (r.y + oben + 2.0) as f64),
+            Some(Ziel::Feld(1))
+        );
+        // Tab zurück ins erste Feld rollt nach oben, ans letzte nach unten
+        m.fokus_auf(0);
+        assert_eq!(m.versatz(s), 0.0);
+        m.fokus_auf(UTM + 2);
+        let f = m.sicht_lage(s).felder[UTM + 2];
+        assert!(f.y >= oben && f.y + f.h <= unten, "{f:?} {oben} {unten}");
+        // Über das Fenster: das Rad rollt, die Titelleiste bleibt frei
+        let t = Theme::dark();
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let vorher = m.versatz(s);
+        let rad = Event::Wheel {
+            delta: 1.0,
+            x: 0.0,
+            y: 0.0,
+            mods: Modifiers::default(),
+        };
+        let w = m.ereignis(rad, r, s, 40.0, &fonts, &t).unwrap();
+        assert!(w.neu_zeichnen && m.versatz(s) < vorher);
+        let oben = Event::MouseDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 20.0,
+            mods: Modifiers::default(),
+        };
+        assert!(m.ereignis(oben, r, s, 40.0, &fonts, &t).is_none());
+        // Das Bild ist so hoch wie das Blatt im Fenster
+        let c = m.paint(&t, &fonts, s);
+        let rand = (t.size.panel_shadow * s).round();
+        assert_eq!(c.height as f32, r.h + 2.0 * rand);
+        assert_eq!(c.width, m.paint_voll(&t, &fonts, s).width);
+    }
+
     /// Ist-Bilder zu `soll-projektdaten` und `soll-projektdaten-knopf`:
     /// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbild_projektdaten -- --ignored`
     #[test]
@@ -1833,6 +2128,11 @@ mod tests {
         );
         m.felder[UTM] = TextEdit::new("467123,456");
         ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-g-ohne-zone.png");
+        // h) 1366 × 768 bei 125 %: das Blatt rollt, Fokus auf der Höhe
+        // ±0,00, Kopf und Knöpfe stehen (Bedienbarkeit 38.1)
+        m.rect(1.25, 1366, 768, 40);
+        m.fokus_auf(UTM + 2);
+        ab(m.paint(&t, &fonts, 1.25), "ist-projektdaten-h-rollt.png");
         // Knopf im linken Paneel: gesetzt und leer, rechts daneben die
         // Kachel des Nordpfeils (gesetzt: Nord 12°, Sonnenstand S2)
         // (aktiv: beim Aufziehen, Hinweise unten für den Nordpfeil)

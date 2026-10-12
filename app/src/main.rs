@@ -81,6 +81,7 @@ mod schedule_view;
 mod section;
 mod selection;
 mod settings;
+mod sicht_zahnrad;
 mod sonne_view;
 mod teilen_edit;
 mod terrace_label;
@@ -236,9 +237,9 @@ const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
 /// Baumpanel (Paket 4) zwischen „Ansichten“ und „Eigenschaften“.
 const OVERLAY_TREE: usize = OVERLAY_VIEWS + 2;
 const OVERLAY_TOOLS: usize = OVERLAY_VIEWS + 3;
-const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 4;
-/// Paneel „Geschosse“.
-const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 5;
+/// Knopf „Geschossmanager“, wie „Werkzeuge“ unter dem Abdunkeln.
+const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 4;
+const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 5;
 /// Dialog „Gebäude erstellen“.
 const OVERLAY_DIALOG: usize = OVERLAY_VIEWS + 6;
 const OVERLAY_TITLE: usize = OVERLAY_VIEWS + 7;
@@ -795,13 +796,8 @@ struct App {
     /// Zuletzt hochgeladene Leiste des Sonnenstands, der Würfel ist
     /// hochgeladen, Lichtrichtung von der Sonne (`None`: die feste).
     sonne_bild: Option<sonne_view::LeistenBild>,
-    /// Schatten der Ansichten (S7): Zahnrad und Feld, zuletzt hochgeladenes
-    /// Bild.
-    ansicht_schatten: ansicht_schatten::Schalter,
-    schatten_bild: Option<ansicht_schatten::Bild>,
-    /// Schnitthöhe des Grundrisses: Zahnrad und Feld, zuletzt hochgeladenes Bild.
-    plan_schnitt: grundriss_schnitt::Schalter,
-    plan_schnitt_bild: Option<grundriss_schnitt::Bild>,
+    /// Zahnräder der Ansicht: Schatten, Schnitthöhe, Sichtbarkeit.
+    zahnrad: zahnrad_app::Zahnraeder,
     /// Ecken des Gebäudes über dem Boden bei eingeschaltetem Sonnenstand:
     /// aus ihnen kommt die Schattenspitze (S6).
     ecken: Vec<Vec3>,
@@ -895,8 +891,8 @@ struct App {
     geschoss: geschossfenster::GeschossFenster,
     ifc: Option<ifc_vorschau::fenster::IfcFenster>,
     /// Baumpanel (Paket 4) und sein Zustand in der App: Hover kommt aus dem
-    /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann kein
-    /// Aufklappen), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
+    /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann bleiben
+    /// die Äste), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
     tree: tree_panel::TreePanel,
     hover_from_tree: bool,
     in_tree: bool,
@@ -1227,8 +1223,8 @@ impl App {
         self.tool.fang_aus(&mut self.scene);
         let l = self.scene.levels();
         self.geschoss.dirty |= self.geschoss.ui.set_levels(l.clone());
-        // Im Hauptfenster steht das Diagramm nur neben dem Dialog
-        self.overlay_dirty |= self.ui.set_levels(l) && self.ui.dialog;
+        // Im Hauptfenster steht nur der Knopf, das Diagramm im Geschossfenster
+        self.ui.set_levels(l);
     }
 
     /// Wählt das Bauteil (oder nichts). Ein Bauteil eines anderen Gebäudes
@@ -1248,7 +1244,7 @@ impl App {
     }
 
     /// Knopf „Gebäude“ ohne Gebäude im Modell: Dialog „Gebäude erstellen“
-    /// (E16). Das Gebäude steht sofort im Paneel „Geschosse“.
+    /// (E16). Das Gebäude steht sofort im Geschossfenster, wenn es offen ist.
     fn open_building_dialog(&mut self) {
         if !self.tool_allowed() {
             self.set_view(ViewKind::Persp);
@@ -1651,13 +1647,12 @@ impl App {
         if !self.tool_allowed() {
             self.nord.set_aktiv(false);
         }
-        self.ansicht_schatten.reset();
-        self.plan_schnitt.reset();
+        let sicht = self.zahnrad_reset();
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
             self.ui.building = false;
         }
-        if same_mesh {
+        if same_mesh && !sicht {
             self.redraw = true;
         } else {
             self.upload_model();
@@ -3492,7 +3487,7 @@ impl App {
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
             // `UiOut::level`; der Zähler ist derzeit fest
-            Id::Field(_) | Id::Grip(_) | Id::DialogMinus | Id::DialogPlus => {}
+            Id::Field(_) | Id::Grip(_) | Id::LineVis(_) | Id::DialogMinus | Id::DialogPlus => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();
@@ -4116,54 +4111,15 @@ impl App {
         let Some(d) = self.projektdaten.as_mut() else {
             return false;
         };
+        if let Event::MouseMove { x, y, .. } = e {
+            self.mouse_at = Some((x, y));
+        }
         let r = d.rect(s, self.w, self.h, th);
-        let answer = match e {
-            Event::MouseMove { x, y, .. } => {
-                self.mouse_at = Some((x, y));
-                self.overlay_dirty |= d.mouse_move(r, s, x, y);
-                None
-            }
-            // Die Titelleiste bleibt bedienbar (Fensterknöpfe, Ziehen)
-            Event::MouseDown { y, .. } | Event::MouseUp { y, .. } if y < th as f64 => {
-                return false;
-            }
-            Event::MouseDown {
-                button: MouseButton::Left,
-                x,
-                y,
-                ..
-            } => {
-                d.press(r, s, &self.ui.fonts, &self.theme, x, y);
-                self.overlay_dirty = true;
-                None
-            }
-            Event::MouseUp {
-                button: MouseButton::Left,
-                x,
-                y,
-                ..
-            } => {
-                self.overlay_dirty = true;
-                d.release(r, s, x, y)
-            }
-            Event::Key {
-                key, down, mods, ..
-            } => {
-                if !down {
-                    return true;
-                }
-                self.overlay_dirty = true;
-                d.key(key, mods)
-            }
-            Event::Text(ch) => {
-                d.text(ch);
-                self.overlay_dirty = true;
-                None
-            }
-            Event::MouseDown { .. } | Event::MouseUp { .. } | Event::Wheel { .. } => None,
-            _ => return false,
+        let Some(w) = d.ereignis(e, r, s, th as f64, &self.ui.fonts, &self.theme) else {
+            return false;
         };
-        if let Some(a) = answer {
+        self.overlay_dirty |= w.neu_zeichnen;
+        if let Some(a) = w.antwort {
             self.answer_projektdaten(a);
         }
         true
@@ -4669,7 +4625,7 @@ impl App {
                 self.wheel.scroll(&mut self.scene, n as i32, t);
             }
             Event::Wheel { y, .. } => {
-                if y >= th && !self.ui.dialog {
+                if y >= th && !self.ui.dialog && !self.tuer_rad(&e) {
                     camera_moved |=
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
@@ -4757,7 +4713,7 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
-                } else if down && key == Key::Escape && self.oeffnung_esc() {
+                } else if down && self.oeffnung_taste(key) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
@@ -6800,16 +6756,16 @@ impl App {
         if !self.edit.is_dragging() {
             self.tree.sync(&self.scene, &self.picking, &self.theme, s);
         }
-        // Auswahl im Modell: Ast aufklappen und hinrollen (nach dem Bau
-        // der Karten, auch beim ersten Bild)
+        // Auswahl im Modell: Ast auf und hinrollen, leer: alle Karten zu (auch beim ersten Bild)
         let p = self.picking.primary();
-        if p != self.tree_primary {
-            self.tree_primary = p;
-            if let Some(id) = p.filter(|_| !self.tree_picked) {
-                self.tree.reveal(self.scene.model(), id, &self.theme, s);
+        if p != self.tree_primary && !self.tree_picked {
+            match p {
+                Some(id) => self.tree.reveal(self.scene.model(), id, &self.theme, s),
+                None => self.tree.fold(),
             }
-            self.tree_picked = false;
         }
+        self.tree_primary = p;
+        self.tree_picked = false;
         // Befehlszeile (Bildvergleiche): überfahrene Zeile leuchtet im Modell
         let cli = self.tree.cli_hover.is_some();
         if let Some(a) = self.tree.apply_cli(self.scene.model()) {
@@ -6913,6 +6869,8 @@ impl App {
     /// Handlung aus dem Baumpanel ausführen.
     fn tree_action(&mut self, a: tree_panel::Action) {
         use tree_panel::Action as A;
+        // Wechselt die Auswahl dadurch (Klick, Löschen, Auge), bleiben die Äste
+        self.tree_picked = true;
         match a {
             A::Select(ids) => self.tree_select(ids),
             A::Storey(sid, ids) => {
@@ -6960,7 +6918,6 @@ impl App {
             }
             A::Delete(ids) => {
                 self.picking.selected = ids;
-                self.tree_picked = true;
                 self.erase(false);
             }
             A::DeleteBuilding(b) => self.open_confirm(b),
@@ -6979,7 +6936,6 @@ impl App {
             return;
         }
         self.picking.selected = ids;
-        self.tree_picked = true;
         self.quantity.dirty = true;
         if self
             .picking
@@ -7750,10 +7706,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         sonne_bild: None,
         ecken: Vec::new(),
         terrain_gaps: Vec::new(),
-        ansicht_schatten: Default::default(),
-        schatten_bild: None,
-        plan_schnitt: Default::default(),
-        plan_schnitt_bild: None,
+        zahnrad: Default::default(),
         griff_cache: None,
         ecken_stand: 0,
         nord_fuehrung: Default::default(),
