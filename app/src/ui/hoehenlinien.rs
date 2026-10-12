@@ -4,8 +4,8 @@
 //! Oberkante der Innentüren (12.10. 05:26); im aktiven Geschoss die
 //! Schnitthöhe des Grundrisses. Zwei Schalter in der Titelzeile blenden
 //! Fenster- und Innentürlinien getrennt aus. Ziehen meldet wie bei
-//! den Ebenen `LevelEvent::Move` mit der neuen Kote. Nur im Fenster, das
-//! Paneel neben dem Dialog „Gebäude erstellen“ hat dafür keinen Platz.
+//! den Ebenen `LevelEvent::Move` mit der neuen Kote. Das Diagramm steht
+//! nur im Geschossfenster (Jörn 12.10.).
 
 use super::*;
 
@@ -25,9 +25,6 @@ impl Ui {
     /// Bands (die Darstellung ist gespreizt); `lines`, `ys` wie im Diagramm.
     pub(super) fn sub_lines(&self, lines: &[LevelLine], ys: &[f32]) -> Vec<SubLine> {
         let mut out = Vec::new();
-        if !self.fenster {
-            return out;
-        }
         let s = self.scale;
         for (i, b) in self.levels.bands.iter().enumerate() {
             let (Some(l0), Some(l1), Some(&y0), Some(&y1)) =
@@ -226,8 +223,7 @@ mod tests {
     }
 
     /// Je Geschoss Brüstung und Sturz, im aktiven die Schnitthöhe; der Griff
-    /// der Brüstung lässt sich ziehen und meldet die gefangene Kote. Neben
-    /// dem Dialog im Hauptfenster keine Linien.
+    /// der Brüstung lässt sich ziehen und meldet die gefangene Kote.
     #[test]
     fn linien_und_griffe_im_fenster() {
         let (mut ui, s) = fenster();
@@ -286,15 +282,6 @@ mod tests {
                 (z / 10.0).round() * 10.0
             ))
         );
-
-        let mut haupt = Ui::new(1.0, &Theme::dark());
-        haupt.fit(1.0, 1440, 900);
-        haupt.set_levels(s.levels());
-        haupt.dialog = true;
-        let lines = level_lines(&haupt.levels);
-        let ys = haupt.line_ys(&lines, &haupt.levels_layout());
-        assert!(haupt.sub_lines(&lines, &ys).is_empty());
-        assert!(haupt.line_vis_rects().is_empty());
     }
 
     /// Die Schalter „Fenster“ und „Innentüren“ (Jörn 05:26) stehen links vom

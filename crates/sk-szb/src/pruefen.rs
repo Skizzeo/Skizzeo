@@ -48,7 +48,7 @@ impl Pruefung {
 const SICHERHEIT: [&str; 3] = ["belegt", "mittel", "grob"];
 const FUNKTION: [&str; 4] = ["loadbearing", "insulation", "finish", "membrane"];
 const BEZUG: [&str; 6] = ["area", "volume", "length", "perimeter", "formwork", "steel"];
-const KATEGORIE: [&str; 7] = [
+const KATEGORIE: [&str; 11] = [
     "masonry",
     "concrete",
     "insulation",
@@ -56,6 +56,10 @@ const KATEGORIE: [&str; 7] = [
     "timber",
     "metal",
     "membrane",
+    "screed",
+    "ceramic",
+    "flooring",
+    "coating",
 ];
 const EINH_P: [&str; 4] = ["mm", "grad", "stk", "-"];
 const EINH_M: [&str; 6] = ["stk", "m", "m2", "m3", "kg", "t"];
@@ -1619,7 +1623,7 @@ mod tests {
         assert_eq!(
             texte(&p),
             [
-                "kategorie: masonry, concrete, insulation, plaster, timber, metal, membrane",
+                "kategorie: masonry, concrete, insulation, plaster, timber, metal, membrane, screed, ceramic, flooring, coating",
                 "farbe: 6 Hex-Ziffern",
                 "[baustoff] holz lambda: Zahl ≥ 0.001 (Dezimalpunkt)",
                 "[baustoff] holz euroklasse: A1, E, F nur ohne Zusatz; A2 bis D auch mit -s1 bis -s3 und ,d0 bis ,d2; Bodenbeläge mit fl, dann nur -s1 oder -s2",
