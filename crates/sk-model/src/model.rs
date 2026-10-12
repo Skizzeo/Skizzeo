@@ -1514,8 +1514,11 @@ impl Model {
             && m.lambda
                 .is_none_or(|l| crate::matprop::check_lambda(m.category, l).is_ok())
             && m.props.iter().all(|(k, v)| {
+                // ein Altwert aus der Datei bleibt, auch wenn er die Prüfung
+                // nicht besteht (Verschnittzuschlag, Review #77/4)
                 *k == crate::matprop::normalize_key(k)
-                    && crate::matprop::check_prop(m.category, k, v).is_ok()
+                    && (crate::matprop::check_prop(m.category, k, v).is_ok()
+                        || old.props.get(k) == Some(v))
             });
         if !ok {
             return false;
