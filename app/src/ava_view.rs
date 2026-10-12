@@ -238,6 +238,9 @@ enum Hot {
     GrossZu,
     /// Große Druckvorschau: eine Seite (der Klick schließt nicht).
     GrossSeite,
+    /// Druckvorschau, klein oder groß: eine Position des Blatts
+    /// (`lv_blatt::Blatt::stellen`); ein Klick wählt ihre Bauteile.
+    Stelle(usize),
 }
 
 /// Punkt im Baum: grün Preis da, Akzent Preis fehlt, grau leer.
@@ -485,6 +488,15 @@ pub struct AvaView {
     /// Druckvorschau groß über dem ganzen Fenster (Jörn 11.10.): Rollstand
     /// (px), `None` zu.
     gross: Option<f32>,
+    /// Druckvorschau: Bauteile je OZ, ganz und nicht isoliert (Jörn 12.10.).
+    blatt_ids: Vec<(String, Vec<ElementId>)>,
+    /// Druckvorschau: die Position, deren Klick die Auswahl gab, sonst die
+    /// OZ der Positionen, die an der Auswahl von außen hängen (wie isoliert).
+    blatt_gewaehlt: Option<String>,
+    blatt_fokus: Vec<String>,
+    /// Eine Auswahl von außen kam in der Druckvorschau an: beim nächsten
+    /// Bild zu ihrer ersten Position blättern.
+    blatt_folgt: bool,
 }
 
 impl Default for AvaView {
@@ -547,6 +559,10 @@ impl AvaView {
             scroll_vorher: None,
             baum_ab: 0,
             gross: None,
+            blatt_ids: Vec::new(),
+            blatt_gewaehlt: None,
+            blatt_fokus: Vec::new(),
+            blatt_folgt: false,
         }
     }
 
@@ -637,7 +653,20 @@ impl AvaView {
                 }
                 Ansicht::Zusammenstellung => zusammenstellung(&lv),
                 Ansicht::Pruefen => pruefen(s.model(), &lv),
-                Ansicht::Blatt => Vec::new(),
+                Ansicht::Blatt => {
+                    let b = s.kostenblatt(firma, &self.leiste.umfang);
+                    let pos = |f| {
+                        lv_zeilen_mit(&lv, s.model(), &b, f)
+                            .into_iter()
+                            .filter(|z| z.art == Art::Position)
+                    };
+                    self.blatt_ids = pos(None).map(|z| (z.oz, z.elemente)).collect();
+                    self.blatt_fokus = match &self.fokus {
+                        Some(f) => pos(Some(f)).map(|z| z.oz).collect(),
+                        None => Vec::new(),
+                    };
+                    Vec::new()
+                }
             };
             self.gebaut = Some(key);
             self.fokus_text = self.fokus_leiste_text(s, firma, &lose, &wahl, &lv);
@@ -707,6 +736,8 @@ impl AvaView {
         let changed = hover != self.hover || p.selected != self.selected;
         if p.selected != self.selected {
             self.fokus_setzen((!p.selected.is_empty()).then(|| p.selected.clone()));
+            self.blatt_folgt = self.ansicht == Ansicht::Blatt && !p.selected.is_empty();
+            self.blatt_gewaehlt = None;
         }
         self.hover = hover;
         self.selected = p.selected.clone();
@@ -1285,6 +1316,7 @@ impl AvaView {
         };
         let group = match hot {
             Some(Hot::Zeile(i)) => self.zeilen[i].elemente.clone(),
+            Some(Hot::Stelle(i)) => self.stelle_ids(i).to_vec(),
             _ => Vec::new(),
         };
         if p.set_hover(None, group) {
@@ -1315,6 +1347,9 @@ impl AvaView {
         let hot = self.hit(t, fonts, x, y);
         // Große Druckvorschau: Klick daneben oder „Schließen“ schließt sie
         if self.gross_offen() {
+            if let Some(Hot::Stelle(i)) = hot {
+                return self.stelle_waehlen(i, p);
+            }
             if hot == Some(Hot::GrossSeite) {
                 return None;
             }
@@ -1377,6 +1412,7 @@ impl AvaView {
                 Some(ListOut::Repaint)
             }
             Hot::GrossZu | Hot::GrossSeite => None,
+            Hot::Stelle(i) => self.stelle_waehlen(i, p),
             Hot::BaumPruefen => {
                 // Auch bei offenem Blatt ein Klick: zu und „Prüfen“
                 self.baum_blatt = false;
@@ -1582,6 +1618,9 @@ impl AvaView {
             Hot::BaumPruefen => Some(format!("{} offene Punkte im LV", self.befunde())),
             Hot::Lupe => Some("Klick zeigt die Seite groß".into()),
             Hot::GrossZu => Some("Schließen (Esc)".into()),
+            Hot::Stelle(_) if !self.gross_offen() => {
+                Some("Klick zeigt die Bauteile im Modell · Lupe zeigt die Seite groß".into())
+            }
             _ => None,
         }
     }
@@ -2846,5 +2885,6 @@ mod erweiterung;
 mod fokus_leiste;
 mod gross;
 mod kopf;
+mod stellen;
 #[cfg(test)]
 mod tests;
