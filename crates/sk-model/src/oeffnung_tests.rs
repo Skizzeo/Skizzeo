@@ -1326,3 +1326,56 @@ fn tuerblatt_und_aufschlag() {
     f.kind = OpeningKind::Window;
     assert!(!m.opening_ok(&f));
 }
+
+/// Aufschlag im Grundriss (Jörn 06:35, Skizze): das offene Blatt steht
+/// senkrecht am Bandpfosten im Aufschlagraum, der Viertelkreis läuft von
+/// seinem freien Ende zum Gegenpfosten; ohne Aufschlag nichts, und in der
+/// Innenwand kein Einbauelement.
+#[test]
+fn aufschlag_im_grundriss() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let (mut m, eg, _) = haus(None);
+    let iw = innenwand(&mut m, eg);
+    let st = storey(&m, eg);
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: Some(Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        }),
+    };
+    let id = m.add_opening(tuer).unwrap();
+    let cut = m.storey(st).unwrap().elevation + 1500.0;
+    let c = m.chain(iw).unwrap();
+    assert!(
+        c.element_edges(cut).is_empty(),
+        "Innentür ohne Einbauelement"
+    );
+    let e = c.swing_edges(cut);
+    assert_eq!(e.len(), 13, "Blatt und zwölf Bogenstücke");
+    assert!(e.iter().all(|k| k.kind == crate::solid::edge_kind::FINE));
+    let l = m.door_leaf(id).unwrap();
+    let flach = |p: Vec3| vec3(p.x, p.y, 0.0);
+    // Blatt: vom Band (y = 3000) 885 mm nach +x
+    assert!((flach(e[0].a) - l.hinge).length() < 1e-6);
+    let frei = l.hinge + l.swing_into * 885.0;
+    assert!((flach(e[0].b) - frei).length() < 1e-6, "{:?}", e[0]);
+    // Bogen endet am Gegenpfosten
+    let ende = flach(e[12].b);
+    assert!(
+        (ende - vec3(l.hinge.x, 3885.0, 0.0)).length() < 1e-6,
+        "{ende:?}"
+    );
+    assert!(e.iter().all(|k| (k.a.z - cut).abs() < 1e-9));
+    // Über der Tür kein Aufschlag
+    assert!(c.swing_edges(cut + 2000.0).is_empty());
+    let mut o = m.opening(id).cloned().unwrap();
+    o.swing = None;
+    assert!(m.set_opening(id, o));
+    assert!(m.chain(iw).unwrap().swing_edges(cut).is_empty());
+}

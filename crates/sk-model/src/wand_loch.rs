@@ -37,6 +37,23 @@ pub struct Hole {
     pub opening: Option<crate::ElementId>,
     /// Einbautiefen des Elements in dieser Wand (Laibungen, Raumbuch).
     pub install: crate::oeffnung::InstallDepth,
+    /// In einer Außenwand oder Aufkantung; sonst in einer Innenwand
+    /// (Innentür: ohne Einbauelement im Grundriss).
+    pub outer: bool,
+    /// Türblatt, wenn die Öffnung einen Aufschlag hat.
+    pub leaf: Option<Leaf>,
+}
+
+/// Türblatt einer Öffnung im Wandzug (Jörn 12.10. 05:50): Lage der
+/// Blattlinie quer zur Bezugslinie (Rohbauflucht der Aufschlagseite,
+/// positiv rechts der Zeichenrichtung), Seite des Aufschlagraums und
+/// Pfosten der Bänder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Leaf {
+    pub off: f64,
+    pub side: crate::oeffnung::FaceSide,
+    /// Bänder am kleineren `u` des Lochs.
+    pub hinge_lo: bool,
 }
 
 /// Bereich eines Lochs in einer Schicht: längs (u) und Höhe (z).
@@ -541,7 +558,7 @@ impl WallChain {
         let (o, inner) = (self.outer_offset(), self.inner_offset());
         let sign = (o - inner).signum();
         for h in &self.joints.holes {
-            if !(h.z.0 < cut && cut < h.z.1) {
+            if !(h.outer && h.z.0 < cut && cut < h.z.1) {
                 continue;
             }
             let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
@@ -581,7 +598,57 @@ impl WallChain {
         }
         out
     }
+
+    /// Aufschlag der Türen im Grundriss in Höhe `cut` (Jörn 05:50): das
+    /// offene Blatt senkrecht vom Bandpfosten in den Aufschlagraum, so lang
+    /// wie die Lichte, und der Viertelkreis bis zum Gegenpfosten, dünn.
+    pub fn swing_edges(&self, cut: f64) -> Vec<Edge> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        for h in &self.joints.holes {
+            let Some(l) = h.leaf else {
+                continue;
+            };
+            if !(h.z.0 < cut && cut < h.z.1 && h.u.0.is_finite() && h.u.1.is_finite()) {
+                continue;
+            }
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            let at = |u: f64| {
+                let p = p0 + d * u + crate::wall::right_of(d) * l.off;
+                vec3(p.x, p.y, cut)
+            };
+            let (uh, uo) = if l.hinge_lo { h.u } else { (h.u.1, h.u.0) };
+            let w = (uo - uh).abs();
+            let (band, offen, zu) = (at(uh), l.side.normal(d) * w, d * (uo - uh));
+            let mut punkte = vec![band + offen];
+            for k in 1..=BOGEN {
+                let t = std::f64::consts::FRAC_PI_2 * k as f64 / BOGEN as f64;
+                punkte.push(band + offen * t.cos() + zu * t.sin());
+            }
+            let mut kante = |a: Vec3, b: Vec3| {
+                out.push(Edge {
+                    a,
+                    b,
+                    kind: edge_kind::FINE,
+                    elem: h.seg as u32,
+                    layer: 0,
+                });
+            };
+            kante(band, punkte[0]);
+            for p in punkte.windows(2) {
+                kante(p[0], p[1]);
+            }
+        }
+        out
+    }
 }
+
+/// Stücke des Viertelkreises im Türaufschlag.
+const BOGEN: usize = 12;
 
 #[cfg(test)]
 mod tests {
@@ -697,6 +764,8 @@ mod tests {
             u_right: true,
             opening: None,
             install: Default::default(),
+            outer: true,
+            leaf: None,
         };
         assert_eq!(h.kasten(true), ((1000.0, 2000.0), (875.0, 2385.0)));
         assert_eq!(h.kasten(false), ((940.0, 2060.0), (875.0, 2445.0)));
@@ -726,6 +795,8 @@ mod tests {
             u_right: true,
             opening: None,
             install: Default::default(),
+            outer: true,
+            leaf: None,
         };
         c.joints.holes.push(h.clone());
         (c, h)

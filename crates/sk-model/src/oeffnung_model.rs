@@ -296,6 +296,8 @@ impl Model {
                         u_right: rechts,
                         opening: id,
                         install: self.install_depth(op, run),
+                        outer: self.category_of(run).is_some_and(Category::is_outer_wall),
+                        leaf: self.leaf_in(run, c, op, d, ua, ub),
                     },
                 ));
             }
@@ -605,26 +607,45 @@ impl Model {
                 let (_, h) = self.legs_on(r, &c, Some(id), o).into_iter().next()?;
                 Some((r, c, h))
             })?;
+        let leaf = h.leaf?;
         let (pts, _, dirs) = c.layout()?;
         let d = dirs[h.seg];
-        let nr = right_of(d);
-        let face = if into.dot(nr) > 0.0 {
-            FaceSide::Right
-        } else {
-            FaceSide::Left
-        };
-        let off = self.rough_face(run, &c, face);
-        let at = |u: f64| pts[h.seg] + d * u + nr * off;
-        let start = if along.dot(d) > 0.0 { h.u.0 } else { h.u.1 };
-        let end = h.u.0 + h.u.1 - start;
+        let at = |u: f64| pts[h.seg] + d * u + right_of(d) * leaf.off;
         Some(DoorLeaf {
             run,
             seg: h.seg,
             u: h.u,
-            face,
+            face: leaf.side,
             line: (at(h.u.0), at(h.u.1)),
             swing_into: into,
-            hinge: at(if sw.hinge_at_start() { start } else { end }),
+            hinge: at(if leaf.hinge_lo { h.u.0 } else { h.u.1 }),
+        })
+    }
+
+    /// Türblatt der Öffnung `op` im Zug `run`, deren gerader Pfad auf dem
+    /// Segment mit Richtung `d` von `ua` nach `ub` läuft.
+    fn leaf_in(
+        &self,
+        run: RunId,
+        c: &WallChain,
+        op: &Opening,
+        d: Vec3,
+        ua: f64,
+        ub: f64,
+    ) -> Option<crate::wand_loch::Leaf> {
+        let sw = op.swing.filter(|_| op.path.len() == 2)?;
+        let along = flat(op.path[1]) - flat(op.path[0]);
+        let into = sw.side.normal(along);
+        let side = if into.dot(right_of(d)) > 0.0 {
+            FaceSide::Right
+        } else {
+            FaceSide::Left
+        };
+        let hinge = if sw.hinge_at_start() { ua } else { ub };
+        Some(crate::wand_loch::Leaf {
+            off: self.rough_face(run, c, side),
+            side,
+            hinge_lo: hinge <= ua.min(ub),
         })
     }
 
