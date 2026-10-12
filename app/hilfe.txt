@@ -71,6 +71,7 @@ Höhen | an einer Linie gefangen wandert die Kante mit, wenn die Linie im Gescho
 Anschlag | bei WDVS und Verblender ist die gezeichnete Öffnung die sichtbare außen, innen ist sie um den Anschlag größer
 Einbauelement | im Grundriss zeigen zwei dünn gestrichelte Linien, wo das spätere Fenster- oder Türelement sitzt: außen nach der äußeren Einbautiefe, dazwischen die Elementtiefe
 Innentür | „Tür“ im Grundriss: über einer Innenwand hängt die Tür am Cursor und schlägt in den Raum auf der Cursorseite auf; **Tab** schaltet den Bezugspunkt Mitte, links, rechts; das Mausrad blättert die Breiten 63,5 / 76 / 88,5 / 101 cm nach DIN 18101; Klick setzt sie, unten OK Rohdecke, oben die Innentürlinie, DIN links
+Aufschlag | im Grundriss zeigt eine Innentür bei der Maus einen runden Griff am Ende des offenen Blatts; ziehen: die Wandseite gibt den Raum, in den sie aufschlägt, die Hälfte der Öffnung den Bandpfosten (DIN links oder rechts nach DIN 107); Loslassen ist ein Schritt, **Esc** bricht ab
 Beenden | **Esc** nimmt die erste Ecke zurück, dann schließt es
 
 [thema] id=einlesen titel="Bauteil einlesen"

@@ -90,6 +90,20 @@ impl Scene {
         self.commit();
         id
     }
+
+    /// Setzt im offenen Schritt den Aufschlag der Tür `id` (Griff im
+    /// Grundriss). `false`, wenn das Modell ihn ablehnt.
+    pub fn set_swing(&mut self, id: ElementId, s: sk_model::oeffnung::Swing) -> bool {
+        let Some(mut o) = self.model.opening(id).cloned() else {
+            return false;
+        };
+        o.swing = Some(s);
+        let ok = self.model.set_opening(id, o);
+        for r in self.model.step_touched() {
+            self.mark(r);
+        }
+        ok
+    }
 }
 
 #[cfg(test)]

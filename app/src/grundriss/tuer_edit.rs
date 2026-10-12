@@ -1,0 +1,329 @@
+//! Aufschlag und DIN-Hand einer Innentür am Griff (Grundriss, Jörn 12.10.
+//! 06:36–06:38): Steht die Maus bei einer Tür des aktiven Geschosses, zeigt
+//! sie einen runden Griff am freien Ende ihres offenen Blatts. Beim Ziehen
+//! bestimmt die Wandseite, auf der der Griff steht, den Raum, in den die Tür
+//! aufschlägt, und die Hälfte der Öffnung darüber den Bandpfosten (und damit
+//! DIN links oder rechts, DIN 107). Die Tür geht live mit, Loslassen ist ein
+//! Schritt, Esc bricht ab. Teil von [`crate::wall_edit`].
+
+use super::drag_point;
+use super::ende_edit::{self, Outcome, GRIFF_PX};
+use crate::camera::Camera;
+use crate::scene::Scene;
+use sk_math::{vec3, Vec3};
+use sk_model::oeffnung::{Din, FaceSide, Swing};
+use sk_model::{ElementId, ElementKind, Model};
+use sk_platform::{Event, Key, MouseButton};
+use sk_render::Helper;
+use sk_ui::theme::Theme;
+
+/// Bezeichnung des Schritts im Verlauf.
+pub const SCHRITT: &str = "Türaufschlag geändert";
+/// Der Griff erscheint, wenn die Maus näher als so viele Türbreiten an der
+/// Türmitte steht (das offene Blattende liegt bei gut einer Breite).
+const NAH: f64 = 1.25;
+
+fn flat(p: Vec3) -> Vec3 {
+    vec3(p.x, p.y, 0.0)
+}
+
+/// Griff der Tür `id` (z = 0) und ihre Mitte und Breite; `None` ohne
+/// Aufschlag.
+fn griff_der_tuer(m: &Model, id: ElementId) -> Option<(Vec3, Vec3, f64)> {
+    let l = m.door_leaf(id)?;
+    let w = (l.u.1 - l.u.0).abs();
+    let mitte = (l.line.0 + l.line.1) * 0.5;
+    Some((flat(l.hinge + l.swing_into * w), flat(mitte), w))
+}
+
+/// Griffe der Türen des aktiven Geschosses, bei denen die Maus (Punkt `p`
+/// im Grundriss) steht.
+pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
+    let m = scene.model();
+    let st = scene.active_storey();
+    let p = flat(p);
+    m.elements()
+        .iter()
+        .filter(|(_, e)| e.storey == st && matches!(e.kind, ElementKind::Opening(_)))
+        .filter_map(|(id, _)| {
+            let (g, mitte, w) = griff_der_tuer(m, id)?;
+            ((p - mitte).length() <= NAH * w).then_some((id, g))
+        })
+        .collect()
+}
+
+/// Griff unter der Maus (Ansichtspixel `x`, `y`) aus `griffe`, gezeichnet
+/// in Höhe `z`.
+#[allow(clippy::too_many_arguments)]
+pub fn griff_bei(
+    griffe: &[(ElementId, Vec3)],
+    cam: &Camera,
+    z: f64,
+    (x, y): (f64, f64),
+    w: f64,
+    h: f64,
+    scale: f64,
+) -> Option<(ElementId, Vec3)> {
+    griffe
+        .iter()
+        .filter_map(|&(id, p)| {
+            let (px, py) = cam.project(vec3(p.x, p.y, z), w, h)?;
+            let d = (px - x).hypot(py - y);
+            (d <= GRIFF_PX * scale).then_some((d, id, p))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, id, p)| (id, p))
+}
+
+/// Aufschlag der Tür `id`, wenn ihr Griff bei `p` (Grundriss) steht: die
+/// Wandseite von `p` zur Wandmitte gibt den Raum, die Hälfte der Lichte den
+/// Bandpfosten. Die Seite gilt zur Pfadrichtung wie in [`Swing`].
+pub fn swing_bei(m: &Model, id: ElementId, p: Vec3) -> Option<Swing> {
+    let o = m.opening(id)?;
+    let l = m.door_leaf(id)?;
+    let (a, b) = (flat(*o.path.first()?), flat(*o.path.last()?));
+    let len = (b - a).length();
+    if len < 1e-9 {
+        return None;
+    }
+    let along = (b - a) / len;
+    let f = m.outer_face(l.run, l.seg)?;
+    let t = m.chain(l.run)?.thickness();
+    // Der Pfad liegt auf der Bezugsfläche, die Wand dahinter um ihre Dicke
+    let mitte = a - f.n * (t / 2.0);
+    let p = flat(p);
+    let rechts = FaceSide::Right.normal(along);
+    let side = if (p - mitte).dot(rechts) > 0.0 {
+        FaceSide::Right
+    } else {
+        FaceSide::Left
+    };
+    let band_am_anfang = (p - a).dot(along) < len / 2.0;
+    let din = if (side == FaceSide::Right) == band_am_anfang {
+        Din::Links
+    } else {
+        Din::Rechts
+    };
+    Some(Swing { side, din })
+}
+
+/// Laufendes Ziehen am Griff einer Tür.
+pub struct TuerZug {
+    pub id: ElementId,
+    alt: Swing,
+    jetzt: Swing,
+    /// Höhe des Grundrisses.
+    z: f64,
+}
+
+impl TuerZug {
+    /// Greift den Griff der Tür `id` und öffnet den Schritt.
+    pub fn greifen(scene: &mut Scene, id: ElementId, z: f64) -> Option<TuerZug> {
+        let alt = scene.model().opening(id)?.swing?;
+        scene.begin(SCHRITT);
+        Some(TuerZug {
+            id,
+            alt,
+            jetzt: alt,
+            z,
+        })
+    }
+
+    /// Maus und Esc beim Ziehen.
+    pub fn handle(
+        &mut self,
+        e: &Event,
+        scene: &mut Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        match *e {
+            Event::MouseMove { x, y, .. } => {
+                let s = drag_point(cam, x, y, w, h, self.z)
+                    .and_then(|p| swing_bei(scene.model(), self.id, p));
+                if let Some(s) = s.filter(|s| *s != self.jetzt) {
+                    if scene.set_swing(self.id, s) {
+                        self.jetzt = s;
+                        out.changed = true;
+                        out.redraw = true;
+                    }
+                }
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.jetzt == self.alt {
+                    scene.rollback();
+                } else {
+                    scene.commit();
+                }
+                out.fertig = true;
+                out.redraw = true;
+            }
+            Event::Key {
+                key: Key::Escape,
+                down: true,
+                ..
+            } => {
+                scene.rollback();
+                out.changed = self.jetzt != self.alt;
+                out.fertig = true;
+                out.redraw = true;
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// Der Griff am freien Blattende, wie die Tür gerade steht.
+    pub fn helpers(&self, scene: &Scene, scale: f32, occlude: bool, theme: &Theme) -> Vec<Helper> {
+        griff_der_tuer(scene.model(), self.id)
+            .map(|(g, ..)| ende_edit::griff(g, self.z, scale, occlude, theme).to_vec())
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    use sk_model::{Category, LevelRef, RefSide};
+
+    /// Prüfhaus 10 × 8 m mit Innenwand bei x = 5 m (Zeichenrichtung +y)
+    /// und einer Tür darin, 88,5 cm breit um y = 3 m.
+    fn haus() -> (Model, ElementId) {
+        let mut m = Model::with_seed(412);
+        let b = m.add_building(1);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let st = m.run(eg).unwrap().storey;
+        let set = m.defaults().interior_wall;
+        let iw = m
+            .add_wall_run(
+                &[vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let f = m.outer_face(iw, 0).unwrap();
+        let u = f.u_of(vec3(5000.0, 3000.0, 0.0));
+        let o = Opening {
+            kind: OpeningKind::Door,
+            path: vec![f.at(u - 442.5, 0.0), f.at(u + 442.5, 0.0)],
+            bottom: HeightRef::Level(LevelRef::bottom(st)),
+            top: HeightRef::Line(st, HeightLine::Door),
+            reveal: None,
+            install: Default::default(),
+            swing: Some(Swing {
+                side: FaceSide::Right,
+                din: Din::Links,
+            }),
+        };
+        let id = m.add_opening(o).unwrap();
+        (m, id)
+    }
+
+    /// Der Griff steht am freien Ende des offenen Blatts: über dem
+    /// Bandpfosten, eine Türbreite im Raum des Aufschlags.
+    #[test]
+    fn griff_am_blattende() {
+        let (m, id) = haus();
+        let l = m.door_leaf(id).unwrap();
+        let (g, mitte, w) = griff_der_tuer(&m, id).unwrap();
+        assert_eq!(w, 885.0);
+        assert!((g - flat(l.hinge) - l.swing_into * w).length() < 1e-6);
+        assert!(((mitte.y) - 3000.0).abs() < 1e-6, "{mitte:?}");
+    }
+
+    /// Alle vier Lagen: die Wandseite des Griffs gibt den Raum, die Hälfte
+    /// der Lichte den Bandpfosten; das Modell zeichnet das Blatt dann dort.
+    #[test]
+    fn vier_lagen_am_griff() {
+        let (mut m, id) = haus();
+        for (p, x_into, y_band) in [
+            (vec3(5800.0, 2700.0, 0.0), 1.0, 2557.5),
+            (vec3(5800.0, 3300.0, 0.0), 1.0, 3442.5),
+            (vec3(4200.0, 2700.0, 0.0), -1.0, 2557.5),
+            (vec3(4200.0, 3300.0, 0.0), -1.0, 3442.5),
+        ] {
+            let s = swing_bei(&m, id, p).unwrap();
+            let mut o = m.opening(id).unwrap().clone();
+            o.swing = Some(s);
+            assert!(m.set_opening(id, o));
+            let l = m.door_leaf(id).unwrap();
+            assert!((l.swing_into.x - x_into).abs() < 1e-9, "{p:?}: {l:?}");
+            assert!((l.hinge.y - y_band).abs() < 1e-6, "{p:?}: {l:?}");
+            let (g, ..) = griff_der_tuer(&m, id).unwrap();
+            // Der Griff landet in der Hälfte und auf der Seite der Maus
+            assert!((g.x - 5000.0) * (p.x - 5000.0) > 0.0);
+            assert!((g.y - 3000.0) * (p.y - 3000.0) > 0.0);
+        }
+        // Aus dem Raum bei +x gesehen (Blick nach −x) liegt das Band bei
+        // −y links: DIN links
+        let s = swing_bei(&m, id, vec3(5800.0, 2700.0, 0.0)).unwrap();
+        assert_eq!(s.din, Din::Links);
+        let s = swing_bei(&m, id, vec3(5800.0, 3300.0, 0.0)).unwrap();
+        assert_eq!(s.din, Din::Rechts);
+    }
+
+    /// Ziehen am Griff: die Tür geht live mit, Esc stellt sie zurück,
+    /// Loslassen ist ein Schritt, den Rückgängig wieder nimmt.
+    #[test]
+    fn ziehen_esc_und_schritt() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(
+            vec3(5000.0, 3000.0, 20000.0),
+            vec3(5000.0, 3001.0, 0.0),
+            45.0,
+        );
+        let (m, id) = haus();
+        let mut s = Scene::with_model(m);
+        let alt = s.model().opening(id).unwrap().swing.unwrap();
+        let ziel = vec3(4200.0, 3300.0, 0.0);
+        let soll = swing_bei(s.model(), id, ziel).unwrap();
+        assert_ne!(soll, alt);
+        let (x, y) = cam.project(ziel, W, H).unwrap();
+        let mods = Default::default();
+        let zug = |s: &mut Scene| TuerZug::greifen(s, id, 0.0).unwrap();
+        let swing = |s: &Scene| s.model().opening(id).unwrap().swing.unwrap();
+        // Esc: zurück
+        let mut t = zug(&mut s);
+        let o = t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        assert!(o.changed);
+        assert_eq!(swing(&s), soll);
+        let esc = Event::Key {
+            key: Key::Escape,
+            down: true,
+            mods,
+            repeat: false,
+        };
+        assert!(t.handle(&esc, &mut s, &cam, W, H).fertig);
+        assert_eq!(swing(&s), alt);
+        // Loslassen: ein Schritt
+        let mut t = zug(&mut s);
+        t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        let los = Event::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods,
+        };
+        assert!(t.handle(&los, &mut s, &cam, W, H).fertig);
+        assert_eq!(swing(&s), soll);
+        assert_eq!(s.undo_label(), Some(SCHRITT));
+        assert!(s.undo());
+        assert_eq!(swing(&s), alt);
+    }
+}
