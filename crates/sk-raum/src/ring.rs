@@ -55,6 +55,22 @@ fn schnitt(p: Vec3, u: Vec3, q: Vec3, v: Vec3) -> Option<Vec3> {
     Some(p + u * t)
 }
 
+/// So weit (Vielfaches des größeren Versatzes) darf die Gehrung von der
+/// Ecke liegen. Eine spitze Ecke von 10° gehrt bei gleichem Versatz
+/// 11,5-fach; weiter draußen laufen die Kanten fast in einer Flucht, und
+/// der Schnitt gäbe eine Spitze aus dem Raum (Geometrie #112).
+const GEHRUNG_MAX: f64 = 16.0;
+
+/// Gehrung der versetzten Kanten `(p, u)` und `(q, v)` an der Ecke `ecke`
+/// mit den Versätzen `d`; `None` wie in einer Flucht (dann steht eine
+/// Stufe), wenn sie parallel laufen oder ihr Schnitt weiter als
+/// [`GEHRUNG_MAX`] von der Ecke liegt.
+fn gehrung(p: Vec3, u: Vec3, q: Vec3, v: Vec3, ecke: Vec3, d: [f64; 2]) -> Option<Vec3> {
+    let s = schnitt(p, u, q, v)?;
+    let weit = GEHRUNG_MAX * d[0].abs().max(d[1].abs());
+    ((s - ecke).length() <= weit).then_some(s)
+}
+
 /// Versetzt den Ring `punkte` (Anfang jeder Kante, geschlossen) je Kante um
 /// `d[k]` nach links, also in den Raum.
 pub(crate) fn versetzt(punkte: &[Vec3], d: &[f64]) -> Versatz {
@@ -74,10 +90,11 @@ pub(crate) fn versetzt(punkte: &[Vec3], d: &[f64]) -> Versatz {
     };
     for k in 0..n {
         let (q, u, ende) = kanten[k];
-        let (qv, uv, _) = kanten[(k + n - 1) % n];
-        let (qn, un, _) = kanten[(k + 1) % n];
-        let s = schnitt(qv, uv, q, u).unwrap_or(q);
-        let e = schnitt(q, u, qn, un).unwrap_or(ende);
+        let (v, w) = ((k + n - 1) % n, (k + 1) % n);
+        let (qv, uv, _) = kanten[v];
+        let (qn, un, _) = kanten[w];
+        let s = gehrung(qv, uv, q, u, flach(punkte[k]), [d[v], d[k]]).unwrap_or(q);
+        let e = gehrung(q, u, qn, un, flach(punkte[w]), [d[k], d[w]]).unwrap_or(ende);
         out.laengen.push((e - s).dot(u).max(0.0));
         out.enden.push((s, e));
         if out.punkte.last().is_none_or(|l| (*l - s).length() > 1e-6) {
@@ -191,5 +208,63 @@ mod tests {
         let v = versetzt(&r, &[15.0; 6]);
         let soll = 3970.0 * 970.0 + 1970.0 * 2000.0;
         assert!((v.flaeche() - soll).abs() < 1e-6, "{}", v.flaeche());
+    }
+
+    /// Eine spitze Ecke von 10° gehrt noch (11,5-facher Versatz von der
+    /// Ecke), erst fast in einer Flucht steht die Stufe.
+    #[test]
+    fn spitze_ecke_gehrt() {
+        let a = 10f64.to_radians();
+        let r = vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(4000.0, 0.0, 0.0),
+            vec3(4000.0, 4000.0 * a.tan(), 0.0),
+        ];
+        let v = versetzt(&r, &[15.0, 15.0, 15.0]);
+        assert_eq!(v.punkte.len(), 3, "{:?}", v.punkte);
+        let ecke = v.punkte[0];
+        assert!((ecke.length() - 15.0 / (a / 2.0).sin()).abs() < 1e-6);
+        assert!(
+            (ecke.y / ecke.x - (a / 2.0).tan()).abs() < 1e-9,
+            "auf der Winkelhalbierenden"
+        );
+    }
+
+    /// Geometrie #112: Zwei Kanten fast in einer Flucht (Zwischenpunkt
+    /// δ neben der Geraden), verschieden weit versetzt (Putz 15, mit
+    /// Fliesen 25). Der Versatz bleibt am Raum: keine Spitze aus dem Raum,
+    /// Fläche wie bei der Stufe in der Flucht (bis auf den Knick).
+    #[test]
+    fn fast_in_der_flucht_keine_spitze() {
+        let stufe = |delta: f64| {
+            let r = vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(2000.0, delta, 0.0),
+                vec3(4000.0, 0.0, 0.0),
+                vec3(4000.0, 3000.0, 0.0),
+                vec3(0.0, 3000.0, 0.0),
+            ];
+            versetzt(&r, &[15.0, 25.0, 15.0, 15.0, 15.0])
+        };
+        let gerade = stufe(0.0);
+        for delta in [1e-5, 1e-3, 0.1, 1.0] {
+            let v = stufe(delta);
+            for p in &v.punkte {
+                assert!(
+                    p.x > -1e-6 && p.x < 4000.0 + 1e-6 && p.y > -1e-6 && p.y < 3000.0 + 1e-6,
+                    "δ {delta}: Punkt {p:?} außerhalb des Raums"
+                );
+            }
+            let d = (v.flaeche() - gerade.flaeche()).abs();
+            assert!(
+                d < 4000.0 * delta + 1.0,
+                "δ {delta}: Fläche um {d} mm² anders"
+            );
+            assert!(
+                v.umfang() < gerade.umfang() + 1.0,
+                "δ {delta}: Umfang {}",
+                v.umfang()
+            );
+        }
     }
 }
