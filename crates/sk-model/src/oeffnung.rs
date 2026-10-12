@@ -134,3 +134,52 @@ impl Opening {
         self.path.windows(2).map(|w| (w[1] - w[0]).length()).sum()
     }
 }
+
+/// Außenfläche eines Außenwandsegments, auf der eine Öffnung aufgezogen
+/// wird (Werkzeug, Paket O3). Punkte auf ihr: `a + d·u + z`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OuterFace {
+    pub run: crate::RunId,
+    pub seg: usize,
+    /// Geschoss der Wand: seine Höhenlinien gelten auf der Fläche.
+    pub storey: StoreyId,
+    /// Punkt der Außenfläche bei `u = 0` (Segmentanfang der Bezugslinie), z = 0.
+    pub a: Vec3,
+    /// Richtung längs der Wand und Normale nach außen (waagerecht).
+    pub d: Vec3,
+    pub n: Vec3,
+    /// Lage der Ecken der Außenfläche längs `d`.
+    pub u: (f64, f64),
+    /// Bereich längs `d`, in dem ein freies Ende einer Öffnung liegen darf:
+    /// samt Anschlag innerhalb aller Schichtflächen des Segments, also nicht
+    /// an der Ecke ([`crate::Model::opening_fault`]).
+    pub free: (f64, f64),
+    /// Wandfuß und Wandkrone (z absolut).
+    pub z: (f64, f64),
+}
+
+impl OuterFace {
+    /// Lage längs der Fläche.
+    pub fn u_of(&self, p: Vec3) -> f64 {
+        (p - self.a).dot(self.d)
+    }
+
+    /// Punkt der Fläche bei `u` in Höhe `z`.
+    pub fn at(&self, u: f64, z: f64) -> Vec3 {
+        let p = self.a + self.d * u;
+        sk_math::vec3(p.x, p.y, z)
+    }
+
+    /// Liegt `p` (waagerecht) auf der Linie der Fläche?
+    pub fn on_line(&self, p: Vec3) -> bool {
+        (sk_math::vec3(p.x, p.y, 0.0) - self.a).dot(self.n).abs() < 1.0
+    }
+}
+
+/// Höhenlinie auf einer Fläche: Höhe und woran eine dort gefangene Kante
+/// gebunden wird.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceLine {
+    pub z: f64,
+    pub bind: HeightRef,
+}

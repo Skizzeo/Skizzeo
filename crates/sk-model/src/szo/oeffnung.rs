@@ -10,6 +10,7 @@
 
 use super::{category, err, keyword, Line, LoadError, Record};
 use crate::element::{Element, ElementKind, LevelEdge, LevelRef};
+use crate::model::RawOpening;
 use crate::oeffnung::{
     HeightLine, HeightRef, Install, Opening, OpeningKind, MAX_INSTALL, MAX_REVEAL,
 };
@@ -66,6 +67,44 @@ pub(super) fn write(m: &Model, elements: &[&Element], out: &mut String) {
             .guid("storey", m.storey(e.storey).map(|s| s.guid))
             .finish(out);
     }
+    for raw in m.opening_raw() {
+        out.push_str(raw);
+        out.push('\n');
+    }
+}
+
+/// Eine verworfene Zeile roh (Regel 72). Sie hält ihre Nummer und ihre
+/// Guid (Review #86 B3), und sie merkt sich die Geschosse, auf die sie
+/// zeigt (`storey`, `bottom`, `top`): Ist eines gelöscht, entfällt sie beim
+/// Speichern.
+pub(super) fn raw(
+    r: &Record,
+    line: &str,
+    number: &mut impl FnMut(&Record) -> Result<String, LoadError>,
+    seen: &mut HashMap<Guid, usize>,
+) -> Result<RawOpening, LoadError> {
+    let number = match r.opt("number") {
+        Some(_) => Some(number(r)?),
+        None => None,
+    };
+    if let Some(g) = r.opt("guid").and_then(Guid::from_ifc) {
+        if let Some(first) = seen.insert(g, r.line) {
+            return Err(err(
+                r.line,
+                format!("Guid {} doppelt (schon in Zeile {first})", g.to_ifc()),
+            ));
+        }
+    }
+    let storeys = ["storey", "bottom", "top"]
+        .iter()
+        .filter_map(|k| r.opt(k))
+        .filter_map(|v| Guid::from_ifc(v.split(':').next().unwrap_or("")))
+        .collect();
+    Ok(RawOpening {
+        line: line.to_string(),
+        storeys,
+        number,
+    })
 }
 
 /// Höhe aus `key`; `None`, wenn der Versatz einer freien Höhe unlesbar
@@ -121,7 +160,7 @@ fn verworfen(r: &Record, key: &str, folge: &str) -> String {
 /// Parametrik einer `[opening]`-Zeile. Ein ungültiger Wert gibt einen
 /// Hinweis: Art (auch fehlend), Anschlag und Einbautiefen nehmen die
 /// Vorgabe, ein unlesbarer Pfad oder Versatz verwirft die Öffnung (`None`,
-/// Review #79). Eine Höhe, die auf kein Geschoss oder keine Höhenlinie
+/// Review #79; die Zeile bleibt roh, Regel 72). Eine Höhe, die auf kein Geschoss oder keine Höhenlinie
 /// zeigt, lehnt die Datei ab wie jeder andere Verweis.
 pub(super) fn read(
     r: &Record,
@@ -168,7 +207,7 @@ pub(super) fn read(
         }
     };
     let Some(path) = path else {
-        hints.push(verworfen(r, "pts", "Öffnung verworfen"));
+        hints.push(verworfen(r, "pts", "Öffnung verworfen, die Zeile bleibt"));
         rest(r);
         return Ok(None);
     };
@@ -177,7 +216,7 @@ pub(super) fn read(
         read_height(r, "top", storeys)?,
     ) else {
         hints.push(format!(
-            "Zeile {}: [opening] Höhe „bottom={}“ / „top={}“ unlesbar, Öffnung verworfen",
+            "Zeile {}: [opening] Höhe „bottom={}“ / „top={}“ unlesbar, Öffnung verworfen, die Zeile bleibt",
             r.line,
             r.opt("bottom").unwrap_or(""),
             r.opt("top").unwrap_or("")
