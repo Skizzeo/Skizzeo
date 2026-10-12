@@ -15,6 +15,7 @@ pub mod krypto;
 pub mod lesen;
 pub mod linien;
 pub mod netz;
+pub mod pdf;
 pub mod praedikate;
 pub mod pruefen;
 pub mod volumen;
