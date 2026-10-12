@@ -432,6 +432,7 @@ mod tests {
         // Das offene Feld mit „vorne oben“ gewählt, Maus über „Sonne“
         let b = crate::ansicht_schatten::Bild {
             gestrichelt: false,
+            entw: false,
             vs: ViewShade {
                 light: ShadeLight::Top,
                 ..ViewShade::WERK
@@ -839,5 +840,92 @@ mod tests {
             leer(),
         );
         ab(&px, "ist-e4-treppe-vorne.png");
+    }
+
+    /// Ist-Bilder Dachentwässerung (Jörn 12.10.): Prüfhaus mit Flachdach in
+    /// 3D und vorne, je mit Regenfallrohren und mit dem Häkchen
+    /// „Dachentwässerung ausblenden“, dazu die offenen Felder der Zahnräder
+    /// in 3D, im Grundriss und vorne.
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> SKIZZEO_SCHRIFT=<ttf> cargo test -p skizzeo gpu_istbilder_entwaesserung -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_entwaesserung() {
+        use crate::{ansicht_schatten as asch, grundriss_schnitt as gs, sicht_zahnrad as sz};
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let mut h = crate::scene::sicht::tests::haus();
+        let cam = blick(&h, vec3(0.8, -1.0, 0.45), 21000.0);
+        let sun = sonne(6, 21, 15 * 60);
+        for (aus, n) in [(false, "zeigen"), (true, "ausgeblendet")] {
+            h.set_drain_hidden(ViewKind::Persp, aus);
+            h.set_drain_hidden(ViewKind::Front, aus);
+            h.skip_vis_animation();
+            ab(
+                &bild(&mut r, &mut h, sun, &cam),
+                &format!("ist-entw-3d-{n}.png"),
+            );
+            let leer = sk_render::MeshData::default();
+            let (px, _) = ansicht(
+                &mut r,
+                &mut h,
+                ViewKind::Front,
+                sk_model::ViewShade::WERK,
+                sun,
+                leer,
+            );
+            ab(&px, &format!("ist-entw-vorne-{n}.png"));
+        }
+        // Die Felder, Maus über dem Häkchen; Schrift aus SKIZZEO_SCHRIFT
+        let mut fonts = sk_ui::widgets::Fonts::system();
+        if let Some(f) = std::env::var_os("SKIZZEO_SCHRIFT")
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(sk_paint::font::Font::parse)
+        {
+            fonts.regular = Some(f);
+        }
+        let (rechts, scale) = (1300f32.to_bits(), 1.5f32.to_bits());
+        let b = sz::Bild {
+            an: true,
+            offen: true,
+            hover: Some(sz::Teil::Haken),
+            rechts,
+            scale,
+        };
+        let (c, _, _) = sz::malen(&b, &fonts, &theme);
+        std::fs::write(ziel.join("ist-entw-feld-3d.png"), c.to_png()).unwrap();
+        let b = gs::Bild {
+            mm: sk_model::PLAN_CUT.to_bits(),
+            eigen: false,
+            offen: true,
+            hover: None,
+            eingabe: None,
+            falsch: false,
+            entw: false,
+            rechts,
+            scale,
+        };
+        let (c, _, _) = gs::malen(&b, &fonts, &theme);
+        std::fs::write(ziel.join("ist-entw-feld-grundriss.png"), c.to_png()).unwrap();
+        let b = asch::Bild {
+            vs: sk_model::ViewShade::WERK,
+            gestrichelt: false,
+            entw: true,
+            offen: true,
+            hover: None,
+            sonne_ok: true,
+            zu_tief: false,
+            eigen: false,
+            rechts,
+            scale,
+        };
+        let (c, _, _) = asch::malen(&b, &fonts, &theme);
+        std::fs::write(ziel.join("ist-entw-feld-vorne.png"), c.to_png()).unwrap();
     }
 }
