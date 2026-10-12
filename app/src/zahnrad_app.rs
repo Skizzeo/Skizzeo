@@ -170,14 +170,13 @@ impl App {
     }
 
     /// Beim Wechsel der Ansicht: Felder zu, die Schnelloption der neuen
-    /// Ansicht gilt sofort.
-    pub(crate) fn zahnrad_reset(&mut self) {
+    /// Ansicht gilt sofort; `true`, wenn sie das Netz ändert (der Aufrufer
+    /// lädt es dann einmal hoch, Review H1).
+    pub(crate) fn zahnrad_reset(&mut self) -> bool {
         self.zahnrad.schatten.reset();
         self.zahnrad.schnitt.reset();
         self.zahnrad.sicht.reset();
-        if self.scene.sicht_fuer(self.ui.view) {
-            self.upload_model();
-        }
+        self.scene.sicht_fuer(self.ui.view)
     }
 
     /// Neue Schnitthöhe übernehmen: Grundrisse neu schneiden.

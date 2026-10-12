@@ -1647,12 +1647,12 @@ impl App {
         if !self.tool_allowed() {
             self.nord.set_aktiv(false);
         }
-        self.zahnrad_reset();
+        let sicht = self.zahnrad_reset();
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
             self.ui.building = false;
         }
-        if same_mesh {
+        if same_mesh && !sicht {
             self.redraw = true;
         } else {
             self.upload_model();

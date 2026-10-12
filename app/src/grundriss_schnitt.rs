@@ -20,7 +20,7 @@ use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
 /// Tooltip am Zahnrad.
-pub const TIP: &str = "Schnitthöhe des Grundrisses";
+pub const TIP: &str = "Schnitthöhe und Sichtbarkeit des Grundrisses";
 /// Name der Zeile im Feld.
 pub const NAME: &str = "Schnitthöhe";
 /// Zeile unter dem Wert: worauf sie sich bezieht.

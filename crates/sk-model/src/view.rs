@@ -65,7 +65,8 @@ pub const SICHT_VIEWS: [&str; 7] = ["persp", "plan", "section", "front", "back",
 pub const ENTWAESSERUNG: [Category; 1] = [Category::Downpipe];
 
 /// Schnelloption je Ansicht: ausgeblendete Arten je Platz in
-/// [`SICHT_VIEWS`], dazu `[viewhide]`-Zeilen, die nicht zählen, roh.
+/// [`SICHT_VIEWS`], nur aus [`ENTWAESSERUNG`] (Review W28), dazu
+/// `[viewhide]`-Zeilen, die nicht zählen, roh.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ViewHide {
     pub(crate) cats: [BTreeSet<Category>; 7],
@@ -73,6 +74,14 @@ pub(crate) struct ViewHide {
 }
 
 static KEINE: BTreeSet<Category> = BTreeSet::new();
+
+/// Bauteilart zu ihrem Namen in der Datei (`cat=`).
+pub(crate) fn szo_art(w: &str) -> Option<Category> {
+    Category::ALL
+        .into_iter()
+        .chain([Category::Extension])
+        .find(|c| crate::kinds::spec(*c).szo == w)
+}
 
 /// Der isolierte Ast: nur er bleibt deckend, alles andere blass.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,15 +164,23 @@ impl Model {
     }
 
     /// Schnelloption der Ansicht `i` setzen: Ansichtszustand ohne Schritt
-    /// wie [`Model::set_view_below`]; eine unlesbare Zeile dieser Ansicht
-    /// entfällt damit.
+    /// wie [`Model::set_view_below`]; nur Arten aus [`ENTWAESSERUNG`]
+    /// zählen. Unlesbare und doppelte Zeilen dieser Ansicht entfallen damit,
+    /// eine Zeile mit einer anderen Art (etwa aus einer neueren Fassung)
+    /// bleibt (Review H6).
     pub fn set_view_hidden(&mut self, i: usize, cats: BTreeSet<Category>) {
         if let Some(v) = self.view_hide.cats.get_mut(i) {
-            *v = cats;
+            *v = cats
+                .into_iter()
+                .filter(|c| ENTWAESSERUNG.contains(c))
+                .collect();
             let name = format!("view={}", SICHT_VIEWS[i]);
-            self.view_hide
-                .raw
-                .retain(|l| !l.split_whitespace().any(|w| w == name));
+            self.view_hide.raw.retain(|l| {
+                let mut w = l.split_whitespace();
+                let fremd = |a: &str| szo_art(a).is_some_and(|c| !ENTWAESSERUNG.contains(&c));
+                !w.clone().any(|w| w == name)
+                    || w.find_map(|w| w.strip_prefix("cat=")).is_some_and(fremd)
+            });
         }
     }
 
