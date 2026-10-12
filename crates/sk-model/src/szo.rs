@@ -19,6 +19,8 @@ mod oeffnung;
 mod raum;
 mod sicht;
 
+pub(crate) use darstellung::Roh;
+
 use crate::attr::{
     Attributes, Dash, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen, Surface,
 };
@@ -784,6 +786,7 @@ fn write_known(m: &Model) -> String {
     if !a.above_is_default() {
         slot(&mut out, "above", &d.above);
     }
+    darstellung::write_raw(a, &mut out);
     Line::new("display")
         .word("slot", "paper")
         .color("color", d.paper)
@@ -1660,9 +1663,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             }
         }
     });
-    let werk = darstellung::werk_linientyp(recs("display"), &mut line_types, &mut lt_ids);
-    let display = darstellung::read(
+    let werk = darstellung::werk_linientyp(recs("display"), &pen_ids, &mut line_types, &mut lt_ids);
+    let (display, display_raw) = darstellung::read(
         recs("display"),
+        &lines,
         &pens,
         &line_types,
         &pen_ids,
@@ -2727,7 +2731,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         assign_codes(&mut layer_sets, &elements, &defaults);
     }
     add_lambda(&mut materials);
-    let attr = Attributes::from_parts(pens, line_types, fills, surfaces, display);
+    let attr = Attributes::from_parts(pens, line_types, fills, surfaces, display, display_raw);
     let mut model = Model::from_parts(
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
     );

@@ -1,10 +1,13 @@
 //! Darstellung in der `.szo`: `[display] slot=… pen=… lt=…` je Stelle
 //! ([`crate::Display`]). Die Werksdarstellung des Einbauelements (F20) und
 //! der Stelle „Über der Schnittebene“ (G7b) steht nicht in der Datei, beim
-//! Lesen entsteht sie wieder.
+//! Lesen entsteht sie wieder. Eine Zeile dieser beiden Stellen, die auf einen
+//! unbekannten Stift oder Linientyp zeigt, zählt nicht: Hinweis, die
+//! Werksdarstellung gilt, und die Zeile wird bytegleich zurückgeschrieben,
+//! solange niemand die Stelle neu setzt (Regel 72/73).
 
 use super::{err, LoadError, Record, EDGE_NAMES};
-use crate::attr::{Display, EdgeStyle, LineType, Pen};
+use crate::attr::{Attributes, Display, EdgeStyle, LineType, Pen};
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
 use crate::solid::edge_kind;
@@ -14,19 +17,46 @@ use std::collections::HashMap;
 /// fehlen (dort gilt die Werksdarstellung).
 pub(super) type Werk = (Option<Id<LineType>>, Option<Id<LineType>>);
 
+/// Stellen mit Werksdarstellung, die nur geändert in der Datei stehen.
+const WERKSSTELLEN: [&str; 2] = ["element", "above"];
+
+/// Werksstelle der Zeile, wenn sie eine ist.
+fn werksstelle(r: &Record) -> Option<&'static str> {
+    let slot = r.get("slot").ok()?;
+    WERKSSTELLEN.into_iter().find(|w| *w == slot)
+}
+
+/// Zählt die Zeile einer Werksstelle? Sie zeigt auf einen gelesenen Stift
+/// und einen gelesenen Linientyp oder den Werks-Linientyp.
+fn zaehlt(
+    r: &Record,
+    pen_ids: &HashMap<Guid, Id<Pen>>,
+    lt_ids: &HashMap<Guid, Id<LineType>>,
+) -> bool {
+    let werk_lt = crate::attr::ELEMENT_LINE_TYPE_GUID;
+    r.guid("pen").is_ok_and(|g| pen_ids.contains_key(&g))
+        && r.guid("lt")
+            .is_ok_and(|g| g == werk_lt || lt_ids.contains_key(&g))
+}
+
 /// Ergänzt den Werks-Linientyp [`crate::attr::ELEMENT_LINE_TYPE`], wenn eine
 /// fehlende Stelle oder eine Zeile ihn braucht.
 pub(super) fn werk_linientyp(
     recs: &[Record],
+    pen_ids: &HashMap<Guid, Id<Pen>>,
     line_types: &mut Arena<LineType>,
     lt_ids: &mut HashMap<Guid, Id<LineType>>,
 ) -> Werk {
-    let has = |slot: &str| recs.iter().any(|r| r.get("slot").is_ok_and(|s| s == slot));
+    let gilt = |r: &Record| werksstelle(r).is_none() || zaehlt(r, pen_ids, lt_ids);
+    let has = |slot: &str| {
+        recs.iter()
+            .any(|r| werksstelle(r) == Some(slot) && zaehlt(r, pen_ids, lt_ids))
+    };
     let (has_element, has_above) = (has("element"), has("above"));
     let werk_lt = crate::attr::ELEMENT_LINE_TYPE_GUID;
     let uses_werk = recs
         .iter()
-        .any(|r| r.guid("lt").is_ok_and(|g| g == werk_lt));
+        .any(|r| gilt(r) && r.guid("lt").is_ok_and(|g| g == werk_lt));
     if !lt_ids.contains_key(&werk_lt) && (!has_element || !has_above || uses_werk) {
         let id = line_types.insert(crate::attr::element_line_type());
         lt_ids.insert(werk_lt, id);
@@ -35,17 +65,37 @@ pub(super) fn werk_linientyp(
     (werk(has_element), werk(has_above))
 }
 
+/// Zeilen der Werksstellen, die beim Lesen nicht zählten, mit ihrer Stelle.
+pub(crate) type Roh = Vec<(&'static str, String)>;
+
+/// Schreibt die Zeilen, die beim Lesen nicht zählten, zurück, solange ihre
+/// Stelle nicht neu gesetzt ist (dann steht sie gültig in der Datei).
+pub(super) fn write_raw(a: &Attributes, out: &mut String) {
+    for (stelle, zeile) in a.display_raw() {
+        let gesetzt = match *stelle {
+            "element" => !a.element_is_default(),
+            _ => !a.above_is_default(),
+        };
+        if !gesetzt {
+            out.push_str(zeile);
+            out.push('\n');
+        }
+    }
+}
+
 /// Liest die Darstellungs-Slots. Fehlt einer, gilt sein Startwert (gleiche
 /// Stiftnummer bzw. gleicher Linientyp-Name wie in den Starttabellen).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn read(
     recs: &[Record],
+    lines: &[&str],
     pens: &Arena<Pen>,
     line_types: &Arena<LineType>,
     pen_ids: &HashMap<Guid, Id<Pen>>,
     lt_ids: &HashMap<Guid, Id<LineType>>,
     (pattern_pen, (element_lt, above_lt)): (Option<Id<Pen>>, Werk),
     hints: &mut Vec<String>,
-) -> Result<Display, LoadError> {
+) -> Result<(Display, Roh), LoadError> {
     let (std_attr, _) = crate::attr::defaults(&mut GuidGen::with_seed(0));
     let sd = std_attr.display();
     let first_lt = line_types.ids().next();
@@ -83,10 +133,20 @@ pub(super) fn read(
     slots.push(("above".into(), sd.above));
     let mut styles: Vec<Option<EdgeStyle>> = vec![None; slots.len()];
     let mut paper = None;
+    let mut roh = Roh::new();
     for r in recs {
         let slot = r.get("slot")?;
         if slot == "paper" {
             paper = Some(r.color("color")?);
+            continue;
+        }
+        if let Some(w) = werksstelle(r).filter(|_| !zaehlt(r, pen_ids, lt_ids)) {
+            r.skip();
+            roh.push((w, lines[r.line - 1].to_string()));
+            hints.push(format!(
+                "Zeile {}: Darstellung „{w}“ zeigt auf einen unbekannten Stift oder Linientyp, übersprungen; die Werksdarstellung gilt, die Zeile bleibt",
+                r.line
+            ));
             continue;
         }
         match slots.iter().position(|s| s.0 == slot) {
@@ -167,7 +227,7 @@ pub(super) fn read(
         drawing[*k as usize] = resolved[i];
         model3d[*k as usize] = resolved[n + i];
     }
-    Ok(Display {
+    let display = Display {
         drawing,
         model3d,
         ground: resolved[2 * n],
@@ -178,5 +238,6 @@ pub(super) fn read(
         element: resolved[2 * n + 5],
         above: resolved[2 * n + 6],
         paper,
-    })
+    };
+    Ok((display, roh))
 }

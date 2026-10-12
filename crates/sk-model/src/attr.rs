@@ -247,6 +247,8 @@ pub struct Attributes {
     fills: Arena<Fill>,
     surfaces: Arena<Surface>,
     display: Display,
+    /// Zeilen der Werksstellen, die beim Lesen nicht zählten (Regel 72).
+    display_raw: crate::szo::Roh,
     rev: u64,
 }
 
@@ -258,6 +260,7 @@ impl Attributes {
         fills: Arena<Fill>,
         surfaces: Arena<Surface>,
         display: Display,
+        display_raw: crate::szo::Roh,
     ) -> Attributes {
         Attributes {
             pens,
@@ -265,8 +268,14 @@ impl Attributes {
             fills,
             surfaces,
             display,
+            display_raw,
             rev: 1,
         }
+    }
+
+    /// Zeilen der Werksstellen, die beim Lesen nicht zählten.
+    pub(crate) fn display_raw(&self) -> &[(&'static str, String)] {
+        &self.display_raw
     }
 
     /// Steigt bei jeder Änderung.
@@ -626,6 +635,7 @@ pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
             above: style(fine),
             paper: [245, 244, 239],
         },
+        display_raw: Vec::new(),
         rev: 0,
     };
     let std = Standard {
@@ -857,5 +867,59 @@ mod tests {
         m.commit();
         let (text, _) = rund(&m);
         assert!(!text.contains(&format!("guid={}", ELEMENT_LINE_TYPE_GUID.to_ifc())));
+    }
+
+    /// Regel 72/73: Eine Zeile „above“ oder „element“, die auf einen
+    /// unbekannten Stift oder Linientyp zeigt, sperrt das Projekt nicht. Sie
+    /// gibt einen Hinweis, die Werksdarstellung gilt, und sie wird bytegleich
+    /// zurückgeschrieben, bis jemand die Stelle neu setzt.
+    #[test]
+    fn unlesbare_werksstelle_bleibt_roh() {
+        use crate::guid::{Guid, GuidGen};
+        let m = Model::with_seed(5);
+        let text = crate::szo::write(&m);
+        let fremd = Guid(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).to_ifc();
+        let pen = m.attr().pens().iter().next().unwrap().1.guid.to_ifc();
+        let zeilen = [
+            format!("[display] slot=above pen={fremd} lt={fremd}"),
+            format!("[display] slot=element pen={pen} lt={fremd}"),
+        ];
+        let papier = text.find("[display] slot=paper").unwrap();
+        let roh = format!(
+            "{}{}\n{}",
+            &text[..papier],
+            zeilen.join("\n"),
+            &text[papier..]
+        );
+        let back = crate::szo::read(&roh, GuidGen::with_seed(9)).unwrap();
+        assert_eq!(back.hints.len(), 2, "{:?}", back.hints);
+        assert!(back
+            .hints
+            .iter()
+            .all(|h| h.contains("die Werksdarstellung gilt")));
+        assert!(back.model.check().is_empty());
+        let d = back.model.attr().display();
+        assert_eq!(d.above, d.element);
+        assert!(back.model.attr().above_is_default() && back.model.attr().element_is_default());
+        assert_eq!(crate::szo::write(&back.model), roh, "bytegleich zurück");
+        // Neu gesetzt: die Stelle steht gültig in der Datei, ihre rohe Zeile
+        // entfällt, die andere bleibt
+        let mut m2 = back.model;
+        let mut d2 = m2.attr().display().clone();
+        let spl = m2
+            .attr()
+            .line_types()
+            .iter()
+            .find(|(_, l)| l.name == "Strichpunktlinie");
+        d2.above.line_type = spl.unwrap().0;
+        m2.begin("Darstellung");
+        m2.set_display(d2);
+        m2.commit();
+        let neu = crate::szo::write(&m2);
+        assert!(!neu.contains(&zeilen[0]) && neu.contains(&zeilen[1]));
+        assert!(neu.contains("[display] slot=above"));
+        let wieder = crate::szo::read(&neu, GuidGen::with_seed(9)).unwrap();
+        assert_eq!(wieder.hints.len(), 1, "{:?}", wieder.hints);
+        assert_eq!(crate::szo::write(&wieder.model), neu);
     }
 }
