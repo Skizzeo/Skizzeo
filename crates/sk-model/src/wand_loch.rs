@@ -684,8 +684,9 @@ impl WallChain {
 
     /// Sturz der Öffnungen in Innenwänden im Grundriss (plan.md §4.3): je
     /// Loch, das die Schnitthöhe `cut` trifft und unter der Wandkrone endet,
-    /// die beiden Wandfluchten über die Öffnung, dünn gestrichelt wie das
-    /// Einbauelement.
+    /// die beiden Wandfluchten über die Öffnung, als Kantenart `ABOVE` (über
+    /// der Schnittebene, im Startsatz dünn gestrichelt wie das
+    /// Einbauelement).
     pub fn lintel_edges(&self, cut: f64) -> Vec<Edge> {
         let mut out = Vec::new();
         let Some((pts, _, dirs)) = self.layout() else {
@@ -709,7 +710,7 @@ impl WallChain {
                 out.push(Edge {
                     a: at(h.u.0),
                     b: at(h.u.1),
-                    kind: edge_kind::ELEMENT,
+                    kind: edge_kind::ABOVE,
                     elem: h.seg as u32,
                     layer,
                 });
