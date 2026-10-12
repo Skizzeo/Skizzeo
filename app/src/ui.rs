@@ -1123,7 +1123,7 @@ enum Row {
 fn opening_label(k: OpeningKind) -> &'static str {
     match k {
         OpeningKind::Window => "Fenster",
-        OpeningKind::Door => "Haustür",
+        OpeningKind::Door => "Tür",
     }
 }
 

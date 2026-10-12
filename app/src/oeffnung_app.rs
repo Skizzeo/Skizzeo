@@ -26,7 +26,7 @@ fn ansicht_ok(v: ViewKind) -> bool {
 }
 
 impl App {
-    /// Knopf „Fenster“ (Wandöffnung) bzw. „Haustür“ (Türöffnung): schaltet
+    /// Knopf „Fenster“ (Wandöffnung) bzw. „Tür“ (Türöffnung): schaltet
     /// das Werkzeug der Art ein, derselbe Knopf aus. Im Grundriss und Schnitt geht es nach 3D.
     pub(crate) fn oeffnung_klick(&mut self, kind: OpeningKind) {
         let an = self.tool.oeffnung.as_ref().is_none_or(|w| w.kind != kind);

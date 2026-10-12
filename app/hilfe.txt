@@ -62,7 +62,7 @@ Beenden | **Esc** oder Klick auf den Knopf des Bauteils
 Verwalten | Datei › „Erweiterungen …“: Ein/Aus, Aktualisieren, Entfernen; die Projektdatei trägt jedes Bauteil mit
 
 [thema] id=oeffnungen titel="Wand- und Türöffnungen"
-Starten | Knopf „Fenster“ (Wandöffnung, auch Terrassentür) oder „Haustür“ (Türöffnung) unter „Gebäude“ und „Innenwand“
+Starten | Knopf „Fenster“ (Wandöffnung, auch Terrassentür) oder „Tür“ (Türöffnung) unter „Gebäude“ und „Innenwand“
 Wo | in 3D und den vier Ansichten über einer Außenwand; Brüstung und Sturz des Geschosses erscheinen gestrichelt
 Aufziehen | Klick setzt eine Ecke, Klick die Gegenecke; die Linien und der Wandfuß fangen
 Ecke | Gegenecke auf der Nachbarwand: die Öffnung geht um die Außenecke
