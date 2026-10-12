@@ -438,6 +438,23 @@ impl Stempel {
             let (aw, ah) = masse(fonts, &flaeche, false, scale, t);
             let voll = (nw.max(aw) + 2.0 * pad, nh + ah + 2.0 * pad);
             let nur = (aw + 2.0 * pad, ah + 2.0 * pad);
+            // Passt nicht einmal die Fläche in den Rahmen des Raums, bleibt er
+            // ohne Stempel; Bögen und Ausweichstelle braucht es dann nicht
+            let (lo, hi) = umriss
+                .iter()
+                .fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), q| {
+                    (
+                        [lo[0].min(q[0]), lo[1].min(q[1])],
+                        [hi[0].max(q[0]), hi[1].max(q[1])],
+                    )
+                });
+            let rahmen = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+            let rmitte = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+            if f.raum.is_none_or(|id| Some(id) != feld)
+                && !inside(&rahmen, &Box::around(rmitte, nur))
+            {
+                continue;
+            }
             // Türbögen nur um einen nicht verschobenen Stempel (G7)
             let auf = if f.stempel == f.mitte {
                 tueren.bei(s, k, r)
