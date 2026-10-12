@@ -74,6 +74,9 @@ pub struct Project {
     /// [`crate::qto_earth::Boden::FELDER`]: bleiben bytegleich stehen, bis
     /// die erste Änderung sie nach `[soil]` umzieht.
     pub soil_legacy: [Option<f64>; 5],
+    /// Dicke und Abstand der Geländeplatte (Gelände G0); in der Datei nur,
+    /// wo sie von der Vorgabe abweichen.
+    pub terrain_plate: PlateSettings,
 }
 
 impl Project {
@@ -95,6 +98,7 @@ impl Project {
             soil: Default::default(),
             soil_info: false,
             soil_legacy: [None; 5],
+            terrain_plate: PlateSettings::default(),
         }
     }
 
@@ -334,6 +338,10 @@ mod decke;
 
 #[path = "gelaende.rs"]
 mod gelaende;
+
+#[path = "gelaende_platte.rs"]
+mod gelaende_platte;
+pub use gelaende_platte::{PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
 
 #[path = "geschossbaender.rs"]
 mod geschossbaender;
@@ -898,6 +906,7 @@ impl Model {
             soil: self.project.soil,
             soil_info: self.project.soil_info,
             soil_legacy: self.project.soil_legacy,
+            terrain_plate: self.project.terrain_plate,
             ..p
         };
         match self.txn.as_mut() {
@@ -941,6 +950,7 @@ impl Model {
             soil: self.project.soil,
             soil_info: self.project.soil_info,
             soil_legacy: self.project.soil_legacy,
+            terrain_plate: self.project.terrain_plate,
             ..p
         };
         self.touch();
