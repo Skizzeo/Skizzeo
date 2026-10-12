@@ -797,3 +797,35 @@ fn lochmasse_ueber_geschosse() {
         "nur das Deckenband fehlt"
     );
 }
+
+/// Kosten H79-2: Der Rechenweg des Volumens nennt die Löcher als Term
+/// „Öffnung“; ihr Volumen landet nicht im Ausgleich.
+#[test]
+fn rechenweg_mit_oeffnung() {
+    use crate::rechenweg::{weg, Bezug, Modus};
+    let (mut m, eg, _) = haus(None);
+    let ausgleich = |m: &Model| -> Vec<bool> {
+        crate::qto::schedule(m)
+            .layer_rows(m)
+            .iter()
+            .filter_map(|(_, r)| weg(m, r, Bezug::Volumen, Modus::Vob))
+            .map(|w| w.terme.iter().any(|t| t.text == "Ecken und Anschlüsse"))
+            .collect()
+    };
+    let vorher = ausgleich(&m);
+    m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    assert_eq!(ausgleich(&m), vorher, "Lochvolumen im Ausgleich");
+    let rows = crate::qto::schedule(&m).layer_rows(&m);
+    let mut n = 0;
+    for (_, r) in &rows {
+        let Some(p) = r.parts.as_ref().filter(|p| p.loecher == 1) else {
+            continue;
+        };
+        let w = weg(&m, r, Bezug::Volumen, Modus::Vob).unwrap();
+        let t = w.terme.iter().find(|t| t.text == "Öffnung").unwrap();
+        assert!((t.wert + p.loch_volumen).abs() < 1e-6 && p.loch_volumen > 0.0);
+        assert!((w.menge() - r.volume).abs() < 1e-3);
+        n += 1;
+    }
+    assert!(n >= 2, "{n} Schichten mit Loch");
+}

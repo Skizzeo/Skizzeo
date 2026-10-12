@@ -1012,6 +1012,8 @@ impl MaterialView {
             (f("Produkt"), "Produkt".into()),
             (f("Bemerkung"), "Bemerkung".into()),
             (f("Preisquelle"), "Preisquelle".into()),
+            (None, "BESTELLUNG".into()),
+            (f(matprop::WASTE), "Verschnittzuschlag".into()),
             (None, "DARSTELLUNG".into()),
             (
                 Some(Target::Combo(ComboId::Pick(Pick::Fill))),
@@ -1111,6 +1113,13 @@ impl MaterialView {
             Field::Key("Verschnittpriorität") => {
                 x.map_or(String::new(), |x| x.priority.to_string())
             }
+            // ohne eigenen Wert die Vorgabe der Art, damit sichtbar ist,
+            // was die Bestellmenge rechnet
+            // ein Altwert als Text bleibt sichtbar, wie er steht
+            Field::Key(matprop::WASTE) => match x.and_then(|x| x.props.get(matprop::WASTE)) {
+                Some(v) => prop_text(v),
+                None => x.map_or(String::new(), |x| de(matprop::waste(x))),
+            },
             Field::Key(k) => prop(k),
             Field::Custom(k) => prop(k),
             Field::NewKey | Field::NewValue(_) => String::new(),
@@ -1124,6 +1133,7 @@ impl MaterialView {
             Field::Key("λ") => "W/(mK)",
             Field::Key("Rohdichte") => "kg/m³",
             Field::Key("c") => "J/(kg·K)",
+            Field::Key(matprop::WASTE) => "%",
             Field::Key(PRICE) => {
                 let unit = x
                     .and_then(|x| stored_unit(x).or(matprop::price_unit(x.category)))

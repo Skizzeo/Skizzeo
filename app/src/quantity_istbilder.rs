@@ -7,6 +7,7 @@
 //! wenn sie da ist; ohne Schrift legt es keine Bilder ab.
 
 use super::*;
+use sk_model::rechenweg::Modus;
 use sk_paint::font::Font;
 use std::path::{Path, PathBuf};
 
@@ -615,4 +616,39 @@ fn istbilder_fokus() {
     b.ablegen(&mut q, "ist-fokus-3-kosten-wand-150.png");
     let mut q = b.fenster(&mut s, 1240, 900, Blatt::Ava);
     b.ablegen(&mut q, "ist-fokus-4-ava-wand.png");
+}
+
+/// Jörn 11.10.: Rechenweg unter den Zeilen nach Gewerk, aufgeklappt, in
+/// der VOB-Sicht und als Bestellmenge.
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_rechenweg() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mut s = standardhaus();
+    for (modus, n) in [
+        (Modus::Vob, "ist-rechenweg-vob.png"),
+        (Modus::Bestellung, "ist-rechenweg-bestellung.png"),
+    ] {
+        let mut q = QuantityWindow::new();
+        q.grouping = Grouping::Trade;
+        q.modus = modus;
+        (q.w, q.h) = (1000, 2400);
+        q.sync(&mut s, &b.p, false);
+        q.list.as_mut().unwrap().alles_aufklappen();
+        // die Rechenwege rechnet erst der Neuaufbau nach dem Aufklappen
+        q.sync(&mut s, &b.p, false);
+        b.ablegen(&mut q, n);
+    }
 }
