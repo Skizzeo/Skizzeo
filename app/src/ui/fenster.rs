@@ -18,6 +18,12 @@ pub(super) const PPM: f32 = 120.0;
 pub const TITEL: &str = "Geschossmanager";
 /// Beschriftung des Knopfs im Hauptfenster.
 pub const KNOPF: &str = "Geschossmanager";
+/// Leise Zeile unter dem Titel, solange der Dialog „Gebäude erstellen“
+/// offen ist: das Fenster zeigt dessen Geschosse, nimmt aber weder Maus
+/// noch Tasten (Jörn 12.10., Einstellungen B1).
+pub const SPERRE: &str = "Gesperrt, solange „Gebäude erstellen“ offen ist.";
+/// Höhe dieser Zeile samt Luft (dip).
+const SPERRE_H: f32 = 21.0;
 
 impl Ui {
     /// Oberfläche des Geschossfensters.
@@ -53,6 +59,21 @@ impl Ui {
     /// dem Dialog „Gebäude erstellen“ (Jörn 12.10.).
     pub(super) fn levels_diagramm(&self) -> bool {
         self.fenster
+    }
+
+    /// Kopf des Diagramms: der Titel, im gesperrten Fenster darunter
+    /// [`SPERRE`].
+    pub(super) fn levels_kopf(&self) -> Vec<Row> {
+        let mut rows = vec![Row::Title("Geschosse")];
+        if self.gesperrt {
+            rows.push(Row::Hint(SPERRE));
+        }
+        rows
+    }
+
+    /// Höhe des Kopfs (dip) über der Luft zur obersten Linie.
+    pub(super) fn level_head(&self) -> f32 {
+        LEVEL_HEAD + if self.gesperrt { SPERRE_H } else { 0.0 }
     }
 
     /// Lage des Paneels im Fenster: die ganze Fläche unter der Titelleiste.
@@ -150,6 +171,22 @@ mod tests {
         let l = ui.levels_layout();
         assert_eq!(l.height, 420.0 - 48.0);
         assert!(ui.level_buttons().iter().all(|b| b.1.y + b.1.h <= l.height));
+    }
+
+    /// Gesperrt (Dialog „Gebäude erstellen“ offen): unter dem Titel die
+    /// leise Zeile, die Linien rücken um sie nach unten (Einstellungen B1).
+    #[test]
+    fn gesperrt_mit_zeile_unter_dem_titel() {
+        let (mut ui, _) = fenster();
+        let a = ui.levels_layout().anchor;
+        ui.gesperrt = true;
+        assert!(ui
+            .levels_kopf()
+            .iter()
+            .any(|r| matches!(r, Row::Hint(t) if *t == SPERRE)));
+        let b = ui.levels_layout();
+        assert!(b.anchor > a, "{a} {b:?}");
+        assert!(b.height <= 900.0 - 32.0 + 0.5, "{b:?}");
     }
 
     /// Hauptfenster: unten links nur der Knopf, bündig unter „Werkzeuge“

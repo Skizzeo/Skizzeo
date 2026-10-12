@@ -1014,6 +1014,8 @@ pub struct Ui {
     fenster_w: f32,
     /// Geschossfenster offen: Knopf „Geschossmanager“ in `accent`.
     pub levels_open: bool,
+    /// Geschossfenster gesperrt ([`fenster::SPERRE`]).
+    pub gesperrt: bool,
     /// Fensterhöhe und Höhe der Titelleiste (Pixel), für die Höhe des
     /// Paneels „Geschosse“.
     win_h: f32,
@@ -1495,6 +1497,7 @@ impl Ui {
             fenster: false,
             fenster_w: 0.0,
             levels_open: false,
+            gesperrt: false,
             win_h: 1e6,
             top: 32,
             tree_slot: 0.0,
@@ -1540,7 +1543,7 @@ impl Ui {
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
                 props_rows(p, self.edit.as_ref(), self.more_open)
             }),
-            Panel::Levels if self.levels_diagramm() => vec![Row::Title("Geschosse")],
+            Panel::Levels if self.levels_diagramm() => self.levels_kopf(),
             Panel::Levels => vec![Row::Button(Id::LevelsOpen, fenster::KNOPF)],
             Panel::Dialog => Vec::new(),
         }
@@ -2981,7 +2984,7 @@ impl Ui {
         let m = (z.panel_margin * s).round();
         let avail = (self.win_h - y - m).max(0.0);
         let lines = level_lines(&self.levels);
-        let head = z.panel_pad + LEVEL_HEAD + LEVEL_TOP;
+        let head = z.panel_pad + self.level_head() + LEVEL_TOP;
         let foot = self.level_footer();
         let layout = |ppm: f32, fuss: f32| {
             let (above, below) = self.level_spans(&lines, ppm);
@@ -3004,7 +3007,7 @@ impl Ui {
                 l = layout(1.0, 0.0);
             }
         }
-        let least = ((2.0 * z.panel_pad + LEVEL_HEAD + l.fuss) * s).round();
+        let least = ((2.0 * z.panel_pad + self.level_head() + l.fuss) * s).round();
         l.height = l.height.min(avail).max(least);
         l
     }
@@ -3186,7 +3189,7 @@ impl Ui {
         }
 
         let ys = self.line_ys(&lines, &l);
-        let clamp = |y: f32| y.clamp((self.size.panel_pad + LEVEL_HEAD) * s, l.height);
+        let clamp = |y: f32| y.clamp((self.size.panel_pad + self.level_head()) * s, l.height);
         for (line, &y) in lines.iter().zip(&ys) {
             if let Some(f) = line.field {
                 push(f, xi - 6.0 * s, clamp(y) - 4.0 * s);
@@ -3410,7 +3413,7 @@ impl Ui {
         };
         let ys = self.line_ys(&lines, &l);
         let (lo, hi) = (
-            (z.panel_pad + LEVEL_HEAD) * s,
+            (z.panel_pad + self.level_head()) * s,
             panel_h - z.panel_pad * s * 0.5,
         );
         let clamp = |y: f32| y.clamp(lo, hi);
