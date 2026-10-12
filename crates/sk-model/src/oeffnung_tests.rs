@@ -1420,6 +1420,42 @@ fn sturz_im_grundriss() {
     assert!(aw.lintel_edges(cut).is_empty(), "Außenwand ohne Öffnung");
 }
 
+/// Grundriss G7: Das Loch der Tür ist im Grundriss das Viereck zwischen
+/// den Wandfluchten über ihre Breite, mit der Öffnung als Herkunft.
+#[test]
+fn loch_im_grundriss() {
+    let (mut m, eg, _) = haus(None);
+    let iw = innenwand(&mut m, eg);
+    let st = storey(&m, eg);
+    let (a, b) = (aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0));
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![a, b],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+        swing: None,
+        lock: Default::default(),
+    };
+    let id = m.add_opening(tuer).unwrap();
+    let c = m.chain(iw).unwrap();
+    let q = c.hole_quads();
+    assert_eq!(q.len(), 1);
+    let (h, q) = q[0];
+    assert_eq!(h.opening, Some(id));
+    assert!(q.iter().all(|p| p.z == 0.0));
+    assert!(((q[1] - q[0]).length() - 885.0).abs() < 1e-6, "{q:?}");
+    assert!(
+        ((q[2] - q[1]).length() - c.thickness()).abs() < 1e-6,
+        "{q:?}"
+    );
+    // Der Pfad liegt auf einer der beiden Fluchten
+    let auf = |p: Vec3| q.iter().any(|e| (*e - vec3(p.x, p.y, 0.0)).length() < 1e-6);
+    assert!(auf(a) && auf(b), "{q:?} {a:?} {b:?}");
+    assert!(m.chain(eg).unwrap().hole_quads().is_empty());
+}
+
 /// Geometrie #99: Der Aufschlag hängt nicht vom Mausweg ab (wie #92 B2).
 /// Eine freie Innenwand mit Tür um 120° gedreht, in einem Sprung und in 30
 /// Schritten im selben Schritt: Die Tür schlägt beide Male in denselben

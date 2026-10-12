@@ -595,6 +595,30 @@ impl WallChain {
         out
     }
 
+    /// Löcher dieses Zugs im Grundriss (z = 0), je mit dem Viereck zwischen
+    /// den Wandfluchten über ihre Lage längs, an Ecke und Fuge bis zum
+    /// Segmentende: zum Wählen einer Öffnung im Grundriss (Grundriss G7).
+    pub fn hole_quads(&self) -> Vec<(&Hole, [Vec3; 4])> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        let (aussen, innen) = (self.outer_offset(), self.inner_offset());
+        for h in &self.joints.holes {
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            let len = (pts[(h.seg + 1) % pts.len()] - p0).length();
+            let (u0, u1) = (h.u.0.clamp(0.0, len), h.u.1.clamp(0.0, len));
+            let at = |u: f64, off: f64| flat(p0 + d * u + crate::wall::right_of(d) * off);
+            out.push((
+                h,
+                [at(u0, aussen), at(u1, aussen), at(u1, innen), at(u0, innen)],
+            ));
+        }
+        out
+    }
+
     /// Aufschläge der Türen dieses Zugs im Grundriss (z = 0), je mit ihrem
     /// Loch: für [`WallChain::swing_edges`] und den Raumstempel, der die
     /// Bögen meidet (Grundriss G7).
