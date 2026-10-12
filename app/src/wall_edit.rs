@@ -19,6 +19,7 @@ use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::scene::Scene;
 use crate::teilen_edit::{self, Teilen};
 use crate::ui::MeasureKind;
+use breite_edit::BreiteZug;
 use ecke_edit::EckeWahl;
 use ende_edit::EndeZug;
 use sk_math::{dist_to_segment, vec3, Vec3};
@@ -28,6 +29,8 @@ use sk_render::Helper;
 use sk_ui::theme::Theme;
 use tuer_edit::TuerZug;
 
+#[path = "grundriss/breite_edit.rs"]
+pub mod breite_edit;
 #[path = "grundriss/ecke_edit.rs"]
 pub mod ecke_edit;
 #[path = "grundriss/ende_edit.rs"]
@@ -267,6 +270,11 @@ pub struct WallEdit {
     tuer_griff: Option<ElementId>,
     /// Laufendes Ziehen am Griff einer Tür (Aufschlag, DIN).
     pub tuer: Option<TuerZug>,
+    /// Griffe an den Enden der Öffnungen bei der Maus und der darunter.
+    breiten: Vec<breite_edit::Griff>,
+    breite_griff: Option<breite_edit::Griff>,
+    /// Laufendes Ziehen an einem Ende einer Öffnung (Breite, O6).
+    pub breite: Option<BreiteZug>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -709,7 +717,7 @@ impl WallEdit {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.drag.is_some() || self.ende.is_some() || self.tuer.is_some()
+        self.drag.is_some() || self.ende.is_some() || self.tuer.is_some() || self.breite.is_some()
     }
 
     /// Wandzug, der gerade gezogen wird.
@@ -843,21 +851,30 @@ impl WallEdit {
             return false;
         }
         let frei = enabled && !self.splitting();
-        let tueren = match (self.plan_z, self.mouse) {
-            (Some(z), Some((x, y))) if frei => drag_point(cam, x, y, w, h, z)
-                .map(|p| tuer_edit::sichtbar(scene, p))
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        let tuer_griff = match (self.plan_z, self.mouse) {
-            (Some(z), Some(m)) => tuer_edit::griff_bei(&tueren, cam, z, m, w, h, scale),
+        // Griffe der Öffnungen bei der Maus: Türblatt vor den Enden
+        let punkt = match (self.plan_z, self.mouse) {
+            (Some(z), Some((x, y))) if frei => drag_point(cam, x, y, w, h, z),
             _ => None,
-        }
-        .map(|g| g.0);
-        let griff =
-            tuer_griff.is_some() || frei && self.griff_bei(scene, cam, w, h, scale).is_some();
-        let changed_tuer = tueren != self.tueren || tuer_griff != self.tuer_griff;
+        };
+        let tueren = punkt.map_or_else(Vec::new, |p| tuer_edit::sichtbar(scene, p));
+        let breiten = punkt.map_or_else(Vec::new, |p| breite_edit::sichtbar(scene, p));
+        let (tuer_griff, breite_griff) = match (self.plan_z, self.mouse) {
+            (Some(z), Some(m)) => {
+                let t = tuer_edit::griff_bei(&tueren, cam, z, m, w, h, scale).map(|g| g.0);
+                let b = breite_edit::griff_bei(&breiten, cam, z, m, w, h, scale);
+                (t, b.filter(|_| t.is_none()))
+            }
+            _ => (None, None),
+        };
+        let griff = tuer_griff.is_some()
+            || breite_griff.is_some()
+            || frei && self.griff_bei(scene, cam, w, h, scale).is_some();
+        let changed_tuer = tueren != self.tueren
+            || tuer_griff != self.tuer_griff
+            || breiten != self.breiten
+            || breite_griff != self.breite_griff;
         (self.tueren, self.tuer_griff) = (tueren, tuer_griff);
+        (self.breiten, self.breite_griff) = (breiten, breite_griff);
         let hover = if frei && !griff {
             self.pick(scene, cam, w, h, scale)
         } else {
@@ -980,6 +997,20 @@ impl WallEdit {
             out.consumed = true;
             return out;
         }
+        if let Some(b) = self.breite.as_mut() {
+            let o = b.handle(e, scene, cam, w, h);
+            if o.fertig {
+                self.breite = None;
+                if let Event::MouseUp { x, y, .. } = *e {
+                    self.mouse = Some((x, y));
+                }
+                self.refresh(scene, cam, w, h, scale, enabled);
+            }
+            out.redraw = o.redraw;
+            out.changed = o.changed;
+            out.consumed = true;
+            return out;
+        }
         if let Some(t) = self.tuer.as_mut() {
             let o = t.handle(e, scene, cam, w, h);
             if o.fertig {
@@ -1009,8 +1040,9 @@ impl WallEdit {
                 if self.drag.is_none() {
                     out.redraw = self.hover.take().is_some();
                 }
-                self.tuer_griff = None;
+                (self.tuer_griff, self.breite_griff) = (None, None);
                 out.redraw |= !std::mem::take(&mut self.tueren).is_empty();
+                out.redraw |= !std::mem::take(&mut self.breiten).is_empty();
             }
             Event::Wheel { .. } => {
                 out.redraw = self.end_post();
@@ -1032,6 +1064,17 @@ impl WallEdit {
                         return out;
                     }
                     self.tuer = TuerZug::greifen(scene, id, z);
+                    out.redraw = true;
+                    return out;
+                }
+                // Griff an einem Ende einer Öffnung: Breite
+                if let (Some((id, k, _)), Some(z)) = (self.breite_griff, self.plan_z) {
+                    out.consumed = true;
+                    if let Some(l) = sk_model::edit_blocked(scene.model(), &[id]) {
+                        out.locked = Some((l, id));
+                        return out;
+                    }
+                    self.breite = BreiteZug::greifen(scene, id, k, z);
                     out.redraw = true;
                     return out;
                 }
@@ -1214,6 +1257,9 @@ impl WallEdit {
         if let Some(t) = &self.tuer {
             return t.helpers(scene, scale, occlude, theme);
         }
+        if let Some(b) = &self.breite {
+            return b.helpers(scene, scale, occlude, theme);
+        }
         let col = &theme.interact;
         let mut out = Vec::new();
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
@@ -1294,7 +1340,8 @@ impl WallEdit {
             }
         }
         if let Some(z) = self.plan_z {
-            for &(_, p) in &self.tueren {
+            let breiten = self.breiten.iter().map(|g| g.2);
+            for p in self.tueren.iter().map(|g| g.1).chain(breiten) {
                 out.extend(ende_edit::griff(p, z, scale, occlude, theme));
             }
         }

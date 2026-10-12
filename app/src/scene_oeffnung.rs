@@ -112,6 +112,16 @@ impl Scene {
         }
         ok
     }
+
+    /// Ändert die Öffnung `id` im offenen Schritt (Griffe im Grundriss).
+    /// `false`, wenn das Modell sie ablehnt.
+    pub fn set_opening(&mut self, id: ElementId, o: Opening) -> bool {
+        let ok = self.model.set_opening(id, o);
+        for r in self.model.step_touched() {
+            self.mark(r);
+        }
+        ok
+    }
 }
 
 #[cfg(test)]
