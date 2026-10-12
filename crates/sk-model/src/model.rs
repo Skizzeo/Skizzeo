@@ -2561,7 +2561,7 @@ impl Model {
         if !self.stack_fits(id, &flat) {
             return None;
         }
-        let anchors = self.opening_anchors();
+        let walls = self.opening_walls();
         if !self.set_points(id, &flat) {
             return None;
         }
@@ -2594,7 +2594,7 @@ impl Model {
         self.update_joins(&moved);
         partners(self, &mut out);
         // Öffnungen wandern mit ihrer Wand (Paket O5)
-        self.carry_openings(&anchors);
+        self.carry_openings(&walls);
         // Der Versatz zwischen den Geschossen formt Decke und Außenschichten
         // darunter (G7 K4) und den Fuß darüber (K3)
         for r in &moved {

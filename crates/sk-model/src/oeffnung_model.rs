@@ -593,9 +593,11 @@ impl Model {
 /// Lage eines Pfadpunkts einer Öffnung auf der Außenfläche ihres Zugs.
 #[derive(Clone, Copy, Debug)]
 enum Anchor {
-    /// Auf Segment `seg` am Grundrisspunkt `p`: bleibt, wo er ist, nur quer
-    /// auf die neue Außenfläche gelegt (die Nachbarwand verschiebt ihn nicht).
-    On(usize, Vec3),
+    /// Auf Segment `seg`, `du` längs ab dem Bezugspunkt `p` (Grundriss, Mitte
+    /// des Pfads): der Bezugspunkt bleibt, wo er ist, nur quer auf die neue
+    /// Außenfläche gelegt (die Nachbarwand verschiebt ihn nicht); die Breite
+    /// längs der Fläche bleibt, auch wenn die Wand sich dreht (Geometrie #92).
+    On(usize, Vec3, f64),
     /// Auf Segment `seg`, `du` längs ab der Außenecke `corner` (Ende einer
     /// Ecköffnung: der Schenkel behält seine Länge).
     FromCorner(usize, usize, f64),
@@ -603,143 +605,185 @@ enum Anchor {
     Corner(usize),
 }
 
-/// Lage einer Öffnung vor einer Änderung der Wandzüge: Zug, dessen
-/// Segmentzahl und je Pfadpunkt der Anker.
-pub(crate) struct OpeningAnchor {
+/// Lage einer Öffnung vor einer Änderung der Wandzüge: je Pfadpunkt der Anker.
+struct OpeningAnchor {
     id: ElementId,
-    run: RunId,
-    segs: usize,
     at: Vec<Anchor>,
 }
 
+/// Ein Außenwandzug vor einer Änderung der Wandzüge
+/// ([`Model::carry_openings`]).
+pub(crate) struct WallBefore {
+    run: RunId,
+    chain: WallChain,
+}
+
+/// Verschiebung, wenn alle Punkte eines Zugs um denselben Vektor wandern;
+/// sonst null.
+fn parallel_shift(old: &[Vec3], new: &[Vec3]) -> Vec3 {
+    let none = vec3(0.0, 0.0, 0.0);
+    let (Some(a), Some(b)) = (old.first(), new.first()) else {
+        return none;
+    };
+    let v = flat(*b) - flat(*a);
+    let same = old.len() == new.len()
+        && old
+            .iter()
+            .zip(new)
+            .all(|(p, q)| (flat(*q) - flat(*p) - v).length() < 1e-6);
+    if same {
+        v
+    } else {
+        none
+    }
+}
+
 impl Model {
-    /// Lage aller Öffnungen auf den Außenflächen der Wände ihres Geschosses,
-    /// vor einer Änderung der Wandzüge ([`Model::carry_openings`]).
-    pub(crate) fn opening_anchors(&self) -> Vec<OpeningAnchor> {
-        let mut out = Vec::new();
-        let openings: Vec<(ElementId, StoreyId, &Opening)> = self
+    /// Die Außenwandzüge der Geschosse mit Öffnungen, vor einer Änderung der
+    /// Wandzüge. Nur Punkte und Schichten: die Flächen baut
+    /// [`Model::carry_openings`] und nur für die Züge, die sich geändert haben.
+    pub(crate) fn opening_walls(&self) -> Vec<WallBefore> {
+        let storeys: Vec<StoreyId> = self
             .elements
             .iter()
-            .filter_map(|(id, e)| match &e.kind {
-                ElementKind::Opening(o) => Some((id, e.storey, o)),
-                _ => None,
-            })
+            .filter(|(_, e)| matches!(e.kind, ElementKind::Opening(_)))
+            .map(|(_, e)| e.storey)
             .collect();
-        if openings.is_empty() {
-            return out;
+        if storeys.is_empty() {
+            return Vec::new();
         }
-        type Faces = (RunId, StoreyId, Vec<crate::oeffnung::OuterFace>, Vec<Vec3>);
-        let mut faces: Vec<Faces> = Vec::new();
-        for (id, st, o) in openings {
-            for (run, r) in self.runs.iter() {
-                if r.storey != st || faces.iter().any(|f| f.0 == run) {
-                    continue;
-                }
-                if !self.category_of(run).is_some_and(Category::is_outer_wall) {
-                    continue;
-                }
-                let Some(c) = self.base_chain(run) else {
-                    continue;
-                };
-                let n = c.layout().map_or(0, |l| l.2.len());
-                let f = (0..n).filter_map(|s| self.face_in(run, s, &c)).collect();
-                let corners = c.face_corners(c.outer_offset());
-                faces.push((run, st, f, corners));
+        self.runs
+            .iter()
+            .filter(|(run, r)| {
+                storeys.contains(&r.storey)
+                    && self.category_of(*run).is_some_and(Category::is_outer_wall)
+            })
+            .filter_map(|(run, _)| {
+                Some(WallBefore {
+                    run,
+                    chain: self.base_chain(run)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Lage der Öffnungen des Geschosses von `run` auf dessen Außenflächen im
+    /// Körper `c`, ohne die Öffnungen `skip`.
+    fn opening_anchors(&self, run: RunId, c: &WallChain, skip: &[ElementId]) -> Vec<OpeningAnchor> {
+        let mut out = Vec::new();
+        let Some(st) = self.run(run).map(|r| r.storey) else {
+            return out;
+        };
+        let segs = c.layout().map_or(0, |l| l.2.len());
+        let f: Vec<_> = (0..segs).filter_map(|s| self.face_in(run, s, c)).collect();
+        let corners = c.face_corners(c.outer_offset());
+        let seat = |p: Vec3| {
+            f.iter().position(|x| {
+                let u = x.u_of(p);
+                let (lo, hi) = (x.u.0.min(x.u.1), x.u.0.max(x.u.1));
+                x.on_line(p) && u > lo - ON_FACE && u < hi + ON_FACE
+            })
+        };
+        'o: for (id, e) in self.elements.iter() {
+            let ElementKind::Opening(o) = &e.kind else {
+                continue;
+            };
+            if e.storey != st || skip.contains(&id) {
+                continue;
             }
             let n = o.path.len();
-            'runs: for (run, _, f, corners) in faces.iter().filter(|f| f.1 == st) {
-                let seat = |p: Vec3| {
-                    f.iter().position(|x| {
-                        let u = x.u_of(p);
-                        let (lo, hi) = (x.u.0.min(x.u.1), x.u.0.max(x.u.1));
-                        x.on_line(p) && u > lo - ON_FACE && u < hi + ON_FACE
-                    })
-                };
-                let mut at = Vec::with_capacity(n);
-                // Ecköffnung: die Außenecke, die dem Eckpunkt am nächsten liegt
-                let corner = (n == 3).then(|| {
-                    let q = flat(o.path[1]);
-                    (0..corners.len()).min_by(|&i, &j| {
-                        (flat(corners[i]) - q)
-                            .length()
-                            .total_cmp(&(flat(corners[j]) - q).length())
-                    })
-                });
-                for (k, p) in o.path.iter().enumerate() {
-                    match corner {
-                        Some(Some(j)) if k == 1 => at.push(Anchor::Corner(j)),
-                        Some(Some(j)) => {
-                            let Some(s) = seat(*p) else {
-                                continue 'runs;
-                            };
-                            let du = f[s].u_of(*p) - f[s].u_of(corners[j]);
-                            at.push(Anchor::FromCorner(s, j, du));
-                        }
-                        Some(None) => continue 'runs,
-                        None => match seat(*p) {
-                            Some(s) => at.push(Anchor::On(s, flat(*p))),
-                            None => continue 'runs,
-                        },
+            // Ecköffnung: die Außenecke, die dem Eckpunkt am nächsten liegt
+            let corner = (n == 3).then(|| {
+                let q = flat(o.path[1]);
+                (0..corners.len()).min_by(|&i, &j| {
+                    (flat(corners[i]) - q)
+                        .length()
+                        .total_cmp(&(flat(corners[j]) - q).length())
+                })
+            });
+            let sum = o.path.iter().fold(vec3(0.0, 0.0, 0.0), |a, p| a + flat(*p));
+            let m = sum / n.max(1) as f64;
+            let mut at = Vec::with_capacity(n);
+            for (k, p) in o.path.iter().enumerate() {
+                match corner {
+                    Some(Some(j)) if k == 1 => at.push(Anchor::Corner(j)),
+                    Some(Some(j)) => {
+                        let Some(s) = seat(*p) else {
+                            continue 'o;
+                        };
+                        let du = f[s].u_of(*p) - f[s].u_of(corners[j]);
+                        at.push(Anchor::FromCorner(s, j, du));
+                    }
+                    Some(None) => continue 'o,
+                    None => {
+                        let Some(s) = seat(*p) else {
+                            continue 'o;
+                        };
+                        at.push(Anchor::On(s, m, f[s].u_of(*p) - f[s].u_of(m)));
                     }
                 }
-                out.push(OpeningAnchor {
-                    id,
-                    run: *run,
-                    segs: f.len(),
-                    at,
-                });
-                break;
             }
+            out.push(OpeningAnchor { id, at });
         }
         out
     }
 
-    /// Führt die Öffnungen nach einer Änderung der Wandzüge mit: ein
-    /// Pfadpunkt kommt quer auf die neue Außenfläche seines Segments, ein
-    /// Eckpunkt auf die neue Ecke, die Enden einer Ecköffnung behalten ihren
-    /// Abstand von der Ecke. Ändert sich die Segmentzahl des Zugs, bleibt die
-    /// Öffnung stehen. Passt sie danach nicht mehr (Wand zu kurz), meldet es
-    /// die Prüfung.
-    pub(crate) fn carry_openings(&mut self, anchors: &[OpeningAnchor]) {
-        for a in anchors {
-            let Some(c) = self.base_chain(a.run) else {
+    /// Führt die Öffnungen nach einer Änderung der Wandzüge mit, nur auf den
+    /// Zügen aus `before`, die sich geändert haben: ein gerader Pfad kommt mit
+    /// seiner Mitte quer auf die neue Außenfläche seines Segments und behält
+    /// seine Breite, ein Eckpunkt kommt auf die neue Ecke, die Enden einer
+    /// Ecköffnung behalten ihren Abstand von der Ecke. Wird der ganze Zug
+    /// parallel verschoben, gehen die Öffnungen mit. Ändert sich die
+    /// Segmentzahl des Zugs, bleibt die Öffnung stehen. Passt sie danach nicht
+    /// mehr (Wand zu kurz), meldet es die Prüfung.
+    pub(crate) fn carry_openings(&mut self, before: &[WallBefore]) {
+        let mut done: Vec<ElementId> = Vec::new();
+        let segs = |c: &WallChain| c.layout().map_or(0, |l| l.2.len());
+        for w in before {
+            let Some(c) = self.base_chain(w.run) else {
                 continue;
             };
-            if c.layout().map_or(0, |l| l.2.len()) != a.segs {
+            if c == w.chain || segs(&c) != segs(&w.chain) {
                 continue;
             }
+            let shift = parallel_shift(&w.chain.points, &c.points);
+            let anchors = self.opening_anchors(w.run, &w.chain, &done);
             let corners = c.face_corners(c.outer_offset());
-            let path: Option<Vec<Vec3>> = a
-                .at
-                .iter()
-                .map(|x| match *x {
-                    Anchor::On(s, p) => self.face_in(a.run, s, &c).map(|f| f.at(f.u_of(p), 0.0)),
-                    Anchor::FromCorner(s, j, du) => {
-                        let f = self.face_in(a.run, s, &c)?;
-                        let q = *corners.get(j)?;
-                        Some(f.at(f.u_of(q) + du, 0.0))
+            for a in anchors {
+                done.push(a.id);
+                let path: Option<Vec<Vec3>> =
+                    a.at.iter()
+                        .map(|x| match *x {
+                            Anchor::On(s, p, du) => self
+                                .face_in(w.run, s, &c)
+                                .map(|f| f.at(f.u_of(p + shift) + du, 0.0)),
+                            Anchor::FromCorner(s, j, du) => {
+                                let f = self.face_in(w.run, s, &c)?;
+                                let q = *corners.get(j)?;
+                                Some(f.at(f.u_of(q) + du, 0.0))
+                            }
+                            Anchor::Corner(j) => corners.get(j).map(|p| flat(*p)),
+                        })
+                        .collect();
+                let (Some(path), Some(o)) = (path, self.opening(a.id)) else {
+                    continue;
+                };
+                let same = path.len() == o.path.len()
+                    && path
+                        .iter()
+                        .zip(&o.path)
+                        .all(|(p, q)| (*p - *q).length() < 1e-6);
+                let mut o = o.clone();
+                o.path = path;
+                // Ohne die Prüfung an den Wänden: die Öffnung bleibt an ihrer
+                // Wand, auch wenn sie dort nicht mehr passt
+                if !same && self.opening_ok(&o) {
+                    note!(self, Element, self.elements, a.id);
+                    if let Some(e) = self.elements.get_mut(a.id) {
+                        e.kind = ElementKind::Opening(o);
                     }
-                    Anchor::Corner(j) => corners.get(j).map(|p| flat(*p)),
-                })
-                .collect();
-            let (Some(path), Some(o)) = (path, self.opening(a.id)) else {
-                continue;
-            };
-            let same = path.len() == o.path.len()
-                && path
-                    .iter()
-                    .zip(&o.path)
-                    .all(|(p, q)| (*p - *q).length() < 1e-6);
-            let mut o = o.clone();
-            o.path = path;
-            // Ohne die Prüfung an den Wänden: die Öffnung bleibt an ihrer Wand,
-            // auch wenn sie dort nicht mehr passt
-            if !same && self.opening_ok(&o) {
-                note!(self, Element, self.elements, a.id);
-                if let Some(e) = self.elements.get_mut(a.id) {
-                    e.kind = ElementKind::Opening(o);
+                    self.touch();
                 }
-                self.touch();
             }
         }
     }

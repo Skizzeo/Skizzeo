@@ -945,3 +945,58 @@ fn rechenweg_mit_oeffnung() {
     }
     assert!(n >= 2, "{n} Schichten mit Loch");
 }
+
+/// Paket O5: Wandert eine Öffnung mit einer gedrehten oder gekippten Wand,
+/// behält sie ihre Breite. Bisher wird jeder Pfadpunkt einzeln quer auf die
+/// neue Fläche gelegt; dabei schrumpft die Breite mit cos(Drehwinkel)
+/// (1000 → 939,7 mm bei 20°), ohne Meldung.
+#[test]
+fn oeffnung_behaelt_breite_beim_drehen() {
+    let drehen = |p: Vec3| {
+        let (s, c) = 20f64.to_radians().sin_cos();
+        vec3(p.x * c - p.y * s, p.x * s + p.y * c, 0.0)
+    };
+    let kippen = |p: Vec3| {
+        if p.x == 0.0 && p.y == 8000.0 {
+            vec3(-1500.0, 8000.0, 0.0)
+        } else {
+            p
+        }
+    };
+    let faelle: [(&str, &dyn Fn(Vec3) -> Vec3); 2] = [("gedreht", &drehen), ("gekippt", &kippen)];
+    for (name, f) in faelle {
+        let (mut m, eg, _) = haus(None);
+        m.begin("Öffnung");
+        let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+        m.commit();
+        let neu: Vec<Vec3> = m.run(eg).unwrap().points.iter().map(|p| f(*p)).collect();
+        m.begin("Wand");
+        assert!(m.set_run_points(eg, &neu).is_some());
+        m.commit();
+        let p = &m.opening(a).unwrap().path;
+        let b = (p[1] - p[0]).length();
+        assert!((b - 1000.0).abs() < 1e-6, "{name}: Breite {b}");
+        assert!(m.check().is_empty(), "{name}: {:?}", m.check());
+    }
+}
+
+/// Paket O5, Geometrie #92: Wird der ganze Zug parallel verschoben, geht die
+/// Öffnung mit und behält ihren Abstand zum Segmentanfang.
+#[test]
+fn oeffnung_geht_mit_dem_verschobenen_zug() {
+    let (mut m, eg, _) = haus(None);
+    m.begin("Öffnung");
+    let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+    m.commit();
+    let vorher = m.opening(a).unwrap().path.clone();
+    let v = vec3(700.0, 300.0, 0.0);
+    let neu: Vec<Vec3> = m.run(eg).unwrap().points.iter().map(|p| *p + v).collect();
+    m.begin("Wand");
+    assert!(m.set_run_points(eg, &neu).is_some());
+    m.commit();
+    let p = &m.opening(a).unwrap().path;
+    for (q, r) in p.iter().zip(&vorher) {
+        assert!((*q - *r - v).length() < 1e-6, "{q:?} statt {r:?} + {v:?}");
+    }
+    assert!(m.check().is_empty(), "{:?}", m.check());
+}
