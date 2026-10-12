@@ -25,9 +25,33 @@ pub const SILL: f64 = 875.0;
 pub const LINTEL: f64 = 2385.0;
 /// Kleinster Abstand zwischen Brüstung und Sturz (mm).
 pub const MIN_LINE_GAP: f64 = 100.0;
-/// Vorgabe der Innentürlinie (mm über OK Rohdecke): Rohbaurichtmaß der
-/// Türhöhe nach DIN 18100, 2,01 m (Jörn 12.10. 05:26).
-pub const DOOR: f64 = 2010.0;
+/// Wandöffnungshöhen der Innentüren ab OK Fertigfußboden nach DIN 18101
+/// (Baurichtmaß + 5 mm), passend zu Zargen und Blättern aus dem Handel
+/// (Jörn 12.10. 05:58).
+pub const DOOR_HEIGHTS: [f64; 3] = [2005.0, 2130.0, 2255.0];
+/// Wandöffnungsbreiten der Innentüren nach DIN 18101 (Baurichtmaß
+/// + 10 mm), Wahl beim Setzen.
+pub const DOOR_WIDTHS: [f64; 4] = [635.0, 760.0, 885.0, 1010.0];
+/// Fußbodenaufbau über OK Rohdecke (mm), bis das Raumbuch ihn je Geschoss
+/// liefert: Werksvorgabe Parkett 20 auf Estrichaufbau 140
+/// ([`crate::model::FINISH_TYPES`]); OK Fertigfußboden liegt im Geschoss
+/// überall gleich hoch.
+pub const FLOOR_BUILDUP: f64 = 160.0;
+/// Fangweite der Innentürlinie an den Normhöhen (mm).
+pub const DOOR_CATCH: f64 = 30.0;
+/// Vorgabe der Innentürlinie (mm über OK Rohdecke): die kleinste Normhöhe
+/// über dem Fußbodenaufbau (Jörn 12.10. 05:26, 05:58).
+pub const DOOR: f64 = DOOR_HEIGHTS[0] + FLOOR_BUILDUP;
+
+/// Innentürlinie `h` (mm über OK Rohdecke) auf eine Normhöhe über dem
+/// Fußbodenaufbau gefangen, wenn sie näher als [`DOOR_CATCH`] liegt.
+pub fn door_snap(h: f64) -> f64 {
+    DOOR_HEIGHTS
+        .iter()
+        .map(|n| n + FLOOR_BUILDUP)
+        .find(|z| (h - z).abs() < DOOR_CATCH)
+        .unwrap_or(h)
+}
 
 /// Höhenlinien eines Geschosses über OK Rohdecke (mm): Brüstung und Sturz
 /// der Fenster, Oberkante der Innentüren. Öffnungen binden ihre Unter- und
@@ -119,5 +143,26 @@ mod tests {
         assert_eq!(m.plan_cut_height(), MAX_PLAN_CUT);
         m.set_plan_cut_height(PLAN_CUT);
         assert_eq!(m.plan_cut_own(), None);
+    }
+
+    /// Innentürlinie (Jörn 05:58): Vorgabe 2,005 m ab OK Fertigfußboden
+    /// über dem Fußbodenaufbau der Werks-Ausbautypen; nahe einer Normhöhe
+    /// rastet sie dort ein, sonst bleibt sie, wo sie ist.
+    #[test]
+    fn innentuer_auf_normhoehe() {
+        let dicke = |g: crate::Guid| {
+            crate::model::FINISH_TYPES
+                .iter()
+                .find(|t| t.guid == g)
+                .map_or(0.0, |t| t.layers.iter().map(|l| l.1).sum::<f64>())
+        };
+        let aufbau =
+            dicke(crate::model::PARQUET_TYPE_GUID) + dicke(crate::model::SCREED_FLOOR_TYPE_GUID);
+        assert_eq!(FLOOR_BUILDUP, aufbau);
+        assert_eq!(DOOR, 2165.0);
+        assert_eq!(door_snap(2150.0), 2165.0);
+        assert_eq!(door_snap(2300.0), 2290.0);
+        assert_eq!(door_snap(2400.0), 2415.0);
+        assert_eq!(door_snap(2220.0), 2220.0);
     }
 }

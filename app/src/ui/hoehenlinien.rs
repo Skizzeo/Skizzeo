@@ -165,7 +165,14 @@ impl Ui {
                 Grip::Door(_) => "Innentür",
                 _ => "Schnitt",
             };
-            let txt = format!("{name} {}", m_text(ab));
+            let txt = match sub.grip {
+                // Fertighöhe ab OK Fertigfußboden, dazu die Rohbauhöhe
+                Grip::Door(_) => {
+                    let fertig = ab - sk_model::hoehen::FLOOR_BUILDUP;
+                    format!("{name} {} (roh {})", m_text(fertig), m_text(ab))
+                }
+                _ => format!("{name} {}", m_text(ab)),
+            };
             let nx = x0 + (z.level_handle + z.level_label_gap) * s;
             widgets::text(c, regular, &txt, px, nx + m, sub.y - 3.0 * s + m, col);
             let hc = if dragged {

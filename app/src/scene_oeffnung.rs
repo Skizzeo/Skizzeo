@@ -4,7 +4,7 @@
 use super::{ray_hits_box, Scene, Vis};
 use crate::visible::Class;
 use sk_math::Vec3;
-use sk_model::hoehen::MIN_LINE_GAP;
+use sk_model::hoehen::{door_snap, MIN_LINE_GAP};
 use sk_model::oeffnung::{HeightLine, Opening, OuterFace, MIN_OPENING};
 use sk_model::{ElementId, RunId, StoreyId, Tri};
 
@@ -43,7 +43,8 @@ impl Scene {
     /// Höhenlinie beim Ziehen im Geschossmanager (im offenen Schritt):
     /// Linie `k` des Geschosses `st` auf die Kote `z`, geklemmt: Brüstung ab
     /// OK Rohdecke, Sturz bis UK Decke, dazwischen mindestens
-    /// [`MIN_LINE_GAP`]; die Innentürlinie von [`MIN_OPENING`] bis UK Decke. Die Wände des Gebäudes rechnen neu, an
+    /// [`MIN_LINE_GAP`]; die Innentürlinie von [`MIN_OPENING`] bis UK Decke,
+    /// nahe einer Normhöhe nach DIN 18101 dort gefangen ([`door_snap`]). Die Wände des Gebäudes rechnen neu, an
     /// die Linie gebundene Öffnungen wandern mit (Jörn 14:22).
     pub fn drag_height_line(&mut self, st: StoreyId, k: HeightLine, z: f64) {
         let Some(s) = self.model.storey(st) else {
@@ -54,7 +55,7 @@ impl Scene {
         match k {
             HeightLine::Lintel => l.lintel = v.min(clear).max(l.sill + MIN_LINE_GAP),
             HeightLine::Sill => l.sill = v.max(0.0).min(l.lintel - MIN_LINE_GAP),
-            HeightLine::Door => l.door = v.min(clear).max(MIN_OPENING),
+            HeightLine::Door => l.door = door_snap(v).min(clear).max(MIN_OPENING),
         }
         if s.lines != l && self.model.set_height_lines(st, l) {
             self.relevel(st);
@@ -175,8 +176,11 @@ mod tests {
             0.0,
             "ab OK Rohdecke"
         );
-        s.drag_height_line(st, HeightLine::Door, el + 2135.0);
-        assert_eq!(s.model().storey(st).unwrap().lines.door, 2135.0);
+        // Normhöhe 2,13 m über 16 cm Aufbau fängt, daneben frei
+        s.drag_height_line(st, HeightLine::Door, el + 2280.0);
+        assert_eq!(s.model().storey(st).unwrap().lines.door, 2290.0);
+        s.drag_height_line(st, HeightLine::Door, el + 2220.0);
+        assert_eq!(s.model().storey(st).unwrap().lines.door, 2220.0);
         s.drag_height_line(st, HeightLine::Door, el + 9000.0);
         assert_eq!(s.model().storey(st).unwrap().lines.door, clear);
         s.drag_height_line(st, HeightLine::Door, el - 500.0);
