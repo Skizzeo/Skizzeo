@@ -4,6 +4,7 @@
 //!
 //! Alles hier ist Zustand und Zeichnen ohne Fenster; `main.rs` führt aus.
 
+use crate::freischaltung::Freischaltung;
 use crate::menu::{self, MenuItem};
 use sk_model::{refusal_lines, BuildingId, Category, Deleted, ElementId, Model, Refusal};
 use sk_paint::{Canvas, Path, Rgba};
@@ -613,9 +614,26 @@ pub struct ContextMenu {
     pub refusal: Option<String>,
 }
 
+/// Skalierung und freie Module für das Kontextmenü im Hauptfenster; eine
+/// Zahl allein ist die Skalierung mit allem frei.
+pub struct Rahmen(pub f32, pub Freischaltung);
+
+impl From<f32> for Rahmen {
+    fn from(s: f32) -> Rahmen {
+        Rahmen(s, Freischaltung::ALLES)
+    }
+}
+
+impl From<&crate::ui::Ui> for Rahmen {
+    fn from(u: &crate::ui::Ui) -> Rahmen {
+        Rahmen(u.scale, u.frei)
+    }
+}
+
 impl ContextMenu {
     /// Menü für `target` mit der Auswahl `selection` an der Maus `(x, y)`,
-    /// so verschoben, dass es ins Fenster passt.
+    /// so verschoben, dass es ins Fenster passt. Gesperrte Einträge
+    /// (Freischaltung) fehlen.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         m: &Model,
@@ -625,9 +643,21 @@ impl ContextMenu {
         y: f64,
         win: (u32, u32, u32),
         t: &Theme,
-        s: f32,
+        r: impl Into<Rahmen>,
     ) -> ContextMenu {
-        Self::build(m, target, selection, false).at(x, y, win, t, s)
+        let Rahmen(s, frei) = r.into();
+        let mut c = Self::build(m, target, selection, false);
+        c.items
+            .retain(|(_, a)| !a.is_some_and(|a| frei.gesperrt(a)));
+        // „Mengen …“ heißt nach den freien Blättern wie der Knopf
+        for (z, _) in c
+            .items
+            .iter_mut()
+            .filter(|(_, a)| *a == Some(Action::Quantity))
+        {
+            z.label = frei.knopf().into();
+        }
+        c.at(x, y, win, t, s)
     }
 
     /// Dasselbe Menü an einer Zeile des Mengenfensters (H119): oben „Im

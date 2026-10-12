@@ -59,11 +59,16 @@ impl App {
                 // Folgen der genutzten Bauleistungen im wirksamen Katalog
                 let firma = self.company.as_ref().map(|c| c.library());
                 let k = sk_cost::lesen::katalog(self.scene.model(), firma);
-                v.hinweise
-                    .extend(sk_cost::erweiterung::fehlende_folgen(&k, &v.def));
+                // Ohne Kosten keine Rückfrage zu Sätzen; die Kostenangaben
+                // bleiben in der Definition (Freischaltung §4.5)
+                let kosten = self.ui.frei.frei(crate::freischaltung::Modul::Kosten);
+                if kosten {
+                    v.hinweise
+                        .extend(sk_cost::erweiterung::fehlende_folgen(&k, &v.def));
+                }
                 ext_ablage::gewerke_ohne_titel(&mut v, &self.ext_ablage, self.scene.model(), firma);
                 // Neue Sätze für den Firmenkatalog (E8c)
-                if let Some(f) = firma {
+                if let Some(f) = firma.filter(|_| kosten) {
                     v.saetze = sk_cost::neue_saetze::neue_saetze(self.scene.model(), f, &v.def);
                 }
                 v
