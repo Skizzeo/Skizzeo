@@ -17,6 +17,8 @@ use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
 mod fenster;
 mod hoehenlinien;
+#[cfg(test)]
+mod umbruch_tests;
 use hoehenlinien::check_word;
 
 pub use fenster::TITEL as LEVELS_TITEL;
@@ -875,6 +877,9 @@ pub struct Props {
     pub joint: bool,
     /// Wand mit freiem Ende: Knöpfe „Ecke bilden“ und „Verlängern“ (G5).
     pub ende: bool,
+    /// `layer_set` bricht an Leerzeichen auf die Innenbreite um, ungekürzt
+    /// (Wände um einen Raum), statt rechts überzulaufen.
+    pub set_umbruch: bool,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -1306,7 +1311,13 @@ fn view_rows(nord: Option<f64>) -> Vec<Row> {
     ]
 }
 
-fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
+/// `umbruch`: Text in Zeilen auf die Innenbreite des Paneels.
+fn props_rows(
+    p: &Props,
+    edit: Option<&Edit>,
+    more_open: bool,
+    umbruch: impl Fn(&str) -> Vec<String>,
+) -> Vec<Row> {
     let mut rows = vec![Row::Title("Eigenschaften")];
     rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
     if let Some(z) = &p.ext {
@@ -1375,6 +1386,8 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     rows.extend([Row::Separator, Row::Label(label)]);
     if p.chip.is_some() {
         rows.push(Row::TypeChip(Id::PropsType));
+    } else if p.set_umbruch {
+        rows.extend(umbruch(&p.layer_set).into_iter().map(Row::Text));
     } else {
         rows.push(Row::Text(p.layer_set.clone()));
     }
@@ -1565,7 +1578,13 @@ impl Ui {
             ),
             Panel::Views => view_rows(self.nord),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
-                props_rows(p, self.edit.as_ref(), self.more_open)
+                // In dip: die Zeilen sind in jedem Maßstab dieselben
+                let breite = self.width(Panel::Props) - 2.0 * self.size.panel_pad;
+                let umbruch = |t: &str| {
+                    let f = self.fonts.regular.as_ref();
+                    widgets::wrap(f, t, self.size.font_small, breite)
+                };
+                props_rows(p, self.edit.as_ref(), self.more_open, umbruch)
             }),
             Panel::Levels if self.levels_diagramm() => self.levels_kopf(),
             Panel::Levels => vec![Row::Button(Id::LevelsOpen, fenster::KNOPF)],
