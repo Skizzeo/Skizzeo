@@ -16,7 +16,7 @@ use crate::ui::ViewKind;
 use crate::App;
 use sk_math::vec3;
 use sk_model::oeffnung::OpeningKind;
-use sk_platform::{Event, Key, MouseButton};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use werkzeug::{fangen, pfad, plan_fang, Bild, Fang, Klick, Werkzeug};
 
 /// Fangabstand an Höhenlinien und Wandenden in Bildschirmpixeln (96 dpi).
@@ -191,9 +191,32 @@ impl App {
         }
     }
 
-    /// Taste gedrückt: **Esc** wie [`App::oeffnung_esc`], **Tab** schaltet
-    /// den Bezugspunkt der Innentür. `true`, wenn das Werkzeug sie nahm.
-    pub(crate) fn oeffnung_taste(&mut self, key: Key) -> bool {
+    /// Taste gedrückt: Ziffern, **Enter** und **Esc** zuerst an die
+    /// Eingabe des Abstands der Innentür, sonst **Esc** wie
+    /// [`App::oeffnung_esc`], **Tab** schaltet den Bezugspunkt der
+    /// Innentür. `true`, wenn das Werkzeug sie nahm.
+    pub(crate) fn oeffnung_taste(&mut self, key: Key, mods: Modifiers) -> bool {
+        if self.innentuer_an() {
+            let mut taste = innentuer::Taste::Frei;
+            self.tuer_bild(|t, _, _, _| taste = t.taste(key, mods));
+            match taste {
+                innentuer::Taste::Frei => {}
+                innentuer::Taste::Geaendert => {
+                    self.redraw = true;
+                    return true;
+                }
+                innentuer::Taste::Setzen => {
+                    self.tuer_setzen();
+                    return true;
+                }
+                innentuer::Taste::PasstNicht => {
+                    let t = innentuer::PASST_NICHT;
+                    self.status(Meldung::mit("{}.", &[t]), crate::NOTICE_TIME);
+                    self.redraw = true;
+                    return true;
+                }
+            }
+        }
         match key {
             Key::Escape => self.oeffnung_esc(),
             Key::Tab if self.innentuer_an() => {
@@ -267,6 +290,7 @@ impl App {
         let bild = w.innen.hover.as_ref().map_or_else(Bild::default, |v| Bild {
             linien: Vec::new(),
             umriss: innentuer::umriss(v),
+            kette: innentuer::kette(v),
             punkt: Some((v.punkt, false)),
         });
         self.redraw |= w.vorschau != bild;
@@ -302,8 +326,9 @@ impl App {
             .is_some_and(|w| w.innen.hover.is_some())
     }
 
-    /// Klick mit der Innentür am Cursor: setzt sie als ein Schritt; lehnt
-    /// das Modell ab, sagt die Statuszeile warum.
+    /// Klick mit der Innentür am Cursor bzw. **Enter** nach dem Abstand:
+    /// setzt sie als ein Schritt; lehnt das Modell ab, sagt die Statuszeile
+    /// warum. Eine getippte Zahl gilt danach nicht mehr.
     fn tuer_setzen(&mut self) -> bool {
         let o = self.tool.oeffnung.as_ref().and_then(|w| w.innen.oeffnung());
         let Some(o) = o else {
@@ -318,7 +343,10 @@ impl App {
                 }
             }
         }
-        self.tuer_bild(|t, m, k, st| t.nochmal(m, k, st));
+        self.tuer_bild(|t, m, k, st| {
+            t.eingabe = None;
+            t.nochmal(m, k, st);
+        });
         self.redraw = true;
         true
     }

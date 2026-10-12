@@ -278,6 +278,8 @@ pub enum Klick {
 pub struct Bild {
     pub linien: Vec<(Vec3, Vec3)>,
     pub umriss: Vec<(Vec3, Vec3)>,
+    /// Maßkette der Innentür zu den Wandflächen (dünn, durchgezogen).
+    pub kette: Vec<(Vec3, Vec3)>,
     /// Die Ecke unter der Maus und ob sie auf einer Linie gefangen ist.
     pub punkt: Option<(Vec3, bool)>,
 }
@@ -315,10 +317,14 @@ impl Werkzeug {
     /// Pille am Gummiband im Grundriss: die Breite live zwischen erster
     /// Kante und Maus.
     pub fn label(&self) -> Option<([Vec3; 2], String)> {
-        let (a, b) = (self.erste.as_ref()?, self.hover.as_ref()?);
         if !self.grundriss {
             return None;
         }
+        // Innentür am Cursor: Abstand zur näheren Wandfläche (G7)
+        if self.erste.is_none() && self.innen.hover.is_some() {
+            return self.innen.label();
+        }
+        let (a, b) = (self.erste.as_ref()?, self.hover.as_ref()?);
         let w = plan_breite(a, b).filter(|w| *w >= 1.0)?;
         Some(([a.p, b.p], crate::ui::live_length_text(w)))
     }
@@ -429,6 +435,11 @@ pub fn helpers(b: &Bild, scale: f32, theme: &Theme) -> Vec<Helper> {
         .iter()
         .map(|(a, c)| line(*a, *c, col.guide, 1.0, 5.0))
         .collect();
+    out.extend(
+        b.kette
+            .iter()
+            .map(|(a, c)| line(*a, *c, col.guide, 1.0, 0.0)),
+    );
     out.extend(
         b.umriss
             .iter()

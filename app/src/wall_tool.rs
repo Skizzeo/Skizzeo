@@ -201,6 +201,13 @@ impl WallTool {
 
     /// Felder der Pille.
     pub fn labels(&self) -> [&'static str; 2] {
+        if self
+            .oeffnung
+            .as_ref()
+            .is_some_and(|w| w.innen.eingabe.is_some())
+        {
+            return ["Abstand", ""];
+        }
         if let Some(nb) = self.abstand.filter(|_| self.abstand_offen()) {
             return [nb.etikett(), ""];
         }
@@ -252,9 +259,10 @@ impl WallTool {
         &self.points
     }
 
-    /// Offene Maßeingabe.
+    /// Offene Maßeingabe, auch der Abstand der Innentür (G7).
     pub fn input(&self) -> Option<&MeasureInput> {
-        self.input.as_ref()
+        let innen = || self.oeffnung.as_ref()?.innen.eingabe.as_ref();
+        self.input.as_ref().or_else(innen)
     }
 
     /// Richtung der vorigen Wand, bei der ersten die Waagerechte.
