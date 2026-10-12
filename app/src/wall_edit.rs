@@ -26,11 +26,14 @@ use sk_model::{ElementId, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
+use tuer_edit::TuerZug;
 
 #[path = "grundriss/ecke_edit.rs"]
 pub mod ecke_edit;
 #[path = "grundriss/ende_edit.rs"]
 pub mod ende_edit;
+#[path = "grundriss/tuer_edit.rs"]
+pub mod tuer_edit;
 
 /// Greifabstand zum Band in Pixeln (bei 96 dpi).
 const PICK_PX: f64 = 8.0;
@@ -259,6 +262,11 @@ pub struct WallEdit {
     griff: bool,
     /// Laufendes Ziehen an einem Wandende (G5b).
     pub ende: Option<EndeZug>,
+    /// Griffe der Türen bei der Maus (Grundriss) und der darunter.
+    tueren: Vec<(ElementId, Vec3)>,
+    tuer_griff: Option<ElementId>,
+    /// Laufendes Ziehen am Griff einer Tür (Aufschlag, DIN).
+    pub tuer: Option<TuerZug>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -701,7 +709,7 @@ impl WallEdit {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.drag.is_some() || self.ende.is_some()
+        self.drag.is_some() || self.ende.is_some() || self.tuer.is_some()
     }
 
     /// Wandzug, der gerade gezogen wird.
@@ -834,14 +842,28 @@ impl WallEdit {
         if self.is_dragging() {
             return false;
         }
+        let frei = enabled && !self.splitting();
+        let tueren = match (self.plan_z, self.mouse) {
+            (Some(z), Some((x, y))) if frei => drag_point(cam, x, y, w, h, z)
+                .map(|p| tuer_edit::sichtbar(scene, p))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let tuer_griff = match (self.plan_z, self.mouse) {
+            (Some(z), Some(m)) => tuer_edit::griff_bei(&tueren, cam, z, m, w, h, scale),
+            _ => None,
+        }
+        .map(|g| g.0);
         let griff =
-            enabled && !self.splitting() && self.griff_bei(scene, cam, w, h, scale).is_some();
-        let hover = if enabled && !self.splitting() && !griff {
+            tuer_griff.is_some() || frei && self.griff_bei(scene, cam, w, h, scale).is_some();
+        let changed_tuer = tueren != self.tueren || tuer_griff != self.tuer_griff;
+        (self.tueren, self.tuer_griff) = (tueren, tuer_griff);
+        let hover = if frei && !griff {
             self.pick(scene, cam, w, h, scale)
         } else {
             None
         };
-        let changed = hover != self.hover || griff != self.griff;
+        let changed = changed_tuer || hover != self.hover || griff != self.griff;
         (self.hover, self.griff) = (hover, griff);
         changed
     }
@@ -958,6 +980,20 @@ impl WallEdit {
             out.consumed = true;
             return out;
         }
+        if let Some(t) = self.tuer.as_mut() {
+            let o = t.handle(e, scene, cam, w, h);
+            if o.fertig {
+                self.tuer = None;
+                if let Event::MouseUp { x, y, .. } = *e {
+                    self.mouse = Some((x, y));
+                }
+                self.refresh(scene, cam, w, h, scale, enabled);
+            }
+            out.redraw = o.redraw;
+            out.changed = o.changed;
+            out.consumed = true;
+            return out;
+        }
         match *e {
             Event::MouseMove { x, y, .. } => {
                 self.mouse = Some((x, y));
@@ -973,6 +1009,8 @@ impl WallEdit {
                 if self.drag.is_none() {
                     out.redraw = self.hover.take().is_some();
                 }
+                self.tuer_griff = None;
+                out.redraw |= !std::mem::take(&mut self.tueren).is_empty();
             }
             Event::Wheel { .. } => {
                 out.redraw = self.end_post();
@@ -986,6 +1024,17 @@ impl WallEdit {
                 out.redraw = self.end_post();
                 self.mouse = Some((x, y));
                 self.refresh(scene, cam, w, h, scale, enabled);
+                // Griff am Blatt einer Tür: Aufschlag und DIN
+                if let (Some(id), Some(z)) = (self.tuer_griff, self.plan_z) {
+                    out.consumed = true;
+                    if let Some(l) = sk_model::edit_blocked(scene.model(), &[id]) {
+                        out.locked = Some((l, id));
+                        return out;
+                    }
+                    self.tuer = TuerZug::greifen(scene, id, z);
+                    out.redraw = true;
+                    return out;
+                }
                 // Griff an einem Ende der gewählten Wand (G5b)
                 let griff = self.griff_bei(scene, cam, w, h, scale).filter(|_| enabled);
                 if let (Some((ende, _)), Some(wand), Some(z)) = (griff, self.gewaehlt, self.plan_z)
@@ -1162,6 +1211,9 @@ impl WallEdit {
         if let Some(z) = &self.ende {
             return z.helpers(scale, occlude, theme);
         }
+        if let Some(t) = &self.tuer {
+            return t.helpers(scene, scale, occlude, theme);
+        }
         let col = &theme.interact;
         let mut out = Vec::new();
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
@@ -1238,6 +1290,11 @@ impl WallEdit {
         // Griffe an den Enden der gewählten Innenwand (Grundriss, G5b)
         if let (Some(wand), Some(z)) = (self.gewaehlt, self.plan_z) {
             for (_, p) in ende_edit::griffe(scene, wand) {
+                out.extend(ende_edit::griff(p, z, scale, occlude, theme));
+            }
+        }
+        if let Some(z) = self.plan_z {
+            for &(_, p) in &self.tueren {
                 out.extend(ende_edit::griff(p, z, scale, occlude, theme));
             }
         }

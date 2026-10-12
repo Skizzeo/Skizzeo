@@ -65,10 +65,12 @@ Verwalten | Datei › „Erweiterungen …“: Ein/Aus, Aktualisieren, Entfernen
 Starten | Knopf „Fenster“ (Wandöffnung, auch Terrassentür) oder „Tür“ (Türöffnung) unter „Gebäude“ und „Innenwand“
 Wo | in 3D und den vier Ansichten über einer Außenwand; Brüstung und Sturz des Geschosses erscheinen gestrichelt
 Aufziehen | Klick setzt eine Ecke, Klick die Gegenecke; die Linien und der Wandfuß fangen
-Ecke | Gegenecke auf der Nachbarwand: die Öffnung geht um die Außenecke
-Geschosse | Gegenecke auf der Wand darüber: die Öffnung geht über beide Geschosse
+Ecke und Geschosse | Gegenecke auf der Nachbarwand: die Öffnung geht um die Außenecke; auf der Wand darüber: über beide Geschosse
 Höhen | an einer Linie gefangen wandert die Kante mit, wenn die Linie im Geschossmanager gezogen wird
 Anschlag | bei WDVS und Verblender ist die gezeichnete Öffnung die sichtbare außen, innen ist sie um den Anschlag größer
+Einbauelement | im Grundriss zeigen zwei dünn gestrichelte Linien, wo das spätere Fenster- oder Türelement sitzt: außen nach der äußeren Einbautiefe, dazwischen die Elementtiefe
+Innentür | „Tür“ im Grundriss: über einer Innenwand hängt die Tür am Cursor und schlägt in den Raum auf der Cursorseite auf; **Tab** schaltet den Bezugspunkt Mitte, links, rechts; das Mausrad blättert die Breiten 63,5 / 76 / 88,5 / 101 cm nach DIN 18101, die Statuszeile zeigt Breite und Bezug, mit **Strg** zoomt es; Klick setzt sie, unten OK Rohdecke, oben die Innentürlinie, DIN links
+Aufschlag | im Grundriss zeigt eine Innentür bei der Maus einen runden Griff am Ende des offenen Blatts; ziehen: die Wandseite gibt den Raum, in den sie aufschlägt, die Hälfte der Öffnung den Bandpfosten (DIN links oder rechts nach DIN 107); Loslassen ist ein Schritt, **Esc** bricht ab
 Beenden | **Esc** nimmt die erste Ecke zurück, dann schließt es
 
 [thema] id=einlesen titel="Bauteil einlesen"
@@ -172,6 +174,7 @@ Aktives Geschoss | Klick auf „Fundament“, „EG“, „OG“ oder „FD“ (
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
 Höhe ziehen | Griff an einer Geschosslinie; Fang 1 cm, mit **Umschalt** 5 cm, **Esc** bricht ab
 Höhe als Zahl | auf eine Maßzahl klicken, Wert in Metern, **Enter**
+Höhenlinien | je Geschoss gestrichelt Brüstung und Sturz der Fenster und die Oberkante der Innentüren (roh über OK Rohdecke, dazu die Fertighöhe über 16 cm Fußbodenaufbau; Vorgabe 2,005 m fertig, rastet an den Normhöhen 2,005 / 2,13 / 2,255 m nach DIN 18101); ziehen am kleinen Griff, gebundene Öffnungen wandern mit; die Haken „Fenster“ und „Innentüren“ oben blenden sie getrennt aus
 Grundriss | schneidet 1,50 m über OK Rohdecke, das Geschoss darunter im Hintergrund; das Zahnrad oben rechts stellt die Schnitthöhe für alle Geschosse ein (0,10 bis 5,00 m, Enter übernimmt)
 Fundament | eigene Ebene; Wände zeichnen ist dort gesperrt
 Grenzen | ±0,00 liegt fest; lichte Höhe mindestens 1,00 m
@@ -190,7 +193,7 @@ Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Um
 Drehen | an der Spitze ziehen
 Verschieben | am Pfeil ziehen; ins Gebäude geschoben rastet er 50 cm vor der Kante ein
 Platz | fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil vorne links daneben
-Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee
+Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee. Die Landeskoordinaten darunter gehen nur ins IFC, Sonne und Nordpfeil rechnen weiter mit Breite und Länge
 Abbrechen | **Esc** schließt erst die Zahl, dann den Fußpunkt, dann das Werkzeug
 Sonnenstand | mit Nordrichtung schalten die Kachel und ein Klick auf den Pfeil ihn an und aus; in 3D stehen Sonne und Tagesbahn über dem Gebäude, fein die Bahnen vom 21.06. und 21.12.; ab 2° Sonnenhöhe wirft das Gebäude Schatten auf sich und den Boden; Sonne und Schatten erscheinen mit dem Gebäude, die Nordrichtung geht auch vorher
 Sonne ziehen | an der Sonne oder am Punkt an der Schattenspitze ziehen ändert die Uhrzeit; die Sonne bleibt auf der Tagesbahn und hält bei Auf- und Untergang; der Punkt folgt der Kurve der Schattenspitze, über ihr Ende hinaus gilt Auf- bzw. Untergang
@@ -211,7 +214,7 @@ Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klap
 Dateimenü | Logo oben links, **F10** oder **Alt** kurz
 Neu, Öffnen | **Strg+N**, **Strg+O**
 Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
-IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen
+IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen. Mit den Landeskoordinaten aus „Projektdaten“ liegt das Haus im IFC an seiner Stelle in der Welt (Georeferenz): Ostwert mit der UTM-Zone vorn (in Deutschland 32 oder 33) und Nordwert im amtlichen System ETRS89/UTM, dazu die Höhe von ±0,00 über NHN (Normalhöhennull), alles aus dem Lageplan; fehlt Ost- oder Nordwert, gibt es keine Georeferenz
 Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
 Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
 Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**
@@ -368,7 +371,7 @@ Innenwand | Innenwand im aktiven Geschoss zeichnen.
 Winkelsprung | Beim Zeichnen springt die Richtung in 90°- oder 45°-Schritten zur vorigen Wand; **R** schaltet ihn aus und ein.
 Erweiterungen | Eingelesene Bauteile wie Stütze oder Treppe setzen, nach Gruppe geordnet.
 Wandöffnung | Fenster oder Terrassentür in eine Außenwand aufziehen.
-Türöffnung | Haustür in eine Außenwand aufziehen.
+Türöffnung | Haustür in eine Außenwand aufziehen, im Grundriss Innentür in eine Innenwand setzen.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.
