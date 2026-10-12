@@ -1992,12 +1992,18 @@ impl Model {
     }
 
     /// U = 1 / (0,13 + Σ d/λ + 0,18 je Luftschicht + 0,04), nur bei
-    /// Außenwänden; `None`, wenn einer Schicht λ fehlt.
+    /// Außenwänden; `None`, wenn einer Schicht λ fehlt. Hat der Typ innen
+    /// keine Bekleidung, zählt ein Innenputz 15 mm Gips mit, wie ihn das
+    /// Raumbuch dort aufbringt (DIN 4108; `raumbuch/plan.md` §5.6).
     pub fn u_value_of(&self, s: &LayerSet) -> Option<f64> {
         if !s.is_external() || s.layers.is_empty() {
             return None;
         }
         let mut r = 0.13 + 0.04;
+        if s.layers.last().map(|l| l.function) != Some(LayerFunction::Finish) {
+            let (d, lambda) = ausbau::INNER_PLASTER_U;
+            r += d / 1000.0 / lambda;
+        }
         for l in &s.layers {
             if l.function == LayerFunction::AirGap {
                 r += 0.18;
