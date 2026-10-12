@@ -559,6 +559,15 @@ impl Company {
         self.save_with(|lib| export_type(m, lib, g), "Typ nicht im Projekt")
     }
 
+    /// Speichert eine Raumvorlage samt Ausbautypen in den Katalog zurück
+    /// (Raumbuch RB2), sonst wie [`Company::save_type`].
+    pub fn save_space_type(&mut self, m: &Model, g: Guid) -> SaveResult {
+        self.save_with(
+            |lib| sk_model::export_space_type(m, lib, g),
+            "Raumvorlage nicht im Projekt",
+        )
+    }
+
     /// Speichert einen Baustoff in den Katalog zurück, sonst wie
     /// [`Company::save_type`].
     pub fn save_material(&mut self, m: &Model, id: MaterialId) -> SaveResult {
