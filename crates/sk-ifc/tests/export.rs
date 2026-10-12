@@ -468,8 +468,9 @@ fn vorschau_liest_den_export() {
     }
 }
 
-/// I5 (ifc/plan.md §5): r7 hat ein Fenster (OE-001), eine Tür (OE-002)
-/// und eine Innentür (OE-003, in einer Innenwand). Jede steht als `IfcOpeningElement` mit der Kennung der Öffnung
+/// I5 (ifc/plan.md §5): r7 hat ein Fenster (OE-001), eine Tür (OE-002),
+/// eine Innentür (OE-003, in einer Innenwand) und ein Fenster im OG (OE-004,
+/// mit Breitenschloss an OE-001). Jede steht als `IfcOpeningElement` mit der Kennung der Öffnung
 /// an ihrer Wand, liegt relativ zu deren Lage, hat ihre Form als
 /// `Reference` (das Wandnetz ist gelocht) und Breite, Höhe und Tiefe wie im
 /// Modell.
@@ -478,7 +479,7 @@ fn oeffnungen_an_der_wand() {
     let m = laden(HAEUSER[5].1);
     let (ifc, b) = export(&m, &opt());
     let f = step::read(&ifc).unwrap();
-    assert_eq!(b.oeffnungen, 3);
+    assert_eq!(b.oeffnungen, 4);
     assert!(b
         .ausgelassen
         .iter()
@@ -488,7 +489,7 @@ fn oeffnungen_an_der_wand() {
         .map(|(_, e)| (liste(&e.args[5])[0], liste(&e.args[4])[0]))
         .collect();
     let mengen = mengen_der_datei("r7", &f);
-    for nr in ["OE-001", "OE-002", "OE-003"] {
+    for nr in ["OE-001", "OE-002", "OE-003", "OE-004"] {
         let (id, el) = m.elements().iter().find(|(_, e)| e.number == nr).unwrap();
         let voids = m.opening_voids(id);
         assert_eq!(voids.len(), 1, "{nr}");

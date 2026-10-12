@@ -985,4 +985,35 @@ mod tests {
         assert_eq!(wieder.hints.len(), 3, "{:?}", wieder.hints);
         assert_eq!(crate::szo::write(&wieder.model), neu);
     }
+
+    /// Review #127 B2: Eine rohe Zeile „element“ vor einer gültigen Zeile
+    /// „above“ bleibt vor ihr; die Datei kommt bytegleich zurück.
+    #[test]
+    fn rohe_zeile_bleibt_an_ihrer_stelle() {
+        use crate::guid::{Guid, GuidGen};
+        let mut m = Model::with_seed(5);
+        let mut d = m.attr().display().clone();
+        let spl = m
+            .attr()
+            .line_types()
+            .iter()
+            .find(|(_, l)| l.name == "Strichpunktlinie")
+            .unwrap()
+            .0;
+        d.above.line_type = spl;
+        m.begin("Darstellung");
+        m.set_display(d);
+        m.commit();
+        let text = crate::szo::write(&m);
+        let above = text.find("[display] slot=above").expect("above geändert");
+        let fremd = Guid(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).to_ifc();
+        let pen = m.attr().pens().iter().next().unwrap().1.guid.to_ifc();
+        let zeile = format!("[display] slot=element pen={pen} lt={fremd}\n");
+        let roh = format!("{}{zeile}{}", &text[..above], &text[above..]);
+        let back = crate::szo::read(&roh, GuidGen::with_seed(9)).unwrap();
+        assert_eq!(back.hints.len(), 1, "{:?}", back.hints);
+        assert!(back.model.attr().element_is_default());
+        assert!(!back.model.attr().above_is_default());
+        assert_eq!(crate::szo::write(&back.model), roh, "bytegleich zurück");
+    }
 }

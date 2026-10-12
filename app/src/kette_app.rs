@@ -232,8 +232,15 @@ impl App {
     }
 
     /// Folgen am Band: geteilt, Teilen abgebrochen oder abgelehnt, bündig
-    /// zusammengeschoben (dann die Rückfrage).
+    /// zusammengeschoben (dann die Rückfrage), gesperrt.
     pub(crate) fn after_edit(&mut self, out: &EditOutcome) {
+        // Sperren aus Maus und Tasten (Review #127 B1)
+        if let Some((id, wall)) = out.locked {
+            self.show_locked(id, Some((wall, delete::Act::Drag)));
+        }
+        if let Some((id, tuer)) = out.gesperrt {
+            self.show_locked(id, Some((tuer, delete::Act::Field)));
+        }
         if let Some(o) = &out.ecke {
             if o != &ecke_edit::Outcome::default() {
                 self.after_ecke(o);
