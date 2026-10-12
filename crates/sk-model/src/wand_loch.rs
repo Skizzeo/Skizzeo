@@ -595,10 +595,10 @@ impl WallChain {
         out
     }
 
-    /// Aufschlag der Türen im Grundriss in Höhe `cut` (Jörn 05:50): das
-    /// offene Blatt senkrecht vom Bandpfosten in den Aufschlagraum, so lang
-    /// wie die Lichte, und der Viertelkreis bis zum Gegenpfosten, dünn.
-    pub fn swing_edges(&self, cut: f64) -> Vec<Edge> {
+    /// Aufschläge der Türen dieses Zugs im Grundriss (z = 0), je mit ihrem
+    /// Loch: für [`WallChain::swing_edges`] und den Raumstempel, der die
+    /// Bögen meidet (Grundriss G7).
+    pub fn door_swings(&self) -> Vec<(&Hole, DoorSwing)> {
         let mut out = Vec::new();
         let Some((pts, _, dirs)) = self.layout() else {
             return out;
@@ -607,23 +607,39 @@ impl WallChain {
             let Some(l) = h.leaf else {
                 continue;
             };
-            if !(h.z.0 < cut && cut < h.z.1 && h.u.0.is_finite() && h.u.1.is_finite()) {
+            if !(h.u.0.is_finite() && h.u.1.is_finite()) {
                 continue;
             }
             let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
                 continue;
             };
-            let at = |u: f64| {
-                let p = p0 + d * u + crate::wall::right_of(d) * l.off;
-                vec3(p.x, p.y, cut)
-            };
+            let at = |u: f64| flat(p0 + d * u + crate::wall::right_of(d) * l.off);
             let (uh, uo) = if l.hinge_lo { h.u } else { (h.u.1, h.u.0) };
             let w = (uo - uh).abs();
-            let (band, offen, zu) = (at(uh), l.side.normal(d) * w, d * (uo - uh));
-            let mut punkte = vec![band + offen];
+            let s = DoorSwing {
+                band: at(uh),
+                offen: l.side.normal(d) * w,
+                zu: d * (uo - uh),
+            };
+            out.push((h, s));
+        }
+        out
+    }
+
+    /// Aufschlag der Türen im Grundriss in Höhe `cut` (Jörn 05:50): das
+    /// offene Blatt senkrecht vom Bandpfosten in den Aufschlagraum, so lang
+    /// wie die Lichte, und der Viertelkreis bis zum Gegenpfosten, dünn.
+    pub fn swing_edges(&self, cut: f64) -> Vec<Edge> {
+        let mut out = Vec::new();
+        for (h, s) in self.door_swings() {
+            if !(h.z.0 < cut && cut < h.z.1) {
+                continue;
+            }
+            let band = vec3(s.band.x, s.band.y, cut);
+            let mut punkte = vec![band + s.offen];
             for k in 1..=BOGEN {
                 let t = std::f64::consts::FRAC_PI_2 * k as f64 / BOGEN as f64;
-                punkte.push(band + offen * t.cos() + zu * t.sin());
+                punkte.push(band + s.offen * t.cos() + s.zu * t.sin());
             }
             let mut kante = |a: Vec3, b: Vec3| {
                 out.push(Edge {
@@ -641,6 +657,17 @@ impl WallChain {
         }
         out
     }
+}
+
+/// Aufschlag eines Türblatts im Grundriss ([`WallChain::door_swings`]):
+/// Bandpfosten (z = 0), offenes Blatt in den Aufschlagraum und
+/// geschlossenes Blatt zum Gegenpfosten, beide ab dem Band und so lang wie
+/// die Lichte. Das Blatt überstreicht den Viertelkreis dazwischen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoorSwing {
+    pub band: Vec3,
+    pub offen: Vec3,
+    pub zu: Vec3,
 }
 
 /// Stücke des Viertelkreises im Türaufschlag.
