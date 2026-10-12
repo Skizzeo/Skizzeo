@@ -453,9 +453,9 @@ mod tests {
             ..Default::default()
         };
         let mods = sk_platform::Modifiers::default();
-        let (x, y) = cam.project(vec3(5300.0, 3000.0, 0.0), W, H).unwrap();
+        let (tx, ty) = cam.project(vec3(5300.0, 3000.0, 0.0), W, H).unwrap();
         e.handle(
-            &Event::MouseMove { x, y, mods },
+            &Event::MouseMove { x: tx, y: ty, mods },
             &mut s,
             &cam,
             W,
@@ -506,6 +506,52 @@ mod tests {
                 .changed
         );
         assert_eq!(swing(&s), alt);
+        // Zurück an der Tür (Review #127 H1): gehalten kippt sie nicht
+        // weiter, mit Strg oder Alt gehört die Taste nicht der Tür
+        e.handle(
+            &Event::MouseMove { x: tx, y: ty, mods },
+            &mut s,
+            &cam,
+            W,
+            H,
+            1.0,
+            true,
+        );
+        let gehalten = Event::Key {
+            key: LEERTASTE,
+            down: true,
+            mods,
+            repeat: true,
+        };
+        let o = e.handle(&gehalten, &mut s, &cam, W, H, 1.0, true);
+        assert!(o.consumed && !o.changed);
+        for m in [
+            sk_platform::Modifiers { ctrl: true, ..mods },
+            sk_platform::Modifiers { alt: true, ..mods },
+        ] {
+            let k = Event::Key {
+                key: LEERTASTE,
+                down: true,
+                mods: m,
+                repeat: false,
+            };
+            assert!(!e.handle(&k, &mut s, &cam, W, H, 1.0, true).changed);
+        }
+        assert_eq!(swing(&s), alt);
+        // Gesperrt (B1): keine Änderung, die Sperre geht an die App
+        s.edit_model("Gesperrt", |m| {
+            m.set_locked(&[id], true);
+            true
+        });
+        let o = e.handle(&taste(false), &mut s, &cam, W, H, 1.0, true);
+        assert!(o.consumed && !o.changed);
+        assert_eq!(o.gesperrt, Some((id, id)));
+        assert_eq!(o.locked, None);
+        assert_eq!(swing(&s), alt);
+        let karte =
+            crate::delete::locked_card(s.model(), id, Some((id, crate::delete::Act::Field)));
+        assert_eq!(karte.len(), 1);
+        assert!(karte[0].ends_with(" ist gesperrt."), "{karte:?}");
     }
 
     /// Sturz im Grundriss (G7b): eigene Stelle „Über der Schnittebene“ der
