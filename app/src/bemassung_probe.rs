@@ -180,7 +180,16 @@ fn ausserhalb_und_weit_weg() {
     };
     let mut zeichnen = |cam: &Camera| {
         let b = Blick { cam, w: W, h: H };
-        mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &b, 1.0, &theme)
+        mk.zeichnen(
+            &s,
+            ViewKind::Plan,
+            &[],
+            Some(&f),
+            &b,
+            1.0,
+            &theme,
+            &Default::default(),
+        )
     };
     // Nah am ersten Haus: nur seine Schrift, mit Kreisen
     let (l_nah, t_nah) = zeichnen(&oben(5000.0, 4000.0, 5000.0));
@@ -294,6 +303,47 @@ fn reps_von(n: usize) -> usize {
     }
 }
 
+/// Eine hervorgehobene Kette malt nur ihr Geschoss neu: Gleiche Farben
+/// behalten den Schlüssel der Tinte, ohne Hervorhebung gilt wieder die
+/// gemerkte (Stufe 2 auf dem Zwischenspeicher aus Review W30).
+#[test]
+fn hervorhebung_malt_nur_ihr_geschoss() {
+    let Some(f) = schrift() else {
+        return;
+    };
+    let s = siedlung(2);
+    let theme = Theme::dark();
+    let mut mk = Massketten::default();
+    let cam = Camera::parallel(
+        vec3(15_000.0, 4000.0, 0.0),
+        90f64.to_radians(),
+        -89.9f64.to_radians(),
+        20_000.0,
+    );
+    let b = Blick {
+        cam: &cam,
+        w: W,
+        h: H,
+    };
+    let mut schluessel = |h: &crate::wall_edit::mass_edit::Hervor| -> Vec<u64> {
+        let (_, t) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &b, 1.0, &theme, h);
+        t.iter().map(|t| t.0).collect()
+    };
+    let ohne = schluessel(&Default::default());
+    assert_eq!(ohne.len(), 2);
+    let st = geschosse(&s, ViewKind::Plan, &[]);
+    let a = Massketten::default().stand(&s, st, Some(&f)).unwrap();
+    let k = crate::wall_edit::mass_treffer::id_von(&a.geschosse[0].a, 0, 0).unwrap();
+    let h = crate::wall_edit::mass_edit::Hervor {
+        ueber: Some(k),
+        ..Default::default()
+    };
+    let hell = schluessel(&h);
+    assert_eq!(hell.iter().filter(|k| ohne.contains(k)).count(), 1);
+    assert_eq!(schluessel(&h), hell, "gleiche Farben, gleicher Schlüssel");
+    assert_eq!(schluessel(&Default::default()), ohne);
+}
+
 fn ms(t: Instant, reps: usize) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0 / reps as f64
 }
@@ -389,7 +439,16 @@ fn probe_bemassung() {
             n
         };
         let t = Instant::now();
-        let (linien, ink) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick, 1.0, &theme);
+        let (linien, ink) = mk.zeichnen(
+            &s,
+            ViewKind::Plan,
+            &[],
+            Some(&f),
+            &blick,
+            1.0,
+            &theme,
+            &Default::default(),
+        );
         let kalt = ms(t, 1);
         hoch(&ink);
         // Stand ohne Änderung, dann auf eine andere Ebene und zurück
@@ -424,7 +483,16 @@ fn probe_bemassung() {
         for k in 0..reps {
             let moved = orig.with_segment_moved(1, -10.0 * (k + 1) as f64).unwrap();
             s.set_run_points(run, &moved.points);
-            let (_, ink) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick, 1.0, &theme);
+            let (_, ink) = mk.zeichnen(
+                &s,
+                ViewKind::Plan,
+                &[],
+                Some(&f),
+                &blick,
+                1.0,
+                &theme,
+                &Default::default(),
+            );
             hochgeladen = hoch(&ink);
         }
         let ziehen = ms(t, reps) - wand;
@@ -434,7 +502,16 @@ fn probe_bemassung() {
         for k in 0..reps {
             let moved = orig.with_segment_moved(1, -10.0 * (k + 1) as f64).unwrap();
             s.set_run_points(run, &moved.points);
-            let (_, ink) = mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick_nah, 1.0, &theme);
+            let (_, ink) = mk.zeichnen(
+                &s,
+                ViewKind::Plan,
+                &[],
+                Some(&f),
+                &blick_nah,
+                1.0,
+                &theme,
+                &Default::default(),
+            );
             teile_nah = ink.len();
         }
         let ziehen_nah = ms(t, reps) - wand;
@@ -449,15 +526,34 @@ fn probe_bemassung() {
                 &blick,
                 1.0,
                 &theme,
+                &Default::default(),
             ));
         }
         let zeichnen = ms(t, reps);
         let t = Instant::now();
         s.commit();
-        std::hint::black_box(mk.zeichnen(&s, ViewKind::Plan, &[], Some(&f), &blick, 1.0, &theme));
+        std::hint::black_box(mk.zeichnen(
+            &s,
+            ViewKind::Plan,
+            &[],
+            Some(&f),
+            &blick,
+            1.0,
+            &theme,
+            &Default::default(),
+        ));
         let los = ms(t, 1);
         // In 3D: erstes Bild baut die verdeckbare Tinte, dann Drehen
-        mk.zeichnen(&s, ViewKind::Persp, &[], Some(&f), &blick3, 1.0, &theme);
+        mk.zeichnen(
+            &s,
+            ViewKind::Persp,
+            &[],
+            Some(&f),
+            &blick3,
+            1.0,
+            &theme,
+            &Default::default(),
+        );
         let t = Instant::now();
         for _ in 0..reps {
             std::hint::black_box(mk.zeichnen(
@@ -468,6 +564,7 @@ fn probe_bemassung() {
                 &blick3,
                 1.0,
                 &theme,
+                &Default::default(),
             ));
         }
         let drehen = ms(t, reps);
