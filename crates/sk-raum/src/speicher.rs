@@ -14,7 +14,7 @@
 //! Geschosses nichts ändert (etwa beim Wandziehen), sieht die Zuteilung nur
 //! neue Gruppen an.
 
-use crate::abgleich::{stempel_in, zuteilen, Stand};
+use crate::abgleich::{stempel_in, zuteilen, Stand, StandGruppe};
 use crate::erkennung::{formen_aus, rohbau, Kante, RaumForm, Teil, TOL};
 use sk_math::Vec3;
 use sk_model::{ElementId, ElementKind, Model, RunId, Space, StoreyId, WallChain};
@@ -252,7 +252,7 @@ impl Lage {
                 .iter()
                 .map(|f| (f.clone(), z.get(&Rc::as_ptr(f)).copied().flatten()))
                 .collect();
-            st.setzen(g.schluessel, raeume);
+            st.setzen(g.schluessel, Rc::new(raeume));
         }
         st
     }
@@ -345,8 +345,8 @@ struct Raumliste {
 struct Zuteilung {
     /// Fingerabdruck der Räume mit Anker im Kasten der Gruppe.
     kennung: u64,
-    /// Je Fläche der Gruppe.
-    raeume: Vec<Option<ElementId>>,
+    /// Je Fläche der Gruppe ihr geltender Raum, wie ihn der Stand hält.
+    stand: Rc<StandGruppe>,
     formen: Rc<[Raumflaeche]>,
     lauf: u64,
 }
@@ -716,14 +716,7 @@ impl Erkennung {
         let mut st = Stand::default();
         for gr in &lage.gruppen {
             if let Some(e) = z.get(&gr.schluessel) {
-                st.setzen(
-                    gr.schluessel,
-                    gr.formen
-                        .iter()
-                        .cloned()
-                        .zip(e.raeume.iter().copied())
-                        .collect(),
-                );
+                st.setzen(gr.schluessel, e.stand.clone());
             }
         }
         st
@@ -829,7 +822,7 @@ impl Erkennung {
                 .collect();
             let e = Zuteilung {
                 kennung,
-                raeume: z,
+                stand: Rc::new(gr.formen.iter().cloned().zip(z).collect()),
                 formen,
                 lauf,
             };

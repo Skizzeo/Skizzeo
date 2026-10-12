@@ -89,14 +89,14 @@ pub(crate) fn zuteilen(fl: &[&Fl], raeume: &[(ElementId, &Space)]) -> Vec<Option
 /// Schritt ([`Lage::stand`], [`abgleichen_lage`]).
 #[derive(Clone, Default)]
 pub struct Stand {
-    gruppen: NachSchluessel<StandGruppe>,
+    gruppen: NachSchluessel<Rc<StandGruppe>>,
 }
 
 /// Flächen einer Hausgruppe mit ihrem geltenden Raum.
-type StandGruppe = Vec<(Rc<Fl>, Option<ElementId>)>;
+pub(crate) type StandGruppe = Vec<(Rc<Fl>, Option<ElementId>)>;
 
 impl Stand {
-    pub(crate) fn setzen(&mut self, schluessel: u64, raeume: StandGruppe) {
+    pub(crate) fn setzen(&mut self, schluessel: u64, raeume: Rc<StandGruppe>) {
         self.gruppen.insert(schluessel, raeume);
     }
 
@@ -104,10 +104,49 @@ impl Stand {
     pub fn raeume(&self) -> usize {
         self.gruppen
             .values()
-            .flatten()
+            .flat_map(|g| g.iter())
             .filter(|r| r.1.is_some())
             .count()
     }
+
+    /// Hausgruppe, Fläche (je ihr Fingerabdruck) und geltender Raum,
+    /// geordnet: Zwei Stände mit gleicher Zuordnung sind gleich.
+    pub fn zuordnung(&self) -> Vec<(u64, u64, Option<ElementId>)> {
+        let mut v: Vec<_> = self
+            .gruppen
+            .iter()
+            .flat_map(|(&s, g)| g.iter().map(move |(f, r)| (s, f.kennung, *r)))
+            .collect();
+        v.sort_by_key(|&(s, f, r)| (s, f, r.map(|id| id.index())));
+        v
+    }
+
+    /// Der Stand vor dem Schritt, dessen Abgleich `w` ergab, aus dem
+    /// danach (Rückgängig).
+    pub fn zurueck(&mut self, w: &Wechsel) {
+        for (s, _) in &w.dazu {
+            self.gruppen.remove(s);
+        }
+        self.gruppen.extend(w.weg.iter().cloned());
+    }
+
+    /// Der Stand nach dem Schritt, dessen Abgleich `w` ergab, aus dem
+    /// davor (Wiederholen).
+    pub fn vor(&mut self, w: &Wechsel) {
+        for (s, _) in &w.weg {
+            self.gruppen.remove(s);
+        }
+        self.gruppen.extend(w.dazu.iter().cloned());
+    }
+}
+
+/// Was ein Abgleich am [`Stand`] ändert: die Hausgruppen, die der Schritt
+/// ersetzt, und die neuen. So folgt der Stand Rückgängig und Wiederholen,
+/// ohne neu gerechnet zu werden (Review #87 R5).
+#[derive(Clone, Default)]
+pub struct Wechsel {
+    weg: Vec<(u64, Rc<StandGruppe>)>,
+    dazu: Vec<(u64, Rc<StandGruppe>)>,
 }
 
 /// Räume des Geschosses, die gerade ruhen (keine Fläche oder ein anderer
@@ -129,6 +168,8 @@ pub struct Abgleich {
     pub neu: Vec<(ElementId, f64)>,
     /// Geltende Räume nach dem Abgleich (Stand vor dem nächsten Schritt).
     pub stand: Stand,
+    /// Wie der Stand davor in den danach übergeht; nur mit Stand davor.
+    pub wechsel: Option<Wechsel>,
     /// Zahl der Änderungen am Modell (0: nichts geändert).
     pub aenderungen: usize,
 }
@@ -142,6 +183,7 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
     let mut out = Abgleich {
         neu: Vec::new(),
         stand: Stand::default(),
+        wechsel: None,
         aenderungen: 0,
     };
     // Unveränderte Hausgruppen behalten ihre Räume
@@ -154,7 +196,12 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
             None => geaendert.push(gi),
         }
     }
+    let mut wechsel = Wechsel::default();
+    if mit_stand {
+        wechsel.weg = alt.gruppen.iter().map(|(&s, g)| (s, g.clone())).collect();
+    }
     if geaendert.is_empty() {
+        out.wechsel = mit_stand.then_some(wechsel);
         return out;
     }
     // Flächen der geänderten Gruppen, in der Ordnung der Räume
@@ -182,7 +229,7 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
         let mut alte: Vec<(&str, ElementId, &Fl)> = alt
             .gruppen
             .values()
-            .flatten()
+            .flat_map(|g| g.iter())
             .filter_map(|(f, r)| {
                 let id = (*r)?;
                 let e = m.element(id)?;
@@ -234,9 +281,12 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
         je.entry(*gi).or_default().push((f.clone(), *r));
     }
     for gi in geaendert {
-        let raeume = je.remove(&gi).unwrap_or_default();
-        out.stand.setzen(lage.gruppen[gi].schluessel, raeume);
+        let raeume = Rc::new(je.remove(&gi).unwrap_or_default());
+        let s = lage.gruppen[gi].schluessel;
+        wechsel.dazu.push((s, raeume.clone()));
+        out.stand.setzen(s, raeume);
     }
+    out.wechsel = mit_stand.then_some(wechsel);
     out
 }
 

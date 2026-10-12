@@ -17,7 +17,7 @@ use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FlatRoof, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId,
-    Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain,
+    Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, TypeCategory, WallChain,
     WallQto, COPING_PART, DOWNPIPE_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART,
     ROOF_COPING_PART, ROOF_PART, SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
 };
@@ -524,13 +524,14 @@ pub struct Scene {
     /// #87 B2, B3).
     erkennung: RefCell<sk_raum::Erkennung>,
     /// Geltende Räume je Geschoss zum Stand vor dem offenen Schritt, für
-    /// den Abgleich nach Überdeckung (B4); fehlt einer, rechnet ihn
+    /// den Abgleich nach Überdeckung (B4); Rückgängig und Wiederholen führen
+    /// ihn nach ([`Scene::staende_folgen`]), fehlt einer, rechnet ihn
     /// [`Scene::begin`].
     staende: HashMap<sk_model::StoreyId, sk_raum::Stand>,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
-    undo: Vec<Txn>,
+    undo: Vec<raum::Schritt>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
-    redo: Vec<Txn>,
+    redo: Vec<raum::Schritt>,
     /// Zählt jeden neuen Schritt im Verlauf (Paket 8b, K3).
     serial: u64,
     /// Zwischenspeicher je Wandzug, über den Arena-Platz der [`RunId`].
@@ -1919,10 +1920,10 @@ impl Scene {
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
         // Räume folgen den Wänden im selben Schritt (G3)
-        self.raeume_abgleichen();
+        let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
-            Ok(Some(t)) => {
-                self.undo.push(t);
+            Ok(Some(txn)) => {
+                self.undo.push(raum::Schritt { txn, raeume });
                 self.serial += 1;
                 if self.undo.len() > HISTORY {
                     self.undo.remove(0);
@@ -3173,7 +3174,7 @@ impl Scene {
         let grow = self
             .undo
             .last()
-            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+            .is_some_and(|t| GROW_STEPS.contains(&t.txn.label));
         self.grown(grow, |s| s.step(Direction::Undo))
     }
 
@@ -3183,7 +3184,7 @@ impl Scene {
         if self.pending.is_some() {
             return Some("Gebäude erstellt");
         }
-        self.undo.last().map(|t| t.label)
+        self.undo.last().map(|t| t.txn.label)
     }
 
     /// Bezeichnung des Schritts, den „Wiederherstellen“ als Nächstes ausführt.
@@ -3191,7 +3192,7 @@ impl Scene {
         if self.pending.is_some() {
             return None;
         }
-        self.redo.last().map(|t| t.label)
+        self.redo.last().map(|t| t.txn.label)
     }
 
     pub fn redo(&mut self) -> bool {
@@ -3201,7 +3202,7 @@ impl Scene {
         let grow = self
             .redo
             .last()
-            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+            .is_some_and(|t| GROW_STEPS.contains(&t.txn.label));
         self.grown(grow, |s| s.step(Direction::Redo))
     }
 
@@ -3307,16 +3308,19 @@ impl Scene {
     }
 
     fn step(&mut self, dir: Direction) -> bool {
-        let (from, to) = match dir {
-            Direction::Undo => (&mut self.undo, &mut self.redo),
-            Direction::Redo => (&mut self.redo, &mut self.undo),
+        let from = match dir {
+            Direction::Undo => &mut self.undo,
+            Direction::Redo => &mut self.redo,
         };
         let Some(t) = from.pop() else {
             return false;
         };
-        let touched = self.model.apply(&t, dir);
-        to.push(t);
-        self.staende.clear();
+        let touched = self.model.apply(&t.txn, dir);
+        self.staende_folgen(&t, dir);
+        match dir {
+            Direction::Undo => self.redo.push(t),
+            Direction::Redo => self.undo.push(t),
+        }
         self.mark_touched(&touched);
         self.rebuild_dirty(false);
         true
