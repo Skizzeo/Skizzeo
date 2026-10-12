@@ -85,7 +85,7 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
             vec!["Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du im Geschossmanager ein."]
         }
         Some(Category::Space) => {
-            vec!["Der Raum folgt den Wänden um ihn. Zum Entfernen eine Wand löschen oder öffnen."]
+            vec!["Der Raum folgt den Wänden um ihn. Zum Entfernen eine Wand löschen oder so verschieben, dass der Raum mit dem Nachbarraum eins wird."]
         }
         _ => vec!["Dieses Bauteil lässt sich nicht löschen."],
     }

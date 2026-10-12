@@ -74,6 +74,14 @@ Breite | im Grundriss zeigt eine Öffnung bei der Maus Griffe an beiden Enden (I
 Höhenlinien | Brüstung, Sturz und Innentürlinie stehen je Geschoss im Geschossmanager; an einer Linie gefangene Kanten wandern mit, wenn man sie dort zieht; die Schnitthöhe des Grundrisses stellt das Zahnrad oben rechts ein
 Ändern, Löschen | im Grundriss wählt ein Klick in die Öffnung oder in den Aufschlag einer Tür sie, das Paneel zeigt Art, Breite, Höhe und Brüstung im Rohbau, die Wand und bei einer Tür den Anschlag mit dem Raum, in den sie aufschlägt (z. B. „DIN links, öffnet in Küche“); ändern: die Breite an den Griffen, den Aufschlag am Türblatt, die Höhen über die Höhenlinien; gewählt löscht **Entf** oder Rechtsklick › Löschen die Öffnung
 
+[thema] id=raeume titel="Räume"
+Entstehen | schließen Wände eine Fläche, entsteht der Raum von selbst, mit Raumstempel: Name und Grundfläche an der fertigen Oberfläche; ein Raumwerkzeug gibt es nicht
+Benennen | nach dem Schritt, der einen Raum schließt, ist sein Namensfeld offen, sonst öffnet es ein Klick auf den Stempel; tippen, **Tab** nimmt den nächsten Vorschlag, **Enter** übernimmt, **Esc** lässt den alten Namen
+Kürzel im Feld | **Strg+A** wählt den Text, **Strg+Z** nimmt Getipptes zurück; **Strg+S** und die übrigen Kürzel übernehmen erst den Namen und wirken dann wie sonst
+Verschieben | Stempel ziehen, Loslassen ist ein Schritt, **Esc** bricht ab; ein verschobener Stempel bleibt dort, sonst steht er in der Raummitte und rückt aus dem Aufschlag einer Tür
+Paneel | Stempel oder Raum im Baum wählen: Name, Grundfläche (fertig) wie am Stempel, Fläche und Umfang im Rohbau, die Wände um den Raum
+Entfernen | ein Raum lässt sich nicht löschen, er folgt den Wänden: eine Wand löschen oder so verschieben, dass er mit dem Nachbarraum eins wird; eine Tür oder ein Fenster trennt keine Räume
+
 [thema] id=einlesen titel="Bauteil einlesen"
 Öffnen | Datei › „Bauteil einlesen …“ und eine .szb aus der Bauteil-Werkbank wählen
 Prüfen | Skizzeo prüft die Datei; Fehler stehen mit Zeile und Grund, die Datei bleibt dann draußen
