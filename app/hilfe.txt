@@ -70,7 +70,7 @@ Ecke und Geschosse | Gegenecke auf der Nachbarwand: die Öffnung geht um die Au�
 Anschlag, Einbauelement | bei WDVS und Verblender ist die gezeichnete Öffnung die sichtbare außen, innen ist sie um den Anschlag größer; im Grundriss zeigen zwei dünn gestrichelte Linien, wo das spätere Fenster- oder Türelement sitzt: außen nach der äußeren Einbautiefe, dazwischen die Elementtiefe
 Innentür | „Tür“ im Grundriss: über einer Innenwand hängt die Tür am Cursor und schlägt in den Raum auf der Cursorseite auf; **Tab** schaltet den Bezugspunkt Mitte, links, rechts; das Mausrad blättert die Breiten 63,5 / 76 / 88,5 / 101 cm nach DIN 18101, die Statuszeile zeigt Breite und Bezug, mit **Strg** zoomt es; Klick setzt sie, unten OK Rohdecke, oben die Innentürlinie, DIN links
 Aufschlag | im Grundriss zeigt eine Innentür bei der Maus einen runden Griff am Ende des offenen Blatts; ziehen: die Wandseite gibt den Raum, in den sie aufschlägt, die Hälfte der Öffnung den Bandpfosten (DIN links oder rechts nach DIN 107); Loslassen ist ein Schritt, **Esc** bricht ab; ohne Ziehen spiegelt **Leertaste** an der Tür bei der Maus (sonst an der gewählten) die Bandseite, **Umschalt+Leertaste** schlägt sie an denselben Bändern in den anderen Raum auf; über der Öffnung zeigen die Wandfluchten gestrichelt den Sturz
-Breite | im Grundriss zeigt eine Öffnung bei der Maus Griffe an beiden Enden (Innenwand: in der Wandmitte); ziehen im Raster von 10 mm, Innentüren rasten an den Normbreiten; vor Wandende und Nachbaröffnung bleibt sie stehen, **Esc** bricht ab; über einer Öffnung im Geschoss darüber oder darunter rastet das Ende mit Spurlinie ein, die Kette daneben koppelt die Breite beider
+Breite | im Grundriss zeigt eine Öffnung bei der Maus Griffe an beiden Enden (Innenwand: in der Wandmitte); ziehen im Raster von 10 mm, Innentüren rasten an den Normbreiten, die Pille zeigt die Breite, Zahl + **Enter** setzt sie genau; vor Wandende und Nachbaröffnung bleibt sie stehen, **Esc** bricht ab; über einer Öffnung im Geschoss darüber oder darunter rastet das Ende mit Spurlinie ein, die Kette daneben koppelt die Breite beider
 Höhenlinien | Brüstung, Sturz und Innentürlinie stehen je Geschoss im Geschossmanager; an einer Linie gefangene Kanten wandern mit, wenn man sie dort zieht; die Schnitthöhe des Grundrisses stellt das Zahnrad oben rechts ein
 Ändern, Löschen | im Grundriss wählt ein Klick in die Öffnung oder in den Aufschlag einer Tür sie, im Baum steht sie unter „Öffnungen“ (OE-…); das Paneel zeigt Art, Breite, Höhe und Brüstung im Rohbau, die Wand und bei einer Tür den Anschlag mit dem Raum, in den sie aufschlägt (z. B. „DIN links, öffnet in Küche“); ändern: die Breite an den Griffen, den Aufschlag am Türblatt, die Höhen über die Höhenlinien; gewählt löscht **Entf** oder Rechtsklick › Löschen die Öffnung
 
@@ -188,6 +188,15 @@ Linien verschieben | im Grundriss Linie A oder B greifen und ziehen (10-mm-Raste
 Längs oder quer | steht automatisch unter dem Buchstaben
 Wand ändern | an der violetten Kugel ziehen
 
+[thema] id=bemassung titel="Bemaßung"
+Maßketten | Grundriss und 3D bemaßen jedes Gebäude außen nach DIN 1356-1, Maßstab 1:100; die Ketten rechnen sich aus dem Modell und folgen jeder Änderung
+Ketten | von der Wand nach außen: Öffnungen (Breite, darunter die Höhe, BRH in cm an der Wand), Wände mit angeschlossenen Innenwänden, Vor- und Rücksprünge, Gesamtmaß; erste Kette 2,00 m vor der Wand, dann je 1,00 m
+Maßzahlen | unter 1 m in cm, ab 1 m in m mit zwei Stellen, Millimeter hochgestellt; passt die Zahl nicht zwischen die Hilfslinien, steht sie daneben oder eine Zeile höher
+3D | die Ketten liegen flach auf der Ebene des gewählten Bauteils, sonst des aktiven Geschosses; verdeckte Teile blass
+Zahnrad | „Maßketten zeigen“ und „Maßbezugspunkte zeigen“ je Ansicht; die Bezugspunkte zeigen, an welcher Kante jede Hilfslinie misst
+Stil | Einstellungen, Reiter „Bemaßung“: Linien, Begrenzung (Kreis, Schrägstrich, Punkt, Pfeil), Schrift, Rundung 1 oder 5 mm, Farbe, Abstände, welche Ketten, BRH ab Rohdecke oder Estrich
+Firmenstandard | „Als Firmenstandard speichern“ gilt mit **OK** für neue Projekte; „Firmenstandard übernehmen“ setzt ihn in dieses Projekt
+
 [thema] id=nordpfeil titel="Nordpfeil"
 Setzen | startet nach dem ersten geschlossenen Umriss einmal von selbst (**Esc** = später), sonst Kachel rechts neben „Projektdaten“; dann im 3D-Fenster oder Grundriss den Fußpunkt (Mitte des Pfeilfußes) klicken und die Richtung zeigen; danach ist der Sonnenstand an
 Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Umschalt** in 15°
@@ -215,7 +224,7 @@ Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klap
 Dateimenü | Logo oben links, **F10** oder **Alt** kurz
 Neu, Öffnen | **Strg+N**, **Strg+O**
 Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
-IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen. Mit den Landeskoordinaten aus „Projektdaten“ liegt das Haus im IFC an seiner Stelle in der Welt (Georeferenz): Ostwert mit der UTM-Zone vorn (in Deutschland 32 oder 33) und Nordwert im amtlichen System ETRS89/UTM, dazu die Höhe von ±0,00 über NHN (Normalhöhennull), alles aus dem Lageplan; fehlt Ost- oder Nordwert, gibt es keine Georeferenz
+IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen. Öffnungen stehen dort an ihrer Wand, eine Tür mit Aufschlag als Tür darin, mit der Türhand nach DIN 107. Mit den Landeskoordinaten aus „Projektdaten“ liegt das Haus im IFC an seiner Stelle in der Welt (Georeferenz): Ostwert mit der UTM-Zone vorn (in Deutschland 32 oder 33) und Nordwert im amtlichen System ETRS89/UTM, dazu die Höhe von ±0,00 über NHN (Normalhöhennull), alles aus dem Lageplan; fehlt Ost- oder Nordwert, gibt es keine Georeferenz
 Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
 Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
 Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**
@@ -225,7 +234,7 @@ Bildzeit messen | Menü → „Bildzeit messen (10 s)“, unter „Hilfe“; Med
 
 [thema] id=einstellungen titel="Einstellungen"
 Öffnen | Dateimenü › „Einstellungen …“ oder **Strg+Komma**
-Reiter | Stifte, Linientypen, Schraffuren, Oberflächen, Bedienoberfläche
+Reiter | Stifte, Linientypen, Schraffuren, Oberflächen, Bemaßung, Bedienoberfläche, Vorgaben
 Wirkung | Jede Änderung wirkt sofort; **OK** ist ein Rückgängig-Schritt
 Abbrechen | stellt alles genau wie vorher her
 Standard | „Auf Standard zurücksetzen“ je Reiter

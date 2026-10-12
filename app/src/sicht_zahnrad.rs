@@ -7,6 +7,10 @@
 //! ([`crate::grundriss_schnitt`], [`crate::ansicht_schatten`]); 3D und
 //! Schnitt bekommen hier ein eigenes Zahnrad an derselben Stelle. „Auf alle
 //! Ansichten übertragen“ gibt die Wahl an alle sieben Ansichten.
+//!
+//! Darunter in 3D die Zeile „Bemaßung“ (Konzept `bemassung/konzept.md` §7):
+//! „Maßketten zeigen“ und „Maßbezugspunkte zeigen“, je Ansicht
+//! ([`crate::bemassung`]); der Grundriss trägt sie in seinem Feld.
 
 use crate::ui::ViewKind;
 use sk_paint::Canvas;
@@ -22,6 +26,10 @@ pub const HAKEN: &str = "Dachentwässerung ausblenden";
 pub const ALLE: &str = "Auf alle Ansichten übertragen";
 /// Breite der Zeile mit dem Häkchen (dip): Kästchen, Abstand, Text.
 pub const HAKEN_W: f32 = 218.0;
+/// Zeile „Bemaßung“ mit ihren zwei Häkchen.
+pub const MASS: &str = "Bemaßung";
+pub const KETTEN: &str = "Maßketten zeigen";
+pub const PUNKTE: &str = "Maßbezugspunkte zeigen";
 
 /// Ob die Ansicht das Zahnrad von hier zeigt: 3D und Schnitt (Grundriss
 /// und Ansichten haben schon eins).
@@ -32,6 +40,21 @@ pub fn zeigt(v: ViewKind) -> bool {
 /// Häkchen mit [`HAKEN`] in der Zeile `q`: Kästchen links, mittig in der
 /// Höhe, der Text daneben.
 pub fn haken(c: &mut Canvas, fonts: &Fonts, q: Rect, an: bool, hover: bool, s: f32, t: &Theme) {
+    haken_mit(c, fonts, q, HAKEN, an, hover, s, t);
+}
+
+/// Häkchen mit dem Text `text` in der Zeile `q`.
+#[allow(clippy::too_many_arguments)]
+pub fn haken_mit(
+    c: &mut Canvas,
+    fonts: &Fonts,
+    q: Rect,
+    text: &str,
+    an: bool,
+    hover: bool,
+    s: f32,
+    t: &Theme,
+) {
     let k = (t.size.checkbox * s).round();
     let kr = Rect::new(q.x, q.y + ((q.h - k) * 0.5).round(), k, k);
     widgets::checkbox(c, kr, an, hover, s, t);
@@ -40,7 +63,7 @@ pub fn haken(c: &mut Canvas, fonts: &Fonts, q: Rect, an: bool, hover: bool, s: f
         let y = q.y + (q.h + f.cap_height(px)) * 0.5;
         f.draw(
             c,
-            HAKEN,
+            text,
             px,
             (kr.x + k + 8.0 * s).round(),
             y.round(),
@@ -57,6 +80,9 @@ pub enum Teil {
     Zahnrad,
     Haken,
     Alle,
+    /// Häkchen „Maßketten zeigen“ und „Maßbezugspunkte zeigen“.
+    Ketten,
+    Punkte,
 }
 
 const RAD: f32 = 28.0;
@@ -73,12 +99,16 @@ pub struct Lage {
     pub name: Rect,
     pub haken: Rect,
     pub alle: Rect,
+    /// Zeile „Bemaßung“ (Name und zwei Häkchen); leer ohne Bemaßung.
+    pub mass: Rect,
+    pub ketten: Rect,
+    pub punkte: Rect,
 }
 
 /// Zahnrad oben links neben dem Paneel „Ansichten“ (`rechts`: dessen linker
 /// Rand in Ansichtspixeln), das Feld darunter, rechtsbündig; wie die
-/// Zahnräder von Grundriss und Ansichten.
-pub fn lage(rechts: f32, s: f32, t: &Theme) -> Lage {
+/// Zahnräder von Grundriss und Ansichten. `mass`: mit der Zeile „Bemaßung“.
+pub fn lage(rechts: f32, s: f32, t: &Theme, mass: bool) -> Lage {
     let r = |x: f32, y: f32, w: f32, h: f32| {
         Rect::new(
             (x * s).round(),
@@ -94,12 +124,25 @@ pub fn lage(rechts: f32, s: f32, t: &Theme) -> Lage {
     let y0 = m + RAD + 4.0;
     let y = y0 + PAD;
     let kx = x0 + PAD + NAME_W;
+    let ym = y + 2.0 * h + GAP * 2.5;
+    let leer = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let (hoehe, mass, ketten, punkte) = if mass {
+        let w = HAKEN_W;
+        let hoehe = 2.0 * PAD + 4.0 * h + GAP * 3.5;
+        let q = (r(x0 + PAD, ym, NAME_W, h), r(kx, ym, w, h));
+        (hoehe, q.0, q.1, r(kx, ym + h + GAP, w, h))
+    } else {
+        (2.0 * PAD + 2.0 * h + GAP, leer, leer, leer)
+    };
     Lage {
         zahnrad: r(x1 - RAD, m, RAD, RAD),
-        feld: r(x0, y0, BREITE, 2.0 * PAD + 2.0 * h + GAP),
+        feld: r(x0, y0, BREITE, hoehe),
         name: r(x0 + PAD, y, NAME_W, h),
         haken: r(kx, y, HAKEN_W, h),
         alle: r(kx, y + h + GAP, HAKEN_W, h),
+        mass,
+        ketten,
+        punkte,
     }
 }
 
@@ -109,6 +152,7 @@ impl Lage {
         let mut teile = vec![(Teil::Zahnrad, self.zahnrad)];
         if offen {
             teile.extend([(Teil::Haken, self.haken), (Teil::Alle, self.alle)]);
+            teile.extend([(Teil::Ketten, self.ketten), (Teil::Punkte, self.punkte)]);
         }
         teile
             .into_iter()
@@ -124,6 +168,9 @@ pub struct Bild {
     pub an: bool,
     pub offen: bool,
     pub hover: Option<Teil>,
+    /// Bemaßung der Ansicht: Maßketten und Maßbezugspunkte zeigen; `None`
+    /// in einer Ansicht ohne Bemaßung.
+    pub mass: Option<(bool, bool)>,
     /// Linker Rand des Paneels „Ansichten“ (Bits) und Skalierung (Bits).
     pub rechts: u32,
     pub scale: u32,
@@ -132,7 +179,7 @@ pub struct Bild {
 /// Zahnrad und (offen) Feld zeichnen: Bild und Lage in der Ansicht.
 pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
     let s = f32::from_bits(b.scale);
-    let l = lage(f32::from_bits(b.rechts), s, t);
+    let l = lage(f32::from_bits(b.rechts), s, t, b.mass.is_some());
     let sh = (t.size.panel_shadow * s).ceil();
     let alles = if b.offen {
         let x0 = l.feld.x.min(l.zahnrad.x);
@@ -157,12 +204,15 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
         return (c, dx as i32, dy as i32);
     }
     widgets::panel(&mut c, ab(l.feld), s, t);
-    if let Some(f) = fonts.regular.as_ref() {
-        let q = ab(l.name);
-        let px = t.size.font * s;
-        let y = q.y + (q.h + f.cap_height(px)) * 0.5;
-        f.draw(&mut c, NAME, px, q.x.round(), y.round(), t.ui.text);
-    }
+    let name = |c: &mut Canvas, text: &str, q: Rect| {
+        if let Some(f) = fonts.regular.as_ref() {
+            let q = ab(q);
+            let px = t.size.font * s;
+            let y = q.y + (q.h + f.cap_height(px)) * 0.5;
+            f.draw(c, text, px, q.x.round(), y.round(), t.ui.text);
+        }
+    };
+    name(&mut c, NAME, l.name);
     let hover = b.hover == Some(Teil::Haken);
     haken(&mut c, fonts, ab(l.haken), b.an, hover, s, t);
     let st = ButtonState {
@@ -170,6 +220,30 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
         ..Default::default()
     };
     widgets::button(&mut c, fonts, ab(l.alle), ALLE, st, s, t);
+    if let Some((ketten, punkte)) = b.mass {
+        name(&mut c, MASS, l.mass);
+        let h = |teil| b.hover == Some(teil);
+        haken_mit(
+            &mut c,
+            fonts,
+            ab(l.ketten),
+            KETTEN,
+            ketten,
+            h(Teil::Ketten),
+            s,
+            t,
+        );
+        haken_mit(
+            &mut c,
+            fonts,
+            ab(l.punkte),
+            PUNKTE,
+            punkte,
+            h(Teil::Punkte),
+            s,
+            t,
+        );
+    }
     (c, dx as i32, dy as i32)
 }
 
@@ -189,6 +263,9 @@ pub struct Ausgang {
     pub haken: bool,
     /// Die Wahl dieser Ansicht in alle sieben übertragen.
     pub alle: bool,
+    /// Klick auf „Maßketten zeigen“ bzw. „Maßbezugspunkte zeigen“.
+    pub ketten: bool,
+    pub punkte: bool,
 }
 
 impl Schalter {
@@ -221,6 +298,8 @@ impl Schalter {
                     Some(Teil::Zahnrad) => self.offen = !self.offen,
                     Some(Teil::Haken) => out.haken = true,
                     Some(Teil::Alle) => out.alle = true,
+                    Some(Teil::Ketten) => out.ketten = true,
+                    Some(Teil::Punkte) => out.punkte = true,
                     None if out.consumed => {}
                     // Klick daneben schließt das Feld und gehört der Ansicht
                     None => out.redraw = std::mem::take(&mut self.offen),
@@ -251,7 +330,7 @@ mod tests {
     #[test]
     fn zahnrad_und_feld() {
         let t = Theme::dark();
-        let l = lage(900.0, 1.0, &t);
+        let l = lage(900.0, 1.0, &t, false);
         assert!(l.zahnrad.x + l.zahnrad.w <= 900.0);
         assert!(l.feld.y > l.zahnrad.y + l.zahnrad.h);
         for q in [l.name, l.haken, l.alle] {
@@ -289,6 +368,7 @@ mod tests {
             an: true,
             offen: false,
             hover: None,
+            mass: None,
             rechts: 900f32.to_bits(),
             scale: 1f32.to_bits(),
         };
@@ -297,5 +377,27 @@ mod tests {
         let (auf, x, y) = malen(&b, &fonts, &t);
         assert!(auf.width > zu.width && auf.height > zu.height);
         assert!(x as f32 <= l.feld.x && y as f32 <= l.zahnrad.y);
+        // Bemaßung (Konzept §7): ohne die Zeile trifft dort nichts, mit ihr
+        // melden sich beide Häkchen, das Feld wird höher
+        assert!(!s.offen);
+        s.handle(&klick(l.zahnrad), &l);
+        let o = s.handle(
+            &klick(Rect::new(l.alle.x, l.feld.y + l.feld.h + 30.0, 1.0, 1.0)),
+            &l,
+        );
+        assert!(!o.ketten && !o.punkte && !s.offen);
+        let m = lage(900.0, 1.0, &t, true);
+        assert!(m.feld.h > l.feld.h && (m.alle, m.haken) == (l.alle, l.haken));
+        for q in [m.mass, m.ketten, m.punkte] {
+            assert!(q.y > m.alle.y + m.alle.h && q.y + q.h <= m.feld.y + m.feld.h);
+        }
+        s.handle(&klick(m.zahnrad), &m);
+        let o = s.handle(&klick(m.ketten), &m);
+        assert!(o.consumed && o.ketten && !o.punkte && !o.haken);
+        let o = s.handle(&klick(m.punkte), &m);
+        assert!(o.consumed && o.punkte && !o.ketten);
+        b.mass = Some((true, false));
+        let (mit, _, _) = malen(&b, &fonts, &t);
+        assert!(mit.height > auf.height);
     }
 }

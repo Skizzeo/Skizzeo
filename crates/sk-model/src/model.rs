@@ -270,6 +270,10 @@ pub struct Model {
     pub(crate) ext_raw: Vec<String>,
     /// Raumvorlagen des Raumkatalogs (Raumbuch RB2).
     space_types: Vec<raumvorlage::SpaceType>,
+    /// Stil und Versätze der Maßketten ([`crate::bemassung`]).
+    bemassung: crate::bemassung::Bemassung,
+    /// Bemaßung je Ansicht am Zahnrad; Ansichtszustand.
+    mass_sicht: crate::bemassung::MassSicht,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -340,6 +344,10 @@ mod geschossbaender;
 
 #[path = "gruendung.rs"]
 mod gruendung;
+
+#[path = "bemassung_model.rs"]
+mod bemassung_model;
+pub use bemassung_model::FLOOR_COVER;
 
 #[path = "oeffnung_model.rs"]
 mod oeffnung_model;
@@ -794,6 +802,8 @@ impl Model {
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
             space_types: Vec::new(),
+            bemassung: Default::default(),
+            mass_sicht: Default::default(),
         }
     }
 
@@ -875,6 +885,8 @@ impl Model {
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
             space_types: Vec::new(),
+            bemassung: Default::default(),
+            mass_sicht: Default::default(),
         };
         m.joins = m.detect_all();
         m
@@ -2105,6 +2117,7 @@ impl Model {
         // Obergeschosse: überzählige der Vorlage weg, fehlende obendrauf
         while levels.len() > storeys + 1 {
             if let Some(top) = levels.pop() {
+                self.massversatz_weg(top);
                 note!(self, Storey, self.storeys, top);
                 self.storeys.remove(top);
             }
@@ -3303,6 +3316,7 @@ impl Model {
                 *new = self.location;
                 foot[1] = self.north_foot;
             }
+            Change::Bemassung { new, .. } => **new = self.bemassung.clone(),
         }
     }
 
@@ -3422,6 +3436,7 @@ impl Model {
                     Direction::Redo => None,
                 };
             }
+            Change::Bemassung { old, new } => m.bemassung = *pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {
