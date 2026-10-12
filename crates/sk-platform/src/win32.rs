@@ -309,6 +309,7 @@ extern "system" {
         and: *const u8,
         xor: *const u8,
     ) -> HICON;
+    fn DestroyIcon(h: HICON) -> BOOL;
     fn SetProcessDPIAware() -> BOOL;
     fn OpenClipboard(h: HWND) -> BOOL;
     fn CloseClipboard() -> BOOL;
@@ -457,6 +458,7 @@ const WM_ERASEBKGND: u32 = 0x0014;
 const WM_SETCURSOR: u32 = 0x0020;
 const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SETICON: u32 = 0x0080;
+const WM_GETICON: u32 = 0x007F;
 const WM_NCCALCSIZE: u32 = 0x0083;
 const WM_NCHITTEST: u32 = 0x0084;
 const WM_NCACTIVATE: u32 = 0x0086;
@@ -492,6 +494,9 @@ const WM_APP_FILL: u32 = 0x8006;
 /// Geschossfenster öffnen bzw. schließen (an das Hauptfenster gesandt).
 const WM_APP_OPEN_LEVELS: u32 = 0x8007;
 const WM_APP_CLOSE_LEVELS: u32 = 0x8008;
+/// IFC-Vorschau öffnen bzw. schließen (an das Hauptfenster gesandt).
+const WM_APP_OPEN_IFC: u32 = 0x8009;
+const WM_APP_CLOSE_IFC: u32 = 0x800A;
 
 const SC_MINIMIZE: usize = 0xF020;
 const SC_MAXIMIZE: usize = 0xF030;
@@ -674,6 +679,8 @@ struct Windows {
     quantity: Arc<Shared>,
     /// Ebenso für das Geschossfenster.
     levels: Arc<Shared>,
+    /// Ebenso für die IFC-Vorschau.
+    ifc: Arc<Shared>,
     /// Regeln für das Zusammenspiel (auch der Zeichenthread liest sie).
     layout: Arc<Mutex<Layout>>,
     /// Systemzeiger in der Reihenfolge von [`Cursor`], einmal geladen.
@@ -768,6 +775,7 @@ fn peek<R: Default>(f: impl FnOnce(&Layout) -> R) -> R {
 fn side_of(w: &Windows, id: WindowId) -> Arc<Shared> {
     match id {
         WindowId::Levels => w.levels.clone(),
+        WindowId::Ifc => w.ifc.clone(),
         _ => w.quantity.clone(),
     }
 }
@@ -1053,6 +1061,7 @@ fn side_gone(id: WindowId) {
         if let Ok(mut l) = l.lock() {
             match id {
                 WindowId::Levels => l.levels_gone(),
+                WindowId::Ifc => l.ifc_gone(),
                 _ => l.quantity_gone(),
             }
         }
@@ -1080,10 +1089,10 @@ unsafe fn create_side(id: WindowId, r: Rect) {
         return;
     };
     let title = wide(&shared.title.lock().map(|t| t.clone()).unwrap_or_default());
-    let class = wide(if id == WindowId::Levels {
-        LEVELS_CLASS
-    } else {
-        QUANTITY_CLASS
+    let class = wide(match id {
+        WindowId::Levels => LEVELS_CLASS,
+        WindowId::Ifc => IFC_CLASS,
+        _ => QUANTITY_CLASS,
     });
     let hwnd = CreateWindowExW(
         0,
@@ -1120,6 +1129,12 @@ unsafe fn create_side(id: WindowId, r: Rect) {
             height: rc.bottom as u32,
         },
     );
+    // Die IFC-Vorschau ist frei: sie kommt nach vorn und bekommt den Fokus
+    if id == WindowId::Ifc {
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(hwnd);
+        return;
+    }
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     // Gleich hinter das Hauptfenster: beide zusammen vor anderen Programmen
     if let Some(main) = hwnd_of(WindowId::Main) {
@@ -1144,6 +1159,7 @@ unsafe fn open_side(main: HWND, id: WindowId) {
     let scale = dpi_of(main) as f32 / 96.0;
     let actions = ask(|l| match id {
         WindowId::Levels => l.open_levels(r, zoomed, work, scale),
+        WindowId::Ifc => l.open_ifc(work, scale),
         _ => l.open_quantity(r, zoomed, work, scale),
     });
     run_actions(actions, Some(main));
@@ -1197,13 +1213,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     .map(|l| match id {
                         WindowId::Quantity => l.docked(),
                         WindowId::Levels => l.levels_docked(),
-                        WindowId::Main => false,
+                        WindowId::Main | WindowId::Ifc => false,
                     })
                     .unwrap_or(false)
             })
             .unwrap_or(false);
             let (keep_left, keep_right) = match id {
-                WindowId::Levels => (true, !docked),
+                WindowId::Levels | WindowId::Ifc => (true, !docked),
                 _ => (!docked, true),
             };
             let b = (6 * dpi / 96) as i32;
@@ -1242,7 +1258,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Die anderen Fenster gleich dahinter: alle zusammen vor anderen
             // Programmen (Alt+Tab, Klick in die Taskleiste)
             let minimized = (wp >> 16) & 0xFFFF != 0;
-            if let Some(me) = id_of(hwnd).filter(|_| active && !minimized) {
+            // Die IFC-Vorschau ist frei: sie zieht die anderen nicht mit
+            let frei = id_of(hwnd) == Some(WindowId::Ifc);
+            if let Some(me) = id_of(hwnd).filter(|_| active && !minimized && !frei) {
                 let mut after = hwnd;
                 for o in [WindowId::Main, WindowId::Quantity, WindowId::Levels] {
                     let Some(o) = hwnd_of(o).filter(|_| o != me) else {
@@ -1324,6 +1342,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 Some(WindowId::Levels) if IsZoomed(hwnd) == 0 => {
                     let g = window_rect(hwnd);
                     ask(|l| l.levels_resized(g))
+                }
+                Some(WindowId::Ifc) if IsZoomed(hwnd) == 0 => {
+                    let f = window_rect(hwnd);
+                    ask(|l| {
+                        l.ifc_moved(f);
+                        Vec::new()
+                    })
                 }
                 _ => Vec::new(),
             };
@@ -1615,17 +1640,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             send(hwnd, Event::CloseRequested { ask: false });
             0
         }
-        WM_APP_OPEN_QUANTITY | WM_APP_OPEN_LEVELS => {
+        WM_APP_OPEN_QUANTITY | WM_APP_OPEN_LEVELS | WM_APP_OPEN_IFC => {
             let id = match msg {
                 WM_APP_OPEN_LEVELS => WindowId::Levels,
+                WM_APP_OPEN_IFC => WindowId::Ifc,
                 _ => WindowId::Quantity,
             };
             open_side(hwnd, id);
             0
         }
-        WM_APP_CLOSE_QUANTITY | WM_APP_CLOSE_LEVELS => {
+        WM_APP_CLOSE_QUANTITY | WM_APP_CLOSE_LEVELS | WM_APP_CLOSE_IFC => {
             let id = match msg {
                 WM_APP_CLOSE_LEVELS => WindowId::Levels,
+                WM_APP_CLOSE_IFC => WindowId::Ifc,
                 _ => WindowId::Quantity,
             };
             let actions = ask(|l| l.close_requested(id, false));
@@ -1642,7 +1669,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_DESTROY => {
             match id_of(hwnd) {
-                Some(id @ (WindowId::Quantity | WindowId::Levels)) => {
+                Some(id @ (WindowId::Quantity | WindowId::Levels | WindowId::Ifc)) => {
                     let closing = with(|w| {
                         w.list.retain(|s| s.id != id);
                         side_of(w, id).hwnd.store(0, Ordering::Relaxed);
@@ -1653,11 +1680,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if !closing {
                         side_gone(id);
                     }
+                    // Die Symbole aus `decorate` gehören dem Fenster: mit ihm
+                    // freigeben, sonst bleiben zwei je Öffnen liegen
+                    for kind in [0usize, 1] {
+                        let h = SendMessageW(hwnd, WM_GETICON, kind, 0);
+                        if h != 0 {
+                            DestroyIcon(h as HICON);
+                        }
+                    }
                 }
                 _ => {
                     // Das Hauptfenster nimmt die Seitenfenster mit; offen bleibt gemerkt
                     with(|w| w.closing = true);
-                    for id in SIDES {
+                    for id in [WindowId::Quantity, WindowId::Levels, WindowId::Ifc] {
                         if let Some(q) = hwnd_of(id) {
                             DestroyWindow(q);
                         }
@@ -1681,6 +1716,8 @@ pub struct Surface {
     quantity: Arc<Shared>,
     /// Geschossfenster, ebenso.
     levels: Arc<Shared>,
+    /// IFC-Vorschau, ebenso.
+    ifc: Arc<Shared>,
     /// Zeilen für die GDI-Kopie in ein Seitenfenster (BGRA).
     quantity_buf: RefCell<Vec<u8>>,
     /// `wglSwapIntervalEXT`, falls vorhanden.
@@ -1840,6 +1877,7 @@ impl Surface {
     fn side(&self, id: WindowId) -> &Shared {
         match id {
             WindowId::Levels => &self.levels,
+            WindowId::Ifc => &self.ifc,
             _ => &self.quantity,
         }
     }
@@ -1850,6 +1888,7 @@ impl Surface {
         }
         let msg = match id {
             WindowId::Levels => WM_APP_OPEN_LEVELS,
+            WindowId::Ifc => WM_APP_OPEN_IFC,
             _ => WM_APP_OPEN_QUANTITY,
         };
         unsafe {
@@ -1860,6 +1899,7 @@ impl Surface {
     pub fn close_side(&self, id: WindowId) {
         let msg = match id {
             WindowId::Levels => WM_APP_CLOSE_LEVELS,
+            WindowId::Ifc => WM_APP_CLOSE_IFC,
             _ => WM_APP_CLOSE_QUANTITY,
         };
         unsafe {
@@ -2125,6 +2165,7 @@ fn make_icon(inst: HINSTANCE, size: i32, rgba: &[u8]) -> HICON {
 const MAIN_CLASS: &str = "SkizzeoFenster";
 const QUANTITY_CLASS: &str = "SkizzeoMengenfenster";
 const LEVELS_CLASS: &str = "SkizzeoGeschossfenster";
+const IFC_CLASS: &str = "SkizzeoIfcVorschau";
 
 unsafe fn register_class(inst: HINSTANCE, name: &str, style: u32) -> bool {
     let class = wide(name);
@@ -2155,6 +2196,7 @@ where
         if !register_class(inst, MAIN_CLASS, CS_OWNDC | CS_HREDRAW | CS_VREDRAW)
             || !register_class(inst, QUANTITY_CLASS, CS_HREDRAW | CS_VREDRAW)
             || !register_class(inst, LEVELS_CLASS, CS_HREDRAW | CS_VREDRAW)
+            || !register_class(inst, IFC_CLASS, CS_HREDRAW | CS_VREDRAW)
         {
             return Err("Fensterklasse konnte nicht angelegt werden.".into());
         }
@@ -2163,6 +2205,7 @@ where
         let shared = Shared::new();
         let quantity = Shared::new();
         let levels = Shared::new();
+        let ifc = Shared::new();
         WINDOWS.with(|s| {
             *s.borrow_mut() = Some(Windows {
                 tx,
@@ -2174,6 +2217,7 @@ where
                 }],
                 quantity: quantity.clone(),
                 levels: levels.clone(),
+                ifc: ifc.clone(),
                 layout,
                 cursors: [IDC_ARROW, IDC_SIZENS, IDC_HAND, IDC_IBEAM]
                     .map(|c| LoadCursorW(null_mut(), c as *const u16)),
@@ -2267,6 +2311,7 @@ where
             shared,
             quantity,
             levels,
+            ifc,
             quantity_buf: RefCell::new(Vec::new()),
             swap_interval: Cell::new(0),
             interval: Cell::new(1),

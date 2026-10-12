@@ -18,8 +18,12 @@ pub enum WindowId {
     Quantity,
     /// Geschossfenster links (Jörn 11.10.), gebaut wie das Mengenfenster.
     Levels,
+    /// IFC-Vorschau (ifc/plan.md §6): freies Fenster mit Taskleisteneintrag,
+    /// ohne OpenGL, nicht angedockt ([`frei`]).
+    Ifc,
 }
 
+mod frei;
 mod links;
 pub use links::LEVELS_WIDTH_DIP;
 
@@ -87,15 +91,20 @@ pub struct Windows {
     filled: Option<(Rect, Rect)>,
     /// Geschossfenster links.
     links: links::Links,
+    /// IFC-Vorschau.
+    frei: frei::Frei,
 }
 
 const ALLE: [WindowId; 3] = [WindowId::Main, WindowId::Quantity, WindowId::Levels];
 
-fn slot(id: WindowId) -> usize {
+/// Platz in `min`; das freie Fenster hat keinen, es minimiert für
+/// sich.
+fn slot(id: WindowId) -> Option<usize> {
     match id {
-        WindowId::Main => 0,
-        WindowId::Quantity => 1,
-        WindowId::Levels => 2,
+        WindowId::Main => Some(0),
+        WindowId::Quantity => Some(1),
+        WindowId::Levels => Some(2),
+        WindowId::Ifc => None,
     }
 }
 
@@ -125,6 +134,7 @@ impl Windows {
             give_back: None,
             filled: None,
             links: links::Links::new(),
+            frei: frei::Frei::default(),
         }
     }
 
@@ -373,16 +383,17 @@ impl Windows {
     /// Ein Fenster wurde minimiert (Knopf, Taskleiste, Win+D, Win+M oder als
     /// Folge einer eigenen Tat): das andere mit.
     pub fn minimized(&mut self, id: WindowId) -> Vec<Action> {
-        if self.min[slot(id)] {
+        let Some(i) = slot(id).filter(|&i| !self.min[i]) else {
             return Vec::new();
-        }
-        self.min[slot(id)] = true;
+        };
+        self.min[i] = true;
         let mut out = Vec::new();
         for o in ALLE {
-            if o != id && self.is_shown(o) && !self.min[slot(o)] {
-                self.min[slot(o)] = true;
-                out.push(Action::Show(o, Show::Minimize));
-            }
+            let Some(j) = slot(o).filter(|&j| o != id && self.is_shown(o) && !self.min[j]) else {
+                continue;
+            };
+            self.min[j] = true;
+            out.push(Action::Show(o, Show::Minimize));
         }
         out
     }
@@ -393,22 +404,24 @@ impl Windows {
             WindowId::Main => true,
             WindowId::Quantity => self.shown,
             WindowId::Levels => self.links.shown,
+            WindowId::Ifc => self.frei.shown,
         }
     }
 
     /// Ein Fenster kam aus dem Minimieren zurück (Taskleiste, Alt+Tab): das
     /// andere mit, ohne es zu aktivieren.
     pub fn restored(&mut self, id: WindowId) -> Vec<Action> {
-        if !self.min[slot(id)] {
+        let Some(i) = slot(id).filter(|&i| self.min[i]) else {
             return Vec::new();
-        }
-        self.min[slot(id)] = false;
+        };
+        self.min[i] = false;
         let mut out = Vec::new();
         for o in ALLE {
-            if o != id && self.is_shown(o) && self.min[slot(o)] {
-                self.min[slot(o)] = false;
-                out.push(Action::Show(o, Show::RestoreNoActivate));
-            }
+            let Some(j) = slot(o).filter(|&j| o != id && self.is_shown(o) && self.min[j]) else {
+                continue;
+            };
+            self.min[j] = false;
+            out.push(Action::Show(o, Show::RestoreNoActivate));
         }
         out
     }
@@ -423,6 +436,7 @@ impl Windows {
     pub fn close_requested(&mut self, id: WindowId, changed: bool) -> Vec<Action> {
         match id {
             WindowId::Levels => self.close_levels(),
+            WindowId::Ifc => self.close_ifc(),
             WindowId::Quantity => {
                 let was = self.shown;
                 let width = self.width();
@@ -474,6 +488,7 @@ impl Windows {
                 if std::mem::take(&mut self.links.shown) {
                     out.push(Action::Close(WindowId::Levels));
                 }
+                out.extend(self.close_ifc());
                 out.push(Action::Close(WindowId::Main));
                 out
             }

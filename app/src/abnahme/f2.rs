@@ -35,6 +35,7 @@ fn fenster(id: WindowId) -> Fenster {
         WindowId::Quantity => Fenster::Mengen,
         // Das Geschossfenster (Jörn 11.10.) öffnet in diesen Abläufen nie
         WindowId::Levels => unreachable!("Geschossfenster in F2"),
+        WindowId::Ifc => unreachable!("IFC-Vorschau in F2"),
     }
 }
 
