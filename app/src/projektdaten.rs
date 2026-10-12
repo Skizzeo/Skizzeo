@@ -211,7 +211,7 @@ const FELDER: [Feld; N] = [
         beispiel: "32 467 123,456",
         zeilen: 1,
         max: 24,
-        breite: 110.0,
+        breite: 124.0,
         x: 0.0,
         einheit: "m",
     },
@@ -220,7 +220,7 @@ const FELDER: [Feld; N] = [
         beispiel: "5 878 765,432",
         zeilen: 1,
         max: 24,
-        breite: 110.0,
+        breite: 124.0,
         x: 0.0,
         einheit: "m",
     },
@@ -1727,6 +1727,17 @@ mod tests {
                 // Die zweite Zahl hat keine eigene Bezeichnung
                 assert!(einheit + 8.0 * s < la.x, "{einheit} {}", la.x);
                 assert!(la.x + la.w + 6.0 * s + f.width("° O", px) < (W - PAD / 2.0) * s);
+                // gegliedert mit vier Nachkommastellen passt ins Feld
+                // (Einstellungen F19), die Einheit ins Blatt
+                for (i, z, e) in [
+                    (UTM, "32 472 589,2915", "m"),
+                    (UTM + 1, "5 878 900,8954", "m"),
+                ] {
+                    let r = l.felder[i];
+                    let innen = r.x + r.w - 8.0 * s - widgets::text_field_x(r, s, &t);
+                    assert!(f.width(z, px) < innen, "{z}: {} ≥ {innen}", f.width(z, px));
+                    assert!(r.x + r.w + 6.0 * s + f.width(e, px) < (W - PAD / 2.0) * s);
+                }
             }
         }
     }
