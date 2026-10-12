@@ -88,8 +88,9 @@ fn zeichenpunkt(f: &OuterFace, p: Vec3, dicke: f64, innen: bool) -> Vec3 {
 }
 
 /// Griffe der Öffnungen des aktiven Geschosses bei der Maus (Punkt `p` im
-/// Grundriss).
-pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<Griff> {
+/// Grundriss); `r_min` (mm) hält sie auch weit herausgezoomt nah genug,
+/// dass die Maus das Kettensymbol daneben erreicht.
+pub fn sichtbar(scene: &Scene, p: Vec3, r_min: f64) -> Vec<Griff> {
     let m = scene.model();
     let st = scene.active_storey();
     let p = flat(p);
@@ -103,7 +104,7 @@ pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<Griff> {
             continue;
         }
         let nah = o.path.windows(2).any(|w| {
-            let r = NAH.max((w[1] - w[0]).length() / 2.0);
+            let r = NAH.max(r_min).max((w[1] - w[0]).length() / 2.0);
             let xy = |q: Vec3| (q.x, q.y);
             dist_to_segment(xy(p), xy(w[0]), xy(w[1])) <= r
         });
@@ -117,6 +118,58 @@ pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<Griff> {
         }
     }
     out
+}
+
+/// Enden von Öffnungen in anderen Geschossen, die mit dem Ende `k` von
+/// `id` in einer Flucht liegen (Partner fürs Breitenschloss).
+pub fn partner(m: &Model, id: ElementId, k: usize) -> Vec<(ElementId, usize)> {
+    let Some(st) = m.element(id).map(|e| e.storey) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (pid, e) in m.elements().iter() {
+        let ElementKind::Opening(o) = &e.kind else {
+            continue;
+        };
+        if e.storey == st {
+            continue;
+        }
+        for pk in [0, o.path.len().saturating_sub(1)] {
+            if m.ends_aligned(id, k, pid, pk) {
+                out.push((pid, pk));
+            }
+        }
+    }
+    out
+}
+
+/// Breitenschlösser an den Griffen `griffe` (Zeichenhöhe `z`): je Ende mit
+/// Partner ein Kettensymbol außen neben dem Ende, gekoppelt, wenn es mit
+/// allen Partnern gekoppelt ist.
+pub fn schloesser(scene: &Scene, griffe: &[Griff], z: f64) -> Vec<crate::link_view::Schloss> {
+    let m = scene.model();
+    griffe
+        .iter()
+        .filter_map(|&(id, k, p)| {
+            let partner = partner(m, id, k);
+            if partner.is_empty() {
+                return None;
+            }
+            let locks = m.end_locks(id, k);
+            let linked = partner
+                .iter()
+                .all(|&(pid, pk)| locks.iter().any(|l| l.partner == pid && l.end == pk));
+            let st = m.element(id)?.storey;
+            let (f, ..) = flaeche_bei(m, st, *m.opening(id)?.path.get(k)?)?;
+            Some(crate::link_view::Schloss {
+                id,
+                k,
+                p: vec3(p.x, p.y, z),
+                out: f.n,
+                linked,
+            })
+        })
+        .collect()
 }
 
 /// Griff unter der Maus (Ansichtspixel `x`, `y`) aus `griffe`, gezeichnet
@@ -479,16 +532,16 @@ mod tests {
     #[test]
     fn griffe_bei_der_maus() {
         let (s, tuer, fenster) = haus();
-        let g = sichtbar(&s, vec3(5100.0, 3000.0, 0.0));
+        let g = sichtbar(&s, vec3(5100.0, 3000.0, 0.0), 0.0);
         assert_eq!(g.iter().filter(|x| x.0 == tuer).count(), 2);
         assert!(g.iter().all(|x| x.0 == tuer));
         let ys: Vec<f64> = g.iter().map(|x| x.2.y).collect();
         assert!(ys.iter().any(|y| (y - 2557.5).abs() < 1e-6), "{ys:?}");
         assert!(g.iter().all(|x| (x.2.x - 5000.0).abs() < 1e-6), "{g:?}");
-        let g = sichtbar(&s, vec3(7000.0, 200.0, 0.0));
+        let g = sichtbar(&s, vec3(7000.0, 200.0, 0.0), 0.0);
         assert_eq!(g.len(), 2);
         assert!(g.iter().all(|x| x.0 == fenster));
-        assert!(sichtbar(&s, vec3(2500.0, 6000.0, 0.0)).is_empty());
+        assert!(sichtbar(&s, vec3(2500.0, 6000.0, 0.0), 0.0).is_empty());
     }
 
     /// Ziehen am Ende der Innentür: rastet an der Normbreite, Esc stellt
@@ -633,7 +686,32 @@ mod tests {
         z.handle(&los, &mut s, &cam, W, H);
         let ob = s.model().opening(oben).unwrap().clone();
         let ko = usize::from(ob.path[1].x > ob.path[0].x);
-        assert!(s.set_end_lock(unten, k, oben, ko, true));
+        // Kettensymbol am Ende: erst gelöst, nach dem Klick gekoppelt
+        let ende = s.model().opening(unten).unwrap().path[k];
+        let g = [(unten, k, ende)];
+        assert_eq!(partner(s.model(), unten, k), vec![(oben, ko)]);
+        assert!(partner(s.model(), unten, 1 - k).is_empty(), "6,5 m und 6 m");
+        let sl = schloesser(&s, &g, 0.0);
+        assert_eq!(sl.len(), 1);
+        assert!(!sl[0].linked);
+        let chips = crate::link_view::chips(&crate::link_view::Want {
+            scene: &s,
+            cam: &cam,
+            w: W,
+            h: H,
+            top: 0.0,
+            scale: 1.0,
+            plan_z: Some(0.0),
+            band: None,
+            hover: None,
+            keep_linked: None,
+            schloesser: sl,
+        });
+        assert!(chips
+            .iter()
+            .any(|c| c.schloss == Some(k) && c.wall == unten));
+        assert!(s.set_end_locks(unten, k, &[(oben, ko)], true));
+        assert!(schloesser(&s, &g, 0.0)[0].linked);
         let mut z = BreiteZug::greifen(&mut s, unten, k, 0.0).unwrap();
         let (x, y) = cam.project(vec3(7300.0, 0.0, 0.0), W, H).unwrap();
         z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);

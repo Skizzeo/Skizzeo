@@ -113,14 +113,14 @@ impl Scene {
         ok
     }
 
-    /// Koppelt (`on`) oder löst das Ende `ka` von `a` mit dem Ende `kb`
-    /// von `b` als ein Schritt (Breitenschloss). `false`, wenn nichts geht.
-    pub fn set_end_lock(
+    /// Koppelt (`on`) oder löst das Ende `k` von `id` mit den Enden
+    /// `partner` als ein Schritt (Breitenschloss). `false`, wenn sich
+    /// nichts ändert.
+    pub fn set_end_locks(
         &mut self,
-        a: ElementId,
-        ka: usize,
-        b: ElementId,
-        kb: usize,
+        id: ElementId,
+        k: usize,
+        partner: &[(ElementId, usize)],
         on: bool,
     ) -> bool {
         self.begin(if on {
@@ -128,7 +128,11 @@ impl Scene {
         } else {
             "Breite gelöst"
         });
-        if self.model.set_end_lock(a, ka, b, kb, on) {
+        let mut changed = false;
+        for &(b, kb) in partner {
+            changed |= self.model.set_end_lock(id, k, b, kb, on);
+        }
+        if changed {
             self.commit();
             true
         } else {

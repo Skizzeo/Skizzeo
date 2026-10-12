@@ -716,6 +716,11 @@ impl WallEdit {
         self.hover.is_some() || self.griff || self.is_dragging() || self.splitting()
     }
 
+    /// Griffe an den Enden der Öffnungen bei der Maus (Grundriss).
+    pub fn oeffnungs_enden(&self) -> &[breite_edit::Griff] {
+        &self.breiten
+    }
+
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some() || self.ende.is_some() || self.tuer.is_some() || self.breite.is_some()
     }
@@ -857,7 +862,14 @@ impl WallEdit {
             _ => None,
         };
         let tueren = punkt.map_or_else(Vec::new, |p| tuer_edit::sichtbar(scene, p));
-        let breiten = punkt.map_or_else(Vec::new, |p| breite_edit::sichtbar(scene, p));
+        // Bis 60 px um die Öffnung: so erreicht die Maus das Kettensymbol
+        let r_min = match (punkt, self.mouse, self.plan_z) {
+            (Some(p), Some((x, y)), Some(z)) => {
+                drag_point(cam, x + 60.0 * scale, y, w, h, z).map_or(0.0, |q| (q - p).length())
+            }
+            _ => 0.0,
+        };
+        let breiten = punkt.map_or_else(Vec::new, |p| breite_edit::sichtbar(scene, p, r_min));
         let (tuer_griff, breite_griff) = match (self.plan_z, self.mouse) {
             (Some(z), Some(m)) => {
                 let t = tuer_edit::griff_bei(&tueren, cam, z, m, w, h, scale).map(|g| g.0);

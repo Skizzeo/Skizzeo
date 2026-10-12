@@ -8424,18 +8424,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let chips_on =
                 matches!(a.ui.view, ViewKind::Plan | ViewKind::Persp) && !a.tool.is_active();
             a.chips = if chips_on {
-                link_view::chips(&link_view::Want {
-                    scene: &a.scene,
-                    cam: &a.cam,
-                    w: vw,
-                    h: vh,
-                    top: th as f64,
-                    scale: scale as f64,
-                    plan_z: a.plan_z(),
-                    band: a.edit.active_wall(),
-                    hover: a.chip_hover,
-                    keep_linked: a.flush_keep,
-                })
+                a.ketten_chips(vw, vh, th as f64, scale as f64)
             } else {
                 Vec::new()
             };
