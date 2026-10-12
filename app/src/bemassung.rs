@@ -250,16 +250,25 @@ impl Massketten {
             self.ketten.retain(|&k, _| m.storey(k).is_some());
             self.geschosse.retain(|&k, _| m.storey(k).is_some());
         }
-        // Züge, Öffnungen und Anschlüsse je Geschoss, erst wenn eines neu
-        // gerechnet wird, dann für alle einmal
+        let keys: Vec<Schluessel> = st
+            .iter()
+            .map(|&s| (scene.mass_stand(s), versaetze(m, s)))
+            .collect();
+        // Züge, Öffnungen und Anschlüsse in einem Durchgang durchs Modell,
+        // nur für die Geschosse, die neu rechnen
+        let neu: HashSet<StoreyId> = st
+            .iter()
+            .zip(&keys)
+            .filter(|(s, key)| self.ketten.get(s).is_none_or(|(k, _)| k != *key))
+            .map(|(s, _)| *s)
+            .collect();
         let mut vz: Option<Verzeichnis> = None;
         let mut da: Vec<(StoreyId, Ketten)> = Vec::new();
-        for &s in &st {
-            let key = (scene.mass_stand(s), versaetze(m, s));
+        for (&s, key) in st.iter().zip(keys) {
             let k = match self.ketten.get(&s) {
                 Some((k, a)) if *k == key => a.clone(),
                 _ => {
-                    let vz = vz.get_or_insert_with(|| Verzeichnis::neu(m));
+                    let vz = vz.get_or_insert_with(|| Verzeichnis::fuer(m, |s| neu.contains(&s)));
                     let k = ketten(scene, vz, s).map(|a| Ketten {
                         nr: neuer_stand(),
                         kasten: kasten(&a, stil),

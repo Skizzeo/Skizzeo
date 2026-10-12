@@ -184,20 +184,29 @@ pub struct Verzeichnis {
 }
 
 impl Verzeichnis {
+    /// Für alle Geschosse.
     pub fn neu(m: &Model) -> Verzeichnis {
+        Verzeichnis::fuer(m, |_| true)
+    }
+
+    /// Nur für die Geschosse, für die `nur` gilt (beim Ziehen eines).
+    pub fn fuer(m: &Model, nur: impl Fn(StoreyId) -> bool) -> Verzeichnis {
         let mut v = Verzeichnis::default();
         for (id, r) in m.runs().iter() {
+            if !r.closed || !nur(r.storey) {
+                continue;
+            }
             let aussenwand = r
                 .segments
                 .first()
                 .and_then(|&e| m.element(e))
                 .is_some_and(|e| e.category == Category::ExteriorWall);
-            if r.closed && aussenwand {
+            if aussenwand {
                 v.zuege.entry(r.storey).or_default().push(id);
             }
         }
         for (id, e) in m.elements().iter() {
-            if matches!(e.kind, ElementKind::Opening(_)) {
+            if matches!(e.kind, ElementKind::Opening(_)) && nur(e.storey) {
                 v.oeffnungen.entry(e.storey).or_default().push(id);
             }
         }
@@ -205,7 +214,10 @@ impl Verzeichnis {
             if j.kind != JoinKind::T {
                 continue;
             }
-            if let Some((host, _)) = m.segment_of(j.b) {
+            let Some((host, _)) = m.segment_of(j.b) else {
+                continue;
+            };
+            if m.run(host).is_some_and(|r| nur(r.storey)) {
                 v.anschluesse.entry(host).or_default().push(i);
             }
         }
@@ -648,7 +660,7 @@ pub fn aussenmasse_aus<C: Borrow<WallChain>>(
     st: StoreyId,
     chain: impl Fn(RunId) -> Option<C>,
 ) -> Option<Aussenmasse> {
-    aussenmasse_mit(m, &Verzeichnis::neu(m), st, chain)
+    aussenmasse_mit(m, &Verzeichnis::fuer(m, |s| s == st), st, chain)
 }
 
 /// Wie [`aussenmasse_aus`], Züge, Öffnungen und Anschlüsse aus `vz` (für
