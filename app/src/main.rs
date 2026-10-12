@@ -3492,7 +3492,7 @@ impl App {
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
             // `UiOut::level`; der Zähler ist derzeit fest
-            Id::Field(_) | Id::Grip(_) | Id::DialogMinus | Id::DialogPlus => {}
+            Id::Field(_) | Id::Grip(_) | Id::LineVis(_) | Id::DialogMinus | Id::DialogPlus => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();

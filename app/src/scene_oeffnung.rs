@@ -5,7 +5,7 @@ use super::{ray_hits_box, Scene, Vis};
 use crate::visible::Class;
 use sk_math::Vec3;
 use sk_model::hoehen::MIN_LINE_GAP;
-use sk_model::oeffnung::{Opening, OuterFace};
+use sk_model::oeffnung::{HeightLine, Opening, OuterFace, MIN_OPENING};
 use sk_model::{ElementId, RunId, StoreyId, Tri};
 
 impl Scene {
@@ -41,20 +41,20 @@ impl Scene {
     }
 
     /// Höhenlinie beim Ziehen im Geschossmanager (im offenen Schritt):
-    /// Brüstung bzw. Sturz (`sturz`) des Geschosses `st` auf die Kote `z`,
-    /// geklemmt: Brüstung ab OK Rohdecke, Sturz bis UK Decke, dazwischen
-    /// mindestens [`MIN_LINE_GAP`]. Die Wände des Gebäudes rechnen neu, an
+    /// Linie `k` des Geschosses `st` auf die Kote `z`, geklemmt: Brüstung ab
+    /// OK Rohdecke, Sturz bis UK Decke, dazwischen mindestens
+    /// [`MIN_LINE_GAP`]; die Innentürlinie von [`MIN_OPENING`] bis UK Decke. Die Wände des Gebäudes rechnen neu, an
     /// die Linie gebundene Öffnungen wandern mit (Jörn 14:22).
-    pub fn drag_height_line(&mut self, st: StoreyId, sturz: bool, z: f64) {
+    pub fn drag_height_line(&mut self, st: StoreyId, k: HeightLine, z: f64) {
         let Some(s) = self.model.storey(st) else {
             return;
         };
         let (mut l, v) = (s.lines, z - s.elevation);
         let clear = self.model.clear_height(st);
-        if sturz {
-            l.lintel = v.min(clear).max(l.sill + MIN_LINE_GAP);
-        } else {
-            l.sill = v.max(0.0).min(l.lintel - MIN_LINE_GAP);
+        match k {
+            HeightLine::Lintel => l.lintel = v.min(clear).max(l.sill + MIN_LINE_GAP),
+            HeightLine::Sill => l.sill = v.max(0.0).min(l.lintel - MIN_LINE_GAP),
+            HeightLine::Door => l.door = v.min(clear).max(MIN_OPENING),
         }
         if s.lines != l && self.model.set_height_lines(st, l) {
             self.relevel(st);
@@ -78,7 +78,7 @@ impl Scene {
 mod tests {
     use super::*;
     use sk_math::vec3;
-    use sk_model::oeffnung::{HeightLine, HeightRef, OpeningKind};
+    use sk_model::oeffnung::{HeightRef, OpeningKind};
     use sk_model::Model;
 
     /// Der Strahl von außen trifft die Außenwandfläche; nach dem Anlegen
@@ -154,31 +154,46 @@ mod tests {
         let low = vec3(5000.0, -9000.0, el + 1000.0);
         assert!(s.outer_face_at(low, d).is_none(), "bei 1,00 m im Loch");
         s.begin("Höhenlinie ziehen");
-        s.drag_height_line(st, false, el + 1200.0);
+        s.drag_height_line(st, HeightLine::Sill, el + 1200.0);
         assert_eq!(s.model().storey(st).unwrap().lines.sill, 1200.0);
         assert!(s.outer_face_at(low, d).is_some(), "Brüstung mitgewandert");
-        s.drag_height_line(st, true, el + 1250.0);
+        s.drag_height_line(st, HeightLine::Lintel, el + 1250.0);
         assert_eq!(
             s.model().storey(st).unwrap().lines.lintel,
             1300.0,
             "10 cm Abstand"
         );
-        s.drag_height_line(st, true, el + 9000.0);
+        s.drag_height_line(st, HeightLine::Lintel, el + 9000.0);
         assert_eq!(
             s.model().storey(st).unwrap().lines.lintel,
             clear,
             "bis UK Decke"
         );
-        s.drag_height_line(st, false, el - 500.0);
+        s.drag_height_line(st, HeightLine::Sill, el - 500.0);
         assert_eq!(
             s.model().storey(st).unwrap().lines.sill,
             0.0,
             "ab OK Rohdecke"
         );
+        s.drag_height_line(st, HeightLine::Door, el + 2135.0);
+        assert_eq!(s.model().storey(st).unwrap().lines.door, 2135.0);
+        s.drag_height_line(st, HeightLine::Door, el + 9000.0);
+        assert_eq!(s.model().storey(st).unwrap().lines.door, clear);
+        s.drag_height_line(st, HeightLine::Door, el - 500.0);
+        assert_eq!(s.model().storey(st).unwrap().lines.door, MIN_OPENING);
+        assert_eq!(
+            s.levels()
+                .bands
+                .iter()
+                .find(|b| b.id == st)
+                .and_then(|b| b.lines)
+                .map(|l| l.2),
+            Some(el + MIN_OPENING)
+        );
         s.commit();
         s.undo();
         let l = s.model().storey(st).unwrap().lines;
-        assert_eq!((l.sill, l.lintel), (sk_model::SILL, sk_model::LINTEL));
+        assert_eq!(l, sk_model::hoehen::HeightLines::default());
         assert!(s.outer_face_at(low, d).is_none());
     }
 
@@ -243,7 +258,7 @@ mod tests {
         // Brüstung über der Schnitthöhe: die Öffnung ist nicht geschnitten
         let el_z = s.model().storey(st).unwrap().elevation;
         s.begin("Höhenlinie ziehen");
-        s.drag_height_line(st, false, s.plan_cut() + 200.0);
+        s.drag_height_line(st, HeightLine::Sill, s.plan_cut() + 200.0);
         s.commit();
         assert!(s.model().storey(st).unwrap().lines.sill > s.plan_cut() - el_z);
         assert!(s.model().opening(id).is_some());

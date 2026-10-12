@@ -2208,8 +2208,10 @@ impl Scene {
                 foundation,
                 roof,
                 active: id == active,
-                lines: (!foundation && !roof)
-                    .then_some((st.elevation + st.lines.sill, st.elevation + st.lines.lintel)),
+                lines: (!foundation && !roof).then(|| {
+                    let (l, e) = (st.lines, st.elevation);
+                    (e + l.sill, e + l.lintel, e + l.door)
+                }),
             });
             if foundation {
                 // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)

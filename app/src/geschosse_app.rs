@@ -7,6 +7,7 @@ use crate::geschossfenster::Out;
 use crate::menu::Command;
 use crate::ui::{Grip, Id, Panel, LEVELS_TITEL};
 use crate::{App, OVERLAY_DIALOG, OVERLAY_SCRIM};
+use sk_model::oeffnung::HeightLine;
 use sk_paint::Rgba;
 use sk_platform::layout::WindowId;
 use sk_platform::{Event, Key, Surface};
@@ -25,7 +26,7 @@ impl App {
         self.geschoss.plan_cut_start =
             (g == Grip::PlanCut).then(|| self.scene.model().plan_cut_height());
         self.scene.begin(match g {
-            Grip::Sill(_) | Grip::Lintel(_) => "Höhenlinie ziehen",
+            Grip::Sill(_) | Grip::Lintel(_) | Grip::Door(_) => "Höhenlinie ziehen",
             _ => "Geschoss ziehen",
         });
     }
@@ -37,8 +38,9 @@ impl App {
             Grip::FoundationBottom => self.scene.drag_foundation_bottom(z),
             Grip::Top(id) => self.scene.drag_storey_top(id, z),
             Grip::Terrain => self.scene.drag_terrain(z),
-            Grip::Sill(id) => self.scene.drag_height_line(id, false, z),
-            Grip::Lintel(id) => self.scene.drag_height_line(id, true, z),
+            Grip::Sill(id) => self.scene.drag_height_line(id, HeightLine::Sill, z),
+            Grip::Lintel(id) => self.scene.drag_height_line(id, HeightLine::Lintel, z),
+            Grip::Door(id) => self.scene.drag_height_line(id, HeightLine::Door, z),
             Grip::PlanCut => {
                 // Höchstens bis UK Decke: darüber fiele die Linie aus ihrem
                 // Band und wäre nicht mehr zu greifen (Review #92 H4)

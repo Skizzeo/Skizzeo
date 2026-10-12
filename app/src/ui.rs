@@ -17,6 +17,7 @@ use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
 mod fenster;
 mod hoehenlinien;
+use hoehenlinien::check_word;
 
 pub use fenster::TITEL as LEVELS_TITEL;
 
@@ -143,6 +144,9 @@ pub enum Id {
     Storey(StoreyId),
     /// Schalter „Flachdach“ im Fuß des Paneels „Geschosse“ (Jörn 10.10.).
     FlatRoof,
+    /// Schalter im Geschossmanager: Fensterlinien (0) bzw. Innentürlinie (1)
+    /// zeigen (Jörn 12.10. 05:26).
+    LineVis(u8),
     /// Dialog „Gebäude erstellen“ (E16): Schließkreuz, Zähler − und +
     /// (derzeit gesperrt), „Abbrechen“ und „Zeichnen beginnen“.
     DialogClose,
@@ -233,9 +237,11 @@ pub enum Grip {
     /// OK Gelände (Gelände Thema 1).
     Terrain,
     /// Höhenlinien eines Geschosses im Geschossmanager (Jörn 11.10.
-    /// 13:57): Brüstung und Sturz, den Ebenen untergeordnet.
+    /// 13:57): Brüstung und Sturz, den Ebenen untergeordnet, und die
+    /// Oberkante der Innentüren (12.10. 05:26).
     Sill(StoreyId),
     Lintel(StoreyId),
+    Door(StoreyId),
     /// Schnitthöhe des Grundrisses im aktiven Geschoss (Jörn 14:12).
     PlanCut,
 }
@@ -717,9 +723,9 @@ pub struct Band {
     /// Ebene Flachdach: Oberkante ist OK Aufkantung.
     pub roof: bool,
     pub active: bool,
-    /// Brüstung und Sturz als Koten (mm); nur Geschosse, nicht Gründung
-    /// und Flachdach.
-    pub lines: Option<(f64, f64)>,
+    /// Brüstung, Sturz und Innentür als Koten (mm); nur Geschosse, nicht
+    /// Gründung und Flachdach.
+    pub lines: Option<(f64, f64, f64)>,
 }
 
 /// Inhalt des Paneels „Geschosse“.
@@ -1012,6 +1018,8 @@ pub struct Ui {
     /// über die ganze Breite `fenster_w` (dip).
     fenster: bool,
     fenster_w: f32,
+    /// Im Geschossmanager gezeigt: Fensterlinien, Innentürlinie.
+    pub line_vis: [bool; 2],
     /// Geschossfenster offen: Knopf „Geschossmanager“ in `accent`.
     pub levels_open: bool,
     /// Fensterhöhe und Höhe der Titelleiste (Pixel), für die Höhe des
@@ -1494,6 +1502,7 @@ impl Ui {
             level_drag: None,
             fenster: false,
             fenster_w: 0.0,
+            line_vis: [true; 2],
             levels_open: false,
             win_h: 1e6,
             top: 32,
@@ -1713,7 +1722,7 @@ impl Ui {
             Grip::FoundationBottom => b.iter().find(|b| b.foundation).map(|b| b.bottom),
             Grip::Top(id) => b.iter().find(|b| b.id == id).map(|b| b.top),
             Grip::Terrain => self.levels.terrain,
-            Grip::Sill(_) | Grip::Lintel(_) | Grip::PlanCut => self.sub_grip_z(g),
+            Grip::Sill(_) | Grip::Lintel(_) | Grip::Door(_) | Grip::PlanCut => self.sub_grip_z(g),
         }
     }
 
@@ -2168,6 +2177,7 @@ impl Ui {
             // Standardknopf des Dialogs
             Id::DialogStart => true,
             Id::FlatRoof => self.levels.flat_roof == Some(true),
+            Id::LineVis(k) => self.line_vis[k as usize],
             Id::Projektdaten
             | Id::Field(_)
             | Id::Grip(_)
@@ -2349,6 +2359,9 @@ impl Ui {
                     out.changed.push(p);
                     out.consumed = true;
                     if self.hit(x, y, win_w, top).and_then(|h| h.1) == Some(p) {
+                        if let Id::LineVis(k) = p {
+                            self.line_vis[k as usize] ^= true;
+                        }
                         out.clicked = Some(p);
                     }
                 }
@@ -2492,7 +2505,7 @@ impl Ui {
             self.paint_close(t, c, b, st.hover);
             return;
         }
-        if id == Id::FlatRoof {
+        if let Some(word) = check_word(id) {
             let k = 14.0 * s;
             let kr = Rect::new(b.x, b.y + ((b.h - k) * 0.5).round(), k, k);
             widgets::checkbox(c, kr, st.active, st.hover, s, t);
@@ -2500,7 +2513,7 @@ impl Ui {
             let col = if st.hover { t.ui.text } else { t.ui.text_dim };
             let base = kr.y + k - 3.0 * s;
             let font = self.fonts.regular.as_ref();
-            widgets::text(c, font, "Flachdach", px, kr.x + k + 6.0 * s, base, col);
+            widgets::text(c, font, word, px, kr.x + k + 6.0 * s, base, col);
             return;
         }
         if let Some(chip) = self.chip(id) {
@@ -3186,6 +3199,7 @@ impl Ui {
         if let Some(r) = self.flat_roof_rect() {
             names.push((Id::FlatRoof, r, ""));
         }
+        names.extend(self.line_vis_rects().into_iter().map(|(id, r)| (id, r, "")));
         let mut push = |f: Field, right: f32, base: f32| {
             out.push((Id::Field(f), self.level_text_rect(f, right, base), ""));
         };
@@ -3260,7 +3274,7 @@ impl Ui {
                 Cursor::Hand
             }
             Some(Id::Field(_)) => Cursor::IBeam,
-            Some(Id::Storey(_) | Id::FlatRoof) => Cursor::Hand,
+            Some(Id::Storey(_) | Id::FlatRoof | Id::LineVis(_)) => Cursor::Hand,
             _ => Cursor::Arrow,
         }
     }
