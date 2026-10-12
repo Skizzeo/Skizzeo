@@ -171,6 +171,10 @@ pub struct Environment {
     /// Deckkraft des Bodens über Modellteilen unter z = 0 in 3D (E11):
     /// 1 = deckend, 0 = Boden nur als Hintergrund.
     pub ground_opacity: f32,
+    /// Geländeplatte (Gelände G0) und später das Geländemodul: Rasen oben,
+    /// Erdreich an den Seiten und im Schnitt.
+    pub terrain_grass: Rgba,
+    pub terrain_soil: Rgba,
     /// Flächen ohne Baustoff und Kanten.
     pub face: Rgba,
     pub edge: Rgba,
@@ -464,6 +468,8 @@ impl Theme {
                 ground: rgb(59, 66, 54),
                 horizon_softness: 1.03,
                 ground_opacity: 0.6,
+                terrain_grass: rgb(104, 142, 66),
+                terrain_soil: rgb(122, 98, 72),
                 face: rgb(242, 240, 234),
                 edge: rgb(0, 0, 0),
                 paper_fallback: rgb(245, 244, 239),

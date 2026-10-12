@@ -23,7 +23,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 70] = [
+pub const RGBA_ROLES: [RgbaRole; 72] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -106,6 +106,12 @@ pub const RGBA_ROLES: [RgbaRole; 70] = [
     ),
     ("title.logo", "Logo", |t| &mut t.title.logo),
     ("env.ground", "Boden", |t| &mut t.env.ground),
+    ("env.terrain_grass", "Gelände Rasen", |t| {
+        &mut t.env.terrain_grass
+    }),
+    ("env.terrain_soil", "Gelände Erdreich", |t| {
+        &mut t.env.terrain_soil
+    }),
     ("env.face", "Flächen ohne Baustoff", |t| &mut t.env.face),
     ("env.edge", "Kanten ohne Stift", |t| &mut t.env.edge),
     ("env.paper_fallback", "Papier (Ersatz)", |t| {

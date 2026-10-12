@@ -141,16 +141,23 @@ impl Model {
                 None => groups.push((z, vec![*b], vec![r])),
             }
         }
-        // Löcher: Umrisse der Gründungen aller Gebäude
+        // Löcher: Außenfläche der Wände über jeder Gründung (mit allen
+        // Schichten, auch bei Sockelrücksprung), sonst der Plattenumriss
         let mut holes: Vec<Vec<Vec3>> = Vec::new();
         for (id, r) in self.runs.iter() {
-            if self.building_of(r.storey).is_none() {
+            if self.building_of(r.storey).is_none() || self.foundation_of(id).is_none() {
                 continue;
             }
-            if let Some(Ok(f)) = self.foundation(id) {
-                if f.outline.len() >= 3 {
-                    holes.push(f.outline.clone());
-                }
+            let face = self
+                .base_chain(id)
+                .map(|c| c.face_corners(c.outer_offset()))
+                .filter(|f| f.len() >= 3 && sk_math::polygon::area(f) > 1.0);
+            let outline = face.or_else(|| match self.foundation(id) {
+                Some(Ok(f)) if f.outline.len() >= 3 => Some(f.outline),
+                _ => None,
+            });
+            if let Some(o) = outline {
+                holes.push(sk_math::polygon::to_ccw(&o));
             }
         }
         let rects: Vec<Vec<[f64; 4]>> = groups.iter().map(|g| g.2.clone()).collect();
@@ -195,8 +202,10 @@ impl Grenze {
 enum Art {
     /// Rechteck der Gruppe; `true` an der linken Kante (öffnet).
     Rechteck(usize, bool),
-    /// Loch (Gebäude).
-    Loch,
+    /// Loch (Gebäude, gegen den Uhrzeigersinn): `+1` an einer Kante nach
+    /// unten (links, hinein), `-1` nach oben; überlappende Löcher zählen
+    /// zusammen, nicht gegeneinander.
+    Loch(i32),
 }
 
 /// Zerlegt die Gruppen (je eine Liste von Rechtecken) abzüglich der Löcher in
@@ -223,7 +232,8 @@ fn streifen(
         for i in 0..h.len() {
             let (a, b) = (h[i], h[(i + 1) % h.len()]);
             if (a.y - b.y).abs() > EPS {
-                kanten.push((Grenze { a, b }, Art::Loch));
+                let w = if b.y < a.y { 1 } else { -1 };
+                kanten.push((Grenze { a, b }, Art::Loch(w)));
             }
         }
     }
@@ -306,7 +316,7 @@ fn schnitt_y(p: &Grenze, q: &Grenze) -> Option<f64> {
     let t = (w.x * d2.y - w.y * d2.x) / den;
     let u = (w.x * d1.y - w.y * d1.x) / den;
     let ok = |s: f64| s > 1e-9 && s < 1.0 - 1e-9;
-    (ok(t) && ok(u)).then(|| p.a.y + t * d1.y)
+    (ok(t) && ok(u)).then_some(p.a.y + t * d1.y)
 }
 
 /// Intervalle jeder Gruppe auf der Höhe `y` (Mitte eines Streifens): in einem
@@ -336,15 +346,15 @@ fn intervalle(kanten: &[(Grenze, Art)], n: usize, y: f64) -> Vec<Vec<(Grenze, Gr
             match hits[j].2 {
                 // Rechtecke: linke Kante öffnet, rechte schließt
                 Art::Rechteck(g, links) => zaehler[g] += if links { 1 } else { -1 },
-                // Löcher: gerade/ungerade
-                Art::Loch => loch = 1 - loch,
+                // Löcher: Umlaufzahl
+                Art::Loch(w) => loch += w,
             }
             j += 1;
         }
         // Zustand nach der Stelle
         let mut frueher = false;
         for g in 0..n {
-            let drin = zaehler[g] > 0 && loch == 0 && !frueher;
+            let drin = zaehler[g] > 0 && loch <= 0 && !frueher;
             frueher |= zaehler[g] > 0;
             match (offen[g], drin) {
                 (None, true) => offen[g] = Some(grenze_an(&hits[i..j], x)),
@@ -463,7 +473,9 @@ mod tests {
         let (p, e) = streifen(&[vec![[0.0, 0.0, 11.0, 9.0]]], &[haus]);
         assert!((flaeche(&p[0]) - (99.0 - a_haus)).abs() < 1e-6);
         assert!((rand_flaeche(&e[0]) - (99.0 - a_haus)).abs() < 1e-6);
-        assert!(p[0].iter().all(|q| sk_math::polygon::signed_area(q) >= -1e-9));
+        assert!(p[0]
+            .iter()
+            .all(|q| sk_math::polygon::signed_area(q) >= -1e-9));
     }
 
     /// L-Haus mit Innenecke und zwei Gruppen: die frühere Gruppe hat
@@ -528,6 +540,19 @@ mod tests {
         assert_eq!((p[0].top, p[0].bottom), (-300.0, -1100.0));
         let a = p[0].area();
         assert!((a - (13.0 * 11.0 - 80.0) * 1e6).abs() < 1.0, "{a}");
+    }
+
+    /// Zwei Löcher, die sich überdecken (Anbau an einem Haus): die Platte
+    /// spart ihre Vereinigung aus, die Überdeckung bleibt Loch.
+    #[test]
+    fn ueberlappende_loecher() {
+        let (p, e) = streifen(
+            &[vec![[0.0, 0.0, 12.0, 10.0]]],
+            &[quadrat(2.0, 2.0, 7.0, 7.0), quadrat(5.0, 4.0, 10.0, 8.0)],
+        );
+        let a = flaeche(&p[0]);
+        assert!((a - (120.0 - (25.0 + 20.0 - 6.0))).abs() < 1e-9, "{a}");
+        assert!((rand_flaeche(&e[0]) - a).abs() < 1e-9);
     }
 
     /// Zwei Rechtecke derselben Gruppe, die sich überlappen und berühren:

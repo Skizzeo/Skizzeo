@@ -307,7 +307,12 @@ fn tree_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
         0,
     );
     let t = l.open(NodeKey::Terrain, "Gelände".into(), String::new(), 1);
-    let pl = l.open(NodeKey::TerrainPlate, "Geländeplatte".into(), String::new(), 2);
+    let pl = l.open(
+        NodeKey::TerrainPlate,
+        "Geländeplatte".into(),
+        String::new(),
+        2,
+    );
     l.close(pl);
     l.close(t);
     let mut buildings: Vec<_> = m.buildings().iter().collect();

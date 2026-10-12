@@ -498,6 +498,10 @@ pub struct Renderer {
     terrain: f32,
     /// OK Gelände je Gebäude (Rechteck im Grundriss, Höhe).
     terrain_boxes: Vec<([f32; 4], f32)>,
+    /// Höhe des Bodens in 3D (mm), sonst OK Gelände; Darstellungsschlüssel
+    /// des Rasens (0 = keiner), Gelände G0.
+    ground_z: Option<f32>,
+    grass: i32,
     /// Konnte der Treiber die Karte nicht anlegen: Meldung (einmal
     /// abzuholen), danach ohne Schatten.
     shadow_failed: bool,
@@ -685,6 +689,45 @@ float terrain_at(vec2 p) {
     }
     return u_terrain;
 }
+// Rasen (Gelände G0): Schlüssel der Fläche, 0 = keiner
+uniform int u_grass;
+// Ohne Ganzzahl-Bitrechnung (läuft auch ohne die Muster, Review 3q)
+float grass_hash(vec2 p) {
+    vec2 q = fract(p * vec2(0.1031, 0.1030));
+    q += dot(q, q.yx + 33.33);
+    return fract((q.x + q.y) * q.x);
+}
+float grass_noise(vec2 p) {
+    vec2 k = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = grass_hash(k);
+    float b = grass_hash(k + vec2(1.0, 0.0));
+    float c = grass_hash(k + vec2(0.0, 1.0));
+    float d = grass_hash(k + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+// Ruhiges Rauschen in fünf Größen (2,4 m bis 4 cm), jede um 37° gedreht
+// (kein Raster zu sehen) und ausgeblendet, sobald ihre Zellen kleiner als
+// zwei Bildpunkte werden (mm je Bildpunkt `w`): kein Flimmern in der
+// Ferne. Dunkel bläulich, hell gelblich.
+vec3 grass_rgb(vec3 base, vec2 p, float w) {
+    const mat2 TURN = mat2(0.8, 0.6, -0.6, 0.8);
+    float n = 0.0;
+    float s = 2400.0;
+    float amp = 0.5;
+    vec2 q = p;
+    for (int i = 0; i < 5; i++) {
+        float fade = clamp(s / max(w, 1e-3) * 0.5 - 1.0, 0.0, 1.0);
+        n += (grass_noise(q / s + vec2(float(i) * 17.3, float(i) * 5.1)) - 0.5) * amp * fade;
+        q = TURN * q;
+        s *= 0.35;
+        amp *= 0.7;
+    }
+    vec3 lo = base * vec3(0.80, 0.88, 0.82);
+    vec3 hi = base * vec3(1.12, 1.08, 0.90);
+    return mix(lo, hi, clamp(0.5 + n * 1.4, 0.0, 1.0));
+}
 vec4 look(int row) {
     return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
 }
@@ -707,8 +750,13 @@ float ink_of(vec4 f, float offset, float w, vec2 dash) {
 }
 void main() {
     bool cut = (v_key & 0x8000) != 0;
+    // Bildpunktgröße auf dem Rasen vor jeder Verzweigung (Ableitungen)
+    float grass_w = fwidth(v_model.x) + fwidth(v_model.y);
     if (u_drawing == 0) {
         vec3 c = look(cut ? 1 : 0).rgb;
+        if (!cut && u_grass > 0 && (v_key & 0x7FFF) == u_grass) {
+            c = grass_rgb(c, v_model.xy, grass_w);
+        }
         // Muster ohne Darstellung in 3D: Mischfarbe statt der Ansichtsfläche
         // (Zeile 11, Feld w); Putz bleibt in seiner Farbe (Paket 6)
         int kind = int(look(8).x + 0.5);
@@ -1628,6 +1676,8 @@ impl Renderer {
                 below: (0, [0.0; 2]),
                 terrain: 0.0,
                 terrain_boxes: Vec::new(),
+                ground_z: None,
+                grass: 0,
                 shadow_failed: shadow_error.is_some(),
                 shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
                 shadow_query: 0,
@@ -2292,6 +2342,7 @@ impl Renderer {
                 gl.glUniform1f(loc(gl, q, c"u_px_fix"), exact);
                 let drawing = view.paper.is_some();
                 gl.glUniform1i(loc(gl, q, c"u_drawing"), drawing as GLint);
+                gl.glUniform1i(loc(gl, q, c"u_grass"), 0);
                 gl.glUniform1i(loc(gl, q, c"u_paper_shade"), 0);
                 gl.glUniform1i(loc(gl, q, c"u_patterns"), view.patterns as GLint);
                 let ink = looks.pattern_ink;
@@ -2631,8 +2682,10 @@ impl Renderer {
             gl.glUseProgram(p);
             mat(gl, p, c"u_inv_vp", &view.inv_view_proj);
             mat(gl, p, c"u_vp", &view.view_proj);
-            // Boden auf OK Gelände: das Auge steht um so viel höher darüber
-            gl.glUniform1f(loc(gl, p, c"u_eye_z"), view.eye_z - self.terrain);
+            // Boden auf OK Gelände (unter der Geländeplatte auf ihrer UK):
+            // das Auge steht um so viel höher darüber
+            let boden = self.ground_z.unwrap_or(self.terrain);
+            gl.glUniform1f(loc(gl, p, c"u_eye_z"), view.eye_z - boden);
             gl.glUniform1f(loc(gl, p, c"u_horizon_px"), view.horizon_px);
             gl.glUniform1f(loc(gl, p, c"u_height"), h as f32);
             gl.glUniform1f(loc(gl, p, c"u_softness"), st.horizon_softness);
@@ -2696,6 +2749,7 @@ impl Renderer {
             let below = if drawing { self.below.0 } else { 0 };
             gl.glUniform1i(loc(gl, p, c"u_below"), below);
             self.terrain_uniforms(gl, p);
+            gl.glUniform1i(loc(gl, p, c"u_grass"), self.grass);
             if let Some(pc) = view.paper {
                 gl.glUniform3f(loc(gl, p, c"u_paper_rgb"), pc[0], pc[1], pc[2]);
             }
@@ -3257,6 +3311,19 @@ impl Renderer {
     /// Gebäude-Rechteck ([`Renderer::set_terrain_boxes`]) gilt.
     pub fn set_terrain(&mut self, z: f32) {
         self.terrain = z;
+    }
+
+    /// Höhe des Bodens in 3D (mm, Gelände G0): unter der Geländeplatte
+    /// ihre Unterkante; `None` = OK Gelände ([`Renderer::set_terrain`]).
+    pub fn set_ground_z(&mut self, z: Option<f32>) {
+        self.ground_z = z;
+    }
+
+    /// Darstellungsschlüssel des Rasens (Gelände G0): diese Flächen
+    /// bekommen in 3D ein ruhiges Rauschen statt einer glatten Farbe; 0 =
+    /// keiner.
+    pub fn set_grass(&mut self, key: u16) {
+        self.grass = i32::from(key);
     }
 
     /// OK Gelände je Gebäude: Rechteck im Grundriss `[x0, y0, x1, y1]`

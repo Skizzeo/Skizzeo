@@ -91,6 +91,12 @@ mod tests {
         let falsch = neu.replace("thick=800", "thick=800 margin=900");
         let l = load(&falsch);
         assert_eq!(l.model.plate_settings().margin, 3000.0);
-        assert!(l.hints.iter().any(|h| h.contains("Abstand der Geländeplatte")), "{:?}", l.hints);
+        assert!(
+            l.hints
+                .iter()
+                .any(|h| h.contains("Abstand der Geländeplatte")),
+            "{:?}",
+            l.hints
+        );
     }
 }

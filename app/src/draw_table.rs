@@ -66,6 +66,9 @@ pub struct DrawTable {
     /// Index = Darstellungsschlüssel des Baustoffs ([`sk_model::material_key`]);
     /// 0 = ohne Baustoff.
     pub mats: Vec<MatLook>,
+    /// Schlüssel von Rasen und Erdreich der Geländeplatte (Gelände G0),
+    /// hinter den Baustoffen.
+    pub terrain: [u16; 2],
     pub drawing_edges: [Stroke; edge_kind::COUNT],
     pub model_edges: [Stroke; edge_kind::COUNT],
     pub paper: [f32; 3],
@@ -279,10 +282,18 @@ impl DrawTable {
             mats[key] = mat_look(model, theme, &m.display(), &mut notes);
         }
         let d = a.display();
+        let terrain = [mats.len() as u16, mats.len() as u16 + 1];
+        let ink = stroke(&d.ground).1;
+        mats.extend(crate::gelaende_platte::looks(
+            theme,
+            rgb(d.paper),
+            [ink[0], ink[1], ink[2]],
+        ));
         DrawTable {
             rev: a.rev(),
             theme_rev: theme.rev,
             mats,
+            terrain,
             drawing_edges: d.drawing.map(|s| stroke(&s)),
             model_edges: d.model3d.map(|s| stroke(&s)),
             paper: rgb(d.paper),
