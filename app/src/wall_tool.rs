@@ -332,6 +332,10 @@ impl WallTool {
     /// (Länge der Bezugslinie bzw. die Eingabe). Ohne gesetzten Punkt und
     /// bei einem Gummiband unter 1 dip ohne Eingabe keine Pille.
     pub fn label(&self) -> Option<([Vec3; 2], String)> {
+        // Öffnung im Grundriss: ihre Breite live (Jörn 12.10. 09:26)
+        if let Some(w) = &self.oeffnung {
+            return w.label();
+        }
         if !self.enabled {
             return None;
         }

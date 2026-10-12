@@ -131,6 +131,18 @@ pub struct Opening {
     /// Aufschlag und Türhand; nur an einer Tür mit geradem Pfad, `None`
     /// ohne Blatt (Durchgang) und an Fenstern.
     pub swing: Option<Swing>,
+    /// Breitenschlösser: je eigenes Pfadende (erstes oder letztes) das Ende
+    /// einer Öffnung im Geschoss darüber oder darunter, das mitgeht
+    /// ([`crate::Model::end_locks`]); leer ohne Schloss.
+    pub lock: Vec<(usize, EndLock)>,
+}
+
+/// Gekoppeltes Ende einer anderen Öffnung (Breitenschloss, Jörn 12.10.
+/// 05:38): Index ihres Pfadpunkts, erstes oder letztes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndLock {
+    pub partner: crate::ElementId,
+    pub end: usize,
 }
 
 /// Seite quer zu einer Richtung im Grundriss.
@@ -257,6 +269,11 @@ impl Opening {
     /// Sichtbare Breite längs des Pfads (mm).
     pub fn width(&self) -> f64 {
         self.path.windows(2).map(|w| (w[1] - w[0]).length()).sum()
+    }
+
+    /// Ist `k` ein Pfadende (erster oder letzter Punkt)?
+    pub fn is_end(&self, k: usize) -> bool {
+        k == 0 || (k > 0 && k + 1 == self.path.len())
     }
 }
 
