@@ -178,8 +178,21 @@ fn csv_mit_kopfzeile() {
     let ohne = csv_grouped(s.model(), &ganz, Grouping::Storey);
     assert!(b.starts_with(&[0xEF, 0xBB, 0xBF]));
     let text = String::from_utf8(b[3..].to_vec()).unwrap();
-    assert!(text.starts_with(&format!("{kopf}\r\n")), "{text}");
-    assert_eq!(&b[3 + kopf.len() + 2..], &ohne[3..]);
+    let erste = format!("VOB-Mengen · {kopf}\r\n");
+    assert!(text.starts_with(&erste), "{text}");
+    assert_eq!(&b[3 + erste.len()..], &ohne[3..]);
+    // Bestellung: die Sicht steht vorn (Bedienbarkeit 38.3)
+    let best = csv_mit_kopf(
+        s.model(),
+        &ganz,
+        (Grouping::Storey, Modus::Bestellung),
+        kopf,
+    );
+    let best = String::from_utf8(best[3..].to_vec()).unwrap();
+    assert!(
+        best.starts_with(&format!("Bestellmengen mit Verschnitt · {kopf}\r\n")),
+        "{best}"
+    );
     // nur EG
     let m = s.model().clone();
     let mut u = sk_model::qto::Umfang::projekt();
@@ -489,4 +502,74 @@ fn bestell_csv_summe_nach_baustoff() {
         vob.iter().zip(&best).any(|(a, b)| *b > a * 1.04),
         "{vob:?} {best:?}"
     );
+}
+
+/// Bedienbarkeit 38.2: Nach Geschoss zeigt die Wandzeile die Menge ihrer
+/// Schichtzeilen in der Sicht, nach VOB/C mit den übermessenen Öffnungen,
+/// in der Bestellung mit Verschnitt; so ergeben die Zeilen die Summe nach
+/// Baustoff. Fenster 3,00 × 1,51 m (abgezogen) und 1,25 × 1,51 m
+/// (übermessen) in der Südwand.
+#[test]
+fn wandzeilen_nach_vob() {
+    use sk_math::vec3;
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    let mut m = Model::with_seed(311);
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let eg = m.build_from_polygon(b, &pts).unwrap();
+    let st = m.run(eg).unwrap().storey;
+    let mut s = Scene::with_model(m);
+    let d = vec3(0.0, 1.0, 0.0);
+    for (x, breite) in [(3000.0, 3000.0), (7500.0, 1250.0)] {
+        let (face, p) = s
+            .outer_face_at(vec3(x, -9000.0, 1500.0), d)
+            .expect("Außenfläche");
+        let a = face.at(face.u_of(p) - breite / 2.0, 0.0);
+        let c = face.at(face.u_of(p) + breite / 2.0, 0.0);
+        s.add_opening(Opening {
+            kind: OpeningKind::Window,
+            path: vec![vec3(a.x, a.y, 0.0), vec3(c.x, c.y, 0.0)],
+            bottom: HeightRef::Line(st, HeightLine::Sill),
+            top: HeightRef::Line(st, HeightLine::Lintel),
+            reveal: None,
+            install: Default::default(),
+        })
+        .expect("Fenster");
+    }
+    let m = s.model();
+    let sched = sk_model::qto::schedule(m);
+    let rows = sched.layer_rows(m);
+    let mut uebermessen = 0;
+    for modus in Modus::ALL {
+        let f = bestell_faktoren(m, &sched, modus);
+        let walls = sched.buildings[0]
+            .storeys
+            .iter()
+            .flat_map(|st| st.groups.iter().flat_map(|g| g.rows.iter()));
+        for r in walls {
+            let Some(ElementQto::Wall(w)) = &r.q else {
+                continue;
+            };
+            let soll: f64 = rows
+                .iter()
+                .filter(|(_, x)| x.element == r.element)
+                .map(|(_, x)| rechenweg::anzeige(m, x, Bezug::Volumen, modus))
+                .sum();
+            let ist = wand_vol(&f, r.element, w.volume);
+            assert!(
+                (ist - soll).abs() < 1.0,
+                "{} {modus:?}: {ist} ≠ {soll}",
+                r.number
+            );
+            if modus == Modus::Vob && ist > w.volume + 1.0 {
+                uebermessen += 1;
+            }
+        }
+    }
+    assert_eq!(uebermessen, 1, "nur die Südwand mit dem kleinen Fenster");
 }
