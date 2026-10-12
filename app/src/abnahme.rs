@@ -5219,13 +5219,15 @@ fn a80_bogen_nur_im_grundriss() {
         ui.fit(1.0, bw, bh);
         let (cx, cy, r) = bogen_lage(&w, &ui, bw, bh);
         let views = ui.rect(Panel::Views, bw, 32);
-        assert_eq!(r, th.size.arc_r);
+        // Bogen ein Viertel kleiner als das Schema (Jörn 12.10.)
+        assert_eq!(r, th.size.arc_r * crate::wheel::SCALE);
         // Unten rechts in der Ecke (Jörn 11.10., vorher senkrecht mittig):
         // untere Spitze samt Schild „Fundament“ mit Abstand `panel_margin`
         // über dem unteren Rand
         let g = w.geo(&ui, bw, bh);
         let spitze = g.tip(false).1;
-        let schild = spitze + 6.0 + (th.size.arc_label_small * 0.72 + 9.0).ceil();
+        let klein = (th.size.arc_label_small * 0.72 + 9.0).ceil();
+        let schild = spitze + (6.0 + klein) * crate::wheel::SCALE;
         assert!(
             (bh as f32 - th.size.panel_margin - schild).abs() < 1.0,
             "senkrecht {bw}×{bh}: Schild unten bei {schild}"

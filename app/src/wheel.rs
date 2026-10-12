@@ -25,10 +25,13 @@ use sk_ui::widgets::{Fonts, Rect};
 pub const KEY_PAGE_UP: Key = Key::Other(0x21);
 pub const KEY_PAGE_DOWN: Key = Key::Other(0x22);
 
-/// Abstand des Schilds vom Band, Breite der Spalte für das aktive Geschoss
-/// (Vielfache der großen Schrift), kleinste Schrift für lange Namen (dip).
+/// Maßstab des Bogens samt Schildern und Knopf gegenüber den Größen im
+/// Schema (Jörn 12.10.: ein Viertel kleiner). Abstände zur rechten Spalte und
+/// zum unteren Rand und der Hinweis an den Spitzen bleiben ungeschrumpft.
+pub const SCALE: f32 = 0.75;
+
+/// Abstand des Schilds vom Band, kleinste Schrift für lange Namen (dip).
 const LABEL_GAP: f32 = 20.0;
-const LABEL_COL: f32 = 5.0;
 const LABEL_MIN: f32 = 16.0;
 /// Schrift der Kote unter dem aktiven Geschoss (dip).
 const KOTE_PX: f32 = 10.5;
@@ -227,8 +230,10 @@ pub struct Geo {
     pub band: f32,
     pub head_l: f32,
     pub head_w: f32,
-    /// Bildschirmskalierung.
+    /// Maßstab des Bogens: Bildschirmskalierung mal [`SCALE`].
     pub s: f32,
+    /// Bildschirmskalierung (Hinweis an den Spitzen).
+    pub dpi: f32,
     /// Linke Kante des Schilds für das aktive Geschoss und rechter Rand.
     pub label_x: f32,
     pub right: f32,
@@ -426,13 +431,18 @@ impl Wheel {
     /// Eigenschaften), zu beiden im Abstand `panel_margin` (Jörn 11.10.,
     /// vorher senkrecht mittig unter „Ansichten“). Maßgeblich unten ist das
     /// kleine Schild an der unteren Spitze; oben bleibt der Bogen im Bild.
+    /// Die Spalte für das große Schild ist so breit wie ihr breitester
+    /// möglicher Inhalt (Jörn 12.10.: dicht an die Spalte): am Schnittrad
+    /// Schilder und Knopf „Blickrichtung“, am Geschossbogen „Fundament“ in
+    /// der kleinsten Schrift (längere Namen werden kleiner).
     pub fn geo(&self, ui: &Ui, w: u32, h: u32) -> Geo {
         let z = &self.size;
-        let s = ui.dpi();
+        let dpi = ui.dpi();
+        let s = dpi * SCALE;
         let views = ui.rect(Panel::Views, w, ui.top);
-        let m = z.panel_margin * s;
+        let m = z.panel_margin * dpi;
         let right = views.x - m;
-        let label_x = right - LABEL_COL * z.arc_label * s;
+        let label_x = right - label_col(&ui.fonts, self.track, z, s);
         let r = z.arc_r * s;
         let mid = label_x - LABEL_GAP * s - z.arc_band * 0.5 * s;
         let mut g = Geo {
@@ -444,6 +454,7 @@ impl Wheel {
             head_l: z.arc_head_l * s,
             head_w: z.arc_head_w * s,
             s,
+            dpi,
             label_x,
             right,
         };
@@ -861,22 +872,17 @@ pub fn paint_big(fonts: &Fonts, name: &str, kote: &str, g: &Geo, t: &Theme) -> C
     let z = &t.size;
     let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
     let reg = fonts.regular.as_ref();
-    let (padx, pady) = (9.0 * s, 7.0 * s);
+    let (padx, pady) = (BIG_PAD.0 * s, BIG_PAD.1 * s);
     let max_w = g.right - g.label_x - 2.0 * padx;
     let mut px = z.arc_label * s;
-    let width = |px: f32| {
-        bold.map_or(px * 0.6 * name.chars().count() as f32, |f| {
-            f.width(name, px)
-        })
-    };
+    let width = |px: f32| text_w(bold, name, px);
     if width(px) > max_w {
         px = (px * max_w / width(px)).max(LABEL_MIN * s);
     }
     let kp = KOTE_PX * s;
     let cap = bold.map_or(px * 0.7, |f| f.cap_height(px));
     let kcap = reg.map_or(kp * 0.7, |f| f.cap_height(kp));
-    let kw = reg.map_or(0.0, |f| f.width(kote, kp));
-    let w = (width(px).max(kw) + 2.0 * padx).ceil();
+    let w = big_w(fonts, name, kote, px, s);
     let h = (pady + cap + 6.0 * s + kcap + pady).ceil();
     let mut c = Canvas::new(w as usize, h as usize);
     let mut p = Path::new();
@@ -885,6 +891,51 @@ pub fn paint_big(fonts: &Fonts, name: &str, kote: &str, g: &Geo, t: &Theme) -> C
     sk_ui::widgets::text(&mut c, bold, name, px, padx, pady + cap, t.ui.text);
     sk_ui::widgets::text(&mut c, reg, kote, kp, padx, h - pady, t.ui.text_dim);
     c
+}
+
+/// Innenabstand des großen Schilds waagerecht und senkrecht (dip).
+const BIG_PAD: (f32, f32) = (9.0, 7.0);
+
+/// Textbreite; ohne Schrift (Tests) geschätzt.
+fn text_w(f: Option<&sk_paint::font::Font>, text: &str, px: f32) -> f32 {
+    f.map_or(px * 0.6 * text.chars().count() as f32, |f| {
+        f.width(text, px)
+    })
+}
+
+/// Breite des großen Schilds mit Name in Schrift `px` und Kote darunter.
+fn big_w(fonts: &Fonts, name: &str, kote: &str, px: f32, s: f32) -> f32 {
+    let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
+    let kw = fonts
+        .regular
+        .as_ref()
+        .map_or(0.0, |f| f.width(kote, KOTE_PX * s));
+    (text_w(bold, name, px).max(kw) + 2.0 * BIG_PAD.0 * s).ceil()
+}
+
+/// Breite der Spalte für das große Schild (Pixel, Maßstab `s`): am
+/// Schnittrad Namen, Unterzeilen und der Knopf „Blickrichtung“, am
+/// Geschossbogen „Fundament“ in der kleinsten Schrift.
+fn label_col(fonts: &Fonts, track: Track, z: &Sizes, s: f32) -> f32 {
+    match track {
+        Track::Levels => big_w(fonts, FOUNDATION_NAME, "", LABEL_MIN * s, s),
+        Track::Cuts => {
+            let mut col = mirror_size(fonts, z, s).0;
+            for id in section::ORDER {
+                for sub in ["Längsschnitt", "Querschnitt"] {
+                    for flip in [false, true] {
+                        let sub = if flip {
+                            format!("{sub} · gespiegelt")
+                        } else {
+                            sub.into()
+                        };
+                        col = col.max(big_w(fonts, &section::title(id), &sub, z.arc_label * s, s));
+                    }
+                }
+            }
+            col
+        }
+    }
 }
 
 /// Kleines Schild eines Nachbargeschosses an der Spitze.
@@ -913,23 +964,34 @@ pub fn mirror_at(g: &Geo) -> (f32, f32) {
     (g.label_x, g.cy + 34.0 * g.s)
 }
 
+/// Text des Knopfs „Blickrichtung“: Das Zeichen ⇄ ist gezeichnet, nicht aus
+/// der Schrift.
+fn mirror_text() -> &'static str {
+    section::MIRROR_LABEL.trim_start_matches('⇄').trim_start()
+}
+
+/// Größe des Knopfs „Blickrichtung“ (Pixel, Maßstab `s`).
+fn mirror_size(fonts: &Fonts, z: &Sizes, s: f32) -> (f32, f32) {
+    let f = fonts.regular.as_ref();
+    let px = z.arc_label_small * s;
+    let (padx, pady, icon, gap) = (7.0 * s, 5.0 * s, 14.0 * s, 6.0 * s);
+    let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
+    (
+        (padx + icon + gap + text_w(f, mirror_text(), px) + padx).ceil(),
+        (cap + 2.0 * pady).ceil().max(22.0 * s),
+    )
+}
+
 /// Knopf „Blickrichtung“ am Schnittrad: zwei gegenläufige Pfeile und der
 /// Text, unter der Maus in Akzentfarbe.
 pub fn paint_mirror(fonts: &Fonts, g: &Geo, t: &Theme, hover: bool) -> Canvas {
     let s = g.s;
     let f = fonts.regular.as_ref();
     let px = t.size.arc_label_small * s;
-    // Das Zeichen ⇄ ist gezeichnet, nicht aus der Schrift
-    let label = section::MIRROR_LABEL.trim_start_matches('⇄').trim_start();
-    let (padx, pady, icon, gap) = (7.0 * s, 5.0 * s, 14.0 * s, 6.0 * s);
+    let label = mirror_text();
+    let (padx, icon, gap) = (7.0 * s, 14.0 * s, 6.0 * s);
     let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
-    let tw = f.map_or(px * 0.6 * label.chars().count() as f32, |f| {
-        f.width(label, px)
-    });
-    let (w, h) = (
-        (padx + icon + gap + tw + padx).ceil(),
-        (cap + 2.0 * pady).ceil().max(22.0 * s),
-    );
+    let (w, h) = mirror_size(fonts, &t.size, s);
     let mut c = Canvas::new(w as usize, h as usize);
     let mut p = Path::new();
     p.rounded_rect(0.0, 0.0, w, h, 4.0 * s);
@@ -1008,7 +1070,7 @@ mod tests {
             let g = w.geo(&ui, bw, bh);
             let top = w.top(&ui, bw, bh);
             assert!(top < g.tip(true).1, "{bw}: {top}");
-            let unten = bh as f32 - th.size.panel_margin * g.s;
+            let unten = bh as f32 - th.size.panel_margin * g.dpi;
             assert!(
                 ((g.cy - top) - (unten - g.cy)).abs() < 1.0,
                 "{bw}: symmetrisch"
