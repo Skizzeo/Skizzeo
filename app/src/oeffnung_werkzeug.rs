@@ -6,12 +6,18 @@
 //! Wand des Geschosses darüber. Eine auf einer Linie gefangene Kante bleibt
 //! an sie gebunden; frei gesetzt steht sie als Maß über OK Rohdecke.
 //!
+//! Im Grundriss (Jörn 12.10. 09:26) zieht man Fenster und Außentür in der
+//! Außenwand auf: Klick auf die erste Kante, die Breite folgt der Maus in
+//! der Vorschau, der zweite Klick setzt. Die Höhen kommen aus den
+//! Höhenbezugslinien des Geschosses: das Fenster von der Brüstung zum
+//! Sturz, die Außentür von OK Rohdecke zum Sturz.
+//!
 //! Hier steht die reine Rechnung (Fangen, Öffnung, Umriss); das Glue mit
 //! Maus, Szene und Zeichnung steht in `oeffnung_app.rs`.
 
 use sk_math::{vec3, Vec3};
-use sk_model::oeffnung::{FaceLine, HeightRef, Opening, OpeningKind, OuterFace};
-use sk_model::{LevelEdge, LevelRef, Model};
+use sk_model::oeffnung::{FaceLine, HeightLine, HeightRef, Opening, OpeningKind, OuterFace};
+use sk_model::{LevelEdge, LevelRef, Model, StoreyId};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
@@ -21,8 +27,11 @@ pub struct Fang {
     pub face: OuterFace,
     pub p: Vec3,
     pub bind: HeightRef,
-    /// Auf einer Höhenlinie oder am Wandfuß gefangen.
+    /// Auf einer Höhenlinie oder am Wandfuß gefangen; im Grundriss am Ende
+    /// des freien Bereichs.
     pub line: bool,
+    /// Wanddicke für den Umriss im Grundriss; 0 in 3D und den Ansichten.
+    pub dicke: f64,
 }
 
 /// Raster längs und in der Höhe, wenn nichts fängt (mm).
@@ -54,23 +63,113 @@ pub fn fangen(face: &OuterFace, lines: &[FaceLine], elevation: f64, p: Vec3, tol
             (elevation + off, bind, false)
         }
     };
-    // Längs: an den Enden des freien Bereichs, nicht an der Ecke selbst
-    // (dort kann eine Öffnung nicht enden, Review #79)
+    Fang {
+        face: face.clone(),
+        p: face.at(laengs(face, p, tol).0, z),
+        bind,
+        line,
+        dicke: 0.0,
+    }
+}
+
+/// Lage längs der Fläche: an den Enden des freien Bereichs (`true`), nicht
+/// an der Ecke selbst (dort kann eine Öffnung nicht enden, Review #79),
+/// sonst auf [`RASTER`] gerundet.
+fn laengs(face: &OuterFace, p: Vec3, tol: f64) -> (f64, bool) {
     let u = face.u_of(vec3(p.x, p.y, 0.0));
     let (f0, f1) = face.free;
-    let u = if u < f0 + tol {
-        f0
+    if u < f0 + tol {
+        (f0, true)
     } else if u > f1 - tol {
-        f1
+        (f1, true)
     } else {
-        ((u / RASTER).round() * RASTER).clamp(f0, f1)
-    };
+        (((u / RASTER).round() * RASTER).clamp(f0, f1), false)
+    }
+}
+
+/// Kante im Grundriss: Lage längs wie [`fangen`], gezeichnet in Höhe `z`
+/// (Schnitthöhe); `dicke` ist die Wanddicke für den Umriss.
+pub fn plan_fang(face: &OuterFace, p: Vec3, tol: f64, z: f64, dicke: f64) -> Fang {
+    let (u, line) = laengs(face, p, tol);
     Fang {
         face: face.clone(),
         p: face.at(u, z),
-        bind,
+        bind: HeightRef::Level(LevelRef::bottom(face.storey)),
         line,
+        dicke,
     }
+}
+
+/// Höhen einer im Grundriss gesetzten Öffnung an den Höhenbezugslinien des
+/// Geschosses `st`: das Fenster von der Brüstung zum Sturz, die Außentür
+/// von OK Rohdecke zum Sturz (Jörn 12.10. 09:26).
+pub fn plan_hoehen(kind: OpeningKind, st: StoreyId) -> (HeightRef, HeightRef) {
+    let unten = match kind {
+        OpeningKind::Window => HeightRef::Line(st, HeightLine::Sill),
+        OpeningKind::Door => HeightRef::Level(LevelRef::bottom(st)),
+    };
+    (unten, HeightRef::Line(st, HeightLine::Lintel))
+}
+
+/// Öffnung aus zwei Kanten im Grundriss, Höhen nach [`plan_hoehen`].
+pub fn plan_oeffnung(kind: OpeningKind, a: &Fang, b: &Fang) -> Option<Opening> {
+    let (bottom, top) = plan_hoehen(kind, a.face.storey);
+    Some(Opening {
+        kind,
+        path: pfad(a, b)?,
+        bottom,
+        top,
+        reveal: None,
+        install: Default::default(),
+        swing: None,
+        lock: Default::default(),
+    })
+}
+
+/// Pfad `path` um `s` Wanddicken hinter die Außenflächen von `fa`
+/// (Pfadanfang) und `fb` (Pfadende) versetzt; an der Außenecke der Schnitt
+/// beider Versatzlinien.
+fn versatz(path: &[Vec3], fa: &Fang, fb: &Fang, s: f64) -> Vec<Vec3> {
+    let (na, nb) = (fa.face.n, fb.face.n);
+    let (ta, tb) = (fa.dicke * s, fb.dicke * s);
+    let mut out = vec![path[0] - na * ta];
+    if path.len() == 3 {
+        // (x − c)·na = −ta und (x − c)·nb = −tb
+        let det = na.x * nb.y - na.y * nb.x;
+        let dx = (-ta * nb.y + tb * na.y) / det;
+        let dy = (-na.x * tb + nb.x * ta) / det;
+        out.push(path[1] + vec3(dx, dy, 0.0));
+    }
+    out.push(path[path.len() - 1] - nb * tb);
+    out
+}
+
+/// Umriss im Grundriss in Zeichenhöhe: Außenkante, Innenkante und die
+/// beiden Laibungen quer durch die Wand; beim Fenster dazu die Glaslinie
+/// in Wandmitte.
+pub fn plan_umriss(kind: OpeningKind, a: &Fang, b: &Fang) -> Vec<(Vec3, Vec3)> {
+    let Some(path) = pfad(a, b) else {
+        return Vec::new();
+    };
+    let hoch = |p: Vec3| vec3(p.x, p.y, a.p.z);
+    let mut linien = vec![path.clone(), versatz(&path, a, b, 1.0)];
+    if kind == OpeningKind::Window {
+        linien.push(versatz(&path, a, b, 0.5));
+    }
+    let mut out: Vec<(Vec3, Vec3)> = linien
+        .iter()
+        .flat_map(|l| l.windows(2).map(|w| (hoch(w[0]), hoch(w[1]))))
+        .collect();
+    let innen = &linien[1];
+    out.push((hoch(path[0]), hoch(innen[0])));
+    out.push((hoch(path[path.len() - 1]), hoch(innen[innen.len() - 1])));
+    out
+}
+
+/// Breite längs des Pfads (über die Ecke beide Schenkel).
+pub fn plan_breite(a: &Fang, b: &Fang) -> Option<f64> {
+    let path = pfad(a, b)?;
+    Some(path.windows(2).map(|w| (w[1] - w[0]).length()).sum())
 }
 
 /// Liegen beide Flächen in einer Flucht (dieselbe Außenfläche, auch über
@@ -156,6 +255,8 @@ pub struct Werkzeug {
     pub vorschau: Bild,
     /// Innentür im Grundriss (Knopf „Tür“ dort).
     pub innen: crate::oeffnung_app::innentuer::Innentuer,
+    /// Kanten im Grundriss statt Ecken auf der Fläche (Jörn 12.10. 09:26).
+    pub grundriss: bool,
 }
 
 /// Was ein Klick mit [`Werkzeug::setzen`] ergibt.
@@ -189,7 +290,37 @@ impl Werkzeug {
             erste: None,
             vorschau: Bild::default(),
             innen: Default::default(),
+            grundriss: false,
         }
+    }
+
+    /// Öffnung aus erster Ecke bzw. Kante `a` und der unter der Maus `b`.
+    fn aus(&self, a: &Fang, b: &Fang) -> Option<Opening> {
+        if self.grundriss {
+            plan_oeffnung(self.kind, a, b)
+        } else {
+            oeffnung(self.kind, a, b)
+        }
+    }
+
+    /// Wechsel zwischen Grundriss und den anderen Ansichten: Eine Ecke aus
+    /// der einen gilt in der anderen nicht.
+    pub fn ansicht(&mut self, grundriss: bool) {
+        if self.grundriss != grundriss {
+            self.grundriss = grundriss;
+            self.erste = None;
+        }
+    }
+
+    /// Pille am Gummiband im Grundriss: die Breite live zwischen erster
+    /// Kante und Maus.
+    pub fn label(&self) -> Option<([Vec3; 2], String)> {
+        let (a, b) = (self.erste.as_ref()?, self.hover.as_ref()?);
+        if !self.grundriss {
+            return None;
+        }
+        let w = plan_breite(a, b).filter(|w| *w >= 1.0)?;
+        Some(([a.p, b.p], crate::ui::live_length_text(w)))
     }
 
     /// Klick: setzt die erste Ecke, beim zweiten die Öffnung (dann beginnt
@@ -202,7 +333,7 @@ impl Werkzeug {
                 None
             }
             Some(a) => {
-                let o = oeffnung(self.kind, &a, &h);
+                let o = self.aus(&a, &h);
                 if o.is_none() {
                     self.erste = Some(a);
                 }
@@ -251,6 +382,16 @@ impl Werkzeug {
     /// Vorschau; `lines` liefert die Höhenlinien einer Fläche.
     pub fn bild(&self, lines: impl Fn(&OuterFace) -> Vec<FaceLine>) -> Bild {
         let mut b = Bild::default();
+        if self.grundriss {
+            b.umriss = match (&self.erste, &self.hover) {
+                (Some(a), Some(h)) => plan_umriss(self.kind, a, h),
+                // Ohne erste Kante ein Strich quer durch die Wand
+                (None, Some(h)) => vec![(h.p, h.p - h.face.n * h.dicke)],
+                _ => Vec::new(),
+            };
+            b.punkt = self.hover.as_ref().map(|h| (h.p, h.line));
+            return b;
+        }
         let mut faces: Vec<&OuterFace> = Vec::new();
         for f in [&self.erste, &self.hover].into_iter().flatten() {
             if !faces.iter().any(|x| **x == f.face) {
@@ -504,5 +645,86 @@ mod tests {
         w.neu();
         assert!(w.erste.is_none() && w.hover.is_none());
         assert_eq!(w.vorschau, Bild::default());
+    }
+
+    /// Grundriss (Jörn 12.10. 09:26): Kante auf der Außenwand, die Breite
+    /// folgt der Maus mit Maß; das Fenster bindet an Brüstung und Sturz,
+    /// die Außentür unten an OK Rohdecke; das Modell nimmt beide an.
+    #[test]
+    fn im_grundriss_aufziehen() {
+        use crate::oeffnung_app::innentuer::treffer_aussen;
+        let (mut m, eg, _) = haus();
+        let f = m.outer_face(eg, 0).unwrap();
+        let st = f.storey;
+        let z = 1000.0;
+        let im_raum = f.at(3000.0, 0.0) - f.n * 2000.0;
+        assert!(treffer_aussen(&m, &|r| m.chain(r), st, im_raum, 40.0).is_none());
+        let p = f.at(3003.0, 0.0) - f.n * 50.0;
+        let (face, _, _, dicke) = treffer_aussen(&m, &|r| m.chain(r), st, p, 40.0).unwrap();
+        assert_eq!((face.run, face.seg), (eg, 0));
+        assert!(dicke > 50.0);
+        let a = plan_fang(&face, p, 40.0, z, dicke);
+        assert!((face.u_of(a.p) - 3000.0).abs() < 1e-9 && a.p.z == z && !a.line);
+        let b = plan_fang(&face, face.at(4255.0, 0.0), 40.0, z, dicke);
+        let mut w = Werkzeug::new(OpeningKind::Window);
+        w.ansicht(true);
+        w.hover = Some(a.clone());
+        assert_eq!(w.bild(|_| Vec::new()).umriss.len(), 1, "Strich quer");
+        assert_eq!(w.setzen(&m), Klick::Erste);
+        w.hover = Some(b);
+        let (ends, text) = w.label().unwrap();
+        assert_eq!(text, crate::ui::live_length_text(1260.0));
+        assert_eq!(ends[0], a.p);
+        let bild = w.bild(|_| Vec::new());
+        assert!(bild.linien.is_empty());
+        assert_eq!(bild.umriss.len(), 5, "außen, innen, Glas, zwei Laibungen");
+        let Klick::Oeffnung(o) = w.setzen(&m) else {
+            panic!("Fenster erwartet");
+        };
+        assert_eq!(o.bottom, HeightRef::Line(st, HeightLine::Sill));
+        assert_eq!(o.top, HeightRef::Line(st, HeightLine::Lintel));
+        assert!(m.add_opening(o).is_some());
+        let mut d = Werkzeug::new(OpeningKind::Door);
+        d.ansicht(true);
+        d.hover = Some(plan_fang(&face, face.at(6000.0, 0.0), 40.0, z, dicke));
+        assert_eq!(d.setzen(&m), Klick::Erste);
+        d.hover = Some(plan_fang(&face, face.at(7010.0, 0.0), 40.0, z, dicke));
+        assert_eq!(d.bild(|_| Vec::new()).umriss.len(), 4);
+        let Klick::Oeffnung(o) = d.setzen(&m) else {
+            panic!("Außentür erwartet");
+        };
+        assert_eq!(o.bottom, HeightRef::Level(LevelRef::bottom(st)));
+        assert_eq!(o.top, HeightRef::Line(st, HeightLine::Lintel));
+        assert!(m.add_opening(o).is_some());
+        assert_eq!(m.chain(eg).unwrap().joints.holes.len(), 2);
+        // Wechsel in eine andere Ansicht nimmt die erste Kante zurück
+        d.hover = Some(plan_fang(&face, face.at(8000.0, 0.0), 40.0, z, dicke));
+        d.klick();
+        assert!(d.erste.is_some());
+        d.ansicht(false);
+        assert!(d.erste.is_none() && d.label().is_none());
+    }
+
+    /// Im Grundriss um die Außenecke: die Innenkante schneidet sich in
+    /// Wanddicke hinter beiden Flächen, die Breite zählt beide Schenkel.
+    #[test]
+    fn im_grundriss_um_die_ecke() {
+        let (mut m, eg, _) = haus();
+        let (f0, f1) = (m.outer_face(eg, 0).unwrap(), m.outer_face(eg, 1).unwrap());
+        let t = 300.0;
+        let a = plan_fang(&f0, f0.at(f0.free.1 - 1000.0, 0.0), 40.0, 1000.0, t);
+        let b = plan_fang(&f1, f1.at(f1.free.0 + 800.0, 0.0), 40.0, 1000.0, t);
+        let path = pfad(&a, &b).unwrap();
+        assert_eq!(path.len(), 3);
+        let innen = versatz(&path, &a, &b, 1.0);
+        let c = path[1];
+        assert!(((innen[1] - c).dot(f0.n) + t).abs() < 1e-9);
+        assert!(((innen[1] - c).dot(f1.n) + t).abs() < 1e-9);
+        let breite = (path[1] - path[0]).length() + (path[2] - path[1]).length();
+        assert!((plan_breite(&a, &b).unwrap() - breite).abs() < 1e-9);
+        assert_eq!(plan_umriss(OpeningKind::Window, &a, &b).len(), 8);
+        let o = plan_oeffnung(OpeningKind::Window, &a, &b).unwrap();
+        assert_eq!(m.opening_fault(&o, None), None);
+        assert!(m.add_opening(o).is_some());
     }
 }

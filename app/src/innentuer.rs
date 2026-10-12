@@ -126,15 +126,39 @@ pub fn treffer(
     p: Vec3,
     tol: f64,
 ) -> Option<(OuterFace, f64, bool, f64)> {
+    wand_unter(m, k, st, p, tol, |c| c == Category::InteriorWall)
+}
+
+/// Wie [`treffer`] für Außenwände: Fenster und Außentür im Grundriss
+/// (Jörn 12.10. 09:26); die Fläche ist die Außenfläche.
+pub fn treffer_aussen(
+    m: &Model,
+    k: Koerper,
+    st: StoreyId,
+    p: Vec3,
+    tol: f64,
+) -> Option<(OuterFace, f64, bool, f64)> {
+    wand_unter(m, k, st, p, tol, Category::is_outer_wall)
+}
+
+/// Wand des Geschosses `st` mit einer Kategorie nach `art` unter `p`.
+fn wand_unter(
+    m: &Model,
+    k: Koerper,
+    st: StoreyId,
+    p: Vec3,
+    tol: f64,
+    art: impl Fn(Category) -> bool,
+) -> Option<(OuterFace, f64, bool, f64)> {
     let p = vec3(p.x, p.y, 0.0);
     let mut best: Option<(f64, (OuterFace, f64, bool, f64))> = None;
     for (id, run) in m.runs().iter() {
-        let innen = run
+        let passt = run
             .segments
             .first()
             .and_then(|e| m.element(*e))
-            .is_some_and(|e| e.category == Category::InteriorWall);
-        if run.storey != st || !innen || !nah(&run.points, p, tol + DICKE) {
+            .is_some_and(|e| art(e.category));
+        if run.storey != st || !passt || !nah(&run.points, p, tol + DICKE) {
             continue;
         }
         // Ein Körper je Zug für alle Segmente (Review #99 B1)
