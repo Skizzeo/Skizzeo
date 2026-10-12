@@ -8,7 +8,12 @@
 //! Schnitt bekommen hier ein eigenes Zahnrad an derselben Stelle. „Auf alle
 //! Ansichten übertragen“ gibt die Wahl an alle sieben Ansichten.
 //!
-//! Darunter in 3D die Zeile „Bemaßung“ (Konzept `bemassung/konzept.md` §7):
+//! Darunter steht in Grundriss, Schnitt und 3D der Schalter „Ausbau innen“
+//! (Raumbuch RB4, `raumbuch/plan.md` §8) mit An und Aus je Ansicht
+//! ([`sk_model::FINISH_VIEWS`]); „Auf alle Ansichten übertragen“ gibt ihn
+//! an diese drei, die leise Zeile [`WOHIN`] sagt es.
+//!
+//! Zuletzt in 3D die Zeile „Bemaßung“ (Konzept `bemassung/konzept.md` §7):
 //! „Maßketten zeigen“ und „Maßbezugspunkte zeigen“, je Ansicht
 //! ([`crate::bemassung`]); der Grundriss trägt sie in seinem Feld.
 
@@ -30,6 +35,15 @@ pub const HAKEN_W: f32 = 218.0;
 pub const MASS: &str = "Bemaßung";
 pub const KETTEN: &str = "Maßketten zeigen";
 pub const PUNKTE: &str = "Maßbezugspunkte zeigen";
+/// Name der Zeile des Schalters „Ausbau innen“ und sein Tooltip an An und
+/// Aus.
+pub const AUSBAU: &str = "Ausbau innen";
+pub const AUSBAU_TIP: &str =
+    "Putz, Wandbeläge, Bodenbelag und Sockelleisten; den Estrich zeigen Schnitt und 3D immer";
+/// Leise Zeile unter „Auf alle Ansichten übertragen“: die Dachentwässerung
+/// geht an alle sieben Ansichten, der Schalter nur an die drei, die ihn
+/// haben (wie Einstellungen H1).
+pub const WOHIN: &str = "Ausbau innen nur an Grundriss, Schnitt und 3D";
 
 /// Ob die Ansicht das Zahnrad von hier zeigt: 3D und Schnitt (Grundriss
 /// und Ansichten haben schon eins).
@@ -72,6 +86,39 @@ pub fn haken_mit(
     }
 }
 
+/// Zeile „Ausbau innen“ in `q`: Name, An, Aus und die leise Zeile
+/// [`WOHIN`]; der gewählte Knopf ist aktiv, `hover`: der Knopf unter der
+/// Maus.
+pub fn ausbau(
+    c: &mut Canvas,
+    fonts: &Fonts,
+    q: [Rect; 4],
+    an: bool,
+    hover: Option<bool>,
+    s: f32,
+    t: &Theme,
+) {
+    let [name, ja, nein, wohin] = q;
+    for (k, r, text) in [(true, ja, "An"), (false, nein, "Aus")] {
+        let st = ButtonState {
+            hover: hover == Some(k),
+            active: k == an,
+            ..Default::default()
+        };
+        widgets::button(c, fonts, r, text, st, s, t);
+    }
+    if let Some(f) = fonts.regular.as_ref() {
+        for (r, text, px, farbe) in [
+            (name, AUSBAU, t.size.font, t.ui.text),
+            (wohin, WOHIN, t.size.font_small, t.ui.text_dim),
+        ] {
+            let px = px * s;
+            let y = r.y + (r.h + f.cap_height(px)) * 0.5;
+            f.draw(c, text, px, r.x.round(), y.round(), farbe);
+        }
+    }
+}
+
 // ===== Zahnrad in 3D und Schnitt =====
 
 /// Teil von Zahnrad und Feld.
@@ -79,6 +126,8 @@ pub fn haken_mit(
 pub enum Teil {
     Zahnrad,
     Haken,
+    /// „Ausbau innen“ an (`true`) oder aus.
+    Ausbau(bool),
     Alle,
     /// Häkchen „Maßketten zeigen“ und „Maßbezugspunkte zeigen“.
     Ketten,
@@ -98,7 +147,12 @@ pub struct Lage {
     pub feld: Rect,
     pub name: Rect,
     pub haken: Rect,
+    /// Zeile „Ausbau innen“: Name, An, Aus; „auf alle“ und leise, wohin.
+    pub ausbau: Rect,
+    pub an: Rect,
+    pub aus: Rect,
     pub alle: Rect,
+    pub wohin: Rect,
     /// Zeile „Bemaßung“ (Name und zwei Häkchen); leer ohne Bemaßung.
     pub mass: Rect,
     pub ketten: Rect,
@@ -124,22 +178,29 @@ pub fn lage(rechts: f32, s: f32, t: &Theme, mass: bool) -> Lage {
     let y0 = m + RAD + 4.0;
     let y = y0 + PAD;
     let kx = x0 + PAD + NAME_W;
-    let ym = y + 2.0 * h + GAP * 2.5;
+    let ya = y + h + GAP;
+    let kw = (HAKEN_W - GAP) * 0.5;
+    let yl = ya + 2.0 * (h + GAP) - GAP * 0.5;
+    let leise = h * 0.8;
+    let ym = yl + leise + GAP * 1.5;
     let leer = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let (hoehe, mass, ketten, punkte) = if mass {
+    let (unten, mass, ketten, punkte) = if mass {
         let w = HAKEN_W;
-        let hoehe = 2.0 * PAD + 4.0 * h + GAP * 3.5;
         let q = (r(x0 + PAD, ym, NAME_W, h), r(kx, ym, w, h));
-        (hoehe, q.0, q.1, r(kx, ym + h + GAP, w, h))
+        (ym + 2.0 * h + GAP, q.0, q.1, r(kx, ym + h + GAP, w, h))
     } else {
-        (2.0 * PAD + 2.0 * h + GAP, leer, leer, leer)
+        (yl + leise, leer, leer, leer)
     };
     Lage {
         zahnrad: r(x1 - RAD, m, RAD, RAD),
-        feld: r(x0, y0, BREITE, hoehe),
+        feld: r(x0, y0, BREITE, unten + PAD - y0),
         name: r(x0 + PAD, y, NAME_W, h),
         haken: r(kx, y, HAKEN_W, h),
-        alle: r(kx, y + h + GAP, HAKEN_W, h),
+        ausbau: r(x0 + PAD, ya, NAME_W, h),
+        an: r(kx, ya, kw, h),
+        aus: r(kx + kw + GAP, ya, kw, h),
+        alle: r(kx, ya + h + GAP, HAKEN_W, h),
+        wohin: r(x0 + PAD, yl, BREITE - 2.0 * PAD, leise),
         mass,
         ketten,
         punkte,
@@ -151,7 +212,12 @@ impl Lage {
     fn treffer(&self, m: (f64, f64), offen: bool) -> Option<Teil> {
         let mut teile = vec![(Teil::Zahnrad, self.zahnrad)];
         if offen {
-            teile.extend([(Teil::Haken, self.haken), (Teil::Alle, self.alle)]);
+            teile.extend([
+                (Teil::Haken, self.haken),
+                (Teil::Ausbau(true), self.an),
+                (Teil::Ausbau(false), self.aus),
+                (Teil::Alle, self.alle),
+            ]);
             teile.extend([(Teil::Ketten, self.ketten), (Teil::Punkte, self.punkte)]);
         }
         teile
@@ -164,8 +230,10 @@ impl Lage {
 /// Was Zahnrad und Feld zeigen; gleich: kein neues Bild.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bild {
-    /// Die Ansicht blendet die Dachentwässerung aus.
+    /// Die Ansicht blendet die Dachentwässerung aus bzw. zeigt den Ausbau
+    /// innen.
     pub an: bool,
+    pub ausbau: bool,
     pub offen: bool,
     pub hover: Option<Teil>,
     /// Bemaßung der Ansicht: Maßketten und Maßbezugspunkte zeigen; `None`
@@ -220,6 +288,12 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
         ..Default::default()
     };
     widgets::button(&mut c, fonts, ab(l.alle), ALLE, st, s, t);
+    let hover = match b.hover {
+        Some(Teil::Ausbau(an)) => Some(an),
+        _ => None,
+    };
+    let q = [l.ausbau, l.an, l.aus, l.wohin].map(ab);
+    ausbau(&mut c, fonts, q, b.ausbau, hover, s, t);
     if let Some((ketten, punkte)) = b.mass {
         name(&mut c, MASS, l.mass);
         let h = |teil| b.hover == Some(teil);
@@ -261,7 +335,10 @@ pub struct Ausgang {
     pub redraw: bool,
     /// Klick aufs Häkchen: die Wahl dieser Ansicht umschalten.
     pub haken: bool,
-    /// Die Wahl dieser Ansicht in alle sieben übertragen.
+    /// Klick auf An oder Aus von „Ausbau innen“.
+    pub ausbau: Option<bool>,
+    /// Die Wahl dieser Ansicht in alle sieben übertragen, den Ausbau innen
+    /// in die drei mit dem Schalter.
     pub alle: bool,
     /// Klick auf „Maßketten zeigen“ bzw. „Maßbezugspunkte zeigen“.
     pub ketten: bool,
@@ -297,6 +374,7 @@ impl Schalter {
                 match t {
                     Some(Teil::Zahnrad) => self.offen = !self.offen,
                     Some(Teil::Haken) => out.haken = true,
+                    Some(Teil::Ausbau(an)) => out.ausbau = Some(an),
                     Some(Teil::Alle) => out.alle = true,
                     Some(Teil::Ketten) => out.ketten = true,
                     Some(Teil::Punkte) => out.punkte = true,
@@ -333,7 +411,7 @@ mod tests {
         let l = lage(900.0, 1.0, &t, false);
         assert!(l.zahnrad.x + l.zahnrad.w <= 900.0);
         assert!(l.feld.y > l.zahnrad.y + l.zahnrad.h);
-        for q in [l.name, l.haken, l.alle] {
+        for q in [l.name, l.haken, l.ausbau, l.an, l.aus, l.alle, l.wohin] {
             assert!(q.x >= l.feld.x && q.x + q.w <= l.feld.x + l.feld.w);
             assert!(q.y >= l.feld.y && q.y + q.h <= l.feld.y + l.feld.h);
         }
@@ -344,6 +422,8 @@ mod tests {
             (l.haken.x, l.haken.w, l.alle.w),
             (g.haken.x, g.haken.w, g.alle.w)
         );
+        assert_eq!((l.an.x, l.an.w, l.aus.x), (g.an.x, g.an.w, g.aus.x));
+        assert_eq!((l.wohin.x, l.wohin.w), (g.wohin.x, g.wohin.w));
         let mut s = Schalter::default();
         let o = s.handle(&klick(l.haken), &l);
         assert!(!o.consumed && !o.haken, "zu: nur das Zahnrad");
@@ -351,7 +431,12 @@ mod tests {
         let o = s.handle(&klick(l.haken), &l);
         assert!(o.consumed && o.haken && !o.alle);
         let o = s.handle(&klick(l.alle), &l);
-        assert!(o.consumed && o.alle && !o.haken);
+        assert!(o.consumed && o.alle && !o.haken && o.ausbau.is_none());
+        let o = s.handle(&klick(l.an), &l);
+        assert!(o.consumed && o.ausbau == Some(true) && !o.haken && !o.alle);
+        assert_eq!(s.handle(&klick(l.aus), &l).ausbau, Some(false));
+        let o = s.handle(&klick(l.wohin), &l);
+        assert!(o.consumed && o.ausbau.is_none() && !o.alle, "leise Zeile");
         let o = s.handle(&klick(l.name), &l);
         assert!(o.consumed && !o.haken && s.offen, "im Feld");
         let o = s.handle(&klick(Rect::new(5.0, 400.0, 1.0, 1.0)), &l);
@@ -366,6 +451,7 @@ mod tests {
         };
         let mut b = Bild {
             an: true,
+            ausbau: false,
             offen: false,
             hover: None,
             mass: None,
@@ -399,5 +485,28 @@ mod tests {
         b.mass = Some((true, false));
         let (mit, _, _) = malen(&b, &fonts, &t);
         assert!(mit.height > auf.height);
+    }
+
+    /// Die Beschriftungen von „Ausbau innen“ passen in ihre Knöpfe und
+    /// Zeilen, auch die leise Zeile (mit Liberation, wenn sie da ist).
+    #[test]
+    fn beschriftung_passt() {
+        let t = Theme::dark();
+        let l = lage(900.0, 1.0, &t, false);
+        let lib = |n: &str| {
+            let p = format!("/usr/share/fonts/truetype/liberation/LiberationSans-{n}.ttf");
+            std::fs::read(p).ok().and_then(sk_paint::font::Font::parse)
+        };
+        if let Some(f) = lib("Bold") {
+            for (text, q) in [("An", l.an), ("Aus", l.aus), (ALLE, l.alle)] {
+                assert!(f.width(text, t.size.font) + 12.0 <= q.w, "{text}");
+            }
+        }
+        if let Some(f) = lib("Regular") {
+            for text in [NAME, AUSBAU, crate::grundriss_schnitt::NAME] {
+                assert!(f.width(text, t.size.font) + 4.0 <= l.ausbau.w, "{text}");
+            }
+            assert!(f.width(WOHIN, t.size.font_small) < l.wohin.w);
+        }
     }
 }

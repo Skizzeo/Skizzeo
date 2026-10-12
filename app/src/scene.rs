@@ -32,6 +32,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod gefaelle;
 #[path = "scene_raum.rs"]
 mod raum;
+#[path = "scene_ausbau.rs"]
+mod scene_ausbau;
+pub use scene_ausbau::platz as ausbau_platz;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
@@ -613,6 +616,8 @@ pub struct Scene {
     ghost: Option<(MeshKey, VisStamp, MeshData)>,
     /// Körper der Erweiterungsbauteile je Exemplar (E4).
     ext: crate::ext_cache::ExtCache,
+    /// Körper des Ausbaus je Raum (Raumbuch RB4).
+    ausbau: scene_ausbau::RaumCache,
 }
 
 /// Übergang der Sichtbarkeit (§2): ändert nur die Deckkraft des blassen
@@ -923,6 +928,7 @@ impl Scene {
             locked_hit: None,
             ghost: None,
             ext: Default::default(),
+            ausbau: Default::default(),
         };
         s.rebuild_dirty(false);
         s
@@ -3599,6 +3605,7 @@ impl Scene {
                 }
             }
             self.ext_into(&mut m, view, section);
+            self.ausbau_into(&mut m, view, section);
             return m;
         }
         // Gestapelte Züge: die Schale läuft ohne waagerechte Naht durch (G6,
@@ -3702,6 +3709,7 @@ impl Scene {
             }
         }
         self.ext_into(&mut m, view, section);
+        self.ausbau_into(&mut m, view, section);
         m
     }
 

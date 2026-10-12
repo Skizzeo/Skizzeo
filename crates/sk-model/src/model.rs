@@ -210,6 +210,10 @@ pub struct Model {
     /// (S11), Ansichtszustand wie `view_shade`, dazu unlesbare Zeilen roh.
     view_below: [bool; 4],
     view_below_raw: Vec<String>,
+    /// Schalter „Ausbau innen“ je Ansicht (Raumbuch RB4), Ansichtszustand wie
+    /// `view_below`, dazu unlesbare Zeilen roh.
+    view_finish: [bool; 3],
+    view_finish_raw: Vec<String>,
     /// Eigene Schnitthöhe des Grundrisses ([`crate::hoehen`]), dazu eine
     /// unlesbare Zeile roh.
     pub(crate) plan_cut: Option<f64>,
@@ -318,6 +322,10 @@ pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
 mod location;
+
+#[path = "ansicht_ausbau.rs"]
+mod ansicht_ausbau;
+pub use ansicht_ausbau::FINISH_VIEWS;
 
 #[path = "fallrohr_model.rs"]
 mod fallrohr_model;
@@ -771,6 +779,8 @@ impl Model {
             view_below: [false; 4],
             view_below_raw: Vec::new(),
             view_hide: Default::default(),
+            view_finish: [false; 3],
+            view_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -859,6 +869,8 @@ impl Model {
             view_below: [false; 4],
             view_below_raw: Vec::new(),
             view_hide: Default::default(),
+            view_finish: [false; 3],
+            view_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),

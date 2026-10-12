@@ -893,6 +893,7 @@ mod tests {
         let (rechts, scale) = (1300f32.to_bits(), 1.5f32.to_bits());
         let b = sz::Bild {
             an: true,
+            ausbau: false,
             offen: true,
             hover: Some(sz::Teil::Haken),
             mass: Some((true, false)),
@@ -909,6 +910,7 @@ mod tests {
             eingabe: None,
             falsch: false,
             entw: false,
+            ausbau: true,
             mass: (true, true),
             rechts,
             scale,

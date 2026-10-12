@@ -2,11 +2,13 @@
 //! „Schatten“ in den vier Ansichten (S7, [`ansicht_schatten`]),
 //! „Schnitthöhe“ im Grundriss ([`grundriss_schnitt`]) und die Sichtbarkeit
 //! in 3D und Schnitt ([`sicht_zahnrad`]); jedes Feld trägt das Häkchen
-//! „Dachentwässerung ausblenden“ seiner Ansicht (Jörn 12.10.), Grundriss
-//! und 3D dazu die Zeile „Bemaßung“ ([`crate::bemassung`]). Hier die
-//! Verdrahtung in der App: Wahl, Lage, Ereignisse, Tasten, Tooltip und
-//! Bilder.
+//! „Dachentwässerung ausblenden“ seiner Ansicht (Jörn 12.10.), die von
+//! Grundriss, Schnitt und 3D dazu den Schalter „Ausbau innen“ (Raumbuch
+//! RB4), Grundriss und 3D die Zeile „Bemaßung“ ([`crate::bemassung`]).
+//! Hier die Verdrahtung in der App: Wahl, Lage, Ereignisse, Tasten,
+//! Tooltip und Bilder.
 
+use crate::scene::ausbau_platz;
 use crate::ui::{Panel, ViewKind};
 use crate::{
     ansicht_schatten, bemassung, grundriss_schnitt, sicht_zahnrad, App, OVERLAY_ANSICHT,
@@ -135,6 +137,7 @@ impl App {
         let out = self.zahnrad.schnitt.handle(ev, &lage, mm, eigen);
         self.schnitt_anwenden(out);
         self.entw_anwenden(out.haken, out.alle);
+        self.ausbau_anwenden(out.ausbau, out.alle);
         self.mass_anwenden(out.ketten, out.punkte);
         out.consumed
     }
@@ -155,6 +158,7 @@ impl App {
         let out = self.zahnrad.sicht.handle(ev, &lage);
         self.redraw |= out.redraw;
         self.entw_anwenden(out.haken, out.alle);
+        self.ausbau_anwenden(out.ausbau, out.alle);
         self.mass_anwenden(out.ketten, out.punkte);
         out.consumed
     }
@@ -181,6 +185,31 @@ impl App {
         }
         if alle {
             self.scene.drain_to_all(v);
+        }
+    }
+
+    /// „Ausbau innen“ der gezeigten Ansicht schalten (`ausbau`) bzw. ihre
+    /// Wahl in Grundriss, Schnitt und 3D übertragen (`alle`).
+    fn ausbau_anwenden(&mut self, ausbau: Option<bool>, alle: bool) {
+        let Some(i) = ausbau_platz(self.ui.view) else {
+            return;
+        };
+        let an = ausbau.unwrap_or(self.scene.model().view_finish(i));
+        let n = sk_model::FINISH_VIEWS.len();
+        let welche = match (alle, ausbau) {
+            (true, _) => 0..n,
+            (false, Some(_)) => i..i + 1,
+            (false, None) => return,
+        };
+        let mut neu = false;
+        for k in welche {
+            if self.scene.model().view_finish(k) != an {
+                self.scene.set_view_finish(k, an);
+                neu = true;
+            }
+        }
+        if neu {
+            self.upload_model();
         }
     }
 
@@ -255,11 +284,16 @@ impl App {
 
     /// Tooltip an den Zahnrädern.
     pub(crate) fn zahnrad_tip(&self) -> Option<String> {
-        if self.zahnrad.schnitt.hover == Some(grundriss_schnitt::Teil::Zahnrad) {
-            return Some(grundriss_schnitt::TIP.into());
-        }
-        if self.zahnrad.sicht.hover == Some(sicht_zahnrad::Teil::Zahnrad) {
-            return Some(ansicht_schatten::TIP.into());
+        match (self.zahnrad.schnitt.hover, self.zahnrad.sicht.hover) {
+            (Some(grundriss_schnitt::Teil::Zahnrad), _) => {
+                return Some(grundriss_schnitt::TIP.into())
+            }
+            (_, Some(sicht_zahnrad::Teil::Zahnrad)) => return Some(ansicht_schatten::TIP.into()),
+            (Some(grundriss_schnitt::Teil::Ausbau(_)), _)
+            | (_, Some(sicht_zahnrad::Teil::Ausbau(_))) => {
+                return Some(sicht_zahnrad::AUSBAU_TIP.into())
+            }
+            _ => {}
         }
         match self.zahnrad.schatten.unter {
             Some(ansicht_schatten::Teil::Zahnrad) => {
@@ -298,8 +332,10 @@ impl App {
             rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
             scale: scale.to_bits(),
         });
+        let ausbau = |v| ausbau_platz(v).is_some_and(|i| self.scene.model().view_finish(i));
         let sicht = sicht_zahnrad::zeigt(self.ui.view).then(|| sicht_zahnrad::Bild {
             an: self.scene.drain_hidden(self.ui.view),
+            ausbau: ausbau(self.ui.view),
             offen: self.zahnrad.sicht.offen,
             hover: self.zahnrad.sicht.hover,
             mass: bemassung::ansicht(self.ui.view).then(|| self.scene.mass_sicht(self.ui.view)),
@@ -335,6 +371,7 @@ impl App {
             eingabe: self.zahnrad.schnitt.eingabe.clone(),
             falsch: self.zahnrad.schnitt.falsch,
             entw: self.scene.drain_hidden(ViewKind::Plan),
+            ausbau: ausbau(ViewKind::Plan),
             mass: self.scene.mass_sicht(ViewKind::Plan),
             rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
             scale: scale.to_bits(),
