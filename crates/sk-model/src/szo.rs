@@ -782,13 +782,15 @@ fn write_known(m: &Model) -> String {
     slot(&mut out, "section_ends", &d.section_ends);
     slot(&mut out, "background", &d.background);
     slot(&mut out, "pattern", &d.pattern);
+    // Rohe Zeilen der Werksstellen jeweils an ihrer Stelle (Review #127 B2)
     if !a.element_is_default() {
         slot(&mut out, "element", &d.element);
     }
+    darstellung::write_raw(a, "element", &mut out);
     if !a.above_is_default() {
         slot(&mut out, "above", &d.above);
     }
-    darstellung::write_raw(a, &mut out);
+    darstellung::write_raw(a, "above", &mut out);
     Line::new("display")
         .word("slot", "paper")
         .color("color", d.paper)
