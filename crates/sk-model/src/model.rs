@@ -125,7 +125,7 @@ pub enum NumberError {
     Empty,
     Taken(ElementId),
     /// Die Nummer trägt eine `[opening]`-Zeile der Datei, die nicht zählt
-    /// (Regel 72, Review #86 B3).
+    /// (Regel 72, Review #86 B3), oder eine solche `[space]`-Zeile.
     Reserved,
     NoElement,
 }
@@ -216,6 +216,8 @@ pub struct Model {
     pub(crate) plan_cut_raw: Option<String>,
     /// `[opening]`-Zeilen der Datei, die nicht zählen (Regel 72).
     pub(crate) opening_raw: Vec<oeffnung_model::RawOpening>,
+    /// `[space]`-Zeilen der Datei, die nicht zählen (Regel 72).
+    pub(crate) space_raw: Vec<raum::RawSpace>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -381,6 +383,7 @@ mod ecke;
 pub use ecke::{EckeFehler, ZugPunkte};
 #[path = "raum.rs"]
 mod raum;
+pub(crate) use raum::RawSpace;
 pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
 
 impl Default for Model {
@@ -748,6 +751,7 @@ impl Model {
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
+            space_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -832,6 +836,7 @@ impl Model {
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
+            space_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
