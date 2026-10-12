@@ -625,9 +625,7 @@ fn geschossband_und_loeschen() {
     let t = m.commit().unwrap();
     let befund = m.check();
     assert!(
-        befund
-            .iter()
-            .any(|b| b.contains("nicht auf einer Außenwand")),
+        befund.iter().any(|b| b.contains("nicht auf einer Wand")),
         "{befund:?}"
     );
     m.apply(&t, Direction::Undo);
@@ -1146,4 +1144,83 @@ fn ziehen_merkt_nur_das_eigene_gebaeude() {
     let (ein, viele) = (gemerkt(1), gemerkt(12));
     assert_eq!(ein, viele);
     assert_eq!(ein.len(), 1, "{ein:?}");
+}
+
+/// Innenwand quer durch das Prüfhaus bei x = 5 m, im Geschoss von `run`.
+fn innenwand(m: &mut Model, run: RunId) -> RunId {
+    let set = m.defaults().interior_wall;
+    let pts = [vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)];
+    let st = storey(m, run);
+    m.add_wall_run(
+        &pts,
+        false,
+        crate::RefSide::Center,
+        st,
+        set,
+        Category::InteriorWall,
+    )
+    .unwrap()
+}
+
+/// Innentür (Integration 05:24): eine Öffnung in der Innenwand, Oberkante
+/// an der Innentürlinie; Loch ohne Anschlag, keine Laibungsmengen, die
+/// Prüfung bleibt leer; rückgängig ist die Wand wieder zu.
+#[test]
+fn innentuer_in_der_innenwand() {
+    let (mut m, eg, _) = haus(None);
+    let iw = innenwand(&mut m, eg);
+    let st = storey(&m, eg);
+    let z = m.storey(st).unwrap().elevation;
+    let tuer = Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0)],
+        bottom: HeightRef::Level(LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        reveal: None,
+        install: Default::default(),
+    };
+    assert_eq!(m.opening_fault(&tuer, None), None);
+    m.begin("Innentür");
+    let id = m.add_opening(tuer.clone()).unwrap();
+    let t = m.commit().unwrap();
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    let c = m.chain(iw).unwrap();
+    assert_eq!(c.joints.holes.len(), 1, "{:?}", c.joints.holes);
+    let h = &c.joints.holes[0];
+    assert!((h.u.1 - h.u.0 - 885.0).abs() < 1e-6, "{:?}", h.u);
+    assert!((h.z.1 - z - crate::hoehen::DOOR).abs() < 1e-6);
+    assert_eq!((h.reveal_u, h.reveal_z), ((0.0, 0.0), (0.0, 0.0)));
+    assert!(m.chain(eg).unwrap().joints.holes.is_empty(), "Außenwand zu");
+    let laibung = crate::qto::schedule(&m)
+        .auto
+        .iter()
+        .filter(|a| a.element == id && a.key.starts_with("opening.reveal"))
+        .count();
+    assert_eq!(laibung, 0, "Innentüren ohne Laibung");
+    let rows = crate::qto::schedule(&m).layer_rows(&m);
+    assert!(rows
+        .iter()
+        .any(|(_, r)| r.holes.iter().any(|x| x.opening == id)));
+    m.apply(&t, Direction::Undo);
+    assert!(m.chain(iw).unwrap().joints.holes.is_empty());
+    // Neben der Innenwand: keine Wand
+    let daneben = Opening {
+        path: vec![vec3(4000.0, 3000.0, 0.0), vec3(4000.0, 3885.0, 0.0)],
+        ..tuer
+    };
+    assert_eq!(m.opening_fault(&daneben, None), Some(OpeningFault::NoWall));
+    // Die Innenwand wandert um 50 cm: die Tür geht mit
+    let id = m.add_opening(tuer.clone()).unwrap();
+    m.begin("Innenwand verschieben");
+    let pts = [vec3(5500.0, 0.0, 0.0), vec3(5500.0, 8000.0, 0.0)];
+    assert!(m.set_run_points(iw, &pts).is_some());
+    m.commit();
+    let p = &m.opening(id).unwrap().path;
+    for (a, b) in p.iter().zip(&tuer.path) {
+        assert!(
+            (a.x - b.x - 500.0).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6,
+            "{p:?}"
+        );
+    }
+    assert!(m.check().is_empty(), "{:?}", m.check());
 }

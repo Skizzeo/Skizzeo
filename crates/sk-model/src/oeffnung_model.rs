@@ -192,7 +192,7 @@ impl Model {
     /// Pfadstück, das auf der Außenfläche eines Segments liegt, ein Loch;
     /// zur Außenecke hin offen.
     pub(crate) fn holes_of(&self, run: RunId, c: &WallChain) -> Vec<Hole> {
-        if !self.category_of(run).is_some_and(Category::is_outer_wall) {
+        if !self.category_of(run).is_some_and(Category::takes_openings) {
             return Vec::new();
         }
         let building = self
@@ -301,7 +301,7 @@ impl Model {
 
     /// Kann die Öffnung `o` so an den Wänden stehen? `except`: die Öffnung
     /// selbst, wenn sie schon im Modell steht. Neben [`Model::opening_ok`]
-    /// muss jedes Pfadstück auf der Außenfläche einer Außenwand liegen, jedes
+    /// muss jedes Pfadstück auf der Außenfläche einer Wand liegen, jedes
     /// freie Ende samt Anschlag innerhalb der Wandfläche (nicht an oder hinter
     /// der Ecke), und keine andere Öffnung darf sie überschneiden (Review
     /// #79).
@@ -333,7 +333,7 @@ impl Model {
     }
 
     /// Steht die Öffnung `o` auf Wänden: jedes Pfadstück in jedem Geschoss,
-    /// das ihr Höhenband schneidet, auf der Außenfläche einer Außenwand? Nur
+    /// das ihr Höhenband schneidet, auf der Außenfläche einer Wand? Nur
     /// die Wandlage, ohne Form, Enden und Überschneidung (Löschen).
     pub(crate) fn opening_on_walls(&self, o: &Opening) -> bool {
         self.opening_lage(o, None, &mut Koerper::default())
@@ -437,7 +437,8 @@ impl Model {
         })
     }
 
-    /// Außenwandzüge, die die Öffnung `o` treffen kann: ihr Grundriss
+    /// Wandzüge mit Öffnungen ([`Category::takes_openings`]), die die
+    /// Öffnung `o` treffen kann: ihr Grundriss
     /// kommt dem Pfad bis auf [`RUN_REACH`] nahe. Damit rechnet eine
     /// Öffnungsänderung nur diese Züge neu (Review #79).
     pub(crate) fn opening_runs(&self, o: &Opening) -> Vec<RunId> {
@@ -448,7 +449,7 @@ impl Model {
         self.runs
             .ids()
             .filter(|&r| {
-                self.category_of(r).is_some_and(Category::is_outer_wall)
+                self.category_of(r).is_some_and(Category::takes_openings)
                     && self.run(r).is_some_and(|run| {
                         let (mut a, mut b) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
                         for p in &run.points {
@@ -487,7 +488,7 @@ struct Lage {
 pub enum OpeningFault {
     /// Pfad, Maße, Höhen oder Anschläge ungültig ([`Model::opening_ok`]).
     Shape,
-    /// Ein Pfadstück liegt auf keiner Außenwand (Wand verschoben oder
+    /// Ein Pfadstück liegt auf keiner Wand (Wand verschoben oder
     /// gelöscht).
     NoWall,
     /// Ein freies Ende samt Anschlag liegt an oder hinter dem Ende der
@@ -502,7 +503,7 @@ impl OpeningFault {
     pub fn text(self, m: &Model) -> String {
         match self {
             OpeningFault::Shape => "Öffnung ungültig".into(),
-            OpeningFault::NoWall => "Öffnung liegt nicht auf einer Außenwand".into(),
+            OpeningFault::NoWall => "Öffnung liegt nicht auf einer Wand".into(),
             OpeningFault::AtEnd => "Öffnung reicht an oder über das Ende der Wandfläche".into(),
             OpeningFault::Overlap(o) => format!(
                 "Öffnung überschneidet {}",
@@ -535,9 +536,10 @@ fn face_span(c: &WallChain, pts: &[Vec3], dirs: &[Vec3], i: usize) -> (f64, f64)
 }
 
 impl Model {
-    /// Außenfläche von Segment `seg` des Außenwandzugs `run`.
+    /// Außenfläche von Segment `seg` des Zugs `run`; bei einer Innenwand
+    /// die Fläche auf der Seite von [`WallChain::outer_offset`].
     pub fn outer_face(&self, run: RunId, seg: usize) -> Option<crate::oeffnung::OuterFace> {
-        if !self.category_of(run).is_some_and(Category::is_outer_wall) {
+        if !self.category_of(run).is_some_and(Category::takes_openings) {
             return None;
         }
         self.face_in(run, seg, &self.chain(run)?)
@@ -698,7 +700,7 @@ impl Model {
         }
         for r in self.opening_scope(run) {
             if g.walls.iter().any(|w| w.run == r)
-                || !self.category_of(r).is_some_and(Category::is_outer_wall)
+                || !self.category_of(r).is_some_and(Category::takes_openings)
             {
                 continue;
             }
