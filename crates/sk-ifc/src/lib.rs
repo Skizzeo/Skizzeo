@@ -10,6 +10,7 @@ pub mod export;
 pub mod geometrie;
 pub mod klassen;
 pub mod lesen;
+pub mod mengen;
 pub mod step;
 
 pub use export::{export, Bericht, Grund, Optionen};

@@ -2,7 +2,8 @@
 //! Reference View 1.2: Projekt › Grundstück › Gebäude › Geschosse, jedes
 //! Bauteil mit seiner Kennung, Klasse aus `kinds.rs` bzw. der Erweiterung,
 //! Form als Dreiecksnetz je Baustoff mit Farbe, Bauteiltyp mit Schichtaufbau,
-//! Baustoffkennwerte, allgemeine Eigenschaften und Kostengruppe DIN 276.
+//! Baustoffkennwerte, allgemeine Eigenschaften, Mengen aus der Mengenliste
+//! ([`crate::mengen`]), Kostengruppe DIN 276 und Leistungsbereich VOB/C.
 //!
 //! Der Export liest nur. Zwei Exporte desselben Modells mit derselben Zeit
 //! sind bytegleich; alle Kennungen, die das Modell nicht trägt (Grundstück,
@@ -11,8 +12,10 @@
 
 use crate::geometrie::{self, Netz};
 use crate::klassen::{self, Klasse, Prop, Zuordnung};
+use crate::mengen;
 use crate::step::{e, lens, r, refs, s, typed, Writer, V};
 use sk_math::{vec3, Vec3};
+use sk_model::qto::ElementQto;
 use sk_model::{
     library, Category, ElementId, ElementKind, Guid, LayerFunction, LayerSetId, LevelKind,
     MatCategory, MaterialId, MaterialLayer, Model, StoreyId,
@@ -161,12 +164,16 @@ struct Ctx<'a> {
     stoff_nutzer: BTreeMap<u32, (Guid, Vec<u32>)>,
     /// Kostengruppe → Bauteile.
     kg_nutzer: BTreeMap<u16, Vec<u32>>,
+    /// Leistungsbereich der VOB/C (ATV-Nummer, Name) → Bauteile.
+    atv_nutzer: BTreeMap<(String, String), Vec<u32>>,
     /// Geschoss → Bauteile.
     inhalt: BTreeMap<u32, Vec<u32>>,
     /// Räume je Geschoss: hängen über `IfcRelAggregates` am Geschoss, nicht
     /// in `IfcRelContainedInSpatialStructure` (IFC4 WR31).
     raeume: BTreeMap<u32, Vec<u32>>,
     projekt: Guid,
+    /// Zeilen der Mengenliste je Bauteil (I4).
+    mengen: HashMap<ElementId, ElementQto>,
 }
 
 /// Exportiert das Modell als IFC4-Datei (Text) und sagt, was darin steht.
@@ -186,9 +193,11 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         typ_nutzer: BTreeMap::new(),
         stoff_nutzer: BTreeMap::new(),
         kg_nutzer: BTreeMap::new(),
+        atv_nutzer: BTreeMap::new(),
         inhalt: BTreeMap::new(),
         raeume: BTreeMap::new(),
         projekt: p.guid,
+        mengen: mengen_je_bauteil(m),
     };
     let mut bericht = Bericht::default();
     c.oh = c.owner_history(opt);
@@ -415,7 +424,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                 vec![
                     V::Null,
                     s(&k.to_string()),
-                    V::Null,
+                    sk_model::din276::name(k).map_or(V::Null, s),
                     r(cls),
                     V::Null,
                     V::Null,
@@ -427,6 +436,47 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                     gid(abgeleitet(c.projekt, &format!("din276.{k}"))),
                     r(c.oh),
                     s(&format!("DIN 276 {k}")),
+                    V::Null,
+                    refs(&els),
+                    r(rf),
+                ],
+            );
+        }
+    }
+
+    let atv: Vec<((String, String), Vec<u32>)> =
+        std::mem::take(&mut c.atv_nutzer).into_iter().collect();
+    if !atv.is_empty() {
+        let cls = c.w.add(
+            "IFCCLASSIFICATION",
+            vec![
+                s("DIN Deutsches Institut für Normung e. V."),
+                V::Null,
+                V::Null,
+                s("VOB/C"),
+                s("Allgemeine Technische Vertragsbedingungen für Bauleistungen (ATV)"),
+                V::Null,
+                V::Null,
+            ],
+        );
+        for ((code, name), els) in atv {
+            let rf = c.w.add(
+                "IFCCLASSIFICATIONREFERENCE",
+                vec![
+                    V::Null,
+                    s(&format!("DIN {code}")),
+                    opt_text(&name),
+                    r(cls),
+                    V::Null,
+                    V::Null,
+                ],
+            );
+            c.w.add(
+                "IFCRELASSOCIATESCLASSIFICATION",
+                vec![
+                    gid(abgeleitet(c.projekt, &format!("atv.{code}"))),
+                    r(c.oh),
+                    s(&format!("VOB/C DIN {code}")),
                     V::Null,
                     refs(&els),
                     r(rf),
@@ -1033,13 +1083,26 @@ impl Ctx<'_> {
             .position(|l| l.core)
             .and_then(|i| m.layer_kg(id, i))
             .or_else(|| ext.map_or(el.category.din276(), |d| d.kg()));
-        let gewerk = layers
+        let trade = layers
             .iter()
             .position(|l| l.core)
             .or((!layers.is_empty()).then_some(0))
             .and_then(|i| m.layer_trade(id, i))
-            .and_then(|t| m.trade(t))
-            .map(|t| format!("{} {}", t.code, t.name));
+            // ohne Schichten: das der Erweiterung bzw. der Bauteilart
+            .or_else(|| match ext {
+                Some(d) => m.trade_by_code(d.def.bauteil_feld("gewerk")?),
+                None => m.trade_by_code(sk_model::kinds::spec(el.category).default_trade?),
+            })
+            .and_then(|t| m.trade(t));
+        let gewerk = trade.map(|t| format!("{} {}", t.code, t.name));
+        // Als Klassifikation nur Leistungsbereiche der VOB/C (ATV DIN 18299
+        // ff.); eigene Nummern der Firma bleiben nur Eigenschaft
+        if let Some(t) = trade.filter(|t| atv(&t.code)) {
+            self.atv_nutzer
+                .entry((t.code.clone(), t.name.trim().to_string()))
+                .or_default()
+                .push(pi);
+        }
         let mut eigen = vec![
             self.single("Nummer", typed("IFCIDENTIFIER", s(&el.number))),
             self.single("Bauteilart", typed("IFCLABEL", s(&art))),
@@ -1062,7 +1125,42 @@ impl Ctx<'_> {
         if let Some(kg) = kg {
             self.kg_nutzer.entry(kg).or_default().push(pi);
         }
+        if let Some(q) = self.mengen.get(&id) {
+            for satz in mengen::saetze(q, k.name) {
+                self.mengensatz(abgeleitet(el.guid, satz.name), &satz, pi);
+            }
+        }
         pi
+    }
+
+    /// Ein Mengensatz am Bauteil `to`.
+    fn mengensatz(&mut self, g: Guid, satz: &mengen::Satz, to: u32) {
+        let qs: Vec<u32> = satz
+            .mengen
+            .iter()
+            .map(|q| {
+                let v = match q.art {
+                    mengen::Art::Anzahl if q.wert.fract() == 0.0 => V::Int(q.wert as i64),
+                    _ => V::Real(round9(q.wert)),
+                };
+                self.w.add(
+                    q.art.klasse(),
+                    vec![s(&q.name), V::Null, V::Null, v, V::Null],
+                )
+            })
+            .collect();
+        let eq = self.w.add(
+            "IFCELEMENTQUANTITY",
+            vec![
+                gid(g),
+                r(self.oh),
+                s(satz.name),
+                V::Null,
+                V::Null,
+                refs(&qs),
+            ],
+        );
+        self.definiert(g, eq, to);
     }
 
     fn material_of_key(&self, key: u16) -> Option<MaterialId> {
@@ -1084,6 +1182,11 @@ impl Ctx<'_> {
             "IFCPROPERTYSET",
             vec![gid(g), r(self.oh), s(name), V::Null, refs(props)],
         );
+        self.definiert(g, ps, to);
+    }
+
+    /// Eigenschafts- oder Mengensatz `ps` (Kennung `g`) am Bauteil `to`.
+    fn definiert(&mut self, g: Guid, ps: u32, to: u32) {
         self.w.add(
             "IFCRELDEFINESBYPROPERTIES",
             vec![
@@ -1111,6 +1214,25 @@ impl Ctx<'_> {
         let (a, b) = if left { (a, b) } else { (b, a) };
         Some((vec3(a.x, a.y, 0.0), vec3(b.x, b.y, 0.0)))
     }
+}
+
+/// ATV-Nummer der VOB/C: „18299“ … „18459“ (fünf Ziffern, 18…).
+fn atv(code: &str) -> bool {
+    code.len() == 5 && code.starts_with("18") && code.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Die Zeile der Mengenliste je Bauteil, das eine Menge hat.
+fn mengen_je_bauteil(m: &Model) -> HashMap<ElementId, ElementQto> {
+    let liste = sk_model::qto::schedule(m);
+    liste
+        .buildings
+        .into_iter()
+        .flat_map(|b| b.storeys)
+        .chain(liste.loose)
+        .flat_map(|st| st.groups)
+        .flat_map(|g| g.rows)
+        .filter_map(|z| Some((z.element, z.q?)))
+        .collect()
 }
 
 fn round9(x: f64) -> f64 {

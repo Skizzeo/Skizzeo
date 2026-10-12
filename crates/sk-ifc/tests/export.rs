@@ -431,3 +431,180 @@ fn oeffnungen_bis_i5() {
         ]
     );
 }
+
+/// Mengen der Datei je Bauteil (Kennung) → Satz → Menge → Wert.
+type Mengen = HashMap<String, BTreeMap<String, BTreeMap<String, f64>>>;
+
+fn mengen_der_datei(name: &str, f: &File) -> Mengen {
+    let kennung: HashMap<u32, String> = bauteile(f).into_iter().map(|(g, (i, _))| (i, g)).collect();
+    let mut out: Mengen = HashMap::new();
+    for (_, rel) in f.all("IFCRELDEFINESBYPROPERTIES") {
+        let eq = f.get(liste(&rel.args[5])[0]).unwrap();
+        if eq.name != "IFCELEMENTQUANTITY" {
+            continue;
+        }
+        let satz = text(&eq.args[2]).to_string();
+        for x in liste(&rel.args[4]) {
+            let s = out
+                .entry(kennung[&x].clone())
+                .or_default()
+                .entry(satz.clone())
+                .or_default();
+            for q in liste(&eq.args[5]) {
+                let q = f.get(q).unwrap();
+                assert!(q.name.starts_with("IFCQUANTITY"), "{name}: {}", q.name);
+                let v = match &q.args[3] {
+                    V::Real(v) => *v,
+                    V::Int(i) => *i as f64,
+                    v => panic!("{name}: Wert {v:?}"),
+                };
+                let n = text(&q.args[0]).to_string();
+                assert!(
+                    s.insert(n.clone(), v).is_none(),
+                    "{name}: {satz} {n} doppelt"
+                );
+            }
+        }
+    }
+    out
+}
+
+/// I4: Die Mengen der Datei sind die der Mengenliste. Jede Zeile mit Menge
+/// hat ihre Sätze; je Gruppe des Mengenfensters ergeben Länge, Fläche,
+/// Rauminhalt und Auflager aus der Datei die Summen der Liste.
+#[test]
+fn mengen_wie_mengenliste() {
+    use sk_model::qto::ElementQto as Q;
+    let qto = "Qto_";
+    for (name, t) in HAEUSER {
+        let m = laden(t);
+        let (ifc, _) = export(&m, &opt());
+        let f = step::read(&ifc).unwrap();
+        let werte = mengen_der_datei(name, &f);
+        let liste = sk_model::qto::schedule(&m);
+        let mut zeilen = 0;
+        for st in liste.buildings.iter().flat_map(|b| &b.storeys) {
+            for g in &st.groups {
+                let mut summe = [0.0; 4];
+                for z in &g.rows {
+                    let Some(q) = &z.q else { continue };
+                    zeilen += 1;
+                    let guid = m.element(z.element).unwrap().guid.to_ifc();
+                    let s = werte
+                        .get(&guid)
+                        .unwrap_or_else(|| panic!("{name}: {} ohne Mengen", z.number));
+                    // Menge `n` aus dem Satz der Norm, sonst aus dem eigenen
+                    let hol = |n: &str| -> f64 {
+                        s.iter()
+                            .filter(|(k, _)| k.starts_with(qto))
+                            .chain(s.get_key_value("Skizzeo_Mengen"))
+                            .find_map(|(_, v)| v.get(n).copied())
+                            .unwrap_or(0.0)
+                    };
+                    let vol = hol("NetVolume").max(hol("Volumen"));
+                    let (len, area) = match q {
+                        Q::Wall(_) => (hol("Listenlänge"), 0.0),
+                        Q::Footing(_) => (hol("Length"), 0.0),
+                        Q::Strip(_) | Q::Coping(_) => (hol("Länge"), 0.0),
+                        Q::Slab(_) | Q::Floor(_) | Q::Terrace(_) => (0.0, hol("GrossArea")),
+                        Q::Soffit(_) | Q::Perimeter(_) => (0.0, hol("NetArea")),
+                        Q::Ext(_) => (0.0, 0.0),
+                    };
+                    let pocket = hol("Deckenauflager") + hol("davon Auflager");
+                    summe[0] += len;
+                    summe[1] += area * 1e6;
+                    summe[2] += vol * 1e9;
+                    summe[3] += pocket * 1e9;
+                    // auf 1e-9 m³ (1 mm³) geschrieben
+                    let ab = (vol * 1e9 - q.volume()).abs();
+                    assert!(ab <= 0.5 + 1e-6, "{name}: {} Volumen {vol} m³", z.number);
+                }
+                let t = g.total;
+                for (i, (soll, was)) in [
+                    (t.length, "Länge"),
+                    (t.area, "Fläche"),
+                    (t.volume, "Volumen"),
+                    (t.pocket, "Auflager"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let ist = summe[i];
+                    assert!(
+                        (ist - soll).abs() <= (1e-9 * soll.abs()).max(g.rows.len() as f64),
+                        "{name}: Gruppe {:?} {was} {ist} statt {soll}",
+                        g.category
+                    );
+                }
+            }
+        }
+        assert!(zeilen > 10, "{name}: {zeilen} Zeilen");
+    }
+}
+
+/// I4: Kostengruppen mit dem Wortlaut der DIN 276, Gewerke als
+/// Leistungsbereich der VOB/C; im Prüfhaus mit allen Abschnitten hat jedes
+/// Bauteil beides.
+#[test]
+fn klassifikation_din276_und_vob() {
+    let m = laden(HAEUSER[5].1);
+    let (ifc, b) = export(&m, &opt());
+    let f = step::read(&ifc).unwrap();
+    let mut je: HashMap<u32, Vec<String>> = HashMap::new();
+    for (_, rel) in f.all("IFCRELASSOCIATESCLASSIFICATION") {
+        let c = f.get(liste(&rel.args[5])[0]).unwrap();
+        let quelle = f.get(liste(&c.args[3])[0]).unwrap();
+        let quelle = text(&quelle.args[3]).to_string();
+        let (id, name) = (text(&c.args[1]), text(&c.args[2]));
+        match quelle.as_str() {
+            "DIN 276" => assert_eq!(Some(name), sk_model::din276::name(id.parse().unwrap())),
+            "VOB/C" => {
+                assert!(id.starts_with("DIN 18") && id.len() == 9, "{id}");
+                assert!(!name.is_empty(), "{id}");
+            }
+            q => panic!("Klassifikation {q}"),
+        }
+        for x in liste(&rel.args[4]) {
+            je.entry(x).or_default().push(quelle.clone());
+        }
+    }
+    let teile = bauteile(&f);
+    assert_eq!(teile.len(), b.bauteile);
+    for (g, (i, _)) in teile {
+        let mut q = je.remove(&i).unwrap_or_default();
+        q.sort();
+        assert_eq!(q, ["DIN 276", "VOB/C"], "{g}");
+    }
+}
+
+/// I4 in der Vorschau: Mengen mit der Einheit der Datei, Klassifikationen
+/// mit ihrem Namen.
+#[test]
+fn vorschau_zeigt_mengen_und_klassen() {
+    let m = laden(HAEUSER[0].1);
+    let (ifc, _) = export(&m, &opt());
+    let v = sk_ifc::lesen::vorschau(&step::read(&ifc).unwrap());
+    let aw = v.teile.iter().find(|t| t.name == "AW-004").unwrap();
+    let qto = &aw
+        .saetze
+        .iter()
+        .find(|s| s.0 == "Qto_WallBaseQuantities")
+        .unwrap()
+        .1;
+    let wert = |n: &str| qto.iter().find(|x| x.0 == n).map(|x| x.1.clone());
+    assert!(wert("Length").unwrap().ends_with(" mm"), "{qto:?}");
+    assert!(wert("GrossSideArea").unwrap().ends_with(" m²"));
+    assert!(wert("NetVolume").unwrap().ends_with(" m³"));
+    assert!(wert("NetWeight").is_none_or(|w| w.ends_with(" kg")));
+    assert!(
+        aw.klassen
+            .contains(&"DIN 276 · 331 Tragende Außenwände".to_string()),
+        "{:?}",
+        aw.klassen
+    );
+    assert!(
+        aw.klassen.iter().any(|k| k.starts_with("VOB/C · DIN 183")),
+        "{:?}",
+        aw.klassen
+    );
+}
