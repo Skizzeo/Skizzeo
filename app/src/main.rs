@@ -4116,54 +4116,15 @@ impl App {
         let Some(d) = self.projektdaten.as_mut() else {
             return false;
         };
+        if let Event::MouseMove { x, y, .. } = e {
+            self.mouse_at = Some((x, y));
+        }
         let r = d.rect(s, self.w, self.h, th);
-        let answer = match e {
-            Event::MouseMove { x, y, .. } => {
-                self.mouse_at = Some((x, y));
-                self.overlay_dirty |= d.mouse_move(r, s, x, y);
-                None
-            }
-            // Die Titelleiste bleibt bedienbar (Fensterknöpfe, Ziehen)
-            Event::MouseDown { y, .. } | Event::MouseUp { y, .. } if y < th as f64 => {
-                return false;
-            }
-            Event::MouseDown {
-                button: MouseButton::Left,
-                x,
-                y,
-                ..
-            } => {
-                d.press(r, s, &self.ui.fonts, &self.theme, x, y);
-                self.overlay_dirty = true;
-                None
-            }
-            Event::MouseUp {
-                button: MouseButton::Left,
-                x,
-                y,
-                ..
-            } => {
-                self.overlay_dirty = true;
-                d.release(r, s, x, y)
-            }
-            Event::Key {
-                key, down, mods, ..
-            } => {
-                if !down {
-                    return true;
-                }
-                self.overlay_dirty = true;
-                d.key(key, mods)
-            }
-            Event::Text(ch) => {
-                d.text(ch);
-                self.overlay_dirty = true;
-                None
-            }
-            Event::MouseDown { .. } | Event::MouseUp { .. } | Event::Wheel { .. } => None,
-            _ => return false,
+        let Some(w) = d.ereignis(e, r, s, th as f64, &self.ui.fonts, &self.theme) else {
+            return false;
         };
-        if let Some(a) = answer {
+        self.overlay_dirty |= w.neu_zeichnen;
+        if let Some(a) = w.antwort {
             self.answer_projektdaten(a);
         }
         true

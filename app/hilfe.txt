@@ -41,7 +41,7 @@ Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht den Zu
 Starten | Knopf „Innenwand“ unter „Gebäude“; sie entsteht im aktiven Geschoss, nicht gestapelt, Bezugsseite ist die Achse
 Zeichnen | wie Wände zeichnen, Richtung in 45°-Schritten („frei“ im Paneel oder **R**); Länge tippen und **Enter**, **Tab** für den Winkel
 Fangen | der Cursor rastet an Wandflächen und freien Wandenden ein, die Fläche leuchtet
-Lichtes Maß | auf einer Wandfläche vor dem ersten Klick zeigt die Pille das lichte Maß zur nächsten Wand; Zahl tippen, **Enter** setzt den Anfang genau
+Lichtes Maß | auf einer Wandfläche vor dem ersten Klick zeigt das Maßfeld am Mauszeiger das lichte Maß zur nächsten Wand; Zahl tippen, **Enter** setzt den Anfang genau
 Beenden | Klick auf eine quer liegende Wandfläche oder ein Wandende, sonst **Enter** oder Doppelklick
 Ecke bilden | Wand wählen, „Ecke bilden“ im Paneel, dann Klick auf die zweite Wand auf der Seite, die bleibt
 Verlängern | Wand wählen, „Verlängern“, Klick auf die Zielwand; weitere Klicks verlängern weitere Wände bis dorthin, **Esc** beendet
@@ -162,15 +162,15 @@ Einschalten | Knopf „Geschossmanager“ unten links, im Fenster Haken „Flach
 Aufkantung | Höhe im Geschossmanager: Linie „OK Aufkantung“ ziehen oder auf ihre Maßzahl klicken
 Dämmung | Dachaufbau anklicken, im Paneel unter „Aufbau“ das Feld „Dämmung“ tippen
 Gefälle | Zahlenfeld „Gefälle“ in %, 1 bis 10; 0 = ohne Gefälle
-Abläufe | Skizzeo schlägt sie vor, beim Rechteck je zwei an beiden Längsseiten nahe den Ecken; „Abläufe vorschlagen“ setzt sie neu; im Grundriss stehen sie als Punkte an der Aufkantung
-Ablauf ziehen | Dachaufbau wählen, im Grundriss einen Punkt an der Aufkantung entlang ziehen; der Gefälleplan geht mit, **Esc** bricht ab
+Abläufe | Skizzeo schlägt sie vor, beim Rechteck je zwei an beiden Längsseiten nahe den Ecken; „Abläufe vorschlagen“ setzt sie neu; nur im Grundriss der Ebene FD stehen sie als Punkte an der Aufkantung
+Ablauf ziehen | Dachaufbau wählen, im Grundriss der Ebene FD einen Punkt an der Aufkantung entlang ziehen; der Gefälleplan geht mit, **Esc** bricht ab
 Ablauf dazu, weg | Punkt anklicken, dann Rechtsklick oder im Abschnitt „Gefälle“ „Ablauf hinzufügen“ bzw. „Ablauf löschen“; der letzte bleibt
 Ausschalten | Haken weg; **Strg+Z** holt das Dach zurück
 
 [thema] id=geschosse titel="Geschosse"
 Bearbeiten | Knopf „Geschossmanager“ unten links öffnet das Geschossfenster links neben dem Hauptfenster; dort wird gezogen und getippt, das Modell bleibt ganz zu sehen
 Fenster | angedockt wie das Mengenfenster; wegziehen löst es, etwa auf einen zweiten Bildschirm; zurück an den Rand rastet es ein
-Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ im Geschossmanager
+Aktives Geschoss | Klick auf „Fundament“, „EG“, „OG“ oder „FD“ (Flachdach) im Geschossmanager
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
 Höhe ziehen | Griff an einer Geschosslinie; Fang 1 cm, mit **Umschalt** 5 cm, **Esc** bricht ab
 Höhe als Zahl | auf eine Maßzahl klicken, Wert in Metern, **Enter**
@@ -193,7 +193,7 @@ Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Um
 Drehen | an der Spitze ziehen
 Verschieben | am Pfeil ziehen; ins Gebäude geschoben rastet er 50 cm vor der Kante ein
 Platz | fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil vorne links daneben
-Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee
+Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee. Die Landeskoordinaten darunter gehen nur ins IFC, Sonne und Nordpfeil rechnen weiter mit Breite und Länge
 Abbrechen | **Esc** schließt erst die Zahl, dann den Fußpunkt, dann das Werkzeug
 Sonnenstand | mit Nordrichtung schalten die Kachel und ein Klick auf den Pfeil ihn an und aus; in 3D stehen Sonne und Tagesbahn über dem Gebäude, fein die Bahnen vom 21.06. und 21.12.; ab 2° Sonnenhöhe wirft das Gebäude Schatten auf sich und den Boden; Sonne und Schatten erscheinen mit dem Gebäude, die Nordrichtung geht auch vorher
 Sonne ziehen | an der Sonne oder am Punkt an der Schattenspitze ziehen ändert die Uhrzeit; die Sonne bleibt auf der Tagesbahn und hält bei Auf- und Untergang; der Punkt folgt der Kurve der Schattenspitze, über ihr Ende hinaus gilt Auf- bzw. Untergang
@@ -213,7 +213,7 @@ Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klap
 Dateimenü | Logo oben links, **F10** oder **Alt** kurz
 Neu, Öffnen | **Strg+N**, **Strg+O**
 Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
-IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen
+IFC | Menü → „IFC exportieren …“ schreibt das Haus als IFC4 für Statik, Energieberatung, Haustechnik und AVA; „IFC-Vorschau …“ zeigt die Datei so, wie andere Programme sie lesen. Mit den Landeskoordinaten aus „Projektdaten“ liegt das Haus im IFC an seiner Stelle in der Welt (Georeferenz): Ostwert mit der UTM-Zone vorn (in Deutschland 32 oder 33) und Nordwert im amtlichen System ETRS89/UTM, dazu die Höhe von ±0,00 über NHN (Normalhöhennull), alles aus dem Lageplan; fehlt Ost- oder Nordwert, gibt es keine Georeferenz
 Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
 Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
 Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**
@@ -315,16 +315,16 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 Übernehmen | **OK**; Abbrechen verwirft
 
 [thema] id=mengen titel="Mengen, Kosten, AVA"
-Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“
+Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“; wegziehen löst das Fenster, an der Kante rastet es wieder ein
 Karten | Mengen, Kosten und AVA; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
 Gebäude | ab zwei Gebäuden wählt das Feld vor den Chips ein Gebäude oder das ganze Projekt
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
 Gliedern | „Gliedern“ nach Geschoss oder Gewerk, bei Kosten auch Kostengruppe
+Sicht | Umschalter „VOB | Bestellung“: „VOB“ zeigt die Abrechnungsmengen nach VOB/C, Öffnungen bis 2,5 m² übermessen; „Bestellung“ die Bestellmengen mit Verschnitt. Nach Gewerk klappt das Dreieck vor einer Schichtzeile ihren Rechenweg auf
 Gewerksumme | jede Fläche einmal je Bauteil; in m Abgerechnetes (Attikablech) zählt ohne Volumen
 Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es; Doppelklick holt es ins Bild
 Löschen | **Entf** oder Rechtsklick auf eine Zeile
-Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zeile nennt Gebäude und Geschosse
-Fenster | wegziehen löst es, an der Kante rastet es wieder ein
+Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zeile nennt Sicht, Gebäude und Geschosse
 
 [thema] id=kosten titel="Kosten"
 Preise | „Material“ oder „Material + Lohn“; die Summe zeigt netto, brutto mit MwSt. und den Lohnanteil. Referenzpreise: Stand 10/2026, unverbindlich, netto

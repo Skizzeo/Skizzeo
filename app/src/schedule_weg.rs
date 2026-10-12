@@ -7,16 +7,14 @@
 use super::*;
 use sk_model::rechenweg::Rechenweg;
 
-/// Bestellmenge je Bauteil für die Gliederung nach Geschoss: Verhältnis der
-/// Bestellmenge zur Menge über alle Schichten (Volumen, Fläche). Leer in der
-/// VOB-Sicht.
-pub(super) type Faktoren = HashMap<ElementId, (f64, f64)>;
+/// Je Bauteil für die Gliederung nach Geschoss: Verhältnis der
+/// Bestellmenge zur VOB-Menge über alle Schichten (Volumen, Fläche; in der
+/// VOB-Sicht 1) und das Volumen der übermessenen Öffnungen, das nach VOB/C
+/// zur Wand gehört (Bedienbarkeit 38.2).
+pub(super) type Faktoren = HashMap<ElementId, (f64, f64, f64)>;
 
 pub(super) fn bestell_faktoren(m: &Model, sched: &Schedule, modus: Modus) -> Faktoren {
-    let mut sum: HashMap<ElementId, [f64; 4]> = HashMap::new();
-    if modus == Modus::Vob {
-        return HashMap::new();
-    }
+    let mut sum: HashMap<ElementId, [f64; 5]> = HashMap::new();
     // alle Schichtzeilen, auch ohne Gewerk (Review #77, Hinweis)
     for (_, r) in sched.layer_rows(m) {
         let x = sum.entry(r.element).or_default();
@@ -24,11 +22,25 @@ pub(super) fn bestell_faktoren(m: &Model, sched: &Schedule, modus: Modus) -> Fak
         x[1] += rechenweg::anzeige(m, &r, Bezug::Volumen, modus);
         x[2] += rechenweg::wert(&r, Bezug::Flaeche);
         x[3] += rechenweg::anzeige(m, &r, Bezug::Flaeche, modus);
+        x[4] += sk_model::vob::uebermessen_vol(&r.holes);
     }
-    let q = |a: f64, b: f64| if a > 0.0 { b / a } else { 1.0 };
+    let q = |a: f64, b: f64| {
+        if a > 0.0 && modus == Modus::Bestellung {
+            b / a
+        } else {
+            1.0
+        }
+    };
     sum.into_iter()
-        .map(|(e, x)| (e, (q(x[0], x[1]), q(x[2], x[3]))))
+        .map(|(e, x)| (e, (q(x[0], x[1]), q(x[2], x[3]), x[4])))
         .collect()
+}
+
+/// Wandvolumen nach VOB/C in der Sicht: geometrisch netto plus die
+/// übermessenen Öffnungen, in der Bestellung mit dem Faktor des Bauteils.
+/// So ergeben die Wandzeilen nach Geschoss die Summe nach Baustoff.
+pub(super) fn wand_vol(faktor: &Faktoren, e: ElementId, netto: f64) -> f64 {
+    faktor.get(&e).map_or(netto, |f| (netto + f.2) * f.0)
 }
 
 /// Hauptmenge einer Schichtzeile für den Rechenweg: Beton nach Volumen,
