@@ -50,6 +50,13 @@ impl App {
                 };
                 (t, z, cur, String::new())
             }
+            // Raumbuch im Paneel des Raums (RB6)
+            Id::Raumbuch(k) => {
+                let Some((t, z, cur)) = self.raum_liste(k) else {
+                    return;
+                };
+                (t, z, cur, String::new())
+            }
             Id::ExtTyp => {
                 let Some(m) = self.tool.ext.as_ref() else {
                     return;
@@ -92,7 +99,7 @@ impl App {
             }
         };
         let panel = match knopf {
-            Id::PropsType | Id::ExtListe(_) => Panel::Props,
+            Id::PropsType | Id::ExtListe(_) | Id::Raumbuch(_) => Panel::Props,
             _ => Panel::Tools,
         };
         let panel = self.ui.rect(panel, self.w, top);
@@ -132,6 +139,7 @@ impl App {
         match knopf {
             Id::PropsType => self.ext_prop_typ(i),
             Id::ExtListe(j) => self.ext_prop_wert(j, Some(i as u8)),
+            Id::Raumbuch(k) => self.raum_waehlen(k, i),
             Id::ExtTyp => {
                 if let Some(m) = self.tool.ext.as_mut() {
                     if let Some(k) = m.def.def.typ.get(i).map(|t| t.key().to_string()) {

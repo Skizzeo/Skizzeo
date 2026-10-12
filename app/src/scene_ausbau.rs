@@ -1237,7 +1237,8 @@ mod tests {
     use crate::ui::ViewKind;
     use sk_math::vec3;
     use sk_model::model::{
-        BATH_SPACE_GUID, SCREED_SLAB_TYPE_GUID, SPACE_TEMPLATES, WOODCHIP_WALL_TYPE_GUID,
+        AusbauAbweichung, AusbauStelle, AusbauWahl, BATH_SPACE_GUID, SCREED_SLAB_TYPE_GUID,
+        SPACE_TEMPLATES, WOODCHIP_WALL_TYPE_GUID,
     };
     use sk_model::{
         material, material_key, Category, ElementId, Guid, Model, RefSide, RunId, WallChain,
@@ -1767,6 +1768,28 @@ mod tests {
             am_gelaende += usize::from(da.abs() < 1.0 || db.abs() < 1.0);
         }
         assert!(am_gelaende > 0);
+    }
+
+    /// Eine Abweichung im Raumbuch (RB6) baut nur diesen Raum neu und
+    /// keinen Wandzug.
+    #[test]
+    fn abweichung_baut_nur_den_raum() {
+        let mut s = Scene::new();
+        let innen = haeuser(&mut s, 0, 2);
+        s.set_view_finish(2, true);
+        let st = s.active_storey();
+        let mut z = (0, 0);
+        neu(&mut s, &mut z);
+        let r = s.model().spaces(st)[0];
+        let zug = s.build_count(innen[0]);
+        let a = AusbauAbweichung {
+            stelle: AusbauStelle::Boden,
+            wahl: Some(AusbauWahl::Keiner),
+            hoehe: None,
+        };
+        assert!(s.raeume_aendern("Raumbuch ändern", |m| m.set_space_finish(r, a).is_ok()));
+        assert_eq!(neu(&mut s, &mut z), (3, 1));
+        assert_eq!(s.build_count(innen[0]), zug, "kein Wandzug neu");
     }
 
     /// Liegen die Anker der Räume `a` und `b` im selben Haus?

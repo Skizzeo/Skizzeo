@@ -305,6 +305,20 @@ impl Scene {
         self.commit();
         true
     }
+
+    /// Ändert Räume in einem Schritt (Raumbuch, RB6); anders als
+    /// [`Scene::edit_model`] bleiben die Wandzüge, wie sie sind, und der
+    /// Ausbau rechnet nur die Räume neu, die sich ändern.
+    pub(crate) fn raeume_aendern(
+        &mut self,
+        label: &'static str,
+        f: impl FnOnce(&mut Model) -> bool,
+    ) -> bool {
+        self.begin(label);
+        let ok = f(&mut self.model);
+        self.commit();
+        ok
+    }
 }
 
 /// Raumvorlage, die der Name `name` nennt (Bedienbarkeit 40.5): der ganze
