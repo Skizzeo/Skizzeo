@@ -219,9 +219,21 @@ impl AvaView {
         if let Some((_, _, v)) = l.haken.iter().find(|(r, ..)| inside(*r, x, y)) {
             return Some(Hot::BlattWahl(*v));
         }
-        // Das Blatt selbst: ein Klick zeigt es groß (Jörn 11.10.)
+        // Das Blatt: die Lupe und ein Klick neben die Positionen zeigen es
+        // groß (Jörn 11.10.), eine Position wählt ihre Bauteile (12.10.)
         let (bx, by, k) = self.blatt_lage(t, fonts);
-        inside((bx, by, A4.0 * k, A4.1 * k), x, y).then_some(Hot::Lupe)
+        if !inside((bx, by, A4.0 * k, A4.1 * k), x, y) {
+            return None;
+        }
+        if inside(self.lupe_rect(t, fonts), x, y) {
+            return Some(Hot::Lupe);
+        }
+        let b = self.blatt(fonts)?;
+        let jetzt = self.seite_jetzt(fonts);
+        Some(
+            self.stelle_bei(&b, jetzt, (bx, by, k), (x, y))
+                .map_or(Hot::Lupe, Hot::Stelle),
+        )
     }
 
     pub(super) fn paint_vorschau(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
@@ -339,7 +351,9 @@ impl AvaView {
             c.fill_rect(x - b, y - b, w + 2.0 * b, h + 2.0 * b, u.accent);
         }
         c.fill_rect(x, y, w, h, Rgba(255, 255, 255, 255));
+        self.stellen_malen(c, t, &b, jetzt, (x, y, k));
         sk_paint::pdf::zeichnen(c, seite, (x, y), k, regular, fett);
+        self.paint_lupe(c, t, fonts);
     }
 }
 

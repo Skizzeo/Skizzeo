@@ -66,12 +66,24 @@ pub struct Eintrag {
     pub seite: usize,
 }
 
+/// Eine Position auf dem Blatt (Jörn 12.10.): Seite (ab 0) und Fläche in
+/// pt, für Klick und Markierung in der Druckvorschau.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stelle {
+    pub seite: usize,
+    pub oz: String,
+    /// Über die ganze Nutzbreite, lückenlos zur nächsten Position.
+    pub flaeche: (f32, f32, f32, f32),
+}
+
 /// Das fertige Blatt.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Blatt {
     pub seiten: Vec<Seite>,
     /// Einträge mit ihren Seiten, auch ohne Verzeichnis (für die Tests).
     pub inhalt: Vec<Eintrag>,
+    /// Die Positionen in Lesereihenfolge.
+    pub stellen: Vec<Stelle>,
 }
 
 /// Dateiname: „LV-Rohbau-Haus-2026-10-09-Anfrage.pdf“ bzw.
@@ -350,6 +362,7 @@ struct Fluss<'a> {
     seiten: Vec<Seite>,
     y: f32,
     inhalt: Vec<Eintrag>,
+    stellen: Vec<Stelle>,
     /// Seiten vor dem LV (Titelblatt, Verzeichnis): für „Übertrag von
     /// Seite n“ wie in der Fußzeile.
     versatz: usize,
@@ -580,6 +593,11 @@ impl<'a> Fluss<'a> {
                 }
             }
             Stueck::Position(p, z) => {
+                self.stellen.push(Stelle {
+                    seite: self.seiten.len(),
+                    oz: p.oz.clone(),
+                    flaeche: (mm(LINKS) - 3.0, self.y, mm(BREITE) + 6.0, x.hoehe()),
+                });
                 let y = self.y + TEXT;
                 self.st.text(0.0, y, TEXT, false, 0, &p.oz);
                 for (i, l) in z.iter().enumerate() {
@@ -944,6 +962,7 @@ pub fn blatt(lv: &Lv, a: &Angaben, w: Wahl, s: Schriften) -> Blatt {
             seiten: Vec::new(),
             y: 0.0,
             inhalt: Vec::new(),
+            stellen: Vec::new(),
             versatz,
         };
         f.kopf_seite1();
@@ -968,6 +987,10 @@ pub fn blatt(lv: &Lv, a: &Angaben, w: Wahl, s: Schriften) -> Blatt {
     let mut inhalt = f.inhalt;
     for e in &mut inhalt {
         e.seite += davor + 1;
+    }
+    let mut stellen = f.stellen;
+    for st in &mut stellen {
+        st.seite += davor;
     }
     let mut seiten = Vec::new();
     if w.titelblatt {
@@ -1004,7 +1027,11 @@ pub fn blatt(lv: &Lv, a: &Angaben, w: Wahl, s: Schriften) -> Blatt {
         st.rechts(BREITE, y, KLEIN, false, LEISE, &n);
         seite.ops.extend(st.ops);
     }
-    Blatt { seiten, inhalt }
+    Blatt {
+        seiten,
+        inhalt,
+        stellen,
+    }
 }
 
 #[cfg(test)]

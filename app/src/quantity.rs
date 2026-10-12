@@ -900,6 +900,10 @@ impl QuantityWindow {
         }
         let (w, h) = (self.w as i32, self.h as i32);
         self.place_hint(t, fonts);
+        // Auswahl im Modell: die Druckvorschau blättert zu ihrer Position
+        if self.blatt() == Blatt::Ava && self.ava.as_mut().is_some_and(|a| a.blatt_folgen(fonts)) {
+            self.dirty = true;
+        }
         // Reiter Kosten und Gleiten: jedes neue Bild ganz (die Teilbilder
         // kennt nur das Mengenblatt)
         if self.blatt() != Blatt::Mengen || self.karten.gleiten(t, now).is_some() {
@@ -1136,7 +1140,7 @@ impl QuantityWindow {
         );
         if self.ava_gross() {
             if let Some(a) = &self.ava {
-                a.paint_gross(c, fonts);
+                a.paint_gross(c, t, fonts);
             }
         }
         if let Some(hc) = &self.hint {
@@ -1876,9 +1880,9 @@ mod tests {
             q.ava.as_ref().unwrap()
         }
         q.ava.as_mut().unwrap().zeige_druckvorschau(0);
-        let blatt = ava(&q).blatt_mitte(&t, &fonts);
+        let blatt = ava(&q).lupe_mitte(&t, &fonts);
         q.handle(&klick(blatt), &t, &fonts, &mut p);
-        assert!(q.ava_gross(), "Klick auf das Blatt zeigt es groß");
+        assert!(q.ava_gross(), "Klick auf die Lupe zeigt das Blatt groß");
         // Die große Ansicht liegt über den Karten
         let c = q.paint(&t, &fonts, Instant::now());
         let px = c.to_rgba8();
