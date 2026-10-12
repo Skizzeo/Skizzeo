@@ -6801,15 +6801,18 @@ impl App {
             self.tree.sync(&self.scene, &self.picking, &self.theme, s);
         }
         // Auswahl im Modell: Ast aufklappen und hinrollen (nach dem Bau
-        // der Karten, auch beim ersten Bild)
+        // der Karten, auch beim ersten Bild); leer: alle Karten zu
         let p = self.picking.primary();
         if p != self.tree_primary {
             self.tree_primary = p;
-            if let Some(id) = p.filter(|_| !self.tree_picked) {
-                self.tree.reveal(self.scene.model(), id, &self.theme, s);
+            if !self.tree_picked {
+                match p {
+                    Some(id) => self.tree.reveal(self.scene.model(), id, &self.theme, s),
+                    None => self.tree.fold(),
+                }
             }
-            self.tree_picked = false;
         }
+        self.tree_picked = false;
         // Befehlszeile (Bildvergleiche): überfahrene Zeile leuchtet im Modell
         let cli = self.tree.cli_hover.is_some();
         if let Some(a) = self.tree.apply_cli(self.scene.model()) {
@@ -6949,7 +6952,11 @@ impl App {
                 self.tip = None;
                 self.redraw = true;
             }
-            A::Visibility(v) => self.fade_to(v),
+            A::Visibility(v) => {
+                // Fällt Ausgeblendetes aus der Auswahl, bleibt der Baum offen
+                self.tree_picked = true;
+                self.fade_to(v);
+            }
             A::Lock(ids, on) => {
                 let label = if on { "Gesperrt" } else { "Entsperrt" };
                 self.scene.edit_model(label, |m| {

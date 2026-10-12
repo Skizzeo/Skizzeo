@@ -202,6 +202,7 @@ Ausblenden | Auge je Zeile; unten „Alles zeigen“
 Isolieren | Symbol beim Überfahren der Zeile; **Esc** oder „Beenden“ zeigt wieder alles
 Sperren | Schloss je Zeile; Gesperrtes hat keine Griffe
 Auswählen | Klick, mehrere mit **Umschalt** oder **Strg**; Doppelklick holt ins Bild
+Aufklappen | Auswahl im Modell klappt ihren Ast auf; ohne Auswahl sind alle Karten zugeklappt
 Kontextmenü | Rechtsklick wie im Modell
 Rückgängig | **Strg+Z** nimmt Sperren zurück, Ausblenden nicht
 Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klappt zu
