@@ -18,7 +18,7 @@ use sk_math::{vec3, Vec3};
 use sk_model::qto::ElementQto;
 use sk_model::{
     library, Category, ElementId, ElementKind, Guid, LayerFunction, LayerSetId, LevelKind,
-    MatCategory, MaterialId, MaterialLayer, Model, StoreyId,
+    MatCategory, MaterialId, MaterialLayer, Model, RunId, StoreyId,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -49,6 +49,8 @@ pub struct Bericht {
     pub gebaeude: usize,
     pub geschosse: usize,
     pub bauteile: usize,
+    /// Wandzüge als `IfcElementAssembly` (die Wände zählen in `bauteile`).
+    pub baugruppen: usize,
     /// Bauteile, die nicht geschrieben wurden, mit Nummer und Grund.
     pub ausgelassen: Vec<(String, Grund)>,
 }
@@ -180,6 +182,10 @@ struct Ctx<'a> {
     /// Zeilen der Mengenliste je Bauteil (I4).
     mengen: HashMap<ElementId, ElementQto>,
 }
+
+/// Wandzug als Baugruppe: Zug, Geschoss, Lage der Baugruppe, Wände mit
+/// ihrem Segment.
+type Zug = (RunId, u32, u32, Vec<(usize, u32)>);
 
 /// Exportiert das Modell als IFC4-Datei (Text) und sagt, was darin steht.
 pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
@@ -333,6 +339,17 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
     }
     c.aggregate(abgeleitet(p.guid, "aggregates.buildings"), site, &b_ids);
 
+    // Wandzüge mit mehr als einer Wand mit Form werden Baugruppen (I4)
+    let mut wandzahl: HashMap<RunId, usize> = HashMap::new();
+    for &id in solids.keys() {
+        if let (Some(ElementKind::Wall(_)), Some((run, _))) =
+            (m.element(id).map(|e| &e.kind), m.segment_of(id))
+        {
+            *wandzahl.entry(run).or_default() += 1;
+        }
+    }
+    let mut zuege: BTreeMap<usize, Zug> = BTreeMap::new();
+
     // Bauteile in der Reihenfolge des Modells
     let mut ids: Vec<ElementId> = m.elements().ids().collect();
     ids.sort_by_key(|id| id.index());
@@ -374,13 +391,65 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                 .push((el.number.clone(), Grund::OhneForm));
             continue;
         }
-        let pi = c.element(id, s_pl, elev, &netze);
-        if klasse == "IfcSpace" {
-            c.raeume.entry(si).or_default().push(pi);
-        } else {
-            c.inhalt.entry(si).or_default().push(pi);
-        }
+        let zug = match el.kind {
+            ElementKind::Wall(_) => m
+                .segment_of(id)
+                .filter(|(run, _)| wandzahl.get(run).is_some_and(|&n| n > 1)),
+            _ => None,
+        };
+        let Some((run, seg)) = zug else {
+            let pi = c.element(id, s_pl, elev, &netze);
+            if klasse == "IfcSpace" {
+                c.raeume.entry(si).or_default().push(pi);
+            } else {
+                c.inhalt.entry(si).or_default().push(pi);
+            }
+            bericht.bauteile += 1;
+            continue;
+        };
+        // Wand im Wandzug: Lage relativ zur Baugruppe, die im Geschoss steht
+        let z = zuege.entry(run.index() as usize).or_insert_with(|| {
+            let o = c.placement3(vec3(0.0, 0.0, 0.0));
+            let a_pl = c.w.add("IFCLOCALPLACEMENT", vec![r(s_pl), r(o)]);
+            (run, si, a_pl, Vec::new())
+        });
+        let a_pl = z.2;
+        let pi = c.element(id, a_pl, elev, &netze);
+        zuege
+            .get_mut(&(run.index() as usize))
+            .unwrap()
+            .3
+            .push((seg, pi));
         bericht.bauteile += 1;
+    }
+    for (run, si, a_pl, mut waende) in zuege.into_values() {
+        let Some(w) = m.run(run) else { continue };
+        waende.sort_unstable();
+        let waende: Vec<u32> = waende.into_iter().map(|x| x.1).collect();
+        let nummern: Vec<&str> = w
+            .segments
+            .iter()
+            .filter_map(|e| m.element(*e))
+            .map(|e| e.number.as_str())
+            .collect();
+        let gruppe = c.w.add(
+            "IFCELEMENTASSEMBLY",
+            vec![
+                gid(w.guid),
+                r(c.oh),
+                s("Wandzug"),
+                s(&nummern.join(", ")),
+                s("Wandzug"),
+                r(a_pl),
+                V::Null,
+                V::Null,
+                e("SITE"),
+                e("USERDEFINED"),
+            ],
+        );
+        c.aggregate(abgeleitet(w.guid, "aggregates.walls"), gruppe, &waende);
+        c.inhalt.entry(si).or_default().push(gruppe);
+        bericht.baugruppen += 1;
     }
 
     // Beziehungen gesammelt
