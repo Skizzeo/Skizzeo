@@ -18,6 +18,7 @@ pub mod netz;
 pub mod pdf;
 pub mod praedikate;
 pub mod pruefen;
+pub mod seite;
 pub mod volumen;
 
 pub use netz::{netz, Netz, Rand};
