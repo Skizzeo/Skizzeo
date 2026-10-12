@@ -15,6 +15,8 @@ use sk_ui::theme::Theme;
 pub mod fallrohr;
 #[path = "grundriss/raum_props.rs"]
 mod raum;
+#[path = "raumbuch/eigenschaften.rs"]
+mod raumbuch;
 
 /// Bis zu so vielen Pixeln Bewegung zwischen Drücken und Loslassen gilt als Klick.
 const CLICK_PX: f64 = 4.0;
