@@ -28,7 +28,10 @@ const HAEUSER: [(&str, &str); 5] = [
     // `terrace` mit dem Typ DT-14, `upstand`, `crown`, `inner`, `coping_mat`);
     // seit PR #68 das Flachdach mit 2 % Gefälle (`slope`, `drains`) und je
     // Ablauf ein `[downpipe]`, eines mit `overflow=spout`, `control=0`, `spacing`;
-    // seit PR #72 die eigene Schnitthöhe des Grundrisses (`[plancut] h=`)
+    // seit PR #72 die eigene Schnitthöhe des Grundrisses (`[plancut] h=`);
+    // seit PR #79 im EG von Gebäude 1 abweichende Höhenlinien (`sill`,
+    // `lintel`), eine Wandöffnung an den Linien und eine Türöffnung mit
+    // freien Höhen, `reveal`, `install` und `element` (`[opening]`)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
