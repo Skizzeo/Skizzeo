@@ -40,11 +40,11 @@ pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
     // Grundnummer die nächste freie Endung
     let alle: std::collections::HashSet<String> = punkte.iter().map(|p| p.nr.clone()).collect();
     let mut weiter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for i in 0..punkte.len() {
-        if gesehen.insert(punkte[i].nr.clone()) {
+    for p in punkte.iter_mut() {
+        if gesehen.insert(p.nr.clone()) {
             continue;
         }
-        let alt = punkte[i].nr.clone();
+        let alt = p.nr.clone();
         let k0 = weiter.get(&alt).copied().unwrap_or(2);
         let (k, neu) = (k0..)
             .map(|k| (k, format!("{alt}-{k}")))
@@ -52,7 +52,7 @@ pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
             .unwrap_or_default();
         weiter.insert(alt.clone(), k + 1);
         gesehen.insert(neu.clone());
-        punkte[i].nr = neu.clone();
+        p.nr = neu.clone();
         umbenannt.push((alt, neu));
     }
     match umbenannt.as_slice() {
