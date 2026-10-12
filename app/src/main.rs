@@ -4951,7 +4951,7 @@ impl App {
                 help::Topic::Ext
             }
             _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
-            help::Topic::Drag if self.edit.splitting() => self.edit.thema(),
+            help::Topic::Drag if self.edit.eigenes_thema() => self.edit.thema(),
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
             _ if ctx.window.is_none()

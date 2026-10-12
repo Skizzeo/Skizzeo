@@ -1154,6 +1154,9 @@ mod tests {
         for a in ["Im Grundriss", "Ändern, Löschen", "Höhenlinien"] {
             assert!(s.rows.iter().any(|(x, _)| x == a), "{a}");
         }
+        let loeschen = s.rows.iter().find(|(x, _)| x == "Ändern, Löschen").unwrap();
+        assert!(loeschen.1.contains("„Öffnungen“") && loeschen.1.contains("**Entf**"));
+        assert!(!loeschen.1.contains("noch nicht"), "39.2");
         assert!(s.rows.len() <= 10);
     }
 
