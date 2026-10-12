@@ -34,6 +34,32 @@ const HAEUSER: [(&str, &str); 6] = [
     ),
 ];
 
+/// r7 mit einer Tür und einem Fenster als Öffnung in der Wand (wie Tests
+/// r7-oeffnungen.patch): Öffnungen haben keinen eigenen Körper. Hat r7
+/// sie schon (Patch eingespielt), bleibt es, wie es ist.
+fn r7_mit_oeffnungen() -> String {
+    if HAEUSER[5].1.contains("[opening]") {
+        return HAEUSER[5].1.to_string();
+    }
+    HAEUSER[5]
+        .1
+        .replace(
+            "short=\"EG\" kind=storey elev=0 h=2855",
+            "short=\"EG\" kind=storey elev=0 h=2855 sill=900 lintel=2100",
+        )
+        .replacen(
+            "[extdef]",
+            "[opening] guid=0spFV0l_51hO$YNK6PnHQX art=door pts=\"17000 8000;18010 8000\" \
+             bottom=0w$UUoIID0CgN5lvvTdnI6:u:0 top=0w$UUoIID0CgN5lvvTdnI6:u:2135 \
+             reveal=40,40,40,0 install=100 element=90 number=\"OE-002\" cat=opening seq=3 \
+             storey=0w$UUoIID0CgN5lvvTdnI6\n\
+             [opening] guid=3t_3k23BnDIBGTyz4qQuwQ art=window pts=\"16000 1500;16000 2750\" \
+             bottom=0w$UUoIID0CgN5lvvTdnI6:sill top=0w$UUoIID0CgN5lvvTdnI6:lintel \
+             number=\"OE-001\" cat=opening seq=3 storey=0w$UUoIID0CgN5lvvTdnI6\n[extdef]",
+            1,
+        )
+}
+
 fn laden(text: &str) -> Model {
     szo::read(text, GuidGen::with_seed(1)).expect("lädt").model
 }
@@ -84,7 +110,11 @@ fn bauteile(f: &File) -> HashMap<String, (u32, String)> {
 
 #[test]
 fn datei_ist_vollstaendig_und_eindeutig() {
-    for (name, t) in HAEUSER {
+    let r7o = r7_mit_oeffnungen();
+    let alle = HAEUSER
+        .into_iter()
+        .chain([("r7 mit Öffnungen", r7o.as_str())]);
+    for (name, t) in alle {
         let m = laden(t);
         let (ifc, b) = export(&m, &opt());
         let f = step::read(&ifc).unwrap_or_else(|e| panic!("{name}: {e:?}"));
@@ -127,7 +157,12 @@ fn datei_ist_vollstaendig_und_eindeutig() {
             assert_eq!(*g, sk_ifc::Grund::OeffnungBisI5, "{name}: {nr}");
         }
         let solids = m.element_solids();
-        assert_eq!(solids.len(), b.bauteile + b.ausgelassen.len(), "{name}");
+        let draussen = |nr: &str| b.ausgelassen.iter().any(|(n, _)| n == nr);
+        let mit_koerper = solids
+            .iter()
+            .filter(|(id, _)| !draussen(&m.element(*id).unwrap().number))
+            .count();
+        assert_eq!(mit_koerper, b.bauteile, "{name}");
         for (id, _) in &solids {
             let el = m.element(*id).unwrap();
             let draussen = b.ausgelassen.iter().any(|(nr, _)| *nr == el.number);
@@ -405,4 +440,23 @@ fn vorschau_liest_den_export() {
             );
         }
     }
+}
+
+/// Befund Test zu #79: Öffnungen ohne Körper stehen als „Öffnung bis I5“ im
+/// Bericht, nicht als „ohne Form“, und nicht in der Datei.
+#[test]
+fn oeffnungen_bis_i5() {
+    let m = laden(&r7_mit_oeffnungen());
+    let (ifc, b) = export(&m, &opt());
+    let f = step::read(&ifc).unwrap();
+    assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
+    let mut aus = b.ausgelassen.clone();
+    aus.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        aus,
+        vec![
+            ("OE-001".to_string(), sk_ifc::Grund::OeffnungBisI5),
+            ("OE-002".to_string(), sk_ifc::Grund::OeffnungBisI5),
+        ]
+    );
 }

@@ -317,6 +317,15 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         let Some(el) = m.element(id) else {
             continue;
         };
+        // Öffnungen zuerst: sie haben (seit O2) keinen eigenen Körper und
+        // fehlen bis I5 aus diesem Grund, nicht „ohne Form“
+        let klasse = c.zuordnung(id).klasse.name;
+        if klasse == "IfcOpeningElement" {
+            bericht
+                .ausgelassen
+                .push((el.number.clone(), Grund::OeffnungBisI5));
+            continue;
+        }
         let Some(&(si, s_pl, elev)) = storey_of.get(&el.storey) else {
             bericht
                 .ausgelassen
@@ -329,13 +338,6 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                 .push((el.number.clone(), Grund::OhneForm));
             continue;
         };
-        let klasse = c.zuordnung(id).klasse.name;
-        if klasse == "IfcOpeningElement" {
-            bericht
-                .ausgelassen
-                .push((el.number.clone(), Grund::OeffnungBisI5));
-            continue;
-        }
         let netze = geometrie::netze(solid, vec3(0.0, 0.0, elev));
         if netze.is_empty() {
             bericht
