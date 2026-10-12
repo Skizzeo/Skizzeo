@@ -24,7 +24,7 @@ const KLEIN: [&str; 3] = [
 /// eigenes Modul daneben (Pfadfinderregel). Ist eine Datei unter der Grenze,
 /// kommt sie von der Liste, ist sie kleiner geworden, wird die Zahl gesenkt.
 const UEBER: [(&str, usize); 2] = [
-    ("app/src/main.rs", 9_010),
+    ("app/src/main.rs", 9_002),
     ("app/src/kosten_view.rs", 3_027),
 ];
 
