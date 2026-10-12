@@ -545,11 +545,22 @@ impl Maske {
         self
     }
 
+    /// Nordwert aus seinem Feld. Der Bereich für Deutschland gilt beim
+    /// Eingeben; ein gespeicherter Wert außerhalb, unverändert im Feld,
+    /// bleibt ohne Meldung (Review #95).
+    fn nordwert(&self) -> Result<Option<f64>, ()> {
+        let t = &self.felder[UTM + 1].text;
+        match self.ort.utm {
+            Some(u) if *t == gruppiert(u.n) => Ok(Some(u.n)),
+            _ => wert_im_bereich(t, UTM + 1, NORD_DE),
+        }
+    }
+
     /// Ostwert und Nordwert aus ihren Feldern: `Ok(None)` beide leer,
     /// `Err` einer fehlt oder passt nicht.
     fn utm(&self) -> Result<Option<sk_model::Utm>, ()> {
         let ost = ostwert(&self.felder[UTM].text)?;
-        let nord = wert_im_bereich(&self.felder[UTM + 1].text, UTM + 1, NORD_DE)?;
+        let nord = self.nordwert()?;
         match (ost, nord) {
             (None, None) => Ok(None),
             (Some((e, zone)), Some(n)) => Ok(Some(sk_model::Utm { e, n, zone })),
@@ -634,7 +645,7 @@ impl Maske {
                 Some(format!("{wort}: Zahl von −{g} bis {g}."))
             } else if i == UTM && ostwert(&e.text).is_err() {
                 Some(format!("{wort} mit Zone vorn: {}.", f.beispiel))
-            } else if i == UTM + 1 && wert_im_bereich(&e.text, i, NORD_DE).is_err() {
+            } else if i == UTM + 1 && self.nordwert().is_err() {
                 Some(format!("{wort}: 5 200 000 bis 6 200 000 m."))
             } else if i == UTM + 2 && wert_im_bereich(&e.text, i, sk_model::NHN).is_err() {
                 Some(format!("{wort}: −500 bis 9000 m."))
@@ -1514,6 +1525,22 @@ mod tests {
         );
         assert_eq!(m.ort().utm, alt.utm);
         // ohne alte Werte: keine im IFC
+        // gespeichert außerhalb Deutschlands (Datei nimmt 0 … 10 Mio.):
+        // angezeigt, unverändert übernommen, ohne Dauermeldung
+        let fern = Location {
+            utm: Some(sk_model::Utm {
+                e: 500_000.0,
+                n: 4_000_000.0,
+                zone: 32,
+            }),
+            ..Default::default()
+        };
+        let mut f = Maske::new(&ohne(), false, None).mit_ort(&fern);
+        assert_eq!(f.meldung(), None);
+        assert_eq!(f.ort(), fern);
+        f.felder[UTM + 1] = TextEdit::new("4 000 001");
+        assert!(f.meldung().unwrap().starts_with("Nordwert: 5 200 000"));
+        assert_eq!(f.ort(), fern);
         let mut neu = Maske::new(&ohne(), false, None).mit_ort(&Location::default());
         neu.felder[UTM + 1] = TextEdit::new("5878765,432");
         assert_eq!(
