@@ -125,6 +125,12 @@ impl Category {
     pub fn is_outer_wall(self) -> bool {
         matches!(self, Category::ExteriorWall | Category::Parapet)
     }
+
+    /// Wände, in denen Öffnungen sitzen können: Außenwände und Aufkantungen,
+    /// Innenwände für die Innentüren (Integration 12.10. 05:24).
+    pub fn takes_openings(self) -> bool {
+        self.is_outer_wall() || self == Category::InteriorWall
+    }
 }
 
 /// Freier Eigenschaftswert.

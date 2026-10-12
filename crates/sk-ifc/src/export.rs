@@ -63,6 +63,10 @@ pub enum Grund {
     /// Öffnungen brauchen das Bauteil, das sie lochen (`IfcRelVoidsElement`,
     /// ifc/plan.md §5 I5); bis dahin nicht in der Datei.
     OeffnungBisI5,
+    /// Räume (Grundriss G3) haben im Modell keinen Körper, ihre Form rechnet
+    /// `sk-raum` aus den Wänden; als `IfcSpace` mit Form in I6 (ifc/plan.md
+    /// §5), bis dahin nicht in der Datei.
+    RaumBisI6,
 }
 
 impl Grund {
@@ -71,6 +75,7 @@ impl Grund {
             Grund::OhneGeschoss => "ohne Geschoss",
             Grund::OhneForm => "ohne Form",
             Grund::OeffnungBisI5 => "Öffnung bis I5",
+            Grund::RaumBisI6 => "Raum bis I6",
         }
     }
 }
@@ -342,6 +347,12 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
             bericht
                 .ausgelassen
                 .push((el.number.clone(), Grund::OeffnungBisI5));
+            continue;
+        }
+        if matches!(el.kind, ElementKind::Space(_)) {
+            bericht
+                .ausgelassen
+                .push((el.number.clone(), Grund::RaumBisI6));
             continue;
         }
         let Some(&(si, s_pl, elev)) = storey_of.get(&el.storey) else {

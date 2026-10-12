@@ -17,7 +17,7 @@ use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FlatRoof, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId,
-    Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain,
+    Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, TypeCategory, WallChain,
     WallQto, COPING_PART, DOWNPIPE_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART,
     ROOF_COPING_PART, ROOF_PART, SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
 };
@@ -26,6 +26,7 @@ use sk_ui::theme::Theme;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "scene_gefaelle.rs"]
 mod gefaelle;
@@ -35,6 +36,8 @@ mod raum;
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
 mod schnitt;
+#[path = "scene_sicht.rs"]
+pub mod sicht;
 use schnitt::UnderMemo;
 #[path = "scene_oeffnung.rs"]
 mod scene_oeffnung;
@@ -296,7 +299,12 @@ impl RunCache {
     /// der Zug unter dem aktiven Geschoss, nur die Teile ohne die Wand.
     fn plan_solid(&self, cut: f64, mode: PlanMode) -> Solid {
         let mut s = match mode {
-            PlanMode::Cut => self.chain.solid_cut_at(cut),
+            PlanMode::Cut => {
+                let mut s = self.chain.solid_cut_at(cut);
+                s.edges.extend(self.chain.element_edges(cut));
+                s.edges.extend(self.chain.swing_edges(cut));
+                s
+            }
             PlanMode::Foundation | PlanMode::Lower => Solid::default(),
         };
         for p in run_parts(&self.found, &self.floor, &self.roof) {
@@ -496,8 +504,13 @@ pub type KostenLive = (Rc<sk_cost::Katalog>, Vec<Rc<sk_cost::Kostenblatt>>);
 /// Schlüssel eines gemerkten LV: Kostenblatt, Modellstand, Wahl.
 type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
 
+/// Zählt die Szenen für [`Scene::kennung`].
+static SZENEN: AtomicU64 = AtomicU64::new(0);
+
 pub struct Scene {
     model: Model,
+    /// Kennung dieser Szene ([`Scene::kennung`]).
+    kennung: u64,
     /// Deckendicke über den Geschossen je Modellstand ([`schnitt`]).
     decken: schnitt::Decken,
     /// Rolle dieser Sitzung für Kostenoperationen (KA-3b1): `Nutzer`, wenn
@@ -513,13 +526,14 @@ pub struct Scene {
     /// #87 B2, B3).
     erkennung: RefCell<sk_raum::Erkennung>,
     /// Geltende Räume je Geschoss zum Stand vor dem offenen Schritt, für
-    /// den Abgleich nach Überdeckung (B4); fehlt einer, rechnet ihn
+    /// den Abgleich nach Überdeckung (B4); Rückgängig und Wiederholen führen
+    /// ihn nach ([`Scene::staende_folgen`]), fehlt einer, rechnet ihn
     /// [`Scene::begin`].
     staende: HashMap<sk_model::StoreyId, sk_raum::Stand>,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
-    undo: Vec<Txn>,
+    undo: Vec<raum::Schritt>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
-    redo: Vec<Txn>,
+    redo: Vec<raum::Schritt>,
     /// Zählt jeden neuen Schritt im Verlauf (Paket 8b, K3).
     serial: u64,
     /// Zwischenspeicher je Wandzug, über den Arena-Platz der [`RunId`].
@@ -858,6 +872,7 @@ impl Scene {
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
             model,
+            kennung: SZENEN.fetch_add(1, Ordering::Relaxed),
             decken: Default::default(),
             undo: Vec::new(),
             serial: 0,
@@ -1086,6 +1101,12 @@ impl Scene {
 
     pub fn model(&self) -> &Model {
         &self.model
+    }
+
+    /// Unterscheidet Szenen (Neu, Öffnen, Sicherung) auch bei gleichem
+    /// Modellstand, für Zwischenspeicher außerhalb der Szene (Review #87 R4).
+    pub fn kennung(&self) -> u64 {
+        self.kennung
     }
 
     /// Aktives Geschoss; gibt es das gewählte nicht mehr, das EG des ersten
@@ -1901,10 +1922,10 @@ impl Scene {
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
         // Räume folgen den Wänden im selben Schritt (G3)
-        self.raeume_abgleichen();
+        let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
-            Ok(Some(t)) => {
-                self.undo.push(t);
+            Ok(Some(txn)) => {
+                self.undo.push(raum::Schritt { txn, raeume });
                 self.serial += 1;
                 if self.undo.len() > HISTORY {
                     self.undo.remove(0);
@@ -2223,8 +2244,10 @@ impl Scene {
                 foundation,
                 roof,
                 active: id == active,
-                lines: (!foundation && !roof)
-                    .then_some((st.elevation + st.lines.sill, st.elevation + st.lines.lintel)),
+                lines: (!foundation && !roof).then(|| {
+                    let (l, e) = (st.lines, st.elevation);
+                    (e + l.sill, e + l.lintel, e + l.door)
+                }),
             });
             if foundation {
                 // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)
@@ -3153,7 +3176,7 @@ impl Scene {
         let grow = self
             .undo
             .last()
-            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+            .is_some_and(|t| GROW_STEPS.contains(&t.txn.label));
         self.grown(grow, |s| s.step(Direction::Undo))
     }
 
@@ -3163,7 +3186,7 @@ impl Scene {
         if self.pending.is_some() {
             return Some("Gebäude erstellt");
         }
-        self.undo.last().map(|t| t.label)
+        self.undo.last().map(|t| t.txn.label)
     }
 
     /// Bezeichnung des Schritts, den „Wiederherstellen“ als Nächstes ausführt.
@@ -3171,7 +3194,7 @@ impl Scene {
         if self.pending.is_some() {
             return None;
         }
-        self.redo.last().map(|t| t.label)
+        self.redo.last().map(|t| t.txn.label)
     }
 
     pub fn redo(&mut self) -> bool {
@@ -3181,7 +3204,7 @@ impl Scene {
         let grow = self
             .redo
             .last()
-            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+            .is_some_and(|t| GROW_STEPS.contains(&t.txn.label));
         self.grown(grow, |s| s.step(Direction::Redo))
     }
 
@@ -3287,16 +3310,19 @@ impl Scene {
     }
 
     fn step(&mut self, dir: Direction) -> bool {
-        let (from, to) = match dir {
-            Direction::Undo => (&mut self.undo, &mut self.redo),
-            Direction::Redo => (&mut self.redo, &mut self.undo),
+        let from = match dir {
+            Direction::Undo => &mut self.undo,
+            Direction::Redo => &mut self.redo,
         };
         let Some(t) = from.pop() else {
             return false;
         };
-        let touched = self.model.apply(&t, dir);
-        to.push(t);
-        self.staende.clear();
+        let touched = self.model.apply(&t.txn, dir);
+        self.staende_folgen(&t, dir);
+        match dir {
+            Direction::Undo => self.redo.push(t),
+            Direction::Redo => self.undo.push(t),
+        }
         self.mark_touched(&touched);
         self.rebuild_dirty(false);
         true
@@ -3306,6 +3332,7 @@ impl Scene {
     /// gezogenen). Beim Schnitt: Ebene `section` (Punkt, Normale zum Betrachter),
     /// alles davor wird weggeschnitten.
     pub fn mesh(&mut self, view: ViewKind, section: Option<Plane>, except: &[RunId]) -> MeshData {
+        self.sicht_fuer(view);
         let key = (view, section, except.to_vec());
         self.shown_key = Some(key.clone());
         let m = self.grow_mesh(&key);
@@ -3476,6 +3503,7 @@ impl Scene {
         section: Option<Plane>,
         runs: &[RunId],
     ) -> MeshData {
+        self.sicht_fuer(view);
         let [m, _] = self.mesh_split(view, section, runs);
         m
     }
@@ -3724,6 +3752,7 @@ impl Scene {
         section: Option<Plane>,
         except: &[RunId],
     ) -> MeshData {
+        self.sicht_fuer(view);
         if !self.filtering() {
             return MeshData::default();
         }
@@ -3750,8 +3779,14 @@ impl Scene {
     // --- Sichtbarkeit (Paket 3) -------------------------------------------
 
     /// Ändert die Sichtbarkeit sofort: kein Schritt, keine Revision, Mengen
-    /// bleiben. `false`, wenn sich nichts ändert.
+    /// bleiben; die Schnelloption der Ansicht bleibt. `false`, wenn sich
+    /// nichts ändert.
     pub fn set_visibility(&mut self, v: Visibility) -> bool {
+        let view_cat = self.model.visibility().view_cat.clone();
+        self.set_vis(Visibility { view_cat, ..v })
+    }
+
+    fn set_vis(&mut self, v: Visibility) -> bool {
         if *self.model.visibility() == v {
             return false;
         }
@@ -3766,8 +3801,13 @@ impl Scene {
     /// Isolieren wird der Rest blass bzw. wieder deckend.
     #[cfg_attr(not(test), allow(dead_code))] // Baumpanel (Paket 4)
     pub fn fade_visibility(&mut self, v: Visibility) -> bool {
+        let view_cat = self.model.visibility().view_cat.clone();
+        self.fade_vis(Visibility { view_cat, ..v })
+    }
+
+    fn fade_vis(&mut self, v: Visibility) -> bool {
         let old = self.model.visibility().clone();
-        if !self.set_visibility(v) {
+        if !self.set_vis(v) {
             return false;
         }
         let new = self.model.visibility();
@@ -3945,6 +3985,7 @@ impl Scene {
         origin: Vec3,
         dir: Vec3,
     ) -> Option<ElementId> {
+        self.sicht_fuer(view);
         let cut = self.plan_cut();
         let active = self.active_storey();
         let modes: Vec<(RunId, PlanMode)> = self

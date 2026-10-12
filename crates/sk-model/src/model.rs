@@ -222,6 +222,9 @@ pub struct Model {
     active_cut: usize,
     /// Ausgeblendetes und Isoliertes (Paket 3); Ansichtszustand wie `cuts`.
     pub(crate) visibility: crate::view::Visibility,
+    /// Schnelloption je Ansicht (Zahnrad, Jörn 12.10.); Ansichtszustand wie
+    /// `view_below`.
+    pub(crate) view_hide: crate::view::ViewHide,
     /// Reihenfolge, in der Bauteile gesperrt wurden (für die `[lock]`-Zeilen,
     /// damit ein Rundlauf die Reihenfolge der Datei behält).
     pub(crate) lock_order: Vec<Guid>,
@@ -741,6 +744,7 @@ impl Model {
             view_shade_raw: Vec::new(),
             view_below: [false; 4],
             view_below_raw: Vec::new(),
+            view_hide: Default::default(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -824,6 +828,7 @@ impl Model {
             view_shade_raw: Vec::new(),
             view_below: [false; 4],
             view_below_raw: Vec::new(),
+            view_hide: Default::default(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -3112,6 +3117,7 @@ impl Model {
         self.txn = Some(Open {
             building_number: self.building_number,
             numbers: self.numbers.to_vec(),
+            revision: self.revision,
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3121,6 +3127,11 @@ impl Model {
 
     pub fn in_step(&self) -> bool {
         self.txn.is_some()
+    }
+
+    /// Revision beim Öffnen des offenen Schritts; `None` ohne Schritt.
+    pub fn step_start_revision(&self) -> Option<u64> {
+        self.txn.as_ref().map(|t| t.revision)
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat
@@ -3133,7 +3144,7 @@ impl Model {
     /// und Typen im selben Schritt. Ändert er ein gesperrtes Bauteil, wird
     /// er ganz zurückgerollt (Sicherheitsnetz, Paket 4 §2.2).
     pub fn try_commit(&mut self) -> Result<Option<Txn>, Locked> {
-        if self.txn.is_some() {
+        if self.txn.is_some() && !self.only_swings() {
             let scope = self.sync_scope();
             let scope = scope.as_deref();
             self.sync_edge_strips(scope);

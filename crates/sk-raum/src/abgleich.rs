@@ -9,13 +9,15 @@
 //! ihre Fläche zurückkommt.
 //!
 //! Beim Abschluss eines Schritts folgt jeder Raum seiner Fläche (Review #87
-//! B4), wenn der Stand davor bekannt ist ([`Stand`]): Eine unveränderte
-//! Fläche behält ihren Raum. Sonst behält ein Raum die Fläche, in der sein
-//! Anker liegt, wenn sie überwiegend aus ihm hervorgeht (geteilt: der Teil
-//! mit dem Stempel), danach gehen die Flächen nach der größten Überdeckung
-//! mit den alten (Wand verschoben; vereint: der größere Anteil gilt). Die
-//! Anker rücken auf den Stempel in der neuen Fläche, so gibt die Ankerregel
-//! danach dasselbe. Jede Fläche ohne Raum bekommt einen neuen („Raum n“).
+//! B4, R1), wenn der Stand davor bekannt ist ([`Stand`]): Eine unveränderte
+//! Fläche behält ihren Raum. Die übrigen Räume gehen an die neuen Flächen,
+//! die sie überdecken, so dass möglichst viele Räume eine Fläche behalten
+//! (Wand verschoben, auch weit über den Stempel des Nachbarn: beide Seiten
+//! bleiben). Unter diesen Zuordnungen behält ein Raum möglichst die Fläche
+//! mit seinem Anker, wenn sie überwiegend aus ihm hervorgeht (geteilt: der
+//! Teil mit dem Stempel), dann gilt die größte Überdeckung (vereint: der
+//! größere Anteil). Die Anker rücken auf den Stempel in der neuen Fläche,
+//! so gibt die Ankerregel danach dasselbe. Jede Fläche ohne Raum bekommt einen neuen („Raum n“).
 //! Nur die Hausgruppen, deren Wände der Schritt ändert, werden angesehen.
 
 use crate::speicher::{beruehren, drin, Fl, Kasten, Lage, NachSchluessel, Raster};
@@ -87,14 +89,14 @@ pub(crate) fn zuteilen(fl: &[&Fl], raeume: &[(ElementId, &Space)]) -> Vec<Option
 /// Schritt ([`Lage::stand`], [`abgleichen_lage`]).
 #[derive(Clone, Default)]
 pub struct Stand {
-    gruppen: NachSchluessel<StandGruppe>,
+    gruppen: NachSchluessel<Rc<StandGruppe>>,
 }
 
 /// Flächen einer Hausgruppe mit ihrem geltenden Raum.
-type StandGruppe = Vec<(Rc<Fl>, Option<ElementId>)>;
+pub(crate) type StandGruppe = Vec<(Rc<Fl>, Option<ElementId>)>;
 
 impl Stand {
-    pub(crate) fn setzen(&mut self, schluessel: u64, raeume: StandGruppe) {
+    pub(crate) fn setzen(&mut self, schluessel: u64, raeume: Rc<StandGruppe>) {
         self.gruppen.insert(schluessel, raeume);
     }
 
@@ -102,10 +104,49 @@ impl Stand {
     pub fn raeume(&self) -> usize {
         self.gruppen
             .values()
-            .flatten()
+            .flat_map(|g| g.iter())
             .filter(|r| r.1.is_some())
             .count()
     }
+
+    /// Hausgruppe, Fläche (je ihr Fingerabdruck) und geltender Raum,
+    /// geordnet: Zwei Stände mit gleicher Zuordnung sind gleich.
+    pub fn zuordnung(&self) -> Vec<(u64, u64, Option<ElementId>)> {
+        let mut v: Vec<_> = self
+            .gruppen
+            .iter()
+            .flat_map(|(&s, g)| g.iter().map(move |(f, r)| (s, f.kennung, *r)))
+            .collect();
+        v.sort_by_key(|&(s, f, r)| (s, f, r.map(|id| id.index())));
+        v
+    }
+
+    /// Der Stand vor dem Schritt, dessen Abgleich `w` ergab, aus dem
+    /// danach (Rückgängig).
+    pub fn zurueck(&mut self, w: &Wechsel) {
+        for (s, _) in &w.dazu {
+            self.gruppen.remove(s);
+        }
+        self.gruppen.extend(w.weg.iter().cloned());
+    }
+
+    /// Der Stand nach dem Schritt, dessen Abgleich `w` ergab, aus dem
+    /// davor (Wiederholen).
+    pub fn vor(&mut self, w: &Wechsel) {
+        for (s, _) in &w.weg {
+            self.gruppen.remove(s);
+        }
+        self.gruppen.extend(w.dazu.iter().cloned());
+    }
+}
+
+/// Was ein Abgleich am [`Stand`] ändert: die Hausgruppen, die der Schritt
+/// ersetzt, und die neuen. So folgt der Stand Rückgängig und Wiederholen,
+/// ohne neu gerechnet zu werden (Review #87 R5).
+#[derive(Clone, Default)]
+pub struct Wechsel {
+    weg: Vec<(u64, Rc<StandGruppe>)>,
+    dazu: Vec<(u64, Rc<StandGruppe>)>,
 }
 
 /// Räume des Geschosses, die gerade ruhen (keine Fläche oder ein anderer
@@ -127,6 +168,8 @@ pub struct Abgleich {
     pub neu: Vec<(ElementId, f64)>,
     /// Geltende Räume nach dem Abgleich (Stand vor dem nächsten Schritt).
     pub stand: Stand,
+    /// Wie der Stand davor in den danach übergeht; nur mit Stand davor.
+    pub wechsel: Option<Wechsel>,
     /// Zahl der Änderungen am Modell (0: nichts geändert).
     pub aenderungen: usize,
 }
@@ -140,6 +183,7 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
     let mut out = Abgleich {
         neu: Vec::new(),
         stand: Stand::default(),
+        wechsel: None,
         aenderungen: 0,
     };
     // Unveränderte Hausgruppen behalten ihre Räume
@@ -152,7 +196,12 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
             None => geaendert.push(gi),
         }
     }
+    let mut wechsel = Wechsel::default();
+    if mit_stand {
+        wechsel.weg = alt.gruppen.iter().map(|(&s, g)| (s, g.clone())).collect();
+    }
     if geaendert.is_empty() {
+        out.wechsel = mit_stand.then_some(wechsel);
         return out;
     }
     // Flächen der geänderten Gruppen, in der Ordnung der Räume
@@ -180,7 +229,7 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
         let mut alte: Vec<(&str, ElementId, &Fl)> = alt
             .gruppen
             .values()
-            .flatten()
+            .flat_map(|g| g.iter())
             .filter_map(|(f, r)| {
                 let id = (*r)?;
                 let e = m.element(id)?;
@@ -232,9 +281,12 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
         je.entry(*gi).or_default().push((f.clone(), *r));
     }
     for gi in geaendert {
-        let raeume = je.remove(&gi).unwrap_or_default();
-        out.stand.setzen(lage.gruppen[gi].schluessel, raeume);
+        let raeume = Rc::new(je.remove(&gi).unwrap_or_default());
+        let s = lage.gruppen[gi].schluessel;
+        wechsel.dazu.push((s, raeume.clone()));
+        out.stand.setzen(s, raeume);
     }
+    out.wechsel = mit_stand.then_some(wechsel);
     out
 }
 
@@ -294,35 +346,162 @@ fn nach_ueberdeckung(m: &Model, alte: &[(ElementId, &Fl)], neu: &[&Fl]) -> Vec<(
             }
         }
     }
-    // Der Teil mit dem Anker, wenn er überwiegend aus dem Raum hervorgeht
-    for (a, &(id, _)) in alte.iter().enumerate() {
-        let Some(anker) = m.space(id).map(|s| s.anker) else {
-            continue;
-        };
-        let teil = anteil.iter().find(|&&(b, i, q)| {
-            b == a && q > 0.5 && frei_a[a] && frei_n[i] && neu[i].enthaelt(anker)
-        });
-        if let Some(&(_, i, _)) = teil {
-            frei_a[a] = false;
-            frei_n[i] = false;
-            paare.push((id, i));
-        }
-    }
-    // Größte Überdeckung zuerst, bei Gleichstand der ältere Raum
-    let mut nach: Vec<(f64, usize, usize)> = anteil
+    // Überdeckungen über 1 % der kleineren Fläche; mit Anker: die neue
+    // Fläche enthält den Anker und geht überwiegend aus dem Raum hervor
+    let kanten: Vec<Kante> = anteil
         .iter()
-        .map(|&(a, i, q)| (q * neu[i].form.flaeche, a, i))
-        .filter(|&(f, a, i)| f > 0.01 * alte[a].1.form.flaeche.min(neu[i].form.flaeche))
+        .filter_map(|&(a, i, q)| {
+            let f = q * neu[i].form.flaeche;
+            if f <= 0.01 * alte[a].1.form.flaeche.min(neu[i].form.flaeche) {
+                return None;
+            }
+            let anker = q > 0.5 && m.space(alte[a].0).is_some_and(|s| neu[i].enthaelt(s.anker));
+            Some(Kante { a, i, f, anker })
+        })
         .collect();
-    nach.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.cmp(&y.1)));
-    for (_, a, i) in nach {
-        if frei_a[a] && frei_n[i] {
-            frei_a[a] = false;
-            frei_n[i] = false;
-            paare.push((alte[a].0, i));
-        }
+    for teil in teile(&kanten, alte.len()) {
+        paare.extend(zuordnen(&teil).into_iter().map(|(a, i)| (alte[a].0, i)));
     }
     paare
+}
+
+/// Überdeckung des alten Raums `a` mit der neuen Fläche `i` (mm²).
+#[derive(Clone, Copy)]
+struct Kante {
+    a: usize,
+    i: usize,
+    f: f64,
+    anker: bool,
+}
+
+/// Die Kanten je zusammenhängendem Teil (über gemeinsame alte Räume oder
+/// neue Flächen); `na`: Zahl der alten Räume.
+fn teile(k: &[Kante], na: usize) -> Vec<Vec<Kante>> {
+    let n = na + k.iter().map(|k| k.i + 1).max().unwrap_or(0);
+    let mut eltern: Vec<usize> = (0..n).collect();
+    fn wurzel(e: &mut [usize], mut i: usize) -> usize {
+        while e[i] != i {
+            e[i] = e[e[i]];
+            i = e[i];
+        }
+        i
+    }
+    for k in k {
+        let (x, y) = (wurzel(&mut eltern, k.a), wurzel(&mut eltern, na + k.i));
+        eltern[x.max(y)] = x.min(y);
+    }
+    let mut je: HashMap<usize, Vec<Kante>> = HashMap::new();
+    for k in k {
+        je.entry(wurzel(&mut eltern, k.a)).or_default().push(*k);
+    }
+    let mut v: Vec<(usize, Vec<Kante>)> = je.into_iter().collect();
+    v.sort_by_key(|t| t.0);
+    v.into_iter().map(|t| t.1).collect()
+}
+
+/// Beste Paare (alter Raum, neue Fläche) eines Teils (siehe Modulkopf):
+/// zuerst möglichst viele Paare (eine verschobene Wand lässt beiden Räumen
+/// ihre Seite, Review #87 R1), dann möglichst viele mit Anker (geteilt: der
+/// Teil mit dem Stempel), dann die größte Überdeckung (vereint: der größere
+/// Anteil), bei Gleichstand der ältere Raum.
+fn zuordnen(k: &[Kante]) -> Vec<(usize, usize)> {
+    let mut za: Vec<usize> = k.iter().map(|k| k.a).collect();
+    let mut zi: Vec<usize> = k.iter().map(|k| k.i).collect();
+    for v in [&mut za, &mut zi] {
+        v.sort_unstable();
+        v.dedup();
+    }
+    let n = za.len().min(zi.len()) as f64;
+    // Rangfolge über die Gewichte: ein Paar mehr wiegt mehr als alle Anker
+    // und Überdeckungen, ein Anker mehr mehr als alle Überdeckungen
+    let anker = n + 1.0;
+    let paar = n * (anker + 2.0);
+    let fmax = k.iter().map(|k| k.f).fold(0.0, f64::max).max(1e-9);
+    let alt = |a: usize| 1e-6 * (za.len() - a) as f64 / za.len() as f64;
+    let quer = za.len() > zi.len();
+    let (zeilen, spalten) = if quer {
+        (zi.len(), za.len())
+    } else {
+        (za.len(), zi.len())
+    };
+    let mut w = vec![vec![0.0; spalten]; zeilen];
+    for k in k {
+        let a = za.binary_search(&k.a).unwrap_or_default();
+        let i = zi.binary_search(&k.i).unwrap_or_default();
+        let g = paar + if k.anker { anker } else { 0.0 } + k.f / fmax + alt(a);
+        if quer {
+            w[i][a] = g;
+        } else {
+            w[a][i] = g;
+        }
+    }
+    beste_zuordnung(&w)
+        .into_iter()
+        .enumerate()
+        .filter(|&(z, s)| w[z][s] > 0.0)
+        .map(|(z, s)| if quer { (za[s], zi[z]) } else { (za[z], zi[s]) })
+        .collect()
+}
+
+/// Spalte je Zeile mit der größten Summe der Gewichte (Ungarische Methode,
+/// O(n² m)); `w` hat höchstens so viele Zeilen wie Spalten.
+fn beste_zuordnung(w: &[Vec<f64>]) -> Vec<usize> {
+    let n = w.len();
+    let m = w.first().map_or(0, |r| r.len());
+    let max = w.iter().flatten().copied().fold(0.0, f64::max);
+    let mut u = vec![0.0; n + 1];
+    let mut v = vec![0.0; m + 1];
+    // Zeile (ab 1) je Spalte, 0: frei; Spalte 0 ist der Anker der Suche
+    let mut p = vec![0usize; m + 1];
+    let mut weg = vec![0usize; m + 1];
+    for i in 1..=n {
+        p[0] = i;
+        let mut j0 = 0;
+        let mut minv = vec![f64::INFINITY; m + 1];
+        let mut besucht = vec![false; m + 1];
+        loop {
+            besucht[j0] = true;
+            let i0 = p[j0];
+            let (mut delta, mut j1) = (f64::INFINITY, 0);
+            for j in 1..=m {
+                if !besucht[j] {
+                    let c = max - w[i0 - 1][j - 1] - u[i0] - v[j];
+                    if c < minv[j] {
+                        minv[j] = c;
+                        weg[j] = j0;
+                    }
+                    if minv[j] < delta {
+                        delta = minv[j];
+                        j1 = j;
+                    }
+                }
+            }
+            for j in 0..=m {
+                if besucht[j] {
+                    u[p[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    minv[j] -= delta;
+                }
+            }
+            j0 = j1;
+            if p[j0] == 0 {
+                break;
+            }
+        }
+        while j0 != 0 {
+            let j1 = weg[j0];
+            p[j0] = p[j1];
+            j0 = j1;
+        }
+    }
+    let mut zu = vec![0; n];
+    for j in 1..=m {
+        if p[j] > 0 {
+            zu[p[j] - 1] = j - 1;
+        }
+    }
+    zu
 }
 
 /// Stichproben in der Fläche: Mitten eines Gitters von etwa 1000 Zellen
@@ -570,13 +749,16 @@ mod tests {
         (m, st, w)
     }
 
-    /// Review #87 B4: Die Innenwand springt in einem Schritt von 3 m auf
-    /// 1,4, 2,5 oder 6 m; links bleibt das Bad, rechts das Wohnen, kein
-    /// neuer Raum, keiner ruht, und die Ankerregel sagt danach dasselbe.
+    /// Review #87 B4, R1: Die Innenwand springt in einem Schritt von 3 m
+    /// auf 1,4 bis 9 m, auch über den Stempel des Wohnens; links bleibt das
+    /// Bad, rechts das Wohnen, kein neuer Raum, keiner ruht, und die
+    /// Ankerregel sagt danach dasselbe.
     #[test]
     fn wand_verschoben_namen_bleiben() {
         for bad_aelter in [true, false] {
-            for x in [1400.0, 2500.0, 6000.0] {
+            for x in [
+                1400.0, 2500.0, 6000.0, 6600.0, 7000.0, 8000.0, 8500.0, 9000.0,
+            ] {
                 let (mut m, st, w) = bad_und_wohnen(bad_aelter);
                 let n = m.spaces(st).len();
                 let a = schritt(&mut m, st, |m| wand_nach(m, w, x));

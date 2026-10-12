@@ -16,10 +16,11 @@ pub fn props(
     let m = scene.model();
     let e = m.element(id)?;
     values.push(("Name", m.space(id)?.name.clone()));
-    let form = scene
-        .raumformen(e.storey)
-        .into_iter()
-        .map(|(f, _)| f)
+    // Aus dem Speicher je Hausgruppe wie die Stempel (Review #87)
+    let formen = scene.raumgruppen(e.storey);
+    let form = formen
+        .flaechen()
+        .map(|f| &f.form)
         .find(|f| f.raum == Some(id));
     let Some(f) = form else {
         values.push(("Zustand", "ruht, keine Fläche".into()));

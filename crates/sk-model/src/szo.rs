@@ -16,6 +16,7 @@ mod hoehen;
 mod lage;
 mod oeffnung;
 mod raum;
+mod sicht;
 
 use crate::attr::{
     Attributes, Dash, Display, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen,
@@ -1248,6 +1249,7 @@ fn write_known(m: &Model) -> String {
         out.push_str(raw);
         out.push('\n');
     }
+    sicht::write(m, &mut out);
     hoehen::write_plan_cut(m, &mut out);
     // Ausgeblendetes (Paket 3 §3.6) nur, wenn es etwas gibt; Isolieren nie
     let v = m.visibility();
@@ -1492,7 +1494,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 42] = [
+    const KNOWN: [&str; 43] = [
         "opening",
         "pen",
         "linetype",
@@ -1530,6 +1532,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "sun",
         "viewshade",
         "viewbelow",
+        "viewhide",
         "plancut",
         "hide",
         "lock",
@@ -2452,8 +2455,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         register(&mut elem_ids, &mut seen, r, g, id)?;
     }
     for r in recs("space") {
-        let e = raum::read(r, number(r)?, r.link("storey", &storey_ids)?, &mut hints)?;
-        register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?;
+        if let Some(e) = raum::read(r, &mut number, &storey_ids, &seen, &mut hints) {
+            register(&mut elem_ids, &mut seen, r, e.guid, elements.insert(e))?;
+        }
     }
     // Verworfene Öffnungen zuletzt: Gültige Bauteile behalten Nummer und Guid (L12)
     let opening_raw: Vec<_> = verworfen
@@ -2670,6 +2674,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             }
         }
     }
+    let view_hide = sicht::read(recs("viewhide"), &lines, &mut hints);
     let (plan_cut, plan_cut_raw) = hoehen::read_plan_cut(recs("plancut"), &lines, &mut hints)?;
     let ausbau = ausbau::read(&recs, &layer_sets, &mut hints)?;
     for recs in by.values() {
@@ -2696,6 +2701,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_sun(sun, sun_raw);
     model.load_view_shade(shade, shade_raw);
     model.load_view_below(below, below_raw);
+    model.view_hide = view_hide;
     model.load_plan_cut(plan_cut, plan_cut_raw);
     model.load_opening_raw(opening_raw);
     model.load_ausbau(ausbau);

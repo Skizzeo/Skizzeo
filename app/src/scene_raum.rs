@@ -1,13 +1,51 @@
 //! Räume in der Szene (Grundriss G3, G4; aus `scene.rs` ausgelagert):
 //! Erkennung aus den berechneten Wandzügen mit Zwischenspeicher, Abgleich
-//! beim Abschluss eines Schritts, der zuletzt angelegte Raum für sein
-//! Namensfeld, Stempel ziehen, Raum anlegen und benennen.
+//! beim Abschluss eines Schritts, der Stand der Räume durch Rückgängig und
+//! Wiederholen, der zuletzt angelegte Raum für sein Namensfeld, Stempel
+//! ziehen, Raum anlegen und benennen.
 
 use super::{RunCache, Scene};
 use sk_math::{vec3, Vec3};
-use sk_model::{ElementId, Model, RunId, Space, StoreyId, WallChain};
-use sk_raum::RaumForm;
+use sk_model::{
+    Change, Direction, ElementId, ElementKind, Model, RunId, Space, StoreyId, Txn, WallChain,
+};
 use std::borrow::Cow;
+
+/// Ein Schritt im Verlauf mit dem Wechsel des Raumstands je Geschoss,
+/// dessen Wände er ändert ([`Scene::staende_folgen`]).
+pub(super) struct Schritt {
+    pub(super) txn: Txn,
+    pub(super) raeume: Vec<(StoreyId, sk_raum::Wechsel)>,
+}
+
+/// Geschosse, deren Räume der Schritt `t` ändern kann (über Wandzüge,
+/// Wände oder Räume); `None`, wenn es alle sein können (Aufbauten,
+/// Baustoffe, Geschosse, Gebäude).
+fn raum_geschosse(t: &Txn) -> Option<Vec<StoreyId>> {
+    let mut v: Vec<StoreyId> = Vec::new();
+    for c in &t.changes {
+        let g: Vec<StoreyId> = match c {
+            Change::Run { old, new, .. } => old.iter().chain(new).map(|r| r.storey).collect(),
+            Change::Element { old, new, .. } => old
+                .iter()
+                .chain(new)
+                .filter(|e| matches!(e.kind, ElementKind::Wall(_) | ElementKind::Space(_)))
+                .map(|e| e.storey)
+                .collect(),
+            Change::LayerSet { .. }
+            | Change::Material { .. }
+            | Change::Storey { .. }
+            | Change::Building { .. } => return None,
+            _ => continue,
+        };
+        for g in g {
+            if !v.contains(&g) {
+                v.push(g);
+            }
+        }
+    }
+    Some(v)
+}
 
 /// Ketten für die Raumerkennung aus den berechneten Wandzügen; ein Zug,
 /// der neu gerechnet werden muss, kommt aus dem Modell. Fassung ist der
@@ -45,27 +83,51 @@ impl sk_raum::Ketten for SzenenKetten<'_> {
 }
 
 impl Scene {
-    /// Erkannte Flächen des Geschosses; nur geänderte Hausgruppen werden
-    /// neu gerechnet (Review #87 B2, B3).
-    fn raumlage(&self, g: StoreyId) -> sk_raum::Lage {
-        let k = SzenenKetten {
+    fn ketten(&self) -> SzenenKetten<'_> {
+        SzenenKetten {
             model: &self.model,
             cache: &self.cache,
             dirty: &self.dirty,
             alle: self.all_dirty,
-        };
-        self.erkennung.borrow_mut().lage(&self.model, &k, g)
+        }
+    }
+
+    /// Erkannte Flächen des Geschosses; nur geänderte Hausgruppen werden
+    /// neu gerechnet (Review #87 B2, B3).
+    fn raumlage(&self, g: StoreyId) -> sk_raum::Lage {
+        self.erkennung
+            .borrow_mut()
+            .lage(&self.model, &self.ketten(), g)
+    }
+
+    /// Räume des Geschosses je Hausgruppe für die Stempel: Nur Gruppen,
+    /// deren Wände oder Räume sich geändert haben, werden neu zugeteilt
+    /// (Review #87 R2).
+    pub fn raumgruppen(&self, g: StoreyId) -> sk_raum::Raumformen {
+        self.erkennung
+            .borrow_mut()
+            .raumformen(&self.model, &self.ketten(), g)
+    }
+
+    /// Wie oft einer Hausgruppe die Räume neu zugeteilt wurden (Tests).
+    #[cfg(test)]
+    pub fn raum_zuteilungen(&self) -> u64 {
+        self.erkennung.borrow().zugeteilt()
     }
 
     /// Räume des Geschosses wie [`sk_raum::raeume`], je mit Grundfläche
-    /// (mm²), aus dem Zwischenspeicher der Erkennung.
-    pub fn raumformen(&self, g: StoreyId) -> Vec<(RaumForm, f64)> {
+    /// (mm²), über alle Hausgruppen zugeteilt (Tests; die App liest
+    /// [`Scene::raumgruppen`]).
+    #[cfg(test)]
+    pub fn raumformen(&self, g: StoreyId) -> Vec<(sk_raum::RaumForm, f64)> {
         self.raumlage(g).mit_grundflaeche(&self.model)
     }
 
     /// Stand der Räume für jedes Geschoss, das noch keinen hat (nach dem
-    /// Öffnen, Rückgängig oder einer Änderung an Räumen): der Abgleich am
-    /// Ende des Schritts vergleicht mit ihm (B4).
+    /// Öffnen, einer Änderung an Räumen ohne Wände oder Rückgängig ohne
+    /// Wechsel): der Abgleich am Ende des Schritts vergleicht mit ihm (B4).
+    /// Hausgruppen, deren Wände und Räume gleich geblieben sind, kommen aus
+    /// dem Speicher der Erkennung.
     pub(super) fn staende_fuellen(&mut self) {
         let fehlen: Vec<StoreyId> = self
             .model
@@ -75,7 +137,10 @@ impl Scene {
             .filter(|g| !self.staende.contains_key(g))
             .collect();
         for g in fehlen {
-            let st = self.raumlage(g).stand(&self.model);
+            let st = self
+                .erkennung
+                .borrow_mut()
+                .stand(&self.model, &self.ketten(), g);
             self.staende.insert(g, st);
         }
     }
@@ -83,8 +148,9 @@ impl Scene {
     /// Beim Abschluss eines Schritts: Räume der Geschosse, deren Wände er
     /// ändert, folgen den Wänden (Öffnen allein legt keine an, alte Dateien
     /// bleiben bytegleich). Die neu angelegten warten auf ihr Namensfeld
-    /// ([`Scene::neuer_raum`]).
-    pub(super) fn raeume_abgleichen(&mut self) {
+    /// ([`Scene::neuer_raum`]). Ergebnis: wie der Stand je Geschoss
+    /// wechselt, für Rückgängig und Wiederholen.
+    pub(super) fn raeume_abgleichen(&mut self) -> Vec<(StoreyId, sk_raum::Wechsel)> {
         let wand = self.model.wand_geschosse_im_schritt();
         // Ändert der Schritt selbst Räume, gilt ihr Stand erst wieder, wenn
         // ihn der nächste Schritt neu rechnet
@@ -92,8 +158,9 @@ impl Scene {
         for g in raum.iter().filter(|g| !wand.contains(g)) {
             self.staende.remove(g);
         }
+        let mut wechsel = Vec::new();
         if wand.is_empty() {
-            return;
+            return wechsel;
         }
         self.neue_raeume.clear();
         for g in wand {
@@ -102,9 +169,36 @@ impl Scene {
             let a = sk_raum::abgleichen_lage(&mut self.model, &lage, alt);
             if !raum.contains(&g) {
                 self.staende.insert(g, a.stand);
+                wechsel.extend(a.wechsel.map(|w| (g, w)));
             }
             self.neue_raeume
                 .extend(a.neu.into_iter().map(|(id, f)| (id, g, f)));
+        }
+        wechsel
+    }
+
+    /// Rückgängig und Wiederholen: Der Stand eines Geschosses, dessen Wände
+    /// der Schritt `s` geändert hat, folgt ihm über den Wechsel aus dessen
+    /// Abgleich und wird nicht neu gerechnet (Review #87 R5). Fehlt einer
+    /// von beiden, und für jedes andere Geschoss, an dessen Wänden oder
+    /// Räumen der Schritt etwas ändert, rechnet der nächste Schritt den
+    /// Stand neu; die übrigen Geschosse behalten ihn.
+    pub(super) fn staende_folgen(&mut self, s: &Schritt, dir: Direction) {
+        let Some(geschosse) = raum_geschosse(&s.txn) else {
+            self.staende.clear();
+            return;
+        };
+        for g in geschosse {
+            let w = s.raeume.iter().find(|(h, _)| *h == g).map(|(_, w)| w);
+            match (self.staende.get_mut(&g), w) {
+                (Some(st), Some(w)) => match dir {
+                    Direction::Undo => st.zurueck(w),
+                    Direction::Redo => st.vor(w),
+                },
+                _ => {
+                    self.staende.remove(&g);
+                }
+            }
         }
     }
 
@@ -244,6 +338,128 @@ mod tests {
         assert_eq!(name_bei(&s, st, vec3(5000.0, 4000.0, 0.0)), "Wohnen");
     }
 
+    /// Jeder gehaltene Stand gleicht dem frisch gerechneten.
+    fn staende_wie_neu(s: &Scene) {
+        for (&g, st) in &s.staende {
+            let neu = sk_raum::Erkennung::default().stand(s.model(), &s.ketten(), g);
+            assert_eq!(st.zuordnung(), neu.zuordnung(), "Geschoss {}", g.index());
+        }
+    }
+
+    /// Review #87 R5: Rückgängig und Wiederholen führen den Stand der Räume
+    /// über den Wechsel aus dem Abgleich nach, statt ihn neu zu rechnen; ein
+    /// anderes Geschoss behält seinen. Zufällige Schritte (Wand ziehen, Wand
+    /// einziehen und entfernen, Raum benennen, Anker in eine andere Fläche
+    /// setzen, Rückgängig, Wiederholen) halten nur Stände, die der frischen
+    /// Rechnung gleichen.
+    #[test]
+    fn stand_folgt_rueckgaengig() {
+        let (mut s, st, innen) = stadt(3);
+        let og = s
+            .model()
+            .storeys()
+            .iter()
+            .map(|(id, _)| id)
+            .find(|g| *g != st)
+            .expect("zweites Geschoss");
+        s.edit_model("Haus oben", |m| {
+            let aw = m.defaults().exterior_wall;
+            let pts = [
+                vec3(0.0, 20000.0, 0.0),
+                vec3(0.0, 28000.0, 0.0),
+                vec3(10000.0, 28000.0, 0.0),
+                vec3(10000.0, 20000.0, 0.0),
+            ];
+            m.add_wall_run(&pts, true, RefSide::Left, og, aw, Category::ExteriorWall)
+                .is_some()
+        });
+        s.begin("Wand");
+        wand_auf(&mut s, innen[1], 5000.0);
+        s.commit();
+        assert!(s.staende.contains_key(&st) && s.staende.contains_key(&og));
+        staende_wie_neu(&s);
+        let z = s.raum_zuteilungen();
+        assert!(s.undo());
+        assert!(s.staende.contains_key(&st) && s.staende.contains_key(&og));
+        staende_wie_neu(&s);
+        assert!(s.redo());
+        assert!(s.staende.contains_key(&st) && s.staende.contains_key(&og));
+        staende_wie_neu(&s);
+        assert_eq!(s.raum_zuteilungen(), z, "nichts neu zugeteilt");
+        // Zufällige Schritte
+        let mut zufall = 0x2545_f491_4f6c_dd1du64;
+        let mut wuerfel = |n: u64| {
+            zufall ^= zufall << 13;
+            zufall ^= zufall >> 7;
+            zufall ^= zufall << 17;
+            zufall % n
+        };
+        let mut quer: Vec<RunId> = Vec::new();
+        for _ in 0..120 {
+            match wuerfel(7) {
+                0 => {
+                    let w = innen[wuerfel(3) as usize];
+                    s.begin("Wand ziehen");
+                    wand_auf(&mut s, w, 1000.0 + wuerfel(8) as f64 * 1000.0);
+                    s.commit();
+                }
+                1 => {
+                    let ox = wuerfel(3) as f64 * 15000.0;
+                    let y = 2000.0 + wuerfel(4) as f64 * 1500.0;
+                    let mut w = None;
+                    s.edit_model("Querwand", |m| {
+                        let iw = m.defaults().interior_wall;
+                        let pts = [vec3(ox + 300.0, y, 0.0), vec3(ox + 9700.0, y, 0.0)];
+                        w = m.add_wall_run(
+                            &pts,
+                            false,
+                            RefSide::Center,
+                            st,
+                            iw,
+                            Category::InteriorWall,
+                        );
+                        w.is_some()
+                    });
+                    quer.extend(w);
+                }
+                2 => {
+                    if let Some(w) = quer.pop() {
+                        s.edit_model("Querwand weg", |m| m.remove_run(w));
+                    }
+                }
+                3 => {
+                    let ids = s.model().spaces(st);
+                    if !ids.is_empty() {
+                        let id = ids[wuerfel(ids.len() as u64) as usize];
+                        s.raum_benennen(id, &format!("Raum {}", wuerfel(1000)));
+                    }
+                }
+                4 => {
+                    let ids = s.model().spaces(st);
+                    if !ids.is_empty() {
+                        let id = ids[wuerfel(ids.len() as u64) as usize];
+                        let p = vec3(
+                            wuerfel(3) as f64 * 15000.0 + 500.0 + wuerfel(9) as f64 * 1000.0,
+                            500.0 + wuerfel(7) as f64 * 1000.0,
+                            0.0,
+                        );
+                        s.edit_model("Anker", |m| m.set_space(id, |r| r.anker = p));
+                    }
+                }
+                5 => {
+                    s.undo();
+                }
+                _ => {
+                    s.redo();
+                }
+            }
+            staende_wie_neu(&s);
+            // Wie der nächste Schritt: Fehlende Stände rechnet er
+            s.staende_fuellen();
+            staende_wie_neu(&s);
+        }
+    }
+
     /// Review #87 B2: Stempel ziehen rechnet keine Fläche neu, Wand ziehen
     /// nur das Haus der Wand; B1: ohne neuen Raum fragt die App umsonst.
     #[test]
@@ -273,5 +489,26 @@ mod tests {
         s.commit();
         s.raumformen(st);
         assert_eq!(gerechnet(&s), n0 + 5, "je Bewegung das eine Haus");
+        // R2: Zuteilen ebenso nur das eine Haus, ohne Änderung keins
+        s.raumgruppen(st);
+        let z0 = s.raum_zuteilungen();
+        s.raumgruppen(st);
+        assert_eq!(s.raum_zuteilungen(), z0);
+        s.begin("Wand verschieben");
+        for k in 1..=5 {
+            wand_auf(&mut s, innen[2], 30000.0 + 3000.0 + 100.0 * k as f64);
+            let r = s.raumgruppen(st);
+            let mut v: Vec<_> = r
+                .flaechen()
+                .map(|f| (f.form.clone(), f.grundflaeche))
+                .collect();
+            let mut w = s.raumformen(st);
+            let mitte = |f: &(sk_raum::RaumForm, f64)| (f.0.mitte.x, f.0.mitte.y);
+            v.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            w.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            assert_eq!(v, w);
+            assert_eq!(s.raum_zuteilungen(), z0 + k, "je Bewegung das eine Haus");
+        }
+        s.commit();
     }
 }

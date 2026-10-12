@@ -441,13 +441,11 @@ fn element_eye(m: &Model, v: &Visibility, id: ElementId) -> State {
     }
 }
 
-/// Bauteile, von denen etwas ausgeblendet ist (ohne Isolieren): für die
-/// Zeile im Mengenfenster, dessen Mengen vollständig bleiben.
+/// Bauteile, von denen etwas ausgeblendet ist (ohne Isolieren und ohne die
+/// Schnelloption der Ansicht): für die Zeile im Mengenfenster, dessen
+/// Mengen vollständig bleiben.
 pub fn hidden_count(m: &Model) -> usize {
-    let v = Visibility {
-        isolate: None,
-        ..m.visibility().clone()
-    };
+    let v = m.visibility().of_tree();
     if v.is_plain() {
         return 0;
     }
@@ -457,17 +455,15 @@ pub fn hidden_count(m: &Model) -> usize {
         .count()
 }
 
-/// Auge der Zeile `i` (Paket 3): Isolieren zählt nicht, nur Ausgeblendetes.
+/// Auge der Zeile `i` (Paket 3): Isolieren zählt nicht, nur Ausgeblendetes,
+/// und die Schnelloption der Ansicht nicht (sie ändert den Baum nicht).
 /// In der Karte „Gewerk“ ist eine Gewerkzeile zu, wenn das Gewerk
 /// ausgeblendet ist.
 pub fn eye(m: &Model, t: &ProjectTree, tab: Tab, i: usize) -> State {
     let Some(n) = t.tab(tab).get(i) else {
         return State::Full;
     };
-    let v = Visibility {
-        isolate: None,
-        ..m.visibility().clone()
-    };
+    let v = m.visibility().of_tree();
     match n.key {
         NodeKey::Terrain => {
             return if v.terrain_hidden {

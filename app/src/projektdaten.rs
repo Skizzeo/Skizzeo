@@ -8,10 +8,11 @@
 use sk_model::qto_earth::Boden;
 use sk_model::{Location, Project};
 use sk_paint::{Canvas, Path};
-use sk_platform::{Key, Modifiers};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, Fonts, Rect};
+use std::cell::Cell;
 
 /// Breite des Blatts und Ränder (dip).
 const W: f32 = 520.0;
@@ -31,6 +32,10 @@ const KNOPF_H: f32 = 30.0;
 const KNOPF_W: [f32; 2] = [110.0, 130.0];
 /// Zeile der Vorschlagsliste.
 const LISTE_ZEILE: f32 = 26.0;
+/// Abstand des Blatts zum Fensterrand oben und unten, wenn es rollt (dip).
+const RAND: f32 = 12.0;
+/// So weit rollt eine Raste des Mausrads (dip).
+const RASTE: f32 = 48.0;
 
 pub const LEER_SATZ: &str = "Jedes Feld darf leer bleiben.";
 pub const VOM_LETZTEN: &str = "vom letzten Projekt";
@@ -66,7 +71,7 @@ const N: usize = 18;
 /// AVA-Kopf öffnet die Maske an einem Feld); gezeigt und mit Tab erreicht
 /// werden sie unter dem Bauort ([`REIHE`]). Leise vorbelegt ist der
 /// Standardort Ganderkesee. Ab 15 die Landeskoordinaten aus dem Lageplan
-/// für die Georeferenz im IFC (ifc/plan.md §10).
+/// für die Georeferenz im IFC.
 const FELDER: [Feld; N] = [
     Feld {
         name: "Projektart",
@@ -211,7 +216,7 @@ const FELDER: [Feld; N] = [
         beispiel: "32 467 123,456",
         zeilen: 1,
         max: 24,
-        breite: 110.0,
+        breite: 124.0,
         x: 0.0,
         einheit: "m",
     },
@@ -220,7 +225,7 @@ const FELDER: [Feld; N] = [
         beispiel: "5 878 765,432",
         zeilen: 1,
         max: 24,
-        breite: 110.0,
+        breite: 124.0,
         x: 0.0,
         einheit: "m",
     },
@@ -396,6 +401,26 @@ fn wert_im_bereich(text: &str, i: usize, bereich: (f64, f64)) -> Result<Option<f
     }
 }
 
+/// Zahl mit Komma und Dreiergruppen vor dem Komma: `5 878 765,432`.
+fn gruppiert(v: f64) -> String {
+    let t = komma(v);
+    let (ganz, rest) = t.split_once(',').map_or((t.as_str(), ""), |(g, r)| (g, r));
+    let (vz, ziffern) = ganz.strip_prefix('-').map_or(("", ganz), |z| ("−", z));
+    let n = ziffern.len();
+    let mut out = String::from(vz);
+    for (k, c) in ziffern.chars().enumerate() {
+        if k > 0 && (n - k) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    if !rest.is_empty() {
+        out.push(',');
+        out.push_str(rest);
+    }
+    out
+}
+
 /// Zahl mit Komma, ohne überflüssige Stellen.
 fn komma(v: f64) -> String {
     v.to_string().replace('.', ",")
@@ -418,6 +443,13 @@ pub enum Ziel {
     Links,
     Uebernehmen,
     Schliessen,
+}
+
+/// Was ein Ereignis an der Maske bewirkt hat ([`Maske::ereignis`]).
+#[derive(Debug, Default)]
+pub struct Wirkung {
+    pub neu_zeichnen: bool,
+    pub antwort: Option<Antwort>,
 }
 
 /// Ausgang der Maske.
@@ -451,6 +483,12 @@ pub struct Maske {
     ort: Location,
     hover: Option<Ziel>,
     pressed: Option<Ziel>,
+    /// Gerollt um so viel (dip), wenn das Blatt nicht ins Fenster passt
+    /// (Bedienbarkeit 38.1).
+    rollen: f32,
+    /// Sichtbare Höhe des Blatts (dip), aus [`Maske::rect`]; unendlich, bis
+    /// das Fenster sie nennt.
+    sicht: Cell<f32>,
 }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -500,6 +538,8 @@ impl Maske {
             ort: Location::default(),
             hover: None,
             pressed: None,
+            rollen: 0.0,
+            sicht: Cell::new(f32::INFINITY),
         }
     }
 
@@ -511,9 +551,10 @@ impl Maske {
             self.felder[i] = TextEdit::new(&grad_text(v.or(Some(ganderkesee(i)))));
             self.felder[i].end(false);
         }
+        // gruppiert wie im Lageplan und im Beispiel (Einstellungen F18)
         let utm = l
             .utm
-            .map(|u| (format!("{}{}", u.zone, komma(u.e)), komma(u.n)));
+            .map(|u| (format!("{} {}", u.zone, gruppiert(u.e)), gruppiert(u.n)));
         let (ost, nord) = utm.unwrap_or_default();
         let nhn = l.nhn.map_or_else(String::new, komma);
         for (i, t) in [(UTM, ost), (UTM + 1, nord), (UTM + 2, nhn)] {
@@ -524,11 +565,22 @@ impl Maske {
         self
     }
 
+    /// Nordwert aus seinem Feld. Der Bereich für Deutschland gilt beim
+    /// Eingeben; ein gespeicherter Wert außerhalb, unverändert im Feld,
+    /// bleibt ohne Meldung (Review #95).
+    fn nordwert(&self) -> Result<Option<f64>, ()> {
+        let t = &self.felder[UTM + 1].text;
+        match self.ort.utm {
+            Some(u) if *t == gruppiert(u.n) => Ok(Some(u.n)),
+            _ => wert_im_bereich(t, UTM + 1, NORD_DE),
+        }
+    }
+
     /// Ostwert und Nordwert aus ihren Feldern: `Ok(None)` beide leer,
     /// `Err` einer fehlt oder passt nicht.
     fn utm(&self) -> Result<Option<sk_model::Utm>, ()> {
         let ost = ostwert(&self.felder[UTM].text)?;
-        let nord = wert_im_bereich(&self.felder[UTM + 1].text, UTM + 1, NORD_DE)?;
+        let nord = self.nordwert()?;
         match (ost, nord) {
             (None, None) => Ok(None),
             (Some((e, zone)), Some(n)) => Ok(Some(sk_model::Utm { e, n, zone })),
@@ -613,7 +665,7 @@ impl Maske {
                 Some(format!("{wort}: Zahl von −{g} bis {g}."))
             } else if i == UTM && ostwert(&e.text).is_err() {
                 Some(format!("{wort} mit Zone vorn: {}.", f.beispiel))
-            } else if i == UTM + 1 && wert_im_bereich(&e.text, i, NORD_DE).is_err() {
+            } else if i == UTM + 1 && self.nordwert().is_err() {
                 Some(format!("{wort}: 5 200 000 bis 6 200 000 m."))
             } else if i == UTM + 2 && wert_im_bereich(&e.text, i, sk_model::NHN).is_err() {
                 Some(format!("{wort}: −500 bis 9000 m."))
@@ -657,11 +709,29 @@ impl Maske {
                 .map(|i| match self.ort.utm {
                     None => format!("{} fehlt, keine Georeferenz.", WORT[i]),
                     Some(_) => format!("{} fehlt, die alten Werte bleiben.", WORT[i]),
-                });
+                })
+                .or_else(|| self.abgleich());
             }
         };
         // Der Wert von Ganderkesee steht als Beispiel im leeren Feld
         Some(format!("{} fehlt, es gilt Ganderkesee.", WORT[fehlt]))
+    }
+
+    /// Breite und Länge gegen die Landeskoordinaten (Review #95 H2): mehr
+    /// als 1 km auseinander ist eher ein Tippfehler oder die falsche Zone
+    /// als Absicht. Nur gegen eine eingegebene Lage: die Vorgabe
+    /// Ganderkesee ist kein Ort des Projekts (Integration zu #96).
+    fn abgleich(&self) -> Option<String> {
+        let u = self.utm().ok().flatten()?;
+        let l = self.ort();
+        let (b, la) = l.lat.zip(l.lon)?;
+        let (ub, ul) = sk_math::utm::von_utm(u.e, u.n, u.zone);
+        // auf der Kugel genügt hier: es geht um Kilometer
+        let r = 6_371.0;
+        let dy = (ub - b).to_radians() * r;
+        let dx = (ul - la).to_radians() * r * ((ub + b) * 0.5).to_radians().cos();
+        let km = dx.hypot(dy);
+        (km > 1.0).then(|| format!("Lage und UTM {} km auseinander.", km.round()))
     }
 
     /// Vorschläge zur Projektart, nach dem Getippten gefiltert (leer: alle).
@@ -696,6 +766,82 @@ impl Maske {
             self.felder[i].select_all();
         }
         self.liste = None;
+        self.zeige(i);
+    }
+
+    /// Rollt so, dass Feld `i` zwischen Kopf und Fuß ganz zu sehen ist.
+    fn zeige(&mut self, i: usize) {
+        let sicht = self.sicht.get();
+        let l = self.lage(1.0);
+        if sicht >= l.h {
+            return;
+        }
+        let f = l.felder[i];
+        let (oben, unten) = (KOPF_H + LUFT, sicht - FUSS_H - LUFT);
+        // Beginnt das Feld eine Gruppe, kommt ihre Überschrift mit
+        let erst = if GRUPPEN.iter().any(|(a, _)| *a == i) {
+            f.y - GRUPPE_H - 2.0
+        } else {
+            f.y
+        };
+        if erst - self.rollen < oben {
+            self.rollen = erst - oben;
+        } else if f.y + f.h - self.rollen > unten {
+            self.rollen = f.y + f.h - unten;
+        }
+        self.rollen = self.rollen.clamp(0.0, l.h - sicht);
+    }
+
+    /// Mausrad (Rasten, positiv vom Benutzer weg: nach oben); `true`, wenn
+    /// das Blatt anders steht.
+    pub fn rad(&mut self, s: f32, delta: f64) -> bool {
+        let max = (self.lage(s).h.round() - self.sicht_px(s)).max(0.0) / s;
+        let neu = (self.rollen - delta as f32 * RASTE).clamp(0.0, max);
+        let anders = (neu - self.rollen).abs() > 1e-3;
+        self.rollen = neu;
+        anders
+    }
+
+    /// Sichtbare Höhe (Pixel): das ganze Blatt oder so viel, wie ins
+    /// Fenster passt.
+    fn sicht_px(&self, s: f32) -> f32 {
+        let voll = self.lage(s).h.round();
+        (self.sicht.get() * s).round().min(voll)
+    }
+
+    /// Gerollt um so viele Pixel.
+    fn versatz(&self, s: f32) -> f32 {
+        let max = (self.lage(s).h.round() - self.sicht_px(s)).max(0.0);
+        (self.rollen * s).round().clamp(0.0, max)
+    }
+
+    /// Lage der Teile, wie sie zu sehen sind: Felder und Gruppen um den
+    /// Versatz nach oben, der Fuß mit den Knöpfen unten am sichtbaren Blatt.
+    fn sicht_lage(&self, s: f32) -> Lage {
+        let mut l = self.lage(s);
+        let (voll, h) = (l.h.round(), self.sicht_px(s));
+        if h >= voll {
+            return l;
+        }
+        let d = self.versatz(s);
+        for f in &mut l.felder {
+            f.y -= d;
+        }
+        for g in &mut l.gruppen {
+            *g -= d;
+        }
+        for k in &mut l.knoepfe {
+            k.y -= voll - h;
+        }
+        l.h = h;
+        l
+    }
+
+    /// Zeilen zwischen Kopf und Fuß (Pixel, relativ zum Blatt): dort
+    /// stehen die rollenden Felder.
+    fn inhalt(&self, s: f32) -> (f32, f32) {
+        let h = self.sicht_px(s);
+        ((KOPF_H * s).round(), h - (FUSS_H * s).round())
     }
 
     // --- Lage ----------------------------------------------------------------
@@ -752,9 +898,15 @@ impl Maske {
         ((W * s).round(), self.lage(s).h.round())
     }
 
-    /// Lage im Fenster: mittig unter der Titelleiste.
+    /// Lage im Fenster: mittig unter der Titelleiste. Passt das Blatt
+    /// nicht in die Höhe, wird es so hoch wie der Platz und rollt; Kopf und
+    /// Fuß mit den Knöpfen bleiben stehen (Bedienbarkeit 38.1).
     pub fn rect(&self, s: f32, win_w: u32, win_h: u32, top: u32) -> Rect {
-        let (w, h) = self.size(s);
+        let (w, voll) = self.size(s);
+        let platz = (win_h as f32 - top as f32 - 2.0 * RAND * s).round();
+        let kleinst = ((KOPF_H + FUSS_H + 2.0 * ZEILE_H) * s).round();
+        let h = voll.min(platz.max(kleinst));
+        self.sicht.set(if h < voll { h / s } else { f32::INFINITY });
         let x = ((win_w as f32 - w) * 0.5).round().max(0.0);
         let y = (top as f32 + (win_h as f32 - top as f32 - h) * 0.4)
             .round()
@@ -782,10 +934,16 @@ impl Maske {
 
     fn ziel(&self, r: Rect, s: f32, x: f64, y: f64) -> Option<Ziel> {
         let (lx, ly) = (x - r.x as f64, y - r.y as f64);
-        if let Some(k) = self.liste_rects(s).iter().position(|z| z.contains(lx, ly)) {
+        let d = self.versatz(s);
+        let (oben, unten) = self.inhalt(s);
+        let im_inhalt = ly >= oben as f64 && ly < unten as f64;
+        if let Some(k) = self.liste_rects(s).iter().position(|z| {
+            let z = Rect::new(z.x, z.y - d, z.w, z.h);
+            im_inhalt && z.contains(lx, ly)
+        }) {
             return Some(Ziel::Vorschlag(k));
         }
-        let l = self.lage(s);
+        let l = self.sicht_lage(s);
         if l.schliessen.contains(lx, ly) {
             return Some(Ziel::Schliessen);
         }
@@ -795,6 +953,9 @@ impl Maske {
         if l.knoepfe[1].contains(lx, ly) {
             return Some(Ziel::Uebernehmen);
         }
+        if !im_inhalt {
+            return None;
+        }
         let f0 = l.felder[0];
         if f0.contains(lx, ly) && lx >= (f0.x + f0.w - 26.0 * s) as f64 {
             return Some(Ziel::Pfeil);
@@ -803,6 +964,61 @@ impl Maske {
             .iter()
             .position(|f| f.contains(lx, ly))
             .map(Ziel::Feld)
+    }
+
+    // --- Ereignisse ----------------------------------------------------------
+
+    /// Ein Ereignis des Fensters an der Maske in `r`; `None`, wenn sie es
+    /// nicht nimmt (fremde Ereignisse, Klicks in die Titelleiste über `kopf`).
+    pub fn ereignis(
+        &mut self,
+        e: Event,
+        r: Rect,
+        s: f32,
+        kopf: f64,
+        fonts: &Fonts,
+        t: &Theme,
+    ) -> Option<Wirkung> {
+        let mut w = Wirkung::default();
+        match e {
+            Event::MouseMove { x, y, .. } => w.neu_zeichnen = self.mouse_move(r, s, x, y),
+            // Die Titelleiste bleibt bedienbar (Fensterknöpfe, Ziehen)
+            Event::MouseDown { y, .. } | Event::MouseUp { y, .. } if y < kopf => return None,
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                self.press(r, s, fonts, t, x, y);
+                w.neu_zeichnen = true;
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                w.neu_zeichnen = true;
+                w.antwort = self.release(r, s, x, y);
+            }
+            Event::Key {
+                key, down, mods, ..
+            } => {
+                if down {
+                    w.neu_zeichnen = true;
+                    w.antwort = self.key(key, mods);
+                }
+            }
+            Event::Text(ch) => {
+                self.text(ch);
+                w.neu_zeichnen = true;
+            }
+            Event::Wheel { delta, .. } => w.neu_zeichnen = self.rad(s, delta),
+            Event::MouseDown { .. } | Event::MouseUp { .. } => {}
+            _ => return None,
+        }
+        Some(w)
     }
 
     // --- Maus ----------------------------------------------------------------
@@ -829,7 +1045,7 @@ impl Maske {
                     self.fokus = i;
                 }
                 self.liste = None;
-                let l = self.lage(s);
+                let l = self.sicht_lage(s);
                 let f = l.felder[i];
                 let (lx, ly) = ((x - r.x as f64) as f32, (y - r.y as f64) as f32);
                 let at = self.stelle(fonts, t, s, f, i, lx, ly);
@@ -965,7 +1181,51 @@ impl Maske {
     // --- Zeichnen ------------------------------------------------------------
 
     /// Bild samt Schatten; Lage links oben = `rect` minus Schatten.
+    /// Das Blatt, so hoch wie es ins Fenster passt: Kopf und Fuß aus dem
+    /// ganzen Blatt, dazwischen der gerollte Ausschnitt und eine
+    /// Bildlaufleiste.
     pub fn paint(&self, t: &Theme, fonts: &Fonts, s: f32) -> Canvas {
+        let voll = self.paint_voll(t, fonts, s);
+        let (h_voll, h) = (self.lage(s).h.round(), self.sicht_px(s));
+        if h >= h_voll {
+            return voll;
+        }
+        let m = (t.size.panel_shadow * s).round();
+        let mut c = Canvas::new(voll.width, (h + 2.0 * m) as usize);
+        let (oben, unten) = self.inhalt(s);
+        let linie = s.max(1.0).round();
+        let kopf = (m + oben + linie) as usize;
+        let fuss = (FUSS_H * s).round() + m;
+        c.copy_rows_at(&voll, 0, 0, kopf);
+        let d = self.versatz(s) as usize;
+        c.copy_rows_at(&voll, kopf + d, kopf, (m + unten) as usize - kopf);
+        c.copy_rows_at(
+            &voll,
+            (m + h_voll - fuss + m) as usize,
+            (m + unten) as usize,
+            fuss as usize,
+        );
+        let leiste = Rect::new(
+            m + (W - 9.0) * s,
+            m + oben + 4.0 * s,
+            4.0 * s,
+            unten - oben - 8.0 * s,
+        );
+        // Anteile am ganzen rollenden Inhalt zwischen Kopf und Fuß
+        let ganz = h_voll - oben - (FUSS_H * s).round();
+        widgets::scrollbar(
+            &mut c,
+            leiste,
+            d as f32 / ganz,
+            (unten - oben) / ganz,
+            false,
+            s,
+            t,
+        );
+        c
+    }
+
+    fn paint_voll(&self, t: &Theme, fonts: &Fonts, s: f32) -> Canvas {
         let u = &t.ui;
         let (w, h) = self.size(s);
         let m = (t.size.panel_shadow * s).round();
@@ -1391,7 +1651,7 @@ mod tests {
         assert_eq!(grad_text(Some(-0.5)), "-0,5");
     }
 
-    /// I4c (ifc/plan.md §10): Ost- und Nordwert aus dem Lageplan, der
+    /// I4c: Ost- und Nordwert aus dem Lageplan, der
     /// Ostwert mit der Zone vorn, dazu die Höhe von ±0,00. Unverändert
     /// übernommen bleibt die Lage genau; ohne Zone, ein Wert allein oder
     /// Unbrauchbares lässt die alten Werte stehen (Einstellungen B1–B3 zu
@@ -1412,9 +1672,31 @@ mod tests {
         let mut m = Maske::new(&ohne(), false, None).mit_ort(&alt);
         assert_eq!(
             (m.wert(UTM), m.wert(UTM + 1), m.wert(UTM + 2)),
-            ("32467123,456", "5878765,432", "14,25")
+            ("32 467 123,456", "5 878 765,432", "14,25")
         );
         assert_eq!(m.ort(), alt);
+        assert_eq!(gruppiert(5_878_765.0), "5 878 765");
+        assert_eq!(gruppiert(-123_456.5), "−123 456,5");
+        assert_eq!(gruppiert(14.25), "14,25");
+        // 467 123 liegt gut 5 km westlich von 8,591° O
+        assert_eq!(
+            m.hinweis().as_deref(),
+            Some("Lage und UTM 5 km auseinander.")
+        );
+        // Lage leer, UTM in Berlin: die Vorgabe zählt nicht
+        let leer = Location {
+            lat: None,
+            lon: None,
+            utm: Some(sk_model::Utm {
+                e: 389_918.04,
+                n: 5_819_699.13,
+                zone: 33,
+            }),
+            ..alt
+        };
+        let b = Maske::new(&ohne(), false, None).mit_ort(&leer);
+        assert_eq!((b.ort().lat, b.ort().lon), (None, None));
+        assert_eq!(b.hinweis(), None);
         // nach der Böschung, am Ende der Maske
         m.fokus_auf(14);
         tab(&mut m);
@@ -1465,6 +1747,22 @@ mod tests {
         );
         assert_eq!(m.ort().utm, alt.utm);
         // ohne alte Werte: keine im IFC
+        // gespeichert außerhalb Deutschlands (Datei nimmt 0 … 10 Mio.):
+        // angezeigt, unverändert übernommen, ohne Dauermeldung
+        let fern = Location {
+            utm: Some(sk_model::Utm {
+                e: 500_000.0,
+                n: 4_000_000.0,
+                zone: 32,
+            }),
+            ..Default::default()
+        };
+        let mut f = Maske::new(&ohne(), false, None).mit_ort(&fern);
+        assert_eq!(f.meldung(), None);
+        assert_eq!(f.ort(), fern);
+        f.felder[UTM + 1] = TextEdit::new("4 000 001");
+        assert!(f.meldung().unwrap().starts_with("Nordwert: 5 200 000"));
+        assert_eq!(f.ort(), fern);
         let mut neu = Maske::new(&ohne(), false, None).mit_ort(&Location::default());
         neu.felder[UTM + 1] = TextEdit::new("5878765,432");
         assert_eq!(
@@ -1505,6 +1803,7 @@ mod tests {
                 "Nordwert fehlt, die alten Werte bleiben.",
                 "Ostwert fehlt, keine Georeferenz.",
                 "Höhe über NHN: −500 bis 9000 m.",
+                "Lage und UTM 1234 km auseinander.",
             ] {
                 assert!(
                     f.width(satz, 11.5) < platz,
@@ -1638,8 +1937,104 @@ mod tests {
                 // Die zweite Zahl hat keine eigene Bezeichnung
                 assert!(einheit + 8.0 * s < la.x, "{einheit} {}", la.x);
                 assert!(la.x + la.w + 6.0 * s + f.width("° O", px) < (W - PAD / 2.0) * s);
+                // gegliedert mit vier Nachkommastellen passt ins Feld
+                // (Einstellungen F19), die Einheit ins Blatt
+                for (i, z, e) in [
+                    (UTM, "32 472 589,2915", "m"),
+                    (UTM + 1, "5 878 900,8954", "m"),
+                ] {
+                    let r = l.felder[i];
+                    let innen = r.x + r.w - 8.0 * s - widgets::text_field_x(r, s, &t);
+                    assert!(f.width(z, px) < innen, "{z}: {} ≥ {innen}", f.width(z, px));
+                    assert!(r.x + r.w + 6.0 * s + f.width(e, px) < (W - PAD / 2.0) * s);
+                }
             }
         }
+    }
+
+    /// Bedienbarkeit 38.1: Auf 1366 × 768 bei 125 % passt das Blatt mit den
+    /// Landeskoordinaten nicht. Es wird so hoch wie der Platz; Kopf und Fuß
+    /// mit den Knöpfen bleiben stehen, dazwischen rollt es mit dem Rad und
+    /// mit Tab zum Feld; verdeckte Felder nehmen keinen Klick.
+    #[test]
+    fn rollt_wenn_es_nicht_passt() {
+        let mut m = Maske::new(&ohne(), false, None);
+        let s = 1.25;
+        let voll = m.size(s).1;
+        // Großes Fenster: wie bisher, nichts rollt
+        let r = m.rect(s, 2560, 1600, 40);
+        assert_eq!(r.h, voll);
+        assert!(!m.rad(s, -1.0));
+        // 768 Pixel hoch, Titelleiste 40
+        let r = m.rect(s, 1366, 768, 40);
+        assert!(r.h < voll && r.y >= 40.0 && r.y + r.h <= 768.0, "{r:?}");
+        let l = m.sicht_lage(s);
+        assert_eq!(l.h, r.h);
+        for k in l.knoepfe {
+            assert!(k.y + k.h <= r.h - 10.0 * s, "Knopf im Blatt");
+        }
+        let mitte = |k: Rect| {
+            (
+                (r.x + k.x + k.w * 0.5) as f64,
+                (r.y + k.y + k.h * 0.5) as f64,
+            )
+        };
+        let (x, y) = mitte(l.knoepfe[1]);
+        assert_eq!(m.ziel(r, s, x, y), Some(Ziel::Uebernehmen));
+        // Rad nach unten bis ans Ende, weiter geht es nicht
+        while m.rad(s, -1.0) {}
+        assert_eq!(m.versatz(s), voll - r.h);
+        assert!(!m.rad(s, -1.0));
+        let (x, y) = mitte(m.sicht_lage(s).knoepfe[1]);
+        assert_eq!(m.ziel(r, s, x, y), Some(Ziel::Uebernehmen), "Knöpfe stehen");
+        // Ein Feld halb unter dem Kopf nimmt dort keinen Klick
+        m.rollen = m.lage(1.0).felder[1].y - KOPF_H + ZEILE_H * 0.5;
+        let f = m.sicht_lage(s).felder[1];
+        let (oben, unten) = m.inhalt(s);
+        assert!(f.y < oben && f.y + f.h > oben);
+        let x = (r.x + f.x + 20.0 * s) as f64;
+        assert_ne!(
+            m.ziel(r, s, x, (r.y + oben - 2.0) as f64),
+            Some(Ziel::Feld(1))
+        );
+        assert_eq!(
+            m.ziel(r, s, x, (r.y + oben + 2.0) as f64),
+            Some(Ziel::Feld(1))
+        );
+        // Tab zurück ins erste Feld rollt nach oben, ans letzte nach unten
+        m.fokus_auf(0);
+        assert_eq!(m.versatz(s), 0.0);
+        m.fokus_auf(UTM + 2);
+        let f = m.sicht_lage(s).felder[UTM + 2];
+        assert!(f.y >= oben && f.y + f.h <= unten, "{f:?} {oben} {unten}");
+        // Über das Fenster: das Rad rollt, die Titelleiste bleibt frei
+        let t = Theme::dark();
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let vorher = m.versatz(s);
+        let rad = Event::Wheel {
+            delta: 1.0,
+            x: 0.0,
+            y: 0.0,
+            mods: Modifiers::default(),
+        };
+        let w = m.ereignis(rad, r, s, 40.0, &fonts, &t).unwrap();
+        assert!(w.neu_zeichnen && m.versatz(s) < vorher);
+        let oben = Event::MouseDown {
+            button: MouseButton::Left,
+            x: 100.0,
+            y: 20.0,
+            mods: Modifiers::default(),
+        };
+        assert!(m.ereignis(oben, r, s, 40.0, &fonts, &t).is_none());
+        // Das Bild ist so hoch wie das Blatt im Fenster
+        let c = m.paint(&t, &fonts, s);
+        let rand = (t.size.panel_shadow * s).round();
+        assert_eq!(c.height as f32, r.h + 2.0 * rand);
+        assert_eq!(c.width, m.paint_voll(&t, &fonts, s).width);
     }
 
     /// Ist-Bilder zu `soll-projektdaten` und `soll-projektdaten-knopf`:
@@ -1712,8 +2107,8 @@ mod tests {
             lat: Some(53.0589),
             lon: Some(8.591),
             utm: Some(sk_model::Utm {
-                e: 467_123.456,
-                n: 5_878_765.432,
+                e: 472_589.291,
+                n: 5_878_900.895,
                 zone: 32,
             }),
             nhn: Some(14.25),
@@ -1733,6 +2128,11 @@ mod tests {
         );
         m.felder[UTM] = TextEdit::new("467123,456");
         ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-g-ohne-zone.png");
+        // h) 1366 × 768 bei 125 %: das Blatt rollt, Fokus auf der Höhe
+        // ±0,00, Kopf und Knöpfe stehen (Bedienbarkeit 38.1)
+        m.rect(1.25, 1366, 768, 40);
+        m.fokus_auf(UTM + 2);
+        ab(m.paint(&t, &fonts, 1.25), "ist-projektdaten-h-rollt.png");
         // Knopf im linken Paneel: gesetzt und leer, rechts daneben die
         // Kachel des Nordpfeils (gesetzt: Nord 12°, Sonnenstand S2)
         // (aktiv: beim Aufziehen, Hinweise unten für den Nordpfeil)

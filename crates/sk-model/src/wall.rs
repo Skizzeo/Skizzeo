@@ -594,7 +594,7 @@ impl WallChain {
     }
 
     /// Schicht, zu der die Fläche im Versatz `off` gehört.
-    fn layer_at(&self, off: f64) -> Option<usize> {
+    pub(crate) fn layer_at(&self, off: f64) -> Option<usize> {
         if self.joints.ends == [EndCut::Square, EndCut::Square] {
             return None;
         }

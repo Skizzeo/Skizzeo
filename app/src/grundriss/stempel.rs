@@ -17,6 +17,12 @@
 //! gefiltert nach dem Getippten. Tab übernimmt den nächsten Vorschlag ins
 //! Feld, ein Klick einen bestimmten. Enter übernimmt („Raum benannt“), ein
 //! Klick daneben ebenso, Esc lässt den Namen.
+//!
+//! Aufwand (Review #87 R2): Die Auslegung gilt, bis sich Modell, Ansicht
+//! oder Namensfeld ändern; Räume außerhalb des Bildes oder zu klein für
+//! den kleinsten Stempel sieht sie gar nicht erst an. Ein gezogener Stempel
+//! setzt nur seine eigene Lage ein, eine gezogene Wand ersetzt nur die
+//! Flächen ihrer Hausgruppe ([`sk_raum::Erkennung::raumformen`]).
 
 use crate::camera::Camera;
 use crate::scene::Scene;
@@ -25,7 +31,7 @@ use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, StoreyId};
 use sk_paint::{font::Font, Canvas, Path, Rgba};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
-use sk_raum::RaumForm;
+use sk_raum::{Raumflaeche, Raumformen};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, FieldState, Fonts, Rect};
@@ -75,15 +81,15 @@ pub struct Bild {
     pub kasten: Box,
     /// Nur die Fläche: Der Name passt nicht in den Raum.
     pub kurz: bool,
-    /// Index der Fläche in der Erkennung.
-    form: usize,
+    /// Fläche in der Erkennung: Hausgruppe und Nummer darin.
+    form: (usize, usize),
 }
 
 /// Gedrückter bzw. gezogener Stempel.
 struct Zug {
     raum: Option<ElementId>,
     punkt: Vec3,
-    form: usize,
+    form: (usize, usize),
     /// Mauspunkt beim Drücken und Versatz zum Stempelpunkt (Pixel).
     start: (f64, f64),
     versatz: (f64, f64),
@@ -101,14 +107,44 @@ pub struct Namen {
     pub wahl: Option<usize>,
 }
 
-/// Erkannte Flächen mit Grundfläche (mm²) zu Modellstand und Geschoss.
-type Formen = (u64, StoreyId, Vec<(RaumForm, f64)>);
+/// Erkannte Flächen des Geschosses je Hausgruppe zum Modellstand `rev`.
+struct Formen {
+    rev: u64,
+    raeume: Raumformen,
+}
+
+impl Formen {
+    fn flaeche(&self, (g, i): (usize, usize)) -> Option<&Raumflaeche> {
+        self.raeume.gruppen.get(g)?.get(i)
+    }
+}
+
+/// Wovon die Auslegung abhängt: Sie gilt, solange sich nichts davon ändert.
+#[derive(Clone, PartialEq)]
+struct Anlass {
+    rev: u64,
+    geschoss: StoreyId,
+    kamera: Camera,
+    w: f64,
+    h: f64,
+    scale: f64,
+    theme: u64,
+    schrift: (bool, bool),
+    gesperrt: Vec<Box>,
+    feld: Option<(ElementId, String)>,
+}
 
 /// Stempel des aktiven Geschosses mit Maus- und Tastenzustand.
 #[derive(Default)]
 pub struct Stempel {
+    /// Szene, zu der alles Folgende gehört ([`Scene::kennung`]).
+    szene: Option<u64>,
     /// Erkannte Flächen mit Grundfläche (mm²), je Modellstand und Geschoss.
     formen: Option<Formen>,
+    /// Wofür `bilder` ausgelegt sind.
+    ausgelegt: Option<Anlass>,
+    /// Zahl der Auslegungen (Tests).
+    gelegt: u64,
     pub bilder: Vec<Bild>,
     /// Stempel unter der Maus (Index in `bilder`).
     pub hover: Option<usize>,
@@ -170,6 +206,20 @@ pub fn vorschlaege(such: Option<&str>) -> Vec<&'static str> {
     v
 }
 
+/// Kasten (mm, x und y von–bis) des Bildes in der Ebene der Höhe `z`;
+/// `None`, wenn eine Bildecke die Ebene nicht trifft.
+fn sichtfeld(c: &Camera, w: f64, h: f64, z: f64) -> Option<[f64; 4]> {
+    let mut k: Option<[f64; 4]> = None;
+    for (x, y) in [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)] {
+        let p = c.plane_point(x, y, w, h, z)?;
+        k = Some(match k {
+            None => [p.x, p.y, p.x, p.y],
+            Some(k) => [k[0].min(p.x), k[1].min(p.y), k[2].max(p.x), k[3].max(p.y)],
+        });
+    }
+    k
+}
+
 /// Modellpunkt unter dem Bildpunkt auf der Höhe `z`.
 fn boden(c: &Camera, x: f64, y: f64, w: f64, h: f64, z: f64) -> Vec3 {
     let (o, d) = c.ray(x, y, w, h);
@@ -188,18 +238,34 @@ impl Stempel {
         self.hover.is_some() || self.zug.is_some()
     }
 
+    /// Eine andere Szene (Neu, Öffnen, Sicherung) beginnt ohne Flächen,
+    /// Auslegung, Zug und Namensfeld der vorigen, auch bei gleichem
+    /// Modellstand (Review #87 R4).
+    fn szene(&mut self, s: &Scene) {
+        if self.szene != Some(s.kennung()) {
+            *self = Stempel {
+                szene: Some(s.kennung()),
+                gelegt: self.gelegt,
+                ..Default::default()
+            };
+        }
+    }
+
     /// Holt die Flächen des aktiven Geschosses, wenn sich Modell oder
     /// Geschoss geändert haben; die Szene rechnet dabei nur Hausgruppen
-    /// neu, deren Wände sich geändert haben (Review #87 B2).
+    /// neu, deren Wände oder Räume sich geändert haben (Review #87 B2, R2).
     fn formen(&mut self, s: &Scene) {
         let (m, g) = (s.model(), s.active_storey());
         let rev = m.revision();
         if self
             .formen
             .as_ref()
-            .is_none_or(|(r, gg, _)| *r != rev || *gg != g)
+            .is_none_or(|f| f.rev != rev || f.raeume.geschoss != g)
         {
-            self.formen = Some((rev, g, s.raumformen(g)));
+            self.formen = Some(Formen {
+                rev,
+                raeume: s.raumgruppen(g),
+            });
         }
     }
 
@@ -228,6 +294,7 @@ impl Stempel {
         t: &Theme,
         gesperrt: &[Box],
     ) {
+        self.szene(s);
         // Nach Rückgängig gibt es den Raum im Namensfeld vielleicht nicht mehr
         if self
             .namen
@@ -236,31 +303,102 @@ impl Stempel {
         {
             self.namen = None;
         }
+        self.formen(s);
+        let anlass = Anlass {
+            rev: s.model().revision(),
+            geschoss: s.active_storey(),
+            kamera: c.clone(),
+            w,
+            h,
+            scale,
+            theme: t.rev,
+            schrift: (fonts.regular.is_some(), fonts.bold.is_some()),
+            gesperrt: gesperrt.to_vec(),
+            feld: self.namen.as_ref().map(|n| (n.raum, n.feld.text.clone())),
+        };
+        if self.ausgelegt.as_ref() != Some(&anlass) {
+            self.bilder = self.legen(s, c, w, h, scale, fonts, t, gesperrt, true);
+            self.ausgelegt = Some(anlass);
+            self.gelegt += 1;
+        }
+        if self.hover.is_some_and(|i| i >= self.bilder.len()) {
+            self.hover = None;
+        }
+        // Raum des Namensfelds nicht in diesem Geschoss: Feld zu, Name bleibt
+        if let Some(n) = &self.namen {
+            if !self.bilder.iter().any(|b| b.raum == Some(n.raum)) {
+                self.namen = None;
+            }
+        }
+        self.liste = self.liste_auslegen(w, h, scale, t);
+    }
+
+    /// Die Stempel zu [`Stempel::auslegen`]. Vorab fallen Räume weg, deren
+    /// Kasten das Bild nicht berührt oder in denen nicht einmal der kleinste
+    /// Stempel Platz hat (nur die Fläche); so kostet die Auslegung je Raum
+    /// im Bild, nicht je Raum im Geschoss. `vortest`: aus nur zum Vergleich
+    /// in Tests.
+    #[allow(clippy::too_many_arguments)]
+    fn legen(
+        &self,
+        s: &Scene,
+        c: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        fonts: &Fonts,
+        t: &Theme,
+        gesperrt: &[Box],
+        vortest: bool,
+    ) -> Vec<Bild> {
+        let Some(fo) = self.formen.as_ref() else {
+            return Vec::new();
+        };
         let z = s.plan_cut();
         let pt = |p: Vec3| c.project(vec3(p.x, p.y, z), w, h).map(|(x, y)| [x, y]);
         let pad = PAD * scale;
         let feld = self.namen.as_ref().map(|n| n.raum);
-        self.formen(s);
-        let formen = self.formen.as_ref().map_or(&[][..], |f| &f.2[..]);
         let m = s.model();
+        let sicht = sichtfeld(c, w, h, z);
+        // Bildpunkte je mm (parallel: überall gleich, keine Richtung mehr)
+        let px_mm = c.ortho.map(|half| h / (2.0 * half));
+        // Der kleinste Stempel ist mindestens so breit und hoch
+        let (_, ah) = masse(fonts, "0", false, scale, t);
+        let (aw, _) = masse(fonts, ", m²", false, scale, t);
+        let kleinst = ah.min(aw) + 2.0 * pad;
+        let passt = |r: &Raumflaeche| {
+            let k = &r.kasten;
+            !vortest
+                || r.form.raum.is_some_and(|id| Some(id) == feld)
+                || (sicht
+                    .is_none_or(|v| k[0] <= v[2] && v[0] <= k[2] && k[1] <= v[3] && v[1] <= k[3])
+                    && px_mm.is_none_or(|p| (k[2] - k[0]).min(k[3] - k[1]) * p >= kleinst))
+        };
+        let mut folge: Vec<((usize, usize), &Raumflaeche)> = fo
+            .raeume
+            .gruppen
+            .iter()
+            .enumerate()
+            .flat_map(|(g, gr)| gr.iter().enumerate().map(move |(i, r)| ((g, i), r)))
+            .filter(|(_, r)| passt(r))
+            .collect();
         // Das Namensfeld zuerst, dann große Räume vor kleinen
-        let mut folge: Vec<usize> = (0..formen.len()).collect();
-        let rang = |k: usize| {
+        let rang = |r: &Raumflaeche| {
             (
-                formen[k].0.raum.is_none_or(|r| Some(r) != feld),
-                -formen[k].1,
+                r.form.raum.is_none_or(|id| Some(id) != feld),
+                -r.grundflaeche,
             )
         };
         folge.sort_by(|a, b| {
-            rang(*a)
-                .partial_cmp(&rang(*b))
+            rang(a.1)
+                .partial_cmp(&rang(b.1))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let bildflaeche = [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]];
         let mut belegt: Vec<Box> = gesperrt.to_vec();
         let mut bilder = Vec::new();
-        for k in folge {
-            let (f, a) = &formen[k];
+        for (k, r) in folge {
+            let (f, a) = (&r.form, r.grundflaeche);
             let name = f
                 .raum
                 .and_then(|id| m.space(id))
@@ -311,17 +449,7 @@ impl Stempel {
                 form: k,
             });
         }
-        if self.hover.is_some_and(|i| i >= bilder.len()) {
-            self.hover = None;
-        }
-        // Raum des Namensfelds nicht in diesem Geschoss: Feld zu, Name bleibt
-        if let Some(n) = &self.namen {
-            if !bilder.iter().any(|b| b.raum == Some(n.raum)) {
-                self.namen = None;
-            }
-        }
-        self.bilder = bilder;
-        self.liste = self.liste_auslegen(w, h, scale, t);
+        bilder
     }
 
     /// Vorschlagsliste unter dem Namensfeld (über ihm, wenn unten kein
@@ -375,6 +503,7 @@ impl Stempel {
     /// Namensfeld für den Raum `id` öffnen: Name markiert, Tippen
     /// überschreibt.
     pub fn oeffnen(&mut self, s: &Scene, id: ElementId) {
+        self.szene(s);
         if let Some(r) = s.model().space(id) {
             self.namen = Some(Namen {
                 raum: id,
@@ -388,6 +517,7 @@ impl Stempel {
     /// Namensfeld schließen und den Namen übernehmen; `true`, wenn er sich
     /// geändert hat.
     pub fn ab(&mut self, s: &mut Scene) -> bool {
+        self.szene(s);
         match self.namen.take() {
             Some(n) => {
                 self.liste = None;
@@ -399,6 +529,7 @@ impl Stempel {
 
     /// Esc beim Ziehen: alles wie vorher. `true`, wenn gezogen wurde.
     pub fn escape(&mut self, s: &mut Scene) -> bool {
+        self.szene(s);
         match self.zug.take() {
             Some(z) if z.offen => {
                 s.rollback();
@@ -423,6 +554,7 @@ impl Stempel {
         t: &Theme,
         aktiv: bool,
     ) -> Ausgang {
+        self.szene(s);
         let mut out = Ausgang::default();
         if !aktiv && self.is_busy() {
             out.redraw = self.hover.take().is_some();
@@ -453,11 +585,25 @@ impl Stempel {
                         let drin = self
                             .formen
                             .as_ref()
-                            .and_then(|(_, _, f)| f.get(z.form))
-                            .is_some_and(|(f, _)| f.enthaelt(p));
+                            .and_then(|f| f.flaeche(z.form))
+                            .is_some_and(|r| r.form.enthaelt(p));
+                        let rev = s.model().revision();
                         if drin && s.raum_stempel(id, p) {
                             z.punkt = p;
                             out.redraw = true;
+                            // Nur dieser Stempel rückt, die Flächen und die
+                            // übrigen Räume bleiben (Review #87 R2)
+                            if let Some(f) = self.formen.as_mut().filter(|f| f.rev == rev) {
+                                let (g, i) = z.form;
+                                if let Some(gr) = f.raeume.gruppen.get_mut(g) {
+                                    let mut v = gr.to_vec();
+                                    if let Some(r) = v.get_mut(i) {
+                                        r.form.stempel = p;
+                                    }
+                                    *gr = v.into();
+                                }
+                                f.rev = s.model().revision();
+                            }
                         }
                     }
                 } else if aktiv {
@@ -581,6 +727,7 @@ impl Stempel {
 
     /// Taste nach [`Stempel::will`].
     pub fn key(&mut self, key: Key, mods: Modifiers, s: &mut Scene) -> Ausgang {
+        self.szene(s);
         let mut out = Ausgang {
             consumed: true,
             redraw: true,
@@ -900,6 +1047,7 @@ mod tests {
     use super::*;
     use crate::ui::ViewKind;
     use sk_model::{Category, Model, RefSide};
+    use std::f64::consts::FRAC_PI_2;
 
     const W: f64 = 1000.0;
     const H: f64 = 700.0;
@@ -952,6 +1100,11 @@ mod tests {
     /// Haus 10 × 8 m mit Innenwand bei x = 3 m, direkt ins Modell (wie
     /// aus einer Datei vor G3: noch ohne Räume).
     fn szene() -> Scene {
+        szene_mit(3000.0)
+    }
+
+    /// Wie [`szene`] mit der Innenwand bei `x`.
+    fn szene_mit(x: f64) -> Scene {
         let mut m = Model::with_seed(5);
         let st = m.defaults().storey;
         let (aw, iw) = (m.defaults().exterior_wall, m.defaults().interior_wall);
@@ -964,7 +1117,7 @@ mod tests {
         ];
         m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall)
             .unwrap();
-        let pts = [vec3(3000.0, t, 0.0), vec3(3000.0, 8000.0 - t, 0.0)];
+        let pts = [vec3(x, t, 0.0), vec3(x, 8000.0 - t, 0.0)];
         m.add_wall_run(&pts, false, RefSide::Center, st, iw, Category::InteriorWall)
             .unwrap();
         Scene::with_model(m)
@@ -1128,6 +1281,36 @@ mod tests {
         let r = s.model().space(id).unwrap().clone();
         let p = r.stempel.expect("verschoben");
         assert_eq!(r.anker, p, "der Anker geht mit");
+        // R2: Nur die Lage dieses Stempels rückt nach, nichts wird neu
+        // zugeteilt, und die Auslegung zeigt sie
+        let z0 = s.raum_zuteilungen();
+        maus(
+            &mut st,
+            &mut s,
+            &c,
+            Event::MouseMove {
+                x: x + 50.0,
+                y,
+                mods,
+            },
+        );
+        maus(
+            &mut st,
+            &mut s,
+            &c,
+            Event::MouseMove {
+                x: x + 40.0,
+                y,
+                mods,
+            },
+        );
+        auslegen(&mut st, &s, &c);
+        assert_eq!(s.raum_zuteilungen(), z0);
+        let gezogen = st.bilder.iter().find(|b| b.raum == Some(id)).unwrap();
+        assert_eq!(gezogen.punkt, p);
+        let neu = s.raumgruppen(s.active_storey());
+        let f = neu.flaechen().find(|f| f.form.raum == Some(id)).unwrap();
+        assert_eq!(f.form.stempel, p, "wie neu zugeteilt");
         // Weit nach links über die Innenwand: bleibt im Raum
         maus(&mut st, &mut s, &c, Event::MouseMove { x: 5.0, y, mods });
         assert_eq!(s.model().space(id).unwrap().stempel, Some(p));
@@ -1167,6 +1350,106 @@ mod tests {
         assert!(st.key(Key::Escape, mods, &mut s).changed);
         assert_eq!(s.model().space(id).unwrap().stempel, Some(p));
         assert_eq!(s.undo_label(), Some("Raumstempel verschoben"));
+    }
+
+    /// Review #87 R2: Ohne Änderung legt `auslegen` nicht neu aus; der
+    /// Vortest über die Kästen lässt bei jedem Ausschnitt und Maßstab
+    /// dieselben Stempel stehen wie die volle Prüfung.
+    /// Review #87 R4: Eine andere Szene mit gleichem Modellstand (etwa eine
+    /// ältere Fassung desselben Projekts) zeigt ihre eigenen Stempel; Zug
+    /// und Namensfeld der vorigen enden, ohne in der neuen etwas zu ändern.
+    #[test]
+    fn andere_szene_gleicher_stand() {
+        let (mut a, mut b) = (szene_mit(3000.0), szene_mit(7000.0));
+        assert_eq!(a.model().revision(), b.model().revision());
+        let c = kamera(&a);
+        let lage = |st: &Stempel| st.bilder.iter().map(mitte).collect::<Vec<_>>();
+        let mut frisch = Stempel::default();
+        auslegen(&mut frisch, &b, &c);
+        let mut st = Stempel::default();
+        auslegen(&mut st, &a, &c);
+        assert_eq!(st.bilder.len(), 2);
+        assert_ne!(lage(&st), lage(&frisch));
+        auslegen(&mut st, &b, &c);
+        assert_eq!(lage(&st), lage(&frisch));
+        // Namensfeld und angefangener Zug in a
+        let p0 = mitte(&st.bilder[0]);
+        auslegen(&mut st, &a, &c);
+        let p = mitte(&st.bilder[0]);
+        assert!(klick(&mut st, &mut a, &c, p).gewaehlt.is_some());
+        assert!(st.namen.is_some());
+        let (mods, button) = (Modifiers::default(), MouseButton::Left);
+        let (x, y) = p;
+        maus(&mut st, &mut a, &c, Event::MouseDown { button, x, y, mods });
+        maus(
+            &mut st,
+            &mut a,
+            &c,
+            Event::MouseMove {
+                x: x + 40.0,
+                y,
+                mods,
+            },
+        );
+        assert!(st.is_busy());
+        let rev = b.model().revision();
+        assert!(!st.key(Key::Escape, mods, &mut b).changed);
+        assert!(!st.ab(&mut b));
+        assert!(st.namen.is_none() && !st.is_busy());
+        assert_eq!(b.model().revision(), rev, "b bleibt, wie es war");
+        auslegen(&mut st, &b, &c);
+        assert_eq!(mitte(&st.bilder[0]), p0);
+    }
+
+    #[test]
+    fn vortest_und_auslegung_im_speicher() {
+        let mut m = Model::with_seed(5);
+        let g = m.defaults().storey;
+        let (aw, iw) = (m.defaults().exterior_wall, m.defaults().interior_wall);
+        let t: f64 = m.wall_layers(aw).iter().map(|l| l.thickness).sum();
+        for i in 0..9 {
+            let (ox, oy) = ((i % 3) as f64 * 15000.0, (i / 3) as f64 * 12000.0);
+            let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+            let pts = [
+                p(0.0, 0.0),
+                p(0.0, 8000.0),
+                p(10000.0, 8000.0),
+                p(10000.0, 0.0),
+            ];
+            m.add_wall_run(&pts, true, RefSide::Left, g, aw, Category::ExteriorWall)
+                .unwrap();
+            let x = 2000.0 + 700.0 * i as f64;
+            let pts = [p(x, t), p(x, 8000.0 - t)];
+            m.add_wall_run(&pts, false, RefSide::Center, g, iw, Category::InteriorWall)
+                .unwrap();
+        }
+        sk_raum::abgleichen(&mut m, &[g]);
+        let s = Scene::with_model(m);
+        let mut st = Stempel::default();
+        let c = kamera(&s);
+        auslegen(&mut st, &s, &c);
+        let n = st.gelegt;
+        auslegen(&mut st, &s, &c);
+        assert_eq!(st.gelegt, n, "nichts geändert");
+        let mut gezeigt = 0;
+        for half in [1500.0, 4000.0, 9000.0, 20000.0, 60000.0, 200000.0] {
+            for (x, y) in [
+                (0.0, 0.0),
+                (5000.0, 4000.0),
+                (17000.0, 15000.0),
+                (36000.0, 30000.0),
+            ] {
+                let c = Camera::parallel(vec3(x, y, 0.0), FRAC_PI_2, -FRAC_PI_2, half);
+                auslegen(&mut st, &s, &c);
+                assert_eq!(st.gelegt, n + 1, "neue Ansicht");
+                let ohne = st.legen(&s, &c, W, H, 1.0, &fonts(), &Theme::dark(), &[], false);
+                assert_eq!(st.bilder, ohne, "{half} {x} {y}");
+                gezeigt += ohne.len();
+                st.ausgelegt = None;
+                st.gelegt = n;
+            }
+        }
+        assert!(gezeigt > 20, "{gezeigt}");
     }
 
     /// Ein Schritt mit Wänden legt die Räume an; der größte neue wartet auf
