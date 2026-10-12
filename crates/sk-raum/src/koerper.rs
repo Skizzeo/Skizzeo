@@ -269,6 +269,17 @@ fn prisma(b: &mut Bau, aussen: &[Vec3], loecher: &[Vec<Vec3>], z: (f64, f64), m:
     });
 }
 
+/// Geschlossener Raumkörper über dem Umriss mit Löchern zwischen `z.0` und
+/// `z.1`, ohne Baustoff (für den Austausch, [`crate::raumliste`]).
+pub(crate) fn raumkoerper(aussen: &[Vec3], loecher: &[Vec<Vec3>], z: (f64, f64)) -> Solid {
+    let mut b = Bau {
+        s: Solid::default(),
+        prismen: Vec::new(),
+    };
+    prisma(&mut b, aussen, loecher, z, [0; 3]);
+    b.s
+}
+
 /// Quader über dem ebenen, konvexen Viereck `p` zwischen `z0` und `z1`.
 /// Baustoffe: oben, unten, dann je Seite `p[i]`–`p[i+1]`.
 fn klotz(b: &mut Bau, p: [Vec3; 4], z: (f64, f64), m: [u16; 6]) {
