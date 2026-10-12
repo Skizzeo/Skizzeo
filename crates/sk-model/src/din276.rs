@@ -1,6 +1,6 @@
-//! Namen der Kostengruppen nach DIN 276:2018 für Gliederung, Kacheln und
-//! CSV (ka-2-fach §2.1): 2. Ebene kurz („320 Gründung“), 3. Ebene mit dem
-//! Wortlaut der Norm.
+//! Namen der Kostengruppen nach DIN 276:2018 für Gliederung, Kacheln, CSV
+//! (ka-2-fach §2.1) und IFC (I4): 2. Ebene kurz („320 Gründung“), 3. Ebene
+//! mit dem Wortlaut der Norm.
 
 /// Kostengruppe der 2. Ebene zu einer der 3. Ebene (331 → 330).
 pub fn ebene2(kg: u16) -> u16 {
