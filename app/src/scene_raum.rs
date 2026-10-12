@@ -147,7 +147,9 @@ impl Scene {
 
     /// Beim Abschluss eines Schritts: Räume der Geschosse, deren Wände er
     /// ändert, folgen den Wänden (Öffnen allein legt keine an, alte Dateien
-    /// bleiben bytegleich). Die neu angelegten warten auf ihr Namensfeld
+    /// bleiben bytegleich). Die neu angelegten bekommen im selben Schritt
+    /// Vorlage und Ausbautypen ihrer Nutzung ([`sk_raum::ausbau::typen_anlegen`],
+    /// Einstellungen #112 B1) und warten auf ihr Namensfeld
     /// ([`Scene::neuer_raum`]). Ergebnis: wie der Stand je Geschoss
     /// wechselt, für Rückgängig und Wiederholen.
     pub(super) fn raeume_abgleichen(&mut self) -> Vec<(StoreyId, sk_raum::Wechsel)> {
@@ -167,6 +169,9 @@ impl Scene {
             let lage = self.raumlage(g);
             let alt = self.staende.remove(&g);
             let a = sk_raum::abgleichen_lage(&mut self.model, &lage, alt);
+            for &(id, _) in &a.neu {
+                sk_raum::ausbau::typen_anlegen(&mut self.model, id);
+            }
             if !raum.contains(&g) {
                 self.staende.insert(g, a.stand);
                 wechsel.extend(a.wechsel.map(|w| (g, w)));
@@ -230,11 +235,13 @@ impl Scene {
     }
 
     /// Raum für eine Fläche ohne Raum anlegen (etwa aus einer Datei vor G3,
-    /// bevor dort eine Wand geändert wurde), Anker an `p`: ein Schritt.
+    /// bevor dort eine Wand geändert wurde), Anker an `p`, mit Vorlage und
+    /// Ausbautypen: ein Schritt.
     pub fn raum_anlegen(&mut self, g: StoreyId, p: Vec3) -> ElementId {
         self.begin("Raum angelegt");
         let name = self.model.naechster_raumname();
         let id = self.model.add_space(g, Space::neu(p, name));
+        sk_raum::ausbau::typen_anlegen(&mut self.model, id);
         self.commit();
         id
     }
