@@ -220,6 +220,8 @@ pub(crate) struct Open {
     pub numbers: Vec<u32>,
     pub changes: Vec<Change>,
     pub noted: std::collections::HashSet<Key>,
+    /// Lage der Öffnungen beim Greifen (Ziehen von Wänden, Review #92).
+    pub grab: crate::model::OpeningGrab,
 }
 
 /// Bezeichnung eines Schritts mit Zahl („3 Bauteile gelöscht“) als

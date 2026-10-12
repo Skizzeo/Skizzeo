@@ -2191,7 +2191,10 @@ impl Scene {
         use crate::ui::{Band, FieldRow, Levels};
         let m = &self.model;
         let active = self.active_storey();
-        let mut l = Levels::default();
+        let mut l = Levels {
+            plan_cut: (!self.is_foundation(active)).then(|| self.plan_cut()),
+            ..Levels::default()
+        };
         let row = |field, label, value, (min, max): (f64, f64)| FieldRow {
             field,
             label,
@@ -2220,6 +2223,8 @@ impl Scene {
                 foundation,
                 roof,
                 active: id == active,
+                lines: (!foundation && !roof)
+                    .then_some((st.elevation + st.lines.sill, st.elevation + st.lines.lintel)),
             });
             if foundation {
                 // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)
