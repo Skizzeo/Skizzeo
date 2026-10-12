@@ -13,6 +13,8 @@ use sk_ui::theme::Theme;
 
 #[path = "props_fallrohr.rs"]
 pub mod fallrohr;
+#[path = "grundriss/raum_props.rs"]
+mod raum;
 
 /// Bis zu so vielen Pixeln Bewegung zwischen Drücken und Loslassen gilt als Klick.
 const CLICK_PX: f64 = 4.0;
@@ -436,7 +438,8 @@ fn foundation_props(
         | ElementKind::Roof { .. }
         | ElementKind::Downpipe { .. }
         | ElementKind::Ext(_)
-        | ElementKind::Opening(_) => return None,
+        | ElementKind::Opening(_)
+        | ElementKind::Space(_) => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);
@@ -496,6 +499,7 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
         ElementKind::Downpipe { .. } => {
             return crate::selection::fallrohr::downpipe_props(scene, id, values)
         }
+        ElementKind::Space(_) => return raum::props(scene, id, values),
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -562,7 +566,10 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
                 .iter()
                 .any(|j| j.0 == id || j.1 == id)
         }),
-        ende: m.freies_ende(id),
+        // Ecke bilden und Verlängern nur im aktiven Geschoss (Review #82 H2)
+        ende: m.freies_ende(id)
+            && m.element(id)
+                .is_some_and(|e| e.storey == scene.active_storey()),
         ..Default::default()
     })
 }

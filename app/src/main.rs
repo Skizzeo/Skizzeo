@@ -79,6 +79,7 @@ mod prefs;
 mod preis_blatt;
 mod projektdaten;
 mod quantity;
+mod raum_app;
 mod scene;
 mod schedule_view;
 mod section;
@@ -232,8 +233,11 @@ const OVERLAY_SCHNITT: usize = OVERLAY_ANSICHT + 1;
 /// Name und Fläche der Dachterrassen im Grundriss (wie eine Raumangabe).
 const OVERLAY_ROOMS: usize = OVERLAY_SCHNITT + 1;
 const ROOMS: usize = 4;
+/// Raumstempel (G4) und die Vorschlagsliste des Namensfelds darüber.
+const OVERLAY_STEMPEL: usize = OVERLAY_ROOMS + ROOMS;
+const STEMPEL: usize = 32;
 /// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
-const OVERLAY_CHIPS: usize = OVERLAY_ROOMS + ROOMS;
+const OVERLAY_CHIPS: usize = OVERLAY_STEMPEL + STEMPEL + 1;
 const OVERLAY_VIEWS: usize = OVERLAY_CHIPS + link_view::SLOTS;
 /// Paneel „Eigenschaften“.
 const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
@@ -598,6 +602,7 @@ struct App {
     /// Zuletzt hochgeladene Terrassenangaben (Text, Skalierung,
     /// Farbschema) und ihre Bildgröße.
     room_keys: [Option<(RoomKey, u32, u32)>; ROOMS],
+    stempel: raum_app::Raumstempel,
     /// Letzte Mausposition im Fenster (Pixel).
     mouse_at: Option<(f64, f64)>,
     /// Hinweis an der Maus: erscheint nach [`TIP_DELAY`] Ruhe über derselben Stelle.
@@ -4145,8 +4150,8 @@ impl App {
                 } else {
                     ev
                 };
-                self.drain_handle(&drain_ev, vw, vh, sc);
-                let sect_ev = if blocked || self.drains.is_busy() {
+                self.griffe_handle(&drain_ev, vw, vh, sc);
+                let sect_ev = if blocked || self.griffe_busy() {
                     Event::MouseLeave
                 } else {
                     ev
@@ -4160,7 +4165,7 @@ impl App {
                     || self.sect.is_busy()
                     || chip.is_some()
                     || self.nord.is_busy()
-                    || self.drains.is_busy()
+                    || self.griffe_busy()
                 {
                     Event::MouseLeave
                 } else {
@@ -4181,7 +4186,7 @@ impl App {
                     || self.edit.is_busy()
                     || self.sect.is_busy()
                     || self.nord.is_busy()
-                    || self.drains.is_busy()
+                    || self.griffe_busy()
                 {
                     Event::MouseLeave
                 } else {
@@ -4259,7 +4264,7 @@ impl App {
                     self.apply_ui(&out);
                     // Ein Klick in die Paneele beendet die Eingaben von Sonnenstand und
                     // Schnitthöhe, sonst nähmen sie weiter die Tasten (Review 3bx)
-                    if out.consumed && (self.sonne.eingabe.take().is_some() | self.zahnrad_ab()) {
+                    if out.consumed && (self.sonne.eingabe.take().is_some() | self.feld_ab()) {
                         self.redraw = true;
                     }
                     if !out.consumed && !self.press_chip(button, x, y, sc) {
@@ -4275,7 +4280,7 @@ impl App {
                             self.sync_caption(surface);
                             return true;
                         }
-                        let dn = self.drain_handle(&ev, vw, vh, sc);
+                        let dn = self.griffe_handle(&ev, vw, vh, sc);
                         let sect_ev = if dn { Event::MouseLeave } else { ev };
                         let so =
                             self.sect
@@ -4351,7 +4356,7 @@ impl App {
                     .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
                 self.cut_changed(&so);
-                self.drain_handle(&ev, vw, vh, sc);
+                self.griffe_handle(&ev, vw, vh, sc);
                 let en = self.edit_enabled();
                 let eo = self
                     .edit
@@ -4388,8 +4393,8 @@ impl App {
                     }
                 }
             }
-            // Getippte Zeichen braucht nur das Einstellungsfenster
-            Event::Text(_) => {}
+            // Getippte Zeichen: Namensfeld des Raumstempels (G4)
+            Event::Text(ch) => self.stempel_text(ch),
             // Mausrad über den Eigenschaften: der Inhalt rollt (Paket 4)
             Event::Wheel { delta, x, y, .. }
                 if !self.ui.dialog && self.ui.over_props(x, y, self.w, self.top()) =>
@@ -4418,13 +4423,13 @@ impl App {
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
             }
-            // Esc schließt die Felder der Zahnräder, die Schnitthöhe nimmt Tasten
+            // Esc schließt die Felder der Zahnräder; Schnitthöhe und Namensfeld nehmen Tasten
             Event::Key {
                 key,
                 down: true,
                 mods,
                 ..
-            } if self.zahnrad_will(key) => self.zahnrad_key(key, mods),
+            } if self.feld_will(key) => self.feld_key(key, mods),
             // Ein Feld der Sonnenstands-Leiste in Eingabe nimmt jede Taste (S4)
             Event::Key {
                 key, down, mods, ..
@@ -4550,7 +4555,7 @@ impl App {
 
     /// Lage der App für die Themenwahl (§1.2).
     fn help_ctx(&self) -> help::HelpCtx {
-        use help::{SelKind, Window};
+        use help::Window;
         let window = if self.card.is_some() {
             Some(Window::Backups)
         } else if let Some(p) = &self.prefs {
@@ -4568,21 +4573,10 @@ impl App {
         } else {
             None
         };
-        let m = self.scene.model();
-        let selection = self.sel.id.and_then(|id| {
-            use sk_model::ElementKind as K;
-            Some(match m.element(id)?.kind {
-                K::Wall(_) if m.stack_offset(id).is_some() => SelKind::UpperWall,
-                K::Wall(_) => SelKind::Wall,
-                K::GroundSlab(_) | K::StripFooting(_) | K::PerimeterInsulation { .. } => {
-                    SelKind::Foundation
-                }
-                K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
-                K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
-                // Thema „Erweiterungen“, siehe `sync_help`
-                K::Ext(_) | K::Opening(_) | K::Downpipe { .. } => return None,
-            })
-        });
+        let selection = self
+            .sel
+            .id
+            .and_then(|id| help::sel_kind(self.scene.model(), id));
         help::HelpCtx {
             window,
             dialog: self.ui.dialog,
@@ -4594,6 +4588,7 @@ impl App {
                 .tool
                 .enabled
                 .then_some(self.tool.category == Category::InteriorWall),
+            opening: self.tool.oeffnung.is_some(),
             isolating: self.scene.isolating().is_some(),
             selection,
             view: self.ui.view,
@@ -7502,6 +7497,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         nord_fuehrung: Default::default(),
         licht: None,
         room_keys: Default::default(),
+        stempel: Default::default(),
         panel_px: Vec::new(),
         wheel,
         wheel_view: wheel_view::WheelView::new(OVERLAY_WHEEL),
@@ -7986,7 +7982,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 sk_platform::Cursor::Hand
             }
             (None, None) if a.sonne.hover.is_some() => sk_platform::Cursor::Hand,
-            (None, None) => a.zahnrad_cursor().unwrap_or_else(|| a.ui.cursor()),
+            (None, None) => a.feld_cursor().unwrap_or_else(|| a.ui.cursor()),
         };
         surface.set_cursor(cursor);
 
@@ -8207,18 +8203,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let chips_on =
                 matches!(a.ui.view, ViewKind::Plan | ViewKind::Persp) && !a.tool.is_active();
             a.chips = if chips_on {
-                link_view::chips(&link_view::Want {
-                    scene: &a.scene,
-                    cam: &a.cam,
-                    w: vw,
-                    h: vh,
-                    top: th as f64,
-                    scale: scale as f64,
-                    plan_z: a.plan_z(),
-                    band: a.edit.active_wall(),
-                    hover: a.chip_hover,
-                    keep_linked: a.flush_keep,
-                })
+                a.ketten_chips(vw, vh, th as f64, scale as f64)
             } else {
                 Vec::new()
             };
@@ -8359,79 +8344,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             ));
             a.zahnrad_bilder(th, scale);
 
-            // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine
-            // Raumangabe, nach der Platzregel (Review 3f K1): nie über Wand,
-            // Attika oder Blech, 6 dip neben dem Kettensymbol
-            let rooms: Vec<((f64, f64), String)> = if a.ui.view == ViewKind::Plan {
-                let chips: Vec<terrace_label::Box> = a
-                    .chips
-                    .iter()
-                    .filter(|k| !k.linked)
-                    .map(|k| terrace_label::chip_box(k, scale as f64, th as f64))
-                    .collect();
-                // Nicht unter den Paneelen
-                let panels: Vec<terrace_label::Box> =
-                    a.ui.panel_rects(a.w, th)
-                        .iter()
-                        .map(|r| terrace_label::Box {
-                            x: r.x as f64,
-                            y: (r.y - th as f32) as f64,
-                            w: r.w as f64,
-                            h: r.h as f64,
-                        })
-                        .collect();
-                let pad = terrace_label::PAD * scale as f64;
-                terrace_label::labels(
-                    &a.scene,
-                    &a.cam,
-                    vw,
-                    vh,
-                    scale as f64,
-                    &a.ui.fonts,
-                    &a.theme,
-                    &chips,
-                    &panels,
-                )
-                .into_iter()
-                .filter_map(|(p, text)| {
-                    let (b, _) = p.shown()?;
-                    Some(((b.x + pad, b.y + pad), text))
-                })
-                .take(ROOMS)
-                .collect()
-            } else {
-                Vec::new()
-            };
-            for i in 0..ROOMS {
-                match rooms.get(i) {
-                    Some(((x, y), text)) => {
-                        let key = (text.clone(), scale.to_bits(), a.theme.rev);
-                        let at =
-                            |_: u32, _: u32| (x.round() as i32, (y + th as f64).round() as i32);
-                        match &a.room_keys[i] {
-                            Some((k, w, h)) if *k == key => {
-                                let (px_x, px_y) = at(*w, *h);
-                                a.renderer.move_overlay(OVERLAY_ROOMS + i, px_x, px_y);
-                            }
-                            _ => {
-                                let c =
-                                    terrace_label::paint(&a.ui.fonts, text, scale as f64, &a.theme);
-                                let (w, h) = (c.width as u32, c.height as u32);
-                                let (px_x, px_y) = at(w, h);
-                                let px = c.to_premul_rgba8();
-                                a.renderer
-                                    .set_overlay(OVERLAY_ROOMS + i, px_x, px_y, w, h, &px);
-                                a.room_keys[i] = Some((key, w, h));
-                            }
-                        }
-                    }
-                    None => {
-                        if a.room_keys[i].take().is_some() {
-                            a.renderer.set_overlay(OVERLAY_ROOMS + i, 0, 0, 0, 0, &[]);
-                        }
-                    }
-                }
-            }
+            // Terrassenangaben und Raumstempel (G4) auf dem Papier
+            a.raumangaben(th, scale, vw, vh);
 
             // Maßzahl am Weg der rückenden Wand (Zielwahl, E20)
             let label = a

@@ -539,10 +539,6 @@ impl WallChain {
     }
 }
 
-/// Strichlänge und Lücke der Einbauelement-Linie im Grundriss (mm auf dem
-/// Papier).
-pub const ELEMENT_DASH: (f64, f64) = (1.5, 0.75);
-
 impl WallChain {
     /// Einbauelement im Grundriss (Jörn 12.10. 05:24): je Loch, das die
     /// Schnitthöhe `cut` trifft, zwei Linien längs der Wand in Höhe des

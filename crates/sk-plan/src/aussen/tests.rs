@@ -125,6 +125,7 @@ fn innenwand_und_fenster_kommen_in_ihre_ketten() {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Vec::new(),
         })
         .expect("Fenster");
     m.commit();
@@ -298,6 +299,7 @@ fn fenster_in_fast_paralleler_wand() {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Vec::new(),
         })
         .expect("Fenster");
     m.commit();

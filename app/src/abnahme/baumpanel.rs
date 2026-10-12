@@ -326,13 +326,13 @@ fn a213_baum_karte() {
     for (name, soll) in [
         (
             "Obergeschoss",
-            vec!["AW-005", "AW-006", "AW-007", "AW-008", "DE-002"],
+            vec!["AW-005", "AW-006", "AW-007", "AW-008", "DE-002", "R-002"],
         ),
         (
             "Erdgeschoss",
             vec![
                 "AW-001", "AW-002", "AW-003", "AW-004", "IW-001", "DE-001", "UD-001", "DT-001",
-                "AB-001",
+                "AB-001", "R-001", "R-003",
             ],
         ),
         ("Gründung", vec!["SP-001", "FS-001"]),
@@ -346,7 +346,8 @@ fn a213_baum_karte() {
             nummern(&s, &ids),
             "{name}"
         );
-        // Gruppen: Außenwände (4) als Gruppe, alles andere einzeln
+        // Gruppen: Außenwände (4) als Gruppe, im EG auch die zwei Räume
+        // beiderseits der Innenwand (G3), alles andere einzeln
         let k = kinder(n, i);
         let raenge: Vec<u8> = k.iter().map(|&c| rang(kategorie(&s, &n[c].key))).collect();
         assert!(
@@ -355,6 +356,11 @@ fn a213_baum_karte() {
         );
         for &c in &k {
             match &n[c].key {
+                NodeKey::Group(g, Category::Space) => {
+                    assert_eq!((*g, name), (sg, "Erdgeschoss"));
+                    assert_eq!(n[c].label, "Räume (2)");
+                    assert_eq!(kinder(n, c).len(), 2, "Räume unter der Gruppe");
+                }
                 NodeKey::Group(g, cat) => {
                     assert_eq!(*g, sg);
                     assert_eq!(*cat, Category::ExteriorWall);
@@ -374,7 +380,12 @@ fn a213_baum_karte() {
             .iter()
             .filter(|&&c| matches!(n[c].key, NodeKey::Group(..)))
             .count();
-        assert_eq!(gruppen, if name == "Gründung" { 0 } else { 1 });
+        let soll = match name {
+            "Gründung" => 0,
+            "Erdgeschoss" => 2,
+            _ => 1,
+        };
+        assert_eq!(gruppen, soll);
     }
     assert_eq!(
         n[finde(n, &NodeKey::Element(guid(&s, "DE-001")))].label,
@@ -669,6 +680,11 @@ fn a219_sperrquelle_kette() {
     let (mut s, _, _) = pruefhaus(219);
     let m = s.model();
     for (id, e) in m.elements().iter() {
+        // Räume folgen allen Wänden um sie, ohne einzelne Quelle (G3)
+        if e.category == Category::Space {
+            assert_eq!(quelle(m, id), id, "{}", e.number);
+            continue;
+        }
         if matches!(m.can_delete(id), Err(Refusal::Derived { .. })) {
             let q = quelle(m, id);
             let c = m.element(q).unwrap().category;

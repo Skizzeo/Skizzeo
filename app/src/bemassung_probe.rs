@@ -48,6 +48,7 @@ fn siedlung(n: usize) -> Scene {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Vec::new(),
         })
         .expect("Fenster");
     }

@@ -916,7 +916,12 @@ pub fn parts_text(m: &Model, b: BuildingId) -> String {
         let k = sk_model::kinds::spec(c);
         (c, k.short, k.plural)
     });
-    let parts = m.building_parts(b);
+    // Räume gehen mit ihren Wänden und zählen nicht als Bauteil (G3)
+    let mut parts = m.building_parts(b);
+    parts.retain(|id| {
+        m.element(*id)
+            .is_some_and(|e| e.category != Category::Space)
+    });
     let count = |c: Category| {
         parts
             .iter()

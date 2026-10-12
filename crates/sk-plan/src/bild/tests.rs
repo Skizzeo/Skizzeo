@@ -29,6 +29,7 @@ fn haus() -> (Model, StoreyId) {
         reveal: None,
         install: Default::default(),
         swing: None,
+        lock: Vec::new(),
     })
     .unwrap();
     m.commit();

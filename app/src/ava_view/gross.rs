@@ -1,4 +1,4 @@
-//! Große Druckvorschau (Jörn 11.10.): Ein Klick auf das Blatt der
+//! Große Druckvorschau (Jörn 11.10.): Die Lupe auf dem Blatt der
 //! Druckvorschau legt die Seiten schwebend über das ganze Fenster, so
 //! breit wie das Fenster (höchstens `BREIT_MAX`), untereinander zum Rollen.
 //! Esc, ein Klick daneben oder „Schließen“ schließt sie; die kleine
@@ -109,7 +109,7 @@ impl AvaView {
         self.gross = None;
         if self
             .hot
-            .is_some_and(|h| matches!(h, Hot::GrossZu | Hot::GrossSeite))
+            .is_some_and(|h| matches!(h, Hot::GrossZu | Hot::GrossSeite | Hot::Stelle(_)))
         {
             self.hot = None;
         }
@@ -127,17 +127,24 @@ impl AvaView {
 
     pub(super) fn gross_hit(&self, fonts: &Fonts, x: f32, y: f32) -> Option<Hot> {
         let (l, r) = self.gross_lage(fonts);
-        let seite = (0..l.seiten).any(|i| inside(l.seite(i), x, y));
-        match r.klick(x, y, seite) {
+        let seite = (0..l.seiten).find(|&i| inside(l.seite(i), x, y));
+        match r.klick(x, y, seite.is_some()) {
             Klick::Zu => Some(Hot::GrossZu),
-            Klick::Inhalt => Some(Hot::GrossSeite),
+            // Eine Position wählt ihre Bauteile (Jörn 12.10.)
+            Klick::Inhalt => {
+                let stelle = seite.zip(self.blatt(fonts)).and_then(|(i, b)| {
+                    let (sx, sy, ..) = l.seite(i);
+                    self.stelle_bei(&b, i, (sx, sy, l.k), (x, y))
+                });
+                Some(stelle.map_or(Hot::GrossSeite, Hot::Stelle))
+            }
             Klick::Daneben => None,
         }
     }
 
     /// Zeichnet die große Vorschau über das ganze Fenster (nach den Karten,
     /// siehe [`crate::quantity::QuantityWindow`]).
-    pub fn paint_gross(&self, c: &mut Canvas, fonts: &Fonts) {
+    pub fn paint_gross(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
         if !self.gross_offen() {
             return;
         }
@@ -160,10 +167,23 @@ impl AvaView {
             }
             c.fill_rect(x + 2.0 * s, y + 3.0 * s, pw, ph, Rgba(0, 0, 0, 60));
             c.fill_rect(x, y, pw, ph, Rgba(255, 255, 255, 255));
+            self.stellen_malen(c, t, &b, i, (x, y, l.k));
             sk_paint::pdf::zeichnen(c, seite, (x, y), l.k, regular, fett);
         }
         let titel = format!("Seite {} von {}", l.jetzt(h) + 1, l.seiten.max(1));
-        let hinweis = format!("Mausrad blättert · {}", schwebend::HINWEIS);
+        // Lang, wenn er passt, sonst wie bisher
+        let lang = format!(
+            "Klick auf eine Position zeigt sie im Modell · Mausrad blättert · {}",
+            schwebend::HINWEIS
+        );
+        let px = 11.0 * self.scale;
+        let platz = r.zu.0 - l.x.max(RAND * self.scale) - 16.0 * self.scale;
+        let titel_w = fett.width(&titel, px) + 16.0 * self.scale;
+        let hinweis = if titel_w + regular.width(&lang, px) < platz {
+            lang
+        } else {
+            format!("Mausrad blättert · {}", schwebend::HINWEIS)
+        };
         let hot = self.hot == Some(Hot::GrossZu);
         r.leiste(c, fonts, (&titel, l.x), &hinweis, hot);
     }

@@ -35,7 +35,7 @@ pub struct Box {
 }
 
 impl Box {
-    fn around(c: [f64; 2], (w, h): (f64, f64)) -> Box {
+    pub(crate) fn around(c: [f64; 2], (w, h): (f64, f64)) -> Box {
         Box {
             x: c[0] - w * 0.5,
             y: c[1] - h * 0.5,
@@ -45,7 +45,7 @@ impl Box {
     }
 
     /// Überdecken sich die Kästen (Berühren zählt nicht)?
-    fn overlaps(&self, o: &Box) -> bool {
+    pub(crate) fn overlaps(&self, o: &Box) -> bool {
         self.x < o.x + o.w && o.x < self.x + self.w && self.y < o.y + o.h && o.y < self.y + self.h
     }
 
@@ -232,7 +232,7 @@ fn crosses(a: [f64; 2], b: [f64; 2], r: &Box) -> bool {
 }
 
 /// Liegt der Kasten ganz im Umriss? (Randberührung erlaubt)
-fn inside(p: &[[f64; 2]], b: &Box) -> bool {
+pub(crate) fn inside(p: &[[f64; 2]], b: &Box) -> bool {
     let core = b.grown(-0.01);
     let n = p.len();
     core.corners().iter().all(|c| contains(p, *c))
@@ -240,7 +240,7 @@ fn inside(p: &[[f64; 2]], b: &Box) -> bool {
 }
 
 /// Überdeckt der Kasten den Umriss? (Randberührung zählt nicht)
-fn touches(p: &[[f64; 2]], b: &Box) -> bool {
+pub(crate) fn touches(p: &[[f64; 2]], b: &Box) -> bool {
     let core = b.grown(-0.01);
     let n = p.len();
     core.corners().iter().any(|c| contains(p, *c))
@@ -307,6 +307,7 @@ pub fn for_plan(
         band: None,
         hover: None,
         keep_linked: None,
+        schloesser: Vec::new(),
     })
     .iter()
     .map(|k| chip_box(k, scale, 0.0))

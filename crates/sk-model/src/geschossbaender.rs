@@ -429,6 +429,7 @@ impl Model {
                 | ElementKind::Coping { .. }
                 | ElementKind::Roof { .. }
                 | ElementKind::Downpipe { .. }
+                | ElementKind::Space(_)
                 | ElementKind::Ext(_) => {}
             }
         }

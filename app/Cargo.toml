@@ -10,6 +10,7 @@ sk-model = { path = "../crates/sk-model" }
 sk-cost = { path = "../crates/sk-cost" }
 sk-ifc = { path = "../crates/sk-ifc" }
 sk-platform = { path = "../crates/sk-platform" }
+sk-raum = { path = "../crates/sk-raum" }
 sk-render = { path = "../crates/sk-render" }
 sk-paint = { path = "../crates/sk-paint" }
 sk-plan = { path = "../crates/sk-plan" }

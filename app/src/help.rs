@@ -385,6 +385,25 @@ pub enum SelKind {
     Foundation,
     Floor,
     Terrace,
+    /// Fenster oder Tür (Bedienbarkeit 38.4).
+    Opening,
+}
+
+/// Art des Bauteils `id` für die Themenwahl; `None` für Erweiterungen
+/// (Thema „Erweiterungen“, siehe `App::sync_help`) und Unbekanntes.
+pub fn sel_kind(m: &sk_model::Model, id: sk_model::ElementId) -> Option<SelKind> {
+    use sk_model::ElementKind as K;
+    Some(match m.element(id)?.kind {
+        K::Wall(_) if m.stack_offset(id).is_some() => SelKind::UpperWall,
+        K::Wall(_) => SelKind::Wall,
+        K::GroundSlab(_) | K::StripFooting(_) | K::PerimeterInsulation { .. } => {
+            SelKind::Foundation
+        }
+        K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
+        K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
+        K::Opening(_) => SelKind::Opening,
+        K::Ext(_) | K::Downpipe { .. } | K::Space(_) => return None,
+    })
 }
 
 /// Lage der App, reine Daten (§3).
@@ -399,6 +418,8 @@ pub struct HelpCtx {
     pub dragging: bool,
     /// Werkzeug aktiv: `true` = Innenwand, `false` = Gebäude.
     pub tool: Option<bool>,
+    /// Werkzeug „Fenster“ oder „Tür“ aktiv.
+    pub opening: bool,
     pub isolating: bool,
     pub selection: Option<SelKind>,
     pub view: ViewKind,
@@ -431,6 +452,9 @@ pub fn topic(c: &HelpCtx) -> Topic {
     if c.dragging {
         return Topic::Drag;
     }
+    if c.opening {
+        return Topic::Openings;
+    }
     if let Some(inner) = c.tool {
         return if inner { Topic::InnerWall } else { Topic::Draw };
     }
@@ -444,6 +468,7 @@ pub fn topic(c: &HelpCtx) -> Topic {
             SelKind::Foundation => Topic::Foundation,
             SelKind::Floor => Topic::Floor,
             SelKind::Terrace => Topic::Terrace,
+            SelKind::Opening => Topic::Openings,
         };
     }
     match c.view {
@@ -1087,6 +1112,7 @@ mod tests {
             flush_pick: false,
             dragging: false,
             tool: None,
+            opening: false,
             isolating: false,
             selection: None,
             view: ViewKind::Plan,
@@ -1106,6 +1132,35 @@ mod tests {
         ] {
             assert!(s.rows.iter().any(|(x, _)| x == a), "{a}");
         }
+    }
+
+    /// Bedienbarkeit 38.4: Im Werkzeug „Fenster“/„Tür“ und mit einer
+    /// gewählten Öffnung zeigt F1 „Wand- und Türöffnungen“; das Thema nennt
+    /// den Grundriss, Ändern und Löschen in höchstens zehn Zeilen.
+    #[test]
+    fn thema_oeffnungen() {
+        let mut c = HelpCtx {
+            window: None,
+            dialog: false,
+            flush_pick: false,
+            dragging: false,
+            tool: None,
+            opening: true,
+            isolating: false,
+            selection: None,
+            view: ViewKind::Plan,
+        };
+        assert_eq!(topic(&c), Topic::Openings);
+        c.opening = false;
+        c.selection = Some(SelKind::Opening);
+        assert_eq!(topic(&c), Topic::Openings);
+        c.window = Some(Window::Catalog);
+        assert_eq!(topic(&c), Topic::Catalog);
+        let s = help().section("oeffnungen").expect("Thema Öffnungen");
+        for a in ["Im Grundriss", "Ändern, Löschen", "Höhenlinien"] {
+            assert!(s.rows.iter().any(|(x, _)| x == a), "{a}");
+        }
+        assert!(s.rows.len() <= 10);
     }
 
     /// KA-2d (paket-ka2 §7): Thema „Kosten“ mit Verrechnungslohn, „Auch für

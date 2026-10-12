@@ -49,6 +49,14 @@ name = "sk-platform"
 version = "0.2.0"
 
 [[package]]
+name = "sk-raum"
+version = "0.2.0"
+dependencies = [
+ "sk-math",
+ "sk-model",
+]
+
+[[package]]
 name = "sk-render"
 version = "0.2.0"
 dependencies = [
@@ -77,6 +85,7 @@ dependencies = [
  "sk-paint",
  "sk-plan",
  "sk-platform",
+ "sk-raum",
  "sk-render",
  "sk-szb",
  "sk-ui",

@@ -38,6 +38,9 @@ pub enum EckeFehler {
     Daneben,
     /// Wandende ziehen: Das Segment liefe auf das Segment davor zurück.
     Faltet,
+    /// Wandende ziehen: So spitz und kurz überlappten sich die Wandkörper
+    /// an der Ecke.
+    Spitz,
     /// Die Wände liegen in verschiedenen Geschossen.
     Geschoss,
 }
@@ -56,6 +59,7 @@ impl EckeFehler {
             EckeFehler::Ungueltig => "Das geht hier nicht: Der Grundriss würde ungültig.",
             EckeFehler::Daneben => "Die Wand liefe an der Zielwand vorbei.",
             EckeFehler::Faltet => "Die Wand läge auf der Wand davor.",
+            EckeFehler::Spitz => "Zu spitz für diese Länge: Die Wände würden sich überlappen.",
             EckeFehler::Geschoss => "Die Wände liegen in verschiedenen Geschossen.",
         }
     }
@@ -325,7 +329,8 @@ impl Model {
     /// Neue Punkte des Zuges, wenn Ende `ende` der Wand nach `p` wandert
     /// (Vorschau beim Ziehen). Das andere Ende des Segments bleibt; das
     /// Segment wird nicht kürzer als 10 cm und faltet nicht auf das Segment
-    /// davor zurück (Review #82 3).
+    /// davor zurück (Review #82 3); an einer spitzen Ecke müssen beide
+    /// Segmente so lang sein, dass sich die Körper nicht überlappen (H1).
     pub fn ende_punkte(
         &self,
         wall: ElementId,
@@ -355,11 +360,33 @@ impl Model {
             Some(s.i[1] + 1).filter(|k| *k < pts.len())
         };
         if let Some(v) = davor.map(|k| pts[k] - fest) {
-            if u.dot(v) > FALTEN_COS * u.length() * v.length() {
+            let (lu, lv) = (u.length(), v.length());
+            let cos = u.dot(v) / (lu * lv).max(1e-9);
+            if cos > FALTEN_COS {
                 return Err(EckeFehler::Faltet);
+            }
+            // Die innere Fläche läuft an der Ecke um w / tan(φ/2) an beiden
+            // Segmenten entlang (w: Abstand der inneren Fläche von der
+            // Bezugslinie); ist eins kürzer, kippt sein Körper über die Ecke
+            let (lo, hi) = self.base_chain(s.run).ok_or(EckeFehler::KeineWand)?.span();
+            // Drehsinn in Zeichenrichtung des Zuges: links innen negativ
+            let (da, db) = if ende == 1 { (-v, u) } else { (-u, v) };
+            let w = if cross2(da, db) > 0.0 { -lo } else { hi }.max(0.0);
+            let halb = cos.clamp(-1.0, 1.0).acos() * 0.5;
+            if w / halb.tan() > lu.min(lv) {
+                return Err(EckeFehler::Spitz);
             }
         }
         pts[s.i[ende]] = flach(p);
+        // Jede Fläche jeder Schicht muss an jedem Segment vorwärts laufen:
+        // Über der Gehrungsgrenze springt die Ecke der äußeren Fläche auf
+        // die Normale des Nachbarsegments, und der Körper kippt auch dann,
+        // wenn die Bezugslinie innen liegt (Review #87 B5)
+        let mut c = self.base_chain(s.run).ok_or(EckeFehler::KeineWand)?;
+        c.points = pts.clone();
+        if !c.gekippte_segmente().is_empty() {
+            return Err(EckeFehler::Spitz);
+        }
         Ok((s.run, pts))
     }
 }
@@ -796,5 +823,201 @@ mod tests {
             m.verlaengern_punkte(a, b).unwrap_err(),
             EckeFehler::Geschoss
         );
+    }
+
+    /// Spitze Ecke beim Wandende (Review #82 H1): Der Körper des kurzen
+    /// Segments kippte über die Ecke; lang genug geht es.
+    #[test]
+    fn spitze_ecke_nur_lang_genug() {
+        let (mut m, st, _) = haus();
+        let iw = m.defaults().interior_wall;
+        let r = m
+            .add_wall_run(
+                &[
+                    vec3(1000.0, 1000.0, 0.0),
+                    vec3(4000.0, 1000.0, 0.0),
+                    vec3(4000.0, 1500.0, 0.0),
+                ],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let w = m.wall_at(r, 1).unwrap();
+        let t: f64 = m.wall_layers(iw).iter().map(|l| l.thickness).sum();
+        let p = |deg: f64, len: f64| {
+            let a = deg.to_radians();
+            vec3(4000.0 - len * a.cos(), 1000.0 + len * a.sin(), 0.0)
+        };
+        // 15°: die innere Fläche läuft t/2 / tan(7,5°) am Segment entlang
+        let noetig = t / 2.0 / 7.5f64.to_radians().tan();
+        assert_eq!(
+            m.ende_punkte(w, 1, p(15.0, noetig - 20.0)),
+            Err(EckeFehler::Spitz)
+        );
+        assert!(m.ende_punkte(w, 1, p(15.0, noetig + 20.0)).is_ok());
+        // 45° mit 15 cm: auch dort kippte der Körper
+        assert_eq!(m.ende_punkte(w, 1, p(45.0, 150.0)), Err(EckeFehler::Spitz));
+        // Rechter Winkel mit 10 cm bleibt erlaubt (Achse, halbe Dicke < 10 cm)
+        assert!(m.ende_punkte(w, 1, vec3(4000.0, 1100.0, 0.0)).is_ok());
+        // Was durchgeht, ergibt Grundrisse, die nicht über die Ecke kippen
+        // (konvexe Vierecke); das zu kurze Segment kippte
+        let konvex = |m: &Model| {
+            let q = m.chain(r).unwrap().segment_footprint(1).unwrap();
+            let k: Vec<f64> = (0..4)
+                .map(|i| cross2(q[(i + 1) % 4] - q[i], q[(i + 2) % 4] - q[(i + 1) % 4]))
+                .collect();
+            k.iter().all(|x| *x > 0.0) || k.iter().all(|x| *x < 0.0)
+        };
+        let mut kurz = m.clone();
+        let (run, pts) = (r, {
+            let mut v = kurz.run(r).unwrap().points.clone();
+            v[2] = p(15.0, noetig - 20.0);
+            v
+        });
+        assert!(kurz.set_run_points(run, &pts).is_some());
+        assert!(!konvex(&kurz), "ohne Prüfung kippt das kurze Segment");
+        let (run, pts) = m.ende_punkte(w, 1, p(15.0, noetig + 20.0)).unwrap();
+        assert!(m.set_run_points(run, &pts).is_some());
+        assert!(konvex(&m));
+    }
+
+    /// Gekippte Dreiecke im Körper des Zuges: Eckfolge gegen die Normale.
+    fn gekippt(m: &Model, r: RunId) -> usize {
+        m.chain(r)
+            .unwrap()
+            .solid()
+            .triangles
+            .iter()
+            .filter(|t| {
+                let [a, b, c] = t.p;
+                let x = (b - a).cross(c - a);
+                x.length() > 1e-6 && x.dot(t.n) < 0.0
+            })
+            .count()
+    }
+
+    /// Spitze Ecke beim Wandende ziehen (H1 aus #82): Liegt die Bezugslinie
+    /// innen am spitzen Winkel (Außenwand, Bezug links), läuft die Gehrung
+    /// der äußeren Fläche über das kurze Stück hinaus und der Körper kippt.
+    /// Entweder lehnt ende_punkte ab, oder der Körper bleibt ungekippt.
+    #[test]
+    fn spitze_ecke_kippt_keinen_koerper() {
+        for grad in [10.5_f64, 11.0, 12.0, 13.0] {
+            let mut m = Model::new();
+            let st = m.eg_at(H);
+            let aw = m.defaults().exterior_wall;
+            let r = m
+                .add_wall_run(
+                    &[
+                        vec3(1000.0, 1000.0, 0.0),
+                        vec3(4000.0, 1000.0, 0.0),
+                        vec3(3000.0, 1500.0, 0.0),
+                    ],
+                    false,
+                    RefSide::Left,
+                    st,
+                    aw,
+                    Category::ExteriorWall,
+                )
+                .unwrap();
+            let w = m.wall_at(r, 1).unwrap();
+            let a = grad.to_radians();
+            let p = vec3(4000.0 - 4000.0 * a.cos(), 1000.0 + 4000.0 * a.sin(), 0.0);
+            if let Ok((run, pts)) = m.ende_punkte(w, 1, p) {
+                m.set_run_points(run, &pts).unwrap();
+                assert_eq!(gekippt(&m, r), 0, "{grad}°: Körper gekippt");
+            }
+        }
+    }
+
+    /// Durchlauf zu B5: Außen- und Innenwand, Bezug links, rechts und
+    /// mittig, das Ende nach links und rechts auf 10 bis 20° zurück, kurze
+    /// und lange Stücke. Was `ende_punkte` erlaubt, kippt keinen Körper.
+    #[test]
+    fn gekippte_segmente_bezug_links_und_rechts() {
+        // Bezugslinie innen am spitzen Winkel: links bei Linksdrehung,
+        // rechts bei Rechtsdrehung (Review #87 B5, Integration: Fall rechts)
+        for (seite, s) in [(RefSide::Left, 1.0), (RefSide::Right, -1.0)] {
+            for i in 0..=30 {
+                let grad: f64 = 10.0 + 0.5 * i as f64;
+                let (sin, cos) = grad.to_radians().sin_cos();
+                let mut m = Model::new();
+                let st = m.eg_at(H);
+                let aw = m.defaults().exterior_wall;
+                let pts = [
+                    vec3(1000.0, 1000.0, 0.0),
+                    vec3(4000.0, 1000.0, 0.0),
+                    vec3(4000.0 - 4000.0 * cos, 1000.0 + s * 4000.0 * sin, 0.0),
+                ];
+                let r = m
+                    .add_wall_run(&pts, false, seite, st, aw, Category::ExteriorWall)
+                    .unwrap();
+                let k = m.chain(r).unwrap().gekippte_segmente();
+                let fall = format!("{seite:?} {grad}°: {k:?}");
+                if k.is_empty() {
+                    assert_eq!(gekippt(&m, r), 0, "{fall}");
+                }
+                if grad == 12.0 {
+                    assert_eq!(k, [0], "{fall}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spitze_ecke_durchlauf() {
+        let mut erlaubt = 0;
+        for (cat, seite) in [
+            (Category::ExteriorWall, RefSide::Left),
+            (Category::ExteriorWall, RefSide::Right),
+            (Category::InteriorWall, RefSide::Center),
+        ] {
+            for links in [false, true] {
+                for laenge in [600.0_f64, 1500.0, 4000.0] {
+                    for i in 0..=40 {
+                        let grad = 10.0 + 0.25 * i as f64;
+                        let mut m = Model::new();
+                        let st = m.eg_at(H);
+                        let typ = if cat == Category::ExteriorWall {
+                            m.defaults().exterior_wall
+                        } else {
+                            m.defaults().interior_wall
+                        };
+                        let y = if links { 1500.0 } else { 500.0 };
+                        let r = m
+                            .add_wall_run(
+                                &[
+                                    vec3(1000.0, 1000.0, 0.0),
+                                    vec3(4000.0, 1000.0, 0.0),
+                                    vec3(3000.0, y, 0.0),
+                                ],
+                                false,
+                                seite,
+                                st,
+                                typ,
+                                cat,
+                            )
+                            .unwrap();
+                        let w = m.wall_at(r, 1).unwrap();
+                        let (s, c) = grad.to_radians().sin_cos();
+                        let dy = if links { laenge * s } else { -laenge * s };
+                        let p = vec3(4000.0 - laenge * c, 1000.0 + dy, 0.0);
+                        if let Ok((run, pts)) = m.ende_punkte(w, 1, p) {
+                            erlaubt += 1;
+                            m.set_run_points(run, &pts).unwrap();
+                            assert_eq!(
+                                gekippt(&m, r),
+                                0,
+                                "{cat:?} {seite:?} links {links} {laenge} mm {grad}°"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(erlaubt > 300, "{erlaubt} erlaubte Fälle");
     }
 }

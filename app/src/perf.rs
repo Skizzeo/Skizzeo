@@ -222,11 +222,13 @@ fn town_with_interior(n: usize) -> Scene {
 fn perf_ziehen_mit_innenwaenden() {
     println!();
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8}",
-        "Häuser", "Anschl.", "Ziehen", "Live3D", "Neu"
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8}",
+        "Häuser", "Anschl.", "Ziehen", "Live3D", "Neu", "Loslassen", "Aufbau"
     );
     for n in [1, 10, 100, 1000] {
+        let t0 = std::time::Instant::now();
         let mut s = town_with_interior(n);
+        let aufbau = t0.elapsed().as_secs_f64();
         let joins = s.model().joins().len();
         assert_eq!(joins, 4 * n);
         let run = s.model().runs().ids().next().unwrap();
@@ -247,18 +249,25 @@ fn perf_ziehen_mit_innenwaenden() {
         let live = time(20, || {
             std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
         });
+        // Loslassen mit Abgleich der Räume (Review #87 B3)
+        let t1 = std::time::Instant::now();
         s.commit();
+        let commit = t1.elapsed().as_secs_f64() * 1e3;
         assert!(s.model().check().is_empty());
         println!(
-            "{:>6} {:>8} {:>8.3} {:>8.3} {:>8.3}",
+            "{:>6} {:>8} {:>8.3} {:>8.3} {:>8.3} {:>10.3} {:>8.2}",
             n,
             joins,
             drag,
             live,
-            drag + live
+            drag + live,
+            commit,
+            aufbau
         );
     }
-    println!("Zeiten in ms je Mausbewegung. Ziel B5a: Ziehen < 1 ms.");
+    println!(
+        "Zeiten in ms je Mausbewegung, Loslassen in ms, Aufbau in s. Ziel B5a: Ziehen < 1 ms."
+    );
 }
 
 /// E3: Eine Attributänderung (Stiftfarbe) bei 1000 Häusern kostet nur die
@@ -1574,6 +1583,174 @@ fn perf_ecke_und_wandende() {
     println!("Zeiten in ms; Ziel: Zeigen < 1 ms, Klick (Loslassen) < 8 ms.");
 }
 
+/// Review #87 R2: Raumarbeit je Bild und je Mausbewegung im Grundriss
+/// (Stempel auslegen, Stempel ziehen, Wand ziehen) wächst nicht mit der
+/// Zahl der Häuser; dazu der Schrittbeginn nach Rückgängig (Stand der
+/// Räume). Leerlauf und Ziehen je ganzem Modell im Bild und auf das erste
+/// Haus gezoomt.
+#[test]
+#[ignore]
+fn perf_raumstempel() {
+    use crate::raum_app::stempel::Stempel;
+    use sk_platform::MouseButton;
+    use sk_ui::theme::Theme;
+    use sk_ui::widgets::Fonts;
+    use std::f64::consts::FRAC_PI_2;
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "Häuser",
+        "Räume",
+        "Leer alle",
+        "Leer nah",
+        "Stempel",
+        "Wand",
+        "Wand ohne",
+        "Beginn",
+        "ohne Bild"
+    );
+    let fonts = Fonts::system();
+    let t = Theme::dark();
+    let mods = Modifiers::default();
+    for n in [1, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        let raeume = s.model().spaces(st).len();
+        let alle = crate::fit_parallel(ViewKind::Plan, s.bounds(), W, H);
+        let nah = Camera::parallel(vec3(5000.0, 4000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 6000.0);
+        let mut sp = Stempel::default();
+        let aus = |sp: &mut Stempel, s: &Scene, c: &Camera| {
+            sp.auslegen(s, c, W, H, 1.0, &fonts, &t, &[]);
+        };
+        aus(&mut sp, &s, &nah);
+        let leer_alle = time(50, || aus(&mut sp, &s, &alle));
+        let leer_nah = time(50, || aus(&mut sp, &s, &nah));
+        assert!(sp.bilder.iter().filter(|b| b.raum.is_some()).count() >= 3);
+        // Stempel des mittleren Raums ziehen
+        let b = sp
+            .bilder
+            .iter()
+            .find(|b| b.raum.is_some() && b.punkt.x > 3500.0 && b.punkt.x < 6500.0)
+            .unwrap()
+            .clone();
+        let (x0, y0) = (b.kasten.x + b.kasten.w * 0.5, b.kasten.y + b.kasten.h * 0.5);
+        let ev = |e: Event, sp: &mut Stempel, s: &mut Scene| {
+            sp.handle(&e, s, &nah, W, H, 1.0, &fonts, &t, true);
+        };
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x: x0,
+            y: y0,
+            mods,
+        };
+        ev(down, &mut sp, &mut s);
+        ev(
+            Event::MouseMove {
+                x: x0 + 10.0,
+                y: y0,
+                mods,
+            },
+            &mut sp,
+            &mut s,
+        );
+        let mut flip = false;
+        let stempel = time(20, || {
+            flip = !flip;
+            let x = if flip { x0 + 20.0 } else { x0 + 10.0 };
+            ev(Event::MouseMove { x, y: y0, mods }, &mut sp, &mut s);
+            aus(&mut sp, &s, &nah);
+        });
+        let up = Event::MouseUp {
+            button: MouseButton::Left,
+            x: x0 + 10.0,
+            y: y0,
+            mods,
+        };
+        ev(up, &mut sp, &mut s);
+        // Innenwand x = 3,5 m des ersten Hauses ziehen
+        let iw = s.model().runs().ids().nth(1).unwrap();
+        let orig = s.model().run(iw).unwrap().points.clone();
+        let auf = |dx: f64| -> Vec<sk_math::Vec3> {
+            orig.iter().map(|p| *p + vec3(dx, 0.0, 0.0)).collect()
+        };
+        s.begin("Wand verschieben");
+        let mut flip = false;
+        let wand_ohne = time(20, || {
+            flip = !flip;
+            s.set_run_points(iw, &auf(if flip { -100.0 } else { -200.0 }));
+        });
+        let wand = time(20, || {
+            flip = !flip;
+            s.set_run_points(iw, &auf(if flip { -100.0 } else { -200.0 }));
+            aus(&mut sp, &s, &nah);
+        });
+        s.commit();
+        // Schrittbeginn nach Rückgängig (Stand der Räume), mit einem Bild
+        // dazwischen wie in der App und ohne
+        let (mut beginn, mut ohne_bild) = (Vec::new(), Vec::new());
+        for k in 0..10 {
+            s.begin("Wand verschieben");
+            s.set_run_points(iw, &auf(-300.0 - 10.0 * k as f64));
+            s.commit();
+            assert!(s.undo());
+            if k % 2 == 0 {
+                aus(&mut sp, &s, &nah);
+            }
+            let t0 = Instant::now();
+            s.begin("Wand verschieben");
+            let t = t0.elapsed().as_secs_f64() * 1000.0;
+            if k % 2 == 0 {
+                &mut beginn
+            } else {
+                &mut ohne_bild
+            }
+            .push(t);
+            s.rollback();
+        }
+        let (beginn, ..) = median(&mut beginn);
+        let (ohne_bild, ..) = median(&mut ohne_bild);
+        println!(
+            "{n:>6} {raeume:>6} {leer_alle:>9.3} {leer_nah:>9.3} {stempel:>9.3} {wand:>9.3} {wand_ohne:>9.3} {beginn:>9.3} {ohne_bild:>9.3}"
+        );
+    }
+    println!("Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen).");
+}
+
+/// Eine Tür 88,5 cm mit Aufschlag `swing` mitten in jeder Innenwand.
+fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    use sk_model::{Category, LevelRef};
+    let st = s.active_storey();
+    assert!(s.edit_model("Türen", |m| {
+        let innen: Vec<_> = m
+            .runs()
+            .iter()
+            .filter(|(_, run)| {
+                run.segments
+                    .first()
+                    .and_then(|e| m.element(*e))
+                    .is_some_and(|e| e.category == Category::InteriorWall)
+            })
+            .map(|(r, _)| r)
+            .collect();
+        innen.into_iter().all(|r| {
+            let f = m.outer_face(r, 0).unwrap();
+            let um = (f.u.0 + f.u.1) / 2.0;
+            let o = Opening {
+                kind: OpeningKind::Door,
+                path: vec![f.at(um - 442.5, 0.0), f.at(um + 442.5, 0.0)],
+                bottom: HeightRef::Level(LevelRef::bottom(st)),
+                top: HeightRef::Line(st, HeightLine::Door),
+                reveal: None,
+                install: Default::default(),
+                swing: Some(swing),
+                lock: Default::default(),
+            };
+            m.add_opening(o).is_some()
+        })
+    }));
+}
+
 /// Review #99 B1/B2: Innentüren bei `n` Häusern (je zwei Innenwände mit
 /// einer Tür): Griffe je Mausbewegung, Fang des Innentür-Werkzeugs, Ziehen
 /// am Griff (Aufschlag wechselt je Bewegung, dazu der neue Griff) und
@@ -1583,8 +1760,7 @@ fn perf_ecke_und_wandende() {
 fn perf_innentuer() {
     use crate::oeffnung_app::innentuer;
     use crate::wall_edit::tuer_edit;
-    use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
-    use sk_model::{Category, LevelRef};
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
     println!();
     println!(
         "{:>6} {:>8} {:>8} {:>8} {:>9}",
@@ -1597,33 +1773,7 @@ fn perf_innentuer() {
             side: FaceSide::Right,
             din: Din::Links,
         };
-        assert!(s.edit_model("Türen", |m| {
-            let innen: Vec<_> = m
-                .runs()
-                .iter()
-                .filter(|(_, run)| {
-                    run.segments
-                        .first()
-                        .and_then(|e| m.element(*e))
-                        .is_some_and(|e| e.category == Category::InteriorWall)
-                })
-                .map(|(r, _)| r)
-                .collect();
-            innen.into_iter().all(|r| {
-                let f = m.outer_face(r, 0).unwrap();
-                let um = (f.u.0 + f.u.1) / 2.0;
-                let o = Opening {
-                    kind: OpeningKind::Door,
-                    path: vec![f.at(um - 442.5, 0.0), f.at(um + 442.5, 0.0)],
-                    bottom: HeightRef::Level(LevelRef::bottom(st)),
-                    top: HeightRef::Line(st, HeightLine::Door),
-                    reveal: None,
-                    install: Default::default(),
-                    swing: Some(rechts),
-                };
-                m.add_opening(o).is_some()
-            })
-        }));
+        innentueren(&mut s, rechts);
         let (id, o) = s
             .model()
             .elements()
@@ -1671,4 +1821,92 @@ fn perf_innentuer() {
         println!("{n:>6} {griffe:>8.3} {fang:>8.3} {ziehen:>8.3} {los:>9.3}");
     }
     println!("Zeiten in ms je Mausbewegung bzw. je Loslassen.");
+}
+
+/// Breite am Griff (Review #109 B1, B4), Tür im zuletzt gebauten Haus:
+/// Griffe je Mausbewegung, Kettensymbole, Greifen, Ziehen je Bewegung und
+/// Loslassen.
+#[test]
+#[ignore]
+fn perf_breite() {
+    use crate::wall_edit::breite_edit::{schloesser, sichtbar, BreiteZug};
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
+    use sk_platform::MouseButton;
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>9}",
+        "Häuser", "Griffe", "Kette", "Greifen", "Ziehen", "Loslassen"
+    );
+    for n in [1, 10, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let swing = Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        };
+        innentueren(&mut s, swing);
+        let (id, o) = s
+            .model()
+            .elements()
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, o.clone())),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        let q = (o.path[0] + o.path[1]) * 0.5;
+        let cam = Camera::looking_at(vec3(q.x, q.y, 20000.0), vec3(q.x, q.y + 1.0, 0.0), 45.0);
+        let mut g = Vec::new();
+        let griffe = time(50, || {
+            g = sichtbar(&s, q + vec3(300.0, 200.0, 0.0), 500.0);
+        });
+        assert_eq!(g.len(), 2);
+        let kette = time(50, || {
+            std::hint::black_box(schloesser(&s, &g, 0.0));
+        });
+        let k = usize::from(o.path[1].y > o.path[0].y);
+        let greifen = time(20, || {
+            assert!(BreiteZug::greifen(&mut s, id, k, 0.0).is_some());
+            s.rollback();
+        });
+        let mods = Modifiers::default();
+        let bei = |dy: f64| {
+            let (x, y) = cam
+                .project(vec3(o.path[k].x, o.path[k].y + dy, 0.0), W, H)
+                .unwrap();
+            Event::MouseMove { x, y, mods }
+        };
+        let mut z = BreiteZug::greifen(&mut s, id, k, 0.0).unwrap();
+        let mut flip = false;
+        let ziehen = time(20, || {
+            flip = !flip;
+            let e = bei(if flip { 100.0 } else { 200.0 });
+            assert!(z.handle(&e, &mut s, &cam, W, H).changed);
+        });
+        s.rollback();
+        let mut los = 0.0;
+        for i in 0..5 {
+            let mut z = BreiteZug::greifen(&mut s, id, k, 0.0).unwrap();
+            z.handle(
+                &bei(if i % 2 == 0 { 100.0 } else { 0.0 }),
+                &mut s,
+                &cam,
+                W,
+                H,
+            );
+            let (x, y) = cam.project(q, W, H).unwrap();
+            let up = Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods,
+            };
+            let t = Instant::now();
+            z.handle(&up, &mut s, &cam, W, H);
+            los += t.elapsed().as_secs_f64() * 1000.0 / 5.0;
+        }
+        assert!(s.model().check().is_empty());
+        println!("{n:>6} {griffe:>8.3} {kette:>8.3} {greifen:>8.3} {ziehen:>8.3} {los:>9.3}");
+    }
+    println!("Zeiten in ms je Mausbewegung, je Bild bzw. je Griff.");
 }

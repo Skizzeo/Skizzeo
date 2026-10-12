@@ -121,10 +121,13 @@ fn datei_ist_vollstaendig_und_eindeutig() {
         // Jedes Bauteil mit Körper genau einmal, mit seiner Kennung
         let im = bauteile(&f);
         assert_eq!(im.len(), b.bauteile, "{name}");
-        // Ausgelassen nur Öffnungen bis I5 (ifc/plan.md §5), mit I5 fällt
-        // die Ausnahme weg
+        // Ausgelassen nur Öffnungen bis I5 und Räume bis I6 (ifc/plan.md
+        // §5); mit I5 und I6 fallen die Ausnahmen weg
         for (nr, g) in &b.ausgelassen {
-            assert_eq!(*g, sk_ifc::Grund::OeffnungBisI5, "{name}: {nr}");
+            assert!(
+                matches!(g, sk_ifc::Grund::OeffnungBisI5 | sk_ifc::Grund::RaumBisI6),
+                "{name}: {nr} {g:?}"
+            );
         }
         let solids = m.element_solids();
         let draussen = |nr: &str| b.ausgelassen.iter().any(|(n, _)| n == nr);
@@ -422,6 +425,7 @@ fn oeffnungen_bis_i5() {
     let f = step::read(&ifc).unwrap();
     assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
     let mut aus = b.ausgelassen.clone();
+    aus.retain(|(_, g)| *g != sk_ifc::Grund::RaumBisI6);
     aus.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
         aus,
@@ -431,6 +435,32 @@ fn oeffnungen_bis_i5() {
             ("OE-003".to_string(), sk_ifc::Grund::OeffnungBisI5),
         ]
     );
+}
+
+/// Befund Test zu #87: Räume haben im Modell keinen Körper. Sie stehen als
+/// „Raum bis I6“ im Bericht, nicht als „ohne Form“, und nicht in der Datei;
+/// ein Bauteil, das als `IfcSpace` eingestuft ist, bleibt davon unberührt.
+#[test]
+fn raeume_bis_i6() {
+    let t = HAEUSER[5].1.replacen(
+        "[plancut]",
+        "[space] guid=2Kq7sVn0P1dA8xYwZ3fT9c number=\"R-009\" at=5000,4000 \
+         name=\"Küche\" seq=0 storey=2raHMuYTD64hQ6K56DbC_u\n[plancut]",
+        1,
+    );
+    let m = laden(&t);
+    assert!(m.elements().iter().any(|(_, e)| e.number == "R-009"));
+    let (ifc, b) = export(&m, &opt());
+    let f = step::read(&ifc).unwrap();
+    assert!(b
+        .ausgelassen
+        .contains(&("R-009".to_string(), sk_ifc::Grund::RaumBisI6)));
+    assert!(!b
+        .ausgelassen
+        .iter()
+        .any(|(_, g)| *g == sk_ifc::Grund::OhneForm));
+    assert!(f.all("IFCSPACE").all(|(_, e)| text(&e.args[2]) != "R-009"));
+    assert_eq!(sk_ifc::Grund::RaumBisI6.text(), "Raum bis I6");
 }
 
 /// Mengen der Datei je Bauteil (Kennung) → Satz → Menge → Wert.

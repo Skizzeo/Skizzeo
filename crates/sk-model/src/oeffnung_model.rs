@@ -96,13 +96,30 @@ impl Model {
 
     /// Ändert die Öffnung `id` (Pfad, Höhen, Art, Anschlag).
     pub fn set_opening(&mut self, id: ElementId, o: Opening) -> bool {
+        self.set_opening_in(id, o, &|_| None)
+    }
+
+    /// Wie [`Model::set_opening`], die Körper der Wandzüge für die Prüfung
+    /// aus `chains`, wo es sie liefert (Zwischenspeicher der Ansicht, Review
+    /// #109 B4); sonst frisch gebaut.
+    pub fn set_opening_in(
+        &mut self,
+        id: ElementId,
+        o: Opening,
+        chains: &dyn Fn(RunId) -> Option<WallChain>,
+    ) -> bool {
         if self.opening(id).is_none() {
             return false;
         }
         if self.opening(id) == Some(&o) {
             return true;
         }
-        if self.opening_fault(&o, Some(id)).is_some() {
+        let mut koerper: Koerper = self
+            .opening_runs(&o)
+            .into_iter()
+            .filter_map(|r| chains(r).map(|c| (r, Some(c))))
+            .collect();
+        if self.opening_fault_in(&o, Some(id), &mut koerper).is_some() {
             return false;
         }
         note!(self, Element, self.elements, id);
@@ -497,9 +514,11 @@ impl Model {
     }
 
     /// Wandzüge mit Öffnungen ([`Category::takes_openings`]), die die
-    /// Öffnung `o` treffen kann: ihr Grundriss
+    /// Öffnung `o` treffen kann: ihre Bezugslinie
     /// kommt dem Pfad bis auf [`RUN_REACH`] nahe. Damit rechnet eine
-    /// Öffnungsänderung nur diese Züge neu (Review #79).
+    /// Öffnungsänderung nur diese Züge neu (Review #79); nach dem Rechteck
+    /// zählt der Abstand der Strecken, sonst träfe eine Innentür den ganzen
+    /// Außenwandring (Review #109 B4).
     pub(crate) fn opening_runs(&self, o: &Opening) -> Vec<RunId> {
         let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
         for p in &o.path {
@@ -519,10 +538,42 @@ impl Model {
                             && b.0 >= lo.0 - RUN_REACH
                             && a.1 <= hi.1 + RUN_REACH
                             && b.1 >= lo.1 - RUN_REACH
+                            && nah_am_pfad(run, &o.path)
                     })
             })
             .collect()
     }
+}
+
+/// Kommt die Bezugslinie von `run` dem Pfad `path` bis auf [`RUN_REACH`]
+/// nahe? Ohne Pfadstück zählt das Rechteck allein.
+fn nah_am_pfad(run: &WallRun, path: &[Vec3]) -> bool {
+    let n = run.points.len();
+    let zu = if run.closed && n > 2 {
+        n
+    } else {
+        n.saturating_sub(1)
+    };
+    path.len() < 2
+        || (0..zu).any(|i| {
+            let (a, b) = (run.points[i], run.points[(i + 1) % n]);
+            path.windows(2)
+                .any(|w| strecken_abstand(a, b, w[0], w[1]) <= RUN_REACH)
+        })
+}
+
+/// Kleinster Abstand der Strecken `a`–`b` und `c`–`d` im Grundriss.
+fn strecken_abstand(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> f64 {
+    let seite = |o: Vec3, p: Vec3, q: Vec3| cross2(flat(p) - flat(o), flat(q) - flat(o));
+    if seite(a, b, c) * seite(a, b, d) < 0.0 && seite(c, d, a) * seite(c, d, b) < 0.0 {
+        return 0.0;
+    }
+    let xy = |p: Vec3| (p.x, p.y);
+    let zu = |p: Vec3, (s, t): (Vec3, Vec3)| sk_math::dist_to_segment(xy(p), xy(s), xy(t));
+    zu(a, (c, d))
+        .min(zu(b, (c, d)))
+        .min(zu(c, (a, b)))
+        .min(zu(d, (a, b)))
 }
 
 /// So weit darf eine Außenfläche von der Bezugslinie ihres Zuges liegen
@@ -1145,9 +1196,10 @@ impl Model {
         self.raw_openings().map(|r| r.line.as_str())
     }
 
-    /// Trägt eine rohe `[opening]`-Zeile die Nummer `n`?
+    /// Trägt eine rohe `[opening]`- oder `[space]`-Zeile die Nummer `n`?
     pub(crate) fn raw_number_taken(&self, n: &str) -> bool {
         self.raw_openings().any(|r| r.number.as_deref() == Some(n))
+            || self.raw_spaces().any(|r| r.number.as_deref() == Some(n))
     }
 
     pub(crate) fn load_opening_raw(&mut self, raw: Vec<RawOpening>) {

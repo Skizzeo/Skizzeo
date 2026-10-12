@@ -125,7 +125,7 @@ pub enum NumberError {
     Empty,
     Taken(ElementId),
     /// Die Nummer trägt eine `[opening]`-Zeile der Datei, die nicht zählt
-    /// (Regel 72, Review #86 B3).
+    /// (Regel 72, Review #86 B3), oder eine solche `[space]`-Zeile.
     Reserved,
     NoElement,
 }
@@ -216,6 +216,8 @@ pub struct Model {
     pub(crate) plan_cut_raw: Option<String>,
     /// `[opening]`-Zeilen der Datei, die nicht zählen (Regel 72).
     pub(crate) opening_raw: Vec<oeffnung_model::RawOpening>,
+    /// `[space]`-Zeilen der Datei, die nicht zählen (Regel 72).
+    pub(crate) space_raw: Vec<raum::RawSpace>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -352,6 +354,9 @@ mod oeffnung_model;
 pub use oeffnung_model::OpeningFault;
 pub(crate) use oeffnung_model::{OpeningGrab, RawOpening};
 
+#[path = "oeffnung_schloss.rs"]
+mod oeffnung_schloss;
+
 #[path = "stapel.rs"]
 mod stapel;
 
@@ -387,6 +392,10 @@ pub use fang::{Fangziele, Wandende, Wandflaeche};
 #[path = "ecke.rs"]
 mod ecke;
 pub use ecke::{EckeFehler, ZugPunkte};
+#[path = "raum.rs"]
+mod raum;
+pub(crate) use raum::RawSpace;
+pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
 
 impl Default for Model {
     fn default() -> Model {
@@ -731,6 +740,12 @@ impl Model {
         let mut d = attr.display().clone();
         d.pattern.pen = pen;
         attr.set_display(d);
+        // Einbauelement (Integration F20): Linientyp „Strichlinie fein“,
+        // ebenfalls mit fester Guid
+        let lt = attr.add_line_type(attr::element_line_type());
+        let mut d = attr.display().clone();
+        d.element.line_type = lt;
+        attr.set_display(d);
         // Paket 1a: Gewerk je Startbaustoff
         let ids: Vec<MaterialId> = materials.ids().collect();
         for id in ids {
@@ -753,6 +768,7 @@ impl Model {
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
+            space_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -839,6 +855,7 @@ impl Model {
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
+            space_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -1425,7 +1442,8 @@ impl Model {
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Roof { .. }
                 | ElementKind::Downpipe { .. }
-                | ElementKind::Opening(_) => false,
+                | ElementKind::Opening(_)
+                | ElementKind::Space(_) => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -3126,6 +3144,7 @@ impl Model {
         self.txn = Some(Open {
             building_number: self.building_number,
             numbers: self.numbers.to_vec(),
+            revision: self.revision,
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3135,6 +3154,11 @@ impl Model {
 
     pub fn in_step(&self) -> bool {
         self.txn.is_some()
+    }
+
+    /// Revision beim Öffnen des offenen Schritts; `None` ohne Schritt.
+    pub fn step_start_revision(&self) -> Option<u64> {
+        self.txn.as_ref().map(|t| t.revision)
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat
@@ -3222,7 +3246,7 @@ impl Model {
                             ElementKind::Downpipe { roof, .. } => {
                                 strips.extend(self.floor_of_roof(roof))
                             }
-                            ElementKind::Ext(_) => {}
+                            ElementKind::Ext(_) | ElementKind::Space(_) => {}
                             ElementKind::Opening(ref o) => openings.extend(self.opening_runs(o)),
                         }
                     }
@@ -3235,10 +3259,6 @@ impl Model {
                 t.run(r);
             }
         }
-        // Öffnungen treffen die Außenwände an ihrem Pfad
-        for r in openings {
-            t.run(r);
-        }
         for r in floors {
             self.runs_under_floor(r).into_iter().for_each(|i| t.run(i));
         }
@@ -3246,6 +3266,11 @@ impl Model {
         let runs = t.runs.clone();
         for r in runs {
             self.joined_runs(r).into_iter().for_each(|p| t.run(p));
+        }
+        // Öffnungen treffen nur die Wände an ihrem Pfad: Ein Loch ändert
+        // weder die angeschlossenen Züge noch die darüber (Review #109 B4)
+        for r in openings {
+            t.run(r);
         }
         t.runs
     }
@@ -3325,7 +3350,7 @@ impl Model {
                             touched.run(f.run);
                             floors.push(f.run);
                         }
-                        ElementKind::Ext(_) => {}
+                        ElementKind::Ext(_) | ElementKind::Space(_) => {}
                         ElementKind::Opening(ref o) => {
                             m.opening_runs(o).into_iter().for_each(|r| touched.run(r))
                         }
@@ -3781,6 +3806,7 @@ impl Model {
                         out.push(format!("{}: {}", e.number, f.text(self)));
                     }
                 }
+                ElementKind::Space(ref s) => out.extend(raum::pruefe(&e.number, s)),
             }
         }
         // Regel 35: unter jeder auskragenden Decke genau eine Untersichtdämmung

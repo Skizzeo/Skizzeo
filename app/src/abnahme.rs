@@ -1341,8 +1341,8 @@ fn a26_zwei_getrennte_bauteile() {
     let m = s.model();
     assert_eq!(
         m.elements().len(),
-        12,
-        "4 EG- und 4 OG-Wände, Sohlplatte, Frostschürze, DE-001, DE-002"
+        14,
+        "4 EG- und 4 OG-Wände, Sohlplatte, Frostschürze, DE-001, DE-002, R-001, R-002"
     );
     let (a, b) = (m.element(slab).unwrap(), m.element(footing).unwrap());
     assert_eq!(
@@ -4725,9 +4725,16 @@ fn a74_linientypen_startsatz_und_shadermuster() {
         .iter()
         .map(|(_, l)| l.name.clone())
         .collect();
+    // F20: dazu der Werks-Linientyp der Einbauelemente im Grundriss
     assert_eq!(
         namen,
-        ["Volllinie", "Strichlinie", "Strichpunktlinie", "Punktlinie"]
+        [
+            "Volllinie",
+            "Strichlinie",
+            "Strichpunktlinie",
+            "Punktlinie",
+            "Strichlinie fein"
+        ]
     );
     let d = |len_mm, gap_mm, dot| Dash {
         len_mm,
@@ -4741,6 +4748,10 @@ fn a74_linientypen_startsatz_und_shadermuster() {
         d(6.0, 1.0, true)
     );
     assert_eq!(linientyp(&s, "Punktlinie").1.pattern[0], d(0.0, 1.0, true));
+    assert_eq!(
+        linientyp(&s, "Strichlinie fein").1.pattern,
+        [d(1.5, 0.75, false)]
+    );
     for l in s.model().attr().line_types().iter().map(|(_, l)| l) {
         assert!(l.pattern.len() <= 2, "{}: höchstens zwei Einträge", l.name);
     }
@@ -4791,7 +4802,9 @@ fn a75_alte_datei_bekommt_linientypen() {
         loaded.hints
     );
     let t = Scene::with_model(loaded.model);
-    assert_eq!(t.model().attr().line_types().len(), 4);
+    // Vier Linientypen des Startsatzes und der Werks-Linientyp der
+    // Einbauelemente (F20, ohne Hinweis)
+    assert_eq!(t.model().attr().line_types().len(), 5);
     let (spl, _) = linientyp(&t, "Strichpunktlinie");
     assert_eq!(t.model().attr().display().section_line.line_type, spl);
     let th = Theme::dark();
