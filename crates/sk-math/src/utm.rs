@@ -1,5 +1,5 @@
 //! Abbildung UTM auf dem Ellipsoid GRS80 (ETRS89, EPSG:25832/25833) für die
-//! Georeferenz im IFC (ifc/plan.md §10): Krüger-Reihen bis n⁶ nach Karney,
+//! Georeferenz im IFC: Krüger-Reihen bis n⁶ nach Karney,
 //! „Transverse Mercator with an accuracy of a few nanometers“ (J. Geodesy
 //! 85, 2011), auf weniger als einen Millimeter genau in einer Zone.
 //!
