@@ -309,3 +309,125 @@ fn leerer_raum_ohne_koerper() {
         .iter()
         .all(|k| k.solid.triangles.is_empty()));
 }
+
+/// Fläche (mm²) der Schnittflächen eines geschnittenen Körpers.
+fn schnittflaeche(s: &Solid) -> f64 {
+    s.triangles
+        .iter()
+        .filter(|t| t.mat & sk_model::material::CUT != 0)
+        .map(|t| 0.5 * (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).length())
+        .sum()
+}
+
+/// Liegt eine Schnittkontur ganz auf der Strecke von `a` nach `b`?
+fn schnittkante_auf(s: &Solid, a: Vec3, b: Vec3) -> bool {
+    let l = (b - a).length();
+    let u = (b - a) * (1.0 / l);
+    let auf = |p: Vec3| {
+        let t = (p - a).dot(u);
+        t > -1e-6 && t < l + 1e-6 && (a + u * t - p).length() < 1e-6
+    };
+    s.edges
+        .iter()
+        .any(|e| e.kind == sk_model::edge_kind::CUT && auf(e.a) && auf(e.b))
+}
+
+/// Grundriss in 1,00 m Höhe: Wandputz mit Schnittfläche nach oben, ohne
+/// Fuge zwischen Putzfeld und Laibung; der Rest ist geschlossen.
+#[test]
+fn grundriss_schneidet_den_putz() {
+    let h = haus();
+    let f = wohnzimmer(&h);
+    let a = RaumAusbau::nach_vorlage(&h.m, &f, &vorlage(LIVING_SPACE_GUID));
+    let k = koerper(&h.m, &f, &a);
+    let oben = vec3(0.0, 0.0, 1.0);
+    let wand = der(&h.m, &k, Flaeche::Wand(0), (WOODCHIP_WALL_TYPE_GUID, 2));
+    let s = wand.geschnitten(vec3(0.0, 0.0, 1000.0), oben);
+    // Trapez ohne das Fenster (Brüstung 0,875), dazu die seitlichen Laibungen
+    let trapez = (5000.0 + 4970.0) / 2.0 * 15.0;
+    let flaeche = trapez - 1510.0 * 15.0 + 2.0 * 15.0 * 180.0;
+    assert!(
+        (schnittflaeche(&s) - flaeche).abs() < 1e-6,
+        "{}",
+        schnittflaeche(&s)
+    );
+    assert!(s
+        .triangles
+        .iter()
+        .all(|t| t.p.iter().all(|p| p.z <= 1000.0 + 1e-6)));
+    assert!(s
+        .triangles
+        .iter()
+        .filter(|t| t.mat & sk_model::material::CUT != 0)
+        .all(|t| t.n == oben && t.mat & !sk_model::material::CUT == wand.schnitt));
+    let unter_dem_fenster = 1510.0 * 15.0 * 125.0 - 2.0 * 15.0 * 180.0 * 125.0;
+    gleich_v(inhalt(&s), trapez * 1000.0 - unter_dem_fenster);
+    // Fuge zwischen Putzfeld und Laibung links neben dem Fenster: keine
+    // Kontur; die Laibung zum Fenster hin hat eine
+    let z = 1000.0;
+    assert!(!schnittkante_auf(
+        &s,
+        vec3(1000.0, 0.0, z),
+        vec3(1000.0, 15.0, z)
+    ));
+    assert!(schnittkante_auf(
+        &s,
+        vec3(1000.0, -165.0, z),
+        vec3(1000.0, 0.0, z)
+    ));
+    // Estrich und Belag liegen unter der Schnitthöhe: nur der Rest
+    let estrich = der(&h.m, &k, Flaeche::Estrich, (SCREED_SLAB_TYPE_GUID, 0));
+    let e = estrich.geschnitten(vec3(0.0, 0.0, 1000.0), oben);
+    assert_eq!(schnittflaeche(&e), 0.0);
+    assert_eq!(e.triangles.len(), estrich.solid.triangles.len());
+}
+
+/// Schnitt quer bei x = 2,50 m: Belag von der Putzoberfläche unten bis in
+/// die Nische der Fenstertür oben als eine Fläche, Decke im Rohbaumaß.
+#[test]
+fn schnitt_durch_den_raum() {
+    let h = haus();
+    let f = wohnzimmer(&h);
+    let a = RaumAusbau::nach_vorlage(&h.m, &f, &vorlage(LIVING_SPACE_GUID));
+    let k = koerper(&h.m, &f, &a);
+    let (p0, n) = (vec3(2500.0, 2000.0, 0.0), vec3(1.0, 0.0, 0.0));
+    let belag = der(&h.m, &k, Flaeche::Boden, (PARQUET_TYPE_GUID, 0));
+    let s = belag.geschnitten(p0, n);
+    assert!((schnittflaeche(&s) - (4165.0 - 15.0) * 20.0).abs() < 1e-6);
+    assert!(s
+        .triangles
+        .iter()
+        .all(|t| t.p.iter().all(|p| p.x <= 2500.0 + 1e-6)));
+    // Streifen und Nische hängen ohne Fuge am Belag
+    let z = 160.0;
+    assert!(!schnittkante_auf(
+        &s,
+        vec3(2500.0, 3985.0, z - 20.0),
+        vec3(2500.0, 3985.0, z)
+    ));
+    assert!(!schnittkante_auf(
+        &s,
+        vec3(2500.0, 4000.0, z - 20.0),
+        vec3(2500.0, 4000.0, z)
+    ));
+    assert!(schnittkante_auf(
+        &s,
+        vec3(2500.0, 4165.0, z - 20.0),
+        vec3(2500.0, 4165.0, z)
+    ));
+    // links der Ebene: Belag ab der Putzoberfläche, Streifen und Nische der
+    // Fenstertür ab x = 1,99
+    gleich_v(
+        inhalt(&s),
+        (2485.0 * 3970.0 + 510.0 * 15.0 + 510.0 * 165.0) * 20.0,
+    );
+    let decke = der(&h.m, &k, Flaeche::Decke, (CEILING_TYPE_GUID, 1));
+    let d = decke.geschnitten(p0, n);
+    assert!((schnittflaeche(&d) - 4000.0 * 10.0).abs() < 1e-6);
+    assert!(d
+        .triangles
+        .iter()
+        .filter(|t| t.mat & sk_model::material::CUT != 0)
+        .all(|t| t.n == n));
+    gleich_v(inhalt(&d), 2500.0 * 4000.0 * 10.0);
+}
