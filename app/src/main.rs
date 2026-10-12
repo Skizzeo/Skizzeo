@@ -82,6 +82,7 @@ mod schedule_view;
 mod section;
 mod selection;
 mod settings;
+mod sicht_zahnrad;
 mod sonne_view;
 mod teilen_edit;
 mod terrace_label;
@@ -799,13 +800,8 @@ struct App {
     /// Zuletzt hochgeladene Leiste des Sonnenstands, der Würfel ist
     /// hochgeladen, Lichtrichtung von der Sonne (`None`: die feste).
     sonne_bild: Option<sonne_view::LeistenBild>,
-    /// Schatten der Ansichten (S7): Zahnrad und Feld, zuletzt hochgeladenes
-    /// Bild.
-    ansicht_schatten: ansicht_schatten::Schalter,
-    schatten_bild: Option<ansicht_schatten::Bild>,
-    /// Schnitthöhe des Grundrisses: Zahnrad und Feld, zuletzt hochgeladenes Bild.
-    plan_schnitt: grundriss_schnitt::Schalter,
-    plan_schnitt_bild: Option<grundriss_schnitt::Bild>,
+    /// Zahnräder der Ansicht: Schatten, Schnitthöhe, Sichtbarkeit.
+    zahnrad: zahnrad_app::Zahnraeder,
     /// Ecken des Gebäudes über dem Boden bei eingeschaltetem Sonnenstand:
     /// aus ihnen kommt die Schattenspitze (S6).
     ecken: Vec<Vec3>,
@@ -1656,13 +1652,12 @@ impl App {
         if !self.tool_allowed() {
             self.nord.set_aktiv(false);
         }
-        self.ansicht_schatten.reset();
-        self.plan_schnitt.reset();
+        let sicht = self.zahnrad_reset();
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
             self.ui.building = false;
         }
-        if same_mesh {
+        if same_mesh && !sicht {
             self.redraw = true;
         } else {
             self.upload_model();
@@ -7716,10 +7711,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         sonne_bild: None,
         ecken: Vec::new(),
         terrain_gaps: Vec::new(),
-        ansicht_schatten: Default::default(),
-        schatten_bild: None,
-        plan_schnitt: Default::default(),
-        plan_schnitt_bild: None,
+        zahnrad: Default::default(),
         griff_cache: None,
         ecken_stand: 0,
         nord_fuehrung: Default::default(),

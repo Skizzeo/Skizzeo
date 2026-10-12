@@ -506,3 +506,56 @@ fn teilstuecke_geschosse_verschiedene_typen() {
         assert!(h.vob(), "{h:?}");
     }
 }
+
+/// Innentür (Jörn 12.10. 06:41): Die Wand ist bis an die Öffnung verputzt,
+/// die Laibung bleibt roh, weil die Umfassungszarge um den Putz greift. Der
+/// Rechenweg jeder Fläche der Innenwand sagt das; an der Außenwand mit
+/// Fenster steht der Hinweis nicht.
+#[test]
+fn innentuer_ohne_laibung_im_rechenweg() {
+    use crate::element::Category;
+    use crate::rechenweg::{weg, wert};
+    let (mut m, eg) = haus();
+    let st = m.run(eg).unwrap().storey;
+    let set = m.defaults().interior_wall;
+    let pts = [vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)];
+    let iw = m
+        .add_wall_run(
+            &pts,
+            false,
+            crate::RefSide::Center,
+            st,
+            set,
+            Category::InteriorWall,
+        )
+        .unwrap();
+    m.add_opening(Opening {
+        kind: OpeningKind::Door,
+        path: vec![aussen(&m, iw, 0, 3000.0), aussen(&m, iw, 0, 3885.0)],
+        bottom: HeightRef::Level(crate::LevelRef::bottom(st)),
+        top: HeightRef::Line(st, HeightLine::Door),
+        ..fenster(&m, eg, (0.0, 1.0))
+    })
+    .unwrap();
+    m.add_opening(fenster(&m, eg, (3000.0, 4500.0))).unwrap();
+    let hinweis = |r: &LayerRow| {
+        weg(&m, r, Bezug::Flaeche, Modus::Vob).is_some_and(|w| {
+            w.terme
+                .iter()
+                .any(|t| t.art == Art::Hinweis && t.text.contains("Umfassungszarge"))
+        })
+    };
+    let rows = mit_loch(&m);
+    let innen: Vec<_> = rows
+        .iter()
+        .filter(|r| r.category == Category::InteriorWall && wert(r, Bezug::Flaeche) > 0.0)
+        .collect();
+    assert!(!innen.is_empty(), "Innenwandflächen mit der Tür");
+    assert!(innen.iter().all(|r| hinweis(r)));
+    let aussen: Vec<_> = rows
+        .iter()
+        .filter(|r| r.category != Category::InteriorWall)
+        .collect();
+    assert!(!aussen.is_empty());
+    assert!(aussen.iter().all(|r| !hinweis(r)));
+}
