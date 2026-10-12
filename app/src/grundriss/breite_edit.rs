@@ -5,8 +5,11 @@
 //! im Raster von 10 mm; eine Innentür rastet an den Normbreiten nach
 //! DIN 18101. Die Öffnung bleibt mindestens 10 cm breit, das Ende kommt
 //! nicht über das andere hinaus, und was das Modell ablehnt (Wandende,
-//! Nachbaröffnung), bleibt beim letzten gültigen Stand stehen. Live,
-//! Loslassen ist ein Schritt, Esc bricht ab. Teil von [`crate::wall_edit`].
+//! Nachbaröffnung), bleibt beim letzten gültigen Stand stehen. Kommt das
+//! Ende bis auf 5 cm an die Seitenflucht einer Öffnung im Geschoss darüber
+//! oder darunter, rastet es dort ein und eine Spurlinie quer durch die
+//! Wand zeigt es (Jörn 12.10. 05:38). Live, Loslassen ist ein Schritt, Esc
+//! bricht ab. Teil von [`crate::wall_edit`].
 
 use super::drag_point;
 use super::ende_edit::{self, Outcome, GRIFF_PX};
@@ -24,6 +27,14 @@ use sk_ui::theme::Theme;
 pub const SCHRITT: &str = "Öffnungsbreite geändert";
 /// Raster längs der Fläche (mm).
 const STEP: f64 = 10.0;
+/// Fang an den Seitenfluchten der Öffnungen darüber und darunter (mm).
+const SPUR: f64 = 50.0;
+/// So weit quer zur Fläche darf die Öffnung des Nachbargeschosses liegen
+/// (versetzte Wand darüber), mm.
+const SPUR_QUER: f64 = 1000.0;
+/// Überstand der Spurlinie vor und hinter der Wand (mm).
+const SPUR_UEBER: f64 = 300.0;
+
 /// Die Griffe erscheinen, wenn die Maus so nah am Pfad steht (mm), bei
 /// breiten Öffnungen bis zur halben Breite.
 const NAH: f64 = 500.0;
@@ -144,6 +155,51 @@ pub fn lage(u: f64, u_nb: f64, vorz: f64, norm: bool) -> f64 {
     u_nb + vorz * b.max(MIN_OPENING)
 }
 
+/// Geschosse desselben Gebäudes direkt über und unter `st`.
+fn nachbargeschosse(m: &Model, st: StoreyId) -> Vec<StoreyId> {
+    let Some(s) = m.storey(st) else {
+        return Vec::new();
+    };
+    let (b, z) = (s.building, s.elevation);
+    let andere = || {
+        m.storeys()
+            .iter()
+            .filter(move |(id, x)| *id != st && x.building == b)
+    };
+    let unten = andere()
+        .filter(|(_, x)| x.elevation < z)
+        .max_by(|a, c| a.1.elevation.total_cmp(&c.1.elevation));
+    let oben = andere()
+        .filter(|(_, x)| x.elevation > z)
+        .min_by(|a, c| a.1.elevation.total_cmp(&c.1.elevation));
+    unten.into_iter().chain(oben).map(|x| x.0).collect()
+}
+
+/// Seitenfluchten der Öffnungen im Geschoss über und unter `st` als Lage
+/// längs der Fläche `f`: die Enden ihrer Pfade, die nahe vor oder hinter
+/// der Fläche liegen.
+pub fn spuren(m: &Model, st: StoreyId, f: &OuterFace) -> Vec<f64> {
+    let nachbarn = nachbargeschosse(m, st);
+    let (lo, hi) = (f.u.0.min(f.u.1), f.u.0.max(f.u.1));
+    let mut out = Vec::new();
+    for (_, e) in m.elements().iter() {
+        let ElementKind::Opening(o) = &e.kind else {
+            continue;
+        };
+        if !nachbarn.contains(&e.storey) {
+            continue;
+        }
+        let enden = [o.path.first(), o.path.last()];
+        for q in enden.into_iter().flatten().map(|q| flat(*q)) {
+            let u = f.u_of(q);
+            if (q - f.a).dot(f.n).abs() <= SPUR_QUER && u > lo && u < hi {
+                out.push(u);
+            }
+        }
+    }
+    out
+}
+
 /// Laufendes Ziehen an einem Ende einer Öffnung.
 pub struct BreiteZug {
     pub id: ElementId,
@@ -155,6 +211,8 @@ pub struct BreiteZug {
     /// Lage des Nachbarpunkts im Pfad und Seite des Endes dazu.
     u_nb: f64,
     vorz: f64,
+    /// Seitenfluchten darüber und darunter ([`spuren`]).
+    spuren: Vec<f64>,
     /// Höhe des Grundrisses.
     z: f64,
     geaendert: bool,
@@ -171,6 +229,7 @@ impl BreiteZug {
         let (face, dicke, innen) = flaeche_bei(m, st, p)?;
         let u_nb = face.u_of(flat(*original.path.get(nb)?));
         let vorz = (face.u_of(flat(p)) - u_nb).signum();
+        let spuren = spuren(m, st, &face);
         scene.begin(SCHRITT);
         Some(BreiteZug {
             id,
@@ -181,6 +240,7 @@ impl BreiteZug {
             innen,
             u_nb,
             vorz,
+            spuren,
             z,
             geaendert: false,
         })
@@ -189,7 +249,16 @@ impl BreiteZug {
     /// Die Öffnung mit dem gezogenen Ende bei `u` (roh).
     fn mit_ende(&self, u: f64) -> Opening {
         let norm = self.innen && self.original.kind == OpeningKind::Door;
-        let u = lage(u, self.u_nb, self.vorz, norm);
+        // Die nächste Seitenflucht im Fang geht vor Raster und Normbreite,
+        // wenn das Ende dort auf seiner Seite und breit genug bleibt
+        let spur = self
+            .spuren
+            .iter()
+            .filter(|s| (*s - u).abs() <= SPUR && (*s - self.u_nb) * self.vorz >= MIN_OPENING)
+            .min_by(|a, b| (*a - u).abs().total_cmp(&(*b - u).abs()));
+        let u = spur
+            .copied()
+            .unwrap_or_else(|| lage(u, self.u_nb, self.vorz, norm));
         let mut o = self.original.clone();
         let alt = o.path[self.k];
         o.path[self.k] = self.face.at(u, alt.z);
@@ -258,7 +327,38 @@ impl BreiteZug {
             return Vec::new();
         };
         let g = zeichenpunkt(&self.face, *p, self.dicke, self.innen);
-        ende_edit::griff(g, self.z, scale, occlude, theme).to_vec()
+        let mut out = ende_edit::griff(g, self.z, scale, occlude, theme).to_vec();
+        // Spurlinie, wenn das Ende auf einer Seitenflucht steht
+        let u = self.face.u_of(flat(*p));
+        if self.spuren.iter().any(|s| (s - u).abs() < 1e-6) {
+            let f = &self.face;
+            let q = |t: f64| {
+                let v = f.at(u, 0.0) + f.n * t;
+                [v.x as f32, v.y as f32, self.z as f32 + 2.0]
+            };
+            out.push(Helper {
+                a: q(SPUR_UEBER),
+                b: q(-self.dicke - SPUR_UEBER),
+                color: theme.interact.track,
+                width: 1.5 * scale,
+                dash: 6.0 * scale,
+                pattern: sk_render::SOLID,
+                occlude,
+                round: false,
+            });
+        }
+        out
+    }
+
+    /// Steht das gezogene Ende gerade auf einer Seitenflucht darüber oder
+    /// darunter?
+    #[cfg(test)]
+    fn auf_spur(&self, scene: &Scene) -> bool {
+        let p = scene.model().opening(self.id).map(|o| o.path[self.k]);
+        p.is_some_and(|p| {
+            let u = self.face.u_of(flat(p));
+            self.spuren.iter().any(|s| (s - u).abs() < 1e-6)
+        })
     }
 }
 
@@ -429,5 +529,62 @@ mod tests {
         let xmax = o.path[0].x.max(o.path[1].x);
         assert!(xmax > 9000.0 && xmax < 10000.0, "{xmax}");
         assert_eq!(s.model().opening_fault(o, Some(fenster)), None);
+    }
+
+    /// Zweigeschossiges Haus: ein Fenster im EG von 6,5 bis 7,5 m, eines im
+    /// OG von 6 bis 7 m. Das rechte Ende des EG-Fensters rastet bis 5 cm an
+    /// der Seitenflucht 7 m des OG-Fensters ein, weiter weg gilt das Raster.
+    #[test]
+    fn spur_zum_geschoss_darueber() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(vec3(7000.0, 0.0, 20000.0), vec3(7000.0, 1.0, 0.0), 45.0);
+        let mut m = Model::with_seed(414);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        let fenster = |m: &mut Model, run, von: f64, bis: f64| {
+            let st = m.run(run).unwrap().storey;
+            let seg = (0..4)
+                .find(|&k| m.outer_face(run, k).is_some_and(|f| f.n.y < -0.5))
+                .unwrap();
+            let f = m.outer_face(run, seg).unwrap();
+            let (a, b) = (f.u_of(vec3(von, 0.0, 0.0)), f.u_of(vec3(bis, 0.0, 0.0)));
+            let o = Opening {
+                kind: OpeningKind::Window,
+                path: vec![f.at(a, 0.0), f.at(b, 0.0)],
+                bottom: HeightRef::Line(st, HeightLine::Sill),
+                top: HeightRef::Line(st, HeightLine::Lintel),
+                reveal: None,
+                install: Default::default(),
+                swing: None,
+            };
+            m.add_opening(o).unwrap()
+        };
+        let unten = fenster(&mut m, eg, 6500.0, 7500.0);
+        fenster(&mut m, og, 6000.0, 7000.0);
+        let mut s = Scene::with_model(m);
+        let o = s.model().opening(unten).unwrap().clone();
+        let k = usize::from(o.path[1].x > o.path[0].x);
+        let mut z = BreiteZug::greifen(&mut s, unten, k, 0.0).unwrap();
+        let mods = Default::default();
+        let rechts = |s: &Scene| {
+            let o = s.model().opening(unten).unwrap();
+            o.path[0].x.max(o.path[1].x)
+        };
+        let (x, y) = cam.project(vec3(7040.0, 0.0, 0.0), W, H).unwrap();
+        z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        assert!((rechts(&s) - 7000.0).abs() < 1e-6, "{}", rechts(&s));
+        assert!(z.auf_spur(&s));
+        let (x, y) = cam.project(vec3(7083.0, 0.0, 0.0), W, H).unwrap();
+        z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        assert!((rechts(&s) - 7080.0).abs() < 1e-6, "{}", rechts(&s));
+        assert!(!z.auf_spur(&s));
     }
 }
