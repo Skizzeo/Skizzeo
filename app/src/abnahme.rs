@@ -4725,9 +4725,16 @@ fn a74_linientypen_startsatz_und_shadermuster() {
         .iter()
         .map(|(_, l)| l.name.clone())
         .collect();
+    // F20: dazu der Werks-Linientyp der Einbauelemente im Grundriss
     assert_eq!(
         namen,
-        ["Volllinie", "Strichlinie", "Strichpunktlinie", "Punktlinie"]
+        [
+            "Volllinie",
+            "Strichlinie",
+            "Strichpunktlinie",
+            "Punktlinie",
+            "Strichlinie fein"
+        ]
     );
     let d = |len_mm, gap_mm, dot| Dash {
         len_mm,
@@ -4741,6 +4748,10 @@ fn a74_linientypen_startsatz_und_shadermuster() {
         d(6.0, 1.0, true)
     );
     assert_eq!(linientyp(&s, "Punktlinie").1.pattern[0], d(0.0, 1.0, true));
+    assert_eq!(
+        linientyp(&s, "Strichlinie fein").1.pattern,
+        [d(1.5, 0.75, false)]
+    );
     for l in s.model().attr().line_types().iter().map(|(_, l)| l) {
         assert!(l.pattern.len() <= 2, "{}: höchstens zwei Einträge", l.name);
     }
@@ -4791,7 +4802,9 @@ fn a75_alte_datei_bekommt_linientypen() {
         loaded.hints
     );
     let t = Scene::with_model(loaded.model);
-    assert_eq!(t.model().attr().line_types().len(), 4);
+    // Vier Linientypen des Startsatzes und der Werks-Linientyp der
+    // Einbauelemente (F20, ohne Hinweis)
+    assert_eq!(t.model().attr().line_types().len(), 5);
     let (spl, _) = linientyp(&t, "Strichpunktlinie");
     assert_eq!(t.model().attr().display().section_line.line_type, spl);
     let th = Theme::dark();
@@ -5219,13 +5232,17 @@ fn a80_bogen_nur_im_grundriss() {
         ui.fit(1.0, bw, bh);
         let (cx, cy, r) = bogen_lage(&w, &ui, bw, bh);
         let views = ui.rect(Panel::Views, bw, 32);
-        assert_eq!(r, th.size.arc_r);
+        // Bogen ein Viertel kleiner als das Schema (Jörn 12.10.)
+        assert_eq!(r, th.size.arc_r * crate::wheel::SCALE);
         // Unten rechts in der Ecke (Jörn 11.10., vorher senkrecht mittig):
         // untere Spitze samt Schild „Fundament“ mit Abstand `panel_margin`
         // über dem unteren Rand
         let g = w.geo(&ui, bw, bh);
         let spitze = g.tip(false).1;
-        let schild = spitze + 6.0 + (th.size.arc_label_small * 0.72 + 9.0).ceil();
+        // kleine Schrift ungeschrumpft, Rand im Maßstab (Einstellungen B1)
+        let sc = crate::wheel::SCALE;
+        let klein = (th.size.arc_label_small * 0.72 + 9.0 * sc).ceil();
+        let schild = spitze + 6.0 * sc + klein;
         assert!(
             (bh as f32 - th.size.panel_margin - schild).abs() < 1.0,
             "senkrecht {bw}×{bh}: Schild unten bei {schild}"

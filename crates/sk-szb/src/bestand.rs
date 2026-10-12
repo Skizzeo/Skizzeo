@@ -355,8 +355,8 @@ pub const GEWERKE: [(u32, &str); 10] = [
 ];
 
 /// Kostengruppen, die der Werksbestand kennt.
-pub const KGS: [u32; 17] = [
-    311, 322, 325, 330, 331, 333, 335, 340, 343, 350, 351, 354, 359, 360, 363, 391, 392,
+pub const KGS: [u32; 18] = [
+    311, 322, 325, 330, 331, 333, 335, 336, 340, 343, 350, 351, 354, 359, 360, 363, 391, 392,
 ];
 
 /// In Skizzeo belegte Präfixe (§5).

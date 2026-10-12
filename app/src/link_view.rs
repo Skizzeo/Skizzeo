@@ -6,6 +6,11 @@
 //! Dazu je Fuge zweier Wände in einer Flucht (W-11, W-12) ein graues,
 //! offenes Plättchen an der Fuge: „getrennt“; Klick vereint sie.
 //!
+//! Im Grundriss dazu am Ende einer Öffnung bei der Maus, das über einer
+//! Öffnung im Nachbargeschoss in derselben Flucht liegt, die Kette des
+//! Breitenschlosses (Jörn 12.10. 05:38): gekoppelt gehen die Enden beim
+//! Ziehen der Breite mit.
+//!
 //! Die Plättchen sind Oberflächenbilder auf eigenen Plätzen; je Bild ändern
 //! sich nur ihre Lagen, gezeichnet wird ein Plättchen nur, wenn sich sein
 //! Aussehen ändert.
@@ -42,6 +47,8 @@ pub struct Chip {
     pub hover: bool,
     /// Mitte (Fenster-Pixel).
     pub at: (f64, f64),
+    /// Breitenschloss: Öffnung (`wall`) und ihr Pfadende.
+    pub schloss: Option<usize>,
 }
 
 impl Chip {
@@ -52,6 +59,13 @@ impl Chip {
 
     pub fn glied(&self) -> Glied {
         (self.wall, self.fuge)
+    }
+
+    /// Glied am Breitenschloss des Pfadendes `k` der Öffnung `id`: am
+    /// ersten Ende die Öffnung selbst als zweites Feld, am letzten keines
+    /// (eine Öffnung ist nie eine gestapelte Wand oder Fuge).
+    pub fn schloss_glied(id: ElementId, k: usize) -> Glied {
+        (id, (k == 0).then_some(id))
     }
 
     pub fn contains(&self, x: f64, y: f64, scale: f64) -> bool {
@@ -79,6 +93,20 @@ pub struct Want<'a> {
     /// Gilt als gekoppelt, obwohl gerade gelöst: die OG-Wand, an die beim
     /// „Bündig setzen“ die EG-Wand gleitet (Zustand vor dem Gleiten).
     pub keep_linked: Option<ElementId>,
+    /// Breitenschlösser an Öffnungsenden bei der Maus (Grundriss).
+    pub schloesser: Vec<Schloss>,
+}
+
+/// Ein Öffnungsende mit Partner in derselben Flucht darüber oder darunter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Schloss {
+    pub id: ElementId,
+    pub k: usize,
+    /// Ende (Zeichenhöhe) und Richtung, in der das Plättchen daneben steht.
+    pub p: Vec3,
+    pub out: Vec3,
+    /// Mit allen Partnern gekoppelt.
+    pub linked: bool,
 }
 
 /// Die Plättchen der gestapelten Wände: gelöste immer, gekoppelte nur am
@@ -134,10 +162,29 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
                 small: !near,
                 hover: wnt.hover == Some((wall, None)),
                 at,
+                schloss: None,
             });
         }
     }
     fugen(wnt, &mut out);
+    for s in &wnt.schloesser {
+        if out.len() >= SLOTS {
+            break;
+        }
+        let Some(at) = place(wnt, s.p, s.out) else {
+            continue;
+        };
+        let hover = wnt.hover == Some(Chip::schloss_glied(s.id, s.k));
+        out.push(Chip {
+            wall: s.id,
+            fuge: (s.k == 0).then_some(s.id),
+            linked: s.linked,
+            small: false,
+            hover,
+            at,
+            schloss: Some(s.k),
+        });
+    }
     out
 }
 
@@ -189,6 +236,7 @@ fn fugen(wnt: &Want, out: &mut Vec<Chip>) {
                 small: !hover,
                 hover,
                 at,
+                schloss: None,
             });
         }
     }
@@ -228,11 +276,21 @@ fn place(wnt: &Want, mid: Vec3, out: Vec3) -> Option<(f64, f64)> {
 
 /// Plättchen unter der Maus.
 pub fn hit(chips: &[Chip], x: f64, y: f64, scale: f64) -> Option<Glied> {
-    chips
-        .iter()
-        .rev()
-        .find(|c| c.contains(x, y, scale))
-        .map(Chip::glied)
+    chip_at(chips, x, y, scale).map(Chip::glied)
+}
+
+/// Das Plättchen unter der Maus selbst.
+pub fn chip_at(chips: &[Chip], x: f64, y: f64, scale: f64) -> Option<&Chip> {
+    chips.iter().rev().find(|c| c.contains(x, y, scale))
+}
+
+/// Hinweis am Breitenschloss.
+pub fn schloss_tip(linked: bool) -> &'static str {
+    if linked {
+        "Gekoppelt: die Breite geht im Geschoss darüber und darunter mit.\nKlick löst."
+    } else {
+        "Gelöst: gleiche Flucht wie die Öffnung darüber oder darunter.\nKlick koppelt die Breite."
+    }
 }
 
 /// Hinweis am Plättchen einer Fuge.
@@ -486,6 +544,7 @@ mod tests {
             band: None,
             keep_linked: None,
             hover: None,
+            schloesser: Vec::new(),
         });
         assert_eq!(c.len(), SLOTS);
     }

@@ -4763,7 +4763,7 @@ impl App {
 
     /// Lage der App für die Themenwahl (§1.2).
     fn help_ctx(&self) -> help::HelpCtx {
-        use help::{SelKind, Window};
+        use help::Window;
         let window = if self.card.is_some() {
             Some(Window::Backups)
         } else if let Some(p) = &self.prefs {
@@ -4781,21 +4781,10 @@ impl App {
         } else {
             None
         };
-        let m = self.scene.model();
-        let selection = self.sel.id.and_then(|id| {
-            use sk_model::ElementKind as K;
-            Some(match m.element(id)?.kind {
-                K::Wall(_) if m.stack_offset(id).is_some() => SelKind::UpperWall,
-                K::Wall(_) => SelKind::Wall,
-                K::GroundSlab(_) | K::StripFooting(_) | K::PerimeterInsulation { .. } => {
-                    SelKind::Foundation
-                }
-                K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
-                K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
-                // Thema „Erweiterungen“, siehe `sync_help`
-                K::Ext(_) | K::Opening(_) | K::Downpipe { .. } => return None,
-            })
-        });
+        let selection = self
+            .sel
+            .id
+            .and_then(|id| help::sel_kind(self.scene.model(), id));
         help::HelpCtx {
             window,
             dialog: self.ui.dialog,
@@ -4807,6 +4796,7 @@ impl App {
                 .tool
                 .enabled
                 .then_some(self.tool.category == Category::InteriorWall),
+            opening: self.tool.oeffnung.is_some(),
             isolating: self.scene.isolating().is_some(),
             selection,
             view: self.ui.view,
@@ -8416,18 +8406,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let chips_on =
                 matches!(a.ui.view, ViewKind::Plan | ViewKind::Persp) && !a.tool.is_active();
             a.chips = if chips_on {
-                link_view::chips(&link_view::Want {
-                    scene: &a.scene,
-                    cam: &a.cam,
-                    w: vw,
-                    h: vh,
-                    top: th as f64,
-                    scale: scale as f64,
-                    plan_z: a.plan_z(),
-                    band: a.edit.active_wall(),
-                    hover: a.chip_hover,
-                    keep_linked: a.flush_keep,
-                })
+                a.ketten_chips(vw, vh, th as f64, scale as f64)
             } else {
                 Vec::new()
             };
