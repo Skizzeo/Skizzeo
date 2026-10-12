@@ -605,17 +605,33 @@ enum Anchor {
     Corner(usize),
 }
 
-/// Lage einer Öffnung vor einer Änderung der Wandzüge: je Pfadpunkt der Anker.
+/// Lage einer Öffnung beim Greifen: ihr Pfad und je Pfadpunkt der Anker.
+#[derive(Clone, Debug)]
 struct OpeningAnchor {
     id: ElementId,
+    path: Vec<Vec3>,
     at: Vec<Anchor>,
 }
 
-/// Ein Außenwandzug vor einer Änderung der Wandzüge
-/// ([`Model::carry_openings`]).
-pub(crate) struct WallBefore {
+/// Ein Außenwandzug beim Greifen: sein Körper, der zuletzt mitgeführte und
+/// die Anker der Öffnungen darauf.
+#[derive(Clone, Debug)]
+struct GrabWall {
     run: RunId,
     chain: WallChain,
+    last: WallChain,
+    anchors: Vec<OpeningAnchor>,
+}
+
+/// Lage der Öffnungen zu Beginn des offenen Schritts (Review #92 B1, B2):
+/// Jede Bewegung beim Ziehen trägt die Öffnungen von hier aus neu ab, nicht
+/// vom Stand der vorigen Bewegung, so hängt die Endlage nicht vom Mausweg ab.
+/// Gemerkt werden nur Züge mit Öffnungen im Gebäude und in der Stapelspalte
+/// des gezogenen Zugs.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OpeningGrab {
+    roots: Vec<RunId>,
+    walls: Vec<GrabWall>,
 }
 
 /// Verschiebung, wenn alle Punkte eines Zugs um denselben Vektor wandern;
@@ -639,32 +655,76 @@ fn parallel_shift(old: &[Vec3], new: &[Vec3]) -> Vec3 {
 }
 
 impl Model {
-    /// Die Außenwandzüge der Geschosse mit Öffnungen, vor einer Änderung der
-    /// Wandzüge. Nur Punkte und Schichten: die Flächen baut
-    /// [`Model::carry_openings`] und nur für die Züge, die sich geändert haben.
-    pub(crate) fn opening_walls(&self) -> Vec<WallBefore> {
-        let storeys: Vec<StoreyId> = self
+    /// Die Züge, die das Ziehen von `run` mitnehmen kann: über Anschlüsse
+    /// und Stapel verbunden (Gebäude und Stapelspalte).
+    fn opening_scope(&self, run: RunId) -> Vec<RunId> {
+        let mut out = vec![run];
+        let mut k = 0;
+        while k < out.len() {
+            let r = out[k];
+            k += 1;
+            let next = self.joined_runs(r).into_iter().chain(self.runs_above(r));
+            for n in next.chain(self.run_below(r)) {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        out
+    }
+
+    /// Lage der Öffnungen um den Zug `run` vor seiner Änderung: aus dem
+    /// offenen Schritt, beim ersten Ziehen dieses Zugs im Schritt ergänzt.
+    /// Zurück in den Schritt mit [`Model::keep_opening_grab`].
+    pub(crate) fn opening_grab(&mut self, run: RunId) -> OpeningGrab {
+        let mut g = self
+            .txn
+            .as_mut()
+            .map(|t| std::mem::take(&mut t.grab))
+            .unwrap_or_default();
+        if g.roots.contains(&run) {
+            return g;
+        }
+        g.roots.push(run);
+        let any = self
             .elements
             .iter()
-            .filter(|(_, e)| matches!(e.kind, ElementKind::Opening(_)))
-            .map(|(_, e)| e.storey)
-            .collect();
-        if storeys.is_empty() {
-            return Vec::new();
+            .any(|(_, e)| matches!(e.kind, ElementKind::Opening(_)));
+        if !any {
+            return g;
         }
-        self.runs
-            .iter()
-            .filter(|(run, r)| {
-                storeys.contains(&r.storey)
-                    && self.category_of(*run).is_some_and(Category::is_outer_wall)
-            })
-            .filter_map(|(run, _)| {
-                Some(WallBefore {
-                    run,
-                    chain: self.base_chain(run)?,
-                })
-            })
-            .collect()
+        for r in self.opening_scope(run) {
+            if g.walls.iter().any(|w| w.run == r)
+                || !self.category_of(r).is_some_and(Category::is_outer_wall)
+            {
+                continue;
+            }
+            let Some(chain) = self.base_chain(r) else {
+                continue;
+            };
+            let skip: Vec<ElementId> = g
+                .walls
+                .iter()
+                .flat_map(|w| w.anchors.iter().map(|a| a.id))
+                .collect();
+            let anchors = self.opening_anchors(r, &chain, &skip);
+            if !anchors.is_empty() {
+                g.walls.push(GrabWall {
+                    run: r,
+                    last: chain.clone(),
+                    chain,
+                    anchors,
+                });
+            }
+        }
+        g
+    }
+
+    /// Legt die Lage der Öffnungen zurück in den offenen Schritt.
+    pub(crate) fn keep_opening_grab(&mut self, g: OpeningGrab) {
+        if let Some(t) = self.txn.as_mut() {
+            t.grab = g;
+        }
     }
 
     /// Lage der Öffnungen des Geschosses von `run` auf dessen Außenflächen im
@@ -723,69 +783,92 @@ impl Model {
                     }
                 }
             }
-            out.push(OpeningAnchor { id, at });
+            out.push(OpeningAnchor {
+                id,
+                path: o.path.clone(),
+                at,
+            });
         }
         out
     }
 
-    /// Führt die Öffnungen nach einer Änderung der Wandzüge mit, nur auf den
-    /// Zügen aus `before`, die sich geändert haben: ein gerader Pfad kommt mit
-    /// seiner Mitte quer auf die neue Außenfläche seines Segments und behält
-    /// seine Breite, ein Eckpunkt kommt auf die neue Ecke, die Enden einer
-    /// Ecköffnung behalten ihren Abstand von der Ecke. Wird der ganze Zug
-    /// parallel verschoben, gehen die Öffnungen mit. Ändert sich die
-    /// Segmentzahl des Zugs, bleibt die Öffnung stehen. Passt sie danach nicht
-    /// mehr (Wand zu kurz), meldet es die Prüfung.
-    pub(crate) fn carry_openings(&mut self, before: &[WallBefore]) {
-        let mut done: Vec<ElementId> = Vec::new();
+    /// Führt die Öffnungen nach einer Änderung der Wandzüge mit, aus ihrer
+    /// Lage beim Greifen `g`: ein gerader Pfad kommt mit seiner Mitte quer
+    /// auf die neue Außenfläche seines Segments und behält seine Breite, ein
+    /// Eckpunkt kommt auf die neue Ecke, die Enden einer Ecköffnung behalten
+    /// ihren Abstand von der Ecke. Wird der ganze Zug parallel verschoben,
+    /// gehen die Öffnungen mit; steht er wieder wie beim Greifen, stehen sie
+    /// es auch. Ändert sich die Segmentzahl des Zugs, bleibt die Öffnung
+    /// stehen. Passt sie danach nicht mehr (Wand zu kurz), meldet es die
+    /// Prüfung.
+    pub(crate) fn carry_openings(&mut self, g: &mut OpeningGrab) {
         let segs = |c: &WallChain| c.layout().map_or(0, |l| l.2.len());
-        for w in before {
+        for w in &mut g.walls {
             let Some(c) = self.base_chain(w.run) else {
                 continue;
             };
-            if c == w.chain || segs(&c) != segs(&w.chain) {
+            if c == w.last {
                 continue;
             }
-            let shift = parallel_shift(&w.chain.points, &c.points);
-            let anchors = self.opening_anchors(w.run, &w.chain, &done);
-            let corners = c.face_corners(c.outer_offset());
-            for a in anchors {
-                done.push(a.id);
-                let path: Option<Vec<Vec3>> =
-                    a.at.iter()
-                        .map(|x| match *x {
-                            Anchor::On(s, p, du) => self
-                                .face_in(w.run, s, &c)
-                                .map(|f| f.at(f.u_of(p + shift) + du, 0.0)),
-                            Anchor::FromCorner(s, j, du) => {
-                                let f = self.face_in(w.run, s, &c)?;
-                                let q = *corners.get(j)?;
-                                Some(f.at(f.u_of(q) + du, 0.0))
-                            }
-                            Anchor::Corner(j) => corners.get(j).map(|p| flat(*p)),
-                        })
-                        .collect();
-                let (Some(path), Some(o)) = (path, self.opening(a.id)) else {
-                    continue;
-                };
-                let same = path.len() == o.path.len()
-                    && path
-                        .iter()
-                        .zip(&o.path)
-                        .all(|(p, q)| (*p - *q).length() < 1e-6);
-                let mut o = o.clone();
-                o.path = path;
-                // Ohne die Prüfung an den Wänden: die Öffnung bleibt an ihrer
-                // Wand, auch wenn sie dort nicht mehr passt
-                if !same && self.opening_ok(&o) {
-                    note!(self, Element, self.elements, a.id);
-                    if let Some(e) = self.elements.get_mut(a.id) {
-                        e.kind = ElementKind::Opening(o);
-                    }
-                    self.touch();
+            let back = c == w.chain;
+            if back || segs(&c) == segs(&w.chain) {
+                let shift = parallel_shift(&w.chain.points, &c.points);
+                let corners = c.face_corners(c.outer_offset());
+                for a in &w.anchors {
+                    let path: Option<Vec<Vec3>> = if back {
+                        Some(a.path.clone())
+                    } else {
+                        a.at.iter()
+                            .map(|x| match *x {
+                                Anchor::On(s, p, du) => self
+                                    .face_in(w.run, s, &c)
+                                    .map(|f| f.at(f.u_of(p + shift) + du, 0.0)),
+                                Anchor::FromCorner(s, j, du) => {
+                                    let f = self.face_in(w.run, s, &c)?;
+                                    let q = *corners.get(j)?;
+                                    Some(f.at(f.u_of(q) + du, 0.0))
+                                }
+                                Anchor::Corner(j) => corners.get(j).map(|p| flat(*p)),
+                            })
+                            .collect()
+                    };
+                    self.put_carried(a.id, path, back);
                 }
             }
+            w.last = c;
         }
+    }
+
+    /// Setzt den mitgeführten Pfad einer Öffnung, ohne die Prüfung an den
+    /// Wänden: die Öffnung bleibt an ihrer Wand, auch wenn sie dort nicht
+    /// mehr passt. Zurück auf die Lage beim Greifen (`back`) geht es immer.
+    fn put_carried(&mut self, id: ElementId, path: Option<Vec<Vec3>>, back: bool) {
+        let (Some(path), Some(o)) = (path, self.opening(id)) else {
+            return;
+        };
+        let near = path.len() == o.path.len()
+            && path
+                .iter()
+                .zip(&o.path)
+                .all(|(p, q)| (*p - *q).length() < 1e-6);
+        let same = path == o.path || (near && !back);
+        let mut o = o.clone();
+        o.path = path;
+        if !same && (back || self.opening_ok(&o)) {
+            note!(self, Element, self.elements, id);
+            if let Some(e) = self.elements.get_mut(id) {
+                e.kind = ElementKind::Opening(o);
+            }
+            self.touch();
+        }
+    }
+
+    /// Außenwandzüge, deren Öffnungen der offene Schritt gemerkt hat.
+    #[cfg(test)]
+    pub(crate) fn grabbed_walls(&self) -> Vec<RunId> {
+        self.txn
+            .as_ref()
+            .map_or_else(Vec::new, |t| t.grab.walls.iter().map(|w| w.run).collect())
     }
 }
 

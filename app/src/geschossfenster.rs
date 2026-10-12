@@ -39,6 +39,9 @@ pub struct GeschossFenster {
     pub dirty: bool,
     /// Angedockt: Fuge am rechten Rand.
     pub docked: bool,
+    /// Schnitthöhe beim Greifen ihrer Linie: Esc stellt sie zurück (sie ist
+    /// Ansichtszustand, der Schritt nimmt sie nicht mit; Review #92 H3).
+    pub plan_cut_start: Option<f64>,
     /// Stand des Farbschemas im gezeigten Bild.
     theme_rev: u64,
     canvas: Canvas,
@@ -60,6 +63,7 @@ impl GeschossFenster {
             ui: Ui::fenster(1.0, theme),
             dirty: false,
             docked: true,
+            plan_cut_start: None,
             theme_rev: theme.rev,
             canvas: Canvas::new(0, 0),
             shown: Vec::new(),

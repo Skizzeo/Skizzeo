@@ -999,3 +999,95 @@ fn oeffnung_geht_mit_dem_verschobenen_zug() {
     }
     assert!(m.check().is_empty(), "{:?}", m.check());
 }
+
+/// Review #92 B2: Die Endlage einer Öffnung hängt nicht vom Mausweg ab. Kippen
+/// und zurück im selben Schritt endet genau in der Ausgangslage, in einem
+/// Sprung wie in vielen Schritten, und dort steht sie in beiden Fällen gleich.
+#[test]
+fn oeffnung_haengt_nicht_vom_mausweg_ab() {
+    let mut dort = Vec::new();
+    for schritte in [1usize, 30] {
+        let (mut m, eg, _) = haus(None);
+        m.begin("Öffnung");
+        let a = m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+        m.commit();
+        let vorher = m.opening(a).unwrap().path.clone();
+        let start = m.run(eg).unwrap().points.clone();
+        let k = start
+            .iter()
+            .position(|p| p.x == 0.0 && p.y == 8000.0)
+            .unwrap();
+        let kippen = |i: usize| {
+            let mut p = start.clone();
+            p[k].x = -3000.0 * i as f64 / schritte as f64;
+            p
+        };
+        m.begin("Ziehen");
+        for i in 1..=schritte {
+            assert!(m.set_run_points(eg, &kippen(i)).is_some());
+        }
+        dort.push(m.opening(a).unwrap().path.clone());
+        for i in (0..schritte).rev() {
+            assert!(m.set_run_points(eg, &kippen(i)).is_some());
+        }
+        m.commit();
+        assert_eq!(m.opening(a).unwrap().path, vorher, "{schritte} Schritte");
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+    for (p, q) in dort[0].iter().zip(&dort[1]) {
+        assert!((*p - *q).length() < 1e-6, "Sprung {p:?}, Schritte {q:?}");
+    }
+}
+
+/// Review #92 B1: Beim Ziehen merkt sich der Schritt nur die Züge mit
+/// Öffnungen im Gebäude des gezogenen Zugs, einmal beim Greifen. Je Bewegung
+/// rechnet er nur diese nach; weitere Häuser mit Öffnungen ändern daran
+/// nichts und bleiben stehen.
+#[test]
+fn ziehen_merkt_nur_das_eigene_gebaeude() {
+    let gemerkt = |haeuser: usize| {
+        let (mut m, eg, _) = haus(None);
+        let r = m.run(eg).unwrap().clone();
+        let set = m.element(r.segments[0]).unwrap().layer_set.unwrap();
+        m.begin("Häuser");
+        let mut fremde = Vec::new();
+        for i in 0..haeuser {
+            let x = 20000.0 + 10000.0 * i as f64;
+            let pts = [vec3(x, 0.0, 0.0), vec3(x, 6000.0, 0.0)];
+            let frei = m
+                .add_wall_run(
+                    &pts,
+                    false,
+                    r.ref_side,
+                    r.storey,
+                    set,
+                    Category::ExteriorWall,
+                )
+                .unwrap();
+            fremde.push(m.add_opening(fenster(&m, frei, (2000.0, 3000.0))).unwrap());
+        }
+        m.add_opening(fenster(&m, eg, (3000.0, 4000.0))).unwrap();
+        m.commit();
+        let vorher: Vec<Opening> = fremde
+            .iter()
+            .map(|f| m.opening(*f).unwrap().clone())
+            .collect();
+        let c = m.chain(eg).unwrap();
+        let mut walls = Vec::new();
+        m.begin("Ziehen");
+        for d in [100.0, 200.0, 300.0] {
+            let neu = c.with_segment_moved(0, c.outward_sign() * d).unwrap();
+            assert!(m.set_run_points(eg, &neu.points).is_some());
+            walls.push(m.grabbed_walls());
+        }
+        m.commit();
+        for (f, v) in fremde.iter().zip(&vorher) {
+            assert_eq!(m.opening(*f), Some(v));
+        }
+        assert!(walls.iter().all(|w| *w == walls[0]), "{walls:?}");
+        walls.remove(0)
+    };
+    let (ein, viele) = (gemerkt(1), gemerkt(12));
+    assert_eq!(ein, viele);
+    assert_eq!(ein.len(), 1, "{ein:?}");
+}
