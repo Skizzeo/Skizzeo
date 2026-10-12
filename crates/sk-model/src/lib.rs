@@ -94,7 +94,7 @@ pub use matprop::{MatProp, MatPropKind, MAT_PROPS};
 pub use model::{
     building_index, edit_blocked, refusal_lines, refusal_text, Cut, Defaults, Deleted, ExtError,
     FlushError, Foot, FugeError, GroundBasis, Location, Locked, Model, NumberError, Project,
-    Refusal, ShadeLight, Sun, Use, ViewShade, CAVITY_TYPE_GUID, COPING_PART, CUT_NAMES,
+    Refusal, ShadeLight, Sun, Use, Utm, ViewShade, CAVITY_TYPE_GUID, COPING_PART, CUT_NAMES,
     DOWNPIPE_PART, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, EXT_SEQ, FLOOR_PART, FLOOR_THICKNESS,
     FOOTING_PART, FOOTING_WIDTH, FROST_DEPTH, INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID,
     INTERIOR_TYPE_GUID, MAX_CROWN, MAX_DOWNPIPES, MAX_FOUNDATION, MAX_INNER, MAX_PERIMETER,

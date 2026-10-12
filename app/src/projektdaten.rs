@@ -1191,6 +1191,7 @@ mod tests {
             lat: Some(53.0589),
             lon: Some(8.591),
             north: Some(12.0),
+            ..Default::default()
         };
         let mut m = Maske::new(&ohne(), false, None).mit_ort(&alt);
         assert_eq!((m.wert(8), m.wert(9)), ("53,0589", "8,591"));
@@ -1490,7 +1491,8 @@ mod tests {
             Location {
                 lat: Some(48.137),
                 lon: None,
-                north: None
+                north: None,
+                ..Default::default()
             },
             "die unveränderte Länge bleibt ungesetzt, es gilt Ganderkesee"
         );
@@ -1499,6 +1501,7 @@ mod tests {
             lat: Some(48.137),
             lon: Some(11.575),
             north: Some(30.0),
+            ..Default::default()
         };
         let m = Maske::new(&ohne(), false, None).mit_ort(&muenchen);
         assert_eq!((m.wert(8), m.wert(9)), ("48,137", "11,575"));
