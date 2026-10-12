@@ -295,13 +295,15 @@ struct GruppenEintrag {
     lauf: u64,
 }
 
-/// Letzte Lage eines Geschosses, solange jeder Zug eine Fassung hat: Daran
-/// führt die nächste Lage nur die Gruppen nach, deren Züge sich geändert
-/// haben (Review #87 R2).
+/// Letzte Lage eines Geschosses: Daran führt die nächste Lage nur die
+/// Gruppen nach, deren Züge sich geändert haben (Review #87 R2). Ein Zug
+/// ohne Fassung (im Schritt geändert, noch nicht gebaut) gilt jedes Mal als
+/// geändert, so kostet auch der Abschluss eines Schritts nur seine Gruppen
+/// (Review #87 R5).
 #[derive(Default)]
 struct Letzte {
     /// Züge des Geschosses in Modellreihenfolge mit ihrer Fassung.
-    zuege: Vec<(RunId, u64)>,
+    zuege: Vec<(RunId, Option<u64>)>,
     /// Gruppen nach Schlüssel, je mit ihren Zügen in Modellreihenfolge.
     gruppen: NachSchluessel<(Gruppe, Vec<RunId>)>,
     /// Schlüssel der Gruppen nach dem Platz ihres ersten Zugs (Reihenfolge
@@ -410,8 +412,9 @@ impl Erkennung {
         self.zugeteilt
     }
 
-    /// Flächen des Geschosses `g`, je Hausgruppe. Hat jeder Zug eine
-    /// Fassung, werden nur die Gruppen der geänderten Züge neu gebildet.
+    /// Flächen des Geschosses `g`, je Hausgruppe. Nach der ersten Rechnung
+    /// werden nur die Gruppen der geänderten Züge und der Züge ohne Fassung
+    /// neu gebildet.
     pub fn lage(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Lage {
         self.lauf += 1;
         let jetzt: Vec<(RunId, Option<u64>)> = m
@@ -420,12 +423,8 @@ impl Erkennung {
             .filter(|(_, r)| r.storey == g)
             .map(|(id, _)| (id, k.fassung(id)))
             .collect();
-        let alle: Option<Vec<(RunId, u64)>> =
-            jetzt.iter().map(|&(id, f)| f.map(|f| (id, f))).collect();
-        if let Some(jetzt) = alle {
-            if let Some(l) = self.nachfuehren(m, k, g, jetzt) {
-                return l;
-            }
+        if let Some(l) = self.nachfuehren(m, k, g, &jetzt) {
+            return l;
         }
         self.neu(m, k, g, &jetzt)
     }
@@ -553,10 +552,11 @@ impl Erkennung {
         self.gruppen
             .retain(|_, e| e.geschoss != g || e.lauf == lauf);
         let lage = letzte.lage(g);
-        let alle: Option<Vec<(RunId, u64)>> =
-            jetzt.iter().map(|&(id, f)| f.map(|f| (id, f))).collect();
         let gs = self.geschosse.entry(g).or_default();
-        gs.letzte = alle.map(|zuege| Letzte { zuege, ..letzte });
+        gs.letzte = Some(Letzte {
+            zuege: jetzt.to_vec(),
+            ..letzte
+        });
         lage
     }
 
@@ -571,7 +571,7 @@ impl Erkennung {
         m: &Model,
         k: &(impl Ketten + ?Sized),
         g: StoreyId,
-        jetzt: Vec<(RunId, u64)>,
+        jetzt: &[(RunId, Option<u64>)],
     ) -> Option<Lage> {
         let mut l = self.geschosse.get_mut(&g)?.letzte.take()?;
         // Geänderte und neue Züge, entfallene Züge (beide Listen nach Platz)
@@ -583,7 +583,7 @@ impl Erkennung {
                     if a.0 != b.0 {
                         weg.push(b.0);
                         neu.push(*a);
-                    } else if a.1 != b.1 {
+                    } else if a.1 != b.1 || a.1.is_none() {
                         neu.push(*a);
                     }
                     i += 1;
@@ -609,6 +609,11 @@ impl Erkennung {
             self.geschosse.entry(g).or_default().letzte = Some(l);
             return Some(lage);
         }
+        // Jeder geänderte Zug sieht alle Gruppen an: Bei vielen (etwa ohne
+        // jede Fassung) ist die volle Rechnung schneller
+        if neu.len() + weg.len() > 16 + jetzt.len() / 8 {
+            return None;
+        }
         // Die übrigen Züge betroffener Gruppen behalten ihren Rohbau; fehlt
         // er im Speicher, rechnet die volle Rechnung
         let geaendert: HashSet<RunId> =
@@ -619,7 +624,7 @@ impl Erkennung {
             .collect();
         let mut zuege: Vec<(RunId, Rc<Roh>, Kasten)> = Vec::new();
         for &(id, f) in &neu {
-            let Some(roh) = self.roh(m, k, id, Some(f), g) else {
+            let Some(roh) = self.roh(m, k, id, f, g) else {
                 continue;
             };
             let Some(kk) = roh.kasten else {
@@ -685,7 +690,7 @@ impl Erkennung {
                 self.gruppen.remove(s);
             }
         }
-        l.zuege = jetzt;
+        l.zuege = jetzt.to_vec();
         let lage = l.lage(g);
         self.geschosse.entry(g).or_default().letzte = Some(l);
         Some(lage)
@@ -1219,10 +1224,26 @@ mod tests {
         }
     }
 
+    /// Wie [`Inhalt`], aber etwa ein Drittel der Züge ohne Fassung (im
+    /// Schritt geändert, noch nicht gebaut), je nach `1`.
+    struct Teils<'a>(&'a Model, u64);
+
+    impl Ketten for Teils<'_> {
+        fn fassung(&self, run: RunId) -> Option<u64> {
+            let ohne = (run.index() as u64 ^ self.1) % 3 == 0;
+            Inhalt(self.0).fassung(run).filter(|_| !ohne)
+        }
+
+        fn kette(&self, run: RunId) -> Option<Cow<'_, WallChain>> {
+            self.0.chain(run).map(Cow::Owned)
+        }
+    }
+
     /// Review #87 R2: Die nachgeführte Lage und Zuteilung gleicht in jeder
     /// Folge von Schritten der vollen Rechnung: Wände über die Nachbarwand
     /// und ins Nachbarhaus ziehen, Häuser zusammen- und auseinanderschieben,
-    /// Züge anlegen und löschen, Räume anlegen; auch im offenen Schritt.
+    /// Züge anlegen und löschen, Räume anlegen; auch im offenen Schritt und
+    /// mit Zügen ohne Fassung (R5).
     #[test]
     fn nachgefuehrt_wie_neu() {
         let (mut m, st) = stadt(4);
@@ -1236,8 +1257,10 @@ mod tests {
             zufall ^= zufall << 17;
             zufall % n
         };
-        let vergleich = |e: &mut Erkennung, m: &Model, schritt: usize| {
-            let l = e.lage(m, &Inhalt(m), st);
+        let vergleich = |e: &mut Erkennung, m: &Model, schritt: usize, teils: bool| {
+            let (inhalt, ohne) = (Inhalt(m), Teils(m, schritt as u64));
+            let k: &dyn Ketten = if teils { &ohne } else { &inhalt };
+            let l = e.lage(m, k, st);
             let frisch = Erkennung::default().lage(m, m, st);
             let kurz = |l: &Lage| -> Vec<(u64, Kasten)> {
                 l.gruppen.iter().map(|g| (g.schluessel, g.kasten)).collect()
@@ -1248,7 +1271,7 @@ mod tests {
                 v.sort_by(|a, b| unten(&a.0).partial_cmp(&unten(&b.0)).unwrap());
                 v
             };
-            let r = e.raumformen(m, &Inhalt(m), st);
+            let r = e.raumformen(m, k, st);
             let r: Vec<(RaumForm, f64)> = r
                 .flaechen()
                 .map(|f| (f.form.clone(), f.grundflaeche))
@@ -1259,7 +1282,7 @@ mod tests {
                 "Schritt {schritt}"
             );
             assert_eq!(
-                e.stand(m, &Inhalt(m), st).raeume(),
+                e.stand(m, k, st).raeume(),
                 frisch.stand(m).raeume(),
                 "Schritt {schritt}"
             );
@@ -1269,6 +1292,7 @@ mod tests {
             let zuege: Vec<RunId> = m.runs().ids().collect();
             let z = zuege[wuerfel(zuege.len() as u64) as usize];
             let offen = wuerfel(4) == 0;
+            let teils = wuerfel(2) == 0;
             m.begin("Schritt");
             match wuerfel(10) {
                 0..=5 => {
@@ -1305,17 +1329,17 @@ mod tests {
             }
             if offen {
                 // Mitten im Schritt: zweimal nachführen, dann weiter
-                vergleich(&mut e, &m, schritt);
+                vergleich(&mut e, &m, schritt, teils);
                 let erster = m.runs().ids().next();
                 if let Some(z) = erster {
                     let d = vec3(50.0, 0.0, 0.0);
                     let pts: Vec<Vec3> = m.run(z).unwrap().points.iter().map(|p| *p + d).collect();
                     m.set_run_points(z, &pts);
                 }
-                vergleich(&mut e, &m, schritt);
+                vergleich(&mut e, &m, schritt, teils);
             }
             m.commit();
-            vergleich(&mut e, &m, schritt);
+            vergleich(&mut e, &m, schritt, teils);
         }
         assert!(e.voll - voll0 <= 2, "{} volle Rechnungen", e.voll - voll0);
     }
