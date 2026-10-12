@@ -384,8 +384,8 @@ impl TreePanel {
         self.icon(m, vi, Icon::Isolate)
     }
 
-    /// Neues Projekt geöffnet: Äste wie beim Öffnen (Projekt, Gebäude,
-    /// Geschosse auf, Gruppen zu), oben.
+    /// Neues Projekt geöffnet: Äste wie beim Öffnen (Projekt und Gebäude
+    /// auf, Geschosse und Gruppen zu), oben.
     pub fn reset(&mut self) {
         self.open = Default::default();
         self.seen.clear();
@@ -408,13 +408,9 @@ impl TreePanel {
         if self.built != Some(rev) {
             self.tree = tree::build(m);
             self.built = Some(rev);
-            // Neue Gebäude und Geschosse gehen auf (beim Öffnen alle)
+            // Neue Gebäude gehen auf (beim Öffnen alle), Geschosse bleiben zu
             for n in self.tree.tab(Tab::Tree) {
-                let opens = matches!(
-                    n.key,
-                    NodeKey::Project | NodeKey::Building(_) | NodeKey::Storey(_)
-                );
-                if opens && self.seen.insert(n.key.clone()) {
+                if opens_first(&n.key) && self.seen.insert(n.key.clone()) {
                     self.open[0].insert(n.key.clone());
                 }
             }
@@ -441,6 +437,26 @@ impl TreePanel {
             self.glow = glow;
         }
         self.dirty || !self.rows_dirty.is_empty()
+    }
+
+    /// Auswahl leer geworden: alle Karten zu wie beim Öffnen (Baum: Projekt
+    /// und Gebäude auf; Bauteil und Gewerk: alle Gruppen zu), oben. Was danach
+    /// ohne Auswahl aufgeklappt wird, bleibt bis zur nächsten Abwahl offen.
+    pub fn fold(&mut self) {
+        let mut open: [BTreeSet<NodeKey>; 3] = Default::default();
+        open[0] = self
+            .tree
+            .tab(Tab::Tree)
+            .iter()
+            .filter(|n| opens_first(&n.key))
+            .map(|n| n.key.clone())
+            .collect();
+        if open != self.open {
+            self.open = open;
+            self.scroll = 0.0;
+            self.anchor = None;
+            self.refresh_rows();
+        }
     }
 
     fn refresh_rows(&mut self) {
@@ -1695,6 +1711,12 @@ impl TreePanel {
     }
 }
 
+/// Äste der Karte „Baum“, die beim Öffnen und nach dem Abwählen offen
+/// stehen: Projekt und Gebäude (Jörn 12.10.2026: Geschosse zu).
+fn opens_first(key: &NodeKey) -> bool {
+    matches!(key, NodeKey::Project | NodeKey::Building(_))
+}
+
 /// Schloss der Zeile `i` der Karte `tab` blass: Es wirkt nicht, weil das
 /// Bauteil bzw. alles unter der Art- oder Gruppenzeile abgeleitet ist und
 /// seiner Quelle folgt (y).
@@ -2035,6 +2057,48 @@ mod tests {
             let ganz = q.paint(&t, &f, &s, &pk, 400.0, 1.0);
             assert!(steps(&p.img.as_ref().unwrap().0, &ganz) <= 1, "{hit:?}");
         }
+    }
+
+    /// Jörn 12.10.2026: Der Baum startet zu (Projekt und Gebäude auf,
+    /// Geschosse zu); die Auswahl klappt ihren Ast auf, wird sie leer, gehen
+    /// alle Karten wieder zu, auch „Bauteil“.
+    #[test]
+    fn abwahl_klappt_zu() {
+        let (s, t) = (haus(), Theme::dark());
+        let m = s.model();
+        let mut p = panel(&s, &t, 400.0);
+        let zeigt =
+            |p: &TreePanel, f: fn(&NodeKey) -> bool| p.rows.iter().any(|&i| f(&p.nodes()[i].key));
+        let start = p.rows.clone();
+        assert!(zeigt(&p, |k| matches!(k, NodeKey::Storey(_))));
+        assert!(!zeigt(&p, |k| matches!(
+            k,
+            NodeKey::Group(..) | NodeKey::Element(_)
+        )));
+        let g = p
+            .nodes()
+            .iter()
+            .find_map(|n| match n.key {
+                NodeKey::Element(g) => Some(g),
+                _ => None,
+            })
+            .unwrap();
+        let id = m.elements().iter().find(|(_, e)| e.guid == g).unwrap().0;
+        p.reveal(m, id, &t, 1.0);
+        assert!(zeigt(&p, |k| matches!(k, NodeKey::Element(_))), "Ast offen");
+        p.fold();
+        assert_eq!(p.rows, start, "Baum wieder zu");
+        p.tab = Tab::Kind;
+        p.refresh_rows();
+        let zu = p.rows.clone();
+        assert!(p
+            .rows
+            .iter()
+            .all(|&i| matches!(p.nodes()[i].key, NodeKey::Kind(_))));
+        p.reveal(m, id, &t, 1.0);
+        assert!(p.rows.len() > zu.len(), "Gruppe offen");
+        p.fold();
+        assert_eq!(p.rows, zu, "Bauteil wieder zu");
     }
 
     /// Review 3j B4: Gleitet die Höhe, wird nicht je Bild neu gemalt; das
