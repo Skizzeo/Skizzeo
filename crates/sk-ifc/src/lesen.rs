@@ -25,6 +25,10 @@ pub struct Vorschau {
     pub ohne_form: usize,
 }
 
+/// Name des Knotens, der unterhalb von [`BAUMTIEFE`] für alles Tiefere
+/// steht.
+pub const WEITERE: &str = "… weitere Ebenen";
+
 /// Ein Ort der räumlichen Gliederung.
 #[derive(Clone, Debug, Default)]
 pub struct Knoten {
@@ -381,6 +385,35 @@ fn laenge_mm(f: &File) -> f64 {
     1.0
 }
 
+/// Zeichen der Einheit je Mengenklasse (`IFCQUANTITYLENGTH` → „mm“) aus
+/// `IfcUnitAssignment`; fehlt, wo die Datei keine bekannte nennt.
+fn mengen_einheiten(f: &File) -> HashMap<&'static str, &'static str> {
+    let mut out = HashMap::new();
+    for (_, ua) in f.all("IFCUNITASSIGNMENT") {
+        for u in verweise(ua.args.first()) {
+            let Some(e) = f.get(u).filter(|e| e.name == "IFCSIUNIT") else {
+                continue;
+            };
+            let wort = |i: usize| match e.args.get(i) {
+                Some(V::Enum(t)) => t.as_str(),
+                _ => "",
+            };
+            let z = match (wort(1), wort(2), wort(3)) {
+                ("LENGTHUNIT", "MILLI", "METRE") => ("IFCQUANTITYLENGTH", "mm"),
+                ("LENGTHUNIT", "CENTI", "METRE") => ("IFCQUANTITYLENGTH", "cm"),
+                ("LENGTHUNIT", "", "METRE") => ("IFCQUANTITYLENGTH", "m"),
+                ("AREAUNIT", "", "SQUARE_METRE") => ("IFCQUANTITYAREA", "m²"),
+                ("VOLUMEUNIT", "", "CUBIC_METRE") => ("IFCQUANTITYVOLUME", "m³"),
+                ("MASSUNIT", "KILO", "GRAM") => ("IFCQUANTITYWEIGHT", "kg"),
+                ("MASSUNIT", "", "GRAM") => ("IFCQUANTITYWEIGHT", "g"),
+                _ => continue,
+            };
+            out.entry(z.0).or_insert(z.1);
+        }
+    }
+    out
+}
+
 /// Vorschau aus einer gelesenen Datei.
 pub fn vorschau(f: &File) -> Vorschau {
     let mut l = Leser {
@@ -482,19 +515,35 @@ pub fn vorschau(f: &File) -> Vorschau {
             }
         }
     }
+    let einheiten = mengen_einheiten(f);
     for (_, e) in f.all("IFCRELDEFINESBYPROPERTIES") {
         let Some(ps) = verweis(e.args.get(5)) else {
             continue;
         };
         let pa = l.args(ps);
         let satz = text(pa.get(2));
+        // IfcElementQuantity hat vor den Mengen noch MethodOfMeasurement
+        let liste = if l.name(ps) == "IFCELEMENTQUANTITY" {
+            5
+        } else {
+            4
+        };
         let mut werte = Vec::new();
-        for p in verweise(pa.get(4)) {
+        for p in verweise(pa.get(liste)) {
             let a = l.args(p);
             let w = match l.name(p) {
                 "IFCPROPERTYSINGLEVALUE" => a.get(2).map(wert).unwrap_or_default(),
-                // Mengen: Name, Beschreibung, Einheit, Wert
-                n if n.starts_with("IFCQUANTITY") => a.get(3).map(wert).unwrap_or_default(),
+                // Mengen: Name, Beschreibung, Einheit, Wert; die Einheit der
+                // Datei dahinter (eine eigene an der Menge liest der Leser nicht)
+                n if n.starts_with("IFCQUANTITY") => {
+                    let w = a.get(3).map(wert).unwrap_or_default();
+                    match einheiten.get(n) {
+                        Some(z) if !w.is_empty() && a.get(2) == Some(&V::Null) => {
+                            format!("{w} {z}")
+                        }
+                        _ => w,
+                    }
+                }
                 _ => continue,
             };
             werte.push((text(a.first()), w));
@@ -566,9 +615,18 @@ pub fn vorschau(f: &File) -> Vorschau {
                 // Räume mit Form: als Teil unter dem Geschoss
                 k.teile.push(i);
             }
-            if RAEUMLICH.contains(&l.name(c)) && tiefe < BAUMTIEFE {
+            if !RAEUMLICH.contains(&l.name(c)) {
+                continue;
+            }
+            if tiefe < BAUMTIEFE {
                 k.kinder
                     .push(knoten(l, c, kinder, enthalten, index, besucht, tiefe + 1));
+            } else if k.kinder.is_empty() {
+                // Hinweis statt still abzuschneiden (Review zu #83)
+                k.kinder.push(Knoten {
+                    name: WEITERE.into(),
+                    ..Knoten::default()
+                });
             }
         }
         if name == "IFCBUILDINGSTOREY" {
@@ -809,14 +867,24 @@ mod tests {
             .stack_size(1 << 20)
             .spawn(move || {
                 let v = vorschau(&step::read(&t).unwrap());
-                fn tiefe(k: &[Knoten]) -> usize {
-                    k.iter().map(|k| 1 + tiefe(&k.kinder)).max().unwrap_or(0)
+                fn tiefe(k: &[Knoten]) -> (usize, String) {
+                    k.iter()
+                        .map(|k| match k.kinder.is_empty() {
+                            true => (1, k.name.clone()),
+                            false => {
+                                let (n, s) = tiefe(&k.kinder);
+                                (n + 1, s)
+                            }
+                        })
+                        .max()
+                        .unwrap_or_default()
                 }
                 tiefe(&v.baum)
             })
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(v, BAUMTIEFE as usize + 1);
+        // Die tiefste Zeile sagt, dass es weitergeht
+        assert_eq!(v, (BAUMTIEFE as usize + 2, WEITERE.to_string()));
     }
 }
