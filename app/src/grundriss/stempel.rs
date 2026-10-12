@@ -774,17 +774,17 @@ pub struct ListenSchluessel {
 
 /// Der Stempel als Bild: Name fett in Papiertinte, darunter die Fläche
 /// gedimmt, beide mittig; unter der Maus und gewählt zart im Akzent
-/// hinterlegt. Mit offenem Namensfeld steht statt des Namens das Feld.
+/// hinterlegt, die Fläche dann in Papiertinte (gedimmt auf dem Akzent unter
+/// 4 : 1). Mit offenem Namensfeld steht statt des Namens das Feld.
 pub fn malen(k: &Schluessel, fonts: &Fonts, t: &Theme) -> Canvas {
     let s = f32::from_bits(k.scale) as f64;
     let (w, h) = (k.groesse.0 as f64, k.groesse.1 as f64);
     let mut c = Canvas::new(k.groesse.0 as usize, k.groesse.1 as usize);
     if k.ton > 0 {
         let Rgba(r, g, b, _) = t.ui.accent;
-        let a = if k.ton == 2 { 0x48 } else { 0x26 };
         let mut p = Path::new();
         p.rounded_rect(0.0, 0.0, w as f32, h as f32, (4.0 * s) as f32);
-        c.fill(&p, Rgba(r, g, b, a));
+        c.fill(&p, Rgba(r, g, b, deckung(k.ton, t)));
     }
     let zeile = |c: &mut Canvas, text: &str, fett: bool, y: f64, farbe: Rgba| -> f64 {
         let (f, px) = schrift(fonts, fett, s, t);
@@ -826,8 +826,27 @@ pub fn malen(k: &Schluessel, fonts: &Fonts, t: &Theme) -> Canvas {
     } else if !k.kurz {
         y += zeile(&mut c, &k.name, true, y, t.ui.paper_text);
     }
-    zeile(&mut c, &k.flaeche, false, y, t.ui.paper_text_dim);
+    zeile(&mut c, &k.flaeche, false, y, flaechen_farbe(k.ton, t));
     c
+}
+
+/// Deckkraft der Akzent-Hinterlegung: 1 unter der Maus, 2 gewählt.
+fn deckung(ton: u8, t: &Theme) -> u8 {
+    let a = if ton == 2 {
+        t.size.stamp_select_alpha
+    } else {
+        t.size.stamp_hover_alpha
+    };
+    (a.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Schrift der Fläche: gedimmt auf Papier, auf der Hinterlegung voll.
+fn flaechen_farbe(ton: u8, t: &Theme) -> Rgba {
+    if ton > 0 {
+        t.ui.paper_text
+    } else {
+        t.ui.paper_text_dim
+    }
 }
 
 /// Die Vorschlagsliste als Bild: Menüfläche mit Schatten, gewählte Zeile
@@ -890,6 +909,43 @@ mod tests {
 
     const W: f64 = 1000.0;
     const H: f64 = 700.0;
+
+    /// Kontrast nach WCAG zweier deckender Farben.
+    fn kontrast(a: Rgba, b: Rgba) -> f32 {
+        let l = |c: Rgba| {
+            let k = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * k(c.0) + 0.7152 * k(c.1) + 0.0722 * k(c.2)
+        };
+        let (x, y) = (l(a), l(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Name und Fläche bleiben auf Papier und auf der Hinterlegung lesbar:
+    /// Papiertinte 4,5 : 1, gedämpft 4 : 1 (wie `blatt_dunkel_papier_hell`).
+    #[test]
+    fn stempel_lesbar_auf_der_hinterlegung() {
+        let t = Theme::dark();
+        let paper = t.env.paper_fallback;
+        let Rgba(r, g, b, _) = t.ui.accent;
+        assert!(kontrast(flaechen_farbe(0, &t), paper) >= 4.0);
+        for ton in [1, 2] {
+            let a = deckung(ton, &t) as f32 / 255.0;
+            let mix = |p: u8, q: u8| (p as f32 * (1.0 - a) + q as f32 * a).round() as u8;
+            let grund = Rgba(mix(paper.0, r), mix(paper.1, g), mix(paper.2, b), 255);
+            assert!(kontrast(t.ui.paper_text, grund) >= 4.5, "Name, Ton {ton}");
+            let k = kontrast(flaechen_farbe(ton, &t), grund);
+            assert!(k >= 4.0, "Fläche, Ton {ton}: {k}");
+        }
+        // Gewählt kräftiger als unter der Maus
+        assert!(deckung(2, &t) > deckung(1, &t));
+    }
 
     fn fonts() -> Fonts {
         Fonts {

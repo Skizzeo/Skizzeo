@@ -3,9 +3,10 @@
 //! ganz umschließen, ist ein Bereich (später ein Raum). Alles auf z = 0, in mm.
 //!
 //! Vorgehen: Kanten aller Umrisse an Schnitt- und Berührpunkten teilen, die
-//! Teilstücke behalten, die links innen und rechts außen liegen, Punkte
-//! innerhalb der Toleranz zusammenlegen und die Teilstücke zu Ringen
-//! verbinden, an jeder Ecke mit der am weitesten links abbiegenden
+//! Teilstücke behalten, die auf genau einer Seite innen liegen (so gedreht,
+//! dass innen links ist; das trägt auch verdrehte Umrisse kurzer Wände mit
+//! Gehrung), Punkte innerhalb der Toleranz zusammenlegen und die Teilstücke
+//! zu Ringen verbinden, an jeder Ecke mit der am weitesten links abbiegenden
 //! Fortsetzung. Ringe gegen den Uhrzeigersinn sind Außenränder der Vereinigung,
 //! Ringe im Uhrzeigersinn umschließen einen Bereich.
 
@@ -97,20 +98,25 @@ pub fn enthaelt(pts: &[Vec3], p: Vec3) -> bool {
 }
 
 /// Vereinigt die Umrisse und liefert ihre Außenränder und die umschlossenen
-/// Bereiche. Punkte näher als `tol` gelten als gleich, ein Punkt näher als
-/// `tol` an einer Kante als auf ihr; so schließt auch eine Wand, die einen
-/// Bruchteil davon vor der nächsten endet.
+/// Bereiche. Punkte höchstens `tol` voneinander gelten als gleich, ein Punkt
+/// höchstens `tol` vor einer Kante als auf ihr; so schließt auch eine Wand,
+/// die bis zu `tol` vor der nächsten endet. Ein weiterer Spalt bleibt offen.
 pub fn anordnung(umrisse: &[Vec<Vec3>], tol: f64) -> Anordnung {
     let tol = tol.max(1e-6);
     let polys = gegen_uhrzeiger(umrisse, tol);
     let kanten = teilen(&polys, tol);
     let mut ecken = Ecken::new(tol);
-    let probe = 4.0 * tol;
+    // Prüfabstand links und rechts einer Randkante: knapp über der Fangweite.
+    // Was bis `tol` nah ist, liegt nach dem Zusammenlegen auf der Kante, der
+    // Prüfpunkt muss über diesen Rest hinaus. Was weiter weg ist, bleibt ein
+    // Spalt, und der Prüfpunkt darf ihn nicht überspringen; ein größerer
+    // Abstand ließ Stirn- und Gegenkante eines solchen Spalts wegfallen.
+    let probe = tol * (1.0 + 1e-6);
     let mut gesehen = HashSet::new();
     let mut rand: Vec<(usize, usize, Herkunft)> = Vec::new();
     for (a, b, h) in kanten {
         let (ia, ib) = (ecken.id(a), ecken.id(b));
-        if ia == ib || !gesehen.insert((ia, ib)) {
+        if ia == ib || !gesehen.insert((ia.min(ib), ia.max(ib))) {
             continue;
         }
         let (a, b) = (ecken.p[ia], ecken.p[ib]);
@@ -119,8 +125,10 @@ pub fn anordnung(umrisse: &[Vec<Vec3>], tol: f64) -> Anordnung {
         let links = m + vec3(-d.y, d.x, 0.0) * probe;
         let rechts = m - vec3(-d.y, d.x, 0.0) * probe;
         let drin = |q: Vec3| polys.iter().any(|(p, _)| enthaelt(p, q));
-        if drin(links) && !drin(rechts) {
-            rand.push((ia, ib, h));
+        match (drin(links), drin(rechts)) {
+            (true, false) => rand.push((ia, ib, h)),
+            (false, true) => rand.push((ib, ia, h)),
+            _ => {}
         }
     }
     let ringe = verbinden(&ecken.p, &rand);
@@ -212,7 +220,7 @@ fn teilen(polys: &[(Vec<Vec3>, Vec<Herkunft>)], tol: f64) -> Vec<(Vec3, Vec3, He
             }
             for q in [c, d] {
                 let t = ((q - a).dot(e) / (len * len)).clamp(0.0, 1.0);
-                if (a + e * t - q).length() < tol {
+                if (a + e * t - q).length() <= tol {
                     ts.push(t);
                 }
             }
@@ -276,7 +284,7 @@ impl Ecken {
                 let Some(v) = self.raster.get(&(x, y)) else {
                     continue;
                 };
-                if let Some(&i) = v.iter().find(|&&i| (self.p[i] - p).length() < self.tol) {
+                if let Some(&i) = v.iter().find(|&&i| (self.p[i] - p).length() <= self.tol) {
                     return i;
                 }
             }
@@ -333,6 +341,10 @@ fn verbinden(p: &[Vec3], rand: &[(usize, usize, Herkunft)]) -> Vec<Ring> {
                 _ => break false,
             }
         };
+        // An jeder Ecke kommen so viele Randkanten an, wie abgehen; ein Ring,
+        // der nicht schließt, heißt, die Prüfung links/rechts passt nicht zum
+        // Zusammenlegen, und die Bereiche daran fehlen.
+        debug_assert!(geschlossen, "Randkanten ohne Ring ab {:?}", p[rand[k0].0]);
         if !geschlossen {
             continue;
         }
@@ -813,5 +825,113 @@ mod tests {
         assert!(b.enthaelt(p));
         assert!(d > 600.0 && d < 1500.0, "{d}");
         assert!((p - vec3(2000.0, 1500.0, 0.0)).length() > 400.0);
+    }
+
+    /// Eine Wand, die knapp mehr als die Toleranz vor der nächsten endet,
+    /// lässt keinen Raum verschwinden: Der Spalt ist schmaler als der
+    /// Prüfabstand links/rechts (4 · tol), dann fallen Spalt- und Stirnkanten
+    /// weg und die Ringe brechen ab. Ob ein oder zwei Räume entstehen, ist
+    /// offen; die Fläche muss bleiben.
+    #[test]
+    fn spalt_knapp_ueber_toleranz_verliert_keinen_raum() {
+        for g in [0.6, 1.0, 1.5, 1.9] {
+            let mut u = aussen();
+            u.push(rechteck(300.0, 3950.0, 9700.0 - g, 4050.0));
+            let a = anordnung(&u, TOL);
+            let summe: f64 = a.bereiche.iter().map(Bereich::flaeche).sum();
+            assert!(
+                (summe - 9400.0 * 7400.0 + (9400.0 - g) * 100.0).abs() < 1e4,
+                "Spalt {g} mm: {:?}",
+                flaechen(&a)
+            );
+        }
+    }
+
+    /// Fangweite und Prüfabstand ohne Lücke dazwischen, auch schräg: Bis
+    /// `tol` schließt die Querwand zwei Räume, darüber bleibt ein Raum mit
+    /// Spalt. Kein Spalt lässt Fläche verschwinden.
+    #[test]
+    fn spalt_um_die_toleranz_gerade_und_gedreht() {
+        let um = vec3(5000.0, 4000.0, 0.0);
+        for grad in [0.0_f64, 1.0, 30.0] {
+            let (sin, cos) = grad.to_radians().sin_cos();
+            let drehen = |p: &Vec3| {
+                let d = *p - um;
+                um + vec3(d.x * cos - d.y * sin, d.x * sin + d.y * cos, 0.0)
+            };
+            for g in [0.0, 0.2, 0.49, 0.5, 0.51, 0.6, 1.0, 1.9, 2.0, 2.1, 5.0] {
+                if grad != 0.0 && g == TOL {
+                    continue; // gedreht liegt der Abstand nur ungefähr auf der Grenze
+                }
+                let mut u = aussen();
+                u.push(rechteck(300.0, 3950.0, 9700.0 - g, 4050.0));
+                let u: Vec<Vec<Vec3>> = u.iter().map(|r| r.iter().map(drehen).collect()).collect();
+                let a = anordnung(&u, TOL);
+                let f = flaechen(&a);
+                let (n, soll) = if g <= TOL {
+                    (2, 9400.0 * 7400.0 - 9400.0 * 100.0)
+                } else {
+                    (1, 9400.0 * 7400.0 - (9400.0 - g) * 100.0)
+                };
+                assert_eq!(a.bereiche.len(), n, "{grad}°, Spalt {g} mm: {f:?}");
+                let summe: f64 = f.iter().sum();
+                assert!((summe - soll).abs() < 1e3, "{grad}°, Spalt {g} mm: {f:?}");
+            }
+        }
+    }
+
+    /// Kurze Wände mit Gehrung ergeben verdrehte Umrisse (A31: Vorsprung
+    /// 5 × 5 cm an einer 31,5 cm dicken Außenwand). Ihre Ränder schließen
+    /// trotzdem, innen bleibt ein Raum.
+    #[test]
+    fn verdrehter_umriss_schliesst() {
+        let p = |v: &[(f64, f64)]| v.iter().map(|&(x, y)| vec3(x, y, 0.0)).collect();
+        let u: Vec<Vec<Vec3>> = vec![
+            p(&[(0.0, 0.0), (0.0, 8000.0), (315.0, 7685.0), (315.0, 315.0)]),
+            p(&[
+                (0.0, 8000.0),
+                (10000.0, 8000.0),
+                (9685.0, 7685.0),
+                (315.0, 7685.0),
+            ]),
+            p(&[
+                (10000.0, 8000.0),
+                (10000.0, 0.0),
+                (9685.0, 315.0),
+                (9685.0, 7685.0),
+            ]),
+            p(&[
+                (10000.0, 0.0),
+                (4050.0, 0.0),
+                (3735.0, 315.0),
+                (9685.0, 315.0),
+            ]),
+            p(&[
+                (4050.0, 0.0),
+                (4050.0, -50.0),
+                (3735.0, 265.0),
+                (3735.0, 315.0),
+            ]),
+            p(&[
+                (4050.0, -50.0),
+                (4000.0, -50.0),
+                (4315.0, 265.0),
+                (3735.0, 265.0),
+            ]),
+            p(&[
+                (4000.0, -50.0),
+                (4000.0, 0.0),
+                (4315.0, 315.0),
+                (4315.0, 265.0),
+            ]),
+            p(&[(4000.0, 0.0), (0.0, 0.0), (315.0, 315.0), (4315.0, 315.0)]),
+        ];
+        let a = anordnung(&u, TOL);
+        assert_eq!(a.bereiche.len(), 1, "{:?}", flaechen(&a));
+        assert!(
+            nah(a.bereiche[0].flaeche(), 9370.0 * 7370.0),
+            "{:?}",
+            flaechen(&a)
+        );
     }
 }
