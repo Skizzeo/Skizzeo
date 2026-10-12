@@ -70,7 +70,7 @@ impl DrainEdit {
     ) -> DrainOutcome {
         let mut out = DrainOutcome::default();
         let (roof, drains) = match sel.filter(|_| enabled) {
-            Some(id) => scene.roof_drains(id),
+            Some(id) => scene.plan_drains(id),
             None => (None, Vec::new()),
         };
         match *e {
@@ -144,8 +144,9 @@ impl DrainEdit {
         }
     }
 
-    /// Punkte an den Abläufen des gewählten Flachdachs (nur Grundriss);
-    /// unter der Maus und beim Ziehen in der Farbe des Ziehens.
+    /// Punkte an den Abläufen des gewählten Flachdachs (nur im Grundriss
+    /// seiner Ebene); unter der Maus und beim Ziehen in der Farbe des
+    /// Ziehens.
     pub fn helpers(
         &self,
         scene: &Scene,
@@ -156,7 +157,7 @@ impl DrainEdit {
         let Some(id) = sel else {
             return Vec::new();
         };
-        let (_, drains) = scene.roof_drains(id);
+        let (_, drains) = scene.plan_drains(id);
         let z = scene.plan_cut() as f32 + 10.0;
         let hot = self.drag.map(|d| d.1).or(self.hover);
         let active = scene.active_drain(id);
@@ -274,7 +275,7 @@ impl App {
             return false;
         }
         let (vw, vh, sc) = self.view_size();
-        let (roof, drains) = self.scene.roof_drains(id);
+        let (roof, drains) = self.scene.plan_drains(id);
         let (Some(roof), Some(k)) = (roof, hit(&self.cam, &drains, x, y - th, vw, vh, sc)) else {
             return false;
         };
