@@ -25,6 +25,10 @@ pub struct Vorschau {
     pub ohne_form: usize,
 }
 
+/// Name des Knotens, der unterhalb von [`BAUMTIEFE`] für alles Tiefere
+/// steht.
+pub const WEITERE: &str = "… weitere Ebenen";
+
 /// Ein Ort der räumlichen Gliederung.
 #[derive(Clone, Debug, Default)]
 pub struct Knoten {
@@ -611,9 +615,18 @@ pub fn vorschau(f: &File) -> Vorschau {
                 // Räume mit Form: als Teil unter dem Geschoss
                 k.teile.push(i);
             }
-            if RAEUMLICH.contains(&l.name(c)) && tiefe < BAUMTIEFE {
+            if !RAEUMLICH.contains(&l.name(c)) {
+                continue;
+            }
+            if tiefe < BAUMTIEFE {
                 k.kinder
                     .push(knoten(l, c, kinder, enthalten, index, besucht, tiefe + 1));
+            } else if k.kinder.is_empty() {
+                // Hinweis statt still abzuschneiden (Review zu #83)
+                k.kinder.push(Knoten {
+                    name: WEITERE.into(),
+                    ..Knoten::default()
+                });
             }
         }
         if name == "IFCBUILDINGSTOREY" {
@@ -854,14 +867,24 @@ mod tests {
             .stack_size(1 << 20)
             .spawn(move || {
                 let v = vorschau(&step::read(&t).unwrap());
-                fn tiefe(k: &[Knoten]) -> usize {
-                    k.iter().map(|k| 1 + tiefe(&k.kinder)).max().unwrap_or(0)
+                fn tiefe(k: &[Knoten]) -> (usize, String) {
+                    k.iter()
+                        .map(|k| match k.kinder.is_empty() {
+                            true => (1, k.name.clone()),
+                            false => {
+                                let (n, s) = tiefe(&k.kinder);
+                                (n + 1, s)
+                            }
+                        })
+                        .max()
+                        .unwrap_or_default()
                 }
                 tiefe(&v.baum)
             })
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(v, BAUMTIEFE as usize + 1);
+        // Die tiefste Zeile sagt, dass es weitergeht
+        assert_eq!(v, (BAUMTIEFE as usize + 2, WEITERE.to_string()));
     }
 }
