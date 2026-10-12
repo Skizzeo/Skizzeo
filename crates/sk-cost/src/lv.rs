@@ -469,8 +469,13 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             continue;
         };
         let oz_basis = k.oz(l);
-        let erde = |a: &&Ansatz| a.auto.is_some_and(|x| x.starts_with("earth."));
-        if erde_aus_mittel.is_none() && m.terrain().is_some() && ansatz.iter().any(erde) {
+        let erde = |a: &&Ansatz| {
+            a.auto.is_some_and(|x| x.starts_with("earth."))
+                && a.formel
+                    .as_deref()
+                    .is_some_and(|f| f.contains(sk_model::qto_earth::AUS_AUFMASS))
+        };
+        if erde_aus_mittel.is_none() && ansatz.iter().any(erde) {
             erde_aus_mittel = Some(oz_basis.clone());
         }
         if mehrere {
