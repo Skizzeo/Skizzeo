@@ -1379,3 +1379,74 @@ fn aufschlag_im_grundriss() {
     assert!(m.set_opening(id, o));
     assert!(m.chain(iw).unwrap().swing_edges(cut).is_empty());
 }
+
+/// Geometrie #99: Der Aufschlag hängt nicht vom Mausweg ab (wie #92 B2).
+/// Eine freie Innenwand mit Tür um 120° gedreht, in einem Sprung und in 30
+/// Schritten im selben Schritt: Die Tür schlägt beide Male in denselben
+/// Raum der Wand auf (zur Wand gesehen auf derselben Seite wie vorher), und
+/// die Bänder sitzen am selben Pfosten.
+#[test]
+fn aufschlag_haengt_nicht_vom_mausweg_ab() {
+    use crate::oeffnung::{Din, FaceSide, Swing};
+    let mut lagen = Vec::new();
+    for schritte in [1usize, 30] {
+        let (mut m, eg, _) = haus(None);
+        let set = m.defaults().interior_wall;
+        let st = storey(&m, eg);
+        let start = [vec3(3000.0, 2000.0, 0.0), vec3(7000.0, 2000.0, 0.0)];
+        let iw = m
+            .add_wall_run(
+                &start,
+                false,
+                crate::RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let tuer = Opening {
+            kind: OpeningKind::Door,
+            path: vec![aussen(&m, iw, 0, 1500.0), aussen(&m, iw, 0, 2385.0)],
+            bottom: HeightRef::Level(LevelRef::bottom(st)),
+            top: HeightRef::Line(st, HeightLine::Door),
+            reveal: None,
+            install: Default::default(),
+            swing: Some(Swing {
+                side: FaceSide::Right,
+                din: Din::Links,
+            }),
+        };
+        let id = m.add_opening(tuer).unwrap();
+        let vorher = m.door_leaf(id).unwrap();
+        let mitte = (start[0] + start[1]) * 0.5;
+        m.begin("Drehen");
+        for k in 1..=schritte {
+            let (s, c) = (120f64 * k as f64 / schritte as f64).to_radians().sin_cos();
+            let neu: Vec<Vec3> = start
+                .iter()
+                .map(|p| {
+                    let r = *p - mitte;
+                    mitte + vec3(r.x * c - r.y * s, r.x * s + r.y * c, 0.0)
+                })
+                .collect();
+            assert!(m.set_run_points(iw, &neu).is_some());
+        }
+        m.commit();
+        let p = m.run(iw).unwrap().points.clone();
+        let d = (p[1] - p[0]).normalized();
+        let l = m.door_leaf(id).unwrap();
+        // Seite zur Wand und Pfosten der Bänder (Anfang oder Ende der Lichte)
+        let seite = l.swing_into.dot(right_of(d)) > 0.0;
+        let am_anfang = (l.hinge - l.line.0).length() < (l.hinge - l.line.1).length();
+        let seite_vorher = vorher.swing_into.dot(vec3(0.0, -1.0, 0.0)) > 0.0;
+        let anfang_vorher =
+            (vorher.hinge - vorher.line.0).length() < (vorher.hinge - vorher.line.1).length();
+        assert_eq!(
+            (seite, am_anfang),
+            (seite_vorher, anfang_vorher),
+            "{schritte} Schritte: Aufschlag oder Bänder gewechselt"
+        );
+        lagen.push((seite, am_anfang));
+    }
+    assert_eq!(lagen[0], lagen[1], "Sprung gegen 30 Schritte");
+}
