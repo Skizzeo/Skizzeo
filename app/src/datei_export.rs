@@ -181,6 +181,7 @@ mod tests {
             gebaeude: 1,
             geschosse: 2,
             bauteile: 34,
+            baugruppen: 0,
             ausgelassen: vec![],
         };
         assert_eq!(ifc_meldung(&b), "IFC gespeichert: 2 Geschosse, 34 Bauteile");
