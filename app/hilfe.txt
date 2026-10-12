@@ -70,6 +70,7 @@ Geschosse | Gegenecke auf der Wand darüber: die Öffnung geht über beide Gesch
 Höhen | an einer Linie gefangen wandert die Kante mit, wenn die Linie im Geschossmanager gezogen wird
 Anschlag | bei WDVS und Verblender ist die gezeichnete Öffnung die sichtbare außen, innen ist sie um den Anschlag größer
 Einbauelement | im Grundriss zeigen zwei dünn gestrichelte Linien, wo das spätere Fenster- oder Türelement sitzt: außen nach der äußeren Einbautiefe, dazwischen die Elementtiefe
+Innentür | „Tür“ im Grundriss: über einer Innenwand hängt die Tür am Cursor und schlägt in den Raum auf der Cursorseite auf; **Tab** schaltet den Bezugspunkt Mitte, links, rechts; das Mausrad blättert die Breiten 63,5 / 76 / 88,5 / 101 cm nach DIN 18101; Klick setzt sie, unten OK Rohdecke, oben die Innentürlinie, DIN links
 Beenden | **Esc** nimmt die erste Ecke zurück, dann schließt es
 
 [thema] id=einlesen titel="Bauteil einlesen"
@@ -369,7 +370,7 @@ Innenwand | Innenwand im aktiven Geschoss zeichnen.
 Winkelsprung | Beim Zeichnen springt die Richtung in 90°- oder 45°-Schritten zur vorigen Wand; **R** schaltet ihn aus und ein.
 Erweiterungen | Eingelesene Bauteile wie Stütze oder Treppe setzen, nach Gruppe geordnet.
 Wandöffnung | Fenster oder Terrassentür in eine Außenwand aufziehen.
-Türöffnung | Haustür in eine Außenwand aufziehen.
+Türöffnung | Haustür in eine Außenwand aufziehen, im Grundriss Innentür in eine Innenwand setzen.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.
