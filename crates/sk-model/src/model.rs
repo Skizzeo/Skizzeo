@@ -244,6 +244,8 @@ pub struct Model {
     /// `view_below`, dazu unlesbare Zeilen roh.
     view_finish: [(bool, bool); 3],
     view_finish_raw: Vec<String>,
+    /// Zeilen `[spacefinish]`, die nicht zählen (RB6, roh).
+    space_finish_raw: Vec<String>,
     /// Eigene Schnitthöhe des Grundrisses ([`crate::hoehen`]), dazu eine
     /// unlesbare Zeile roh.
     pub(crate) plan_cut: Option<f64>,
@@ -476,6 +478,9 @@ pub use ecke::{EckeFehler, ZugPunkte};
 mod raum;
 pub(crate) use raum::RawSpace;
 pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
+#[path = "raum_ausbau.rs"]
+mod raum_ausbau;
+pub use raum_ausbau::{ausbau_befund, AusbauAbweichung, AusbauStelle, AusbauWahl, WandSeite};
 
 impl Default for Model {
     fn default() -> Model {
@@ -849,6 +854,7 @@ impl Model {
             view_hide: Default::default(),
             view_finish: [(false, false); 3],
             view_finish_raw: Vec::new(),
+            space_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -943,6 +949,7 @@ impl Model {
             view_hide: Default::default(),
             view_finish: [(false, false); 3],
             view_finish_raw: Vec::new(),
+            space_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -2844,7 +2851,13 @@ impl Model {
                     }
                     segments.push(e);
                 }
-                (None, Some(t)) => segments.push(self.new_wall(id, k, t)),
+                (None, Some(t)) => {
+                    let neu = self.new_wall(id, k, t);
+                    if let Some(g) = self.elements.get(neu).map(|e| e.guid) {
+                        self.ausbau_wand_geteilt(t.guid, g);
+                    }
+                    segments.push(neu);
+                }
                 (None, None) => return false,
             }
         }
