@@ -1189,7 +1189,7 @@ const AVA_VORHER: &str = "Leistungsverzeichnis je Los";
 /// Lebende Zahl der Karte Mengen: „14 Bauteile · 3 Geschosse“ im Umfang
 /// (Geschosse mit Bauteilen, das Gründungsband zählt mit).
 fn mengen_zahl(sched: &Schedule) -> String {
-    let mut bauteile: Vec<sk_model::ElementId> = Vec::new();
+    let mut bauteile = std::collections::HashSet::new();
     let mut geschosse = 0;
     let storeys = sched
         .buildings
@@ -1200,9 +1200,7 @@ fn mengen_zahl(sched: &Schedule) -> String {
         let mut belegt = false;
         for r in st.groups.iter().flat_map(|g| &g.rows) {
             belegt = true;
-            if !bauteile.contains(&r.element) {
-                bauteile.push(r.element);
-            }
+            bauteile.insert(r.element);
         }
         geschosse += usize::from(belegt);
     }

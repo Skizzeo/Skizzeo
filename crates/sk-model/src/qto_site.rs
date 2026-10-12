@@ -8,9 +8,10 @@
 
 use crate::model::Model;
 use crate::qto::AutoMenge;
-use crate::RunId;
+use crate::{BuildingId, RunId, StoreyId};
 use sk_math::polygon;
 use sk_math::Vec3;
+use std::collections::HashMap;
 
 /// Abstand des Bauzauns von der Außenkante des Gebäudes (mm): Arbeitsraum,
 /// Gerüst und Lagerfläche um das Haus (keine Normvorgabe, Schätzung).
@@ -113,6 +114,61 @@ pub fn vorhaltemonate(geschosse: usize) -> u32 {
     2 + geschosse.div_ceil(2) as u32
 }
 
+/// Außenwandzüge eines Gebäudes (alle Geschosse), wie die Bauvorbereitung
+/// sie braucht: einmal je Gebäude gesammelt, nicht je Sohlplatte (sonst
+/// wächst die Mengenliste mit dem Quadrat der Züge im Gebäude).
+#[derive(Clone, Debug, Default)]
+pub struct Huelle {
+    /// Außenecken aller Züge, in der Reihenfolge der Züge.
+    punkte: Vec<Vec3>,
+    /// Oberste Wandkrone bzw. Attika.
+    krone: f64,
+    /// Geschosse mit Außenwandzug (ohne die Ebene Flachdach).
+    geschosse: usize,
+    /// Außenecken je Zug: die Fassade, an der das Gerüst einer Platte steht.
+    fassaden: HashMap<RunId, Vec<Vec3>>,
+}
+
+/// [`Huelle`] je Gebäude (`None`: Züge ohne Gebäude) in einem Gang über die
+/// Züge: Außenwandzüge samt Aufkantung des Flachdachs, denn das Gerüst
+/// reicht über ihre Krone.
+pub fn huellen(model: &Model) -> HashMap<Option<BuildingId>, Huelle> {
+    let mut out: HashMap<Option<BuildingId>, (Huelle, Vec<StoreyId>)> = HashMap::new();
+    for (id, r) in model.runs().iter() {
+        let aussen = r.closed
+            && r.segments
+                .first()
+                .and_then(|e| model.element(*e))
+                .is_some_and(|e| e.category.is_outer_wall());
+        if !aussen {
+            continue;
+        }
+        let (h, geschosse) = out.entry(model.building_of(r.storey)).or_default();
+        let Some(c) = model.chain(id) else { continue };
+        let ecken = c.face_corners(c.outer_offset());
+        h.punkte.extend(ecken.iter().copied());
+        h.krone = h.krone.max(c.top());
+        if let Some(a) = &c.joints.attika {
+            h.krone = h.krone.max(a.band.1);
+        }
+        // Die Ebene Flachdach ist kein Geschoss (Vorhaltemonate)
+        if model
+            .storey(r.storey)
+            .is_some_and(|s| s.kind == crate::LevelKind::Storey)
+            && !geschosse.contains(&r.storey)
+        {
+            geschosse.push(r.storey);
+        }
+        h.fassaden.insert(id, ecken);
+    }
+    out.into_iter()
+        .map(|(b, (mut h, g))| {
+            h.geschosse = g.len();
+            (b, h)
+        })
+        .collect()
+}
+
 /// Automatikmengen `site.*` des Gebäudes mit dem Plattenumriss `platte` am
 /// Wandzugs `run` (der Zug, unter dem die Sohlplatte liegt), mit Sohlplatte,
 /// Geschoss und Gebäude aus `vorlage`. `gelaende`: OK Gelände relativ zu
@@ -129,51 +185,26 @@ pub fn site_mengen(
     erste: bool,
 ) -> Vec<AutoMenge> {
     let gebaeude = model.run(run).and_then(|r| model.building_of(r.storey));
-    // Außenwandzüge desselben Gebäudes (alle Geschosse) samt Aufkantung
-    // des Flachdachs: das Gerüst reicht über ihre Krone
-    let zuege: Vec<RunId> = model
-        .runs()
-        .iter()
-        .filter(|(_, r)| {
-            r.closed
-                && model.building_of(r.storey) == gebaeude
-                && r.segments
-                    .first()
-                    .and_then(|e| model.element(*e))
-                    .is_some_and(|e| e.category.is_outer_wall())
-        })
-        .map(|(id, _)| id)
-        .collect();
-    let mut punkte: Vec<Vec3> = platte.to_vec();
-    let mut krone = 0.0f64;
-    let mut geschosse = Vec::new();
-    let mut fassade: Option<Vec<Vec3>> = None;
-    for id in &zuege {
-        let Some(c) = model.chain(*id) else { continue };
-        let aussen = c.face_corners(c.outer_offset());
-        punkte.extend(aussen.iter().copied());
-        krone = krone.max(c.top());
-        if let Some(a) = &c.joints.attika {
-            krone = krone.max(a.band.1);
-        }
-        // Die Ebene Flachdach ist kein Geschoss (Vorhaltemonate)
-        if let Some(r) = model.run(*id).filter(|r| {
-            model
-                .storey(r.storey)
-                .is_some_and(|s| s.kind == crate::LevelKind::Storey)
-        }) {
-            if !geschosse.contains(&r.storey) {
-                geschosse.push(r.storey);
-            }
-        }
-        if *id == run {
-            fassade = Some(aussen);
-        }
-    }
-    let fassade = fassade.unwrap_or_else(|| platte.to_vec());
-    let monate = vorhaltemonate(geschosse.len());
-    let huelle = convex_hull(&punkte);
-    let zaun = offset_perimeter(&huelle, ZAUN_ABSTAND);
+    let h = huellen(model).remove(&gebaeude).unwrap_or_default();
+    site_mengen_in(&h, run, platte, vorlage, gelaende, erste)
+}
+
+/// [`site_mengen`] mit der schon gesammelten [`Huelle`] des Gebäudes.
+pub fn site_mengen_in(
+    h: &Huelle,
+    run: RunId,
+    platte: &[Vec3],
+    vorlage: &AutoMenge,
+    gelaende: f64,
+    erste: bool,
+) -> Vec<AutoMenge> {
+    let krone = h.krone;
+    let fassade = h
+        .fassaden
+        .get(&run)
+        .cloned()
+        .unwrap_or_else(|| platte.to_vec());
+    let monate = vorhaltemonate(h.geschosse);
     let laenge = offset_perimeter(&fassade, GERUEST_ABSTAND);
     // Aufstandsfläche: Gelände bis über die oberste Wandkrone bzw. Attika
     let hoehe = (krone + GERUEST_UEBERSTAND - gelaende).max(0.0);
@@ -196,6 +227,11 @@ pub fn site_mengen(
     if !erste {
         return vec![geruest];
     }
+    // Hülle über alle Züge des Gebäudes nur für die erste Platte
+    let mut punkte: Vec<Vec3> = platte.to_vec();
+    punkte.extend(h.punkte.iter().copied());
+    let huelle = convex_hull(&punkte);
+    let zaun = offset_perimeter(&huelle, ZAUN_ABSTAND);
     vec![
         menge(LUMP, "psch", 1.0, KG_BE, "1 je Gebäude".into()),
         menge(
@@ -205,7 +241,7 @@ pub fn site_mengen(
             KG_BE,
             format!(
                 "2 + {} Geschosse ÷ 2, aufgerundet = {monate} Monate",
-                geschosse.len()
+                h.geschosse
             ),
         ),
         menge(

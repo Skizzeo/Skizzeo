@@ -202,6 +202,11 @@ type Zug = (RunId, u32, u32, Vec<(usize, u32)>);
 
 /// Exportiert das Modell als IFC4-Datei (Text) und sagt, was darin steht.
 pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
+    // Ein Gang über das ganze Modell (Wandkörper, Mengen): mit Verzeichnis
+    m.lesend(|| export_im_gang(m, opt))
+}
+
+fn export_im_gang(m: &Model, opt: &Optionen) -> (String, Bericht) {
     let p = m.project();
     let mut c = Ctx {
         m,

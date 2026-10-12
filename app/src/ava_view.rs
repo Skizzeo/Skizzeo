@@ -2518,8 +2518,9 @@ pub const UNVOLLSTAENDIG: &str =
 pub fn lv_zeilen(lv: &Lv) -> Vec<Zeile> {
     let bauteile = |p: &LvPosition| {
         let mut v: Vec<ElementId> = Vec::new();
+        let mut schon = std::collections::HashSet::new();
         for e in p.ansatz.iter().flat_map(|a| &a.elemente) {
-            if !v.contains(e) {
+            if schon.insert(*e) {
                 v.push(*e);
             }
         }
@@ -2539,31 +2540,35 @@ pub fn lv_zeilen_mit(
     fokus: Option<&crate::fokus::Fokus>,
 ) -> Vec<Zeile> {
     let ansatz = |p: &LvPosition| {
+        let im_lv: std::collections::HashSet<_> = p
+            .ansatz
+            .iter()
+            .flat_map(|z| z.elemente.iter().map(|e| (z.geschoss, *e)))
+            .collect();
         p.blatt
             .iter()
             .filter_map(|&i| b.positionen.get(i))
             .flat_map(|x| &x.ansatz)
-            .filter(|a| {
-                p.ansatz
-                    .iter()
-                    .any(|z| z.geschoss == a.geschoss && z.elemente.contains(&a.element))
-            })
+            .filter(|a| im_lv.contains(&(a.geschoss, a.element)))
             .collect::<Vec<_>>()
     };
     let bauteile = |p: &LvPosition| {
         let mut v: Vec<ElementId> = Vec::new();
+        let mut schon = std::collections::HashSet::new();
         for e in ansatz(p)
             .into_iter()
             .flat_map(|a| crate::fokus::bauteile(m, a))
             .chain(p.ansatz.iter().flat_map(|a| a.elemente.iter().copied()))
         {
-            if !v.contains(&e) {
+            if schon.insert(e) {
                 v.push(e);
             }
         }
         v
     };
-    match fokus {
+    // Ein Gang über alle Positionen: die Gründung je Platte aus dem
+    // Verzeichnis des Modells
+    m.lesend(|| match fokus {
         None => lv_zeilen_wie(lv, |_| true, bauteile, true),
         Some(f) => lv_zeilen_wie(
             lv,
@@ -2571,7 +2576,7 @@ pub fn lv_zeilen_mit(
             bauteile,
             false,
         ),
-    }
+    })
 }
 
 /// Tabelle aus den Positionen, für die `behalten` gilt, mit ihren
