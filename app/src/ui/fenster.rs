@@ -207,7 +207,26 @@ mod tests {
         assert!(r.y > t.y + t.h && r.y + r.h == 900.0 - 12.0, "{r:?}");
         assert!(r.h < 80.0, "nur ein Knopf: {r:?}");
         assert_eq!(ui.laid_out_buttons(Panel::Levels).len(), 1);
+        assert!(ui.line_vis_rects().is_empty());
         assert_eq!(klick(&mut ui, mitte(r), 1440), Some(Id::LevelsOpen));
+        // Jede Stelle des Paneels: höchstens der Knopf, nie ein Griff
+        let (mut x, mut treffer) = (r.x + 1.0, 0);
+        while x < r.x + r.w {
+            let mut y = r.y + 1.0;
+            while y < r.y + r.h {
+                let id = klick(&mut ui, (x as f64, y as f64), 1440);
+                assert!(
+                    id.is_none() || id == Some(Id::LevelsOpen),
+                    "{x},{y}: {id:?}"
+                );
+                assert!(!matches!(ui.hover, Some(Id::Grip(_))), "{x},{y}");
+                assert!(ui.level_dragging().is_none(), "{x},{y}");
+                treffer += usize::from(id.is_some());
+                y += 3.0;
+            }
+            x += 3.0;
+        }
+        assert!(treffer > 0);
         assert!(!ui.is_on(Id::LevelsOpen));
         ui.levels_open = true;
         assert!(ui.is_on(Id::LevelsOpen));
