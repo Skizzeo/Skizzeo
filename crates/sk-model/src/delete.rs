@@ -82,9 +82,7 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
             vec!["Das Regenfallrohr folgt dem Ablauf. Abläufe setzt und löschst du am Flachdach."]
         }
         Some(Category::Parapet) => {
-            vec![
-                "Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du im Paneel Geschosse ein.",
-            ]
+            vec!["Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du im Geschossmanager ein."]
         }
         Some(Category::Space) => {
             vec!["Der Raum folgt den Wänden um ihn. Zum Entfernen eine Wand löschen oder öffnen."]
