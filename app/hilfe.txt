@@ -382,4 +382,6 @@ Hinten | Ansicht von hinten.
 Links | Ansicht von links.
 Rechts | Ansicht von rechts.
 Mengen · Kosten · AVA | Mengen, Kosten und Ausschreibung (LV) deines Hauses.
+Mengen · Kosten | Mengen und Kosten deines Hauses.
+Mengen | Mengen deines Hauses.
 ? | Hilfe zu dem, was du gerade tust.

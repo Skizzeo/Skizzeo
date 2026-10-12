@@ -536,6 +536,8 @@ pub struct HelpCard {
     /// Bild und Inhaltsbild des letzten Malens: behalten den Speicher
     /// (Review 3w, wie 3k: frische Seiten kosten mehr als das Malen).
     bufs: Option<(Canvas, Canvas)>,
+    /// Freie Module: die Liste „Alle Themen“ zeigt nur ihre Themen.
+    pub frei: crate::freischaltung::Freischaltung,
 }
 
 impl HelpCard {
@@ -756,7 +758,7 @@ impl HelpCard {
             for (name, topics) in Topic::GROUPS {
                 groups.push((name, y));
                 y += gh;
-                for tp in topics {
+                for tp in topics.iter().filter(|t| !self.frei.gesperrt(**t)) {
                     items.push((*tp, y, ih));
                     y += ih;
                 }

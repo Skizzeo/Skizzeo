@@ -45,6 +45,7 @@ mod ext_werkzeug;
 mod flush_pick;
 mod fokus;
 mod frame_time;
+mod freischaltung;
 mod gelaende_platte;
 mod geschosse_app;
 mod geschossfenster;
@@ -1608,6 +1609,7 @@ impl App {
         self.menu.close();
         self.menu_dirty = true;
         match c {
+            _ if self.ui.frei.gesperrt(c) => {}
             Command::New | Command::Close | Command::Open | Command::Quit => {
                 self.confirm_then(c, surface)
             }
@@ -2812,6 +2814,9 @@ impl App {
 
     /// Öffnet das Mengenfenster (F2) oder holt es nach vorn.
     fn open_quantity(&mut self, surface: &Surface) {
+        if self.ui.frei.gesperrt(Id::Quantity) {
+            return;
+        }
         self.quantity.open = true;
         self.quantity.dirty = true;
         let caption = windows::blatt_caption(
@@ -3219,6 +3224,7 @@ impl App {
 
     fn click(&mut self, id: Id) {
         match id {
+            _ if self.ui.frei.gesperrt(id) => {}
             Id::LevelsOpen => self.geschoss.wanted = true,
             Id::Building | Id::Interior => {
                 let cat = match id {
@@ -5631,7 +5637,6 @@ impl App {
             self.select(Some(hit));
         }
         self.close_type_menu(false);
-        let s = self.ui.scale;
         self.context = Some(delete::ContextMenu::new(
             self.scene.model(),
             hit,
@@ -5640,7 +5645,7 @@ impl App {
             y,
             (self.w, self.h, top),
             &self.theme,
-            s,
+            &self.ui,
         ));
         self.context_dirty = true;
         self.tip = None;
@@ -5935,7 +5940,7 @@ impl App {
         match self.title.hover {
             Some(Button::Undo) => return menu::history_hint(&self.scene, false),
             Some(Button::Redo) => return menu::history_hint(&self.scene, true),
-            Some(Button::Help) => return Some(tip_text(help::tooltip_lines("?"))),
+            Some(Button::Help) => return Some(knopf_tip::tip_text(help::tooltip_lines("?"))),
             Some(_) => return None,
             None => {}
         }
@@ -6708,7 +6713,6 @@ impl App {
                     self.tree_select(vec![target]);
                 }
                 self.close_type_menu(false);
-                let s = self.ui.scale;
                 self.context = Some(delete::ContextMenu::new(
                     self.scene.model(),
                     target,
@@ -6717,7 +6721,7 @@ impl App {
                     y,
                     (self.w, self.h, self.top()),
                     &self.theme,
-                    s,
+                    &self.ui,
                 ));
                 self.context_dirty = true;
                 self.tip = None;
@@ -7302,16 +7306,6 @@ fn coalesce_moves(events: &mut Vec<Event>) {
     });
 }
 
-/// Zeilen eines Tooltips als Text für [`sk_ui::widgets::tooltip`] (erste
-/// Zeile fett), ohne Fettschrift-Marken.
-fn tip_text(lines: Vec<String>) -> String {
-    lines
-        .iter()
-        .map(|l| help::plain(l))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn write_timing(path: &Option<String>, log: &mut String) {
     use std::io::Write;
     if let Some(p) = path {
@@ -7775,6 +7769,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
     a.quantity.read_settings(&a.settings.windows);
+    a.freischalten(freischaltung::Freischaltung::aus_args(std::env::args()));
     a.quantity.blatt_wahl = a.settings.lv_blatt();
     // Baumpanel: Karte, zugeklappt, Grenze (Paket 4)
     let panel = a.settings.panel.clone();
