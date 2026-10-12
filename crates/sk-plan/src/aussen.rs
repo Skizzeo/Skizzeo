@@ -431,7 +431,7 @@ fn innenwaende(m: &Model, zuege: &[Zug], stuecke: &[Stueck], n: Vec3, t: Vec3) -
             let Some(s) = stueck_bei(stuecke, at) else {
                 continue;
             };
-            if !s.kanten.iter().any(|&k| k == (zi, seg)) {
+            if !s.kanten.contains(&(zi, seg)) {
                 continue;
             }
             dazu(

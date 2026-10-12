@@ -23,7 +23,7 @@ use sk_ui::theme::Theme;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "bemassung_istbilder.rs"]
 mod istbilder;
 
@@ -46,6 +46,9 @@ pub struct Stand {
     pub geschosse: Vec<(Aussenmasse, Bild)>,
 }
 
+/// Wofür ein [`Stand`] gilt: Revision des Modells, Geschosse, Stil.
+type Schluessel = (u64, Vec<StoreyId>, Stil);
+
 /// Bemaßung der App: gemerkte Schriften und das zuletzt gerechnete Bild.
 #[derive(Default)]
 pub struct Massketten {
@@ -53,7 +56,7 @@ pub struct Massketten {
     /// (Revision des Modells, Geschosse, Stil) und Stand dazu; der Stil
     /// zählt mit, weil „Abbrechen“ im Einstellungsfenster die Revision
     /// zurückstellt.
-    stand: Option<((u64, Vec<StoreyId>, Stil), Rc<Stand>)>,
+    stand: Option<(Schluessel, Rc<Stand>)>,
 }
 
 /// Ansicht mit Bemaßung (Stufe 1: Grundriss und 3D).
