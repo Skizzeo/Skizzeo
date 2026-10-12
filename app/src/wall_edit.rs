@@ -446,10 +446,11 @@ impl WallEdit {
 
     /// Offene Maßeingabe beim Ziehen bzw. in der Nachkorrektur (Paket 8b).
     pub fn input(&self) -> Option<&MeasureInput> {
-        match (&self.teilen, &self.ende) {
-            (Some(t), _) => t.input.as_ref(),
-            (None, Some(z)) => z.input.as_ref(),
-            (None, None) => self.input.as_ref(),
+        match (&self.teilen, &self.ende, &self.breite) {
+            (Some(t), ..) => t.input.as_ref(),
+            (None, Some(z), _) => z.input.as_ref(),
+            (None, None, Some(b)) => b.input.as_ref(),
+            (None, None, None) => self.input.as_ref(),
         }
     }
 
@@ -472,9 +473,17 @@ impl WallEdit {
         self.teilen.is_some() || self.ecke.is_some()
     }
 
+    /// Hat das laufende Tun an der Wand ein eigenes Hilfethema ([`Self::thema`])
+    /// statt „Wand verschieben“? Teilen, Ecke, Breite und Aufschlag (39.2).
+    pub fn eigenes_thema(&self) -> bool {
+        self.splitting() || self.tuer.is_some() || self.breite.is_some()
+    }
+
     /// Hilfethema des laufenden Werkzeugs an der Wand.
     pub fn thema(&self) -> crate::help::Topic {
-        if self.ecke.is_some() {
+        if self.tuer.is_some() || self.breite.is_some() {
+            crate::help::Topic::Openings
+        } else if self.ecke.is_some() {
             crate::help::Topic::InnerWall
         } else {
             crate::help::Topic::Split
@@ -528,6 +537,9 @@ impl WallEdit {
         if let Some(z) = &self.ende {
             return z.pill();
         }
+        if let Some(b) = &self.breite {
+            return b.pill(scene);
+        }
         let label = match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
             (None, Some(l)) if self.last_valid(scene) => l.target.label(),
@@ -562,6 +574,9 @@ impl WallEdit {
         }
         if self.ende.is_some() {
             return ende_edit::LABEL;
+        }
+        if self.breite.is_some() {
+            return breite_edit::LABEL;
         }
         match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),

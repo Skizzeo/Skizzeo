@@ -169,6 +169,8 @@ pub enum Topic {
     FlatRoof,
     Levels,
     Section,
+    /// Maßketten in Grundriss und 3D, Zahnrad und Reiter „Bemaßung“.
+    Bemassung,
     /// Nordpfeil aufziehen, drehen, verschieben (Sonnenstand S2).
     North,
     Tree,
@@ -215,6 +217,7 @@ impl Topic {
         Topic::FlatRoof,
         Topic::Levels,
         Topic::Section,
+        Topic::Bemassung,
         Topic::North,
         Topic::Tree,
         Topic::File,
@@ -273,6 +276,7 @@ impl Topic {
             &[
                 Topic::Levels,
                 Topic::Section,
+                Topic::Bemassung,
                 Topic::North,
                 Topic::Tree,
                 Topic::Quantities,
@@ -322,6 +326,7 @@ impl Topic {
             Topic::FlatRoof => "flachdach",
             Topic::Levels => "geschosse",
             Topic::Section => "schnitt",
+            Topic::Bemassung => "bemassung",
             Topic::North => "nordpfeil",
             Topic::Tree => "baum",
             Topic::File => "datei",
@@ -437,6 +442,7 @@ pub fn topic(c: &HelpCtx) -> Topic {
             Window::Settings(2) => Topic::SettingsFills,
             Window::Settings(3) => Topic::SettingsSurfaces,
             Window::Settings(5) => Topic::SettingsVorgaben,
+            Window::Settings(6) => Topic::Bemassung,
             Window::Settings(_) => Topic::SettingsUi,
             Window::Catalog => Topic::Catalog,
             Window::Materials => Topic::Materials,

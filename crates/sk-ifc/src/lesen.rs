@@ -425,13 +425,14 @@ pub fn vorschau(f: &File) -> Vorschau {
     l.farben_lesen();
 
     // Bauteile: Produkte mit Platzierung und Darstellung, außer Gliederung
+    // und Öffnungen (sie lochen eine Wand, deren Netz schon gelocht ist)
     let mut v = Vorschau {
         schema: f.schema().unwrap_or("").to_string(),
         ..Vorschau::default()
     };
     let mut index: HashMap<u32, usize> = HashMap::new();
     for (&id, e) in &f.data {
-        if RAEUMLICH[..4].contains(&e.name.as_str()) {
+        if RAEUMLICH[..4].contains(&e.name.as_str()) || e.name == "IFCOPENINGELEMENT" {
             continue;
         }
         let Some(sh) = verweis(e.args.get(6)) else {
