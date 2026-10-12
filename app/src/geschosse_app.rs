@@ -129,6 +129,7 @@ impl App {
         if !self.geschoss.open {
             return;
         }
+        self.geschoss.gesperrt = self.ui.dialog;
         if let Event::MouseMove { .. } = e {
             self.geschoss.pending_move = Some(e);
             return;

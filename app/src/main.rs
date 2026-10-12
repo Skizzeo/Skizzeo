@@ -236,9 +236,9 @@ const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
 /// Baumpanel (Paket 4) zwischen „Ansichten“ und „Eigenschaften“.
 const OVERLAY_TREE: usize = OVERLAY_VIEWS + 2;
 const OVERLAY_TOOLS: usize = OVERLAY_VIEWS + 3;
-const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 4;
-/// Paneel „Geschosse“.
-const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 5;
+/// Knopf „Geschossmanager“, wie „Werkzeuge“ unter dem Abdunkeln.
+const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 4;
+const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 5;
 /// Dialog „Gebäude erstellen“.
 const OVERLAY_DIALOG: usize = OVERLAY_VIEWS + 6;
 const OVERLAY_TITLE: usize = OVERLAY_VIEWS + 7;
@@ -1227,8 +1227,8 @@ impl App {
         self.tool.fang_aus(&mut self.scene);
         let l = self.scene.levels();
         self.geschoss.dirty |= self.geschoss.ui.set_levels(l.clone());
-        // Im Hauptfenster steht das Diagramm nur neben dem Dialog
-        self.overlay_dirty |= self.ui.set_levels(l) && self.ui.dialog;
+        // Im Hauptfenster steht nur der Knopf, das Diagramm im Geschossfenster
+        self.ui.set_levels(l);
     }
 
     /// Wählt das Bauteil (oder nichts). Ein Bauteil eines anderen Gebäudes
@@ -1248,7 +1248,7 @@ impl App {
     }
 
     /// Knopf „Gebäude“ ohne Gebäude im Modell: Dialog „Gebäude erstellen“
-    /// (E16). Das Gebäude steht sofort im Paneel „Geschosse“.
+    /// (E16). Das Gebäude steht sofort im Geschossfenster, wenn es offen ist.
     fn open_building_dialog(&mut self) {
         if !self.tool_allowed() {
             self.set_view(ViewKind::Persp);

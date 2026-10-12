@@ -12,8 +12,7 @@
 
 use super::*;
 
-/// Größter Maßstab im Fenster (dip je m); neben dem Dialog gilt
-/// `level_px_per_m`.
+/// Größter Maßstab im Fenster (dip je m).
 pub(super) const PPM: f32 = 120.0;
 /// Titel des Fensters.
 pub const TITEL: &str = "Geschossmanager";
@@ -49,11 +48,11 @@ impl Ui {
         out
     }
 
-    /// Zeigt das Paneel „Geschosse“ das Diagramm: im eigenen Fenster und im
-    /// Hauptfenster neben dem Dialog „Gebäude erstellen“; sonst ist es dort
-    /// der Knopf „Geschossmanager“.
+    /// Zeigt das Paneel „Geschosse“ das Diagramm: nur im eigenen Fenster;
+    /// im Hauptfenster ist es immer der Knopf „Geschossmanager“, auch neben
+    /// dem Dialog „Gebäude erstellen“ (Jörn 12.10.).
     pub(super) fn levels_diagramm(&self) -> bool {
-        self.fenster || self.dialog
+        self.fenster
     }
 
     /// Lage des Paneels im Fenster: die ganze Fläche unter der Titelleiste.
@@ -123,7 +122,7 @@ mod tests {
     }
 
     /// Im Fenster: das Paneel füllt die Fläche unter der Titelleiste, im
-    /// größeren Maßstab als neben dem Dialog; Zahlen und Namen greifen.
+    /// großen Maßstab; Zahlen und Namen greifen.
     #[test]
     fn fenster_fuellt_und_ist_bedienbar() {
         let (mut ui, _) = fenster();
@@ -154,8 +153,8 @@ mod tests {
     }
 
     /// Hauptfenster: unten links nur der Knopf, bündig unter „Werkzeuge“
-    /// und so breit; aktiv, solange das Fenster offen ist. Neben dem Dialog
-    /// steht dort das Diagramm.
+    /// und so breit; aktiv, solange das Fenster offen ist. Auch neben dem
+    /// Dialog steht dort nur der Knopf.
     #[test]
     fn knopf_unten_links() {
         let th = Theme::dark();
@@ -177,11 +176,11 @@ mod tests {
         assert!(ui.is_on(Id::LevelsOpen));
         let patch = ui.repaint_button(&th, Id::LevelsOpen);
         assert!(patch.is_none() || patch.is_some_and(|p| p.panel == Panel::Levels));
-        // Neben dem Dialog das Diagramm unter „Werkzeuge“
+        // Neben dem Dialog „Gebäude erstellen“ derselbe Knopf, kein
+        // Diagramm (Jörn 12.10.)
         ui.dialog = true;
-        let d = ui.rect(Panel::Levels, 1440, 32);
-        assert_eq!(d.y, t.y + t.h + 12.0);
-        assert!(ui.laid_out_buttons(Panel::Levels).len() > 1);
+        assert_eq!(ui.rect(Panel::Levels, 1440, 32), r);
+        assert_eq!(ui.laid_out_buttons(Panel::Levels).len(), 1);
         // Ein kleines Fenster: der Knopf rückt nie über „Werkzeuge“
         ui.dialog = false;
         ui.fit(1.0, 900, 380);
