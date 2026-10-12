@@ -3492,7 +3492,7 @@ impl App {
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
             // `UiOut::level`; der Zähler ist derzeit fest
-            Id::Field(_) | Id::Grip(_) | Id::DialogMinus | Id::DialogPlus => {}
+            Id::Field(_) | Id::Grip(_) | Id::LineVis(_) | Id::DialogMinus | Id::DialogPlus => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();
@@ -4116,54 +4116,15 @@ impl App {
         let Some(d) = self.projektdaten.as_mut() else {
             return false;
         };
+        if let Event::MouseMove { x, y, .. } = e {
+            self.mouse_at = Some((x, y));
+        }
         let r = d.rect(s, self.w, self.h, th);
-        let answer = match e {
-            Event::MouseMove { x, y, .. } => {
-                self.mouse_at = Some((x, y));
-                self.overlay_dirty |= d.mouse_move(r, s, x, y);
-                None
-            }
-            // Die Titelleiste bleibt bedienbar (Fensterknöpfe, Ziehen)
-            Event::MouseDown { y, .. } | Event::MouseUp { y, .. } if y < th as f64 => {
-                return false;
-            }
-            Event::MouseDown {
-                button: MouseButton::Left,
-                x,
-                y,
-                ..
-            } => {
-                d.press(r, s, &self.ui.fonts, &self.theme, x, y);
-                self.overlay_dirty = true;
-                None
-            }
-            Event::MouseUp {
-                button: MouseButton::Left,
-                x,
-                y,
-                ..
-            } => {
-                self.overlay_dirty = true;
-                d.release(r, s, x, y)
-            }
-            Event::Key {
-                key, down, mods, ..
-            } => {
-                if !down {
-                    return true;
-                }
-                self.overlay_dirty = true;
-                d.key(key, mods)
-            }
-            Event::Text(ch) => {
-                d.text(ch);
-                self.overlay_dirty = true;
-                None
-            }
-            Event::MouseDown { .. } | Event::MouseUp { .. } | Event::Wheel { .. } => None,
-            _ => return false,
+        let Some(w) = d.ereignis(e, r, s, th as f64, &self.ui.fonts, &self.theme) else {
+            return false;
         };
-        if let Some(a) = answer {
+        self.overlay_dirty |= w.neu_zeichnen;
+        if let Some(a) = w.antwort {
             self.answer_projektdaten(a);
         }
         true
@@ -4669,7 +4630,7 @@ impl App {
                 self.wheel.scroll(&mut self.scene, n as i32, t);
             }
             Event::Wheel { y, .. } => {
-                if y >= th && !self.ui.dialog {
+                if y >= th && !self.ui.dialog && !self.tuer_rad(&e) {
                     camera_moved |=
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
@@ -4757,7 +4718,7 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
-                } else if down && key == Key::Escape && self.oeffnung_esc() {
+                } else if down && self.oeffnung_taste(key) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
