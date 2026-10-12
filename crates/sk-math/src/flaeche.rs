@@ -16,9 +16,50 @@
 //! tragen.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::polygon::signed_area;
 use crate::{vec3, Vec3};
+
+/// Tabelle über Zahlen aus der eigenen Rechnung (Rasterzellen, Punkte,
+/// Kanten), mit schnellem Streuwert statt des gegen Angriffe gehärteten.
+type Tabelle<K, V> = HashMap<K, V, BuildHasherDefault<Streu>>;
+
+/// Streuwert für [`Tabelle`]: je Zahl drehen, mischen, mit einer ungeraden
+/// Konstanten malnehmen; am Ende gedreht, damit die unteren Bits (der Platz
+/// in der Tabelle) von allen Bits abhängen.
+#[derive(Default)]
+struct Streu(u64);
+
+impl Streu {
+    fn dazu(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for Streu {
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.dazu(u64::from(b));
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.dazu(n);
+    }
+
+    fn write_i64(&mut self, n: i64) {
+        self.dazu(n as u64);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.dazu(n as u64);
+    }
+}
 
 /// Herkunft einer Randkante: Umriss `poly`, dessen Kante `kante` (von Punkt
 /// `kante` zu Punkt `kante + 1` in der übergebenen Reihenfolge).
@@ -274,7 +315,7 @@ fn teilen(polys: &[(Vec<Vec3>, Vec<Herkunft>)], tol: f64) -> Vec<(Vec3, Vec3, He
 /// Arbeit mit der Zahl der Wände, nicht mit ihrem Quadrat.
 struct Raster {
     zelle: f64,
-    karte: HashMap<(i64, i64), Vec<usize>>,
+    karte: Tabelle<(i64, i64), Vec<usize>>,
 }
 
 impl Raster {
@@ -294,7 +335,7 @@ impl Raster {
         }
         let weite = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(0.0);
         let zelle = mittel.max(weite / 4096.0).max(1e-3);
-        let mut karte: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        let mut karte: Tabelle<(i64, i64), Vec<usize>> = Tabelle::default();
         for (i, k) in kaesten.iter().enumerate() {
             for z in Raster::zellen(zelle, k) {
                 karte.entry(z).or_default().push(i);
@@ -342,14 +383,14 @@ fn kasten_nah(a: Vec3, b: Vec3, c: Vec3, d: Vec3, tol: f64) -> bool {
 /// zuerst übergebenen ihrer Punkte.
 struct Ecken {
     p: Vec<Vec3>,
-    nummer: HashMap<(u64, u64), usize>,
+    nummer: Tabelle<(u64, u64), usize>,
 }
 
 impl Ecken {
     fn neu(tol: f64, punkte: impl IntoIterator<Item = Vec3>) -> Ecken {
         let schluessel = |p: Vec3| (p.x.to_bits(), p.y.to_bits());
         let mut roh: Vec<Vec3> = Vec::new();
-        let mut index: HashMap<(u64, u64), usize> = HashMap::new();
+        let mut index: Tabelle<(u64, u64), usize> = Tabelle::default();
         for p in punkte {
             index.entry(schluessel(p)).or_insert_with(|| {
                 roh.push(p);
@@ -357,7 +398,7 @@ impl Ecken {
             });
         }
         let zelle = |p: Vec3| ((p.x / tol).floor() as i64, (p.y / tol).floor() as i64);
-        let mut raster: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        let mut raster: Tabelle<(i64, i64), Vec<usize>> = Tabelle::default();
         for (i, &p) in roh.iter().enumerate() {
             raster.entry(zelle(p)).or_default().push(i);
         }
@@ -475,7 +516,7 @@ impl Netz {
     fn neu(polys: &[(Vec<Vec3>, Vec<Herkunft>)], tol: f64) -> Netz {
         let stuecke = teilen(polys, tol);
         let ecken = Ecken::neu(tol, stuecke.iter().flat_map(|&(a, b, _)| [a, b]));
-        let mut index: HashMap<(usize, usize), usize> = HashMap::new();
+        let mut index: Tabelle<(usize, usize), usize> = Tabelle::default();
         let mut kanten: Vec<NetzKante> = Vec::new();
         for (a, b, h) in stuecke {
             let (ia, ib) = (ecken.id(a), ecken.id(b));
@@ -584,7 +625,7 @@ impl Netz {
             let (a, b) = (wurzel(&mut teil, e.u), wurzel(&mut teil, e.v));
             teil[a] = b;
         }
-        let mut links_unten: HashMap<usize, usize> = HashMap::new();
+        let mut links_unten: Tabelle<usize, usize> = Tabelle::default();
         for v in 0..self.p.len() {
             if self.ab[v].is_empty() {
                 continue;
@@ -601,7 +642,7 @@ impl Netz {
         }
         // Je Umriss seine Kanten mit Lauf und sein Kasten: Nur ein Umriss,
         // dessen Kasten den Startpunkt enthält, kann ihn umlaufen
-        let mut je_umriss: HashMap<usize, Vec<(usize, i32)>> = HashMap::new();
+        let mut je_umriss: Tabelle<usize, Vec<(usize, i32)>> = Tabelle::default();
         for (k, e) in self.kanten.iter().enumerate() {
             for &(poly, n) in &e.lauf {
                 je_umriss.entry(poly).or_default().push((k, n));

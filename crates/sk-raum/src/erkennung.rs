@@ -16,8 +16,13 @@ pub const MIN_FLAECHE: f64 = 100_000.0;
 /// Kleinste mittlere Breite (2 · Fläche / Umfang, mm): schmale Spalten
 /// zwischen zwei Wänden sind kein Raum.
 pub const MIN_BREITE: f64 = 200.0;
-/// Genauigkeit der Stempelmitte (mm).
+/// Genauigkeit der Stempelmitte (mm), mindestens.
 const GENAU: f64 = 10.0;
+/// In größeren Räumen genügt dieser Anteil der kürzeren Seite ihres
+/// Umrisskastens: längs der Mitte eines langen Raums sind viele Stellen
+/// gleich gut, auf 10 mm genau teilte die Suche dort Hunderte Zellen
+/// (Review #87 B3).
+const GENAU_ANTEIL: f64 = 0.02;
 
 /// Seite des Wandsegments, an der der Raum liegt: links oder rechts der
 /// Zeichenrichtung, oder an der Stirn am Anfang bzw. Ende (freies Wandende).
@@ -325,7 +330,10 @@ fn form(b: &Bereich, teile: &[Teil], geschoss: StoreyId) -> RaumForm {
         .chain(loecher.iter().flatten())
         .map(Kante::laenge)
         .sum();
-    let mitte = innenpunkt(b, GENAU).0;
+    let genau = crate::speicher::kasten_um(&b.rand.punkte).map_or(GENAU, |k| {
+        GENAU.max(GENAU_ANTEIL * (k[2] - k[0]).min(k[3] - k[1]))
+    });
+    let mitte = innenpunkt(b, genau).0;
     RaumForm {
         geschoss,
         umriss,
