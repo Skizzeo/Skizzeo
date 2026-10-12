@@ -239,7 +239,13 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                     * faktor(&t.rows, Bezug::Volumen, &|r| {
                         !(r.once && r.bill_length > 0.0)
                     })),
-                "",
+                // Die Fläche zählt nur die nach m² abgerechneten Schichten,
+                // darüber stehen auch Mauerwerk und Putz (Review #77, B)
+                if t.area.is_some() {
+                    "Fläche: davon nach m² abgerechnet"
+                } else {
+                    ""
+                },
             ]);
             ext::csv_gewerk(m, b, &gb, &trade, Some(id), &mut row);
         }
