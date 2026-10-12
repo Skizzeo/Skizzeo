@@ -743,7 +743,13 @@ fn write_known(m: &Model) -> String {
     for p in sorted(a.pens().iter(), |p| p.guid) {
         write_pen(&mut out, p);
     }
+    // Der Werks-Linientyp der Einbauelemente steht nur in der Datei, wenn er
+    // geändert ist (F20); beim Lesen entsteht er wieder
+    let werk = crate::attr::element_line_type();
     for l in sorted(a.line_types().iter(), |l| l.guid) {
+        if *l == werk {
+            continue;
+        }
         write_line_type(&mut out, l);
     }
     for f in sorted(a.fills().iter(), |f| f.guid) {
@@ -770,6 +776,9 @@ fn write_known(m: &Model) -> String {
     slot(&mut out, "section_ends", &d.section_ends);
     slot(&mut out, "background", &d.background);
     slot(&mut out, "pattern", &d.pattern);
+    if !a.element_is_default() {
+        slot(&mut out, "element", &d.element);
+    }
     Line::new("display")
         .word("slot", "paper")
         .color("color", d.paper)
@@ -1642,13 +1651,27 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             }
         }
     });
+    // F20: Ohne Einbauelement-Stelle gilt die Werksdarstellung; den
+    // Werks-Linientyp ergänzen, wenn sie oder eine Stelle ihn braucht
+    let has_element = recs("display")
+        .iter()
+        .any(|r| r.get("slot").is_ok_and(|s| s == "element"));
+    let werk_lt = crate::attr::ELEMENT_LINE_TYPE_GUID;
+    let uses_werk = recs("display")
+        .iter()
+        .any(|r| r.guid("lt").is_ok_and(|g| g == werk_lt));
+    if !lt_ids.contains_key(&werk_lt) && (!has_element || uses_werk) {
+        let id = line_types.insert(crate::attr::element_line_type());
+        lt_ids.insert(werk_lt, id);
+    }
+    let element_lt = (!has_element).then(|| lt_ids[&werk_lt]);
     let display = read_display(
         recs("display"),
         &pens,
         &line_types,
         &pen_ids,
         &lt_ids,
-        pattern_pen,
+        (pattern_pen, element_lt),
         &mut hints,
     )?;
 
@@ -3202,7 +3225,7 @@ fn read_display(
     line_types: &Arena<LineType>,
     pen_ids: &HashMap<Guid, Id<Pen>>,
     lt_ids: &HashMap<Guid, Id<LineType>>,
-    pattern_pen: Option<Id<Pen>>,
+    (pattern_pen, element_lt): (Option<Id<Pen>>, Option<Id<LineType>>),
     hints: &mut Vec<String>,
 ) -> Result<Display, LoadError> {
     let (std_attr, _) = crate::attr::defaults(&mut GuidGen::with_seed(0));
@@ -3238,6 +3261,7 @@ fn read_display(
     slots.push(("section_ends".into(), sd.section_ends));
     slots.push(("background".into(), sd.background));
     slots.push(("pattern".into(), sd.pattern));
+    slots.push(("element".into(), sd.element));
     let mut styles: Vec<Option<EdgeStyle>> = vec![None; slots.len()];
     let mut paper = None;
     for r in recs {
@@ -3278,6 +3302,20 @@ fn read_display(
                     resolved.push(EdgeStyle { pen, line_type });
                     continue;
                 }
+                // Einbauelement (F20): Stift der feinen Linie in Zeichnungen,
+                // der ergänzte Linientyp
+                if let (Some(line_type), "element") = (element_lt, name.as_str()) {
+                    let fine = EDGE_NAMES
+                        .iter()
+                        .position(|(_, k)| *k == edge_kind::FINE)
+                        .and_then(|i| resolved.get(i).copied())
+                        .ok_or_else(|| err(0, "Darstellung „element“ fehlt, keine feine Linie"))?;
+                    resolved.push(EdgeStyle {
+                        pen: fine.pen,
+                        line_type,
+                    });
+                    continue;
+                }
                 // Der Hintergrund (E16) fehlt in allen älteren Dateien: still ergänzen
                 if name != "background" {
                     hints.push(format!("Darstellung „{name}“ fehlt, Startwert gesetzt"));
@@ -3311,6 +3349,7 @@ fn read_display(
         section_ends: resolved[2 * n + 2],
         background: resolved[2 * n + 3],
         pattern: resolved[2 * n + 4],
+        element: resolved[2 * n + 5],
         paper,
     })
 }

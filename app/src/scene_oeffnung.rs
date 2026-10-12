@@ -356,11 +356,13 @@ mod tests {
         );
         let breite = (l[0][1][0] - l[0][0][0]).abs() as f64;
         assert!(breite >= 1200.0 - 0.01, "mindestens die Öffnung: {breite}");
-        // Aussehen: Stift der feinen Linie, gestrichelt
+        // Aussehen aus der Darstellung (F20): Stift „Fein“, Linientyp
+        // „Strichlinie fein“, Strich 1,5 mm zu Lücke 0,75 mm
         let looks = s.table().edge_looks(true, 1.0);
         let (f, k) = (edge_kind::FINE as usize, edge_kind::ELEMENT as usize);
         assert_eq!(looks.width[k], looks.width[f]);
-        assert!(looks.dash[2 * k][1] > 0.0, "gestrichelt");
+        let [l, g, ..] = looks.dash[2 * k];
+        assert!(g > 0.0 && (l / g - 2.0).abs() < 1e-4, "{l} {g}");
         // Brüstung über der Schnitthöhe: die Öffnung ist nicht geschnitten
         let el_z = s.model().storey(st).unwrap().elevation;
         s.begin("Höhenlinie ziehen");
