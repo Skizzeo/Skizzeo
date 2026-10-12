@@ -302,21 +302,38 @@ fn zuschnitt(
         if aktiv.iter().filter(|a| **a).count() < 3 {
             return roh;
         }
-        // Segment vor und nach Ecke j unter den verbliebenen
-        let vor = |j: usize| -> Option<usize> {
-            (1..=m)
-                .map(|s| (j + m - s) % m)
-                .find(|&k| aktiv[k] && (closed || k < j))
-        };
-        let nach = |j: usize| -> Option<usize> {
-            (0..m)
-                .map(|s| (j + s) % m)
-                .find(|&k| aktiv[k] && (closed || k >= j))
-        };
+        // Segment vor und nach Ecke j unter den verbliebenen, je Runde
+        // einmal als Tabelle
+        let mut vor = vec![None; n];
+        let mut last = (0..m).rev().find(|&k| closed && aktiv[k]);
+        for (j, v) in vor.iter_mut().enumerate() {
+            *v = last;
+            if j < m && aktiv[j] {
+                last = Some(j);
+            }
+        }
+        let mut nach = vec![None; n];
+        let mut next = (0..m).find(|&k| closed && aktiv[k]);
+        for (j, v) in nach.iter_mut().enumerate().rev() {
+            if j < m && aktiv[j] {
+                next = Some(j);
+            }
+            *v = next;
+        }
+        // Summe und Zahl der Ecken je Paar verbliebener Nachbarn
+        let mut ecken: std::collections::HashMap<(usize, usize), (Vec3, f64)> =
+            std::collections::HashMap::new();
+        for i in 0..n {
+            if let (Some(p), Some(q)) = (vor[i], nach[i]) {
+                let e = ecken.entry((p, q)).or_default();
+                e.0 += flat(pts[i]);
+                e.1 += 1.0;
+            }
+        }
         let mut c = roh.clone();
         let mut gegen: Option<(usize, usize)> = None;
         for (j, cj) in c.iter_mut().enumerate() {
-            let (Some(p), Some(q)) = (vor(j), nach(j)) else {
+            let (Some(p), Some(q)) = (vor[j], nach[j]) else {
                 continue;
             };
             if (p + 1) % m == q && (closed || p + 1 == j) {
@@ -334,11 +351,8 @@ fn zuschnitt(
                 }
             }
             // Mitte der weggefallenen Ecken
-            let w: Vec<Vec3> = (0..n)
-                .filter(|&i| vor(i) == Some(p) && nach(i) == Some(q))
-                .map(|i| flat(pts[i]))
-                .collect();
-            let mitte = w.iter().fold(Vec3::default(), |s, x| s + *x) * (1.0 / w.len() as f64);
+            let (summe, zahl) = ecken[&(p, q)];
+            let mitte = summe * (1.0 / zahl);
             // Eine Flucht: die Mitte auf der Linie, sonst der Schnittpunkt
             let x = if k.abs() < 1e-9 {
                 a + da * (mitte - a).dot(da)
