@@ -608,3 +608,88 @@ fn vorschau_zeigt_mengen_und_klassen() {
         aw.klassen
     );
 }
+
+fn zahl(v: &V) -> f64 {
+    match v {
+        V::Real(x) => *x,
+        V::Int(i) => *i as f64,
+        _ => f64::NAN,
+    }
+}
+
+/// I4c (ifc/plan.md §10): ohne Landeskoordinaten keine Georeferenz; mit
+/// ihnen zeigt geografisch Nord des Modells nach der `IfcMapConversion`
+/// dorthin, wo die UTM-Rechnung den Punkt 100 m weiter nördlich hat.
+#[test]
+fn georeferenz_aus_landeskoordinaten() {
+    let mut m = laden(HAEUSER[0].1);
+    let (ifc, _) = export(&m, &opt());
+    let f = step::read(&ifc).unwrap();
+    assert_eq!(f.all("IFCMAPCONVERSION").count(), 0);
+    assert_eq!(f.all("IFCPROJECTEDCRS").count(), 0);
+
+    let (e0, n0) = (467_123.456, 5_878_765.432);
+    for (north, nhn) in [(12.0, Some(14.25)), (300.0, None)] {
+        assert!(m.set_location(sk_model::Location {
+            north: Some(north),
+            utm: Some(sk_model::Utm {
+                e: e0,
+                n: n0,
+                zone: 32,
+            }),
+            nhn,
+            ..Default::default()
+        }));
+        let (ifc, _) = export(&m, &opt());
+        let f = step::read(&ifc).unwrap();
+        let mc: Vec<_> = f.all("IFCMAPCONVERSION").collect();
+        assert_eq!(mc.len(), 1);
+        let a = &mc[0].1.args;
+        let ctx = f.get(liste(&a[0])[0]).unwrap();
+        assert_eq!(ctx.name, "IFCGEOMETRICREPRESENTATIONCONTEXT");
+        let crs = f.get(liste(&a[1])[0]).unwrap();
+        assert_eq!(crs.name, "IFCPROJECTEDCRS");
+        assert_eq!(text(&crs.args[0]), "EPSG:25832");
+        assert_eq!(text(&crs.args[5]), "32N");
+        assert_eq!(
+            text(&crs.args[3]),
+            if nhn.is_some() { "DHHN2016" } else { "" }
+        );
+        let einheit = f.get(liste(&crs.args[6])[0]).unwrap();
+        assert_eq!(einheit.args[2], V::Null, "Meter ohne Vorsatz");
+        assert_eq!(zahl(&a[2]), e0);
+        assert_eq!(zahl(&a[3]), n0);
+        assert_eq!(zahl(&a[4]), nhn.unwrap_or(0.0));
+        assert_eq!(zahl(&a[7]), 0.001);
+        let (xa, xo) = (zahl(&a[5]), zahl(&a[6]));
+        assert!((xa.hypot(xo) - 1.0).abs() < 1e-9);
+
+        // geografisch Nord im Modell, 100 m, ins Gitter
+        let al = north.to_radians();
+        let (x, y) = (1e5 * al.sin(), 1e5 * al.cos());
+        let ost = 0.001 * (xa * x - xo * y);
+        let nord = 0.001 * (xo * x + xa * y);
+        // derselbe Weg auf dem Ellipsoid: 100 m auf dem Meridian
+        let (b, l) = sk_math::utm::von_utm(e0, n0, 32);
+        let (a_, f_) = (6_378_137.0, 1.0 / 298.257_222_101);
+        let e2: f64 = f_ * (2.0 - f_);
+        let mr = a_ * (1.0 - e2) / (1.0 - e2 * b.to_radians().sin().powi(2)).powf(1.5);
+        let (e1, n1) = sk_math::utm::nach_utm(b + (100.0 / mr).to_degrees(), l, 32);
+        let soll = (e1 - e0).atan2(n1 - n0);
+        let ist = ost.atan2(nord);
+        assert!(
+            (soll - ist).abs() < 1e-7,
+            "Gitterrichtung {ist} statt {soll}"
+        );
+        assert!(
+            (soll.to_degrees() + sk_math::utm::konvergenz(b, l, 32)).abs() < 1e-4,
+            "Nord liegt im Gitter um −γ"
+        );
+
+        let site = f.all("IFCSITE").next().unwrap().1;
+        match nhn {
+            Some(h) => assert_eq!(zahl(&site.args[11]), h * 1000.0),
+            None => assert_eq!(site.args[11], V::Null),
+        }
+    }
+}

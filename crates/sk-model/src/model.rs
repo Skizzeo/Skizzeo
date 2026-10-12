@@ -313,7 +313,10 @@ mod flachdach;
 pub use flachdach::{
     MIN_ROOF_EDGE, ROOF_INSULATION_GUID, ROOF_SEAL_GUID, ROOF_TYPE_GUID, ROOF_VAPOUR_GUID,
 };
-pub use location::{Foot, Location, ShadeLight, Sun, ViewShade, FOOT_MAX, SHADE_VIEWS};
+pub use location::{
+    im_bereich, Foot, Location, ShadeLight, Sun, Utm, ViewShade, FOOT_MAX, NHN, SHADE_VIEWS, UTM_E,
+    UTM_N, UTM_ZONEN,
+};
 
 #[path = "anschluesse.rs"]
 mod anschluesse;

@@ -201,8 +201,8 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
     };
     let mut bericht = Bericht::default();
     c.oh = c.owner_history(opt);
-    let units = c.units();
-    let (ctx, body, axis) = c.contexts();
+    let (units, meter) = c.units();
+    let (ctx, body, axis) = c.contexts(meter);
     c.body = body;
     c.axis = axis;
     let name = if p.name.trim().is_empty() {
@@ -229,6 +229,15 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
     let origin = c.placement3(vec3(0.0, 0.0, 0.0));
     let site_pl = c.w.add("IFCLOCALPLACEMENT", vec![V::Null, r(origin)]);
     let loc = m.location().normalized();
+    // Mit Landeskoordinaten liegt der Projektnullpunkt genau dort; Breite
+    // und Länge der Lage sind nur der Bauort für die Sonne
+    let (breite, laenge) = match loc.utm {
+        Some(u) => {
+            let (b, l) = sk_math::utm::von_utm(u.e, u.n, u.zone);
+            (Some(b), Some(l))
+        }
+        None => (loc.lat, loc.lon),
+    };
     let site_guid = abgeleitet(p.guid, "site");
     let site = c.w.add(
         "IFCSITE",
@@ -246,9 +255,9 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
             V::Null,
             opt_text(&p.place),
             e("ELEMENT"),
-            loc.lat.map_or(V::Null, grad_min_sek),
-            loc.lon.map_or(V::Null, grad_min_sek),
-            V::Null,
+            breite.map_or(V::Null, grad_min_sek),
+            laenge.map_or(V::Null, grad_min_sek),
+            loc.nhn.map_or(V::Null, |h| V::Real(round9(h * 1000.0))),
             V::Null,
             V::Null,
         ],
@@ -567,8 +576,9 @@ impl Ctx<'_> {
     }
 
     /// Einheiten: Länge mm, Fläche m², Rauminhalt m³, Winkel rad, Masse kg,
-    /// Zeit s, Temperatur K; abgeleitet U-Wert, λ und Rohdichte.
-    fn units(&mut self) -> u32 {
+    /// Zeit s, Temperatur K; abgeleitet U-Wert, λ und Rohdichte. Dazu der
+    /// Meter für Rohdichte, λ und die Georeferenz.
+    fn units(&mut self) -> (u32, u32) {
         let si = |w: &mut Writer, typ: &str, pre: Option<&str>, name: &str| {
             w.add(
                 "IFCSIUNIT",
@@ -603,15 +613,17 @@ impl Ctx<'_> {
             &[(kg, 1), (m, 1), (sec, -3), (k, -1)],
         );
         let rho = derived(w, "MASSDENSITYUNIT", &[(kg, 1), (m, -3)]);
-        w.add(
+        let ua = w.add(
             "IFCUNITASSIGNMENT",
             vec![refs(&[mm, m2, m3, rad, kg, sec, k, u, lambda, rho])],
-        )
+        );
+        (ua, m)
     }
 
     /// Darstellungszusammenhang Modell (3D, Nordrichtung) mit den
-    /// Unterzusammenhängen Body und Axis.
-    fn contexts(&mut self) -> (u32, u32, u32) {
+    /// Unterzusammenhängen Body und Axis, mit Landeskoordinaten auch die
+    /// Georeferenz.
+    fn contexts(&mut self, meter: u32) -> (u32, u32, u32) {
         let origin = self.placement3(vec3(0.0, 0.0, 0.0));
         let n = self.m.location().normalized().north_deg().to_radians();
         let north = self.w.add(
@@ -649,9 +661,52 @@ impl Ctx<'_> {
                 ],
             )
         };
+        self.georeferenz(ctx, meter);
         let body = sub(&mut self.w, "Body", "MODEL_VIEW");
         let axis = sub(&mut self.w, "Axis", "GRAPH_VIEW");
         (ctx, body, axis)
+    }
+
+    /// `IfcMapConversion` vom Modell nach ETRS89/UTM (ifc/plan.md §10), nur
+    /// mit Ost- und Nordwert aus der Lage. Der Nullpunkt liegt auf dem
+    /// Ost- und Nordwert, ±0,00 auf `nhn` (sonst 0). Die x-Achse zeigt im
+    /// Gitter um Nordrichtung plus Meridiankonvergenz gedreht: Gitter-Nord
+    /// liegt um γ im Uhrzeigersinn von geografisch Nord, die Nordrichtung
+    /// α ebenso von +y. Maßstab 0,001 von mm nach m; die Verzerrung der
+    /// Abbildung (unter 0,04 %, auf 20 m keine 8 mm) bleibt außen vor wie
+    /// im Lageplan.
+    fn georeferenz(&mut self, ctx: u32, meter: u32) {
+        let loc = self.m.location().normalized();
+        let Some(u) = loc.utm else {
+            return;
+        };
+        let (b, l) = sk_math::utm::von_utm(u.e, u.n, u.zone);
+        let gitter = (loc.north_deg() + sk_math::utm::konvergenz(b, l, u.zone)).to_radians();
+        let crs = self.w.add(
+            "IFCPROJECTEDCRS",
+            vec![
+                s(&format!("EPSG:{}", u.epsg())),
+                s(&format!("ETRS89 / UTM zone {}N", u.zone)),
+                s("ETRS89"),
+                loc.nhn.map_or(V::Null, |_| s("DHHN2016")),
+                s("UTM"),
+                s(&format!("{}N", u.zone)),
+                r(meter),
+            ],
+        );
+        self.w.add(
+            "IFCMAPCONVERSION",
+            vec![
+                r(ctx),
+                r(crs),
+                V::Real(u.e),
+                V::Real(u.n),
+                V::Real(loc.nhn.unwrap_or(0.0)),
+                V::Real(round12(gitter.cos())),
+                V::Real(round12(gitter.sin())),
+                V::Real(0.001),
+            ],
+        );
     }
 
     fn placement3(&mut self, at: Vec3) -> u32 {
@@ -1233,6 +1288,11 @@ fn mengen_je_bauteil(m: &Model) -> HashMap<ElementId, ElementQto> {
         .flat_map(|g| g.rows)
         .filter_map(|z| Some((z.element, z.q?)))
         .collect()
+}
+
+/// Auf 12 Stellen: eine Richtung auf 1 mm in 1000 km.
+fn round12(x: f64) -> f64 {
+    (x * 1e12).round() / 1e12
 }
 
 fn round9(x: f64) -> f64 {

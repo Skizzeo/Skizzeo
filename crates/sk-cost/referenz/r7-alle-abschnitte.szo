@@ -23,17 +23,29 @@ SZO 4
 [surface] guid=0Kv0ys5avCWgZAh4WMU3Ds name="Randdämmung" color=ece6c4 cut=e2cc78
 [surface] guid=0Nqc$Rzfn6JB4EHC6Nzy46 name="Luft" color=ffffff cut=ffffff
 [surface] guid=0bqfa7vhvAWwwAvb377hM4 name="Dämmung (WDVS)" color=f4efdc cut=e8c45c
+[surface] guid=0cjmYoBNs8lV6uBVR4Q0GU name="Raufaser" color=f8f7f4 cut=f8f7f4
+[surface] guid=0mcC6YlGXe6PPejHDcInv0 name="Sockelleiste Eiche" color=ba9668 cut=aa885e
 [surface] guid=1G87ywj6vEoh1uzpHeS9Ka name="Porenbeton" color=eeede8 cut=b0b1ae
 [surface] guid=1MI6$s1jP42ehJb$wmcr0Y name="Kerndämmung (Mineralwolle)" color=ece2aa cut=dec86e
 [surface] guid=1dTTnt0LPFOPhyr4qKpul_ name="Abdichtung Bitumen 2-lagig" color=46484c cut=282a2e
+[surface] guid=1eVo_QW1UEMU9F_$dEHE5h name="Verbundabdichtung" color=788caa cut=788caa
 [surface] guid=1lcsskRqn7gAh2pXUbUKex name="Dampfsperre Bitumen-Alu" color=787c82 cut=5a5e64
 [surface] guid=1qTi_AIwfDm8UpGTQGrwAA name="Dämmung EPS 035 DAA dh" color=ece8d6 cut=d6d0b8
+[surface] guid=2Cp_DHfiHI9MbIPSF975pq name="Wärmedämmung EPS 035 DEO" color=f0f2f6 cut=d6deec
+[surface] guid=2Gh2rU6YHQz7dcnyqKLxfe name="Trittschalldämmung EPS-T" color=f4f4ec cut=e8e0b4
 [surface] guid=2I0iV4XeLFxOVLUIsiaPG9 name="Verblender (Vormauerziegel)" color=ffffff cut=96503e
+[surface] guid=2QT7kgU2zRgoWcKob$eVo9 name="Gipsputz" color=f4f3f0 cut=d6d4ce
 [surface] guid=2bDAQcj$rBOv2wqDfNAwhn name="Titanzink 0,7" color=969ea4 cut=6e767c
 [surface] guid=2dx_8AKGDFDgTK5XiVjxFU name="Dämmung EPS 035 DAA dh, Attikakrone" color=ece8d6 cut=d6d0b8
+[surface] guid=2f6E$flszYsbl6GjenCiG_ name="Feinsteinzeug" color=b0aeaa cut=a09e9a
 [surface] guid=2s1ASAYtf3cvlG8rPArrSc name="XPS Perimeterdämmung" color=b2d4e2 cut=96bed2
+[surface] guid=2$5YIlsiRfmqTsm$QzYZlb name="Kalkzementputz" color=eceae4 cut=cecbc4
+[surface] guid=36Gut4_2gxILvNwb2ZkaqJ name="Dispersionsanstrich" color=fafaf8 cut=fafaf8
+[surface] guid=3GfgZl1LarsxBe7K5E9phz name="Zementestrich CT-C25-F4" color=bebcb6 cut=b0aea8
 [surface] guid=3MoId9HKv2OPcggMMyT2Nx name="Putz" color=ececed cut=c8c6c0
+[surface] guid=3V4lijxUYWrj70RQdVfVnQ name="Wandfliese" color=f4f4f2 cut=dcdcd8
 [surface] guid=3X3RPVEgTDiuBJtF3HcOvV name="Dämmung hart (Terrasse)" color=d6e2ec cut=b4c8de
+[surface] guid=3vGms01HlDdP4svYF6kiXd name="Parkett Eiche" color=c4a070 cut=b49264
 [display] slot=drawing.view pen=14aAtKoCX5n9c2Nc3B4nHX lt=2tPWXx8yr62xOuexxUL_tQ
 [display] slot=drawing.cut pen=1IiLgAMJ9FNOr_wJnDOsJy lt=2tPWXx8yr62xOuexxUL_tQ
 [display] slot=drawing.fine pen=0gW2blvGf1MfYVGCh3XF08 lt=2tPWXx8yr62xOuexxUL_tQ
@@ -54,29 +66,58 @@ SZO 4
 [trade] guid=1S7Wf_00100800000004UZ code="18339" name="Klempnerarbeiten" order=11
 [trade] guid=1S7Wf_00100800000004Uf code="18345" name="Wärmedämm-Verbundsysteme" order=16
 [trade] guid=1S7Wf_00100800000004Uk code="18350" name="Putz- und Stuckarbeiten" order=18
+[trade] guid=1S7Wf_00100800000004Un code="18353" name="Estricharbeiten" order=20
+[trade] guid=1S7Wf_00100800000004Um code="18352" name="Fliesen- und Plattenarbeiten" order=21
+[trade] guid=1S7Wf_00100800000004Uq code="18356" name="Parkett- und Holzpflasterarbeiten" order=24
+[trade] guid=1S7Wf_00100800000004Ux code="18363" name="Maler- und Lackierarbeiten" order=27
+[trade] guid=1S7Wf_00100800000004U_ code="18366" name="Tapezierarbeiten" order=28
 [material] guid=0IMx_GM9LBJQ9vKs2JYvZu name="Luft" cat=air prio=0 rho=1.2 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Nqc$Rzfn6JB4EHC6Nzy46
+[material] guid=0YNCb9uH273FK7df93YfEK name="Gipsputz" cat=plaster prio=100 rho=1200 lambda=0.51 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2QT7kgU2zRgoWcKob$eVo9 trade=1S7Wf_00100800000004Uk
 [material] guid=0Yb39JGen4JxkgK3pBgZ4k name="Dampfsperre Bitumen-Alu" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1lcsskRqn7gAh2pXUbUKex trade=1S7Wf_00100800000004UY
 [material] guid=0isiJXaEH68fAGDc36vC$0 name="Kerndämmung (Mineralwolle)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1MI6$s1jP42ehJb$wmcr0Y trade=1S7Wf_00100800000004UQ
+[material] guid=0lj3cQqGWQ6dtTsi7U71v_ name="Dispersionsanstrich" cat=coating prio=0 rho=1000 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=36Gut4_2gxILvNwb2ZkaqJ trade=1S7Wf_00100800000004Ux
+[material] guid=0m4g5eNdhUpOaMqoKJbtjp name="Wandfliese" cat=ceramic prio=500 rho=2000 lambda=1 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3V4lijxUYWrj70RQdVfVnQ trade=1S7Wf_00100800000004Um
 [material] guid=0y7tgIrEXB1gMowS1z6FHL name="XPS Perimeterdämmung" cat=insulation prio=300 rho=33 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2s1ASAYtf3cvlG8rPArrSc trade=1S7Wf_00100800000004UR
+[material] guid=130mvbD3iKVDEasFK7hWhc name="Raufaser" cat=coating prio=0 rho=300 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0cjmYoBNs8lV6uBVR4Q0GU trade=1S7Wf_00100800000004U_
 [material] guid=1GT1XeoafF8xcAmmBvbUWb name="Dämmung EPS 035 DAA dh, Attikakrone" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2dx_8AKGDFDgTK5XiVjxFU trade=1S7Wf_00100800000004UY
+[material] guid=1ODK_ZVfPODJ_btFxWYPZ8 name="Sockelleiste Eiche" cat=timber prio=500 rho=700 lambda=0.18 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0mcC6YlGXe6PPejHDcInv0 trade=1S7Wf_00100800000004Uq
 [material] guid=1OxgZ1vjv038gKF7kkLN6C name="Dämmung EPS 035 DAA dh" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1qTi_AIwfDm8UpGTQGrwAA trade=1S7Wf_00100800000004UY
 [material] guid=1nbp1u0agfb$Q84vtYmYRU name="Baustahl S235, verzinkt" cat=metal prio=800 rho=7850 lambda=- fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1G87ywj6vEoh1uzpHeS9Ka trade=1S7Wf_00100800000004UQ
 [material] guid=1vl_pQvH1FDBsLfn5l1heC name="Terrassenbelag" cat=concrete prio=500 rho=2200 lambda=1.65 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0E2RAo8obFthy$Bh5EIskX trade=1S7Wf_00100800000004UY
+[material] guid=1vsOcfVJSOwioZ9U0_BYR8 name="Trittschalldämmung EPS-T" cat=insulation prio=300 rho=15 lambda=0.04 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2Gh2rU6YHQz7dcnyqKLxfe trade=1S7Wf_00100800000004Un
+[material] guid=1zGH6AuboodSmZLw_rWyGt name="Feinsteinzeug" cat=ceramic prio=500 rho=2300 lambda=1.3 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2f6E$flszYsbl6GjenCiG_ trade=1S7Wf_00100800000004Um
 [material] guid=203X9w6RHAvxaAnObFB0IP name="Verblender (Vormauerziegel)" cat=masonry prio=700 rho=1800 lambda=0.68 fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2I0iV4XeLFxOVLUIsiaPG9 trade=1S7Wf_00100800000004UQ
+[material] guid=2DCoq9rC3q5vfSQr6jrkQX name="Kalkzementputz" cat=plaster prio=100 rho=1800 lambda=1 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2$5YIlsiRfmqTsm$QzYZlb trade=1S7Wf_00100800000004Uk
 [material] guid=2N$fHb0Xb1UBvWkvwrJ4Rx name="Titanzink 0,7" cat=metal prio=900 rho=7200 lambda=110 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2bDAQcj$rBOv2wqDfNAwhn trade=1S7Wf_00100800000004UZ
 [material] guid=2OkeJcZuXDoAclkUNNrqJM name="Abdichtung Bitumen 2-lagig" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1dTTnt0LPFOPhyr4qKpul_ trade=1S7Wf_00100800000004UY
 [material] guid=2dv8rsAYH3ovLj1KIg1$Mo name="Randdämmung" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Kv0ys5avCWgZAh4WMU3Ds trade=1S7Wf_00100800000004UQ
+[material] guid=2ksPH9thB__Vx0YNbQhves name="Zementestrich CT-C25-F4" cat=screed prio=400 rho=2000 lambda=1.4 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3GfgZl1LarsxBe7K5E9phz trade=1S7Wf_00100800000004Un
 [material] guid=2wuC33GkTD9Qack6WJ4EsM name="Porenbeton" cat=masonry prio=800 rho=350 lambda=0.09 fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1G87ywj6vEoh1uzpHeS9Ka trade=1S7Wf_00100800000004UQ
 [material] guid=2zPDwmqLPDpAPPFFMa8UFs name="Dämmung (WDVS)" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0bqfa7vhvAWwwAvb377hM4 trade=1S7Wf_00100800000004Uf
 [material] guid=32Ino7hAj08ufHFYBJxPyP name="Stahlbeton" cat=concrete prio=900 rho=2500 lambda=2.3 fill=3w$Ivc7fPFuRh_XxlbojR5 fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0193nkAlT2LhksTCegVeuh trade=1S7Wf_00100800000004UR
+[material] guid=3CICRJXzgSF6ri6zk3HEBg name="Wärmedämmung EPS 035 DEO" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2Cp_DHfiHI9MbIPSF975pq trade=1S7Wf_00100800000004Un
 [material] guid=3NKChAqkL3uwFZN5n$FOr1 name="Dämmung hart (Terrasse)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3X3RPVEgTDiuBJtF3HcOvV trade=1S7Wf_00100800000004UY
+[material] guid=3Y19W9Z4tbI9RkP7PaNRiy name="Parkett Eiche" cat=flooring prio=500 rho=700 lambda=0.18 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3vGms01HlDdP4svYF6kiXd trade=1S7Wf_00100800000004Uq
+[material] guid=3YMfu8hafA7xZm7EY$yw9O name="Verbundabdichtung" cat=membrane prio=200 rho=1400 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1eVo_QW1UEMU9F_$dEHE5h trade=1S7Wf_00100800000004Um
 [material] guid=3wpDPQ9rX51Re1tUzckf7X name="Putz" cat=plaster prio=100 rho=1400 lambda=0.87 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3MoId9HKv2OPcggMMyT2Nx trade=1S7Wf_00100800000004Uk
+[layerset] guid=0IuWBd0EWeomW0JSWDmW7T name="Gipsputz mit Raufaser und Anstrich" code="WB-RF" cat=wallfinish changed=1 note=""
+[layer] set=0IuWBd0EWeomW0JSWDmW7T mat=0lj3cQqGWQ6dtTsi7U71v_ t=0 fn=finish core=0
+[layer] set=0IuWBd0EWeomW0JSWDmW7T mat=130mvbD3iKVDEasFK7hWhc t=0 fn=finish core=0
+[layer] set=0IuWBd0EWeomW0JSWDmW7T mat=0YNCb9uH273FK7df93YfEK t=15 fn=finish core=0
+[layerset] guid=0Jup2V0moU2JKnl6Mtv1Ec name="Kalkzementputz mit Anstrich" code="WB-KZ" cat=wallfinish changed=1 note=""
+[layer] set=0Jup2V0moU2JKnl6Mtv1Ec mat=0lj3cQqGWQ6dtTsi7U71v_ t=0 fn=finish core=0
+[layer] set=0Jup2V0moU2JKnl6Mtv1Ec mat=2DCoq9rC3q5vfSQr6jrkQX t=15 fn=finish core=0
+[layerset] guid=0To0be8vhKGD0dmVbnjnk9 name="Wandfliesen 30 × 60" code="WF-1" cat=walltiles changed=1 note=""
+[layer] set=0To0be8vhKGD0dmVbnjnk9 mat=0m4g5eNdhUpOaMqoKJbtjp t=10 fn=finish core=0
 [layerset] guid=0ZfW2fP394GuDJUdD2cn2v name="Flachdach 21,5" code="DA-21,5" cat=roof changed=1 note=""
 [layer] set=0ZfW2fP394GuDJUdD2cn2v mat=2OkeJcZuXDoAclkUNNrqJM t=10 fn=membrane core=0 trade=1S7Wf_00100800000004UY
 [layer] set=0ZfW2fP394GuDJUdD2cn2v mat=1OxgZ1vjv038gKF7kkLN6C t=200 fn=insulation core=0 trade=1S7Wf_00100800000004UY
 [layer] set=0ZfW2fP394GuDJUdD2cn2v mat=0Yb39JGen4JxkgK3pBgZ4k t=5 fn=membrane core=0 trade=1S7Wf_00100800000004UY
 [layerset] guid=0lZVz271X6W6OApjh99S8E name="IW 11,5 Porenbeton" code="IW-11,5" cat=interior changed=1 note=""
 [layer] set=0lZVz271X6W6OApjh99S8E mat=2wuC33GkTD9Qack6WJ4EsM t=115 fn=loadbearing core=1
+[layerset] guid=0vUyl5qL_UntNyH3KdOH4B name="Feinsteinzeug mit Verbundabdichtung" code="BB-FA" cat=floorfinish changed=1 note=""
+[layer] set=0vUyl5qL_UntNyH3KdOH4B mat=1zGH6AuboodSmZLw_rWyGt t=13 fn=finish core=0
+[layer] set=0vUyl5qL_UntNyH3KdOH4B mat=3YMfu8hafA7xZm7EY$yw9O t=2 fn=membrane core=0
 [layerset] guid=0vdRtD5bgsZvbgpzuasO7V name="IW 24 Porenbeton" code="IW-24" cat=interior changed=1 note=""
 [layer] set=0vdRtD5bgsZvbgpzuasO7V mat=2wuC33GkTD9Qack6WJ4EsM t=240 fn=loadbearing core=1
 [layerset] guid=1o57_JzOU2n0nmPAl2XdZt name="AW mit WDVS 36" code="AW-36" cat=exterior changed=1 note=""
@@ -87,6 +128,10 @@ SZO 4
 [layerset] guid=2dMkjFCxf6nfRD5ttUqAkM name="Dachterrasse 14" code="DT-14" cat=roofterrace changed=1 note=""
 [layer] set=2dMkjFCxf6nfRD5ttUqAkM mat=1vl_pQvH1FDBsLfn5l1heC t=60 fn=finish core=0
 [layer] set=2dMkjFCxf6nfRD5ttUqAkM mat=3NKChAqkL3uwFZN5n$FOr1 t=80 fn=insulation core=0 trade=1S7Wf_00100800000004UY
+[layerset] guid=2dZvQs4XQTuAMbQxsMktyy name="Estrich 14 auf Decke" code="ES-DE" cat=screed changed=1 note=""
+[layer] set=2dZvQs4XQTuAMbQxsMktyy mat=2ksPH9thB__Vx0YNbQhves t=65 fn=finish core=0
+[layer] set=2dZvQs4XQTuAMbQxsMktyy mat=1vsOcfVJSOwioZ9U0_BYR8 t=30 fn=insulation core=0
+[layer] set=2dZvQs4XQTuAMbQxsMktyy mat=3CICRJXzgSF6ri6zk3HEBg t=45 fn=insulation core=0
 [layerset] guid=2hOi2zoKksT0kOOpxRX45S name="AW mehrschalig 49" code="AW-49" cat=exterior changed=1 note=""
 [layer] set=2hOi2zoKksT0kOOpxRX45S mat=203X9w6RHAvxaAnObFB0IP t=115 fn=finish core=0
 [layer] set=2hOi2zoKksT0kOOpxRX45S mat=0IMx_GM9LBJQ9vKs2JYvZu t=60 fn=airgap core=0
@@ -95,8 +140,36 @@ SZO 4
 [layerset] guid=2$6TN9pv91oRMXaTMzh9E2 name="AW 31,5 Porenbeton + WDVS" code="AW-31,5" cat=exterior changed=1 note=""
 [layer] set=2$6TN9pv91oRMXaTMzh9E2 mat=2zPDwmqLPDpAPPFFMa8UFs t=140 fn=insulation core=0
 [layer] set=2$6TN9pv91oRMXaTMzh9E2 mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
+[layerset] guid=37XnK7nDRA7U9887S649Ng name="Fliesensockel 60" code="SL-FL" cat=skirting changed=1 h=60 note=""
+[layer] set=37XnK7nDRA7U9887S649Ng mat=1zGH6AuboodSmZLw_rWyGt t=10 fn=finish core=0
+[layerset] guid=3AqI9gLwoFSTNT8zEeaHQZ name="Feinsteinzeug 60 × 60" code="BB-FS" cat=floorfinish changed=1 note=""
+[layer] set=3AqI9gLwoFSTNT8zEeaHQZ mat=1zGH6AuboodSmZLw_rWyGt t=15 fn=finish core=0
+[layerset] guid=3CN1YVJ9Bz4SO26hBZG8C0 name="Sockelleiste Eiche 60 × 15" code="SL-HO" cat=skirting changed=1 h=60 note=""
+[layer] set=3CN1YVJ9Bz4SO26hBZG8C0 mat=1ODK_ZVfPODJ_btFxWYPZ8 t=15 fn=finish core=0
+[layerset] guid=3CTi6fc2dkToeqHIp3GKj7 name="Gipsputz mit Anstrich" code="WB-GP" cat=wallfinish changed=1 note=""
+[layer] set=3CTi6fc2dkToeqHIp3GKj7 mat=0lj3cQqGWQ6dtTsi7U71v_ t=0 fn=finish core=0
+[layer] set=3CTi6fc2dkToeqHIp3GKj7 mat=0YNCb9uH273FK7df93YfEK t=15 fn=finish core=0
+[layerset] guid=3JniZloTCAdorNYpHAQN8X name="Deckenputz Gips mit Anstrich" code="DB-GP" cat=ceilingfinish changed=1 note=""
+[layer] set=3JniZloTCAdorNYpHAQN8X mat=0lj3cQqGWQ6dtTsi7U71v_ t=0 fn=finish core=0
+[layer] set=3JniZloTCAdorNYpHAQN8X mat=0YNCb9uH273FK7df93YfEK t=10 fn=finish core=0
 [layerset] guid=3ZTJrDtor3KfcH2vccNFkY name="IW 17,5 Porenbeton" code="IW-17,5" cat=interior changed=1 note=""
 [layer] set=3ZTJrDtor3KfcH2vccNFkY mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
+[layerset] guid=3qs8fx9fCJhdjCg3i9xau8 name="Parkett Eiche 20" code="BB-PA" cat=floorfinish changed=1 note=""
+[layer] set=3qs8fx9fCJhdjCg3i9xau8 mat=3Y19W9Z4tbI9RkP7PaNRiy t=20 fn=finish core=0
+[spacetype] guid=0Ml610VcPJfaK_yud72Mpg name="Esszimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
+[spacetype] guid=1IDw4UKZUX7b8teHu00001 name="R7 Hobbyraum" group=nuf4 woflv=50 floor=3AqI9gLwoFSTNT8zEeaHQZ screed=2dZvQs4XQTuAMbQxsMktyy wall=0Jup2V0moU2JKnl6Mtv1Ec tiles=0To0be8vhKGD0dmVbnjnk9 tiles_h=2000 ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
+[spacetype] guid=1OVi8rjVbPUYr1rmvVZAqK name="Kinderzimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
+[spacetype] guid=1hJ46xKm4iJgTEJq5bQwmU name="Diele, Flur" group=vf woflv=100 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
+[spacetype] guid=27cy5v9N1e4lPLXb6$pN1d name="Technik, Hausanschluss" group=tf woflv=0 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=0Jup2V0moU2JKnl6Mtv1Ec ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
+[spacetype] guid=2mpXdQDG9QoKDR9tooXviM name="Küche" group=nuf1 woflv=100 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=3CTi6fc2dkToeqHIp3GKj7 ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
+[spacetype] guid=31zglCSmq9Qp7HTWdGhLlx name="Schlafzimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
+[spacetype] guid=3CYcJx0LZCbWucQS9NIjKW name="Bad" group=nuf7 woflv=100 floor=0vUyl5qL_UntNyH3KdOH4B wall=0Jup2V0moU2JKnl6Mtv1Ec tiles=0To0be8vhKGD0dmVbnjnk9 tiles_h=1200 ceiling=3JniZloTCAdorNYpHAQN8X
+[spacetype] guid=3GcrzTVCA5PdG5dGfXG7uT name="Gäste-WC" group=nuf7 woflv=100 floor=0vUyl5qL_UntNyH3KdOH4B wall=0Jup2V0moU2JKnl6Mtv1Ec tiles=0To0be8vhKGD0dmVbnjnk9 tiles_h=1200 ceiling=3JniZloTCAdorNYpHAQN8X
+[spacetype] guid=3L0qftDQBqEiFKla5DswQ4 name="Wohnzimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
+[spacetype] guid=3S5qseTYwZQn8n6KAJlkEv name="Hauswirtschaftsraum" group=nuf7 woflv=100 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=0Jup2V0moU2JKnl6Mtv1Ec ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
+[spacetype] guid=3YEgaSK6PzY6Zzy3nclChY name="Abstellraum" group=nuf7 woflv=100 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=3CTi6fc2dkToeqHIp3GKj7 ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
+[spacetype] guid=3bIRb62BUylWXxAOWLry2z name="Arbeitszimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
+[spacetype] guid=3jxEtgf1$vuKf7$1opxuYG name="Gästezimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [project] guid=2YaOeyxqn6WPcq0HPeUvj0 name="Projekt" storey=2raHMuYTD64hQ6K56DbC_u wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY topsoil=250 slope=60
 [building] guid=1tBffObw134uGxOa1UQhBN name="Gebäude 2" number="GB-02" terrain=-1000
 [building] guid=3KSRR0Gnz9rBLKj19nZ4YO name="Gebäude 1" number="GB-01" terrain=400
@@ -166,8 +239,14 @@ SZO 4
 [extpart] guid=3y1kS67MD3zfAPmF4yotzT key=werk.stabgelaender number="GL-002" x=2500 y=5000 rot=90 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [plancut] h=1200
 [pattern] surface=0193nkAlT2LhksTCegVeuh gen=concrete w=2500 h=500 joint=0 anchors=0 cloud=2 pores=0.5 seed=11
+[pattern] surface=0cjmYoBNs8lV6uBVR4Q0GU gen=plaster grain=0.8 spread=4 seed=7
 [pattern] surface=2I0iV4XeLFxOVLUIsiaPG9 gen=masonry len=240 h=71 joint=10 bond=wild jrgb=d1cbc2 pal=87493c:79;675549:9;7b6d65:12 hpal=87493c:50;675549:50 flame=100 fend=64 relief=100 spread=7 seed=17
+[pattern] surface=2QT7kgU2zRgoWcKob$eVo9 gen=plaster grain=0.5 spread=2 seed=5
+[pattern] surface=2f6E$flszYsbl6GjenCiG_ gen=tiles len=600 wid=600 joint=3 bond=cross jrgb=8c8a86 pal=b0aeaa:50;a8a6a2:30;b8b6b2:20 spread=3 seed=41
+[pattern] surface=2$5YIlsiRfmqTsm$QzYZlb gen=plaster grain=1 spread=3 seed=6
 [pattern] surface=3MoId9HKv2OPcggMMyT2Nx gen=plaster grain=2 spread=4 seed=3
+[pattern] surface=3V4lijxUYWrj70RQdVfVnQ gen=tiles len=600 wid=300 joint=2 bond=cross jrgb=cececc pal=f4f4f2:70;eeeeec:30 spread=2 seed=43
+[pattern] surface=3vGms01HlDdP4svYF6kiXd gen=tiles len=1200 wid=140 joint=2 bond=half jrgb=967650 pal=c4a070:40;b89464:35;ceac7c:25 spread=8 seed=47
 [service] guid=1S7bUW001008020000000N short="Oberboden abtragen" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=10 unit=m3 basis=auto auto=earth.topsoil hours=0.1 kg=311
 [service] guid=1S7bUW001008020000000P short="Baustelle einrichten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=20 unit=psch basis=auto auto=site.lump equip=2500 kg=391
 [service] guid=1S7bUW001008020000000Q short="Vorhalten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=30 unit=mon basis=auto auto=site.months equip=400 kg=391

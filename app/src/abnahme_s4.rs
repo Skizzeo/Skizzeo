@@ -200,6 +200,7 @@ fn abnahme_s4_himmel_ganderkesee() {
             lat: None,
             lon: None,
             north: Some(nord),
+            ..Default::default()
         };
         let h = himmel(&l, &s, q);
         let p = h.sonne.expect("am Tag eine Scheibe");

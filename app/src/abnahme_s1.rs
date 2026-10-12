@@ -50,6 +50,7 @@ fn abnahme_s1_referenzhaeuser_rundlauf() {
             lat: Some(52.520008),
             lon: Some(13.404954),
             north: Some(-17.25),
+            ..Default::default()
         };
         let (mut s, neu) = mit_lage(&alt, l);
         assert_eq!(s.undo_label(), Some("Projektdaten geändert"), "{name}");
@@ -116,6 +117,7 @@ fn abnahme_s1_zufaellige_lagen() {
             lat: wert(90.0),
             lon: wert(180.0),
             north: wert(800.0),
+            ..Default::default()
         };
         let soll = l.normalized();
         let mut s = Scene::with_model(laden(&alt).unwrap().model);
