@@ -123,6 +123,7 @@ impl App {
         if !self.geschoss.open {
             return;
         }
+        self.geschoss.sperren(self.ui.dialog);
         if let Event::MouseMove { .. } = e {
             self.geschoss.pending_move = Some(e);
             return;
@@ -182,6 +183,7 @@ impl App {
         if !self.geschoss.open {
             return;
         }
+        self.geschoss.sperren(self.ui.dialog);
         self.flush_geschoss_move(surface);
         let docked = surface.layout().levels_docked();
         if docked != self.geschoss.docked {

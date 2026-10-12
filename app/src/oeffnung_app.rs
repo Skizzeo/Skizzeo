@@ -2,7 +2,9 @@
 //! Maus, Esc. Die Rechnung (Fangen, Öffnung, Vorschau) steht in
 //! [`werkzeug`], das Werkzeug selbst im
 //! [`WallTool`](crate::wall_tool::WallTool), der auch die Vorschau zeichnet.
-//! Im Grundriss setzt „Tür“ eine Innentür ([`innentuer`]).
+//! Im Grundriss setzt „Tür“ über einer Innenwand eine Innentür
+//! ([`innentuer`]); über der Außenwand zieht man dort Fenster und Außentür
+//! mit zwei Klicks auf (Jörn 12.10. 09:26).
 
 #[path = "innentuer.rs"]
 pub(crate) mod innentuer;
@@ -15,27 +17,22 @@ use crate::App;
 use sk_math::vec3;
 use sk_model::oeffnung::OpeningKind;
 use sk_platform::{Event, Key, MouseButton};
-use werkzeug::{fangen, Bild, Fang, Klick, Werkzeug};
+use werkzeug::{fangen, pfad, plan_fang, Bild, Fang, Klick, Werkzeug};
 
 /// Fangabstand an Höhenlinien und Wandenden in Bildschirmpixeln (96 dpi).
 const FANG_PX: f64 = 10.0;
 
-/// Ansichten, in denen das Werkzeug der Art `kind` arbeitet: Außenwand-
-/// flächen in 3D und den Ansichten, die Innentür im Grundriss.
-fn ansicht_ok(v: ViewKind, kind: OpeningKind) -> bool {
-    match v {
-        ViewKind::Persp | ViewKind::Front | ViewKind::Back | ViewKind::Left | ViewKind::Right => {
-            true
-        }
-        ViewKind::Plan => kind == OpeningKind::Door,
-        ViewKind::Section => false,
-    }
+/// Ansichten, in denen das Werkzeug arbeitet: Außenwandflächen in 3D und
+/// den Ansichten, Außen- und Innenwände im Grundriss (dort bleibt der
+/// Grundriss stehen, Jörn 12.10. 09:26), nicht im Schnitt.
+fn ansicht_ok(v: ViewKind) -> bool {
+    v != ViewKind::Section
 }
 
 impl App {
     /// Knopf „Fenster“ (Wandöffnung) bzw. „Tür“ (Türöffnung): schaltet
     /// das Werkzeug der Art ein, derselbe Knopf aus. Im Schnitt geht es nach
-    /// 3D, im Grundriss das Fenster auch; die Tür bleibt dort als Innentür.
+    /// 3D, der Grundriss bleibt.
     pub(crate) fn oeffnung_klick(&mut self, kind: OpeningKind) {
         let an = self.tool.oeffnung.as_ref().is_none_or(|w| w.kind != kind);
         if an && self.ui.foundation_active {
@@ -45,7 +42,7 @@ impl App {
         self.tool.oeffnung = an.then(|| Werkzeug::new(kind));
         if an {
             self.nord.set_aktiv(false);
-            if !ansicht_ok(self.ui.view, kind) {
+            if !ansicht_ok(self.ui.view) {
                 self.set_view(ViewKind::Persp);
             }
         }
@@ -73,22 +70,54 @@ impl App {
         Some(fangen(&face, &m.face_lines(face.storey), elevation, p, tol))
     }
 
+    /// Kante unter der Maus im Grundriss: auf der Außenwand des aktiven
+    /// Geschosses, in Schnitthöhe. Mit gesetzter erster Kante folgt die
+    /// Kante sonst der Flucht der ersten (die Maus darf in den Raum gehen).
+    fn oeffnung_plan_fang(&self, x: f64, y: f64, vw: f64, vh: f64, sc: f64) -> Option<Fang> {
+        let z = self.scene.plan_cut();
+        let at = |dx: f64| self.cam.plane_point(x + dx, y, vw, vh, z);
+        let (p, q) = (at(0.0)?, at(FANG_PX * sc)?);
+        let tol = (q - p).length();
+        let st = self.scene.active_storey();
+        let scene = &self.scene;
+        let hit = innentuer::treffer_aussen(scene.model(), &|r| scene.koerper(r), st, p, tol)
+            .map(|(face, _, _, dicke)| plan_fang(&face, p, tol, z, dicke));
+        let erste = self.tool.oeffnung.as_ref()?.erste.as_ref();
+        match (hit, erste) {
+            (Some(h), Some(a)) if pfad(a, &h).is_none() => {
+                Some(plan_fang(&a.face, p, tol, z, a.dicke))
+            }
+            (None, Some(a)) => Some(plan_fang(&a.face, p, tol, z, a.dicke)),
+            (hit, _) => hit,
+        }
+    }
+
     /// Mausbewegung (Ansichtskoordinaten); `MouseLeave` über Paneelen und
     /// Bändern nimmt die Ecke weg.
     pub(crate) fn oeffnung_move(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) {
-        let Some(kind) = self.tool.oeffnung.as_ref().map(|w| w.kind) else {
+        let plan = self.ui.view == ViewKind::Plan;
+        let Some(w) = self.tool.oeffnung.as_mut() else {
             return;
         };
+        w.ansicht(plan);
+        // Über einer Innenwand gilt die Innentür; die Außenwand nur, wenn
+        // keine Innenwand trifft oder die erste Kante schon steht
         if self.innentuer_an() {
             match *ev {
                 Event::MouseMove { x, y, .. } => self.tuer_suchen(x, y, vw, vh, sc),
                 Event::MouseLeave => self.tuer_bild(|t, _, _, _| t.weg()),
-                _ => {}
+                _ => return,
             }
-            return;
+            if self.tuer_hover() {
+                if let Some(w) = self.tool.oeffnung.as_mut() {
+                    w.hover = None;
+                }
+                return;
+            }
         }
         let hover = match *ev {
-            Event::MouseMove { x, y, .. } if ansicht_ok(self.ui.view, kind) => {
+            Event::MouseMove { x, y, .. } if plan => self.oeffnung_plan_fang(x, y, vw, vh, sc),
+            Event::MouseMove { x, y, .. } if ansicht_ok(self.ui.view) => {
                 self.oeffnung_fang(x, y, vw, vh, sc)
             }
             Event::MouseMove { .. } | Event::MouseLeave => None,
@@ -119,7 +148,7 @@ impl App {
         else {
             return false;
         };
-        if self.innentuer_an() {
+        if self.innentuer_an() && self.tuer_hover() {
             return self.tuer_setzen();
         }
         let m = self.scene.model();
@@ -208,14 +237,15 @@ impl App {
         }
     }
 
-    /// Innentür im Grundriss: Werkzeug „Tür“ in der Grundrissansicht.
+    /// Innentür im Grundriss: Werkzeug „Tür“ in der Grundrissansicht,
+    /// solange keine Außentür halb aufgezogen ist.
     fn innentuer_an(&self) -> bool {
         self.ui.view == ViewKind::Plan
             && self
                 .tool
                 .oeffnung
                 .as_ref()
-                .is_some_and(|w| w.kind == OpeningKind::Door)
+                .is_some_and(|w| w.kind == OpeningKind::Door && w.erste.is_none())
     }
 
     /// Ändert die Innentür mit `f` und zeichnet ihre Vorschau neu.

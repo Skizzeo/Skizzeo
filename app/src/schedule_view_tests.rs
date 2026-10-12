@@ -539,6 +539,7 @@ fn wandzeilen_nach_vob() {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Default::default(),
         })
         .expect("Fenster");
     }
