@@ -172,7 +172,9 @@ struct Ctx<'a> {
     /// Kostengruppe → Bauteile.
     kg_nutzer: BTreeMap<u16, Vec<u32>>,
     /// Leistungsbereich der VOB/C (ATV-Nummer, Name) → Bauteile.
-    atv_nutzer: BTreeMap<(String, String), Vec<u32>>,
+    /// Nach ATV-Nummer: Name und Bauteile. Eine Nummer, eine Beziehung,
+    /// auch wenn zwei Gewerke sie tragen (Regel 48 meldet das nur).
+    atv_nutzer: BTreeMap<String, (String, Vec<u32>)>,
     /// Geschoss → Bauteile.
     inhalt: BTreeMap<u32, Vec<u32>>,
     /// Räume je Geschoss: hängen über `IfcRelAggregates` am Geschoss, nicht
@@ -533,7 +535,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         }
     }
 
-    let atv: Vec<((String, String), Vec<u32>)> =
+    let atv: Vec<(String, (String, Vec<u32>))> =
         std::mem::take(&mut c.atv_nutzer).into_iter().collect();
     if !atv.is_empty() {
         let cls = c.w.add(
@@ -548,7 +550,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                 V::Null,
             ],
         );
-        for ((code, name), els) in atv {
+        for (code, (name, els)) in atv {
             let rf = c.w.add(
                 "IFCCLASSIFICATIONREFERENCE",
                 vec![
@@ -1233,10 +1235,16 @@ impl Ctx<'_> {
         // Als Klassifikation nur Leistungsbereiche der VOB/C (ATV DIN 18299
         // ff.); eigene Nummern der Firma bleiben nur Eigenschaft
         if let Some(t) = trade.filter(|t| atv(&t.code)) {
-            self.atv_nutzer
-                .entry((t.code.clone(), t.name.trim().to_string()))
-                .or_default()
-                .push(pi);
+            let name = t.name.trim();
+            let (n, els) = self
+                .atv_nutzer
+                .entry(t.code.clone())
+                .or_insert_with(|| (name.to_string(), Vec::new()));
+            // bei zwei Namen der kleinste, unabhängig von der Folge
+            if name < n.as_str() {
+                *n = name.to_string();
+            }
+            els.push(pi);
         }
         let mut eigen = vec![
             self.single("Nummer", typed("IFCIDENTIFIER", s(&el.number))),
@@ -1351,7 +1359,8 @@ impl Ctx<'_> {
     }
 }
 
-/// ATV-Nummer der VOB/C: „18299“ … „18459“ (fünf Ziffern, 18…).
+/// ATV-Nummer der VOB/C: fünf Ziffern, 18000 … 18999 (belegt sind 18299
+/// ff.; eine neue ATV soll nicht an der Grenze scheitern).
 fn atv(code: &str) -> bool {
     code.len() == 5 && code.starts_with("18") && code.bytes().all(|b| b.is_ascii_digit())
 }

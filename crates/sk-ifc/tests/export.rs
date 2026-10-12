@@ -111,6 +111,8 @@ fn datei_ist_vollstaendig_und_eindeutig() {
                             | "IFCBUILDING"
                             | "IFCBUILDINGSTOREY"
                             | "IFCPROPERTYSET"
+                            | "IFCELEMENTQUANTITY"
+                            | "IFCELEMENTASSEMBLY"
                     )
                 {
                     assert!(sk_model::Guid::from_ifc(g).is_some(), "{name}: {g}");
@@ -782,4 +784,27 @@ fn wandzug_als_baugruppe() {
         assert!(soll > 0, "{name}");
         assert_eq!(b.baugruppen, soll, "{name}");
     }
+}
+
+/// Review #90 H2: Zwei Gewerke mit derselben ATV-Nummer und verschiedenen
+/// Namen ergeben eine Beziehung mit einer Kennung, nicht zwei gleiche.
+#[test]
+fn atv_nummer_doppelt_eine_beziehung() {
+    let t = HAEUSER[0].1.replace(
+        r#"code="18338" name="Dachdeckungs- und Dachabdichtungsarbeiten""#,
+        r#"code="18330" name="Mauerarbeiten (Dach)""#,
+    );
+    assert_ne!(t, HAEUSER[0].1);
+    let (ifc, _) = export(&laden(&t), &opt());
+    let f = step::read(&ifc).unwrap();
+    let mut je_nummer: HashMap<String, usize> = HashMap::new();
+    let mut kennungen = HashSet::new();
+    for (_, e) in f.all("IFCRELASSOCIATESCLASSIFICATION") {
+        let n = text(&e.args[2]).to_string();
+        if n.starts_with("VOB/C") {
+            *je_nummer.entry(n).or_default() += 1;
+            assert!(kennungen.insert(text(&e.args[0]).to_string()));
+        }
+    }
+    assert_eq!(je_nummer.get("VOB/C DIN 18330"), Some(&1), "{je_nummer:?}");
 }
