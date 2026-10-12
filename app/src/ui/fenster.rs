@@ -218,6 +218,7 @@ mod tests {
         ui.dialog = true;
         assert_eq!(ui.rect(Panel::Levels, 1440, 32), r);
         assert_eq!(ui.laid_out_buttons(Panel::Levels).len(), 1);
+        assert!(ui.line_vis_rects().is_empty());
         // Ein kleines Fenster: der Knopf rückt nie über „Werkzeuge“
         ui.dialog = false;
         ui.fit(1.0, 900, 380);
