@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod deflate;
+mod dreiecke;
 pub mod font;
 pub mod pdf;
 mod png;

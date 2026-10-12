@@ -11,6 +11,8 @@
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
 pub(crate) mod ausbau;
+mod bemassung;
+pub use bemassung::{firmenstil_lesen, firmenstil_text};
 mod dach;
 mod hoehen;
 mod lage;
@@ -1248,6 +1250,7 @@ fn write_known(m: &Model) -> String {
         out.push('\n');
     }
     sicht::write(m, &mut out);
+    bemassung::write(m, &mut out);
     hoehen::write_plan_cut(m, &mut out);
     // Ausgeblendetes (Paket 3 §3.6) nur, wenn es etwas gibt; Isolieren nie
     let v = m.visibility();
@@ -1540,7 +1543,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let Some(r) = Record::parse(i + 1, l)? else {
             continue;
         };
-        match ausbau::known(&KNOWN, &r.section) {
+        match ausbau::known(&KNOWN, &r.section).or_else(|| bemassung::known(&r.section)) {
             Some(k) => by.entry(k).or_default().push(r),
             None if ext.contains(&r.section.as_str()) => ext_lines.push((r.section.clone(), l)),
             None => alien.push(i + 1),
@@ -2671,6 +2674,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
     }
     let view_hide = sicht::read(recs("viewhide"), &lines, &mut hints);
+    let has_storey = |g: Guid| storeys.iter().any(|(_, s)| s.guid == g);
+    let (bem, bem_sicht) = bemassung::read(&recs, &lines, &has_storey, &mut hints);
     let (plan_cut, plan_cut_raw) = hoehen::read_plan_cut(recs("plancut"), &lines, &mut hints)?;
     let ausbau = ausbau::read(&recs, &layer_sets, &mut hints)?;
     for recs in by.values() {
@@ -2698,6 +2703,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_view_shade(shade, shade_raw);
     model.load_view_below(below, below_raw);
     model.view_hide = view_hide;
+    model.load_bemassung(bem, bem_sicht);
     model.load_plan_cut(plan_cut, plan_cut_raw);
     model.load_opening_raw(opening_raw);
     model.load_ausbau(ausbau);

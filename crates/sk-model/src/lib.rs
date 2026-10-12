@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod attr;
+pub mod bemassung;
 pub mod catalog;
 pub mod din276;
 pub mod element;

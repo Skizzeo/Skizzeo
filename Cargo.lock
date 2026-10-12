@@ -36,6 +36,15 @@ name = "sk-paint"
 version = "0.2.0"
 
 [[package]]
+name = "sk-plan"
+version = "0.2.0"
+dependencies = [
+ "sk-math",
+ "sk-model",
+ "sk-paint",
+]
+
+[[package]]
 name = "sk-platform"
 version = "0.2.0"
 

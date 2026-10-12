@@ -120,6 +120,11 @@ pub enum Change {
         raw: Option<String>,
         foot: [Option<crate::Foot>; 2],
     },
+    /// Stil und Versätze der Maßketten (Bemaßung), als Ganzes.
+    Bemassung {
+        old: Box<crate::bemassung::Bemassung>,
+        new: Box<crate::bemassung::Bemassung>,
+    },
 }
 
 impl Change {
@@ -150,6 +155,7 @@ impl Change {
                 raw,
                 foot,
             } => old == new && raw.is_none() && foot[0] == foot[1],
+            Change::Bemassung { old, new } => old == new,
         }
     }
 }
@@ -207,6 +213,7 @@ pub(crate) enum Key {
     ExtDefs,
     Project,
     Location,
+    Bemassung,
 }
 
 /// Offener Schritt.

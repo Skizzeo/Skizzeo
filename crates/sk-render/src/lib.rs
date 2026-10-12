@@ -327,6 +327,18 @@ pub struct Helper {
     pub round: bool,
 }
 
+/// Tinte: einfarbiges Dreieck in Modellkoordinaten (Schrift und gefüllte
+/// Begrenzungen der Bemaßung). Liegt flach auf seiner Ebene und wird mit dem
+/// Bild perspektivisch, im Grundriss bleibt es in jeder Zoomstufe scharf.
+#[derive(Clone, Copy, Debug)]
+pub struct Ink {
+    pub p: [[f32; 3]; 3],
+    /// RGBA, 0..1, nicht vormultipliziert.
+    pub color: [f32; 4],
+    /// Wie [`Helper::occlude`]: Verdecktes nur blass, sonst obenauf.
+    pub occlude: bool,
+}
+
 /// Bild der Oberfläche an einer Stelle im Fenster.
 struct Overlay {
     tex: GLuint,
@@ -447,9 +459,11 @@ pub struct Renderer {
     edges: Program,
     overlay: Program,
     helpers: Program,
+    ink: Program,
     empty_vao: GLuint,
     meshes: Vec<GpuMesh>,
     helper_mesh: GpuBuffer,
+    ink_mesh: GpuBuffer,
     overlays: Vec<Overlay>,
     samples: i32,
     target: Option<Target>,
@@ -1453,6 +1467,36 @@ void main() {
 }
 "#;
 
+const INK_VS: &str = r#"#version 330 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec4 a_color;
+layout(location = 2) in float a_occl;
+uniform mat4 u_vp;
+uniform vec3 u_origin;
+uniform vec4 u_pull;
+out vec4 v_color;
+void main() {
+    // Wie die Hilfslinien: verdeckbar ein wenig zur Kamera gezogen, sonst
+    // ganz vorne
+    bool occl = a_occl > 0.5;
+    vec4 pull = occl ? u_pull : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 c = u_vp * vec4((a_pos + u_origin) * pull.w + pull.xyz, 1.0);
+    v_color = a_color;
+    if (!occl) c.z = -c.w;
+    gl_Position = c;
+}
+"#;
+
+const INK_FS: &str = r#"#version 330 core
+in vec4 v_color;
+uniform float u_hidden;
+out vec4 o_color;
+void main() {
+    float a = v_color.a * (u_hidden > 0.5 ? 0.3 : 1.0);
+    o_color = vec4(v_color.rgb * a, a);
+}
+"#;
+
 const OVERLAY_FS: &str = r#"#version 330 core
 in vec2 v_ndc;
 out vec4 o_color;
@@ -1574,6 +1618,7 @@ impl Renderer {
             let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
+            let ink = program(&gl, INK_VS, INK_FS)?;
             let snap_prog = program(&gl, FULLSCREEN_VS, SNAPSHOT_FS)?;
             let shadow_prog = program(&gl, SHADOW_VS, SHADOW_FS)?;
             let shadow_dummy = depth_texture(&gl, 1, &[u32::MAX]);
@@ -1594,9 +1639,11 @@ impl Renderer {
                 edges,
                 overlay,
                 helpers,
+                ink,
                 empty_vao: vao,
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
+                ink_mesh: GpuBuffer::default(),
                 overlays: Vec::new(),
                 samples: max_samples.clamp(1, 8),
                 target: None,
@@ -1960,6 +2007,25 @@ impl Renderer {
                 &mut self.helper_mesh,
                 &v,
                 &[(3, 0), (3, 12), (2, 24), (4, 32), (3, 48), (4, 60), (4, 76)],
+            );
+        }
+    }
+
+    /// Tinte (gefüllte Dreiecke in Modellkoordinaten) für das nächste Bild.
+    pub fn set_ink(&mut self, tris: &[Ink]) {
+        let mut v: Vec<[f32; 8]> = Vec::with_capacity(tris.len() * 3);
+        for t in tris {
+            let [r, g, b, a] = t.color;
+            for p in t.p {
+                v.push([p[0], p[1], p[2], r, g, b, a, t.occlude as u8 as f32]);
+            }
+        }
+        unsafe {
+            fill(
+                &self.gl,
+                &mut self.ink_mesh,
+                &v,
+                &[(3, 0), (4, 12), (1, 28)],
             );
         }
     }
@@ -2811,7 +2877,8 @@ impl Renderer {
             // Fang hinter Blassem bleiben sichtbar (Review 3h, Hinweis). Erst
             // nach dem Boden, sonst tönt er den Geist über leerem Boden (3l);
             // ohne Hilfslinien braucht niemand die Tiefe
-            if ghost.is_some_and(|g| g.1 > 0.0) && self.helper_mesh.count > 0 {
+            let marks = self.helper_mesh.count > 0 || self.ink_mesh.count > 0;
+            if ghost.is_some_and(|g| g.1 > 0.0) && marks {
                 gl.glClear(DEPTH_BUFFER_BIT);
                 let p = self.faces.id;
                 gl.glUseProgram(p);
@@ -2846,6 +2913,28 @@ impl Renderer {
                     gl.glDepthFunc(func);
                     gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
                     gl.glDrawArrays(TRIANGLES, 0, self.helper_mesh.count);
+                }
+                gl.glDisable(BLEND);
+                gl.glDepthMask(TRUE);
+            }
+
+            // Tinte (Schrift der Bemaßung) über den Linien, ebenso erst
+            // sichtbar, dann verdeckt blass
+            if self.ink_mesh.count > 0 {
+                gl.glDepthMask(FALSE);
+                gl.glEnable(BLEND);
+                gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
+                let p = self.ink.id;
+                gl.glUseProgram(p);
+                mat(gl, p, c"u_vp", &view.view_proj);
+                vec3(gl, p, c"u_origin", view.origin_rel);
+                let q = view.pull;
+                gl.glUniform4f(loc(gl, p, c"u_pull"), q[0], q[1], q[2], q[3]);
+                gl.glBindVertexArray(self.ink_mesh.vao);
+                for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
+                    gl.glDepthFunc(func);
+                    gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
+                    gl.glDrawArrays(TRIANGLES, 0, self.ink_mesh.count);
                 }
                 gl.glDisable(BLEND);
                 gl.glDepthMask(TRUE);
