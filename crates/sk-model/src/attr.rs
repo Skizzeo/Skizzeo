@@ -165,7 +165,8 @@ pub struct Display {
     pub background: EdgeStyle,
     /// Fugenmuster in den Ansichten (Paket 6), Stift „Ansichtsmuster“.
     pub pattern: EdgeStyle,
-    /// Einbauelement im Grundriss (Kantenart `ELEMENT`, Jörn 12.10.):
+    /// Einbauelement und Sturz über Innenöffnungen im Grundriss (Kantenart
+    /// `ELEMENT`, Jörn 12.10.):
     /// Startsatz Stift „Fein“ mit dem Linientyp [`ELEMENT_LINE_TYPE`].
     pub element: EdgeStyle,
     /// Papiergrund der Zeichnungsansichten.

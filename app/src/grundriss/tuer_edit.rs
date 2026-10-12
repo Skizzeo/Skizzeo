@@ -4,7 +4,9 @@
 //! bestimmt die Wandseite, auf der der Griff steht, den Raum, in den die Tür
 //! aufschlägt, und die Hälfte der Öffnung darüber den Bandpfosten (und damit
 //! DIN links oder rechts, DIN 107). Die Tür geht live mit, Loslassen ist ein
-//! Schritt, Esc bricht ab. Teil von [`crate::wall_edit`].
+//! Schritt, Esc bricht ab. Ohne Ziehen spiegelt die Leertaste an der Tür bei
+//! der Maus die Bandseite, Umschalt+Leertaste schlägt sie in den anderen
+//! Raum auf (plan.md §4.3), je ein Schritt. Teil von [`crate::wall_edit`].
 
 use super::drag_point;
 use super::ende_edit::{self, Outcome, GRIFF_PX};
@@ -19,6 +21,8 @@ use sk_ui::theme::Theme;
 
 /// Bezeichnung des Schritts im Verlauf.
 pub const SCHRITT: &str = "Türaufschlag geändert";
+/// Leertaste (Code des Betriebssystems, wie [`Key::Other`]).
+pub const LEERTASTE: Key = Key::Other(0x20);
 /// Der Griff erscheint, wenn die Maus näher als so viele Türbreiten an der
 /// Türmitte steht (das offene Blattende liegt bei gut einer Breite).
 const NAH: f64 = 1.25;
@@ -153,6 +157,33 @@ fn swing_aus(l: &Lage, p: Vec3) -> Option<Swing> {
         Din::Rechts
     };
     Some(Swing { side, din })
+}
+
+/// Leertaste an der Tür `id`: die Bänder an den anderen Pfosten, mit
+/// `raum` der Aufschlag in den anderen Raum bei denselben Bändern
+/// ([`Swing::other_hand`], [`Swing::flipped`]); ein Schritt. `false`, wenn
+/// die Tür keinen Aufschlag hat oder das Modell ihn ablehnt.
+pub fn umschlagen(scene: &mut Scene, id: ElementId, raum: bool) -> bool {
+    let m = scene.model();
+    let Some(alt) = m.opening(id).and_then(|o| o.swing) else {
+        return false;
+    };
+    let Some(l) = m.door_leaf_in(id, &|r| scene.koerper(r)) else {
+        return false;
+    };
+    let neu = if raum {
+        alt.flipped()
+    } else {
+        alt.other_hand()
+    };
+    scene.begin(SCHRITT);
+    if scene.set_swing(id, neu, l.run) {
+        scene.commit();
+        true
+    } else {
+        scene.rollback();
+        false
+    }
 }
 
 /// Laufendes Ziehen am Griff einer Tür.
@@ -400,6 +431,80 @@ mod tests {
         assert_eq!(swing(&s), soll);
         assert_eq!(s.undo_label(), Some(SCHRITT));
         assert!(s.undo());
+        assert_eq!(swing(&s), alt);
+    }
+
+    /// Leertaste an der Tür bei der Maus: die Bänder an den anderen
+    /// Pfosten, mit Umschalt der Aufschlag in den anderen Raum an denselben
+    /// Bändern; je ein Schritt, den Rückgängig wieder nimmt.
+    #[test]
+    fn leertaste_an_der_tuer() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(
+            vec3(5000.0, 3000.0, 20000.0),
+            vec3(5000.0, 3001.0, 0.0),
+            45.0,
+        );
+        let (m, id) = haus();
+        let mut s = Scene::with_model(m);
+        let mut e = crate::wall_edit::WallEdit {
+            plan_z: Some(0.0),
+            ..Default::default()
+        };
+        let mods = sk_platform::Modifiers::default();
+        let (x, y) = cam.project(vec3(5300.0, 3000.0, 0.0), W, H).unwrap();
+        e.handle(
+            &Event::MouseMove { x, y, mods },
+            &mut s,
+            &cam,
+            W,
+            H,
+            1.0,
+            true,
+        );
+        let swing = |s: &Scene| s.model().opening(id).unwrap().swing.unwrap();
+        let blatt = |s: &Scene| s.model().door_leaf(id).unwrap();
+        let taste = |shift: bool| Event::Key {
+            key: LEERTASTE,
+            down: true,
+            mods: sk_platform::Modifiers { shift, ..mods },
+            repeat: false,
+        };
+        let (alt, l0) = (swing(&s), blatt(&s));
+        let o = e.handle(&taste(false), &mut s, &cam, W, H, 1.0, true);
+        assert!(o.consumed && o.changed);
+        assert_eq!(swing(&s), alt.other_hand());
+        let l1 = blatt(&s);
+        assert!((l1.hinge.y - l0.hinge.y).abs() > 800.0, "anderer Pfosten");
+        assert_eq!(l1.swing_into, l0.swing_into, "derselbe Raum");
+        assert_eq!(s.undo_label(), Some(SCHRITT));
+        let o = e.handle(&taste(true), &mut s, &cam, W, H, 1.0, true);
+        assert!(o.changed);
+        assert_eq!(swing(&s), alt.other_hand().flipped());
+        let l2 = blatt(&s);
+        assert!((l2.hinge.y - l1.hinge.y).abs() < 1e-6, "derselbe Pfosten");
+        assert!(
+            (l2.swing_into + l1.swing_into).length() < 1e-9,
+            "anderer Raum"
+        );
+        assert!(s.undo() && s.undo());
+        assert_eq!(swing(&s), alt);
+        // Weit weg von der Tür tut die Taste nichts
+        let (x, y) = cam.project(vec3(8000.0, 6000.0, 0.0), W, H).unwrap();
+        e.handle(
+            &Event::MouseMove { x, y, mods },
+            &mut s,
+            &cam,
+            W,
+            H,
+            1.0,
+            true,
+        );
+        assert!(
+            !e.handle(&taste(false), &mut s, &cam, W, H, 1.0, true)
+                .changed
+        );
         assert_eq!(swing(&s), alt);
     }
 }

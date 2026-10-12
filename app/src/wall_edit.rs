@@ -844,6 +844,23 @@ impl WallEdit {
             .filter(|&e| scene.pickable(e) && !scene.model().element(e).is_some_and(|x| x.locked))
     }
 
+    /// Tür für die Leertaste: die mit dem Griff unter der Maus, sonst die
+    /// mit dem nächsten Griff.
+    fn tuer_bei_maus(&self, cam: &Camera, w: f64, h: f64) -> Option<ElementId> {
+        if self.tuer_griff.is_some() {
+            return self.tuer_griff;
+        }
+        let ((x, y), z) = (self.mouse?, self.plan_z?);
+        self.tueren
+            .iter()
+            .filter_map(|&(id, p)| {
+                let (px, py) = cam.project(vec3(p.x, p.y, z), w, h)?;
+                Some(((px - x).hypot(py - y), id))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, id)| id)
+    }
+
     /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).
     pub fn refresh(
         &mut self,
@@ -1223,6 +1240,26 @@ impl WallEdit {
                     out.consumed = true;
                     out.redraw = true;
                     self.refresh(scene, cam, w, h, scale, enabled);
+                }
+            }
+            // Leertaste an der Tür bei der Maus (plan.md §4.3)
+            Event::Key {
+                key: tuer_edit::LEERTASTE,
+                down: true,
+                mods,
+                ..
+            } if self.input.is_none() && self.drag.is_none() && !self.tueren.is_empty() => {
+                if let Some(id) = self.tuer_bei_maus(cam, w, h) {
+                    out.consumed = true;
+                    if let Some(l) = sk_model::edit_blocked(scene.model(), &[id]) {
+                        out.locked = Some((l, id));
+                        return out;
+                    }
+                    if tuer_edit::umschlagen(scene, id, mods.shift) {
+                        out.changed = true;
+                        out.redraw = true;
+                        self.refresh(scene, cam, w, h, scale, enabled);
+                    }
                 }
             }
             Event::Key {

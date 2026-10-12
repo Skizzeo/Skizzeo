@@ -706,7 +706,8 @@ impl Stempel {
 impl Stempel {
     /// Nimmt das offene Namensfeld (bzw. der gezogene Stempel: Esc) die
     /// Taste? Zeichen kommen als Text ([`Stempel::text`]), ihre Tasten
-    /// bleiben im Feld, damit kein Kürzel auslöst.
+    /// bleiben im Feld, damit kein Kürzel auslöst (auch die Leertaste nicht,
+    /// die an einer Tür den Aufschlag wechselt).
     pub fn will(&self, key: Key) -> bool {
         let feld = matches!(
             key,
@@ -720,6 +721,7 @@ impl Stempel {
                 | Key::Escape
                 | Key::Enter
                 | Key::Tab
+                | Key::Other(0x20)
         );
         (key == Key::Escape && self.zug.as_ref().is_some_and(|z| z.offen))
             || (feld && self.namen.is_some())
@@ -1164,6 +1166,22 @@ mod tests {
                 mods: m,
             },
         )
+    }
+
+    /// Die Leertaste bleibt im offenen Namensfeld, sonst wechselte sie an
+    /// einer Tür bei der Maus den Aufschlag.
+    #[test]
+    fn leertaste_bleibt_im_feld() {
+        let mut s = szene();
+        let c = kamera(&s);
+        let mut st = Stempel::default();
+        auslegen(&mut st, &s, &c);
+        let leer = crate::wall_edit::tuer_edit::LEERTASTE;
+        assert!(!st.will(leer));
+        let b = mitte(&st.bilder[0]);
+        klick(&mut st, &mut s, &c, b);
+        assert!(st.namen.is_some());
+        assert!(st.will(leer));
     }
 
     #[test]

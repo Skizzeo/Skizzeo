@@ -643,6 +643,44 @@ impl WallChain {
     }
 }
 
+impl WallChain {
+    /// Sturz der Öffnungen in Innenwänden im Grundriss (plan.md §4.3): je
+    /// Loch, das die Schnitthöhe `cut` trifft und unter der Wandkrone endet,
+    /// die beiden Wandfluchten über die Öffnung, dünn gestrichelt wie das
+    /// Einbauelement.
+    pub fn lintel_edges(&self, cut: f64) -> Vec<Edge> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        let krone = self.base + self.height;
+        let innen = self.layers.len().saturating_sub(1) as u8;
+        for h in &self.joints.holes {
+            let offen = h.u.0.is_finite() && h.u.1.is_finite();
+            if h.outer || !(offen && h.z.0 < cut && cut < h.z.1 && h.z.1 < krone - EPS) {
+                continue;
+            }
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            for (off, layer) in [(self.outer_offset(), 0), (self.inner_offset(), innen)] {
+                let at = |u: f64| {
+                    let p = p0 + d * u + crate::wall::right_of(d) * off;
+                    vec3(p.x, p.y, cut)
+                };
+                out.push(Edge {
+                    a: at(h.u.0),
+                    b: at(h.u.1),
+                    kind: edge_kind::ELEMENT,
+                    elem: h.seg as u32,
+                    layer,
+                });
+            }
+        }
+        out
+    }
+}
+
 /// Stücke des Viertelkreises im Türaufschlag.
 const BOGEN: usize = 12;
 
