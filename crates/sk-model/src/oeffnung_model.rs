@@ -4,9 +4,9 @@
 use super::*;
 use crate::hoehen::HeightLines;
 use crate::oeffnung::{
-    DoorLeaf, FaceSide, HeightLine, HeightRef, InstallDepth, Opening, OpeningKind, ELEMENT_DEPTH,
-    INSTALL_BEHIND_SHELL, INSTALL_MONO, MAX_INSTALL, MAX_REVEAL, MIN_OPENING, REVEAL_ETICS,
-    REVEAL_FACING,
+    DoorLeaf, FaceSide, HeightLine, HeightRef, InstallDepth, Opening, OpeningKind, Swing,
+    ELEMENT_DEPTH, INSTALL_BEHIND_SHELL, INSTALL_MONO, MAX_INSTALL, MAX_REVEAL, MIN_OPENING,
+    REVEAL_ETICS, REVEAL_FACING,
 };
 use crate::wall::{cross2, flat, right_of};
 use crate::wand_loch::Hole;
@@ -716,6 +716,35 @@ struct OpeningAnchor {
     id: ElementId,
     path: Vec<Vec3>,
     at: Vec<Anchor>,
+    /// Tür mit Blatt: Aufschlag beim Greifen und seine Seite zur Richtung
+    /// des Wandsegments (Geometrie #99): Daraus kommt der Aufschlag nach
+    /// jeder Bewegung, nicht aus der vorigen Lage.
+    swing: Option<(Swing, FaceSide)>,
+}
+
+/// Richtung eines Pfads (Grundriss, nicht normiert).
+fn path_dir(p: &[Vec3]) -> Vec3 {
+    flat(p[p.len() - 1]) - flat(p[0])
+}
+
+/// Seite `side` zur Pfadrichtung als Seite zur Flächenrichtung `d` und
+/// zurück (dieselbe Umrechnung in beide Richtungen).
+fn side_to(side: FaceSide, path: &[Vec3], d: Vec3) -> FaceSide {
+    if path_dir(path).dot(d) >= 0.0 {
+        side
+    } else {
+        side.other()
+    }
+}
+
+/// Ist der Zug `now` der Zug `grab` mit umgekehrter Punktfolge?
+fn reversed(grab: &[Vec3], now: &[Vec3]) -> bool {
+    grab.len() == now.len()
+        && grab.len() > 1
+        && grab
+            .iter()
+            .zip(now.iter().rev())
+            .all(|(a, b)| (*a - *b).length() < 1e-6)
 }
 
 /// Ein Außenwandzug beim Greifen: sein Körper, der zuletzt mitgeführte und
@@ -868,6 +897,11 @@ impl Model {
                         .total_cmp(&(flat(corners[j]) - q).length())
                 })
             });
+            // Aufschlag zur Segmentrichtung beim Greifen
+            let swing = o.swing.filter(|_| n == 2).and_then(|sw| {
+                let s = seat(o.path[0])?;
+                Some((sw, side_to(sw.side, &o.path, f[s].d)))
+            });
             let sum = o.path.iter().fold(vec3(0.0, 0.0, 0.0), |a, p| a + flat(*p));
             let m = sum / n.max(1) as f64;
             let mut at = Vec::with_capacity(n);
@@ -894,6 +928,7 @@ impl Model {
                 id,
                 path: o.path.clone(),
                 at,
+                swing,
             });
         }
         out
@@ -920,6 +955,7 @@ impl Model {
             let back = c == w.chain;
             if back || segs(&c) == segs(&w.chain) {
                 let shift = parallel_shift(&w.chain.points, &c.points);
+                let umgekehrt = reversed(&w.chain.points, &c.points);
                 let corners = c.face_corners(c.outer_offset());
                 for a in &w.anchors {
                     let path: Option<Vec<Vec3>> = if back {
@@ -939,7 +975,23 @@ impl Model {
                             })
                             .collect()
                     };
-                    self.put_carried(a.id, path, back);
+                    // Aufschlag aus dem Greifzustand: Seite zum Segment bleibt,
+                    // nur bei umgekehrter Punktfolge des Zugs wechselt sie
+                    // (der Raum bleibt derselbe, Integration 05:54)
+                    let swing = match (&path, a.swing, a.at.first()) {
+                        (_, Some((sw, _)), _) if back => Some(sw),
+                        (Some(p), Some((sw, seite)), Some(&Anchor::On(s, ..))) if p.len() == 2 => {
+                            self.face_in(w.run, s, &c).map(|f| {
+                                let seite = if umgekehrt { seite.other() } else { seite };
+                                Swing {
+                                    side: side_to(seite, p, f.d),
+                                    ..sw
+                                }
+                            })
+                        }
+                        _ => None,
+                    };
+                    self.put_carried(a.id, path, back, swing);
                 }
             }
             w.last = c;
@@ -949,7 +1001,14 @@ impl Model {
     /// Setzt den mitgeführten Pfad einer Öffnung, ohne die Prüfung an den
     /// Wänden: die Öffnung bleibt an ihrer Wand, auch wenn sie dort nicht
     /// mehr passt. Zurück auf die Lage beim Greifen (`back`) geht es immer.
-    fn put_carried(&mut self, id: ElementId, path: Option<Vec<Vec3>>, back: bool) {
+    /// `swing` ersetzt den Aufschlag, wenn gesetzt.
+    fn put_carried(
+        &mut self,
+        id: ElementId,
+        path: Option<Vec<Vec3>>,
+        back: bool,
+        swing: Option<Swing>,
+    ) {
         let (Some(path), Some(o)) = (path, self.opening(id)) else {
             return;
         };
@@ -958,17 +1017,11 @@ impl Model {
                 .iter()
                 .zip(&o.path)
                 .all(|(p, q)| (*p - *q).length() < 1e-6);
-        let same = path == o.path || (near && !back);
+        let swing = swing.or(o.swing);
+        let same = (path == o.path || (near && !back)) && swing == o.swing;
         let mut o = o.clone();
-        // Kehrt der Pfad sich um (Wand umgekehrt), bleibt der Aufschlag im
-        // selben Raum (Integration 05:54)
-        let dir = |p: &[Vec3]| flat(p[p.len() - 1]) - flat(p[0]);
-        if let Some(sw) = o.swing.as_mut().filter(|_| path.len() == 2) {
-            if dir(&path).dot(dir(&o.path)) < 0.0 {
-                sw.side = sw.side.other();
-            }
-        }
         o.path = path;
+        o.swing = swing;
         if !same && (back || self.opening_ok(&o)) {
             note!(self, Element, self.elements, id);
             if let Some(e) = self.elements.get_mut(id) {
