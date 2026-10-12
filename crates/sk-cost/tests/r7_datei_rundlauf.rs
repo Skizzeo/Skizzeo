@@ -38,6 +38,8 @@ const HAEUSER: [(&str, &str); 5] = [
     // sechs Feldern, `group=nuf4`, `woflv=50` und `tiles_h=2000`
     // seit I4c die Lage mit allen Feldern (`[location]` mit `lat`, `lon`,
     // `north`, Fußpunkt `x`/`y`, `utm_e`, `utm_n`, `utm_zone`, `nhn`)
+    // seit #99 im EG von Gebäude 2 eine Innenwand mit Innentür an der
+    // eigenen Innentürlinie (`door=`), Aufschlag `swing` und `din`
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
