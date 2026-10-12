@@ -12,5 +12,6 @@ sk-ifc = { path = "../crates/sk-ifc" }
 sk-platform = { path = "../crates/sk-platform" }
 sk-render = { path = "../crates/sk-render" }
 sk-paint = { path = "../crates/sk-paint" }
+sk-plan = { path = "../crates/sk-plan" }
 sk-szb = { path = "../crates/sk-szb" }
 sk-ui = { path = "../crates/sk-ui" }

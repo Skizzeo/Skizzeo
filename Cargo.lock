@@ -75,6 +75,7 @@ dependencies = [
  "sk-math",
  "sk-model",
  "sk-paint",
+ "sk-plan",
  "sk-platform",
  "sk-render",
  "sk-szb",
