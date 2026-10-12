@@ -307,6 +307,7 @@ pub fn for_plan(
         band: None,
         hover: None,
         keep_linked: None,
+        schloesser: Vec::new(),
     })
     .iter()
     .map(|k| chip_box(k, scale, 0.0))

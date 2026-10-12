@@ -110,6 +110,7 @@ fn thema(l: &Lage) -> &'static str {
         flush_pick: l.zielwahl,
         dragging: l.ziehen,
         tool: l.werkzeug.map(|w| w == "innenwand"),
+        opening: matches!(l.werkzeug, Some("fenster" | "tuer")),
         isolating: l.isolieren,
         selection: l.auswahl.map(|a| match a {
             "wand" => SelKind::Wall,

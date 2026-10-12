@@ -165,6 +165,9 @@ pub struct Display {
     pub background: EdgeStyle,
     /// Fugenmuster in den Ansichten (Paket 6), Stift „Ansichtsmuster“.
     pub pattern: EdgeStyle,
+    /// Einbauelement im Grundriss (Kantenart `ELEMENT`, Jörn 12.10.):
+    /// Startsatz Stift „Fein“ mit dem Linientyp [`ELEMENT_LINE_TYPE`].
+    pub element: EdgeStyle,
     /// Papiergrund der Zeichnungsansichten.
     pub paper: [u8; 3],
 }
@@ -226,6 +229,7 @@ pub fn display_slots(d: &Display) -> Vec<(&'static str, EdgeStyle)> {
     v.push(("Schnittlinie Enden", d.section_ends));
     v.push(("Hintergrund", d.background));
     v.push(("Fugen in Ansichten", d.pattern));
+    v.push(("Einbauelement im Grundriss", d.element));
     v
 }
 
@@ -395,6 +399,15 @@ impl Attributes {
         self.display = d;
     }
 
+    /// Zeigt die Einbauelement-Stelle auf die Werksdarstellung (Stift der
+    /// feinen Linie, unveränderter [`ELEMENT_LINE_TYPE`])? Dann steht sie
+    /// nicht in der Datei (F20).
+    pub(crate) fn element_is_default(&self) -> bool {
+        let d = &self.display;
+        d.element.pen == d.drawing[edge_kind::FINE as usize].pen
+            && self.line_type(d.element.line_type) == Some(&element_line_type())
+    }
+
     pub(crate) fn bump(&mut self) {
         self.rev += 1;
     }
@@ -408,6 +421,7 @@ impl Attributes {
             &d.section_ends,
             &d.background,
             &d.pattern,
+            &d.element,
         ]);
         let mut out = Vec::new();
         let mut numbers: Vec<u16> = self.pens.iter().map(|(_, p)| p.number).collect();
@@ -455,6 +469,33 @@ pub fn standard_line_types() -> [(&'static str, Vec<Dash>); 4] {
 
 /// Name der Linientyps der Schnittlinie A–A im Startsatz.
 pub const SECTION_LINE_TYPE: &str = "Strichpunktlinie";
+
+/// Werks-Linientyp der Einbauelemente im Grundriss (dünn gestrichelt, Jörn
+/// 12.10.): Strich 1,5 mm, Lücke 0,75 mm auf dem Papier. Ältere Dateien
+/// bekommen ihn beim Öffnen.
+pub const ELEMENT_LINE_TYPE: (&str, Dash) = (
+    "Strichlinie fein",
+    Dash {
+        len_mm: 1.5,
+        gap_mm: 0.75,
+        dot: false,
+    },
+);
+
+/// Feste Guid des Linientyps [`ELEMENT_LINE_TYPE`], in jedem Projekt gleich
+/// (wie beim Stift „Ansichtsmuster“), damit die übrigen Guids des
+/// Startsatzes gleich bleiben.
+pub const ELEMENT_LINE_TYPE_GUID: Guid = Guid(0x5bfd7591e3384ad49e470bb8d3658260);
+
+/// Der Linientyp [`ELEMENT_LINE_TYPE`] mit seiner festen Guid.
+pub(crate) fn element_line_type() -> LineType {
+    let (name, dash) = ELEMENT_LINE_TYPE;
+    LineType {
+        guid: ELEMENT_LINE_TYPE_GUID,
+        name: name.into(),
+        pattern: vec![dash],
+    }
+}
 
 /// Startverweise der Standardbaustoffe auf die Tabellen.
 #[derive(Clone, Copy, Debug)]
@@ -563,6 +604,8 @@ pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
             background: style(under),
             // Startwert; das Modell setzt den Stift „Ansichtsmuster“
             pattern: style(fine),
+            // Startwert; das Modell setzt den Linientyp „Strichlinie fein“
+            element: style(fine),
             paper: [245, 244, 239],
         },
         rev: 0,
@@ -665,5 +708,66 @@ mod tests {
         d.ground.pen = foreign;
         m.set_display(d);
         assert!(!m.check().is_empty());
+    }
+
+    /// F20 (Integration): Die Einbauelement-Linie im Grundriss ist eine
+    /// Stelle der Darstellung wie Hintergrund und Schnittlinie: Stift „Fein“
+    /// und Linientyp „Strichlinie fein“ (1,5 / 0,75 mm) mit fester Guid. Wie
+    /// beim Werksbestand der Kataloge steht die Werksdarstellung nicht in der
+    /// Datei: ältere Dateien laden und speichern bytegleich, und erst eine
+    /// Änderung schreibt die Stelle bzw. den Linientyp.
+    #[test]
+    fn einbauelement_als_darstellung() {
+        use super::{display_slots, ELEMENT_LINE_TYPE, ELEMENT_LINE_TYPE_GUID};
+        use crate::guid::GuidGen;
+        let mut m = Model::with_seed(5);
+        let a = m.attr();
+        let d = a.display();
+        let lt = a.line_type(d.element.line_type).unwrap();
+        assert_eq!(lt.guid, ELEMENT_LINE_TYPE_GUID);
+        assert_eq!(lt.name, ELEMENT_LINE_TYPE.0);
+        assert_eq!(lt.pattern, [ELEMENT_LINE_TYPE.1]);
+        assert_eq!(a.pen(d.element.pen).unwrap().number, 1);
+        assert!(display_slots(d)
+            .iter()
+            .any(|s| s.0 == "Einbauelement im Grundriss" && s.1 == d.element));
+        let g = ELEMENT_LINE_TYPE_GUID.to_ifc();
+        let rund = |m: &Model| {
+            let text = crate::szo::write(m);
+            let back = crate::szo::read(&text, GuidGen::with_seed(9)).unwrap();
+            assert!(back.hints.is_empty(), "{:?}", back.hints);
+            assert_eq!(crate::szo::write(&back.model), text, "Rundlauf");
+            (text, back.model)
+        };
+        let (text, back) = rund(&m);
+        assert!(!text.contains("slot=element") && !text.contains(&g));
+        let b = back.attr();
+        assert_eq!(b.display().element, {
+            let id = b.line_types().iter().find(|(_, l)| l.guid == lt.guid);
+            super::EdgeStyle {
+                pen: b.display().drawing[super::edge_kind::FINE as usize].pen,
+                line_type: id.unwrap().0,
+            }
+        });
+        // Anderer Stift: die Stelle steht in der Datei, der Linientyp nicht
+        let mittel = a.pens().iter().find(|(_, p)| p.number == 2).unwrap().0;
+        let lt_id = d.element.line_type;
+        let mut d = d.clone();
+        d.element.pen = mittel;
+        m.begin("Darstellung");
+        m.set_display(d);
+        m.commit();
+        let (text, back) = rund(&m);
+        assert!(text.contains("slot=element") && !text.contains(&format!("guid={g}")));
+        let pen = back.attr().display().element.pen;
+        assert_eq!(back.attr().pen(pen).unwrap().number, 2);
+        // Geänderter Strich: der Linientyp steht in der Datei
+        let mut l = m.attr().line_type(lt_id).unwrap().clone();
+        l.pattern[0].len_mm = 2.0;
+        m.begin("Linientyp");
+        assert!(m.set_line_type(lt_id, l));
+        m.commit();
+        let (text, _) = rund(&m);
+        assert!(text.contains(&format!("guid={g}")));
     }
 }
