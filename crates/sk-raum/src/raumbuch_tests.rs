@@ -632,7 +632,7 @@ fn leer_und_seite_ohne_ausbau() {
 }
 
 /// Ausbau nach der Nutzung des gespeicherten Raums: ohne Wahl Wohnzimmer,
-/// dessen Typen ein frisches Projekt erst mit `anlegen` führt; gewählt das
+/// dessen Typen ein frisches Projekt erst mit `typen_anlegen` führt; gewählt das
 /// Bad samt Typen; eine geänderte Projektkopie des Wohnzimmers gilt für Räume ohne
 /// Wahl.
 #[test]
@@ -661,7 +661,7 @@ fn ausbau_nach_der_nutzung_des_raums() {
     assert_eq!(crate::ausbau::fehlende_typen(&m, &r.form).len(), 5);
     // Anlegen bringt Vorlage, Ausbautypen und den Estrich des Geschosses
     m.begin("Ausbau");
-    assert!(crate::ausbau::anlegen(&mut m, id));
+    assert!(crate::ausbau::typen_anlegen(&mut m, id));
     assert!(m.commit().is_some());
     let r = roh(&m);
     assert!(crate::ausbau::fehlende_typen(&m, &r.form).is_empty());

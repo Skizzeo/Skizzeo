@@ -124,13 +124,14 @@ mod tests {
         assert_eq!(wert(&v, "Nutzung").as_deref(), Some("Wohnzimmer (Vorgabe)"));
         let fehlt = s.model().space_type(DEFAULT_SPACE_GUID).is_none();
         assert_eq!(wert(&v, "Ausbau").is_some(), fehlt, "{v:?}");
-        assert!(s.edit_model("Ausbau", |m| sk_raum::ausbau::anlegen(m, r)));
+        assert!(s.edit_model("Ausbau", |m| sk_raum::ausbau::typen_anlegen(m, r)));
         let v = werte(&s);
         assert_eq!(wert(&v, "OK Fertigfußboden").as_deref(), Some("+0,160 m"));
         assert!(wert(&v, "Sockelleiste").is_some_and(|x| x.ends_with(" m")));
         assert_eq!(wert(&v, "Ausbau"), None);
         assert!(s.edit_model("Bad", |m| {
-            m.set_space(r, |x| x.nutzung = Some(BATH_SPACE_GUID)) && sk_raum::ausbau::anlegen(m, r)
+            m.set_space(r, |x| x.nutzung = Some(BATH_SPACE_GUID))
+                && sk_raum::ausbau::typen_anlegen(m, r)
         }));
         let v = werte(&s);
         assert_eq!(wert(&v, "Nutzung").as_deref(), Some("Bad"));

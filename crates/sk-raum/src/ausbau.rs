@@ -107,7 +107,7 @@ pub fn fehlende_typen(model: &Model, form: &RaumForm) -> Vec<Guid> {
 /// seine Nutzung wechselt; danach rechnet das Raumbuch mit Typen des
 /// Projekts. `false`, wenn `raum` kein Raum ist oder etwas fehlt, das weder
 /// Projekt noch Werk kennt.
-pub fn anlegen(model: &mut Model, raum: ElementId) -> bool {
+pub fn typen_anlegen(model: &mut Model, raum: ElementId) -> bool {
     let (Some(e), Some(s)) = (model.element(raum), model.space(raum)) else {
         return false;
     };
