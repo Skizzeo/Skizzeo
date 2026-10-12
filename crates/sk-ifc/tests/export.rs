@@ -120,6 +120,7 @@ fn datei_ist_vollstaendig_und_eindeutig() {
                             | "IFCELEMENTQUANTITY"
                             | "IFCELEMENTASSEMBLY"
                             | "IFCOPENINGELEMENT"
+                            | "IFCDOOR"
                     )
                 {
                     assert!(sk_model::Guid::from_ifc(g).is_some(), "{name}: {g}");
@@ -606,6 +607,9 @@ fn tuer_in_der_oeffnung_nach_din_107() {
             }
         };
         let o = punkt(liste(&a.args[0])[0]);
+        // Unterkante der Öffnung in dieser Wand, im Geschoss
+        let elev = m.storey(el.storey).unwrap().elevation;
+        assert!((o[2] - (z0 - elev)).abs() < 1e-6, "{o:?}");
         assert_eq!(punkt(liste(&a.args[1])[0]), vec![0.0, 0.0, 1.0]);
         let x = punkt(liste(&a.args[2])[0]);
         let y = (-x[1], x[0]);

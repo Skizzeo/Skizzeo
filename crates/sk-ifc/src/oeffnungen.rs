@@ -17,7 +17,8 @@ use crate::step::{e, lens, r, refs, s, typed, V};
 use sk_math::{vec3, Vec3};
 use sk_model::oeffnung::DoorLeaf;
 use sk_model::oeffnung_koerper::OpeningVoid;
-use sk_model::{ElementId, ElementKind, Guid, StoreyId};
+use sk_model::{ElementId, ElementKind, Guid, RunId, StoreyId, WallChain};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// `OperationType` eines Drehflügels aus der Lage des Blatts. IFC4
@@ -52,6 +53,15 @@ impl Ctx<'_> {
         bericht: &mut Bericht,
     ) {
         let m = self.m;
+        // Wandkörper je Zug einmal je Export (Review #115 B1)
+        let koerper: RefCell<HashMap<RunId, Option<WallChain>>> = RefCell::default();
+        let chain_of = |r: RunId| -> Option<WallChain> {
+            koerper
+                .borrow_mut()
+                .entry(r)
+                .or_insert_with(|| m.chain(r))
+                .clone()
+        };
         for &id in ids {
             let Some(el) = m.element(id) else {
                 continue;
@@ -60,7 +70,7 @@ impl Ctx<'_> {
                 continue;
             };
             let voids: Vec<_> = m
-                .opening_voids(id)
+                .opening_voids_in(id, &chain_of)
                 .into_iter()
                 .filter(|v| self.lage.contains_key(&v.wall))
                 .collect();
@@ -73,7 +83,7 @@ impl Ctx<'_> {
             let z = self.zuordnung(id);
             // Das Blatt sitzt in einer Wand seines Geschosses
             let blatt = m
-                .door_leaf(id)
+                .door_leaf_in(id, &chain_of)
                 .and_then(|l| Some((m.wall_at(l.run, l.seg)?, l)))
                 .filter(|_| geschosse.contains_key(&el.storey));
             for (k, v) in voids.iter().enumerate() {
@@ -150,15 +160,7 @@ impl Ctx<'_> {
                 );
                 if let Some((_, l)) = blatt.as_ref().filter(|(w, _)| *w == v.wall) {
                     let (si, _, _) = geschosse[&el.storey];
-                    let (z0, _) = m.opening_band(op).unwrap_or((elev, elev));
-                    let tuer = self.tuer(
-                        id,
-                        g,
-                        l,
-                        (pl, elev, z0.max(elev)),
-                        v,
-                        w.category.is_outer_wall(),
-                    );
+                    let tuer = self.tuer(id, g, l, (pl, elev), v, w.category.is_outer_wall());
                     self.inhalt.entry(si).or_default().push(tuer);
                     self.w.add(
                         "IFCRELFILLSELEMENT",
@@ -180,13 +182,14 @@ impl Ctx<'_> {
 
     /// `IfcDoor` der Öffnung `id` im Leerraum `v` (Kennung der Öffnung dort
     /// `g`), relativ zur Lage der Öffnung `pl` in einem Geschoss auf Höhe
-    /// `elev`, Unterkante `z0` (absolut).
+    /// `elev`; Unterkante und Höhe wie die Öffnung in dieser Wand (Review
+    /// #115 H3).
     fn tuer(
         &mut self,
         id: ElementId,
         g: Guid,
         l: &DoorLeaf,
-        (pl, elev, z0): (u32, f64, f64),
+        (pl, elev): (u32, f64),
         v: &OpeningVoid,
         aussen: bool,
     ) -> u32 {
@@ -195,9 +198,10 @@ impl Ctx<'_> {
             .element(id)
             .expect("Öffnung aus der Liste des Modells");
         let (o, x, art) = drehfluegel(l);
-        let p = self
-            .w
-            .add("IFCCARTESIANPOINT", vec![lens(&[o.x, o.y, z0 - elev])]);
+        let p = self.w.add(
+            "IFCCARTESIANPOINT",
+            vec![lens(&[o.x, o.y, v.bottom - elev])],
+        );
         let up = self.w.add(
             "IFCDIRECTION",
             vec![V::List(vec![V::Real(0.0), V::Real(0.0), V::Real(1.0)])],

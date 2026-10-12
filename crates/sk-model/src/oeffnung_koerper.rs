@@ -6,14 +6,15 @@
 //! schon gelocht ist.
 
 use crate::solid::Solid;
-use crate::wall::right_of;
-use crate::{ElementId, Model};
+use crate::wall::{right_of, WallChain};
+use crate::{ElementId, Model, RunId};
 use sk_math::{vec3, Vec3};
 
 /// Leerraum einer Öffnung in einer Wand.
 #[derive(Clone, Debug)]
 pub struct OpeningVoid {
-    /// Die gelochte Wand (ein Segment eines Außenwandzugs).
+    /// Die gelochte Wand (ein Segment eines Zugs, der Öffnungen nimmt:
+    /// Außenwand, Aufkantung oder Innenwand).
     pub wall: ElementId,
     /// Quader von außen nach innen (absolut, mm).
     pub boxes: Vec<Solid>,
@@ -22,20 +23,33 @@ pub struct OpeningVoid {
     pub width: f64,
     pub height: f64,
     pub depth: f64,
+    /// Unterkante der sichtbaren Öffnung in dieser Wand (z absolut, mm).
+    pub bottom: f64,
 }
 
 impl Model {
-    /// Leerräume der Öffnung `id`, je gelochter Wand einer, nach Wand
-    /// geordnet. Läuft die Öffnung um die Ecke, endet der Quader an der
-    /// Außenecke; über zwei Geschosse teilt die Wandhöhe ihn auf.
+    /// Leerräume der Öffnung `id`, je gelochter Wand einer, nach Kennung
+    /// der Wand geordnet. Läuft die Öffnung um die Ecke, endet der Quader an
+    /// der Außenecke; über zwei Geschosse teilt die Wandhöhe ihn auf.
     pub fn opening_voids(&self, id: ElementId) -> Vec<OpeningVoid> {
+        self.opening_voids_in(id, &|r| self.chain(r))
+    }
+
+    /// [`Model::opening_voids`] mit den Wandkörpern aus `chain_of`, z. B.
+    /// aus einem Zwischenspeicher je Export (Review #115 B1:
+    /// [`Model::chain`] wächst mit der Zahl der Anschlüsse).
+    pub fn opening_voids_in(
+        &self,
+        id: ElementId,
+        chain_of: &dyn Fn(RunId) -> Option<WallChain>,
+    ) -> Vec<OpeningVoid> {
         let Some(op) = self.opening(id) else {
             return Vec::new();
         };
         let mut out = Vec::new();
-        // nur Außenwandzüge ([`Model::opening_runs`])
+        // Züge, die Öffnungen nehmen ([`Model::opening_runs`])
         for run in self.opening_runs(op) {
-            let Some(c) = self.chain(run) else {
+            let Some(c) = chain_of(run) else {
                 continue;
             };
             let Some((pts, _, dirs)) = c.layout() else {
@@ -69,7 +83,7 @@ impl Model {
                     vec![(quer(0, shell), true), (quer(shell, n), false)]
                 };
                 let mut boxes = Vec::new();
-                let mut sichtbar = (0.0, 0.0);
+                let mut sichtbar = (0.0, 0.0, 0.0);
                 for (t, aussen) in teile {
                     let ((u0, u1), (z0, z1)) = h.kasten(aussen);
                     // zur Ecke hin offen: bis an die Außenecke
@@ -82,7 +96,7 @@ impl Model {
                         continue;
                     }
                     if aussen {
-                        sichtbar = (u.1 - u.0, z.1 - z.0);
+                        sichtbar = (u.1 - u.0, z.1 - z.0, z.0);
                     }
                     boxes.push(quader(p0, d, nr, u, t, z));
                 }
@@ -94,11 +108,15 @@ impl Model {
                         width: sichtbar.0,
                         height: sichtbar.1,
                         depth: hi - lo,
+                        bottom: sichtbar.2,
                     });
                 }
             }
         }
-        out.sort_by_key(|v| v.wall.index());
+        // nach Kennung, nicht nach Lage in der Liste: Welche Wand die
+        // Kennung der Öffnung trägt, bleibt über Speichern und Laden gleich
+        // (Review #115 H1)
+        out.sort_by_cached_key(|v| self.element(v.wall).map(|e| e.guid.to_ifc()));
         out
     }
 }
