@@ -111,6 +111,8 @@ fn datei_ist_vollstaendig_und_eindeutig() {
                             | "IFCBUILDING"
                             | "IFCBUILDINGSTOREY"
                             | "IFCPROPERTYSET"
+                            | "IFCELEMENTQUANTITY"
+                            | "IFCELEMENTASSEMBLY"
                     )
                 {
                     assert!(sk_model::Guid::from_ifc(g).is_some(), "{name}: {g}");
@@ -157,9 +159,30 @@ fn datei_ist_vollstaendig_und_eindeutig() {
                 *drin.entry(x).or_default() += 1;
             }
         }
-        for (g, (i, _)) in &im {
-            assert_eq!(drin.get(i), Some(&1), "{name}: {g}");
+        // … direkt oder über genau eine Baugruppe (Wandzug, I4), nie beides
+        let mut teil_von: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (_, e) in f.all("IFCRELAGGREGATES") {
+            let ganz = liste(&e.args[4])[0];
+            if f.get(ganz).unwrap().name == "IFCELEMENTASSEMBLY" {
+                for x in liste(&e.args[5]) {
+                    teil_von.entry(x).or_default().push(ganz);
+                }
+            }
         }
+        let mut gruppen = HashSet::new();
+        for (g, (i, _)) in &im {
+            match teil_von.get(i).map(Vec::as_slice) {
+                Some(&[a]) => {
+                    assert_eq!(drin.get(i), None, "{name}: {g} auch direkt");
+                    assert_eq!(drin.get(&a), Some(&1), "{name}: Baugruppe von {g}");
+                    gruppen.insert(a);
+                }
+                None => assert_eq!(drin.get(i), Some(&1), "{name}: {g}"),
+                Some(v) => panic!("{name}: {g} in {} Baugruppen", v.len()),
+            }
+        }
+        assert_eq!(gruppen.len(), b.baugruppen, "{name}");
+        assert_eq!(f.all("IFCELEMENTASSEMBLY").count(), b.baugruppen, "{name}");
         assert_eq!(f.all("IFCBUILDINGSTOREY").count(), b.geschosse, "{name}");
         assert_eq!(f.all("IFCPROJECT").count(), 1);
         assert_eq!(f.all("IFCSITE").count(), 1);
@@ -723,4 +746,65 @@ fn georeferenz_aus_landeskoordinaten() {
             None => assert_eq!(site.args[11], V::Null),
         }
     }
+}
+
+/// I4: Ein Wandzug mit mehr als einer Wand ist eine Baugruppe mit seiner
+/// Kennung, die Wände sind ihre Teile, in der Folge der Segmente.
+#[test]
+fn wandzug_als_baugruppe() {
+    for (name, t) in HAEUSER {
+        let m = laden(t);
+        let (ifc, b) = export(&m, &opt());
+        let f = step::read(&ifc).unwrap();
+        let kennung = |i: u32| text(&f.get(i).unwrap().args[0]).to_string();
+        let mut teile: HashMap<String, Vec<String>> = HashMap::new();
+        for (_, e) in f.all("IFCRELAGGREGATES") {
+            let ganz = liste(&e.args[4])[0];
+            if f.get(ganz).unwrap().name == "IFCELEMENTASSEMBLY" {
+                let t = liste(&e.args[5]).into_iter().map(kennung).collect();
+                teile.insert(kennung(ganz), t);
+            }
+        }
+        let solids: HashSet<_> = m.element_solids().into_iter().map(|x| x.0).collect();
+        let mut soll = 0;
+        for (_, w) in m.runs().iter() {
+            let waende: Vec<String> = w
+                .segments
+                .iter()
+                .filter(|e| solids.contains(e))
+                .map(|e| m.element(*e).unwrap().guid.to_ifc())
+                .collect();
+            if waende.len() < 2 {
+                assert!(!teile.contains_key(&w.guid.to_ifc()), "{name}");
+                continue;
+            }
+            soll += 1;
+            assert_eq!(teile.get(&w.guid.to_ifc()), Some(&waende), "{name}");
+        }
+        assert!(soll > 0, "{name}");
+        assert_eq!(b.baugruppen, soll, "{name}");
+    }
+}
+
+/// Review #90 H2: Zwei Gewerke mit derselben ATV-Nummer und verschiedenen
+/// Namen ergeben eine Beziehung mit einer Kennung, nicht zwei gleiche.
+#[test]
+fn atv_nummer_doppelt_eine_beziehung() {
+    let t = HAEUSER[0].1.replace(
+        r#"code="18338" name="Dachdeckungs- und Dachabdichtungsarbeiten""#,
+        r#"code="18330" name="Mauerarbeiten (Dach)""#,
+    );
+    assert_ne!(t, HAEUSER[0].1);
+    let (ifc, _) = export(&laden(&t), &opt());
+    let f = step::read(&ifc).unwrap();
+    let mut je_nummer: HashMap<String, usize> = HashMap::new();
+    let mut kennungen = HashSet::new();
+    for (_, e) in f.all("IFCRELASSOCIATESCLASSIFICATION") {
+        let n = text(&e.args[2]).to_string();
+        if n.starts_with("VOB/C") {
+            *je_nummer.entry(n).or_default() += 1;
+            assert!(kennungen.insert(text(&e.args[0]).to_string()));
+        }
+    }
+    assert_eq!(je_nummer.get("VOB/C DIN 18330"), Some(&1), "{je_nummer:?}");
 }
