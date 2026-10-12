@@ -304,6 +304,7 @@ mod tests {
             reveal: None,
             install: Default::default(),
             swing: None,
+            lock: Default::default(),
         }
     }
 

@@ -346,6 +346,9 @@ mod oeffnung_model;
 pub use oeffnung_model::OpeningFault;
 pub(crate) use oeffnung_model::{OpeningGrab, RawOpening};
 
+#[path = "oeffnung_schloss.rs"]
+mod oeffnung_schloss;
+
 #[path = "stapel.rs"]
 mod stapel;
 
@@ -728,6 +731,12 @@ impl Model {
         let pen = attr.add_pen(pen);
         let mut d = attr.display().clone();
         d.pattern.pen = pen;
+        attr.set_display(d);
+        // Einbauelement (Integration F20): Linientyp „Strichlinie fein“,
+        // ebenfalls mit fester Guid
+        let lt = attr.add_line_type(attr::element_line_type());
+        let mut d = attr.display().clone();
+        d.element.line_type = lt;
         attr.set_display(d);
         // Paket 1a: Gewerk je Startbaustoff
         let ids: Vec<MaterialId> = materials.ids().collect();
@@ -3237,10 +3246,6 @@ impl Model {
                 t.run(r);
             }
         }
-        // Öffnungen treffen die Außenwände an ihrem Pfad
-        for r in openings {
-            t.run(r);
-        }
         for r in floors {
             self.runs_under_floor(r).into_iter().for_each(|i| t.run(i));
         }
@@ -3248,6 +3253,11 @@ impl Model {
         let runs = t.runs.clone();
         for r in runs {
             self.joined_runs(r).into_iter().for_each(|p| t.run(p));
+        }
+        // Öffnungen treffen nur die Wände an ihrem Pfad: Ein Loch ändert
+        // weder die angeschlossenen Züge noch die darüber (Review #109 B4)
+        for r in openings {
+            t.run(r);
         }
         t.runs
     }
@@ -3871,6 +3881,17 @@ impl Model {
                 let (p, q) = (r.points[k], r.points[(k + 1) % n]);
                 if (q - p).length() < 1.0 {
                     out.push(format!("Wandzug {id:?}: Segment {} ohne Länge", k + 1));
+                }
+            }
+            // Keine Gehrung kippt einen Körper: dieselbe Regel wie beim
+            // Ziehen des Wandendes (Review #87 B5), hier an den Flächen nach
+            // dem Zuschnitt (#98), für gezeichnete und geladene Züge
+            if let Some(c) = self.chain(id) {
+                for k in c.koerper_kippt() {
+                    out.push(format!(
+                        "Wandzug {id:?}: Gehrung an Segment {} gekippt",
+                        k + 1
+                    ));
                 }
             }
             if let Some(lower) = self.run_below(id).and_then(|b| self.run(b)) {

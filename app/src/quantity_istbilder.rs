@@ -514,7 +514,7 @@ fn istbilder_druckvorschau_gross() {
         q.sync(&mut s, &b.p, false);
         let a = q.ava.as_mut().unwrap();
         a.zeige_druckvorschau(1);
-        let xy = a.blatt_mitte(&b.t, &b.fonts);
+        let xy = a.lupe_mitte(&b.t, &b.fonts);
         a.mouse_move(&b.t, &b.fonts, &mut b.p, xy.0, xy.1);
         if gross {
             a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
@@ -522,6 +522,68 @@ fn istbilder_druckvorschau_gross() {
         }
         q.sync(&mut s, &b.p, false);
         b.ablegen(&mut q, name);
+    }
+}
+
+/// Druckvorschau mit dem Modell verknüpft (Jörn 12.10.): Klick auf eine
+/// Position klein, Auswahl aus dem Modell auf einer anderen Seite, groß.
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_druckvorschau_verknuepft() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mods = sk_platform::Modifiers::default();
+    let mut s = standardhaus();
+    for (name, w, h, scale) in [
+        ("ist-verknuepft", 960, 1040, 1.0_f32),
+        ("ist-verknuepft-150", 720, 1100, 1.5),
+    ] {
+        b.p = Picking::default();
+        let mut q = QuantityWindow::new();
+        q.datei = "haus.szo".into();
+        q.title.scale = scale;
+        (q.w, q.h) = (w, h);
+        q.sync(&mut s, &b.p, false);
+        q.waehlen(Blatt::Ava, &b.t);
+        q.sync(&mut s, &b.p, false);
+        q.ava.as_mut().unwrap().zeige_druckvorschau(0);
+        q.sync(&mut s, &b.p, false);
+        // Klein: Klick auf die erste Position, die Maus bleibt darüber
+        let a = q.ava.as_mut().unwrap();
+        let (xy, _) = a
+            .stelle_auf(&b.t, &b.fonts, 0)
+            .expect("Position auf Seite 1");
+        a.mouse_move(&b.t, &b.fonts, &mut b.p, xy.0, xy.1);
+        a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+        q.sync(&mut s, &b.p, false);
+        b.ablegen(&mut q, &format!("{name}-klick.png"));
+        // Auswahl im Modell: eine Position auf Seite 2, die Vorschau folgt
+        let a = q.ava.as_mut().unwrap();
+        a.mouse_leave(&mut b.p);
+        let (_, ids) = a
+            .stelle_auf(&b.t, &b.fonts, 1)
+            .expect("Position auf Seite 2");
+        b.p.selected = ids;
+        q.sync(&mut s, &b.p, false);
+        q.ava.as_mut().unwrap().blatt_folgen(&b.fonts);
+        b.ablegen(&mut q, &format!("{name}-modell.png"));
+        // Groß: über die Lupe, die Auswahl bleibt markiert
+        let a = q.ava.as_mut().unwrap();
+        let xy = a.lupe_mitte(&b.t, &b.fonts);
+        a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+        q.sync(&mut s, &b.p, false);
+        b.ablegen(&mut q, &format!("{name}-gross.png"));
     }
 }
 

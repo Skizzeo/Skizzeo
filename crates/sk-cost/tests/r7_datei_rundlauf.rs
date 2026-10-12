@@ -40,6 +40,12 @@ const HAEUSER: [(&str, &str); 5] = [
     // `north`, Fußpunkt `x`/`y`, `utm_e`, `utm_n`, `utm_zone`, `nhn`)
     // seit #99 im EG von Gebäude 2 eine Innenwand mit Innentür an der
     // eigenen Innentürlinie (`door=`), Aufschlag `swing` und `din`
+    // seit #107 die Schnelloption je Ansicht (`[viewhide]` für Grundriss und
+    // Vorderansicht, `cat=downpipe`) und die Bodenkennwerte als `[soil]`
+    // neben den alten Werten an `[project]` (gleiche Werte, Mengen bleiben)
+    // seit G3 zwei Räume (`[space]`): einer mit `stamp`, `use` auf die
+    // Werksvorlage Wohnzimmer und `factor=0.5`, einer nur mit Anker und
+    // einem Namen mit Anführungszeichen
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
