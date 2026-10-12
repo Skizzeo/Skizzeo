@@ -2178,6 +2178,7 @@ pub fn offset_note(m: &Model, wall: ElementId) -> Option<String> {
 
 /// Zahl mit Dezimalkomma und Tausenderpunkt.
 pub fn de(v: f64, dec: usize) -> String {
+    let v = kaufmaennisch(v, dec);
     let neg = v < 0.0 && (v * 10f64.powi(dec as i32)).round() != 0.0;
     let s = format!("{:.*}", dec, v.abs());
     let (int, frac) = match s.split_once('.') {
@@ -2201,6 +2202,16 @@ pub fn de(v: f64, dec: usize) -> String {
         out.push_str(&f);
     }
     out
+}
+
+/// Kaufmännisch auf `dec` Stellen: Die Hälfte rundet vom Nullpunkt weg,
+/// auch wenn die Rechnung sie als Binärzahl knapp darunter ablegt
+/// (4,5675 → 4,568, 23,815 → 23,82; Raumbuch RB5 mit Innenwänden, deren
+/// Achse auf halben Millimetern liegt).
+pub fn kaufmaennisch(v: f64, dec: usize) -> f64 {
+    let f = 10f64.powi(dec as i32);
+    let y = v * f;
+    (y + y.signum() * y.abs().max(1.0) * 1e-9).round() / f
 }
 
 fn m_len(mm: f64) -> String {

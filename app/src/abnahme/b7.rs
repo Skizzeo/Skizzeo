@@ -258,7 +258,9 @@ fn baustoff_summe(v: &[(String, f64, Option<f64>)], name: &str) -> (f64, Option<
 /// A88 (B7 Aufbau, Gruppierung): Ein Gebäude GB-01; Gruppen nach Bauablauf:
 /// Fundament (FS-001, SP-001 nach Kostengruppe 322, obwohl die Sohlplatte zum
 /// EG gehört), EG (AW-001…004, IW-001, DE-001), OG (AW-005…008, DE-002);
-/// innerhalb der Gruppe nach Nummer. Jedes Bauteil ist an ein Geschoss des
+/// innerhalb der Gruppe nach Nummer. Seit Raumbuch RB5 folgen je Geschoss
+/// die Räume (G3): im EG R-001 und R-003 links und rechts der Innenwand,
+/// im OG R-002. Jedes Bauteil ist an ein Geschoss des
 /// Gebäudes gebunden (A-09). Die Liste wird nie gespeichert.
 #[test]
 fn a88_gliederung_nach_bauablauf() {
@@ -282,12 +284,14 @@ fn a88_gliederung_nach_bauablauf() {
             ),
             ("EG".into(), Category::InteriorWall, n(&["IW-001"])),
             ("EG".into(), Category::Floor, n(&["DE-001"])),
+            ("EG".into(), Category::Space, n(&["R-001", "R-003"])),
             (
                 "OG".into(),
                 Category::ExteriorWall,
                 n(&["AW-005", "AW-006", "AW-007", "AW-008"])
             ),
             ("OG".into(), Category::Floor, n(&["DE-002"])),
+            ("OG".into(), Category::Space, n(&["R-002"])),
         ]
     );
     // Jedes Bauteil der Liste ist im Modell an ein Geschoss des Gebäudes
@@ -295,7 +299,7 @@ fn a88_gliederung_nach_bauablauf() {
     // Kostengruppe 322, im Modell heute am EG) ist es das der Gruppe
     let m = s.model();
     let z = zeilen(m, &l);
-    assert_eq!(z.len(), 13, "alle Bauteile, keines doppelt");
+    assert_eq!(z.len(), 16, "alle Bauteile und Räume, keines doppelt");
     for x in &z {
         let (_, el) = m
             .elements()
@@ -469,7 +473,11 @@ fn a91_tasche_nicht_doppelt() {
 
 /// A92 (B7 Summen, „Immer aktuell“): Summe nach Baustoff GB-01: Stahlbeton
 /// 57,6407 m³, Porenbeton 34,9210 m³, Dämmung (WDVS) 28,3307 m³ / 205,56 m²
-/// (aus ungerundeten Werten). Gummiband EG-Wand y = 8 um +1 m: SP 90,00 m²,
+/// (aus ungerundeten Werten). Seit Raumbuch RB5 dazu der Ausbau der drei
+/// Räume (Vorlage Wohnzimmer) auf 135,6065 m² Boden bis Putz: Estrich
+/// 6,5 cm, Trittschall 3 cm, Wärmedämmung 4 cm im EG und 4,5 cm im OG,
+/// Parkett 2 cm, Abdichtung 0,5 cm nur auf der Sohlplatte, Gipsputz an
+/// Wänden und Decken. Gummiband EG-Wand y = 8 um +1 m: SP 90,00 m²,
 /// DE-001 und DE-002 je 84,7584 m², ohne Knopfdruck.
 #[test]
 fn a92_summe_nach_baustoff_und_immer_aktuell() {
@@ -483,7 +491,17 @@ fn a92_summe_nach_baustoff_und_immer_aktuell() {
         baustoff_summe(&b, "Dämmung (WDVS)"),
         (28.3307, Some(205.56))
     );
-    assert_eq!(b.len(), 3, "nur vorhandene Baustoffe: {b:?}");
+    for (name, soll) in [
+        ("Trittschalldämmung EPS-T", (4.0682, Some(135.6065))),
+        ("Wärmedämmung EPS 035 DEO", (5.767, Some(135.6065))),
+        ("Gipsputz", (4.5836, None)),
+        ("Abdichtung Bitumenbahn, Sohlplatte", (0.3353, None)),
+        ("Zementestrich CT-C25-F4", (8.8144, None)),
+        ("Parkett Eiche", (2.7121, None)),
+    ] {
+        assert_eq!(baustoff_summe(&b, name), soll, "{name}");
+    }
+    assert_eq!(b.len(), 9, "nur vorhandene Baustoffe: {b:?}");
     // Gummiband
     ziehen_am_fuss(&mut s, 0.0, 1000.0);
     let l = liste(&mut s);
@@ -508,7 +526,11 @@ fn a93_ohne_koerper_mit_grund() {
     assert!(s.edit_model("Rücksprung", |m| m.set_slab_recess(slab, 400.0)));
     let l = liste(&mut s);
     let z = zeilen(s.model(), &l);
-    assert_eq!(z.len(), 13, "keine Zeile verschwunden");
+    assert_eq!(
+        z.len(),
+        16,
+        "keine Zeile verschwunden (13 Bauteile, 3 Räume)"
+    );
     for nr in ["SP-001", "FS-001"] {
         let x = zeile(&z, nr);
         assert!(x.q.is_none(), "{nr}: keine Mengen");

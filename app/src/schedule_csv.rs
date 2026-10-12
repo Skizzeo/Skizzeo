@@ -4,9 +4,10 @@
 
 use super::*;
 
-/// Zahl für die .csv: Dezimalkomma, 4 Nachkommastellen, ASCII-Minus.
+/// Zahl für die .csv: Dezimalkomma, 4 Nachkommastellen kaufmännisch,
+/// ASCII-Minus.
 pub(super) fn csv_num(v: f64) -> String {
-    let s = format!("{:.4}", v);
+    let s = format!("{:.4}", kaufmaennisch(v, 4));
     let s = if s == "-0.0000" { "0.0000".into() } else { s };
     s.replace('.', ",")
 }
