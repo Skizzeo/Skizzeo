@@ -3,10 +3,13 @@
 //! Aussparung in dieser Schicht größer als 2,5 m² ist (DIN 18330, 18345,
 //! 18350, 18363 je Abschnitt 5); kleinere werden übermessen. Teilstücke
 //! einer Ecköffnung oder einer geschossübergreifenden Öffnung sind eine
-//! Aussparung: Die Schwelle gilt für ihre Summe in derselben Schicht des
-//! Wandtyps. Jede Schicht hat ihr eigenes Loch (vob/oeffnung-vorgabe.md
-//! §2): Zwei Lagen aus demselben Baustoff, etwa Dämmung 2 × 70 mm, werden
-//! je für sich gegen die Grenze geprüft (Review W24 B1).
+//! Aussparung: Die Schwelle gilt für ihre Summe in derselben Schicht. Jede
+//! Schicht hat ihr eigenes Loch (vob/oeffnung-vorgabe.md §2): Zwei Lagen
+//! aus demselben Baustoff, etwa Dämmung 2 × 70 mm, werden je für sich
+//! gegen die Grenze geprüft (Review W24 B1). Dieselbe Schicht ist über
+//! Wände hinweg das k-te Vorkommen ihres Baustoffs in der Wand, nicht die
+//! Stelle im Wandtyp: So summiert eine Öffnung über zwei Geschosse mit
+//! verschiedenen Wandtypen ihre Teile im selben Baustoff (Review #88 L14).
 //!
 //! Das Volumen der Mengenzeile verliert ein Loch nur über 0,5 m³ (DIN
 //! 18330, 18331 Abschnitt 5, Kosten H79-1), ebenfalls je Aussparung und
@@ -68,9 +71,16 @@ pub fn ueber_grenze_vol(v: f64) -> bool {
     (v / 1e6).round() > UEBERMESSEN_BIS_VOL / 1e6
 }
 
-/// Lochfläche und -volumen je Öffnung und Schicht (Stelle im Wandtyp und
-/// Baustoff) über alle Wände der Geschosse.
-pub(crate) type Summen = HashMap<(ElementId, usize, MaterialId), (f64, f64)>;
+/// Lochfläche und -volumen je Öffnung und Schicht (Baustoff und sein
+/// k-tes Vorkommen in der Wand) über alle Wände der Geschosse.
+pub(crate) type Summen = HashMap<(ElementId, MaterialId, usize), (f64, f64)>;
+
+/// Schlüssel der Schicht `i` einer Wand: Baustoff und wie oft er davor
+/// schon vorkam.
+fn schicht(layers: &[LayerQto], i: usize) -> Option<(MaterialId, usize)> {
+    let m = layers.get(i)?.material;
+    Some((m, layers[..i].iter().filter(|l| l.material == m).count()))
+}
 
 pub(crate) fn summen(storeys: &[StoreyQto]) -> Summen {
     let mut s = Summen::new();
@@ -82,8 +92,11 @@ pub(crate) fn summen(storeys: &[StoreyQto]) -> Summen {
             continue;
         };
         for (i, l) in w.layers.iter().enumerate() {
+            let Some((m, k)) = schicht(&w.layers, i) else {
+                continue;
+            };
             for h in &l.holes {
-                let x = s.entry((h.opening, i, l.material)).or_default();
+                let x = s.entry((h.opening, m, k)).or_default();
                 x.0 += h.area;
                 x.1 += h.volume;
             }
@@ -93,12 +106,15 @@ pub(crate) fn summen(storeys: &[StoreyQto]) -> Summen {
 }
 
 /// Die Löcher der Wandschicht `i` mit der Fläche ihrer ganzen Aussparung.
-pub(crate) fn loecher(l: &LayerQto, i: usize, s: &Summen) -> Vec<Loch> {
+pub(crate) fn loecher(layers: &[LayerQto], i: usize, s: &Summen) -> Vec<Loch> {
+    let (Some(l), Some((m, k))) = (layers.get(i), schicht(layers, i)) else {
+        return Vec::new();
+    };
     l.holes
         .iter()
         .map(|h| {
             let (total, total_vol) = s
-                .get(&(h.opening, i, l.material))
+                .get(&(h.opening, m, k))
                 .copied()
                 .unwrap_or((h.area, h.volume));
             Loch {
