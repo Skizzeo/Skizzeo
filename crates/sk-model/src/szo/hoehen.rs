@@ -173,8 +173,12 @@ mod tests {
             assert!(neu.lines().any(|z| z == roh), "{roh}: Zeile bleibt roh");
             assert!(write(&load(&neu).model) == neu, "{roh}: stabil");
             let mut m3 = l.model;
+            // Ziehen und Esc (Review #92 L16): die rohe Zeile kommt zurück
+            let vorher = m3.plan_cut_state();
             m3.set_plan_cut_height(1200.0);
             assert!(!write(&m3).lines().any(|z| z == roh), "{roh}: ersetzt");
+            m3.restore_plan_cut(vorher);
+            assert_eq!(write(&m3), neu, "{roh}: nach Esc wie vorher");
         }
         let doppelt = format!("{alt}[plancut] h=1000\n[plancut] h=1100\n");
         assert!(read(&doppelt, GuidGen::with_seed(99)).is_err());

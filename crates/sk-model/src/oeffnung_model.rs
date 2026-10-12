@@ -676,7 +676,9 @@ impl Model {
 
     /// Lage der Öffnungen um den Zug `run` vor seiner Änderung: aus dem
     /// offenen Schritt, beim ersten Ziehen dieses Zugs im Schritt ergänzt.
-    /// Zurück in den Schritt mit [`Model::keep_opening_grab`].
+    /// Zurück in den Schritt mit [`Model::keep_opening_grab`]. Ändert
+    /// `set_opening` eine gemerkte Öffnung im selben Schritt, springt sie
+    /// beim nächsten Ziehen auf ihren Anker zurück (Review #92).
     pub(crate) fn opening_grab(&mut self, run: RunId) -> OpeningGrab {
         let mut g = self
             .txn

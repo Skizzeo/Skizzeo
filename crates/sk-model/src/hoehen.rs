@@ -40,8 +40,11 @@ pub const FLOOR_BUILDUP: f64 = 160.0;
 /// Fangweite der Innentürlinie an den Normhöhen (mm).
 pub const DOOR_CATCH: f64 = 30.0;
 /// Vorgabe der Innentürlinie (mm über OK Rohdecke): die kleinste Normhöhe
-/// über dem Fußbodenaufbau (Jörn 12.10. 05:26, 05:58).
-pub const DOOR: f64 = DOOR_HEIGHTS[0] + FLOOR_BUILDUP;
+/// über dem Fußbodenaufbau (Jörn 12.10. 05:26, 05:58). Sie ist zugleich
+/// die Bedeutung eines fehlenden `door=` in der Datei und bleibt deshalb
+/// fest, auch wenn später `Model::floor_buildup` je Geschoss kommt: neue
+/// Geschosse setzen ihre Linie dann ausdrücklich (Integration 06:00).
+pub const DOOR: f64 = 2165.0;
 
 /// Innentürlinie `h` (mm über OK Rohdecke) auf eine Normhöhe über dem
 /// Fußbodenaufbau gefangen, wenn sie näher als [`DOOR_CATCH`] liegt.
@@ -52,6 +55,8 @@ pub fn door_snap(h: f64) -> f64 {
         .find(|z| (h - z).abs() < DOOR_CATCH)
         .unwrap_or(h)
 }
+
+const _: () = assert!(DOOR == DOOR_HEIGHTS[0] + FLOOR_BUILDUP);
 
 /// Höhenlinien eines Geschosses über OK Rohdecke (mm): Brüstung und Sturz
 /// der Fenster, Oberkante der Innentüren. Öffnungen binden ihre Unter- und
@@ -121,7 +126,23 @@ impl Model {
         self.plan_cut = h;
         self.plan_cut_raw = raw;
     }
+
+    /// Stand der Schnitthöhe samt roher Zeile, zum Zurückstellen nach
+    /// **Esc** (Review #92 L16: über [`Model::set_plan_cut_height`] ginge
+    /// die rohe Zeile verloren).
+    pub fn plan_cut_state(&self) -> PlanCutState {
+        PlanCutState(self.plan_cut, self.plan_cut_raw.clone())
+    }
+
+    /// Stellt einen mit [`Model::plan_cut_state`] gemerkten Stand zurück.
+    pub fn restore_plan_cut(&mut self, s: PlanCutState) {
+        self.load_plan_cut(s.0, s.1);
+    }
 }
+
+/// Gemerkter Stand der Schnitthöhe ([`Model::plan_cut_state`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanCutState(Option<f64>, Option<String>);
 
 #[cfg(test)]
 mod tests {

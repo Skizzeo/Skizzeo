@@ -62,6 +62,23 @@ impl Scene {
         }
     }
 
+    /// Schnitthöhe beim Ziehen im Geschossmanager auf die Kote `z` des
+    /// aktiven Geschosses, höchstens bis 1 mm unter UK Decke: darüber fiele
+    /// die Linie aus ihrem Band und wäre nicht mehr zu greifen (Review #92
+    /// H4).
+    pub fn drag_plan_cut(&mut self, z: f64) {
+        let st = self.active_storey();
+        let el = self.model.storey(st).map_or(0.0, |s| s.elevation);
+        let h = (z - el).min(self.model.clear_height(st) - 1.0);
+        self.model.set_plan_cut_height(h);
+    }
+
+    /// Stellt die Schnitthöhe nach **Esc** samt roher Dateizeile zurück
+    /// (Review #92 H3, L16).
+    pub fn restore_plan_cut(&mut self, s: sk_model::hoehen::PlanCutState) {
+        self.model.restore_plan_cut(s);
+    }
+
     /// Legt die Öffnung `o` als einen Schritt an. Neu gerechnet werden nur
     /// die Züge, die sie berührt (Review #86, B1: nicht alle Züge).
     pub fn add_opening(&mut self, o: Opening) -> Option<ElementId> {
@@ -199,6 +216,25 @@ mod tests {
         let l = s.model().storey(st).unwrap().lines;
         assert_eq!(l, sk_model::hoehen::HeightLines::default());
         assert!(s.outer_face_at(low, d).is_none());
+    }
+
+    /// Schnitthöhe im Geschossmanager (Review #92 H3, H4): Ziehen endet
+    /// 1 mm unter UK Decke des aktiven Geschosses; Esc stellt den Stand vom
+    /// Greifen zurück.
+    #[test]
+    fn schnitthoehe_ziehen_und_zurueck() {
+        let mut s = Scene::new();
+        let st = s.active_storey();
+        let el = s.model().storey(st).unwrap().elevation;
+        let clear = s.model().clear_height(st);
+        let vorher = s.model().plan_cut_state();
+        s.drag_plan_cut(el + 9000.0);
+        assert_eq!(s.model().plan_cut_height(), (clear - 1.0).round());
+        s.drag_plan_cut(el + 1000.0);
+        assert_eq!(s.model().plan_cut_height(), 1000.0);
+        s.restore_plan_cut(vorher.clone());
+        assert_eq!(s.model().plan_cut_state(), vorher);
+        assert_eq!(s.model().plan_cut_height(), sk_model::hoehen::PLAN_CUT);
     }
 
     /// Einbauelement im Grundriss (Jörn 12.10. 05:24): zwei dünn
