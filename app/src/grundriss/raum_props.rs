@@ -35,7 +35,7 @@ pub fn props(
         ("Fläche (Rohbau)", format!("{} m²", de(f.flaeche / 1e6, 2))),
         ("Umfang (Rohbau)", format!("{} m", de(f.umfang / 1e3, 2))),
     ]);
-    values.extend(super::raumbuch::werte(m, f));
+    values.extend(super::raumbuch::werte(m, &scene.ketten(), f));
     let mut waende: Vec<ElementId> = Vec::new();
     for k in f.umriss.iter().chain(f.loecher.iter().flatten()) {
         let Begrenzung::Wand { wand, .. } = k.quelle;

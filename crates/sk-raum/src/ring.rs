@@ -267,4 +267,24 @@ mod tests {
             );
         }
     }
+
+    /// Review #112 B2: 1 mm Knick auf 2 m mit verschiedenem Putz (15, mit
+    /// Fliesen 30) stuft statt zu gehren; Längen und Fläche wie in der
+    /// Flucht, ohne Kante der Länge null.
+    #[test]
+    fn knick_ein_millimeter_stuft() {
+        let r = vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(2000.0, 0.0, 0.0),
+            vec3(4000.0, 1.0, 0.0),
+            vec3(4000.0, 3000.0, 0.0),
+            vec3(0.0, 3000.0, 0.0),
+        ];
+        let v = versetzt(&r, &[15.0, 30.0, 15.0, 15.0, 15.0]);
+        for k in [0, 1] {
+            assert!((v.laengen[k] - 1985.0).abs() < 1.0, "{:?}", v.laengen);
+        }
+        let a = v.flaeche() / 1e6;
+        assert!((a - 11.760).abs() < 0.005, "{a} m²");
+    }
 }

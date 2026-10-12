@@ -10,7 +10,7 @@ use sk_model::Model;
 use sk_raum::ausbau::{self, RaumAusbau};
 use sk_raum::oeffnungen::Rohbau;
 use sk_raum::raumbuch::{self, Bezug, Flaeche, Regeln, Zeile};
-use sk_raum::RaumForm;
+use sk_raum::{Ketten, RaumForm};
 
 /// Gehört eine Zeile des Raumbuchs zu einer Fläche im Paneel?
 type Gehoert = fn(Flaeche) -> bool;
@@ -25,8 +25,9 @@ const FLAECHEN: [(&str, Gehoert); 6] = [
     ("Sockelleiste", |f| f == Flaeche::Sockel),
 ];
 
-/// Zeilen für das Paneel des Raums mit der Form `form`.
-pub fn werte(m: &Model, form: &RaumForm) -> Vec<(&'static str, String)> {
+/// Zeilen für das Paneel des Raums mit der Form `form`, die Wandzüge aus
+/// `k` (die berechneten der Szene, Review #112 B1).
+pub fn werte(m: &Model, k: &impl Ketten, form: &RaumForm) -> Vec<(&'static str, String)> {
     let mut v = Vec::new();
     let g = ausbau::nutzung(m, form);
     let Some(s) = ausbau::vorlage(m, g) else {
@@ -40,7 +41,7 @@ pub fn werte(m: &Model, form: &RaumForm) -> Vec<(&'static str, String)> {
     if !gewaehlt {
         v.push(("", VORGABE.into()));
     }
-    let roh = Rohbau::neu(m, form.clone());
+    let roh = Rohbau::mit(m, k, form.clone());
     let Some(a) = RaumAusbau::fuer(m, &roh) else {
         return v;
     };

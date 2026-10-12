@@ -50,7 +50,7 @@ fn raum_geschosse(t: &Txn) -> Option<Vec<StoreyId>> {
 /// Ketten für die Raumerkennung aus den berechneten Wandzügen; ein Zug,
 /// der neu gerechnet werden muss, kommt aus dem Modell. Fassung ist der
 /// Bauzähler des Zugs.
-struct SzenenKetten<'a> {
+pub(crate) struct SzenenKetten<'a> {
     model: &'a Model,
     cache: &'a [Option<RunCache>],
     dirty: &'a [RunId],
@@ -83,7 +83,9 @@ impl sk_raum::Ketten for SzenenKetten<'_> {
 }
 
 impl Scene {
-    fn ketten(&self) -> SzenenKetten<'_> {
+    /// Ketten der Wandzüge aus den berechneten der Szene, für Erkennung und
+    /// Raumbuch (Review #112 B1).
+    pub(crate) fn ketten(&self) -> SzenenKetten<'_> {
         SzenenKetten {
             model: &self.model,
             cache: &self.cache,

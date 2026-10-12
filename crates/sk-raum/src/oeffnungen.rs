@@ -6,8 +6,10 @@
 //! Löcher in ihrer Reihenfolge ([`Rohbau::kanten`]).
 
 use crate::erkennung::{Begrenzung, Kante, RaumForm, Seite};
+use crate::speicher::Ketten;
 use sk_model::oeffnung::FaceSide;
-use sk_model::{ElementId, LevelKind, Model, RunId, WallChain};
+use sk_model::{ElementId, LevelKind, Model, RunId, StoreyId, WallChain};
+use std::borrow::Cow;
 
 /// Art der Öffnung für das Raumbuch. Das Modell kennt die Innentür als Tür
 /// in einer Innenwand (Öffnungen #99), das Raumbuch rechnet sie anders als
@@ -68,9 +70,17 @@ pub struct Rohbau {
 }
 
 impl Rohbau {
+    /// Rohbau des Raums, die Wandzüge aus dem Modell.
     pub fn neu(model: &Model, form: RaumForm) -> Rohbau {
+        Rohbau::mit(model, model, form)
+    }
+
+    /// Wie [`Rohbau::neu`], die Wandzüge aus `k`: in der App die berechneten
+    /// der Szene, damit das Paneel nicht je Zug die Kette neu rechnet
+    /// (Review #112 B1).
+    pub fn mit(model: &Model, k: &(impl Ketten + ?Sized), form: RaumForm) -> Rohbau {
         let (z_boden, z_decke) = hoehen_roh(model, &form);
-        let oeffnungen = am_raum(model, &form);
+        let oeffnungen = oeffnungen(model, k, &form, (z_boden, z_decke));
         Rohbau {
             form,
             z_boden,
@@ -105,12 +115,25 @@ pub fn hoehen_roh(model: &Model, form: &RaumForm) -> (f64, f64) {
 /// Wandsegments, das eine Kante berührt, das Stück in der Kante, im Maß der
 /// raumseitigen Schicht (hinter einer Außenschale um den Anschlag größer).
 pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
-    let mut zuege: Vec<(RunId, Option<WallChain>)> = Vec::new();
-    let (z_boden, z_decke) = hoehen_roh(model, form);
+    oeffnungen(model, model, form, hoehen_roh(model, form))
+}
+
+/// [`am_raum`] mit den Ketten aus `ketten` und den Höhen des Raums.
+fn oeffnungen(
+    model: &Model,
+    ketten: &(impl Ketten + ?Sized),
+    form: &RaumForm,
+    (z_boden, z_decke): (f64, f64),
+) -> Vec<OeffnungAmRaum> {
+    let mut zuege: Vec<(RunId, Option<Cow<'_, WallChain>>)> = Vec::new();
     let andere = andere_geschosse(model, form);
+    // Die lichte Höhe eines anderen Geschosses nur, wenn die Öffnung in
+    // seinen Rohbau reicht; sonst ist ihr Stück dort ohnehin leer
     let weiter = |z0: f64, z1: f64, unten: bool| -> f64 {
         andere
             .iter()
+            .filter(|g| z1 > g.1 && z0 < g.2)
+            .map(|&(id, z, _)| (z, z + model.clear_height(id)))
             .filter(|g| {
                 if unten {
                     g.1 <= z_boden + 0.5
@@ -137,7 +160,7 @@ pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
             continue;
         };
         if !zuege.iter().any(|z| z.0 == run) {
-            zuege.push((run, model.chain(run)));
+            zuege.push((run, ketten.kette(run)));
         }
         let Some(Some(c)) = zuege.iter().find(|z| z.0 == run).map(|z| &z.1) else {
             continue;
@@ -200,9 +223,10 @@ pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
     out
 }
 
-/// OK Rohdecke und UK Rohdecke darüber der anderen Geschosse im Gebäude des
-/// Raums (mm, absolut).
-fn andere_geschosse(model: &Model, form: &RaumForm) -> Vec<(f64, f64)> {
+/// Die anderen Geschosse im Gebäude des Raums mit OK Rohdecke und Oberkante
+/// des Geschosses (mm, absolut); die lichte Höhe darin kostet einen Gang
+/// über alle Bauteile und kommt erst, wenn eine Öffnung hineinreicht.
+fn andere_geschosse(model: &Model, form: &RaumForm) -> Vec<(StoreyId, f64, f64)> {
     let Some(b) = model.storey(form.geschoss).map(|s| s.building) else {
         return Vec::new();
     };
@@ -210,17 +234,15 @@ fn andere_geschosse(model: &Model, form: &RaumForm) -> Vec<(f64, f64)> {
         .storeys()
         .iter()
         .filter(|(id, s)| *id != form.geschoss && s.building == b && s.kind == LevelKind::Storey)
-        .map(|(id, s)| (s.elevation, s.elevation + model.clear_height(id)))
+        .map(|(id, s)| (id, s.elevation, s.elevation + s.height))
         .collect()
 }
 
 /// Wandzug und Segment des Bauteils `wand` im Geschoss des Raums.
 fn segment(model: &Model, form: &RaumForm, wand: ElementId) -> Option<(RunId, usize)> {
-    model
-        .runs()
-        .iter()
-        .filter(|(_, r)| r.storey == form.geschoss)
-        .find_map(|(id, r)| Some((id, r.segments.iter().position(|&s| s == wand)?)))
+    let (run, seg) = model.segment_of(wand)?;
+    let r = model.run(run).filter(|r| r.storey == form.geschoss)?;
+    (r.segments.get(seg) == Some(&wand)).then_some((run, seg))
 }
 
 /// Liegt die Außenseite des Zugs links der Zeichenrichtung (kleinster
