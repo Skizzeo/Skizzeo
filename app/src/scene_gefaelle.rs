@@ -108,6 +108,21 @@ impl Scene {
         (Some(roof), drains)
     }
 
+    /// Abläufe zum Greifen im Grundriss: wie [`Scene::roof_drains`], aber
+    /// nur, wenn die Ebene des Dachs aktiv ist. Die Geschosse darunter
+    /// zeigen das Dach nicht (Jörn 12.10.).
+    pub fn plan_drains(&self, id: ElementId) -> (Option<ElementId>, Vec<Vec3>) {
+        let (roof, drains) = self.roof_drains(id);
+        let here = roof
+            .and_then(|r| self.model.element(r))
+            .is_some_and(|e| e.storey == self.active_storey());
+        if here {
+            (roof, drains)
+        } else {
+            (None, Vec::new())
+        }
+    }
+
     /// Zieht den Ablauf `k` des Dachaufbaus `roof` an den Punkt der
     /// Aufkantung, der `p` am nächsten liegt, mit Abstand zu den Ecken (im
     /// offenen Schritt, G4). `true`, wenn er sich bewegt hat.

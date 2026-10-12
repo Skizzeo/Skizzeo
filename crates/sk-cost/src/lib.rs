@@ -10,7 +10,7 @@
 pub mod abgleich;
 pub mod ablauf;
 pub mod befund;
-pub mod din276;
+pub use sk_model::din276;
 pub mod einheit;
 pub mod erweiterung;
 pub mod geld;
