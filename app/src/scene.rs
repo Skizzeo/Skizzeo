@@ -26,6 +26,7 @@ use sk_ui::theme::Theme;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "scene_gefaelle.rs"]
 mod gefaelle;
@@ -501,8 +502,13 @@ pub type KostenLive = (Rc<sk_cost::Katalog>, Vec<Rc<sk_cost::Kostenblatt>>);
 /// Schlüssel eines gemerkten LV: Kostenblatt, Modellstand, Wahl.
 type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
 
+/// Zählt die Szenen für [`Scene::kennung`].
+static SZENEN: AtomicU64 = AtomicU64::new(0);
+
 pub struct Scene {
     model: Model,
+    /// Kennung dieser Szene ([`Scene::kennung`]).
+    kennung: u64,
     /// Deckendicke über den Geschossen je Modellstand ([`schnitt`]).
     decken: schnitt::Decken,
     /// Rolle dieser Sitzung für Kostenoperationen (KA-3b1): `Nutzer`, wenn
@@ -863,6 +869,7 @@ impl Scene {
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
             model,
+            kennung: SZENEN.fetch_add(1, Ordering::Relaxed),
             decken: Default::default(),
             undo: Vec::new(),
             serial: 0,
@@ -1091,6 +1098,12 @@ impl Scene {
 
     pub fn model(&self) -> &Model {
         &self.model
+    }
+
+    /// Unterscheidet Szenen (Neu, Öffnen, Sicherung) auch bei gleichem
+    /// Modellstand, für Zwischenspeicher außerhalb der Szene (Review #87 R4).
+    pub fn kennung(&self) -> u64 {
+        self.kennung
     }
 
     /// Aktives Geschoss; gibt es das gewählte nicht mehr, das EG des ersten

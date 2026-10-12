@@ -137,6 +137,8 @@ struct Anlass {
 /// Stempel des aktiven Geschosses mit Maus- und Tastenzustand.
 #[derive(Default)]
 pub struct Stempel {
+    /// Szene, zu der alles Folgende gehört ([`Scene::kennung`]).
+    szene: Option<u64>,
     /// Erkannte Flächen mit Grundfläche (mm²), je Modellstand und Geschoss.
     formen: Option<Formen>,
     /// Wofür `bilder` ausgelegt sind.
@@ -236,6 +238,19 @@ impl Stempel {
         self.hover.is_some() || self.zug.is_some()
     }
 
+    /// Eine andere Szene (Neu, Öffnen, Sicherung) beginnt ohne Flächen,
+    /// Auslegung, Zug und Namensfeld der vorigen, auch bei gleichem
+    /// Modellstand (Review #87 R4).
+    fn szene(&mut self, s: &Scene) {
+        if self.szene != Some(s.kennung()) {
+            *self = Stempel {
+                szene: Some(s.kennung()),
+                gelegt: self.gelegt,
+                ..Default::default()
+            };
+        }
+    }
+
     /// Holt die Flächen des aktiven Geschosses, wenn sich Modell oder
     /// Geschoss geändert haben; die Szene rechnet dabei nur Hausgruppen
     /// neu, deren Wände oder Räume sich geändert haben (Review #87 B2, R2).
@@ -279,6 +294,7 @@ impl Stempel {
         t: &Theme,
         gesperrt: &[Box],
     ) {
+        self.szene(s);
         // Nach Rückgängig gibt es den Raum im Namensfeld vielleicht nicht mehr
         if self
             .namen
@@ -487,6 +503,7 @@ impl Stempel {
     /// Namensfeld für den Raum `id` öffnen: Name markiert, Tippen
     /// überschreibt.
     pub fn oeffnen(&mut self, s: &Scene, id: ElementId) {
+        self.szene(s);
         if let Some(r) = s.model().space(id) {
             self.namen = Some(Namen {
                 raum: id,
@@ -500,6 +517,7 @@ impl Stempel {
     /// Namensfeld schließen und den Namen übernehmen; `true`, wenn er sich
     /// geändert hat.
     pub fn ab(&mut self, s: &mut Scene) -> bool {
+        self.szene(s);
         match self.namen.take() {
             Some(n) => {
                 self.liste = None;
@@ -511,6 +529,7 @@ impl Stempel {
 
     /// Esc beim Ziehen: alles wie vorher. `true`, wenn gezogen wurde.
     pub fn escape(&mut self, s: &mut Scene) -> bool {
+        self.szene(s);
         match self.zug.take() {
             Some(z) if z.offen => {
                 s.rollback();
@@ -535,6 +554,7 @@ impl Stempel {
         t: &Theme,
         aktiv: bool,
     ) -> Ausgang {
+        self.szene(s);
         let mut out = Ausgang::default();
         if !aktiv && self.is_busy() {
             out.redraw = self.hover.take().is_some();
@@ -707,6 +727,7 @@ impl Stempel {
 
     /// Taste nach [`Stempel::will`].
     pub fn key(&mut self, key: Key, mods: Modifiers, s: &mut Scene) -> Ausgang {
+        self.szene(s);
         let mut out = Ausgang {
             consumed: true,
             redraw: true,
@@ -1079,6 +1100,11 @@ mod tests {
     /// Haus 10 × 8 m mit Innenwand bei x = 3 m, direkt ins Modell (wie
     /// aus einer Datei vor G3: noch ohne Räume).
     fn szene() -> Scene {
+        szene_mit(3000.0)
+    }
+
+    /// Wie [`szene`] mit der Innenwand bei `x`.
+    fn szene_mit(x: f64) -> Scene {
         let mut m = Model::with_seed(5);
         let st = m.defaults().storey;
         let (aw, iw) = (m.defaults().exterior_wall, m.defaults().interior_wall);
@@ -1091,7 +1117,7 @@ mod tests {
         ];
         m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall)
             .unwrap();
-        let pts = [vec3(3000.0, t, 0.0), vec3(3000.0, 8000.0 - t, 0.0)];
+        let pts = [vec3(x, t, 0.0), vec3(x, 8000.0 - t, 0.0)];
         m.add_wall_run(&pts, false, RefSide::Center, st, iw, Category::InteriorWall)
             .unwrap();
         Scene::with_model(m)
@@ -1329,6 +1355,52 @@ mod tests {
     /// Review #87 R2: Ohne Änderung legt `auslegen` nicht neu aus; der
     /// Vortest über die Kästen lässt bei jedem Ausschnitt und Maßstab
     /// dieselben Stempel stehen wie die volle Prüfung.
+    /// Review #87 R4: Eine andere Szene mit gleichem Modellstand (etwa eine
+    /// ältere Fassung desselben Projekts) zeigt ihre eigenen Stempel; Zug
+    /// und Namensfeld der vorigen enden, ohne in der neuen etwas zu ändern.
+    #[test]
+    fn andere_szene_gleicher_stand() {
+        let (mut a, mut b) = (szene_mit(3000.0), szene_mit(7000.0));
+        assert_eq!(a.model().revision(), b.model().revision());
+        let c = kamera(&a);
+        let lage = |st: &Stempel| st.bilder.iter().map(mitte).collect::<Vec<_>>();
+        let mut frisch = Stempel::default();
+        auslegen(&mut frisch, &b, &c);
+        let mut st = Stempel::default();
+        auslegen(&mut st, &a, &c);
+        assert_eq!(st.bilder.len(), 2);
+        assert_ne!(lage(&st), lage(&frisch));
+        auslegen(&mut st, &b, &c);
+        assert_eq!(lage(&st), lage(&frisch));
+        // Namensfeld und angefangener Zug in a
+        let p0 = mitte(&st.bilder[0]);
+        auslegen(&mut st, &a, &c);
+        let p = mitte(&st.bilder[0]);
+        assert!(klick(&mut st, &mut a, &c, p).gewaehlt.is_some());
+        assert!(st.namen.is_some());
+        let (mods, button) = (Modifiers::default(), MouseButton::Left);
+        let (x, y) = p;
+        maus(&mut st, &mut a, &c, Event::MouseDown { button, x, y, mods });
+        maus(
+            &mut st,
+            &mut a,
+            &c,
+            Event::MouseMove {
+                x: x + 40.0,
+                y,
+                mods,
+            },
+        );
+        assert!(st.is_busy());
+        let rev = b.model().revision();
+        assert!(!st.key(Key::Escape, mods, &mut b).changed);
+        assert!(!st.ab(&mut b));
+        assert!(st.namen.is_none() && !st.is_busy());
+        assert_eq!(b.model().revision(), rev, "b bleibt, wie es war");
+        auslegen(&mut st, &b, &c);
+        assert_eq!(mitte(&st.bilder[0]), p0);
+    }
+
     #[test]
     fn vortest_und_auslegung_im_speicher() {
         let mut m = Model::with_seed(5);
