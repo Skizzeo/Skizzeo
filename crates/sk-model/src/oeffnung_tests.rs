@@ -914,11 +914,12 @@ fn oeffnung_wandert_mit_der_wand() {
     assert_eq!(m.opening(b), Some(&vorher.1));
 }
 
-/// Kosten H79-2: Der Rechenweg des Volumens nennt die Löcher als Term
-/// „Öffnung“; ihr Volumen landet nicht im Ausgleich.
+/// Kosten H79-2: Der Rechenweg des Volumens nennt jedes Loch; ihr Volumen
+/// landet nicht im Ausgleich. Das Fenster 1,25 × 1,51 m ist kleiner als
+/// 0,5 m³ je Schicht und wird nach VOB/C übermessen.
 #[test]
 fn rechenweg_mit_oeffnung() {
-    use crate::rechenweg::{weg, Bezug, Modus};
+    use crate::rechenweg::{weg, Art, Bezug, Modus};
     let (mut m, eg, _) = haus(None);
     let ausgleich = |m: &Model| -> Vec<bool> {
         crate::qto::schedule(m)
@@ -933,13 +934,11 @@ fn rechenweg_mit_oeffnung() {
     assert_eq!(ausgleich(&m), vorher, "Lochvolumen im Ausgleich");
     let rows = crate::qto::schedule(&m).layer_rows(&m);
     let mut n = 0;
-    for (_, r) in &rows {
-        let Some(p) = r.parts.as_ref().filter(|p| p.loecher == 1) else {
-            continue;
-        };
+    for (_, r) in rows.iter().filter(|(_, r)| !r.holes.is_empty()) {
         let w = weg(&m, r, Bezug::Volumen, Modus::Vob).unwrap();
-        let t = w.terme.iter().find(|t| t.text == "Öffnung").unwrap();
-        assert!((t.wert + p.loch_volumen).abs() < 1e-6 && p.loch_volumen > 0.0);
+        let t = w.terme.iter().find(|t| t.text.contains("OE-")).unwrap();
+        assert_eq!(t.art, Art::Hinweis, "{}", t.text);
+        assert!(t.text.contains("bis 0,5 m³"), "{}", t.text);
         assert!((w.menge() - r.volume).abs() < 1e-3);
         n += 1;
     }

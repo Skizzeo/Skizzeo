@@ -878,7 +878,7 @@ const RH5: Soll = Soll {
             33000,
         ),
         (
-            "Auslaufbogen Titanzink DN 100 am Notfallrohr, 20cm über Gelände",
+            "Auslaufbogen Titanzink DN 100, Rohrende 20cm über Gelände oder Belag",
             2000,
             2700,
             5400,

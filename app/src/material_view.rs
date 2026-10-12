@@ -122,12 +122,21 @@ pub fn input(m: &mut Model, id: MaterialId, field: &str, text: &str) -> bool {
                     x.props.remove(PRICE_UNIT);
                 }
             } else {
-                let v = match fixed.map(|p| p.kind) {
-                    Some(MatPropKind::Number) => match parse_num(text) {
-                        Some(n) => PropValue::Number(n),
-                        None => return false,
-                    },
-                    Some(MatPropKind::Text) => PropValue::Text(text.to_string()),
+                let v = match fixed.map(|p| (p.kind, p.unit)) {
+                    // die Einheit darf dabeistehen: „5 %“, „2,5 m²“ (auch
+                    // ein Altwert, der so im Feld steht; Review #77, D)
+                    Some((MatPropKind::Number, unit)) => {
+                        let t = text.trim();
+                        let t = t
+                            .strip_suffix(unit)
+                            .filter(|_| !unit.is_empty())
+                            .unwrap_or(t);
+                        match parse_num(t) {
+                            Some(n) => PropValue::Number(n),
+                            None => return false,
+                        }
+                    }
+                    Some((MatPropKind::Text, _)) => PropValue::Text(text.to_string()),
                     None => custom_value(text),
                 };
                 if matprop::check_prop(x.category, k, &v).is_err() {
@@ -1014,6 +1023,7 @@ impl MaterialView {
             (f("Preisquelle"), "Preisquelle".into()),
             (None, "BESTELLUNG".into()),
             (f(matprop::WASTE), "Verschnittzuschlag".into()),
+            (f(matprop::OPENING_FROM), "Öffnungen abziehen ab".into()),
             (None, "DARSTELLUNG".into()),
             (
                 Some(Target::Combo(ComboId::Pick(Pick::Fill))),
@@ -1134,6 +1144,7 @@ impl MaterialView {
             Field::Key("Rohdichte") => "kg/m³",
             Field::Key("c") => "J/(kg·K)",
             Field::Key(matprop::WASTE) => "%",
+            Field::Key(matprop::OPENING_FROM) => "m²",
             Field::Key(PRICE) => {
                 let unit = x
                     .and_then(|x| stored_unit(x).or(matprop::price_unit(x.category)))
@@ -3326,5 +3337,27 @@ mod synonym_tests {
         for q in ["ga", "beton", "putz", ""] {
             assert_eq!(synonym(q), None, "{q}");
         }
+    }
+}
+
+#[cfg(test)]
+mod einheit_tests {
+    use super::*;
+
+    /// Review #77, D: Zahlenfelder nehmen die Einheit mit, „5 %“ und
+    /// „2,5 m²“ wie ein Altwert sie zeigt.
+    #[test]
+    fn zahl_mit_einheit() {
+        let mut m = Model::new();
+        let id = m.materials().iter().next().map(|(id, _)| id).unwrap();
+        assert!(input(&mut m, id, matprop::WASTE, "7,5 %"));
+        assert!(input(&mut m, id, matprop::OPENING_FROM, "2,5 m²"));
+        let x = m.material(id).unwrap();
+        assert_eq!(x.props.get(matprop::WASTE), Some(&PropValue::Number(7.5)));
+        assert_eq!(
+            x.props.get(matprop::OPENING_FROM),
+            Some(&PropValue::Number(2.5))
+        );
+        assert!(!input(&mut m, id, matprop::WASTE, "viel"));
     }
 }

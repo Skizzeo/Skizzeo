@@ -11,6 +11,7 @@ use crate::element::{Category, ElementKind};
 use crate::matprop;
 use crate::model::Model;
 use crate::qto::{foundation_qto, wall_face, Face, LayerParts, LayerRow};
+use crate::vob;
 
 /// Welche Menge der Zeile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,12 +146,29 @@ pub fn zuschlag(model: &Model, r: &LayerRow) -> f64 {
 }
 
 /// Gezeigte Menge der Zeile in der Sicht `modus`, ohne Rechenweg (für die
-/// ganze Liste): VOB wie die Mengenliste, Bestellung mit Zuschlag.
+/// ganze Liste): VOB wie die Mengenliste, Bestellung mit den Öffnungen
+/// nach der Regel des Baustoffs und dem Zuschlag.
 pub fn anzeige(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> f64 {
-    let v = wert(r, b);
     match modus {
-        Modus::Vob => v,
-        Modus::Bestellung => v * (1.0 + zuschlag(model, r) / 100.0),
+        Modus::Vob => wert(r, b),
+        Modus::Bestellung => vor_zuschlag(model, r, b) * (1.0 + zuschlag(model, r) / 100.0),
+    }
+}
+
+/// Öffnungen in der Bestellmenge abziehen ab (mm²); `None`: übermessen.
+fn ab(model: &Model, r: &LayerRow) -> Option<f64> {
+    model.material(r.material).and_then(matprop::opening_from)
+}
+
+/// Bestellmenge vor dem Verschnittzuschlag: die VOB-Fläche mit den
+/// Öffnungen nach der Regel des Baustoffs statt nach VOB; das Volumen
+/// mit den übermessenen Öffnungen.
+fn vor_zuschlag(model: &Model, r: &LayerRow, b: Bezug) -> f64 {
+    let (da, dv) = vob::bestell_mehr(&r.holes, ab(model, r));
+    match b {
+        Bezug::Flaeche => wert(r, b) + da,
+        Bezug::Volumen => wert(r, b) + dv,
+        Bezug::Laenge => wert(r, b),
     }
 }
 
@@ -166,13 +184,24 @@ pub fn fuer(model: &Model, r: &LayerRow, modus: Modus) -> Vec<Rechenweg> {
 /// Rechenweg einer Menge der Zeile; `None`, wenn sie die Menge nicht hat.
 /// Rechnet keine Geometrie (die Teile stehen an der Zeile).
 pub fn weg(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Option<Rechenweg> {
-    let ziel = wert(r, b);
-    if ziel <= 0.0 {
+    if wert(r, b) <= 0.0 {
         return None;
     }
+    let ziel = match modus {
+        Modus::Vob => wert(r, b),
+        Modus::Bestellung => vor_zuschlag(model, r, b),
+    };
     let mut terme = match (&r.parts, b) {
-        (Some(p), Bezug::Flaeche) => wand_flaeche(model, r, p),
-        (Some(p), Bezug::Volumen) => wand_volumen(p),
+        (Some(p), Bezug::Flaeche) => {
+            let mut t = wand_flaeche(model, r, p);
+            t.extend(loch_terme(model, r, b, modus));
+            t
+        }
+        (Some(p), Bezug::Volumen) => {
+            let mut t = wand_volumen(p);
+            t.extend(loch_terme(model, r, b, modus));
+            t
+        }
         (Some(_), Bezug::Laenge) => vec![basis(
             if r.category == Category::InteriorWall {
                 "lichte Länge der tragenden Schicht".into()
@@ -357,6 +386,73 @@ fn wand_flaeche(model: &Model, r: &LayerRow, p: &LayerParts) -> Vec<Term> {
     t
 }
 
+/// Öffnungen einer Wandschicht: abgezogen mit ihren Maßen, übermessen als
+/// Hinweis. Nach VOB/C die Fläche über 2,5 m² und das Volumen über 0,5 m³
+/// (DIN 18330, 18331), in der Bestellung nach der Regel des Baustoffs.
+fn loch_terme(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Vec<Term> {
+    let ab = ab(model, r);
+    let mut out: Vec<Term> = r
+        .holes
+        .iter()
+        .map(|h| {
+            let name = model.element(h.opening).map_or("", |e| e.number.as_str());
+            let art = model
+                .opening(h.opening)
+                .map_or("Öffnung", |o| o.kind.name());
+            let mass = format!("{name} {art} {} × {} m", m(h.width), m(h.height));
+            let teil = match b {
+                Bezug::Volumen if h.total_vol > h.volume + 1.0 => {
+                    format!(", Teilstück von {}", menge_text(h.total_vol, b))
+                }
+                Bezug::Volumen => String::new(),
+                _ if h.total > h.area + 1.0 => {
+                    format!(", Teilstück von {}", menge_text(h.total, Bezug::Flaeche))
+                }
+                _ => String::new(),
+            };
+            let abzug = match (b, modus) {
+                (Bezug::Volumen, Modus::Vob) => h.vob_volumen(),
+                (_, Modus::Vob) => h.vob(),
+                (_, Modus::Bestellung) => h.bestellung(ab),
+            };
+            let wert = if b == Bezug::Volumen {
+                h.volume
+            } else {
+                h.area
+            };
+            if abzug {
+                Term {
+                    text: format!("{mass}{teil}"),
+                    wert: -wert,
+                    art: Art::Abzug,
+                }
+            } else {
+                Term {
+                    text: match (modus, b) {
+                        (Modus::Vob, Bezug::Volumen) => {
+                            format!("{mass} übermessen (bis 0,5 m³, VOB/C{teil})")
+                        }
+                        (Modus::Vob, _) => format!("{mass} übermessen (bis 2,5 m², VOB/C{teil})"),
+                        (Modus::Bestellung, _) => format!("{mass} übermessen (Bestellung{teil})"),
+                    },
+                    wert: 0.0,
+                    art: Art::Hinweis,
+                }
+            }
+        })
+        .collect();
+    // Innentüren ohne Laibung: die Umfassungszarge deckt sie (Integration
+    // zu Review W24, Hinweis 4)
+    if b == Bezug::Flaeche && r.category == Category::InteriorWall && !r.holes.is_empty() {
+        out.push(Term {
+            text: "Innentür: keine Laibung, die Umfassungszarge deckt sie".into(),
+            wert: 0.0,
+            art: Art::Hinweis,
+        });
+    }
+    out
+}
+
 /// Volumen einer Wandschicht: Grundfläche × Höhe, Abzüge und Zuschläge.
 fn wand_volumen(p: &LayerParts) -> Vec<Term> {
     let b = Bezug::Volumen;
@@ -390,13 +486,6 @@ fn wand_volumen(p: &LayerParts) -> Vec<Term> {
         -a * p.h_foot,
         b,
     );
-    // Löcher der Öffnungen (O2, Kosten H79-2); die Übermessungsregel der
-    // VOB/C folgt mit dem Öffnungsabzug
-    let text = match p.loecher {
-        1 => "Öffnung".to_string(),
-        n => format!("{n} Öffnungen"),
-    };
-    dazu(&mut t, text, -p.loch_volumen, b);
     t
 }
 

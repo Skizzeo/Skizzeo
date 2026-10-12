@@ -35,6 +35,14 @@ pub const MAKER: &str = "Hersteller";
 /// vorher ein freier eigener Kennwert: Altwerte als Text („5 %“) bleiben
 /// roh erhalten und an ihrer Stelle unter den eigenen (Review #77/4).
 pub const WASTE: &str = "Verschnittzuschlag";
+/// Öffnungen ab dieser Einzelgröße (m²) von der Bestellmenge abziehen;
+/// ohne Wert werden alle übermessen (Jörn 11.10.). Wie [`WASTE`] vorher
+/// ein freier eigener Kennwert: Altwerte bleiben roh erhalten.
+pub const OPENING_FROM: &str = "Öffnungen abziehen ab";
+/// Feste Kennwerte, die vorher freie eigene waren: Sie stehen in der Datei
+/// weiter unter den eigenen, und ein Altwert, der die Prüfung nicht
+/// besteht, bleibt roh erhalten (Review #77/4).
+const FRUEHER_FREI: [&str; 2] = [WASTE, OPENING_FROM];
 
 const fn prop(key: &'static str, unit: &'static str, kind: MatPropKind, basic: bool) -> MatProp {
     MatProp {
@@ -48,7 +56,7 @@ const fn prop(key: &'static str, unit: &'static str, kind: MatPropKind, basic: b
 /// Feste Kennwerte in Anzeige- und Dateireihenfolge. Die Einheit des
 /// Richtpreises steht am Baustoff ([`PRICE_UNIT`]); λ und Rohdichte sind
 /// Felder des Baustoffs.
-pub const MAT_PROPS: [MatProp; 12] = {
+pub const MAT_PROPS: [MatProp; 13] = {
     use MatPropKind::{Number as N, Text as T};
     [
         prop(PRICE, "", N, true),
@@ -63,6 +71,7 @@ pub const MAT_PROPS: [MatProp; 12] = {
         prop("Bemerkung", "", T, false),
         prop("Preisquelle", "", T, false),
         prop(WASTE, "%", N, false),
+        prop(OPENING_FROM, "m\u{b2}", N, false),
     ]
 };
 
@@ -130,6 +139,21 @@ pub fn waste(m: &crate::library::Material) -> f64 {
 fn waste_text(t: &str) -> Option<f64> {
     let n = t.trim().trim_end_matches('%').trim().replace(',', ".");
     n.parse::<f64>().ok().filter(|n| (0.0..=100.0).contains(n))
+}
+
+/// Einzelgröße (mm²), ab der Öffnungen von der Bestellmenge abgezogen
+/// werden; `None`: alle übermessen. Ein Altwert als Text zählt, wenn er
+/// sich lesen lässt („2,5 m²“).
+pub fn opening_from(m: &crate::library::Material) -> Option<f64> {
+    let m2 = match m.props.get(OPENING_FROM)? {
+        PropValue::Number(n) => Some(*n),
+        PropValue::Text(t) => {
+            let n = t.trim().trim_end_matches("m²").trim().replace(',', ".");
+            n.parse::<f64>().ok()
+        }
+        PropValue::Bool(_) => None,
+    };
+    m2.filter(|n| *n >= 0.0).map(|n| n * 1e6)
 }
 
 /// Anzeige einer Preiseinheit: „m3“ → „€/m³“.
@@ -200,7 +224,7 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
             Ok(())
         };
     };
-    if key == WASTE && !matches!(v, PropValue::Number(_)) {
+    if FRUEHER_FREI.contains(&key) && !matches!(v, PropValue::Number(_)) {
         // Altwert aus der Zeit als eigener Kennwert, roh erhalten
         return Ok(());
     }
@@ -226,6 +250,7 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
         "c" => num > 0.0,
         EUROCLASS => valid_euroclass(text),
         WASTE => (0.0..=100.0).contains(&num),
+        OPENING_FROM => num >= 0.0,
         _ => true,
     };
     if ok {
@@ -238,6 +263,7 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
         MU => "\u{3bc} ab 1".into(),
         "c" => "c größer als 0".into(),
         WASTE => "Verschnittzuschlag von 0 bis 100 %".into(),
+        OPENING_FROM => "Öffnungen ab 0 m²".into(),
         _ => "Euroklasse A1, A2, B, C, D, E oder F, Zusatz wie B-s1,d0".into(),
     })
 }
@@ -267,16 +293,17 @@ pub(crate) fn write_lines(out: &mut String, g: Guid, props: &PropSet) {
     // Die Preiseinheit steht als `unit=` am Richtpreis; ohne Richtpreis in
     // einer eigenen Zeile (Review 3n/6)
     let has_price = props.contains_key(PRICE);
-    // Der Verschnitt steht wie früher als eigener Kennwert an seiner
-    // Stelle unter den eigenen, damit alte Dateien bytegleich bleiben
+    // Verschnitt und Öffnungsgrenze stehen wie früher als eigene Kennwerte
+    // an ihrer Stelle unter den eigenen, damit alte Dateien bytegleich
+    // bleiben
     let fixed = MAT_PROPS
         .iter()
-        .filter(|p| p.key != WASTE && (p.key != PRICE_UNIT || !has_price))
+        .filter(|p| !FRUEHER_FREI.contains(&p.key) && (p.key != PRICE_UNIT || !has_price))
         .map(|p| p.key);
     let custom = props
         .keys()
         .map(String::as_str)
-        .filter(|k| *k == WASTE || mat_prop(k).is_none());
+        .filter(|k| FRUEHER_FREI.contains(k) || mat_prop(k).is_none());
     for k in fixed.chain(custom) {
         let Some(v) = props.get(k) else {
             continue;
@@ -324,7 +351,7 @@ pub(crate) fn read_line(r: &Record, c: MatCategory, props: &mut PropSet) -> Resu
         return drop(format!("„{key}“ ohne Wert"));
     };
     if let Err(why) = check_prop(c, &key, &value) {
-        if key != WASTE {
+        if !FRUEHER_FREI.contains(&key.as_str()) {
             return drop(format!("„{key}“: {why}"));
         }
         // Altwert außerhalb 0 bis 100 % roh und mit seinem Typ erhalten
