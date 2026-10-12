@@ -699,14 +699,12 @@ impl Maske {
 
     /// Breite und Länge gegen die Landeskoordinaten (Review #95 H2): mehr
     /// als 1 km auseinander ist eher ein Tippfehler oder die falsche Zone
-    /// als Absicht.
+    /// als Absicht. Nur gegen eine eingegebene Lage: die Vorgabe
+    /// Ganderkesee ist kein Ort des Projekts (Integration zu #96).
     fn abgleich(&self) -> Option<String> {
         let u = self.utm().ok().flatten()?;
         let l = self.ort();
-        let (b, la) = (
-            l.lat.unwrap_or(ganderkesee(8)),
-            l.lon.unwrap_or(ganderkesee(9)),
-        );
+        let (b, la) = l.lat.zip(l.lon)?;
         let (ub, ul) = sk_math::utm::von_utm(u.e, u.n, u.zone);
         // auf der Kugel genügt hier: es geht um Kilometer
         let r = 6_371.0;
@@ -1475,6 +1473,20 @@ mod tests {
             m.hinweis().as_deref(),
             Some("Lage und UTM 5 km auseinander.")
         );
+        // Lage leer, UTM in Berlin: die Vorgabe zählt nicht
+        let leer = Location {
+            lat: None,
+            lon: None,
+            utm: Some(sk_model::Utm {
+                e: 389_918.04,
+                n: 5_819_699.13,
+                zone: 33,
+            }),
+            ..alt
+        };
+        let b = Maske::new(&ohne(), false, None).mit_ort(&leer);
+        assert_eq!((b.ort().lat, b.ort().lon), (None, None));
+        assert_eq!(b.hinweis(), None);
         // nach der Böschung, am Ende der Maske
         m.fokus_auf(14);
         tab(&mut m);
