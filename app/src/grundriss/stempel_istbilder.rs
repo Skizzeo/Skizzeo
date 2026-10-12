@@ -139,7 +139,7 @@ fn istbilder_g4() {
         -(a as i64)
     });
     for (id, n) in raeume.iter().zip(namen) {
-        assert!(s.raum_benennen(*id, n));
+        assert!(s.raum_benennen(*id, n, None));
     }
     lege(&mut st, &s);
     st.hover = st.bilder.iter().position(|b| b.raum == Some(raeume[2]));
