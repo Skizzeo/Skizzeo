@@ -236,6 +236,11 @@ impl TuerZug {
         out
     }
 
+    /// Zug der Tür: Er wird beim Ziehen live gezeichnet.
+    pub fn run(&self) -> RunId {
+        self.lage.run
+    }
+
     /// Der Griff am freien Blattende, wie die Tür gerade steht.
     pub fn helpers(&self, _scene: &Scene, scale: f32, occlude: bool, theme: &Theme) -> Vec<Helper> {
         self.griff
@@ -287,6 +292,7 @@ mod tests {
                 side: FaceSide::Right,
                 din: Din::Links,
             }),
+            lock: Default::default(),
         };
         let id = m.add_opening(o).unwrap();
         (m, id)
@@ -358,9 +364,20 @@ mod tests {
         let swing = |s: &Scene| s.model().opening(id).unwrap().swing.unwrap();
         // Esc: zurück
         let mut t = zug(&mut s);
+        // Die Zeichnung geht live mit: Der Zug ist neu gerechnet und das
+        // Blatt im Körper steht auf der neuen Seite (Jörn 12.10. 14:44)
+        let run = t.run();
+        let blatt = |s: &Scene| {
+            let c = s.chain(run).unwrap();
+            let h = c.joints.holes.iter().find(|h| h.opening == Some(id));
+            h.and_then(|h| h.leaf).map(|l| (l.side, l.hinge_lo))
+        };
+        let vorher = blatt(&s);
+        assert!(vorher.is_some());
         let o = t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
         assert!(o.changed);
         assert_eq!(swing(&s), soll);
+        assert_ne!(blatt(&s), vorher);
         let esc = Event::Key {
             key: Key::Escape,
             down: true,
@@ -369,6 +386,7 @@ mod tests {
         };
         assert!(t.handle(&esc, &mut s, &cam, W, H).fertig);
         assert_eq!(swing(&s), alt);
+        assert_eq!(blatt(&s), vorher, "Esc rechnet den Zug zurück");
         // Loslassen: ein Schritt
         let mut t = zug(&mut s);
         t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);

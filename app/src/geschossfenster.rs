@@ -70,6 +70,18 @@ impl GeschossFenster {
         }
     }
 
+    /// Sperrt das Fenster, solange der Dialog „Gebäude erstellen“ offen ist:
+    /// das Diagramm zeigt dessen Geschosse mit der leisen Zeile „Gesperrt,
+    /// solange …“ unter dem Titel, nimmt aber weder Maus noch Tasten; die
+    /// Titelleiste bleibt bedienbar (Jörn 12.10.). Die App setzt es vor
+    /// jedem Ereignis dieses Fensters und bei jedem Abgleich.
+    pub fn sperren(&mut self, an: bool) {
+        if self.ui.gesperrt != an {
+            self.ui.gesperrt = an;
+            self.dirty = true;
+        }
+    }
+
     pub fn caption_area(&self) -> CaptionArea {
         CaptionArea {
             height: self.title.height(),
@@ -124,6 +136,7 @@ impl GeschossFenster {
                 None
             }
             Event::CloseRequested { .. } => Some(Out::Close),
+            Event::Key { .. } if self.ui.gesperrt => None,
             Event::Key {
                 key, down, mods, ..
             } => match self.ui.key(key, down, mods) {
@@ -184,6 +197,9 @@ impl GeschossFenster {
 
     /// Mausereignis für das Diagramm.
     fn ui_event(&mut self, e: &Event) -> Option<Out> {
+        if self.ui.gesperrt {
+            return None;
+        }
         let out = self.ui.handle(e, self.w, self.title.height());
         if !out.changed.is_empty() || out.relayout {
             self.dirty = true;
@@ -309,6 +325,22 @@ mod tests {
             Some(Out::Key(Key::Char('Z'), _))
         ));
         assert!(matches!(klick(&mut f, 230.0, 600.0), Some(Out::Ui(_))));
+        // Neben dem Dialog „Gebäude erstellen“ nur zu sehen, die
+        // Titelleiste bleibt bedienbar
+        f.sperren(true);
+        assert!(klick(&mut f, 230.0, 600.0).is_none());
+        assert!(f
+            .handle(&Event::Key {
+                key: Key::Char('Z'),
+                down: true,
+                repeat: false,
+                mods: Modifiers { ctrl: true, ..M },
+            })
+            .is_none());
+        assert!(matches!(
+            klick(&mut f, 460.0 - bw * 0.5, 10.0),
+            Some(Out::Close)
+        ));
     }
 
     /// Review #70, 1: Getipptes erscheint sofort; verliert das Fenster den

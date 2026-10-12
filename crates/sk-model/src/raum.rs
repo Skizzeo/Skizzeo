@@ -192,6 +192,47 @@ impl Iterator for FreieRaumnamen {
     }
 }
 
+/// `[space]`-Zeile der Datei, die nicht zählt (Regel 72): roh mit ihren
+/// `[prop]`-Zeilen, dem Geschoss, auf das sie zeigt, dem Anker, wenn er
+/// lesbar ist, und ihrer Nummer, die belegt bleibt (BIM-Datenmodell zu
+/// #87).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RawSpace {
+    pub line: String,
+    pub props: Vec<String>,
+    pub guid: Option<Guid>,
+    pub storey: Guid,
+    pub anker: Option<Vec3>,
+    pub number: Option<String>,
+}
+
+impl Model {
+    /// Die rohen `[space]`-Zeilen, die beim Speichern bleiben: ohne die,
+    /// deren Geschoss inzwischen gelöscht ist.
+    pub(crate) fn raw_spaces(&self) -> impl Iterator<Item = &RawSpace> {
+        self.space_raw
+            .iter()
+            .filter(|r| self.storeys().iter().any(|(_, s)| s.guid == r.storey))
+    }
+
+    /// Lesbare Anker der rohen `[space]`-Zeilen im Geschoss: Eine Fläche,
+    /// in der einer liegt, bekommt beim Abgleich keinen neuen Raum.
+    pub fn raw_space_anchors(&self, storey: StoreyId) -> Vec<Vec3> {
+        let Some(g) = self.storey(storey).map(|s| s.guid) else {
+            return Vec::new();
+        };
+        self.space_raw
+            .iter()
+            .filter(|r| r.storey == g)
+            .filter_map(|r| r.anker)
+            .collect()
+    }
+
+    pub(crate) fn load_space_raw(&mut self, raw: Vec<RawSpace>) {
+        self.space_raw = raw;
+    }
+}
+
 /// Befunde zu einem Raum für [`Model::check`].
 pub(super) fn pruefe(nummer: &str, s: &Space) -> Vec<String> {
     let mut out = Vec::new();

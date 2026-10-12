@@ -1716,6 +1716,41 @@ fn perf_raumstempel() {
     println!("Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen).");
 }
 
+/// Eine Tür 88,5 cm mit Aufschlag `swing` mitten in jeder Innenwand.
+fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    use sk_model::{Category, LevelRef};
+    let st = s.active_storey();
+    assert!(s.edit_model("Türen", |m| {
+        let innen: Vec<_> = m
+            .runs()
+            .iter()
+            .filter(|(_, run)| {
+                run.segments
+                    .first()
+                    .and_then(|e| m.element(*e))
+                    .is_some_and(|e| e.category == Category::InteriorWall)
+            })
+            .map(|(r, _)| r)
+            .collect();
+        innen.into_iter().all(|r| {
+            let f = m.outer_face(r, 0).unwrap();
+            let um = (f.u.0 + f.u.1) / 2.0;
+            let o = Opening {
+                kind: OpeningKind::Door,
+                path: vec![f.at(um - 442.5, 0.0), f.at(um + 442.5, 0.0)],
+                bottom: HeightRef::Level(LevelRef::bottom(st)),
+                top: HeightRef::Line(st, HeightLine::Door),
+                reveal: None,
+                install: Default::default(),
+                swing: Some(swing),
+                lock: Default::default(),
+            };
+            m.add_opening(o).is_some()
+        })
+    }));
+}
+
 /// Review #99 B1/B2: Innentüren bei `n` Häusern (je zwei Innenwände mit
 /// einer Tür): Griffe je Mausbewegung, Fang des Innentür-Werkzeugs, Ziehen
 /// am Griff (Aufschlag wechselt je Bewegung, dazu der neue Griff) und
@@ -1725,8 +1760,7 @@ fn perf_raumstempel() {
 fn perf_innentuer() {
     use crate::oeffnung_app::innentuer;
     use crate::wall_edit::tuer_edit;
-    use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
-    use sk_model::{Category, LevelRef};
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
     println!();
     println!(
         "{:>6} {:>8} {:>8} {:>8} {:>9}",
@@ -1739,33 +1773,7 @@ fn perf_innentuer() {
             side: FaceSide::Right,
             din: Din::Links,
         };
-        assert!(s.edit_model("Türen", |m| {
-            let innen: Vec<_> = m
-                .runs()
-                .iter()
-                .filter(|(_, run)| {
-                    run.segments
-                        .first()
-                        .and_then(|e| m.element(*e))
-                        .is_some_and(|e| e.category == Category::InteriorWall)
-                })
-                .map(|(r, _)| r)
-                .collect();
-            innen.into_iter().all(|r| {
-                let f = m.outer_face(r, 0).unwrap();
-                let um = (f.u.0 + f.u.1) / 2.0;
-                let o = Opening {
-                    kind: OpeningKind::Door,
-                    path: vec![f.at(um - 442.5, 0.0), f.at(um + 442.5, 0.0)],
-                    bottom: HeightRef::Level(LevelRef::bottom(st)),
-                    top: HeightRef::Line(st, HeightLine::Door),
-                    reveal: None,
-                    install: Default::default(),
-                    swing: Some(rechts),
-                };
-                m.add_opening(o).is_some()
-            })
-        }));
+        innentueren(&mut s, rechts);
         let (id, o) = s
             .model()
             .elements()
@@ -1813,4 +1821,92 @@ fn perf_innentuer() {
         println!("{n:>6} {griffe:>8.3} {fang:>8.3} {ziehen:>8.3} {los:>9.3}");
     }
     println!("Zeiten in ms je Mausbewegung bzw. je Loslassen.");
+}
+
+/// Breite am Griff (Review #109 B1, B4), Tür im zuletzt gebauten Haus:
+/// Griffe je Mausbewegung, Kettensymbole, Greifen, Ziehen je Bewegung und
+/// Loslassen.
+#[test]
+#[ignore]
+fn perf_breite() {
+    use crate::wall_edit::breite_edit::{schloesser, sichtbar, BreiteZug};
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
+    use sk_platform::MouseButton;
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>9}",
+        "Häuser", "Griffe", "Kette", "Greifen", "Ziehen", "Loslassen"
+    );
+    for n in [1, 10, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let swing = Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        };
+        innentueren(&mut s, swing);
+        let (id, o) = s
+            .model()
+            .elements()
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, o.clone())),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        let q = (o.path[0] + o.path[1]) * 0.5;
+        let cam = Camera::looking_at(vec3(q.x, q.y, 20000.0), vec3(q.x, q.y + 1.0, 0.0), 45.0);
+        let mut g = Vec::new();
+        let griffe = time(50, || {
+            g = sichtbar(&s, q + vec3(300.0, 200.0, 0.0), 500.0);
+        });
+        assert_eq!(g.len(), 2);
+        let kette = time(50, || {
+            std::hint::black_box(schloesser(&s, &g, 0.0));
+        });
+        let k = usize::from(o.path[1].y > o.path[0].y);
+        let greifen = time(20, || {
+            assert!(BreiteZug::greifen(&mut s, id, k, 0.0).is_some());
+            s.rollback();
+        });
+        let mods = Modifiers::default();
+        let bei = |dy: f64| {
+            let (x, y) = cam
+                .project(vec3(o.path[k].x, o.path[k].y + dy, 0.0), W, H)
+                .unwrap();
+            Event::MouseMove { x, y, mods }
+        };
+        let mut z = BreiteZug::greifen(&mut s, id, k, 0.0).unwrap();
+        let mut flip = false;
+        let ziehen = time(20, || {
+            flip = !flip;
+            let e = bei(if flip { 100.0 } else { 200.0 });
+            assert!(z.handle(&e, &mut s, &cam, W, H).changed);
+        });
+        s.rollback();
+        let mut los = 0.0;
+        for i in 0..5 {
+            let mut z = BreiteZug::greifen(&mut s, id, k, 0.0).unwrap();
+            z.handle(
+                &bei(if i % 2 == 0 { 100.0 } else { 0.0 }),
+                &mut s,
+                &cam,
+                W,
+                H,
+            );
+            let (x, y) = cam.project(q, W, H).unwrap();
+            let up = Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods,
+            };
+            let t = Instant::now();
+            z.handle(&up, &mut s, &cam, W, H);
+            los += t.elapsed().as_secs_f64() * 1000.0 / 5.0;
+        }
+        assert!(s.model().check().is_empty());
+        println!("{n:>6} {griffe:>8.3} {kette:>8.3} {greifen:>8.3} {ziehen:>8.3} {los:>9.3}");
+    }
+    println!("Zeiten in ms je Mausbewegung, je Bild bzw. je Griff.");
 }

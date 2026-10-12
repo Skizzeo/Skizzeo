@@ -17,7 +17,9 @@
 //! mit seinem Anker, wenn sie überwiegend aus ihm hervorgeht (geteilt: der
 //! Teil mit dem Stempel), dann gilt die größte Überdeckung (vereint: der
 //! größere Anteil). Die Anker rücken auf den Stempel in der neuen Fläche,
-//! so gibt die Ankerregel danach dasselbe. Jede Fläche ohne Raum bekommt einen neuen („Raum n“).
+//! so gibt die Ankerregel danach dasselbe. Jede Fläche ohne Raum bekommt einen neuen („Raum n“),
+//! außer es liegt der lesbare Anker einer rohen `[space]`-Zeile der Datei
+//! darin (Regel 72): Deren Raum zählt nicht, bekommt aber keinen zweiten.
 //! Nur die Hausgruppen, deren Wände der Schritt ändert, werden angesehen.
 
 use crate::speicher::{beruehren, drin, Fl, Kasten, Lage, NachSchluessel, Raster};
@@ -259,11 +261,17 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
     if nochmal {
         z = zuteilen(&fl, &raeume_im(m, g, im_bereich));
     }
-    // Anker auf den Stempel; jede Fläche ohne Raum bekommt einen
+    // Anker auf den Stempel; jede Fläche ohne Raum bekommt einen, außer es
+    // liegt der lesbare Anker einer rohen `[space]`-Zeile darin (Regel 72)
     let mut namen = None;
+    let mut roh = None;
     for (i, f) in fl.iter().enumerate() {
         match z[i] {
             Some(id) => out.aenderungen += anker_auf_stempel(m, id, f),
+            None if roh
+                .get_or_insert_with(|| m.raw_space_anchors(g))
+                .iter()
+                .any(|p| f.enthaelt(*p)) => {}
             None => {
                 let name = namen
                     .get_or_insert_with(|| m.freie_raumnamen())
@@ -582,6 +590,48 @@ mod tests {
 
     fn name(m: &Model, f: &RaumForm) -> String {
         f.raum.and_then(|id| m.space(id)).unwrap().name.clone()
+    }
+
+    /// Regel 72 (BIM-Datenmodell zu #87): Liegt der lesbare Anker einer
+    /// rohen `[space]`-Zeile in einer Fläche, bekommt sie keinen zweiten
+    /// Raum, ohne lesbaren Anker einen neuen; die Zeile bleibt.
+    #[test]
+    fn rohe_zeile_haelt_ihre_flaeche() {
+        let (mut m, st, t) = haus();
+        m.begin("Wand");
+        innenwand(&mut m, st, t, 3000.0);
+        ab(&mut m);
+        m.commit().unwrap();
+        let rechts = |m: &Model, st| {
+            raeume(m, st)
+                .into_iter()
+                .find(|f| f.enthaelt(vec3(8000.0, 4000.0, 0.0)))
+                .unwrap()
+        };
+        let bad = rechts(&m, st).raum.unwrap();
+        m.begin("Name");
+        m.set_space(bad, |s| s.name = "Bad".into());
+        m.commit().unwrap();
+        let text = sk_model::szo::write(&m);
+        let zeile = text.lines().find(|l| l.contains("name=\"Bad\"")).unwrap();
+        let g = m.storey(st).unwrap().guid;
+        for (kaputt, neu) in [
+            (zeile.replace(" name=\"Bad\"", ""), 0),
+            (zeile.replace(" at=", " at=x"), 1),
+        ] {
+            let text = text.replace(zeile, &kaputt);
+            let mut l = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1))
+                .unwrap()
+                .model;
+            let st = l.storeys().iter().find(|(_, s)| s.guid == g).unwrap().0;
+            let n = l.spaces(st).len();
+            l.begin("Abgleich");
+            ab(&mut l);
+            l.commit();
+            assert_eq!(l.spaces(st).len(), n + neu, "{kaputt}");
+            assert_eq!(rechts(&l, st).raum.is_some(), neu == 1, "{kaputt}");
+            assert!(sk_model::szo::write(&l).contains(&kaputt), "{kaputt}");
+        }
     }
 
     #[test]
