@@ -413,6 +413,43 @@ impl WallChain {
         Some([o[seg], o[j], i[j], i[seg]])
     }
 
+    /// Segmente, an denen der Körper kippt (Review #87 B5): Je Schicht muss
+    /// jede ihrer beiden Flächen ([`WallChain::face_corners_in`], wie der
+    /// Körper sie nimmt) in Zeichenrichtung laufen, und an beiden Ecken des
+    /// Segments muss die Fläche mit dem größeren Versatz rechts der anderen
+    /// liegen. Sonst läuft eine Gehrung über das Nachbarsegment hinaus
+    /// (spitze Ecke, kurzes Segment, auch über der Gehrungsgrenze), egal auf
+    /// welcher Seite die Bezugslinie liegt.
+    pub fn gekippte_segmente(&self) -> Vec<usize> {
+        let pts = self.clean_points();
+        let flach = |p: Vec3| vec3(p.x, p.y, 0.0);
+        let schichten: Vec<(Vec<Vec3>, Vec<Vec3>, bool)> = self
+            .layer_offsets()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.layers.get(*i).is_some_and(|l| l.air))
+            .map(|(i, &(lo, hi, _))| {
+                (
+                    self.face_corners_in(lo, Some(i)),
+                    self.face_corners_in(hi, Some(i)),
+                    hi - lo > 1e-6,
+                )
+            })
+            .collect();
+        (0..self.segment_count())
+            .filter(|&k| {
+                let j = (k + 1) % pts.len();
+                let d = flach(pts[j] - pts[k]);
+                let n = right_of(d.normalized());
+                schichten.iter().any(|(lo, hi, dick)| {
+                    let vor = |f: &[Vec3]| flach(f[j] - f[k]).dot(d) <= 0.0;
+                    let quer = |e: usize| flach(hi[e] - lo[e]).dot(n) <= 0.0;
+                    vor(lo) || vor(hi) || (*dick && (quer(k) || quer(j)))
+                })
+            })
+            .collect()
+    }
+
     /// Eckpunkte der zur Bezugslinie parallelen Wandfläche im Abstand `off`
     /// (je Punkt der bereinigten Linie einer, mit Gehrung an den Ecken).
     /// An angeschlossenen Enden gilt der Abschluss der Schicht, zu der die
