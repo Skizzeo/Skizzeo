@@ -2407,11 +2407,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             };
             // Öffnungen über 2,5 m² gehen von der Abrechnungsfläche ab
             let holes = match q {
-                ElementQto::Wall(w) => w
-                    .layers
-                    .get(i)
-                    .map(|l| crate::vob::loecher(l, i, &summen))
-                    .unwrap_or_default(),
+                ElementQto::Wall(w) => crate::vob::loecher(&w.layers, i, &summen),
                 _ => Vec::new(),
             };
             let abzug = crate::vob::abzug(&holes);
@@ -2692,7 +2688,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                         .material(l.material)
                         .is_some_and(|x| x.category == MatCategory::Air);
                     if !air {
-                        let h = crate::vob::loecher(l, i, &summen);
+                        let h = crate::vob::loecher(&w.layers, i, &summen);
                         add(
                             l.material,
                             l.volume + crate::vob::uebermessen_vol(&h),

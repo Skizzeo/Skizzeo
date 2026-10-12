@@ -13,6 +13,7 @@
 pub(crate) mod ausbau;
 mod dach;
 mod hoehen;
+mod lage;
 mod oeffnung;
 mod raum;
 
@@ -31,7 +32,7 @@ use crate::library::{
     type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
     MaterialDisplay, MaterialLayer, TypeCategory,
 };
-use crate::model::{Defaults, Location, Model, Project, FOOT_MAX};
+use crate::model::{Defaults, Model, Project};
 use crate::solid::edge_kind;
 use crate::trade::{self, Trade, TradeId};
 use crate::wall::{segment_count, RefSide};
@@ -872,28 +873,7 @@ fn write_known(m: &Model) -> String {
             line.finish(&mut out);
         }
     }
-    // Lage und Nordrichtung (Sonnenstand S1): ohne Angaben keine Zeile, so
-    // bleibt eine Datei ohne sie bytegleich
-    let l = m.location();
-    if let Some(raw) = m.location_raw().filter(|_| l.is_unset()) {
-        out.push_str(raw);
-        out.push('\n');
-    } else if !l.is_unset() {
-        let mut line = Line::new("location");
-        let [x, y] = m.north_foot().map_or([None; 2], |p| p.map(Some));
-        for (k, v) in [
-            ("lat", l.lat),
-            ("lon", l.lon),
-            ("north", l.north),
-            ("x", x),
-            ("y", y),
-        ] {
-            if let Some(v) = v {
-                line = line.num(k, v);
-            }
-        }
-        line.finish(&mut out);
-    }
+    lage::write(m, &mut out);
     for b in sorted(m.buildings().iter(), |b| b.guid) {
         let l = Line::new("building")
             .guid("guid", Some(b.guid))
@@ -1857,61 +1837,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     // Wert, der keine Zahl im Bereich ist, oder keine bekannte Angabe),
     // öffnet das Projekt trotzdem und bleibt bytegleich stehen (Befund A der
     // Abnahme S1, Review 3br)
-    let mut location = Location::default();
-    let mut location_raw = None;
-    let mut foot = None;
-    match recs("location").as_slice() {
-        [] => {}
-        [r] => {
-            let mut falsch = Vec::new();
-            let mut num = |k: &'static str, max: f64| {
-                let v = r.opt(k)?;
-                let x = v
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|x| x.is_finite() && x.abs() <= max);
-                if x.is_none() {
-                    falsch.push(format!("„{k}“ ist keine Zahl im Bereich"));
-                }
-                x
-            };
-            let read = Location {
-                lat: num("lat", 90.0),
-                lon: num("lon", 180.0),
-                north: num("north", f64::MAX),
-            };
-            // Fußpunkt des Nordpfeils (S2): x und y zusammen, nur mit north
-            let (x, y) = (num("x", FOOT_MAX), num("y", FOOT_MAX));
-            let fehlt = |k: &str| falsch.iter().all(|f| !f.starts_with(&format!("„{k}“")));
-            let luecke = match (x, y, read.north) {
-                (Some(_), None, _) if fehlt("y") => Some("y"),
-                (None, Some(_), _) if fehlt("x") => Some("x"),
-                (Some(_), Some(_), None) if fehlt("north") => Some("north"),
-                _ => None,
-            };
-            if let Some(k) = luecke {
-                falsch.push(format!("„{k}“ fehlt"));
-            }
-            if falsch.is_empty() && !read.is_unset() {
-                location = read.normalized();
-                foot = x.zip(y).map(|(x, y)| [x, y]);
-            } else if falsch.is_empty() {
-                // Keine bekannte Angabe (`elev=` einer neueren Fassung): zählt
-                // nicht als Lage, bleibt im Wortlaut (Review 3br); Unbekanntes
-                // meldet der Hinweis zu fremden Schlüsseln
-                location_raw = Some(lines[r.line - 1].to_string());
-            } else {
-                r.skip();
-                location_raw = Some(lines[r.line - 1].to_string());
-                hints.push(format!(
-                    "Zeile {}: [location] {}; die Lage gilt als nicht gesetzt, die Zeile bleibt",
-                    r.line,
-                    falsch.join(", ")
-                ));
-            }
-        }
-        [_, r, ..] => return Err(err(r.line, "[location] doppelt")),
-    }
+    let (location, foot, location_raw) = lage::read(recs("location"), &lines, &mut hints)?;
     // Nummernzähler (Regel 25), z. B. „IW:1,GB:2“; fehlt er, gilt die höchste
     // vorhandene Nummer
     let mut counters = Vec::new();
@@ -3383,6 +3309,7 @@ fn read_display(
 mod tests {
     use super::*;
     use crate::element::PropSet;
+    use crate::model::Location;
     use crate::qto::run_qto;
 
     /// Haus 10 × 8 m, eine offene Wand, umbenannte Nummer, Eigenschaften,
@@ -4783,6 +4710,7 @@ mod tests {
             lat: Some(53.0589),
             lon: Some(8.591),
             north: Some(-12.5),
+            ..Default::default()
         };
         assert!(m.set_location(l));
         assert!(!m.set_location(l), "gleiche Werte ändern nichts");

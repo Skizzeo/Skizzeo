@@ -492,6 +492,7 @@ fn abnahme_s2_zufallsfolgen() {
                     lat: (zufall() % 3 != 0).then(|| wert(zufall(), 90.0)),
                     lon: (zufall() % 3 != 0).then(|| wert(zufall(), 180.0)),
                     north: s.model().location().north,
+                    ..Default::default()
                 };
                 s.projektdaten_setzen("Projektdaten geändert", p, ort)
             }

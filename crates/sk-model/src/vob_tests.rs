@@ -389,3 +389,119 @@ fn summe_nach_baustoff_wie_zeilen() {
     }
     assert!(geprueft >= 2, "{geprueft}");
 }
+
+/// Teilstücke einer Ecköffnung sind eine Aussparung: Jedes Stück liegt
+/// unter 2,5 m², ihre Summe darüber, also gehen beide ab (Review #88 N3).
+#[test]
+fn teilstuecke_ecke() {
+    let (mut m, eg) = haus();
+    let c = m.chain(eg).unwrap();
+    let ecke = c.face_corners(c.outer_offset())[1];
+    let id = m
+        .add_opening(Opening {
+            path: vec![aussen(&m, eg, 0, 7000.0), ecke, aussen(&m, eg, 1, 1500.0)],
+            ..fenster(&m, eg, (0.0, 1.0))
+        })
+        .unwrap();
+    let rows: Vec<_> = mit_loch(&m)
+        .into_iter()
+        .filter(|r| r.holes.iter().any(|h| h.opening == id))
+        .collect();
+    let mut schichten: Vec<usize> = rows.iter().map(|r| r.layer).collect();
+    schichten.sort();
+    schichten.dedup();
+    let mut klein = 0;
+    for i in schichten {
+        let teile: Vec<_> = rows
+            .iter()
+            .filter(|r| r.layer == i)
+            .flat_map(|r| r.holes.iter().filter(|h| h.opening == id))
+            .collect();
+        assert_eq!(teile.len(), 2, "Schicht {i}: {teile:?}");
+        let summe: f64 = teile.iter().map(|h| h.area).sum();
+        for h in &teile {
+            assert!((h.total - summe).abs() < 1.0, "{} ≠ {summe}", h.total);
+            assert_eq!(h.vob(), crate::vob::ueber_grenze(summe));
+        }
+        if teile.iter().all(|h| h.area < 2.5e6) && summe > 2.6e6 {
+            assert!(teile.iter().all(|h| h.vob()), "Schicht {i}: {teile:?}");
+            klein += 1;
+        }
+    }
+    assert!(klein > 0, "kein Stück unter 2,5 m² mit Summe darüber");
+}
+
+/// Review #88 L14: Eine Öffnung über zwei Geschosse durch Wände
+/// verschiedener Typen (EG Dämmung einlagig, OG zweilagig) summiert ihre
+/// Teile im selben Baustoff, auch wenn er im Wandtyp an anderer Stelle
+/// steht. Beide Porenbeton-Teile liegen unter 2,5 m², zusammen darüber.
+#[test]
+fn teilstuecke_geschosse_verschiedene_typen() {
+    use crate::oeffnung::{HeightLine, HeightRef};
+    let (mut m, eg) = haus();
+    let og = m.runs_above(eg)[0];
+    let (s_eg, s_og) = (m.run(eg).unwrap().storey, m.run(og).unwrap().storey);
+    let r = m.run(eg).unwrap().clone();
+    let set = m.element(r.segments[0]).unwrap().layer_set.unwrap();
+    let mut t = m.layer_set(set).unwrap().clone();
+    let i = t
+        .layers
+        .iter()
+        .position(|l| {
+            m.material(l.material)
+                .is_some_and(|x| x.category == crate::MatCategory::Insulation)
+        })
+        .unwrap();
+    let mut lage = t.layers[i];
+    lage.thickness *= 0.5;
+    t.layers[i] = lage;
+    t.layers.insert(i, lage);
+    t.guid = m.new_guid();
+    (t.code, t.name) = ("AW-2L".into(), "AW zwei Lagen".into());
+    let kern = t.layers.iter().find(|l| l.core).unwrap().material;
+    m.begin("Typ");
+    let zwei = m.add_layer_set(t).unwrap();
+    m.commit();
+    // freie Wände übereinander, EG einlagig, OG zweilagig
+    let pts = [vec3(14000.0, 0.0, 0.0), vec3(14000.0, 6000.0, 0.0)];
+    m.begin("Wände");
+    let unten = m
+        .add_wall_run(
+            &pts,
+            false,
+            r.ref_side,
+            s_eg,
+            set,
+            crate::Category::ExteriorWall,
+        )
+        .unwrap();
+    m.add_wall_run(
+        &pts,
+        false,
+        r.ref_side,
+        s_og,
+        zwei,
+        crate::Category::ExteriorWall,
+    )
+    .unwrap();
+    m.commit();
+    let id = m
+        .add_opening(Opening {
+            top: HeightRef::Line(s_og, HeightLine::Lintel),
+            ..fenster(&m, unten, (2000.0, 2900.0))
+        })
+        .unwrap();
+    let teile: Vec<_> = mit_loch(&m)
+        .into_iter()
+        .filter(|r| r.material == kern)
+        .flat_map(|r| r.holes.into_iter().filter(|h| h.opening == id))
+        .collect();
+    assert_eq!(teile.len(), 2, "{teile:?}");
+    let summe: f64 = teile.iter().map(|h| h.area).sum();
+    assert!(teile.iter().all(|h| h.area < 2.5e6), "{teile:?}");
+    assert!(summe > 2.6e6, "{summe}");
+    for h in &teile {
+        assert!((h.total - summe).abs() < 1.0, "{} ≠ {summe}", h.total);
+        assert!(h.vob(), "{h:?}");
+    }
+}
