@@ -17,14 +17,15 @@ use sk_math::{vec3, Vec3};
 use sk_model::bemassung::{Kettenart, Stil};
 use sk_model::{ElementId, LevelKind, Model, StoreyId};
 use sk_paint::font::Font;
-use sk_plan::aussen::aussenmasse_aus;
+use sk_plan::aussen::{aussenmasse_aus, Aussenmasse};
 use sk_plan::bild::{bild, Bild, Strichart};
+use sk_plan::platz::{dazu, kasten, nachbarn, ohne, zu_zweit, Weg};
 use sk_plan::schrift::Schrift;
 use sk_render::{Helper, Ink, SOLID};
 use sk_ui::theme::Theme;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -128,16 +129,35 @@ pub struct Stand {
 /// ([`Scene::mass_stand`]) und seine Versätze. Der Stil gilt für alle.
 type Schluessel = ((u64, u64), Vec<((i32, Kettenart), f64)>);
 
-/// Bemaßung der App: gemerkte Schriften und je Geschoss die zuletzt
-/// gerechneten Ketten. Beim Ziehen rechnet nur das Geschoss des gezogenen
-/// Zugs neu, beim Neuzeichnen ohne Änderung nichts (Review W30).
+/// Alle Ketten eines Geschosses, eindeutig nummeriert je Rechnung, und der
+/// Kasten um ihre Bereiche ([`sk_plan::platz::kasten`]).
+#[derive(Clone)]
+struct Ketten {
+    nr: u64,
+    a: Rc<Aussenmasse>,
+    kasten: Option<[f64; 4]>,
+}
+
+/// Bemaßung der App: gemerkte Schriften, je Geschoss die zuletzt
+/// gerechneten Ketten und ihr Bild. Beim Ziehen rechnet nur das Geschoss
+/// des gezogenen Zugs neu, beim Neuzeichnen ohne Änderung nichts (Review
+/// W30). Stehen Gebäude zu dicht, weichen Ketten ([`sk_plan::platz`]):
+/// gerechnet nur für die Paare mit dem geänderten Geschoss, das Bild eines
+/// Nachbarn wird nur neu, wenn sich ändert, was bei ihm weicht.
 #[derive(Default)]
 pub struct Massketten {
     schriften: HashMap<String, Option<Rc<Schrift>>>,
     /// Stil der gemerkten Geschosse; ein anderer rechnet alle neu (auch
     /// „Abbrechen“ im Einstellungsfenster).
     stil: Option<Stil>,
-    geschosse: HashMap<StoreyId, (Schluessel, Option<Rc<Geschoss>>)>,
+    ketten: HashMap<StoreyId, (Schluessel, Option<Ketten>)>,
+    /// Zuletzt geprüfter Platz: Nummern der Ketten und was je Geschoss
+    /// weicht.
+    platz: Option<(Vec<u64>, Vec<Weg>)>,
+    /// Was je Paar von Nachbarn weicht, nach den Nummern ihrer Ketten.
+    paare: HashMap<(u64, u64), [Weg; 2]>,
+    /// Bild je Geschoss und wofür es gilt: Nummer der Ketten, was weicht.
+    geschosse: HashMap<StoreyId, ((u64, Weg), Rc<Geschoss>)>,
     /// Zuletzt zusammengestellter Stand und die Nummern seiner Geschosse.
     stand: Option<(Vec<u64>, Rc<Stand>)>,
 }
@@ -204,7 +224,8 @@ impl Massketten {
     }
 
     /// Ketten und Bilder der Geschosse `st`; neu gerechnet nur Geschosse,
-    /// deren Stand sich geändert hat.
+    /// deren Stand sich geändert hat, neu gezeichnet auch die, bei denen
+    /// sich ändert, was weicht.
     pub fn stand(
         &mut self,
         scene: &Scene,
@@ -214,23 +235,74 @@ impl Massketten {
         let m = scene.model();
         let stil = m.massstil();
         if self.stil.as_ref() != Some(stil) {
+            self.ketten.clear();
             self.geschosse.clear();
+            self.platz = None;
+            self.paare.clear();
             self.stil = Some(stil.clone());
         }
         let schrift = self.schrift(&stil.schrift, ui)?;
+        self.ketten.retain(|k, _| st.contains(k));
         self.geschosse.retain(|k, _| st.contains(k));
-        let mut liste = Vec::new();
+        let mut da: Vec<(StoreyId, Ketten)> = Vec::new();
         for &s in &st {
             let key = (scene.mass_stand(s), versaetze(m, s));
-            let g = match self.geschosse.get(&s) {
-                Some((k, g)) if *k == key => g.clone(),
+            let k = match self.ketten.get(&s) {
+                Some((k, a)) if *k == key => a.clone(),
                 _ => {
-                    let g = rechnen(scene, s, &schrift).map(Rc::new);
-                    self.geschosse.insert(s, (key, g.clone()));
+                    let k = ketten(scene, s).map(|a| Ketten {
+                        nr: neuer_stand(),
+                        kasten: kasten(&a, stil),
+                        a: Rc::new(a),
+                    });
+                    self.ketten.insert(s, (key, k.clone()));
+                    k
+                }
+            };
+            da.extend(k.map(|k| (s, k)));
+        }
+        let nrn: Vec<u64> = da.iter().map(|(_, k)| k.nr).collect();
+        if self.platz.as_ref().is_none_or(|(k, _)| *k != nrn) {
+            let kaesten: Vec<_> = da.iter().map(|(_, k)| k.kasten).collect();
+            let mut wege = vec![Weg::new(); da.len()];
+            let paare = nachbarn(&kaesten);
+            for &(i, j) in &paare {
+                let (a, b) = (&da[i].1, &da[j].1);
+                let w = self
+                    .paare
+                    .entry((a.nr, b.nr))
+                    .or_insert_with(|| zu_zweit(&a.a, &b.a, stil));
+                dazu(&mut wege[i], &w[0]);
+                dazu(&mut wege[j], &w[1]);
+            }
+            // Paare mit alten Ketten fallen gelegentlich heraus
+            if self.paare.len() > 2 * paare.len() + 16 {
+                let jetzt: HashSet<(u64, u64)> = paare
+                    .iter()
+                    .map(|&(i, j)| (da[i].1.nr, da[j].1.nr))
+                    .collect();
+                self.paare.retain(|k, _| jetzt.contains(k));
+            }
+            self.platz = Some((nrn, wege));
+        }
+        let wege = &self.platz.as_ref()?.1;
+        let mut liste = Vec::new();
+        for ((s, k), weg) in da.iter().zip(wege) {
+            let (n, a) = (k.nr, &k.a);
+            let g = match self.geschosse.get(s) {
+                Some(((kn, kw), g)) if *kn == n && kw == weg => g.clone(),
+                _ => {
+                    let a = if weg.is_empty() {
+                        Cow::Borrowed(&**a)
+                    } else {
+                        Cow::Owned(ohne(a, weg))
+                    };
+                    let g = Rc::new(geschoss(&a, stil, &schrift));
+                    self.geschosse.insert(*s, ((n, weg.clone()), g.clone()));
                     g
                 }
             };
-            liste.extend(g);
+            liste.push(g);
         }
         let nr: Vec<u64> = liste.iter().map(|g| g.nr).collect();
         if let Some((k, s)) = &self.stand {
@@ -323,17 +395,20 @@ fn versaetze(m: &Model, st: StoreyId) -> Vec<((i32, Kettenart), f64)> {
         .collect()
 }
 
-/// Ketten und Bild des Geschosses `st`, die Züge aus dem Zwischenspeicher
-/// der Szene.
-fn rechnen(scene: &Scene, st: StoreyId, schrift: &Schrift) -> Option<Geschoss> {
+/// Ketten des Geschosses `st`, die Züge aus dem Zwischenspeicher der Szene.
+fn ketten(scene: &Scene, st: StoreyId) -> Option<Aussenmasse> {
     let m = scene.model();
-    let a = aussenmasse_aus(m, st, |id| {
+    aussenmasse_aus(m, st, |id| {
         scene
             .chain(id)
             .map(Cow::Borrowed)
             .or_else(|| m.chain(id).map(Cow::Owned))
-    })?;
-    let b = bild(&a, m.massstil(), schrift);
+    })
+}
+
+/// Bild der Ketten `a`, eindeutig nummeriert.
+fn geschoss(a: &Aussenmasse, stil: &Stil, schrift: &Schrift) -> Geschoss {
+    let b = bild(a, stil, schrift);
     let punkte = b
         .striche
         .iter()
@@ -350,13 +425,13 @@ fn rechnen(scene: &Scene, st: StoreyId, schrift: &Schrift) -> Option<Geschoss> {
             vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)),
         ]
     });
-    Some(Geschoss {
+    Geschoss {
         b,
         nr: neuer_stand(),
         rahmen,
         linien: RefCell::new([None, None]),
         tinte: RefCell::new([None, None]),
-    })
+    }
 }
 
 /// Farbe des Stils als RGBA.

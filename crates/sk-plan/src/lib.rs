@@ -10,5 +10,6 @@
 
 pub mod aussen;
 pub mod bild;
+pub mod platz;
 pub mod schrift;
 pub mod zahl;

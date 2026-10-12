@@ -162,6 +162,97 @@ fn ausserhalb_und_weit_weg() {
     assert!(l_weit.len() < 4 * l_nah.len());
 }
 
+/// Zwei Häuser 10 × 8 m, `luecke` mm zwischen den Außenwänden.
+fn zwei(luecke: f64) -> Scene {
+    let mut m = Model::new();
+    m.begin("Zwei Häuser");
+    for x in [0.0, 10_000.0 + luecke] {
+        let b = m.add_building(1);
+        let p = |dx: f64, y: f64| vec3(x + dx, y, 0.0);
+        let pts = [
+            p(0.0, 0.0),
+            p(0.0, 8000.0),
+            p(10_000.0, 8000.0),
+            p(10_000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).expect("Haus");
+    }
+    m.commit();
+    Scene::with_model(m)
+}
+
+/// Achsparallele Kästen der Maßzahlen eines Geschosses.
+fn kaesten(g: &Geschoss) -> Vec<[f64; 4]> {
+    g.b.zahlen
+        .iter()
+        .map(|z| {
+            z.rahmen
+                .iter()
+                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
+                    [k[0].min(p.x), k[1].min(p.y), k[2].max(p.x), k[3].max(p.y)]
+                })
+        })
+        .collect()
+}
+
+/// Zwei Häuser 6 m auseinander (Einstellungen zu #116, B2): keine Maßzahl
+/// überdeckt eine des anderen Hauses; zueinander weicht ein Gesamtmaß, dann
+/// hat das andere Platz.
+/// Rückt ein Haus weg, kommen sie wieder, und das Bild des Nachbarn wird
+/// neu; ändert sich am Weichen nichts, bleibt es.
+#[test]
+fn zwei_haeuser_sechs_meter() {
+    let Some(f) = schrift() else {
+        return;
+    };
+    let mut s = zwei(6000.0);
+    let mut mk = Massketten::default();
+    let st = geschosse(&s, ViewKind::Plan, &[]);
+    assert_eq!(st.len(), 2);
+    let a = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    let (l, r) = (kaesten(&a.geschosse[0]), kaesten(&a.geschosse[1]));
+    let ueber = l
+        .iter()
+        .flat_map(|p| r.iter().map(move |q| (p, q)))
+        .filter(|(p, q)| p[0] < q[2] && q[0] < p[2] && p[1] < q[3] && q[1] < p[3])
+        .count();
+    assert_eq!(ueber, 0);
+    // Zusammen eine Zahl weniger als allein: das linke Gesamtmaß nach Osten
+    let allein: Vec<usize> = st
+        .iter()
+        .map(|&g| {
+            let mut m = Massketten::default();
+            m.stand(&s, vec![g], Some(&f)).unwrap().geschosse[0]
+                .b
+                .zahlen
+                .len()
+        })
+        .collect();
+    assert_eq!([l.len() + 1, r.len()], allein[..]);
+    // Die Nordwand des rechten Hauses rückt: am Weichen ändert sich nichts,
+    // das linke Haus bleibt
+    let run = zug(&s, st[1]);
+    let c = s.chain(run).unwrap().clone();
+    let nord = (0..c.points.len())
+        .find(|&i| {
+            let (p, q) = (c.points[i], c.points[(i + 1) % c.points.len()]);
+            p.y > 7000.0 && q.y > 7000.0
+        })
+        .unwrap();
+    s.begin("Wand verschieben");
+    s.set_run_points(run, &c.with_segment_moved(nord, 500.0).unwrap().points);
+    let b = mk.stand(&s, st.clone(), Some(&f)).unwrap();
+    assert!(Rc::ptr_eq(&a.geschosse[0], &b.geschosse[0]));
+    assert!(!Rc::ptr_eq(&a.geschosse[1], &b.geschosse[1]));
+    s.rollback();
+    // Rückt das rechte Haus 20 m weg, steht beim linken alles wieder
+    let w = zwei(20_000.0);
+    let n = mk
+        .stand(&w, geschosse(&w, ViewKind::Plan, &[]), Some(&f))
+        .unwrap();
+    assert_eq!(n.geschosse[0].b.zahlen.len(), allein[0]);
+}
+
 fn ms(t: Instant, reps: usize) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0 / reps as f64
 }
