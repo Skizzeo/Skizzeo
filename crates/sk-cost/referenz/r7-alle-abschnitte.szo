@@ -242,6 +242,8 @@ SZO 4
 [extpart] guid=3BRCeVvTzBkQvU1PgK3ZD7 key=werk.stabgelaender number="GL-001" x=2500 y=2000 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [extpart] guid=3N_s4ILSj9DeczPurFRPuA key=werk.streifenfundament number="SF-001" x=4000 y=2000 typ="sf5080" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [extpart] guid=3y1kS67MD3zfAPmF4yotzT key=werk.stabgelaender number="GL-002" x=2500 y=5000 rot=90 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
+[space] guid=1JxRjJ2eb3A99QwGHJp0Ji number="R-002" at=5000,4000 name="Raum \"Süd\"" seq=0 storey=2raHMuYTD64hQ6K56DbC_u
+[space] guid=1dIrSPIIL5SulaBsBPBA7K number="R-001" at=20000,4000 name="Wohnen" stamp=19000,3000 use=3L0qftDQBqEiFKla5DswQ4 factor=0.5 seq=0 storey=0w$UUoIID0CgN5lvvTdnI6
 [viewhide] view=plan cat=downpipe
 [viewhide] view=front cat=downpipe
 [plancut] h=1200
