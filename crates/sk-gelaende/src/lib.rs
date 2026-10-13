@@ -3,7 +3,8 @@
 //! Stelle, Profil entlang einer Linie, Höhenlinien und Flächenmittel;
 //! dazu der Lageplan als PDF (§4.5, G1c): Flate entpacken, Standard-Schutz
 //! öffnen, Objekte und Inhaltsstrom lesen, Lage im UTM-Gitter einpassen
-//! und das Flurstück samt Ecken und Fläche finden.
+//! und das Flurstück samt Ecken und Fläche finden. Gelesen werden
+//! Punktlisten und ASCII-DXF.
 //!
 //! Gerechnet wird in Metern relativ zu einem Bezugspunkt nahe den Punkten.
 //! Die Crate kennt weder das Modell noch Ausbaustufen; sie bekommt Bytes
@@ -13,6 +14,7 @@
 
 pub mod abfrage;
 pub mod codes;
+pub mod dxf;
 pub mod inflate;
 pub mod krypto;
 pub mod lageplan;

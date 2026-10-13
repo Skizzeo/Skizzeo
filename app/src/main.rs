@@ -4565,7 +4565,7 @@ impl App {
             flush_pick: self.pick.is_some(),
             dragging: self.edit.is_dragging()
                 || self.edit.input().is_some()
-                || self.edit.splitting(),
+                || self.edit.eigenes_thema(),
             tool: self
                 .tool
                 .enabled
