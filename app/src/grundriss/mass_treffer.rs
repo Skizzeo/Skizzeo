@@ -180,8 +180,8 @@ fn im_bereich<'a>(
 }
 
 /// Maßzahl oder Maßlinie bei `(x, y)` (Pixel der Ansicht). Geprüft werden
-/// nur Geschosse im Bild, deren Rahmen unter der Maus liegt, Zahlen nur,
-/// wenn sie gezeichnet werden (lesbar, Review W36).
+/// nur Geschosse, deren Rahmen der Blickstrahl der Maus trifft, Zahlen nur,
+/// wenn sie gezeichnet werden (lesbar, Review W36 und W39).
 #[allow(clippy::too_many_arguments)]
 pub fn treffer(
     stand: &Stand,
@@ -195,7 +195,12 @@ pub fn treffer(
     let p = (x, y);
     let blick = Blick { cam, w, h };
     let r = ZAHL_PX.max(LINIE_PX) * scale;
-    let nah = im_bereich(stand, &blick, [x - r, y - r, x + r, y + r]);
+    let strahl = cam.ray(x, y, w, h);
+    let nah: Vec<(&Aussenmasse, &Bild, bool)> = stand
+        .geschosse
+        .iter()
+        .filter_map(|g| Some((&*g.a, &g.b, g.unter_strahl(&blick, strahl, r)?)))
+        .collect();
     // Zahlen zuerst, die nächste zur Mitte
     let mut best: Option<(f64, Treffer)> = None;
     for &(a, b, _) in nah.iter().filter(|g| g.2) {

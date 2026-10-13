@@ -153,6 +153,50 @@ impl Geschoss {
         let px = blick.massstab(self.rahmen)?;
         Some(self.schrift * px >= LESBAR_PX)
     }
+
+    /// Wie [`Geschoss::im_bereich`] für den Blickstrahl `(o, d)` der Maus
+    /// mit Spielraum `r` (Bildpunkte): geprüft am Quader in Weltkoordinaten,
+    /// ohne ihn ins Bild zu rechnen (Review W39); nur getroffene Geschosse
+    /// fragen nach dem Maßstab.
+    pub fn unter_strahl(&self, blick: &Blick, (o, d): (Vec3, Vec3), r: f64) -> Option<bool> {
+        let [lo, hi] = self.rahmen;
+        let cam = blick.cam;
+        // Spielraum in mm am Bau, in 3D am fernsten Punkt des Quaders
+        let mm_px = match cam.ortho {
+            Some(half) => 2.0 * half / blick.h,
+            None => {
+                let tiefe =
+                    ((lo + hi) * 0.5 - cam.eye).dot(cam.forward()) + (hi - lo).length() * 0.5;
+                if tiefe <= 0.0 {
+                    return None;
+                }
+                2.0 * tiefe * (cam.fov_y * 0.5).tan() / blick.h
+            }
+        };
+        let e = r * mm_px;
+        let (mut t0, mut t1) = (0.0f64, f64::MAX);
+        for (o, d, lo, hi) in [
+            (o.x, d.x, lo.x, hi.x),
+            (o.y, d.y, lo.y, hi.y),
+            (o.z, d.z, lo.z, hi.z),
+        ] {
+            let (lo, hi) = (lo - e, hi + e);
+            if d.abs() < 1e-12 {
+                if o < lo || o > hi {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((lo - o) / d, (hi - o) / d);
+            t0 = t0.max(a.min(b));
+            t1 = t1.min(a.max(b));
+            if t0 > t1 {
+                return None;
+            }
+        }
+        let px = blick.massstab(self.rahmen)?;
+        Some(self.schrift * px >= LESBAR_PX)
+    }
 }
 
 /// Wofür die gemerkten Linien eines Geschosses gelten: Maßstab der
@@ -177,9 +221,18 @@ impl Stand {
     }
 }
 
-/// Tinte eines hervorgehobenen Geschosses: gilt für das Geschoss
-/// (Nummer), die Ansicht (verdeckbar) und die Farben je Dreieck.
-type HellTinte = (u64, bool, Vec<Option<[f32; 4]>>, Teil);
+/// Linien und Tinte eines hervorgehobenen Geschosses (gemerkt unter seiner
+/// Nummer und ob verdeckbar) und wofür sie gelten: Farben je Kette und je
+/// Zahl, Art der Linien, mit Kreisen. Tinte nur, wenn die Zahlen lesbar
+/// waren.
+struct Hell {
+    ketten: Kettenfarben,
+    zahlen: Vec<Option<[f32; 4]>>,
+    art: Linienart,
+    kreise: bool,
+    linien: Rc<[Helper]>,
+    teil: Option<Teil>,
+}
 
 /// Wofür die Ketten eines Geschosses gelten: Stand der Szene im Geschoss
 /// ([`Scene::mass_stand`]) und seine Versätze. Der Stil gilt für alle.
@@ -233,7 +286,7 @@ pub struct Massketten {
     zuletzt: Option<Zuletzt>,
     /// Tinte hervorgehobener Geschosse beim letzten Zeichnen: Gleiche
     /// Farben behalten ihren Schlüssel, der Renderer lädt nichts neu.
-    hell: Vec<HellTinte>,
+    hell: HashMap<(u64, bool), Hell>,
 }
 
 /// Ansicht mit Bemaßung (Stufe 1: Grundriss und 3D).
@@ -480,39 +533,60 @@ impl Massketten {
             theme.interact.track.map(f32::to_bits),
         );
         let (mut out, mut ink) = (Vec::new(), Vec::new());
-        let mut hell = Vec::new();
+        let mut hell = HashMap::new();
+        // Gewählte Ketten je Geschoss, einmal je Bild (Review W39)
+        let mut wahl: HashMap<StoreyId, Vec<KettenId>> = HashMap::new();
+        for k in &hervor.gewaehlt {
+            wahl.entry(k.st).or_default().push(*k);
+        }
         for g in &stand.geschosse {
             let Some(px) = blick.massstab(g.rahmen) else {
                 continue;
             };
             let kreise = stil.am_bau(stil.symbol_mm) * 0.5 * px >= SYMBOL_PX;
             let lesbar = g.schrift * px >= LESBAR_PX;
-            let (ketten, zahlen) = farben(&g.a, &g.b, hervor, theme);
-            if !ketten.is_empty() || zahlen.iter().any(Option::is_some) {
-                let mut v = linien(&g.b, stil, scale, theme, occlude, &ketten);
-                if !kreise {
-                    v.retain(|h| !h.round);
-                }
-                if bezug {
-                    v.extend(bezugspunkte(&g.b, scale, theme, occlude));
-                }
-                out.extend(v);
-                if !lesbar {
-                    continue;
-                }
-                let alt = self
-                    .hell
-                    .iter()
-                    .position(|h| h.0 == g.nr && h.1 == occlude && h.2 == zahlen);
-                let t = match alt {
-                    Some(i) => self.hell.swap_remove(i).3,
-                    None => {
-                        let t: Rc<[Ink]> = tinte(&g.b, stil, occlude, &zahlen).into();
-                        (neuer_stand() << 1 | occlude as u64, t)
+            let w = wahl.get(&g.a.storey).map_or(&[][..], Vec::as_slice);
+            let (ketten, zahlen) = farben(&g.a, &g.b, w, hervor, theme);
+            if !ketten.is_empty() || !zahlen.is_empty() {
+                // Hervorgehoben: Linien und Tinte gemerkt, solange Farben
+                // und Art gleich bleiben
+                let alt = self.hell.remove(&(g.nr, occlude));
+                let linien = match &alt {
+                    Some(h) if h.ketten == ketten && h.art == art && h.kreise == kreise => {
+                        h.linien.clone()
+                    }
+                    _ => {
+                        let mut v = linien(&g.b, stil, scale, theme, occlude, &ketten);
+                        if !kreise {
+                            v.retain(|h| !h.round);
+                        }
+                        if bezug {
+                            v.extend(bezugspunkte(&g.b, scale, theme, occlude));
+                        }
+                        v.into()
                     }
                 };
-                ink.push(t.clone());
-                hell.push((g.nr, occlude, zahlen, t));
+                out.extend_from_slice(&linien);
+                let teil =
+                    lesbar.then(
+                        || match alt.and_then(|h| h.teil.filter(|_| h.zahlen == zahlen)) {
+                            Some(t) => t,
+                            None => {
+                                let t = tinte(&g.b, stil, occlude, &je_dreieck(&g.b, &zahlen));
+                                (neuer_stand() << 1 | occlude as u64, t.into())
+                            }
+                        },
+                    );
+                ink.extend(teil.clone());
+                let h = Hell {
+                    ketten,
+                    zahlen,
+                    art,
+                    kreise,
+                    linien,
+                    teil,
+                };
+                hell.insert((g.nr, occlude), h);
                 continue;
             }
             let mut l = g.linien.borrow_mut();
@@ -576,19 +650,22 @@ fn pfeil(stand: &Stand, m: MassId, ende: usize, stil: &Stil) -> Option<[(Vec3, V
     ])
 }
 
-/// Farben der Hervorhebung: je Kette (Seite, Kette) im Bild und je Dreieck
-/// der Tinte, `None` in der Farbe des Stils.
+/// Farben der Hervorhebung je Kette (Seite, Kette) im Bild.
 type Kettenfarben = Vec<((usize, usize), [f32; 4])>;
 
+/// Farben der Hervorhebung im Geschoss `a` mit den dort gewählten Ketten
+/// `gewaehlt`: je Kette und je Zahl des Bildes (`None` in der Farbe des
+/// Stils; leer, wenn keine hervorgehoben ist).
 fn farben(
     a: &Aussenmasse,
     b: &Bild,
+    gewaehlt: &[KettenId],
     h: &Hervor,
     theme: &Theme,
 ) -> (Kettenfarben, Vec<Option<[f32; 4]>>) {
     // Nichts in diesem Geschoss hervorgehoben: nichts anlegen (Review W36)
     let hier = |k: &KettenId| k.st == a.storey;
-    if !h.gewaehlt.iter().any(hier)
+    if gewaehlt.is_empty()
         && !h.ueber.as_ref().is_some_and(hier)
         && !h.zahl.is_some_and(|(m, _)| hier(&m.kette))
     {
@@ -599,16 +676,16 @@ fn farben(
     for (si, s) in a.seiten.iter().enumerate() {
         for ki in 0..s.ketten.len() {
             let Some(k) = id_von(a, si, ki) else { continue };
-            if h.gewaehlt.contains(&k) {
+            if gewaehlt.contains(&k) {
                 ketten.push(((si, ki), col.select));
             } else if h.ueber == Some(k) {
                 ketten.push(((si, ki), col.drag_hot));
             }
         }
     }
-    let mut zahlen = vec![None; b.tinte.len()];
+    let mut zahlen = vec![None; b.zahlen.len()];
     let mut hell = false;
-    for z in &b.zahlen {
+    for (z, f) in b.zahlen.iter().zip(&mut zahlen) {
         let (si, ki) = match z.art {
             Zahlart::Mass { seite, kette, .. } => (seite, kette),
             Zahlart::Hoehe { seite, .. } | Zahlart::Brh { seite, .. } => {
@@ -629,17 +706,26 @@ fn farben(
                 c = Some(if aktiv { col.drag } else { col.drag_hot });
             }
         }
-        if let Some(c) = c {
+        if c.is_some() {
             hell = true;
-            for f in &mut zahlen[z.tinte.clone()] {
-                *f = Some(c);
-            }
+            *f = c;
         }
     }
     if !hell {
         zahlen.clear();
     }
     (ketten, zahlen)
+}
+
+/// Farbe je Dreieck der Tinte aus der Farbe je Zahl.
+fn je_dreieck(b: &Bild, zahlen: &[Option<[f32; 4]>]) -> Vec<Option<[f32; 4]>> {
+    let mut out = vec![None; b.tinte.len()];
+    for (z, c) in b.zahlen.iter().zip(zahlen) {
+        if c.is_some() {
+            out[z.tinte.clone()].fill(*c);
+        }
+    }
+    out
 }
 
 /// Versätze der Ketten im Geschoss `st` (nur dessen Abschnitt der
@@ -676,6 +762,7 @@ fn geschoss(a: Rc<Aussenmasse>, stil: &Stil, schrift: &Schrift) -> Geschoss {
         .flat_map(|s| [s.a, s.b])
         .chain(b.tinte.iter().flatten().copied())
         .chain(b.linien.iter().flat_map(|l| [l.a, l.b]))
+        .chain(b.zahlen.iter().flat_map(|z| z.rahmen))
         .chain(b.bezuege.iter().map(|r| r.am_bauteil));
     let (lo, hi) = (
         vec3(f64::MAX, f64::MAX, f64::MAX),

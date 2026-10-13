@@ -473,9 +473,10 @@ impl Model {
 
     /// Züge, deren abgeleitete Bauteile der offene Schritt ändern kann
     /// (Z4): die von [`Model::step_touched`]. Reine Darstellung (Stifte,
-    /// Linien, Schraffuren, Oberflächen, Anzeige) zählt nicht (Review 2d
-    /// T8). `None` (alle), sobald der Schritt mehr als Züge und Bauteile
-    /// ändert, etwa einen Typ, einen Baustoff oder ein Geschoss.
+    /// Linien, Schraffuren, Oberflächen, Anzeige, Maßketten) zählt nicht
+    /// (Review 2d T8, Review W39 zu #126). `None` (alle), sobald der
+    /// Schritt mehr als Züge und Bauteile ändert, etwa einen Typ, einen
+    /// Baustoff oder ein Geschoss.
     pub(super) fn sync_scope(&self) -> Option<Vec<RunId>> {
         let open = self.txn.as_ref()?;
         open.changes
@@ -493,6 +494,7 @@ impl Model {
                         | Change::Ext { .. }
                         | Change::Project { .. }
                         | Change::Location { .. }
+                        | Change::Bemassung { .. }
                 )
             })
             .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))

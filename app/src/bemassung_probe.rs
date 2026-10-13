@@ -405,7 +405,7 @@ fn probe_bemassung() {
     let theme = Theme::dark();
     println!();
     println!(
-        "{:>7} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
+        "{:>7} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
         "Häuser",
         "Kalt",
         "Stand",
@@ -418,6 +418,8 @@ fn probe_bemassung() {
         "Zeichn.",
         "Loslass",
         "Drehen",
+        "KetteLos",
+        "Wahl",
         "Linien",
         "Dreiecke",
         "Teile",
@@ -622,8 +624,49 @@ fn probe_bemassung() {
             ));
         }
         let drehen = ms(t, reps);
+        // Kette loslassen: Versatz als Schritt, dann das Bild (Review W39)
+        let st0 = geschosse(&s, ViewKind::Plan, &[])[0];
+        let zeichne = |mk: &mut Massketten, s: &Scene, h: &Hervor| {
+            std::hint::black_box(mk.zeichnen(
+                s,
+                ViewKind::Plan,
+                &[],
+                Some(&f),
+                &blick,
+                1.0,
+                &theme,
+                h,
+            ));
+        };
+        let t = Instant::now();
+        for k in 0..reps {
+            s.begin(crate::wall_edit::mass_edit::SCHRITT_KETTE);
+            s.set_massversatz(st0, 270, Kettenart::Gesamt, 500.0 + 10.0 * (k % 2) as f64);
+            s.commit();
+            zeichne(&mut mk, &s, &Default::default());
+        }
+        let kette_los = ms(t, reps);
+        // Alle Ketten gewählt: je Bild ohne Änderung
+        let gezeigt = mk.gezeigt(&s, ViewKind::Plan, &[], Some(&f)).unwrap();
+        let alle = Hervor {
+            gewaehlt: gezeigt
+                .paare()
+                .flat_map(|(a, _)| {
+                    (0..a.seiten.len()).flat_map(move |si| {
+                        (0..a.seiten[si].ketten.len()).filter_map(move |ki| id_von(a, si, ki))
+                    })
+                })
+                .collect(),
+            ..Default::default()
+        };
+        zeichne(&mut mk, &s, &alle);
+        let t = Instant::now();
+        for _ in 0..reps {
+            zeichne(&mut mk, &s, &alle);
+        }
+        let wahl = ms(t, reps);
         println!(
-            "{:>7} {:>8.2} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
+            "{:>7} {:>8.2} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
             format!("{n}{}", if eng { " eng" } else { "" }),
             kalt,
             stand,
@@ -636,6 +679,8 @@ fn probe_bemassung() {
             zeichnen,
             los,
             drehen,
+            kette_los,
+            wahl,
             linien.len(),
             dreiecke,
             ink.len(),
@@ -649,7 +694,9 @@ fn probe_bemassung() {
          die Bemaßung je Mausschritt dazu kostet, Hochlad. = Dreiecke, die dabei neu zur \
          Grafikkarte gehen; ZiehNah = Ziehen nah am Haus (etwa 1:100 am Bildschirm). \
          Zeichn. = Bild ohne Änderung, Loslass = Loslassen und erstes \
-         Bild, Drehen = Bild in 3D ohne Änderung. Linien, Dreiecke, Teile = im Bild der ganzen \
+         Bild, Drehen = Bild in 3D ohne Änderung, \
+         KetteLos = Kette loslassen (Versatz als Schritt) und Bild, Wahl = Bild mit allen \
+         Ketten gewählt. Linien, Dreiecke, Teile = im Bild der ganzen \
          Siedlung (weit weg ohne Schrift und Kreise), TeilNah = Geschosse mit Schrift nah am \
          Haus."
     );
