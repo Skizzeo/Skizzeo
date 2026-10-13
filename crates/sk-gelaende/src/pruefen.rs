@@ -79,24 +79,34 @@ pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
         .iter()
         .map(|p| codes.bedeutung(&p.code).im_gelaende())
         .collect();
-    // unplausible Höhen (Kommafehler, Platzhalter) bleiben außen vor
-    let hoch: Vec<String> = punkte
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| {
-            !(p.h.is_finite() && p.e.is_finite() && p.n.is_finite()) || p.h.abs() > MAX_HOEHE
-        })
-        .map(|(i, p)| {
-            drin[i] = false;
-            p.nr.clone()
-        })
-        .collect();
+    // unlesbare Zahlen und unplausible Höhen (Kommafehler, Platzhalter)
+    // bleiben außen vor, je mit eigenem Hinweis (Review #121, H2)
+    let mut unlesbar: Vec<String> = Vec::new();
+    let mut hoch: Vec<String> = Vec::new();
+    for (i, p) in punkte.iter().enumerate() {
+        if !(p.h.is_finite() && p.e.is_finite() && p.n.is_finite()) {
+            unlesbar.push(p.nr.clone());
+        } else if p.h.abs() > MAX_HOEHE {
+            hoch.push(p.nr.clone());
+        } else {
+            continue;
+        }
+        drin[i] = false;
+    }
     if !hoch.is_empty() {
         hinweise.push(liste(
-            "mit unplausibler Höhe (über 9000 m), außen vor",
+            "mit unplausibler Höhe (mehr als 9000 m über oder unter NHN), außen vor",
             "Punkt",
             "Punkte",
             &hoch,
+        ));
+    }
+    if !unlesbar.is_empty() {
+        hinweise.push(liste(
+            "ohne lesbare Lage oder Höhe, außen vor",
+            "Punkt",
+            "Punkte",
+            &unlesbar,
         ));
     }
     // ferne Punkte: weiter als 2 km vom Median
@@ -414,8 +424,21 @@ mod tests {
         let r = pruefen(&mut v, &Codetabelle::default());
         assert!(!r.drin[3] && !r.drin[7] && !r.drin[9] && r.drin[4]);
         assert_eq!(
+            r.hinweise[..2],
+            [
+                "Punkte 4 und 10 mit unplausibler Höhe (mehr als 9000 m über oder unter NHN), außen vor.",
+                "Punkt 8 ohne lesbare Lage oder Höhe, außen vor."
+            ]
+        );
+        // unendlich und eine unlesbare Lage zählen ebenso als unlesbar
+        let mut v = feld();
+        v[1].h = f64::INFINITY;
+        v[2].e = f64::NAN;
+        let r = pruefen(&mut v, &Codetabelle::default());
+        assert!(!r.drin[1] && !r.drin[2]);
+        assert_eq!(
             r.hinweise[0],
-            "Punkte 4, 8 und 10 mit unplausibler Höhe (über 9000 m), außen vor."
+            "Punkte 2 und 3 ohne lesbare Lage oder Höhe, außen vor."
         );
     }
 
