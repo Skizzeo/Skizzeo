@@ -14,6 +14,26 @@ use crate::wand_loch::Hole;
 /// So weit darf ein Pfadpunkt neben der Außenfläche liegen (mm).
 const ON_FACE: f64 = 1.0;
 
+/// Rechteck (x/y) des Öffnungspfads `path`, je Seite um 1e-3 der
+/// Pfadlänge erweitert: so weit darf ein Pfadstück, das [`Model::legs_on`]
+/// noch als parallel zur Wandfläche nimmt, von ihr abweichen. Ohne Punkte
+/// leer (`lo` über `hi`).
+pub(crate) fn pfad_rahmen(path: &[Vec3]) -> (Vec3, Vec3) {
+    let mut lo = vec3(f64::INFINITY, f64::INFINITY, 0.0);
+    let mut hi = vec3(f64::NEG_INFINITY, f64::NEG_INFINITY, 0.0);
+    for p in path {
+        (lo.x, lo.y) = (lo.x.min(p.x), lo.y.min(p.y));
+        (hi.x, hi.y) = (hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let schraeg = 1e-3
+        * path
+            .windows(2)
+            .map(|w| (flat(w[1]) - flat(w[0])).length())
+            .sum::<f64>();
+    let r = vec3(schraeg, schraeg, 0.0);
+    (lo - r, hi + r)
+}
+
 impl Model {
     /// Absolute Höhe einer Öffnungskante (mm).
     pub fn height_z(&self, r: HeightRef) -> Option<f64> {
@@ -273,9 +293,11 @@ impl Model {
             .run(run)
             .and_then(|r| self.storey(r.storey))
             .and_then(|s| s.building);
-        // Vortest über die Quader: Ein Pfadstück auf der Außenfläche liegt
-        // höchstens Versatz + Dicke neben der Bezugslinie; nur Öffnungen
-        // dort kosten den ganzen Gang (sonst wächst jeder Zug mit dem Modell)
+        // Vortest über die Quader: Ein Pfadstück, das [`Model::legs_on`]
+        // nimmt, hat einen Punkt höchstens Versatz + ON_FACE + Dicke neben
+        // einem Segment (bis auf die Neigung, die [`pfad_rahmen`] trägt);
+        // nur Öffnungen dort kosten den ganzen Gang (sonst wächst jeder Zug
+        // mit dem Modell). 1 mm Reserve gegen Rundung.
         let Some((pts, _, _)) = c.layout() else {
             return Vec::new();
         };
@@ -286,12 +308,8 @@ impl Model {
             (hi.x, hi.y) = (hi.x.max(p.x), hi.y.max(p.y));
         }
         let nah = |path: &[Vec3]| {
-            let x = path.iter().map(|p| p.x);
-            let y = path.iter().map(|p| p.y);
-            x.clone().fold(f64::INFINITY, f64::min) <= hi.x + rand
-                && x.fold(f64::NEG_INFINITY, f64::max) >= lo.x - rand
-                && y.clone().fold(f64::INFINITY, f64::min) <= hi.y + rand
-                && y.fold(f64::NEG_INFINITY, f64::max) >= lo.y - rand
+            let (a, b) = pfad_rahmen(path);
+            a.x <= hi.x + rand && b.x >= lo.x - rand && a.y <= hi.y + rand && b.y >= lo.y - rand
         };
         // Im lesenden Gang nur die Öffnungen der Felder um den Zug
         let kandidaten: Box<dyn Iterator<Item = ElementId>> = match self.verz() {
