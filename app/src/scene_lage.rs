@@ -5,11 +5,13 @@
 //! Szene alles neu; sonst blieben 3D-Körper und Mengen beim alten Stand.
 //! Beim Ziehen von OK Gelände folgen so die Züge der Gebäude, deren
 //! Gründung sich bewegt hat (W45-Nachprüfung N1), die anderen Gebäude erst
-//! beim Loslassen (Review #123 B1 zum Gelände-Zug).
+//! beim Loslassen (Review #123 B1 zum Gelände-Zug), im Modell sofort, ihre
+//! Körper im Leerlauf (Review #123 F1).
 
 use super::Scene;
 use sk_model::{BuildingId, ElementKind, LevelKind, RunId, StoreyId};
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 impl Scene {
     /// Projektdaten samt Breite und Länge aus der Maske (Sonnenstand S1)
@@ -84,17 +86,58 @@ impl Scene {
     }
 
     /// Loslassen eines Zugs an OK Gelände (aus [`Scene::commit`]): Die
-    /// übrigen Gründungen folgen im Modell, die Züge mit Sohlplatte der
-    /// Gebäude, deren Unterkante sich bewegt hat, werden neu.
+    /// übrigen Gründungen folgen im Modell. Die Züge mit Sohlplatte der
+    /// Gebäude, deren Unterkante sich bewegt hat, werden im Leerlauf neu
+    /// ([`Scene::nachziehen`]), nicht im Loslassen: Bei 1000 Häusern mit
+    /// Aufmaß kostete es sonst 195 ms statt 41,5 wie ohne Aufmaß, bei 4000
+    /// Häusern 15,3 s statt 6,1 (Review #123 F1).
     pub(super) fn gelaende_loslassen(&mut self) {
         let Some((zug, _)) = self.gelaende_zug.take() else {
             return;
         };
         let bewegt = self.model.gelaende_loslassen(zug);
         if !bewegt.is_empty() {
-            for r in self.platten_zuege(&bewegt) {
-                self.mark(r);
+            let schon: HashSet<RunId> = self.nachzug.iter().copied().collect();
+            let neu = self.platten_zuege(&bewegt);
+            self.nachzug
+                .extend(neu.into_iter().filter(|r| !schon.contains(r)));
+        }
+    }
+
+    /// Im Leerlauf, nicht in einem offenen Schritt: Züge, die einem
+    /// Gelände-Zug folgen, neu rechnen, bis `budget` um ist (mindestens
+    /// einen). `None`, wenn nichts zu tun ist; `Some(true)`, wenn jetzt alle
+    /// neu sind (dann folgen Bild und Mengen), sonst `Some(false)`.
+    pub fn nachziehen(&mut self, budget: Duration) -> Option<bool> {
+        if self.nachzug.is_empty() || self.model.in_step() {
+            return None;
+        }
+        let t0 = Instant::now();
+        while let Some(id) = self.nachzug.pop() {
+            self.mass_zug(id);
+            let b = self.cached(id).map_or(0, |c| c.builds);
+            self.store(id, b, false);
+            if t0.elapsed() >= budget {
+                break;
             }
+        }
+        let fertig = self.nachzug.is_empty();
+        if fertig {
+            self.bounds_neu();
+        }
+        Some(fertig)
+    }
+
+    /// Folgen noch Züge einem Gelände-Zug ([`Scene::nachziehen`])?
+    pub fn zieht_nach(&self) -> bool {
+        !self.nachzug.is_empty()
+    }
+
+    /// Züge, die ohnehin neu werden, folgen nicht noch einmal.
+    pub(super) fn nachzug_ohne(&mut self, ids: &[RunId]) {
+        if !self.nachzug.is_empty() && !ids.is_empty() {
+            let neu: HashSet<RunId> = ids.iter().copied().collect();
+            self.nachzug.retain(|r| !neu.contains(r));
         }
     }
 
@@ -253,6 +296,14 @@ mod tests {
         let nachher = uk2(&s);
         assert!((nachher - vorher).abs() > 100.0, "{vorher} {nachher}");
         let mut neu = Scene::with_model(s.model().clone());
+        // seine Körper folgen im Leerlauf (Review #123 F1), nicht in einem
+        // offenen Schritt
+        assert!(s.zieht_nach() && bild(&mut s) != bild(&mut neu));
+        s.begin("Gelände ziehen");
+        assert_eq!(s.nachziehen(Duration::ZERO), None);
+        s.rollback();
+        while s.nachziehen(Duration::ZERO) == Some(false) {}
+        assert!(!s.zieht_nach());
         assert!(bild(&mut s) == bild(&mut neu), "Bild wie nach Neuaufbau");
         assert_eq!(s.bounds(), neu.bounds());
         // Esc lässt Gelände und Gründungen, wie sie waren
@@ -265,5 +316,136 @@ mod tests {
         // Rückgängig nimmt Zug und Nachziehen in einem Schritt zurück
         assert!(s.undo());
         assert_eq!(uk2(&s), vorher);
+        while s.nachziehen(Duration::ZERO) == Some(false) {}
+        let mut alt = Scene::with_model(s.model().clone());
+        assert!(bild(&mut s) == bild(&mut alt), "Bild nach Rückgängig");
+    }
+
+    /// `n` Häuser 10 × 8 m im Raster zu 15 m, je eines ein Gebäude, mit
+    /// oder ohne gewelltes örtliches Aufmaß darunter (wie im Budget von
+    /// sk-model).
+    fn viele_haeuser(n: usize, aufmass: bool) -> Scene {
+        let mut m = Model::with_seed(5);
+        for i in 0..n {
+            let b = m.add_building(1);
+            let (ox, oy) = ((i % 64) as f64 * 15_000.0, (i / 64) as f64 * 15_000.0);
+            let ecken = [
+                (0.0, 0.0),
+                (0.0, 8000.0),
+                (10_000.0, 8000.0),
+                (10_000.0, 0.0),
+            ];
+            let ecken: Vec<_> = ecken
+                .iter()
+                .map(|&(x, y)| vec3(ox + x, oy + y, 0.0))
+                .collect();
+            m.build_from_polygon(b, &ecken).unwrap();
+        }
+        if aufmass {
+            let tiefe = n.div_ceil(64) as f64 * 15.0 + 80.0;
+            let (nx, ny) = (53, (tiefe / 20.0) as usize + 1);
+            let mut t = Terrain::new(Crs::Local);
+            for i in 0..nx {
+                for j in 0..ny {
+                    let (e, nn) = (1000.0 + 20.0 * i as f64, 2000.0 + 20.0 * j as f64);
+                    t.points.push(TerrainPoint {
+                        nr: (i * ny + j + 1).to_string(),
+                        e,
+                        n: nn,
+                        h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
+                        code: String::new(),
+                        off: false,
+                    });
+                }
+            }
+            m.begin("Aufmaß");
+            assert!(m.import_terrain(t));
+            m.commit();
+        }
+        Scene::with_model(m)
+    }
+
+    /// Loslassen eines Gelände-Zugs (Review #123 F1: mit Aufmaß 195 ms bei
+    /// 1000 Häusern, ohne 41,5): Mit Aufmaß folgen die übrigen Gründungen
+    /// im Modell, ihre Körper erst im Leerlauf, je Durchlauf im Budget. So
+    /// kostet das Loslassen mit Aufmaß kaum mehr als ohne, und am Ende steht
+    /// dasselbe Bild wie nach einem Neuaufbau.
+    #[test]
+    fn loslassen_ohne_aufschlag() {
+        use crate::ui::ViewKind;
+        let n = if cfg!(debug_assertions) { 64 } else { 1000 };
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+        let mut zeiten = Vec::new();
+        for aufmass in [false, true] {
+            let mut s = viele_haeuser(n, aufmass);
+            let (mut los, mut nach, mut runden) = (Vec::new(), 0.0, 0);
+            for z in [-300.0, -650.0, -450.0, -800.0, -350.0] {
+                s.begin("Gelände ziehen");
+                s.drag_terrain(z + 40.0);
+                s.drag_terrain(z);
+                let t0 = Instant::now();
+                s.commit();
+                los.push(ms(t0));
+                assert_eq!(s.zieht_nach(), aufmass);
+                loop {
+                    let t0 = Instant::now();
+                    let r = s.nachziehen(Duration::from_millis(6));
+                    nach += ms(t0);
+                    if r != Some(false) {
+                        break;
+                    }
+                    runden += 1;
+                }
+            }
+            los.sort_by(f64::total_cmp);
+            zeiten.push(los[2]);
+            eprintln!(
+                "{n} Häuser {} Aufmaß: Loslassen {:.1} ms (Median), \
+                 Nachziehen {nach:.1} ms in {runden} weiteren Durchläufen",
+                if aufmass { "mit" } else { "ohne" },
+                los[2]
+            );
+            if aufmass {
+                let mut neu = Scene::with_model(s.model().clone());
+                let bild = |s: &mut Scene| s.mesh(ViewKind::Front, None, &[]).faces.len();
+                assert_eq!(bild(&mut s), bild(&mut neu));
+                assert_eq!(s.bounds(), neu.bounds());
+            }
+        }
+        let grenze = if cfg!(debug_assertions) { 400.0 } else { 10.0 };
+        assert!(
+            zeiten[1] <= 1.3 * zeiten[0] + grenze,
+            "Loslassen mit Aufmaß {:.1} ms, ohne {:.1} ms",
+            zeiten[1],
+            zeiten[0]
+        );
+    }
+
+    /// Die automatische Sicherung wartet, solange ein Gelände-Zug offen
+    /// ist (Review #123 F2): ±0,00 steht dann schon neu, die übrigen
+    /// Gründungen noch alt. Nach dem Loslassen sichert sie den fertigen
+    /// Stand.
+    #[test]
+    fn sicherung_nicht_im_gelaende_zug() {
+        use crate::autosave::AutoSave;
+        use crate::document::Document;
+        let d = std::env::temp_dir().join(format!("skizzeo-sicherung-zug-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut s = haeuser_am_hang(&[0.0, 20_000.0]);
+        let doc = Document::opened(d.join("haus.szo"), s.model().revision());
+        let mut a = AutoSave::new(d.clone());
+        let t = |min: u64| Duration::from_secs(min * 60);
+        assert_eq!(a.tick(s.model(), &doc, t(0)), None);
+        s.begin("Gelände ziehen");
+        s.drag_terrain(-500.0);
+        assert!(doc.is_dirty(s.model()));
+        assert_eq!(a.wait(s.model(), &doc, t(6)), None);
+        assert_eq!(a.tick(s.model(), &doc, t(6)), None, "im offenen Schritt");
+        s.commit();
+        let p = a.tick(s.model(), &doc, t(6)).expect("nach dem Loslassen");
+        let gesichert = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(gesichert, sk_model::szo::write(s.model()));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
