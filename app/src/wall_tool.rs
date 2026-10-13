@@ -206,7 +206,7 @@ impl WallTool {
             .as_ref()
             .is_some_and(|w| w.innen.eingabe.is_some())
         {
-            return ["Abstand", ""];
+            return crate::oeffnung_app::innentuer::FELDER;
         }
         if let Some(nb) = self.abstand.filter(|_| self.abstand_offen()) {
             return [nb.etikett(), ""];

@@ -37,6 +37,8 @@ const BOGEN: usize = 12;
 const BREITE: usize = 2;
 /// Abstand der Maßkette von der Wandfläche (mm).
 const KETTE: f64 = 250.0;
+/// Felder der Pille beim Tippen des Abstands.
+pub const FELDER: [&str; 2] = ["Abstand", ""];
 
 /// Bezugspunkt der Tür am Cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -103,7 +105,8 @@ pub enum Taste {
     Frei,
     /// Eingabe geöffnet, geändert oder geschlossen.
     Geaendert,
-    /// Enter: Die Tür steht im getippten Abstand und wird gesetzt.
+    /// Enter: Die Tür steht im getippten Abstand und wird gesetzt; die
+    /// Eingabe bleibt, bis [`Innentuer::pruefen`] die Tür annimmt.
     Setzen,
     /// Enter, doch so passt die Tür nicht in die Wand; die Eingabe bleibt.
     PasstNicht,
@@ -301,7 +304,6 @@ impl Innentuer {
             InputOutcome::Enter => {
                 let a = i.value(0).and_then(Result::ok);
                 if a.is_some_and(|a| self.abstand_setzen(a)) {
-                    self.eingabe = None;
                     Taste::Setzen
                 } else {
                     if let Some(i) = self.eingabe.as_mut() {
@@ -337,20 +339,43 @@ impl Innentuer {
     }
 
     /// Pille an der Maßkette: der Abstand zur näheren Wandfläche, von der
-    /// Fläche zur Kante der Tür, als Maßzahl auf `rundung` mm.
+    /// Fläche zur Kante der Tür, als Maßzahl auf `rundung` mm, beim Tippen
+    /// die Eingabe nach jeder Taste (Review W49 B1).
     pub fn label(&self, rundung: u8) -> Option<([Vec3; 2], String)> {
         let v = self.hover.as_ref()?;
         let (seite, a) = naeher(v);
-        if a < 1.0 {
-            return None;
-        }
+        let text = match &self.eingabe {
+            Some(i) => i.text(FELDER),
+            None if a >= 1.0 => masszahl(a, rundung).text(),
+            None => return None,
+        };
         let (s0, s1) = v.face.span;
         let (von, bis) = match seite {
             Seite::Anfang => (s0, v.u.0),
             Seite::Ende => (s1, v.u.1),
         };
         let auf = kette_auf(v);
-        Some(([auf(von), auf(bis)], masszahl(a, rundung).text()))
+        Some(([auf(von), auf(bis)], text))
+    }
+
+    /// Die Tür der Vorschau, wenn das Modell sie nimmt (Klick oder
+    /// **Enter**); dann schließt die Eingabe. Lehnt es ab, steht der Grund
+    /// in `Err`, und eine getippte Zahl bleibt mit diesem Fehler offen, die
+    /// Tür im getippten Abstand (Review W49 B2). `None` ohne Vorschau.
+    pub fn pruefen(&mut self, m: &Model) -> Option<Result<Opening, String>> {
+        let o = self.oeffnung()?;
+        match m.opening_fault(&o, None).map(|f| f.text(m)) {
+            None => {
+                self.eingabe = None;
+                Some(Ok(o))
+            }
+            Some(t) => {
+                if let Some(i) = self.eingabe.as_mut() {
+                    i.error = Some(crate::meldung::Meldung::mit("{}.", &[&t]));
+                }
+                Some(Err(t))
+            }
+        }
     }
 
     fn vorschau(
@@ -762,7 +787,6 @@ mod tests {
         tippe(&mut t, "0,5");
         assert!(t.eingabe.is_some());
         assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
-        assert!(t.eingabe.is_none());
         let v = t.hover.clone().unwrap();
         let lichte = |v: &Vorschau| {
             let (a, b) = (y(v.u.0), y(v.u.1));
@@ -770,12 +794,14 @@ mod tests {
         };
         assert_eq!(lichte(&v), (815.0, 1700.0));
         assert!((v.punkt.y - 1257.5).abs() < 1e-6, "{:?}", v.punkt);
-        assert_eq!(m.opening_fault(&t.oeffnung().unwrap(), None), None);
+        assert!(t.pruefen(&m).unwrap().is_ok());
+        assert!(t.eingabe.is_none(), "angenommen: die Eingabe schließt");
         // Oben ist die obere Fläche die nähere
         t.suchen(&m, &k, st, vec3(5020.0, 6500.0, 0.0), 30.0, 1500.0);
         tippe(&mut t, "0,3");
         assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
         assert_eq!(lichte(t.hover.as_ref().unwrap()), (6500.0, 7385.0));
+        assert!(t.pruefen(&m).unwrap().is_ok());
         // Zu weit: bleibt offen, mit Fehler
         tippe(&mut t, "7,2");
         assert_eq!(t.taste(Key::Enter, mods), Taste::PasstNicht);
@@ -789,5 +815,43 @@ mod tests {
         t.suchen(&m, &k, st, vec3(3000.0, 3000.0, 0.0), 30.0, 1500.0);
         assert!(t.eingabe.is_none() && t.label(1).is_none());
         assert_eq!(t.taste(Key::Char('1'), mods), Taste::Frei);
+    }
+
+    /// Review W49: Die Pille zeigt nach jeder Taste die getippte Zahl (B1).
+    /// Lehnt das Modell die Tür im getippten Abstand ab, hier wegen einer
+    /// Tür, die dort schon steht, bleibt die Eingabe mit dem Grund offen
+    /// und die Tür im getippten Abstand (B2); **Esc** schließt sie.
+    #[test]
+    fn eingabe_in_der_pille_und_abgelehnt() {
+        let (mut m, _, st) = haus();
+        let mut t = Innentuer::default();
+        let mods = Modifiers::default();
+        let p = vec3(5020.0, 3000.0, 0.0);
+        t.suchen(&m, &|r| m.chain(r), st, p, 30.0, 1500.0);
+        let mut texte = vec![t.label(1).unwrap().1];
+        for ch in "0,5".chars() {
+            assert_eq!(t.taste(Key::Char(ch), mods), Taste::Geaendert);
+            let (_, text) = t.label(1).unwrap();
+            assert_eq!(text, t.eingabe.as_ref().unwrap().text(FELDER));
+            assert!(!texte.contains(&text), "{text} nach {texte:?}");
+            texte.push(text);
+        }
+        assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
+        let o = t.pruefen(&m).unwrap().unwrap();
+        m.add_opening(o).unwrap();
+        // Noch einmal 0,5 m von derselben Fläche: Dort steht die Tür schon
+        t.suchen(&m, &|r| m.chain(r), st, p, 30.0, 1500.0);
+        for ch in "0,5".chars() {
+            t.taste(Key::Char(ch), mods);
+        }
+        assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
+        let vorher = t.hover.clone();
+        assert!(t.pruefen(&m).unwrap().is_err());
+        let i = t.eingabe.as_ref().expect("die Eingabe bleibt");
+        assert!(i.error.is_some());
+        assert_eq!(t.label(1).unwrap().1, i.text(FELDER));
+        assert_eq!(t.hover, vorher, "die Tür bleibt im getippten Abstand");
+        assert_eq!(t.taste(Key::Escape, mods), Taste::Geaendert);
+        assert!(t.eingabe.is_none());
     }
 }
