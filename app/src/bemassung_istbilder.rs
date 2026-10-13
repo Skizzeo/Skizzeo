@@ -159,7 +159,9 @@ fn gpu_istbilder_bemassung() {
         let bezug = |s: &mut Scene, b: sk_model::bemassung::Aussenbezug| {
             let mut stil = s.model().massstil().clone();
             stil.bezug = b;
+            s.begin_settings();
             s.edit_attr(|m| m.set_massstil(stil));
+            s.commit();
         };
         bezug(&mut s, sk_model::bemassung::Aussenbezug::Rohbau);
         ab(

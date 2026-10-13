@@ -1138,7 +1138,9 @@ mod tests {
         }
         let mut stil = s.model().massstil().clone();
         stil.bezug = sk_model::bemassung::Aussenbezug::Rohbau;
+        s.begin_settings();
         assert!(s.edit_attr(|m| m.set_massstil(stil)));
+        s.commit();
         let c = kamera();
         let mut e = WallEdit::default();
         let (p, wert) = zahl(&s, &c, 270, Kettenart::Oeffnung, 1);
