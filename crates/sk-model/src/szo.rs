@@ -25,9 +25,7 @@ mod sicht;
 
 pub(crate) use darstellung::Roh;
 
-use crate::attr::{
-    Attributes, Dash, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen, Surface,
-};
+use crate::attr::{Attributes, Dash, Fill, FillKind, FillSpace, HatchLine, LineType, Pen, Surface};
 use crate::element::{
     Building, Category, Coupling, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind,
     LevelRef, PropSet, PropValue, Soffit, Storey, StripFooting, Terrace, Wall, WallRun,
@@ -746,7 +744,6 @@ fn write_known(m: &Model) -> String {
     let mut out = format!("SZO {VERSION}\n# Skizzeo-Projekt\n");
     let a = m.attr();
     let pen_guid = |id| a.pen(id).map(|p| p.guid);
-    let lt_guid = |id| a.line_type(id).map(|l| l.guid);
 
     for p in sorted(a.pens().iter(), |p| p.guid) {
         write_pen(&mut out, p);
@@ -766,37 +763,7 @@ fn write_known(m: &Model) -> String {
     for s in sorted(a.surfaces().iter(), |s| s.guid) {
         write_surface(&mut out, s);
     }
-    let d = a.display();
-    let slot = |out: &mut String, name: &str, s: &EdgeStyle| {
-        Line::new("display")
-            .word("slot", name)
-            .guid("pen", pen_guid(s.pen))
-            .guid("lt", lt_guid(s.line_type))
-            .finish(out);
-    };
-    for (prefix, table) in [("drawing", &d.drawing), ("model3d", &d.model3d)] {
-        for (name, k) in EDGE_NAMES {
-            slot(&mut out, &format!("{prefix}.{name}"), &table[k as usize]);
-        }
-    }
-    slot(&mut out, "ground", &d.ground);
-    slot(&mut out, "section_line", &d.section_line);
-    slot(&mut out, "section_ends", &d.section_ends);
-    slot(&mut out, "background", &d.background);
-    slot(&mut out, "pattern", &d.pattern);
-    // Rohe Zeilen der Werksstellen jeweils an ihrer Stelle (Review #127 B2)
-    if !a.element_is_default() {
-        slot(&mut out, "element", &d.element);
-    }
-    darstellung::write_raw(a, "element", &mut out);
-    if !a.above_is_default() {
-        slot(&mut out, "above", &d.above);
-    }
-    darstellung::write_raw(a, "above", &mut out);
-    Line::new("display")
-        .word("slot", "paper")
-        .color("color", d.paper)
-        .finish(&mut out);
+    darstellung::write(a, &mut out);
 
     let mat_guid = |id| m.material(id).map(|x| x.guid);
     let used = used_trades(

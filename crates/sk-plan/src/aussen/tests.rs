@@ -44,11 +44,21 @@ fn schichten(m: &Model, run: RunId) -> (f64, f64) {
     ((a - c.outer_offset()).abs(), (i - a).abs())
 }
 
+/// Dicke des ganzen Wandpakets.
+fn dicke(m: &Model, run: RunId) -> f64 {
+    let c = m.chain(run).unwrap();
+    (c.inner_offset() - c.outer_offset()).abs()
+}
+
+/// Das ganze Wandpaket von der Außen- bis zur Innenkante, nicht nur die
+/// tragende Schicht (Jörn 13.10.): Wandmaß und Gesamtmaß über alles.
 #[test]
 fn rechteck_hat_vier_seiten_mit_wand_und_gesamtmass() {
     let (m, run, st) = rechteck();
     let (vor, kern) = schichten(&m, run);
-    assert!(kern > 100.0, "tragende Schicht {kern}");
+    let d = dicke(&m, run);
+    assert!(vor > 100.0 && kern > 100.0, "Dämmung {vor}, tragend {kern}");
+    assert!(d >= vor + kern - 1e-6, "Wandpaket {d}");
     let a = aussenmasse(&m, st).unwrap();
     assert_eq!(a.seiten.len(), 4);
     let sued = seite(&a, 270);
@@ -58,20 +68,16 @@ fn rechteck_hat_vier_seiten_mit_wand_und_gesamtmass() {
         [Kettenart::Wand, Kettenart::Gesamt]
     );
     let gesamt = kette(sued, Kettenart::Gesamt).unwrap();
-    assert_eq!(masse(gesamt), [(10_000.0 - 2.0 * vor).round()]);
+    assert_eq!(masse(gesamt), [10_000.0]);
     let wand = kette(sued, Kettenart::Wand).unwrap();
     assert_eq!(
         masse(wand),
-        [
-            kern.round(),
-            (10_000.0 - 2.0 * vor - 2.0 * kern).round(),
-            kern.round()
-        ]
+        [d.round(), (10_000.0 - 2.0 * d).round(), d.round()]
     );
-    // Erste Kette 2 m vor der Rohbauflucht, die nächste 1 m weiter
+    // Erste Kette 2 m vor der Außenkante, die nächste 1 m weiter
     assert!((wand.lage - (sued.aussen + 2000.0)).abs() < 1e-6);
     assert!((gesamt.lage - (sued.aussen + 3000.0)).abs() < 1e-6);
-    assert!((sued.aussen - (-vor)).abs() < 1e-6);
+    assert!(sued.aussen.abs() < 1e-6);
     // Ecken bewegen die quer stehenden Wände
     assert_eq!(wand.bezuege[0].herkunft, Herkunft::Ecke);
     assert_eq!(wand.bezuege[1].herkunft, Herkunft::Innenseite);
@@ -82,28 +88,40 @@ fn rechteck_hat_vier_seiten_mit_wand_und_gesamtmass() {
     // Ost: von unten nach oben lesbar
     let ost = seite(&a, 0);
     assert_eq!(ost.t, vec3(0.0, 1.0, 0.0));
-    assert_eq!(
-        masse(kette(ost, Kettenart::Gesamt).unwrap()),
-        [(8000.0 - 2.0 * vor).round()]
-    );
+    assert_eq!(masse(kette(ost, Kettenart::Gesamt).unwrap()), [8000.0]);
 }
 
+/// Wählbar bleibt die tragende Schicht (Rohbaumaß): Dämmung und Putz
+/// zählen dann nicht.
 #[test]
-fn bezug_aussenkante_wand_misst_ueber_alles() {
-    let (mut m, _, st) = rechteck();
+fn tragende_schicht_misst_nur_den_kern() {
+    let (mut m, run, st) = rechteck();
+    let (vor, kern) = schichten(&m, run);
     let mut s = m.massstil().clone();
-    s.bezug = Aussenbezug::Wand;
+    assert_eq!(s.bezug, Aussenbezug::Wand);
+    s.bezug = Aussenbezug::Rohbau;
     m.begin("Stil");
     assert!(m.set_massstil(s));
     m.commit();
     let a = aussenmasse(&m, st).unwrap();
-    let g = kette(seite(&a, 270), Kettenart::Gesamt).unwrap();
-    assert_eq!(masse(g), [10_000.0]);
+    let sued = seite(&a, 270);
+    let g = kette(sued, Kettenart::Gesamt).unwrap();
+    assert_eq!(masse(g), [(10_000.0 - 2.0 * vor).round()]);
+    let wand = kette(sued, Kettenart::Wand).unwrap();
+    assert_eq!(
+        masse(wand),
+        [
+            kern.round(),
+            (10_000.0 - 2.0 * vor - 2.0 * kern).round(),
+            kern.round()
+        ]
+    );
+    assert!((sued.aussen - (-vor)).abs() < 1e-6);
 }
 
 #[test]
 fn innenwand_und_fenster_kommen_in_ihre_ketten() {
-    let (mut m, run, st) = rechteck();
+    let (mut m, _, st) = rechteck();
     let iw = m.defaults().interior_wall;
     m.begin("Innenwand");
     let innen = m
@@ -136,16 +154,8 @@ fn innenwand_und_fenster_kommen_in_ihre_ketten() {
         [Kettenart::Oeffnung, Kettenart::Wand, Kettenart::Gesamt]
     );
     // Öffnungskette: Ecke, Fensterkanten, Ecke
-    let (vor, _) = schichten(&m, run);
     let o = kette(sued, Kettenart::Oeffnung).unwrap();
-    assert_eq!(
-        masse(o),
-        [
-            (2000.0 - vor).round(),
-            1010.0,
-            (10_000.0 - vor - 3010.0).round()
-        ]
-    );
+    assert_eq!(masse(o), [2000.0, 1010.0, 10_000.0 - 3010.0]);
     assert_eq!(
         o.bezuege[1].quelle,
         Some(Quelle::Oeffnung {
@@ -161,11 +171,9 @@ fn innenwand_und_fenster_kommen_in_ihre_ketten() {
     let boden = m.storey(st).unwrap().elevation;
     assert_eq!(om.brh, Some(z0 - boden));
     assert!(om.wand.abs() < 1e-6, "Außenhaut bei y = 0: {}", om.wand);
-    // Wandkette: beide Seiten der Innenwand (Kern mittig auf x = 5 m)
+    // Wandkette: beide Seiten der ganzen Innenwand (mittig auf x = 5 m)
     let w = kette(sued, Kettenart::Wand).unwrap();
-    let iw_c = m.chain(innen).unwrap();
-    let (ka, ki) = kern(&iw_c);
-    let dicke = (ki - ka).abs();
+    let dicke = dicke(&m, innen);
     let ts: Vec<f64> = w.bezuege.iter().map(|b| b.t.round()).collect();
     assert!(ts.contains(&(5000.0 - dicke / 2.0).round()), "{ts:?}");
     assert!(ts.contains(&(5000.0 + dicke / 2.0).round()), "{ts:?}");
@@ -202,7 +210,7 @@ fn l_form_bekommt_die_kette_der_spruenge() {
         vec3(12_000.0, 4000.0, 0.0),
         vec3(12_000.0, 0.0, 0.0),
     ]);
-    let (vor, kern) = schichten(&m, run);
+    let d = dicke(&m, run);
     let a = aussenmasse(&m, st).unwrap();
     let nord = seite(&a, 90);
     assert_eq!(
@@ -210,13 +218,13 @@ fn l_form_bekommt_die_kette_der_spruenge() {
         [Kettenart::Wand, Kettenart::Sprung, Kettenart::Gesamt]
     );
     let sp = kette(nord, Kettenart::Sprung).unwrap();
-    assert_eq!(masse(sp), [(7000.0 - 2.0 * vor).round(), 5000.0]);
+    assert_eq!(masse(sp), [7000.0, 5000.0]);
     // Die Ketten liegen vor der äußersten Wand der Seite
-    assert!((nord.aussen - (9000.0 - vor)).abs() < 1e-6);
-    // Wandkette: am Rücksprung die Innenseite der quer stehenden Wand
+    assert!((nord.aussen - 9000.0).abs() < 1e-6);
+    // Wandkette: am Rücksprung die Innenkante der quer stehenden Wand
     let w = kette(nord, Kettenart::Wand).unwrap();
     let ts: Vec<f64> = w.bezuege.iter().map(|b| b.t.round()).collect();
-    assert!(ts.contains(&(7000.0 - vor - kern).round()), "{ts:?}");
+    assert!(ts.contains(&(7000.0 - d).round()), "{ts:?}");
     // Süd hat keine Sprünge
     assert!(kette(seite(&a, 270), Kettenart::Sprung).is_none());
 }
@@ -248,23 +256,19 @@ fn versatz_und_abgeschaltete_kette() {
 fn gedrehtes_haus_folgt_seiner_hauptrichtung() {
     let w = 30f64.to_radians();
     let r = |x: f64, y: f64| vec3(x * w.cos() - y * w.sin(), x * w.sin() + y * w.cos(), 0.0);
-    let (m, run, st) = haus(&[
+    let (m, _, st) = haus(&[
         r(0.0, 0.0),
         r(0.0, 8000.0),
         r(10_000.0, 8000.0),
         r(10_000.0, 0.0),
     ]);
-    let (vor, _) = schichten(&m, run);
     let a = aussenmasse(&m, st).unwrap();
     assert_eq!(a.seiten.len(), 4);
     for s in &a.seiten {
         assert!(s.t.x > 0.0 || (s.t.x.abs() < 1e-9 && s.t.y > 0.0));
         let g = kette(s, Kettenart::Gesamt).unwrap();
         let l = masse(g)[0];
-        assert!(
-            l == (10_000.0 - 2.0 * vor).round() || l == (8000.0 - 2.0 * vor).round(),
-            "{l}"
-        );
+        assert!(l == 10_000.0 || l == 8000.0, "{l}");
     }
 }
 

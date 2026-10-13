@@ -43,10 +43,12 @@ use schnitt::UnderMemo;
 mod boden;
 #[path = "scene_massstand.rs"]
 mod massstand;
+#[path = "scene_bemassung.rs"]
+mod scene_bemassung;
 #[path = "scene_oeffnung.rs"]
 mod scene_oeffnung;
 use boden::{mesh_into, Boden};
-pub use massstand::neuer_stand;
+pub use massstand::{naechster_stand, neuer_stand};
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";

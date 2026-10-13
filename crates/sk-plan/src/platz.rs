@@ -168,12 +168,50 @@ pub fn nachbarn(kaesten: &[Option<[f64; 4]>]) -> Vec<(usize, usize)> {
             if b[0] > a[2] {
                 break;
             }
-            if b[1] < a[3] && a[1] < b[3] {
+            if ueberdecken(a, b) {
                 paare.push((*i.min(j), *i.max(j)));
             }
         }
     }
     paare
+}
+
+/// Wie [`nachbarn`], wenn sich gegenüber den Paaren `paare` nur die Kästen
+/// `neu` (Nummern, aufsteigend) geändert haben: Die übrigen Paare bleiben,
+/// nur die geänderten Kästen werden gegen alle geprüft (Review L24: beim
+/// Ziehen nicht je Mausbewegung alle sortieren). Reihenfolge der Paare wie
+/// sie anfallen.
+pub fn nachbarn_neu(
+    kaesten: &[Option<[f64; 4]>],
+    paare: &[(usize, usize)],
+    neu: &[usize],
+) -> Vec<(usize, usize)> {
+    let geaendert = |i: usize| neu.binary_search(&i).is_ok();
+    let mut out: Vec<(usize, usize)> = paare
+        .iter()
+        .copied()
+        .filter(|&(i, j)| !geaendert(i) && !geaendert(j))
+        .collect();
+    for &i in neu {
+        let Some(a) = kaesten.get(i).copied().flatten() else {
+            continue;
+        };
+        for (j, b) in kaesten.iter().enumerate() {
+            // Zwei geänderte nur einmal, beim kleineren
+            if j == i || (j < i && geaendert(j)) {
+                continue;
+            }
+            if b.is_some_and(|b| ueberdecken(&a, &b)) {
+                out.push((i.min(j), i.max(j)));
+            }
+        }
+    }
+    out
+}
+
+/// Überdecken sich die Kästen `a` und `b`: in x mit Rand, in y echt.
+fn ueberdecken(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && b[1] < a[3] && a[1] < b[3]
 }
 
 /// Was bei zwei Nachbarn `a` und `b` weicht. Je Runde weicht auf jeder
