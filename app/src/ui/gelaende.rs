@@ -179,8 +179,8 @@ impl Ui {
             rows.extend([
                 Row::Hint("Lageplan: PDF 1:500, das"),
                 Row::Hint("Flurstück wird erkannt."),
-                Row::Hint("Höhen: Punktliste des"),
-                Row::Hint("Vermessers einlesen."),
+                Row::Hint("Höhen: Punktliste oder"),
+                Row::Hint("DXF des Vermessers."),
             ]);
         }
         if !l.meldung.is_empty() || l.fehler.is_some() {

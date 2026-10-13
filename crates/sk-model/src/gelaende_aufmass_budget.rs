@@ -7,7 +7,7 @@
 //! OK EG und OK Gelände ziehen bei 1000 und 4000 Häusern.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 fn budget(ms: f64) -> f64 {
@@ -236,4 +236,79 @@ fn grenzen_mit_vielen_punkten() {
     assert_eq!(ringe[0].len(), n);
     assert!((t.parcel_area() - std::f64::consts::PI * 100.0 * 100.0).abs() < 1.0);
     assert!(zeit < budget(100.0), "{zeit:.1} ms");
+}
+
+/// Ein fertiges Netz aus der DXF (G1b): 150 × 150 Punkte und 44.402
+/// Netzflächen, deren Kanten das Netz festhalten. Vernetzen mit allen
+/// Kanten kostet höchstens wenig mehr als ohne, und jede Fläche gibt ihr
+/// Dreieck zurück, auch wo das Raster vier Punkte auf einem Kreis hat.
+#[test]
+fn netz_der_datei_im_budget() {
+    let k = 150;
+    let mut t = Terrain::new(Crs::Local);
+    for i in 0..k {
+        for j in 0..k {
+            let (e, n) = (1000.0 + 2.0 * i as f64, 2000.0 + 2.0 * j as f64);
+            t.points.push(TerrainPoint {
+                nr: format!("N{}", i * k + j + 1),
+                e,
+                n,
+                h: 50.0 + (e / 7.0).sin() + (n / 5.0).cos(),
+                code: String::new(),
+                off: false,
+            });
+        }
+    }
+    t.trim = Trim::Hull;
+    let mut t2 = t.clone();
+    let ohne = Instant::now();
+    let m0 = t.mesh();
+    let ohne = ms_seit(ohne);
+    let nr = |i: usize, j: usize| format!("N{}", i * k + j + 1);
+    for i in 0..k - 1 {
+        for j in 0..k - 1 {
+            // Diagonale abwechselnd, so weicht das Netz vom Delaunay ab
+            let (a, b, c, d) = (nr(i, j), nr(i + 1, j), nr(i + 1, j + 1), nr(i, j + 1));
+            let [x, y] = if (i + j) % 2 == 0 {
+                [vec![a, b.clone(), c.clone()], vec![nr(i, j), c, d]]
+            } else {
+                [vec![a, b.clone(), d.clone()], vec![b, nr(i + 1, j + 1), d]]
+            };
+            for pts in [x, y] {
+                t2.breaks.push(TerrainLine { pts, closed: true });
+            }
+        }
+    }
+    let t0 = Instant::now();
+    let m = t2.mesh();
+    let mit = ms_seit(t0);
+    eprintln!("Netz der Datei: {mit:.0} ms, ohne Kanten {ohne:.0} ms");
+    assert_eq!(m.netz.dreiecke.len(), 2 * (k - 1) * (k - 1));
+    assert_eq!(m0.netz.dreiecke.len(), m.netz.dreiecke.len());
+    // jedes Dreieck der Datei ist eines des Netzes
+    let mut da: HashSet<[u32; 3]> = HashSet::new();
+    for d in &m.netz.dreiecke {
+        let mut d = *d;
+        d.sort();
+        da.insert(d);
+    }
+    let ix: HashMap<&str, u32> = m
+        .index
+        .iter()
+        .enumerate()
+        .map(|(k, &i)| (t2.points[i].nr.as_str(), k as u32))
+        .collect();
+    for l in &t2.breaks {
+        let mut d = [
+            ix[l.pts[0].as_str()],
+            ix[l.pts[1].as_str()],
+            ix[l.pts[2].as_str()],
+        ];
+        d.sort();
+        assert!(da.contains(&d), "{:?}", l.pts);
+    }
+    assert!(
+        mit < budget(ohne * 4.0 + 300.0),
+        "{mit:.0} ms, ohne {ohne:.0} ms"
+    );
 }

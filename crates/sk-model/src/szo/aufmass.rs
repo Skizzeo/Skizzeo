@@ -5,12 +5,16 @@
 //! [tpoint] nr=1 e=467108.214 n=5878741.637 h=24.337 code=GR
 //! [tpoint] nr=245 e=… n=… h=… code=GP off=1
 //! [tline] kind=boundary pts=1,2,3,4
+//! [tline] kind=break pts=106,107,L1-1,108
+//! [tline] kind=break pts=N1,N2,N3 closed=1
 //! [tcode] code=BO kind=break
 //! [tline] kind=boundary en=467108.21,5878741.64;467132.04,5878744.56;…
 //! [underlay] src="lageplan.pdf" page=1 m=0.176,0,0,0.176,0,0 flst=123/4
 //! ```
 //!
-//! Grenzen aus dem Lageplan (G1c) stehen als Landeswerte (`en`), der
+//! Bruchkanten und Kanten der Netzflächen einer DXF (G1b) stehen als
+//! Punktnummern, eine Netzfläche geschlossen (`closed=1`).
+//! Grenzen aus dem Lageplan (G1c) und der DXF stehen als Landeswerte (`en`), der
 //! Lageplan selbst nur mit Pfad, Seite, Einpassung Blatt (pt) → Landeswert
 //! (m) und Flurstück.
 //!
@@ -22,7 +26,8 @@
 
 use super::{err, Line, LoadError, Record};
 use crate::model::{
-    Crs, HeightRef, HeightSystem, LocalFrame, Show, Terrain, TerrainPoint, Trim, Underlay,
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, Terrain, TerrainLine, TerrainPoint, Trim,
+    Underlay,
 };
 use crate::Model;
 use sk_gelaende::codes::Bedeutung;
@@ -72,6 +77,17 @@ pub(super) fn write(m: &Model, out: &mut String) {
             &b.join(","),
         )
         .finish(out);
+    }
+    for b in &t.breaks {
+        let mut l = wort(
+            Line::new("tline").word("kind", "break"),
+            "pts",
+            &b.pts.join(","),
+        );
+        if b.closed {
+            l = l.flag("closed", true);
+        }
+        l.finish(out);
     }
     for r in &t.parcels {
         let en: Vec<String> = r.iter().map(|(e, n)| format!("{e},{n}")).collect();
@@ -249,6 +265,13 @@ pub(super) fn read<'r>(
                     .push(p.split(',').map(|s| s.to_string()).collect());
             }
             (Some("boundary"), None, Some(Some(en))) => t.parcels.push(en),
+            (Some("break"), Some(p), None) if p.contains(',') => match r.opt("closed") {
+                None | Some("0") | Some("1") => t.breaks.push(TerrainLine {
+                    pts: p.split(',').map(|s| s.to_string()).collect(),
+                    closed: r.opt("closed") == Some("1"),
+                }),
+                Some(_) => weg(r, "mit „closed“ weder 0 noch 1", hints),
+            },
             _ => weg(r, "unbekannte Linie", hints),
         }
     }
@@ -307,7 +330,7 @@ fn landeswerte(v: &str) -> Option<Vec<(f64, f64)>> {
 mod tests {
     use super::super::tests::house;
     use super::super::{read, write};
-    use crate::model::{Crs, HeightRef, Terrain, TerrainPoint};
+    use crate::model::{Crs, HeightRef, Terrain, TerrainLine, TerrainPoint};
     use crate::GuidGen;
     use sk_gelaende::codes::Bedeutung;
 
@@ -332,6 +355,14 @@ mod tests {
             });
         }
         t.boundaries.push(vec!["1".into(), "2".into(), "3".into()]);
+        t.breaks.push(TerrainLine {
+            pts: vec!["1".into(), "2".into()],
+            closed: false,
+        });
+        t.breaks.push(TerrainLine {
+            pts: vec!["1".into(), "2".into(), "A 7".into()],
+            closed: true,
+        });
         t.codes.push(("XY".into(), Bedeutung::NichtImGelaende));
         t.parcels.push(vec![
             (467103.548, 5878774.715),
@@ -382,6 +413,8 @@ mod tests {
                 "[tpoint] nr=3 e=467128.548 n=5878777.885 h=25.71 code=GR off=1",
                 "[tpoint] nr=\"A 7\" e=467120 n=5878760 h=25",
                 "[tline] kind=boundary pts=1,2,3",
+                "[tline] kind=break pts=1,2",
+                "[tline] kind=break pts=\"1,2,A 7\" closed=1",
                 "[tline] kind=boundary en=467103.548,5878774.715;467108.214,5878741.637;467132.035,5878744.562",
                 "[tcode] code=XY kind=off",
                 "[underlay] src=\"C:\\\\Pläne\\\\lage plan.pdf\" page=1 m=0.17638888888888887,0,0,0.17638888888888887,467066.6,5878675.6 flst=123/4",
@@ -420,6 +453,32 @@ mod tests {
         let kopf = text.lines().find(|z| z.starts_with("[terrain]")).unwrap();
         assert!(wieder.lines().any(|z| z == kopf), "{wieder}");
         assert_eq!(write(&load(&wieder).model), wieder);
+    }
+
+    /// Eine Bruchkante mit unlesbarem „closed“ oder nur einem Punkt bleibt
+    /// roh stehen, mit Hinweis (G1b).
+    #[test]
+    fn bruchkante_unlesbar_bleibt_roh() {
+        let load = |t: &str| read(t, GuidGen::with_seed(99)).unwrap();
+        let mut m = house();
+        m.begin("Aufmaß");
+        m.set_terrain(Some(aufmass()));
+        m.commit();
+        let text = write(&m)
+            .replace("A 7\" closed=1", "A 7\" closed=ja")
+            .replace("kind=break pts=1,2\n", "kind=break pts=1\n");
+        let l = load(&text);
+        assert_eq!(l.hints.len(), 2, "{:?}", l.hints);
+        assert!(
+            l.hints.iter().all(|h| h.contains("[tline]")),
+            "{:?}",
+            l.hints
+        );
+        assert!(l.model.terrain().unwrap().breaks.is_empty());
+        assert_eq!(write(&l.model).lines().count(), text.lines().count());
+        let wieder = write(&l.model);
+        assert!(wieder.contains("[tline] kind=break pts=1\n"), "{wieder}");
+        assert!(wieder.contains("closed=ja"), "{wieder}");
     }
 
     /// Jeder Wert im Kopf, der nicht gilt, lässt die ganze `[terrain]`-Zeile

@@ -13,9 +13,10 @@ use sk_model::{Crs, HeightRef, Model, SitePlan, Terrain, UnderlayKind};
 use sk_platform::Surface;
 use std::path::Path;
 
-/// Größte Punktliste, die gelesen wird (Bytes); ein Aufmaß mit 100.000
-/// Punkten hat etwa 5 MB.
-const MAX_DATEI: u64 = 32 << 20;
+/// Größte Datei, die gelesen wird (Bytes); ein Aufmaß mit 100.000
+/// Punkten hat als Punktliste etwa 5 MB, als DXF mit Nummerntexten etwa
+/// 15 MB.
+const MAX_DATEI: u64 = 64 << 20;
 
 /// Dateiarten im Dialog „Lageplan einlesen“.
 const FILTER_PDF: [(&str, &str); 2] = [
@@ -24,11 +25,12 @@ const FILTER_PDF: [(&str, &str); 2] = [
 ];
 
 /// Dateiarten im Dialog; die Endung zählt nicht, Skizzeo liest den Inhalt.
-const FILTER: [(&str, &str); 2] = [
+const FILTER: [(&str, &str); 3] = [
     (
-        "Punktliste (*.csv, *.txt, *.xyz, …)",
-        "*.csv;*.txt;*.xyz;*.asc;*.pkt;*.dat;*.koo;*.kor;*.coo",
+        "Punktliste oder DXF (*.csv, *.txt, *.dxf, …)",
+        "*.csv;*.txt;*.xyz;*.asc;*.pkt;*.dat;*.koo;*.kor;*.coo;*.dxf",
     ),
+    ("DXF des Vermessers (*.dxf)", "*.dxf"),
     ("Alle Dateien (*.*)", "*.*"),
 ];
 
@@ -404,7 +406,7 @@ impl App {
         }
     }
 
-    /// Punktliste `p` lesen und als Aufmaß übernehmen (ein Schritt). Was
+    /// Punktliste oder DXF `p` lesen und als Aufmaß übernehmen (ein Schritt). Was
     /// erkannt wurde, steht in der Leiste, ebenso ein Fehler.
     pub(crate) fn hoehen_einlesen(&mut self, p: &Path) {
         let name = p
@@ -697,6 +699,28 @@ mod tests {
                 Field::Gelaende(GelaendeFeld::Nhn)
             ]
         );
+    }
+
+    /// „Höhen“ nimmt auch die DXF des Vermessers (G1b): Der Dialog bietet
+    /// sie an, und die Leiste zeigt dasselbe Grundstück wie mit der CSV.
+    #[test]
+    fn dxf_in_der_leiste() {
+        const DXF: &[u8] =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.dxf");
+        assert!(FILTER[0].1.split(';').any(|f| f == "*.dxf"));
+        let mut m = lindenhof();
+        let (t, satz, hinweise) = Terrain::lesen(DXF, "aufmass.dxf", "2026-10-13", 32).unwrap();
+        assert_eq!(
+            satz,
+            "109 Punkte · DXF R12 · 4 Bruchkanten · 1 Grenze · ETRS89/UTM · Höhen 24,15 bis 26,04 m"
+        );
+        assert!(hinweise.is_empty(), "{hinweise:?}");
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let l = leiste(&m, &Zustand::default());
+        assert!(l.aufmass && l.grenze);
+        assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,86 m²"));
     }
 
     /// Jeder Knopf hat einen Namen mit Satz in der Hilfe.
