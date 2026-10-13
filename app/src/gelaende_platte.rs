@@ -13,9 +13,11 @@ use crate::ui::{kote_text, Field, FieldRow, Props, Section, ViewKind};
 use crate::App;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame};
-use sk_model::{edge_kind, material, Model, Solid, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
+use sk_model::{edge_kind, material, Model, PlateInput, Solid, TerrainPlate};
+use sk_model::{PLATE_MARGIN, PLATE_THICK};
 use sk_render::{Helper, MeshData};
 use sk_ui::theme::Theme;
+use std::sync::{mpsc, Arc};
 
 /// Platz der Platte im Renderer (neben Modell, Vorschau, Live und Geist).
 pub(crate) const MESH_PLATE: usize = 4;
@@ -33,9 +35,33 @@ pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)>
         .collect()
 }
 
-/// Was im Renderer liegt: Modellstand, Ansicht, Schnittebene (Bits),
+/// Was das Netz außer den Platten bestimmt: Ansicht, Schnittebene,
 /// Schlüssel von Rasen und Erdreich, ausgeblendet.
+pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 2], bool);
+
+/// Was im Renderer liegt: Fassung der Platten und die [`Sicht`], die
+/// Schnittebene als Bits.
 type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 2], bool);
+
+fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
+    (fassung, s.0, s.1.map(bits), s.2, s.3)
+}
+
+/// Was der Faden zurückgibt.
+enum Ergebnis {
+    /// Die Eingaben sind dieselben wie die der stehenden Platten (etwa
+    /// nach Esc oder einer Änderung, die die Platte nicht berührt).
+    Gleich,
+    /// Neue Platten, ihre Eingaben und ihr Netz zur Sicht beim Start.
+    Neu(Arc<PlateInput>, Vec<TerrainPlate>, MeshData),
+}
+
+/// Ein Nachzug im eigenen Faden: Modellstand und Sicht beim Start.
+struct Job {
+    rev: u64,
+    sicht: Sicht,
+    rx: mpsc::Receiver<Ergebnis>,
+}
 
 /// Gelände-Rechtecke (x0, y0, x1, y1) mit Höhe, wie der Renderer sie nimmt.
 type Kisten = Vec<([f32; 4], f32)>;
@@ -45,8 +71,15 @@ type Kisten = Vec<([f32; 4], f32)>;
 pub(crate) struct Platte {
     /// Modellstand, zu dem `platten` gehört.
     stand: Option<u64>,
+    /// Zählt, wenn `platten` wirklich neu sind (Schlüssel des Netzes).
+    fassung: u64,
     platten: Vec<TerrainPlate>,
+    /// Eingaben zu `platten`, mit denen der Faden vergleicht.
+    eingabe: Option<Arc<PlateInput>>,
     netz: Option<NetzKey>,
+    /// Netz aus dem Faden zu seinem Schlüssel, bis es hochgeladen ist.
+    fertig: Option<(NetzKey, MeshData)>,
+    job: Option<Job>,
     /// Das Paneel „Eigenschaften“ zeigt die Platte (zum Stand der Platten).
     props: Option<u64>,
     /// Gelände-Rechtecke für „unter Gelände“ zum Modellstand.
@@ -62,8 +95,15 @@ impl Platte {
     pub(crate) fn platten(&mut self, m: &Model, halten: bool) -> &[TerrainPlate] {
         let rev = m.revision();
         if self.stand != Some(rev) && !(halten && self.stand.is_some()) {
+            // ein laufender Nachzug brächte einen älteren Stand
+            self.job = None;
             self.stand = Some(rev);
-            self.platten = m.terrain_plates();
+            let e = m.terrain_plate_input();
+            if self.eingabe.as_deref() != Some(&e) {
+                self.fassung += 1;
+                self.platten = e.build();
+                self.eingabe = Some(Arc::new(e));
+            }
         }
         &self.platten
     }
@@ -77,14 +117,88 @@ impl Platte {
         self.platten(m, true)
     }
 
-    /// Im Leerlauf: die Platten einer Änderung nachziehen, nicht in einem
-    /// offenen Schritt; `true`, wenn sie neu sind (dann folgt ein Bild).
-    pub(crate) fn nachziehen(&mut self, m: &Model) -> bool {
-        if m.in_step() || self.stand == Some(m.revision()) {
+    /// Je Durchlauf der Hauptschleife: einen fertigen Nachzug abholen,
+    /// sonst nach einer Änderung einen beginnen, nicht in einem offenen
+    /// Schritt. Der UI-Faden kopiert dafür nur das Modell; Eingaben,
+    /// Zerlegen und Netz rechnet ein eigener Faden, das Bild nimmt dann das
+    /// fertige Netz (Review #119 W34 B6: synchron 20 ms bei 1000 Häusern,
+    /// 53 ms bei 4000). `true`, wenn der Stand neu ist (dann folgt ein
+    /// Bild).
+    pub(crate) fn nachziehen(&mut self, m: &Model, sicht: Sicht) -> bool {
+        if self.abholen() {
+            return true;
+        }
+        if self.job.is_some() || m.in_step() || self.stand == Some(m.revision()) {
             return false;
         }
-        self.platten(m, false);
+        let kopie = m.clone();
+        let alt = self.eingabe.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let e = kopie.terrain_plate_input();
+            let r = if alt.as_deref() == Some(&e) {
+                Ergebnis::Gleich
+            } else {
+                let p = e.build();
+                let n = match sicht {
+                    (_, _, _, true) => MeshData::default(),
+                    (view, plane, keys, false) => netz(&p, view, plane, keys),
+                };
+                Ergebnis::Neu(Arc::new(e), p, n)
+            };
+            // fällt weg, wenn die Platte inzwischen neu begonnen hat
+            let _ = tx.send(r);
+        });
+        self.job = Some(Job {
+            rev: m.revision(),
+            sicht,
+            rx,
+        });
+        false
+    }
+
+    /// Ein Nachzug läuft (die Hauptschleife fragt dann je Bild nach).
+    pub(crate) fn rechnet(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Den Nachzug übernehmen, wenn der Faden fertig ist.
+    fn abholen(&mut self) -> bool {
+        let Some(job) = &self.job else {
+            return false;
+        };
+        let r = match job.rx.try_recv() {
+            Ok(r) => Ok(r),
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => Err(()),
+        };
+        let job = self.job.take().expect("Nachzug");
+        self.einsetzen(job, r)
+    }
+
+    /// Stand und, wenn neu, Platten und Netz des Nachzugs übernehmen. Ist
+    /// der Faden ohne Ergebnis abgebrochen, bleiben die Platten, ohne dass
+    /// derselbe Stand je Bild neu begonnen wird.
+    fn einsetzen(&mut self, job: Job, r: Result<Ergebnis, ()>) -> bool {
+        self.stand = Some(job.rev);
+        let Ok(Ergebnis::Neu(e, p, n)) = r else {
+            return true;
+        };
+        self.fassung += 1;
+        self.platten = p;
+        self.eingabe = Some(e);
+        self.fertig = Some((netz_key(self.fassung, &job.sicht), n));
         true
+    }
+
+    /// Für Tests: auf den laufenden Nachzug warten und ihn übernehmen.
+    #[cfg(test)]
+    fn warten(&mut self) -> bool {
+        let Some(job) = self.job.take() else {
+            return false;
+        };
+        let r = job.rx.recv().map_err(|_| ());
+        self.einsetzen(job, r)
     }
 }
 
@@ -399,31 +513,35 @@ fn bits(p: (Vec3, Vec3)) -> [u64; 6] {
 }
 
 impl App {
-    /// Netz der Platte hochladen, wenn sich Modell, Ansicht, Schnitt,
-    /// Aussehen oder Sichtbarkeit geändert haben (aus `build_mesh`, je
-    /// Bild).
-    pub(crate) fn platte_hochladen(&mut self) {
+    /// Was das Netz der Platte außer den Platten bestimmt.
+    fn platte_sicht(&self) -> Sicht {
         let keys = self.scene.table().terrain;
-        let hidden = self.scene.terrain_hidden();
-        let plane = self.plane();
-        let view = self.ui.view;
+        (
+            self.ui.view,
+            self.plane(),
+            keys,
+            self.scene.terrain_hidden(),
+        )
+    }
+
+    /// Netz der Platte hochladen, wenn sich die Platten, Ansicht, Schnitt,
+    /// Aussehen oder Sichtbarkeit geändert haben (aus `build_mesh`, je
+    /// Bild); nach einem Nachzug das Netz aus dem Faden. Gerechnet wird
+    /// hier nur, wenn die Sicht sich ändert, und beim ersten Bild.
+    pub(crate) fn platte_hochladen(&mut self) {
+        let sicht = self.platte_sicht();
         let m = self.scene.model();
         self.platte.im_bild(m);
-        let key = (
-            self.platte.stand.unwrap_or(0),
-            view,
-            plane.map(bits),
-            keys,
-            hidden,
-        );
+        let key = netz_key(self.platte.fassung, &sicht);
         if self.platte.netz == Some(key) {
             return;
         }
         self.platte.netz = Some(key);
-        let netz = if hidden {
-            MeshData::default()
-        } else {
-            netz(&self.platte.platten, view, plane, keys)
+        let (view, plane, keys, hidden) = sicht;
+        let netz = match self.platte.fertig.take() {
+            Some((k, n)) if k == key => n,
+            _ if hidden => MeshData::default(),
+            _ => netz(&self.platte.platten, view, plane, keys),
         };
         self.renderer.set_mesh(MESH_PLATE, &netz);
         self.renderer.set_grass(keys[0]);
@@ -498,10 +616,18 @@ impl App {
         soll.is_some()
     }
 
-    /// Leerlauf: die Platten einer Änderung nachziehen ([`Platte::nachziehen`]);
-    /// `true`, wenn ein Bild folgen soll.
+    /// Je Durchlauf, auch während Animationen (Review W34 H3): die
+    /// Platten einer Änderung nachziehen ([`Platte::nachziehen`]); `true`,
+    /// wenn ein Bild folgen soll.
     pub(crate) fn platte_nachziehen(&mut self) -> bool {
-        self.platte.nachziehen(self.scene.model())
+        let sicht = self.platte_sicht();
+        self.platte.nachziehen(self.scene.model(), sicht)
+    }
+
+    /// Etwas rechnet im Hintergrund (Mengen, Verbände, die Platte): das
+    /// Warten der Hauptschleife fragt dann je Bild nach.
+    pub(crate) fn rechnet_noch(&self) -> bool {
+        self.quantity_busy || !self.bond_wait.is_empty() || self.platte.rechnet()
     }
 
     /// Neues Projekt (Neu, Öffnen, Sicherung): Objektbaum zu, Platte
@@ -560,35 +686,62 @@ mod tests {
         m
     }
 
-    /// Nach dem Loslassen rechnet das Bild die Platten nicht, erst der
-    /// Leerlauf; im offenen Schritt auch er nicht (Review #119 B4).
+    /// Sicht der Tests: 3D, Rasen und Erdreich 40 und 41.
+    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41], false);
+
+    /// Erste Wand des Modells um `d` verschieben, ein geschlossener Schritt.
+    fn wand_schieben(s: &mut crate::scene::Scene, d: f64) {
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        s.begin("Wand verschieben");
+        let moved = orig.with_segment_moved(0, d).unwrap();
+        assert!(s.set_run_points(run, &moved.points));
+        s.commit();
+    }
+
+    /// Nach dem Loslassen rechnet das Bild die Platten nicht, sondern ein
+    /// eigener Faden, den die Hauptschleife beginnt und abholt; im offenen
+    /// Schritt beginnt sie keinen (Review #119 B4, W34 B6).
     #[test]
     fn leerlauf_zieht_nach() {
         let mut s = crate::scene::Scene::with_model(haus());
         let mut pl = Platte::default();
         let a0 = pl.im_bild(s.model())[0].area();
-        assert!(!pl.nachziehen(s.model()), "aktuell");
+        assert!(!pl.nachziehen(s.model(), SICHT), "aktuell");
+        assert!(!pl.rechnet());
         let run = s.model().runs().ids().next().unwrap();
         let orig = s.chain(run).unwrap().clone();
         s.begin("Wand verschieben");
         let moved = orig.with_segment_moved(0, 1000.0).unwrap();
         assert!(s.set_run_points(run, &moved.points));
-        assert!(!pl.nachziehen(s.model()), "im Schritt nicht");
+        assert!(!pl.nachziehen(s.model(), SICHT), "im Schritt nicht");
+        assert!(!pl.rechnet());
         s.commit();
         assert_eq!(
             pl.im_bild(s.model())[0].area(),
             a0,
             "das Bild rechnet nicht"
         );
-        assert!(pl.nachziehen(s.model()));
+        assert!(!pl.nachziehen(s.model(), SICHT), "beginnt den Faden");
+        assert!(pl.rechnet());
+        assert_eq!(pl.im_bild(s.model())[0].area(), a0, "steht bis dahin");
+        assert!(pl.warten());
         let a1 = pl.im_bild(s.model())[0].area();
         assert!((a1 - a0).abs() > 1e6, "{a0} {a1}");
-        assert!(!pl.nachziehen(s.model()));
-        // der Leerlauf ruft es; die App fragt im Bild nur `im_bild`
+        assert!(!pl.nachziehen(s.model(), SICHT));
+        assert!(!pl.rechnet());
+        // die Hauptschleife ruft es je Durchlauf, vor dem Leerlauf, der
+        // während Animationen ruht (Review W34 H3); im Bild nur `im_bild`
         let main = include_str!("main.rs");
         assert!(main.contains("a.redraw |= a.platte_nachziehen();"));
+        let schleife = &main[main.find("a.redraw |= a.tool.pulsiert();").unwrap()..];
+        assert!(
+            schleife.find("a.platte_nachziehen()").unwrap()
+                < schleife.find("if !a.redraw").unwrap()
+        );
+        assert!(main.contains("let wait = match (wait, a.rechnet_noch()) {"));
         let quelle = include_str!("gelaende_platte.rs");
-        let app = &quelle[quelle.find("impl App {").unwrap()..quelle.find("#[cfg(test)]").unwrap()];
+        let app = &quelle[quelle.find("impl App {").unwrap()..quelle.find("mod tests {").unwrap()];
         assert!(!app.contains(concat!("platte.", "platten(")));
     }
 
@@ -644,6 +797,127 @@ mod tests {
         let main = include_str!("main.rs");
         let install = &main[main.find("fn install_scene").unwrap()..];
         assert!(install[..install.find("\n    }\n").unwrap()].contains("self.baum_neu();"));
+    }
+
+    /// Das Netz kommt fertig aus dem Faden, zur Sicht beim Start. Esc
+    /// ändert die Revision, aber nicht die Platten: Der Faden meldet
+    /// „gleich“, Fassung und Netz bleiben (Review W34 H2). Ändert sich das
+    /// Modell, während der Faden rechnet, kommt erst sein Stand, dann ein
+    /// neuer Nachzug; das Rechnen im UI-Faden verwirft einen laufenden.
+    #[test]
+    fn nachzug_im_faden() {
+        let mut s = crate::scene::Scene::with_model(haus());
+        let mut pl = Platte::default();
+        pl.im_bild(s.model());
+        let f0 = pl.fassung;
+        wand_schieben(&mut s, 1000.0);
+        pl.nachziehen(s.model(), SICHT);
+        assert!(pl.warten());
+        assert_eq!(pl.fassung, f0 + 1);
+        let (k, n) = pl.fertig.take().expect("Netz aus dem Faden");
+        assert_eq!(k, netz_key(pl.fassung, &SICHT));
+        let soll = netz(&pl.platten, SICHT.0, SICHT.1, SICHT.2);
+        assert_eq!(n.faces, soll.faces);
+        assert_eq!(n.edges, soll.edges);
+        // ausgeblendet: leeres Netz
+        wand_schieben(&mut s, 500.0);
+        pl.nachziehen(s.model(), (ViewKind::Persp, None, [40, 41], true));
+        assert!(pl.warten());
+        assert!(pl.fertig.take().unwrap().1.faces.is_empty());
+        // Esc: neue Revision, dieselben Platten
+        let (f1, rev) = (pl.fassung, s.model().revision());
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        s.begin("Wand verschieben");
+        let moved = orig.with_segment_moved(0, 2000.0).unwrap();
+        assert!(s.set_run_points(run, &moved.points));
+        s.rollback();
+        assert_ne!(s.model().revision(), rev);
+        assert!(!pl.nachziehen(s.model(), SICHT));
+        assert!(pl.warten());
+        assert_eq!(pl.fassung, f1, "gleich");
+        assert!(pl.fertig.is_none());
+        assert_eq!(pl.stand, Some(s.model().revision()));
+        // Änderung während des Fadens
+        wand_schieben(&mut s, 1000.0);
+        let r1 = s.model().revision();
+        pl.nachziehen(s.model(), SICHT);
+        wand_schieben(&mut s, -1000.0);
+        assert!(pl.warten());
+        assert_eq!(pl.stand, Some(r1));
+        assert!(!pl.nachziehen(s.model(), SICHT));
+        assert!(pl.rechnet(), "neuer Nachzug");
+        assert!(pl.warten());
+        assert_eq!(pl.stand, Some(s.model().revision()));
+        // im UI-Faden gerechnet: der laufende Nachzug entfällt
+        wand_schieben(&mut s, 1000.0);
+        pl.nachziehen(s.model(), SICHT);
+        assert!(pl.rechnet());
+        pl.platten(s.model(), false);
+        assert!(!pl.rechnet() && !pl.warten());
+        // neues Projekt, während ein Faden rechnet
+        wand_schieben(&mut s, 1000.0);
+        pl.nachziehen(s.model(), SICHT);
+        pl = Platte::default();
+        assert!(!pl.rechnet());
+    }
+
+    /// Budget (Review W34 B6, 15 ms je Bild): Der UI-Faden kopiert für den
+    /// Nachzug nur das Modell und holt das Ergebnis ab; Platten und Netz
+    /// rechnet der Faden. 1000 und 4000 Häuser in einem Gebäude (synchron
+    /// waren es 20 und 53 ms); im Debug nur 1000, das Bauen von 4000
+    /// dauerte dort Minuten.
+    #[test]
+    fn nachzug_im_budget() {
+        let budget = |ms: f64| {
+            if cfg!(debug_assertions) {
+                ms * 40.0
+            } else {
+                ms
+            }
+        };
+        let faelle: &[usize] = if cfg!(debug_assertions) {
+            &[1000]
+        } else {
+            &[1000, 4000]
+        };
+        for &n in faelle {
+            let mut m = Model::with_seed(5);
+            let b = m.add_building(1);
+            for i in 0..n {
+                let (ox, oy) = ((i % 64) as f64 * 15000.0, (i / 64) as f64 * 15000.0);
+                let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+                let pts = [p(0.0, 0.0), p(0.0, 8000.0), p(1e4, 8000.0), p(1e4, 0.0)];
+                m.build_from_polygon(b, &pts).unwrap();
+            }
+            let mut pl = Platte::default();
+            pl.im_bild(&m);
+            let run = m.runs().ids().next().unwrap();
+            let orig = m.runs().get(run).unwrap().points.clone();
+            // das Beste aus drei Nachzügen (andere Tests laufen nebenher)
+            let (mut beginnen, mut abholen) = (f64::INFINITY, f64::INFINITY);
+            for d in [1000.0, 0.0, 1000.0] {
+                let moved: Vec<Vec3> = orig.iter().map(|q| *q + vec3(d, 0.0, 0.0)).collect();
+                m.begin("Haus verschieben");
+                assert!(m.set_run_points(run, &moved).is_some());
+                m.commit();
+                let t = std::time::Instant::now();
+                assert!(!pl.nachziehen(&m, SICHT));
+                beginnen = beginnen.min(t.elapsed().as_secs_f64() * 1000.0);
+                let ms = loop {
+                    let t = std::time::Instant::now();
+                    if pl.nachziehen(&m, SICHT) {
+                        break t.elapsed().as_secs_f64() * 1000.0;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                };
+                abholen = abholen.min(ms);
+                assert!(pl.fertig.take().is_some(), "neue Platten");
+            }
+            eprintln!("{n} Häuser: beginnen {beginnen:.2} ms, abholen {abholen:.3} ms");
+            assert!(beginnen < budget(15.0), "{n}: {beginnen:.1} ms");
+            assert!(abholen < budget(1.0), "{n}: {abholen:.2} ms");
+        }
     }
 
     /// In 3D ein geschlossener Körper: Rasen oben und Erdreich unten mit
