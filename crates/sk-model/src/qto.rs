@@ -1038,8 +1038,9 @@ pub struct SupportQto {
 /// Analyse Fassung 1 §4.1: Folgepositionen „Deckenschalung“ und
 /// „Randschalung“). Keine Schicht, kein Bauteil, nur gelesen.
 ///
-/// Vorgemerkt, noch nicht gerechnet: Abzüge für Öffnungen und Aussparungen
-/// nach VOB/C (DIN 18331), sobald es Deckenöffnungen gibt.
+/// Aussparungen für Fenster über zwei Geschosse übermisst die Untersicht
+/// bis 2,5 m² je Öffnung (VOB/C, DIN 18331, `FloorSlab::vob_mengen`); die
+/// Randschalung folgt der Kerbe.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FormworkQto {
     /// Schalfläche der Untersicht (mm²): Deckenfläche ohne die Auflager auf

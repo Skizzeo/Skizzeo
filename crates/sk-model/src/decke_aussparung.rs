@@ -435,7 +435,7 @@ mod tests {
             .auto
             .iter()
             .filter(|x| x.key == SLAB_REVEAL || x.key == SLAB_EDGE)
-            .all(|x| x.kg == Some(354)));
+            .all(|x| x.kg == Some(336)));
         let fenster_eg = s.auto.iter().filter(|x| x.key == SLAB_EDGE).count();
         assert_eq!(fenster_eg, 1, "nur das Fenster über zwei Geschosse");
         // Innenlaibung ohne das Stück im Deckenband (VOB, Doppelzählung):
@@ -570,6 +570,74 @@ mod tests {
             }
             assert_eq!(m.spart_aus(eg, id), versatz == 0.0, "{versatz}");
         }
+    }
+
+    /// Flachdach mit Attika: Ein Fenster im OG, dessen Oberkante durch die
+    /// Flachdachdecke in die Attika reicht, kerbt die Decke nicht, denn
+    /// darüber liegt der Dachaufbau (Review W48 B2). Ein Fenster aus dem EG
+    /// in das OG kerbt die Decke dazwischen weiter.
+    #[test]
+    fn attika_ohne_kerbe() {
+        use crate::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+        use crate::{LevelEdge, LevelRef, Model};
+        let mut m = Model::with_seed(415);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        let (st, st_og) = (m.run(eg).unwrap().storey, m.run(og).unwrap().storey);
+        assert!(m.set_flat_roof(st_og, true));
+        let fd = m.roof_level_of(m.storey(st_og).unwrap().building).unwrap();
+        // Die Attika steht bündig auf dem OG
+        assert_eq!(m.runs_above(og).len(), 1);
+        let seg = (0..4)
+            .find(|&k| m.outer_face(eg, k).is_some_and(|f| f.n.y < -0.5))
+            .unwrap();
+        let f = m.outer_face(eg, seg).unwrap();
+        let fenster = |x0: f64, unten, oben| Opening {
+            kind: OpeningKind::Window,
+            path: vec![
+                f.at(f.u_of(vec3(x0, 0.0, 0.0)), 0.0),
+                f.at(f.u_of(vec3(x0 + 1000.0, 0.0, 0.0)), 0.0),
+            ],
+            bottom: unten,
+            top: oben,
+            reveal: None,
+            install: Default::default(),
+            swing: None,
+            lock: Default::default(),
+        };
+        let attika = HeightRef::Level(LevelRef {
+            storey: fd,
+            edge: LevelEdge::Bottom,
+            offset: 300.0,
+        });
+        let oben = m
+            .add_opening(fenster(
+                2000.0,
+                HeightRef::Line(st_og, HeightLine::Sill),
+                attika,
+            ))
+            .unwrap();
+        let d = m.floor(og).unwrap().unwrap();
+        assert!(d.aussparungen.is_empty(), "{:?}", d.aussparungen);
+        assert!(!m.spart_aus(og, oben));
+        let unten = m
+            .add_opening(fenster(
+                6500.0,
+                HeightRef::Line(st, HeightLine::Sill),
+                HeightRef::Line(st_og, HeightLine::Lintel),
+            ))
+            .unwrap();
+        let d = m.floor(eg).unwrap().unwrap();
+        assert_eq!(d.aussparungen.len(), 1, "{:?}", d.aussparungen);
+        assert!(m.spart_aus(eg, unten));
+        assert!(m.floor(og).unwrap().unwrap().aussparungen.is_empty());
     }
 
     /// Einschalige Wand mit Randdämmstreifen: Der Streifen bekommt an der

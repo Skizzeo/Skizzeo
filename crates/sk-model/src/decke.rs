@@ -143,6 +143,18 @@ impl Model {
         run: RunId,
         chain: &WallChain,
     ) -> Option<Result<FloorSlab, FloorError>> {
+        self.floor_mit_loechern(run, chain, None)
+    }
+
+    /// [`Model::floor_of_chain`] mit den schon gesuchten Löchern des Zugs
+    /// (`None`: hier suchen); so sucht [`Model::chain_and_floor`] sie nur
+    /// einmal (Review W48 B3).
+    pub(super) fn floor_mit_loechern(
+        &self,
+        run: RunId,
+        chain: &WallChain,
+        loecher: Option<&[Hole]>,
+    ) -> Option<Result<FloorSlab, FloorError>> {
         let id = self.floor_of(run)?;
         let ElementKind::Floor(f) = self.element(id)?.kind else {
             return None;
@@ -187,7 +199,7 @@ impl Model {
         let mut slab = FloorSlab::from_chain_over(chain, &p, strip, over);
         if let Ok(fs) = &mut slab {
             fs.core_layer = self.core_layer(id);
-            self.aussparen(run, chain, fs);
+            self.aussparen(run, chain, fs, loecher);
             if fs.strip.is_some_and(|sp| sp.covered) {
                 fs.strip_covered = self.covered_segments(run);
             }
@@ -238,14 +250,34 @@ impl Model {
     /// Öffnung aus, die sichtbar in das Deckenband reicht, über die ganze
     /// Dicke: so breit wie ihr Loch in der Schicht, in der der Deckenrand
     /// sitzt (der erste Kern), bis zur Innenfläche der Wand (Fenster über
-    /// zwei Geschosse, `decke_aussparung`).
-    fn aussparen(&self, run: RunId, chain: &WallChain, fs: &mut FloorSlab) {
+    /// zwei Geschosse, `decke_aussparung`). `loecher`: die Löcher des Zugs,
+    /// wenn schon gesucht.
+    fn aussparen(
+        &self,
+        run: RunId,
+        chain: &WallChain,
+        fs: &mut FloorSlab,
+        loecher: Option<&[Hole]>,
+    ) {
         let (b, t) = fs.band();
+        let im_band = |h: &Hole| h.z.1 > b + 1.0 && h.z.0 < t - 1.0;
+        let gesucht;
+        let alle = match loecher {
+            Some(l) => l,
+            None => {
+                gesucht = self.holes_of(run, chain);
+                &gesucht[..]
+            }
+        };
+        // Erst ein Loch im Band, dann der Zug darüber (Review W48 B3)
+        if !alle.iter().any(im_band) {
+            return;
+        }
         let buendig = self.buendig_oben(run);
-        let loecher: Vec<_> = self
-            .holes_of(run, chain)
-            .into_iter()
-            .filter(|h| h.z.1 > b + 1.0 && h.z.0 < t - 1.0 && buendig(h.seg))
+        let loecher: Vec<_> = alle
+            .iter()
+            .filter(|h| im_band(h) && buendig(h.seg))
+            .cloned()
             .collect();
         let (neu, aus) = kerben(chain, &fs.outline, (b, t), &loecher);
         if !aus.is_empty() {
@@ -256,33 +288,59 @@ impl Model {
 
     /// Steht über Segment `k` von `run` die Wand darüber bündig (kein Vor-
     /// oder Rücksprung)? Nur dort läuft eine Öffnung durch die Decke weiter;
-    /// unter einer Dachterrasse oder einem Erker bleibt die Decke ganz.
+    /// unter einer Dachterrasse oder einem Erker bleibt die Decke ganz. Der
+    /// Zug darüber muss eine Außenwand eines Geschosses mit eigener Decke
+    /// sein: Durch die Flachdachdecke in die Attika spart nichts aus, denn
+    /// darüber liegt der Dachaufbau (Review W48 B2).
     fn buendig_oben(&self, run: RunId) -> impl Fn(usize) -> bool {
-        let o = self.offsets_above(run).unwrap_or_default();
+        let geschoss = self.runs_above(run).first().is_some_and(|&up| {
+            self.category_of(up) == Some(Category::ExteriorWall) && self.floor_of(up).is_some()
+        });
+        let o = geschoss
+            .then(|| self.offsets_above(run))
+            .flatten()
+            .unwrap_or_default();
         move |k| o.get(k).is_some_and(|d| d.abs() < MIN_OFFSET)
     }
 
     /// Spart die Decke über `run` für die Öffnung `opening` aus, wenn diese
     /// durch das ganze Deckenband reicht? Nein bei einem Vor- oder
-    /// Rücksprung der Wand darüber, ohne Kern am Deckenrand oder ohne
-    /// Decke; dort bleibt die
-    /// Kante der Öffnung unter der Decke (Kanten von außen, O7).
+    /// Rücksprung der Wand darüber, unter einer Attika, ohne Kern am
+    /// Deckenrand oder ohne Decke; dort bleibt die Kante der Öffnung unter
+    /// der Decke (Kanten von außen, O7).
     pub fn spart_aus(&self, run: RunId, opening: ElementId) -> bool {
-        let Some(chain) = self.base_chain(run) else {
-            return false;
-        };
-        let Some(Ok(fs)) = self.floor_of_chain(run, &chain) else {
-            return false;
-        };
+        match self.floor(run) {
+            Some(Ok(fs)) => self.spart_aus_bei(run, opening, &fs),
+            _ => false,
+        }
+    }
+
+    /// [`Model::spart_aus`] zur schon gebauten Decke `fs` über `run`, etwa
+    /// aus dem Cache der Szene: sucht nur die Löcher dieser einen Öffnung
+    /// (Review W48 B3).
+    pub fn spart_aus_bei(&self, run: RunId, opening: ElementId, fs: &FloorSlab) -> bool {
         if fs.aussparungen.iter().any(|a| a.opening == Some(opening)) {
             return true;
         }
+        let Some(chain) = self.base_chain(run) else {
+            return false;
+        };
+        let Some(ElementKind::Opening(op)) = self.element(opening).map(|e| &e.kind) else {
+            return false;
+        };
+        if !self.category_of(run).is_some_and(Category::takes_openings) {
+            return false;
+        }
         let band = fs.band();
+        let legs = self.legs_on(run, &chain, Some(opening), op);
+        if legs.is_empty() {
+            return false;
+        }
         let buendig = self.buendig_oben(run);
-        let loecher: Vec<_> = self
-            .holes_of(run, &chain)
+        let loecher: Vec<_> = legs
             .into_iter()
-            .filter(|h| h.opening == Some(opening) && buendig(h.seg))
+            .map(|(_, h)| h)
+            .filter(|h| buendig(h.seg))
             .map(|h| Hole { z: band, ..h })
             .collect();
         !kerben(&chain, &fs.outline, band, &loecher).1.is_empty()

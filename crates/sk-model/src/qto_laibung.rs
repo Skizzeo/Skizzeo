@@ -64,9 +64,10 @@ pub const SCHLUESSEL: [(&str, &str, &str); 7] = [
 /// Kostengruppen nach DIN 276: Außenwandbekleidungen außen und innen.
 const KG_AUSSEN: u16 = 335;
 const KG_INNEN: u16 = 336;
-/// Laibung und Stirn in der Deckenaussparung sind Flächen der Decke:
-/// Deckenbekleidungen (VOB und Kosten 13.10.).
-const KG_DECKE: u16 = 354;
+/// Laibung und Stirn in der Deckenaussparung setzen Innenlaibung und
+/// Innenputz der Außenwand bündig fort: KG 336 wie die Innenlaibung
+/// (Review #143 H1, Kosten 13.10.).
+const KG_DECKE: u16 = KG_INNEN;
 
 /// Welche Laibung eine Wandschicht zeigt.
 fn art(model: &Model, layers: &[MaterialLayer], i: usize) -> Option<&'static str> {
@@ -166,9 +167,16 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             }
         }
     }
-    // Deckenaussparungen (Fenster über zwei Geschosse): je Öffnung Seiten,
-    // Stirn, Deckendicke und Tiefe
-    let mut decke: Vec<(ElementId, u32, f64, f64, f64)> = Vec::new();
+    // Deckenaussparungen (Fenster über zwei Geschosse): je Öffnung die
+    // Seiten mit der Dicke ihrer Decke, die Stirnen mit Länge und Höhe und
+    // die Tiefe (Review W48 H3: Decken verschiedener Dicke)
+    struct Decke {
+        id: ElementId,
+        seiten: Vec<f64>,
+        stirnen: Vec<(f64, f64)>,
+        tiefe: f64,
+    }
+    let mut decke: Vec<Decke> = Vec::new();
     for r in sched
         .buildings
         .iter()
@@ -190,19 +198,34 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             let Some(id) = a.opening else {
                 continue;
             };
-            match decke.iter_mut().find(|x| x.0 == id) {
-                Some(x) => (x.1, x.2, x.4) = (x.1 + a.seiten, x.2 + a.stirn, x.4.max(a.tiefe)),
-                None => decke.push((id, a.seiten, a.stirn, a.dicke, a.tiefe)),
+            let i = match decke.iter().position(|x| x.id == id) {
+                Some(i) => i,
+                None => {
+                    decke.push(Decke {
+                        id,
+                        seiten: Vec::new(),
+                        stirnen: Vec::new(),
+                        tiefe: 0.0,
+                    });
+                    decke.len() - 1
+                }
+            };
+            let x = &mut decke[i];
+            x.seiten
+                .extend(std::iter::repeat_n(a.dicke, a.seiten as usize));
+            if a.stirn > 0.0 {
+                x.stirnen.push((a.stirn, a.dicke));
             }
+            x.tiefe = x.tiefe.max(a.tiefe);
         }
     }
     let mut out = Vec::new();
-    for &(id, seiten, stirn, dicke, tiefe) in &decke {
-        let Some(e) = model.element(id) else {
+    for x in &decke {
+        let Some(e) = model.element(x.id) else {
             continue;
         };
         let vorlage = AutoMenge {
-            element: id,
+            element: x.id,
             number: e.number.clone(),
             storey: e.storey,
             building: model.storey(e.storey).and_then(|s| s.building),
@@ -212,20 +235,30 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             kg: Some(KG_DECKE),
             formula: String::new(),
         };
-        let teile = vec![dicke; seiten as usize];
-        if seiten > 0 {
+        if !x.seiten.is_empty() {
             out.push(AutoMenge {
-                value: dicke * seiten as f64,
-                formula: formel(&teile, tiefe),
+                value: x.seiten.iter().sum(),
+                formula: formel(&x.seiten, x.tiefe),
                 ..vorlage.clone()
             });
         }
-        if stirn > 0.0 {
+        if !x.stirnen.is_empty() {
             let m = |mm: f64| format!("{:.3}", mm / 1000.0).replace('.', ",");
+            let gleich = x.stirnen.iter().all(|s| s.1 == x.stirnen[0].1);
+            let formula = if gleich {
+                let l: f64 = x.stirnen.iter().map(|s| s.0).sum();
+                format!("{} m, Höhe {} m", m(l), m(x.stirnen[0].1))
+            } else {
+                x.stirnen
+                    .iter()
+                    .map(|(l, h)| format!("{} m (Höhe {} m)", m(*l), m(*h)))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            };
             out.push(AutoMenge {
                 key: SLAB_EDGE,
-                value: stirn,
-                formula: format!("{} m, Höhe {} m", m(stirn), m(dicke)),
+                value: x.stirnen.iter().map(|s| s.0).sum(),
+                formula,
                 ..vorlage
             });
         }

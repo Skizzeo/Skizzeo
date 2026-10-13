@@ -2798,7 +2798,10 @@ impl Model {
         id: RunId,
     ) -> Option<(WallChain, Option<Result<FloorSlab, FloorError>>)> {
         let mut c = self.base_chain(id)?;
-        let floor = self.floor_of_chain(id, &c);
+        // Die Löcher hängen nur am Grundkörper, nicht an den Anschlüssen:
+        // einmal suchen, für Decke und Zug (Review W48 B3)
+        let holes = self.holes_of(id, &c);
+        let floor = self.floor_mit_loechern(id, &c, Some(&holes));
         let prio = |k: u16| self.material_by_key(k).map_or(0, |m| m.priority);
         // Im lesenden Gang nur die Anschlüsse dieses Zuges
         let v = self.verz();
@@ -2874,7 +2877,7 @@ impl Model {
                 });
         }
         c.joints.facing_foot = self.facing_foot(id, &c);
-        c.joints.holes = self.holes_of(id, &c);
+        c.joints.holes = holes;
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self

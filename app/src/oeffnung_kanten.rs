@@ -26,7 +26,7 @@ use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
 use sk_model::oeffnung::{FaceLine, HeightLine, HeightRef, Opening, MIN_OPENING};
-use sk_model::{ElementId, LevelEdge, LevelKind, LevelRef, Model, RunId, StoreyId};
+use sk_model::{ElementId, FloorSlab, LevelEdge, LevelKind, LevelRef, Model, RunId, StoreyId};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -284,10 +284,13 @@ pub fn zug(scene: &Scene, id: ElementId) -> Option<RunId> {
 /// Bedienung: Ein Fenster über zwei Geschosse wird vom unteren aus nach
 /// oben aufgezogen. Das Modell spart auch eine Decke unter dem Geschoss der
 /// Öffnung aus, wenn ihr Loch hineinreicht.
-pub fn decke_grenzen(m: &Model, run: Option<RunId>, id: ElementId) -> (f64, f64) {
-    let band = |r: RunId| m.floor(r).and_then(Result::ok).map(|f| f.band());
+pub fn decke_grenzen(scene: &Scene, run: Option<RunId>, id: ElementId) -> (f64, f64) {
+    let m = scene.model();
+    let band = |r: RunId| mit_decke(scene, r, |f| f.band());
     let decke = match run {
-        Some(r) if m.spart_aus(r, id) => m.runs_above(r).first().copied(),
+        Some(r) if mit_decke(scene, r, |f| m.spart_aus_bei(r, id, f)) == Some(true) => {
+            m.runs_above(r).first().copied()
+        }
         _ => run,
     };
     let oben = decke.and_then(band).map_or(f64::INFINITY, |b| b.0);
@@ -296,6 +299,17 @@ pub fn decke_grenzen(m: &Model, run: Option<RunId>, id: ElementId) -> (f64, f64)
         .and_then(band)
         .map_or(f64::NEG_INFINITY, |b| b.1);
     (unten, oben)
+}
+
+/// `f` zur Decke über `run`: aus dem Cache der Szene, sonst gebaut (Review
+/// W48 B3). `None` ohne Decke.
+fn mit_decke<T>(scene: &Scene, run: RunId, f: impl FnOnce(&FloorSlab) -> T) -> Option<T> {
+    if let Some(fs) = scene.floor(run) {
+        return Some(f(fs));
+    }
+    let m = scene.model();
+    m.floor_of(run)?;
+    m.floor(run)?.ok().map(|fs| f(&fs))
 }
 
 /// Höhenlinien, an denen eine Kante der Öffnung fängt: Brüstung, Sturz und
@@ -384,7 +398,7 @@ pub fn umbinden(scene: &Scene, id: ElementId, oben: bool) -> Option<Opening> {
     let neu = if bindung_name(m, r).is_some() {
         HeightRef::Level(frei_bei(m, st, z))
     } else {
-        linien(m, st, decke_grenzen(m, zug(scene, id), id))
+        linien(m, st, decke_grenzen(scene, zug(scene, id), id))
             .into_iter()
             .find(|l| (l.z - z).abs() < 0.5)?
             .bind
@@ -435,7 +449,7 @@ pub fn schloesser(scene: &Scene, t: Treffer) -> Vec<Schloss> {
     }
     let (a, b) = legs[t.schenkel.min(legs.len() - 1)];
     let mid = (a + b) * 0.5;
-    let linien = linien(m, st, decke_grenzen(m, zug(scene, t.id), t.id));
+    let linien = linien(m, st, decke_grenzen(scene, zug(scene, t.id), t.id));
     for (oben, r, z) in [(false, o.bottom, z0), (true, o.top, z1)] {
         let gebunden = bindung_name(m, r).is_some();
         let auf_linie = linien
@@ -513,7 +527,7 @@ impl HoeheZug {
         let mm = mm_je_px(cam, p, w, h).or_else(|| mm_je_px(cam, a, w, h));
         let tol = FANG_PX * scale * mm.unwrap_or(0.0);
         let run = zug(scene, t.id);
-        let grenzen = decke_grenzen(m, run, t.id);
+        let grenzen = decke_grenzen(scene, run, t.id);
         let linien = linien(m, st, grenzen);
         scene.begin(SCHRITT);
         Some(HoeheZug {
@@ -1032,7 +1046,7 @@ pub(super) mod tests {
         let vorn = strahl(&s).unwrap();
         assert!(vorn < tief - 100.0, "{vorn} {tief}");
         // Durch die nächste Decke geht sie nicht
-        let (unten, oben) = decke_grenzen(s.model(), Some(eg), id);
+        let (unten, oben) = decke_grenzen(&s, Some(eg), id);
         assert!(unten.is_infinite() && oben > z_og, "{unten} {oben}");
     }
 
@@ -1054,7 +1068,7 @@ pub(super) mod tests {
         let st_og = s.model().run(og).unwrap().storey;
         let sturz_og = HeightRef::Line(st_og, HeightLine::Lintel);
         let z_og = s.model().height_z(sturz_og).unwrap();
-        let (unten, decke) = decke_grenzen(s.model(), Some(eg), id);
+        let (unten, decke) = decke_grenzen(&s, Some(eg), id);
         assert!(unten.is_infinite() && decke < z_og, "{unten} {decke}");
         assert_eq!(zug(&s, id), Some(eg));
         let st = s.model().run(eg).unwrap().storey;
@@ -1236,7 +1250,7 @@ pub(super) mod tests {
         );
         assert!(s.opening_schritt(id, o, "Höhe gebunden"));
         assert_eq!(zug(&s, id), Some(og));
-        let (decke, oben) = decke_grenzen(s.model(), Some(og), id);
+        let (decke, oben) = decke_grenzen(&s, Some(og), id);
         let ok = s.model().floor(eg).unwrap().unwrap().band().1;
         assert_eq!(decke, ok);
         assert!(oben > decke);

@@ -1419,8 +1419,8 @@ mod tests {
         assert_eq!(k.anteile.len(), 59);
         assert_eq!(k.folgen.len(), 9);
         assert_eq!(k.werte, Firmenwerte::werk());
-        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(16));
-        // Stand 16: 56 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(17));
+        // Stand 17: 56 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
         // Anschluss an der Attika, Untersicht, Fußpunkt, Flachdach, Gefälledämmung,
         // Dachentwässerung außen, Laibungen und Diagonalbewehrung an Öffnungen,
         // Laibung und Stirn an der Deckenaussparung)
