@@ -474,8 +474,14 @@ impl Model {
     /// Züge, deren abgeleitete Bauteile der offene Schritt ändern kann
     /// (Z4): die von [`Model::step_touched`]. Reine Darstellung (Stifte,
     /// Linien, Schraffuren, Oberflächen, Anzeige) zählt nicht (Review 2d
-    /// T8). `None` (alle), sobald der Schritt mehr als Züge und Bauteile
-    /// ändert, etwa einen Typ, einen Baustoff oder ein Geschoss.
+    /// T8), ebenso wenig Raumvorlagen und neu angelegte Typen und Baustoffe:
+    /// Was es vorher nicht gab, trägt kein bestehendes Bauteil, und die
+    /// Werksstoffe, auf die abgeleitete Bauteile zurückfallen, legt deren
+    /// Abgleich mit dem ersten an (wie `touched.library` in `apply`, RB3).
+    /// So gleicht der erste Wandschritt, der mit dem ersten Raum dessen
+    /// Ausbautypen anlegt, nur seine Züge ab (Bemaßung, Review #112).
+    /// `None` (alle), sobald der Schritt mehr als Züge und Bauteile ändert,
+    /// etwa einen bestehenden Typ, einen Baustoff oder ein Geschoss.
     pub(super) fn sync_scope(&self) -> Option<Vec<RunId>> {
         let open = self.txn.as_ref()?;
         open.changes
@@ -493,6 +499,9 @@ impl Model {
                         | Change::Ext { .. }
                         | Change::Project { .. }
                         | Change::Location { .. }
+                        | Change::SpaceTypes { .. }
+                        | Change::Material { old: None, .. }
+                        | Change::LayerSet { old: None, .. }
                 )
             })
             .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
