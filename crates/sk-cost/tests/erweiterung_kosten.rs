@@ -507,6 +507,11 @@ fn fehlende_folge_beim_einlesen() {
             stahl.kurz
         )]
     );
+    // Review #120 H4: die App erkennt ihn unter den gespeicherten wieder
+    assert!(sk_cost::erweiterung::ist_folgen_hinweis(&h[0]));
+    assert!(!sk_cost::erweiterung::ist_folgen_hinweis(
+        "Zeile 3: Feld „x“ kommt in der Definition nicht vor"
+    ));
 }
 
 /// Review 3cm: Kostenblatt und LV mit vielen Erweiterungen (Messung).
