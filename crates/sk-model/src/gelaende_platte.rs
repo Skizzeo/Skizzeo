@@ -128,10 +128,16 @@ impl Model {
     /// leer ohne Wandzüge. Gründungen über das Verzeichnis ([`Model::lesend`]),
     /// nicht je Zug über alle Bauteile (Review W34 B2).
     pub fn terrain_plates(&self) -> Vec<TerrainPlate> {
-        self.lesend(|| self.platten_bauen())
+        self.terrain_plate_input().build()
     }
 
-    fn platten_bauen(&self) -> Vec<TerrainPlate> {
+    /// Was die Platten aus dem Modell brauchen ([`PlateInput`]); das
+    /// Zerlegen selbst braucht das Modell nicht mehr.
+    pub fn terrain_plate_input(&self) -> PlateInput {
+        self.lesend(|| self.platten_eingaben())
+    }
+
+    fn platten_eingaben(&self) -> PlateInput {
         let s = self.plate_settings();
         // Rechtecke je Gebäude, nach Guid
         let mut boxes: Vec<(Guid, BuildingId, [f64; 4])> = Vec::new();
@@ -180,16 +186,42 @@ impl Model {
             groups[g].2.push(r);
         }
         let holes: Vec<Vec<Vec3>> = self.plate_outlines().into_iter().map(|o| o.1).collect();
-        let rects: Vec<Vec<[f64; 4]>> = groups.iter().map(|g| g.2.clone()).collect();
-        let (pieces, edges) = streifen(&rects, &holes);
-        groups
-            .into_iter()
+        PlateInput {
+            thick: s.thick,
+            groups,
+            holes,
+        }
+    }
+}
+
+/// Was die Geländeplatten aus dem Modell brauchen: die Gruppen gleicher
+/// Geländehöhe mit ihren Gebäuden und Rechtecken, die Löcher und die Dicke.
+/// Gelesen wird schnell im Modell, das Zerlegen ([`PlateInput::build`])
+/// braucht kein Modell und kann in einem eigenen Faden laufen (Review #119
+/// W34 B6).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlateInput {
+    thick: f64,
+    /// Höhe, Gebäude und Rechtecke je Gruppe, in der Reihenfolge ihres
+    /// ersten Gebäudes (Vorrang).
+    groups: Vec<(f64, Vec<BuildingId>, Vec<[f64; 4]>)>,
+    holes: Vec<Vec<Vec3>>,
+}
+
+impl PlateInput {
+    /// Die Platten: Gruppen abzüglich der Löcher in Trapeze und Randkanten
+    /// zerlegt.
+    pub fn build(&self) -> Vec<TerrainPlate> {
+        let rects: Vec<Vec<[f64; 4]>> = self.groups.iter().map(|g| g.2.clone()).collect();
+        let (pieces, edges) = streifen(&rects, &self.holes);
+        self.groups
+            .iter()
             .zip(pieces.into_iter().zip(edges))
             .filter(|(_, (p, _))| !p.is_empty())
             .map(|((z, bs, _), (pieces, edges))| TerrainPlate {
-                buildings: bs,
-                top: z,
-                bottom: z - s.thick,
+                buildings: bs.clone(),
+                top: *z,
+                bottom: z - self.thick,
                 pieces,
                 edges,
             })
