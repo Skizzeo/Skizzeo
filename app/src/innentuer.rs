@@ -540,12 +540,7 @@ pub fn kette(v: &Vorschau, st: StoreyId, stil: &Stil, schrift: &Schrift) -> Bild
     };
     let n = vec3(n.x, n.y, 0.0).normalized();
     // Maßzahlen von unten oder von rechts lesbar, wie bei den Außenmaßen
-    let t = vec3(-n.y, n.x, 0.0);
-    let t = if t.x > 1e-9 || (t.x.abs() <= 1e-9 && t.y > 0.0) {
-        t
-    } else {
-        -t
-    };
+    let t = sk_plan::aussen::laengs(n);
     let bezug = |u: f64, herkunft| {
         let p = v.face.at(u, 0.0);
         let p = vec3(p.x, p.y, 0.0);

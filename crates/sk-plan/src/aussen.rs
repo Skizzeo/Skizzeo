@@ -291,8 +291,8 @@ fn hauptrichtung(zuege: &[Zug]) -> Vec3 {
 }
 
 /// Richtung längs einer Seite mit Normale `n`: Maßzahlen von unten oder von
-/// rechts lesbar.
-fn laengs(n: Vec3) -> Vec3 {
+/// rechts lesbar. Auch für die Kette der Innentür (Bemaßung zu #146, H2).
+pub fn laengs(n: Vec3) -> Vec3 {
     let t = vec3(-n.y, n.x, 0.0);
     if t.x > 1e-9 || (t.x.abs() <= 1e-9 && t.y > 0.0) {
         t
