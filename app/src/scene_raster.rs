@@ -358,8 +358,9 @@ impl Raster {
         let (a, b) = (o + d * t0, o + d * t1);
         // Außerhalb der Zellen des Quaders um alles steht nichts
         let g = [zelle(lo.x), zelle(lo.y), zelle(hi.x), zelle(hi.y)];
-        let breit = g[2] as i64 - g[0] as i64 + g[3] as i64 - g[1] as i64 + 1;
-        let k = (rand / ZELLE).ceil().clamp(0.0, breit as f64) as i64;
+        // Nicht auf die Breite des Rasters kappen: Das Stück liegt bis zum
+        // Spielraum neben dem Quader, die Spannen unten kappen auf ihn
+        let k = (rand / ZELLE).ceil().clamp(0.0, i32::MAX as f64) as i64;
         let (ai, aj, bi, bj) = (zelle(a.x), zelle(a.y), zelle(b.x), zelle(b.y));
         let schritte = (bi as i64 - ai as i64).abs() + (bj as i64 - aj as i64).abs();
         if schritte as usize >= self.lage.len() {
@@ -597,6 +598,27 @@ mod tests {
             r.am_strahl(vec3(1e6, 1e6, 1e5), vec3(0.0, 0.0, -1.0), 0.0),
             vec![3, 4]
         );
+    }
+
+    /// Ein kleines Raster (eine Zelle) und ein Strahl, der weiter als das
+    /// Raster breit ist, aber im Spielraum daneben vorbeigeht (Geometrie zu
+    /// #142): der Platz ist dabei.
+    #[test]
+    fn spielraum_breiter_als_raster() {
+        let q = (vec3(1000.0, 1000.0, 0.0), vec3(9000.0, 9000.0, 3000.0));
+        let r = Raster::aus([Some(q)]);
+        let d = vec3(0.0, 0.0, -1.0);
+        assert_eq!(
+            r.am_strahl(vec3(24_000.0, 5000.0, 5000.0), d, 16_000.0),
+            vec![0]
+        );
+        assert_eq!(
+            r.am_strahl(vec3(5000.0, -20_000.0, 5000.0), d, 25_000.0),
+            vec![0]
+        );
+        assert!(r
+            .am_strahl(vec3(5000.0, -20_000.0, 5000.0), d, 20_000.0)
+            .is_empty());
     }
 
     /// Jeder Quader, den der Strahl mit Spielraum trifft, ist dabei;
