@@ -247,6 +247,12 @@ impl Stempel {
         self.hover.is_some() || self.zug.is_some()
     }
 
+    /// Wird ein Stempel gezogen (Schritt offen)? Das Paneel ruht dann wie
+    /// beim Ziehen einer Wand (Review #112 B1).
+    pub fn zieht(&self) -> bool {
+        self.zug.as_ref().is_some_and(|z| z.offen)
+    }
+
     /// Eine andere Szene (Neu, Öffnen, Sicherung) beginnt ohne Flächen,
     /// Auslegung, Zug und Namensfeld der vorigen, auch bei gleichem
     /// Modellstand (Review #87 R4).
@@ -1304,6 +1310,7 @@ mod tests {
         let (x, y) = mitte(&b);
         let (mods, button) = (Modifiers::default(), MouseButton::Left);
         maus(&mut st, &mut s, &c, Event::MouseDown { button, x, y, mods });
+        assert!(!st.zieht(), "gedrückt, noch nicht gezogen");
         let out = maus(
             &mut st,
             &mut s,
@@ -1315,6 +1322,7 @@ mod tests {
             },
         );
         assert!(out.consumed && out.redraw);
+        assert!(st.zieht(), "das Paneel ruht (Review #112 B1)");
         let r = s.model().space(id).unwrap().clone();
         let p = r.stempel.expect("verschoben");
         assert_eq!(r.anker, p, "der Anker geht mit");
@@ -1363,6 +1371,7 @@ mod tests {
             },
         );
         assert_eq!(s.undo_label(), Some("Raumstempel verschoben"));
+        assert!(!st.zieht());
         auslegen(&mut st, &s, &c);
         let b2 = st.bilder.iter().find(|b| b.raum == Some(id)).unwrap();
         assert!(
