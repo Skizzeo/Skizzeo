@@ -282,6 +282,8 @@ pub struct Model {
     bemassung: crate::bemassung::Bemassung,
     /// Bemaßung je Ansicht am Zahnrad; Ansichtszustand.
     mass_sicht: crate::bemassung::MassSicht,
+    /// Verzeichnis für einen lesenden Gang ([`Model::lesend`]).
+    merker: verzeichnis::Merker,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -310,6 +312,8 @@ macro_rules! note {
 
 #[path = "delete.rs"]
 mod delete;
+#[path = "verzeichnis.rs"]
+mod verzeichnis;
 pub use delete::{refusal_lines, refusal_text, Deleted, Refusal};
 
 #[path = "lock.rs"]
@@ -810,6 +814,7 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            merker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -893,6 +898,7 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            merker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -2526,6 +2532,9 @@ impl Model {
         let Some(segs) = self.run(below).map(|r| &r.segments) else {
             return Vec::new();
         };
+        if let Some(v) = self.verz() {
+            return v.darueber(below);
+        }
         let mut out = Vec::new();
         for (_, e) in self.elements.iter() {
             if let ElementKind::Wall(Wall {
@@ -2791,7 +2800,13 @@ impl Model {
         let mut c = self.base_chain(id)?;
         let floor = self.floor_of_chain(id, &c);
         let prio = |k: u16| self.material_by_key(k).map_or(0, |m| m.priority);
-        for j in &self.joins {
+        // Im lesenden Gang nur die Anschlüsse dieses Zuges
+        let v = self.verz();
+        let anschluesse: Box<dyn Iterator<Item = &Join>> = match &v {
+            Some(v) => Box::new(v.anschluesse(id).iter().map(|&k| &self.joins[k])),
+            None => Box::new(self.joins.iter()),
+        };
+        for j in anschluesse {
             if j.a_run == id {
                 let cut = match (j.kind, j.b_end) {
                     (JoinKind::L, Some(eb)) => self
@@ -2994,7 +3009,7 @@ impl Model {
     fn floor_over(&self, storey: StoreyId, c: &WallChain) -> Option<FloorSlab> {
         let mids = mids(&c.points, c.closed);
         let (lo, hi) = bounds2(&mids);
-        for (id, r) in self.runs.iter() {
+        for (id, r) in self.runs_near(storey, lo, hi) {
             // Vortest: geschlossen und Rechteck der Zugpunkte überdeckt die
             // Segmentmitten, bevor der Umriss entsteht
             if !r.closed || r.storey != storey || !overlap(bounds2(&r.points), (lo, hi)) {
@@ -3013,6 +3028,24 @@ impl Model {
         None
     }
 
+    /// Züge, unter denen die im Geschoss `storey` mit Rechteck `lo`–`hi`
+    /// sind: im lesenden Gang nur die aus dem Raster, sonst alle.
+    fn runs_near(
+        &self,
+        storey: StoreyId,
+        lo: Vec3,
+        hi: Vec3,
+    ) -> Box<dyn Iterator<Item = (RunId, &WallRun)> + '_> {
+        match self.verz() {
+            Some(v) => Box::new(
+                v.zuege_bei(storey, lo, hi)
+                    .into_iter()
+                    .filter_map(|id| Some((id, self.runs.get(id)?))),
+            ),
+            None => Box::new(self.runs.iter()),
+        }
+    }
+
     /// Innenwandzüge, die die Decke über dem Zug `run` unterbricht.
     pub fn runs_under_floor(&self, run: RunId) -> Vec<RunId> {
         self.runs_under_outline(run, None)
@@ -3026,8 +3059,7 @@ impl Model {
         let (lo, hi) = bounds2(&r.points);
         // Vortest am Rechteck, bevor der Umriss entsteht
         let near: Vec<(RunId, Vec<Vec3>)> = self
-            .runs
-            .iter()
+            .runs_near(r.storey, lo, hi)
             .filter(|(id, x)| {
                 *id != run && x.storey == r.storey && overlap(bounds2(&x.points), (lo, hi))
             })

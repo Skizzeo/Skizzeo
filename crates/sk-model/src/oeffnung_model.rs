@@ -273,12 +273,43 @@ impl Model {
             .run(run)
             .and_then(|r| self.storey(r.storey))
             .and_then(|s| s.building);
+        // Vortest über die Quader: Ein Pfadstück auf der Außenfläche liegt
+        // höchstens Versatz + Dicke neben der Bezugslinie; nur Öffnungen
+        // dort kosten den ganzen Gang (sonst wächst jeder Zug mit dem Modell)
+        let Some((pts, _, _)) = c.layout() else {
+            return Vec::new();
+        };
+        let rand = c.outer_offset().abs() + c.thickness() + ON_FACE + 1.0;
+        let (mut lo, mut hi) = (flat(pts[0]), flat(pts[0]));
+        for p in &pts {
+            (lo.x, lo.y) = (lo.x.min(p.x), lo.y.min(p.y));
+            (hi.x, hi.y) = (hi.x.max(p.x), hi.y.max(p.y));
+        }
+        let nah = |path: &[Vec3]| {
+            let x = path.iter().map(|p| p.x);
+            let y = path.iter().map(|p| p.y);
+            x.clone().fold(f64::INFINITY, f64::min) <= hi.x + rand
+                && x.fold(f64::NEG_INFINITY, f64::max) >= lo.x - rand
+                && y.clone().fold(f64::INFINITY, f64::min) <= hi.y + rand
+                && y.fold(f64::NEG_INFINITY, f64::max) >= lo.y - rand
+        };
+        // Im lesenden Gang nur die Öffnungen der Felder um den Zug
+        let kandidaten: Box<dyn Iterator<Item = ElementId>> = match self.verz() {
+            Some(v) => {
+                let r = vec3(rand, rand, 0.0);
+                Box::new(v.oeffnungen_bei(building, lo - r, hi + r).into_iter())
+            }
+            None => Box::new(self.elements.ids()),
+        };
         let mut out = Vec::new();
-        for (id, e) in self.elements.iter() {
+        for id in kandidaten {
+            let Some(e) = self.element(id) else {
+                continue;
+            };
             let ElementKind::Opening(op) = &e.kind else {
                 continue;
             };
-            if self.storey(e.storey).and_then(|s| s.building) != building {
+            if self.storey(e.storey).and_then(|s| s.building) != building || !nah(&op.path) {
                 continue;
             }
             out.extend(
@@ -524,8 +555,16 @@ impl Model {
         for p in &o.path {
             (lo.0, lo.1, hi.0, hi.1) = (lo.0.min(p.x), lo.1.min(p.y), hi.0.max(p.x), hi.1.max(p.y));
         }
-        self.runs
-            .ids()
+        // Im lesenden Gang nur die Züge der Felder um den Pfad
+        let kandidaten: Box<dyn Iterator<Item = RunId>> = match self.verz() {
+            Some(v) => {
+                let r = RUN_REACH;
+                let (a, b) = (vec3(lo.0 - r, lo.1 - r, 0.0), vec3(hi.0 + r, hi.1 + r, 0.0));
+                Box::new(v.alle_zuege_bei(a, b).into_iter())
+            }
+            None => Box::new(self.runs.ids()),
+        };
+        kandidaten
             .filter(|&r| {
                 self.category_of(r).is_some_and(Category::takes_openings)
                     && self.run(r).is_some_and(|run| {

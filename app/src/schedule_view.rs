@@ -2389,8 +2389,9 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
             rows: Vec::new(),
         };
         let t = b.by_trade.iter().find(|t| t.trade == id).unwrap_or(&leer);
+        let mut schon = HashSet::new();
         for r in &t.rows {
-            if !head.elements.contains(&r.element) {
+            if schon.insert(r.element) {
                 head.elements.push(r.element);
             }
         }
