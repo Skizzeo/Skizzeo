@@ -31,8 +31,9 @@ use sk_model::{edge_kind, material, FootingShape, LevelKind, Model, Show, Solid,
 use sk_render::Helper;
 
 /// Abstand der Höhenlinien im Grundriss (m); volle Meter sind
-/// Hauptlinien, nur sie stehen in 3D.
-const STUFE: f64 = 0.25;
+/// Hauptlinien, nur sie stehen in 3D. Gäbe er zu viele Stücke, gilt der
+/// gröbere aus [`Model::terrain_contour_step`] (Review #121, Auflage H1).
+pub(crate) const STUFE: f64 = 0.25;
 
 /// Das Grundstück liegt bei „Umgebung blass“ so weit über dem blassen Netz
 /// (mm), damit beide nicht flimmern.
@@ -89,7 +90,8 @@ impl Gelaende {
             t.show()
         };
         let linien = m
-            .terrain_contours(STUFE)
+            .terrain_contour_step(STUFE)
+            .map_or(Vec::new(), |s| m.terrain_contours(s))
             .into_iter()
             .map(|(z, p, _)| ((z - h0) * 1000.0, p, (z - z.round()).abs() < 1e-6))
             .collect();

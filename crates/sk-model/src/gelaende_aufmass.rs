@@ -1076,8 +1076,24 @@ impl Model {
             .collect()
     }
 
+    /// Abstand der Höhenlinien (m) für den Wunsch `wunsch`: er selbst, oder
+    /// der nächste gröbere aus 0,5 / 1 / 2 / 2,5 / 5 / 10 / 25 / 50 / 100 m,
+    /// wenn er mehr als [`sk_gelaende::linien::MAX_STRECKEN`] Stücke gäbe
+    /// (Review #121, Auflage H1: vorab gezählt, in O(Dreiecke)). `None`
+    /// ohne Aufmaß oder wenn auch 100 m zu viele gäbe.
+    pub fn terrain_contour_step(&self, wunsch: f64) -> Option<f64> {
+        use sk_gelaende::linien::{strecken, MAX_STRECKEN};
+        const GROEBER: [f64; 9] = [0.5, 1.0, 2.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0];
+        let m = self.terrain()?.mesh();
+        std::iter::once(wunsch)
+            .chain(GROEBER.into_iter().filter(|&s| s > wunsch))
+            .find(|&s| strecken(&m.netz, s) <= MAX_STRECKEN)
+    }
+
     /// Höhenlinien im Abstand `stufe` (m) im Modell: Höhe (m ü. NHN) und
-    /// Punkte (mm), das Höhere links.
+    /// Punkte (mm), das Höhere links. Mehr als
+    /// [`sk_gelaende::linien::MAX_STRECKEN`] Stücke geben keine Linien,
+    /// [`Model::terrain_contour_step`] nennt einen Abstand, der passt.
     pub fn terrain_contours(&self, stufe: f64) -> Vec<(f64, Vec<[f64; 2]>, bool)> {
         let (Some(t), Some(f)) = (self.terrain(), self.survey_frame()) else {
             return Vec::new();
@@ -1379,6 +1395,39 @@ mod tests {
         assert!(m.location().utm.is_none());
         let z = m.terrain_z_at(Some(b), 7000.0, 6000.0);
         assert!(z.is_finite() && z <= 0.0, "{z}");
+    }
+
+    /// Zu viele Stücke für Höhenlinien: vorab gezählt, ein gröberer
+    /// Abstand passt (Review #121, Auflage H1).
+    #[test]
+    fn hoehenlinien_vorab_gezaehlt() {
+        let (mut m, _) = lindenhof_haus();
+        assert_eq!(m.terrain_contour_step(0.25), None, "ohne Aufmaß");
+        // 30 × 30 Punkte, jede zweite Reihe 400 m höher: bei 0,25 m wären
+        // es 2,7 Mio. Stücke, bei 0,5 m 1,3 Mio.
+        let mut text = String::new();
+        for i in 0..30 {
+            for j in 0..30 {
+                let h = 10.1 + (i % 2) as f64 * 400.0;
+                text.push_str(&format!("{} {j} {i} {h}\n", i * 30 + j + 1));
+            }
+        }
+        let a = sk_gelaende::lesen::lesen(text.as_bytes()).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "x.txt", "", 32)));
+        m.commit();
+        let t = std::time::Instant::now();
+        assert_eq!(m.terrain_contour_step(0.25), Some(1.0));
+        assert!(m.terrain_contours(0.25).is_empty());
+        let grenze = if cfg!(debug_assertions) { 5.0 } else { 0.5 };
+        assert!(t.elapsed().as_secs_f64() < grenze, "{:?}", t.elapsed());
+        assert_eq!(m.terrain_contours(1.0).len(), 400 * 29);
+        // das Beispiel bleibt beim Wunsch
+        let (mut m, _) = lindenhof_haus();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(aufmass()));
+        m.commit();
+        assert_eq!(m.terrain_contour_step(0.25), Some(0.25));
     }
 
     #[test]
