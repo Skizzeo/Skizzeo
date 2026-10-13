@@ -1,8 +1,8 @@
 //! Paneel „Eigenschaften“ einer Öffnung (Grundriss G7): Art, Breite und
-//! Höhe im Rohbau, bei einer Tür der Anschlag mit dem Raum, in den sie
-//! aufschlägt („DIN links, öffnet in Küche“), und die Wand. Geändert wird
-//! am Grundriss (Griffe, Höhenlinien), das Paneel zeigt nur. Dazu Löcher
-//! und Aufschlag für den Umriss der Auswahl.
+//! Höhe im Rohbau, bei einer Tür der Anschlag („DIN links“) und darunter
+//! der Raum, in den sie aufschlägt („öffnet in Küche“), und die Wand.
+//! Geändert wird am Grundriss (Griffe, Höhenlinien), das Paneel zeigt nur.
+//! Dazu Löcher und Aufschlag für den Umriss der Auswahl.
 
 use super::de_m;
 use crate::scene::Scene;
@@ -110,12 +110,12 @@ pub fn props(
         }
     }
     if let Some(s) = o.swing {
-        let wohin = raum_im_aufschlag(scene, id);
-        let text = match wohin {
-            Some(r) => format!("{}, öffnet in {r}", s.din.name()),
-            None => s.din.name().to_string(),
-        };
-        values.push(("Anschlag", text));
+        values.push(("Anschlag", s.din.name().into()));
+        // Der Raum als Detailzeile: sie kürzt sich mit „…“, eine Wertzeile
+        // liefe bei langen Namen über ihr Etikett (Einstellungen #132 B1)
+        if let Some(r) = raum_im_aufschlag(scene, id) {
+            values.push(("", format!("öffnet in {r}")));
+        }
     }
     let mut waende: Vec<&str> = Vec::new();
     for (run, c) in zuege(scene, id) {
