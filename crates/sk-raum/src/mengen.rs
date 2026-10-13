@@ -22,7 +22,7 @@ use crate::raumliste::{fertigmass, traeger, Platten};
 use crate::Ketten;
 use sk_model::qto::{RoomLine, RoomQto, Side};
 use sk_model::rechenweg::Rechenweg;
-use sk_model::{Category, ElementId, LayerFunction, Model, StoreyId};
+use sk_model::{Category, ElementId, LayerFunction, MaterialLayer, Model, StoreyId};
 
 /// Kostengruppen nach DIN 276:2018.
 const KG_SOHLE: u16 = 324;
@@ -106,25 +106,7 @@ fn zeile(model: &Model, unten: Option<Category>, kanten: &[&Kante], z: Zeile) ->
         Flaeche::Decke => Side::Ceiling,
         _ => Side::Wall,
     };
-    let kg = match z.flaeche {
-        Flaeche::Decke => KG_DECKENBEKLEIDUNG,
-        Flaeche::Wand(k)
-        | Flaeche::Laibung(k)
-        | Flaeche::Fliesen(k)
-        | Flaeche::FliesenLaibung(k) => wand_kg(model, kanten, k),
-        Flaeche::Eckschienen | Flaeche::Silikon | Flaeche::Dichtband => KG_INNENWAND,
-        Flaeche::Boden | Flaeche::Estrich | Flaeche::Sockel | Flaeche::Randstreifen => {
-            match unten {
-                Some(Category::GroundSlab)
-                    if schicht.is_some_and(|l| l.function == LayerFunction::Membrane) =>
-                {
-                    KG_SOHLE_ABDICHTUNG
-                }
-                Some(Category::GroundSlab) => KG_SOHLE,
-                _ => KG_DECKENBELAG,
-            }
-        }
-    };
+    let kg = kostengruppe(model, unten, kanten, z.flaeche, schicht);
     RoomLine {
         name: name(model, kanten, z.flaeche),
         side,
@@ -142,6 +124,37 @@ fn zeile(model: &Model, unten: Option<Category>, kanten: &[&Kante], z: Zeile) ->
             bezug: z.bezug,
             terme: z.terme,
         },
+    }
+}
+
+/// Kostengruppe einer Zeile nach dem Träger (Modulkopf, plan.md §10);
+/// `unten` ist das Bauteil unter dem Boden, `schicht` die Schicht der Zeile.
+/// Die Raumliste für den Austausch nimmt dieselbe Regel.
+pub(crate) fn kostengruppe(
+    model: &Model,
+    unten: Option<Category>,
+    kanten: &[&Kante],
+    flaeche: Flaeche,
+    schicht: Option<MaterialLayer>,
+) -> u16 {
+    match flaeche {
+        Flaeche::Decke => KG_DECKENBEKLEIDUNG,
+        Flaeche::Wand(k)
+        | Flaeche::Laibung(k)
+        | Flaeche::Fliesen(k)
+        | Flaeche::FliesenLaibung(k) => wand_kg(model, kanten, k),
+        Flaeche::Eckschienen | Flaeche::Silikon | Flaeche::Dichtband => KG_INNENWAND,
+        Flaeche::Boden | Flaeche::Estrich | Flaeche::Sockel | Flaeche::Randstreifen => {
+            match unten {
+                Some(Category::GroundSlab)
+                    if schicht.is_some_and(|l| l.function == LayerFunction::Membrane) =>
+                {
+                    KG_SOHLE_ABDICHTUNG
+                }
+                Some(Category::GroundSlab) => KG_SOHLE,
+                _ => KG_DECKENBELAG,
+            }
+        }
     }
 }
 
@@ -354,6 +367,46 @@ mod tests {
             .by_trade
             .iter()
             .any(|t| t.rows.iter().any(|r| r.category == Category::Space)));
+    }
+
+    /// Die Raumliste für den Austausch (IFC I6) trägt je Schicht dieselbe
+    /// Kostengruppe wie die Zeile des Mengenblatts: auf der Sohlplatte 324
+    /// und 325, auf der Decke 353, an der Außenwand 336, Decke 354.
+    #[test]
+    fn raumliste_mit_kostengruppen_des_mengenblatts() {
+        let m = haus();
+        let liste = crate::raumliste::raumliste(&m);
+        assert_eq!(liste.len(), 2);
+        let mut kgs = std::collections::BTreeSet::new();
+        for r in &liste {
+            let zeilen: Vec<RoomLine> = raeume(&m, r.geschoss)
+                .into_iter()
+                .find(|(id, _)| *id == r.raum)
+                .expect("Raum im Mengenblatt")
+                .1
+                .lines;
+            for a in &r.ausbau {
+                for s in a.schichten.iter().filter(|s| s.menge > 0.0) {
+                    let f = Some((a.typ, s.schicht));
+                    let z: Vec<_> = zeilen.iter().filter(|z| z.finish == f).collect();
+                    assert!(!z.is_empty(), "{:?} {}", a.flaeche, s.schicht);
+                    assert!(
+                        z.iter().any(|z| z.kg == Some(s.kg)),
+                        "{:?} {} {}",
+                        a.flaeche,
+                        s.schicht,
+                        s.kg
+                    );
+                }
+                for s in &a.schichten {
+                    kgs.insert(s.kg);
+                }
+            }
+        }
+        assert_eq!(
+            kgs.into_iter().collect::<Vec<_>>(),
+            [324, 325, 336, 353, 354]
+        );
     }
 
     /// Richtung der Wandseite nach Nord des Projekts.

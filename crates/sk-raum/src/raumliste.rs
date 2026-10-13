@@ -8,6 +8,7 @@
 
 use crate::ausbau::{self, RaumAusbau};
 use crate::erkennung::{raeume, Begrenzung, Kante, RaumForm};
+use crate::mengen::kostengruppe;
 use crate::oeffnungen::{Geschosse, Rohbau};
 use crate::raumbuch::koerper::{koerper, raumkoerper};
 use crate::raumbuch::{rechnen, Flaeche, Regeln};
@@ -87,6 +88,8 @@ pub struct SchichtDaten {
     pub dicke: f64,
     /// Menge nach VOB/C aus dem Raumbuch (mm², bei der Sockelleiste mm).
     pub menge: f64,
+    /// Kostengruppe nach DIN 276 wie im Mengenblatt ([`crate::mengen`]).
+    pub kg: u16,
     /// Körper mit Baustoffstempel; `None`, wo das Raumbuch keinen baut
     /// (Laibungen als eigene Fläche, Schichten ohne Dicke, Fliesen an
     /// Laibungen).
@@ -212,6 +215,15 @@ fn ausbauflaechen(
     aus: &RaumAusbau,
 ) -> Vec<AusbauDaten> {
     let kanten: Vec<&Kante> = roh.kanten().collect();
+    let unten = traeger(model, platten, roh, &kanten, Flaeche::Boden)
+        .and_then(|id| model.element(id))
+        .map(|e| e.category);
+    let kg = |flaeche: Flaeche, typ: LayerSetId, schicht: usize| {
+        let l = model
+            .layer_set(typ)
+            .and_then(|t| t.layers.get(schicht).copied());
+        kostengruppe(model, unten, &kanten, flaeche, l)
+    };
     let mut out: Vec<AusbauDaten> = Vec::new();
     let eintrag = |out: &mut Vec<AusbauDaten>, flaeche: Flaeche, typ: LayerSetId| -> usize {
         if let Some(i) = out
@@ -243,6 +255,7 @@ fn ausbauflaechen(
                 schicht,
                 dicke: z.dicke,
                 menge: z.menge(),
+                kg: kg(z.flaeche, typ, schicht),
                 koerper: None,
             }),
         }
@@ -263,6 +276,7 @@ fn ausbauflaechen(
                 schicht: k.schicht,
                 dicke,
                 menge: 0.0,
+                kg: kg(k.flaeche, k.typ, k.schicht),
                 koerper: Some(k.solid),
             }),
         }
