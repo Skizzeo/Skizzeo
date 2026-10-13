@@ -40,7 +40,7 @@ const KETTE_KEYS: [&str; 4] = [
 
 pub(super) fn write(m: &Model, out: &mut String) {
     let b = m.bemassung();
-    if let Some(l) = stil_line(&b.stil) {
+    if let Some(l) = stil_line_in("bemassung", "project", &b.stil, b.bezug_genannt) {
         l.finish(out);
     }
     for ((g, seite, art), v) in &b.versatz {
@@ -67,17 +67,12 @@ pub(super) fn write(m: &Model, out: &mut String) {
     }
 }
 
-/// Zeile mit den Abweichungen vom Werksstil; `None` ohne Abweichung.
-fn stil_line(s: &Stil) -> Option<Line> {
-    stil_line_in("bemassung", "project", s)
-}
-
 /// Der Stil als Firmenstandard des Arbeitsplatzes (`einstellungen.txt`):
 /// `[massstil] key=firma …` mit den Abweichungen vom Werk; leer ohne
 /// Abweichung.
 pub fn firmenstil_text(s: &Stil) -> String {
     let mut out = String::new();
-    if let Some(l) = stil_line_in("massstil", "firma", s) {
+    if let Some(l) = stil_line_in("massstil", "firma", s, false) {
         l.finish(&mut out);
     }
     out
@@ -90,9 +85,11 @@ pub fn firmenstil_lesen(zeile: &str) -> Option<Stil> {
     (r.section == "massstil").then(|| read_stil(&r).0)
 }
 
-fn stil_line_in(section: &str, key: &str, s: &Stil) -> Option<Line> {
+/// Zeile mit den Abweichungen vom Werksstil; `None` ohne Abweichung.
+/// `bezug` steht auch, wenn er dem Werk gleicht, sobald `bezug_genannt`.
+fn stil_line_in(section: &str, key: &str, s: &Stil, bezug_genannt: bool) -> Option<Line> {
     let w = Stil::werk();
-    if *s == w {
+    if *s == w && !bezug_genannt {
         return None;
     }
     let mut l = Line::new(section).word("key", key);
@@ -113,7 +110,7 @@ fn stil_line_in(section: &str, key: &str, s: &Stil) -> Option<Line> {
     if s.rundung != w.rundung {
         l = l.num("rundung", s.rundung);
     }
-    if s.bezug != w.bezug {
+    if s.bezug != w.bezug || bezug_genannt {
         l = l.word("bezug", s.bezug.word());
     }
     for (k, key) in Kettenart::ALL.iter().zip(KETTE_KEYS) {
@@ -164,6 +161,7 @@ pub(super) fn read<'a>(
             continue;
         }
         let (stil, falsch) = read_stil(r);
+        b.bezug_genannt = r.opt("bezug").is_some() && !falsch.iter().any(|k| k == "bezug");
         b.stil = stil;
         if !falsch.is_empty() {
             hints.push(format!(
@@ -364,6 +362,37 @@ mod tests {
         assert_eq!(back.model.mass_sicht(1), (true, true));
         assert_eq!(back.model.mass_sicht(0), (false, false));
         assert_eq!(write(&back.model), neu);
+    }
+
+    /// Werk ist das ganze Wandpaket (Jörn 13.10.): Ein neues Projekt
+    /// schreibt keinen `bezug`; eine Datei ohne Angabe zeigt das Wandpaket
+    /// und bleibt bytegleich, ebenso eine mit `bezug=wand` (aus der Zeit vor
+    /// dem Wandpaket, Review W42) und eine mit `bezug=rohbau`.
+    #[test]
+    fn bezug_im_rundlauf() {
+        use crate::bemassung::Aussenbezug;
+        let m = house();
+        let alt = write(&m);
+        assert!(!alt.contains("bezug="), "neu ohne bezug");
+        let l = load(&alt);
+        assert_eq!(l.model.massstil().bezug, Aussenbezug::Wand);
+        assert_eq!(write(&l.model), alt);
+        for (zeile, bezug) in [
+            ("[bemassung] key=project bezug=wand", Aussenbezug::Wand),
+            (
+                "[bemassung] key=project symbol=punkt bezug=wand",
+                Aussenbezug::Wand,
+            ),
+            ("[bemassung] key=project bezug=rohbau", Aussenbezug::Rohbau),
+        ] {
+            let text = alt.replacen("[storey]", &format!("{zeile}\n[storey]"), 1);
+            let l = load(&text);
+            assert!(l.hints.is_empty(), "{zeile}: {:?}", l.hints);
+            assert_eq!(l.model.massstil().bezug, bezug, "{zeile}");
+            let w = write(&l.model);
+            assert!(w.lines().any(|z| z == zeile), "{zeile}: {w}");
+            assert_eq!(w, write(&load(&w).model), "{zeile}");
+        }
     }
 
     /// Unlesbares bleibt roh mit Hinweis, der Rundlauf bleibt bytegleich.

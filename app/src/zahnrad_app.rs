@@ -273,16 +273,18 @@ impl App {
 
     /// Zeiger über den Zahnrädern: Textcursor über dem Wertfeld, sonst die
     /// Hand über einem Knopf; `None` daneben.
+    /// Dazu die Hand über Maßzahlen und Maßlinien ([`crate::wall_edit::mass_edit`]).
     pub(crate) fn zahnrad_cursor(&self) -> Option<sk_platform::Cursor> {
         match self.zahnrad.schnitt.hover {
             Some(grundriss_schnitt::Teil::Wert) => Some(sk_platform::Cursor::IBeam),
             Some(_) => Some(sk_platform::Cursor::Hand),
             None => (self.zahnrad.schatten.hover.is_some() || self.zahnrad.sicht.hover.is_some())
-                .then_some(sk_platform::Cursor::Hand),
+                .then_some(sk_platform::Cursor::Hand)
+                .or_else(|| self.edit.masse.cursor()),
         }
     }
 
-    /// Tooltip an den Zahnrädern.
+    /// Tooltip an den Zahnrädern und an den Maßketten.
     pub(crate) fn zahnrad_tip(&self) -> Option<String> {
         match (self.zahnrad.schnitt.hover, self.zahnrad.sicht.hover) {
             (Some(grundriss_schnitt::Teil::Zahnrad), _) => {
@@ -309,7 +311,8 @@ impl App {
             {
                 Some(ansicht_schatten::OHNE_NORD.into())
             }
-            _ => None,
+            // Maßzahl oder Maßlinie unter der Maus
+            _ => self.edit.masse.tip().map(String::from),
         }
     }
 
