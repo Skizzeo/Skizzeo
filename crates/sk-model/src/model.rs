@@ -270,6 +270,10 @@ pub struct Model {
     pub(crate) ext_raw: Vec<String>,
     /// Raumvorlagen des Raumkatalogs (Raumbuch RB2).
     space_types: Vec<raumvorlage::SpaceType>,
+    /// Stil und Versätze der Maßketten ([`crate::bemassung`]).
+    bemassung: crate::bemassung::Bemassung,
+    /// Bemaßung je Ansicht am Zahnrad; Ansichtszustand.
+    mass_sicht: crate::bemassung::MassSicht,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -340,6 +344,10 @@ mod geschossbaender;
 
 #[path = "gruendung.rs"]
 mod gruendung;
+
+#[path = "bemassung_model.rs"]
+mod bemassung_model;
+pub use bemassung_model::FLOOR_COVER;
 
 #[path = "oeffnung_model.rs"]
 mod oeffnung_model;
@@ -792,6 +800,8 @@ impl Model {
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
             space_types: Vec::new(),
+            bemassung: Default::default(),
+            mass_sicht: Default::default(),
         }
     }
 
@@ -873,6 +883,8 @@ impl Model {
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
             space_types: Vec::new(),
+            bemassung: Default::default(),
+            mass_sicht: Default::default(),
         };
         m.joins = m.detect_all();
         m
@@ -2103,6 +2115,7 @@ impl Model {
         // Obergeschosse: überzählige der Vorlage weg, fehlende obendrauf
         while levels.len() > storeys + 1 {
             if let Some(top) = levels.pop() {
+                self.massversatz_weg(top);
                 note!(self, Storey, self.storeys, top);
                 self.storeys.remove(top);
             }
@@ -3301,6 +3314,7 @@ impl Model {
                 *new = self.location;
                 foot[1] = self.north_foot;
             }
+            Change::Bemassung { new, .. } => **new = self.bemassung.clone(),
         }
     }
 
@@ -3346,11 +3360,15 @@ impl Model {
             }
             Change::LayerSet { id, old, new } => {
                 m.layer_sets.set(*id, pick(dir, old, new));
-                touched.library = true;
+                // Ein neuer oder entfernter Aufbau trägt keine Wand, die nicht
+                // selbst im Schritt steht (Ausbautypen mit dem Raum, RB3):
+                // Rückgängig rechnet dann nur die Züge des Schritts
+                touched.library |= old.is_some() && new.is_some();
             }
             Change::Material { id, old, new } => {
-                // Nur Darstellungsverweise geändert: allein die Zeichentabelle
-                if bim_equal(old.as_ref(), new.as_ref()) {
+                // Nur Darstellungsverweise geändert: allein die Zeichentabelle;
+                // ebenso ein neuer oder entfernter Baustoff (wie beim Aufbau)
+                if old.is_none() || new.is_none() || bim_equal(old.as_ref(), new.as_ref()) {
                     touched.attr = true;
                 } else {
                     touched.library = true;
@@ -3386,10 +3404,8 @@ impl Model {
             }
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
             Change::Trades { old, new } => m.trades = pick(dir, old, new),
-            Change::SpaceTypes { old, new } => {
-                m.space_types = pick(dir, old, new);
-                touched.library = true;
-            }
+            // Raumvorlagen tragen keine Wand
+            Change::SpaceTypes { old, new } => m.space_types = pick(dir, old, new),
             Change::ForeignRecords { old, new } => m.foreign.records = pick(dir, old, new),
             Change::ExtDefs { old, new } => m.ext_defs = pick(dir, old, new),
             Change::Ext {
@@ -3420,6 +3436,7 @@ impl Model {
                     Direction::Redo => None,
                 };
             }
+            Change::Bemassung { old, new } => m.bemassung = *pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {
@@ -3881,6 +3898,17 @@ impl Model {
                 let (p, q) = (r.points[k], r.points[(k + 1) % n]);
                 if (q - p).length() < 1.0 {
                     out.push(format!("Wandzug {id:?}: Segment {} ohne Länge", k + 1));
+                }
+            }
+            // Keine Gehrung kippt einen Körper: dieselbe Regel wie beim
+            // Ziehen des Wandendes (Review #87 B5), hier an den Flächen nach
+            // dem Zuschnitt (#98), für gezeichnete und geladene Züge
+            if let Some(c) = self.chain(id) {
+                for k in c.koerper_kippt() {
+                    out.push(format!(
+                        "Wandzug {id:?}: Gehrung an Segment {} gekippt",
+                        k + 1
+                    ));
                 }
             }
             if let Some(lower) = self.run_below(id).and_then(|b| self.run(b)) {

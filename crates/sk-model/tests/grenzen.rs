@@ -24,13 +24,13 @@ const KLEIN: [&str; 3] = [
 /// eigenes Modul daneben (Pfadfinderregel). Ist eine Datei unter der Grenze,
 /// kommt sie von der Liste, ist sie kleiner geworden, wird die Zahl gesenkt.
 const UEBER: [(&str, usize); 2] = [
-    ("app/src/main.rs", 8_932),
+    ("app/src/main.rs", 8_723),
     ("app/src/kosten_view.rs", 3_027),
 ];
 
 /// Die Kanten aus architektur.md §2: jede Crate mit den eigenen Crates, die
 /// sie nennt. Eine neue Kante kommt nur zusammen mit architektur.md hierher.
-const KANTEN: [(&str, &[&str]); 11] = [
+const KANTEN: [(&str, &[&str]); 12] = [
     ("sk-math", &[]),
     ("sk-szb", &[]),
     ("sk-paint", &[]),
@@ -40,6 +40,7 @@ const KANTEN: [(&str, &[&str]); 11] = [
     ("sk-model", &["sk-math", "sk-szb"]),
     ("sk-cost", &["sk-math", "sk-model", "sk-szb"]),
     ("sk-ifc", &["sk-math", "sk-model"]),
+    ("sk-plan", &["sk-math", "sk-model", "sk-paint"]),
     ("sk-raum", &["sk-math", "sk-model"]),
     (
         "skizzeo",
@@ -49,6 +50,7 @@ const KANTEN: [(&str, &[&str]); 11] = [
             "sk-math",
             "sk-model",
             "sk-paint",
+            "sk-plan",
             "sk-platform",
             "sk-raum",
             "sk-render",

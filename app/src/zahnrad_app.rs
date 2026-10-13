@@ -2,14 +2,15 @@
 //! „Schatten“ in den vier Ansichten (S7, [`ansicht_schatten`]),
 //! „Schnitthöhe“ im Grundriss ([`grundriss_schnitt`]) und die Sichtbarkeit
 //! in 3D und Schnitt ([`sicht_zahnrad`]); jedes Feld trägt das Häkchen
-//! „Dachentwässerung ausblenden“ seiner Ansicht (Jörn 12.10.). Hier die
+//! „Dachentwässerung ausblenden“ seiner Ansicht (Jörn 12.10.), Grundriss
+//! und 3D dazu die Zeile „Bemaßung“ ([`crate::bemassung`]). Hier die
 //! Verdrahtung in der App: Wahl, Lage, Ereignisse, Tasten, Tooltip und
 //! Bilder.
 
 use crate::ui::{Panel, ViewKind};
 use crate::{
-    ansicht_schatten, grundriss_schnitt, sicht_zahnrad, App, OVERLAY_ANSICHT, OVERLAY_SCHNITT,
-    SCHATTEN_FEHLT,
+    ansicht_schatten, bemassung, grundriss_schnitt, sicht_zahnrad, App, OVERLAY_ANSICHT,
+    OVERLAY_SCHNITT, SCHATTEN_FEHLT,
 };
 use sk_platform::{Event, Key, Modifiers};
 
@@ -134,6 +135,7 @@ impl App {
         let out = self.zahnrad.schnitt.handle(ev, &lage, mm, eigen);
         self.schnitt_anwenden(out);
         self.entw_anwenden(out.haken, out.alle);
+        self.mass_anwenden(out.ketten, out.punkte);
         out.consumed
     }
 
@@ -148,11 +150,24 @@ impl App {
             return false;
         }
         let rechts = self.ui.rect(Panel::Views, self.w, self.top()).x;
-        let lage = sicht_zahnrad::lage(rechts, sc as f32, &self.theme);
+        let mass = bemassung::ansicht(self.ui.view);
+        let lage = sicht_zahnrad::lage(rechts, sc as f32, &self.theme, mass);
         let out = self.zahnrad.sicht.handle(ev, &lage);
         self.redraw |= out.redraw;
         self.entw_anwenden(out.haken, out.alle);
+        self.mass_anwenden(out.ketten, out.punkte);
         out.consumed
+    }
+
+    /// Häkchen „Maßketten zeigen“ bzw. „Maßbezugspunkte zeigen“ der
+    /// gezeigten Ansicht umschalten (Ansichtszustand ohne Schritt).
+    fn mass_anwenden(&mut self, ketten: bool, punkte: bool) {
+        let v = self.ui.view;
+        if (ketten || punkte) && bemassung::ansicht(v) {
+            let (k, p) = self.scene.mass_sicht(v);
+            self.scene.set_mass_sicht(v, k ^ ketten, p ^ punkte);
+            self.redraw = true;
+        }
     }
 
     /// Häkchen „Dachentwässerung ausblenden“ der gezeigten Ansicht
@@ -287,6 +302,7 @@ impl App {
             an: self.scene.drain_hidden(self.ui.view),
             offen: self.zahnrad.sicht.offen,
             hover: self.zahnrad.sicht.hover,
+            mass: bemassung::ansicht(self.ui.view).then(|| self.scene.mass_sicht(self.ui.view)),
             rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
             scale: scale.to_bits(),
         });
@@ -319,6 +335,7 @@ impl App {
             eingabe: self.zahnrad.schnitt.eingabe.clone(),
             falsch: self.zahnrad.schnitt.falsch,
             entw: self.scene.drain_hidden(ViewKind::Plan),
+            mass: self.scene.mass_sicht(ViewKind::Plan),
             rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
             scale: scale.to_bits(),
         });

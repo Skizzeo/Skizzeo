@@ -460,6 +460,11 @@ impl Catalog {
             .is_some_and(|g| self.work.space_type(g).is_some())
     }
 
+    /// Räume, die die gewählte Vorlage nutzen; mit ihnen bleibt sie.
+    pub(super) fn room_users(&self) -> usize {
+        self.room_sel.map_or(0, |g| self.work.space_type_users(g))
+    }
+
     fn free_room_name(&self, name: &str) -> String {
         let taken = |n: &str| self.raum_eintraege().iter().any(|e| e.1 == n);
         if !taken(name) {
