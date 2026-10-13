@@ -49,19 +49,22 @@ fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
     (fassung, s.0, s.1.map(bits), s.2, s.3)
 }
 
+/// Neue Platten, ihre Eingaben, das Gelände und ihr Netz zur Sicht beim
+/// Start.
+type Neues = (
+    Arc<PlateInput>,
+    Vec<TerrainPlate>,
+    Option<Gelaende>,
+    MeshData,
+);
+
 /// Was der Faden zurückgibt.
 enum Ergebnis {
     /// Die Eingaben sind dieselben wie die der stehenden Platten (etwa
     /// nach Esc oder einer Änderung, die die Platte nicht berührt).
     Gleich,
-    /// Neue Platten, ihre Eingaben, das Gelände und ihr Netz zur Sicht
-    /// beim Start.
-    Neu(
-        Arc<PlateInput>,
-        Vec<TerrainPlate>,
-        Option<Gelaende>,
-        MeshData,
-    ),
+    /// Neue Platten (in einer Kiste, das Gelände ist groß).
+    Neu(Box<Neues>),
 }
 
 /// Ein Nachzug im eigenen Faden: Modellstand und Sicht beim Start.
@@ -177,7 +180,7 @@ impl Platte {
             } else {
                 let p = e.build();
                 let n = netz_der_sicht(&p, g.as_ref(), sicht);
-                Ergebnis::Neu(Arc::new(e), p, g, n)
+                Ergebnis::Neu(Box::new((Arc::new(e), p, g, n)))
             };
             // fällt weg, wenn die Platte inzwischen neu begonnen hat
             let _ = tx.send(r);
@@ -214,9 +217,10 @@ impl Platte {
     /// derselbe Stand je Bild neu begonnen wird.
     fn einsetzen(&mut self, job: Job, r: Result<Ergebnis, ()>) -> bool {
         self.stand = Some(job.rev);
-        let Ok(Ergebnis::Neu(e, p, g, n)) = r else {
+        let Ok(Ergebnis::Neu(neu)) = r else {
             return true;
         };
+        let (e, p, g, n) = *neu;
         self.fassung += 1;
         self.platten = p;
         self.eingabe = Some(e);
