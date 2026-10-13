@@ -184,12 +184,16 @@ fn wand_unter(
     let p = vec3(p.x, p.y, 0.0);
     let mut best: Option<(f64, (OuterFace, f64, bool, f64))> = None;
     for (id, run) in m.runs().iter() {
+        // Das Bauteil erst bei Zügen nahe `p` (Review #140, Zugschritt)
+        if run.storey != st || !nah(&run.points, p, tol + DICKE) {
+            continue;
+        }
         let passt = run
             .segments
             .first()
             .and_then(|e| m.element(*e))
             .is_some_and(|e| art(e.category));
-        if run.storey != st || !passt || !nah(&run.points, p, tol + DICKE) {
+        if !passt {
             continue;
         }
         // Ein Körper je Zug für alle Segmente (Review #99 B1)

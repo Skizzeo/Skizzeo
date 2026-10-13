@@ -70,15 +70,16 @@ pub(crate) fn flaeche_bei(
 ) -> Option<(OuterFace, f64, bool)> {
     let p = flat(p);
     for (id, run) in m.runs().iter() {
+        // Das Bauteil erst bei Zügen nahe `p` (Review #140, Zugschritt)
+        if run.storey != st || !nah(&run.points, p, DICKE) {
+            continue;
+        }
         let cat = run
             .segments
             .first()
             .and_then(|e| m.element(*e))
             .map(|e| e.category);
-        if run.storey != st
-            || !cat.is_some_and(Category::takes_openings)
-            || !nah(&run.points, p, DICKE)
-        {
+        if !cat.is_some_and(Category::takes_openings) {
             continue;
         }
         let Some(c) = k(id) else {

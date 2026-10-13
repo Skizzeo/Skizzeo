@@ -574,30 +574,32 @@ impl Model {
             (lo.0, lo.1, hi.0, hi.1) = (lo.0.min(p.x), lo.1.min(p.y), hi.0.max(p.x), hi.1.max(p.y));
         }
         // Im lesenden Gang nur die Züge der Felder um den Pfad
-        let kandidaten: Box<dyn Iterator<Item = RunId>> = match self.verz() {
+        let kandidaten: Box<dyn Iterator<Item = (RunId, &WallRun)>> = match self.verz() {
             Some(v) => {
                 let r = RUN_REACH;
                 let (a, b) = (vec3(lo.0 - r, lo.1 - r, 0.0), vec3(hi.0 + r, hi.1 + r, 0.0));
-                Box::new(v.alle_zuege_bei(a, b).into_iter())
+                let ids = v.alle_zuege_bei(a, b);
+                Box::new(ids.into_iter().filter_map(|r| Some((r, self.run(r)?))))
             }
-            None => Box::new(self.runs.ids()),
+            None => Box::new(self.runs.iter()),
         };
+        // Erst Rechteck und Strecken des Zugs, dann die Art seiner Wände:
+        // Ein Blick in das erste Bauteil kostet je Zug mehr als das Rechteck,
+        // ohne Verzeichnis bei jedem Zug des Modells (Review #140, Zugschritt)
         kandidaten
-            .filter(|&r| {
-                self.category_of(r).is_some_and(Category::takes_openings)
-                    && self.run(r).is_some_and(|run| {
-                        let (mut a, mut b) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
-                        for p in &run.points {
-                            (a.0, a.1, b.0, b.1) =
-                                (a.0.min(p.x), a.1.min(p.y), b.0.max(p.x), b.1.max(p.y));
-                        }
-                        a.0 <= hi.0 + RUN_REACH
-                            && b.0 >= lo.0 - RUN_REACH
-                            && a.1 <= hi.1 + RUN_REACH
-                            && b.1 >= lo.1 - RUN_REACH
-                            && nah_am_pfad(run, &o.path)
-                    })
+            .filter(|(r, run)| {
+                let (mut a, mut b) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+                for p in &run.points {
+                    (a.0, a.1, b.0, b.1) = (a.0.min(p.x), a.1.min(p.y), b.0.max(p.x), b.1.max(p.y));
+                }
+                a.0 <= hi.0 + RUN_REACH
+                    && b.0 >= lo.0 - RUN_REACH
+                    && a.1 <= hi.1 + RUN_REACH
+                    && b.1 >= lo.1 - RUN_REACH
+                    && nah_am_pfad(run, &o.path)
+                    && self.category_of(*r).is_some_and(Category::takes_openings)
             })
+            .map(|(r, _)| r)
             .collect()
     }
 }
