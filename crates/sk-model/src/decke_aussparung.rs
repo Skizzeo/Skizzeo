@@ -22,7 +22,7 @@ use sk_math::{polygon, vec3, Vec3};
 const EPS: f64 = 0.5;
 /// So viele Kerbtiefen darf die innere Ecke höchstens vom Eckpunkt des
 /// Umrisses weg liegen (spitze Ecken: etwa 29°).
-const MAX_ECKE: f64 = 4.0;
+pub(crate) const MAX_ECKE: f64 = 4.0;
 
 /// Eine Kerbe im Umriss der Decke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -295,6 +295,59 @@ mod tests {
         assert!(weit <= 1500.0, "{neu:?}");
         assert!(polygon::is_simple(&neu));
         assert!(polygon::area(&neu) <= polygon::area(&o) + 1e-6);
+    }
+
+    /// Geometrie zu #143: Ein Eckfenster über eine spitze Ecke (45°) spart
+    /// die Decke aus. Der Umriss der Decke reicht dort um Dicke / tan(22,5°)
+    /// über den Eckpunkt der Bezugslinie hinaus, mehr als eine Wanddicke.
+    #[test]
+    fn eckfenster_ueber_spitze_ecke() {
+        use crate::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+        use crate::solid::right_of;
+        use crate::Model;
+        let a = 45f64.to_radians();
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(15000.0, 0.0, 0.0),
+            vec3(15000.0, 12000.0 * a.sin() + 4000.0, 0.0),
+            vec3(12000.0 * a.cos(), 12000.0 * a.sin(), 0.0),
+        ];
+        let mut m = Model::with_seed(415);
+        let b = m.add_building(2);
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        let (st, st_og) = (m.run(eg).unwrap().storey, m.run(og).unwrap().storey);
+        let c = m.chain(eg).unwrap();
+        let (lp, _, dirs) = c.layout().unwrap();
+        let n = lp.len();
+        let k = (0..n)
+            .min_by(|&i, &j| lp[i].length().total_cmp(&lp[j].length()))
+            .unwrap();
+        let v = (k + n - 1) % n;
+        let lv = (lp[k] - lp[v]).length();
+        let auf = |s: usize, u: f64| lp[s] + dirs[s] * u + right_of(dirs[s]) * c.outer_offset();
+        let ecke = *c
+            .face_corners(c.outer_offset())
+            .iter()
+            .min_by(|p, q| p.length().total_cmp(&q.length()))
+            .unwrap();
+        let id = m
+            .add_opening(Opening {
+                kind: OpeningKind::Window,
+                path: vec![auf(v, lv - 900.0), ecke, auf(k, 900.0)],
+                bottom: HeightRef::Line(st, HeightLine::Sill),
+                top: HeightRef::Line(st_og, HeightLine::Lintel),
+                reveal: None,
+                install: Default::default(),
+                swing: None,
+                lock: Default::default(),
+            })
+            .unwrap();
+        let d = m.floor(eg).unwrap().unwrap();
+        assert_eq!(d.aussparungen.len(), 2, "{:?}", d.aussparungen);
+        assert!(d.aussparungen.iter().all(|x| x.opening == Some(id)));
+        assert!(polygon::is_simple(&d.outline));
+        assert!(m.spart_aus(eg, id));
     }
 
     /// Zu tief: der Umriss würde sich kreuzen, er bleibt.

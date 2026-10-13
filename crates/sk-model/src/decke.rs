@@ -306,7 +306,10 @@ fn kerben(
     };
     {
         let (aussen, innen) = (chain.outer_offset(), chain.inner_offset());
-        let reach = chain.thickness();
+        // Über eine spitze Ecke reicht der Umriss um Dicke / tan(θ/2) über
+        // den Eckpunkt hinaus; bis zur spitzesten Ecke, an der sich Kerben
+        // noch treffen (MAX_ECKE), soll die Kerbe dort ankommen
+        let reach = chain.thickness() * crate::decke_aussparung::MAX_ECKE;
         let n = umriss.len();
         let mut aus = Vec::new();
         for h in loecher {
