@@ -10,7 +10,9 @@
 //! schließt danach das Feld.
 //!
 //! Darunter die Schnelloption „Dachentwässerung ausblenden“ des Grundrisses
-//! mit „Auf alle Ansichten übertragen“ ([`crate::sicht_zahnrad`]).
+//! mit „Auf alle Ansichten übertragen“ ([`crate::sicht_zahnrad`]), zuletzt
+//! die Zeile „Bemaßung“ mit „Maßketten zeigen“ und „Maßbezugspunkte zeigen“
+//! (Konzept `bemassung/konzept.md` §7).
 
 use sk_model::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT};
 use sk_paint::Canvas;
@@ -65,6 +67,9 @@ pub enum Teil {
     /// übertragen“ ([`crate::sicht_zahnrad`]).
     Haken,
     Alle,
+    /// Häkchen „Maßketten zeigen“ und „Maßbezugspunkte zeigen“.
+    Ketten,
+    Punkte,
 }
 
 /// Lage von Zahnrad und Feld in der Ansicht (Pixel).
@@ -81,6 +86,10 @@ pub struct Lage {
     pub sicht: Rect,
     pub haken: Rect,
     pub alle: Rect,
+    /// Zeile „Bemaßung“: Name und zwei Häkchen.
+    pub mass: Rect,
+    pub ketten: Rect,
+    pub punkte: Rect,
 }
 
 /// Zahnrad oben links neben dem Paneel „Ansichten“ (`rechts`: dessen linker
@@ -104,9 +113,10 @@ pub fn lage(rechts: f32, s: f32, t: &Theme) -> Lage {
     let kx = x0 + PAD + NAME_W;
     let ys = y + 2.0 * h + GAP * 1.5;
     let sw = FELD_W + GAP + VORGABE_W;
+    let ym = ys + 2.0 * h + GAP * 2.5;
     Lage {
         zahnrad: r(x1 - RAD, m, RAD, RAD),
-        feld: r(x0, y0, BREITE, 2.0 * PAD + 4.0 * h + GAP * 2.5),
+        feld: r(x0, y0, BREITE, 2.0 * PAD + 6.0 * h + GAP * 5.0),
         name: r(x0 + PAD, y, NAME_W, h),
         wert: r(kx, y, FELD_W, h),
         vorgabe: r(kx + FELD_W + GAP, y, VORGABE_W, h),
@@ -114,6 +124,9 @@ pub fn lage(rechts: f32, s: f32, t: &Theme) -> Lage {
         sicht: r(x0 + PAD, ys, NAME_W, h),
         haken: r(kx, ys, sw, h),
         alle: r(kx, ys + h + GAP, sw, h),
+        mass: r(x0 + PAD, ym, NAME_W, h),
+        ketten: r(kx, ym, sw, h),
+        punkte: r(kx, ym + h + GAP, sw, h),
     }
 }
 
@@ -125,6 +138,7 @@ impl Lage {
         if offen {
             teile.push((Teil::Wert, self.wert));
             teile.extend([(Teil::Haken, self.haken), (Teil::Alle, self.alle)]);
+            teile.extend([(Teil::Ketten, self.ketten), (Teil::Punkte, self.punkte)]);
             if eigen {
                 teile.push((Teil::Vorgabe, self.vorgabe));
             }
@@ -148,6 +162,8 @@ pub struct Bild {
     pub falsch: bool,
     /// Der Grundriss blendet die Dachentwässerung aus.
     pub entw: bool,
+    /// Maßketten und Maßbezugspunkte zeigen.
+    pub mass: (bool, bool),
     /// Linker Rand des Paneels „Ansichten“ (Bits) und Skalierung (Bits).
     pub rechts: u32,
     pub scale: u32,
@@ -227,6 +243,30 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
     };
     let alle = crate::sicht_zahnrad::ALLE;
     widgets::button(&mut c, fonts, ab(l.alle), alle, st, s, t);
+    use crate::sicht_zahnrad::{haken_mit, KETTEN, MASS, PUNKTE};
+    zeile(&mut c, MASS, l.mass, t.size.font * s, t.ui.text);
+    let (ketten, punkte) = b.mass;
+    let h = |teil| b.hover == Some(teil);
+    haken_mit(
+        &mut c,
+        fonts,
+        ab(l.ketten),
+        KETTEN,
+        ketten,
+        h(Teil::Ketten),
+        s,
+        t,
+    );
+    haken_mit(
+        &mut c,
+        fonts,
+        ab(l.punkte),
+        PUNKTE,
+        punkte,
+        h(Teil::Punkte),
+        s,
+        t,
+    );
     (c, dx as i32, dy as i32)
 }
 
@@ -250,6 +290,9 @@ pub struct Ausgang {
     /// Ansichten übertragen“.
     pub haken: bool,
     pub alle: bool,
+    /// Klick auf „Maßketten zeigen“ bzw. „Maßbezugspunkte zeigen“.
+    pub ketten: bool,
+    pub punkte: bool,
 }
 
 impl Schalter {
@@ -295,11 +338,13 @@ impl Schalter {
                         self.falsch = false;
                         out.neu = Some(PLAN_CUT);
                     }
-                    Some(t @ (Teil::Haken | Teil::Alle)) => {
+                    Some(t @ (Teil::Haken | Teil::Alle | Teil::Ketten | Teil::Punkte)) => {
                         self.eingabe = None;
                         self.falsch = false;
                         out.haken = t == Teil::Haken;
                         out.alle = t == Teil::Alle;
+                        out.ketten = t == Teil::Ketten;
+                        out.punkte = t == Teil::Punkte;
                     }
                     None if out.consumed => {
                         self.eingabe = None;
@@ -473,6 +518,14 @@ mod tests {
         assert!(h.consumed && h.haken && !h.alle && s.eingabe.is_none());
         let a = s.handle(&mitte(l.alle), &l, 1500.0, false);
         assert!(a.consumed && a.alle && !a.haken && a.neu.is_none());
+        // Bemaßung (Konzept §7): die Zeile unter der Sichtbarkeit, im Feld
+        for q in [l.mass, l.ketten, l.punkte] {
+            assert!(q.y > l.alle.y + l.alle.h && q.y + q.h <= l.feld.y + l.feld.h);
+        }
+        let k = s.handle(&mitte(l.ketten), &l, 1500.0, false);
+        assert!(k.consumed && k.ketten && !k.punkte && !k.haken);
+        let p = s.handle(&mitte(l.punkte), &l, 1500.0, false);
+        assert!(p.consumed && p.punkte && !p.ketten && !p.alle);
         let d = s.handle(&klick(5.0, 400.0), &l, 1500.0, false);
         assert!(!d.consumed && !s.offen, "Klick daneben");
     }

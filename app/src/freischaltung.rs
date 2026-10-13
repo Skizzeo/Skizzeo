@@ -310,6 +310,7 @@ impl Eingang for Topic {
             | Topic::SettingsSurfaces
             | Topic::SettingsUi
             | Topic::SettingsVorgaben
+            | Topic::Bemassung
             | Topic::Catalog
             | Topic::Materials
             | Topic::Patterns

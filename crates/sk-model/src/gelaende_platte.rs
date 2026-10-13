@@ -92,6 +92,7 @@ impl Model {
         }
         self.note_project();
         self.project.terrain_plate = s;
+        self.project.terrain_plate_raw = None;
         self.touch();
         true
     }
@@ -257,8 +258,29 @@ fn streifen(
     for h in holes {
         ys.extend(h.iter().map(|p| p.y));
     }
-    for i in 0..kanten.len() {
-        for j in i + 1..kanten.len() {
+    // Schnitte nur zwischen Kanten, deren Rahmen sich überdecken: nach
+    // linkem Rand sortiert, je Kante die folgenden bis zu ihrem rechten Rand
+    let rahmen: Vec<[f64; 4]> = kanten
+        .iter()
+        .map(|(k, _)| {
+            [
+                k.a.x.min(k.b.x),
+                k.a.x.max(k.b.x),
+                k.a.y.min(k.b.y),
+                k.a.y.max(k.b.y),
+            ]
+        })
+        .collect();
+    let mut nach_x: Vec<usize> = (0..kanten.len()).collect();
+    nach_x.sort_by(|&i, &j| rahmen[i][0].total_cmp(&rahmen[j][0]));
+    for (o, &i) in nach_x.iter().enumerate() {
+        for &j in &nach_x[o + 1..] {
+            if rahmen[j][0] > rahmen[i][1] + EPS {
+                break;
+            }
+            if rahmen[j][2] > rahmen[i][3] + EPS || rahmen[i][2] > rahmen[j][3] + EPS {
+                continue;
+            }
             if let Some(y) = schnitt_y(&kanten[i].0, &kanten[j].0) {
                 ys.push(y);
             }
@@ -267,12 +289,25 @@ fn streifen(
     ys.retain(|y| y.is_finite());
     ys.sort_by(f64::total_cmp);
     ys.dedup_by(|a, b| (*a - *b).abs() < EPS);
+    // aktive Kanten: von unten nach oben aufgenommen, oben entlassen
+    let mut nach_y: Vec<usize> = (0..kanten.len()).collect();
+    nach_y.sort_by(|&i, &j| rahmen[i][2].total_cmp(&rahmen[j][2]));
+    let mut neu = nach_y.into_iter().peekable();
+    let mut aktiv: Vec<usize> = Vec::new();
     // je Streifen die Intervalle jeder Gruppe; `vorher` merkt die Intervalle
     // des Streifens darunter (für die waagerechten Randkanten)
     let mut vorher: Vec<Vec<(Grenze, Grenze)>> = vec![Vec::new(); n];
     for w in ys.windows(2) {
         let (y0, y1) = (w[0], w[1]);
-        let jetzt = intervalle(&kanten, n, 0.5 * (y0 + y1));
+        let ym = 0.5 * (y0 + y1);
+        while let Some(&k) = neu.peek().filter(|&&k| rahmen[k][2] < ym) {
+            aktiv.push(k);
+            neu.next();
+        }
+        aktiv.retain(|&k| rahmen[k][3] > ym);
+        // in der ursprünglichen Reihenfolge (gleiche Stellen wie zuvor)
+        aktiv.sort_unstable();
+        let jetzt = intervalle(aktiv.iter().map(|&k| &kanten[k]), n, ym);
         for g in 0..n {
             waagerecht(&vorher[g], &jetzt[g], y0, &mut edges[g]);
             for (l, r) in &jetzt[g] {
@@ -332,10 +367,13 @@ fn schnitt_y(p: &Grenze, q: &Grenze) -> Option<f64> {
 /// Intervalle jeder Gruppe auf der Höhe `y` (Mitte eines Streifens): in einem
 /// Rechteck der Gruppe, in keinem Loch, in keinem Rechteck einer früheren
 /// Gruppe. Je Intervall die Grenzen links und rechts.
-fn intervalle(kanten: &[(Grenze, Art)], n: usize, y: f64) -> Vec<Vec<(Grenze, Grenze)>> {
+fn intervalle<'a>(
+    kanten: impl Iterator<Item = &'a (Grenze, Art)>,
+    n: usize,
+    y: f64,
+) -> Vec<Vec<(Grenze, Grenze)>> {
     // Treffer: x, Grenze, Art
     let mut hits: Vec<(f64, Grenze, Art)> = kanten
-        .iter()
         .filter(|(k, _)| {
             let (lo, hi) = (k.a.y.min(k.b.y), k.a.y.max(k.b.y));
             lo < y && y < hi
@@ -566,6 +604,57 @@ mod tests {
         assert_eq!((p[0].top, p[0].bottom), (-300.0, -1100.0));
         let a = p[0].area();
         assert!((a - (13.0 * 11.0 - 80.0) * 1e6).abs() < 1.0, "{a}");
+    }
+
+    /// Budget (Review W34 B2): 1000 schräg gestellte Häuser in einem
+    /// Gebäude und je Haus ein Gebäude; die Platten rechnen fast linear
+    /// (Kantenpaare nur bei sich überdeckenden Rahmen, je Streifen nur die
+    /// aktiven Kanten), jedes Haus ist ausgespart.
+    #[test]
+    fn tausend_haeuser_im_budget() {
+        for je_haus in [false, true] {
+            let mut m = Model::with_seed(5);
+            let b0 = m.add_building(1);
+            let w = 0.3_f64;
+            for i in 0..1000 {
+                let b = if je_haus && i > 0 {
+                    m.add_building(1)
+                } else {
+                    b0
+                };
+                let (ox, oy) = ((i % 32) as f64 * 15000.0, (i / 32) as f64 * 15000.0);
+                let p = |x: f64, y: f64| {
+                    vec3(
+                        ox + x * w.cos() - y * w.sin(),
+                        oy + x * w.sin() + y * w.cos(),
+                        0.0,
+                    )
+                };
+                m.build_from_polygon(
+                    b,
+                    &[
+                        p(0.0, 0.0),
+                        p(0.0, 8000.0),
+                        p(10000.0, 8000.0),
+                        p(10000.0, 0.0),
+                    ],
+                )
+                .unwrap();
+            }
+            let t = std::time::Instant::now();
+            let p = m.terrain_plates();
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            // vorher 77 ms (Review, Release); jetzt um 20 ms
+            let budget = if cfg!(debug_assertions) {
+                3000.0
+            } else {
+                200.0
+            };
+            assert!(ms < budget, "je Haus ein Gebäude {je_haus}: {ms:.1} ms");
+            let a: f64 = p.iter().map(TerrainPlate::area).sum();
+            let rand: f64 = p.iter().map(|q| rand_flaeche(&q.edges)).sum();
+            assert!((rand - a).abs() < 1e-6 * a, "{rand} {a}");
+        }
     }
 
     /// Zwei Löcher, die sich überdecken (Anbau an einem Haus): die Platte

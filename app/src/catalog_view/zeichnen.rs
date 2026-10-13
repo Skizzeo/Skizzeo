@@ -488,7 +488,7 @@ impl Catalog {
         } else if self.tab == Tab::Rooms {
             for (b, r, text) in self.list_buttons(t, w) {
                 let disabled = match b {
-                    Btn::Delete => !self.room_in_project(),
+                    Btn::Delete => !self.room_in_project() || self.room_users() > 0,
                     Btn::Duplicate => self.room_sel.is_none(),
                     _ => false,
                 };

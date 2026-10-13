@@ -1558,7 +1558,11 @@ fn auto_ansaetze(
             if menge <= 0 {
                 continue;
             }
-            if a.key.starts_with("earth.") && m.terrain().is_some() && erde_aus_mittel.is_none() {
+            // der Hinweis folgt dem Ansatz, nicht dem bloßen Aufmaß (H123-1)
+            if a.key.starts_with("earth.")
+                && a.formula.contains(sk_model::qto_earth::AUS_AUFMASS)
+                && erde_aus_mittel.is_none()
+            {
                 erde_aus_mittel = Some(ort.clone());
             }
             let (stoff, pf) = *stoffe.entry(l.guid).or_insert_with(|| {
