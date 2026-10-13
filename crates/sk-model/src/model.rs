@@ -354,6 +354,10 @@ mod anschluesse;
 #[path = "dach.rs"]
 mod dach;
 
+#[cfg(test)]
+#[path = "abgleich_tempo.rs"]
+mod abgleich_tempo;
+
 #[path = "decke.rs"]
 mod decke;
 
@@ -3263,10 +3267,13 @@ impl Model {
         if self.txn.is_some() && !self.only_swings() {
             let scope = self.sync_scope();
             let scope = scope.as_deref();
-            self.sync_edge_strips(scope);
-            self.sync_soffits_in(scope);
-            self.sync_terraces_in(scope);
-            self.sync_flat_roofs_in(scope);
+            // Was die vier Abgleiche wollen, in einem lesenden Gang: Keiner
+            // hängt an den Bauteilen, die ein anderer anlegt (Review zu #148)
+            let w = self.abgleich_lesend(scope, || self.abgleich_wunsch(scope));
+            self.sync_edge_strips_mit(scope, Some(w.streifen));
+            self.sync_soffits_mit(scope, Some(w.untersicht));
+            self.sync_terraces_mit(scope, Some(w.terrasse));
+            self.sync_flat_roofs_mit(scope, Some(w.flachdach));
             self.terrain_nhn_merken();
         }
         if let Some(id) = self.locked_change() {
@@ -4651,9 +4658,55 @@ fn room_inside(c: &WallChain) -> bool {
     !c.closed || sk_math::polygon::inset(&c.face_corners(c.outer_offset()), c.thickness()).is_ok()
 }
 
+/// Züge im Bereich, ab denen sich das [`Model::lesend`]-Verzeichnis für den
+/// Abgleich lohnt: Darunter rechnet jede Decke ohne es schneller, als es zu
+/// bauen dauert (Review L39).
+const VERZ_AB: usize = 16;
+
+/// Was die Abgleiche beim Schließen eines Schritts wollen
+/// ([`Model::abgleich_wunsch`]).
+pub(super) struct Wunsch {
+    streifen: Vec<(ElementId, ElementId)>,
+    untersicht: Vec<ElementId>,
+    terrasse: Vec<ElementId>,
+    flachdach: Vec<(ElementId, StoreyId, u16)>,
+}
+
+impl Model {
+    /// Randdämmstreifen, Untersichten, Dachterrassen und Flachdächer, die
+    /// `scope` braucht; jede Decke einmal gerechnet.
+    pub(super) fn abgleich_wunsch(&self, scope: Option<&[RunId]>) -> Wunsch {
+        let (untersicht, terrasse) = self.untersicht_und_terrasse_in(scope);
+        Wunsch {
+            streifen: self.edge_strip_pairs_in(scope),
+            untersicht,
+            terrasse,
+            flachdach: self.flat_roof_want_in(scope),
+        }
+    }
+
+    /// `f` im Abgleich über `scope`: bei vielen Zügen mit dem Verzeichnis
+    /// ([`Model::lesend`]), bei wenigen ohne.
+    pub(super) fn abgleich_lesend<R>(&self, scope: Option<&[RunId]>, f: impl FnOnce() -> R) -> R {
+        if scope.is_some_and(|s| s.len() < VERZ_AB) {
+            f()
+        } else {
+            self.lesend(f)
+        }
+    }
+}
+
 /// `run` liegt in `scope` (`None`: alles).
 fn in_scope(scope: Option<&[RunId]>, run: RunId) -> bool {
-    scope.is_none_or(|s| s.contains(&run))
+    // `scope` ist nach Platz geordnet ([`Model::sync_scope`]); so bleibt der
+    // Abgleich bei einem großen Bereich linear (Review L39)
+    scope.is_none_or(|s| {
+        let i = s.partition_point(|r| r.index() < run.index());
+        s[i..]
+            .iter()
+            .take_while(|r| r.index() == run.index())
+            .any(|r| *r == run)
+    })
 }
 
 #[cfg(test)]
