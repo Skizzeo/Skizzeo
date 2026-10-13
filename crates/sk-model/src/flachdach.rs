@@ -196,6 +196,7 @@ impl Model {
                     note!(self, Element, self.elements, id);
                     self.elements.remove(id);
                 }
+                self.massversatz_weg(fd);
                 note!(self, Storey, self.storeys, fd);
                 self.storeys.remove(fd);
                 self.touch();

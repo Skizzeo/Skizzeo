@@ -59,6 +59,18 @@ impl Scene {
         true
     }
 
+    /// Wahl am Zahnrad der Ansicht `view`: Bemaßung zeigen und
+    /// Maßbezugspunkte zeigen ([`sk_model::Model::mass_sicht`]).
+    pub fn mass_sicht(&self, view: ViewKind) -> (bool, bool) {
+        self.model.mass_sicht(platz(view))
+    }
+
+    /// Setzt die Wahl am Zahnrad der Ansicht `view`: Ansichtszustand ohne
+    /// Schritt wie die Dachentwässerung.
+    pub fn set_mass_sicht(&mut self, view: ViewKind, zeigen: bool, bezug: bool) {
+        self.model.set_mass_sicht(platz(view), zeigen, bezug);
+    }
+
     /// „Auf alle Ansichten übertragen“: die Wahl der Ansicht `view` gilt in
     /// allen sieben; `true`, wenn sich eine andere Ansicht änderte.
     pub fn drain_to_all(&mut self, view: ViewKind) -> bool {

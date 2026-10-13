@@ -14,6 +14,8 @@ pub const FERN: f64 = 2000.0;
 pub const AUSREISSER: f64 = 1.0;
 /// … und mehr als so oft die örtliche Streuung.
 pub const STREUUNG: f64 = 3.0;
+/// Höher oder tiefer als so viel (m) ist keine Geländehöhe.
+pub const MAX_HOEHE: f64 = 9000.0;
 /// Nachbarn für den Ausreißertest.
 const NACHBARN: usize = 6;
 
@@ -34,17 +36,23 @@ pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
     // doppelte Nummern
     let mut umbenannt: Vec<(String, String)> = Vec::new();
     let mut gesehen = std::collections::HashSet::new();
-    for i in 0..punkte.len() {
-        if gesehen.insert(punkte[i].nr.clone()) {
+    // alle Nummern der Datei, damit „-2“ keine spätere trifft; je
+    // Grundnummer die nächste freie Endung
+    let alle: std::collections::HashSet<String> = punkte.iter().map(|p| p.nr.clone()).collect();
+    let mut weiter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for p in punkte.iter_mut() {
+        if gesehen.insert(p.nr.clone()) {
             continue;
         }
-        let alt = punkte[i].nr.clone();
-        let neu = (2..)
-            .map(|k| format!("{alt}-{k}"))
-            .find(|n| !gesehen.contains(n) && !punkte.iter().any(|p| &p.nr == n))
+        let alt = p.nr.clone();
+        let k0 = weiter.get(&alt).copied().unwrap_or(2);
+        let (k, neu) = (k0..)
+            .map(|k| (k, format!("{alt}-{k}")))
+            .find(|(_, n)| !gesehen.contains(n) && !alle.contains(n))
             .unwrap_or_default();
+        weiter.insert(alt.clone(), k + 1);
         gesehen.insert(neu.clone());
-        punkte[i].nr = neu.clone();
+        p.nr = neu.clone();
         umbenannt.push((alt, neu));
     }
     match umbenannt.as_slice() {
@@ -71,6 +79,26 @@ pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
         .iter()
         .map(|p| codes.bedeutung(&p.code).im_gelaende())
         .collect();
+    // unplausible Höhen (Kommafehler, Platzhalter) bleiben außen vor
+    let hoch: Vec<String> = punkte
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            !(p.h.is_finite() && p.e.is_finite() && p.n.is_finite()) || p.h.abs() > MAX_HOEHE
+        })
+        .map(|(i, p)| {
+            drin[i] = false;
+            p.nr.clone()
+        })
+        .collect();
+    if !hoch.is_empty() {
+        hinweise.push(liste(
+            "mit unplausibler Höhe (über 9000 m), außen vor",
+            "Punkt",
+            "Punkte",
+            &hoch,
+        ));
+    }
     // ferne Punkte: weiter als 2 km vom Median
     if !punkte.is_empty() {
         let median = |f: fn(&Punkt) -> f64| {
@@ -347,6 +375,48 @@ mod tests {
         let r = pruefen(&mut v, &Codetabelle::default());
         assert!(r.hinweise.is_empty(), "{:?}", r.hinweise);
         assert!(r.drin.iter().all(|&d| d));
+    }
+
+    #[test]
+    fn viele_doppelte_nummern() {
+        // 20.000 Punkte, je zehn mit derselben Nummer; „5-2“ steht schon in
+        // der Datei und wird übersprungen
+        let mut v: Vec<Punkt> = (0..20_000)
+            .map(|i| {
+                p(
+                    &(i / 10).to_string(),
+                    (i % 200) as f64,
+                    (i / 200) as f64,
+                    24.0,
+                    "GP",
+                )
+            })
+            .collect();
+        v[19_999].nr = "5-2".into();
+        let t = std::time::Instant::now();
+        let r = pruefen(&mut v, &Codetabelle::default());
+        assert!(t.elapsed().as_secs_f64() < 5.0);
+        assert_eq!(
+            [&v[50].nr, &v[51].nr, &v[52].nr, &v[59].nr],
+            ["5", "5-3", "5-4", "5-11"]
+        );
+        let alle: std::collections::HashSet<&str> = v.iter().map(|p| p.nr.as_str()).collect();
+        assert_eq!(alle.len(), v.len());
+        assert!(r.hinweise[0].starts_with("Punktnummern doppelt, umbenannt: 0 → 0-2,"));
+    }
+
+    #[test]
+    fn unplausible_hoehen_bleiben_aussen_vor() {
+        let mut v = feld();
+        v[3].h = 2_434_500.0; // Kommafehler
+        v[7].h = f64::NAN;
+        v[9].h = -9000.5;
+        let r = pruefen(&mut v, &Codetabelle::default());
+        assert!(!r.drin[3] && !r.drin[7] && !r.drin[9] && r.drin[4]);
+        assert_eq!(
+            r.hinweise[0],
+            "Punkte 4, 8 und 10 mit unplausibler Höhe (über 9000 m), außen vor."
+        );
     }
 
     #[test]
