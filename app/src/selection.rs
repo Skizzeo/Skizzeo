@@ -130,6 +130,14 @@ pub fn pick_at(
             return Some(id);
         }
     }
+    // In 3D und den Ansichten eine Öffnung, durch deren Loch der Strahl
+    // geht (Paket O7); sonst träfe er die Laibung oder was dahinter liegt
+    if !matches!(view, ViewKind::Plan | ViewKind::Section) {
+        let t = crate::wall_edit::oeffnung_kanten::treffer(scene, cam, (x, y), w, h, 1.0, None);
+        if let Some(t) = t {
+            return Some(t.id);
+        }
+    }
     scene.pick(view, section, o, d)
 }
 
