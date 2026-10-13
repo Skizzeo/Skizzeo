@@ -1,9 +1,10 @@
 //! Abnahme G1 am Beispielgrundstück „Am Lindenhof 7“ (erfunden), Sollwerte
 //! aus `gelaende/beispiel/sollwerte-lindenhof-7.md`. Alle drei Punktlisten
-//! ergeben dasselbe Gelände.
+//! und beide DXF (G1b) ergeben dasselbe Gelände.
 
 use sk_gelaende::abfrage::Abfrage;
 use sk_gelaende::codes::Codetabelle;
+use sk_gelaende::dxf::Linienart;
 use sk_gelaende::lesen::{lesen, Lage, Spalte, Trenner, Zeichensatz};
 use sk_gelaende::linien::{hoehenlinien, strecken};
 use sk_gelaende::pruefen::pruefen;
@@ -13,6 +14,10 @@ use sk_gelaende::{netz, Netz, Rand};
 const CSV: &[u8] = include_bytes!("daten/hoehenaufmass-lindenhof-7.csv");
 const TXT: &[u8] = include_bytes!("daten/hoehenaufmass-lindenhof-7.txt");
 const XY: &[u8] = include_bytes!("daten/hoehenaufmass-lindenhof-7-xy.txt");
+/// POINT mit Z auf Layern PKT_<Code>, Nummern als Text, 3D-Polylinien.
+const DXF: &[u8] = include_bytes!("daten/hoehenaufmass-lindenhof-7.dxf");
+/// Blöcke auf Z = 0, Höhe, Nummer und Code als Attribut.
+const BLOECKE: &[u8] = include_bytes!("daten/hoehenaufmass-lindenhof-7-bloecke.dxf");
 
 /// Örtliches System des Beispiels: Ursprung Grenzpunkt 1, um 7° gedreht.
 const E0: f64 = 467108.214;
@@ -30,7 +35,7 @@ fn gelaende(roh: &[u8]) -> (Netz, usize) {
     let codes = Codetabelle::default();
     let pr = pruefen(&mut a.punkte, &codes);
     assert!(pr.hinweise.is_empty(), "{:?}", pr.hinweise);
-    let bruch = codes.bruchkanten(&a.punkte, &pr.drin);
+    let bruch = a.bruchkanten(&codes, &pr.drin);
     let p: Vec<[f64; 3]> = a
         .punkte
         .iter()
@@ -96,9 +101,50 @@ fn drei_dateien_werden_erkannt() {
     }
 }
 
+/// Beide DXF geben dieselben Punkte wie die Punktliste, dazu die Grenze
+/// und in der ersten die Bruchkanten als Linien.
+#[test]
+fn dxf_wie_punktliste() {
+    let c = lesen(CSV).unwrap();
+    let d = lesen(DXF).unwrap();
+    let b = lesen(BLOECKE).unwrap();
+    for o in [&d, &b] {
+        assert_eq!(o.punkte.len(), 109);
+        assert!(o.hinweise.is_empty(), "{:?}", o.hinweise);
+        assert_eq!(o.erkannt.lage, Lage::Utm { zone: None });
+        for (a, x) in c.punkte.iter().zip(&o.punkte) {
+            assert_eq!((&a.nr, &a.code), (&x.nr, &x.code));
+            assert!(
+                (a.e - x.e).abs() < 1e-6 && (a.n - x.n).abs() < 1e-6 && (a.h - x.h).abs() < 1e-9
+            );
+        }
+        // Flurstück aus FLURSTUECKSGRENZE: die vier Grenzpunkte
+        let g: Vec<_> = o
+            .linien
+            .iter()
+            .filter(|l| l.art == Linienart::Grenze)
+            .collect();
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].lage.len(), 4);
+        for (q, p) in g[0].lage.iter().zip(&c.punkte[..4]) {
+            assert!((q[0] - p.e).abs() < 1e-6 && (q[1] - p.n).abs() < 1e-6);
+        }
+    }
+    assert_eq!(
+        d.satz(),
+        "109 Punkte · DXF R12 · 4 Bruchkanten · 1 Grenze · ETRS89/UTM · Höhen 24,15 bis 26,04 m"
+    );
+    assert_eq!(
+        b.satz(),
+        "109 Punkte · DXF R12 · Höhe aus Attribut HOEHE · 1 Grenze · ETRS89/UTM · Höhen 24,15 bis 26,04 m"
+    );
+    let ebenen = &d.dxf.as_ref().unwrap().ebenen;
+    assert_eq!(ebenen.len(), 18);
+}
+
 #[test]
 fn gelaende_wie_soll() {
-    for roh in [CSV, TXT, XY] {
+    for roh in [CSV, TXT, XY, DXF, BLOECKE] {
         let (n, kanten) = gelaende(roh);
         assert_eq!(kanten, 18, "18 Bruchkanten aus BO, RI, BUK, BOK");
         assert_eq!(n.bruch.len(), 18);
