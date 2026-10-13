@@ -6,9 +6,17 @@ use crate::visible::Class;
 use sk_math::Vec3;
 use sk_model::hoehen::{door_snap, MIN_LINE_GAP};
 use sk_model::oeffnung::{HeightLine, Opening, OuterFace, MIN_OPENING};
+use sk_model::wand_loch::Hole;
 use sk_model::{ElementId, RunId, StoreyId, Tri};
 
 impl Scene {
+    /// Löcher eines berechneten Wandzugs im Grundriss, wie
+    /// [`sk_model::WallChain::hole_quads`], aus dem Zwischenspeicher
+    /// (Review L26).
+    pub fn loecher(&self, run: RunId) -> &[(Hole, [Vec3; 4])] {
+        self.cached(run).map_or(&[], |c| c.loecher.as_slice())
+    }
+
     /// Außenwandfläche unter dem Strahl (3D und Ansichten) und der
     /// Treffpunkt; `None`, wenn zuerst etwas anderes getroffen wird (eine
     /// Laibung, eine Decke, eine Innenwand).
@@ -21,7 +29,8 @@ impl Scene {
             stamp: self.vis_stamp(),
         };
         let mut best: Option<(f64, RunId, u32)> = None;
-        for c in self.cache.iter().flatten() {
+        let plaetze = self.plaetze_am_strahl(origin, dir, 0.0);
+        for c in plaetze.iter().filter_map(|&i| self.cache.get(i)?.as_ref()) {
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
                 continue;
             }
@@ -156,6 +165,23 @@ impl Scene {
         let runs = self.model.step_touched();
         self.mark_live(&runs);
         ok
+    }
+
+    /// Ändert die Öffnung `id` als eigener Schritt `schritt` (Schloss der
+    /// Höhenbindung, Paket O7). `false`, wenn das Modell sie ablehnt oder
+    /// sich nichts ändert.
+    pub fn opening_schritt(&mut self, id: ElementId, o: Opening, schritt: &'static str) -> bool {
+        if self.model.opening(id) == Some(&o) {
+            return false;
+        }
+        self.begin(schritt);
+        if self.set_opening(id, o) {
+            self.commit();
+            true
+        } else {
+            self.rollback();
+            false
+        }
     }
 
     /// Rechnet die Züge `runs` live neu, damit die Zeichnung beim Ziehen am

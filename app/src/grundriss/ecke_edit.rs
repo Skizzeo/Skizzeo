@@ -162,7 +162,7 @@ impl EckeWahl {
             g.x < lo.x - um || g.x > hi.x + um || g.y < lo.y - um || g.y > hi.y + um
         };
         let mut best: Option<(f64, ElementId)> = None;
-        for (run, c, quader) in scene.zuege() {
+        for (run, c, quader) in scene.zuege_im((g.x - um, g.y - um), (g.x + um, g.y + um)) {
             if quader.is_some_and(weit) || m.run(run).is_none_or(|r| r.storey != storey) {
                 continue;
             }
@@ -432,7 +432,7 @@ fn bezug(scene: &Scene, id: ElementId) -> Option<(Vec3, Vec3)> {
 }
 
 /// Liegt `p` im (konvexen) Viereck `q`?
-fn innen(q: &[Vec3; 4], p: Vec3) -> bool {
+pub(super) fn innen(q: &[Vec3; 4], p: Vec3) -> bool {
     let s: Vec<f64> = (0..4)
         .map(|i| {
             let (a, b) = (q[i], q[(i + 1) % 4]);

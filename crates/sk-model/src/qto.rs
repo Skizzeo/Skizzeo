@@ -614,7 +614,9 @@ pub fn foundation_qto_of(f: &Foundation) -> (SlabQto, FootingQto) {
 /// Mengen einer Geschossdecke (IFC: Qto_SlabBaseQuantities), Hauptmenge Fläche.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloorQto {
-    /// Fläche des Umrisses bis Außenseite Kern (mm²).
+    /// Fläche des Umrisses bis Außenseite Kern (mm²) und Volumen, nach
+    /// VOB/C: kleine Aussparungen für Fenster über zwei Geschosse übermessen
+    /// ([`FloorSlab::vob_mengen`]).
     pub area: f64,
     pub volume: f64,
     /// Umfang (Randschalung), mm.
@@ -1010,9 +1012,10 @@ pub fn floor_qto(model: &Model, run: RunId) -> Option<FloorQto> {
 
 /// Mengen aus einer schon berechneten Decke.
 pub fn floor_qto_of(f: &FloorSlab) -> FloorQto {
+    let (area, volume) = f.vob_mengen();
     FloorQto {
-        area: f.area(),
-        volume: f.volume(),
+        area,
+        volume,
         perimeter: f.perimeter(),
         thickness: f.params.thickness,
         top: f.params.top,
@@ -1035,8 +1038,9 @@ pub struct SupportQto {
 /// Analyse Fassung 1 §4.1: Folgepositionen „Deckenschalung“ und
 /// „Randschalung“). Keine Schicht, kein Bauteil, nur gelesen.
 ///
-/// Vorgemerkt, noch nicht gerechnet: Abzüge für Öffnungen und Aussparungen
-/// nach VOB/C (DIN 18331), sobald es Deckenöffnungen gibt.
+/// Aussparungen für Fenster über zwei Geschosse übermisst die Untersicht
+/// bis 2,5 m² je Öffnung (VOB/C, DIN 18331, `FloorSlab::vob_mengen`); die
+/// Randschalung folgt der Kerbe.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FormworkQto {
     /// Schalfläche der Untersicht (mm²): Deckenfläche ohne die Auflager auf
@@ -1160,7 +1164,7 @@ fn floor_formwork_from<'a>(
     }
     let lost: f64 = (0..f.strips.len())
         .filter(|&k| f.strip_length(k) > 1e-6)
-        .map(|k| (f.strips[k][2] - f.strips[k][3]).length())
+        .map(|k| f.strip_inner_length(k))
         .sum();
     let mut q = FormworkQto {
         soffit: 0.0,
@@ -1169,7 +1173,7 @@ fn floor_formwork_from<'a>(
         edge_lost: lost,
         supports,
     };
-    q.soffit = (f.area() - q.support_area()).max(0.0);
+    q.soffit = (f.vob_mengen().0 - q.support_area()).max(0.0);
     q
 }
 
@@ -1678,6 +1682,9 @@ pub fn gruendung_von(model: &Model, e: ElementId) -> Vec<ElementId> {
     else {
         return Vec::new();
     };
+    if let Some(v) = model.verz() {
+        return v.gruendung(run);
+    }
     model
         .elements()
         .iter()
@@ -1723,6 +1730,12 @@ fn material_rank(c: MatCategory) -> u8 {
 /// Baut die Mengenliste: Gebäude → Fundament und Geschosse von unten →
 /// Bauteilart (Wände je Aufbau) → Bauteile nach Nummer. Nur Lesen.
 pub fn schedule(model: &Model) -> Schedule {
+    // Ein Gang über das ganze Modell: Anschlüsse, Decken und Öffnungen aus
+    // dem Verzeichnis, sonst wächst er mit dem Quadrat der Züge
+    model.lesend(|| schedule_im_gang(model))
+}
+
+pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
     // Je Wandzug einmal rechnen
     let mut walls: HashMap<RunId, Vec<WallQto>> = HashMap::new();
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
@@ -2073,10 +2086,17 @@ pub fn schedule(model: &Model) -> Schedule {
 fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
     let mut out = Vec::new();
     let boden = model.project().soil;
+    // Außenwände je Gebäude einmal, nicht je Platte
+    let huellen = match platten {
+        [] => HashMap::new(),
+        _ => crate::qto_site::huellen(model),
+    };
+    let leer = crate::qto_site::Huelle::default();
     // Träger der Mengen je Gebäude: die Platte mit der kleinsten Nummer
     // (Guid bei gleicher Nummer), unabhängig von der Speicherreihenfolge
     let rang = |e: &Element| (e.number.len(), e.number.clone(), e.guid);
-    let mut traeger: Vec<(BuildingId, (usize, String, crate::Guid), ElementId)> = Vec::new();
+    let mut traeger: HashMap<BuildingId, ((usize, String, crate::Guid), ElementId)> =
+        HashMap::new();
     for &(run, slab) in platten {
         let (Some(_), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
@@ -2085,10 +2105,12 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
             continue;
         };
         let r = rang(e);
-        match traeger.iter_mut().find(|t| t.0 == b) {
-            Some(t) if r < t.1 => *t = (b, r, slab),
+        match traeger.get_mut(&b) {
+            Some(t) if r < t.0 => *t = (r, slab),
             Some(_) => {}
-            None => traeger.push((b, r, slab)),
+            None => {
+                traeger.insert(b, (r, slab));
+            }
         }
     }
     for &(run, slab) in platten {
@@ -2111,9 +2133,10 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
         out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
         let b = model.run(run).and_then(|r| model.building_of(r.storey));
         // ohne Gebäude zählt jede Platte für sich
-        let erste = b.is_none_or(|b| traeger.iter().any(|t| t.0 == b && t.2 == slab));
-        out.extend(crate::qto_site::site_mengen(
-            model,
+        let erste = b.is_none_or(|b| traeger.get(&b).is_some_and(|t| t.1 == slab));
+        let huelle = huellen.get(&b).unwrap_or(&leer);
+        out.extend(crate::qto_site::site_mengen_in(
+            huelle,
             run,
             &g.outline,
             &vorlage,

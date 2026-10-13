@@ -17,9 +17,11 @@
 //! Stempel innerhalb des Raums, ein Schritt „Raumstempel verschoben“; ein
 //! Klick wählt den Raum und öffnet sein Namensfeld. Einen neu erkannten Raum
 //! öffnet die App selbst. Der Name ist markiert, Tippen überschreibt;
-//! darunter Vorschläge (feste Liste bis zum Raumkatalog des Raumbuchs),
-//! gefiltert nach dem Getippten. Tab übernimmt den nächsten Vorschlag ins
-//! Feld, ein Klick einen bestimmten. Enter übernimmt („Raum benannt“), ein
+//! darunter die Raumvorlagen aus dem Raumkatalog
+//! ([`sk_model::Model::space_type_choices`]), gefiltert nach dem Getippten.
+//! Tab übernimmt die nächste Vorlage ins Feld, ein Klick eine bestimmte; eine
+//! gewählte Vorlage setzt mit dem Namen auch die Nutzung des Raums, ein frei
+//! getippter Name lässt sie stehen. Enter übernimmt („Raum benannt“), ein
 //! Klick daneben ebenso, Esc lässt den Namen.
 //!
 //! Aufwand (Review #87 R2): Die Auslegung gilt, bis sich Modell, Ansicht
@@ -32,7 +34,7 @@ use crate::camera::Camera;
 use crate::scene::Scene;
 use crate::terrace_label::{inside, touches, Box, PAD};
 use sk_math::{vec3, Vec3};
-use sk_model::{ElementId, StoreyId};
+use sk_model::{ElementId, Guid, StoreyId};
 use sk_paint::{font::Font, Canvas, Path, Rgba};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_raum::{Raumflaeche, Raumformen};
@@ -43,29 +45,6 @@ use sk_ui::widgets::{self, FieldState, Fonts, Rect};
 #[path = "aufschlag.rs"]
 mod aufschlag;
 
-/// Vorschläge für den Namen, bis der Raumkatalog des Raumbuchs sie liefert.
-pub const VORSCHLAEGE: [&str; 20] = [
-    "Wohnen",
-    "Essen",
-    "Küche",
-    "Schlafen",
-    "Kind",
-    "Bad",
-    "WC",
-    "Dusche",
-    "Diele",
-    "Flur",
-    "Garderobe",
-    "Abstellraum",
-    "Speisekammer",
-    "Hauswirtschaft",
-    "Arbeiten",
-    "Gast",
-    "Ankleide",
-    "Technik",
-    "Heizung",
-    "Treppe",
-];
 /// Zeilen der Vorschlagsliste höchstens.
 pub const ZEILEN: usize = 6;
 /// Weg, ab dem ein Druck auf den Stempel zum Ziehen wird (dip).
@@ -110,6 +89,8 @@ pub struct Namen {
     pub feld: TextEdit,
     /// Getippter Suchtext; `None` bis zum ersten Tippen (alle Vorschläge).
     such: Option<String>,
+    /// Mit Tab gewählte Raumvorlage; Tippen nimmt sie zurück.
+    vorlage: Option<Guid>,
     /// Vorschlag unter der Maus bzw. mit Tab gewählt (Index in der Liste).
     pub wahl: Option<usize>,
 }
@@ -160,8 +141,8 @@ pub struct Stempel {
     zug: Option<Zug>,
     pub namen: Option<Namen>,
     /// Vorschlagsliste: Kasten (Pixel der Ansicht, ohne Schatten) und
-    /// Einträge.
-    pub liste: Option<(Box, Vec<&'static str>)>,
+    /// Raumvorlagen.
+    pub liste: Option<(Box, Vec<(Guid, String)>)>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -194,24 +175,17 @@ fn schrift<'a>(fonts: &'a Fonts, fett: bool, s: f64, t: &Theme) -> (Option<&'a F
     }
 }
 
-/// Vorschläge zum Suchtext: erst die, die damit beginnen, dann die, die ihn
-/// enthalten (ohne Groß- und Kleinschreibung).
-pub fn vorschlaege(such: Option<&str>) -> Vec<&'static str> {
+/// Raumvorlagen zum Suchtext: erst die, deren Name damit beginnt, dann die,
+/// deren Name ihn enthält (ohne Groß- und Kleinschreibung).
+pub fn vorschlaege(alle: Vec<(Guid, String)>, such: Option<&str>) -> Vec<(Guid, String)> {
     let Some(q) = such.map(|q| q.trim().to_lowercase()) else {
-        return VORSCHLAEGE.to_vec();
+        return alle;
     };
-    let klein = |v: &str| v.to_lowercase();
-    let mut v: Vec<&'static str> = VORSCHLAEGE
-        .iter()
-        .copied()
-        .filter(|v| klein(v).starts_with(&q))
-        .collect();
-    v.extend(
-        VORSCHLAEGE
-            .iter()
-            .copied()
-            .filter(|v| !klein(v).starts_with(&q) && klein(v).contains(&q)),
-    );
+    let (mut v, rest): (Vec<_>, Vec<_>) = alle
+        .into_iter()
+        .filter(|(_, n)| n.to_lowercase().contains(&q))
+        .partition(|(_, n)| n.to_lowercase().starts_with(&q));
+    v.extend(rest);
     v
 }
 
@@ -346,7 +320,7 @@ impl Stempel {
                 self.namen = None;
             }
         }
-        self.liste = self.liste_auslegen(w, h, scale, t);
+        self.liste = self.liste_auslegen(s, w, h, scale, t);
     }
 
     /// Die Stempel zu [`Stempel::auslegen`]. Vorab fallen Räume weg, deren
@@ -444,6 +418,23 @@ impl Stempel {
             let (aw, ah) = masse(fonts, &flaeche, false, scale, t);
             let voll = (nw.max(aw) + 2.0 * pad, nh + ah + 2.0 * pad);
             let nur = (aw + 2.0 * pad, ah + 2.0 * pad);
+            // Passt nicht einmal die Fläche in den Rahmen des Raums, bleibt er
+            // ohne Stempel; Bögen und Ausweichstelle braucht es dann nicht
+            let (lo, hi) = umriss
+                .iter()
+                .fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), q| {
+                    (
+                        [lo[0].min(q[0]), lo[1].min(q[1])],
+                        [hi[0].max(q[0]), hi[1].max(q[1])],
+                    )
+                });
+            let rahmen = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+            let rmitte = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+            if f.raum.is_none_or(|id| Some(id) != feld)
+                && !inside(&rahmen, &Box::around(rmitte, nur))
+            {
+                continue;
+            }
             // Türbögen nur um einen nicht verschobenen Stempel (G7)
             let auf = if f.stempel == f.mitte {
                 tueren.bei(s, k, r)
@@ -499,17 +490,19 @@ impl Stempel {
     /// Platz ist).
     fn liste_auslegen(
         &self,
+        sc: &Scene,
         w: f64,
         h: f64,
         s: f64,
         t: &Theme,
-    ) -> Option<(Box, Vec<&'static str>)> {
+    ) -> Option<(Box, Vec<(Guid, String)>)> {
         let n = self.namen.as_ref()?;
         let b = self.bilder.iter().find(|b| b.raum == Some(n.raum))?;
-        let v: Vec<&'static str> = vorschlaege(n.such.as_deref())
-            .into_iter()
-            .take(ZEILEN)
-            .collect();
+        let v: Vec<(Guid, String)> =
+            vorschlaege(sc.model().space_type_choices(), n.such.as_deref())
+                .into_iter()
+                .take(ZEILEN)
+                .collect();
         if v.is_empty() {
             return None;
         }
@@ -552,6 +545,7 @@ impl Stempel {
                 raum: id,
                 feld: TextEdit::new(&r.name),
                 such: None,
+                vorlage: None,
                 wahl: None,
             });
         }
@@ -564,7 +558,7 @@ impl Stempel {
         match self.namen.take() {
             Some(n) => {
                 self.liste = None;
-                s.raum_benennen(n.raum, &n.feld.text)
+                s.raum_benennen(n.raum, &n.feld.text, n.vorlage)
             }
             None => false,
         }
@@ -669,9 +663,10 @@ impl Stempel {
             } => {
                 // Vorschlag angeklickt: übernehmen
                 if let Some(i) = self.zeile_bei(x, y, scale, t) {
-                    let v = self.liste.as_ref().map(|(_, v)| v[i]);
-                    if let (Some(v), Some(n)) = (v, self.namen.as_mut()) {
-                        n.feld = TextEdit::new(v);
+                    let v = self.liste.as_ref().map(|(_, v)| v[i].clone());
+                    if let (Some((g, name)), Some(n)) = (v, self.namen.as_mut()) {
+                        n.feld = TextEdit::new(&name);
+                        n.vorlage = Some(g);
                     }
                     out.changed = self.ab(s);
                     out.consumed = true;
@@ -746,24 +741,35 @@ impl Stempel {
     }
 }
 
+/// Ein Kürzel mit **Strg**, das nicht im Namensfeld bleibt: alle Buchstaben
+/// außer **Strg+A** (alles wählen) und **Strg+Z** (Getipptes zurück).
+pub fn kuerzel(key: Key, mods: Modifiers) -> bool {
+    mods.ctrl && matches!(key, Key::Char(c) if c != 'A' && c != 'Z')
+}
+
 impl Stempel {
     /// Nimmt das offene Namensfeld (bzw. der gezogene Stempel: Esc) die
     /// Taste? Zeichen kommen als Text ([`Stempel::text`]), ihre Tasten
-    /// bleiben im Feld, damit kein Kürzel auslöst.
-    pub fn will(&self, key: Key) -> bool {
-        let feld = matches!(
-            key,
-            Key::Char(_)
-                | Key::Backspace
-                | Key::Delete
-                | Key::Left
-                | Key::Right
-                | Key::Home
-                | Key::End
-                | Key::Escape
-                | Key::Enter
-                | Key::Tab
-        );
+    /// bleiben im Feld, damit kein Kürzel auslöst (auch die Leertaste nicht,
+    /// die an einer Tür den Aufschlag wechselt). Mit **Strg** bleiben nur
+    /// **Strg+A** und **Strg+Z** im Feld, die übrigen Kürzel gehen an die App,
+    /// die vorher den Namen übernimmt (Bedienbarkeit 39.3, [`kuerzel`]).
+    pub fn will(&self, key: Key, mods: Modifiers) -> bool {
+        let feld = !kuerzel(key, mods)
+            && matches!(
+                key,
+                Key::Char(_)
+                    | Key::Backspace
+                    | Key::Delete
+                    | Key::Left
+                    | Key::Right
+                    | Key::Home
+                    | Key::End
+                    | Key::Escape
+                    | Key::Enter
+                    | Key::Tab
+                    | Key::Other(0x20)
+            );
         (key == Key::Escape && self.zug.as_ref().is_some_and(|z| z.offen))
             || (feld && self.namen.is_some())
     }
@@ -813,15 +819,16 @@ impl Stempel {
                 false
             }
             Key::Char('Z') if mods.ctrl => n.feld.undo(),
-            // Tab: der nächste Vorschlag ins Feld
+            // Tab: die nächste Vorlage ins Feld
             Key::Tab => {
-                let v = vorschlaege(n.such.as_deref());
+                let v = vorschlaege(s.model().space_type_choices(), n.such.as_deref());
                 let k = v.len().min(ZEILEN);
                 if k > 0 {
                     let i = n.wahl.map_or(0, |i| (i + 1) % k);
                     n.wahl = Some(i);
-                    n.feld = TextEdit::new(v[i]);
+                    n.feld = TextEdit::new(&v[i].1);
                     n.feld.end(false);
+                    n.vorlage = Some(v[i].0);
                 }
                 false
             }
@@ -839,6 +846,7 @@ impl Stempel {
         if getippt {
             n.such = Some(n.feld.text.clone());
             n.wahl = None;
+            n.vorlage = None;
         }
         out
     }
@@ -851,6 +859,7 @@ impl Stempel {
         n.feld.insert(&ch.to_string());
         n.such = Some(n.feld.text.clone());
         n.wahl = None;
+        n.vorlage = None;
         true
     }
 
@@ -920,7 +929,7 @@ impl Stempel {
         let (b, v) = self.liste.as_ref()?;
         let m = SCHATTEN * scale;
         let k = ListenSchluessel {
-            eintraege: v.clone(),
+            eintraege: v.iter().map(|(_, n)| n.clone()).collect(),
             wahl: self.namen.as_ref().and_then(|n| n.wahl),
             groesse: (b.w.ceil() as u32, b.h.ceil() as u32),
             scale: (scale as f32).to_bits(),
@@ -949,7 +958,7 @@ pub struct Schluessel {
 /// Was das Bild der Vorschlagsliste bestimmt.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListenSchluessel {
-    eintraege: Vec<&'static str>,
+    eintraege: Vec<String>,
     wahl: Option<usize>,
     groesse: (u32, u32),
     scale: u32,
@@ -1089,8 +1098,14 @@ fn feld_rect(k: &Box, s: f64, t: &Theme) -> Rect {
 mod tests {
     use super::*;
     use crate::ui::ViewKind;
-    use sk_model::{Category, Model, RefSide};
+    use sk_model::{Category, Model, RefSide, DEFAULT_SPACE_GUID};
     use std::f64::consts::FRAC_PI_2;
+
+    /// Guid der Raumvorlage mit dem Namen `name`.
+    fn vorlage(name: &str) -> Guid {
+        let v = Model::new().space_type_choices();
+        v.into_iter().find(|(_, n)| n == name).unwrap().0
+    }
 
     const W: f64 = 1000.0;
     const H: f64 = 700.0;
@@ -1209,16 +1224,39 @@ mod tests {
         )
     }
 
+    /// Die Leertaste bleibt im offenen Namensfeld, sonst wechselte sie an
+    /// einer Tür bei der Maus den Aufschlag.
+    #[test]
+    fn leertaste_bleibt_im_feld() {
+        let mut s = szene();
+        let c = kamera(&s);
+        let mut st = Stempel::default();
+        auslegen(&mut st, &s, &c);
+        let leer = crate::wall_edit::tuer_edit::LEERTASTE;
+        assert!(!st.will(leer, Modifiers::default()));
+        let b = mitte(&st.bilder[0]);
+        klick(&mut st, &mut s, &c, b);
+        assert!(st.namen.is_some());
+        assert!(st.will(leer, Modifiers::default()));
+    }
+
     #[test]
     fn vorschlaege_filtern() {
-        assert_eq!(vorschlaege(None).len(), VORSCHLAEGE.len());
+        let alle = Model::new().space_type_choices();
+        let namen = |such| -> Vec<String> {
+            vorschlaege(alle.clone(), such)
+                .into_iter()
+                .map(|(_, n)| n)
+                .collect()
+        };
+        assert_eq!(namen(None).len(), 13, "die Werksvorlagen");
         assert_eq!(
-            vorschlaege(Some("k")),
-            ["Küche", "Kind", "Speisekammer", "Ankleide", "Technik"],
+            namen(Some("k")),
+            ["Küche", "Kinderzimmer", "Technik, Hausanschluss"],
             "erst die Anfänge, dann der Rest"
         );
-        assert_eq!(vorschlaege(Some(" BA ")), ["Bad"]);
-        assert!(vorschlaege(Some("xyz")).is_empty());
+        assert_eq!(namen(Some(" BA ")), ["Bad"]);
+        assert!(namen(Some("xyz")).is_empty());
     }
 
     /// Eine Datei vor G3: Stempel ohne Raum zeigen „Raum“, ein Klick legt
@@ -1248,16 +1286,31 @@ mod tests {
         assert!(out.changed && out.consumed);
         assert_eq!(s.model().space(id).unwrap().name, "Raum 1");
         assert_eq!(s.undo_label(), Some("Raum angelegt"));
+        let nutzung = |s: &Scene| s.model().space(id).unwrap().nutzung;
+        assert_eq!(nutzung(&s), None, "Vorgabe, nicht gewählt");
+        assert!(s.model().space_type(DEFAULT_SPACE_GUID).is_some());
         assert_eq!(st.namen.as_ref().map(|n| n.feld.selected()), Some("Raum 1"));
         auslegen(&mut st, &s, &c);
         assert_eq!(st.liste.as_ref().map(|l| l.1.len()), Some(ZEILEN));
         // Tippen überschreibt die Markierung und filtert
-        assert!(st.will(Key::Char('K')));
+        assert!(st.will(Key::Char('K'), Modifiers::default()));
+        // Kürzel mit Strg gehen an die App, nur Strg+A und Strg+Z bleiben im
+        // Feld (Bedienbarkeit 39.3)
+        let strg = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        for (k, bleibt) in [('S', false), ('Y', false), ('A', true), ('Z', true)] {
+            assert_eq!(st.will(Key::Char(k), strg), bleibt, "Strg+{k}");
+        }
         for ch in "Kü".chars() {
             assert!(st.text(ch));
         }
         auslegen(&mut st, &s, &c);
-        assert_eq!(st.liste.as_ref().map(|l| l.1.clone()), Some(vec!["Küche"]));
+        assert_eq!(
+            st.liste.as_ref().map(|l| l.1.clone()),
+            Some(vec![(vorlage("Küche"), "Küche".to_string())])
+        );
         let m = Modifiers::default();
         st.key(Key::Tab, m, &mut s);
         assert_eq!(
@@ -1268,6 +1321,12 @@ mod tests {
         assert!(out.changed && st.namen.is_none());
         assert_eq!(s.model().space(id).unwrap().name, "Küche");
         assert_eq!(s.undo_label(), Some("Raum benannt"));
+        assert_eq!(
+            nutzung(&s),
+            Some(vorlage("Küche")),
+            "die Wahl setzt die Nutzung"
+        );
+        assert!(s.model().space_type(vorlage("Küche")).is_some());
         // Esc lässt den Namen
         auslegen(&mut st, &s, &c);
         let b = st
@@ -1283,9 +1342,30 @@ mod tests {
         assert!(st.namen.is_none());
         assert_eq!(s.model().space(id).unwrap().name, "Küche");
         assert!(
-            !st.will(Key::Char('X')),
+            !st.will(Key::Char('X'), Modifiers::default()),
             "ohne Feld nimmt der Stempel keine Taste"
         );
+        // Ein freier Name lässt die Nutzung stehen, auch nach Tab und Tippen
+        let benennen = |st: &mut Stempel, s: &mut Scene, text: &str, tab: bool| {
+            auslegen(st, s, &c);
+            klick(st, s, &c, mitte(&b));
+            if tab {
+                st.key(Key::Tab, m, s);
+                let strg = Modifiers { ctrl: true, ..m };
+                st.key(Key::Char('A'), strg, s);
+            }
+            for ch in text.chars() {
+                st.text(ch);
+            }
+            st.key(Key::Enter, m, s);
+        };
+        benennen(&mut st, &mut s, "Speis", true);
+        assert_eq!(s.model().space(id).unwrap().name, "Speis");
+        assert_eq!(nutzung(&s), Some(vorlage("Küche")));
+        // Ein Name, der genau eine Vorlage nennt, wählt sie
+        benennen(&mut st, &mut s, "bad", false);
+        assert_eq!(s.model().space(id).unwrap().name, "bad");
+        assert_eq!(nutzung(&s), Some(vorlage("Bad")));
     }
 
     /// Ziehen verschiebt Stempel und Anker in einem Schritt, nie aus dem
@@ -1392,7 +1472,7 @@ mod tests {
                 mods,
             },
         );
-        assert!(st.will(Key::Escape));
+        assert!(st.will(Key::Escape, Modifiers::default()));
         assert!(st.key(Key::Escape, mods, &mut s).changed);
         assert_eq!(s.model().space(id).unwrap().stempel, Some(p));
         assert_eq!(s.undo_label(), Some("Raumstempel verschoben"));

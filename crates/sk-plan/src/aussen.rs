@@ -112,8 +112,9 @@ pub struct Aussenmasse {
     pub seiten: Vec<Seite>,
 }
 
-/// Ein geschlossener Außenwandzug: Bezugsfläche außen, Rohbau-Innenseite
-/// und Außenhaut (mit Dämmung und Putz), je mit Gehrung an den Ecken.
+/// Ein geschlossener Außenwandzug: Bezugsfläche außen und innen (nach dem
+/// Bezug des Stils, [`flaechen`]) und Außenhaut (mit Dämmung und Putz), je
+/// mit Gehrung an den Ecken.
 struct Zug {
     run: RunId,
     bezug: Vec<Vec3>,
@@ -121,6 +122,20 @@ struct Zug {
     haut: Vec<Vec3>,
     /// Gegen den Uhrzeigersinn umlaufend?
     ccw: bool,
+    /// Nur bei „Tragende Schicht“: Löcher, die in der tragenden Schicht um
+    /// den Anschlag größer sind als außen (WDVS, Verblender; Bedienbarkeit
+    /// 40.1).
+    anschlaege: Vec<Anschlag>,
+}
+
+/// Anschlag einer Öffnung in Kante `seg` eines Zugs: so viel größer ist ihr
+/// Loch in der tragenden Schicht am Anfang und Ende längs der Kante
+/// (unendlich offene Enden ohne) sowie unten und oben.
+struct Anschlag {
+    id: ElementId,
+    seg: usize,
+    u: (f64, f64),
+    z: (f64, f64),
 }
 
 impl Zug {
@@ -169,6 +184,16 @@ pub fn kern(c: &WallChain) -> (f64, f64) {
     match (lagen.get(erste), lagen.get(letzte)) {
         (Some(&a), Some(&b)) => (nah(a).0, nah(b).1),
         _ => (aussen, innen),
+    }
+}
+
+/// Flächen quer zur Bezugslinie, an denen die Ketten eine Wand messen:
+/// (außen, innen). Wandpaket: die ganze Wand von der Außen- bis zur
+/// Innenkante (Jörn 13.10.), Rohbau: die tragende Schicht ([`kern`]).
+pub fn flaechen(c: &WallChain, bezug: Aussenbezug) -> (f64, f64) {
+    match bezug {
+        Aussenbezug::Rohbau => kern(c),
+        Aussenbezug::Wand => (c.outer_offset(), c.inner_offset()),
     }
 }
 
@@ -235,12 +260,8 @@ fn zuege<C: Borrow<WallChain>>(
     for &id in vz.zuege.get(&st).into_iter().flatten() {
         let Some(c) = chain(id) else { continue };
         let c = c.borrow();
-        let (k_aussen, k_innen) = kern(c);
-        let off = match stil.bezug {
-            Aussenbezug::Rohbau => k_aussen,
-            Aussenbezug::Wand => c.outer_offset(),
-        };
-        let bezug = c.face_corners(off);
+        let (aussen, innen) = flaechen(c, stil.bezug);
+        let bezug = c.face_corners(aussen);
         if bezug.len() < 3 || bezug.len() != c.segment_count() {
             continue;
         }
@@ -252,13 +273,41 @@ fn zuege<C: Borrow<WallChain>>(
             .sum();
         out.push(Zug {
             run: id,
-            innen: c.face_corners(k_innen),
+            innen: c.face_corners(innen),
             haut: c.face_corners(c.outer_offset()),
             bezug,
             ccw: flaeche > 0.0,
+            anschlaege: anschlaege(c, stil.bezug),
         });
     }
     out
+}
+
+/// Anschläge der Öffnungen in `c`, die die Ketten bei `bezug` messen: Bei
+/// „Tragende Schicht“ liegt die Messfläche hinter der Außenschale, das
+/// Loch dort ist um den Anschlag größer ([`sk_model::wand_loch::Hole`]).
+fn anschlaege(c: &WallChain, bezug: Aussenbezug) -> Vec<Anschlag> {
+    if bezug != Aussenbezug::Rohbau {
+        return Vec::new();
+    }
+    let Some(kern) = c.layers.iter().position(|l| l.core) else {
+        return Vec::new();
+    };
+    let offen = |u: f64, r: f64| if u.is_finite() { r } else { 0.0 };
+    c.joints
+        .holes
+        .iter()
+        .filter(|h| h.shell <= kern)
+        .filter_map(|h| {
+            Some(Anschlag {
+                id: h.opening?,
+                seg: h.seg,
+                u: (offen(h.u.0, h.reveal_u.0), offen(h.u.1, h.reveal_u.1)),
+                z: h.reveal_z,
+            })
+        })
+        .filter(|a| a.u != (0.0, 0.0) || a.z != (0.0, 0.0))
+        .collect()
 }
 
 /// Hauptrichtung: die längste Außenwand, gedreht in (−45°, 45°].
@@ -436,7 +485,8 @@ fn stueck_bei(stuecke: &[Stueck], at: f64) -> Option<&Stueck> {
 }
 
 /// Eine angeschlossene Innenwand am Außenwandzug `zi`, Segment `seg`:
-/// Endpunkt, Richtung der Wand, Richtung aus der Wand heraus, Kern.
+/// Endpunkt, Richtung der Wand, Richtung aus der Wand heraus, gemessene
+/// Flächen ([`flaechen`]).
 struct Anschluss {
     run: RunId,
     zi: usize,
@@ -444,7 +494,7 @@ struct Anschluss {
     p: Vec3,
     d: Vec3,
     raus: Vec3,
-    kern: (f64, f64),
+    flaechen: (f64, f64),
 }
 
 /// T-Anschlüsse von Innenwänden an die Außenwandzüge, einmal je Geschoss
@@ -452,6 +502,7 @@ struct Anschluss {
 fn anschluesse<C: Borrow<WallChain>>(
     m: &Model,
     vz: &Verzeichnis,
+    stil: &Stil,
     zuege: &[Zug],
     chain: &impl Fn(RunId) -> Option<C>,
 ) -> Vec<Anschluss> {
@@ -494,14 +545,14 @@ fn anschluesse<C: Borrow<WallChain>>(
             p,
             d,
             raus,
-            kern: kern(c),
+            flaechen: flaechen(c, stil.bezug),
         });
     }
     out
 }
 
-/// Seiten der angeschlossenen Innenwände (Rohbau), die von innen an eine
-/// sichtbare Fläche der Seite stoßen.
+/// Seiten der angeschlossenen Innenwände (Flächen wie bei den Außenwänden),
+/// die von innen an eine sichtbare Fläche der Seite stoßen.
 fn innenwaende(
     anschluesse: &[Anschluss],
     zuege: &[Zug],
@@ -519,7 +570,7 @@ fn innenwaende(
         let z = &zuege[zi];
         let innen_d = 0.5 * (z.innen[seg] + z.innen[(seg + 1) % z.n()]).dot(n);
         let r = vec3(a.d.y, -a.d.x, 0.0);
-        let (ka, ki) = a.kern;
+        let (ka, ki) = a.flaechen;
         for off in [ka, ki] {
             let at = (a.p + r * off).dot(t);
             let Some(s) = stueck_bei(stuecke, at) else {
@@ -622,9 +673,21 @@ fn oeffnungen(
                     let p = w[k];
                     (p.dot(n) - haut_bei(z, i, p.dot(t), n, t)).abs() < AUF_FLAECHE
                 });
-                auf.then(|| haut_bei(z, i, tm, n, t))
+                auf.then(|| (haut_bei(z, i, tm, n, t), z, i))
             });
-            let Some(wand) = haut else { continue };
+            let Some((wand, z, i)) = haut else { continue };
+            // „Tragende Schicht“: das Loch im Mauerwerk, nicht die sichtbare
+            // Öffnung in der Dämmung (Bedienbarkeit 40.1)
+            let (mut t0, mut t1, mut z0, mut z1) = (t0, t1, z0, z1);
+            if let Some(a) = z.anschlaege.iter().find(|a| a.id == id && a.seg == i) {
+                let (p, q) = z.kante(i);
+                let (lo, hi) = if (q - p).dot(t) > 0.0 {
+                    a.u
+                } else {
+                    (a.u.1, a.u.0)
+                };
+                (t0, t1, z0, z1) = (t0 - lo, t1 + hi, z0 - a.z.0, z1 + a.z.1);
+            }
             for (ende, at) in [(0, t0), (1, t1)] {
                 kanten.push(Bezug {
                     t: at,
@@ -680,7 +743,7 @@ pub fn aussenmasse_mit<C: Borrow<WallChain>>(
     if zuege.is_empty() {
         return None;
     }
-    let anschluesse = anschluesse(m, vz, &zuege, &chain);
+    let anschluesse = anschluesse(m, vz, stil, &zuege, &chain);
     let alle_oeffnungen = oeffnungen_von(m, vz, st);
     let e1 = hauptrichtung(&zuege);
     let e2 = vec3(-e1.y, e1.x, 0.0);

@@ -5,6 +5,7 @@
 //! „Eigenschaften“.
 
 use crate::ext_props::ExtZeile;
+use crate::freischaltung::{Freischaltung, Modul};
 use crate::meldung::Meldung;
 use crate::type_look::TypeLook;
 use crate::wall_tool::Sprung;
@@ -297,6 +298,9 @@ pub enum Field {
     /// Parameter `i` einer gewählten Erweiterung im Paneel „Eigenschaften“
     /// (E7).
     ExtProp(u8),
+    /// Geländeplatte (Gelände G0): Dicke in cm, Außenoffset in m.
+    PlateThick,
+    PlateMargin,
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
@@ -377,7 +381,10 @@ impl Field {
     /// Zahl in Metern (sonst in Zentimetern).
     fn in_metres(self) -> bool {
         self.is_level()
-            || matches!(self, Field::Offset | Field::DownpipeSpacing)
+            || matches!(
+                self,
+                Field::Offset | Field::DownpipeSpacing | Field::PlateMargin
+            )
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
     }
 
@@ -881,6 +888,9 @@ pub struct Props {
     /// `layer_set` bricht an Leerzeichen auf die Innenbreite um, ungekürzt
     /// (Wände um einen Raum), statt rechts überzulaufen.
     pub set_umbruch: bool,
+    /// Zeilen in `values`, die zu Mengen gehören (Raumbuchmengen, Review
+    /// #120 B2); ohne Mengen fehlen sie.
+    pub mengen: std::ops::Range<usize>,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -969,6 +979,8 @@ pub struct Ui {
     pub view: ViewKind,
     /// Mengenfenster offen: Knopf „Mengen · Kosten · AVA“ in `accent`.
     pub quantity_open: bool,
+    /// Freie Module: gesperrte Knöpfe fehlen in den Paneelen.
+    pub frei: Freischaltung,
     pub building: bool,
     /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
     pub interior: bool,
@@ -1112,7 +1124,7 @@ pub fn projekt_zeilen(p: &sk_model::Project) -> Vec<String> {
 }
 
 /// Zeilen des Werkzeug-Paneels (für Zeichnen und Treffertest gleich).
-enum Row {
+pub(crate) enum Row {
     Title(&'static str),
     Button(Id, &'static str),
     Label(&'static str),
@@ -1297,7 +1309,7 @@ fn tool_rows(
     rows
 }
 
-fn view_rows(nord: Option<f64>) -> Vec<Row> {
+fn view_rows(nord: Option<f64>, frei: Freischaltung) -> Vec<Row> {
     let v = |k: ViewKind| (Id::View(k), k.knopf(nord));
     vec![
         Row::Title("Ansichten"),
@@ -1308,7 +1320,7 @@ fn view_rows(nord: Option<f64>) -> Vec<Row> {
         Row::Pair([v(ViewKind::Front), v(ViewKind::Back)]),
         Row::Pair([v(ViewKind::Left), v(ViewKind::Right)]),
         Row::Separator,
-        Row::Button(Id::Quantity, crate::cards::KNOPF),
+        Row::Button(Id::Quantity, frei.knopf()),
     ]
 }
 
@@ -1511,6 +1523,7 @@ impl Ui {
             pressed: None,
             view: ViewKind::Persp,
             quantity_open: false,
+            frei: Freischaltung::ALLES,
             building: false,
             interior: false,
             ref_side: RefSide::Left,
@@ -1567,7 +1580,7 @@ impl Ui {
     }
 
     fn rows(&self, p: Panel) -> Vec<Row> {
-        match p {
+        let rows = match p {
             Panel::Tools => tool_rows(
                 &self.projekt_zeilen,
                 self.nord_aktiv,
@@ -1580,7 +1593,7 @@ impl Ui {
                 self.ext_knopf,
                 self.opening.map(|k| (k, self.view == ViewKind::Plan)),
             ),
-            Panel::Views => view_rows(self.nord),
+            Panel::Views => view_rows(self.nord, self.frei),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
                 // In dip: die Zeilen sind in jedem Maßstab dieselben
                 let breite = self.width(Panel::Props) - 2.0 * self.size.panel_pad;
@@ -1593,7 +1606,8 @@ impl Ui {
             Panel::Levels if self.levels_diagramm() => self.levels_kopf(),
             Panel::Levels => vec![Row::Button(Id::LevelsOpen, fenster::KNOPF)],
             Panel::Dialog => Vec::new(),
-        }
+        };
+        self.frei.zeilen(rows)
     }
 
     pub fn props(&self) -> Option<&Props> {
@@ -1653,7 +1667,19 @@ impl Ui {
         if !p.as_ref().is_some_and(|p| p.more) {
             self.more_open = false;
         }
-        self.props = p;
+        // Die Menge je Schicht und die Raumbuchmengen gehören zu Mengen
+        let mengen = self.frei.frei(Modul::Mengen);
+        self.props = p.map(|mut p| {
+            if !mengen {
+                for l in &mut p.layers {
+                    l.2.clear();
+                }
+                let n = p.values.len();
+                p.values.drain(p.mengen.start.min(n)..p.mengen.end.min(n));
+                p.mengen = 0..0;
+            }
+            p
+        });
     }
 
     fn field_row(&self, f: Field) -> Option<&FieldRow> {
@@ -2629,7 +2655,8 @@ impl Ui {
             // Zweizeilig ab KA-4 (Einstellungen §3 KA-4 Punkt 8): „Mengen“ /
             // „Kosten · AVA“, 12 fett, Zeilenabstand 16
             widgets::button(c, &self.fonts, b, "", st, s, t);
-            let (oben, unten) = crate::cards::KNOPF_ZEILEN;
+            // Nur Mengen frei: einzeilig in der Mitte
+            let (oben, unten) = self.frei.knopf_zeilen();
             if let Some(f) = self.fonts.bold.as_ref().or(self.fonts.regular.as_ref()) {
                 let px = 12.0 * s;
                 let col = if st.disabled {
@@ -2640,7 +2667,12 @@ impl Ui {
                     t.ui.text
                 };
                 let mitte = b.y + b.h * 0.5 + f.cap_height(px) * 0.5;
-                for (text, y) in [(oben, mitte - 8.0 * s), (unten, mitte + 8.0 * s)] {
+                let zeilen = if unten.is_empty() {
+                    vec![(oben, mitte)]
+                } else {
+                    vec![(oben, mitte - 8.0 * s), (unten, mitte + 8.0 * s)]
+                };
+                for (text, y) in zeilen {
                     let x = b.x + (b.w - f.width(text, px)) * 0.5;
                     f.draw(c, text, px, x.round(), y.round(), col);
                 }

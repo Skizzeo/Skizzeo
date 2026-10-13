@@ -99,7 +99,7 @@ const ZEILEN: [Zeile; 15] = [
         Zahl::Abstand,
     ),
     Zeile::Knoepfe(
-        "Außenmaß bis",
+        "Wände bemaßen",
         &[
             (Knopf::Bezug(Aussenbezug::Rohbau), 2),
             (Knopf::Bezug(Aussenbezug::Wand), 2),

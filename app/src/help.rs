@@ -152,6 +152,8 @@ pub enum Topic {
     Ext,
     /// Wand- und Türöffnungen (Paket O3).
     Openings,
+    /// Räume und Raumstempel (Grundriss G3, G4; Bedienbarkeit 39.5).
+    Rooms,
     /// Rückfrage „Bauteil einlesen“ (E9).
     Einlesen,
     Drag,
@@ -194,7 +196,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 39] = [
+    pub const ALL: [Topic; 40] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -202,6 +204,7 @@ impl Topic {
         Topic::InnerWall,
         Topic::Ext,
         Topic::Openings,
+        Topic::Rooms,
         Topic::Einlesen,
         Topic::Drag,
         Topic::Split,
@@ -250,6 +253,7 @@ impl Topic {
                 Topic::InnerWall,
                 Topic::Ext,
                 Topic::Openings,
+                Topic::Rooms,
                 Topic::Einlesen,
                 Topic::Drag,
                 Topic::Split,
@@ -309,6 +313,7 @@ impl Topic {
             Topic::InnerWall => "innenwand",
             Topic::Ext => "erweiterungen",
             Topic::Openings => "oeffnungen",
+            Topic::Rooms => "raeume",
             Topic::Einlesen => "einlesen",
             Topic::Drag => "ziehen",
             Topic::Split => "teilen",
@@ -387,6 +392,8 @@ pub enum SelKind {
     Terrace,
     /// Fenster oder Tür (Bedienbarkeit 38.4).
     Opening,
+    /// Raum (Bedienbarkeit 39.5).
+    Space,
 }
 
 /// Art des Bauteils `id` für die Themenwahl; `None` für Erweiterungen
@@ -402,7 +409,8 @@ pub fn sel_kind(m: &sk_model::Model, id: sk_model::ElementId) -> Option<SelKind>
         K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
         K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
         K::Opening(_) => SelKind::Opening,
-        K::Ext(_) | K::Downpipe { .. } | K::Space(_) => return None,
+        K::Space(_) => SelKind::Space,
+        K::Ext(_) | K::Downpipe { .. } => return None,
     })
 }
 
@@ -414,7 +422,8 @@ pub struct HelpCtx {
     pub dialog: bool,
     /// Zielwahl „Bündig setzen“ läuft.
     pub flush_pick: bool,
-    /// Ziehen läuft.
+    /// Ziehen läuft, eine Eingabe ist offen, oder das Tun an der Wand hat
+    /// ein eigenes Thema (Teilen, Ecke, Bemaßung unter der Maus).
     pub dragging: bool,
     /// Werkzeug aktiv: `true` = Innenwand, `false` = Gebäude.
     pub tool: Option<bool>,
@@ -469,6 +478,7 @@ pub fn topic(c: &HelpCtx) -> Topic {
             SelKind::Floor => Topic::Floor,
             SelKind::Terrace => Topic::Terrace,
             SelKind::Opening => Topic::Openings,
+            SelKind::Space => Topic::Rooms,
         };
     }
     match c.view {
@@ -542,9 +552,35 @@ pub struct HelpCard {
     /// Bild und Inhaltsbild des letzten Malens: behalten den Speicher
     /// (Review 3w, wie 3k: frische Seiten kosten mehr als das Malen).
     bufs: Option<(Canvas, Canvas)>,
+    /// Freie Module: die Liste „Alle Themen“ zeigt nur ihre Themen.
+    pub frei: crate::freischaltung::Freischaltung,
 }
 
 impl HelpCard {
+    /// Titel des Themas; das Mengenfenster heißt nach den freien Blättern
+    /// (Review #120 H5).
+    fn titel(&self, t: Topic) -> &'static str {
+        match (t, self.frei.blaetter()) {
+            (Topic::Quantities, 1) => "Mengen",
+            (Topic::Quantities, 2) => "Mengen, Kosten",
+            _ => t.title(),
+        }
+    }
+
+    /// Zeilen des Themas ohne die gesperrter Module
+    /// ([`crate::freischaltung::hilfe_zeile`]); der Knopf zum Mengenfenster
+    /// heißt wie im Paneel.
+    fn zeilen(&self, t: Topic) -> Vec<(String, String)> {
+        let knopf = self.frei.knopf();
+        t.rows()
+            .into_iter()
+            .filter(|(a, _)| {
+                crate::freischaltung::hilfe_zeile(t, a).is_none_or(|m| self.frei.frei(m))
+            })
+            .map(|(a, b)| (a, b.replace(crate::cards::KNOPF, knopf)))
+            .collect()
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -762,7 +798,7 @@ impl HelpCard {
             for (name, topics) in Topic::GROUPS {
                 groups.push((name, y));
                 y += gh;
-                for tp in topics {
+                for tp in topics.iter().filter(|t| !self.frei.gesperrt(**t)) {
                     items.push((*tp, y, ih));
                     y += ih;
                 }
@@ -771,7 +807,7 @@ impl HelpCard {
             y
         } else {
             let mut h = 0.0;
-            for (a, b) in topic.rows() {
+            for (a, b) in self.zeilen(topic) {
                 let left = widgets::wrap(reg, &a, px, left_w - 4.0 * s);
                 let lines = rich_wrap(reg, bold, &b, px, right_w);
                 h += lines.len().max(left.len()).max(1) as f32 * line + gap;
@@ -833,7 +869,7 @@ impl HelpCard {
         let title = if self.list {
             "Alle Themen"
         } else {
-            topic.title()
+            self.titel(topic)
         };
         let title = widgets::ellipsize(bold, title, px_head, ox + close.x - tx - 4.0 * s);
         widgets::text(c, bold, &title, px_head, tx, hy, t.ui.text);
@@ -903,8 +939,12 @@ impl HelpCard {
                 }
                 let nw = if current { width(reg, now) } else { 0.0 };
                 let x = pad + (6.0 * s).round();
-                let label =
-                    widgets::ellipsize(reg, tp.title(), px, w - x - pad - nw - (12.0 * s).round());
+                let label = widgets::ellipsize(
+                    reg,
+                    self.titel(*tp),
+                    px,
+                    w - x - pad - nw - (12.0 * s).round(),
+                );
                 widgets::text(sub, reg, &label, px, x, base(y, *ih), t.ui.text);
                 if current {
                     widgets::text(
@@ -1016,7 +1056,7 @@ impl HelpCard {
             r
         };
         let (all, back) = if self.picked.is_some() || self.list {
-            let label = format!("‹ Zurück zu „{}“", self.doing.title());
+            let label = format!("‹ Zurück zu „{}“", self.titel(self.doing));
             let r = link(c, &label, self.hover == Some(Hit::Back), None);
             (None, Some(r))
         } else {
@@ -1163,6 +1203,52 @@ mod tests {
         assert!(s.rows.len() <= 10);
     }
 
+    /// Bedienbarkeit 39.5: Mit gewähltem Raum zeigt F1 „Räume“; das Thema
+    /// nennt Entstehen, Benennen, Verschieben, Paneel und Entfernen.
+    #[test]
+    fn thema_raeume() {
+        let c = HelpCtx {
+            window: None,
+            dialog: false,
+            flush_pick: false,
+            dragging: false,
+            tool: None,
+            opening: false,
+            isolating: false,
+            selection: Some(SelKind::Space),
+            view: ViewKind::Plan,
+        };
+        assert_eq!(topic(&c), Topic::Rooms);
+        let mut s = crate::scene::Scene::with_model(sk_model::Model::with_seed(3));
+        let st = s.model().defaults().storey;
+        assert!(s.edit_model("Haus", |m| {
+            let aw = m.defaults().exterior_wall;
+            let pts = [
+                sk_math::vec3(0.0, 0.0, 0.0),
+                sk_math::vec3(0.0, 5000.0, 0.0),
+                sk_math::vec3(5000.0, 5000.0, 0.0),
+                sk_math::vec3(5000.0, 0.0, 0.0),
+            ];
+            let art = sk_model::Category::ExteriorWall;
+            m.add_wall_run(&pts, true, sk_model::RefSide::Left, st, aw, art)
+                .is_some()
+        }));
+        let raum = s.model().spaces(st);
+        assert_eq!(raum.len(), 1, "der Raum entsteht von selbst");
+        assert_eq!(sel_kind(s.model(), raum[0]), Some(SelKind::Space));
+        let t = help().section("raeume").expect("Thema Räume");
+        for a in [
+            "Entstehen",
+            "Benennen",
+            "Verschieben",
+            "Paneel",
+            "Entfernen",
+        ] {
+            assert!(t.rows.iter().any(|(x, _)| x == a), "{a}");
+        }
+        assert!(t.rows.len() <= 10);
+    }
+
     /// KA-2d (paket-ka2 §7): Thema „Kosten“ mit Verrechnungslohn, „Auch für
     /// neue Häuser“ und „Bauleistung wählen …“; „Mengen und Kosten“ mit der
     /// Zeile „Gebäude“ und ohne die alte Zeile „Preise“.
@@ -1305,5 +1391,45 @@ mod tests {
         assert_eq!(k.wait(0), None);
         k.follow(Topic::Drag, 100);
         assert_eq!(k.wait(200), Some(50));
+    }
+
+    /// Review #120 H5: Das Mengenfenster heißt nach den freien Blättern,
+    /// und Zeilen gesperrter Module fehlen; der Knopf heißt wie im Paneel.
+    #[test]
+    fn hilfe_nach_stufe() {
+        use crate::freischaltung::Freischaltung;
+        let mut k = HelpCard::default();
+        let zeile = |k: &HelpCard, t: Topic, a: &str| k.zeilen(t).into_iter().find(|z| z.0 == a);
+        for (w, titel, mengen, preise) in [
+            ("basis", Topic::Quantities.title(), false, false),
+            ("pro", "Mengen", true, false),
+            ("ultimate", "Mengen, Kosten, AVA", true, true),
+        ] {
+            k.frei = Freischaltung::stufe(w).unwrap();
+            assert_eq!(k.titel(Topic::Quantities), titel, "{w}");
+            assert_eq!(k.titel(Topic::Draw), Topic::Draw.title(), "{w}");
+            let start = zeile(&k, Topic::Start, "Mengen");
+            assert_eq!(start.is_some(), mengen, "{w}");
+            if let Some((_, b)) = start {
+                assert!(b.contains(k.frei.knopf()), "{w}: {b}");
+            }
+            assert_eq!(
+                zeile(&k, Topic::Materials, "Bestellung").is_some(),
+                mengen,
+                "{w}"
+            );
+            assert_eq!(
+                zeile(&k, Topic::Materials, "Preise").is_some(),
+                preise,
+                "{w}"
+            );
+            assert!(zeile(&k, Topic::Materials, "Ansehen").is_some(), "{w}");
+            assert_eq!(
+                zeile(&k, Topic::Foundation, "Baugrund").is_some(),
+                mengen,
+                "{w}"
+            );
+            assert_eq!(zeile(&k, Topic::Terrace, "Mengen").is_some(), mengen, "{w}");
+        }
     }
 }

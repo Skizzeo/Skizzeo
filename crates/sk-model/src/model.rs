@@ -74,6 +74,12 @@ pub struct Project {
     /// [`crate::qto_earth::Boden::FELDER`]: bleiben bytegleich stehen, bis
     /// die erste Änderung sie nach `[soil]` umzieht.
     pub soil_legacy: [Option<f64>; 5],
+    /// Dicke und Abstand der Geländeplatte (Gelände G0); in der Datei nur,
+    /// wo sie von der Vorgabe abweichen.
+    pub terrain_plate: PlateSettings,
+    /// `[terrainplate]`, deren Werte nicht galten: bleibt bytegleich, bis
+    /// neue Werte sie ersetzen (Regel 72).
+    pub terrain_plate_raw: Option<String>,
 }
 
 impl Project {
@@ -95,6 +101,8 @@ impl Project {
             soil: Default::default(),
             soil_info: false,
             soil_legacy: [None; 5],
+            terrain_plate: PlateSettings::default(),
+            terrain_plate_raw: None,
         }
     }
 
@@ -274,6 +282,8 @@ pub struct Model {
     bemassung: crate::bemassung::Bemassung,
     /// Bemaßung je Ansicht am Zahnrad; Ansichtszustand.
     mass_sicht: crate::bemassung::MassSicht,
+    /// Verzeichnis für einen lesenden Gang ([`Model::lesend`]).
+    merker: verzeichnis::Merker,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -302,6 +312,8 @@ macro_rules! note {
 
 #[path = "delete.rs"]
 mod delete;
+#[path = "verzeichnis.rs"]
+mod verzeichnis;
 pub use delete::{refusal_lines, refusal_text, Deleted, Refusal};
 
 #[path = "lock.rs"]
@@ -333,11 +345,19 @@ mod anschluesse;
 #[path = "dach.rs"]
 mod dach;
 
+#[cfg(test)]
+#[path = "abgleich_tempo.rs"]
+mod abgleich_tempo;
+
 #[path = "decke.rs"]
 mod decke;
 
 #[path = "gelaende.rs"]
 mod gelaende;
+
+#[path = "gelaende_platte.rs"]
+mod gelaende_platte;
+pub use gelaende_platte::{PlateInput, PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
 
 #[path = "geschossbaender.rs"]
 mod geschossbaender;
@@ -741,10 +761,12 @@ impl Model {
         d.pattern.pen = pen;
         attr.set_display(d);
         // Einbauelement (Integration F20): Linientyp „Strichlinie fein“,
-        // ebenfalls mit fester Guid
+        // ebenfalls mit fester Guid; über der Schnittebene (G7b) zunächst
+        // ebenso
         let lt = attr.add_line_type(attr::element_line_type());
         let mut d = attr.display().clone();
         d.element.line_type = lt;
+        d.above.line_type = lt;
         attr.set_display(d);
         // Paket 1a: Gewerk je Startbaustoff
         let ids: Vec<MaterialId> = materials.ids().collect();
@@ -796,6 +818,7 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            merker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -879,6 +902,7 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            merker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -910,6 +934,8 @@ impl Model {
             soil: self.project.soil,
             soil_info: self.project.soil_info,
             soil_legacy: self.project.soil_legacy,
+            terrain_plate: self.project.terrain_plate,
+            terrain_plate_raw: self.project.terrain_plate_raw.clone(),
             ..p
         };
         match self.txn.as_mut() {
@@ -953,6 +979,8 @@ impl Model {
             soil: self.project.soil,
             soil_info: self.project.soil_info,
             soil_legacy: self.project.soil_legacy,
+            terrain_plate: self.project.terrain_plate,
+            terrain_plate_raw: self.project.terrain_plate_raw.clone(),
             ..p
         };
         self.touch();
@@ -2508,6 +2536,9 @@ impl Model {
         let Some(segs) = self.run(below).map(|r| &r.segments) else {
             return Vec::new();
         };
+        if let Some(v) = self.verz() {
+            return v.darueber(below);
+        }
         let mut out = Vec::new();
         for (_, e) in self.elements.iter() {
             if let ElementKind::Wall(Wall {
@@ -2771,9 +2802,18 @@ impl Model {
         id: RunId,
     ) -> Option<(WallChain, Option<Result<FloorSlab, FloorError>>)> {
         let mut c = self.base_chain(id)?;
-        let floor = self.floor_of_chain(id, &c);
+        // Die Löcher hängen nur am Grundkörper, nicht an den Anschlüssen:
+        // einmal suchen, für Decke und Zug (Review W48 B3)
+        let holes = self.holes_of(id, &c);
+        let floor = self.floor_mit_loechern(id, &c, Some(&holes));
         let prio = |k: u16| self.material_by_key(k).map_or(0, |m| m.priority);
-        for j in &self.joins {
+        // Im lesenden Gang nur die Anschlüsse dieses Zuges
+        let v = self.verz();
+        let anschluesse: Box<dyn Iterator<Item = &Join>> = match &v {
+            Some(v) => Box::new(v.anschluesse(id).iter().map(|&k| &self.joins[k])),
+            None => Box::new(self.joins.iter()),
+        };
+        for j in anschluesse {
             if j.a_run == id {
                 let cut = match (j.kind, j.b_end) {
                     (JoinKind::L, Some(eb)) => self
@@ -2841,7 +2881,7 @@ impl Model {
                 });
         }
         c.joints.facing_foot = self.facing_foot(id, &c);
-        c.joints.holes = self.holes_of(id, &c);
+        c.joints.holes = holes;
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self
@@ -2976,7 +3016,7 @@ impl Model {
     fn floor_over(&self, storey: StoreyId, c: &WallChain) -> Option<FloorSlab> {
         let mids = mids(&c.points, c.closed);
         let (lo, hi) = bounds2(&mids);
-        for (id, r) in self.runs.iter() {
+        for (id, r) in self.runs_near(storey, lo, hi) {
             // Vortest: geschlossen und Rechteck der Zugpunkte überdeckt die
             // Segmentmitten, bevor der Umriss entsteht
             if !r.closed || r.storey != storey || !overlap(bounds2(&r.points), (lo, hi)) {
@@ -2986,13 +3026,31 @@ impl Model {
             if !mids.iter().any(|m| inside(*m, rlo, rhi)) {
                 continue;
             }
-            if let Some(Ok(slab)) = self.floor(id) {
+            if let Some(Ok(slab)) = self.floor_ohne_kerben(id) {
                 if mids.iter().any(|m| contains(&slab.outline, *m)) {
                     return Some(slab);
                 }
             }
         }
         None
+    }
+
+    /// Züge, unter denen die im Geschoss `storey` mit Rechteck `lo`–`hi`
+    /// sind: im lesenden Gang nur die aus dem Raster, sonst alle.
+    fn runs_near(
+        &self,
+        storey: StoreyId,
+        lo: Vec3,
+        hi: Vec3,
+    ) -> Box<dyn Iterator<Item = (RunId, &WallRun)> + '_> {
+        match self.verz() {
+            Some(v) => Box::new(
+                v.zuege_bei(storey, lo, hi)
+                    .into_iter()
+                    .filter_map(|id| Some((id, self.runs.get(id)?))),
+            ),
+            None => Box::new(self.runs.iter()),
+        }
     }
 
     /// Innenwandzüge, die die Decke über dem Zug `run` unterbricht.
@@ -3008,8 +3066,7 @@ impl Model {
         let (lo, hi) = bounds2(&r.points);
         // Vortest am Rechteck, bevor der Umriss entsteht
         let near: Vec<(RunId, Vec<Vec3>)> = self
-            .runs
-            .iter()
+            .runs_near(r.storey, lo, hi)
             .filter(|(id, x)| {
                 *id != run && x.storey == r.storey && overlap(bounds2(&x.points), (lo, hi))
             })
@@ -3022,7 +3079,7 @@ impl Model {
         }
         let outline = match slab {
             Some(o) => o.to_vec(),
-            None => match self.floor(run) {
+            None => match self.floor_ohne_kerben(run) {
                 Some(Ok(f)) => f.outline,
                 _ => return Vec::new(),
             },
@@ -3051,9 +3108,9 @@ impl Model {
         }
         let before = self.base_chain(run).and_then(|mut c| {
             c.points = old.to_vec();
-            self.floor_of_chain(run, &c)
+            self.floor_mit_loechern(run, &c, Some(&[]))
         });
-        let (Some(Ok(before)), Some(Ok(after))) = (before, self.floor(run)) else {
+        let (Some(Ok(before)), Some(Ok(after))) = (before, self.floor_ohne_kerben(run)) else {
             return self.runs_under_floor(run);
         };
         let (alo, ahi) = bounds2(&before.outline);
@@ -3174,10 +3231,13 @@ impl Model {
         if self.txn.is_some() && !self.only_swings() {
             let scope = self.sync_scope();
             let scope = scope.as_deref();
-            self.sync_edge_strips(scope);
-            self.sync_soffits_in(scope);
-            self.sync_terraces_in(scope);
-            self.sync_flat_roofs_in(scope);
+            // Was die vier Abgleiche wollen, in einem lesenden Gang: Keiner
+            // hängt an den Bauteilen, die ein anderer anlegt (Review zu #148)
+            let w = self.abgleich_lesend(scope, || self.abgleich_wunsch(scope));
+            self.sync_edge_strips_mit(scope, Some(w.streifen));
+            self.sync_soffits_mit(scope, Some(w.untersicht));
+            self.sync_terraces_mit(scope, Some(w.terrasse));
+            self.sync_flat_roofs_mit(scope, Some(w.flachdach));
         }
         if let Some(id) = self.locked_change() {
             self.rollback();
@@ -4561,9 +4621,55 @@ fn room_inside(c: &WallChain) -> bool {
     !c.closed || sk_math::polygon::inset(&c.face_corners(c.outer_offset()), c.thickness()).is_ok()
 }
 
+/// Züge im Bereich, ab denen sich das [`Model::lesend`]-Verzeichnis für den
+/// Abgleich lohnt: Darunter rechnet jede Decke ohne es schneller, als es zu
+/// bauen dauert (Review L39).
+const VERZ_AB: usize = 16;
+
+/// Was die Abgleiche beim Schließen eines Schritts wollen
+/// ([`Model::abgleich_wunsch`]).
+pub(super) struct Wunsch {
+    streifen: Vec<(ElementId, ElementId)>,
+    untersicht: Vec<ElementId>,
+    terrasse: Vec<ElementId>,
+    flachdach: Vec<(ElementId, StoreyId, u16)>,
+}
+
+impl Model {
+    /// Randdämmstreifen, Untersichten, Dachterrassen und Flachdächer, die
+    /// `scope` braucht; jede Decke einmal gerechnet.
+    pub(super) fn abgleich_wunsch(&self, scope: Option<&[RunId]>) -> Wunsch {
+        let (untersicht, terrasse) = self.untersicht_und_terrasse_in(scope);
+        Wunsch {
+            streifen: self.edge_strip_pairs_in(scope),
+            untersicht,
+            terrasse,
+            flachdach: self.flat_roof_want_in(scope),
+        }
+    }
+
+    /// `f` im Abgleich über `scope`: bei vielen Zügen mit dem Verzeichnis
+    /// ([`Model::lesend`]), bei wenigen ohne.
+    pub(super) fn abgleich_lesend<R>(&self, scope: Option<&[RunId]>, f: impl FnOnce() -> R) -> R {
+        if scope.is_some_and(|s| s.len() < VERZ_AB) {
+            f()
+        } else {
+            self.lesend(f)
+        }
+    }
+}
+
 /// `run` liegt in `scope` (`None`: alles).
 fn in_scope(scope: Option<&[RunId]>, run: RunId) -> bool {
-    scope.is_none_or(|s| s.contains(&run))
+    // `scope` ist nach Platz geordnet ([`Model::sync_scope`]); so bleibt der
+    // Abgleich bei einem großen Bereich linear (Review L39)
+    scope.is_none_or(|s| {
+        let i = s.partition_point(|r| r.index() < run.index());
+        s[i..]
+            .iter()
+            .take_while(|r| r.index() == run.index())
+            .any(|r| *r == run)
+    })
 }
 
 #[cfg(test)]

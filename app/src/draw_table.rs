@@ -66,6 +66,9 @@ pub struct DrawTable {
     /// Index = Darstellungsschlüssel des Baustoffs ([`sk_model::material_key`]);
     /// 0 = ohne Baustoff.
     pub mats: Vec<MatLook>,
+    /// Schlüssel von Rasen und Erdreich der Geländeplatte (Gelände G0),
+    /// hinter den Baustoffen.
+    pub terrain: [u16; 2],
     pub drawing_edges: [Stroke; edge_kind::COUNT],
     pub model_edges: [Stroke; edge_kind::COUNT],
     pub paper: [f32; 3],
@@ -88,6 +91,10 @@ pub struct DrawTable {
     /// Strich aus der Darstellung.
     pub element: Stroke,
     pub element_dash: DashPattern,
+    /// Über der Schnittebene im Grundriss, etwa der Sturz (Kantenart
+    /// `ABOVE`, G7b): Stift und Strich aus der Darstellung.
+    pub above: Stroke,
+    pub above_dash: DashPattern,
     /// Was die Darstellung noch nicht kann (modellbezogene Schraffuren, mehr
     /// als zwei Scharen); gezeichnet wird ersatzweise.
     pub notes: Vec<String>,
@@ -279,10 +286,18 @@ impl DrawTable {
             mats[key] = mat_look(model, theme, &m.display(), &mut notes);
         }
         let d = a.display();
+        let terrain = [mats.len() as u16, mats.len() as u16 + 1];
+        let ink = stroke(&d.ground).1;
+        mats.extend(crate::gelaende_platte::looks(
+            theme,
+            rgb(d.paper),
+            [ink[0], ink[1], ink[2]],
+        ));
         DrawTable {
             rev: a.rev(),
             theme_rev: theme.rev,
             mats,
+            terrain,
             drawing_edges: d.drawing.map(|s| stroke(&s)),
             model_edges: d.model3d.map(|s| stroke(&s)),
             paper: rgb(d.paper),
@@ -298,6 +313,8 @@ impl DrawTable {
             section_dash: dash_px(model, d.section_line.line_type, px_per_mm),
             element: stroke(&d.element),
             element_dash: dash_px(model, d.element.line_type, px_per_mm),
+            above: stroke(&d.above),
+            above_dash: dash_px(model, d.above.line_type, px_per_mm),
             notes,
         }
     }
@@ -348,16 +365,21 @@ impl DrawTable {
             e.color[i] = [c[0], c[1], c[2]];
             [e.dash[2 * i], e.dash[2 * i + 1]] = scaled(p);
         }
-        let (w, c) = self.background;
-        let k = edge_kind::BACKGROUND as usize;
-        e.width[k] = w * px_scale;
-        e.color[k] = [c[0], c[1], c[2]];
-        [e.dash[2 * k], e.dash[2 * k + 1]] = scaled(&self.background_dash);
-        let (w, c) = self.element;
-        let k = edge_kind::ELEMENT as usize;
-        e.width[k] = w * px_scale;
-        e.color[k] = [c[0], c[1], c[2]];
-        [e.dash[2 * k], e.dash[2 * k + 1]] = scaled(&self.element_dash);
+        // Kantenarten mit eigener Stelle der Darstellung
+        for (k, (w, c), dash) in [
+            (
+                edge_kind::BACKGROUND,
+                self.background,
+                &self.background_dash,
+            ),
+            (edge_kind::ELEMENT, self.element, &self.element_dash),
+            (edge_kind::ABOVE, self.above, &self.above_dash),
+        ] {
+            let k = k as usize;
+            e.width[k] = w * px_scale;
+            e.color[k] = [c[0], c[1], c[2]];
+            [e.dash[2 * k], e.dash[2 * k + 1]] = scaled(dash);
+        }
         e
     }
 

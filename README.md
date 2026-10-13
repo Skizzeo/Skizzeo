@@ -57,6 +57,16 @@ Vor- und Rücksprünge, Gesamtmaß; in 3D flach auf der Geschossebene. Das
 Zahnrad der Ansicht blendet sie aus und zeigt auf Wunsch die
 Maßbezugspunkte; den Stil stellt der Reiter „Bemaßung“ der Einstellungen ein,
 als Projektwert und als Firmenstandard.
+Gemessen wird das ganze Wandpaket; „Tragende Schicht“ zeigt Rohbaumaße, die
+Öffnungen dann am Loch im Mauerwerk.
+Jede Maßzahl lässt sich anklicken und überschreiben (Eingabe in m, das Feld
+steht mit dem Maß vorbelegt und markiert): Es wandert das Bauteil am rechten
+bzw. oberen Ende, in der Öffnungskette die Öffnung, ein Pfeil zeigt es, Tab
+nimmt das andere Ende; Klick ins Freie oder Enter übernimmt als ein
+Rückgängig-Schritt. Wer eine Wand am Gummiband zieht, sieht das Maß dahinter
+leuchten und tippt beim Ziehen oder nach dem Loslassen die Zahl. Maßlinien lassen sich greifen
+und quer verschieben (10-mm-Raster), mit Strg, Umschalt (ganzer Block) oder
+einem Rechteck von rechts nach links auch mehrere; Doppelklick setzt zurück.
 
 Knopf „Gebäude“ (Paneel „Werkzeuge“, links) startet die Außenwand-Eingabe.
 Außenwand zweischalig, 31,5 cm: 14 cm Dämmung (WDVS) außen, 17,5 cm Porenbeton

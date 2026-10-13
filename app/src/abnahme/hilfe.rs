@@ -192,7 +192,7 @@ const OHNE: Modifiers = Modifiers {
 /// Knöpfe mit Tooltip (§1.3); „Winkelsprung“ (vormals „90°-Sprung“, G2)
 /// steht im Paneel Werkzeuge (Koordinator 21:45), „Erweiterungen“ dort ab
 /// E6 (Schrittplan .szb).
-const KNOEPFE: [&str; 15] = [
+const KNOEPFE: [&str; 17] = [
     "Gebäude",
     "Innenwand",
     "Wandöffnung",
@@ -207,6 +207,9 @@ const KNOEPFE: [&str; 15] = [
     "Links",
     "Rechts",
     "Mengen · Kosten · AVA",
+    // derselbe Knopf in den Stufen Pro und Basis (freischaltung.rs)
+    "Mengen · Kosten",
+    "Mengen",
     "?",
 ];
 
@@ -663,6 +666,12 @@ fn a293_genannte_tasten_sind_belegt() {
         ("Bild↓", "Geschoss bzw. Schnitt (wheel::KEY_PAGE_DOWN)"),
         ("←", "Kachelwahl der Sicherungskarte (backup_card)"),
         ("→", "Kachelwahl der Sicherungskarte (backup_card)"),
+        ("Leertaste", "Bandseite der Tür bei der Maus (tuer_edit)"),
+        ("Umschalt+Leertaste", "anderer Raum (tuer_edit)"),
+        (
+            "Strg+A",
+            "alles wählen im Namensfeld des Raumstempels (stempel)",
+        ),
         ("OK", "Knopf, keine Taste"),
     ];
     for t in fett(hilfetext()) {
@@ -687,6 +696,7 @@ fn a293_genannte_tasten_sind_belegt() {
     );
     assert_eq!(crate::wheel::KEY_PAGE_UP, Key::Other(0x21));
     assert_eq!(crate::wheel::KEY_PAGE_DOWN, Key::Other(0x22));
+    assert_eq!(crate::wall_edit::tuer_edit::LEERTASTE, Key::Other(0x20));
 
     // Werkzeug: Tab, R, Umschalt, Rücktaste, Enter, Esc
     let s = Scene::with_model(Model::with_seed(293));

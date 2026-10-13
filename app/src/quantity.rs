@@ -200,7 +200,8 @@ impl QuantityWindow {
     /// Karte unter der Maus (Fensterpixel).
     fn karte_at(&self, t: &Theme, x: f64, y: f64) -> Option<Blatt> {
         let s = self.title.scale;
-        Karten::hit(self.cards_x0(t), 32.0 * s, s, self.cards_breit(t), x, y)
+        self.karten
+            .hit(self.cards_x0(t), 32.0 * s, s, self.cards_breit(t), x, y)
     }
 
     /// Rechtsklick auf eine Zeile: wählt sie und öffnet das Menü. `false`
@@ -324,7 +325,13 @@ impl QuantityWindow {
     pub fn read_settings(&mut self, text: &str) {
         self.grouping = crate::windows::read_grouping(text);
         self.modus = crate::windows::read_modus(text);
-        self.karten.aktiv = crate::windows::read_blatt(text);
+        self.karten.merken(crate::windows::read_blatt(text));
+    }
+
+    /// Freischaltung: die Kartenleiste zeigt nur die freien Blätter.
+    pub fn set_frei(&mut self, f: crate::freischaltung::Freischaltung) {
+        self.karten.set_frei(f.blaetter());
+        self.dirty = true;
     }
 
     /// Oberkante der Blätter unter Titelleiste und Karten (dip).
@@ -1189,7 +1196,7 @@ const AVA_VORHER: &str = "Leistungsverzeichnis je Los";
 /// Lebende Zahl der Karte Mengen: „14 Bauteile · 3 Geschosse“ im Umfang
 /// (Geschosse mit Bauteilen, das Gründungsband zählt mit).
 fn mengen_zahl(sched: &Schedule) -> String {
-    let mut bauteile: Vec<sk_model::ElementId> = Vec::new();
+    let mut bauteile = std::collections::HashSet::new();
     let mut geschosse = 0;
     let storeys = sched
         .buildings
@@ -1200,9 +1207,7 @@ fn mengen_zahl(sched: &Schedule) -> String {
         let mut belegt = false;
         for r in st.groups.iter().flat_map(|g| &g.rows) {
             belegt = true;
-            if !bauteile.contains(&r.element) {
-                bauteile.push(r.element);
-            }
+            bauteile.insert(r.element);
         }
         geschosse += usize::from(belegt);
     }

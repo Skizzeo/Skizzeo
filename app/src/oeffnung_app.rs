@@ -16,7 +16,7 @@ use crate::ui::ViewKind;
 use crate::App;
 use sk_math::vec3;
 use sk_model::oeffnung::OpeningKind;
-use sk_platform::{Event, Key, MouseButton};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use werkzeug::{fangen, pfad, plan_fang, Bild, Fang, Klick, Werkzeug};
 
 /// Fangabstand an Höhenlinien und Wandenden in Bildschirmpixeln (96 dpi).
@@ -191,9 +191,32 @@ impl App {
         }
     }
 
-    /// Taste gedrückt: **Esc** wie [`App::oeffnung_esc`], **Tab** schaltet
-    /// den Bezugspunkt der Innentür. `true`, wenn das Werkzeug sie nahm.
-    pub(crate) fn oeffnung_taste(&mut self, key: Key) -> bool {
+    /// Taste gedrückt: Ziffern, **Enter** und **Esc** zuerst an die
+    /// Eingabe des Abstands der Innentür, sonst **Esc** wie
+    /// [`App::oeffnung_esc`], **Tab** schaltet den Bezugspunkt der
+    /// Innentür. `true`, wenn das Werkzeug sie nahm.
+    pub(crate) fn oeffnung_taste(&mut self, key: Key, mods: Modifiers) -> bool {
+        if self.innentuer_an() {
+            let mut taste = innentuer::Taste::Frei;
+            self.tuer_bild(|t, _, _, _| taste = t.taste(key, mods));
+            match taste {
+                innentuer::Taste::Frei => {}
+                innentuer::Taste::Geaendert => {
+                    self.redraw = true;
+                    return true;
+                }
+                innentuer::Taste::Setzen => {
+                    self.tuer_setzen();
+                    return true;
+                }
+                innentuer::Taste::PasstNicht => {
+                    let t = innentuer::PASST_NICHT;
+                    self.status(Meldung::mit("{}.", &[t]), crate::NOTICE_TIME);
+                    self.redraw = true;
+                    return true;
+                }
+            }
+        }
         match key {
             Key::Escape => self.oeffnung_esc(),
             Key::Tab if self.innentuer_an() => {
@@ -264,11 +287,35 @@ impl App {
             return;
         };
         f(&mut w.innen, scene.model(), &|r| scene.koerper(r), st);
-        let bild = w.innen.hover.as_ref().map_or_else(Bild::default, |v| Bild {
-            linien: Vec::new(),
-            umriss: innentuer::umriss(v),
-            punkt: Some((v.punkt, false)),
+        // Maßkette im Stil und in der Schrift der Außenmaßketten (G7)
+        let stil = scene.model().massstil();
+        let ui = self.ui.fonts.regular.as_ref();
+        let schrift = w
+            .innen
+            .hover
+            .as_ref()
+            .and_then(|_| self.massketten.schrift(&stil.schrift, ui));
+        let bild = w.innen.hover.as_ref().map_or_else(Bild::default, |v| {
+            let masse = schrift
+                .as_ref()
+                .map(|f| innentuer::kette(v, st, stil, f))
+                .unwrap_or_default();
+            let kette = masse.striche.iter().map(|s| {
+                let rund = s.art == sk_plan::bild::Strichart::Symbol;
+                (s.a, s.b, crate::bemassung::staerke(stil, s.art), rund)
+            });
+            Bild {
+                linien: Vec::new(),
+                umriss: innentuer::umriss(v),
+                kette: kette.collect(),
+                tinte: masse.tinte,
+                pille: w.innen.label(stil.rundung),
+                punkt: Some((v.punkt, false)),
+            }
         });
+        if w.vorschau.tinte != bild.tinte {
+            w.tinte_nr = crate::scene::neuer_stand();
+        }
         self.redraw |= w.vorschau != bild;
         w.vorschau = bild;
     }
@@ -302,23 +349,23 @@ impl App {
             .is_some_and(|w| w.innen.hover.is_some())
     }
 
-    /// Klick mit der Innentür am Cursor: setzt sie als ein Schritt; lehnt
-    /// das Modell ab, sagt die Statuszeile warum.
+    /// Klick mit der Innentür am Cursor bzw. **Enter** nach dem Abstand:
+    /// setzt sie als ein Schritt, eine getippte Zahl gilt danach nicht mehr.
+    /// Lehnt das Modell ab, sagt die Statuszeile warum, und die Zahl bleibt
+    /// rot stehen (Review W49 B2).
     fn tuer_setzen(&mut self) -> bool {
-        let o = self.tool.oeffnung.as_ref().and_then(|w| w.innen.oeffnung());
-        let Some(o) = o else {
-            return false;
-        };
         let m = self.scene.model();
-        match m.opening_fault(&o, None).map(|f| f.text(m)) {
-            Some(t) => self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME),
-            None => {
+        let r = self.tool.oeffnung.as_mut().and_then(|w| w.innen.pruefen(m));
+        match r {
+            None => return false,
+            Some(Err(t)) => self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME),
+            Some(Ok(o)) => {
                 if self.scene.add_opening(o).is_some() {
                     self.upload_model();
                 }
+                self.tuer_bild(|t, m, k, st| t.nochmal(m, k, st));
             }
         }
-        self.tuer_bild(|t, m, k, st| t.nochmal(m, k, st));
         self.redraw = true;
         true
     }
