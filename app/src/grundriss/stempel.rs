@@ -418,6 +418,23 @@ impl Stempel {
             let (aw, ah) = masse(fonts, &flaeche, false, scale, t);
             let voll = (nw.max(aw) + 2.0 * pad, nh + ah + 2.0 * pad);
             let nur = (aw + 2.0 * pad, ah + 2.0 * pad);
+            // Passt nicht einmal die Fläche in den Rahmen des Raums, bleibt er
+            // ohne Stempel; Bögen und Ausweichstelle braucht es dann nicht
+            let (lo, hi) = umriss
+                .iter()
+                .fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), q| {
+                    (
+                        [lo[0].min(q[0]), lo[1].min(q[1])],
+                        [hi[0].max(q[0]), hi[1].max(q[1])],
+                    )
+                });
+            let rahmen = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+            let rmitte = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+            if f.raum.is_none_or(|id| Some(id) != feld)
+                && !inside(&rahmen, &Box::around(rmitte, nur))
+            {
+                continue;
+            }
             // Türbögen nur um einen nicht verschobenen Stempel (G7)
             let auf = if f.stempel == f.mitte {
                 tueren.bei(s, k, r)
@@ -724,26 +741,35 @@ impl Stempel {
     }
 }
 
+/// Ein Kürzel mit **Strg**, das nicht im Namensfeld bleibt: alle Buchstaben
+/// außer **Strg+A** (alles wählen) und **Strg+Z** (Getipptes zurück).
+pub fn kuerzel(key: Key, mods: Modifiers) -> bool {
+    mods.ctrl && matches!(key, Key::Char(c) if c != 'A' && c != 'Z')
+}
+
 impl Stempel {
     /// Nimmt das offene Namensfeld (bzw. der gezogene Stempel: Esc) die
     /// Taste? Zeichen kommen als Text ([`Stempel::text`]), ihre Tasten
     /// bleiben im Feld, damit kein Kürzel auslöst (auch die Leertaste nicht,
-    /// die an einer Tür den Aufschlag wechselt).
-    pub fn will(&self, key: Key) -> bool {
-        let feld = matches!(
-            key,
-            Key::Char(_)
-                | Key::Backspace
-                | Key::Delete
-                | Key::Left
-                | Key::Right
-                | Key::Home
-                | Key::End
-                | Key::Escape
-                | Key::Enter
-                | Key::Tab
-                | Key::Other(0x20)
-        );
+    /// die an einer Tür den Aufschlag wechselt). Mit **Strg** bleiben nur
+    /// **Strg+A** und **Strg+Z** im Feld, die übrigen Kürzel gehen an die App,
+    /// die vorher den Namen übernimmt (Bedienbarkeit 39.3, [`kuerzel`]).
+    pub fn will(&self, key: Key, mods: Modifiers) -> bool {
+        let feld = !kuerzel(key, mods)
+            && matches!(
+                key,
+                Key::Char(_)
+                    | Key::Backspace
+                    | Key::Delete
+                    | Key::Left
+                    | Key::Right
+                    | Key::Home
+                    | Key::End
+                    | Key::Escape
+                    | Key::Enter
+                    | Key::Tab
+                    | Key::Other(0x20)
+            );
         (key == Key::Escape && self.zug.as_ref().is_some_and(|z| z.offen))
             || (feld && self.namen.is_some())
     }
@@ -1207,11 +1233,11 @@ mod tests {
         let mut st = Stempel::default();
         auslegen(&mut st, &s, &c);
         let leer = crate::wall_edit::tuer_edit::LEERTASTE;
-        assert!(!st.will(leer));
+        assert!(!st.will(leer, Modifiers::default()));
         let b = mitte(&st.bilder[0]);
         klick(&mut st, &mut s, &c, b);
         assert!(st.namen.is_some());
-        assert!(st.will(leer));
+        assert!(st.will(leer, Modifiers::default()));
     }
 
     #[test]
@@ -1267,7 +1293,16 @@ mod tests {
         auslegen(&mut st, &s, &c);
         assert_eq!(st.liste.as_ref().map(|l| l.1.len()), Some(ZEILEN));
         // Tippen überschreibt die Markierung und filtert
-        assert!(st.will(Key::Char('K')));
+        assert!(st.will(Key::Char('K'), Modifiers::default()));
+        // Kürzel mit Strg gehen an die App, nur Strg+A und Strg+Z bleiben im
+        // Feld (Bedienbarkeit 39.3)
+        let strg = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        for (k, bleibt) in [('S', false), ('Y', false), ('A', true), ('Z', true)] {
+            assert_eq!(st.will(Key::Char(k), strg), bleibt, "Strg+{k}");
+        }
         for ch in "Kü".chars() {
             assert!(st.text(ch));
         }
@@ -1307,7 +1342,7 @@ mod tests {
         assert!(st.namen.is_none());
         assert_eq!(s.model().space(id).unwrap().name, "Küche");
         assert!(
-            !st.will(Key::Char('X')),
+            !st.will(Key::Char('X'), Modifiers::default()),
             "ohne Feld nimmt der Stempel keine Taste"
         );
         // Ein freier Name lässt die Nutzung stehen, auch nach Tab und Tippen
@@ -1437,7 +1472,7 @@ mod tests {
                 mods,
             },
         );
-        assert!(st.will(Key::Escape));
+        assert!(st.will(Key::Escape, Modifiers::default()));
         assert!(st.key(Key::Escape, mods, &mut s).changed);
         assert_eq!(s.model().space(id).unwrap().stempel, Some(p));
         assert_eq!(s.undo_label(), Some("Raumstempel verschoben"));
