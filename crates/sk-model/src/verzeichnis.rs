@@ -477,7 +477,6 @@ mod tests {
                             erste,
                         );
                         assert_eq!(neu, alt);
-                        assert_eq!(site_mengen(&m, r, &platte, &vorlage, gelaende, erste), alt);
                     }
                 }
             }

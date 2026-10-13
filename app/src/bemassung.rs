@@ -14,6 +14,7 @@
 //! [`crate::wall_edit::mass_edit`].
 
 use crate::camera::Camera;
+use crate::scene::raster::Raster;
 use crate::scene::{naechster_stand, neuer_stand, Scene};
 use crate::ui::ViewKind;
 use crate::wall_edit::mass_edit::Hervor;
@@ -29,7 +30,7 @@ use sk_plan::schrift::Schrift;
 use sk_render::{Helper, Ink, SOLID};
 use sk_ui::theme::Theme;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -212,9 +213,41 @@ pub type Teil = (u64, Rc<[Ink]>);
 /// Gerechnete Ketten der Geschosse einer Ebene.
 pub struct Stand {
     pub geschosse: Vec<Rc<Geschoss>>,
+    /// Raster über die Quader der Geschosse, beim ersten Zeigen gebaut
+    /// (Review L29).
+    raster: OnceCell<Raster>,
 }
 
 impl Stand {
+    pub fn neu(geschosse: Vec<Rc<Geschoss>>) -> Stand {
+        Stand {
+            geschosse,
+            raster: OnceCell::new(),
+        }
+    }
+
+    /// Geschosse, deren Quader der Blickstrahl `(o, d)` mit `r`
+    /// Bildpunkten Spielraum treffen kann (eine Obermenge derer, die
+    /// [`Geschoss::unter_strahl`] nennt), in ihrer Reihenfolge.
+    pub fn am_strahl(&self, blick: &Blick, (o, d): (Vec3, Vec3), r: f64) -> Vec<&Geschoss> {
+        let raster = self.raster.get_or_init(|| {
+            Raster::aus(
+                self.geschosse
+                    .iter()
+                    .map(|g| Some((g.rahmen[0], g.rahmen[1]))),
+            )
+        });
+        // Spielraum, wie ihn ein Geschoss am Strahl höchstens annimmt: es
+        // rechnet ihn eine halbe Diagonale hinter seiner Mitte, die selbst
+        // bis eine halbe Diagonale hinter dem berührten Punkt liegt
+        let rand = raster.rand(blick.cam, blick.h, r, (o, d), raster.diagonale());
+        raster
+            .am_strahl(o, d, rand)
+            .into_iter()
+            .filter_map(|i| self.geschosse.get(i).map(|g| &**g))
+            .collect()
+    }
+
     /// Ketten und Bild je Geschoss.
     pub fn paare(&self) -> impl Iterator<Item = (&Aussenmasse, &Bild)> {
         self.geschosse.iter().map(|g| (&*g.a, &g.b))
@@ -475,7 +508,7 @@ impl Massketten {
         }
         let nr: Vec<u64> = liste.iter().map(|g| g.nr).collect();
         if self.stand.as_ref().is_none_or(|(k, _)| *k != nr) {
-            self.stand = Some((nr, Rc::new(Stand { geschosse: liste })));
+            self.stand = Some((nr, Rc::new(Stand::neu(liste))));
         }
         self.zuletzt = Some((naechster_stand(), scene.mass_alle(), st, versatz.clone()));
         self.stand.as_ref().map(|(_, s)| s.clone())

@@ -1448,7 +1448,7 @@ fn perf_gelaende_ziehen() {
 #[ignore]
 fn perf_automenge() {
     use sk_model::qto_earth::{erd_mengen, ErdBasis};
-    use sk_model::qto_site::site_mengen;
+    use sk_model::qto_site::{huellen, site_mengen_in, Huelle};
     println!();
     for (name, buildings, storeys, annexes) in [
         ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
@@ -1475,6 +1475,9 @@ fn perf_automenge() {
         let mut zeilen = 0;
         let auto = time(20, || {
             zeilen = 0;
+            // Außenwände je Gebäude einmal, wie `auto_rows`
+            let h = huellen(m);
+            let leer = Huelle::default();
             let mut gebaeude = Vec::new();
             for &run in &runs {
                 let Some(g) = m.ground_basis(run) else {
@@ -1486,7 +1489,9 @@ fn perf_automenge() {
                 });
                 let erste = !gebaeude.contains(&g.building);
                 gebaeude.push(g.building);
-                zeilen += site_mengen(m, run, &g.outline, &vorlage, g.terrain_z, erste).len();
+                let b = m.run(run).and_then(|r| m.building_of(r.storey));
+                let hb = h.get(&b).unwrap_or(&leer);
+                zeilen += site_mengen_in(hb, run, &g.outline, &vorlage, g.terrain_z, erste).len();
             }
         });
         let ganz = time(10, || {
@@ -1500,7 +1505,7 @@ fn perf_automenge() {
         );
         assert!(zeilen >= sched.auto.len(), "Nachbau zählt {zeilen} Zeilen");
         // Budget am Maßstab (bis zwei Häuser); die Reserve ×4 zeigt nur den
-        // Verlauf: `site_mengen` sucht je Platte alle Züge ab
+        // Verlauf
         if buildings <= 2 {
             assert!(auto <= 1.0, "{name}: AutoMengen {auto:.3} ms > 1 ms");
         }
