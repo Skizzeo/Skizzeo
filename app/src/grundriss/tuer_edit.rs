@@ -72,6 +72,51 @@ pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
         .collect()
 }
 
+/// So weit reicht ein Aufschlag höchstens über den Wandkörper hinaus (mm):
+/// Vortest beim Wählen.
+const AUFSCHLAG: f64 = 3000.0;
+
+/// Öffnung des aktiven Geschosses unter dem Punkt `p` des Grundrisses
+/// (Grundriss G7): in ihrem Loch zwischen den Wandfluchten oder, bei einer
+/// Tür, im Viertelkreis ihres Aufschlags. Nur Öffnungen, die die
+/// Schnitthöhe trifft, also die gezeichneten; liegen Aufschläge
+/// übereinander, gewinnt das nächste Band.
+pub fn oeffnung_bei(scene: &Scene, p: Vec3) -> Option<ElementId> {
+    let m = scene.model();
+    let (st, cut, p) = (scene.active_storey(), scene.plan_cut(), flat(p));
+    let weit = |(lo, hi): (Vec3, Vec3)| {
+        p.x < lo.x - AUFSCHLAG
+            || p.x > hi.x + AUFSCHLAG
+            || p.y < lo.y - AUFSCHLAG
+            || p.y > hi.y + AUFSCHLAG
+    };
+    let mut bogen: Option<(f64, ElementId)> = None;
+    for (run, c, quader) in scene.zuege() {
+        if quader.is_some_and(weit) || m.run(run).is_none_or(|r| r.storey != st) {
+            continue;
+        }
+        let geschnitten = |z: (f64, f64)| z.0 < cut && cut < z.1;
+        for (h, q) in c.hole_quads() {
+            if let Some(id) = h.opening.filter(|_| geschnitten(h.z)) {
+                if super::ecke_edit::innen(&q, p) {
+                    return Some(id);
+                }
+            }
+        }
+        for (h, s) in c.door_swings() {
+            let (Some(id), true) = (h.opening, geschnitten(h.z)) else {
+                continue;
+            };
+            let (v, w) = (p - s.band, s.offen.length());
+            let drin = v.dot(s.offen) >= 0.0 && v.dot(s.zu) >= 0.0 && v.length() <= w;
+            if drin && bogen.is_none_or(|b| v.length() < b.0) {
+                bogen = Some((v.length(), id));
+            }
+        }
+    }
+    bogen.map(|b| b.1)
+}
+
 /// Griff unter der Maus (Ansichtspixel `x`, `y`) aus `griffe`, gezeichnet
 /// in Höhe `z`.
 #[allow(clippy::too_many_arguments)]
@@ -290,6 +335,13 @@ mod tests {
     /// und einer Tür darin, 88,5 cm breit um y = 3 m.
     fn haus() -> (Model, ElementId) {
         let mut m = Model::with_seed(412);
+        let id = haus_in(&mut m);
+        (m, id)
+    }
+
+    /// Wie [`haus`], in ein Modell gebaut (in einem Schritt der Szene
+    /// entstehen dabei die Räume).
+    fn haus_in(m: &mut Model) -> ElementId {
         let b = m.add_building(1);
         let pts = [
             vec3(0.0, 0.0, 0.0),
@@ -325,8 +377,7 @@ mod tests {
             }),
             lock: Default::default(),
         };
-        let id = m.add_opening(o).unwrap();
-        (m, id)
+        m.add_opening(o).unwrap()
     }
 
     /// Der Griff steht am freien Ende des offenen Blatts: über dem
@@ -552,6 +603,217 @@ mod tests {
             crate::delete::locked_card(s.model(), id, Some((id, crate::delete::Act::Field)));
         assert_eq!(karte.len(), 1);
         assert!(karte[0].ends_with(" ist gesperrt."), "{karte:?}");
+    }
+
+    /// Grundriss G7: Ein Klick in Loch oder Aufschlag wählt die Tür, nicht
+    /// Wand oder Decke, und das Band der Wand meldet sich dort nicht. Das
+    /// Paneel zeigt Art, Breite, Höhe, Anschlag mit dem Raum und die Wand,
+    /// die Auswahl ihren Umriss. Die Leertaste schlägt die gewählte Tür auch
+    /// ohne Maus an ihr um, Löschen nimmt sie aus der Wand.
+    #[test]
+    fn tuer_waehlen() {
+        use crate::selection;
+        use crate::ui::ViewKind;
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(
+            vec3(5000.0, 3000.0, 20000.0),
+            vec3(5000.0, 3001.0, 0.0),
+            45.0,
+        );
+        // Im Schritt der Szene entstehen die Räume
+        let mut s = Scene::with_model(Model::with_seed(412));
+        let mut tuer = None;
+        assert!(s.edit_model("Haus", |m| {
+            tuer = Some(haus_in(m));
+            true
+        }));
+        let id = tuer.unwrap();
+        assert_eq!(s.model().spaces(s.active_storey()).len(), 2);
+        let z = s.plan_cut();
+        let bild = |p: Vec3| cam.project(vec3(p.x, p.y, z), W, H).unwrap();
+        let wahl = |s: &mut Scene, p: Vec3| {
+            let (x, y) = bild(p);
+            selection::pick_at(s, &cam, ViewKind::Plan, None, x, y, W, H)
+        };
+        let l = s.model().door_leaf(id).unwrap();
+        let gegen = if (l.line.0 - l.hinge).length() > 1.0 {
+            l.line.0
+        } else {
+            l.line.1
+        };
+        let zu = (gegen - l.hinge).normalized();
+        let band = flat(l.hinge);
+        assert_eq!(wahl(&mut s, vec3(5000.0, 3000.0, 0.0)), Some(id), "im Loch");
+        let im_bogen = band + l.swing_into * 400.0 + zu * 400.0;
+        assert_eq!(wahl(&mut s, im_bogen), Some(id), "im Aufschlag");
+        let wand = wahl(&mut s, vec3(5000.0, 5500.0, 0.0));
+        assert!(wand.is_some() && wand != Some(id), "daneben die Wand");
+        let drueben = band - l.swing_into * 400.0 + zu * 400.0;
+        assert_ne!(wahl(&mut s, drueben), Some(id), "nicht im anderen Raum");
+        let draussen = band + l.swing_into * 400.0 - zu * 400.0;
+        assert_ne!(wahl(&mut s, draussen), Some(id), "nicht hinter dem Band");
+        // Das Band der Wand (am Fuß, z = 0) nimmt den Klick im Loch nicht
+        let mods = sk_platform::Modifiers::default();
+        let mut e = crate::wall_edit::WallEdit::default();
+        e.stand(None, Some(0.0), None);
+        let zeige = |e: &mut crate::wall_edit::WallEdit, s: &mut Scene, p: Vec3| {
+            let (x, y) = cam.project(p, W, H).unwrap();
+            e.handle(&Event::MouseMove { x, y, mods }, s, &cam, W, H, 1.0, true);
+            e.active_wall()
+        };
+        assert_eq!(zeige(&mut e, &mut s, vec3(5000.0, 3000.0, 0.0)), None);
+        assert!(zeige(&mut e, &mut s, vec3(5000.0, 5500.0, 0.0)).is_some());
+        // Paneel
+        let wert = |s: &Scene, k: &str| {
+            let p = selection::props(s, id).unwrap();
+            p.values.iter().find(|v| v.0 == k).map(|v| v.1.clone())
+        };
+        assert_eq!(wert(&s, "Art").as_deref(), Some("Türöffnung"));
+        assert_eq!(wert(&s, "Breite").as_deref(), Some("0,885 m"));
+        assert!(wert(&s, "Höhe (Rohbau)").is_some_and(|h| h.ends_with(" m")));
+        assert_eq!(wert(&s, "Brüstung (Rohbau)"), None, "Tür ab Rohdecke");
+        // Der Raum steht als Detailzeile unter dem Anschlag (Einstellungen #132 B1)
+        let anschlag = |s: &Scene| {
+            let v = selection::props(s, id).unwrap().values;
+            let i = v.iter().position(|v| v.0 == "Anschlag").unwrap();
+            (v[i].1.clone(), v.get(i + 1).cloned())
+        };
+        let (din, vorher) = anschlag(&s);
+        assert_eq!(din, "DIN links");
+        let vorher = vorher.unwrap();
+        assert!(
+            vorher.0.is_empty() && vorher.1.starts_with("öffnet in Raum"),
+            "{vorher:?}"
+        );
+        let p = selection::props(&s, id).unwrap();
+        assert_eq!(p.set_label, "Wand");
+        assert!(p.layer_set.starts_with("IW-"), "{}", p.layer_set);
+        // Umriss: Loch und Aufschlag im Grundriss, das Loch in 3D
+        let t = sk_ui::theme::Theme::dark();
+        let plan = selection::helpers(&s, id, ViewKind::Plan, None, 1.0, &t);
+        assert_eq!(plan.len(), 4 + 13, "Viereck, Blatt und Bogen");
+        let persp = selection::helpers(&s, id, ViewKind::Persp, None, 1.0, &t);
+        assert_eq!(persp.len(), 12, "Quader des Lochs");
+        // Leertaste an der gewählten Tür, die Maus weit weg
+        e.stand(None, Some(0.0), Some(id));
+        zeige(&mut e, &mut s, vec3(8000.0, 6000.0, 0.0));
+        let taste = Event::Key {
+            key: LEERTASTE,
+            down: true,
+            mods: sk_platform::Modifiers {
+                shift: true,
+                ..mods
+            },
+            repeat: false,
+        };
+        assert!(e.handle(&taste, &mut s, &cam, W, H, 1.0, true).changed);
+        let (_, nachher) = anschlag(&s);
+        let nachher = nachher.unwrap();
+        assert!(nachher.1.starts_with("öffnet in Raum"), "{nachher:?}");
+        assert_ne!(nachher, vorher, "anderer Raum");
+        // Löschen nimmt sie aus der Wand, auch im Kontextmenü
+        let menu = crate::delete::ContextMenu::new(
+            s.model(),
+            id,
+            &[id],
+            0.0,
+            0.0,
+            (1200, 800, 0),
+            &t,
+            1.0,
+        );
+        assert!(menu.actions().iter().any(|a| a.0 == "Löschen" && a.1));
+        let run = l.run;
+        let d = s.delete_elements(&[id]);
+        assert_eq!(d.removed, vec![id]);
+        assert!(s.chain(run).unwrap().hole_quads().is_empty());
+        assert_ne!(wahl(&mut s, vec3(5000.0, 3000.0, 0.0)), Some(id));
+        assert!(s.undo());
+        assert_eq!(wahl(&mut s, vec3(5000.0, 3000.0, 0.0)), Some(id));
+    }
+
+    /// Ist-Bilder G7c (Einstellungen #132 B1): Paneel einer Tür mit kurzem,
+    /// mittlerem und langem Raumnamen bei 100 % und 150 %, links die alte
+    /// Wertzeile „DIN links, öffnet in …“, rechts Anschlag und Raum als
+    /// Detailzeile. Nur auf Wunsch:
+    /// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbilder_g7c -- --ignored`
+    #[test]
+    #[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+    fn istbilder_g7c() {
+        use crate::selection;
+        use crate::ui::{Panel, Ui};
+        use sk_paint::Canvas;
+        use sk_ui::theme::Theme;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let lade = |n: &str| {
+            std::fs::read(lib.join(n))
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+        };
+        let fonts = || sk_ui::widgets::Fonts {
+            regular: lade("LiberationSans-Regular.ttf"),
+            bold: lade("LiberationSans-Bold.ttf"),
+            italic: None,
+        };
+        if fonts().regular.is_none() {
+            return;
+        }
+        std::fs::create_dir_all(&ziel).unwrap();
+        let t = Theme::dark();
+        let mut s = Scene::with_model(Model::with_seed(412));
+        let mut tuer = None;
+        assert!(s.edit_model("Haus", |m| {
+            tuer = Some(haus_in(m));
+            true
+        }));
+        let id = tuer.unwrap();
+        let raeume = s.model().spaces(s.active_storey());
+        let namen = [
+            "Küche",
+            "Hauswirtschaftsraum",
+            "Hauswirtschafts- und Abstellraum mit Waschmaschine",
+        ];
+        for sk in [1.0f32, 1.5] {
+            let (w, h) = ((1440.0 * sk) as u32, (900.0 * sk) as u32);
+            let mut bilder: Vec<Canvas> = Vec::new();
+            for name in namen {
+                assert!(s.edit_model("Name", |m| raeume
+                    .iter()
+                    .all(|&r| m.set_space(r, |sp| sp.name = name.into()))));
+                let neu = selection::props(&s, id).unwrap();
+                let i = neu.values.iter().position(|v| v.0 == "Anschlag").unwrap();
+                assert_eq!(neu.values[i + 1].1, format!("öffnet in {name}"));
+                // vorher: eine Wertzeile
+                let mut alt = neu.clone();
+                let raum = alt.values.remove(i + 1).1;
+                alt.values[i].1 = format!("{}, {raum}", alt.values[i].1);
+                for p in [alt, neu] {
+                    let mut ui = Ui::new(sk, &t);
+                    ui.fit(sk, w, h);
+                    ui.fonts = fonts();
+                    ui.set_props(Some(p));
+                    let (c, ..) = ui.paint(&t, Panel::Props, w, (32.0 * sk) as u32);
+                    bilder.push(c.clone());
+                }
+            }
+            // je Name eine Zeile: vorher, nachher
+            let rand = (20.0 * sk) as usize;
+            let bw = bilder.iter().map(|c| c.width).max().unwrap();
+            let bh = bilder.iter().map(|c| c.height).max().unwrap();
+            let (breite, hoehe) = (2 * bw + 3 * rand, 3 * bh + 4 * rand);
+            let mut m = Canvas::new(breite, hoehe);
+            m.fill_rect(0.0, 0.0, breite as f32, hoehe as f32, t.ui.bg);
+            for (k, c) in bilder.iter().enumerate() {
+                let (x, y) = (rand + (k % 2) * (bw + rand), rand + (k / 2) * (bh + rand));
+                m.blit(c, x as i32, y as i32);
+            }
+            let datei = format!("ist-g7c-anschlag-{}.png", (sk * 100.0) as u32);
+            std::fs::write(ziel.join(datei), m.to_png()).unwrap();
+        }
     }
 
     /// Sturz im Grundriss (G7b): eigene Stelle „Über der Schnittebene“ der

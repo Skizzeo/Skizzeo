@@ -1916,6 +1916,67 @@ fn perf_stempel_tueren() {
     println!("einmal je Modellstand, wenn der Stempel an der Mitte einen Bogen trifft.");
 }
 
+/// Wählen einer Öffnung im Grundriss (Grundriss G7): Treffer bei jeder
+/// Mausbewegung (im Loch einer Tür und daneben im Raum), Umriss der Auswahl
+/// je Bild und Paneel bei der Wahl, in der Stadt mit zwei Innentüren je
+/// Haus.
+#[test]
+#[ignore]
+fn perf_tuer_waehlen() {
+    use crate::wall_edit::tuer_edit::oeffnung_bei;
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
+    use sk_ui::theme::Theme;
+    println!();
+    println!(
+        "{:>6} {:>6} {:>10} {:>10} {:>10} {:>10}",
+        "Häuser", "Türen", "im Loch", "daneben", "Umriss", "Paneel"
+    );
+    let t = Theme::dark();
+    for n in [1, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let rechts = Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        };
+        innentueren(&mut s, rechts);
+        let (id, mitte) = s
+            .model()
+            .elements()
+            .iter()
+            .find_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, (o.path[0] + o.path[1]) * 0.5)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(oeffnung_bei(&s, mitte), Some(id));
+        let neben = vec3(mitte.x + 1500.0, mitte.y + 1500.0, 0.0);
+        let im_loch = time(50, || {
+            std::hint::black_box(oeffnung_bei(&s, mitte));
+        });
+        let daneben = time(50, || {
+            std::hint::black_box(oeffnung_bei(&s, neben));
+        });
+        let umriss = time(50, || {
+            std::hint::black_box(crate::selection::helpers(
+                &s,
+                id,
+                ViewKind::Plan,
+                None,
+                1.0,
+                &t,
+            ));
+        });
+        let paneel = time(20, || {
+            std::hint::black_box(crate::selection::props(&s, id));
+        });
+        println!(
+            "{n:>6} {:>6} {im_loch:>10.3} {daneben:>10.3} {umriss:>10.3} {paneel:>10.3}",
+            2 * n
+        );
+    }
+    println!("Zeiten in ms.");
+}
+
 /// Eine Tür 88,5 cm mit Aufschlag `swing` mitten in jeder Innenwand.
 fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
     use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
@@ -2187,4 +2248,106 @@ fn perf_breite() {
         println!("{n:>6} {griffe:>8.3} {kette:>8.3} {greifen:>8.3} {ziehen:>8.3} {los:>9.3}");
     }
     println!("Zeiten in ms je Mausbewegung, je Bild bzw. je Griff.");
+}
+
+/// Mengenliste bei 1 bis 1000 Häusern (höchstens `SKIZZEO_PERF_BIS`), alle
+/// in einem Gebäude, mit je zwei Innentüren und einem Fenster je Außenzug:
+/// `qto::schedule` und das erste Öffnen des Mengenfensters (rechnet die
+/// Liste mit). Beide wachsen höchstens linear mit der Zahl der Häuser.
+#[test]
+#[ignore]
+fn perf_mengen_haeuser() {
+    use crate::picking::Picking;
+    use crate::quantity::QuantityWindow;
+    use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
+    use sk_model::Category;
+    println!();
+    println!(
+        "{:>6} {:>8} {:>10} {:>10} {:>12}",
+        "Häuser", "Zeilen", "Mengen", "Fenster", "je Haus"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let mut je_haus = Vec::new();
+    for n in [1, 10, 100, 300, 1000, 3000]
+        .into_iter()
+        .filter(|&n| n <= bis)
+    {
+        let mut s = town_with_interior(n);
+        innentueren(
+            &mut s,
+            Swing {
+                side: FaceSide::Right,
+                din: Din::Links,
+            },
+        );
+        let st = s.active_storey();
+        s.edit_model("Fenster", |m| {
+            let aussen: Vec<_> = m
+                .runs()
+                .iter()
+                .filter(|(_, run)| {
+                    run.segments
+                        .first()
+                        .and_then(|e| m.element(*e))
+                        .is_some_and(|e| e.category.is_outer_wall())
+                })
+                .map(|(r, _)| r)
+                .collect();
+            for r in aussen {
+                let f = m.outer_face(r, 0).unwrap();
+                // Der Außenzug kann doppelt auftauchen: dort bleibt es frei
+                m.add_opening(Opening {
+                    kind: OpeningKind::Window,
+                    path: vec![f.at(f.u.0 + 1500.0, 0.0), f.at(f.u.0 + 2750.0, 0.0)],
+                    bottom: HeightRef::Line(st, HeightLine::Sill),
+                    top: HeightRef::Line(st, HeightLine::Lintel),
+                    reveal: None,
+                    install: Default::default(),
+                    swing: None,
+                    lock: Default::default(),
+                });
+            }
+            true
+        });
+        let innen = s
+            .model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| e.category == Category::InteriorWall)
+            .count();
+        assert_eq!(innen, 2 * n);
+        let t = Instant::now();
+        let sched = sk_model::qto::schedule(s.model());
+        let mengen = t.elapsed().as_secs_f64() * 1000.0;
+        let zeilen = sched.auto.len()
+            + sched
+                .buildings
+                .iter()
+                .flat_map(|b| &b.storeys)
+                .chain(&sched.loose)
+                .flat_map(|st| &st.groups)
+                .map(|g| g.rows.len())
+                .sum::<usize>();
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 1000);
+        let t = Instant::now();
+        q.sync(&mut s, &Picking::default(), false);
+        let fenster = t.elapsed().as_secs_f64() * 1000.0;
+        let haus = fenster / n as f64;
+        println!("{n:>6} {zeilen:>8} {mengen:>10.0} {fenster:>10.0} {haus:>12.2}");
+        if n >= 100 {
+            je_haus.push(haus);
+        }
+    }
+    println!("Zeiten in ms (Mengenliste, erstes Öffnen des Mengenfensters).");
+    // Höchstens linear: je Haus ab 100 Häusern nicht mehr als das Doppelte
+    if let (Some(a), Some(b)) = (je_haus.first(), je_haus.last()) {
+        assert!(
+            b <= &(2.0 * a),
+            "je Haus {a:.2} ms bei 100, {b:.2} ms zuletzt"
+        );
+    }
 }
