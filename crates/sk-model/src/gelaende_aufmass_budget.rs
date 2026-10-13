@@ -149,16 +149,20 @@ fn aufmass_im_budget() {
 /// Ziehen im Geschossmanager mit Aufmaß (W45-Nachprüfung B1): je
 /// Mausbewegung OK EG des ersten Gebäudes oder sein OK Gelände, danach
 /// Einbindetiefe und Bereich wie `sync_levels`. Die Lage bleibt dabei
-/// gemerkt; beim Gelände folgen alle Gründungen in einem Gang, weil das
-/// erste Gebäude die Höhenlage bestimmt. Vorher 15,5 und 67,9 ms (OK EG)
-/// und 26,2 und 1020 ms (Gelände) bei 1000 und 4000 Häusern. 4000 Häuser
-/// nur in Release, im Debug dauert schon das Bauen zu lange.
+/// gemerkt. Beim Gelände folgt je Bewegung nur die Gründung des ersten
+/// Gebäudes, die übrigen beim Loslassen in einem Gang, weil das erste
+/// Gebäude die Höhenlage bestimmt (Review #123 B1 zum Gelände-Zug); das
+/// Ergebnis gleicht demselben Versatz in einem Schritt. Vorher 15,5 und
+/// 67,9 ms (OK EG) und 26,2 und 1020 ms (Gelände) bei 1000 und 4000
+/// Häusern. 4000 Häuser nur in Release, im Debug dauert schon das Bauen zu
+/// lange.
 #[test]
 fn zuege_im_budget() {
-    let mut faelle = vec![(1000, [1.0, 5.0])];
+    let mut faelle = vec![(1000, [1.0, 0.1, 50.0])];
     if !cfg!(debug_assertions) {
-        faelle.push((4000, [2.0, 20.0]));
+        faelle.push((4000, [2.0, 0.1, 200.0]));
     }
+    let mut zuege = Vec::new();
     for (n, grenzen) in faelle {
         let (mut m, t) = haeuser_am_hang(n);
         m.begin("Aufmaß");
@@ -182,14 +186,30 @@ fn zuege_im_budget() {
         gleich.begin("Versatz");
         assert!(gleich.set_terrain_offset_of(b, 400.0));
         gleich.commit();
+        // wie der Geschossmanager (Review #123 B1 zum Gelände-Zug): je
+        // Bewegung nur das gezogene Gebäude, beim Loslassen die übrigen in
+        // einem Gang
         m.begin("Gelände ziehen");
+        // die Lage rechnet das erste Bild ohnehin (siehe oben)
+        std::hint::black_box(m.terrain_nhn());
         let t0 = Instant::now();
-        for k in 1..=10 {
-            assert!(m.set_terrain_offset_of(b, 40.0 * k as f64));
+        let zug = m.gelaende_zug(b).unwrap();
+        let beginn = ms_seit(t0);
+        let mut gelaende_zug = 0.0;
+        for k in 1..=100 {
+            let t0 = Instant::now();
+            assert!(m.gelaende_ziehen(&zug, 4.0 * k as f64));
+            gelaende_zug += ms_seit(t0) / 100.0;
             std::hint::black_box((m.embedment_of(gr), m.foundation_bottom_range_of(gr)));
         }
-        let gelaende_zug = ms_seit(t0) / 10.0;
+        let t0 = Instant::now();
+        let bewegt = m.gelaende_loslassen(zug);
+        let loslassen = ms_seit(t0);
+        // Gründungen an einer Grenze bleiben; ob gleich, zeigt der
+        // Vergleich unten
+        assert!(!bewegt.is_empty() && !bewegt.contains(&b));
         m.commit();
+        zuege.push(gelaende_zug);
         wie_gerechnet(&m);
         for (id, s) in m.storeys().iter() {
             let soll = gleich.storey(id).unwrap();
@@ -198,14 +218,23 @@ fn zuege_im_budget() {
         }
         eprintln!(
             "{n} Häuser mit Aufmaß je Mausbewegung: OK EG {eg_zug:.2} ms, \
-             Gelände {gelaende_zug:.2} ms"
+             Gelände {gelaende_zug:.4} ms (Beginn {beginn:.1} ms, Loslassen {loslassen:.1} ms)"
         );
         for (wert, grenze, was) in [
             (eg_zug, grenzen[0], "OK EG ziehen"),
             (gelaende_zug, grenzen[1], "Gelände ziehen"),
+            (beginn + loslassen, grenzen[2], "Beginn und Loslassen"),
         ] {
             assert!(wert < budget(grenze), "{n} Häuser, {was}: {wert:.2} ms");
         }
+    }
+    // Die Mausbewegung hängt nicht an der Zahl der Häuser; unter 20 µs
+    // zählt das Rauschen der Uhr
+    if let [z1, z4] = zuege[..] {
+        assert!(
+            z4 <= 1.5 * z1.max(0.02),
+            "1000 Häuser {z1:.4} ms, 4000 Häuser {z4:.4} ms"
+        );
     }
 }
 

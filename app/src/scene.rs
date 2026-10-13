@@ -569,6 +569,9 @@ pub struct Scene {
     /// Züge, die sich im offenen Schritt live geändert haben (der gezogene und
     /// die mitgeführten oder angeschlossenen).
     live: Vec<RunId>,
+    /// Laufender Zug an OK Gelände mit den Sohlplatten-Zügen des gezogenen
+    /// Gebäudes ([`Scene::drag_terrain`]).
+    gelaende_zug: Option<(sk_model::model::GelaendeZug, Vec<RunId>)>,
     bounds: Option<Aabb>,
     /// Aufgelöste Attributtabellen des Modells.
     table: DrawTable,
@@ -915,6 +918,7 @@ impl Scene {
             mass_alle: neuer_stand(),
             unsettled: Vec::new(),
             live: Vec::new(),
+            gelaende_zug: None,
             bounds: None,
             table,
             theme,
@@ -1917,6 +1921,7 @@ impl Scene {
     /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
+        self.gelaende_loslassen();
         // Räume folgen den Wänden im selben Schritt (G3)
         let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
@@ -1956,6 +1961,7 @@ impl Scene {
     /// Verwirft den offenen Schritt (Esc beim Ziehen); nur die betroffenen
     /// Wandzüge werden neu berechnet.
     pub fn rollback(&mut self) {
+        self.gelaende_zug = None;
         let touched = self.model.rollback();
         self.live.clear();
         self.mark_touched(&touched);

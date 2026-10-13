@@ -359,6 +359,7 @@ mod decke;
 
 #[path = "gelaende.rs"]
 mod gelaende;
+pub use gelaende::GelaendeZug;
 
 #[path = "gelaende_platte.rs"]
 mod gelaende_platte;

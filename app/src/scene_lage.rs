@@ -4,7 +4,8 @@
 //! mit ihm die Gründungen. Ändert sich dabei eine Unterkante, rechnet die
 //! Szene alles neu; sonst blieben 3D-Körper und Mengen beim alten Stand.
 //! Beim Ziehen von OK Gelände folgen so die Züge der Gebäude, deren
-//! Gründung sich bewegt hat (W45-Nachprüfung N1).
+//! Gründung sich bewegt hat (W45-Nachprüfung N1), die anderen Gebäude erst
+//! beim Loslassen (Review #123 B1 zum Gelände-Zug).
 
 use super::Scene;
 use sk_model::{BuildingId, ElementKind, LevelKind, RunId, StoreyId};
@@ -48,45 +49,67 @@ impl Scene {
     }
 
     /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
-    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur die Züge mit
+    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur seine Züge mit
     /// Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an OK
     /// Gelände. Ohne Aufmaß bleiben andere Gebäude (Entscheidung B). Mit
     /// Aufmaß bestimmt ein Gebäude ±0,00 für alle; zieht man dessen
-    /// Gelände, folgen im Modell auch die Gründungen der anderen, und ihre
-    /// Züge mit Sohlplatte werden hier neu (W45-Nachprüfung N1). Die Mengen
-    /// rechnet das Loslassen nach (Review Gelände).
+    /// Gelände, stehen die anderen bis zum Loslassen auf ihrer alten
+    /// Gründung, dann folgen sie in einem Gang ([`Scene::commit`], Review
+    /// #123 B1 zum Gelände-Zug). Je Bild kostet das so viel wie das gezogene
+    /// Gebäude. Die Mengen rechnet das Loslassen nach (Review Gelände).
     pub fn drag_terrain(&mut self, z: f64) {
         let max = sk_model::MAX_TERRAIN_OFFSET;
-        let Some(b) = self.active_building() else {
+        let Some(b) = self.active_building().filter(|_| z.is_finite()) else {
             return;
         };
-        let uk = self.gruendungen_uk();
-        if !(z.is_finite() && self.model.set_terrain_offset_of(b, (-z).clamp(-max, max))) {
+        if self.gelaende_zug.is_none() {
+            let Some(zug) = self.model.gelaende_zug(b) else {
+                return;
+            };
+            self.gelaende_zug = Some((zug, self.platten_zuege(&[b])));
+        }
+        let Some((zug, runs)) = &self.gelaende_zug else {
+            return;
+        };
+        if !self.model.gelaende_ziehen(zug, (-z).clamp(-max, max)) {
             return;
         }
-        let m = &self.model;
-        let mut neu: HashSet<Option<BuildingId>> = HashSet::from([Some(b)]);
-        for ((gr, alt), (_, jetzt)) in uk.iter().zip(self.gruendungen_uk()) {
-            if *alt != jetzt {
-                neu.insert(m.building_of(*gr));
+        for r in runs.clone() {
+            self.mark(r);
+        }
+        self.rebuild_dirty(true);
+    }
+
+    /// Loslassen eines Zugs an OK Gelände (aus [`Scene::commit`]): Die
+    /// übrigen Gründungen folgen im Modell, die Züge mit Sohlplatte der
+    /// Gebäude, deren Unterkante sich bewegt hat, werden neu.
+    pub(super) fn gelaende_loslassen(&mut self) {
+        let Some((zug, _)) = self.gelaende_zug.take() else {
+            return;
+        };
+        let bewegt = self.model.gelaende_loslassen(zug);
+        if !bewegt.is_empty() {
+            for r in self.platten_zuege(&bewegt) {
+                self.mark(r);
             }
         }
-        let runs: Vec<RunId> = m
-            .elements()
+    }
+
+    /// Züge mit Sohlplatte der Gebäude `haeuser`.
+    fn platten_zuege(&self, haeuser: &[BuildingId]) -> Vec<RunId> {
+        let haeuser: HashSet<BuildingId> = haeuser.iter().copied().collect();
+        let m = &self.model;
+        m.elements()
             .iter()
             .filter_map(|(_, e)| match e.kind {
                 ElementKind::GroundSlab(s) => Some(s.run),
                 _ => None,
             })
             .filter(|r| {
-                let st = m.run(*r).map(|x| x.storey);
-                neu.contains(&st.and_then(|st| m.building_of(st)))
+                let b = m.run(*r).and_then(|x| m.building_of(x.storey));
+                b.is_some_and(|b| haeuser.contains(&b))
             })
-            .collect();
-        for r in runs {
-            self.mark(r);
-        }
-        self.rebuild_dirty(true);
+            .collect()
     }
 
     /// Unterkanten aller Gründungen.
@@ -220,11 +243,24 @@ mod tests {
         s.begin("Gelände ziehen");
         for z in [-300.0, 250.0, -900.0] {
             s.drag_terrain(z);
+            // das andere Haus folgt erst beim Loslassen
+            assert_eq!(uk2(&s), vorher);
         }
         s.commit();
-        assert!((uk2(&s) - vorher).abs() > 100.0, "{vorher} {}", uk2(&s));
+        let nachher = uk2(&s);
+        assert!((nachher - vorher).abs() > 100.0, "{vorher} {nachher}");
         let mut neu = Scene::with_model(s.model().clone());
         assert!(bild(&mut s) == bild(&mut neu), "Bild wie nach Neuaufbau");
         assert_eq!(s.bounds(), neu.bounds());
+        // Esc lässt Gelände und Gründungen, wie sie waren
+        let nhn = s.model().terrain_nhn();
+        s.begin("Gelände ziehen");
+        s.drag_terrain(600.0);
+        s.rollback();
+        assert_eq!((uk2(&s), s.model().terrain_nhn()), (nachher, nhn));
+        assert!(bild(&mut s) == bild(&mut neu), "Bild nach Esc");
+        // Rückgängig nimmt Zug und Nachziehen in einem Schritt zurück
+        assert!(s.undo());
+        assert_eq!(uk2(&s), vorher);
     }
 }
