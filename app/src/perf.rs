@@ -2406,7 +2406,12 @@ fn perf_kanten() {
         "Los"
     );
     let mut je_bild = Vec::new();
-    for n in [1, 10, 100, 1000] {
+    // `SKIZZEO_PERF_BIS=4000` misst auch 4000 Häuser (Review zu #151)
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 1000, 4000].into_iter().filter(|&n| n <= bis) {
         let mut s = town_with_interior(n);
         let st = s.active_storey();
         assert!(s.edit_model("Fenster", |m| {

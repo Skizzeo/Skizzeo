@@ -206,10 +206,11 @@ impl Scene {
         let Some((t0, t1)) = im_quader(o, d, rahmen) else {
             return (best_o, best_w);
         };
-        // Zellen in der Reihenfolge, in der der Strahl sie kreuzt, für die
-        // Schenkel mit den Nachbarn im Spielraum am Austritt aus der Zelle
-        // (dort ist er in ihr am größten); wären es mehr als Einträge,
-        // gleich alle (ohne Raster)
+        // Zellen in der Reihenfolge, in der der Strahl sie kreuzt; für die
+        // Schenkel dazu die Zellen, die sein Stück darin mit dem Spielraum am
+        // Austritt berührt (dort ist er im Stück am größten), ohne die schon
+        // beim vorigen Stück geprüften. Wären es mehr als Einträge, gleich
+        // alle (ohne Raster)
         let (p, q) = (o + d * t0, o + d * t1);
         let (mut x, mut y) = (raster::zelle(p.x), raster::zelle(p.y));
         let schritte = (raster::zelle(q.x) as i64 - x as i64).abs()
@@ -220,8 +221,9 @@ impl Scene {
             return (best_o, best_w);
         }
         let k = (spiel / ZELLE).ceil().min(1e6) as i32;
-        let nachbarn = (2 * k as i64 + 1).pow(2);
-        let k = if nachbarn.saturating_mul(schritte + 1) >= felder.plaetze() as i64 {
+        // je Schritt kommt höchstens ein Streifen neuer Zellen dazu
+        let breite = 2 * k as i64 + 1;
+        let k = if breite.saturating_mul(schritte + 1 + breite) >= felder.plaetze() as i64 {
             pruefen(&alle(felder), &[]);
             None
         } else {
@@ -236,23 +238,30 @@ impl Scene {
             ((rand - ov) / dv, ZELLE / dv.abs())
         };
         let ((mut tx, dx), (mut ty, dy)) = (grenze(x, o.x, d.x), grenze(y, o.y, d.y));
+        let (mut ein, mut vorher) = (t0, None);
         for _ in 0..=schritte {
             let aus = tx.min(ty).min(t1);
             let mut naechst = pruefen(&[], zuege.in_zelle((x, y)));
-            let hier = k.map(|k| {
-                let g = (griff(o + d * aus).max(0.0) / ZELLE).ceil();
-                if g < k as f64 {
-                    g as i32
-                } else {
-                    k
+            if let Some(k) = k {
+                let g = griff(o + d * aus).max(0.0).min(k as f64 * ZELLE);
+                let (a, b) = (o + d * ein, o + d * aus);
+                let um = |u: f64, v: f64, c: i32| {
+                    let zu =
+                        |w: f64| raster::zelle(w).clamp(c.saturating_sub(k), c.saturating_add(k));
+                    (zu(u.min(v) - g).min(c), zu(u.max(v) + g).max(c))
+                };
+                let ((x0, x1), (y0, y1)) = (um(a.x, b.x, x), um(a.y, b.y, y));
+                for cy in y0..=y1 {
+                    for cx in x0..=x1 {
+                        let alt = vorher.is_some_and(|(a0, a1, b0, b1)| {
+                            (a0..=a1).contains(&cx) && (b0..=b1).contains(&cy)
+                        });
+                        if !alt {
+                            naechst = pruefen(felder.in_zelle((cx, cy)), &[]);
+                        }
+                    }
                 }
-            });
-            let um = || hier.into_iter().flat_map(|k| -k..=k);
-            for j in um() {
-                for i in um() {
-                    let c = (x.saturating_add(i), y.saturating_add(j));
-                    naechst = pruefen(felder.in_zelle(c), &[]);
-                }
+                vorher = Some((x0, x1, y0, y1));
             }
             if let Some(t) = naechst {
                 if t + VOR_WAND <= aus {
@@ -262,6 +271,7 @@ impl Scene {
             if aus >= t1 {
                 break;
             }
+            ein = aus;
             if tx < ty {
                 (x, tx) = (x + schritt(d.x), tx + dx);
             } else {
