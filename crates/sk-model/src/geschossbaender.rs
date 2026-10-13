@@ -140,14 +140,19 @@ impl Model {
     /// bleibt mindestens 10 cm hoch, und die Gründung reicht mindestens
     /// [`FROST_DEPTH`] unter OK Gelände (frostfrei, Gelände Thema 1).
     pub fn foundation_bottom_range_of(&self, gr: StoreyId) -> (f64, f64) {
+        self.foundation_bottom_range_at(gr, self.terrain_z_of_level(gr))
+    }
+
+    /// Wie [`Model::foundation_bottom_range_of`] mit schon bekanntem OK
+    /// Gelände `t` an der Gründung.
+    pub(super) fn foundation_bottom_range_at(&self, gr: StoreyId, t: f64) -> (f64, f64) {
         let eg = self
             .ground_storey(gr)
             .and_then(|e| self.storey(e))
             .map_or(0.0, |s| s.elevation);
         (
             eg - MAX_FOUNDATION,
-            (eg - self.max_slab_depth(gr) - MIN_FOOTING)
-                .min(self.terrain_z_of_level(gr) - FROST_DEPTH),
+            (eg - self.max_slab_depth(gr) - MIN_FOOTING).min(t - FROST_DEPTH),
         )
     }
 
@@ -265,7 +270,7 @@ impl Model {
             s.elevation = z;
             s.height = top - z;
         }
-        self.touch();
+        self.touch_height();
     }
 
     /// Unterkante der Gründung `gr` als Zahl (mm); außerhalb abgelehnt.

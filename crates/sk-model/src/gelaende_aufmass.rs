@@ -15,6 +15,8 @@ use sk_gelaende::abfrage::Abfrage;
 use sk_gelaende::codes::{Bedeutung, Codetabelle};
 use sk_gelaende::lesen::Punkt;
 use sk_gelaende::{netz, Netz, Rand};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
@@ -198,6 +200,50 @@ impl std::fmt::Debug for Merker {
     }
 }
 
+/// Was aus dem Aufmaß für das ganze Modell folgt, einmal je Modellstand
+/// gerechnet (Review #123 W45 B1): Vorher rechnete jede Geländeabfrage
+/// alle Plattenumrisse neu, und Gänge über alle Gründungen oder Platten
+/// wuchsen mit dem Quadrat der Häuser.
+#[derive(Debug, Default)]
+pub(crate) struct Lage {
+    /// Das Gebäude, das die Höhenlage bestimmt ([`Model::level_building`]).
+    haus: Option<BuildingId>,
+    /// ±0,00 in m ü. NHN ([`Model::terrain_nhn`]).
+    nhn: Option<f64>,
+    /// Tiefster Geländepunkt am Plattenrand je Gründung (m ü. NHN).
+    tief: HashMap<StoreyId, f64>,
+}
+
+/// Platz für die [`Lage`] im Modell mit dem Stand, zu dem sie gehört.
+/// Der Stand steigt mit jeder Änderung außer an Höhe und Einbindung einer
+/// Gründung: Davon hängt die Lage nicht ab, und beim Ziehen der UK im
+/// Geschossmanager bleibt sie so gemerkt.
+#[derive(Clone, Default)]
+pub(crate) struct Lagemerker {
+    stand: u64,
+    lage: RefCell<Option<(u64, Arc<Lage>)>>,
+}
+
+impl std::fmt::Debug for Lagemerker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Lagemerker")
+    }
+}
+
+impl Lagemerker {
+    /// Vergessen, wenn der Stand zurückgesetzt wird
+    /// ([`Model::restore_revision`]): Dieselbe Nummer kann dann für einen
+    /// anderen Stand stehen.
+    pub(crate) fn vergessen(&self) {
+        self.lage.borrow_mut().take();
+    }
+
+    /// Eine Änderung, von der die Lage abhängen kann.
+    pub(crate) fn weiter(&mut self) {
+        self.stand += 1;
+    }
+}
+
 /// Ein eingelesenes Höhenaufmaß.
 #[derive(Clone, Debug)]
 pub struct Terrain {
@@ -219,6 +265,9 @@ pub struct Terrain {
     pub codes: Vec<(String, Bedeutung)>,
     /// Zeilen der Datei, die nicht zählen, roh (Regel 72).
     pub raw: Vec<String>,
+    /// Die `[terrain]`-Zeile der Datei, roh, wenn ein Wert darin nicht galt
+    /// (Regel 72, Review #123 W45 B5); neue Werte im Kopf ersetzen sie.
+    pub head_raw: Option<String>,
     mesh: Merker,
 }
 
@@ -230,6 +279,7 @@ impl PartialEq for Terrain {
             &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
         ) && (&self.points, &self.boundaries, &self.codes, &self.raw)
             == (&o.points, &o.boundaries, &o.codes, &o.raw)
+            && self.head_raw == o.head_raw
     }
 }
 
@@ -249,6 +299,7 @@ impl Terrain {
             boundaries: Vec::new(),
             codes: Vec::new(),
             raw: Vec::new(),
+            head_raw: None,
             mesh: Merker::default(),
         }
     }
@@ -398,6 +449,20 @@ impl Terrain {
         let n = m.index.len();
         (n > 0).then(|| m.index.iter().map(|&i| self.points[i].h).sum::<f64>() / n as f64)
     }
+
+    /// Dasselbe Netz: gleiche Punkte (mit „aus“), Codes und Rand.
+    fn netz_gleich(&self, o: &Terrain) -> bool {
+        self.trim == o.trim && self.codes == o.codes && self.points == o.points
+    }
+
+    /// Gleiche Werte in der `[terrain]`-Zeile.
+    fn kopf_gleich(&self, o: &Terrain) -> bool {
+        (
+            &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href, self.local,
+        ) == (
+            &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
+        )
+    }
 }
 
 impl Model {
@@ -415,13 +480,27 @@ impl Model {
         neu
     }
 
-    /// Aufmaß schreiben, ohne die Gründungen nachzuführen.
+    /// Aufmaß schreiben, ohne die Gründungen nachzuführen. Das gemerkte
+    /// Netz geht nur mit, wenn Punkte, Codes und Rand gleich bleiben: Eine
+    /// Kopie mit abgewähltem Punkt brachte sonst das alte Netz mit (Review
+    /// #123 W45 B2).
     fn put_survey(&mut self, t: Option<Terrain>) -> bool {
         if t.as_ref() == self.terrain() {
             return false;
         }
+        let t = t.map(|mut t| {
+            t.mesh = match self.terrain() {
+                Some(alt) if alt.netz_gleich(&t) => alt.mesh.clone(),
+                _ => Merker::default(),
+            };
+            // neue Werte im Kopf ersetzen die rohe `[terrain]`-Zeile
+            if self.terrain().is_some_and(|alt| !alt.kopf_gleich(&t)) {
+                t.head_raw = None;
+            }
+            Arc::new(t)
+        });
         self.note_project();
-        self.project.terrain = t.map(Arc::new);
+        self.project.terrain = t;
         self.touch();
         true
     }
@@ -454,16 +533,7 @@ impl Model {
     /// Das Gebäude, das die Höhenlage bestimmt (§4.3): das mit der kleinsten
     /// Nummer unter denen mit Gründung.
     pub fn level_building(&self) -> Option<BuildingId> {
-        let mut bs: Vec<BuildingId> = self.plate_outlines().into_iter().map(|o| o.0).collect();
-        bs.dedup();
-        bs.into_iter().min_by(|a, b| {
-            let n = |x: &BuildingId| {
-                self.building(*x)
-                    .map(|b| b.number.clone())
-                    .unwrap_or_default()
-            };
-            n(a).cmp(&n(b))
-        })
+        self.lage().haus
     }
 
     /// Höhe von ±0,00 in m ü. NHN mit Aufmaß: fest (`abs`, `[location]
@@ -471,25 +541,73 @@ impl Model {
     /// Gebäudes plus sein Versatz; ohne Haus die mittlere Punkthöhe. `None`
     /// ohne Aufmaß oder Lage.
     pub fn terrain_nhn(&self) -> Option<f64> {
-        let t = self.terrain()?;
-        let f = self.survey_frame()?;
-        if t.href == HeightRef::Abs {
-            if let Some(h) = self.location().nhn {
-                return Some(h);
+        self.terrain()?;
+        self.lage().nhn
+    }
+
+    /// Die [`Lage`] zum jetzigen Modellstand, gerechnet beim ersten Bedarf.
+    fn lage(&self) -> Arc<Lage> {
+        let stand = self.lagemerker.stand;
+        if let Some((s, l)) = self.lagemerker.lage.borrow().as_ref() {
+            if *s == stand {
+                return l.clone();
             }
         }
-        let Some(b) = self.level_building() else {
-            return t.mean_height();
+        let l = Arc::new(self.lesend(|| self.lage_rechnen()));
+        *self.lagemerker.lage.borrow_mut() = Some((stand, l.clone()));
+        l
+    }
+
+    /// Ein Gang über die Wandzüge: Plattenumriss, Gebäude und Gründung je
+    /// Zug, mit Aufmaß dazu die Höhen entlang des Umrisses.
+    fn lage_rechnen(&self) -> Lage {
+        let aufmass = self.terrain().zip(self.survey_frame());
+        let mut lage = Lage::default();
+        // je Zug mit Gebäude: Gebäude und höchster Punkt am Umriss
+        let mut hoch: Vec<(BuildingId, Option<f64>)> = Vec::new();
+        for (id, r) in self.runs.iter() {
+            let Some(ring) = self.plate_outline(id) else {
+                continue;
+            };
+            let along = aufmass.map_or_else(Vec::new, |(t, f)| {
+                let q: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
+                t.along(&q)
+            });
+            let lo = along.iter().copied().reduce(f64::min);
+            if let (Some(h), Some(gr)) = (lo, self.foundation_level_of(r.storey)) {
+                let x = lage.tief.entry(gr).or_insert(h);
+                *x = x.min(h);
+            }
+            if let Some(b) = self.building_of(r.storey) {
+                hoch.push((b, along.into_iter().reduce(f64::max)));
+            }
+        }
+        let nummer = |b: BuildingId| {
+            self.building(b)
+                .map(|x| x.number.clone())
+                .unwrap_or_default()
         };
-        let mut hoch: Option<f64> = None;
-        for (_, ring) in self.plate_outlines().into_iter().filter(|o| o.0 == b) {
-            let r: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
-            if let Some(h) = t.max_along(&r) {
-                hoch = Some(hoch.map_or(h, |x: f64| x.max(h)));
+        lage.haus = hoch
+            .iter()
+            .map(|x| x.0)
+            .reduce(|a, b| if nummer(b) < nummer(a) { b } else { a });
+        let Some((t, _)) = aufmass else {
+            return lage;
+        };
+        lage.nhn = match (t.href, self.location().nhn, lage.haus) {
+            (HeightRef::Abs, Some(h), _) => Some(h),
+            (_, _, None) => t.mean_height(),
+            (_, _, Some(b)) => {
+                let h = hoch
+                    .iter()
+                    .filter(|x| x.0 == b)
+                    .filter_map(|x| x.1)
+                    .reduce(f64::max);
+                let versatz = self.terrain_offset_of(Some(b)) / 1000.0;
+                h.or_else(|| t.mean_height()).map(|h| h + versatz)
             }
-        }
-        let versatz = self.terrain_offset_of(Some(b)) / 1000.0;
-        hoch.or_else(|| t.mean_height()).map(|h| h + versatz)
+        };
+        lage
     }
 
     /// OK Gelände aus dem Aufmaß an der Modellstelle (mm, relativ zu
@@ -510,23 +628,9 @@ impl Model {
     /// (mm, relativ zu ±0,00); ab hier zählt ihre Einbindetiefe (§5 G1).
     /// `None` ohne Aufmaß, Lage, Netz oder Platte.
     pub(super) fn terrain_low_survey(&self, gr: StoreyId) -> Option<f64> {
-        let t = self.terrain()?;
-        let f = self.survey_frame()?;
-        let h0 = self.terrain_nhn()?;
-        let mut tief: Option<f64> = None;
-        for (id, r) in self.runs.iter() {
-            if self.foundation_level_of(r.storey) != Some(gr) {
-                continue;
-            }
-            let Some(ring) = self.plate_outline(id) else {
-                continue;
-            };
-            let q: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
-            if let Some(h) = t.min_along(&q) {
-                tief = Some(tief.map_or(h, |x: f64| x.min(h)));
-            }
-        }
-        tief.map(|h| (h - h0) * 1000.0)
+        self.terrain()?;
+        let lage = self.lage();
+        Some((lage.tief.get(&gr)? - lage.nhn?) * 1000.0)
     }
 
     /// Mit Aufmaß: Flächenmittel des Geländes über einem Umriss im Modell
@@ -616,13 +720,22 @@ impl Terrain {
         t
     }
 
-    /// Grenzen als Landeswerte; Nummern ohne Punkt fehlen.
+    /// Grenzen als Landeswerte; Nummern ohne Punkt fehlen, bei doppelter
+    /// Nummer gilt der erste Punkt. Die Nummern werden einmal in eine
+    /// Tabelle gelegt, nicht je Grenzpunkt gesucht (Review W45 H4).
     pub fn boundary_rings(&self) -> Vec<Vec<(f64, f64)>> {
+        if self.boundaries.is_empty() {
+            return Vec::new();
+        }
+        let mut nach_nr: HashMap<&str, (f64, f64)> = HashMap::with_capacity(self.points.len());
+        for p in &self.points {
+            nach_nr.entry(p.nr.as_str()).or_insert((p.e, p.n));
+        }
         self.boundaries
             .iter()
             .map(|b| {
                 b.iter()
-                    .filter_map(|nr| self.points.iter().find(|p| &p.nr == nr).map(|p| (p.e, p.n)))
+                    .filter_map(|nr| nach_nr.get(nr.as_str()).copied())
                     .collect::<Vec<_>>()
             })
             .filter(|r| r.len() >= 3)
@@ -761,8 +874,9 @@ impl Model {
 
     /// Schreibt die Höhe von ±0,00 nach `[location] nhn`, wenn sie über dem
     /// Gelände liegt (für IFC und Projektdaten; „beide schreiben am Ende
-    /// nhn“, §4.3).
-    fn terrain_nhn_merken(&mut self) {
+    /// nhn“, §4.3). Läuft auch am Ende jedes Schritts, damit die Höhe
+    /// Wandänderungen folgt (Review W45 H2).
+    pub(super) fn terrain_nhn_merken(&mut self) {
         if self.terrain().is_some_and(|t| t.href == HeightRef::High) {
             if let Some(h) = self.terrain_nhn() {
                 let h = (h * 1000.0).round() / 1000.0;
@@ -886,14 +1000,13 @@ impl Model {
     /// Höhe von ±0,00 fest setzen (m ü. NHN, im offenen Schritt): Höhenlage
     /// „absolut“.
     pub fn set_terrain_nhn(&mut self, h: f64) -> bool {
-        if !location::im_bereich(h, location::NHN) || self.terrain().is_none() {
+        if !location::im_bereich(h, location::NHN) {
             return false;
         }
+        let Some(mut t) = self.terrain().cloned() else {
+            return false;
+        };
         let vorher = self.foundation_terrain();
-        let mut t = self
-            .terrain()
-            .cloned()
-            .unwrap_or_else(|| Terrain::new(Crs::Local));
         t.href = HeightRef::Abs;
         let a = self.put_survey(Some(t));
         let l = Location {
@@ -933,15 +1046,22 @@ impl Model {
     /// Abstand der Höhenlinien (m) für den Wunsch `wunsch`: er selbst, oder
     /// der nächste gröbere aus 0,5 / 1 / 2 / 2,5 / 5 / 10 / 25 / 50 / 100 m,
     /// wenn er mehr als [`sk_gelaende::linien::MAX_STRECKEN`] Stücke gäbe
-    /// (Review #121, Auflage H1: vorab gezählt, in O(Dreiecke)). `None`
-    /// ohne Aufmaß oder wenn auch 100 m zu viele gäbe.
+    /// (Review #121, Auflage H1: vorab gezählt, in O(Dreiecke)). Der Wunsch
+    /// gilt geklemmt auf [`sk_gelaende::linien::MIN_STUFE`] bis 100 m, und
+    /// es passt nur ein Abstand, mit dem Höhen entstehen (Review #123 W45
+    /// B4). `None` ohne Aufmaß oder Netz, bei einem Wunsch, der keine Zahl
+    /// ist, oder wenn auch 100 m nicht passt.
     pub fn terrain_contour_step(&self, wunsch: f64) -> Option<f64> {
-        use sk_gelaende::linien::{strecken, MAX_STRECKEN};
+        use sk_gelaende::linien::{strecken, MAX_STRECKEN, MIN_STUFE};
         const GROEBER: [f64; 9] = [0.5, 1.0, 2.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0];
+        if wunsch.is_nan() {
+            return None;
+        }
+        let wunsch = wunsch.clamp(MIN_STUFE, GROEBER[8]);
         let m = self.terrain()?.mesh();
         std::iter::once(wunsch)
             .chain(GROEBER.into_iter().filter(|&s| s > wunsch))
-            .find(|&s| strecken(&m.netz, s) <= MAX_STRECKEN)
+            .find(|&s| strecken(&m.netz, s).is_some_and(|n| n <= MAX_STRECKEN))
     }
 
     /// Höhenlinien im Abstand `stufe` (m) im Modell: Höhe (m ü. NHN) und
@@ -1101,6 +1221,53 @@ mod tests {
         assert_eq!(ecke(&m, 7000.0, 6000.0), 0.0);
     }
 
+    /// Über Gelände folgt ±0,00 den Wänden: Steht das Haus nach einem Umbau
+    /// tiefer am Hang, schreibt der Schritt die neue Höhe nach `[location]
+    /// nhn`, Rückgängig nimmt sie zurück (Review W45 H2).
+    #[test]
+    fn nhn_folgt_den_waenden() {
+        let (mut m, b) = lindenhof_haus();
+        let (e0, n0) = (467108.214, 5878741.637);
+        m.begin("Lage");
+        m.set_location(Location {
+            utm: Some(Utm {
+                e: e0,
+                n: n0,
+                zone: 32,
+            }),
+            north: Some(Model::nord_zu(7f64.to_radians(), e0, n0, 32)),
+            ..Location::default()
+        });
+        m.commit();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(aufmass()));
+        m.commit();
+        let gerundet = |h: f64| (h * 1000.0).round() / 1000.0;
+        let vorher = m.location().nhn;
+        assert_eq!(vorher, m.terrain_nhn().map(gerundet));
+        // dasselbe Haus 3 m weiter südlich, wo der Hang tiefer liegt
+        let r = m.runs().ids().next().unwrap();
+        m.begin("Umbau");
+        assert!(m.remove_run(r));
+        let pts = [
+            sk_math::vec3(7000.0, 3000.0, 0.0),
+            sk_math::vec3(7000.0, 11000.0, 0.0),
+            sk_math::vec3(17000.0, 11000.0, 0.0),
+            sk_math::vec3(17000.0, 3000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let tx = m.commit().unwrap();
+        let jetzt = m.location().nhn;
+        assert_eq!(jetzt, m.terrain_nhn().map(gerundet));
+        assert!(
+            jetzt.unwrap() < vorher.unwrap() - 0.05,
+            "{jetzt:?} {vorher:?}"
+        );
+        m.apply(&tx, crate::txn::Direction::Undo);
+        assert_eq!(m.location().nhn, vorher);
+        assert_eq!(m.terrain_nhn().map(gerundet), vorher);
+    }
+
     /// Frostschürze ab dem tiefsten Gelände am Plattenrand, Erdmengen aus
     /// dem Flächenmittel unter der Platte (sollwerte-lindenhof-7.md): bei
     /// ±0,00 = 24,95 liegt UK Schürze auf 23,723, das Mittel auf 24,753.
@@ -1243,6 +1410,14 @@ mod tests {
         assert!(m.import_terrain(aufmass()));
         m.commit();
         assert_eq!(m.terrain_contour_step(0.25), Some(0.25));
+        // geklemmt, was gerechnet wird; keine Zahl passt nie (W45 B4)
+        assert_eq!(m.terrain_contour_step(0.0001), Some(0.01));
+        for w in [0.0, -1.0, f64::NEG_INFINITY] {
+            assert_eq!(m.terrain_contour_step(w), Some(0.01), "{w}");
+        }
+        assert_eq!(m.terrain_contour_step(f64::INFINITY), Some(100.0));
+        assert_eq!(m.terrain_contour_step(f64::NAN), None);
+        assert_eq!(m.terrain_contour_step(1e9), Some(100.0));
     }
 
     #[test]

@@ -291,6 +291,8 @@ pub struct Model {
     mass_sicht: crate::bemassung::MassSicht,
     /// Verzeichnis für einen lesenden Gang ([`Model::lesend`]).
     merker: verzeichnis::Merker,
+    /// Was aus dem Höhenaufmaß folgt, je Modellstand gemerkt.
+    lagemerker: gelaende_aufmass::Lagemerker,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -364,6 +366,9 @@ pub use gelaende_platte::{PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK
 
 #[path = "gelaende_aufmass.rs"]
 mod gelaende_aufmass;
+#[cfg(test)]
+#[path = "gelaende_aufmass_budget.rs"]
+mod gelaende_aufmass_budget;
 pub use gelaende_aufmass::{
     Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainMesh,
     TerrainPoint, Trim,
@@ -829,6 +834,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             merker: Default::default(),
+            lagemerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -913,6 +919,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             merker: Default::default(),
+            lagemerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -1113,6 +1120,13 @@ impl Model {
 
     fn touch(&mut self) {
         self.revision += 1;
+        self.lagemerker.weiter();
+    }
+
+    /// Wie `touch` für Höhe und Einbindung einer Gründung, die die Lage im
+    /// Aufmaß nicht ändern (Review #123 W45 B1).
+    fn touch_height(&mut self) {
+        self.revision += 1;
     }
 
     /// Setzt die Revision nach einem verworfenen Schritt auf den Stand davor
@@ -1121,6 +1135,7 @@ impl Model {
     pub fn restore_revision(&mut self, rev: u64) {
         debug_assert!(self.txn.is_none());
         self.revision = rev;
+        self.lagemerker.vergessen();
     }
 
     /// Neue, noch nie vergebene Guid.
@@ -3242,6 +3257,7 @@ impl Model {
             self.sync_soffits_in(scope);
             self.sync_terraces_in(scope);
             self.sync_flat_roofs_in(scope);
+            self.terrain_nhn_merken();
         }
         if let Some(id) = self.locked_change() {
             self.rollback();

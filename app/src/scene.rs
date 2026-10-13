@@ -39,6 +39,8 @@ mod schnitt;
 #[path = "scene_sicht.rs"]
 pub mod sicht;
 use schnitt::UnderMemo;
+#[path = "scene_lage.rs"]
+mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
 #[path = "scene_bemassung.rs"]
@@ -1467,11 +1469,13 @@ impl Scene {
         ort: sk_model::Location,
     ) -> bool {
         self.begin(label);
+        let uk = self.gruendungen_uk();
         let soil = p.soil;
         let a = self.model.set_project(p);
         let b = self.model.set_location(ort);
         // Bodenkennwerte der Erdarbeiten (Gruppe Baugrund) im selben Schritt
         let c = self.model.set_soil(soil);
+        self.gruendungen_folgen(&uk);
         self.commit();
         a || b || c
     }
@@ -1485,7 +1489,9 @@ impl Scene {
         fuss: Option<sk_model::Foot>,
     ) -> bool {
         self.begin(label);
+        let uk = self.gruendungen_uk();
         let ok = self.model.set_north_arrow(nord, fuss);
+        self.gruendungen_folgen(&uk);
         self.commit();
         ok
     }
