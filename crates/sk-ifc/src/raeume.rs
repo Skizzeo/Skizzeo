@@ -24,10 +24,13 @@ use crate::mengen;
 use crate::step::{e, lens, r, refs, s, typed, V};
 use sk_math::vec3;
 use sk_model::model::SCREED_SLAB_TYPE_GUID;
-use sk_model::{Category, ElementId, ElementKind, Guid, MaterialLayer, StoreyId, TypeCategory};
+use sk_model::{
+    Category, ElementId, ElementKind, Guid, MaterialLayer, Model, StoreyId, TypeCategory,
+};
 use sk_raum::ausbau;
 use sk_raum::raumbuch::Flaeche;
 use sk_raum::raumliste::{raumliste, AusbauDaten, RaumDaten};
+use sk_raum::{Begrenzung, Kante};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Name einer Fläche im Raum, Wandseiten ab 1 gezählt.
@@ -50,6 +53,36 @@ fn flaechenzweck(f: Flaeche) -> String {
         Flaeche::Fliesen(k) => format!("fliesen.{k}"),
         _ => format!("{f:?}").to_ascii_lowercase(),
     }
+}
+
+/// Zweck für die Kennung einer Bekleidung. Eine Wandseite hängt an der
+/// Guid ihrer Wand, der Seite und der Folge längs der Wand (zwei Kanten an
+/// derselben Seite, etwa neben einem Wandstummel), nicht an der Zählung der
+/// Raumkanten: die Kennung bleibt, wenn sich deren Reihenfolge ändert.
+fn bekleidungszweck(m: &Model, kanten: &[Kante], f: Flaeche) -> String {
+    let (art, k) = match f {
+        Flaeche::Wand(k) => ("wand", k),
+        Flaeche::Fliesen(k) => ("fliesen", k),
+        _ => return format!("covering.{}", flaechenzweck(f)),
+    };
+    let Some(Kante {
+        quelle: Begrenzung::Wand {
+            wand, seite, von, ..
+        },
+        ..
+    }) = kanten.get(k)
+    else {
+        return format!("covering.{}", flaechenzweck(f));
+    };
+    let folge = kanten
+        .iter()
+        .filter(|x| {
+            matches!(x.quelle, Begrenzung::Wand { wand: w, seite: s, von: v, .. }
+                if w == *wand && s == *seite && v < *von)
+        })
+        .count();
+    let g = m.element(*wand).map_or(Guid(0), |e| e.guid);
+    format!("covering.{art}.{}.{seite:?}.{folge}", g.to_ifc())
 }
 
 /// `PredefinedType` des `IfcCovering` und seines Typs nach der Art des
@@ -149,8 +182,9 @@ impl Ctx<'_> {
         }
         let mut liste: HashMap<ElementId, RaumDaten> =
             raumliste(m).into_iter().map(|r| (r.raum, r)).collect();
-        // Räume mit Fläche, aber ohne Ausbau (nur für den Bericht)
-        let mut mit_flaeche: HashSet<ElementId> = HashSet::new();
+        // Kanten der Räume mit Fläche (je Geschoss einmal erkannt): für die
+        // Kennungen der Wandseiten und den Bericht
+        let mut kanten: HashMap<ElementId, Vec<Kante>> = HashMap::new();
         let mut erkannt: HashSet<StoreyId> = HashSet::new();
         let bauteile: HashMap<Guid, ElementId> =
             m.elements().iter().map(|(id, e)| (e.guid, id)).collect();
@@ -167,11 +201,17 @@ impl Ctx<'_> {
                     .push((el.number.clone(), Grund::OhneGeschoss));
                 continue;
             };
-            let Some(rd) = liste.remove(&id) else {
-                if erkannt.insert(el.storey) {
-                    mit_flaeche.extend(sk_raum::raeume(m, el.storey).iter().filter_map(|f| f.raum));
+            if erkannt.insert(el.storey) {
+                for f in sk_raum::raeume(m, el.storey) {
+                    if let Some(r) = f.raum {
+                        let mut k = f.umriss;
+                        k.extend(f.loecher.into_iter().flatten());
+                        kanten.entry(r).or_insert(k);
+                    }
                 }
-                let grund = if mit_flaeche.contains(&id) {
+            }
+            let Some(rd) = liste.remove(&id) else {
+                let grund = if kanten.contains_key(&id) {
                     Grund::OhneForm
                 } else {
                     Grund::RaumOhneFlaeche
@@ -308,7 +348,8 @@ impl Ctx<'_> {
                     }
                 }
                 let art = bekleidungsart(ls.category);
-                let g = abgeleitet(el.guid, &format!("covering.{}", flaechenzweck(a.flaeche)));
+                let zweck = bekleidungszweck(m, kanten.get(&id).map_or(&[], |k| k), a.flaeche);
+                let g = abgeleitet(el.guid, &zweck);
                 let (shape, pl) = self.form_und_lage(&netze, true, s_pl);
                 let name = format!("{} {}", el.number, flaechenname(a.flaeche));
                 let ci = self.w.add(
@@ -526,5 +567,55 @@ impl Ctx<'_> {
                 ],
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sk_model::LevelKind;
+
+    /// Die Kennung einer Wandseite hängt an Wand und Seite: Beginnt der
+    /// Umriss an einer anderen Kante, behält jede Wandseite ihren Zweck.
+    #[test]
+    fn wandseite_unabhaengig_von_der_zaehlung() {
+        let mut m = Model::with_seed(9);
+        let b = m.add_building(1);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let g = m
+            .levels_in(Some(b))
+            .into_iter()
+            .find(|g| m.storey(*g).unwrap().kind == LevelKind::Storey)
+            .unwrap();
+        m.begin("Räume");
+        assert!(sk_raum::abgleichen(&mut m, &[g]) > 0);
+        m.commit();
+        let kanten = sk_raum::raeume(&m, g).remove(0).umriss;
+        assert_eq!(kanten.len(), 4);
+        let zwecke = |k: &[Kante]| {
+            let mut z: Vec<String> = (0..k.len())
+                .map(|i| bekleidungszweck(&m, k, Flaeche::Wand(i)))
+                .collect();
+            z.sort();
+            z
+        };
+        let vorher = zwecke(&kanten);
+        let mut gedreht = kanten.clone();
+        gedreht.rotate_left(1);
+        assert_eq!(zwecke(&gedreht), vorher);
+        // je Wand ein eigener Zweck, Fliesen davon getrennt
+        assert!(vorher.windows(2).all(|w| w[0] != w[1]), "{vorher:?}");
+        assert!(vorher[0].starts_with("covering.wand."), "{vorher:?}");
+        assert!(bekleidungszweck(&m, &kanten, Flaeche::Fliesen(0)).starts_with("covering.fliesen."));
+        assert_eq!(
+            bekleidungszweck(&m, &kanten, Flaeche::Decke),
+            "covering.decke"
+        );
     }
 }
