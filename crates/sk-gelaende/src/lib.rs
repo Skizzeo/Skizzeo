@@ -1,6 +1,7 @@
 //! Rechenkern des Geländemoduls (plan-gelaendemodul.md §7): Höhenaufmaß
 //! lesen und prüfen, Dreiecksnetz durch die Messpunkte, Höhe an einer
 //! Stelle, Profil entlang einer Linie, Höhenlinien und Flächenmittel.
+//! Gelesen werden Punktlisten und ASCII-DXF.
 //!
 //! Gerechnet wird in Metern relativ zu einem Bezugspunkt nahe den Punkten.
 //! Die Crate kennt weder das Modell noch Ausbaustufen; sie bekommt Bytes
@@ -10,6 +11,7 @@
 
 pub mod abfrage;
 pub mod codes;
+pub mod dxf;
 pub mod lesen;
 pub mod linien;
 pub mod netz;
