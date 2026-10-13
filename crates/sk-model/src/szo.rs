@@ -10,6 +10,7 @@
 //! `storey`, `run`, `wall`, `slab`, `footing`, `floor`, `prop`. Innerhalb eines Abschnitts nach Guid sortiert, damit Diffs
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
+mod aufmass;
 pub(crate) mod ausbau;
 mod bemassung;
 pub use bemassung::{firmenstil_lesen, firmenstil_text};
@@ -1483,7 +1484,11 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 44] = [
+    const KNOWN: [&str; 48] = [
+        "terrain",
+        "tpoint",
+        "tline",
+        "tcode",
         "opening",
         "pen",
         "linetype",
@@ -1798,8 +1803,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     }
     project.soil = crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default();
     project.soil_legacy = legacy;
-    (project.terrain_plate, project.terrain_plate_raw) =
-        gelaende::read(recs("terrainplate"), &lines, &mut hints)?;
+    gelaende::read_project(&mut project, &|k| recs(k).as_slice(), &lines, &mut hints)?;
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
     let alt = [text("site"), text("client"), text("author")];
     match recs("projectinfo").as_slice() {
@@ -2781,6 +2785,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     for (section, l) in ext_lines {
         model.ext.push_read(&section, l);
     }
+    // die `load_*` erhöhen den Lagestand nicht (W45-Nachprüfung H-e)
+    model.lage_vergessen();
     Ok(Loaded { model, hints })
 }
 

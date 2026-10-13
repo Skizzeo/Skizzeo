@@ -226,15 +226,34 @@ impl Model {
     /// Projektdaten); der Fußpunkt bleibt. Gleiche Werte ändern nichts.
     /// Eine unlesbare Zeile aus der Datei entfällt damit (Rückgängig holt sie
     /// zurück).
+    /// Mit Höhenaufmaß wandert damit das Gelände unter dem Haus; die
+    /// Gründungen behalten ihre Einbindetiefe.
     pub fn set_location(&mut self, l: Location) -> bool {
+        let vorher = self.foundation_terrain();
+        let neu = self.put_location(l);
+        self.resettle_foundations(vorher);
+        neu
+    }
+
+    /// Lage schreiben, ohne die Gründungen nachzuführen. Ändert sich nur
+    /// die Höhe von ±0,00, bleibt die Lage im Aufmaß gemerkt.
+    pub(crate) fn put_location(&mut self, l: Location) -> bool {
         let l = l.normalized();
         if l == self.location {
             return false;
         }
+        let nur_hoehe = Location {
+            nhn: self.location.nhn,
+            ..l
+        } == self.location;
         self.note_location();
         self.location = l;
         self.location_raw = None;
-        self.touch();
+        if nur_hoehe {
+            self.touch_height();
+        } else {
+            self.touch();
+        }
         true
     }
 
@@ -252,11 +271,13 @@ impl Model {
         if l.north.is_none() || (l == self.location && foot == self.north_foot()) {
             return false;
         }
+        let vorher = self.foundation_terrain();
         self.note_location();
         self.location = l;
         self.north_foot = foot;
         self.location_raw = None;
         self.touch();
+        self.resettle_foundations(vorher);
         true
     }
 

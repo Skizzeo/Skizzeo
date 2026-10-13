@@ -452,6 +452,8 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         }
     }
 
+    // erste Position mit Erdmengen aus dem Höhenaufmaß (Hinweis unten)
+    let mut erde_aus_mittel: Option<String> = None;
     for (g, zeilen) in je_leistung {
         let l = k.leistung(g).expect("Leistung");
         let ps: Vec<&Position> = zeilen.iter().map(|i| &b.positionen[*i]).collect();
@@ -467,6 +469,15 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             continue;
         };
         let oz_basis = k.oz(l);
+        let erde = |a: &&Ansatz| {
+            a.auto.is_some_and(|x| x.starts_with("earth."))
+                && a.formel
+                    .as_deref()
+                    .is_some_and(|f| f.contains(sk_model::qto_earth::AUS_AUFMASS))
+        };
+        if erde_aus_mittel.is_none() && ansatz.iter().any(erde) {
+            erde_aus_mittel = Some(oz_basis.clone());
+        }
         if mehrere {
             // Zeilen aus Erweiterungen nennen das Bauteil statt der Dicke
             // (Vorprüfung E8-3)
@@ -638,6 +649,14 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                 );
             }
         }
+    }
+
+    if let Some(oz) = erde_aus_mittel {
+        befunde.push(Befund::hinweis(
+            0,
+            crate::rechnung::ERDE_AUS_MITTEL,
+            Ort::Position(oz),
+        ));
     }
 
     // Regel 86 im LV: Der Katalog meldet eine doppelte OZ nur und behält
