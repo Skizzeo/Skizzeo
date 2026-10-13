@@ -645,3 +645,49 @@ fn datei_rundreise() {
         .iter()
         .any(|h| h.contains("OK Sohle über Gelände 9000")));
 }
+
+/// Review #123 (Hinweis zum Gelände-Zug): `gruendungs_basis` bildet OK EG
+/// und Plattentiefe je Gebäude nach; ihr Bereich gleicht je Gründung
+/// `foundation_bottom_range_at`, auch mit mehreren Geschossen, dicker
+/// Platte und Dämmung.
+#[test]
+fn bereich_der_basis_wie_je_gruendung() {
+    let mut m = Model::with_seed(13);
+    for (i, geschosse) in [1u8, 3, 2].into_iter().enumerate() {
+        let b = m.add_building(geschosse);
+        let ox = i as f64 * 20_000.0;
+        let pts = [
+            vec3(ox, 0.0, 0.0),
+            vec3(ox, 8000.0, 0.0),
+            vec3(ox + 10000.0, 8000.0, 0.0),
+            vec3(ox + 10000.0, 0.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+    }
+    let platten: Vec<ElementId> = m
+        .elements()
+        .iter()
+        .filter(|(_, e)| matches!(e.kind, ElementKind::GroundSlab(_)))
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(platten.len(), 3);
+    schritt(&mut m, |m| m.set_slab_thickness(platten[1], 350.0));
+    schritt(&mut m, |m| m.set_slab_insulation(platten[2], 120.0));
+    let basis = m.gruendungs_basis();
+    let gruendungen: Vec<(StoreyId, Option<BuildingId>)> = m
+        .storeys()
+        .iter()
+        .filter(|(_, s)| s.kind == LevelKind::Foundation)
+        .map(|(id, s)| (id, s.building))
+        .collect();
+    assert_eq!(gruendungen.len(), 3);
+    for (gr, b) in gruendungen {
+        for t in [-1500.0, -300.0, 0.0, 450.0] {
+            assert_eq!(
+                basis.bereich(b, t),
+                m.foundation_bottom_range_at(gr, t),
+                "{gr:?} bei {t}"
+            );
+        }
+    }
+}

@@ -24,7 +24,7 @@ use ecke_edit::EckeWahl;
 use ende_edit::EndeZug;
 use mass_edit::Masse;
 use mass_treffer::Bezugsmass;
-use oeffnung_kanten::HoeheZug;
+use oeffnung_kanten::{HoeheNach, HoeheZug};
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{ElementId, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -339,6 +339,9 @@ pub struct WallEdit {
     schloesser: std::cell::RefCell<Option<SchlossMerk>>,
     /// Laufendes Ziehen an Ober- oder Unterkante einer Öffnung (O7).
     pub hoehe: Option<HoeheZug>,
+    /// Nachkorrektur nach dem Ziehen an Ober- oder Unterkante
+    /// (Bedienbarkeit 40.7).
+    hoehe_nach: Option<HoeheNach>,
 }
 
 /// Öffnung, Schenkel und Modellstand mit ihren Schlössern.
@@ -531,6 +534,9 @@ impl WallEdit {
         if let Some(z) = &self.hoehe {
             return z.input.as_ref();
         }
+        if let Some(i) = self.hoehe_nach.as_ref().and_then(HoeheNach::input) {
+            return Some(i);
+        }
         self.input.as_ref()
     }
 
@@ -646,6 +652,9 @@ impl WallEdit {
         if let Some(z) = &self.hoehe {
             return z.pill(scene);
         }
+        if let Some(n) = self.hoehe_nach.as_ref().filter(|n| n.gilt(scene)) {
+            return n.pill(scene);
+        }
         let label = match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
             (None, Some(l)) if self.last_valid(scene) => l.target.label(),
@@ -692,8 +701,11 @@ impl WallEdit {
         if self.breite.is_some() {
             return breite_edit::LABEL;
         }
-        if self.hoehe.is_some() {
-            return oeffnung_kanten::LABEL;
+        if let Some(z) = &self.hoehe {
+            return z.label();
+        }
+        if let Some(n) = &self.hoehe_nach {
+            return n.label();
         }
         match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
@@ -704,10 +716,11 @@ impl WallEdit {
 
     /// Nachkorrektur beenden (Zeit um, Klick, andere Taste).
     pub fn end_post(&mut self) -> bool {
-        let had = self.last.is_some() && self.drag.is_none();
+        let had = (self.last.is_some() || self.hoehe_nach.is_some()) && self.drag.is_none();
         if self.drag.is_none() {
             self.last = None;
             self.input = None;
+            self.hoehe_nach = None;
         }
         had
     }
@@ -742,6 +755,26 @@ impl WallEdit {
             redraw: true,
             ..Default::default()
         };
+        // Nachkorrektur der Öffnungshöhe (Bedienbarkeit 40.7)
+        if let Some(n) = self.hoehe_nach.as_mut() {
+            if matches!(key, Key::Shift | Key::Control | Key::Alt) {
+                return None;
+            }
+            let gilt = n.gilt(scene);
+            match gilt.then(|| n.taste(key, mods, scene)).flatten() {
+                Some(changed) => {
+                    out.changed = changed;
+                    if changed {
+                        self.refresh(scene, cam, w, h, scale, enabled);
+                    }
+                    return Some(out);
+                }
+                None => {
+                    self.hoehe_nach = None;
+                    return None;
+                }
+            }
+        }
         let dragging = self.drag.is_some();
         let Some(i) = self.input.as_mut() else {
             let kind = if let Some(d) = &self.drag {
@@ -1362,7 +1395,7 @@ impl WallEdit {
         if let Some(z) = self.hoehe.as_mut() {
             let o = z.handle(e, scene, cam, w, h);
             if o.fertig {
-                self.hoehe = None;
+                self.hoehe_nach = self.hoehe.take().and_then(|z| z.nach(scene));
                 if let Event::MouseUp { x, y, .. } = *e {
                     self.mouse = Some((x, y));
                 }

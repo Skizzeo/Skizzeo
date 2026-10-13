@@ -5,6 +5,7 @@
 //! Befehle aus.
 
 use crate::document::Document;
+use crate::freischaltung::Freischaltung;
 use crate::scene::Scene;
 use sk_model::Model;
 use sk_paint::{Canvas, Path, Rgba};
@@ -178,6 +179,8 @@ pub struct FileMenu {
     /// Offene Vorschläge an die Firma, rechts an „Verwaltung …“
     /// (Bedienbarkeit 17.2); setzt die App beim Öffnen.
     pub vorschlaege: usize,
+    /// Freie Module: gesperrte Befehle fehlen im Menü.
+    pub frei: Freischaltung,
 }
 
 impl FileMenu {
@@ -195,12 +198,16 @@ impl FileMenu {
         *self = FileMenu {
             open: true,
             sel: Some(0),
+            frei: self.frei,
             ..FileMenu::default()
         };
     }
 
     pub fn close(&mut self) {
-        *self = FileMenu::default();
+        *self = FileMenu {
+            frei: self.frei,
+            ..FileMenu::default()
+        };
     }
 
     /// Klick neben das Menü: zu, ohne Wirkung.
@@ -209,9 +216,10 @@ impl FileMenu {
         self.close();
     }
 
-    /// Zeilen des Hauptmenüs. `save`: „Speichern“ ist möglich.
+    /// Zeilen des Hauptmenüs ohne gesperrte Befehle. `save`: „Speichern“
+    /// ist möglich.
     pub fn items(&self, save: bool, _recent: &Recent) -> Vec<MenuItem> {
-        vec![
+        let mut v = vec![
             item("Neu", "Strg+N", Command::New, true),
             item("Öffnen …", "Strg+O", Command::Open, true),
             MenuItem {
@@ -254,7 +262,9 @@ impl FileMenu {
             separator(),
             item("Schließen", "Strg+W", Command::Close, true),
             item("Beenden", "Alt+F4", Command::Quit, true),
-        ]
+        ];
+        v.retain(|i| !i.command.is_some_and(|c| self.frei.gesperrt(c)));
+        v
     }
 
     /// Zeilen des Untermenüs: die Dateien, dann „Liste leeren“; leer nur

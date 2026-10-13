@@ -24,7 +24,7 @@ const KLEIN: [&str; 3] = [
 /// eigenes Modul daneben (Pfadfinderregel). Ist eine Datei unter der Grenze,
 /// kommt sie von der Liste, ist sie kleiner geworden, wird die Zahl gesenkt.
 const UEBER: [(&str, usize); 2] = [
-    ("app/src/main.rs", 8_629),
+    ("app/src/main.rs", 8_625),
     ("app/src/kosten_view.rs", 3_027),
 ];
 
@@ -38,7 +38,7 @@ const KANTEN: [(&str, &[&str]); 13] = [
     ("sk-platform", &[]),
     ("sk-render", &["sk-math"]),
     ("sk-ui", &["sk-paint"]),
-    ("sk-model", &["sk-math", "sk-szb"]),
+    ("sk-model", &["sk-gelaende", "sk-math", "sk-szb"]),
     ("sk-cost", &["sk-math", "sk-model", "sk-szb"]),
     ("sk-ifc", &["sk-math", "sk-model"]),
     ("sk-plan", &["sk-math", "sk-model", "sk-paint"]),
@@ -299,6 +299,29 @@ fn bausteingrenze_kosten() {
     assert!(
         fehler.is_empty(),
         "Bausteingrenze §8:\n{}",
+        fehler.join("\n")
+    );
+}
+
+/// Die Freischaltung kennt nur `app` (architektur.md §7b): Modell,
+/// Kosten, Gelände, IFC und Zeichnen wissen nichts von Stufen. Auch in
+/// Kommentaren nicht, damit niemand dort danach fragt.
+#[test]
+fn freischaltung_nur_in_app() {
+    let fehler: Vec<String> = quellen()
+        .into_iter()
+        .filter(|(rel, _)| !rel.starts_with("app/") && !rel.contains("/tests/"))
+        .flat_map(|(rel, text)| {
+            text.lines()
+                .enumerate()
+                .filter(|(_, z)| z.to_lowercase().contains("freischaltung"))
+                .map(|(i, z)| format!("{rel}:{}: {}", i + 1, z.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        fehler.is_empty(),
+        "Freischaltung nur unter app/ (architektur.md §7b):\n{}",
         fehler.join("\n")
     );
 }
