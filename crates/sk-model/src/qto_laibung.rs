@@ -19,9 +19,11 @@ pub const RENDER: &str = "opening.reveal.render";
 pub const INNER: &str = "opening.reveal.inner";
 pub const FACING: &str = "opening.reveal.facing";
 pub const MESH: &str = "opening.mesh";
+pub const SLAB_REVEAL: &str = "opening.reveal.slab";
+pub const SLAB_EDGE: &str = "opening.slab_edge";
 
 /// Schlüssel der Öffnungen (`[service] auto=`), Einheit und Bedeutung.
-pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
+pub const SCHLUESSEL: [(&str, &str, &str); 7] = [
     (
         WDVS,
         "m",
@@ -47,11 +49,25 @@ pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
         "st",
         "Diagonalbewehrung WDVS an den Öffnungsecken: Fenster 4, Tür 2",
     ),
+    (
+        SLAB_REVEAL,
+        "m",
+        "Laibung an der Deckenaussparung links und rechts, je Seite die Deckendicke, Tiefe bis zur Innenfläche (Fenster über zwei Geschosse; Putz DIN 18350, Maler 18363)",
+    ),
+    (
+        SLAB_EDGE,
+        "m",
+        "Deckenstirn in der Aussparung hinter der Öffnung, Länge der Stirn, Höhe die Deckendicke (Fenster über zwei Geschosse; Putz DIN 18350, Maler 18363)",
+    ),
 ];
 
 /// Kostengruppen nach DIN 276: Außenwandbekleidungen außen und innen.
 const KG_AUSSEN: u16 = 335;
 const KG_INNEN: u16 = 336;
+/// Laibung und Stirn in der Deckenaussparung setzen Innenlaibung und
+/// Innenputz der Außenwand bündig fort: KG 336 wie die Innenlaibung
+/// (Review #143 H1, Kosten 13.10.).
+const KG_DECKE: u16 = KG_INNEN;
 
 /// Welche Laibung eine Wandschicht zeigt.
 fn art(model: &Model, layers: &[MaterialLayer], i: usize) -> Option<&'static str> {
@@ -151,7 +167,102 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             }
         }
     }
+    // Deckenaussparungen (Fenster über zwei Geschosse): je Öffnung die
+    // Seiten mit der Dicke ihrer Decke, die Stirnen mit Länge und Höhe und
+    // die Tiefe (Review W48 H3: Decken verschiedener Dicke)
+    struct Decke {
+        id: ElementId,
+        seiten: Vec<f64>,
+        stirnen: Vec<(f64, f64)>,
+        tiefe: f64,
+    }
+    let mut decke: Vec<Decke> = Vec::new();
+    for r in sched
+        .buildings
+        .iter()
+        .flat_map(|b| &b.storeys)
+        .chain(&sched.loose)
+        .flat_map(|s| &s.groups)
+        .flat_map(|g| &g.rows)
+    {
+        let (Some(ElementQto::Floor(_)), Some(e)) = (&r.q, model.element(r.element)) else {
+            continue;
+        };
+        let ElementKind::Floor(f) = &e.kind else {
+            continue;
+        };
+        let Some(Ok(d)) = model.floor(f.run) else {
+            continue;
+        };
+        for a in &d.aussparungen {
+            let Some(id) = a.opening else {
+                continue;
+            };
+            let i = match decke.iter().position(|x| x.id == id) {
+                Some(i) => i,
+                None => {
+                    decke.push(Decke {
+                        id,
+                        seiten: Vec::new(),
+                        stirnen: Vec::new(),
+                        tiefe: 0.0,
+                    });
+                    decke.len() - 1
+                }
+            };
+            let x = &mut decke[i];
+            x.seiten
+                .extend(std::iter::repeat_n(a.dicke, a.seiten as usize));
+            if a.stirn > 0.0 {
+                x.stirnen.push((a.stirn, a.dicke));
+            }
+            x.tiefe = x.tiefe.max(a.tiefe);
+        }
+    }
     let mut out = Vec::new();
+    for x in &decke {
+        let Some(e) = model.element(x.id) else {
+            continue;
+        };
+        let vorlage = AutoMenge {
+            element: x.id,
+            number: e.number.clone(),
+            storey: e.storey,
+            building: model.storey(e.storey).and_then(|s| s.building),
+            key: SLAB_REVEAL,
+            unit: "m",
+            value: 0.0,
+            kg: Some(KG_DECKE),
+            formula: String::new(),
+        };
+        if !x.seiten.is_empty() {
+            out.push(AutoMenge {
+                value: x.seiten.iter().sum(),
+                formula: formel(&x.seiten, x.tiefe),
+                ..vorlage.clone()
+            });
+        }
+        if !x.stirnen.is_empty() {
+            let m = |mm: f64| format!("{:.3}", mm / 1000.0).replace('.', ",");
+            let gleich = x.stirnen.iter().all(|s| s.1 == x.stirnen[0].1);
+            let formula = if gleich {
+                let l: f64 = x.stirnen.iter().map(|s| s.0).sum();
+                format!("{} m, Höhe {} m", m(l), m(x.stirnen[0].1))
+            } else {
+                x.stirnen
+                    .iter()
+                    .map(|(l, h)| format!("{} m (Höhe {} m)", m(*l), m(*h)))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            };
+            out.push(AutoMenge {
+                key: SLAB_EDGE,
+                value: x.stirnen.iter().map(|s| s.0).sum(),
+                formula,
+                ..vorlage
+            });
+        }
+    }
     for ((id, key), x) in &sum {
         let Some(e) = model.element(*id) else {
             continue;

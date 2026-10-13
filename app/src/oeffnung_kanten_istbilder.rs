@@ -47,7 +47,7 @@ fn gpu_istbilder_kanten() {
     let t = treffer(&s, &cam, p, W, H, 1.0, None).unwrap();
     let h = baender(&s, &cam, t, 1.0, true, &theme);
     ab(&bild(&mut r, &mut s, &cam, &h), "ist-o7-kanten.png");
-    // 2: Oberkante Richtung Sturz OG gezogen: sie endet unter der Decke
+    // 2: Oberkante an den Sturz OG gezogen: Fenster über zwei Geschosse
     let mut z = HoeheZug::greifen(&mut s, t, true, &cam, p, W, H, 1.0).unwrap();
     let st_og = s.model().run(og).unwrap().storey;
     let z_og = s
@@ -59,4 +59,19 @@ fn gpu_istbilder_kanten() {
     z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
     let h = z.helpers(&s, &cam, 1.0, true, &theme);
     ab(&bild(&mut r, &mut s, &cam, &h), "ist-o7-hoehe-og.png");
+    // 3: losgelassen, schräg von unten in die Öffnung: die Decke ist bis zur
+    // Innenfläche ausgespart, dahinter steht ihre Stirn
+    let up = Event::MouseUp {
+        button: MouseButton::Left,
+        x,
+        y,
+        mods,
+    };
+    z.handle(&up, &mut s, &cam, W, H);
+    let nah = Camera::looking_at(
+        vec3(9800.0, -4200.0, 1600.0),
+        vec3(7000.0, 0.0, 2800.0),
+        45.0,
+    );
+    ab(&bild(&mut r, &mut s, &nah, &[]), "ist-o8-decke.png");
 }

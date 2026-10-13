@@ -199,6 +199,100 @@ fn innenwand_und_fenster_kommen_in_ihre_ketten() {
     assert_eq!(seite(&a, 270).oeffnungen[0].brh, Some(z0 - e));
 }
 
+/// Bei WDVS ist die gezeichnete Öffnung die sichtbare in der Dämmung, im
+/// Mauerwerk ist das Loch um den Anschlag größer (Bedienbarkeit 40.1): Das
+/// Wandpaket misst die sichtbare Öffnung ab der Außenkante, „Tragende
+/// Schicht“ das Loch im Mauerwerk ab dessen Ecke, beides ohne Mischung.
+#[test]
+fn wdvs_fenster_in_beiden_bezuegen() {
+    let (mut m, run, st) = rechteck();
+    let (vor, _) = schichten(&m, run);
+    m.begin("Fenster");
+    let fenster = m
+        .add_opening(Opening {
+            kind: OpeningKind::Window,
+            path: vec![vec3(3010.0, 0.0, 0.0), vec3(2000.0, 0.0, 0.0)],
+            bottom: HeightRef::Line(st, HeightLine::Sill),
+            top: HeightRef::Line(st, HeightLine::Lintel),
+            reveal: None,
+            install: Default::default(),
+            swing: None,
+            lock: Vec::new(),
+        })
+        .expect("Fenster");
+    m.commit();
+    let c = m.chain(run).unwrap();
+    let loch = c.joints.holes.iter().find(|h| h.opening == Some(fenster));
+    let h = loch.expect("Loch").clone();
+    assert_eq!(h.reveal_u, (30.0, 30.0), "WDVS-Anschlag");
+    assert_eq!(h.reveal_z, (0.0, 30.0));
+    let (z0, z1) = m.opening_band(m.opening(fenster).unwrap()).unwrap();
+    let boden = m.storey(st).unwrap().elevation;
+    // Wandpaket: sichtbare Öffnung ab der Außenkante
+    let a = aussenmasse(&m, st).unwrap();
+    let sued = seite(&a, 270);
+    let o = kette(sued, Kettenart::Oeffnung).unwrap();
+    assert_eq!(masse(o), [2000.0, 1010.0, 10_000.0 - 3010.0]);
+    let om = &sued.oeffnungen[0];
+    assert_eq!((om.t0, om.t1), (2000.0, 3010.0));
+    assert!((om.hoehe - (z1 - z0)).abs() < 1e-9);
+    // Tragende Schicht: Loch im Mauerwerk ab der Ecke des Mauerwerks
+    let mut s = m.massstil().clone();
+    s.bezug = Aussenbezug::Rohbau;
+    m.begin("Stil");
+    assert!(m.set_massstil(s));
+    m.commit();
+    let a = aussenmasse(&m, st).unwrap();
+    let sued = seite(&a, 270);
+    let o = kette(sued, Kettenart::Oeffnung).unwrap();
+    assert_eq!(
+        masse(o),
+        [
+            (1970.0 - vor).round(),
+            1070.0,
+            (10_000.0 - vor - 3040.0).round()
+        ]
+    );
+    assert_eq!(
+        o.bezuege[2].quelle,
+        Some(Quelle::Oeffnung {
+            id: fenster,
+            ende: 1
+        })
+    );
+    let om = &sued.oeffnungen[0];
+    assert_eq!((om.t0, om.t1), (1970.0, 3040.0));
+    assert!((om.hoehe - (z1 - z0 + 30.0)).abs() < 1e-9, "{}", om.hoehe);
+    assert_eq!(om.brh, Some(z0 - boden));
+    // Eigener Anschlag, von außen gesehen links 2 cm, rechts 1 cm: links
+    // ist auf der Südseite Westen (kleineres t)
+    let mut f = m.opening(fenster).unwrap().clone();
+    f.reveal = Some([20.0, 10.0, 30.0, 0.0]);
+    m.begin("Anschlag");
+    assert!(m.set_opening(fenster, f));
+    m.commit();
+    let a = aussenmasse(&m, st).unwrap();
+    let o = kette(seite(&a, 270), Kettenart::Oeffnung).unwrap();
+    assert_eq!(
+        masse(o),
+        [
+            (1980.0 - vor).round(),
+            1040.0,
+            (10_000.0 - vor - 3020.0).round()
+        ]
+    );
+    // Ohne Anschlag (eigener Wert 0) misst auch das Mauerwerk die
+    // gezeichnete Öffnung
+    let mut f = m.opening(fenster).unwrap().clone();
+    f.reveal = Some([0.0; 4]);
+    m.begin("Ohne Anschlag");
+    assert!(m.set_opening(fenster, f));
+    m.commit();
+    let a = aussenmasse(&m, st).unwrap();
+    let o = kette(seite(&a, 270), Kettenart::Oeffnung).unwrap();
+    assert_eq!(masse(o)[1], 1010.0);
+}
+
 #[test]
 fn l_form_bekommt_die_kette_der_spruenge() {
     // L: unten 12 m breit, rechts oben 5 m zurück
