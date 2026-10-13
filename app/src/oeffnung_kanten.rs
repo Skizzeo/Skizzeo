@@ -19,11 +19,12 @@ use crate::camera::Camera;
 use crate::link_view::{Schloss, Schlossart};
 use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::meldung::Meldung;
+use crate::scene::kanten::VOR_WAND;
 use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
 use sk_model::oeffnung::{FaceLine, HeightLine, HeightRef, Opening, MIN_OPENING};
-use sk_model::{ElementId, ElementKind, LevelEdge, LevelKind, LevelRef, Model, StoreyId};
+use sk_model::{ElementId, LevelEdge, LevelKind, LevelRef, Model, StoreyId};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -114,79 +115,64 @@ pub fn treffer(
     halten: Option<ElementId>,
 ) -> Option<Treffer> {
     let (o, d) = cam.ray(x, y, w, h);
-    let m = scene.model();
     let mut best: Option<(f64, Treffer)> = None;
-    for (id, e) in m.elements().iter() {
-        let ElementKind::Opening(op) = &e.kind else {
-            continue;
-        };
-        if !scene.pickable(id) {
-            continue;
+    // Nur die Schenkel in den Feldern, die der Strahl kreuzt (W43 B1)
+    let (_, wand) = scene.kanten_strahl(o, d, |s| {
+        if !scene.pickable(s.id) {
+            return None;
         }
-        let Some((legs, z0, z1)) = schenkel(m, op) else {
-            continue;
-        };
-        let n = legs.len();
-        for (k, &(a, b)) in legs.iter().enumerate() {
-            let Some((dir, nrm, len)) = ebene(a, b) else {
-                continue;
-            };
-            let dn = d.dot(nrm);
-            if dn.abs() < 1e-9 {
-                continue;
-            }
-            let t = (a - o).dot(nrm) / dn;
-            if t <= 0.0 || best.is_some_and(|b| b.0 <= t) {
-                continue;
-            }
-            let p = o + d * t;
-            let Some(mm) = mm_je_px(cam, p, w, h) else {
-                continue;
-            };
-            let tol = GRIFF_PX * scale * mm;
-            let rand = if halten == Some(id) {
-                HALTEN_PX * scale * mm
-            } else {
-                tol
-            };
-            let (u, z) = ((p - a).dot(dir), p.z);
-            if u < -rand || u > len + rand || z < z0 - rand || z > z1 + rand {
-                continue;
-            }
-            // Die nächste Kante innerhalb des Greifabstands
-            let in_u = u >= -tol && u <= len + tol;
-            let in_z = z >= z0 - tol && z <= z1 + tol;
-            let mut kanten = Vec::new();
-            if k == 0 && in_z {
-                kanten.push((u.abs(), Kante::Ende(0)));
-            }
-            if k + 1 == n && in_z {
-                kanten.push(((u - len).abs(), Kante::Ende(n)));
-            }
-            if in_u {
-                kanten.push(((z - z0).abs(), Kante::Unten));
-                kanten.push(((z1 - z).abs(), Kante::Oben));
-            }
-            let kante = kanten
-                .into_iter()
-                .filter(|x| x.0 <= tol)
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|x| x.1);
-            best = Some((
-                t,
-                Treffer {
-                    id,
-                    schenkel: k,
-                    kante,
-                },
-            ));
+        let (dir, nrm, len) = ebene(s.a, s.b)?;
+        let dn = d.dot(nrm);
+        if dn.abs() < 1e-9 {
+            return None;
         }
-    }
+        let t = (s.a - o).dot(nrm) / dn;
+        if t <= 0.0 || best.is_some_and(|b| b.0 <= t) {
+            return None;
+        }
+        let p = o + d * t;
+        let mm = mm_je_px(cam, p, w, h)?;
+        let tol = GRIFF_PX * scale * mm;
+        let rand = if halten == Some(s.id) {
+            HALTEN_PX * scale * mm
+        } else {
+            tol
+        };
+        let (u, z, z0, z1) = ((p - s.a).dot(dir), p.z, s.z0, s.z1);
+        if u < -rand || u > len + rand || z < z0 - rand || z > z1 + rand {
+            return None;
+        }
+        // Die nächste Kante innerhalb des Greifabstands
+        let in_u = u >= -tol && u <= len + tol;
+        let in_z = z >= z0 - tol && z <= z1 + tol;
+        let mut kanten = Vec::new();
+        if s.k == 0 && in_z {
+            kanten.push((u.abs(), Kante::Ende(0)));
+        }
+        if s.k + 1 == s.n && in_z {
+            kanten.push(((u - len).abs(), Kante::Ende(s.n)));
+        }
+        if in_u {
+            kanten.push(((z - z0).abs(), Kante::Unten));
+            kanten.push(((z1 - z).abs(), Kante::Oben));
+        }
+        let kante = kanten
+            .into_iter()
+            .filter(|x| x.0 <= tol)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|x| x.1);
+        let tr = Treffer {
+            id: s.id,
+            schenkel: s.k,
+            kante,
+        };
+        best = Some((t, tr));
+        Some(t)
+    });
     let (t, tr) = best?;
     // Durch das Loch geht der Strahl weiter; knapp daneben trifft er die
     // Wand in der Fläche selbst. Davor darf nichts liegen.
-    let frei = scene.raycast(o, d).is_none_or(|(ts, _)| ts >= t - 20.0);
-    frei.then_some(tr)
+    wand.is_none_or(|ts| ts >= t - VOR_WAND).then_some(tr)
 }
 
 /// Ein Band von `a` nach `b`: unter der Maus mit Schatten, sonst dünn.
@@ -321,21 +307,32 @@ pub fn bindung_name(m: &Model, r: HeightRef) -> Option<String> {
 }
 
 /// Freie Höhe `z` (genau) als Maß über OK Rohdecke des Geschosses, in dem
-/// sie liegt.
+/// sie liegt. Genau auf OK Rohdecke wäre das die Bindung selbst (W43 B3):
+/// Dort zählt sie vom Geschoss darunter, im untersten von dessen Oberkante.
 fn frei_bei(m: &Model, st: StoreyId, z: f64) -> HeightRef {
     let alle = geschosse(m, st);
-    let (s, e) = alle
+    let i = alle
         .iter()
-        .rev()
-        .find(|g| g.1 <= z + 1e-6)
-        .or(alle.first())
+        .rposition(|g| g.1 <= z + 1e-6)
+        .unwrap_or_default();
+    let (s, e) = alle
+        .get(i)
         .copied()
         .unwrap_or((st, m.storey(st).map_or(0.0, |s| s.elevation)));
-    HeightRef::Level(LevelRef {
-        storey: s,
-        edge: LevelEdge::Bottom,
-        offset: z - e,
-    })
+    let r = |storey, edge, offset| {
+        HeightRef::Level(LevelRef {
+            storey,
+            edge,
+            offset,
+        })
+    };
+    if (z - e).abs() > 1e-6 {
+        return r(s, LevelEdge::Bottom, z - e);
+    }
+    match i.checked_sub(1).and_then(|j| alle.get(j)) {
+        Some(&(u, eu)) => r(u, LevelEdge::Bottom, z - eu),
+        None => r(s, LevelEdge::Top, z - m.storey(s).map_or(e, |x| x.top())),
+    }
 }
 
 /// Die Öffnung `id` mit gelöster bzw. gebundener Ober- (`oben`) oder
@@ -934,6 +931,45 @@ pub(super) mod tests {
     }
 
     /// Frei gezogen steht die Unterkante im Raster über OK Rohdecke; Zahl +
+    /// Das Schloss an OK Rohdecke löst die Kante und bindet sie wieder, im
+    /// untersten Geschoss wie darüber (Review W43 B3).
+    #[test]
+    fn schloss_an_rohdecke() {
+        let (mut s, cam, id, eg, og) = haus();
+        for run in [eg, og] {
+            let st = s.model().run(run).unwrap().storey;
+            let unten = HeightRef::Level(LevelRef::bottom(st));
+            let mut o = s.model().opening(id).unwrap().clone();
+            (o.bottom, o.top) = (unten, HeightRef::Line(st, HeightLine::Lintel));
+            assert!(s.opening_schritt(id, o, "Höhe gebunden"));
+            let z = s.model().height_z(unten).unwrap();
+            let t = treffer(
+                &s,
+                &cam,
+                bei(&s, &cam, id, 7000.0, z + 5.0),
+                W,
+                H,
+                1.0,
+                None,
+            );
+            let t = t.expect("Unterkante von außen");
+            let schloss = |s: &Scene| {
+                schloesser(s, t)
+                    .into_iter()
+                    .find(|c| c.art == Schlossart::Hoehe(false))
+                    .map(|c| c.linked)
+            };
+            assert_eq!(schloss(&s), Some(true));
+            let frei = umbinden(s.model(), id, false).unwrap();
+            assert_eq!(bindung_name(s.model(), frei.bottom), None);
+            assert!((s.model().height_z(frei.bottom).unwrap() - z).abs() < 1e-6);
+            assert!(s.opening_schritt(id, frei, "Höhe gelöst"));
+            assert_eq!(schloss(&s), Some(false));
+            let wieder = umbinden(s.model(), id, false).unwrap();
+            assert_eq!(wieder.bottom, unten);
+        }
+    }
+
     /// Enter setzt die Höhe genau, zu niedrig gilt Enter nicht.
     #[test]
     fn hoehe_frei_und_getippt() {

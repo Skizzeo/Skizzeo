@@ -334,9 +334,15 @@ pub struct WallEdit {
     /// Öffnung unter der Maus in 3D und den Ansichten und die Kante dort
     /// (Paket O7).
     kante: Option<oeffnung_kanten::Treffer>,
+    /// Schlösser dieser Öffnung je Schenkel und Modellstand: Die Chips
+    /// fragen sie in jedem Bild (W43 B2).
+    schloesser: std::cell::RefCell<Option<SchlossMerk>>,
     /// Laufendes Ziehen an Ober- oder Unterkante einer Öffnung (O7).
     pub hoehe: Option<HoeheZug>,
 }
+
+/// Öffnung, Schenkel und Modellstand mit ihren Schlössern.
+type SchlossMerk = ((ElementId, usize, u64), Vec<crate::link_view::Schloss>);
 
 /// Ergebnis eines Ereignisses für die App.
 #[derive(Default)]
@@ -876,9 +882,18 @@ impl WallEdit {
     /// Schlösser an der Öffnung unter der Maus in 3D und den Ansichten
     /// (Breite und Höhenbindung, Paket O7).
     pub fn aussen_schloesser(&self, scene: &Scene) -> Vec<crate::link_view::Schloss> {
-        match self.kante {
-            Some(t) if !self.is_dragging() => oeffnung_kanten::schloesser(scene, t),
-            _ => Vec::new(),
+        let Some(t) = self.kante.filter(|_| !self.is_dragging()) else {
+            return Vec::new();
+        };
+        let key = (t.id, t.schenkel, scene.model().revision());
+        let mut merk = self.schloesser.borrow_mut();
+        match merk.as_ref() {
+            Some((k, v)) if *k == key => v.clone(),
+            _ => {
+                let v = oeffnung_kanten::schloesser(scene, t);
+                *merk = Some((key, v.clone()));
+                v
+            }
         }
     }
 
