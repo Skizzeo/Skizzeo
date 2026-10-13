@@ -1,4 +1,4 @@
-//! Tests und Probe zu Review W30, W33, L24, W36 und W39: nur geänderte
+//! Tests und Probe zu Review W30, W33, L24, W36, W39 und L29: nur geänderte
 //! Geschosse rechnen neu, ein Ebenenwechsel rechnet nichts, Geschosse
 //! außerhalb des Bildes fehlen; die Probe misst das erste Bild,
 //! Ebenenwechsel, Maus im Freien, Ziehen, Loslassen, Neuzeichnen, Ketten
@@ -341,6 +341,80 @@ fn zwei_haeuser_sechs_meter() {
         .stand(&w, geschosse(&w, ViewKind::Plan, &[]), Some(&f))
         .unwrap();
     assert_eq!(n.geschosse[0].b.zahlen.len(), allein[0]);
+}
+
+/// Die Maus fragt nur Geschosse am Blickstrahl ab und verpasst keins, das
+/// sie trifft: im Grundriss nah und fern, in 3D von oben und flach über
+/// die Siedlung (Review L29).
+#[test]
+fn hover_nur_am_strahl() {
+    let Some(f) = schrift() else {
+        return;
+    };
+    let s = siedlung(100);
+    let mut mk = Massketten::default();
+    let st = mk.gezeigt(&s, ViewKind::Plan, &[], Some(&f)).unwrap();
+    assert_eq!(st.geschosse.len(), 100);
+    let (lo, hi) = s.bounds().unwrap();
+    let mitte = (lo + hi) * 0.5;
+    let oben =
+        |p: Vec3, halb: f64| Camera::parallel(p, 90f64.to_radians(), -89.9f64.to_radians(), halb);
+    for (k, cam) in [
+        oben(mitte, 120_000.0),
+        oben(vec3(5000.0, 4000.0, 0.0), 12_000.0),
+        Camera::looking_at(
+            mitte + vec3(0.55, -1.0, 0.9).normalized() * 300_000.0,
+            mitte,
+            45.0,
+        ),
+        Camera::looking_at(vec3(-20_000.0, 90_000.0, 1700.0), mitte, 60.0),
+        // Weit weg (Review W47 B1): der Spielraum reicht über viele Zellen
+        Camera::looking_at(
+            mitte + vec3(0.55, -1.0, 0.9).normalized() * (60.0 * (hi - lo).length()),
+            mitte,
+            45.0,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let blick = Blick {
+            cam: &cam,
+            w: W,
+            h: H,
+        };
+        let (mut getroffen, mut gefragt) = (0, 0);
+        // Ein Raster über das Bild und die Mitte jedes zehnten Geschosses
+        let mitten = st
+            .geschosse
+            .iter()
+            .step_by(10)
+            .filter_map(|g| cam.project((g.rahmen[0] + g.rahmen[1]) * 0.5, W, H));
+        let bild = (0..(32 * 18)).map(|i| ((i % 32) as f64 * W / 31.0, (i / 32) as f64 * H / 17.0));
+        for (x, y) in bild.chain(mitten) {
+            let strahl = cam.ray(x, y, W, H);
+            let nah = st.am_strahl(&blick, strahl, 12.0);
+            gefragt += nah.len();
+            for g in &st.geschosse {
+                if g.unter_strahl(&blick, strahl, 12.0).is_some() {
+                    assert!(
+                        nah.iter().any(|n| std::ptr::eq(*n, &**g)),
+                        "Kamera {k}, {x} {y}"
+                    );
+                    getroffen += 1;
+                }
+            }
+        }
+        assert!(getroffen > 0, "Kamera {k}");
+        // Im Schnitt nur ein Bruchteil der Geschosse je Mausbewegung; weit
+        // weg höchstens alle
+        let grenze = if k < 4 {
+            32 * 18 * 100 / 4
+        } else {
+            42 * 18 * 100
+        };
+        assert!(gefragt < grenze, "Kamera {k}: {gefragt}");
+    }
 }
 
 fn reps_von(n: usize) -> usize {

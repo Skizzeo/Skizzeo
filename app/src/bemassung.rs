@@ -14,6 +14,7 @@
 //! [`crate::wall_edit::mass_edit`].
 
 use crate::camera::Camera;
+use crate::scene::raster::Raster;
 use crate::scene::{naechster_stand, neuer_stand, Scene};
 use crate::ui::ViewKind;
 use crate::wall_edit::mass_edit::Hervor;
@@ -29,7 +30,7 @@ use sk_plan::schrift::Schrift;
 use sk_render::{Helper, Ink, SOLID};
 use sk_ui::theme::Theme;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -212,9 +213,41 @@ pub type Teil = (u64, Rc<[Ink]>);
 /// Gerechnete Ketten der Geschosse einer Ebene.
 pub struct Stand {
     pub geschosse: Vec<Rc<Geschoss>>,
+    /// Raster über die Quader der Geschosse, beim ersten Zeigen gebaut
+    /// (Review L29).
+    raster: OnceCell<Raster>,
 }
 
 impl Stand {
+    pub fn neu(geschosse: Vec<Rc<Geschoss>>) -> Stand {
+        Stand {
+            geschosse,
+            raster: OnceCell::new(),
+        }
+    }
+
+    /// Geschosse, deren Quader der Blickstrahl `(o, d)` mit `r`
+    /// Bildpunkten Spielraum treffen kann (eine Obermenge derer, die
+    /// [`Geschoss::unter_strahl`] nennt), in ihrer Reihenfolge.
+    pub fn am_strahl(&self, blick: &Blick, (o, d): (Vec3, Vec3), r: f64) -> Vec<&Geschoss> {
+        let raster = self.raster.get_or_init(|| {
+            Raster::aus(
+                self.geschosse
+                    .iter()
+                    .map(|g| Some((g.rahmen[0], g.rahmen[1]))),
+            )
+        });
+        // Spielraum, wie ihn ein Geschoss am Strahl höchstens annimmt: es
+        // rechnet ihn eine halbe Diagonale hinter seiner Mitte, die selbst
+        // bis eine halbe Diagonale hinter dem berührten Punkt liegt
+        let rand = raster.rand(blick.cam, blick.h, r, (o, d), raster.diagonale());
+        raster
+            .am_strahl(o, d, rand)
+            .into_iter()
+            .filter_map(|i| self.geschosse.get(i).map(|g| &**g))
+            .collect()
+    }
+
     /// Ketten und Bild je Geschoss.
     pub fn paare(&self) -> impl Iterator<Item = (&Aussenmasse, &Bild)> {
         self.geschosse.iter().map(|g| (&*g.a, &g.b))
@@ -343,7 +376,7 @@ pub fn schrift_laden(name: &str, ui: Option<&Font>) -> Option<Schrift> {
 
 impl Massketten {
     /// Schrift des Stils, einmal geladen.
-    fn schrift(&mut self, name: &str, ui: Option<&Font>) -> Option<Rc<Schrift>> {
+    pub(crate) fn schrift(&mut self, name: &str, ui: Option<&Font>) -> Option<Rc<Schrift>> {
         self.schriften
             .entry(name.to_string())
             .or_insert_with(|| schrift_laden(name, ui).map(Rc::new))
@@ -475,7 +508,7 @@ impl Massketten {
         }
         let nr: Vec<u64> = liste.iter().map(|g| g.nr).collect();
         if self.stand.as_ref().is_none_or(|(k, _)| *k != nr) {
-            self.stand = Some((nr, Rc::new(Stand { geschosse: liste })));
+            self.stand = Some((nr, Rc::new(Stand::neu(liste))));
         }
         self.zuletzt = Some((naechster_stand(), scene.mass_alle(), st, versatz.clone()));
         self.stand.as_ref().map(|(_, s)| s.clone())
@@ -815,11 +848,7 @@ pub fn linien(
                 .iter()
                 .find(|h| h.0 == st.kette)
                 .map_or(stil, |h| h.1);
-            let mm = match st.art {
-                Strichart::Masslinie => s.linie,
-                Strichart::Hilfslinie => s.hilfslinie,
-                Strichart::Symbol => s.symbol_strich,
-            };
+            let mm = staerke(s, st.art);
             Helper {
                 a: st.a.to_f32(),
                 b: st.b.to_f32(),
@@ -832,6 +861,16 @@ pub fn linien(
             }
         })
         .collect()
+}
+
+/// Strichstärke einer Strichart nach dem Stil (mm auf dem Papier); auch
+/// für die Live-Kette der Innentür (Grundriss G7).
+pub fn staerke(s: &Stil, art: Strichart) -> f64 {
+    match art {
+        Strichart::Masslinie => s.linie,
+        Strichart::Hilfslinie => s.hilfslinie,
+        Strichart::Symbol => s.symbol_strich,
+    }
 }
 
 /// Gefüllte Dreiecke des Bildes in der Farbe des Stils, hervorgehobene in

@@ -1123,8 +1123,10 @@ impl Model {
         self.lagemerker.weiter();
     }
 
-    /// Wie `touch` für Höhe und Einbindung einer Gründung, die die Lage im
-    /// Aufmaß nicht ändern (Review #123 W45 B1).
+    /// Wie `touch` für Änderungen, von denen die Lage im Aufmaß nicht
+    /// abhängt: Geschosshöhen, Höhe und Einbindung einer Gründung, Versatz
+    /// und feste Höhe von ±0,00 (Review #123 W45 B1 und Nachprüfung). So
+    /// bleibt sie beim Ziehen im Geschossmanager gemerkt.
     fn touch_height(&mut self) {
         self.revision += 1;
     }

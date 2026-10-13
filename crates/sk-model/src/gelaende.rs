@@ -169,13 +169,14 @@ impl Model {
         true
     }
 
-    /// Schreibt den Versatz eines Gebäudes (mit Rückgängig).
+    /// Schreibt den Versatz eines Gebäudes (mit Rückgängig). Die Lage im
+    /// Aufmaß bleibt gemerkt, der Versatz kommt beim Lesen dazu.
     fn put_terrain(&mut self, b: BuildingId, offset: f64) {
         note!(self, Building, self.buildings, b);
         if let Some(x) = self.buildings.get_mut(b) {
             x.terrain = offset;
         }
-        self.touch();
+        self.touch_height();
     }
 
     /// OK Gelände je Gründung, vor einer Änderung des Geländes gemerkt
@@ -201,22 +202,31 @@ impl Model {
     /// bewegt hat, bleibt alles.
     pub(super) fn resettle_foundations(&mut self, vorher: Vec<(StoreyId, f64)>) {
         // OK Gelände je Gründung einmal für den ganzen Gang: Eine Gründung
-        // zu setzen ändert kein Gelände, aber den Modellstand (Review #123
-        // W45 B1, sonst je Gründung alle Umrisse neu)
+        // zu setzen ändert kein Gelände (Review #123 W45 B1, sonst je
+        // Gründung alle Umrisse neu)
         let jetzt: std::collections::HashMap<StoreyId, f64> =
             self.foundation_terrain().into_iter().collect();
-        for (gr, alt) in vorher {
-            let Some(&t) = jetzt.get(&gr) else {
-                continue;
-            };
-            if (t - alt).abs() <= 1e-6 {
-                continue;
-            }
+        let bewegt: Vec<(StoreyId, f64, f64)> = vorher
+            .into_iter()
+            .filter_map(|(gr, alt)| {
+                let t = *jetzt.get(&gr)?;
+                ((t - alt).abs() > 1e-6).then_some((gr, alt, t))
+            })
+            .collect();
+        if bewegt.is_empty() {
+            return;
+        }
+        // Bereich je Gebäude in einem Gang: Eine Gründung zu setzen ändert
+        // weder OK EG noch eine Platte (W45-Nachprüfung B1, sonst suchte
+        // jede Gründung alle Geschosse und Bauteile ab)
+        let basis = self.gruendungs_basis();
+        for (gr, alt, t) in bewegt {
             let Some(s) = self.storey(gr) else {
                 continue;
             };
             let want = s.embed.unwrap_or(alt - s.elevation);
-            self.settle_foundation_at(gr, want, t);
+            let bereich = basis.bereich(s.building, t);
+            self.settle_foundation_in(gr, want, t, bereich);
         }
     }
 
@@ -232,7 +242,19 @@ impl Model {
 
     /// Wie [`Model::settle_foundation`] mit schon bekanntem OK Gelände `t`.
     fn settle_foundation_at(&mut self, gr: StoreyId, want: f64, t: f64) -> bool {
-        let (lo, hi) = self.foundation_bottom_range_at(gr, t);
+        let bereich = self.foundation_bottom_range_at(gr, t);
+        self.settle_foundation_in(gr, want, t, bereich)
+    }
+
+    /// Wie [`Model::settle_foundation_at`] mit schon bekanntem Bereich
+    /// ([`Model::foundation_bottom_range_at`]).
+    fn settle_foundation_in(
+        &mut self,
+        gr: StoreyId,
+        want: f64,
+        t: f64,
+        (lo, hi): (f64, f64),
+    ) -> bool {
         let z = (t - want).min(hi).max(lo);
         self.move_foundation_bottom(gr, z);
         let embed = ((t - z) - want).abs() > 1e-6;

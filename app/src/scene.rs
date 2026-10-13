@@ -47,6 +47,8 @@ pub mod kanten;
 mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
+#[path = "scene_raster.rs"]
+pub mod raster;
 #[path = "scene_bemassung.rs"]
 mod scene_bemassung;
 #[path = "scene_oeffnung.rs"]
@@ -107,6 +109,9 @@ struct RunCache {
     foot_bounds: Option<Aabb>,
     /// Fugen des Zugs (W-11), für die Plättchen in jedem Bild.
     joints: Vec<usize>,
+    /// Löcher im Grundriss ([`WallChain::hole_quads`]), mit dem Zug
+    /// berechnet (Review L26).
+    loecher: Vec<(sk_model::wand_loch::Hole, [Vec3; 4])>,
     /// Mengen je Segment; leer, solange der Zug gezogen wird.
     qto: Vec<WallQto>,
     /// Gekoppelter Zug darunter (gestapelte Außenwand, B12): kein eigenes
@@ -167,9 +172,12 @@ impl RunCache {
             .iter()
             .flat_map(|&(a, b)| [a, b])
             .fold(None, |acc, p| union(acc, Some((p, p))));
+        let loecher = chain.hole_quads();
+        let loecher = loecher.into_iter().map(|(h, q)| (h.clone(), q)).collect();
         RunCache {
             id,
             joints: chain.straight_joints(),
+            loecher,
             plan: Vec::new(),
             under: Vec::new(),
             bounds: solid.bounds(),
@@ -551,6 +559,8 @@ pub struct Scene {
     serial: u64,
     /// Zwischenspeicher je Wandzug, über den Arena-Platz der [`RunId`].
     cache: Vec<Option<RunCache>>,
+    /// Quader der Wandzüge je Platz im Raster (Review L26).
+    raster: raster::Raster,
     /// Wandzüge, die neu berechnet werden müssen.
     dirty: Vec<RunId>,
     all_dirty: bool,
@@ -906,6 +916,7 @@ impl Scene {
             erkennung: RefCell::default(),
             staende: HashMap::new(),
             cache: Vec::new(),
+            raster: Default::default(),
             dirty: Vec::new(),
             all_dirty: true,
             mass_stand: HashMap::new(),
@@ -1522,6 +1533,7 @@ impl Scene {
                 .map(|c| c.as_ref().map_or(0, |c| c.builds))
                 .collect();
             self.cache.clear();
+            self.raster.leeren();
             let ids: Vec<RunId> = self.model.runs().ids().collect();
             for id in ids {
                 let b = builds.get(id.index() as usize).copied().unwrap_or(0);
@@ -1572,12 +1584,17 @@ impl Scene {
                         rc.splits = std::mem::take(&mut old.splits);
                     }
                 }
+                let q = rc
+                    .bounds
+                    .map(|b| union(Some(b), rc.foot_bounds).unwrap_or(b));
+                self.raster.setze(slot, q);
                 self.cache[slot] = Some(rc);
             }
             // Gelöscht: Platz nur räumen, wenn kein neuerer Zug darin steht
             None => {
                 if self.cache[slot].as_ref().is_some_and(|c| c.id == id) {
                     self.cache[slot] = None;
+                    self.raster.entferne(slot);
                 }
             }
         }
@@ -1831,15 +1848,6 @@ impl Scene {
 
     pub fn chain(&self, run: RunId) -> Option<&WallChain> {
         self.cached(run).map(|c| &c.chain)
-    }
-
-    /// Berechnete Wandzüge mit dem Quader ihres Körpers (Vortest beim
-    /// Zeigen auf eine Wand, Review #82 1).
-    pub fn zuege(&self) -> impl Iterator<Item = (RunId, &WallChain, Option<Aabb>)> + '_ {
-        self.cache
-            .iter()
-            .flatten()
-            .map(|c| (c.id, &c.chain, c.bounds))
     }
 
     /// Fangziele eines Geschosses ([`Model::fangziele`]) aus den berechneten
@@ -2956,43 +2964,6 @@ impl Scene {
         }
     }
 
-    /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
-    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur seine Züge
-    /// mit Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an
-    /// OK Gelände, und andere Gebäude bleiben (Entscheidung B). Die Mengen
-    /// rechnet das Loslassen nach (Review Gelände).
-    pub fn drag_terrain(&mut self, z: f64) {
-        let Some(gr) = self.model.foundation_level_of(self.active_storey()) else {
-            return;
-        };
-        let (lo, hi) = self.model.terrain_z_of_level_range(gr);
-        // mit Aufmaß wandert ±0,00 aller Gebäude
-        let b = self
-            .model
-            .terrain()
-            .is_none()
-            .then(|| self.model.building_of(gr));
-        if z.is_finite() && self.model.set_terrain_z_of_level(gr, z.clamp(lo, hi)) {
-            let runs: Vec<RunId> = self
-                .model
-                .elements()
-                .iter()
-                .filter_map(|(_, e)| match e.kind {
-                    sk_model::ElementKind::GroundSlab(s) => Some(s.run),
-                    _ => None,
-                })
-                .filter(|r| {
-                    let st = self.model.run(*r).map(|x| x.storey);
-                    b.is_none_or(|b| st.and_then(|st| self.model.building_of(st)) == b)
-                })
-                .collect();
-            for r in runs {
-                self.mark(r);
-            }
-            self.rebuild_dirty(true);
-        }
-    }
-
     /// Nach einer Änderung der Geschossbänder des Gebäudes, zu dem `level`
     /// gehört: dessen Züge live neu. Jedes Gebäude hat eigene Geschosse, die
     /// Züge anderer Gebäude bleiben (U4); ohne Gebäude alle.
@@ -3969,7 +3940,8 @@ impl Scene {
             stamp: self.vis_stamp(),
         };
         let mut best: Option<(f64, RunId, u32)> = None;
-        for c in self.cache.iter().flatten() {
+        let plaetze = self.plaetze_am_strahl(origin, dir, 0.0);
+        for c in plaetze.iter().filter_map(|&i| self.cache.get(i)?.as_ref()) {
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
                 continue;
             }
@@ -3999,10 +3971,11 @@ impl Scene {
         self.sicht_fuer(view);
         let cut = self.plan_cut();
         let active = self.active_storey();
-        let modes: Vec<(RunId, PlanMode)> = self
-            .cache
+        // Nur Züge nahe dem Strahl (Review L26)
+        let plaetze = self.plaetze_am_strahl(origin, dir, 0.0);
+        let modes: Vec<(RunId, PlanMode)> = plaetze
             .iter()
-            .flatten()
+            .filter_map(|&i| self.cache.get(i)?.as_ref())
             .map(|c| (c.id, self.plan_mode(c.id, active)))
             .collect();
         let filter = self.filtering();
@@ -4013,7 +3986,10 @@ impl Scene {
             stamp: self.vis_stamp(),
         };
         let mut best: Option<(f64, RunId, u32)> = None;
-        for c in self.cache.iter_mut().flatten() {
+        for &i in &plaetze {
+            let Some(Some(c)) = self.cache.get_mut(i) else {
+                continue;
+            };
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
                 continue;
             }

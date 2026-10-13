@@ -244,21 +244,30 @@ impl std::fmt::Debug for Merker {
 /// Was aus dem Aufmaß für das ganze Modell folgt, einmal je Modellstand
 /// gerechnet (Review #123 W45 B1): Vorher rechnete jede Geländeabfrage
 /// alle Plattenumrisse neu, und Gänge über alle Gründungen oder Platten
-/// wuchsen mit dem Quadrat der Häuser.
+/// wuchsen mit dem Quadrat der Häuser. Versatz und feste Höhe von ±0,00
+/// stehen nicht darin, sie kommen beim Lesen dazu ([`Model::terrain_nhn`]):
+/// So bleibt die Lage gemerkt, während OK Gelände gezogen wird
+/// (W45-Nachprüfung B1).
 #[derive(Debug, Default)]
 pub(crate) struct Lage {
+    /// Aufmaß und Lage waren da: Nur dann gibt es ±0,00 in NHN.
+    aufmass: bool,
     /// Das Gebäude, das die Höhenlage bestimmt ([`Model::level_building`]).
     haus: Option<BuildingId>,
-    /// ±0,00 in m ü. NHN ([`Model::terrain_nhn`]).
-    nhn: Option<f64>,
+    /// Höchster Geländepunkt am Plattenrand des bestimmenden Gebäudes
+    /// (m ü. NHN), ohne seinen Versatz.
+    hoch: Option<f64>,
+    /// Mittlere Punkthöhe des Aufmaßes (m ü. NHN).
+    mittel: Option<f64>,
     /// Tiefster Geländepunkt am Plattenrand je Gründung (m ü. NHN).
     tief: HashMap<StoreyId, f64>,
 }
 
 /// Platz für die [`Lage`] im Modell mit dem Stand, zu dem sie gehört.
-/// Der Stand steigt mit jeder Änderung außer an Höhe und Einbindung einer
-/// Gründung: Davon hängt die Lage nicht ab, und beim Ziehen der UK im
-/// Geschossmanager bleibt sie so gemerkt.
+/// Der Stand steigt mit jeder Änderung außer an Geschosshöhen, an Höhe und
+/// Einbindung einer Gründung, am Versatz und an der festen Höhe von ±0,00:
+/// Davon hängt die Lage nicht ab, und beim Ziehen im Geschossmanager bleibt
+/// sie so gemerkt ([`Model::touch_height`]).
 #[derive(Clone, Default)]
 pub(crate) struct Lagemerker {
     stand: u64,
@@ -619,7 +628,28 @@ impl Model {
     /// ohne Aufmaß oder Lage.
     pub fn terrain_nhn(&self) -> Option<f64> {
         self.terrain()?;
-        self.lage().nhn
+        self.nhn_aus(&self.lage())
+    }
+
+    /// ±0,00 in m ü. NHN aus der gemerkten [`Lage`], mit fester Höhe oder
+    /// Versatz zum jetzigen Stand.
+    fn nhn_aus(&self, lage: &Lage) -> Option<f64> {
+        let t = self.terrain().filter(|_| lage.aufmass)?;
+        match (t.href, self.location().nhn, lage.haus) {
+            (HeightRef::Abs, Some(h), _) => Some(h),
+            (_, _, None) => lage.mittel,
+            (_, _, Some(b)) => {
+                let versatz = self.terrain_offset_of(Some(b)) / 1000.0;
+                lage.hoch.or(lage.mittel).map(|h| h + versatz)
+            }
+        }
+    }
+
+    /// Die gemerkte [`Lage`] verwerfen, etwa nach dem Lesen einer Datei:
+    /// Dessen `load_*` erhöhen den Lagestand nicht, und eine Abfrage
+    /// mittendrin hätte eine halbe Lage gemerkt (W45-Nachprüfung H-e).
+    pub(crate) fn lage_vergessen(&self) {
+        self.lagemerker.vergessen();
     }
 
     /// Die [`Lage`] zum jetzigen Modellstand, gerechnet beim ersten Bedarf.
@@ -671,19 +701,14 @@ impl Model {
         let Some((t, _)) = aufmass else {
             return lage;
         };
-        lage.nhn = match (t.href, self.location().nhn, lage.haus) {
-            (HeightRef::Abs, Some(h), _) => Some(h),
-            (_, _, None) => t.mean_height(),
-            (_, _, Some(b)) => {
-                let h = hoch
-                    .iter()
-                    .filter(|x| x.0 == b)
-                    .filter_map(|x| x.1)
-                    .reduce(f64::max);
-                let versatz = self.terrain_offset_of(Some(b)) / 1000.0;
-                h.or_else(|| t.mean_height()).map(|h| h + versatz)
-            }
-        };
+        lage.aufmass = true;
+        lage.mittel = t.mean_height();
+        lage.hoch = lage.haus.and_then(|b| {
+            hoch.iter()
+                .filter(|x| x.0 == b)
+                .filter_map(|x| x.1)
+                .reduce(f64::max)
+        });
         lage
     }
 
@@ -707,7 +732,7 @@ impl Model {
     pub(super) fn terrain_low_survey(&self, gr: StoreyId) -> Option<f64> {
         self.terrain()?;
         let lage = self.lage();
-        Some((lage.tief.get(&gr)? - lage.nhn?) * 1000.0)
+        Some((lage.tief.get(&gr)? - self.nhn_aus(&lage)?) * 1000.0)
     }
 
     /// Mit Aufmaß: Flächenmittel des Geländes über einem Umriss im Modell
@@ -1251,9 +1276,11 @@ impl Model {
     /// wenn er mehr als [`sk_gelaende::linien::MAX_STRECKEN`] Stücke gäbe
     /// (Review #121, Auflage H1: vorab gezählt, in O(Dreiecke)). Der Wunsch
     /// gilt geklemmt auf [`sk_gelaende::linien::MIN_STUFE`] bis 100 m, und
-    /// es passt nur ein Abstand, mit dem Höhen entstehen (Review #123 W45
-    /// B4). `None` ohne Aufmaß oder Netz, bei einem Wunsch, der keine Zahl
-    /// ist, oder wenn auch 100 m nicht passt.
+    /// es passt nur ein Abstand, mit dem Linien entstehen (Review #123 W45
+    /// B4 und Nachprüfung: ein ebenes Aufmaß hat Höhen, aber keine Linie).
+    /// `None` ohne Aufmaß oder Netz, bei einem Wunsch, der keine Zahl ist,
+    /// wenn auch 100 m nicht passt oder bei keinem Abstand eine Linie
+    /// entsteht.
     pub fn terrain_contour_step(&self, wunsch: f64) -> Option<f64> {
         use sk_gelaende::linien::{strecken, MAX_STRECKEN, MIN_STUFE};
         const GROEBER: [f64; 9] = [0.5, 1.0, 2.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0];
@@ -1265,7 +1292,7 @@ impl Model {
         gemerkt(&m.stufen, wunsch, || {
             std::iter::once(wunsch)
                 .chain(GROEBER.into_iter().filter(|&s| s > wunsch))
-                .find(|&s| strecken(&m.netz, s).is_some_and(|n| n <= MAX_STRECKEN))
+                .find(|&s| strecken(&m.netz, s).is_some_and(|n| n > 0 && n <= MAX_STRECKEN))
         })
     }
 
@@ -1682,9 +1709,34 @@ mod tests {
         for w in [0.0, -1.0, f64::NEG_INFINITY] {
             assert_eq!(m.terrain_contour_step(w), Some(0.01), "{w}");
         }
-        assert_eq!(m.terrain_contour_step(f64::INFINITY), Some(100.0));
+        // 100 m schneidet das Beispiel (24 bis 26 m) nicht: keine Linie
+        assert_eq!(m.terrain_contour_step(f64::INFINITY), None);
         assert_eq!(m.terrain_contour_step(f64::NAN), None);
-        assert_eq!(m.terrain_contour_step(1e9), Some(100.0));
+        assert_eq!(m.terrain_contour_step(1e9), None);
+        assert_eq!(m.terrain_contour_step(50.0), None);
+    }
+
+    /// Ein ebenes Aufmaß hat Höhen, aber keine Höhenlinie: kein Abstand
+    /// passt (W45-Nachprüfung B4).
+    #[test]
+    fn ebenes_aufmass_ohne_hoehenlinien() {
+        let (mut m, _) = lindenhof_haus();
+        let mut text = String::new();
+        for i in 0..10 {
+            for j in 0..10 {
+                text.push_str(&format!("{} {} {} 24.5\n", i * 10 + j + 1, 5 * j, 5 * i));
+            }
+        }
+        let a = sk_gelaende::lesen::lesen(text.as_bytes()).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "eben.txt", "", 32)));
+        m.commit();
+        let netz = &m.terrain().unwrap().mesh().netz;
+        assert_eq!(sk_gelaende::linien::strecken(netz, 0.25), Some(0));
+        for w in [0.25, 0.5, 1.0, 100.0] {
+            assert_eq!(m.terrain_contour_step(w), None, "{w}");
+            assert!(m.terrain_contours(w).is_empty(), "{w}");
+        }
     }
 
     #[test]

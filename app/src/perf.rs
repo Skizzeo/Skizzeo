@@ -1448,7 +1448,7 @@ fn perf_gelaende_ziehen() {
 #[ignore]
 fn perf_automenge() {
     use sk_model::qto_earth::{erd_mengen, ErdBasis};
-    use sk_model::qto_site::site_mengen;
+    use sk_model::qto_site::{huellen, site_mengen_in, Huelle};
     println!();
     for (name, buildings, storeys, annexes) in [
         ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
@@ -1475,6 +1475,9 @@ fn perf_automenge() {
         let mut zeilen = 0;
         let auto = time(20, || {
             zeilen = 0;
+            // Außenwände je Gebäude einmal, wie `auto_rows`
+            let h = huellen(m);
+            let leer = Huelle::default();
             let mut gebaeude = Vec::new();
             for &run in &runs {
                 let Some(g) = m.ground_basis(run) else {
@@ -1486,7 +1489,9 @@ fn perf_automenge() {
                 });
                 let erste = !gebaeude.contains(&g.building);
                 gebaeude.push(g.building);
-                zeilen += site_mengen(m, run, &g.outline, &vorlage, g.terrain_z, erste).len();
+                let b = m.run(run).and_then(|r| m.building_of(r.storey));
+                let hb = h.get(&b).unwrap_or(&leer);
+                zeilen += site_mengen_in(hb, run, &g.outline, &vorlage, g.terrain_z, erste).len();
             }
         });
         let ganz = time(10, || {
@@ -1500,7 +1505,7 @@ fn perf_automenge() {
         );
         assert!(zeilen >= sched.auto.len(), "Nachbau zählt {zeilen} Zeilen");
         // Budget am Maßstab (bis zwei Häuser); die Reserve ×4 zeigt nur den
-        // Verlauf: `site_mengen` sucht je Platte alle Züge ab
+        // Verlauf
         if buildings <= 2 {
             assert!(auto <= 1.0, "{name}: AutoMengen {auto:.3} ms > 1 ms");
         }
@@ -1842,8 +1847,9 @@ fn perf_raumbuch_paneel() {
 /// G7: Raumstempel mit Türaufschlägen (je Haus zwei Innentüren) gegen
 /// dieselbe Stadt ohne Türen. Erste Auslegung mit frischem Speicher (Türen,
 /// Aufschläge, Ausweichstellen; die Erkennung der Szene ist gerechnet) und
-/// Auslegung je Bild, wenn sich die Ansicht ändert, für das ganze Modell
-/// und das erste Haus.
+/// Auslegung je Bild, wenn sich die Ansicht ändert, für das ganze Modell,
+/// eine mittlere Ansicht, in der die Räume zu schmal für ihren Stempel
+/// sind, und das erste Haus.
 #[test]
 #[ignore]
 fn perf_stempel_tueren() {
@@ -1854,12 +1860,13 @@ fn perf_stempel_tueren() {
     use std::f64::consts::FRAC_PI_2;
     println!();
     println!(
-        "{:>6} {:>6} {:>10} {:>10} {:>10} {:>10} {:>8} {:>10}",
+        "{:>6} {:>6} {:>10} {:>10} {:>10} {:>11} {:>10} {:>8} {:>10}",
         "Häuser",
         "Türen",
         "erst alle",
         "erst nah",
         "Bild alle",
+        "Bild mittel",
         "Bild nah",
         "Stempel",
         "Ausweichen"
@@ -1878,6 +1885,8 @@ fn perf_stempel_tueren() {
             }
             let alle = crate::fit_parallel(ViewKind::Plan, s.bounds(), W, H);
             let nah = Camera::parallel(vec3(5000.0, 4000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 6000.0);
+            let mittel =
+                Camera::parallel(vec3(40000.0, 30000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 34000.0);
             let aus = |sp: &mut Stempel, c: &Camera, w: f64| {
                 sp.auslegen(&s, c, w, H, 1.0, &fonts, &t, &[]);
             };
@@ -1893,7 +1902,7 @@ fn perf_stempel_tueren() {
                     aus(&mut sp, c, if flip { W - 1.0 } else { W });
                 })
             };
-            let (bild_alle, bild_nah) = (bild(&alle), bild(&nah));
+            let (bild_alle, bild_mittel, bild_nah) = (bild(&alle), bild(&mittel), bild(&nah));
             let zahl = sp.bilder.len();
             let tueren = if mit { 2 * n } else { 0 };
             // Ausweichstelle im größten Raum, ein Bogen 88,5 cm um seine Mitte
@@ -1908,7 +1917,7 @@ fn perf_stempel_tueren() {
                 std::hint::black_box(f.form.mitte_ohne(weg));
             });
             println!(
-                "{n:>6} {tueren:>6} {erst_alle:>10.3} {erst_nah:>10.3} {bild_alle:>10.3} {bild_nah:>10.3} {zahl:>8} {ausweichen:>10.3}"
+                "{n:>6} {tueren:>6} {erst_alle:>10.3} {erst_nah:>10.3} {bild_alle:>10.3} {bild_mittel:>11.3} {bild_nah:>10.3} {zahl:>8} {ausweichen:>10.3}"
             );
         }
     }
