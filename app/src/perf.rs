@@ -2253,3 +2253,120 @@ fn perf_breite() {
     }
     println!("Zeiten in ms je Mausbewegung, je Bild bzw. je Griff.");
 }
+
+/// Mengenliste bei 1 bis 1000 Häusern (höchstens `SKIZZEO_PERF_BIS`), alle
+/// in einem Gebäude, mit je zwei Innentüren und einem Fenster je Außenzug:
+/// `qto::schedule` und das erste Öffnen des Mengenfensters (rechnet die
+/// Liste mit). Beide wachsen höchstens linear mit der Zahl der Häuser.
+#[test]
+#[ignore]
+fn perf_mengen_haeuser() {
+    use crate::picking::Picking;
+    use crate::quantity::QuantityWindow;
+    use sk_model::oeffnung::{Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, Swing};
+    use sk_model::Category;
+    println!();
+    println!(
+        "{:>6} {:>8} {:>10} {:>10} {:>12}",
+        "Häuser", "Zeilen", "Mengen", "Fenster", "je Haus"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let mut je_haus = Vec::new();
+    for n in [1, 10, 100, 300, 1000, 3000]
+        .into_iter()
+        .filter(|&n| n <= bis)
+    {
+        let mut s = town_with_interior(n);
+        innentueren(
+            &mut s,
+            Swing {
+                side: FaceSide::Right,
+                din: Din::Links,
+            },
+        );
+        let st = s.active_storey();
+        s.edit_model("Fenster", |m| {
+            let aussen: Vec<_> = m
+                .runs()
+                .iter()
+                .filter(|(_, run)| {
+                    run.segments
+                        .first()
+                        .and_then(|e| m.element(*e))
+                        .is_some_and(|e| e.category.is_outer_wall())
+                })
+                .map(|(r, _)| r)
+                .collect();
+            for r in aussen {
+                let f = m.outer_face(r, 0).unwrap();
+                // Der Außenzug kann doppelt auftauchen: dort bleibt es frei
+                m.add_opening(Opening {
+                    kind: OpeningKind::Window,
+                    path: vec![f.at(f.u.0 + 1500.0, 0.0), f.at(f.u.0 + 2750.0, 0.0)],
+                    bottom: HeightRef::Line(st, HeightLine::Sill),
+                    top: HeightRef::Line(st, HeightLine::Lintel),
+                    reveal: None,
+                    install: Default::default(),
+                    swing: None,
+                    lock: Default::default(),
+                });
+            }
+            true
+        });
+        let innen = s
+            .model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| e.category == Category::InteriorWall)
+            .count();
+        assert_eq!(innen, 2 * n);
+        // Bestes von drei Läufen: eine Lastspitze kippt die Probe nicht
+        let mut mengen = f64::INFINITY;
+        let mut sched = None;
+        for _ in 0..3 {
+            let t = Instant::now();
+            sched = Some(sk_model::qto::schedule(s.model()));
+            mengen = mengen.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let sched = sched.unwrap();
+        let zeilen = sched.auto.len()
+            + sched
+                .buildings
+                .iter()
+                .flat_map(|b| &b.storeys)
+                .chain(&sched.loose)
+                .flat_map(|st| &st.groups)
+                .map(|g| g.rows.len())
+                .sum::<usize>();
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 1000);
+        let t = Instant::now();
+        q.sync(&mut s, &Picking::default(), false);
+        let fenster = t.elapsed().as_secs_f64() * 1000.0;
+        let haus = fenster / n as f64;
+        println!("{n:>6} {zeilen:>8} {mengen:>10.0} {fenster:>10.0} {haus:>12.2}");
+        if n >= 100 {
+            je_haus.push((mengen / n as f64, haus));
+        }
+    }
+    println!("Zeiten in ms (Mengenliste bester von 3 Läufen, erstes Öffnen des Mengenfensters).");
+    // Höchstens linear: je Haus ab 100 Häusern die Mengenliste nicht mehr
+    // als das Doppelte; das Fenster (ein Lauf) mit Spielraum für Last
+    if let (Some(a), Some(b)) = (je_haus.first(), je_haus.last()) {
+        assert!(
+            b.0 <= 2.0 * a.0,
+            "Mengenliste je Haus {:.3} ms bei 100, {:.3} ms zuletzt",
+            a.0,
+            b.0
+        );
+        assert!(
+            b.1 <= 3.0 * a.1,
+            "Fenster je Haus {:.2} ms bei 100, {:.2} ms zuletzt",
+            a.1,
+            b.1
+        );
+    }
+}

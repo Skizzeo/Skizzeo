@@ -25,6 +25,9 @@ impl Model {
 
     /// Sohlplatten unter einem Wandzug (richtig: höchstens eine).
     pub(super) fn slabs_of(&self, run: RunId) -> Vec<ElementId> {
+        if let Some(v) = self.verz() {
+            return v.platten(run);
+        }
         self.elements
             .iter()
             .filter(|(_, e)| matches!(e.kind, ElementKind::GroundSlab(s) if s.run == run))
@@ -34,6 +37,9 @@ impl Model {
 
     /// Frostschürzen unter einer Sohlplatte (richtig: genau eine).
     pub(super) fn footings_of(&self, slab: ElementId) -> Vec<ElementId> {
+        if let Some(v) = self.verz() {
+            return v.schuerzen(slab);
+        }
         self.elements
             .iter()
             .filter(|(_, e)| matches!(e.kind, ElementKind::StripFooting(f) if f.slab == slab))

@@ -14,6 +14,26 @@ use crate::wand_loch::Hole;
 /// So weit darf ein Pfadpunkt neben der Außenfläche liegen (mm).
 const ON_FACE: f64 = 1.0;
 
+/// Rechteck (x/y) des Öffnungspfads `path`, je Seite um 1e-3 der
+/// Pfadlänge erweitert: so weit darf ein Pfadstück, das [`Model::legs_on`]
+/// noch als parallel zur Wandfläche nimmt, von ihr abweichen. Ohne Punkte
+/// leer (`lo` über `hi`).
+pub(crate) fn pfad_rahmen(path: &[Vec3]) -> (Vec3, Vec3) {
+    let mut lo = vec3(f64::INFINITY, f64::INFINITY, 0.0);
+    let mut hi = vec3(f64::NEG_INFINITY, f64::NEG_INFINITY, 0.0);
+    for p in path {
+        (lo.x, lo.y) = (lo.x.min(p.x), lo.y.min(p.y));
+        (hi.x, hi.y) = (hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let schraeg = 1e-3
+        * path
+            .windows(2)
+            .map(|w| (flat(w[1]) - flat(w[0])).length())
+            .sum::<f64>();
+    let r = vec3(schraeg, schraeg, 0.0);
+    (lo - r, hi + r)
+}
+
 impl Model {
     /// Absolute Höhe einer Öffnungskante (mm).
     pub fn height_z(&self, r: HeightRef) -> Option<f64> {
@@ -273,12 +293,41 @@ impl Model {
             .run(run)
             .and_then(|r| self.storey(r.storey))
             .and_then(|s| s.building);
+        // Vortest über die Quader: Ein Pfadstück, das [`Model::legs_on`]
+        // nimmt, hat einen Punkt höchstens Versatz + ON_FACE + Dicke neben
+        // einem Segment (bis auf die Neigung, die [`pfad_rahmen`] trägt);
+        // nur Öffnungen dort kosten den ganzen Gang (sonst wächst jeder Zug
+        // mit dem Modell). 1 mm Reserve gegen Rundung.
+        let Some((pts, _, _)) = c.layout() else {
+            return Vec::new();
+        };
+        let rand = c.outer_offset().abs() + c.thickness() + ON_FACE + 1.0;
+        let (mut lo, mut hi) = (flat(pts[0]), flat(pts[0]));
+        for p in &pts {
+            (lo.x, lo.y) = (lo.x.min(p.x), lo.y.min(p.y));
+            (hi.x, hi.y) = (hi.x.max(p.x), hi.y.max(p.y));
+        }
+        let nah = |path: &[Vec3]| {
+            let (a, b) = pfad_rahmen(path);
+            a.x <= hi.x + rand && b.x >= lo.x - rand && a.y <= hi.y + rand && b.y >= lo.y - rand
+        };
+        // Im lesenden Gang nur die Öffnungen der Felder um den Zug
+        let kandidaten: Box<dyn Iterator<Item = ElementId>> = match self.verz() {
+            Some(v) => {
+                let r = vec3(rand, rand, 0.0);
+                Box::new(v.oeffnungen_bei(building, lo - r, hi + r).into_iter())
+            }
+            None => Box::new(self.elements.ids()),
+        };
         let mut out = Vec::new();
-        for (id, e) in self.elements.iter() {
+        for id in kandidaten {
+            let Some(e) = self.element(id) else {
+                continue;
+            };
             let ElementKind::Opening(op) = &e.kind else {
                 continue;
             };
-            if self.storey(e.storey).and_then(|s| s.building) != building {
+            if self.storey(e.storey).and_then(|s| s.building) != building || !nah(&op.path) {
                 continue;
             }
             out.extend(
@@ -524,8 +573,16 @@ impl Model {
         for p in &o.path {
             (lo.0, lo.1, hi.0, hi.1) = (lo.0.min(p.x), lo.1.min(p.y), hi.0.max(p.x), hi.1.max(p.y));
         }
-        self.runs
-            .ids()
+        // Im lesenden Gang nur die Züge der Felder um den Pfad
+        let kandidaten: Box<dyn Iterator<Item = RunId>> = match self.verz() {
+            Some(v) => {
+                let r = RUN_REACH;
+                let (a, b) = (vec3(lo.0 - r, lo.1 - r, 0.0), vec3(hi.0 + r, hi.1 + r, 0.0));
+                Box::new(v.alle_zuege_bei(a, b).into_iter())
+            }
+            None => Box::new(self.runs.ids()),
+        };
+        kandidaten
             .filter(|&r| {
                 self.category_of(r).is_some_and(Category::takes_openings)
                     && self.run(r).is_some_and(|run| {
