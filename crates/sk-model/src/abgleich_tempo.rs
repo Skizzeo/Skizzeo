@@ -8,12 +8,17 @@ use std::time::Instant;
 /// `n` Häuser 10 × 8 m mit zwei Geschossen im Raster zu 15 m, je Haus ein
 /// Gebäude oder alle in einem.
 fn haeuser(n: usize, je_haus: bool) -> (Model, Vec<BuildingId>) {
+    haeuser_mit(n, je_haus, 2)
+}
+
+/// Wie [`haeuser`] mit `geschosse` Geschossen.
+fn haeuser_mit(n: usize, je_haus: bool, geschosse: u8) -> (Model, Vec<BuildingId>) {
     let mut m = Model::with_seed(5);
-    let b0 = m.add_building(2);
+    let b0 = m.add_building(geschosse);
     let mut gebaeude = vec![b0];
     for i in 0..n {
         let b = if je_haus && i > 0 {
-            let b = m.add_building(2);
+            let b = m.add_building(geschosse);
             gebaeude.push(b);
             b
         } else {
@@ -95,11 +100,24 @@ fn band_und_gelaende_nur_im_gebaeude() {
                 let top = m.storey(eg).unwrap().top();
                 assert!(m.set_storey_top(eg, top - 150.0));
             }
+            // nur Züge dieses Gebäudes; beim Band die des EG und darüber
+            // (Review zu #148: Nachbarn des geänderten Bands, nicht alle)
             let scope = m.sync_scope().expect("nur ein Gebäude");
+            assert!(!scope.is_empty(), "{i} {gelaende}");
             for &x in &gb {
-                let drin = zuege(&m, x).iter().all(|r| scope.contains(r));
-                let draussen = zuege(&m, x).iter().all(|r| !scope.contains(r));
-                assert!(if x == b { drin } else { draussen }, "{i} {gelaende}");
+                if x != b {
+                    assert!(zuege(&m, x).iter().all(|r| !scope.contains(r)), "{i}");
+                }
+            }
+            assert!(scope.iter().all(|r| zuege(&m, b).contains(r)), "{i}");
+            if !gelaende {
+                let eg = m.ground_of(Some(b)).unwrap();
+                let og = m.level_above(eg).unwrap();
+                for (id, r) in m.runs().iter() {
+                    if r.storey == eg || r.storey == og {
+                        assert!(scope.contains(&id), "{i}");
+                    }
+                }
             }
             assert!(m.commit().is_some());
             assert_eq!(ganz(&m), ((0, 0), (0, 0), true), "{i} {gelaende}");
@@ -122,6 +140,92 @@ fn budget_geschosszug() {
     let ms = ms(t);
     let budget = if cfg!(debug_assertions) { 400.0 } else { 20.0 };
     assert!(ms < budget, "{ms:.1} ms");
+}
+
+/// Budget (Review zu #148, B2): ein Großgebäude mit 200 Einheiten und fünf
+/// Geschossen, Loslassen nach einem Zug am EG; die Bänder darüber wandern
+/// nur mit. Vorher 27 ms im Release.
+#[test]
+fn budget_grossgebaeude() {
+    let (mut m, gb) = haeuser_mit(200, false, 5);
+    let eg = m.ground_of(Some(gb[0])).unwrap();
+    // Bestwert aus drei: Die Tests laufen nebeneinander
+    let ms = [100.0, -100.0, 100.0]
+        .map(|dz| {
+            let top = m.storey(eg).unwrap().top();
+            m.begin("Geschoss ziehen");
+            assert!(m.set_storey_top(eg, top + dz));
+            let t = Instant::now();
+            assert!(m.commit().is_some());
+            ms(t)
+        })
+        .into_iter()
+        .fold(f64::INFINITY, f64::min);
+    let budget = if cfg!(debug_assertions) { 200.0 } else { 8.0 };
+    assert!(ms < budget, "{ms:.1} ms");
+}
+
+/// Zufällige Schritte an Bändern, Gründung, Gelände und Flachdach in drei
+/// Gebäuden mit Vor- und Rücksprüngen: Nach jedem gleicht der Abgleich im
+/// Bereich dem über alles (Review zu #148).
+#[test]
+fn zufall_wie_ueber_alles() {
+    let (mut m, gb) = haeuser_mit(6, true, 4);
+    let mut z = 148u64;
+    let mut f = || {
+        z = z
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (z >> 11) as f64 / (1u64 << 53) as f64
+    };
+    // Vor- und Rücksprünge in den oberen Geschossen
+    let ids: Vec<_> = m.runs().ids().collect();
+    for (k, r) in ids.into_iter().enumerate() {
+        let Some(&og) = m.runs_above(r).first() else {
+            continue;
+        };
+        let w = m.wall_at(og, 1 + k % 3).unwrap();
+        m.begin("Versatz");
+        m.set_linked(w, false);
+        assert!(m.set_offset(w, [-1200.0, 900.0, 600.0][k % 3]).is_some());
+        m.commit();
+    }
+    assert_eq!(ganz(&m), ((0, 0), (0, 0), true));
+    for k in 0..80 {
+        let b = gb[(f() * gb.len() as f64) as usize];
+        let ebenen = m.levels_in(Some(b));
+        let st = ebenen[(f() * ebenen.len() as f64) as usize];
+        m.begin("Zufall");
+        let was = (f() * 5.0) as usize;
+        let geaendert = match was {
+            0 => {
+                let top = m.storey(st).unwrap().top();
+                m.drag_storey_top(st, top + (f() - 0.5) * 800.0)
+            }
+            1 => m.set_storey_height(st, 2400.0 + f() * 1200.0),
+            2 => m.set_terrain_offset_of(b, (f() - 0.5) * 1500.0),
+            3 => {
+                let gr = m.foundation_level_of(st).unwrap();
+                let uk = m.storey(gr).unwrap().elevation;
+                m.drag_foundation_bottom_of(gr, uk + (f() - 0.5) * 600.0)
+            }
+            _ => {
+                let an = m.roof_level_of(Some(b)).is_none();
+                m.set_flat_roof(st, an)
+            }
+        };
+        m.commit();
+        assert_eq!(
+            ganz(&m),
+            ((0, 0), (0, 0), true),
+            "Schritt {k}, Art {was}, {geaendert}"
+        );
+        assert!(
+            m.check().is_empty(),
+            "Schritt {k}, Art {was}: {:?}",
+            m.check()
+        );
+    }
 }
 
 #[test]

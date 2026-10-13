@@ -431,20 +431,39 @@ impl Model {
         self.soffit_floors_in(None)
     }
 
-    fn soffit_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
-        let mut out: Vec<(String, ElementId)> = self
-            .elements
-            .iter()
-            .filter_map(|(id, e)| match e.kind {
-                ElementKind::Floor(f) if in_scope(scope, f.run) => match self.floor(f.run) {
-                    Some(Ok(s)) if !s.soffits.is_empty() => Some((e.number.clone(), id)),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        out.into_iter().map(|x| x.1).collect()
+    pub(super) fn soffit_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
+        self.untersicht_und_terrasse_in(scope).0
+    }
+
+    /// Decken mit Untersicht und Decken mit Dachterrasse
+    /// ([`Model::terrace_floors`]) unter den Zügen `scope`, je nach Nummer,
+    /// mit einer Rechnung je Decke (Review zu #148).
+    pub(super) fn untersicht_und_terrasse_in(
+        &self,
+        scope: Option<&[RunId]>,
+    ) -> (Vec<ElementId>, Vec<ElementId>) {
+        let (mut u, mut t) = (Vec::<(String, ElementId)>::new(), Vec::new());
+        for (id, e) in self.elements.iter() {
+            let ElementKind::Floor(f) = e.kind else {
+                continue;
+            };
+            if !in_scope(scope, f.run) {
+                continue;
+            }
+            if let Some(Ok(s)) = self.floor(f.run) {
+                if !s.soffits.is_empty() {
+                    u.push((e.number.clone(), id));
+                }
+                if !s.terraces.is_empty() {
+                    t.push((e.number.clone(), id));
+                }
+            }
+        }
+        let ordnen = |mut v: Vec<(String, ElementId)>| -> Vec<ElementId> {
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v.into_iter().map(|x| x.1).collect()
+        };
+        (ordnen(u), ordnen(t))
     }
 
     /// Untersichtdämmung unter einer Decke.
@@ -465,7 +484,18 @@ impl Model {
 
     /// [`Model::sync_soffits`] nur an den Decken der Züge `scope` (Z4).
     pub(super) fn sync_soffits_in(&mut self, scope: Option<&[RunId]>) {
-        let want = self.abgleich_lesend(scope, || self.soffit_floors_in(scope));
+        self.sync_soffits_mit(scope, None);
+    }
+
+    /// [`Model::sync_soffits_in`] mit schon gesuchten Decken
+    /// ([`Model::abgleich_wunsch`]).
+    pub(super) fn sync_soffits_mit(
+        &mut self,
+        scope: Option<&[RunId]>,
+        want: Option<Vec<ElementId>>,
+    ) {
+        let want =
+            want.unwrap_or_else(|| self.abgleich_lesend(scope, || self.soffit_floors_in(scope)));
         // Bekleidung (W3): der eingebaute Baustoff bei der ersten
         if self.material_by_guid(CLADDING_MAT_GUID).is_none()
             && want.iter().any(|f| {

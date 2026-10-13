@@ -222,7 +222,7 @@ impl Model {
         self.roof_floors_in(None)
     }
 
-    fn roof_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
+    pub(super) fn roof_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
         let mut out: Vec<(String, ElementId)> = self
             .elements
             .iter()
@@ -666,18 +666,36 @@ impl Model {
     }
 
     pub(super) fn sync_flat_roofs_in(&mut self, scope: Option<&[RunId]>) -> (usize, usize) {
-        let want: Vec<(ElementId, StoreyId, u16)> = self.abgleich_lesend(scope, || {
-            self.roof_floors_in(scope)
-                .into_iter()
-                .filter_map(|floor| {
-                    let ElementKind::Floor(f) = self.element(floor)?.kind else {
-                        return None;
-                    };
-                    let ak = self.run(self.parapet_above(f.run)?)?.storey;
-                    Some((floor, ak, self.element(floor)?.seq))
-                })
-                .collect()
-        });
+        self.sync_flat_roofs_mit(scope, None)
+    }
+
+    /// Decken unter einem Flachdach mit Ebene der Aufkantung und Folge
+    /// ([`Model::sync_flat_roofs_in`]).
+    pub(super) fn flat_roof_want_in(
+        &self,
+        scope: Option<&[RunId]>,
+    ) -> Vec<(ElementId, StoreyId, u16)> {
+        self.roof_floors_in(scope)
+            .into_iter()
+            .filter_map(|floor| {
+                let ElementKind::Floor(f) = self.element(floor)?.kind else {
+                    return None;
+                };
+                let ak = self.run(self.parapet_above(f.run)?)?.storey;
+                Some((floor, ak, self.element(floor)?.seq))
+            })
+            .collect()
+    }
+
+    /// [`Model::sync_flat_roofs_in`] mit schon gesuchten Decken
+    /// ([`Model::abgleich_wunsch`]).
+    pub(super) fn sync_flat_roofs_mit(
+        &mut self,
+        scope: Option<&[RunId]>,
+        want: Option<Vec<(ElementId, StoreyId, u16)>>,
+    ) -> (usize, usize) {
+        let want =
+            want.unwrap_or_else(|| self.abgleich_lesend(scope, || self.flat_roof_want_in(scope)));
         if !want.is_empty() {
             self.ensure_roof_type();
             // Kronendämmung mit eigenem Baustoff (W9 an #60), auch beim
@@ -1207,9 +1225,12 @@ mod tests {
         ];
         let set = m.type_by_guid(typ).unwrap();
         let eg = m.ground_of(Some(b)).unwrap();
+        // als Schritt, damit der Abgleich die Randdämmstreifen anlegt
+        m.begin("Haus");
         let eg = m
             .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap();
+        m.commit();
         let og = m.runs_above(eg)[0];
         (m, og)
     }

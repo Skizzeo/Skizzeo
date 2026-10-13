@@ -1,6 +1,7 @@
 //! Dachterrasse, Attika, Attikablech (D1–D3): Methoden von `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
+use std::collections::HashSet;
 
 impl Model {
     /// Typ der Dachterrasse einer Decke: der gewählte oder der Werkstyp
@@ -329,20 +330,8 @@ impl Model {
 
     /// [`Model::terrace_floors`] nur unter den Zügen `scope` (T6: die
     /// Decke wird nur dort neu gerechnet, wo der Schritt etwas geändert hat).
-    fn terrace_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
-        let mut out: Vec<(String, ElementId)> = self
-            .elements
-            .iter()
-            .filter_map(|(id, e)| match e.kind {
-                ElementKind::Floor(f) if in_scope(scope, f.run) => match self.floor(f.run) {
-                    Some(Ok(s)) if !s.terraces.is_empty() => Some((e.number.clone(), id)),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        out.into_iter().map(|x| x.1).collect()
+    pub(super) fn terrace_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
+        self.untersicht_und_terrasse_in(scope).1
     }
 
     /// Dachterrasse auf einer Decke.
@@ -373,12 +362,23 @@ impl Model {
     /// [`Model::sync_terraces`] nur an den Decken der Züge `scope`; Terrasse
     /// und Blech je Decke kommen aus einer Liste (T7).
     pub(super) fn sync_terraces_in(&mut self, scope: Option<&[RunId]>) -> (usize, usize) {
+        self.sync_terraces_mit(scope, None)
+    }
+
+    /// [`Model::sync_terraces_in`] mit schon gesuchten Decken
+    /// ([`Model::abgleich_wunsch`]).
+    pub(super) fn sync_terraces_mit(
+        &mut self,
+        scope: Option<&[RunId]>,
+        want: Option<Vec<ElementId>>,
+    ) -> (usize, usize) {
         // Fußpunkt der Verblendschale (W2): der Baustoff beim ersten Mal,
         // auch wenn der Schritt nur den Typ der Wand darüber ändert
         if self.foamglass_material().is_none() && self.foot_wanted() {
             self.ensure_foamglass_material();
         }
-        let want = self.abgleich_lesend(scope, || self.terrace_floors_in(scope));
+        let want =
+            want.unwrap_or_else(|| self.abgleich_lesend(scope, || self.terrace_floors_in(scope)));
         if !want.is_empty() {
             self.ensure_terrace_type();
             if want.iter().any(|f| {
@@ -480,25 +480,47 @@ impl Model {
     /// Bauteile zurückfallen, legt deren Abgleich mit dem ersten an (wie
     /// `touched.library` in `apply`, RB3). So gleicht der erste Wandschritt,
     /// der mit dem ersten Raum dessen Ausbautypen anlegt, nur seine Züge ab
-    /// (Bemaßung, Review #112). Ein Geschoss oder Gebäude (Band ziehen,
-    /// Gelände) gleicht die Züge seines Gebäudes samt Anschlüssen ab, nicht
-    /// alle (Review L39). `None` (alle), sobald der Schritt mehr ändert,
-    /// etwa einen bestehenden Typ, einen Baustoff oder ein Geschoss ohne
-    /// Gebäude.
+    /// (Bemaßung, Review #112). Ein geändertes Geschoss (Band ziehen,
+    /// Gründung, die dem Gelände folgt) gleicht seine Züge und die der
+    /// Nachbargeschosse ab, nicht alle (Review L39 und zu #148). `None`
+    /// (alle), sobald der Schritt mehr ändert, etwa einen bestehenden Typ,
+    /// einen Baustoff oder ein Geschoss ohne Gebäude.
     pub(super) fn sync_scope(&self) -> Option<Vec<RunId>> {
         let open = self.txn.as_ref()?;
-        let mut gebaeude: Vec<BuildingId> = Vec::new();
+        // Geschosse, deren Züge mitkommen: geänderte samt den Nachbarn im
+        // Gebäude. Ein Band, das nur mitwandert (allein seine UK ändert
+        // sich), bringt keine; ebenso wenig das Gebäude selbst (Versatz,
+        // Nummer): Davon hängt kein abgeleitetes Bauteil ab, und die
+        // Gründungen, die dem Gelände folgen, kommen als Geschosse
+        // (Review zu #148, B2)
+        let mut geschosse: HashSet<StoreyId> = HashSet::new();
+        let mut gebaeude: HashSet<BuildingId> = HashSet::new();
         for c in &open.changes {
-            match c {
-                // `new` füllt erst das Schließen: das Geschoss, wie es jetzt
-                // ist (auch ein neu angelegtes, etwa die Ebene Flachdach)
-                Change::Storey { id, old, .. } => {
-                    for s in [old.as_ref(), self.storeys.get(*id)].into_iter().flatten() {
-                        gebaeude.push(s.building?);
+            // `new` füllt erst das Schließen: das Geschoss, wie es jetzt ist
+            // (auch ein neu angelegtes, etwa die Ebene Flachdach)
+            let Change::Storey { id, old, .. } = c else {
+                continue;
+            };
+            match (old.as_ref(), self.storeys.get(*id)) {
+                (Some(a), Some(b))
+                    if Storey {
+                        elevation: b.elevation,
+                        ..a.clone()
+                    } == *b => {}
+                (old, Some(b)) => {
+                    b.building?;
+                    if old.is_some_and(|a| a.building != b.building) {
+                        gebaeude.insert(old?.building?);
                     }
+                    geschosse.insert(*id);
+                    geschosse.extend(self.level_below(*id));
+                    geschosse.extend(self.level_above(*id));
                 }
-                Change::Building { id, .. } => gebaeude.push(*id),
-                _ => {}
+                // weg: sein Gebäude ganz
+                (Some(a), None) => {
+                    gebaeude.insert(a.building?);
+                }
+                (None, None) => {}
             }
         }
         let nur_zuege = open
@@ -536,23 +558,23 @@ impl Model {
             return None;
         }
         let mut runs = self.step_touched();
-        if !gebaeude.is_empty() {
-            let dazu: Vec<RunId> = self
-                .runs
-                .iter()
-                .filter(|(_, r)| {
-                    self.storey(r.storey)
-                        .and_then(|s| s.building)
-                        .is_some_and(|b| gebaeude.contains(&b))
-                })
-                .map(|(id, _)| id)
-                .collect();
-            let joined: Vec<RunId> = dazu.iter().flat_map(|&r| self.joined_runs(r)).collect();
-            runs.extend(dazu);
-            runs.extend(joined);
+        // Anschlüsse liegen nur im Geschoss (B12), also schon darin
+        if !geschosse.is_empty() || !gebaeude.is_empty() {
+            runs.extend(
+                self.runs
+                    .iter()
+                    .filter(|(_, r)| {
+                        geschosse.contains(&r.storey)
+                            || self
+                                .storey(r.storey)
+                                .and_then(|s| s.building)
+                                .is_some_and(|b| gebaeude.contains(&b))
+                    })
+                    .map(|(id, _)| id),
+            );
         }
         // Nach Platz geordnet, ohne Doppelte: [`in_scope`] sucht binär
-        let mut gesehen = std::collections::HashSet::with_capacity(runs.len());
+        let mut gesehen = HashSet::with_capacity(runs.len());
         runs.retain(|r| gesehen.insert(*r));
         runs.sort_by_key(|r| r.index());
         Some(runs)

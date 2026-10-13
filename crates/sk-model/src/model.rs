@@ -3228,10 +3228,13 @@ impl Model {
         if self.txn.is_some() && !self.only_swings() {
             let scope = self.sync_scope();
             let scope = scope.as_deref();
-            self.sync_edge_strips(scope);
-            self.sync_soffits_in(scope);
-            self.sync_terraces_in(scope);
-            self.sync_flat_roofs_in(scope);
+            // Was die vier Abgleiche wollen, in einem lesenden Gang: Keiner
+            // hängt an den Bauteilen, die ein anderer anlegt (Review zu #148)
+            let w = self.abgleich_lesend(scope, || self.abgleich_wunsch(scope));
+            self.sync_edge_strips_mit(scope, Some(w.streifen));
+            self.sync_soffits_mit(scope, Some(w.untersicht));
+            self.sync_terraces_mit(scope, Some(w.terrasse));
+            self.sync_flat_roofs_mit(scope, Some(w.flachdach));
         }
         if let Some(id) = self.locked_change() {
             self.rollback();
@@ -4620,7 +4623,28 @@ fn room_inside(c: &WallChain) -> bool {
 /// bauen dauert (Review L39).
 const VERZ_AB: usize = 16;
 
+/// Was die Abgleiche beim Schließen eines Schritts wollen
+/// ([`Model::abgleich_wunsch`]).
+pub(super) struct Wunsch {
+    streifen: Vec<(ElementId, ElementId)>,
+    untersicht: Vec<ElementId>,
+    terrasse: Vec<ElementId>,
+    flachdach: Vec<(ElementId, StoreyId, u16)>,
+}
+
 impl Model {
+    /// Randdämmstreifen, Untersichten, Dachterrassen und Flachdächer, die
+    /// `scope` braucht; jede Decke einmal gerechnet.
+    pub(super) fn abgleich_wunsch(&self, scope: Option<&[RunId]>) -> Wunsch {
+        let (untersicht, terrasse) = self.untersicht_und_terrasse_in(scope);
+        Wunsch {
+            streifen: self.edge_strip_pairs_in(scope),
+            untersicht,
+            terrasse,
+            flachdach: self.flat_roof_want_in(scope),
+        }
+    }
+
     /// `f` im Abgleich über `scope`: bei vielen Zügen mit dem Verzeichnis
     /// ([`Model::lesend`]), bei wenigen ohne.
     pub(super) fn abgleich_lesend<R>(&self, scope: Option<&[RunId]>, f: impl FnOnce() -> R) -> R {
