@@ -16,7 +16,7 @@
 
 use super::*;
 use sk_math::{vec3, Vec3};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// Dicke und Abstand der Geländeplatte, für alle Gebäude des Projekts (mm).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -319,12 +319,21 @@ fn rahmen_von(h: &[Vec3]) -> [f64; 4] {
 
 /// Haufen: Rechtecke (Stellen in `alle`), die sich über Berührung verbinden,
 /// und die Löcher, die eines davon berühren. Gesucht über ein Raster in der
-/// mittleren Rechteckgröße, nicht über alle Paare.
+/// mittleren Rechteckgröße, nicht über alle Paare. Gleiche Rechtecke
+/// (Dubletten, z. B. Häuser übereinander kopiert) vertritt das erste, so
+/// wächst ein Rasterfeld nicht mit ihrer Zahl (Review #119 B5).
 fn haufen(alle: &[(usize, [f64; 4])], holes: &[Vec<Vec3>]) -> Vec<(Vec<usize>, Vec<usize>)> {
     let n = alle.len();
     if n == 0 {
         return Vec::new();
     }
+    let mut eltern: Vec<usize> = (0..n).collect();
+    let mut erst: HashMap<[u64; 4], usize> = HashMap::new();
+    for (i, (_, r)) in alle.iter().enumerate() {
+        eltern[i] = *erst.entry(r.map(f64::to_bits)).or_insert(i);
+    }
+    // Vertreter: Stellen, die für sich im Raster stehen
+    let vertreter: Vec<usize> = (0..n).filter(|&i| eltern[i] == i).collect();
     let mut seiten: Vec<f64> = alle
         .iter()
         .map(|(_, r)| (r[2] - r[0]).max(r[3] - r[1]))
@@ -338,8 +347,8 @@ fn haufen(alle: &[(usize, [f64; 4])], holes: &[Vec<Vec3>]) -> Vec<(Vec<usize>, V
     };
     let mut raster: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
     let mut gross: Vec<usize> = Vec::new();
-    for (i, (_, r)) in alle.iter().enumerate() {
-        match zellen(r) {
+    for &i in &vertreter {
+        match zellen(&alle[i].1) {
             Some((x0, y0, x1, y1)) => {
                 for cx in x0..=x1 {
                     for cy in y0..=y1 {
@@ -350,7 +359,6 @@ fn haufen(alle: &[(usize, [f64; 4])], holes: &[Vec<Vec3>]) -> Vec<(Vec<usize>, V
             None => gross.push(i),
         }
     }
-    let mut eltern: Vec<usize> = (0..n).collect();
     fn wurzel(e: &mut [usize], mut i: usize) -> usize {
         while e[i] != i {
             e[i] = e[e[i]];
@@ -374,7 +382,7 @@ fn haufen(alle: &[(usize, [f64; 4])], holes: &[Vec<Vec3>]) -> Vec<(Vec<usize>, V
         }
     }
     for &i in &gross {
-        for j in 0..n {
+        for &j in &vertreter {
             verbinde(&mut eltern, i, j);
         }
     }
@@ -408,7 +416,7 @@ fn haufen(alle: &[(usize, [f64; 4])], holes: &[Vec<Vec3>]) -> Vec<(Vec<usize>, V
                 t.dedup();
                 t
             }
-            None => (0..n).collect(),
+            None => vertreter.clone(),
         };
         treffer.retain(|&i| beruehren(&alle[i].1, &r));
         let mut hs: Vec<usize> = treffer.into_iter().map(|i| haufen_von[i]).collect();
@@ -470,6 +478,9 @@ fn zerlegen(rs: &[(usize, [f64; 4])], hs: &[&[Vec3]], n: usize) -> Zerlegt {
     let (mut r_aktiv, mut l_aktiv): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
     let mut kanten: Vec<Kante> = Vec::new();
     let mut kreuz: Vec<(f64, i32)> = Vec::new();
+    // je Haufen einmal, nicht je Scheibe (viele Gruppen, viele Scheiben)
+    let mut zaehler = vec![0i32; n];
+    let mut positiv: BTreeSet<usize> = BTreeSet::new();
     for w in grenzen.windows(2) {
         let (xa, xb) = (w[0], w[1]);
         while let Some(k) = r_neu.next_if(|&k| rs[k].1[0] < xb) {
@@ -549,21 +560,22 @@ fn zerlegen(rs: &[(usize, [f64; 4])], hs: &[&[Vec3]], n: usize) -> Zerlegt {
                 });
             }
         }
-        let (p, e) = scheibe(&kanten, n);
-        for (g, (p, e)) in p.into_iter().zip(e).enumerate() {
-            pieces[g].extend(p);
-            edges[g].extend(e);
-        }
+        scheibe(&kanten, &mut pieces, &mut edges, &mut zaehler, &mut positiv);
     }
     (pieces, edges)
 }
 
 /// Eine Scheibe: waagerechte Streifen (an jeder Ecke und jedem
 /// Kantenschnitt eine Grenze); in jedem Streifen sind Rechtecke, Löcher und
-/// Vorrang einfache Intervalle.
-fn scheibe(kanten: &[Kante], n: usize) -> Zerlegt {
-    let mut pieces = vec![Vec::new(); n];
-    let mut edges = vec![Vec::new(); n];
+/// Vorrang einfache Intervalle. Stücke und Kanten kommen zu denen des
+/// Haufens; `zaehler` und `positiv` sind vorher und nachher leer.
+fn scheibe(
+    kanten: &[Kante],
+    pieces: &mut [Vec<[Vec3; 4]>],
+    edges: &mut [Vec<(Vec3, Vec3)>],
+    zaehler: &mut [i32],
+    positiv: &mut BTreeSet<usize>,
+) {
     let rahmen: Vec<[f64; 4]> = kanten
         .iter()
         .map(|k| {
@@ -611,8 +623,6 @@ fn scheibe(kanten: &[Kante], n: usize) -> Zerlegt {
     neu.sort_by(|&i, &j| rahmen[i][2].total_cmp(&rahmen[j][2]));
     let mut neu = neu.into_iter().peekable();
     let mut aktiv: Vec<usize> = Vec::new();
-    let mut zaehler = vec![0i32; n];
-    let mut positiv: Vec<usize> = Vec::new();
     let mut hits: Vec<(f64, usize)> = Vec::new();
     // `vorher`: die Intervalle des Streifens darunter (für die waagerechten
     // Randkanten), an seiner Oberkante festgehalten
@@ -635,8 +645,8 @@ fn scheibe(kanten: &[Kante], n: usize) -> Zerlegt {
                 .map(|&k| (kanten[k].g.x_bei(ym), k)),
         );
         hits.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let jetzt = intervalle(&hits, kanten, &mut zaehler, &mut positiv, ym);
-        waagerecht(&vorher, &jetzt, y0, &mut edges);
+        let jetzt = intervalle(&hits, kanten, zaehler, positiv, ym);
+        waagerecht(&vorher, &jetzt, y0, edges);
         for s in &jetzt {
             let (l0, l1, r0, r1) = (s.l.x_bei(y0), s.l.x_bei(y1), s.r.x_bei(y0), s.r.x_bei(y1));
             pieces[s.g].push([
@@ -663,9 +673,8 @@ fn scheibe(kanten: &[Kante], n: usize) -> Zerlegt {
             .collect();
     }
     if let Some(&y) = ys.last() {
-        waagerecht(&vorher, &[], y, &mut edges);
+        waagerecht(&vorher, &[], y, edges);
     }
-    (pieces, edges)
 }
 
 /// Senkrechte Grenze bei `x(y)` (damit die waagerechte Rechnung am Ende
@@ -695,13 +704,13 @@ fn schnitt_y(p: &Grenze, q: &Grenze) -> Option<f64> {
 /// Intervalle auf der Höhe `y` (Mitte eines Streifens) aus den Treffern
 /// (`x`, Kante; nach `x` sortiert): in einem Rechteck einer Gruppe, in keinem
 /// Loch; wo Rechtecke mehrerer Gruppen liegen, gilt die erste. `zaehler` und
-/// `positiv` (Gruppen mit offenem Rechteck, sortiert) sind danach wieder
-/// leer.
+/// `positiv` (Gruppen mit offenem Rechteck, geordnet, je Gruppe O(log n)
+/// statt Verschieben eines Vec, Review #119 B5) sind danach wieder leer.
 fn intervalle(
     hits: &[(f64, usize)],
     kanten: &[Kante],
     zaehler: &mut [i32],
-    positiv: &mut Vec<usize>,
+    positiv: &mut BTreeSet<usize>,
     y: f64,
 ) -> Vec<Stueck> {
     let mut out = Vec::new();
@@ -725,12 +734,10 @@ fn intervalle(
         for &(_, k) in &hits[i..j] {
             if let Art::Rechteck(g, _) = kanten[k].art {
                 beruehrt.push(g);
-                match (positiv.binary_search(&g), zaehler[g] > 0) {
-                    (Err(p), true) => positiv.insert(p, g),
-                    (Ok(p), false) => {
-                        positiv.remove(p);
-                    }
-                    _ => {}
+                if zaehler[g] > 0 {
+                    positiv.insert(g);
+                } else {
+                    positiv.remove(&g);
                 }
             }
         }
@@ -788,32 +795,54 @@ fn grenze_an(hits: &[(f64, usize)], kanten: &[Kante], x: f64) -> (Grenze, bool) 
 /// nur unten Platte ist, liegt sie links einer Kante nach Westen, wo nur
 /// oben, links einer Kante nach Osten.
 fn waagerecht(unten: &[Stueck], oben: &[Stueck], y: f64, edges: &mut [Vec<(Vec3, Vec3)>]) {
-    let mut gs: Vec<usize> = unten.iter().chain(oben).map(|s| s.g).collect();
-    gs.sort_unstable();
-    gs.dedup();
-    for g in gs {
-        let iv = |v: &[Stueck]| -> Vec<(f64, f64)> {
-            v.iter()
-                .filter(|s| s.g == g)
-                .map(|s| (s.l.x_bei(y), s.r.x_bei(y)))
-                .collect()
-        };
-        let (u, o) = (iv(unten), iv(oben));
-        for (a, b) in differenz(&u, &o) {
-            edges[g].push((vec3(b, y, 0.0), vec3(a, y, 0.0)));
+    // je Seite (Gruppe, links, rechts), nach Gruppe und x geordnet, statt je
+    // Gruppe alle Stücke zu filtern
+    let iv = |v: &[Stueck]| -> Vec<(usize, f64, f64)> {
+        let mut out: Vec<(usize, f64, f64)> = v
+            .iter()
+            .map(|s| (s.g, s.l.x_bei(y), s.r.x_bei(y)))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        out
+    };
+    let (u, o) = (iv(unten), iv(oben));
+    let (mut i, mut j) = (0, 0);
+    while let Some(g) = [u.get(i), o.get(j)]
+        .into_iter()
+        .flatten()
+        .map(|s| s.0)
+        .min()
+    {
+        let bis =
+            |v: &[(usize, f64, f64)], k: usize| k + v[k..].iter().take_while(|s| s.0 == g).count();
+        let (i1, j1) = (bis(&u, i), bis(&o, j));
+        let paare =
+            |v: &[(usize, f64, f64)]| -> Vec<(f64, f64)> { v.iter().map(|s| (s.1, s.2)).collect() };
+        let (a, b) = (paare(&u[i..i1]), paare(&o[j..j1]));
+        for (x0, x1) in differenz(&a, &b) {
+            edges[g].push((vec3(x1, y, 0.0), vec3(x0, y, 0.0)));
         }
-        for (a, b) in differenz(&o, &u) {
-            edges[g].push((vec3(a, y, 0.0), vec3(b, y, 0.0)));
+        for (x0, x1) in differenz(&b, &a) {
+            edges[g].push((vec3(x0, y, 0.0), vec3(x1, y, 0.0)));
         }
+        (i, j) = (i1, j1);
     }
 }
 
-/// `a` ohne `b` (beide sortiert, ohne Überlappung in sich).
+/// `a` ohne `b` (beide sortiert, ohne Überlappung in sich), in einem
+/// Durchgang über beide.
 fn differenz(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
+    let mut k = 0;
     for &(mut x0, x1) in a {
-        for &(c0, c1) in b {
-            if c1 <= x0 + EPS || c0 >= x1 - EPS {
+        while k < b.len() && b[k].1 <= x0 + EPS {
+            k += 1;
+        }
+        for &(c0, c1) in &b[k..] {
+            if c0 >= x1 - EPS {
+                break;
+            }
+            if c1 <= x0 + EPS {
                 continue;
             }
             if c0 > x0 + EPS {
@@ -1109,14 +1138,17 @@ mod tests {
         assert!((a - (2e10 - a_loch)).abs() < 1e-6 * a, "{a}");
         assert!((rand_flaeche(&e[0]) - a).abs() < 1e-6 * a);
         assert!(ms < budget(300.0), "kollinear: {ms:.1} ms");
-        // 1000 gleiche Häuser, jedes ein eigenes Gebäude an derselben Stelle
-        let rects = vec![vec![[0.0, 0.0, 20_000.0, 20_000.0]]; 1000];
-        let holes = vec![quadrat(5000.0, 5000.0, 15_000.0, 15_000.0); 1000];
-        let ((p, e), ms) = zeit(&|| streifen(&rects, &holes));
-        assert!((flaeche(&p[0]) - 3e8).abs() < 1e-3);
-        assert!(p[1..].iter().all(|q| q.is_empty()));
-        assert!((rand_flaeche(&e[0]) - 3e8).abs() < 1e-3);
-        assert!(ms < budget(100.0), "gleiche: {ms:.1} ms");
+        // gleiche Häuser, jedes ein eigenes Gebäude mit eigener Höhe
+        // (Gruppe) an derselben Stelle: 25.000 vorher 8,6 s (Review #119 B5)
+        for (zahl, grenze) in [(1000, 100.0), (25_000, 300.0)] {
+            let rects = vec![vec![[0.0, 0.0, 20_000.0, 20_000.0]]; zahl];
+            let holes = vec![quadrat(5000.0, 5000.0, 15_000.0, 15_000.0); zahl];
+            let ((p, e), ms) = zeit(&|| streifen(&rects, &holes));
+            assert!((flaeche(&p[0]) - 3e8).abs() < 1e-3);
+            assert!(p[1..].iter().all(|q| q.is_empty()));
+            assert!((rand_flaeche(&e[0]) - 3e8).abs() < 1e-3);
+            assert!(ms < budget(grenze), "{zahl} gleiche: {ms:.1} ms");
+        }
         // 4096 Gruppen (eigene Höhen), die sich je mit den Nachbarn überdecken
         let ort = |i: usize| ((i % 64) as f64 * 15_000.0, (i / 64) as f64 * 12_000.0);
         let rects: Vec<Vec<[f64; 4]>> = (0..4096)
