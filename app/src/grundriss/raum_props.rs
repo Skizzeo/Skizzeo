@@ -40,7 +40,9 @@ pub fn props(
         ("Fläche (Rohbau)", format!("{} m²", de(f.flaeche / 1e6, 2))),
         ("Umfang (Rohbau)", format!("{} m", de(f.umfang / 1e3, 2))),
     ]);
-    values.extend(super::raumbuch::werte(m, &scene.ketten(), f));
+    let (raum, mengen) = super::raumbuch::werte(m, &scene.ketten(), f);
+    let mengen = values.len() + mengen.start..values.len() + mengen.end;
+    values.extend(raum);
     let mut waende: Vec<ElementId> = Vec::new();
     for k in f.umriss.iter().chain(f.loecher.iter().flatten()) {
         let Begrenzung::Wand { wand, .. } = k.quelle;
@@ -58,6 +60,7 @@ pub fn props(
         set_label: "Begrenzung",
         layer_set: nummern.join(", "),
         set_umbruch: true,
+        mengen,
         ..Default::default()
     })
 }
@@ -114,6 +117,21 @@ mod tests {
             fertig > 0.0 && fertig < zahl("Fläche (Rohbau)"),
             "ohne Putz"
         );
+        // Die Mengen der Flächen stehen in `mengen`, Nutzung und Höhen davor
+        // (Review #120 B2)
+        let flaechen = [
+            "Boden",
+            "Estrich",
+            "Wand",
+            "Wandfliesen",
+            "Decke",
+            "Sockelleiste",
+        ];
+        assert!(!p.mengen.is_empty() && stelle("Lichte Höhe") < p.mengen.start);
+        assert!(flaechen.contains(&p.values[p.mengen.start].0));
+        assert!(p.values[p.mengen.clone()]
+            .iter()
+            .all(|v| v.0.is_empty() || flaechen.contains(&v.0)));
         assert_eq!(p.set_label, "Begrenzung");
         assert!(p.set_umbruch, "bricht im Paneel um");
         assert!(p.layer_set.contains("IW-001"), "{}", p.layer_set);
