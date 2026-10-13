@@ -200,15 +200,23 @@ impl Model {
     /// zurück ergibt so dieselbe Gründung. Wo sich das Gelände nicht
     /// bewegt hat, bleibt alles.
     pub(super) fn resettle_foundations(&mut self, vorher: Vec<(StoreyId, f64)>) {
+        // OK Gelände je Gründung einmal für den ganzen Gang: Eine Gründung
+        // zu setzen ändert kein Gelände, aber den Modellstand (Review #123
+        // W45 B1, sonst je Gründung alle Umrisse neu)
+        let jetzt: std::collections::HashMap<StoreyId, f64> =
+            self.foundation_terrain().into_iter().collect();
         for (gr, alt) in vorher {
-            if (self.terrain_z_of_level(gr) - alt).abs() <= 1e-6 {
+            let Some(&t) = jetzt.get(&gr) else {
+                continue;
+            };
+            if (t - alt).abs() <= 1e-6 {
                 continue;
             }
             let Some(s) = self.storey(gr) else {
                 continue;
             };
             let want = s.embed.unwrap_or(alt - s.elevation);
-            self.settle_foundation(gr, want);
+            self.settle_foundation_at(gr, want, t);
         }
     }
 
@@ -219,7 +227,12 @@ impl Model {
     /// liegt dann an der unteren Grenze).
     fn settle_foundation(&mut self, gr: StoreyId, want: f64) -> bool {
         let t = self.terrain_z_of_level(gr);
-        let (lo, hi) = self.foundation_bottom_range_of(gr);
+        self.settle_foundation_at(gr, want, t)
+    }
+
+    /// Wie [`Model::settle_foundation`] mit schon bekanntem OK Gelände `t`.
+    fn settle_foundation_at(&mut self, gr: StoreyId, want: f64, t: f64) -> bool {
+        let (lo, hi) = self.foundation_bottom_range_at(gr, t);
         let z = (t - want).min(hi).max(lo);
         self.move_foundation_bottom(gr, z);
         let embed = ((t - z) - want).abs() > 1e-6;
@@ -254,7 +267,7 @@ impl Model {
         if let Some(s) = self.storeys.get_mut(gr) {
             s.embed = embed;
         }
-        self.touch();
+        self.touch_height();
     }
 
     /// Merkt das Projekt im offenen Schritt.

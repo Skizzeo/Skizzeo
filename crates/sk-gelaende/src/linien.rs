@@ -147,9 +147,11 @@ fn punkt(netz: &Netz, e: (u32, u32), z: f64) -> [f64; 2] {
 }
 
 /// Anzahl der Stücke (je Dreieck und Höhe eins) bei Abstand `stufe`, in
-/// O(Dreiecke) gezählt, ohne ein Stück zu bauen.
-pub fn strecken(netz: &Netz, stufe: f64) -> usize {
-    stufen(netz, stufe).map_or(0, |s| zaehlen(netz, &s))
+/// O(Dreiecke) gezählt, ohne ein Stück zu bauen. `None`, wenn bei diesem
+/// Abstand keine Höhen entstehen (wie [`hoehen`] leer): Null Stücke heißt
+/// dann nicht, dass er passt (Review #123 W45 B4).
+pub fn strecken(netz: &Netz, stufe: f64) -> Option<usize> {
+    stufen(netz, stufe).map(|s| zaehlen(netz, &s))
 }
 
 fn zaehlen(netz: &Netz, s: &Stufen) -> usize {
@@ -328,7 +330,7 @@ mod tests {
         for stufe in [f64::INFINITY, f64::NAN, f64::NEG_INFINITY, 0.0, -1.0] {
             assert!(hoehen(&n, stufe).is_empty(), "{stufe}");
             assert!(hoehenlinien(&n, stufe).is_empty(), "{stufe}");
-            assert_eq!(strecken(&n, stufe), 0, "{stufe}");
+            assert_eq!(strecken(&n, stufe), None, "{stufe}");
         }
     }
 
@@ -361,7 +363,11 @@ mod tests {
                             .count()
                     })
                     .sum();
-                assert_eq!(strecken(&n, stufe), einzeln, "Runde {runde}, Stufe {stufe}");
+                assert_eq!(
+                    strecken(&n, stufe),
+                    Some(einzeln),
+                    "Runde {runde}, Stufe {stufe}"
+                );
             }
         }
     }
@@ -377,7 +383,7 @@ mod tests {
         let n = netz(&p, &[], Rand::Huelle);
         assert_eq!(hoehen(&n, 0.25).len(), 1602);
         let t = std::time::Instant::now();
-        let st = strecken(&n, 0.25);
+        let st = strecken(&n, 0.25).unwrap();
         assert!(st > MAX_STRECKEN, "{st}");
         assert!(hoehenlinien(&n, 0.25).is_empty());
         let ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -387,7 +393,7 @@ mod tests {
         );
         // gröber geht es: 8 Höhen schneiden jedes Dreieck, je Reihenpaar
         // eine Linie von Rand zu Rand
-        assert_eq!(strecken(&n, 50.0), 8 * n.dreiecke.len());
+        assert_eq!(strecken(&n, 50.0), Some(8 * n.dreiecke.len()));
         let l = hoehenlinien(&n, 50.0);
         assert_eq!(l.len(), 8 * 29);
         assert!(l
@@ -431,7 +437,7 @@ mod tests {
         assert_eq!(hoehen(&n, 1.0), [-1.0, 0.0, 1.0, 2.0, 3.0]);
         // Stücke je Dreieck, auch die der Länge null an der Spitze (3)
         // und am Ring (0): 24 + 12 + 12 + 12
-        assert_eq!(strecken(&n, 1.0), 60);
+        assert_eq!(strecken(&n, 1.0), Some(60));
         assert!(l.iter().all(|x| x.z != 3.0));
     }
 

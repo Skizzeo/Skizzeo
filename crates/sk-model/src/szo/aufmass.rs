@@ -45,28 +45,13 @@ pub(super) fn write(m: &Model, out: &mut String) {
     let Some(t) = m.terrain() else {
         return;
     };
-    let mut l = Line::new("terrain").text("src", &t.src);
-    if !t.read.is_empty() {
-        l = wort(l, "read", &t.read);
+    match &t.head_raw {
+        Some(r) => {
+            out.push_str(r);
+            out.push('\n');
+        }
+        None => kopf(t, out),
     }
-    l = l.word("crs", &t.crs.key()).word("hsys", t.hsys.key());
-    if t.trim == Trim::Hull {
-        l = l.word("trim", "hull");
-    }
-    if let Some(s) = t.show {
-        l = l.word("show", s.key());
-    }
-    if t.href == HeightRef::Abs {
-        l = l.word("href", "abs");
-    }
-    if let Some(f) = t.local {
-        l = l
-            .flag("local", true)
-            .num("e0", f.e0)
-            .num("n0", f.n0)
-            .num("rot", f.rot);
-    }
-    l.finish(out);
     for p in &t.points {
         let mut l = wort(Line::new("tpoint"), "nr", &p.nr)
             .num("e", p.e)
@@ -114,6 +99,32 @@ pub(super) fn write(m: &Model, out: &mut String) {
     }
 }
 
+/// Die `[terrain]`-Zeile aus den Werten.
+fn kopf(t: &Terrain, out: &mut String) {
+    let mut l = Line::new("terrain").text("src", &t.src);
+    if !t.read.is_empty() {
+        l = wort(l, "read", &t.read);
+    }
+    l = l.word("crs", &t.crs.key()).word("hsys", t.hsys.key());
+    if t.trim == Trim::Hull {
+        l = l.word("trim", "hull");
+    }
+    if let Some(s) = t.show {
+        l = l.word("show", s.key());
+    }
+    if t.href == HeightRef::Abs {
+        l = l.word("href", "abs");
+    }
+    if let Some(f) = t.local {
+        l = l
+            .flag("local", true)
+            .num("e0", f.e0)
+            .num("n0", f.n0)
+            .num("rot", f.rot);
+    }
+    l.finish(out);
+}
+
 /// Aufmaß aus den Abschnitten; `None` ohne `[terrain]` und ohne Punkte.
 pub(super) fn read<'r>(
     recs: &dyn Fn(&str) -> &'r [Record],
@@ -145,28 +156,25 @@ pub(super) fn read<'r>(
         [r] => {
             t.src = r.opt("src").unwrap_or("").to_string();
             t.read = r.opt("read").unwrap_or("").to_string();
-            let mut falsch = |k: &str, v: &str| {
-                hints.push(format!(
-                    "Zeile {}: [terrain] „{k}={v}“ unbekannt, die Vorgabe gilt",
-                    r.line
-                ))
-            };
+            // Werte, die nicht gelten: die Vorgabe gilt, die ganze Zeile
+            // bleibt roh stehen (Regel 72 wie `[sun]`, Review #123 W45 B5)
+            let mut falsch: Vec<String> = Vec::new();
             if let Some(v) = r.opt("crs") {
                 match Crs::from_key(v) {
                     Some(c) => t.crs = c,
-                    None => falsch("crs", v),
+                    None => falsch.push(format!("„crs={v}“")),
                 }
             }
             if let Some(v) = r.opt("hsys") {
                 match HeightSystem::ALL.into_iter().find(|h| h.key() == v) {
                     Some(h) => t.hsys = h,
-                    None => falsch("hsys", v),
+                    None => falsch.push(format!("„hsys={v}“")),
                 }
             }
             match r.opt("trim") {
                 None | Some("auto") => {}
                 Some("hull") => t.trim = Trim::Hull,
-                Some(v) => falsch("trim", v),
+                Some(v) => falsch.push(format!("„trim={v}“")),
             }
             if let Some(v) = r.opt("show") {
                 match [Show::All, Show::Fade, Show::Parcel]
@@ -174,13 +182,13 @@ pub(super) fn read<'r>(
                     .find(|s| s.key() == v)
                 {
                     Some(s) => t.show = Some(s),
-                    None => falsch("show", v),
+                    None => falsch.push(format!("„show={v}“")),
                 }
             }
             match r.opt("href") {
                 None | Some("high") => {}
                 Some("abs") => t.href = HeightRef::Abs,
-                Some(v) => falsch("href", v),
+                Some(v) => falsch.push(format!("„href={v}“")),
             }
             if r.opt("local") == Some("1") {
                 let z = |k: &str| {
@@ -190,11 +198,16 @@ pub(super) fn read<'r>(
                 };
                 match (z("e0"), z("n0"), z("rot")) {
                     (Some(e0), Some(n0), Some(rot)) => t.local = Some(LocalFrame { e0, n0, rot }),
-                    _ => hints.push(format!(
-                        "Zeile {}: [terrain] Lage des örtlichen Systems unlesbar, das Gelände liegt unter dem Haus",
-                        r.line
-                    )),
+                    _ => falsch.push("die Lage des örtlichen Systems".into()),
                 }
+            }
+            if !falsch.is_empty() {
+                hints.push(format!(
+                    "Zeile {}: [terrain] {} unlesbar, die Vorgabe gilt, die Zeile bleibt unverändert stehen",
+                    r.line,
+                    falsch.join(", ")
+                ));
+                t.head_raw = Some(lines.get(r.line - 1).copied().unwrap_or("").to_string());
             }
         }
         [_, r, ..] => return Err(err(r.line, "[terrain] doppelt")),
@@ -394,7 +407,7 @@ mod tests {
             .replace("crs=utm32", "crs=utm99");
         let l = load(&text);
         assert_eq!(l.hints.len(), 3, "{:?}", l.hints);
-        assert!(l.hints[0].contains("crs=utm99"));
+        assert!(l.hints[0].contains("crs=utm99") && l.hints[0].contains("bleibt unverändert"));
         assert!(l.hints[1].contains("[tpoint]") && l.hints[1].contains("bleibt unverändert"));
         let t = l.model.terrain().unwrap();
         assert_eq!(t.points.len(), 3);
@@ -403,6 +416,45 @@ mod tests {
         let wieder = write(&l.model);
         assert!(wieder.contains("[tpoint] nr=2 e=467132.035 n=5878744.562 h=abc code=GR"));
         assert!(wieder.contains("[tcode] code=XY kind=quatsch"));
+        // auch die Lage im Kopf geht nicht verloren (W45 B5)
+        let kopf = text.lines().find(|z| z.starts_with("[terrain]")).unwrap();
+        assert!(wieder.lines().any(|z| z == kopf), "{wieder}");
         assert_eq!(write(&load(&wieder).model), wieder);
+    }
+
+    /// Jeder Wert im Kopf, der nicht gilt, lässt die ganze `[terrain]`-Zeile
+    /// roh stehen, mit einem Hinweis; neue Werte ersetzen sie (Regel 72,
+    /// Review #123 W45 B5).
+    #[test]
+    fn kopf_bleibt_roh_bis_neue_werte() {
+        let load = |t: &str| read(t, GuidGen::with_seed(99)).unwrap();
+        let mut m = house();
+        m.begin("Aufmaß");
+        m.set_terrain(Some(aufmass()));
+        m.commit();
+        let text = write(&m);
+        for (alt, neu) in [
+            ("crs=utm32", "crs=utm99"),
+            ("hsys=DHHN2016", "hsys=DHHN1492"),
+            ("href=abs", "href=tief"),
+            ("href=abs", "href=abs trim=eng"),
+            ("href=abs", "href=abs show=bunt"),
+            ("href=abs", "href=abs local=1 e0=x n0=0 rot=0"),
+            ("crs=utm32 hsys=DHHN2016", "crs=utm99 hsys=x"),
+        ] {
+            let t = text.replace(alt, neu);
+            let l = load(&t);
+            assert_eq!(l.hints.len(), 1, "{neu}: {:?}", l.hints);
+            assert!(l.hints[0].contains("[terrain]"), "{:?}", l.hints);
+            assert_eq!(write(&l.model), t, "{neu}");
+        }
+        // neue Werte im Kopf ersetzen die rohe Zeile
+        let mut l = load(&text.replace("crs=utm32", "crs=utm99")).model;
+        l.begin("Höhenlage");
+        assert!(l.set_terrain_href(HeightRef::High));
+        l.commit();
+        let neu = write(&l);
+        assert!(!neu.contains("utm99"), "{neu}");
+        assert!(neu.contains("[terrain] src=\"höhen aufmaß.csv\" read=2026-10-12 crs=local"));
     }
 }
