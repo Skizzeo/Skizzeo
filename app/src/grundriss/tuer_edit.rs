@@ -47,7 +47,7 @@ fn griff_der_tuer(m: &Model, id: ElementId, k: Koerper) -> Option<(Vec3, Vec3, f
 }
 
 /// Griffe der Türen des aktiven Geschosses, bei denen die Maus (Punkt `p`
-/// im Grundriss) steht.
+/// im Grundriss) steht; ausgeblendete Türen haben keinen.
 pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
     let m = scene.model();
     let st = scene.active_storey();
@@ -58,7 +58,7 @@ pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
             let ElementKind::Opening(o) = &e.kind else {
                 return None;
             };
-            if e.storey != st || o.swing.is_none() || o.path.len() != 2 {
+            if e.storey != st || o.swing.is_none() || o.path.len() != 2 || !scene.pickable(id) {
                 return None;
             }
             // Erst am Pfad filtern, das Blatt nur für Türen bei der Maus
@@ -91,14 +91,18 @@ pub fn oeffnung_bei(scene: &Scene, p: Vec3) -> Option<ElementId> {
             || p.y > hi.y + AUFSCHLAG
     };
     let mut bogen: Option<(f64, ElementId)> = None;
-    for (run, c, quader) in scene.zuege() {
+    let (lo, hi) = (
+        (p.x - AUFSCHLAG, p.y - AUFSCHLAG),
+        (p.x + AUFSCHLAG, p.y + AUFSCHLAG),
+    );
+    for (run, c, quader) in scene.zuege_im(lo, hi) {
         if quader.is_some_and(weit) || m.run(run).is_none_or(|r| r.storey != st) {
             continue;
         }
         let geschnitten = |z: (f64, f64)| z.0 < cut && cut < z.1;
-        for (h, q) in c.hole_quads() {
+        for (h, q) in scene.loecher(run) {
             if let Some(id) = h.opening.filter(|_| geschnitten(h.z)) {
-                if super::ecke_edit::innen(&q, p) {
+                if super::ecke_edit::innen(q, p) {
                     return Some(id);
                 }
             }
@@ -603,6 +607,147 @@ mod tests {
             crate::delete::locked_card(s.model(), id, Some((id, crate::delete::Act::Field)));
         assert_eq!(karte.len(), 1);
         assert!(karte[0].ends_with(" ist gesperrt."), "{karte:?}");
+    }
+
+    /// Eine ausgeblendete Tür zeigt keinen Griff und kippt nicht, auch
+    /// nicht gewählt mit der Maus weit weg (Review #132 H1).
+    #[test]
+    fn ausgeblendete_tuer_bleibt() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(
+            vec3(5000.0, 3000.0, 20000.0),
+            vec3(5000.0, 3001.0, 0.0),
+            45.0,
+        );
+        let (m, id) = haus();
+        let mut s = Scene::with_model(m);
+        let mut e = crate::wall_edit::WallEdit::default();
+        e.stand(None, Some(0.0), Some(id));
+        let mods = sk_platform::Modifiers::default();
+        let geh = |e: &mut crate::wall_edit::WallEdit, s: &mut Scene, p: Vec3| {
+            let (x, y) = cam.project(p, W, H).unwrap();
+            e.handle(&Event::MouseMove { x, y, mods }, s, &cam, W, H, 1.0, true);
+        };
+        let taste = Event::Key {
+            key: LEERTASTE,
+            down: true,
+            mods,
+            repeat: false,
+        };
+        let swing = |s: &Scene| s.model().opening(id).unwrap().swing.unwrap();
+        let alt = swing(&s);
+        let mut v = s.model().visibility().clone();
+        v.hidden.insert(s.model().element(id).unwrap().guid);
+        assert!(s.set_visibility(v));
+        for p in [vec3(5300.0, 3000.0, 0.0), vec3(9000.0, 7000.0, 0.0)] {
+            geh(&mut e, &mut s, p);
+            let o = e.handle(&taste, &mut s, &cam, W, H, 1.0, true);
+            assert!(!o.changed, "bei {p:?}");
+            assert_eq!(swing(&s), alt);
+        }
+        // Wieder eingeblendet kippt sie gewählt mit der Maus weit weg
+        let mut v = s.model().visibility().clone();
+        v.hidden.clear();
+        assert!(s.set_visibility(v));
+        geh(&mut e, &mut s, vec3(9000.0, 7000.0, 0.0));
+        assert!(e.handle(&taste, &mut s, &cam, W, H, 1.0, true).changed);
+        assert_eq!(swing(&s), alt.other_hand());
+    }
+
+    /// Grundriss G7 (Jörn): Wird die Innenwand gezogen, wandern die Griffe
+    /// ihrer Tür mit, nicht erst beim Loslassen, und die Raumstempel rücken
+    /// stetig mit, statt längs der Raummitte zu springen.
+    #[test]
+    fn wand_ziehen_fuehrt_griffe_und_stempel_mit() {
+        use crate::raum_app::stempel::Stempel;
+        use sk_platform::Modifiers;
+        use sk_ui::widgets::Fonts;
+        use std::collections::BTreeMap;
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(
+            vec3(5000.0, 4000.0, 20000.0),
+            vec3(5000.0, 4001.0, 0.0),
+            45.0,
+        );
+        let mut s = Scene::with_model(Model::with_seed(412));
+        let mut tuer = None;
+        assert!(s.edit_model("Haus", |m| {
+            tuer = Some(haus_in(m));
+            true
+        }));
+        let run = s.model().door_leaf(tuer.unwrap()).unwrap().run;
+        let f = s.model().outer_face(run, 0).unwrap();
+        // Auf dem Band der Wand, knapp 0,5 m unter der Tür
+        let p0 = f.at(f.u_of(vec3(5000.0, 2100.0, 0.0)), 0.0);
+        let mods = Modifiers::default();
+        let mut e = crate::wall_edit::WallEdit::default();
+        e.stand(None, Some(0.0), None);
+        let maus = |p: Vec3| cam.project(p, W, H).unwrap();
+        let geh = |e: &mut crate::wall_edit::WallEdit, s: &mut Scene, p: Vec3| {
+            let (x, y) = maus(p);
+            e.handle(&Event::MouseMove { x, y, mods }, s, &cam, W, H, 1.0, true)
+        };
+        geh(&mut e, &mut s, p0);
+        assert!(e.active_wall().is_some());
+        // Griffe gegen die Wand gemessen
+        let x0 = |s: &Scene| s.model().run(run).unwrap().points[0].x;
+        let lage = |e: &crate::wall_edit::WallEdit, s: &Scene| {
+            let breiten = e.breiten.iter().map(|g| g.2);
+            let p: Vec<_> = e.tueren.iter().map(|g| g.1).chain(breiten).collect();
+            p.iter().map(|p| (p.x - x0(s), p.y)).collect::<Vec<_>>()
+        };
+        let griffe = lage(&e, &s);
+        assert!(!e.tueren.is_empty() && e.breiten.len() == 2, "{griffe:?}");
+        let (x, y) = maus(p0);
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods,
+        };
+        assert!(e.handle(&down, &mut s, &cam, W, H, 1.0, true).consumed);
+        assert!(e.drag.is_some());
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let mut st = Stempel::default();
+        let mut stempel = |s: &Scene| {
+            st.auslegen(s, &cam, W, H, 1.0, &fonts, &Theme::dark(), &[]);
+            st.bilder
+                .iter()
+                .map(|b| (b.name.clone(), b.punkt))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let mut vorher = stempel(&s);
+        assert_eq!(vorher.len(), 2, "{vorher:?}");
+        for k in 1..=12 {
+            let dx = 30.0 * k as f64;
+            assert!(geh(&mut e, &mut s, p0 + vec3(dx, 0.0, 0.0)).changed);
+            assert!((x0(&s) - 5000.0 - dx).abs() < 1e-6, "{k}: {}", x0(&s));
+            let jetzt = lage(&e, &s);
+            assert_eq!(jetzt.len(), griffe.len(), "{k}");
+            for (a, b) in griffe.iter().zip(&jetzt) {
+                assert!(
+                    (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6,
+                    "{k}: {a:?} → {b:?}"
+                );
+            }
+            // Je Schritt rückt die Mitte eines Raums um 15 mm
+            let neu = stempel(&s);
+            assert_eq!(
+                neu.keys().collect::<Vec<_>>(),
+                vorher.keys().collect::<Vec<_>>()
+            );
+            for (name, p) in &neu {
+                let q = vorher[name];
+                assert!((*p - q).length() < 20.0, "{k} {name}: {q:?} → {p:?}");
+            }
+            vorher = neu;
+        }
     }
 
     /// Grundriss G7: Ein Klick in Loch oder Aufschlag wählt die Tür, nicht

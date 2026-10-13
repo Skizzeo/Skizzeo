@@ -22,6 +22,9 @@ use crate::ui::MeasureKind;
 use breite_edit::BreiteZug;
 use ecke_edit::EckeWahl;
 use ende_edit::EndeZug;
+use mass_edit::Masse;
+use mass_treffer::Bezugsmass;
+use oeffnung_kanten::HoeheZug;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{ElementId, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -35,6 +38,12 @@ pub mod breite_edit;
 pub mod ecke_edit;
 #[path = "grundriss/ende_edit.rs"]
 pub mod ende_edit;
+#[path = "grundriss/mass_edit.rs"]
+pub mod mass_edit;
+#[path = "grundriss/mass_treffer.rs"]
+pub mod mass_treffer;
+#[path = "oeffnung_kanten.rs"]
+pub mod oeffnung_kanten;
 #[path = "grundriss/tuer_edit.rs"]
 pub mod tuer_edit;
 
@@ -68,6 +77,10 @@ struct Drag {
     side: f64,
     /// An einer Stufe (W-12): die Fuge darunter, die mitwandert.
     joint: Option<Joint>,
+    /// Kettenbezug (Bemaßung): getippt wird das Maß hinter dem Bauteil.
+    mass: Option<Bezugsmass>,
+    /// Die Maus hat eine Richtung gezeigt (dann leuchtet das Maß).
+    gerichtet: bool,
 }
 
 /// Fuge im Zug `run` vor Segment `seg`, die beim Ziehen an einer Stufe
@@ -98,6 +111,7 @@ impl Drag {
             offset: self.offset.map(|o| o.0),
             side: self.side,
             joint: self.joint.clone(),
+            mass: self.mass,
         }
     }
 }
@@ -113,6 +127,8 @@ struct Target {
     offset: Option<ElementId>,
     side: f64,
     joint: Option<Joint>,
+    /// Kettenbezug: der getippte Wert ist das Maß, nicht der Weg.
+    mass: Option<Bezugsmass>,
 }
 
 impl Target {
@@ -127,16 +143,26 @@ impl Target {
     fn label(&self) -> &'static str {
         if self.offset.is_some() {
             "Versatz"
+        } else if self.mass.is_some() {
+            mass_edit::LABEL
         } else {
             "Verschiebung"
         }
     }
 
-    /// Setzt den getippten Wert `v` (mm) genau, ohne das Raster.
+    /// Setzt den getippten Wert `v` (mm) genau, ohne das Raster. Mit
+    /// Kettenbezug ist `v` das Maß hinter dem Bauteil.
     fn apply(&self, scene: &mut Scene, v: f64) -> bool {
         if let Some(wall) = self.offset {
             return scene.set_offset(wall, v);
         }
+        let v = match &self.mass {
+            Some(m) => match m.fuer(self.side) {
+                Some(a) => a.weg(v),
+                None => return false,
+            },
+            None => v,
+        };
         if let Some(j) = &self.joint {
             return j.moved(v * self.side).is_some_and(|c| {
                 put(scene, j.run, &c);
@@ -162,6 +188,9 @@ impl Target {
     fn value(&self, scene: &Scene) -> f64 {
         if let Some(wall) = self.offset {
             return scene.model().stack_offset(wall).map_or(0.0, |o| o.0);
+        }
+        if let Some(a) = self.mass.as_ref().and_then(|m| m.fuer(self.side)) {
+            return a.mass(self.weg(scene));
         }
         if let Some(j) = &self.joint {
             let now = scene.chain(j.run).map(|c| c.clean_points());
@@ -195,6 +224,31 @@ impl Target {
                 (parallel && overlap > 1.0).then(|| (p - a).dot(n).abs())
             })
             .min_by(f64::total_cmp)
+            .unwrap_or(0.0)
+    }
+
+    /// Weg des Segments in Zugrichtung (mit Vorzeichen, mm).
+    fn weg(&self, scene: &Scene) -> f64 {
+        let old = self.original.clean_points();
+        let (Some(&a), Some(n), Some(c)) = (
+            old.get(self.seg),
+            self.original.segment_normal(self.seg),
+            scene.chain(self.run),
+        ) else {
+            return 0.0;
+        };
+        let b = old[(self.seg + 1) % old.len()];
+        let dir = (b - a).normalized();
+        let len = (b - a).length();
+        let pts = c.clean_points();
+        (0..c.segment_count())
+            .filter_map(|k| {
+                let (p, q) = (pts[k], pts[(k + 1) % pts.len()]);
+                let overlap = (q - a).dot(dir).min(len) - (p - a).dot(dir).max(0.0);
+                let parallel = (q - p).length() - (q - p).dot(dir) < 1e-6;
+                (parallel && overlap > 1.0).then(|| (p - a).dot(n) * self.side)
+            })
+            .min_by(|x, y| x.abs().total_cmp(&y.abs()))
             .unwrap_or(0.0)
     }
 }
@@ -275,7 +329,20 @@ pub struct WallEdit {
     breite_griff: Option<breite_edit::Griff>,
     /// Laufendes Ziehen an einem Ende einer Öffnung (Breite, O6).
     pub breite: Option<BreiteZug>,
+    /// Bemaßung: Maßzahlen überschreiben, Ketten greifen.
+    pub masse: Masse,
+    /// Öffnung unter der Maus in 3D und den Ansichten und die Kante dort
+    /// (Paket O7).
+    kante: Option<oeffnung_kanten::Treffer>,
+    /// Schlösser dieser Öffnung je Schenkel und Modellstand: Die Chips
+    /// fragen sie in jedem Bild (W43 B2).
+    schloesser: std::cell::RefCell<Option<SchlossMerk>>,
+    /// Laufendes Ziehen an Ober- oder Unterkante einer Öffnung (O7).
+    pub hoehe: Option<HoeheZug>,
 }
+
+/// Öffnung, Schenkel und Modellstand mit ihren Schlössern.
+type SchlossMerk = ((ElementId, usize, u64), Vec<crate::link_view::Schloss>);
 
 /// Ergebnis eines Ereignisses für die App.
 #[derive(Default)]
@@ -449,12 +516,22 @@ impl WallEdit {
 
     /// Offene Maßeingabe beim Ziehen bzw. in der Nachkorrektur (Paket 8b).
     pub fn input(&self) -> Option<&MeasureInput> {
-        match (&self.teilen, &self.ende, &self.breite) {
-            (Some(t), ..) => t.input.as_ref(),
-            (None, Some(z), _) => z.input.as_ref(),
-            (None, None, Some(b)) => b.input.as_ref(),
-            (None, None, None) => self.input.as_ref(),
+        if let Some(i) = self.masse.input() {
+            return Some(i);
         }
+        if let Some(t) = &self.teilen {
+            return t.input.as_ref();
+        }
+        if let Some(z) = &self.ende {
+            return z.input.as_ref();
+        }
+        if let Some(b) = &self.breite {
+            return b.input.as_ref();
+        }
+        if let Some(z) = &self.hoehe {
+            return z.input.as_ref();
+        }
+        self.input.as_ref()
     }
 
     /// Griff der gewählten Wand unter der Maus (nur im Grundriss).
@@ -477,14 +554,20 @@ impl WallEdit {
     }
 
     /// Hat das laufende Tun an der Wand ein eigenes Hilfethema ([`Self::thema`])
-    /// statt „Wand verschieben“? Teilen, Ecke, Breite und Aufschlag (39.2).
+    /// statt „Wand verschieben“? Teilen, Ecke, Breite, Höhe und Aufschlag
+    /// (39.2).
     pub fn eigenes_thema(&self) -> bool {
-        self.splitting() || self.tuer.is_some() || self.breite.is_some()
+        self.splitting() || self.oeffnung_zieht()
+    }
+
+    /// Läuft ein Ziehen an einer Öffnung (Breite, Höhe, Aufschlag)?
+    fn oeffnung_zieht(&self) -> bool {
+        self.tuer.is_some() || self.breite.is_some() || self.hoehe.is_some()
     }
 
     /// Hilfethema des laufenden Werkzeugs an der Wand.
     pub fn thema(&self) -> crate::help::Topic {
-        if self.tuer.is_some() || self.breite.is_some() {
+        if self.oeffnung_zieht() {
             crate::help::Topic::Openings
         } else if self.ecke.is_some() {
             crate::help::Topic::InnerWall
@@ -540,8 +623,14 @@ impl WallEdit {
         if let Some(z) = &self.ende {
             return z.pill();
         }
+        if let Some(p) = self.masse.pill() {
+            return Some(p);
+        }
         if let Some(b) = &self.breite {
             return b.pill(scene);
+        }
+        if let Some(z) = &self.hoehe {
+            return z.pill(scene);
         }
         let label = match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
@@ -553,6 +642,11 @@ impl WallEdit {
         }
         let l = self.last.as_ref().filter(|_| self.drag.is_none())?;
         let v = l.value;
+        // Mit Kettenbezug bleibt das Maß offen, bis ein Klick es schließt
+        // (Jörn 14:26); sonst blendet die Pille aus
+        if l.target.mass.is_some() {
+            return Some((format!("{label} {}", crate::ui::m_text(v)), true));
+        }
         let text = if l.target.offset.is_some() && v == 0.0 {
             format!("{label} bündig")
         } else if l.target.offset.is_some() {
@@ -578,8 +672,14 @@ impl WallEdit {
         if self.ende.is_some() {
             return ende_edit::LABEL;
         }
+        if self.masse.input().is_some() {
+            return mass_edit::LABEL;
+        }
         if self.breite.is_some() {
             return breite_edit::LABEL;
+        }
+        if self.hoehe.is_some() {
+            return oeffnung_kanten::LABEL;
         }
         match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
@@ -657,6 +757,9 @@ impl WallEdit {
             i.push(ch);
             self.input = Some(i);
             out.changed = self.apply_typed(scene);
+            if out.changed {
+                self.refresh(scene, cam, w, h, scale, enabled);
+            }
             return Some(out);
         };
         match i.key(key, mods) {
@@ -714,8 +817,10 @@ impl WallEdit {
                 // erneut
                 self.remember(scene, serial, target);
                 out.changed = true;
-                self.refresh(scene, cam, w, h, scale, enabled);
             }
+        }
+        if out.changed {
+            self.refresh(scene, cam, w, h, scale, enabled);
         }
         Some(out)
     }
@@ -731,7 +836,12 @@ impl WallEdit {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.hover.is_some() || self.griff || self.is_dragging() || self.splitting()
+        self.hover.is_some()
+            || self.griff
+            || self.kante.is_some()
+            || self.is_dragging()
+            || self.splitting()
+            || self.masse.is_busy()
     }
 
     /// Griffe an den Enden der Öffnungen bei der Maus (Grundriss).
@@ -740,7 +850,7 @@ impl WallEdit {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.drag.is_some() || self.ende.is_some() || self.tuer.is_some() || self.breite.is_some()
+        self.drag.is_some() || self.ende.is_some() || self.oeffnung_zieht() || self.masse.aktiv()
     }
 
     /// Wandzug, der gerade gezogen wird.
@@ -751,6 +861,42 @@ impl WallEdit {
             .or(self.ende.as_ref().map(|z| z.run))
             .or(self.tuer.as_ref().map(|t| t.run()))
             .or(self.breite.as_ref().map(|b| b.run()))
+            .or(self.hoehe.as_ref().and_then(|z| z.run()))
+            .or(self.masse.lauf())
+    }
+
+    /// Was das Bild der Maßketten hervorhebt; beim Ziehen am Band mit
+    /// Kettenbezug das Maß hinter dem Bauteil, sobald die Richtung feststeht
+    /// (und nach dem Loslassen, solange es offen ist).
+    pub fn mass_hervor(&self, scene: &Scene) -> mass_edit::Hervor {
+        let mut h = self.masse.hervor();
+        let ziel = match (&self.drag, &self.last) {
+            (Some(d), _) if d.gerichtet || self.input.is_some() => d.mass.zip(Some(d.side)),
+            (None, Some(l)) if self.last_valid(scene) => l.target.mass.zip(Some(l.target.side)),
+            _ => None,
+        };
+        if let Some(a) = ziel.and_then(|(m, side)| m.fuer(side).copied()) {
+            h.zahl = Some((a.mass, true));
+        }
+        h
+    }
+
+    /// Schlösser an der Öffnung unter der Maus in 3D und den Ansichten
+    /// (Breite und Höhenbindung, Paket O7).
+    pub fn aussen_schloesser(&self, scene: &Scene) -> Vec<crate::link_view::Schloss> {
+        let Some(t) = self.kante.filter(|_| !self.is_dragging()) else {
+            return Vec::new();
+        };
+        let key = (t.id, t.schenkel, scene.model().revision());
+        let mut merk = self.schloesser.borrow_mut();
+        match merk.as_ref() {
+            Some((k, v)) if *k == key => v.clone(),
+            _ => {
+                let v = oeffnung_kanten::schloesser(scene, t);
+                *merk = Some((key, v.clone()));
+                v
+            }
+        }
     }
 
     /// Ist der Fuß einer Wand, die von der Seite als Punkt erscheint, zu sehen?
@@ -779,9 +925,10 @@ impl WallEdit {
         let on_level = move |foot: &[(Vec3, Vec3)]| {
             plan_z.is_none_or(|z| foot.first().is_none_or(|(a, _)| (a.z - z).abs() < 1.0))
         };
+        // Nur Züge nahe dem Blickstrahl der Maus (Review L26)
+        let m = self.mouse?;
         let feet = scene
-            .feet()
-            .chain(scene.stacked_feet())
+            .feet_am_strahl(cam, h, cam.ray(m.0, m.1, w, h), PICK_PX * scale)
             .filter(move |(_, _, f)| on_level(f));
         self.pick_in(feet, scene, cam, w, h, scale)
     }
@@ -882,6 +1029,12 @@ impl WallEdit {
     /// Gewählte Tür mit Aufschlag, im Grundriss (Grundriss G7).
     fn gewaehlte_tuer(&self, scene: &Scene) -> Option<ElementId> {
         let id = self.gewaehlt.filter(|_| self.plan_z.is_some())?;
+        // Nur im aktiven Geschoss und nicht ausgeblendet, wie die Tür bei
+        // der Maus (Review #132 H1)
+        let e = scene.model().element(id)?;
+        if e.storey != scene.active_storey() || !scene.pickable(id) {
+            return None;
+        }
         let o = scene.model().opening(id)?;
         o.swing.map(|_| id)
     }
@@ -896,24 +1049,19 @@ impl WallEdit {
         scale: f64,
         enabled: bool,
     ) -> bool {
-        if self.is_dragging() {
-            return false;
-        }
         let frei = enabled && !self.splitting();
-        // Griffe der Öffnungen bei der Maus: Türblatt vor den Enden
-        let punkt = match (self.plan_z, self.mouse) {
-            (Some(z), Some((x, y))) if frei => drag_point(cam, x, y, w, h, z),
-            _ => None,
-        };
-        let tueren = punkt.map_or_else(Vec::new, |p| tuer_edit::sichtbar(scene, p));
-        // Bis 60 px um die Öffnung: so erreicht die Maus das Kettensymbol
-        let r_min = match (punkt, self.mouse, self.plan_z) {
-            (Some(p), Some((x, y)), Some(z)) => {
-                drag_point(cam, x + 60.0 * scale, y, w, h, z).map_or(0.0, |q| (q - p).length())
+        if self.is_dragging() {
+            // Zieht die Maus eine Wand, wandern die Griffe der Öffnungen bei
+            // ihr mit; gegriffen ist keiner (Grundriss G7, Jörn)
+            if self.drag.is_none() {
+                return false;
             }
-            _ => 0.0,
-        };
-        let breiten = punkt.map_or_else(Vec::new, |p| breite_edit::sichtbar(scene, p, r_min));
+            let (_, tueren, breiten) = self.griffe(scene, cam, w, h, scale, frei);
+            let changed = tueren != self.tueren || breiten != self.breiten;
+            (self.tueren, self.breiten) = (tueren, breiten);
+            return changed;
+        }
+        let (punkt, tueren, breiten) = self.griffe(scene, cam, w, h, scale, frei);
         let (tuer_griff, breite_griff) = match (self.plan_z, self.mouse) {
             (Some(z), Some(m)) => {
                 let t = tuer_edit::griff_bei(&tueren, cam, z, m, w, h, scale).map(|g| g.0);
@@ -922,13 +1070,24 @@ impl WallEdit {
             }
             _ => (None, None),
         };
+        // Von außen (3D, Ansicht): Öffnung und Kante unter der Maus (O7)
+        let kante = match self.mouse {
+            Some(m) if frei && self.plan_z.is_none() && self.section.is_none() => {
+                let halten = self.kante.map(|t| t.id);
+                oeffnung_kanten::treffer(scene, cam, m, w, h, scale, halten)
+            }
+            _ => None,
+        };
         let griff = tuer_griff.is_some()
             || breite_griff.is_some()
+            || kante.is_some()
             || frei && self.griff_bei(scene, cam, w, h, scale).is_some();
         let changed_tuer = tueren != self.tueren
             || tuer_griff != self.tuer_griff
             || breiten != self.breiten
-            || breite_griff != self.breite_griff;
+            || breite_griff != self.breite_griff
+            || kante != self.kante;
+        self.kante = kante;
         (self.tueren, self.tuer_griff) = (tueren, tuer_griff);
         (self.breiten, self.breite_griff) = (breiten, breite_griff);
         // In Loch und Aufschlag einer Öffnung gilt der Klick ihr, nicht
@@ -948,6 +1107,38 @@ impl WallEdit {
         changed
     }
 
+    /// Stelle der Maus im Grundriss und die Griffe der Öffnungen bei ihr:
+    /// Türblätter, dann die Enden.
+    #[allow(clippy::type_complexity)]
+    fn griffe(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        frei: bool,
+    ) -> (
+        Option<Vec3>,
+        Vec<(ElementId, Vec3)>,
+        Vec<breite_edit::Griff>,
+    ) {
+        let punkt = match (self.plan_z, self.mouse) {
+            (Some(z), Some((x, y))) if frei => drag_point(cam, x, y, w, h, z),
+            _ => None,
+        };
+        let tueren = punkt.map_or_else(Vec::new, |p| tuer_edit::sichtbar(scene, p));
+        // Bis 60 px um die Öffnung: so erreicht die Maus das Kettensymbol
+        let r_min = match (punkt, self.mouse, self.plan_z) {
+            (Some(p), Some((x, y)), Some(z)) => {
+                drag_point(cam, x + 60.0 * scale, y, w, h, z).map_or(0.0, |q| (q - p).length())
+            }
+            _ => 0.0,
+        };
+        let breiten = punkt.map_or_else(Vec::new, |p| breite_edit::sichtbar(scene, p, r_min));
+        (punkt, tueren, breiten)
+    }
+
     fn update_drag(&mut self, scene: &mut Scene, cam: &Camera, w: f64, h: f64) -> bool {
         let (Some(d), Some((mx, my))) = (&self.drag, self.mouse) else {
             return false;
@@ -962,6 +1153,7 @@ impl WallEdit {
             if let Some(d) = self.drag.as_mut() {
                 if d.offset.is_none() && off != 0.0 {
                     d.side = off.signum();
+                    d.gerichtet = true;
                 }
             }
             return self.apply_typed(scene);
@@ -969,6 +1161,7 @@ impl WallEdit {
         if let Some(d) = self.drag.as_mut() {
             if off != 0.0 {
                 d.side = off.signum();
+                d.gerichtet = true;
             }
         }
         let Some(d) = &self.drag else {
@@ -1012,8 +1205,55 @@ impl WallEdit {
 
     /// Verarbeitet ein Ereignis (Mauskoordinaten relativ zur 3D-Ansicht).
     /// `enabled` ist falsch, solange gerade ein Wandzug gezeichnet wird.
+    /// Die Bemaßung kommt vor dem Band, solange am Band nichts läuft.
     #[allow(clippy::too_many_arguments)]
     pub fn handle(
+        &mut self,
+        e: &Event,
+        scene: &mut Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        enabled: bool,
+    ) -> EditOutcome {
+        let rev = self.masse.rev();
+        let frei = self.drag.is_none()
+            && self.teilen.is_none()
+            && self.ecke.is_none()
+            && self.ende.is_none()
+            && self.tuer.is_none()
+            && self.breite.is_none()
+            && self.hoehe.is_none();
+        let band = self.hover.is_some()
+            || self.griff
+            || self.tuer_griff.is_some()
+            || self.breite_griff.is_some()
+            || self.kante.is_some_and(|t| t.kante.is_some());
+        let masse = frei
+            .then(|| self.masse.handle(e, scene, cam, w, h, scale, enabled, band))
+            .flatten();
+        let mut out = match masse {
+            Some(o) => {
+                if self.masse.is_busy() {
+                    self.hover = None;
+                    self.griff = false;
+                    self.tuer_griff = None;
+                    self.breite_griff = None;
+                }
+                if matches!(e, Event::MouseDown { .. }) {
+                    self.end_post();
+                }
+                o
+            }
+            None => self.handle_band(e, scene, cam, w, h, scale, enabled),
+        };
+        out.redraw |= self.masse.rev() != rev;
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_band(
         &mut self,
         e: &Event,
         scene: &mut Scene,
@@ -1074,6 +1314,20 @@ impl WallEdit {
             out.consumed = true;
             return out;
         }
+        if let Some(z) = self.hoehe.as_mut() {
+            let o = z.handle(e, scene, cam, w, h);
+            if o.fertig {
+                self.hoehe = None;
+                if let Event::MouseUp { x, y, .. } = *e {
+                    self.mouse = Some((x, y));
+                }
+                self.refresh(scene, cam, w, h, scale, enabled);
+            }
+            out.redraw = o.redraw;
+            out.changed = o.changed;
+            out.consumed = true;
+            return out;
+        }
         if let Some(t) = self.tuer.as_mut() {
             let o = t.handle(e, scene, cam, w, h);
             if o.fertig {
@@ -1094,6 +1348,9 @@ impl WallEdit {
                 if self.drag.is_some() {
                     out.changed = self.update_drag(scene, cam, w, h);
                     out.redraw = out.changed;
+                    if out.changed {
+                        self.refresh(scene, cam, w, h, scale, enabled);
+                    }
                 } else {
                     out.redraw = self.refresh(scene, cam, w, h, scale, enabled);
                 }
@@ -1141,6 +1398,32 @@ impl WallEdit {
                         return out;
                     }
                     self.breite = BreiteZug::greifen(scene, id, k, z);
+                    out.redraw = true;
+                    return out;
+                }
+                // Kante einer Öffnung von außen: Breite bzw. Höhe (O7)
+                if let Some(t) = self.kante.filter(|t| t.kante.is_some()) {
+                    out.consumed = true;
+                    let mut ids = vec![t.id];
+                    if let Some(oeffnung_kanten::Kante::Ende(k)) = t.kante {
+                        ids.extend(scene.model().locked_ends(t.id, k).iter().map(|e| e.0));
+                    }
+                    if let Some(l) = sk_model::edit_blocked(scene.model(), &ids) {
+                        out.locked = Some((l, t.id));
+                        return out;
+                    }
+                    match t.kante {
+                        Some(oeffnung_kanten::Kante::Ende(k)) => {
+                            self.breite = BreiteZug::greifen_aussen(scene, t.id, k);
+                        }
+                        Some(oeffnung_kanten::Kante::Oben)
+                        | Some(oeffnung_kanten::Kante::Unten) => {
+                            let oben = t.kante == Some(oeffnung_kanten::Kante::Oben);
+                            self.hoehe =
+                                HoeheZug::greifen(scene, t, oben, cam, (x, y), w, h, scale);
+                        }
+                        None => {}
+                    }
                     out.redraw = true;
                     return out;
                 }
@@ -1213,6 +1496,10 @@ impl WallEdit {
                         original: c.clone(),
                     })
                 });
+                // Kettenbezug nur, wenn das Segment selbst wandert
+                let mass = (offset.is_none() && joint.is_none())
+                    .then(|| self.masse.bezugsmass(run, seg, normal, start))
+                    .flatten();
                 self.drag = Some(Drag {
                     wall,
                     run,
@@ -1226,6 +1513,8 @@ impl WallEdit {
                     blocked: false,
                     side: 1.0,
                     joint,
+                    mass,
+                    gerichtet: false,
                 });
                 scene.begin("Wand verschoben");
                 out.redraw = true;
@@ -1359,8 +1648,15 @@ impl WallEdit {
         if let Some(b) = &self.breite {
             return b.helpers(scene, scale, occlude, theme);
         }
+        if let Some(z) = &self.hoehe {
+            return z.helpers(scene, cam, scale, occlude, theme);
+        }
+        // Öffnung unter der Maus von außen: ihre Kanten als Band (O7)
+        if let Some(t) = self.kante {
+            return oeffnung_kanten::baender(scene, cam, t, scale, occlude, theme);
+        }
         let col = &theme.interact;
-        let mut out = Vec::new();
+        let mut out = self.masse.helpers(cam, scale, theme);
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
         let line = |a: Vec3, b: Vec3, color, width: f32, dash: f32| Helper {
             a: lift(a),

@@ -15,6 +15,7 @@ mod bemassung;
 pub use bemassung::{firmenstil_lesen, firmenstil_text};
 mod dach;
 mod darstellung;
+mod gelaende;
 mod hoehen;
 mod lage;
 mod oeffnung;
@@ -23,9 +24,7 @@ mod sicht;
 
 pub(crate) use darstellung::Roh;
 
-use crate::attr::{
-    Attributes, Dash, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen, Surface,
-};
+use crate::attr::{Attributes, Dash, Fill, FillKind, FillSpace, HatchLine, LineType, Pen, Surface};
 use crate::element::{
     Building, Category, Coupling, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind,
     LevelRef, PropSet, PropValue, Soffit, Storey, StripFooting, Terrace, Wall, WallRun,
@@ -744,7 +743,6 @@ fn write_known(m: &Model) -> String {
     let mut out = format!("SZO {VERSION}\n# Skizzeo-Projekt\n");
     let a = m.attr();
     let pen_guid = |id| a.pen(id).map(|p| p.guid);
-    let lt_guid = |id| a.line_type(id).map(|l| l.guid);
 
     for p in sorted(a.pens().iter(), |p| p.guid) {
         write_pen(&mut out, p);
@@ -764,37 +762,7 @@ fn write_known(m: &Model) -> String {
     for s in sorted(a.surfaces().iter(), |s| s.guid) {
         write_surface(&mut out, s);
     }
-    let d = a.display();
-    let slot = |out: &mut String, name: &str, s: &EdgeStyle| {
-        Line::new("display")
-            .word("slot", name)
-            .guid("pen", pen_guid(s.pen))
-            .guid("lt", lt_guid(s.line_type))
-            .finish(out);
-    };
-    for (prefix, table) in [("drawing", &d.drawing), ("model3d", &d.model3d)] {
-        for (name, k) in EDGE_NAMES {
-            slot(&mut out, &format!("{prefix}.{name}"), &table[k as usize]);
-        }
-    }
-    slot(&mut out, "ground", &d.ground);
-    slot(&mut out, "section_line", &d.section_line);
-    slot(&mut out, "section_ends", &d.section_ends);
-    slot(&mut out, "background", &d.background);
-    slot(&mut out, "pattern", &d.pattern);
-    // Rohe Zeilen der Werksstellen jeweils an ihrer Stelle (Review #127 B2)
-    if !a.element_is_default() {
-        slot(&mut out, "element", &d.element);
-    }
-    darstellung::write_raw(a, "element", &mut out);
-    if !a.above_is_default() {
-        slot(&mut out, "above", &d.above);
-    }
-    darstellung::write_raw(a, "above", &mut out);
-    Line::new("display")
-        .word("slot", "paper")
-        .color("color", d.paper)
-        .finish(&mut out);
+    darstellung::write(a, &mut out);
 
     let mat_guid = |id| m.material(id).map(|x| x.guid);
     let used = used_trades(
@@ -893,6 +861,7 @@ fn write_known(m: &Model) -> String {
             line.finish(&mut out);
         }
     }
+    gelaende::write(m, &mut out);
     lage::write(m, &mut out);
     for b in sorted(m.buildings().iter(), |b| b.guid) {
         let l = Line::new("building")
@@ -1514,7 +1483,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 43] = [
+    const KNOWN: [&str; 44] = [
         "opening",
         "pen",
         "linetype",
@@ -1529,6 +1498,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "project",
         "projectinfo",
         "soil",
+        "terrainplate",
         "location",
         "building",
         "storey",
@@ -1796,23 +1766,14 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     // stehen bleiben. Fehlende gelten mit der Vorgabe; ein Wert außerhalb
     // seines Bereichs mit Hinweis ebenso, das Projekt öffnet
     let felder = crate::qto_earth::Boden::FELDER;
-    let mut boden_wert = |r: &Record, i: usize| -> Result<Option<f64>, LoadError> {
+    let mut boden_wert = |r: &Record, i: usize| {
         let (k, name, min, max) = felder[i];
-        if r.opt(k).is_none() {
-            return Ok(None);
-        }
-        let v = r.f64(k)?;
-        if v.is_finite() && v >= min && v <= max {
-            Ok(Some(v))
-        } else {
-            let einheit = if k == "slope" { "°" } else { " mm" };
-            hints.push(ausserhalb(r.line, name, v, min, max, einheit));
-            Ok(None)
-        }
+        let einheit = if k == "slope" { "°" } else { " mm" };
+        gelaende::bereich(r, k, name, (min, max), einheit, &mut hints)
     };
     let mut legacy = [None; 5];
     for (i, w) in legacy.iter_mut().enumerate() {
-        *w = boden_wert(p, i)?;
+        *w = boden_wert(p, i);
     }
     let mut boden = project.soil.werte();
     match recs("soil").as_slice() {
@@ -1827,7 +1788,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             // Kennung `key=project`; gelesen, damit sie nicht als fremd gilt
             let _ = r.opt("key");
             for (i, b) in boden.iter_mut().enumerate() {
-                if let Some(w) = boden_wert(r, i)? {
+                if let Some(w) = boden_wert(r, i) {
                     *b = w;
                 }
             }
@@ -1837,6 +1798,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     }
     project.soil = crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default();
     project.soil_legacy = legacy;
+    (project.terrain_plate, project.terrain_plate_raw) =
+        gelaende::read(recs("terrainplate"), &lines, &mut hints)?;
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
     let alt = [text("site"), text("client"), text("author")];
     match recs("projectinfo").as_slice() {

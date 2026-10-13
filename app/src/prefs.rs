@@ -1321,6 +1321,12 @@ impl Prefs {
             Target::Field(FieldId::Softness),
         ));
         y += 34.0 * s;
+        for (name, role) in [
+            ("Gelände Rasen", "env.terrain_grass"),
+            ("Gelände Erdreich", "env.terrain_soil"),
+        ] {
+            swatch_row(&mut texts, &mut items, &mut y, name, role_target(role));
+        }
         swatch_row(
             &mut texts,
             &mut items,

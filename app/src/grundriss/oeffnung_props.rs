@@ -29,20 +29,23 @@ fn zuege<'a>(
             )
         },
     );
-    scene.zuege().filter_map(move |(run, c, quader)| {
-        let weit = quader.is_some_and(|(a, b)| {
-            a.x > hi.0 + DICKE || b.x < lo.0 - DICKE || a.y > hi.1 + DICKE || b.y < lo.1 - DICKE
-        });
-        (!weit && !path.is_empty()).then_some((run, c))
-    })
+    let nah = ((lo.0 - DICKE, lo.1 - DICKE), (hi.0 + DICKE, hi.1 + DICKE));
+    scene
+        .zuege_im(nah.0, nah.1)
+        .filter_map(move |(run, c, quader)| {
+            let weit = quader.is_some_and(|(a, b)| {
+                a.x > hi.0 + DICKE || b.x < lo.0 - DICKE || a.y > hi.1 + DICKE || b.y < lo.1 - DICKE
+            });
+            (!weit && !path.is_empty()).then_some((run, c))
+        })
 }
 
 /// Löcher der Öffnung `id` im Grundriss (z = 0) mit UK und OK (absolut).
 pub fn loecher(scene: &Scene, id: ElementId) -> Vec<([Vec3; 4], (f64, f64))> {
     zuege(scene, id)
-        .flat_map(|(_, c)| c.hole_quads())
+        .flat_map(|(run, _)| scene.loecher(run))
         .filter(|(h, _)| h.opening == Some(id))
-        .map(|(h, q)| (q, h.z))
+        .map(|(h, q)| (*q, h.z))
         .collect()
 }
 
@@ -118,8 +121,8 @@ pub fn props(
         }
     }
     let mut waende: Vec<&str> = Vec::new();
-    for (run, c) in zuege(scene, id) {
-        for (h, _) in c.hole_quads() {
+    for (run, _) in zuege(scene, id) {
+        for (h, _) in scene.loecher(run) {
             let w = m.wall_at(run, h.seg).and_then(|w| m.element(w));
             if let Some(w) = w.filter(|_| h.opening == Some(id)) {
                 if !waende.contains(&w.number.as_str()) {
