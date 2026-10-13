@@ -432,7 +432,7 @@ fn bezug(scene: &Scene, id: ElementId) -> Option<(Vec3, Vec3)> {
 }
 
 /// Liegt `p` im (konvexen) Viereck `q`?
-fn innen(q: &[Vec3; 4], p: Vec3) -> bool {
+pub(super) fn innen(q: &[Vec3; 4], p: Vec3) -> bool {
     let s: Vec<f64> = (0..4)
         .map(|i| {
             let (a, b) = (q[i], q[(i + 1) % 4]);

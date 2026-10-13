@@ -879,6 +879,13 @@ impl WallEdit {
             .map(|(_, id)| id)
     }
 
+    /// Gewählte Tür mit Aufschlag, im Grundriss (Grundriss G7).
+    fn gewaehlte_tuer(&self, scene: &Scene) -> Option<ElementId> {
+        let id = self.gewaehlt.filter(|_| self.plan_z.is_some())?;
+        let o = scene.model().opening(id)?;
+        o.swing.map(|_| id)
+    }
+
     /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).
     pub fn refresh(
         &mut self,
@@ -924,7 +931,14 @@ impl WallEdit {
             || breite_griff != self.breite_griff;
         (self.tueren, self.tuer_griff) = (tueren, tuer_griff);
         (self.breiten, self.breite_griff) = (breiten, breite_griff);
-        let hover = if frei && !griff {
+        // In Loch und Aufschlag einer Öffnung gilt der Klick ihr, nicht
+        // dem Band der Wand (Grundriss G7)
+        let in_oeffnung = || {
+            punkt
+                .and_then(|p| tuer_edit::oeffnung_bei(scene, p))
+                .is_some_and(|id| scene.pickable(id))
+        };
+        let hover = if frei && !griff && !in_oeffnung() {
             self.pick(scene, cam, w, h, scale)
         } else {
             None
@@ -1260,9 +1274,10 @@ impl WallEdit {
                     self.refresh(scene, cam, w, h, scale, enabled);
                 }
             }
-            // Leertaste an der Tür bei der Maus (plan.md §4.3); mit Strg
-            // oder Alt nicht (Alt+Leertaste ist unter Windows das
-            // Systemmenü), gehalten nur einmal (Review #127 H1)
+            // Leertaste an der Tür bei der Maus, sonst an der gewählten
+            // (plan.md §4.3); mit Strg oder Alt nicht (Alt+Leertaste ist
+            // unter Windows das Systemmenü), gehalten nur einmal (Review #127
+            // H1)
             Event::Key {
                 key: tuer_edit::LEERTASTE,
                 down: true,
@@ -1270,11 +1285,13 @@ impl WallEdit {
                 repeat,
             } if self.input.is_none()
                 && self.drag.is_none()
-                && !self.tueren.is_empty()
+                && (!self.tueren.is_empty() || enabled && self.gewaehlte_tuer(scene).is_some())
                 && !mods.ctrl
                 && !mods.alt =>
             {
-                if let Some(id) = self.tuer_bei_maus(cam, w, h) {
+                let tuer = self.tuer_bei_maus(cam, w, h);
+                let gewaehlt = || self.gewaehlte_tuer(scene).filter(|_| enabled);
+                if let Some(id) = tuer.or_else(gewaehlt) {
                     out.consumed = true;
                     if repeat {
                         return out;
