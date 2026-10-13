@@ -1424,6 +1424,12 @@ mod tests {
                 "{w}"
             );
             assert!(zeile(&k, Topic::Materials, "Ansehen").is_some(), "{w}");
+            assert_eq!(
+                zeile(&k, Topic::Foundation, "Baugrund").is_some(),
+                mengen,
+                "{w}"
+            );
+            assert_eq!(zeile(&k, Topic::Terrace, "Mengen").is_some(), mengen, "{w}");
         }
     }
 }
