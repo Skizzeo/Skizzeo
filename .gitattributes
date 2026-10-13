@@ -1,1 +1,2 @@
 app/hilfe.txt text eol=lf
+crates/sk-gelaende/tests/daten/* -text

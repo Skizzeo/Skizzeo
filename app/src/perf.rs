@@ -2370,3 +2370,244 @@ fn perf_mengen_haeuser() {
         );
     }
 }
+
+/// Öffnung von außen (Paket O7, Review W43): 15 Fenster je Haus. Raster
+/// (erste Mausbewegung nach einer Änderung), Übersicht über die ganze
+/// Siedlung mit der Maus im Freien und auf einer fernen Öffnung, Orbit mit
+/// einer Öffnung unter der Maus (refresh und Chips je Bild), dazu Greifen,
+/// Ziehen und Loslassen der Oberkante. Alles je Mausbewegung oder Bild
+/// bleibt über die Zahl der Häuser gleich.
+#[test]
+#[ignore]
+fn perf_kanten() {
+    use crate::link_view::{chips, Want};
+    use crate::wall_edit::oeffnung_kanten::{treffer, HoeheZug, Kante};
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    use sk_platform::MouseButton;
+    println!();
+    println!(
+        "{:>6} {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7}",
+        "Häuser",
+        "Öffn.",
+        "Raster",
+        "Frei",
+        "Fern",
+        "Refresh",
+        "Schl.",
+        "Chips",
+        "Bild",
+        "Greifen",
+        "Ziehen",
+        "Los"
+    );
+    let mut je_bild = Vec::new();
+    for n in [1, 10, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        assert!(s.edit_model("Fenster", |m| {
+            let aussen: Vec<_> = m
+                .runs()
+                .iter()
+                .filter(|(_, run)| {
+                    run.segments
+                        .first()
+                        .and_then(|e| m.element(*e))
+                        .is_some_and(|e| e.category.is_outer_wall())
+                })
+                .map(|(r, _)| r)
+                .collect();
+            for r in aussen {
+                // 4 + 4 + 4 + 3 Fenster auf den vier Seiten
+                for (k, viele) in [(0, 4), (1, 4), (2, 4), (3, 3)] {
+                    let f = m.outer_face(r, k).unwrap();
+                    for i in 0..viele {
+                        let u = f.u.0 + 800.0 + 1900.0 * i as f64;
+                        m.add_opening(Opening {
+                            kind: OpeningKind::Window,
+                            path: vec![f.at(u, 0.0), f.at(u + 900.0, 0.0)],
+                            bottom: HeightRef::Line(st, HeightLine::Sill),
+                            top: HeightRef::Line(st, HeightLine::Lintel),
+                            reveal: None,
+                            install: Default::default(),
+                            swing: None,
+                            lock: Default::default(),
+                        });
+                    }
+                }
+            }
+            true
+        }));
+        let m = s.model();
+        let oeffnungen: Vec<_> = m
+            .elements()
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, o.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(oeffnungen.len(), 15 * n);
+        let mitte_von = |o: &Opening| {
+            let (z0, z1) = m.opening_band(o).unwrap();
+            let q = (o.path[0] + o.path[1]) * 0.5;
+            vec3(q.x, q.y, (z0 + z1) / 2.0)
+        };
+        // Übersicht schräg von oben über die ganze Siedlung
+        let side = (n as f64).sqrt().ceil() * 15000.0;
+        let ziel = vec3(side / 2.0, side / 2.0, 0.0);
+        let ueber =
+            Camera::looking_at(ziel + vec3(-0.5, -0.9, 0.9) * side.max(30000.0), ziel, 45.0);
+        let frei_px = ueber.project(vec3(-2500.0, -2500.0, 0.0), W, H).unwrap();
+        let t = Instant::now();
+        let leer = treffer(&s, &ueber, frei_px, W, H, 1.0, None);
+        let raster = t.elapsed().as_secs_f64() * 1000.0;
+        assert!(leer.is_none(), "im Freien trifft nichts");
+        let frei = time(50, || {
+            std::hint::black_box(treffer(&s, &ueber, frei_px, W, H, 1.0, None));
+        });
+        // Die fernste Öffnung, die die Übersicht trifft
+        let mut fern: Vec<_> = oeffnungen
+            .iter()
+            .map(|(id, o)| (*id, mitte_von(o)))
+            .collect();
+        fern.sort_by(|a, b| {
+            (b.1 - ueber.eye)
+                .length()
+                .total_cmp(&(a.1 - ueber.eye).length())
+        });
+        let (fern_px, _) = fern
+            .iter()
+            .filter_map(|&(id, p)| Some((ueber.project(p, W, H)?, id)))
+            .find(|&(px, id)| treffer(&s, &ueber, px, W, H, 1.0, None).is_some_and(|t| t.id == id))
+            .expect("eine ferne Öffnung von oben zu treffen");
+        let fern_t = time(50, || {
+            std::hint::black_box(treffer(&s, &ueber, fern_px, W, H, 1.0, None));
+        });
+        // Orbit aus der Gasse vor einer Öffnung des letzten Hauses, die
+        // Maus bleibt auf ihr
+        let (id, o) = oeffnungen.last().unwrap().clone();
+        let mitte = mitte_von(&o);
+        let d = (o.path[1] - o.path[0]).normalized();
+        let nrm = [vec3(-d.y, d.x, 0.0), vec3(d.y, -d.x, 0.0)]
+            .into_iter()
+            .find(|&v| {
+                let c = Camera::looking_at(mitte + v * 2500.0, mitte, 45.0);
+                let p = c.project(mitte, W, H).unwrap();
+                treffer(&s, &c, p, W, H, 1.0, None).is_some_and(|t| t.id == id)
+            })
+            .expect("Fenster von außen zu sehen");
+        let kameras: Vec<Camera> = (0..20)
+            .map(|i| {
+                let a = (i as f64 / 19.0 - 0.5) * 60f64.to_radians();
+                let (sa, ca) = a.sin_cos();
+                let v = vec3(nrm.x * ca - nrm.y * sa, nrm.x * sa + nrm.y * ca, 0.0);
+                Camera::looking_at(mitte + v * 2500.0 + vec3(0.0, 0.0, 300.0), mitte, 45.0)
+            })
+            .collect();
+        let mut e = WallEdit::default();
+        let mods = Modifiers::default();
+        let (cx, cy) = kameras[0].project(mitte, W, H).unwrap();
+        e.handle(
+            &Event::MouseMove { x: cx, y: cy, mods },
+            &mut s,
+            &kameras[0],
+            W,
+            H,
+            1.0,
+            true,
+        );
+        let (mut refresh, mut chips_ms) = (0.0, 0.0);
+        let runden = 5;
+        for _ in 0..runden {
+            for c in &kameras {
+                let t = Instant::now();
+                e.refresh(&s, c, W, H, 1.0, true);
+                refresh += t.elapsed().as_secs_f64() * 1000.0;
+                let t = Instant::now();
+                std::hint::black_box(chips(&Want {
+                    scene: &s,
+                    cam: c,
+                    w: W,
+                    h: H,
+                    top: 0.0,
+                    scale: 1.0,
+                    plan_z: None,
+                    band: None,
+                    hover: None,
+                    keep_linked: None,
+                    schloesser: e.aussen_schloesser(&s),
+                }));
+                chips_ms += t.elapsed().as_secs_f64() * 1000.0;
+            }
+        }
+        let schl = time(50, || {
+            std::hint::black_box(e.aussen_schloesser(&s));
+        });
+        let bilder = (runden * kameras.len()) as f64;
+        let (refresh, chips_ms) = (refresh / bilder, chips_ms / bilder);
+        assert!(!e.aussen_schloesser(&s).is_empty() || e.is_busy());
+        // Greifen, Ziehen und Loslassen der Oberkante, gerade davor
+        let cam = Camera::looking_at(mitte + nrm * 2500.0, mitte, 45.0);
+        let (_, z1) = s.model().opening_band(&o).unwrap();
+        let q = (o.path[0] + o.path[1]) * 0.5;
+        let px = |z: f64| cam.project(vec3(q.x, q.y, z), W, H).unwrap();
+        let t = treffer(&s, &cam, px(z1 - 5.0), W, H, 1.0, None).unwrap();
+        assert_eq!(t.kante, Some(Kante::Oben));
+        let greifen = time(20, || {
+            assert!(HoeheZug::greifen(&mut s, t, true, &cam, px(z1), W, H, 1.0).is_some());
+            s.rollback();
+        });
+        let bei = |z: f64| {
+            let (x, y) = px(z);
+            Event::MouseMove { x, y, mods }
+        };
+        let mut z = HoeheZug::greifen(&mut s, t, true, &cam, px(z1), W, H, 1.0).unwrap();
+        let mut flip = false;
+        let ziehen = time(20, || {
+            flip = !flip;
+            let e = bei(if flip { z1 + 150.0 } else { z1 + 300.0 });
+            assert!(z.handle(&e, &mut s, &cam, W, H).changed);
+        });
+        s.rollback();
+        let mut los = 0.0;
+        for i in 0..5 {
+            let mut z = HoeheZug::greifen(&mut s, t, true, &cam, px(z1), W, H, 1.0).unwrap();
+            z.handle(&bei(z1 + 150.0 + 20.0 * i as f64), &mut s, &cam, W, H);
+            let (x, y) = px(z1);
+            let up = Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods,
+            };
+            let t = Instant::now();
+            z.handle(&up, &mut s, &cam, W, H);
+            los += t.elapsed().as_secs_f64() * 1000.0 / 5.0;
+        }
+        assert!(s.model().check().is_empty());
+        let bild = refresh + chips_ms;
+        println!(
+            "{n:>6} {:>7} {raster:>7.2} {frei:>7.3} {fern_t:>7.3} | {refresh:>7.3} {schl:>7.3} {chips_ms:>7.3} {bild:>7.3} | {greifen:>7.3} {ziehen:>7.3} {los:>7.3}",
+            15 * n
+        );
+        je_bild.push((n, frei.max(fern_t), refresh + schl));
+    }
+    println!("Zeiten in ms je Mausbewegung, je Bild bzw. je Griff; Raster einmal je Modellstand.");
+    println!("Chips: alle Kettensymbole, Schl.: der Anteil der Öffnung (O7).");
+    // Was O7 je Mausbewegung und Bild rechnet, bleibt gleich: bei 1000
+    // Häusern höchstens das Dreifache von 10
+    let a = je_bild.iter().find(|x| x.0 == 10).unwrap();
+    let b = je_bild.last().unwrap();
+    assert!(
+        b.1 <= 3.0 * a.1 + 0.05,
+        "Treffer {:.3} → {:.3} ms",
+        a.1,
+        b.1
+    );
+    assert!(
+        b.2 <= 3.0 * a.2 + 0.05,
+        "Refresh und Schlösser {:.3} → {:.3} ms",
+        a.2,
+        b.2
+    );
+}
