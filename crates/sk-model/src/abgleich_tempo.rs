@@ -1,8 +1,9 @@
 //! Tempo des Abgleichs beim Schließen eines Schritts, der nur Geschoss-
 //! bänder oder den Geländeversatz eines Gebäudes ändert (Review L39).
 
-use crate::{BuildingId, Category, Model};
+use crate::{BuildingId, Category, Model, StoreyId};
 use sk_math::vec3;
+use std::collections::HashSet;
 use std::time::Instant;
 
 /// `n` Häuser 10 × 8 m mit zwei Geschossen im Raster zu 15 m, je Haus ein
@@ -161,7 +162,8 @@ fn budget_grossgebaeude() {
         })
         .into_iter()
         .fold(f64::INFINITY, f64::min);
-    let budget = if cfg!(debug_assertions) { 200.0 } else { 8.0 };
+    // Vor #148 27 ms, danach 4,8–7,2 ms je nach Last (Review zu #148, H3)
+    let budget = if cfg!(debug_assertions) { 200.0 } else { 15.0 };
     assert!(ms < budget, "{ms:.1} ms");
 }
 
@@ -214,6 +216,33 @@ fn zufall_wie_ueber_alles() {
                 m.set_flat_roof(st, an)
             }
         };
+        // Die Bereichswahl selbst (Review zu #148, H2): nur Züge dieses
+        // Gebäudes (ein im Schritt entfernter Zug zählt nicht mit); ein Band oder die Gründung bringt höchstens sich und
+        // die Nachbarn, nicht das ganze Gebäude
+        let scope = m.sync_scope().expect("nur ein Gebäude");
+        let geschosse: HashSet<StoreyId> = scope
+            .iter()
+            .filter_map(|&r| m.run(r).map(|x| x.storey))
+            .collect();
+        assert!(
+            geschosse
+                .iter()
+                .all(|&s| m.storey(s).and_then(|s| s.building) == Some(b)),
+            "Schritt {k}, Art {was}: fremde Züge"
+        );
+        if was < 4 {
+            assert!(
+                geschosse.len() <= 3,
+                "Schritt {k}, Art {was}: {geschosse:?}"
+            );
+            // Ein Schritt, der etwas ändert, bringt Züge mit
+            let leer = m.txn.as_ref().is_some_and(|t| t.changes.is_empty());
+            assert_eq!(
+                scope.is_empty(),
+                leer,
+                "Schritt {k}, Art {was}, {geaendert}"
+            );
+        }
         m.commit();
         assert_eq!(
             ganz(&m),
