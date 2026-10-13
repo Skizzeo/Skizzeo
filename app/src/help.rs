@@ -422,7 +422,8 @@ pub struct HelpCtx {
     pub dialog: bool,
     /// Zielwahl „Bündig setzen“ läuft.
     pub flush_pick: bool,
-    /// Ziehen läuft.
+    /// Ziehen läuft, eine Eingabe ist offen, oder das Tun an der Wand hat
+    /// ein eigenes Thema (Teilen, Ecke, Bemaßung unter der Maus).
     pub dragging: bool,
     /// Werkzeug aktiv: `true` = Innenwand, `false` = Gebäude.
     pub tool: Option<bool>,
