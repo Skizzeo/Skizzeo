@@ -6,11 +6,12 @@
 //! Breitenschloss), oben und unten die Höhe ([`HoeheZug`]).
 //!
 //! Die Höhe fängt an Brüstung, Sturz und OK Rohdecke des eigenen Geschosses
-//! und der Geschosse direkt darüber und darunter und bindet dort; die Kante
-//! wandert mit, wenn die Linie im Geschossmanager gezogen wird. Durch eine
-//! Decke geht sie nicht ([`decke_grenzen`]), solange die Decke dort nicht
-//! ausgespart wird (Geometrie zu #136). Frei steht die Kante im
-//! Raster von 10 mm als Maß über OK Rohdecke des Geschosses, in dem sie
+//! und des Geschosses darüber und bindet dort; die Kante wandert mit, wenn
+//! die Linie im Geschossmanager gezogen wird. So geht ein Fenster über zwei
+//! Geschosse, die Decke dazwischen wird ausgespart; wo das Modell sie nicht
+//! aussparen kann, durch die Decke unter ihrem Geschoss und durch eine
+//! weitere darüber geht die Kante nicht ([`decke_grenzen`]). Frei steht die
+//! Kante im Raster von 10 mm als Maß über OK Rohdecke des Geschosses, in dem sie
 //! liegt. Das Schloss neben Ober- und Unterkante zeigt die Bindung; ein
 //! Klick löst sie (die Höhe bleibt) oder bindet die Kante an die Linie, auf
 //! der sie gerade steht. Teil von [`crate::wall_edit`].
@@ -25,7 +26,7 @@ use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
 use sk_model::oeffnung::{FaceLine, HeightLine, HeightRef, Opening, MIN_OPENING};
-use sk_model::{ElementId, LevelEdge, LevelKind, LevelRef, Model, RunId, StoreyId};
+use sk_model::{ElementId, FloorSlab, LevelEdge, LevelKind, LevelRef, Model, RunId, StoreyId};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -309,18 +310,45 @@ pub fn zug(scene: &Scene, id: ElementId) -> Option<RunId> {
     super::breite_edit::flaeche_bei(m, &koerper, st, *o.path.first()?).map(|f| f.0.run)
 }
 
-/// Spielraum einer Kante am Zug `run`: von OK der Decke darunter bis UK
-/// der Decke darüber. Durch eine Decke geht keine Öffnung, solange sie
-/// dort nicht ausgespart wird (Geometrie zu #136, Sperre bis zum
-/// Folgepaket „Aussparen“).
-pub fn decke_grenzen(m: &Model, run: Option<RunId>) -> (f64, f64) {
-    let band = |r: RunId| m.floor(r).and_then(Result::ok).map(|f| f.band());
-    let oben = run.and_then(band).map_or(f64::INFINITY, |b| b.0);
+/// Spielraum einer Kante der Öffnung `id` am Zug `run`: von OK der Decke
+/// darunter bis UK der Decke darüber. Spart das Modell die Decke darüber
+/// für die Öffnung aus ([`Model::spart_aus`], Jörn 13.10.: „Aussparen“),
+/// reicht er bis UK der nächsten Decke; bei einem Vorsprung der Wand
+/// darüber oder ohne Kern am Deckenrand nicht (Geometrie). Dass die Kante
+/// nicht durch die Decke unter ihrem Geschoss geht, ist eine Vorgabe der
+/// Bedienung: Ein Fenster über zwei Geschosse wird vom unteren aus nach
+/// oben aufgezogen. Das Modell spart auch eine Decke unter dem Geschoss der
+/// Öffnung aus, wenn ihr Loch hineinreicht.
+pub fn decke_grenzen(scene: &Scene, run: Option<RunId>, id: ElementId) -> (f64, f64) {
+    let m = scene.model();
+    let band = |r: RunId| mit_decke(scene, r, |f| f.band());
+    let uk = |r: RunId| band(r).map(|b| b.0);
+    // Ohne gültige Decke darüber bleibt die eigene die Grenze (Review W48 H9)
+    let oben = match run {
+        Some(r) if mit_decke(scene, r, |f| m.spart_aus_bei(r, id, f)) == Some(true) => m
+            .runs_above(r)
+            .first()
+            .and_then(|&u| uk(u))
+            .or_else(|| uk(r)),
+        _ => run.and_then(uk),
+    }
+    .unwrap_or(f64::INFINITY);
     let unten = run
         .and_then(|r| m.run_below(r))
         .and_then(band)
         .map_or(f64::NEG_INFINITY, |b| b.1);
     (unten, oben)
+}
+
+/// `f` zur Decke über `run`: aus dem Cache der Szene, sonst gebaut (Review
+/// W48 B3). `None` ohne Decke.
+fn mit_decke<T>(scene: &Scene, run: RunId, f: impl FnOnce(&FloorSlab) -> T) -> Option<T> {
+    if let Some(fs) = scene.floor(run) {
+        return Some(f(fs));
+    }
+    let m = scene.model();
+    m.floor_of(run)?;
+    m.floor(run)?.ok().map(|fs| f(&fs))
 }
 
 /// Höhenlinien, an denen eine Kante der Öffnung fängt: Brüstung, Sturz und
@@ -409,7 +437,7 @@ pub fn umbinden(scene: &Scene, id: ElementId, oben: bool) -> Option<Opening> {
     let neu = if bindung_name(m, r).is_some() {
         HeightRef::Level(frei_bei(m, st, z))
     } else {
-        linien(m, st, decke_grenzen(m, zug(scene, id)))
+        linien(m, st, decke_grenzen(scene, zug(scene, id), id))
             .into_iter()
             .find(|l| (l.z - z).abs() < 0.5)?
             .bind
@@ -460,7 +488,7 @@ pub fn schloesser(scene: &Scene, t: Treffer) -> Vec<Schloss> {
     }
     let (a, b) = legs[t.schenkel.min(legs.len() - 1)];
     let mid = (a + b) * 0.5;
-    let linien = linien(m, st, decke_grenzen(m, zug(scene, t.id)));
+    let linien = linien(m, st, decke_grenzen(scene, zug(scene, t.id), t.id));
     for (oben, r, z) in [(false, o.bottom, z0), (true, o.top, z1)] {
         let gebunden = bindung_name(m, r).is_some();
         let auf_linie = linien
@@ -538,7 +566,7 @@ impl HoeheZug {
         let mm = mm_je_px(cam, p, w, h).or_else(|| mm_je_px(cam, a, w, h));
         let tol = FANG_PX * scale * mm.unwrap_or(0.0);
         let run = zug(scene, t.id);
-        let grenzen = decke_grenzen(m, run);
+        let grenzen = decke_grenzen(scene, run, t.id);
         let linien = linien(m, st, grenzen);
         scene.begin(SCHRITT);
         Some(HoeheZug {
@@ -759,8 +787,18 @@ impl HoeheZug {
         let (z0, z1) = m.opening_band(o)?;
         let hoehe = crate::ui::live_length_text(z1 - z0);
         let r = if self.oben { o.top } else { o.bottom };
+        // Frei an der Decke: sagen, warum die Kante dort stehen bleibt
+        // (Einstellungen zu #136)
+        let (z, grenze, an) = if self.oben {
+            (z1, self.grenzen.1, "bis unter die Decke")
+        } else {
+            (z0, self.grenzen.0, "bis auf die Decke")
+        };
         Some(match bindung_name(m, r) {
             Some(b) => (format!("{LABEL} {hoehe} · {b}"), false),
+            None if grenze.is_finite() && (z - grenze).abs() < RASTER + 1e-6 => {
+                (format!("{LABEL} {hoehe} · {an}"), false)
+            }
             None => (format!("{LABEL} {hoehe}"), false),
         })
     }
@@ -835,6 +873,27 @@ pub(super) mod tests {
     /// Zweigeschossiges Haus 10 × 8 m mit einem Fenster in der Südwand des
     /// EG von 6,5 bis 7,5 m, Brüstung bis Sturz; Kamera von Süden.
     pub fn haus() -> (Scene, Camera, ElementId, RunId, RunId) {
+        let (m, id, eg, og) = haus_modell();
+        (Scene::with_model(m), kamera(), id, eg, og)
+    }
+
+    /// Segment der Südwand (Außenfläche nach −y).
+    pub fn sued(m: &Model, eg: RunId) -> usize {
+        (0..4)
+            .find(|&k| m.outer_face(eg, k).is_some_and(|f| f.n.y < -0.5))
+            .unwrap()
+    }
+
+    pub fn kamera() -> Camera {
+        Camera::looking_at(
+            vec3(7000.0, -16000.0, 3500.0),
+            vec3(7000.0, 0.0, 3000.0),
+            45.0,
+        )
+    }
+
+    /// Das Prüfhaus als Modell: Fenster, EG-Zug, OG-Zug.
+    pub fn haus_modell() -> (Model, ElementId, RunId, RunId) {
         let mut m = Model::with_seed(415);
         let b = m.add_building(2);
         let pts = [
@@ -846,10 +905,7 @@ pub(super) mod tests {
         let eg = m.build_from_polygon(b, &pts).unwrap();
         let og = m.runs_above(eg)[0];
         let st = m.run(eg).unwrap().storey;
-        let seg = (0..4)
-            .find(|&k| m.outer_face(eg, k).is_some_and(|f| f.n.y < -0.5))
-            .unwrap();
-        let f = m.outer_face(eg, seg).unwrap();
+        let f = m.outer_face(eg, sued(&m, eg)).unwrap();
         let (a, b) = (
             f.u_of(vec3(6500.0, 0.0, 0.0)),
             f.u_of(vec3(7500.0, 0.0, 0.0)),
@@ -865,12 +921,7 @@ pub(super) mod tests {
             lock: Default::default(),
         };
         let id = m.add_opening(o).unwrap();
-        let cam = Camera::looking_at(
-            vec3(7000.0, -16000.0, 3500.0),
-            vec3(7000.0, 0.0, 3000.0),
-            45.0,
-        );
-        (Scene::with_model(m), cam, id, eg, og)
+        (m, id, eg, og)
     }
 
     /// Punkt der Außenfläche der Öffnung bei `x` (mm) in Höhe `z`, im Bild.
@@ -997,17 +1048,140 @@ pub(super) mod tests {
     }
 
     /// Oberkante über das Wandband greifen und bis an den Sturz des OG
-    /// ziehen: Solange die Decke dort nicht ausgespart wird, endet die Kante
-    /// frei unter der Decke (Geometrie zu #136, Sperre); sie fängt an keiner
-    /// Linie des OG, ein Schritt. Getippt über die Decke gilt Enter nicht.
+    /// ziehen: Sie bindet dort, das Fenster geht über zwei Geschosse und die
+    /// Decke dazwischen wird ausgespart, ein Schritt. Das Schloss löst die
+    /// Bindung bei gleicher Höhe und bindet sie wieder.
     #[test]
-    fn hoehe_endet_an_der_decke() {
+    fn hoehe_ueber_zwei_geschosse() {
         let (mut s, cam, id, eg, og) = haus();
+        let st = s.model().run(eg).unwrap().storey;
+        let (z0, z1) = band(&s, id);
+        let st_og = s.model().run(og).unwrap().storey;
+        let sturz_og = HeightRef::Line(st_og, HeightLine::Lintel);
+        let z_og = s.model().height_z(sturz_og).unwrap();
+        let mut e = crate::wall_edit::WallEdit::default();
+        let mods = Default::default();
+        let (x, y) = bei(&s, &cam, id, 7000.0, z1 - 5.0);
+        e.handle(
+            &Event::MouseMove { x, y, mods },
+            &mut s,
+            &cam,
+            W,
+            H,
+            1.0,
+            true,
+        );
+        assert!(
+            !e.aussen_schloesser(&s).is_empty(),
+            "Schlösser an Ober- und Unterkante"
+        );
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods,
+        };
+        assert!(e.handle(&down, &mut s, &cam, W, H, 1.0, true).consumed);
+        assert!(e.hoehe.is_some());
+        assert_eq!(e.thema(), crate::help::Topic::Openings);
+        let (x, y) = bei(&s, &cam, id, 7000.0, z_og + 30.0);
+        e.handle(
+            &Event::MouseMove { x, y, mods },
+            &mut s,
+            &cam,
+            W,
+            H,
+            1.0,
+            true,
+        );
+        assert_eq!(s.model().opening(id).unwrap().top, sturz_og);
+        let pille = e.pill(&s).unwrap().0;
+        assert!(
+            pille.starts_with("Höhe ") && pille.ends_with("Sturz OG"),
+            "{pille}"
+        );
+        let up = Event::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods,
+        };
+        e.handle(&up, &mut s, &cam, W, H, 1.0, true);
+        assert!(e.hoehe.is_none());
+        assert_eq!(s.undo_label(), Some(SCHRITT));
+        assert_eq!(band(&s, id), (z0, z_og));
+        // Das Loch geht durch beide Wände
+        assert!(s
+            .model()
+            .opening_fault(s.model().opening(id).unwrap(), Some(id))
+            .is_none());
+        // Die Decke über dem EG ist ausgespart: Ein Strahl in Deckenhöhe
+        // durch das Fenster trifft erst ihre Stirn an der Innenfläche
+        let d = s.model().floor(eg).unwrap().unwrap();
+        assert_eq!(d.aussparungen.len(), 1, "{:?}", d.aussparungen);
+        assert_eq!(d.aussparungen[0].opening, Some(id));
+        let (zb, zt) = d.band();
+        let strahl = |s: &Scene| {
+            s.raycast(vec3(7000.0, -5000.0, (zb + zt) * 0.5), vec3(0.0, 1.0, 0.0))
+                .map(|h| h.0)
+        };
+        let tief = strahl(&s).unwrap();
+        assert!(tief > 5000.0 + 200.0, "{tief}");
+        // Lösen: frei auf derselben Höhe im OG, dann wieder gebunden
+        let frei = umbinden(&s, id, true).unwrap();
+        assert!(matches!(frei.top, HeightRef::Level(l) if l.storey == st_og));
+        assert!(s.opening_schritt(id, frei, "Höhe gelöst"));
+        assert_eq!(band(&s, id).1, z_og);
+        let t = Treffer {
+            id,
+            schenkel: 0,
+            kante: None,
+        };
+        let oben = schloesser(&s, t)
+            .into_iter()
+            .find(|x| x.art == Schlossart::Hoehe(true))
+            .unwrap();
+        assert!(!oben.linked, "frei auf der Linie: Schloss offen");
+        let wieder = umbinden(&s, id, true).unwrap();
+        assert_eq!(wieder.top, sturz_og);
+        // Zurück auf den Sturz EG: Die Decke ist wieder ganz, der Strahl
+        // trifft sie vorn
+        let mut o = s.model().opening(id).unwrap().clone();
+        o.top = HeightRef::Line(st, HeightLine::Lintel);
+        assert!(s.opening_schritt(id, o, "Höhe gebunden"));
+        assert!(s
+            .model()
+            .floor(eg)
+            .unwrap()
+            .unwrap()
+            .aussparungen
+            .is_empty());
+        let vorn = strahl(&s).unwrap();
+        assert!(vorn < tief - 100.0, "{vorn} {tief}");
+        // Durch die nächste Decke geht sie nicht
+        let (unten, oben) = decke_grenzen(&s, Some(eg), id);
+        assert!(unten.is_infinite() && oben > z_og, "{unten} {oben}");
+    }
+
+    /// Springt die Wand im OG vor, spart das Modell die Decke nicht aus:
+    /// Die Oberkante, zum Sturz des OG gezogen, endet frei unter der Decke
+    /// und sagt es im Maßfeld; sie fängt an keiner Linie des OG, ein
+    /// Schritt. Getippt über die Decke gilt Enter nicht (Geometrie).
+    #[test]
+    fn vorsprung_haelt_an_der_decke() {
+        let (mut m, id, eg, og) = haus_modell();
+        assert!(m.spart_aus(eg, id), "ohne Vorsprung: ausgespart");
+        let wand = m.wall_at(og, sued(&m, eg)).unwrap();
+        m.begin("Versatz");
+        assert!(m.set_offset(wand, 600.0).is_some());
+        m.commit().unwrap();
+        assert!(!m.spart_aus(eg, id));
+        let (mut s, cam) = (Scene::with_model(m), kamera());
         let z0 = band(&s, id).0;
         let st_og = s.model().run(og).unwrap().storey;
         let sturz_og = HeightRef::Line(st_og, HeightLine::Lintel);
         let z_og = s.model().height_z(sturz_og).unwrap();
-        let (unten, decke) = decke_grenzen(s.model(), Some(eg));
+        let (unten, decke) = decke_grenzen(&s, Some(eg), id);
         assert!(unten.is_infinite() && decke < z_og, "{unten} {decke}");
         assert_eq!(zug(&s, id), Some(eg));
         let st = s.model().run(eg).unwrap().storey;
@@ -1060,7 +1234,10 @@ pub(super) mod tests {
             "{z1} {decke}"
         );
         let pille = e.pill(&s).unwrap().0;
-        assert!(!pille.contains("OG"), "{pille}");
+        assert!(
+            !pille.contains("OG") && pille.ends_with("bis unter die Decke"),
+            "{pille}"
+        );
         // Getippt über die Decke: rot, Enter gilt nicht
         for c in "4".chars().chain(std::iter::once(',')).chain("0".chars()) {
             let k = Event::Key {
@@ -1186,7 +1363,7 @@ pub(super) mod tests {
         );
         assert!(s.opening_schritt(id, o, "Höhe gebunden"));
         assert_eq!(zug(&s, id), Some(og));
-        let (decke, oben) = decke_grenzen(s.model(), Some(og));
+        let (decke, oben) = decke_grenzen(&s, Some(og), id);
         let ok = s.model().floor(eg).unwrap().unwrap().band().1;
         assert_eq!(decke, ok);
         assert!(oben > decke);
