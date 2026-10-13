@@ -397,6 +397,10 @@ pub struct Bemassung {
     pub stil: Stil,
     /// mm am Bau nach außen (+) bzw. zur Wand (−), nur ungleich null.
     pub versatz: BTreeMap<VersatzKey, f64>,
+    /// Die Datei nennt `bezug` ausdrücklich: Er wird wieder geschrieben,
+    /// auch wenn er dem Werk gleicht (`bezug=wand` aus der Zeit vor dem
+    /// Wandpaket bleibt bytegleich, Review W42).
+    pub bezug_genannt: bool,
 }
 
 /// Seite einer Kette als ganzer Grad in 0..360.
