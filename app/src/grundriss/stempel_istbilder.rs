@@ -213,7 +213,7 @@ fn bad() -> (Scene, ElementId, Vec3) {
     let mitte = vec3(t + 900.0, t + 700.0, 0.0);
     let bad = s.raum_anlegen(st, mitte);
     let flur = s.raum_anlegen(st, vec3(6000.0, 5000.0, 0.0));
-    assert!(s.raum_benennen(bad, "Bad") && s.raum_benennen(flur, "Wohnen"));
+    assert!(s.raum_benennen(bad, "Bad", None) && s.raum_benennen(flur, "Wohnen", None));
     (s, id, mitte)
 }
 
