@@ -986,6 +986,50 @@ mod tests {
         assert_eq!(crate::szo::write(&wieder.model), neu);
     }
 
+    /// Review #133 H1: Eine ungültige Zeile vor der gültigen derselben
+    /// Stelle bleibt davor, die Datei kommt bytegleich zurück. H2: Wer die
+    /// Stelle ändert und genau auf den Wert zurücksetzt, der statt der Zeile
+    /// galt, bekommt die rohe Zeile zurück.
+    #[test]
+    fn rohe_zeile_vor_der_gueltigen() {
+        use crate::guid::{Guid, GuidGen};
+        let m = Model::with_seed(5);
+        let text = crate::szo::write(&m);
+        let fremd = Guid(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).to_ifc();
+        let view = text
+            .lines()
+            .find(|l| l.starts_with("[display] slot=drawing.view "))
+            .unwrap();
+        let davor = format!("[display] slot=drawing.view pen={fremd} lt={fremd}");
+        let roh = text.replace(view, &format!("{davor}\n{view}"));
+        let back = crate::szo::read(&roh, GuidGen::with_seed(9)).unwrap();
+        assert_eq!(back.hints.len(), 1, "{:?}", back.hints);
+        assert_eq!(crate::szo::write(&back.model), roh, "davor bytegleich");
+        // Geändert: nur die gültige Zeile; zurückgesetzt: wieder roh davor
+        let k = crate::solid::edge_kind::VIEW as usize;
+        let mut m2 = back.model;
+        let alt = m2.attr().display().drawing[k];
+        let fein = m2.attr().display().drawing[crate::solid::edge_kind::FINE as usize];
+        assert_ne!(alt.pen, fein.pen);
+        let setze = |m: &mut Model, s: super::EdgeStyle| {
+            let mut d = m.attr().display().clone();
+            d.drawing[k] = s;
+            m.begin("Darstellung");
+            m.set_display(d);
+            m.commit();
+        };
+        setze(
+            &mut m2,
+            super::EdgeStyle {
+                pen: fein.pen,
+                ..alt
+            },
+        );
+        assert!(!crate::szo::write(&m2).contains(&davor));
+        setze(&mut m2, alt);
+        assert_eq!(crate::szo::write(&m2), roh, "zurückgesetzt wieder roh");
+    }
+
     /// Review #127 B2: Eine rohe Zeile „element“ vor einer gültigen Zeile
     /// „above“ bleibt vor ihr; die Datei kommt bytegleich zurück.
     #[test]
