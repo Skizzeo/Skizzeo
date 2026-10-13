@@ -871,9 +871,10 @@ impl WallEdit {
         let on_level = move |foot: &[(Vec3, Vec3)]| {
             plan_z.is_none_or(|z| foot.first().is_none_or(|(a, _)| (a.z - z).abs() < 1.0))
         };
+        // Nur Züge nahe dem Blickstrahl der Maus (Review L26)
+        let m = self.mouse?;
         let feet = scene
-            .feet()
-            .chain(scene.stacked_feet())
+            .feet_am_strahl(cam, h, cam.ray(m.0, m.1, w, h), PICK_PX * scale)
             .filter(move |(_, _, f)| on_level(f));
         self.pick_in(feet, scene, cam, w, h, scale)
     }
