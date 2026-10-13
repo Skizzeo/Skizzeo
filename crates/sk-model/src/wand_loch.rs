@@ -595,6 +595,30 @@ impl WallChain {
         out
     }
 
+    /// Löcher dieses Zugs im Grundriss (z = 0), je mit dem Viereck zwischen
+    /// den Wandfluchten über ihre Lage längs, an Ecke und Fuge bis zum
+    /// Segmentende: zum Wählen einer Öffnung im Grundriss (Grundriss G7).
+    pub fn hole_quads(&self) -> Vec<(&Hole, [Vec3; 4])> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        let (aussen, innen) = (self.outer_offset(), self.inner_offset());
+        for h in &self.joints.holes {
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            let len = (pts[(h.seg + 1) % pts.len()] - p0).length();
+            let (u0, u1) = (h.u.0.clamp(0.0, len), h.u.1.clamp(0.0, len));
+            let at = |u: f64, off: f64| flat(p0 + d * u + crate::wall::right_of(d) * off);
+            out.push((
+                h,
+                [at(u0, aussen), at(u1, aussen), at(u1, innen), at(u0, innen)],
+            ));
+        }
+        out
+    }
+
     /// Aufschläge der Türen dieses Zugs im Grundriss (z = 0), je mit ihrem
     /// Loch: für [`WallChain::swing_edges`] und den Raumstempel, der die
     /// Bögen meidet (Grundriss G7).
@@ -653,6 +677,65 @@ impl WallChain {
             kante(band, punkte[0]);
             for p in punkte.windows(2) {
                 kante(p[0], p[1]);
+            }
+        }
+        out
+    }
+
+    /// Sturz der Öffnungen in Innenwänden im Grundriss (plan.md §4.3): je
+    /// Loch, das die Schnitthöhe `cut` trifft und unter der Wandkrone endet,
+    /// die beiden Wandfluchten über die Öffnung, als Kantenart `ABOVE` (über
+    /// der Schnittebene, im Startsatz dünn gestrichelt wie das
+    /// Einbauelement). Zur Ecke oder Fuge hin offene Löcher enden an der Ecke
+    /// der Flucht, so läuft der Sturz um die Ecke (wie [`Self::element_edges`]).
+    pub fn lintel_edges(&self, cut: f64) -> Vec<Edge> {
+        let mut out = Vec::new();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return out;
+        };
+        let krone = self.base + self.height;
+        let innen = self.layers.len().saturating_sub(1) as u8;
+        let fluchten = [(self.outer_offset(), 0), (self.inner_offset(), innen)];
+        // Ecken der Fluchten nur, wenn ein Loch über Ecke oder Fuge reicht
+        let holes = &self.joints.holes;
+        let um_ecke = holes
+            .iter()
+            .any(|h| !h.outer && !(h.u.0 + h.u.1).is_finite());
+        let ecken = fluchten.map(|(off, _)| {
+            if um_ecke {
+                self.face_corners(off)
+            } else {
+                Vec::new()
+            }
+        });
+        for h in holes {
+            if h.outer || !(h.z.0 < cut && cut < h.z.1 && h.z.1 < krone - EPS) {
+                continue;
+            }
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            for ((off, layer), ecken) in fluchten.iter().zip(&ecken) {
+                let at = |u: f64, k: usize| {
+                    let p = if u.is_finite() {
+                        p0 + d * u + crate::wall::right_of(d) * *off
+                    } else {
+                        *ecken.get(k % ecken.len().max(1))?
+                    };
+                    Some(vec3(p.x, p.y, cut))
+                };
+                let (Some(a), Some(b)) = (at(h.u.0, h.seg), at(h.u.1, h.seg + 1)) else {
+                    continue;
+                };
+                if (b - a).length() > EPS {
+                    out.push(Edge {
+                        a,
+                        b,
+                        kind: edge_kind::ABOVE,
+                        elem: h.seg as u32,
+                        layer: *layer,
+                    });
+                }
             }
         }
         out
@@ -858,6 +941,30 @@ mod tests {
         assert!((quer - 80.0).abs() < 1e-6, "{quer}");
         assert!(c.element_edges(h.z.0 - 1.0).is_empty());
         assert!(c.element_edges(h.z.1 + 1.0).is_empty());
+    }
+
+    /// Sturz an einem Loch über die Ecke (Review #127 H2): beide Fluchten
+    /// laufen um die Ecke, die Schenkel treffen sich dort.
+    #[test]
+    fn sturz_um_die_ecke() {
+        let (mut c, mut h) = wand_mit_loch();
+        h.outer = false;
+        h.u = (7000.0, f64::INFINITY);
+        let zwei = Hole {
+            seg: 1,
+            u: (f64::NEG_INFINITY, 1000.0),
+            ..h.clone()
+        };
+        c.joints.holes = vec![h.clone(), zwei];
+        let cut = h.z.0 + 500.0;
+        let e = c.lintel_edges(cut);
+        assert_eq!(e.len(), 4, "{e:?}");
+        assert!(e.iter().all(|x| x.kind == edge_kind::ABOVE && x.a.z == cut));
+        for k in 0..2 {
+            let (a, b) = (&e[k], &e[k + 2]);
+            assert!((a.b - b.a).length() < 1e-6, "Ecke: {:?} {:?}", a.b, b.a);
+        }
+        assert!(c.lintel_edges(h.z.1 + 1.0).is_empty());
     }
 
     fn mitte(t: &Tri) -> Vec3 {
