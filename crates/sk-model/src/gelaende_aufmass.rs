@@ -1296,6 +1296,13 @@ impl Model {
         })
     }
 
+    /// Stücke der Höhenlinien im Abstand `stufe` (m), vorab gezählt wie in
+    /// [`Model::terrain_contour_step`]: `Some(0)` bei ebenem Gelände, `None`
+    /// ohne Aufmaß oder bei zu vielen Höhen.
+    pub fn terrain_contour_pieces(&self, stufe: f64) -> Option<usize> {
+        sk_gelaende::linien::strecken(&self.terrain()?.mesh().netz, stufe)
+    }
+
     /// Höhenlinien im Abstand `stufe` (m) im Modell: Höhe (m ü. NHN) und
     /// Punkte (mm), das Höhere links. Mehr als
     /// [`sk_gelaende::linien::MAX_STRECKEN`] Stücke geben keine Linien,

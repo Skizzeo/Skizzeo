@@ -180,6 +180,9 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
             meter(s),
             meter(wunsch)
         )),
+        None if m.terrain_contour_pieces(wunsch) == Some(0) => {
+            Some("Höhenlinien: keine, das Gelände ist eben".into())
+        }
         None => Some("Höhenlinien: zu viele, keine gezeigt".into()),
     };
     l
@@ -395,6 +398,29 @@ mod tests {
             Some("Höhenlinien alle 1 m, bei 0,25 m wären es zu viele")
         );
         assert!(crate::gelaende_netz::Gelaende::aus(&m).is_some());
+    }
+
+    /// Ebenes Aufmaß: keine Höhenlinien, aber nicht „zu viele“
+    /// (W45-Nachprüfung B4).
+    #[test]
+    fn ebenes_aufmass_ohne_hoehenlinien() {
+        let mut m = lindenhof();
+        let mut text = String::new();
+        for i in 0..30 {
+            for j in 0..30 {
+                text.push_str(&format!("{} {j} {i} 10.1\n", i * 30 + j + 1));
+            }
+        }
+        let (t, ..) = Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-13", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        assert_eq!(m.terrain_contour_step(crate::gelaende_netz::STUFE), None);
+        let l = leiste(&m, &Zustand::default());
+        assert_eq!(
+            l.hoehenlinien.as_deref(),
+            Some("Höhenlinien: keine, das Gelände ist eben")
+        );
     }
 
     /// Ohne Aufmaß nur das Einlesen; mit Aufmaß Höhenlage, Folgen und
