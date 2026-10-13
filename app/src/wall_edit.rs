@@ -1028,6 +1028,12 @@ impl WallEdit {
     /// Gewählte Tür mit Aufschlag, im Grundriss (Grundriss G7).
     fn gewaehlte_tuer(&self, scene: &Scene) -> Option<ElementId> {
         let id = self.gewaehlt.filter(|_| self.plan_z.is_some())?;
+        // Nur im aktiven Geschoss und nicht ausgeblendet, wie die Tür bei
+        // der Maus (Review #132 H1)
+        let e = scene.model().element(id)?;
+        if e.storey != scene.active_storey() || !scene.pickable(id) {
+            return None;
+        }
         let o = scene.model().opening(id)?;
         o.swing.map(|_| id)
     }
