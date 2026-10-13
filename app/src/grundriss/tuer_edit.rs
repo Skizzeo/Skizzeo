@@ -49,12 +49,20 @@ fn griff_der_tuer(m: &Model, id: ElementId, k: Koerper) -> Option<(Vec3, Vec3, f
 /// Griffe der Türen des aktiven Geschosses, bei denen die Maus (Punkt `p`
 /// im Grundriss) steht; ausgeblendete Türen haben keinen.
 pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
+    // Das Blatt liegt im Körper seines Zugs und ist nicht breiter, als ein
+    // Zug lang ist
+    let r = NAH * scene.zug_diagonale() + DICKE;
+    griffe_von(scene, p, oeffnungen_nah(scene, p, r))
+}
+
+/// [`sichtbar`] unter den Öffnungen `ids`.
+fn griffe_von(scene: &Scene, p: Vec3, ids: Vec<ElementId>) -> Vec<(ElementId, Vec3)> {
     let m = scene.model();
     let st = scene.active_storey();
     let p = flat(p);
-    m.elements()
-        .iter()
-        .filter_map(|(id, e)| {
+    ids.into_iter()
+        .filter_map(|id| {
+            let e = m.element(id)?;
             let ElementKind::Opening(o) = &e.kind else {
                 return None;
             };
@@ -70,6 +78,23 @@ pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
             ((p - mitte).length() <= NAH * w).then_some((id, g))
         })
         .collect()
+}
+
+/// Öffnungen mit einem Loch in einem Wandzug, dessen Körper das Quadrat um
+/// den Punkt `p` des Grundrisses mit halber Seite `r` (mm) berühren kann,
+/// in der Reihenfolge der Bauteile. Vorfilter der Griffe je Mausbewegung
+/// und Zugschritt über das Raster der Szene statt über alle Bauteile
+/// (Review #140, Zugschritt). Züge aller Geschosse; das Geschoss prüft der
+/// Aufrufer an der Öffnung.
+pub(super) fn oeffnungen_nah(scene: &Scene, p: Vec3, r: f64) -> Vec<ElementId> {
+    let mut ids: Vec<ElementId> = scene
+        .zuege_im((p.x - r, p.y - r), (p.x + r, p.y + r))
+        .flat_map(|(run, ..)| scene.loecher(run))
+        .filter_map(|(h, _)| h.opening)
+        .collect();
+    ids.sort_by_key(|id| id.index());
+    ids.dedup();
+    ids
 }
 
 /// So weit reicht ein Aufschlag höchstens über den Wandkörper hinaus (mm):
@@ -382,6 +407,44 @@ mod tests {
             lock: Default::default(),
         };
         m.add_opening(o).unwrap()
+    }
+
+    /// Vorfilter je Wandzug (Review #140, Zugschritt): Rund um das Haus,
+    /// auch an einer Tür, die ihre kurze Wand fast füllt und bei der die
+    /// Maus über die Zellgrenze x = 0 des Rasters reicht, stehen dieselben
+    /// Griffe wie über alle Bauteile.
+    #[test]
+    fn vorfilter_wie_alle() {
+        let (mut m, tuer) = haus();
+        let st = m.element(tuer).unwrap().storey;
+        let set = m.defaults().interior_wall;
+        let kurz = m
+            .add_wall_run(
+                &[vec3(600.0, 8000.0, 0.0), vec3(600.0, 6500.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let f = m.outer_face(kurz, 0).unwrap();
+        let u = f.u_of(vec3(600.0, 7100.0, 0.0));
+        let mut o = m.opening(tuer).unwrap().clone();
+        o.path = vec![f.at(u - 505.0, 0.0), f.at(u + 505.0, 0.0)];
+        let breit = m.add_opening(o).unwrap();
+        let s = Scene::with_model(m);
+        let alle: Vec<ElementId> = s.model().elements().ids().collect();
+        let mut gesehen = Vec::new();
+        for x in (-3000..=13000).step_by(125) {
+            for y in (-3000..=11000).step_by(125) {
+                let p = vec3(x as f64, y as f64, 0.0);
+                let g = sichtbar(&s, p);
+                assert_eq!(g, griffe_von(&s, p, alle.clone()), "{p:?}");
+                gesehen.extend(g.iter().map(|g| g.0));
+            }
+        }
+        assert!(gesehen.contains(&tuer) && gesehen.contains(&breit));
     }
 
     /// Der Griff steht am freien Ende des offenen Blatts: über dem

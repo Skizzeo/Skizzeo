@@ -515,6 +515,12 @@ impl Scene {
             .map(|c| (c.id, &c.chain, c.bounds))
     }
 
+    /// Längste Diagonale eines berechneten Wandzugs (mm, eine Obergrenze):
+    /// Was in einem Zug liegt, ist höchstens so lang (Griffe, Review #140).
+    pub fn zug_diagonale(&self) -> f64 {
+        self.raster.diagonale()
+    }
+
     /// Plätze der Wandzüge, die der Strahl mit Spielraum `rand` (mm)
     /// treffen kann.
     pub(super) fn plaetze_am_strahl(&self, o: Vec3, d: Vec3, rand: f64) -> Vec<usize> {
