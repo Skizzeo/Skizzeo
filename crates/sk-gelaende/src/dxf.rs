@@ -1,7 +1,9 @@
 //! ASCII-DXF des Vermessers lesen (G1b, plan-gelaendemodul.md §5 G1b).
 //! Punkte kommen aus POINT und INSERT. Die Höhe ist Z; auf Z = 0 gilt ein
-//! Höhenattribut des Blocks (2D-Plan aus einer DWG oder einzelne Blöcke),
-//! sonst bleibt der Punkt mit Hinweis außen vor. Nummer und
+//! Höhenattribut des Blocks (2D-Plan aus einer DWG oder einzelne Blöcke).
+//! Ohne Attribut bleibt ein Punkt auf Z = 0 mit Hinweis außen vor, wenn
+//! alle Z = 0 sind oder alle übrigen Höhen weiter als 10 m von 0 liegen;
+//! sonst ist ±0,00 eine Höhe wie jede andere. Nummer und
 //! Code kommen aus Attributen, die Nummer sonst aus einem Nummerntext
 //! daneben, der Code aus dem Layer. 3D-Polylinien sind Bruchkanten,
 //! Polylinien mit Erhebung Höhenlinien (Punkte alle höchstens 2 m), 3DFACE
@@ -26,6 +28,10 @@ const GLEICH: f64 = 0.005;
 /// B1). So bleiben alle Rechnungen endlich und jeder Rasterindex im
 /// Bereich von `i64`.
 pub const MAX_KOORDINATE: f64 = 1e12;
+/// Liegen alle übrigen Höhen weiter als so viel von 0 (m), ist Z = 0 ohne
+/// Höhenattribut eine fehlende Höhe (NHN: Schriftfeld, Rahmen,
+/// Nordpfeil). Bei örtlichen Höhen ist ±0,00 echt.
+const Z_NULL_FERN: f64 = 10.0;
 /// Höchstens so viele Punkte; mehr entstehen nur aus riesigen Höhenlinien.
 pub const MAX_PUNKTE: usize = 2_000_000;
 /// Höchstens so viele Punkte aus Höhenlinien (500 km Linie bei 2 m).
@@ -435,9 +441,6 @@ struct Kandidat {
     attribut: Option<(f64, String)>,
     nr: Option<String>,
     code: Option<String>,
-    /// Block ohne Attribute: auf Z = 0 in einer 3D-Datei ein Symbol
-    /// (Schriftfeld, Nordpfeil), kein Punkt.
-    symbol: bool,
     zeile: usize,
 }
 
@@ -475,6 +478,7 @@ impl Raster {
         }
     }
     fn k(&self, x: f64, y: f64) -> (i64, i64) {
+        // `as` kappt auf den Bereich von i64, `nahe` addiert sättigend
         (
             (x / self.zelle).floor() as i64,
             (y / self.zelle).floor() as i64,
@@ -683,7 +687,6 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                     attribut: None,
                     nr: None,
                     code: None,
-                    symbol: x.typ == "INSERT" && folge.is_empty(),
                     zeile: x.zeile,
                 };
                 for a in &folge {
@@ -930,12 +933,18 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
     hinweise.extend(c.hinweise());
     let m = |p: [f64; 3]| [p[0] * faktor, p[1] * faktor, p[2] * faktor];
 
-    // Höhe je Punkt (Review #150 B2): Z, auf Z = 0 ein Höhenattribut,
-    // sonst ohne Höhe. In einer 3D-Datei (nicht alle Z = 0) ist ein Block
-    // ohne Attribute auf Z = 0 ein Symbol (Schriftfeld, Nordpfeil).
+    // Höhe je Punkt (Review #150 B2): Z, wenn es nicht 0 ist, auch bei
+    // Blöcken ohne Attribute; auf Z = 0 ein Höhenattribut. Ohne Attribut
+    // fehlt die Höhe, wenn alle Z = 0 sind (2D-Plan) oder alle übrigen
+    // Höhen fern von 0 liegen (NHN); sonst ist Z = 0 die Höhe ±0,00.
     let z_null = c.kandidaten.iter().all(|k| k.p[2] == 0.0);
+    let fern = c.kandidaten.iter().all(|k| match &k.attribut {
+        _ if k.p[2] != 0.0 => (k.p[2] * faktor).abs() > Z_NULL_FERN,
+        Some((h, _)) => h.abs() > Z_NULL_FERN,
+        None => true,
+    });
     let mut hoehe_aus: Option<String> = None;
-    let (mut ohne, mut symbole) = (0usize, 0usize);
+    let (mut ohne, mut auf_null) = (0usize, 0usize);
     let mut punkte: Vec<Punkt> = Vec::new();
     let mut nr_fehlt: Vec<usize> = Vec::new();
     for k in &c.kandidaten {
@@ -945,12 +954,12 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         } else if let Some((h, t)) = &k.attribut {
             hoehe_aus.get_or_insert_with(|| t.clone());
             *h
-        } else if k.symbol && !z_null {
-            symbole += 1;
-            continue;
-        } else {
+        } else if z_null || fern {
             ohne += 1;
             continue;
+        } else {
+            auf_null += 1;
+            0.0
         };
         if k.nr.is_none() {
             nr_fehlt.push(punkte.len());
@@ -973,10 +982,14 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             (n, false) => format!("{n} Punkte auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleiben außen vor."),
         });
     }
-    if symbole > 0 {
-        hinweise.push(match symbole {
-            1 => "1 Block ohne Attribute auf Z = 0 (Schriftfeld, Nordpfeil, Symbol) zählt nicht als Punkt.".into(),
-            n => format!("{n} Blöcke ohne Attribute auf Z = 0 (Schriftfeld, Nordpfeil, Symbole) zählen nicht als Punkte."),
+    if auf_null > 0 {
+        hinweise.push(match auf_null {
+            1 => {
+                "1 Punkt genau auf 0,000 (Z = 0, kein Höhenattribut) zählt mit dieser Höhe.".into()
+            }
+            n => format!(
+                "{n} Punkte genau auf 0,000 (Z = 0, kein Höhenattribut) zählen mit dieser Höhe."
+            ),
         });
     }
     nummern(&mut punkte, &nr_fehlt, &c.texte, faktor);
@@ -1948,36 +1961,108 @@ mod grenzfaelle {
         assert_eq!(a.punkte.len(), 1);
     }
 
-    /// B2: In einer 3D-Datei sind Blöcke ohne Attribute auf Z = 0 Symbole.
-    /// Ein Block mit Höhenattribut gibt seine Höhe, einer nur mit Nummer
-    /// und ein POINT auf Z = 0 bleiben mit Hinweis außen vor; kein Punkt
-    /// bekommt die Höhe 0.
+    fn insert(z: f64, name: &str, attrib: &str) -> String {
+        let folge = if attrib.is_empty() { "" } else { "66\n1\n" };
+        format!(
+            "0\nINSERT\n8\nPKT\n{folge}2\n{name}\n10\n467110.0\n20\n5878710.0\n30\n{z}\n{attrib}"
+        )
+    }
+    fn hoehe(h: &str) -> String {
+        format!("0\nATTRIB\n2\nHOEHE\n1\n{h}\n0\nSEQEND\n")
+    }
+    fn hoehen(z: [f64; 4]) -> String {
+        [(0.0, 0.0), (30.0, 0.0), (0.0, 30.0), (30.0, 30.0)]
+            .iter()
+            .zip(z)
+            .map(|((x, y), z)| pt(467100.0 + x, 5878700.0 + y, z))
+            .collect()
+    }
+
+    /// B2: Ein Block ohne Attribute mit Z ≠ 0 ist ein Punkt mit Höhe Z
+    /// (Punktsymbol des Vermessers), wie ein POINT.
     #[test]
-    fn bloecke_auf_z_null_in_3d_datei() {
-        let insert = |name: &str, attrib: &str| {
-            let folge = if attrib.is_empty() { "" } else { "66\n1\n" };
-            format!(
-                "0\nINSERT\n8\nPKT\n{folge}2\n{name}\n10\n467110.0\n20\n5878710.0\n30\n0.0\n{attrib}"
-            )
-        };
+    fn block_ohne_attribute_mit_z_ist_punkt() {
         let s = umgebung()
-            + &insert("SCHRIFTFELD", "")
-            + &insert("NORD", "")
-            + &insert("HP", "0\nATTRIB\n2\nHOEHE\n1\n24,8\n0\nSEQEND\n")
-            + &insert("HP", "0\nATTRIB\n2\nPNR\n1\n77\n0\nSEQEND\n")
+            + &insert(24.65, "VP", "")
+            + &insert(0.35, "VP", "").replace("467110.0", "467120.0");
+        let a = lies(&datei("", &s));
+        let h: Vec<f64> = a.punkte.iter().map(|p| p.h).collect();
+        assert_eq!(h, [24.1, 24.2, 24.3, 24.4, 24.65, 0.35]);
+        assert!(a.hinweise.is_empty(), "{:?}", a.hinweise);
+    }
+
+    /// B2, NHN-Datei: Rahmen, Nordpfeil, ein Block nur mit Nummer und ein
+    /// POINT auf Z = 0 ohne Höhenattribut fallen mit Hinweis weg; kein
+    /// Punkt bekommt die Höhe 0.
+    #[test]
+    fn nhn_datei_mit_rahmen_auf_z_null() {
+        let s = umgebung()
+            + &insert(0.0, "RAHMEN", "")
+            + &insert(0.0, "NORD", "")
+            + &insert(0.0, "HP", "0\nATTRIB\n2\nPNR\n1\n77\n0\nSEQEND\n")
             + &pt(467111.0, 5878711.0, 0.0);
         let a = lies(&datei("", &s));
-        assert_eq!(a.punkte.len(), 5);
+        assert_eq!(a.punkte.len(), 4);
         assert!(a.punkte.iter().all(|p| p.h != 0.0));
-        assert_eq!(a.punkte[4].h, 24.8);
-        assert_eq!(a.dxf.as_ref().unwrap().hoehe.as_deref(), Some("HOEHE"));
+        assert_eq!(
+            a.hinweise,
+            ["4 Punkte auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleiben außen vor."]
+        );
+        // knapp über 10 m gilt als fern
+        let a = lies(&datei(
+            "",
+            &(hoehen([10.01, -10.5, 12.0, 30.0]) + &pt(1.0, 1.0, 0.0)),
+        ));
+        assert_eq!(a.punkte.len(), 4);
+    }
+
+    /// B2, örtliche Höhen: ±0,00 ist echt. POINT und Block ohne Attribute
+    /// auf Z = 0 bleiben mit der Höhe 0 und einem Hinweis; 10 m gelten
+    /// noch als nah, Millimeter zählen umgerechnet.
+    #[test]
+    fn oertliche_hoehen_mit_null_punkt() {
+        let s =
+            hoehen([-1.25, 0.4, 1.5, 2.3]) + &pt(467111.0, 5878711.0, 0.0) + &insert(0.0, "HP", "");
+        let a = lies(&datei("", &s));
+        assert_eq!(a.punkte.len(), 6);
+        assert_eq!(a.punkte.iter().filter(|p| p.h == 0.0).count(), 2);
+        assert_eq!(
+            a.hinweise,
+            ["2 Punkte genau auf 0,000 (Z = 0, kein Höhenattribut) zählen mit dieser Höhe."]
+        );
+        let a = lies(&datei(
+            "",
+            &(hoehen([10.0, 12.0, 30.0, 40.0]) + &pt(1.0, 1.0, 0.0)),
+        ));
+        assert_eq!(a.punkte.len(), 5);
+        let kopf = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
+        let s = hoehen([-1250.0, 400.0, 1500.0, 2300.0]) + &pt(467111.0, 5878711.0, 0.0);
+        let a = lies(&datei(kopf, &s));
+        assert_eq!(a.punkte.len(), 5);
         assert_eq!(
             a.hinweise,
             [
-                "2 Punkte auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleiben außen vor.",
-                "2 Blöcke ohne Attribute auf Z = 0 (Schriftfeld, Nordpfeil, Symbole) zählen nicht als Punkte."
+                "Die DXF ist in Millimetern gezeichnet; Skizzeo rechnet in Meter um.",
+                "1 Punkt genau auf 0,000 (Z = 0, kein Höhenattribut) zählt mit dieser Höhe."
             ]
         );
+    }
+
+    /// B2, gemischte Datei: Auf Z = 0 gilt das HOEHE-Attribut, bei NHN wie
+    /// bei örtlichen Höhen.
+    #[test]
+    fn gemischte_datei_mit_hoehenattribut() {
+        for (z, h, w) in [
+            ([24.1, 24.2, 24.3, 24.4], "24,8", 24.8),
+            ([-1.25, 0.4, 1.5, 2.3], "0,85", 0.85),
+        ] {
+            let s = hoehen(z) + &insert(0.0, "HP", &hoehe(h));
+            let a = lies(&datei("", &s));
+            assert_eq!(a.punkte.len(), 5);
+            assert_eq!(a.punkte[4].h, w);
+            assert_eq!(a.dxf.as_ref().unwrap().hoehe.as_deref(), Some("HOEHE"));
+            assert!(a.hinweise.is_empty(), "{:?}", a.hinweise);
+        }
     }
 
     /// B3 wie im Befund: LWPOLYLINE mit Extrusion (0, 0, −1) und Erhebung
