@@ -657,6 +657,9 @@ impl WallEdit {
             i.push(ch);
             self.input = Some(i);
             out.changed = self.apply_typed(scene);
+            if out.changed {
+                self.refresh(scene, cam, w, h, scale, enabled);
+            }
             return Some(out);
         };
         match i.key(key, mods) {
@@ -714,8 +717,10 @@ impl WallEdit {
                 // erneut
                 self.remember(scene, serial, target);
                 out.changed = true;
-                self.refresh(scene, cam, w, h, scale, enabled);
             }
+        }
+        if out.changed {
+            self.refresh(scene, cam, w, h, scale, enabled);
         }
         Some(out)
     }
@@ -896,24 +901,19 @@ impl WallEdit {
         scale: f64,
         enabled: bool,
     ) -> bool {
-        if self.is_dragging() {
-            return false;
-        }
         let frei = enabled && !self.splitting();
-        // Griffe der Öffnungen bei der Maus: Türblatt vor den Enden
-        let punkt = match (self.plan_z, self.mouse) {
-            (Some(z), Some((x, y))) if frei => drag_point(cam, x, y, w, h, z),
-            _ => None,
-        };
-        let tueren = punkt.map_or_else(Vec::new, |p| tuer_edit::sichtbar(scene, p));
-        // Bis 60 px um die Öffnung: so erreicht die Maus das Kettensymbol
-        let r_min = match (punkt, self.mouse, self.plan_z) {
-            (Some(p), Some((x, y)), Some(z)) => {
-                drag_point(cam, x + 60.0 * scale, y, w, h, z).map_or(0.0, |q| (q - p).length())
+        if self.is_dragging() {
+            // Zieht die Maus eine Wand, wandern die Griffe der Öffnungen bei
+            // ihr mit; gegriffen ist keiner (Grundriss G7, Jörn)
+            if self.drag.is_none() {
+                return false;
             }
-            _ => 0.0,
-        };
-        let breiten = punkt.map_or_else(Vec::new, |p| breite_edit::sichtbar(scene, p, r_min));
+            let (_, tueren, breiten) = self.griffe(scene, cam, w, h, scale, frei);
+            let changed = tueren != self.tueren || breiten != self.breiten;
+            (self.tueren, self.breiten) = (tueren, breiten);
+            return changed;
+        }
+        let (punkt, tueren, breiten) = self.griffe(scene, cam, w, h, scale, frei);
         let (tuer_griff, breite_griff) = match (self.plan_z, self.mouse) {
             (Some(z), Some(m)) => {
                 let t = tuer_edit::griff_bei(&tueren, cam, z, m, w, h, scale).map(|g| g.0);
@@ -946,6 +946,38 @@ impl WallEdit {
         let changed = changed_tuer || hover != self.hover || griff != self.griff;
         (self.hover, self.griff) = (hover, griff);
         changed
+    }
+
+    /// Stelle der Maus im Grundriss und die Griffe der Öffnungen bei ihr:
+    /// Türblätter, dann die Enden.
+    #[allow(clippy::type_complexity)]
+    fn griffe(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        frei: bool,
+    ) -> (
+        Option<Vec3>,
+        Vec<(ElementId, Vec3)>,
+        Vec<breite_edit::Griff>,
+    ) {
+        let punkt = match (self.plan_z, self.mouse) {
+            (Some(z), Some((x, y))) if frei => drag_point(cam, x, y, w, h, z),
+            _ => None,
+        };
+        let tueren = punkt.map_or_else(Vec::new, |p| tuer_edit::sichtbar(scene, p));
+        // Bis 60 px um die Öffnung: so erreicht die Maus das Kettensymbol
+        let r_min = match (punkt, self.mouse, self.plan_z) {
+            (Some(p), Some((x, y)), Some(z)) => {
+                drag_point(cam, x + 60.0 * scale, y, w, h, z).map_or(0.0, |q| (q - p).length())
+            }
+            _ => 0.0,
+        };
+        let breiten = punkt.map_or_else(Vec::new, |p| breite_edit::sichtbar(scene, p, r_min));
+        (punkt, tueren, breiten)
     }
 
     fn update_drag(&mut self, scene: &mut Scene, cam: &Camera, w: f64, h: f64) -> bool {
@@ -1094,6 +1126,9 @@ impl WallEdit {
                 if self.drag.is_some() {
                     out.changed = self.update_drag(scene, cam, w, h);
                     out.redraw = out.changed;
+                    if out.changed {
+                        self.refresh(scene, cam, w, h, scale, enabled);
+                    }
                 } else {
                     out.redraw = self.refresh(scene, cam, w, h, scale, enabled);
                 }
