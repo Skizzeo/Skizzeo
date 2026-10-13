@@ -17,14 +17,16 @@
 use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
-use sk_model::bemassung::{Kettenart, Stil};
+use sk_model::bemassung::{Aussenbezug, Kettenart, Stil};
 use sk_model::hoehen::DOOR_WIDTHS;
 use sk_model::join::{JoinEnd, JoinKind};
 use sk_model::oeffnung::{
     Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, OuterFace, Swing,
 };
 use sk_model::{Category, LevelRef, Model, RunId, StoreyId, WallChain};
-use sk_plan::aussen::{Aussenmasse, Bezug as Massbezug, Herkunft, Kette, Seite as Massseite};
+use sk_plan::aussen::{
+    flaechen, Aussenmasse, Bezug as Massbezug, Herkunft, Kette, Seite as Massseite,
+};
 use sk_plan::bild::{bild, Bild};
 use sk_plan::schrift::Schrift;
 use sk_plan::zahl::masszahl;
@@ -410,9 +412,17 @@ impl Innentuer {
         // kleinere u links
         let links_klein = raum == FaceSide::Right;
         let u0 = match (self.bezug, links_klein) {
-            (Bezug::Mitte, _) => uc - w / 2.0,
+            // Auch bei Mitte die Kante im Raster: Bei 88,5 cm lägen die
+            // Kanten sonst auf halben Millimetern, und die Teilmaße der
+            // Kette ergäben gerundet nicht das Ganze (Bedienbarkeit 41.1)
+            (Bezug::Mitte, _) => ((u - w / 2.0) / RASTER).round() * RASTER,
             (Bezug::Links, true) | (Bezug::Rechts, false) => uc,
             (Bezug::Links, false) | (Bezug::Rechts, true) => uc - w,
+        };
+        let uc = if self.bezug == Bezug::Mitte {
+            u0 + w / 2.0
+        } else {
+            uc
         };
         let (f0, f1) = face.free;
         if f1 - f0 < w {
@@ -421,7 +431,8 @@ impl Innentuer {
         let u0 = u0.clamp(f0, f1 - w);
         let mitte = face.at(uc.clamp(f0, f1), 0.0) - face.n * (dicke / 2.0);
         // Die Kette steht gegenüber dem Aufschlag
-        let (seite, stoesse) = kettenseite(m, k, &face, raum != fs, dicke);
+        let bezug = m.massstil().bezug;
+        let (seite, stoesse) = kettenseite(m, k, &face, raum != fs, dicke, bezug);
         Some(Vorschau {
             u: (u0, u0 + w),
             swing: Swing {
@@ -518,59 +529,121 @@ pub fn spanne(v: &Vorschau) -> (f64, f64) {
 }
 
 /// Fläche der Kette, vor der Fläche `f` (`vor`) oder vor der Gegenfläche im
-/// Abstand `dicke`: ihre Spanne längs bis zu ihren Ecken und die Wände, die
-/// dort im T-Stoß anschließen, je mit der Spanne zwischen ihren Flächen.
+/// Abstand `dicke`, nach dem Bezug der Außenmaße `bezug` (Reiter
+/// „Bemaßung“; Bedienbarkeit 41.2): beim ganzen Wandpaket die fertigen
+/// Flächen, bei tragender Schicht das Mauerwerk. Ergebnis: ihre Spanne
+/// längs bis zu ihren Ecken, an einem Ende des Zugs bis zur Fläche der
+/// Wand, an die er dort stößt, und die Wände, die auf dieser Seite im
+/// T-Stoß anschließen, je mit der Spanne zwischen ihren Flächen.
 fn kettenseite(
     m: &Model,
     k: Koerper,
     f: &OuterFace,
     vor: bool,
     dicke: f64,
+    bezug: Aussenbezug,
 ) -> ((f64, f64), Vec<(f64, f64)>) {
     let flach = |p: Vec3| vec3(p.x, p.y, 0.0);
     let u_of = |p: Vec3| (flach(p) - f.a).dot(f.d);
-    let q = if vor { f.a } else { f.a - f.n * dicke };
-    let q = flach(q);
-    let seite = if vor {
-        Some(f.u)
-    } else {
-        k(f.run).and_then(|c| {
-            let cs = c.face_corners(c.inner_offset());
-            let j = (f.seg + 1) % cs.len().max(1);
-            Some((u_of(*cs.get(f.seg)?), u_of(*cs.get(j)?)))
-        })
+    let Some(c) = k(f.run) else {
+        return (f.span, Vec::new());
     };
-    let seite = seite.map_or(f.span, |(a, b)| (a.min(b), a.max(b)));
+    // Linie der Kette: die Fläche nach dem Bezug auf ihrer Seite
+    let (aussen, innen) = flaechen(&c, bezug);
+    let cs = c.face_corners(if vor { aussen } else { innen });
+    let j = (f.seg + 1) % cs.len().max(1);
+    let (Some(&e0), Some(&e1)) = (cs.get(f.seg), cs.get(j)) else {
+        return (f.span, Vec::new());
+    };
+    let q = flach(e0);
+    let kreuz = |a: Vec3, b: Vec3| a.x * b.y - a.y * b.x;
+    // u, wo die Linie durch `p` und `n` die Linie der Kette schneidet
+    let schnitt = |p: Vec3, n: Vec3| {
+        let r = flach(n) - flach(p);
+        let nenner = kreuz(f.d, r);
+        (nenner.abs() > 1e-9 * r.length()).then(|| kreuz(flach(p) - q, r) / nenner + u_of(q))
+    };
+    // Flächen nach dem Bezug am Segment `sg` der Wand `co`, als u
+    let flaechen_an = |co: &WallChain, sg: usize| -> Vec<f64> {
+        let (a, b) = flaechen(co, bezug);
+        [a, b]
+            .into_iter()
+            .filter_map(|off| {
+                let cs = co.face_corners(off);
+                let n = (sg + 1) % cs.len().max(1);
+                schnitt(*cs.get(sg)?, *cs.get(n)?)
+            })
+            .collect()
+    };
+    let ende_seg = |co: &WallChain, e: JoinEnd| match e {
+        JoinEnd::Start => 0,
+        JoinEnd::End => co.segment_count().saturating_sub(1),
+    };
+    // Enden des Zugs: bis zur nächsten Fläche der Wand, an die er stößt
+    // (beim Wandpaket ist das die eigene Ecke)
+    let mut ecken = [u_of(e0), u_of(e1)];
+    if !c.closed {
+        for jn in m.joins() {
+            let (andere, eigen, ihr_seg) = if jn.a_run == f.run && jn.b_run != f.run {
+                let Some(co) = k(jn.b_run) else {
+                    continue;
+                };
+                let sg = match (jn.kind, jn.b_end) {
+                    (JoinKind::L, Some(e)) => ende_seg(&co, e),
+                    _ => match m
+                        .run(jn.b_run)
+                        .and_then(|r| r.segments.iter().position(|e| *e == jn.b))
+                    {
+                        Some(sg) => sg,
+                        None => continue,
+                    },
+                };
+                (co, jn.a_end, sg)
+            } else if jn.kind == JoinKind::L && jn.b_run == f.run && jn.a_run != f.run {
+                let (Some(co), Some(e)) = (k(jn.a_run), jn.b_end) else {
+                    continue;
+                };
+                let sg = ende_seg(&co, jn.a_end);
+                (co, e, sg)
+            } else {
+                continue;
+            };
+            let i = match eigen {
+                JoinEnd::Start if f.seg == 0 => 0,
+                JoinEnd::End if f.seg == ende_seg(&c, JoinEnd::End) => 1,
+                _ => continue,
+            };
+            let weit = andere.thickness() + c.thickness();
+            if let Some(u) = flaechen_an(&andere, ihr_seg)
+                .into_iter()
+                .filter(|u| (u - ecken[i]).abs() <= weit)
+                .min_by(|a, b| (a - ecken[i]).abs().total_cmp(&(b - ecken[i]).abs()))
+            {
+                ecken[i] = u;
+            }
+        }
+    }
+    let seite = (ecken[0].min(ecken[1]), ecken[0].max(ecken[1]));
     let wirt = m.run(f.run).and_then(|r| r.segments.get(f.seg).copied());
     let mut stoesse: Vec<(f64, f64)> = m
         .joins()
         .iter()
         .filter(|j| j.kind == JoinKind::T && j.b_run == f.run && Some(j.b) == wirt)
         .filter_map(|j| {
-            let c = k(j.a_run)?;
-            let mut us = Vec::new();
-            for off in [c.outer_offset(), c.inner_offset()] {
-                let cs = c.face_corners(off);
-                let (e, nb) = match j.a_end {
-                    JoinEnd::Start => (*cs.first()?, *cs.get(1)?),
-                    JoinEnd::End => (*cs.last()?, *cs.get(cs.len().checked_sub(2)?)?),
-                };
-                // Nur Wände auf der Seite der Kette
-                let s = (flach(nb) - f.a).dot(f.n);
-                if (vor && s <= 0.0) || (!vor && s >= -dicke) {
-                    return None;
-                }
-                // Schnitt der Wandfläche mit der Fläche der Kette
-                let (p, r) = (flach(e), (flach(nb) - flach(e)).normalized());
-                let kreuz = |a: Vec3, b: Vec3| a.x * b.y - a.y * b.x;
-                let nenner = kreuz(f.d, r);
-                if nenner.abs() < 1e-9 {
-                    return None;
-                }
-                us.push(kreuz(p - q, r) / nenner + (q - flach(f.a)).dot(f.d));
+            let ca = k(j.a_run)?;
+            // Nur Wände auf der Seite der Kette
+            let cs = ca.face_corners(ca.outer_offset());
+            let nb = match j.a_end {
+                JoinEnd::Start => *cs.get(1)?,
+                JoinEnd::End => *cs.get(cs.len().checked_sub(2)?)?,
+            };
+            let s = (flach(nb) - f.a).dot(f.n);
+            if (vor && s <= 0.0) || (!vor && s >= -dicke) {
+                return None;
             }
-            let (a, b) = (us[0].min(us[1]), us[0].max(us[1]));
-            Some((a, b))
+            let us = flaechen_an(&ca, ende_seg(&ca, j.a_end));
+            let (a, b) = (us.first()?, us.get(1)?);
+            Some((a.min(*b), a.max(*b)))
         })
         .collect();
     stoesse.sort_by(|x, y| x.0.total_cmp(&y.0));
@@ -672,7 +745,7 @@ pub fn kette(v: &Vorschau, st: StoreyId, stil: &Stil, schrift: &Schrift) -> Bild
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sk_model::{RefSide, RunId};
+    use sk_model::{LayerFunction, MaterialLayer, RefSide, RunId, TypeCategory};
     use sk_plan::bild::Strichart;
 
     /// Prüfhaus 10 × 8 m mit Innenwand bei x = 5 m (Zeichenrichtung +y).
@@ -721,7 +794,8 @@ mod tests {
         assert_eq!(v.face.run, iw);
         assert_eq!(v.u.1 - v.u.0, 885.0);
         let mitte = (v.face.at(v.u.0, 0.0) + v.face.at(v.u.1, 0.0)) * 0.5;
-        assert!((mitte.y - 3000.0).abs() < 1e-6, "{mitte:?}");
+        // Die linke Kante rastet (Bedienbarkeit 41.1): 2,56 bis 3,445 m
+        assert!((mitte.y - 3002.5).abs() < 1e-6, "{mitte:?}");
         // Cursor bei x > 5 m: Aufschlag nach +x
         let into = v.swing.side.normal(v.face.d);
         assert!(into.x > 0.5, "{into:?}");
@@ -787,7 +861,7 @@ mod tests {
             let (a, b) = (v.face.at(v.u.0, 0.0).y, v.face.at(v.u.1, 0.0).y);
             (a.min(b), a.max(b))
         };
-        assert_eq!(lichte(&mut t), (2557.5, 3442.5));
+        assert_eq!(lichte(&mut t), (2560.0, 3445.0));
         assert_eq!(t.anzeige(), "Tür 88,5 cm · Bezug Mitte");
         // Aus dem Raum bei +x zur Wand geschaut (Blick nach −x) liegt
         // links −y: die linke Kante am Cursor, die Tür geht nach +y
@@ -810,7 +884,7 @@ mod tests {
         t.rad(1.0);
         assert_eq!(t.anzeige(), "Tür 76 cm · Bezug Mitte");
         t.rad(-1.0);
-        assert_eq!(lichte(&mut t), (2682.5, 3317.5));
+        assert_eq!(lichte(&mut t), (2680.0, 3315.0));
     }
 
     /// Grundriss G7: Die Maßkette steht auf der Wandseite gegenüber dem
@@ -852,7 +926,9 @@ mod tests {
             let b = kette(&v, st, stil, &f);
             let mut werte: Vec<f64> = b.zahlen.iter().map(|z| z.wert).collect();
             werte.sort_by(f64::total_cmp);
-            assert_eq!(werte, [885.0, 2242.5, 4242.5]);
+            // Kanten im Raster: die Teilmaße gehen in ganzen mm auf
+            // (Bedienbarkeit 41.1), 2.245 + 885 + 4.240 = 7.370
+            assert_eq!(werte, [885.0, 2245.0, 4240.0]);
             assert!(!b.tinte.is_empty());
             assert!(b.striche.iter().all(|s| s.a.x <= x_gegen + 1e-6
                 && s.b.x <= x_gegen + 1e-6
@@ -869,8 +945,8 @@ mod tests {
         }
         // Pille: zur näheren Fläche (unten, y = 0,315 m), Maßzahl im Stil
         let (ends, text) = t.label(stil.rundung).unwrap();
-        assert_eq!(text, masszahl(2557.5 - 315.0, stil.rundung).text());
-        assert!((ends[0].y - 315.0).abs() < 1e-6 && (ends[1].y - 2557.5).abs() < 1e-6);
+        assert_eq!(text, masszahl(2560.0 - 315.0, stil.rundung).text());
+        assert!((ends[0].y - 315.0).abs() < 1e-6 && (ends[1].y - 2560.0).abs() < 1e-6);
         // 0,5 m und Enter: die Tür 50 cm von der Fläche, das Modell nimmt sie
         tippe(&mut t, "0,5");
         assert!(t.eingabe.is_some());
@@ -1057,6 +1133,95 @@ mod tests {
         assert!(
             (ya - 315.0).abs() < 1e-6 && (yb - (5000.0 - d)).abs() < 1e-6,
             "{ya} {yb}"
+        );
+    }
+
+    /// Wie [`haus`], die Außenwände innen, die Innenwände beidseitig 15 mm
+    /// verputzt: fertig innen bei y = 0,33 und 7,67 m, Mauerwerk bei 0,315
+    /// und 7,685 m.
+    fn haus_mit_putz() -> (Model, StoreyId) {
+        let mut m = Model::with_seed(411);
+        let putz = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Putz")
+            .unwrap()
+            .0;
+        let p = MaterialLayer::new(putz, 15.0, LayerFunction::Finish);
+        for (cat, alt) in [
+            (TypeCategory::ExteriorWall, m.defaults().exterior_wall),
+            (TypeCategory::InteriorWall, m.defaults().interior_wall),
+        ] {
+            let mut t = m.layer_set(alt).unwrap().clone();
+            t.guid = m.new_guid();
+            t.code = format!("{}-P", t.code);
+            if cat == TypeCategory::InteriorWall {
+                t.layers.insert(0, p);
+            }
+            t.layers.push(p);
+            let id = m.add_layer_set(t).unwrap();
+            assert!(m.set_default_type(cat, id));
+        }
+        let b = m.add_building(1);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let st = m.run(eg).unwrap().storey;
+        let set = m.defaults().interior_wall;
+        for pts in [
+            [vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)],
+            [vec3(5000.0, 4000.0, 0.0), vec3(10000.0, 4000.0, 0.0)],
+        ] {
+            m.add_wall_run(
+                &pts,
+                false,
+                RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        }
+        (m, st)
+    }
+
+    /// Bedienbarkeit 41.2: Die Kette misst nach dem Bezug aus dem Reiter
+    /// „Bemaßung“. Beim ganzen Wandpaket reicht sie bis zu den fertigen
+    /// Flächen, bei tragender Schicht bis zum Mauerwerk der Außenwände und
+    /// der Wand im T-Stoß, also um deren Putz weiter bzw. kürzer.
+    #[test]
+    fn kette_nach_bezug() {
+        let (mut m, st) = haus_mit_putz();
+        let quer = m.runs().ids().last().unwrap();
+        let d = m.chain(quer).unwrap().thickness() / 2.0;
+        assert_eq!(d, 102.5);
+        let spannen = |m: &Model| {
+            let k = |r| m.chain(r);
+            let mut t = Innentuer::default();
+            // Kette bei +x, dort die Wand im T-Stoß; dann bei −x
+            [4980.0, 5020.0].map(|x| {
+                t.suchen(m, &k, st, vec3(x, 2000.0, 0.0), 30.0, 1500.0);
+                spanne_y(&t.hover.clone().unwrap())
+            })
+        };
+        let gleich = |a: [(f64, f64); 2], b: [(f64, f64); 2]| {
+            a.iter()
+                .zip(&b)
+                .all(|(x, y)| (x.0 - y.0).abs() < 1e-6 && (x.1 - y.1).abs() < 1e-6)
+        };
+        let s = spannen(&m);
+        assert!(gleich(s, [(330.0, 4000.0 - d), (330.0, 7670.0)]), "{s:?}");
+        let mut stil = m.massstil().clone();
+        stil.bezug = Aussenbezug::Rohbau;
+        assert!(m.set_massstil(stil));
+        let s = spannen(&m);
+        assert!(
+            gleich(s, [(315.0, 4000.0 - d + 15.0), (315.0, 7685.0)]),
+            "{s:?}"
         );
     }
 }
