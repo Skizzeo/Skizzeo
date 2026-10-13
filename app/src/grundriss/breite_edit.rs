@@ -10,7 +10,9 @@
 //! oder darunter, rastet es dort ein und eine Spurlinie quer durch die
 //! Wand zeigt es (Jörn 12.10. 05:38). Live, Loslassen ist ein Schritt, Esc
 //! bricht ab. Die Pille am Cursor zeigt die Breite; eine Ziffer öffnet die
-//! Eingabe „Breite“, Enter setzt sie genau (Bedienbarkeit 39.1). Teil von
+//! Eingabe „Breite“, Enter setzt sie genau (Bedienbarkeit 39.1). Von
+//! außen in 3D und den Ansichten greift dasselbe Ziehen an der Seitenkante
+//! ([`BreiteZug::greifen_aussen`], Paket O7). Teil von
 //! [`crate::wall_edit`].
 
 use super::drag_point;
@@ -42,6 +44,9 @@ const SPUR: f64 = 50.0;
 const SPUR_QUER: f64 = 1000.0;
 /// Überstand der Spurlinie vor und hinter der Wand (mm).
 const SPUR_UEBER: f64 = 300.0;
+/// Von außen: Überstand der Spurlinie über und unter der Öffnung (mm), bis
+/// ins Geschoss darüber bzw. darunter.
+const SPUR_HOCH: f64 = 1500.0;
 
 /// Die Griffe erscheinen, wenn die Maus so nah am Pfad steht (mm), bei
 /// breiten Öffnungen bis zur halben Breite.
@@ -57,7 +62,12 @@ pub type Griff = (ElementId, usize, Vec3);
 /// Fläche einer öffnungsfähigen Wand des Geschosses `st`, auf der der Punkt
 /// `p` liegt, und die Wanddicke; `innen` bei einer Innenwand. Nur Züge nahe
 /// bei `p` bauen ihren Körper, und der kommt aus `k` (Review #109 B1).
-fn flaeche_bei(m: &Model, k: Koerper, st: StoreyId, p: Vec3) -> Option<(OuterFace, f64, bool)> {
+pub(crate) fn flaeche_bei(
+    m: &Model,
+    k: Koerper,
+    st: StoreyId,
+    p: Vec3,
+) -> Option<(OuterFace, f64, bool)> {
     let p = flat(p);
     for (id, run) in m.runs().iter() {
         let cat = run
@@ -179,7 +189,7 @@ pub fn schloesser(scene: &Scene, griffe: &[Griff], z: f64) -> Vec<crate::link_vi
             let (f, ..) = flaeche_bei(m, &koerper, st, *m.opening(id)?.path.get(k)?)?;
             Some(crate::link_view::Schloss {
                 id,
-                k,
+                art: crate::link_view::Schlossart::Ende(k),
                 p: vec3(p.x, p.y, z),
                 out: f.n,
                 linked,
@@ -304,6 +314,9 @@ pub struct BreiteZug {
     mit: Vec<Mit>,
     /// Höhe des Grundrisses.
     z: f64,
+    /// Von außen gegriffen (3D, Ansicht): die Maus zählt auf der Ebene der
+    /// Fläche, gezeichnet wird die Seitenkante.
+    aussen: bool,
     geaendert: bool,
     /// Getippte Breite (39.1); solange sie offen ist, ruht die Maus.
     pub input: Option<MeasureInput>,
@@ -358,10 +371,33 @@ impl BreiteZug {
             spuren,
             mit,
             z,
+            aussen: false,
             geaendert: false,
             input: None,
             maus: None,
         })
+    }
+
+    /// Greift Ende `k` der Öffnung `id` von außen (Seitenkante in 3D oder
+    /// einer Ansicht) und öffnet den Schritt.
+    pub fn greifen_aussen(scene: &mut Scene, id: ElementId, k: usize) -> Option<BreiteZug> {
+        let mut z = BreiteZug::greifen(scene, id, k, 0.0)?;
+        z.aussen = true;
+        Some(z)
+    }
+
+    /// Punkt unter der Maus: im Grundriss auf seiner Höhe, von außen auf
+    /// der Ebene der Fläche.
+    fn punkt(&self, cam: &Camera, x: f64, y: f64, w: f64, h: f64) -> Option<Vec3> {
+        if !self.aussen {
+            return drag_point(cam, x, y, w, h, self.z);
+        }
+        let (o, d) = cam.ray(x, y, w, h);
+        let dn = d.dot(self.face.n);
+        if dn.abs() < 1e-9 {
+            return None;
+        }
+        Some(o + d * ((self.face.a - o).dot(self.face.n) / dn))
     }
 
     /// Die Öffnung mit dem gezogenen Ende bei `u` (roh).
@@ -425,7 +461,7 @@ impl BreiteZug {
         let Some((x, y)) = self.maus else {
             return false;
         };
-        let Some(p) = drag_point(cam, x, y, w, h, self.z) else {
+        let Some(p) = self.punkt(cam, x, y, w, h) else {
             return false;
         };
         let o = self.mit_ende(self.face.u_of(flat(p)));
@@ -560,7 +596,8 @@ impl BreiteZug {
         self.face.run
     }
 
-    /// Der Griff am gezogenen Ende, wie die Öffnung gerade steht.
+    /// Der Griff am gezogenen Ende, wie die Öffnung gerade steht; von außen
+    /// die Seitenkante als Band.
     pub fn helpers(&self, scene: &Scene, scale: f32, occlude: bool, theme: &Theme) -> Vec<Helper> {
         let Some(p) = scene
             .model()
@@ -569,6 +606,9 @@ impl BreiteZug {
         else {
             return Vec::new();
         };
+        if self.aussen {
+            return self.helpers_aussen(scene, *p, scale, occlude, theme);
+        }
         let g = zeichenpunkt(&self.face, *p, self.dicke, self.innen);
         let mut out = ende_edit::griff(g, self.z, scale, occlude, theme).to_vec();
         // Spurlinie, wenn das Ende auf einer Seitenflucht steht
@@ -582,6 +622,50 @@ impl BreiteZug {
             out.push(Helper {
                 a: q(SPUR_UEBER),
                 b: q(-self.dicke - SPUR_UEBER),
+                color: theme.interact.track,
+                width: theme.size.link_line * scale,
+                dash: theme.size.link_dash * scale,
+                pattern: sk_render::SOLID,
+                occlude,
+                round: false,
+            });
+        }
+        out
+    }
+
+    /// Von außen: die Seitenkante als Band, auf einer Seitenflucht dazu die
+    /// Spurlinie senkrecht bis ins Geschoss darüber und darunter.
+    fn helpers_aussen(
+        &self,
+        scene: &Scene,
+        p: Vec3,
+        scale: f32,
+        occlude: bool,
+        theme: &Theme,
+    ) -> Vec<Helper> {
+        let m = scene.model();
+        let Some((z0, z1)) = m.opening(self.id).and_then(|o| m.opening_band(o)) else {
+            return Vec::new();
+        };
+        let f = &self.face;
+        let u = f.u_of(flat(p));
+        let mut out = super::oeffnung_kanten::band(
+            f.at(u, z0) + f.n * super::oeffnung_kanten::VOR,
+            f.at(u, z1) + f.n * super::oeffnung_kanten::VOR,
+            true,
+            scale,
+            occlude,
+            theme,
+        )
+        .to_vec();
+        if self.spuren.iter().any(|s| (s - u).abs() < 1e-6) {
+            let q = |z: f64| {
+                let v = f.at(u, z) + f.n * super::oeffnung_kanten::VOR;
+                [v.x as f32, v.y as f32, v.z as f32]
+            };
+            out.push(Helper {
+                a: q(z0 - SPUR_HOCH),
+                b: q(z1 + SPUR_HOCH),
                 color: theme.interact.track,
                 width: theme.size.link_line * scale,
                 dash: theme.size.link_dash * scale,
@@ -939,7 +1023,7 @@ mod tests {
         });
         assert!(chips
             .iter()
-            .any(|c| c.schloss == Some(k) && c.wall == unten));
+            .any(|c| c.schloss == Some(crate::link_view::Schlossart::Ende(k)) && c.wall == unten));
         assert!(s.set_end_locks(unten, k, &[(oben, ko)], true));
         assert!(schloesser(&s, &g, 0.0)[0].linked);
         let mut z = BreiteZug::greifen(&mut s, unten, k, 0.0).unwrap();
