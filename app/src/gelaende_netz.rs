@@ -30,6 +30,16 @@ use sk_render::Helper;
 /// gröbere aus [`Model::terrain_contour_step`] (Review #121, Auflage H1).
 pub(crate) const STUFE: f64 = 0.25;
 
+/// Netz und Höhenlinien vorab rechnen, beim Öffnen eines Projekts, wo
+/// ohnehin gewartet wird; sonst entstünden sie träge im ersten Bild
+/// (Review #123 W45 H5: 0,3 s bei 100.000 Punkten). Beide bleiben am
+/// Aufmaß gemerkt.
+pub(crate) fn vorab(m: &Model) {
+    if let (Some(s), Some(t)) = (m.terrain_contour_step(STUFE), m.terrain()) {
+        t.mesh().hoehenlinien(s);
+    }
+}
+
 /// Das Grundstück liegt bei „Umgebung blass“ so weit über dem blassen Netz
 /// (mm), damit beide nicht flimmern.
 const HEBEN: f64 = 5.0;

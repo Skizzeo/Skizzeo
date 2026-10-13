@@ -14,10 +14,11 @@ use super::*;
 use sk_gelaende::abfrage::Abfrage;
 use sk_gelaende::codes::{Bedeutung, Codetabelle};
 use sk_gelaende::lesen::Punkt;
+use sk_gelaende::linien::Hoehenlinie;
 use sk_gelaende::{netz, Netz, Rand};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -178,11 +179,51 @@ pub struct TerrainMesh {
     pub hinweise: Vec<String>,
     /// Ausreißer (Aufmaßpunkte), zum Abwählen angeboten.
     pub ausreisser: Vec<usize>,
+    /// Gerechnete Höhenlinien und Abstände je Stufe (Review #123 W45 H1):
+    /// Sie hängen nur am Netz, eine Wand- oder Lageänderung rechnet sie
+    /// nicht neu.
+    linien: Mutex<Vec<(u64, Arc<Vec<Hoehenlinie>>)>>,
+    stufen: Mutex<Vec<(u64, Option<f64>)>>,
 }
 
-/// Das Netz, einmal gerechnet; gilt bei jedem Vergleich als gleich.
+/// So viele Stufen merkt ein Netz; die älteste geht zuerst.
+const GEMERKTE_STUFEN: usize = 4;
+
+/// Wert zu `stufe` aus `liste`, sonst gerechnet und dazugelegt.
+fn gemerkt<T: Clone>(liste: &Mutex<Vec<(u64, T)>>, stufe: f64, rechnen: impl FnOnce() -> T) -> T {
+    let k = stufe.to_bits();
+    if let Some((_, v)) = liste
+        .lock()
+        .ok()
+        .and_then(|l| l.iter().find(|x| x.0 == k).cloned())
+    {
+        return v;
+    }
+    let v = rechnen();
+    if let Ok(mut l) = liste.lock() {
+        if l.len() >= GEMERKTE_STUFEN {
+            l.remove(0);
+        }
+        l.push((k, v.clone()));
+    }
+    v
+}
+
+impl TerrainMesh {
+    /// Höhenlinien im Abstand `stufe` (m, relativ zu `bezug`), je Stufe
+    /// einmal gerechnet.
+    pub fn hoehenlinien(&self, stufe: f64) -> Arc<Vec<Hoehenlinie>> {
+        gemerkt(&self.linien, stufe, || {
+            Arc::new(sk_gelaende::linien::hoehenlinien(&self.netz, stufe))
+        })
+    }
+}
+
+/// Das Netz, einmal gerechnet, mit dem Schlüssel der Punkte, Codes und
+/// des Rands, aus denen es entstand ([`Terrain::netz_schluessel`]); gilt
+/// bei jedem Vergleich als gleich.
 #[derive(Default)]
-struct Merker(OnceLock<Arc<TerrainMesh>>);
+struct Merker(OnceLock<(u64, Arc<TerrainMesh>)>);
 
 impl Clone for Merker {
     fn clone(&self) -> Merker {
@@ -326,8 +367,40 @@ impl Terrain {
     pub fn mesh(&self) -> Arc<TerrainMesh> {
         self.mesh
             .0
-            .get_or_init(|| Arc::new(self.vernetzen()))
+            .get_or_init(|| (self.netz_schluessel(), Arc::new(self.vernetzen())))
+            .1
             .clone()
+    }
+
+    /// Prüfsumme über alles, woraus das Netz entsteht (Rand, Codes,
+    /// Punkte mit Abwahl), wie [`Terrain::netz_gleich`] vergleicht.
+    fn netz_schluessel(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.trim as u8).hash(&mut h);
+        for (c, b) in &self.codes {
+            (c, *b as u8).hash(&mut h);
+        }
+        for p in &self.points {
+            (
+                &p.nr,
+                p.e.to_bits(),
+                p.n.to_bits(),
+                p.h.to_bits(),
+                &p.code,
+                p.off,
+            )
+                .hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// Das gemerkte Netz gehört zu diesen Punkten, Codes und diesem Rand.
+    fn netz_passt(&self) -> bool {
+        self.mesh
+            .0
+            .get()
+            .is_some_and(|(k, _)| *k == self.netz_schluessel())
     }
 
     fn vernetzen(&self) -> TerrainMesh {
@@ -384,6 +457,8 @@ impl Terrain {
             index,
             hinweise,
             ausreisser: pr.ausreisser,
+            linien: Mutex::default(),
+            stufen: Mutex::default(),
         }
     }
 
@@ -483,7 +558,8 @@ impl Model {
     /// Aufmaß schreiben, ohne die Gründungen nachzuführen. Das gemerkte
     /// Netz geht nur mit, wenn Punkte, Codes und Rand gleich bleiben: Eine
     /// Kopie mit abgewähltem Punkt brachte sonst das alte Netz mit (Review
-    /// #123 W45 B2).
+    /// #123 W45 B2). Ein Netz, das das neue Aufmaß schon aus genau seinen
+    /// Punkten gerechnet hat (beim Einlesen), bleibt (H5).
     fn put_survey(&mut self, t: Option<Terrain>) -> bool {
         if t.as_ref() == self.terrain() {
             return false;
@@ -491,6 +567,7 @@ impl Model {
         let t = t.map(|mut t| {
             t.mesh = match self.terrain() {
                 Some(alt) if alt.netz_gleich(&t) => alt.mesh.clone(),
+                _ if t.netz_passt() => std::mem::take(&mut t.mesh),
                 _ => Merker::default(),
             };
             // neue Werte im Kopf ersetzen die rohe `[terrain]`-Zeile
@@ -1185,9 +1262,11 @@ impl Model {
         }
         let wunsch = wunsch.clamp(MIN_STUFE, GROEBER[8]);
         let m = self.terrain()?.mesh();
-        std::iter::once(wunsch)
-            .chain(GROEBER.into_iter().filter(|&s| s > wunsch))
-            .find(|&s| strecken(&m.netz, s).is_some_and(|n| n <= MAX_STRECKEN))
+        gemerkt(&m.stufen, wunsch, || {
+            std::iter::once(wunsch)
+                .chain(GROEBER.into_iter().filter(|&s| s > wunsch))
+                .find(|&s| strecken(&m.netz, s).is_some_and(|n| n <= MAX_STRECKEN))
+        })
     }
 
     /// Höhenlinien im Abstand `stufe` (m) im Modell: Höhe (m ü. NHN) und
@@ -1199,8 +1278,8 @@ impl Model {
             return Vec::new();
         };
         let m = t.mesh();
-        sk_gelaende::linien::hoehenlinien(&m.netz, stufe)
-            .into_iter()
+        m.hoehenlinien(stufe)
+            .iter()
             .map(|l| {
                 let p = l
                     .punkte
@@ -1601,5 +1680,43 @@ mod tests {
         assert!((e - (467108.214 + 24.0 * 7f64.to_radians().cos())).abs() < 1e-9);
         let p = f.to_model(e, n);
         assert!((p[0] - 24000.0).abs() < 1e-6 && p[1].abs() < 1e-6);
+    }
+
+    /// Das Netz aus „Höhen“ bleibt beim Übernehmen (Review #123 W45 H5).
+    /// Höhenlinien und Abstand je Stufe hängen am Netz und überstehen eine
+    /// neue Lage, gezeichnet an der neuen Stelle (H1). Eine Abwahl rechnet
+    /// ein neues Netz (B2).
+    #[test]
+    fn netz_und_linien_gemerkt() {
+        let (mut m, _) = lindenhof_haus();
+        let (t, ..) = Terrain::lesen(CSV, "aufmass.csv", "2026-10-12", 32).unwrap();
+        let netz = t.mesh();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        assert!(Arc::ptr_eq(&netz, &m.terrain().unwrap().mesh()));
+        let s = m.terrain_contour_step(0.25).unwrap();
+        let linien = netz.hoehenlinien(s);
+        let vorher = m.terrain_contours(s);
+        assert!(!vorher.is_empty());
+        m.begin("Verschieben");
+        assert!(m.move_terrain([1000.0, 0.0]));
+        m.commit();
+        let netz2 = m.terrain().unwrap().mesh();
+        assert!(Arc::ptr_eq(&netz, &netz2));
+        assert!(Arc::ptr_eq(&linien, &netz2.hoehenlinien(s)));
+        assert_eq!(m.terrain_contour_step(0.25), Some(s));
+        let nachher = m.terrain_contours(s);
+        assert_eq!(vorher.len(), nachher.len());
+        let dx = nachher[0].1[0][0] - vorher[0].1[0][0];
+        assert!((dx - 1000.0).abs() < 1e-6, "{dx}");
+        let mut t = m.terrain().unwrap().clone();
+        t.points[netz.index[0]].off = true;
+        m.begin("Abwahl");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        let netz3 = m.terrain().unwrap().mesh();
+        assert!(!Arc::ptr_eq(&netz, &netz3));
+        assert_eq!(netz3.index.len() + 1, netz.index.len());
     }
 }
