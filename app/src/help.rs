@@ -618,6 +618,10 @@ impl HelpCard {
     pub fn open_with(&mut self, t: Topic) {
         self.set_open(true);
         self.picked = (t != self.doing).then_some(t);
+        // auch auf der schon offenen Karte das Thema von oben, nicht die
+        // Liste „Alle Themen“ (Review #156 B1)
+        self.list = false;
+        self.scroll = 0.0;
     }
 
     /// Taste: F1 öffnet und schließt, Esc schließt nur eine offene Karte.
@@ -1406,6 +1410,27 @@ mod tests {
         assert_eq!(k.wait(0), None);
         k.follow(Topic::Drag, 100);
         assert_eq!(k.wait(200), Some(50));
+    }
+
+    /// Review #156 B1: Ist die Karte mit „Alle Themen“ offen und weit
+    /// gerollt, zeigt „Ausbaustufe …“ trotzdem das Thema, von oben.
+    #[test]
+    fn oeffnen_mit_thema_aus_der_liste() {
+        let mut k = HelpCard::default();
+        k.follow(Topic::Draw, 0);
+        k.set_open(true);
+        k.toggle_list();
+        k.scroll = 120.0;
+        assert!(k.list_open());
+        k.open_with(Topic::Ausbaustufen);
+        assert!(k.is_open() && !k.list_open());
+        assert_eq!(k.topic(), Topic::Ausbaustufen);
+        assert_eq!(k.scroll, 0.0);
+        // ebenso aus einem anderen Thema heraus
+        k.pick(Topic::Quantities);
+        k.scroll = 80.0;
+        k.open_with(Topic::Ausbaustufen);
+        assert_eq!((k.topic(), k.scroll), (Topic::Ausbaustufen, 0.0));
     }
 
     /// Review #120 H5: Das Mengenfenster heißt nach den freien Blättern,

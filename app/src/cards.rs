@@ -169,6 +169,15 @@ impl Karten {
             .map(|(b, _)| b)
     }
 
+    /// Liegt `(x, y)` auf einer Karte, auch einer blassen? Ein Klick dort
+    /// geht nicht an die Liste darunter (Review #156).
+    pub fn auf_karte(x0: f32, top: f32, s: f32, breit: f32, x: f64, y: f64) -> bool {
+        let (x, y) = (x as f32, y as f32);
+        Self::rects(x0, top, s, breit)
+            .iter()
+            .any(|(rx, ry, rw, rh)| x >= *rx && x < rx + rw && y >= *ry && y < ry + rh)
+    }
+
     /// Karte unter der Maus; `true`, wenn sich das Bild ändert.
     pub fn set_hover(&mut self, h: Option<Blatt>) -> bool {
         std::mem::replace(&mut self.hover, h) != h
@@ -461,6 +470,8 @@ mod tests {
         k.set_frei(1);
         assert_eq!(k.aktiv, Blatt::Mengen);
         assert_eq!(k.hit(x0, top, s, breit, zweite, y), None);
+        assert!(Karten::auf_karte(x0, top, s, breit, zweite, y));
+        assert!(!Karten::auf_karte(x0, top, s, breit, zweite, y + 200.0));
         assert!(!k.waehlen(Blatt::Ava, now, false));
         assert_eq!(k.blaetter().collect::<Vec<_>>(), [Blatt::Mengen]);
         k.set_frei(3);

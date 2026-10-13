@@ -57,6 +57,16 @@ impl Modul {
             Modul::Gelaende => "Geländemodul",
         }
     }
+
+    /// Satz im Tooltip eines grauen Knopfs: die Stufe und der Weg zur
+    /// Übersicht (Bedienbarkeit 41.5).
+    pub fn grund(self) -> &'static str {
+        match self {
+            Modul::Mengen => "Ab der Ausbaustufe Pro (Datei › Ausbaustufe …).",
+            Modul::Kosten | Modul::Ava => "In der Ausbaustufe Ultimate (Datei › Ausbaustufe …).",
+            Modul::Gelaende => "Mit dem Geländemodul (Datei › Ausbaustufe …).",
+        }
+    }
 }
 
 /// Freie Module als Bitmenge. Heute steht sie fest auf [`Freischaltung::ALLES`];
@@ -547,6 +557,11 @@ mod tests {
         );
         assert_eq!(p.sperre(Blatt::Ava).map(Modul::ab), Some("Ultimate"));
         assert_eq!(stufe("ultimate").sperre(Command::Verwaltung), None);
+        // der Satz im Tooltip nennt dieselbe Stufe wie das kurze Wort
+        for m in [Modul::Mengen, Modul::Kosten, Modul::Ava, Modul::Gelaende] {
+            let stufe = m.ab().trim_start_matches("ab ");
+            assert!(m.grund().contains(stufe), "{m:?}");
+        }
         assert_eq!(
             [b, p, stufe("ultimate"), stufe("pro+gelaende")].map(Freischaltung::name),
             ["Basis", "Pro", "Ultimate", "Pro mit Geländemodul"]

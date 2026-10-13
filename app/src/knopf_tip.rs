@@ -1,6 +1,7 @@
 //! Tooltip an den Werkzeug- und Ansichtsknöpfen (9b), aus `main.rs`
 //! ausgelagert.
 
+use crate::freischaltung::Modul;
 use crate::ui::Id;
 use crate::{help, nordpfeil, sonne_view, App};
 
@@ -33,10 +34,7 @@ impl App {
                 Some("Im Fundament wird nicht gezeichnet.")
             }
             // Bedienbarkeit 41.5: grau, mit der Stufe und dem Weg zur Übersicht
-            Id::Quantity if self.ui.frei.gesperrt(id) => {
-                Some("Ab der Ausbaustufe Pro (Datei › Ausbaustufe …).")
-            }
-            _ => None,
+            _ => self.ui.frei.sperre(id).map(Modul::grund),
         };
         let mut lines = help::tooltip_lines(name);
         if let (Some(r), true) = (reason, lines.len() == 3) {
