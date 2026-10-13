@@ -20,10 +20,14 @@
 
 use crate::draw_table::{DrawTable, Stroke};
 use crate::ui::ViewKind;
+use gitter::{ueberlappt, Gitter, Kasten};
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame, Tri, NO_LAYER};
-use sk_model::{edge_kind, material, FootingShape, LevelKind, Model, Show, Solid};
-use sk_render::Helper;
+use sk_model::{edge_kind, material, BuildingId, FootingShape, LevelKind, Model, Show, Solid};
+use sk_render::{DashPattern, Helper};
+use std::collections::HashMap;
+
+mod gitter;
 
 /// Abstand der Höhenlinien im Grundriss (m); volle Meter sind
 /// Hauptlinien, nur sie stehen in 3D. Gäbe er zu viele Stücke, gilt der
@@ -50,20 +54,33 @@ const MARKE: f64 = 3.0;
 /// Ein Punkt im Grundriss.
 type P2 = [f64; 2];
 
-/// Gelände aus dem Aufmaß im Modell (mm, z zu ±0,00).
+/// Ein Stück Höhenlinie, an Grenze und Haus geteilt: Höhe, Anfang und
+/// Ende, im Grundstück, Hauptlinie (volle Meter).
+type Stueck = (f64, [P2; 2], bool, bool);
+
+/// Gelände aus dem Aufmaß im Modell (mm, z zu ±0,00). Was nur vom Modell
+/// abhängt, steht hier einmal gerechnet: Höhenlinien und Messpunkte sind
+/// schon an Grenze und Haus geteilt, Häuser und Dreiecke stehen in je
+/// einem Raster (Review #129 B3, B4). Zoom und Sicht kosten danach nur
+/// noch das Zeichnen.
 pub(crate) struct Gelaende {
     dreiecke: Vec<[Vec3; 3]>,
+    /// Raster über den Dreiecken.
+    netz: Gitter,
     /// Grenzen; leer ohne Grenze.
     ringe: Vec<Vec<P2>>,
     /// Zuschnitt; ohne Grenze immer „alles“.
     show: Show,
-    /// Höhenlinien: Höhe, Punkte, Hauptlinie.
-    linien: Vec<(f64, Vec<P2>, bool)>,
-    /// Messpunkte, die zählen.
-    punkte: Vec<Vec3>,
+    /// Stücke der Höhenlinien außerhalb der Häuser.
+    stuecke: Vec<Stueck>,
+    /// Messpunkte außerhalb der Häuser, die gezeigt werden: voll im
+    /// Grundstück, sonst blass.
+    marken: Vec<(Vec3, bool)>,
     /// Außenumriss jedes Hauses über der Gründung und die Unterkante
     /// seiner Gründung (mm).
     haus: Vec<(Vec<P2>, f64)>,
+    /// Raster über den Häusern.
+    haeuser: Gitter,
     /// Innenseite jeder Frostschürze mit Unterkante und Oberkante des
     /// Erdreichs in ihr (UK Schürze bis UK Dämmung oder Platte).
     kern: Vec<(Vec<P2>, f64, f64)>,
@@ -73,7 +90,13 @@ pub(crate) struct Gelaende {
 
 impl Gelaende {
     /// Das Gelände zum Modell; `None` ohne Aufmaß, Lage oder Netz.
+    /// Gründungen und Umrisse über das Verzeichnis ([`Model::lesend`]),
+    /// nicht je Zug über alle Bauteile (Review #129 B4).
     pub(crate) fn aus(m: &Model) -> Option<Gelaende> {
+        m.lesend(|| Gelaende::rechnen(m))
+    }
+
+    fn rechnen(m: &Model) -> Option<Gelaende> {
         let dreiecke = m.terrain_triangles();
         if dreiecke.is_empty() {
             return None;
@@ -90,30 +113,23 @@ impl Gelaende {
         } else {
             t.show()
         };
-        let linien = m
+        let linien: Vec<(f64, Vec<P2>, bool)> = m
             .terrain_contour_step(STUFE)
             .map_or(Vec::new(), |s| m.terrain_contours(s))
             .into_iter()
             .map(|(z, p, _)| ((z - h0) * 1000.0, p, (z - z.round()).abs() < 1e-6))
             .collect();
-        let punkte = t
-            .points
-            .iter()
-            .filter(|p| !p.off)
-            .map(|p| {
-                let [x, y] = f.to_model(p.e, p.n);
-                vec3(x, y, (p.h - h0) * 1000.0)
-            })
-            .collect();
-        let uk = |b| {
-            m.storeys()
-                .iter()
-                .filter(|(_, s)| s.kind == LevelKind::Foundation && s.building == Some(b))
-                .map(|(_, s)| s.elevation)
-                .fold(0.0, f64::min)
-        };
+        // Unterkante der Gründung je Gebäude, einmal gesammelt
+        let mut uk: HashMap<BuildingId, f64> = HashMap::new();
+        for (_, s) in m.storeys().iter() {
+            if let (LevelKind::Foundation, Some(b)) = (s.kind, s.building) {
+                let x = uk.entry(b).or_insert(0.0);
+                *x = x.min(s.elevation);
+            }
+        }
+        let uk = |b: BuildingId| uk.get(&b).copied().unwrap_or(0.0);
         let flach = |r: &[Vec3]| r.iter().map(|p| [p.x, p.y]).collect::<Vec<P2>>();
-        let haus = m
+        let haus: Vec<(Vec<P2>, f64)> = m
             .plate_outlines()
             .into_iter()
             .map(|(b, r)| (flach(&r), uk(b)))
@@ -132,16 +148,49 @@ impl Gelaende {
                 Some((flach(&i.pts), uk(b), uk(b) + f.params.footing_depth))
             })
             .collect();
-        Some(Gelaende {
+        let mut g = Gelaende {
+            netz: Gitter::neu(
+                dreiecke
+                    .iter()
+                    .map(|t| kasten(&t.map(|p| [p.x, p.y])))
+                    .collect(),
+            ),
             dreiecke,
             ringe,
             show,
-            linien,
-            punkte,
+            stuecke: Vec::new(),
+            marken: Vec::new(),
+            haeuser: Gitter::neu(haus.iter().map(|(r, _)| kasten(r)).collect()),
             haus,
             kern,
             unten: tief - m.plate_settings().thick,
-        })
+        };
+        // Höhenlinien und Messpunkte einmal je Gelände an Grenze und Haus
+        // teilen, nicht je Zoomstufe (B3)
+        let mut stuecke = Vec::new();
+        for (z, p, haupt) in &linien {
+            for w in p.windows(2) {
+                for (t0, t1, innen) in g.teile(w[0], w[1]) {
+                    let ab = [lerp2(w[0], w[1], t0), lerp2(w[0], w[1], t1)];
+                    stuecke.push((*z, ab, innen, *haupt));
+                }
+            }
+        }
+        g.stuecke = stuecke;
+        g.marken = t
+            .points
+            .iter()
+            .filter(|p| !p.off)
+            .filter_map(|p| {
+                let q = f.to_model(p.e, p.n);
+                if g.im_haus(q) {
+                    return None;
+                }
+                let voll = g.zeigen(g.innen(q))?;
+                Some((vec3(q[0], q[1], (p.h - h0) * 1000.0), voll))
+            })
+            .collect();
+        Some(g)
     }
 
     /// Quader um das Netz bis zur Unterkante des Rands.
@@ -163,14 +212,25 @@ impl Gelaende {
 
     /// Liegt `p` in einem Haus?
     fn im_haus(&self, p: P2) -> bool {
-        self.haus.iter().any(|(r, _)| im_ring(r, p))
+        let mut nah = Vec::new();
+        self.haeuser.bei(&[p[0], p[1], p[0], p[1]], &mut nah);
+        self.in_einem(&nah, p)
+    }
+
+    /// Liegt `p` in einem der Häuser `nah`?
+    fn in_einem(&self, nah: &[u32], p: P2) -> bool {
+        nah.iter().any(|&h| im_ring(&self.haus[h as usize].0, p))
     }
 
     /// Teile der Strecke `a`→`b` an Grenze und Haus: Parameter von, bis
-    /// und ob der Teil im Grundstück liegt; Teile im Haus fallen weg.
+    /// und ob der Teil im Grundstück liegt; Teile im Haus fallen weg. Nur
+    /// die Häuser am Rechteck der Strecke zählen.
     fn teile(&self, a: P2, b: P2) -> Vec<(f64, f64, bool)> {
+        let mut nah = Vec::new();
+        self.haeuser.bei(&kasten(&[a, b]), &mut nah);
         let mut ts = vec![0.0, 1.0];
-        for r in self.ringe.iter().chain(self.haus.iter().map(|h| &h.0)) {
+        let haeuser = nah.iter().map(|&h| &self.haus[h as usize].0);
+        for r in self.ringe.iter().chain(haeuser) {
             ts.extend(schnitte(r, a, b));
         }
         ts.sort_by(f64::total_cmp);
@@ -178,28 +238,31 @@ impl Gelaende {
         ts.windows(2)
             .filter_map(|w| {
                 let m = lerp2(a, b, (w[0] + w[1]) / 2.0);
-                (!self.im_haus(m)).then(|| (w[0], w[1], self.innen(m)))
+                (!self.in_einem(&nah, m)).then(|| (w[0], w[1], self.innen(m)))
             })
             .collect()
     }
 
     /// Die Dreiecke ohne die Häuser: Ein Dreieck, das ein Haus berührt,
     /// wird an den Geraden der Hauskanten in konvexe Stücke geteilt, die
-    /// Stücke im Haus fallen weg.
+    /// Stücke im Haus fallen weg. Je Dreieck zählen nur die Häuser an
+    /// seinem Rechteck.
     fn ohne_haus(&self, d: Vec<[Vec3; 3]>) -> Vec<[Vec3; 3]> {
         if self.haus.is_empty() {
             return d;
         }
-        let kaesten: Vec<[f64; 4]> = self.haus.iter().map(|(r, _)| kasten(r)).collect();
         let mut out = Vec::with_capacity(d.len());
+        let mut nah = Vec::new();
         for t in d {
             let ecken = t.map(|p| [p.x, p.y]);
-            if !kaesten.iter().any(|k| ueberlappt(k, &kasten(&ecken))) {
+            self.haeuser.bei(&kasten(&ecken), &mut nah);
+            if nah.is_empty() {
                 out.push(t);
                 continue;
             }
             let mut stuecke = vec![ecken.to_vec()];
-            for (r, _) in &self.haus {
+            for &h in &nah {
+                let r = &self.haus[h as usize].0;
                 for i in 0..r.len() {
                     let (c, e) = (r[i], r[(i + 1) % r.len()]);
                     let k = kasten(&[c, e]);
@@ -218,7 +281,7 @@ impl Gelaende {
             for s in stuecke {
                 let m = s.iter().fold([0.0, 0.0], |m, p| [m[0] + p[0], m[1] + p[1]]);
                 let k = s.len() as f64;
-                if self.im_haus([m[0] / k, m[1] / k]) {
+                if self.in_einem(&nah, [m[0] / k, m[1] / k]) {
                     continue;
                 }
                 let p: Vec<Vec3> = s.iter().map(|q| vec3(q[0], q[1], ebene(&t, *q))).collect();
@@ -233,9 +296,15 @@ impl Gelaende {
         out
     }
 
-    /// Höhe des Netzes an `p`; `None` außerhalb.
+    /// Höhe des Netzes an `p`; `None` außerhalb. Gefragt werden nur die
+    /// Dreiecke an `p` (mit einem Hauch Rand für die Toleranz).
     fn hoehe(&self, p: P2) -> Option<f64> {
-        self.dreiecke.iter().find_map(|t| {
+        let mut nah = Vec::new();
+        let e = 1e-3;
+        self.netz
+            .bei(&[p[0] - e, p[1] - e, p[0] + e, p[1] + e], &mut nah);
+        nah.iter().find_map(|&i| {
+            let t = &self.dreiecke[i as usize];
             let l = baryzentrisch(t, p)?;
             Some(l[0] * t[0].z + l[1] * t[1].z + l[2] * t[2].z)
         })
@@ -294,7 +363,7 @@ fn schnitte(r: &[P2], a: P2, b: P2) -> impl Iterator<Item = f64> + '_ {
 }
 
 /// Rechteck um die Punkte: x, y von, x, y bis.
-fn kasten(p: &[P2]) -> [f64; 4] {
+fn kasten(p: &[P2]) -> Kasten {
     p.iter()
         .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, q| {
             [
@@ -304,10 +373,6 @@ fn kasten(p: &[P2]) -> [f64; 4] {
                 k[3].max(q[1]),
             ]
         })
-}
-
-fn ueberlappt(a: &[f64; 4], b: &[f64; 4]) -> bool {
-    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
 
 /// Konvexes Vieleck `s` an der Geraden durch `c`→`e` geteilt (beide Teile
@@ -573,24 +638,16 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
     }
     // Volle Meter als feine Kanten auf dem Rasen
     s.edge_kind = edge_kind::FINE;
-    for (z, p, haupt) in &g.linien {
-        if !*haupt {
+    for &(z, [a, b], innen, haupt) in &g.stuecke {
+        if !haupt || (g.show == Show::Parcel && !innen) {
             continue;
         }
-        for w in p.windows(2) {
-            for (t0, t1, innen) in g.teile(w[0], w[1]) {
-                if g.show == Show::Parcel && !innen {
-                    continue;
-                }
-                let dz = if innen && g.show == Show::Fade {
-                    HEBEN
-                } else {
-                    0.0
-                };
-                let (a, b) = (lerp2(w[0], w[1], t0), lerp2(w[0], w[1], t1));
-                s.edge(vec3(a[0], a[1], z + dz), vec3(b[0], b[1], z + dz));
-            }
-        }
+        let dz = if innen && g.show == Show::Fade {
+            HEBEN
+        } else {
+            0.0
+        };
+        s.edge(vec3(a[0], a[1], z + dz), vec3(b[0], b[1], z + dz));
     }
     s
 }
@@ -608,6 +665,7 @@ fn rand_an_grenze(s: &mut Solid, g: &Gelaende, r: &[P2], unten: f64, aussen: boo
         0.0
     };
     let n = r.len();
+    let mut nah = Vec::new();
     for i in 0..n {
         let (a, b) = if ccw == aussen {
             (r[i], r[(i + 1) % n])
@@ -615,7 +673,9 @@ fn rand_an_grenze(s: &mut Solid, g: &Gelaende, r: &[P2], unten: f64, aussen: boo
             (r[(i + 1) % n], r[i])
         };
         let mut ts = vec![0.0, 1.0];
-        for t in &g.dreiecke {
+        // nur die Dreiecke am Rechteck der Kante (Review #129 B4)
+        g.netz.bei(&kasten(&[a, b]), &mut nah);
+        for t in nah.iter().map(|&j| &g.dreiecke[j as usize]) {
             for k in 0..3 {
                 let (c, d) = (t[k], t[(k + 1) % 3]);
                 if let Some(x) = kreuzung(a, b, [c.x, c.y], [d.x, d.y]) {
@@ -685,8 +745,10 @@ pub(crate) fn kappen(g: &Gelaende, f: &SectionFrame, p0: Vec3, soil: u16) -> Sol
     s
 }
 
-/// Linien in Grundriss, Schnitt und Ansicht. `mm_px`: Millimeter je
+/// Linien in Grundriss, Schnitt und Ansicht samt den Punktmarken im
+/// Grundriss ([`grundlinien`] und [`marken`]). `mm_px`: Millimeter je
 /// Bildpunkt (Grundriss), `fassade`: Ebene der Geländelinie einer Ansicht.
+#[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))] // Prüfbilder
 pub(crate) fn linien(
     g: &Gelaende,
     view: ViewKind,
@@ -696,9 +758,14 @@ pub(crate) fn linien(
     scale: f32,
     mm_px: f64,
 ) -> Vec<Helper> {
-    let fine = t.drawing_edges[edge_kind::FINE as usize];
-    let blass = t.background;
-    let line = |a: Vec3, b: Vec3, (w, c): Stroke, pattern| Helper {
+    let mut out = grundlinien(g, view, plane, fassade, t, scale);
+    out.extend(marken(g, view, t, scale, mm_px));
+    out
+}
+
+/// Strich von `a` nach `b` mit Stift und Muster.
+fn strich(a: Vec3, b: Vec3, (w, c): Stroke, pattern: DashPattern, scale: f32) -> Helper {
+    Helper {
         a: a.to_f32(),
         b: b.to_f32(),
         color: c,
@@ -707,35 +774,58 @@ pub(crate) fn linien(
         pattern,
         occlude: false,
         round: false,
-    };
+    }
+}
+
+/// Kreuze der Messpunkte im Grundriss, je zwei Striche; nur sie hängen
+/// vom Zoom ab (Review #129 B3).
+pub(crate) fn marken(
+    g: &Gelaende,
+    view: ViewKind,
+    t: &DrawTable,
+    scale: f32,
+    mm_px: f64,
+) -> Vec<Helper> {
+    if view != ViewKind::Plan {
+        return Vec::new();
+    }
+    let fine = t.drawing_edges[edge_kind::FINE as usize];
+    let k = MARKE * f64::from(scale) * mm_px;
+    let mut out = Vec::with_capacity(2 * g.marken.len());
+    for &(p, voll) in &g.marken {
+        let st = if voll { fine } else { t.background };
+        for (dx, dy) in [(k, k), (k, -k)] {
+            let (a, b) = (vec3(p.x - dx, p.y - dy, p.z), vec3(p.x + dx, p.y + dy, p.z));
+            out.push(strich(a, b, st, sk_render::SOLID, scale));
+        }
+    }
+    out
+}
+
+/// Linien in Grundriss (ohne die Punktmarken), Schnitt und Ansicht;
+/// unabhängig vom Zoom.
+pub(crate) fn grundlinien(
+    g: &Gelaende,
+    view: ViewKind,
+    plane: Option<(Vec3, Vec3)>,
+    fassade: Option<(Vec3, Vec3)>,
+    t: &DrawTable,
+    scale: f32,
+) -> Vec<Helper> {
+    let fine = t.drawing_edges[edge_kind::FINE as usize];
+    let blass = t.background;
+    let line = |a: Vec3, b: Vec3, st: Stroke, pattern| strich(a, b, st, pattern, scale);
     let solid = sk_render::SOLID;
     let mut out = Vec::new();
     match (view, plane.or(fassade)) {
         (ViewKind::Plan, _) => {
-            for (z, p, haupt) in &g.linien {
-                let stift = if *haupt { t.ground } else { fine };
-                for w in p.windows(2) {
-                    for (t0, t1, innen) in g.teile(w[0], w[1]) {
-                        let Some(voll) = g.zeigen(innen) else {
-                            continue;
-                        };
-                        let (a, b) = (lerp2(w[0], w[1], t0), lerp2(w[0], w[1], t1));
-                        let st = if voll { stift } else { blass };
-                        let (a, b) = (vec3(a[0], a[1], *z), vec3(b[0], b[1], *z));
-                        out.push(line(a, b, st, solid));
-                    }
-                }
-            }
-            let k = MARKE * f64::from(scale) * mm_px;
-            for p in g.punkte.iter().filter(|p| !g.im_haus([p.x, p.y])) {
-                let Some(voll) = g.zeigen(g.innen([p.x, p.y])) else {
+            for &(z, [a, b], innen, haupt) in &g.stuecke {
+                let Some(voll) = g.zeigen(innen) else {
                     continue;
                 };
-                let st = if voll { fine } else { blass };
-                for (dx, dy) in [(k, k), (k, -k)] {
-                    let (a, b) = (vec3(p.x - dx, p.y - dy, p.z), vec3(p.x + dx, p.y + dy, p.z));
-                    out.push(line(a, b, st, solid));
-                }
+                let stift = if haupt { t.ground } else { fine };
+                let st = if voll { stift } else { blass };
+                out.push(line(vec3(a[0], a[1], z), vec3(b[0], b[1], z), st, solid));
             }
             // Grenze strichpunktiert, kräftig
             for r in &g.ringe {
