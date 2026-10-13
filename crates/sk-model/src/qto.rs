@@ -1678,6 +1678,9 @@ pub fn gruendung_von(model: &Model, e: ElementId) -> Vec<ElementId> {
     else {
         return Vec::new();
     };
+    if let Some(v) = model.verz() {
+        return v.gruendung(run);
+    }
     model
         .elements()
         .iter()
@@ -1723,6 +1726,12 @@ fn material_rank(c: MatCategory) -> u8 {
 /// Baut die Mengenliste: Gebäude → Fundament und Geschosse von unten →
 /// Bauteilart (Wände je Aufbau) → Bauteile nach Nummer. Nur Lesen.
 pub fn schedule(model: &Model) -> Schedule {
+    // Ein Gang über das ganze Modell: Anschlüsse, Decken und Öffnungen aus
+    // dem Verzeichnis, sonst wächst er mit dem Quadrat der Züge
+    model.lesend(|| schedule_im_gang(model))
+}
+
+pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
     // Je Wandzug einmal rechnen
     let mut walls: HashMap<RunId, Vec<WallQto>> = HashMap::new();
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
@@ -2073,10 +2082,17 @@ pub fn schedule(model: &Model) -> Schedule {
 fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
     let mut out = Vec::new();
     let boden = model.project().soil;
+    // Außenwände je Gebäude einmal, nicht je Platte
+    let huellen = match platten {
+        [] => HashMap::new(),
+        _ => crate::qto_site::huellen(model),
+    };
+    let leer = crate::qto_site::Huelle::default();
     // Träger der Mengen je Gebäude: die Platte mit der kleinsten Nummer
     // (Guid bei gleicher Nummer), unabhängig von der Speicherreihenfolge
     let rang = |e: &Element| (e.number.len(), e.number.clone(), e.guid);
-    let mut traeger: Vec<(BuildingId, (usize, String, crate::Guid), ElementId)> = Vec::new();
+    let mut traeger: HashMap<BuildingId, ((usize, String, crate::Guid), ElementId)> =
+        HashMap::new();
     for &(run, slab) in platten {
         let (Some(_), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
@@ -2085,10 +2101,12 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
             continue;
         };
         let r = rang(e);
-        match traeger.iter_mut().find(|t| t.0 == b) {
-            Some(t) if r < t.1 => *t = (b, r, slab),
+        match traeger.get_mut(&b) {
+            Some(t) if r < t.0 => *t = (r, slab),
             Some(_) => {}
-            None => traeger.push((b, r, slab)),
+            None => {
+                traeger.insert(b, (r, slab));
+            }
         }
     }
     for &(run, slab) in platten {
@@ -2111,9 +2129,10 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
         out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
         let b = model.run(run).and_then(|r| model.building_of(r.storey));
         // ohne Gebäude zählt jede Platte für sich
-        let erste = b.is_none_or(|b| traeger.iter().any(|t| t.0 == b && t.2 == slab));
-        out.extend(crate::qto_site::site_mengen(
-            model,
+        let erste = b.is_none_or(|b| traeger.get(&b).is_some_and(|t| t.1 == slab));
+        let huelle = huellen.get(&b).unwrap_or(&leer);
+        out.extend(crate::qto_site::site_mengen_in(
+            huelle,
             run,
             &g.outline,
             &vorlage,
