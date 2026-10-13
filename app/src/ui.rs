@@ -297,6 +297,9 @@ pub enum Field {
     /// Parameter `i` einer gewählten Erweiterung im Paneel „Eigenschaften“
     /// (E7).
     ExtProp(u8),
+    /// Geländeplatte (Gelände G0): Dicke in cm, Außenoffset in m.
+    PlateThick,
+    PlateMargin,
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
@@ -377,7 +380,10 @@ impl Field {
     /// Zahl in Metern (sonst in Zentimetern).
     fn in_metres(self) -> bool {
         self.is_level()
-            || matches!(self, Field::Offset | Field::DownpipeSpacing)
+            || matches!(
+                self,
+                Field::Offset | Field::DownpipeSpacing | Field::PlateMargin
+            )
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
     }
 
