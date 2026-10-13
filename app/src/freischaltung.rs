@@ -288,6 +288,7 @@ impl Eingang for Topic {
             | Topic::InnerWall
             | Topic::Ext
             | Topic::Openings
+            | Topic::Rooms
             | Topic::Einlesen
             | Topic::Drag
             | Topic::Split
