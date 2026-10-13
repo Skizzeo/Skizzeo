@@ -66,6 +66,19 @@ struct Job {
 /// Gelände-Rechtecke (x0, y0, x1, y1) mit Höhe, wie der Renderer sie nimmt.
 type Kisten = Vec<([f32; 4], f32)>;
 
+/// Wovon die Linien abhängen: Fassung der Platten, Ansicht, Schnittebene
+/// und Modellgrenzen (Bits), Maßstab (Bits), Stand der Zeichentabelle und
+/// des Farbschemas.
+type LinienKey = (
+    u64,
+    ViewKind,
+    Option<[u64; 6]>,
+    Option<[u64; 6]>,
+    u32,
+    u64,
+    u64,
+);
+
 /// Platten des Modells und was davon gezeigt wird.
 #[derive(Default)]
 pub(crate) struct Platte {
@@ -84,6 +97,8 @@ pub(crate) struct Platte {
     props: Option<u64>,
     /// Gelände-Rechtecke für „unter Gelände“ zum Modellstand.
     kisten: Option<(u64, Kisten)>,
+    /// Linien in Ansicht und Schnitt zu ihrem Schlüssel.
+    linien: Option<(LinienKey, Vec<Helper>)>,
 }
 
 impl Platte {
@@ -155,6 +170,35 @@ impl Platte {
             rx,
         });
         false
+    }
+
+    /// Linien der Platten in Ansicht und Schnitt ([`linien`]), gemerkt:
+    /// neu nur, wenn sich Platten, Ansicht, Ebene, Modellgrenzen, Maßstab
+    /// oder Zeichentabelle ändern, nicht je Bild (Review W34 B7: 0,35 ms
+    /// bei 1000, 1,46 ms bei 4000 Häusern).
+    pub(crate) fn linien_im_bild(
+        &mut self,
+        m: &Model,
+        (view, plane): (ViewKind, Option<(Vec3, Vec3)>),
+        bounds: Option<(Vec3, Vec3)>,
+        t: &DrawTable,
+        scale: f32,
+    ) -> &[Helper] {
+        self.im_bild(m);
+        let key = (
+            self.fassung,
+            view,
+            plane.map(bits),
+            bounds.map(bits),
+            scale.to_bits(),
+            t.rev,
+            t.theme_rev,
+        );
+        if self.linien.as_ref().is_none_or(|(k, _)| *k != key) {
+            let l = linien(&self.platten, view, plane, bounds, t, scale);
+            self.linien = Some((key, l));
+        }
+        self.linien.as_ref().map_or(&[], |(_, l)| l)
     }
 
     /// Ein Nachzug läuft (die Hauptschleife fragt dann je Bild nach).
@@ -547,17 +591,16 @@ impl App {
         self.renderer.set_grass(keys[0]);
     }
 
-    /// Linien der Platte in Ansicht und Schnitt; ausgeblendet keine.
-    pub(crate) fn platte_linien(&mut self, scale: f32) -> Vec<Helper> {
+    /// Linien der Platte in Ansicht und Schnitt, gemerkt
+    /// ([`Platte::linien_im_bild`]); ausgeblendet keine.
+    pub(crate) fn platte_linien(&mut self, scale: f32) -> &[Helper] {
         // nur Ansichten und Schnitt zeigen Linien der Platte
         if self.scene.terrain_hidden() || matches!(self.ui.view, ViewKind::Plan | ViewKind::Persp) {
-            return Vec::new();
+            return &[];
         }
-        let plane = self.plane();
-        let m = self.scene.model();
-        let plates = self.platte.im_bild(m);
-        let b = self.scene.bounds();
-        linien(plates, self.ui.view, plane, b, self.scene.table(), scale)
+        let sicht = (self.ui.view, self.plane());
+        let (m, b, t) = (self.scene.model(), self.scene.bounds(), self.scene.table());
+        self.platte.linien_im_bild(m, sicht, b, t, scale)
     }
 
     /// Gelände im Renderer: OK Gelände je Gebäude für „unter Gelände“ und
@@ -859,9 +902,57 @@ mod tests {
         assert!(!pl.rechnet());
     }
 
+    /// Die Linien in Ansicht und Schnitt entstehen je Schlüssel einmal,
+    /// nicht je Bild (Review W34 B7); neu mit Maßstab, Ansicht, Ebene,
+    /// Modellgrenzen, Zeichentabelle und neuen Platten.
+    #[test]
+    fn linien_gemerkt() {
+        let mut s = crate::scene::Scene::with_model(haus());
+        let mut pl = Platte::default();
+        let t = DrawTable::resolve(s.model(), &Theme::dark());
+        let vorn = (ViewKind::Front, None);
+        let l = pl.linien_im_bild(s.model(), vorn, None, &t, 1.0);
+        let (a, w) = (l.as_ptr(), l[0].width);
+        assert_eq!(l.len(), 4);
+        assert_eq!(
+            pl.linien_im_bild(s.model(), vorn, None, &t, 1.0).as_ptr(),
+            a
+        );
+        let l = pl.linien_im_bild(s.model(), vorn, None, &t, 2.0);
+        assert_eq!(l[0].width, 2.0 * w, "Maßstab");
+        let l = pl.linien_im_bild(s.model(), (ViewKind::Left, None), None, &t, 2.0);
+        assert!(l.iter().all(|h| h.a[0] == 0.0), "Seite");
+        let plane = (vec3(5000.0, 4000.0, 0.0), vec3(0.0, -1.0, 0.0));
+        let schnitt = (ViewKind::Section, Some(plane));
+        assert_eq!(
+            pl.linien_im_bild(s.model(), schnitt, None, &t, 2.0).len(),
+            8
+        );
+        let b = Some((vec3(0.0, -2000.0, 0.0), vec3(10000.0, 8000.0, 3000.0)));
+        let l = pl.linien_im_bild(s.model(), vorn, b, &t, 1.0);
+        assert!(l.iter().all(|h| h.a[1] == 3000.0), "Mitte der Grenzen");
+        let mut t2 = t.clone();
+        t2.theme_rev += 1;
+        let a = pl.linien_im_bild(s.model(), vorn, b, &t, 1.0).as_ptr();
+        assert_ne!(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0).as_ptr(), a);
+        // neue Platten: das Band ändert sich um 1 m
+        let breite = |l: &[Helper]| {
+            let xs = l.iter().flat_map(|h| [h.a[0], h.b[0]]);
+            let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |a, x| (a.0.min(x), a.1.max(x)));
+            hi - lo
+        };
+        let b0 = breite(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0));
+        wand_schieben(&mut s, 1000.0);
+        assert_eq!(breite(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0)), b0);
+        pl.nachziehen(s.model(), SICHT);
+        assert!(pl.warten());
+        let b1 = breite(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0));
+        assert!(((b1 - b0).abs() - 1000.0).abs() < 1e-3, "{b0} {b1}");
+    }
+
     /// Budget (Review W34 B6, 15 ms je Bild): Der UI-Faden kopiert für den
     /// Nachzug nur das Modell und holt das Ergebnis ab; Platten und Netz
-    /// rechnet der Faden. 1000 und 4000 Häuser in einem Gebäude (synchron
+    /// rechnet der Faden. Die Linien je Bild sind gemerkt (B7). 1000 und 4000 Häuser in einem Gebäude (synchron
     /// waren es 20 und 53 ms); im Debug nur 1000, das Bauen von 4000
     /// dauerte dort Minuten.
     #[test]
@@ -911,9 +1002,22 @@ mod tests {
                 abholen = abholen.min(ms);
                 assert!(pl.fertig.take().is_some(), "neue Platten");
             }
-            eprintln!("{n} Häuser: beginnen {beginnen:.2} ms, abholen {abholen:.3} ms");
+            // die Linien je Bild (Review W34 B7): gemerkt
+            let t = DrawTable::resolve(&m, &Theme::dark());
+            let vorn = (ViewKind::Front, None);
+            pl.linien_im_bild(&m, vorn, None, &t, 1.0);
+            let z = std::time::Instant::now();
+            for _ in 0..100 {
+                std::hint::black_box(pl.linien_im_bild(&m, vorn, None, &t, 1.0).len());
+            }
+            let linien = z.elapsed().as_secs_f64() * 10.0;
+            eprintln!(
+                "{n} Häuser: beginnen {beginnen:.2} ms, abholen {abholen:.3} ms, \
+                 Linien {linien:.4} ms"
+            );
             assert!(beginnen < budget(15.0), "{n}: {beginnen:.1} ms");
             assert!(abholen < budget(1.0), "{n}: {abholen:.2} ms");
+            assert!(linien < budget(0.05), "{n}: {linien:.3} ms");
         }
     }
 
