@@ -134,20 +134,19 @@ impl Model {
     /// Geometrie der Decke über einem Wandzug; `None` ohne Decke, `Err` wenn
     /// kein Körper entstehen kann.
     pub fn floor(&self, run: RunId) -> Option<Result<FloorSlab, FloorError>> {
-        self.floor_of_chain(run, &self.base_chain(run)?)
+        self.floor_mit_loechern(run, &self.base_chain(run)?, None)
     }
 
-    /// [`Model::floor`] zum schon gebauten Zug `chain` (ohne Anschlüsse).
-    pub(super) fn floor_of_chain(
-        &self,
-        run: RunId,
-        chain: &WallChain,
-    ) -> Option<Result<FloorSlab, FloorError>> {
-        self.floor_mit_loechern(run, chain, None)
+    /// [`Model::floor`] ohne Kerben für Öffnungen: Wo nur Umriss und Band
+    /// zählen (Innenwände darunter), sucht so niemand die Öffnungen des
+    /// Zugs (Review W48 B3).
+    pub(super) fn floor_ohne_kerben(&self, run: RunId) -> Option<Result<FloorSlab, FloorError>> {
+        self.floor_mit_loechern(run, &self.base_chain(run)?, Some(&[]))
     }
 
-    /// [`Model::floor_of_chain`] mit den schon gesuchten Löchern des Zugs
-    /// (`None`: hier suchen); so sucht [`Model::chain_and_floor`] sie nur
+    /// [`Model::floor`] zum schon gebauten Zug `chain` (ohne Anschlüsse),
+    /// mit den schon gesuchten Löchern des Zugs (`None`: hier suchen, nur
+    /// die im Deckenband); so sucht [`Model::chain_and_floor`] sie nur
     /// einmal (Review W48 B3).
     pub(super) fn floor_mit_loechern(
         &self,
@@ -164,8 +163,12 @@ impl Model {
             thickness: f.thickness,
             mat: material_key(f.material),
         };
-        let ext = self
-            .overhang_offsets(run)
+        // Zug darüber und sein Versatz je Segment nur einmal (Review W48 B3)
+        let up = self.runs_above(run).first().copied();
+        let versatz = up.and_then(|_| self.offsets_above(run));
+        let ext = versatz
+            .clone()
+            .and_then(ueberstand)
             .and_then(|o| Some((chain.with_segment_offsets(&o)?, o)));
         let soffit = SoffitParams {
             // Bis 1 m über dem Wandfuß (wie die lichte Höhe, G4)
@@ -199,17 +202,20 @@ impl Model {
         let mut slab = FloorSlab::from_chain_over(chain, &p, strip, over);
         if let Ok(fs) = &mut slab {
             fs.core_layer = self.core_layer(id);
+            let geschoss = up.is_some_and(|u| {
+                self.category_of(u) == Some(Category::ExteriorWall) && self.needs_floor(u)
+            });
+            fs.buendig = match versatz.filter(|_| geschoss) {
+                Some(o) => o.iter().map(|d| d.abs() < MIN_OFFSET).collect(),
+                None => Vec::new(),
+            };
             self.aussparen(run, chain, fs, loecher);
             if fs.strip.is_some_and(|sp| sp.covered) {
                 fs.strip_covered = self.covered_segments(run);
             }
             // Dachterrasse über dem Rücksprung darüber (D1–D3): Deckenkante
             // ist der Umriss der Decke (Kern oder Randdämmstreifen innen)
-            let up = self
-                .runs_above(run)
-                .first()
-                .and_then(|u| self.base_chain(*u));
-            if let Some(up) = up {
+            if let Some((u, up)) = up.and_then(|u| Some((u, self.base_chain(u)?))) {
                 let below = ext.as_ref().map_or(chain, |(c, _)| c);
                 let depth = match strip {
                     Some(sp) if sp.width > 0.0 => sp.width,
@@ -218,11 +224,11 @@ impl Model {
                         below.layers[..core].iter().map(|l| l.thickness).sum()
                     }
                 };
-                let map = self.runs_above(run).first().map(|u| self.stack_map(*u));
+                let map = self.stack_map(u);
                 let plan = crate::terrace::terrace_plan_mapped(
                     below,
                     &up,
-                    map.as_deref().unwrap_or_default(),
+                    &map,
                     depth,
                     strip.map(|s| s.mat),
                 );
@@ -261,19 +267,20 @@ impl Model {
     ) {
         let (b, t) = fs.band();
         let im_band = |h: &Hole| h.z.1 > b + 1.0 && h.z.0 < t - 1.0;
+        if !fs.buendig.contains(&true) {
+            return;
+        }
+        // Ohne fertige Löcher nur die Öffnungen, die das Band erreichen
+        // (Review W48 B3)
         let gesucht;
         let alle = match loecher {
             Some(l) => l,
             None => {
-                gesucht = self.holes_of(run, chain);
+                gesucht = self.holes_in_band(run, chain, Some((b, t)));
                 &gesucht[..]
             }
         };
-        // Erst ein Loch im Band, dann der Zug darüber (Review W48 B3)
-        if !alle.iter().any(im_band) {
-            return;
-        }
-        let buendig = self.buendig_oben(run);
+        let buendig = |k: usize| fs.buendig.get(k).copied().unwrap_or(false);
         let loecher: Vec<_> = alle
             .iter()
             .filter(|h| im_band(h) && buendig(h.seg))
@@ -284,23 +291,6 @@ impl Model {
             fs.outline = neu;
             fs.aussparungen = aus;
         }
-    }
-
-    /// Steht über Segment `k` von `run` die Wand darüber bündig (kein Vor-
-    /// oder Rücksprung)? Nur dort läuft eine Öffnung durch die Decke weiter;
-    /// unter einer Dachterrasse oder einem Erker bleibt die Decke ganz. Der
-    /// Zug darüber muss eine Außenwand eines Geschosses mit eigener Decke
-    /// sein: Durch die Flachdachdecke in die Attika spart nichts aus, denn
-    /// darüber liegt der Dachaufbau (Review W48 B2).
-    fn buendig_oben(&self, run: RunId) -> impl Fn(usize) -> bool {
-        let geschoss = self.runs_above(run).first().is_some_and(|&up| {
-            self.category_of(up) == Some(Category::ExteriorWall) && self.floor_of(up).is_some()
-        });
-        let o = geschoss
-            .then(|| self.offsets_above(run))
-            .flatten()
-            .unwrap_or_default();
-        move |k| o.get(k).is_some_and(|d| d.abs() < MIN_OFFSET)
     }
 
     /// Spart die Decke über `run` für die Öffnung `opening` aus, wenn diese
@@ -322,6 +312,9 @@ impl Model {
         if fs.aussparungen.iter().any(|a| a.opening == Some(opening)) {
             return true;
         }
+        if !fs.buendig.contains(&true) {
+            return false;
+        }
         let Some(chain) = self.base_chain(run) else {
             return false;
         };
@@ -336,15 +329,24 @@ impl Model {
         if legs.is_empty() {
             return false;
         }
-        let buendig = self.buendig_oben(run);
         let loecher: Vec<_> = legs
             .into_iter()
             .map(|(_, h)| h)
-            .filter(|h| buendig(h.seg))
+            .filter(|h| fs.buendig.get(h.seg).copied().unwrap_or(false))
             .map(|h| Hole { z: band, ..h })
             .collect();
         !kerben(&chain, &fs.outline, band, &loecher).1.is_empty()
     }
+}
+
+/// Vorsprung je Segment (≥ 0) aus dem Versatz `o` des Zuges darüber, wenn
+/// mindestens ein Segment vorspringt ([`Model::overhang_offsets`]).
+fn ueberstand(o: Vec<f64>) -> Option<Vec<f64>> {
+    let o: Vec<f64> = o
+        .into_iter()
+        .map(|d| if d >= MIN_OFFSET { d } else { 0.0 })
+        .collect();
+    o.iter().any(|d| *d > 0.0).then_some(o)
 }
 
 /// Der Umriss `umriss` der Decke im Band `(b, t)` über dem Zug `chain` mit
@@ -474,12 +476,7 @@ impl Model {
     /// Segment vorspringt (G7 K4): Dort wachsen Decke, Untersichtdämmung und
     /// die Außenschichten mit.
     pub(super) fn overhang_offsets(&self, run: RunId) -> Option<Vec<f64>> {
-        let o: Vec<f64> = self
-            .offsets_above(run)?
-            .into_iter()
-            .map(|d| if d >= MIN_OFFSET { d } else { 0.0 })
-            .collect();
-        o.iter().any(|d| *d > 0.0).then_some(o)
+        ueberstand(self.offsets_above(run)?)
     }
 
     /// Je Segment des Zuges: springt es gegenüber dem Zug darunter zurück

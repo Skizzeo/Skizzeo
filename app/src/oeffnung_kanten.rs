@@ -287,13 +287,17 @@ pub fn zug(scene: &Scene, id: ElementId) -> Option<RunId> {
 pub fn decke_grenzen(scene: &Scene, run: Option<RunId>, id: ElementId) -> (f64, f64) {
     let m = scene.model();
     let band = |r: RunId| mit_decke(scene, r, |f| f.band());
-    let decke = match run {
-        Some(r) if mit_decke(scene, r, |f| m.spart_aus_bei(r, id, f)) == Some(true) => {
-            m.runs_above(r).first().copied()
-        }
-        _ => run,
-    };
-    let oben = decke.and_then(band).map_or(f64::INFINITY, |b| b.0);
+    let uk = |r: RunId| band(r).map(|b| b.0);
+    // Ohne gültige Decke darüber bleibt die eigene die Grenze (Review W48 H9)
+    let oben = match run {
+        Some(r) if mit_decke(scene, r, |f| m.spart_aus_bei(r, id, f)) == Some(true) => m
+            .runs_above(r)
+            .first()
+            .and_then(|&u| uk(u))
+            .or_else(|| uk(r)),
+        _ => run.and_then(uk),
+    }
+    .unwrap_or(f64::INFINITY);
     let unten = run
         .and_then(|r| m.run_below(r))
         .and_then(band)

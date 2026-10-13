@@ -3022,7 +3022,7 @@ impl Model {
             if !mids.iter().any(|m| inside(*m, rlo, rhi)) {
                 continue;
             }
-            if let Some(Ok(slab)) = self.floor(id) {
+            if let Some(Ok(slab)) = self.floor_ohne_kerben(id) {
                 if mids.iter().any(|m| contains(&slab.outline, *m)) {
                     return Some(slab);
                 }
@@ -3075,7 +3075,7 @@ impl Model {
         }
         let outline = match slab {
             Some(o) => o.to_vec(),
-            None => match self.floor(run) {
+            None => match self.floor_ohne_kerben(run) {
                 Some(Ok(f)) => f.outline,
                 _ => return Vec::new(),
             },
@@ -3104,9 +3104,9 @@ impl Model {
         }
         let before = self.base_chain(run).and_then(|mut c| {
             c.points = old.to_vec();
-            self.floor_of_chain(run, &c)
+            self.floor_mit_loechern(run, &c, Some(&[]))
         });
-        let (Some(Ok(before)), Some(Ok(after))) = (before, self.floor(run)) else {
+        let (Some(Ok(before)), Some(Ok(after))) = (before, self.floor_ohne_kerben(run)) else {
             return self.runs_under_floor(run);
         };
         let (alo, ahi) = bounds2(&before.outline);

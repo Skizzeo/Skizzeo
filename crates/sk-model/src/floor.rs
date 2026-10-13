@@ -158,6 +158,11 @@ pub struct FloorSlab {
     /// Kerben im Umriss für Öffnungen, die durch die Decke laufen; der
     /// Umriss trägt sie schon (das Modell setzt sie, `decke_aussparung`).
     pub aussparungen: Vec<crate::decke_aussparung::Aussparung>,
+    /// Je Segment des Zugs darunter: steht darüber bündig die Außenwand
+    /// eines Geschosses mit eigener Decke? Nur dort kann eine Öffnung die
+    /// Decke aussparen. Das Modell merkt es beim Bau, damit die Kerbe den
+    /// Zug darüber nicht noch einmal sucht (Review W48 B3). Leer: nirgends.
+    pub buendig: Vec<bool>,
 }
 
 impl FloorSlab {
@@ -305,6 +310,7 @@ impl FloorSlab {
             terraces: TerracePlan::default(),
             core_layer: 0,
             aussparungen: Vec::new(),
+            buendig: Vec::new(),
         })
     }
 
