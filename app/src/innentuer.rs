@@ -19,6 +19,7 @@ use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
 use sk_model::bemassung::{Kettenart, Stil};
 use sk_model::hoehen::DOOR_WIDTHS;
+use sk_model::join::{JoinEnd, JoinKind};
 use sk_model::oeffnung::{
     Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, OuterFace, Swing,
 };
@@ -82,6 +83,12 @@ pub struct Vorschau {
     pub z: f64,
     /// Bezugspunkt am Cursor, auf der Wandmitte.
     pub punkt: Vec3,
+    /// Fläche auf der Seite der Kette längs (u, aufsteigend) bis zu ihren
+    /// Ecken; am Knick des Zugs außen bis zur Außenecke (Review W49 H2).
+    pub seite: (f64, f64),
+    /// Wände, die auf der Seite der Kette im T-Stoß anschließen: je die
+    /// Spanne zwischen ihren Flächen längs, aufsteigend (Review W49 H1).
+    pub stoesse: Vec<(f64, f64)>,
 }
 
 /// Zustand des Werkzeugs.
@@ -327,13 +334,15 @@ impl Innentuer {
             return false;
         };
         let w = v.u.1 - v.u.0;
-        let (s0, s1) = v.face.span;
+        let (s0, s1) = spanne(v);
         let u0 = match naeher(v).0 {
             Seite::Anfang => s0 + a,
             Seite::Ende => s1 - a - w,
         };
+        // In der Wand und zwischen den Flächen der Kette, also nicht über
+        // eine Wand im T-Stoß hinweg
         let (f0, f1) = v.face.free;
-        if u0 < f0 - 1e-6 || u0 + w > f1 + 1e-6 {
+        if u0 < f0.max(s0) - 1e-6 || u0 + w > f1.min(s1) + 1e-6 {
             return false;
         }
         v.u = (u0, u0 + w);
@@ -353,7 +362,7 @@ impl Innentuer {
             None if a >= 1.0 => masszahl(a, rundung).text(),
             None => return None,
         };
-        let (s0, s1) = v.face.span;
+        let (s0, s1) = spanne(v);
         let (von, bis) = match seite {
             Seite::Anfang => (s0, v.u.0),
             Seite::Ende => (s1, v.u.1),
@@ -411,6 +420,8 @@ impl Innentuer {
         }
         let u0 = u0.clamp(f0, f1 - w);
         let mitte = face.at(uc.clamp(f0, f1), 0.0) - face.n * (dicke / 2.0);
+        // Die Kette steht gegenüber dem Aufschlag
+        let (seite, stoesse) = kettenseite(m, k, &face, raum != fs, dicke);
         Some(Vorschau {
             u: (u0, u0 + w),
             swing: Swing {
@@ -421,6 +432,8 @@ impl Innentuer {
             z,
             punkt: vec3(mitte.x, mitte.y, z),
             face,
+            seite,
+            stoesse,
         })
     }
 
@@ -488,9 +501,85 @@ enum Seite {
     Ende,
 }
 
+/// Flächen der anschließenden Wände links und rechts der Tür auf der Seite
+/// der Kette (u, aufsteigend): die Enden der Fläche oder die nächste Wand im
+/// T-Stoß davor (Review W49 H1, H2).
+pub fn spanne(v: &Vorschau) -> (f64, f64) {
+    let (mut s0, mut s1) = v.seite;
+    for &(a, b) in &v.stoesse {
+        if b <= v.u.0 + 1e-6 {
+            s0 = s0.max(b);
+        }
+        if a >= v.u.1 - 1e-6 {
+            s1 = s1.min(a);
+        }
+    }
+    (s0, s1)
+}
+
+/// Fläche der Kette, vor der Fläche `f` (`vor`) oder vor der Gegenfläche im
+/// Abstand `dicke`: ihre Spanne längs bis zu ihren Ecken und die Wände, die
+/// dort im T-Stoß anschließen, je mit der Spanne zwischen ihren Flächen.
+fn kettenseite(
+    m: &Model,
+    k: Koerper,
+    f: &OuterFace,
+    vor: bool,
+    dicke: f64,
+) -> ((f64, f64), Vec<(f64, f64)>) {
+    let flach = |p: Vec3| vec3(p.x, p.y, 0.0);
+    let u_of = |p: Vec3| (flach(p) - f.a).dot(f.d);
+    let q = if vor { f.a } else { f.a - f.n * dicke };
+    let q = flach(q);
+    let seite = if vor {
+        Some(f.u)
+    } else {
+        k(f.run).and_then(|c| {
+            let cs = c.face_corners(c.inner_offset());
+            let j = (f.seg + 1) % cs.len().max(1);
+            Some((u_of(*cs.get(f.seg)?), u_of(*cs.get(j)?)))
+        })
+    };
+    let seite = seite.map_or(f.span, |(a, b)| (a.min(b), a.max(b)));
+    let wirt = m.run(f.run).and_then(|r| r.segments.get(f.seg).copied());
+    let mut stoesse: Vec<(f64, f64)> = m
+        .joins()
+        .iter()
+        .filter(|j| j.kind == JoinKind::T && j.b_run == f.run && Some(j.b) == wirt)
+        .filter_map(|j| {
+            let c = k(j.a_run)?;
+            let mut us = Vec::new();
+            for off in [c.outer_offset(), c.inner_offset()] {
+                let cs = c.face_corners(off);
+                let (e, nb) = match j.a_end {
+                    JoinEnd::Start => (*cs.first()?, *cs.get(1)?),
+                    JoinEnd::End => (*cs.last()?, *cs.get(cs.len().checked_sub(2)?)?),
+                };
+                // Nur Wände auf der Seite der Kette
+                let s = (flach(nb) - f.a).dot(f.n);
+                if (vor && s <= 0.0) || (!vor && s >= -dicke) {
+                    return None;
+                }
+                // Schnitt der Wandfläche mit der Fläche der Kette
+                let (p, r) = (flach(e), (flach(nb) - flach(e)).normalized());
+                let kreuz = |a: Vec3, b: Vec3| a.x * b.y - a.y * b.x;
+                let nenner = kreuz(f.d, r);
+                if nenner.abs() < 1e-9 {
+                    return None;
+                }
+                us.push(kreuz(p - q, r) / nenner + (q - flach(f.a)).dot(f.d));
+            }
+            let (a, b) = (us[0].min(us[1]), us[0].max(us[1]));
+            Some((a, b))
+        })
+        .collect();
+    stoesse.sort_by(|x, y| x.0.total_cmp(&y.0));
+    (seite, stoesse)
+}
+
 /// Nähere Fläche der anschließenden Wände und der Abstand der Tür zu ihr.
 fn naeher(v: &Vorschau) -> (Seite, f64) {
-    let (s0, s1) = v.face.span;
+    let (s0, s1) = spanne(v);
     let (a0, a1) = (v.u.0 - s0, s1 - v.u.1);
     if a0 <= a1 {
         (Seite::Anfang, a0)
@@ -528,7 +617,7 @@ fn kette_auf(v: &Vorschau) -> impl Fn(f64) -> Vec3 + '_ {
 /// Flächen der anschließenden Wände über die Kanten der Tür, in
 /// Zeichenhöhe. Leer, wenn die Tür nicht zwischen die Flächen passt.
 pub fn kette(v: &Vorschau, st: StoreyId, stil: &Stil, schrift: &Schrift) -> Bild {
-    let (s0, s1) = v.face.span;
+    let (s0, s1) = spanne(v);
     if s1 - s0 < v.u.1 - v.u.0 {
         return Bild::default();
     }
@@ -852,5 +941,122 @@ mod tests {
         assert_eq!(t.hover, vorher, "die Tür bleibt im getippten Abstand");
         assert_eq!(t.taste(Key::Escape, mods), Taste::Geaendert);
         assert!(t.eingabe.is_none());
+    }
+
+    /// Spanne der Kette um die Tür als y von unten nach oben (die Innenwand
+    /// läuft in +y).
+    fn spanne_y(v: &Vorschau) -> (f64, f64) {
+        let (s0, s1) = spanne(v);
+        let y = |u: f64| v.face.at(u, 0.0).y;
+        (y(s0).min(y(s1)), y(s0).max(y(s1)))
+    }
+
+    /// Review W49 H1: Eine Wand, die mitten an der Innenwand im T-Stoß
+    /// anschließt, begrenzt die Kette auf ihrer Seite wie eine anschließende
+    /// Wand am Ende, auf der anderen Seite nicht. Die Zahl misst von ihrer
+    /// Fläche; über sie hinweg passt die Tür nicht.
+    #[test]
+    fn kette_am_t_stoss() {
+        let (mut m, iw, st) = haus();
+        let set = m.defaults().interior_wall;
+        let quer = m
+            .add_wall_run(
+                &[vec3(5000.0, 4000.0, 0.0), vec3(10000.0, 4000.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        assert!(m
+            .joins()
+            .iter()
+            .any(|j| j.kind == JoinKind::T && j.a_run == quer && j.b_run == iw));
+        let d = m.chain(quer).unwrap().thickness() / 2.0;
+        let k = |r| m.chain(r);
+        let mods = Modifiers::default();
+        let mut t = Innentuer::default();
+        // Cursor bei x < 5 m: Aufschlag nach −x, die Kette steht bei +x, wo
+        // die Wand anschließt
+        let bei = |t: &mut Innentuer, x: f64, y: f64| {
+            t.suchen(&m, &k, st, vec3(x, y, 0.0), 30.0, 1500.0);
+            t.hover.clone().unwrap()
+        };
+        let v = bei(&mut t, 4980.0, 2000.0);
+        assert_eq!(v.stoesse.len(), 1);
+        let (ya, yb) = spanne_y(&v);
+        assert!(
+            (ya - 315.0).abs() < 1e-6 && (yb - (4000.0 - d)).abs() < 1e-6,
+            "{ya} {yb}"
+        );
+        let v = bei(&mut t, 4980.0, 6000.0);
+        let (ya, yb) = spanne_y(&v);
+        assert!(
+            (ya - (4000.0 + d)).abs() < 1e-6 && (yb - 7685.0).abs() < 1e-6,
+            "{ya} {yb}"
+        );
+        // Cursor bei x > 5 m: die Kette steht bei −x, dort schließt nichts an
+        let v = bei(&mut t, 5020.0, 2000.0);
+        assert!(v.stoesse.is_empty());
+        assert_eq!(spanne_y(&v), (315.0, 7685.0));
+        // Nahe der Wand im T-Stoß: 0,3 m von ihrer Fläche
+        let v = bei(&mut t, 4980.0, 3000.0);
+        let y = |u: f64| v.face.at(u, 0.0).y;
+        for ch in "0,3".chars() {
+            t.taste(Key::Char(ch), mods);
+        }
+        assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
+        let w = t.hover.clone().unwrap();
+        let oben = y(w.u.0).max(y(w.u.1));
+        assert!((oben - (4000.0 - d - 300.0)).abs() < 1e-6, "{oben}");
+        assert!(t.pruefen(&m).unwrap().is_ok());
+        // 3 m von der Fläche liefe die Tür über den Stoß hinweg
+        bei(&mut t, 4980.0, 3000.0);
+        t.taste(Key::Char('3'), mods);
+        assert_eq!(t.taste(Key::Enter, mods), Taste::PasstNicht);
+    }
+
+    /// Review W49 H2: Am Knick eines Innenwandzugs reicht die Kette außen
+    /// bis zur Außenecke, innen bis zur Innenecke.
+    #[test]
+    fn kette_am_knick() {
+        let (mut m, iw, st) = haus();
+        // Statt der geraden Innenwand ein L: hoch bis 5 m, dann nach +x
+        assert!(m.remove_run(iw));
+        let set = m.defaults().interior_wall;
+        let l = m
+            .add_wall_run(
+                &[
+                    vec3(5000.0, 0.0, 0.0),
+                    vec3(5000.0, 5000.0, 0.0),
+                    vec3(10000.0, 5000.0, 0.0),
+                ],
+                false,
+                RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let d = m.chain(l).unwrap().thickness() / 2.0;
+        let k = |r| m.chain(r);
+        let mut t = Innentuer::default();
+        // Cursor bei x > 5 m (im Winkel des L): Kette bei −x, außen am Knick
+        t.suchen(&m, &k, st, vec3(5020.0, 2000.0, 0.0), 30.0, 1500.0);
+        let v = t.hover.clone().unwrap();
+        assert_eq!(v.face.run, l);
+        let (ya, yb) = spanne_y(&v);
+        assert!(
+            (ya - 315.0).abs() < 1e-6 && (yb - (5000.0 + d)).abs() < 1e-6,
+            "{ya} {yb}"
+        );
+        // Cursor bei x < 5 m: Kette bei +x, innen am Knick
+        t.suchen(&m, &k, st, vec3(4980.0, 2000.0, 0.0), 30.0, 1500.0);
+        let (ya, yb) = spanne_y(&t.hover.clone().unwrap());
+        assert!(
+            (ya - 315.0).abs() < 1e-6 && (yb - (5000.0 - d)).abs() < 1e-6,
+            "{ya} {yb}"
+        );
     }
 }
