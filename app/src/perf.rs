@@ -1916,6 +1916,67 @@ fn perf_stempel_tueren() {
     println!("einmal je Modellstand, wenn der Stempel an der Mitte einen Bogen trifft.");
 }
 
+/// Wählen einer Öffnung im Grundriss (Grundriss G7): Treffer bei jeder
+/// Mausbewegung (im Loch einer Tür und daneben im Raum), Umriss der Auswahl
+/// je Bild und Paneel bei der Wahl, in der Stadt mit zwei Innentüren je
+/// Haus.
+#[test]
+#[ignore]
+fn perf_tuer_waehlen() {
+    use crate::wall_edit::tuer_edit::oeffnung_bei;
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
+    use sk_ui::theme::Theme;
+    println!();
+    println!(
+        "{:>6} {:>6} {:>10} {:>10} {:>10} {:>10}",
+        "Häuser", "Türen", "im Loch", "daneben", "Umriss", "Paneel"
+    );
+    let t = Theme::dark();
+    for n in [1, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let rechts = Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        };
+        innentueren(&mut s, rechts);
+        let (id, mitte) = s
+            .model()
+            .elements()
+            .iter()
+            .find_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, (o.path[0] + o.path[1]) * 0.5)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(oeffnung_bei(&s, mitte), Some(id));
+        let neben = vec3(mitte.x + 1500.0, mitte.y + 1500.0, 0.0);
+        let im_loch = time(50, || {
+            std::hint::black_box(oeffnung_bei(&s, mitte));
+        });
+        let daneben = time(50, || {
+            std::hint::black_box(oeffnung_bei(&s, neben));
+        });
+        let umriss = time(50, || {
+            std::hint::black_box(crate::selection::helpers(
+                &s,
+                id,
+                ViewKind::Plan,
+                None,
+                1.0,
+                &t,
+            ));
+        });
+        let paneel = time(20, || {
+            std::hint::black_box(crate::selection::props(&s, id));
+        });
+        println!(
+            "{n:>6} {:>6} {im_loch:>10.3} {daneben:>10.3} {umriss:>10.3} {paneel:>10.3}",
+            2 * n
+        );
+    }
+    println!("Zeiten in ms.");
+}
+
 /// Eine Tür 88,5 cm mit Aufschlag `swing` mitten in jeder Innenwand.
 fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
     use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
