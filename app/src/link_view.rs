@@ -9,7 +9,9 @@
 //! Im Grundriss dazu am Ende einer Öffnung bei der Maus, das über einer
 //! Öffnung im Nachbargeschoss in derselben Flucht liegt, die Kette des
 //! Breitenschlosses (Jörn 12.10. 05:38): gekoppelt gehen die Enden beim
-//! Ziehen der Breite mit.
+//! Ziehen der Breite mit. In 3D und den Ansichten steht es an der Öffnung
+//! unter der Maus, dazu an Ober- und Unterkante das Schloss der
+//! Höhenbindung (Paket O7): gebunden wandert die Kante mit der Höhenlinie.
 //!
 //! Die Plättchen sind Oberflächenbilder auf eigenen Plätzen; je Bild ändern
 //! sich nur ihre Lagen, gezeichnet wird ein Plättchen nur, wenn sich sein
@@ -32,8 +34,17 @@ const RADIUS: f32 = 5.0;
 const SMALL: f64 = 0.85;
 
 /// Welches Plättchen: die gestapelte Wand bzw. an einer Fuge die Wand
-/// danach und (zweites Feld) die Wand davor.
-pub type Glied = (ElementId, Option<ElementId>);
+/// danach und (zweites Feld) die Wand davor; an einer Öffnung ihr Schloss
+/// (drittes Feld).
+pub type Glied = (ElementId, Option<ElementId>, Option<Schlossart>);
+
+/// Schloss an einer Öffnung: Breitenschloss am Pfadende `k` oder Bindung
+/// der Ober- (`true`) bzw. Unterkante an eine Höhenlinie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Schlossart {
+    Ende(usize),
+    Hoehe(bool),
+}
 
 /// Ein Plättchen im Fenster.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,8 +58,8 @@ pub struct Chip {
     pub hover: bool,
     /// Mitte (Fenster-Pixel).
     pub at: (f64, f64),
-    /// Breitenschloss: Öffnung (`wall`) und ihr Pfadende.
-    pub schloss: Option<usize>,
+    /// Schloss an der Öffnung `wall`.
+    pub schloss: Option<Schlossart>,
 }
 
 impl Chip {
@@ -58,14 +69,12 @@ impl Chip {
     }
 
     pub fn glied(&self) -> Glied {
-        (self.wall, self.fuge)
+        (self.wall, self.fuge, self.schloss)
     }
 
-    /// Glied am Breitenschloss des Pfadendes `k` der Öffnung `id`: am
-    /// ersten Ende die Öffnung selbst als zweites Feld, am letzten keines
-    /// (eine Öffnung ist nie eine gestapelte Wand oder Fuge).
-    pub fn schloss_glied(id: ElementId, k: usize) -> Glied {
-        (id, (k == 0).then_some(id))
+    /// Glied am Schloss `art` der Öffnung `id`.
+    pub fn schloss_glied(id: ElementId, art: Schlossart) -> Glied {
+        (id, None, Some(art))
     }
 
     pub fn contains(&self, x: f64, y: f64, scale: f64) -> bool {
@@ -93,19 +102,22 @@ pub struct Want<'a> {
     /// Gilt als gekoppelt, obwohl gerade gelöst: die OG-Wand, an die beim
     /// „Bündig setzen“ die EG-Wand gleitet (Zustand vor dem Gleiten).
     pub keep_linked: Option<ElementId>,
-    /// Breitenschlösser an Öffnungsenden bei der Maus (Grundriss).
+    /// Schlösser an der Öffnung bei der Maus: Breite im Grundriss, in 3D
+    /// und den Ansichten auch die Höhenbindung.
     pub schloesser: Vec<Schloss>,
 }
 
-/// Ein Öffnungsende mit Partner in derselben Flucht darüber oder darunter.
+/// Ein Schloss an einer Öffnung: ein Ende mit Partner in derselben Flucht
+/// darüber oder darunter, oder eine Kante auf einer Höhenlinie.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Schloss {
     pub id: ElementId,
-    pub k: usize,
-    /// Ende (Zeichenhöhe) und Richtung, in der das Plättchen daneben steht.
+    pub art: Schlossart,
+    /// Ende bzw. Kante (Zeichenhöhe) und Richtung, in der das Plättchen
+    /// daneben steht.
     pub p: Vec3,
     pub out: Vec3,
-    /// Mit allen Partnern gekoppelt.
+    /// Mit allen Partnern gekoppelt bzw. an die Linie gebunden.
     pub linked: bool,
 }
 
@@ -140,7 +152,7 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
                 continue;
             };
             let linked = linked || wnt.keep_linked == Some(wall);
-            let near = wnt.band == Some(wall) || wnt.hover == Some((wall, None));
+            let near = wnt.band == Some(wall) || wnt.hover == Some((wall, None, None));
             if linked && !near {
                 continue;
             }
@@ -160,7 +172,7 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
                 fuge: None,
                 linked,
                 small: !near,
-                hover: wnt.hover == Some((wall, None)),
+                hover: wnt.hover == Some((wall, None, None)),
                 at,
                 schloss: None,
             });
@@ -174,15 +186,15 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
         let Some(at) = place(wnt, s.p, s.out) else {
             continue;
         };
-        let hover = wnt.hover == Some(Chip::schloss_glied(s.id, s.k));
+        let hover = wnt.hover == Some(Chip::schloss_glied(s.id, s.art));
         out.push(Chip {
             wall: s.id,
-            fuge: (s.k == 0).then_some(s.id),
+            fuge: None,
             linked: s.linked,
             small: false,
             hover,
             at,
-            schloss: Some(s.k),
+            schloss: Some(s.art),
         });
     }
     out
@@ -228,7 +240,7 @@ fn fugen(wnt: &Want, out: &mut Vec<Chip>) {
             let Some(at) = place(wnt, p, out_n) else {
                 continue;
             };
-            let hover = wnt.hover == Some((b, Some(a)));
+            let hover = wnt.hover == Some((b, Some(a), None));
             out.push(Chip {
                 wall: b,
                 fuge: Some(a),
@@ -284,8 +296,15 @@ pub fn chip_at(chips: &[Chip], x: f64, y: f64, scale: f64) -> Option<&Chip> {
     chips.iter().rev().find(|c| c.contains(x, y, scale))
 }
 
-/// Hinweis am Breitenschloss.
-pub fn schloss_tip(linked: bool) -> &'static str {
+/// Hinweis am Schloss einer Öffnung.
+pub fn schloss_tip(art: Schlossart, linked: bool) -> &'static str {
+    if let Schlossart::Hoehe(_) = art {
+        return if linked {
+            "Gebunden: die Kante wandert mit der Höhenlinie.\nKlick löst sie, die Höhe bleibt."
+        } else {
+            "Frei, auf Höhe einer Höhenlinie.\nKlick bindet die Kante an sie."
+        };
+    }
     if linked {
         "Gekoppelt: die Breite geht im Geschoss darüber und darunter mit.\nKlick löst."
     } else {
