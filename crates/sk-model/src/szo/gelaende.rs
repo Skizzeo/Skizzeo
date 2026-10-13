@@ -100,6 +100,12 @@ pub(super) fn read(
                 let raw = lines.get(r.line - 1).map(|l| l.to_string());
                 return Ok((PlateSettings::default(), raw));
             }
+            // Vorgaben mit unbekannten Angaben: Ohne abweichende Werte
+            // schreibt Skizzeo keine Zeile, die Angaben hätten keinen Platz;
+            // die Zeile bleibt roh, bis neue Werte sie ersetzen (Review N1)
+            if r.unknown() > 0 && s == PlateSettings::default() {
+                return Ok((s, lines.get(r.line - 1).map(|l| l.to_string())));
+            }
         }
         [_, r, ..] => return Err(err(r.line, "[terrainplate] doppelt")),
     }
@@ -183,6 +189,27 @@ mod tests {
             "[terrainplate] key=project thick=800\n[terrainplate] key=project thick=900",
         );
         assert!(read(&doppelt, GuidGen::with_seed(99)).is_err());
+        // eine unbekannte Angabe bleibt, auch ohne abweichende Werte
+        // (Review N1, Regel 72), bis neue Werte die Zeile ersetzen
+        for zeile in [
+            "[terrainplate] key=project neu=1",
+            "[terrainplate] key=project thick=800 neu=1",
+        ] {
+            let t = neu.replace("[terrainplate] key=project thick=800", zeile);
+            let mut l = load(&t);
+            assert_eq!(write(&l.model), t, "{zeile}");
+            l.model.begin("Platte");
+            assert!(l.model.set_plate_settings(PlateSettings {
+                thick: 900.0,
+                margin: 3000.0
+            }));
+            l.model.commit();
+            let w = write(&l.model);
+            assert!(
+                w.contains("[terrainplate] key=project thick=900\n"),
+                "{zeile}"
+            );
+        }
     }
 
     /// Bodenkennwerte (Regel 113, 114): eine unlesbare Zahl an `[soil]` oder

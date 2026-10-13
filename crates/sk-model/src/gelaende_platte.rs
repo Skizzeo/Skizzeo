@@ -16,6 +16,7 @@
 
 use super::*;
 use sk_math::{vec3, Vec3};
+use std::collections::HashMap;
 
 /// Dicke und Abstand der Geländeplatte, für alle Gebäude des Projekts (mm).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -98,23 +99,30 @@ impl Model {
     }
 
     /// Die Geländeplatten des Projekts, nach dem ersten Gebäude geordnet;
-    /// leer ohne Wandzüge.
+    /// leer ohne Wandzüge. Gründungen über das Verzeichnis ([`Model::lesend`]),
+    /// nicht je Zug über alle Bauteile (Review W34 B2).
     pub fn terrain_plates(&self) -> Vec<TerrainPlate> {
+        self.lesend(|| self.platten_bauen())
+    }
+
+    fn platten_bauen(&self) -> Vec<TerrainPlate> {
         let s = self.plate_settings();
         // Rechtecke je Gebäude, nach Guid
         let mut boxes: Vec<(Guid, BuildingId, [f64; 4])> = Vec::new();
+        let mut stelle: HashMap<BuildingId, usize> = HashMap::new();
         for (_, r) in self.runs.iter() {
             let Some(b) = self.building_of(r.storey) else {
                 continue;
             };
-            let Some(guid) = self.building(b).map(|x| x.guid) else {
-                continue;
-            };
-            let i = match boxes.iter().position(|x| x.1 == b) {
-                Some(i) => i,
+            let i = match stelle.get(&b) {
+                Some(&i) => i,
                 None => {
+                    let Some(guid) = self.building(b).map(|x| x.guid) else {
+                        continue;
+                    };
                     let e = f64::INFINITY;
                     boxes.push((guid, b, [e, e, -e, -e]));
+                    stelle.insert(b, boxes.len() - 1);
                     boxes.len() - 1
                 }
             };
@@ -128,21 +136,22 @@ impl Model {
         }
         boxes.retain(|x| x.2[0] <= x.2[2] && x.2[1] <= x.2[3]);
         boxes.sort_by_key(|x| x.0);
-        // Gruppen gleicher Geländehöhe in der Reihenfolge ihres ersten Gebäudes
+        // Gruppen gleicher Geländehöhe (auf 1 nm) in der Reihenfolge ihres
+        // ersten Gebäudes
         let mut groups: Vec<(f64, Vec<BuildingId>, Vec<[f64; 4]>)> = Vec::new();
+        let mut gruppe: HashMap<i64, usize> = HashMap::new();
         for (_, b, x) in &boxes {
             // Höhenkette: Höhe über den Ort abfragen (Rechteckmitte), damit
             // ein Geländemodell die Platte mitnimmt
             let z = self.terrain_z_at(Some(*b), (x[0] + x[2]) / 2.0, (x[1] + x[3]) / 2.0);
             let m = s.margin;
             let r = [x[0] - m, x[1] - m, x[2] + m, x[3] + m];
-            match groups.iter_mut().find(|g| (g.0 - z).abs() < 1e-6) {
-                Some(g) => {
-                    g.1.push(*b);
-                    g.2.push(r);
-                }
-                None => groups.push((z, vec![*b], vec![r])),
-            }
+            let g = *gruppe.entry((z * 1e6).round() as i64).or_insert_with(|| {
+                groups.push((z, Vec::new(), Vec::new()));
+                groups.len() - 1
+            });
+            groups[g].1.push(*b);
+            groups[g].2.push(r);
         }
         // Löcher: Außenfläche der Wände über jeder Gründung (mit allen
         // Schichten, auch bei Sockelrücksprung), sonst der Plattenumriss
@@ -183,6 +192,17 @@ impl Model {
 /// Abstand, unter dem zwei Werte als gleich gelten (mm).
 const EPS: f64 = 1e-6;
 
+/// Ab so vielen Kanten je Haufen wird in senkrechte Scheiben geteilt, je
+/// Scheibe etwa so viele.
+const SCHEIBE: usize = 64;
+
+/// Höchstens so viele Scheiben je Haufen.
+const MAX_SCHEIBEN: usize = 4096;
+
+/// Ein Rechteck über mehr Rasterfelder steht in keinem Feld, sondern wird
+/// mit jedem verglichen (wenige, sehr große Gebäude).
+const MAX_FELDER: i64 = 64;
+
 /// Gerade einer Intervallgrenze: die Kante, die sie bildet.
 #[derive(Clone, Copy, Debug)]
 struct Grenze {
@@ -211,69 +231,366 @@ enum Art {
     Loch(i32),
 }
 
+/// Kante der Zerlegung; `schnitt`: nur der Schnitt an einer Scheibengrenze,
+/// keine Randkante der Platte.
+#[derive(Clone, Copy, Debug)]
+struct Kante {
+    g: Grenze,
+    art: Art,
+    schnitt: bool,
+}
+
+/// Ein Intervall eines Streifens: Gruppe, linke und rechte Grenze, je mit
+/// `schnitt` wie an [`Kante`].
+#[derive(Clone, Copy, Debug)]
+struct Stueck {
+    g: usize,
+    l: Grenze,
+    ls: bool,
+    r: Grenze,
+    rs: bool,
+}
+
+/// Trapeze und Randkanten je Gruppe.
+type Zerlegt = (Vec<Vec<[Vec3; 4]>>, Vec<Vec<(Vec3, Vec3)>>);
+
 /// Zerlegt die Gruppen (je eine Liste von Rechtecken) abzüglich der Löcher in
 /// Trapeze und Randkanten; eine frühere Gruppe hat Vorrang vor einer späteren.
-#[allow(clippy::type_complexity)]
-fn streifen(
-    rects: &[Vec<[f64; 4]>],
-    holes: &[Vec<Vec3>],
-) -> (Vec<Vec<[Vec3; 4]>>, Vec<Vec<(Vec3, Vec3)>>) {
+///
+/// Damit die Arbeit mit der Zahl der Häuser wächst und nicht mit ihrem
+/// Quadrat (Review W34 B2): Rechtecke, die sich berühren, bilden einen
+/// Haufen, jeder Haufen rechnet für sich. Ein Haufen mit vielen Kanten wird
+/// in senkrechte Scheiben geteilt (Grenzen zwischen den Ecken, je Scheibe
+/// gleich viele), so läuft kein Streifen über eine ganze Reihe Häuser.
+/// Scheibengrenzen sind keine Randkanten.
+fn streifen(rects: &[Vec<[f64; 4]>], holes: &[Vec<Vec3>]) -> Zerlegt {
     let n = rects.len();
     let mut pieces = vec![Vec::new(); n];
     let mut edges = vec![Vec::new(); n];
-    // alle Kanten mit ihrer Art
-    let mut kanten: Vec<(Grenze, Art)> = Vec::new();
-    for (g, rs) in rects.iter().enumerate() {
-        for r in rs {
-            let (a, b) = (vec3(r[0], r[1], 0.0), vec3(r[0], r[3], 0.0));
-            kanten.push((Grenze { a, b }, Art::Rechteck(g, true)));
-            let (a, b) = (vec3(r[2], r[1], 0.0), vec3(r[2], r[3], 0.0));
-            kanten.push((Grenze { a, b }, Art::Rechteck(g, false)));
+    let alle: Vec<(usize, [f64; 4])> = rects
+        .iter()
+        .enumerate()
+        .flat_map(|(g, rs)| rs.iter().map(move |r| (g, *r)))
+        .filter(|(_, r)| r[2] - r[0] > EPS && r[3] - r[1] > EPS)
+        .collect();
+    for (ri, hi) in haufen(&alle, holes) {
+        // Gruppen des Haufens in ihrer Reihenfolge (Vorrang)
+        let mut gs: Vec<usize> = ri.iter().map(|&i| alle[i].0).collect();
+        gs.sort_unstable();
+        gs.dedup();
+        let lokal: HashMap<usize, usize> = gs.iter().enumerate().map(|(l, &g)| (g, l)).collect();
+        let rs: Vec<(usize, [f64; 4])> =
+            ri.iter().map(|&i| (lokal[&alle[i].0], alle[i].1)).collect();
+        let hs: Vec<&[Vec3]> = hi.iter().map(|&i| holes[i].as_slice()).collect();
+        let (p, e) = zerlegen(&rs, &hs, gs.len());
+        for (l, (p, e)) in p.into_iter().zip(e).enumerate() {
+            pieces[gs[l]].extend(p);
+            edges[gs[l]].extend(e);
         }
     }
-    for h in holes {
-        for i in 0..h.len() {
-            let (a, b) = (h[i], h[(i + 1) % h.len()]);
-            if (a.y - b.y).abs() > EPS {
-                let w = if b.y < a.y { 1 } else { -1 };
-                kanten.push((Grenze { a, b }, Art::Loch(w)));
+    (pieces, edges)
+}
+
+/// Rahmen `[x0, y0, x1, y1]` zweier Rechtecke berühren oder überdecken sich.
+fn beruehren(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    a[0] <= b[2] + EPS && b[0] <= a[2] + EPS && a[1] <= b[3] + EPS && b[1] <= a[3] + EPS
+}
+
+/// Rahmen eines Lochs.
+fn rahmen_von(h: &[Vec3]) -> [f64; 4] {
+    h.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |r, p| [r[0].min(p.x), r[1].min(p.y), r[2].max(p.x), r[3].max(p.y)],
+    )
+}
+
+/// Haufen: Rechtecke (Stellen in `alle`), die sich über Berührung verbinden,
+/// und die Löcher, die eines davon berühren. Gesucht über ein Raster in der
+/// mittleren Rechteckgröße, nicht über alle Paare.
+fn haufen(alle: &[(usize, [f64; 4])], holes: &[Vec<Vec3>]) -> Vec<(Vec<usize>, Vec<usize>)> {
+    let n = alle.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut seiten: Vec<f64> = alle
+        .iter()
+        .map(|(_, r)| (r[2] - r[0]).max(r[3] - r[1]))
+        .collect();
+    seiten.sort_by(f64::total_cmp);
+    let feld = seiten[n / 2].max(1.0);
+    let zellen = |r: &[f64; 4]| -> Option<(i64, i64, i64, i64)> {
+        let z = |v: f64| (v / feld).floor() as i64;
+        let c = (z(r[0]), z(r[1]), z(r[2]), z(r[3]));
+        ((c.2 - c.0 + 1) * (c.3 - c.1 + 1) <= MAX_FELDER).then_some(c)
+    };
+    let mut raster: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let mut gross: Vec<usize> = Vec::new();
+    for (i, (_, r)) in alle.iter().enumerate() {
+        match zellen(r) {
+            Some((x0, y0, x1, y1)) => {
+                for cx in x0..=x1 {
+                    for cy in y0..=y1 {
+                        raster.entry((cx, cy)).or_default().push(i);
+                    }
+                }
+            }
+            None => gross.push(i),
+        }
+    }
+    let mut eltern: Vec<usize> = (0..n).collect();
+    fn wurzel(e: &mut [usize], mut i: usize) -> usize {
+        while e[i] != i {
+            e[i] = e[e[i]];
+            i = e[i];
+        }
+        i
+    }
+    let verbinde = |e: &mut Vec<usize>, i: usize, j: usize| {
+        let (a, b) = (wurzel(e, i), wurzel(e, j));
+        if a != b && beruehren(&alle[i].1, &alle[j].1) {
+            e[a.max(b)] = a.min(b);
+        }
+    };
+    let mut felder: Vec<&Vec<usize>> = raster.values().collect();
+    felder.sort_by_key(|v| v[0]);
+    for v in felder {
+        for (k, &i) in v.iter().enumerate() {
+            for &j in &v[k + 1..] {
+                verbinde(&mut eltern, i, j);
             }
         }
     }
-    // Streifengrenzen: Ecken und Schnittpunkte der Kanten
-    let mut ys: Vec<f64> = Vec::new();
-    for rs in rects {
-        for r in rs {
-            ys.extend([r[1], r[3]]);
+    for &i in &gross {
+        for j in 0..n {
+            verbinde(&mut eltern, i, j);
         }
     }
-    for h in holes {
-        ys.extend(h.iter().map(|p| p.y));
-    }
-    // Schnitte nur zwischen Kanten, deren Rahmen sich überdecken: nach
-    // linkem Rand sortiert, je Kante die folgenden bis zu ihrem rechten Rand
-    let rahmen: Vec<[f64; 4]> = kanten
-        .iter()
-        .map(|(k, _)| {
-            [
-                k.a.x.min(k.b.x),
-                k.a.x.max(k.b.x),
-                k.a.y.min(k.b.y),
-                k.a.y.max(k.b.y),
-            ]
+    // Haufen in der Reihenfolge ihres ersten Rechtecks
+    let mut nummer: HashMap<usize, usize> = HashMap::new();
+    let mut out: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
+    let haufen_von: Vec<usize> = (0..n)
+        .map(|i| {
+            let w = wurzel(&mut eltern, i);
+            let h = *nummer.entry(w).or_insert_with(|| {
+                out.push((Vec::new(), Vec::new()));
+                out.len() - 1
+            });
+            out[h].0.push(i);
+            h
         })
         .collect();
-    let mut nach_x: Vec<usize> = (0..kanten.len()).collect();
-    nach_x.sort_by(|&i, &j| rahmen[i][0].total_cmp(&rahmen[j][0]));
-    for (o, &i) in nach_x.iter().enumerate() {
-        for &j in &nach_x[o + 1..] {
-            if rahmen[j][0] > rahmen[i][1] + EPS {
-                break;
+    // Löcher zu jedem Haufen, dessen Rechteck sie berühren
+    for (k, h) in holes.iter().enumerate() {
+        let r = rahmen_von(h);
+        let mut treffer: Vec<usize> = match zellen(&r) {
+            Some((x0, y0, x1, y1)) => {
+                let mut t: Vec<usize> = (x0..=x1)
+                    .flat_map(|cx| (y0..=y1).map(move |cy| (cx, cy)))
+                    .filter_map(|c| raster.get(&c))
+                    .flatten()
+                    .copied()
+                    .chain(gross.iter().copied())
+                    .collect();
+                t.sort_unstable();
+                t.dedup();
+                t
             }
-            if rahmen[j][2] > rahmen[i][3] + EPS || rahmen[i][2] > rahmen[j][3] + EPS {
+            None => (0..n).collect(),
+        };
+        treffer.retain(|&i| beruehren(&alle[i].1, &r));
+        let mut hs: Vec<usize> = treffer.into_iter().map(|i| haufen_von[i]).collect();
+        hs.sort_unstable();
+        hs.dedup();
+        for h in hs {
+            out[h].1.push(k);
+        }
+    }
+    out
+}
+
+/// Ein Haufen: Rechtecke mit Gruppe (lokal, `n` Gruppen) und Löcher; bei
+/// vielen Kanten in senkrechten Scheiben. Je Scheibe kommen nur die Kanten,
+/// die sie berühren, auf die Scheibe beschnitten; was links der Scheibe
+/// liegt, ersetzt an ihrer linken Grenze je eine Kante mit dem Umlauf der
+/// Löcher dort (Schnitt, keine Randkante).
+fn zerlegen(rs: &[(usize, [f64; 4])], hs: &[&[Vec3]], n: usize) -> Zerlegt {
+    let mut pieces = vec![Vec::new(); n];
+    let mut edges = vec![Vec::new(); n];
+    // Lochkanten mit ihrem Umlauf (waagerechte zählen nur beim Kreuzen
+    // einer Scheibengrenze)
+    let mut loecher: Vec<(Vec3, Vec3, i32)> = Vec::new();
+    for h in hs {
+        for i in 0..h.len() {
+            let (a, b) = (h[i], h[(i + 1) % h.len()]);
+            loecher.push((a, b, if b.y < a.y { 1 } else { -1 }));
+        }
+    }
+    let zahl = 2 * rs.len() + loecher.len();
+    let mut xs: Vec<f64> = rs
+        .iter()
+        .flat_map(|(_, r)| [r[0], r[2]])
+        .chain(hs.iter().flat_map(|h| h.iter().map(|p| p.x)))
+        .collect();
+    xs.sort_by(f64::total_cmp);
+    xs.dedup_by(|a, b| *a - *b < 1e-3);
+    // Scheibengrenzen mitten zwischen zwei Ecken (nie auf einer), je
+    // Scheibe gleich viele Ecken
+    let scheiben = (zahl / SCHEIBE).clamp(1, MAX_SCHEIBEN).min(xs.len().max(1));
+    let mut grenzen = vec![f64::NEG_INFINITY];
+    for k in 1..scheiben {
+        let i = k * (xs.len() - 1) / scheiben;
+        let g = 0.5 * (xs[i] + xs[i + 1]);
+        if g > grenzen[grenzen.len() - 1] {
+            grenzen.push(g);
+        }
+    }
+    grenzen.push(f64::INFINITY);
+    // von links nach rechts: aufnehmen, sobald der linke Rand in die
+    // Scheibe reicht, entlassen, wenn der rechte links von ihr liegt
+    let mut r_neu: Vec<usize> = (0..rs.len()).collect();
+    r_neu.sort_by(|&i, &j| rs[i].1[0].total_cmp(&rs[j].1[0]));
+    let links = |k: usize| loecher[k].0.x.min(loecher[k].1.x);
+    let rechts = |k: usize| loecher[k].0.x.max(loecher[k].1.x);
+    let mut l_neu: Vec<usize> = (0..loecher.len()).collect();
+    l_neu.sort_by(|&i, &j| links(i).total_cmp(&links(j)));
+    let (mut r_neu, mut l_neu) = (r_neu.into_iter().peekable(), l_neu.into_iter().peekable());
+    let (mut r_aktiv, mut l_aktiv): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+    let mut kanten: Vec<Kante> = Vec::new();
+    let mut kreuz: Vec<(f64, i32)> = Vec::new();
+    for w in grenzen.windows(2) {
+        let (xa, xb) = (w[0], w[1]);
+        while let Some(k) = r_neu.next_if(|&k| rs[k].1[0] < xb) {
+            r_aktiv.push(k);
+        }
+        r_aktiv.retain(|&k| rs[k].1[2] > xa);
+        r_aktiv.sort_unstable();
+        while let Some(k) = l_neu.next_if(|&k| links(k) < xb) {
+            l_aktiv.push(k);
+        }
+        l_aktiv.retain(|&k| rechts(k) > xa);
+        l_aktiv.sort_unstable();
+        kanten.clear();
+        for &k in &r_aktiv {
+            let (g, r) = rs[k];
+            let (x0, x1) = (r[0].max(xa), r[2].min(xb));
+            if x1 - x0 <= EPS {
                 continue;
             }
-            if let Some(y) = schnitt_y(&kanten[i].0, &kanten[j].0) {
+            let senk = |x: f64| Grenze {
+                a: vec3(x, r[1], 0.0),
+                b: vec3(x, r[3], 0.0),
+            };
+            kanten.push(Kante {
+                g: senk(x0),
+                art: Art::Rechteck(g, true),
+                schnitt: r[0] < xa,
+            });
+            kanten.push(Kante {
+                g: senk(x1),
+                art: Art::Rechteck(g, false),
+                schnitt: r[2] > xb,
+            });
+        }
+        kreuz.clear();
+        for &k in &l_aktiv {
+            let (a, b, w) = loecher[k];
+            let bei = |x: f64| {
+                let t = (x - a.x) / (b.x - a.x);
+                vec3(x, a.y + t * (b.y - a.y), 0.0)
+            };
+            // über die linke Grenze: der Umlauf rechts von ihr springt
+            if links(k) < xa && xa < rechts(k) {
+                kreuz.push((bei(xa).y, if a.x < b.x { 1 } else { -1 }));
+            }
+            let auf = |p: Vec3| {
+                if p.x < xa {
+                    bei(xa)
+                } else if p.x > xb {
+                    bei(xb)
+                } else {
+                    p
+                }
+            };
+            let (p, q) = (auf(a), auf(b));
+            if (p.y - q.y).abs() > EPS {
+                kanten.push(Kante {
+                    g: Grenze { a: p, b: q },
+                    art: Art::Loch(w),
+                    schnitt: false,
+                });
+            }
+        }
+        // Umlauf der Löcher an der linken Grenze, von unten nach oben
+        kreuz.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut umlauf = 0;
+        for k in kreuz.windows(2) {
+            umlauf += k[0].1;
+            if umlauf != 0 && k[1].0 - k[0].0 > EPS {
+                kanten.push(Kante {
+                    g: Grenze {
+                        a: vec3(xa, k[0].0, 0.0),
+                        b: vec3(xa, k[1].0, 0.0),
+                    },
+                    art: Art::Loch(umlauf),
+                    schnitt: true,
+                });
+            }
+        }
+        let (p, e) = scheibe(&kanten, n);
+        for (g, (p, e)) in p.into_iter().zip(e).enumerate() {
+            pieces[g].extend(p);
+            edges[g].extend(e);
+        }
+    }
+    (pieces, edges)
+}
+
+/// Eine Scheibe: waagerechte Streifen (an jeder Ecke und jedem
+/// Kantenschnitt eine Grenze); in jedem Streifen sind Rechtecke, Löcher und
+/// Vorrang einfache Intervalle.
+fn scheibe(kanten: &[Kante], n: usize) -> Zerlegt {
+    let mut pieces = vec![Vec::new(); n];
+    let mut edges = vec![Vec::new(); n];
+    let rahmen: Vec<[f64; 4]> = kanten
+        .iter()
+        .map(|k| {
+            let (a, b) = (k.g.a, k.g.b);
+            [a.x.min(b.x), a.x.max(b.x), a.y.min(b.y), a.y.max(b.y)]
+        })
+        .collect();
+    // Streifengrenzen: Ecken und Schnittpunkte der Kanten
+    let mut ys: Vec<f64> = kanten.iter().flat_map(|k| [k.g.a.y, k.g.b.y]).collect();
+    // Schnitte: gleiche Kanten nur einmal, nach unterem Rand sortiert, je
+    // Kante die folgenden bis zu ihrem oberen Rand (Paare nur bei sich
+    // überdeckenden Rahmen)
+    let mut einmal: HashMap<[u64; 4], usize> = HashMap::new();
+    for (i, k) in kanten.iter().enumerate() {
+        let (a, b) = (k.g.a, k.g.b);
+        let (p, q) = if (a.x, a.y) <= (b.x, b.y) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        einmal
+            .entry([p.x, p.y, q.x, q.y].map(f64::to_bits))
+            .or_insert(i);
+    }
+    let mut nach_y: Vec<usize> = einmal.into_values().collect();
+    nach_y.sort_by(|&i, &j| rahmen[i][2].total_cmp(&rahmen[j][2]).then(i.cmp(&j)));
+    for (o, &i) in nach_y.iter().enumerate() {
+        for &j in &nach_y[o + 1..] {
+            if rahmen[j][2] > rahmen[i][3] + EPS {
+                break;
+            }
+            if rahmen[j][0] > rahmen[i][1] + EPS || rahmen[i][0] > rahmen[j][1] + EPS {
+                continue;
+            }
+            if let Some(y) = schnitt_y(&kanten[i].g, &kanten[j].g) {
                 ys.push(y);
             }
         }
@@ -282,13 +599,16 @@ fn streifen(
     ys.sort_by(f64::total_cmp);
     ys.dedup_by(|a, b| (*a - *b).abs() < EPS);
     // aktive Kanten: von unten nach oben aufgenommen, oben entlassen
-    let mut nach_y: Vec<usize> = (0..kanten.len()).collect();
-    nach_y.sort_by(|&i, &j| rahmen[i][2].total_cmp(&rahmen[j][2]));
-    let mut neu = nach_y.into_iter().peekable();
+    let mut neu: Vec<usize> = (0..kanten.len()).collect();
+    neu.sort_by(|&i, &j| rahmen[i][2].total_cmp(&rahmen[j][2]));
+    let mut neu = neu.into_iter().peekable();
     let mut aktiv: Vec<usize> = Vec::new();
-    // je Streifen die Intervalle jeder Gruppe; `vorher` merkt die Intervalle
-    // des Streifens darunter (für die waagerechten Randkanten)
-    let mut vorher: Vec<Vec<(Grenze, Grenze)>> = vec![Vec::new(); n];
+    let mut zaehler = vec![0i32; n];
+    let mut positiv: Vec<usize> = Vec::new();
+    let mut hits: Vec<(f64, usize)> = Vec::new();
+    // `vorher`: die Intervalle des Streifens darunter (für die waagerechten
+    // Randkanten), an seiner Oberkante festgehalten
+    let mut vorher: Vec<Stueck> = Vec::new();
     for w in ys.windows(2) {
         let (y0, y1) = (w[0], w[1]);
         let ym = 0.5 * (y0 + y1);
@@ -299,35 +619,43 @@ fn streifen(
         aktiv.retain(|&k| rahmen[k][3] > ym);
         // in der ursprünglichen Reihenfolge (gleiche Stellen wie zuvor)
         aktiv.sort_unstable();
-        let jetzt = intervalle(aktiv.iter().map(|&k| &kanten[k]), n, ym);
-        for g in 0..n {
-            waagerecht(&vorher[g], &jetzt[g], y0, &mut edges[g]);
-            for (l, r) in &jetzt[g] {
-                let (l0, l1, r0, r1) = (l.x_bei(y0), l.x_bei(y1), r.x_bei(y0), r.x_bei(y1));
-                pieces[g].push([
-                    vec3(l0, y0, 0.0),
-                    vec3(r0, y0, 0.0),
-                    vec3(r1, y1, 0.0),
-                    vec3(l1, y1, 0.0),
-                ]);
-                edges[g].push((vec3(l1, y1, 0.0), vec3(l0, y0, 0.0)));
-                edges[g].push((vec3(r0, y0, 0.0), vec3(r1, y1, 0.0)));
+        hits.clear();
+        hits.extend(
+            aktiv
+                .iter()
+                .filter(|&&k| rahmen[k][2] < ym && ym < rahmen[k][3])
+                .map(|&k| (kanten[k].g.x_bei(ym), k)),
+        );
+        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let jetzt = intervalle(&hits, kanten, &mut zaehler, &mut positiv, ym);
+        waagerecht(&vorher, &jetzt, y0, &mut edges);
+        for s in &jetzt {
+            let (l0, l1, r0, r1) = (s.l.x_bei(y0), s.l.x_bei(y1), s.r.x_bei(y0), s.r.x_bei(y1));
+            pieces[s.g].push([
+                vec3(l0, y0, 0.0),
+                vec3(r0, y0, 0.0),
+                vec3(r1, y1, 0.0),
+                vec3(l1, y1, 0.0),
+            ]);
+            if !s.ls {
+                edges[s.g].push((vec3(l1, y1, 0.0), vec3(l0, y0, 0.0)));
+            }
+            if !s.rs {
+                edges[s.g].push((vec3(r0, y0, 0.0), vec3(r1, y1, 0.0)));
             }
         }
         // die Oberkante dieses Streifens ist die Unterkante des nächsten
         vorher = jetzt
             .into_iter()
-            .map(|v| {
-                v.into_iter()
-                    .map(|(l, r)| (fest(l, y1), fest(r, y1)))
-                    .collect()
+            .map(|s| Stueck {
+                l: fest(s.l, y1),
+                r: fest(s.r, y1),
+                ..s
             })
             .collect();
     }
     if let Some(&y) = ys.last() {
-        for g in 0..n {
-            waagerecht(&vorher[g], &[], y, &mut edges[g]);
-        }
+        waagerecht(&vorher, &[], y, &mut edges);
     }
     (pieces, edges)
 }
@@ -356,34 +684,29 @@ fn schnitt_y(p: &Grenze, q: &Grenze) -> Option<f64> {
     (ok(t) && ok(u)).then_some(p.a.y + t * d1.y)
 }
 
-/// Intervalle jeder Gruppe auf der Höhe `y` (Mitte eines Streifens): in einem
-/// Rechteck der Gruppe, in keinem Loch, in keinem Rechteck einer früheren
-/// Gruppe. Je Intervall die Grenzen links und rechts.
-fn intervalle<'a>(
-    kanten: impl Iterator<Item = &'a (Grenze, Art)>,
-    n: usize,
+/// Intervalle auf der Höhe `y` (Mitte eines Streifens) aus den Treffern
+/// (`x`, Kante; nach `x` sortiert): in einem Rechteck einer Gruppe, in keinem
+/// Loch; wo Rechtecke mehrerer Gruppen liegen, gilt die erste. `zaehler` und
+/// `positiv` (Gruppen mit offenem Rechteck, sortiert) sind danach wieder
+/// leer.
+fn intervalle(
+    hits: &[(f64, usize)],
+    kanten: &[Kante],
+    zaehler: &mut [i32],
+    positiv: &mut Vec<usize>,
     y: f64,
-) -> Vec<Vec<(Grenze, Grenze)>> {
-    // Treffer: x, Grenze, Art
-    let mut hits: Vec<(f64, Grenze, Art)> = kanten
-        .filter(|(k, _)| {
-            let (lo, hi) = (k.a.y.min(k.b.y), k.a.y.max(k.b.y));
-            lo < y && y < hi
-        })
-        .map(|(k, a)| (k.x_bei(y), *k, *a))
-        .collect();
-    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut zaehler = vec![0i32; n];
+) -> Vec<Stueck> {
+    let mut out = Vec::new();
     let mut loch = 0i32;
-    let mut out: Vec<Vec<(Grenze, Grenze)>> = vec![Vec::new(); n];
-    let mut offen: Vec<Option<Grenze>> = vec![None; n];
+    let mut offen: Option<(usize, Grenze, bool)> = None;
+    let mut beruehrt: Vec<usize> = Vec::new();
     let mut i = 0;
     while i < hits.len() {
         // alle Treffer an derselben Stelle zusammen
         let x = hits[i].0;
         let mut j = i;
         while j < hits.len() && (hits[j].0 - x).abs() < EPS {
-            match hits[j].2 {
+            match kanten[hits[j].1].art {
                 // Rechtecke: linke Kante öffnet, rechte schließt
                 Art::Rechteck(g, links) => zaehler[g] += if links { 1 } else { -1 },
                 // Löcher: Umlaufzahl
@@ -391,55 +714,89 @@ fn intervalle<'a>(
             }
             j += 1;
         }
-        // Zustand nach der Stelle
-        let mut frueher = false;
-        for g in 0..n {
-            let drin = zaehler[g] > 0 && loch <= 0 && !frueher;
-            frueher |= zaehler[g] > 0;
-            match (offen[g], drin) {
-                (None, true) => offen[g] = Some(grenze_an(&hits[i..j], x)),
-                (Some(l), false) => {
-                    let r = grenze_an(&hits[i..j], x);
-                    if r.x_bei(y) - l.x_bei(y) > EPS {
-                        out[g].push((l, r));
+        for &(_, k) in &hits[i..j] {
+            if let Art::Rechteck(g, _) = kanten[k].art {
+                beruehrt.push(g);
+                match (positiv.binary_search(&g), zaehler[g] > 0) {
+                    (Err(p), true) => positiv.insert(p, g),
+                    (Ok(p), false) => {
+                        positiv.remove(p);
                     }
-                    offen[g] = None;
+                    _ => {}
                 }
-                _ => {}
             }
+        }
+        // die Gruppe nach der Stelle: die erste mit offenem Rechteck
+        let jetzt = if loch <= 0 {
+            positiv.first().copied()
+        } else {
+            None
+        };
+        if jetzt != offen.map(|o| o.0) {
+            let (b, bs) = grenze_an(&hits[i..j], kanten, x);
+            if let Some((g, l, ls)) = offen {
+                if b.x_bei(y) - l.x_bei(y) > EPS {
+                    out.push(Stueck {
+                        g,
+                        l,
+                        ls,
+                        r: b,
+                        rs: bs,
+                    });
+                }
+            }
+            offen = jetzt.map(|g| (g, b, bs));
         }
         i = j;
     }
+    for g in beruehrt {
+        zaehler[g] = 0;
+    }
+    positiv.clear();
     out
 }
 
-/// Die Grenze an einer Stelle: bei mehreren Treffern die erste.
-fn grenze_an(hits: &[(f64, Grenze, Art)], x: f64) -> Grenze {
-    hits.first().map(|h| h.1).unwrap_or(Grenze {
-        a: vec3(x, 0.0, 0.0),
-        b: vec3(x, 1.0, 0.0),
-    })
+/// Die Grenze an einer Stelle: bei mehreren Treffern die erste echte Kante
+/// (vor einem Schnitt an der Scheibengrenze).
+fn grenze_an(hits: &[(f64, usize)], kanten: &[Kante], x: f64) -> (Grenze, bool) {
+    hits.iter()
+        .map(|h| &kanten[h.1])
+        .find(|k| !k.schnitt)
+        .or_else(|| hits.first().map(|h| &kanten[h.1]))
+        .map_or(
+            (
+                Grenze {
+                    a: vec3(x, 0.0, 0.0),
+                    b: vec3(x, 1.0, 0.0),
+                },
+                true,
+            ),
+            |k| (k.g, k.schnitt),
+        )
 }
 
 /// Waagerechte Randkanten auf Höhe `y` zwischen dem Streifen darunter
-/// (`unten`, Oberkanten) und darüber (`oben`, Unterkanten): wo nur unten
-/// Platte ist, liegt sie links einer Kante nach Westen, wo nur oben, links
-/// einer Kante nach Osten.
-fn waagerecht(
-    unten: &[(Grenze, Grenze)],
-    oben: &[(Grenze, Grenze)],
-    y: f64,
-    edges: &mut Vec<(Vec3, Vec3)>,
-) {
-    let iv = |v: &[(Grenze, Grenze)]| -> Vec<(f64, f64)> {
-        v.iter().map(|(l, r)| (l.x_bei(y), r.x_bei(y))).collect()
-    };
-    let (u, o) = (iv(unten), iv(oben));
-    for (a, b) in differenz(&u, &o) {
-        edges.push((vec3(b, y, 0.0), vec3(a, y, 0.0)));
-    }
-    for (a, b) in differenz(&o, &u) {
-        edges.push((vec3(a, y, 0.0), vec3(b, y, 0.0)));
+/// (`unten`, Oberkanten) und darüber (`oben`, Unterkanten), je Gruppe: wo
+/// nur unten Platte ist, liegt sie links einer Kante nach Westen, wo nur
+/// oben, links einer Kante nach Osten.
+fn waagerecht(unten: &[Stueck], oben: &[Stueck], y: f64, edges: &mut [Vec<(Vec3, Vec3)>]) {
+    let mut gs: Vec<usize> = unten.iter().chain(oben).map(|s| s.g).collect();
+    gs.sort_unstable();
+    gs.dedup();
+    for g in gs {
+        let iv = |v: &[Stueck]| -> Vec<(f64, f64)> {
+            v.iter()
+                .filter(|s| s.g == g)
+                .map(|s| (s.l.x_bei(y), s.r.x_bei(y)))
+                .collect()
+        };
+        let (u, o) = (iv(unten), iv(oben));
+        for (a, b) in differenz(&u, &o) {
+            edges[g].push((vec3(b, y, 0.0), vec3(a, y, 0.0)));
+        }
+        for (a, b) in differenz(&o, &u) {
+            edges[g].push((vec3(a, y, 0.0), vec3(b, y, 0.0)));
+        }
     }
 }
 
@@ -598,55 +955,241 @@ mod tests {
         assert!((a - (13.0 * 11.0 - 80.0) * 1e6).abs() < 1.0, "{a}");
     }
 
-    /// Budget (Review W34 B2): 1000 schräg gestellte Häuser in einem
-    /// Gebäude und je Haus ein Gebäude; die Platten rechnen fast linear
-    /// (Kantenpaare nur bei sich überdeckenden Rahmen, je Streifen nur die
-    /// aktiven Kanten), jedes Haus ist ausgespart.
+    /// Budget im Release (Review W34 B2), im Debug großzügig.
+    fn budget(ms: f64) -> f64 {
+        if cfg!(debug_assertions) {
+            ms * 40.0
+        } else {
+            ms
+        }
+    }
+
+    /// `n` schräg gestellte Häuser 10 × 8 m (80 m²) im Raster zu 15 m, in
+    /// einem Gebäude oder je Haus ein Gebäude, mit Innenwand und je Haus
+    /// eigener Geländehöhe (997 verschiedene).
+    fn haeuser(n: usize, je_haus: bool, innen: bool, hoehen: bool) -> Model {
+        let mut m = Model::with_seed(5);
+        let b0 = m.add_building(1);
+        let iw = m.defaults().interior_wall;
+        let w = 0.3_f64;
+        let mut gebaeude = Vec::new();
+        for i in 0..n {
+            let b = if je_haus && i > 0 {
+                m.add_building(1)
+            } else {
+                b0
+            };
+            gebaeude.push(b);
+            let (ox, oy) = ((i % 64) as f64 * 15000.0, (i / 64) as f64 * 15000.0);
+            let p = |x: f64, y: f64| {
+                vec3(
+                    ox + x * w.cos() - y * w.sin(),
+                    oy + x * w.sin() + y * w.cos(),
+                    0.0,
+                )
+            };
+            m.build_from_polygon(
+                b,
+                &[
+                    p(0.0, 0.0),
+                    p(0.0, 8000.0),
+                    p(10000.0, 8000.0),
+                    p(10000.0, 0.0),
+                ],
+            )
+            .unwrap();
+            if innen {
+                let eg = m.ground_of(Some(b)).unwrap();
+                m.add_wall_run(
+                    &[p(5000.0, 0.0), p(5000.0, 8000.0)],
+                    false,
+                    RefSide::Center,
+                    eg,
+                    iw,
+                    Category::InteriorWall,
+                )
+                .unwrap();
+            }
+        }
+        if hoehen {
+            m.begin("Gelände");
+            for (i, b) in gebaeude.iter().enumerate() {
+                m.set_terrain_offset_of(*b, (i % 997) as f64 * 3.0);
+            }
+            m.commit();
+        }
+        m
+    }
+
+    /// Platten von `m` mit Zeit (ms); jedes Haus ist ausgespart, der Rand
+    /// geschlossen, die Stücke je Haus begrenzt.
+    fn platten_geprueft(m: &Model, n: usize) -> (Vec<TerrainPlate>, f64) {
+        let t = std::time::Instant::now();
+        let p = m.terrain_plates();
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let a: f64 = p.iter().map(TerrainPlate::area).sum();
+        let rand: f64 = p.iter().map(|q| rand_flaeche(&q.edges)).sum();
+        assert!((rand - a).abs() < 1e-6 * a, "{rand} {a}");
+        let stuecke: usize = p.iter().map(|q| q.pieces.len()).sum();
+        assert!(stuecke < 40 * n, "{stuecke} Stücke");
+        (p, ms)
+    }
+
+    /// Budget (Review W34 B2, Nachtrag): 4000 Häuser in einem Gebäude und je
+    /// Haus ein Gebäude. In einem Gebäude ist es ein Rechteck um alle, aus
+    /// dem jedes Haus ausgespart ist.
     #[test]
-    fn tausend_haeuser_im_budget() {
+    fn viertausend_haeuser_im_budget() {
+        const N: usize = 4000;
         for je_haus in [false, true] {
-            let mut m = Model::with_seed(5);
-            let b0 = m.add_building(1);
-            let w = 0.3_f64;
-            for i in 0..1000 {
-                let b = if je_haus && i > 0 {
-                    m.add_building(1)
-                } else {
-                    b0
-                };
-                let (ox, oy) = ((i % 32) as f64 * 15000.0, (i / 32) as f64 * 15000.0);
-                let p = |x: f64, y: f64| {
+            let m = haeuser(N, je_haus, false, false);
+            let (p, ms) = platten_geprueft(&m, N);
+            // vorher 973 ms je Haus ein Gebäude (Review, Release)
+            assert!(ms < budget(250.0), "je Haus {je_haus}: {ms:.1} ms");
+            assert_eq!(p.len(), 1, "eine Höhe, eine Platte");
+            if !je_haus {
+                let (mut lo, mut hi) = (vec3(1e18, 1e18, 0.0), vec3(-1e18, -1e18, 0.0));
+                for (_, r) in m.runs().iter() {
+                    for q in &r.points {
+                        lo = vec3(lo.x.min(q.x), lo.y.min(q.y), 0.0);
+                        hi = vec3(hi.x.max(q.x), hi.y.max(q.y), 0.0);
+                    }
+                }
+                let rahmen = (hi.x - lo.x + 6000.0) * (hi.y - lo.y + 6000.0);
+                let soll = rahmen - N as f64 * 80e6;
+                let a = p[0].area();
+                assert!((a - soll).abs() < 1e-6 * soll, "{a} {soll}");
+            }
+        }
+    }
+
+    /// Budget mit Innenwänden (Review W34 B2, Nachtrag: mehr Züge, die
+    /// Gründung über das Verzeichnis) und je Haus eigener Geländehöhe.
+    #[test]
+    fn innenwaende_und_hoehen_im_budget() {
+        const N: usize = 1000;
+        for (je_haus, hoehen) in [(false, false), (true, true)] {
+            let m = haeuser(N, je_haus, true, hoehen);
+            let (p, ms) = platten_geprueft(&m, N);
+            // vorher 98 ms in einem Gebäude mit Innenwänden (Review, Release)
+            assert!(ms < budget(60.0), "je Haus {je_haus}: {ms:.1} ms");
+            assert_eq!(p.len(), if hoehen { 997 } else { 1 });
+        }
+    }
+
+    /// Entartete Eingaben (Review W34 B2, Nachtrag): kollineare Punkte,
+    /// lauter gleiche Häuser, viele Höhen und eine fast waagerechte Reihe
+    /// rechnen in der Zeit der Eingabe, die Fläche stimmt.
+    #[test]
+    fn entartete_eingaben_im_budget() {
+        let zeit = |f: &dyn Fn() -> Zerlegt| {
+            let t = std::time::Instant::now();
+            let z = f();
+            (z, t.elapsed().as_secs_f64() * 1000.0)
+        };
+        // ein Loch mit 100.000 kollinearen Punkten an einer schrägen Kante
+        let mut loch: Vec<Vec3> = (0..=100_000)
+            .map(|i| {
+                let t = i as f64 / 100_000.0;
+                vec3(1000.0 + t * 998_000.0, 1000.0 + t * 8000.0, 0.0)
+            })
+            .collect();
+        loch.extend([vec3(999_000.0, 15_000.0, 0.0), vec3(1000.0, 15_000.0, 0.0)]);
+        let a_loch = sk_math::polygon::area(&loch);
+        let ((p, e), ms) = zeit(&|| streifen(&[vec![[0.0, 0.0, 1e6, 2e4]]], &[loch.clone()]));
+        let a = flaeche(&p[0]);
+        assert!((a - (2e10 - a_loch)).abs() < 1e-6 * a, "{a}");
+        assert!((rand_flaeche(&e[0]) - a).abs() < 1e-6 * a);
+        assert!(ms < budget(300.0), "kollinear: {ms:.1} ms");
+        // 1000 gleiche Häuser, jedes ein eigenes Gebäude an derselben Stelle
+        let rects = vec![vec![[0.0, 0.0, 20_000.0, 20_000.0]]; 1000];
+        let holes = vec![quadrat(5000.0, 5000.0, 15_000.0, 15_000.0); 1000];
+        let ((p, e), ms) = zeit(&|| streifen(&rects, &holes));
+        assert!((flaeche(&p[0]) - 3e8).abs() < 1e-3);
+        assert!(p[1..].iter().all(|q| q.is_empty()));
+        assert!((rand_flaeche(&e[0]) - 3e8).abs() < 1e-3);
+        assert!(ms < budget(100.0), "gleiche: {ms:.1} ms");
+        // 4096 Gruppen (eigene Höhen), die sich je mit den Nachbarn überdecken
+        let ort = |i: usize| ((i % 64) as f64 * 15_000.0, (i / 64) as f64 * 12_000.0);
+        let rects: Vec<Vec<[f64; 4]>> = (0..4096)
+            .map(|i| {
+                let (x, y) = ort(i);
+                vec![[x - 3000.0, y - 3000.0, x + 13_000.0, y + 11_000.0]]
+            })
+            .collect();
+        let holes: Vec<Vec<Vec3>> = (0..4096)
+            .map(|i| {
+                let (x, y) = ort(i);
+                quadrat(x, y, x + 10_000.0, y + 8000.0)
+            })
+            .collect();
+        let ((p, e), ms) = zeit(&|| streifen(&rects, &holes));
+        let a: f64 = p.iter().map(|q| flaeche(q)).sum();
+        let rand: f64 = e.iter().map(|q| rand_flaeche(q)).sum();
+        // Vereinigung der Rechtecke ohne die Häuser
+        let soll = (63.0 * 15_000.0 + 16_000.0) * (63.0 * 12_000.0 + 14_000.0) - 4096.0 * 80e6;
+        assert!((a - soll).abs() < 1e-6 * soll, "{a} {soll}");
+        assert!((rand - a).abs() < 1e-6 * a);
+        assert!(ms < budget(200.0), "viele Höhen: {ms:.1} ms");
+        // 10.000 Häuser in einer fast waagerechten Reihe, eine Gruppe
+        let holes: Vec<Vec<Vec3>> = (0..10_000)
+            .map(|i| {
+                let (x, y) = (i as f64 * 15_000.0, i as f64 * 1.5);
+                quadrat(x, y, x + 10_000.0, y + 8000.0)
+            })
+            .collect();
+        let rect = [
+            -3000.0,
+            -3000.0,
+            10_000.0 * 15_000.0,
+            8000.0 + 15_000.0 + 3000.0,
+        ];
+        let ((p, e), ms) = zeit(&|| streifen(&[vec![rect]], &holes));
+        let a = flaeche(&p[0]);
+        let soll = (rect[2] - rect[0]) * (rect[3] - rect[1]) - 10_000.0 * 80e6;
+        assert!((a - soll).abs() < 1e-6 * soll, "{a} {soll}");
+        assert!((rand_flaeche(&e[0]) - a).abs() < 1e-6 * a);
+        assert!(p[0].len() < 40 * 10_000, "{} Stücke", p[0].len());
+        assert!(ms < budget(300.0), "Reihe: {ms:.1} ms");
+    }
+
+    /// Scheiben ändern nichts: schräge Häuser in einem Rechteck, mit und
+    /// ohne Teilung dieselbe Fläche, derselbe geschlossene Rand, keine
+    /// Randkante auf einer Scheibengrenze.
+    #[test]
+    fn scheiben_ohne_naht() {
+        let haus = |ox: f64, oy: f64, w: f64| -> Vec<Vec3> {
+            [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]
+                .iter()
+                .map(|&(x, y)| {
                     vec3(
                         ox + x * w.cos() - y * w.sin(),
                         oy + x * w.sin() + y * w.cos(),
                         0.0,
                     )
-                };
-                m.build_from_polygon(
-                    b,
-                    &[
-                        p(0.0, 0.0),
-                        p(0.0, 8000.0),
-                        p(10000.0, 8000.0),
-                        p(10000.0, 0.0),
-                    ],
+                })
+                .collect()
+        };
+        let holes: Vec<Vec<Vec3>> = (0..300)
+            .map(|i| {
+                haus(
+                    (i % 20) as f64 * 17.0,
+                    (i / 20) as f64 * 15.0,
+                    0.1 * (i % 7) as f64,
                 )
-                .unwrap();
-            }
-            let t = std::time::Instant::now();
-            let p = m.terrain_plates();
-            let ms = t.elapsed().as_secs_f64() * 1000.0;
-            // vorher 77 ms (Review, Release); jetzt um 20 ms
-            let budget = if cfg!(debug_assertions) {
-                3000.0
-            } else {
-                200.0
-            };
-            assert!(ms < budget, "je Haus ein Gebäude {je_haus}: {ms:.1} ms");
-            let a: f64 = p.iter().map(TerrainPlate::area).sum();
-            let rand: f64 = p.iter().map(|q| rand_flaeche(&q.edges)).sum();
-            assert!((rand - a).abs() < 1e-6 * a, "{rand} {a}");
-        }
+            })
+            .collect();
+        let a_loecher: f64 = holes.iter().map(|h| sk_math::polygon::area(h)).sum();
+        let rect = [-5.0, -5.0, 20.0 * 17.0 + 5.0, 15.0 * 15.0 + 5.0];
+        let (p, e) = streifen(&[vec![rect]], &holes);
+        let a = flaeche(&p[0]);
+        let soll = (rect[2] - rect[0]) * (rect[3] - rect[1]) - a_loecher;
+        assert!((a - soll).abs() < 1e-6 * soll, "{a} {soll}");
+        assert!((rand_flaeche(&e[0]) - a).abs() < 1e-6 * a);
+        // Randlänge: Rechteckumfang plus Umfang der Häuser (36 m je Haus)
+        let laenge: f64 = e[0].iter().map(|(a, b)| (*b - *a).length()).sum();
+        let soll = 2.0 * (rect[2] - rect[0] + rect[3] - rect[1]) + 300.0 * 36.0;
+        assert!((laenge - soll).abs() < 1e-6 * soll, "{laenge} {soll}");
     }
 
     /// Zwei Löcher, die sich überdecken (Anbau an einem Haus): die Platte
