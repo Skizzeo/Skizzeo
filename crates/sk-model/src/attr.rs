@@ -247,7 +247,7 @@ pub struct Attributes {
     fills: Arena<Fill>,
     surfaces: Arena<Surface>,
     display: Display,
-    /// Zeilen der Werksstellen, die beim Lesen nicht zählten (Regel 72).
+    /// Zeilen der Darstellung, die beim Lesen nicht zählten (Regel 72).
     display_raw: crate::szo::Roh,
     rev: u64,
 }
@@ -273,8 +273,8 @@ impl Attributes {
         }
     }
 
-    /// Zeilen der Werksstellen, die beim Lesen nicht zählten.
-    pub(crate) fn display_raw(&self) -> &[(&'static str, String)] {
+    /// Zeilen der Darstellung, die beim Lesen nicht zählten.
+    pub(crate) fn display_raw(&self) -> &crate::szo::Roh {
         &self.display_raw
     }
 
@@ -922,6 +922,70 @@ mod tests {
         assert_eq!(wieder.hints.len(), 1, "{:?}", wieder.hints);
         assert_eq!(crate::szo::write(&wieder.model), neu);
     }
+    /// Regel 72/73 an allen Stellen: Zeigt eine Zeile einer anderen Stelle
+    /// auf einen unbekannten Stift oder Linientyp, öffnet das Projekt mit dem
+    /// Startwert der Stelle und einem Hinweis. Die Zeile steht an ihrem Platz
+    /// bytegleich wieder in der Datei, bis jemand die Stelle neu setzt.
+    #[test]
+    fn unlesbare_stelle_bleibt_roh() {
+        use crate::guid::{Guid, GuidGen};
+        let m = Model::with_seed(5);
+        let text = crate::szo::write(&m);
+        let fremd = Guid(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef).to_ifc();
+        let mut roh = text.clone();
+        let mut zeilen = Vec::new();
+        for (stelle, key) in [("drawing.cut", "pen"), ("ground", "lt"), ("pattern", "pen")] {
+            let alt = text
+                .lines()
+                .find(|l| l.starts_with(&format!("[display] slot={stelle} ")))
+                .unwrap();
+            let pos = alt.find(&format!(" {key}=")).unwrap() + key.len() + 2;
+            let neu = format!("{}{fremd}{}", &alt[..pos], &alt[pos + fremd.len()..]);
+            roh = roh.replace(alt, &neu);
+            zeilen.push(neu);
+        }
+        // Eine zweite, ungültige Zeile neben einer gültigen bleibt dahinter
+        let view = text
+            .lines()
+            .find(|l| l.starts_with("[display] slot=drawing.view "))
+            .unwrap();
+        let zweite = format!("[display] slot=drawing.view pen={fremd} lt={fremd}");
+        roh = roh.replace(view, &format!("{view}\n{zweite}"));
+        let back = crate::szo::read(&roh, GuidGen::with_seed(9)).unwrap();
+        assert_eq!(back.hints.len(), 4, "{:?}", back.hints);
+        assert!(back.hints.iter().all(|h| h.contains("der Startwert gilt")));
+        assert!(back.model.check().is_empty());
+        // Der Startwert ist der Wert aus der Datei vor dem Verbiegen
+        let (a, b) = (m.attr().display(), back.model.attr().display());
+        let pen = |m: &Model, id| m.attr().pen(id).unwrap().number;
+        let lt = |m: &Model, id| m.attr().line_type(id).unwrap().name.clone();
+        let cut = crate::solid::edge_kind::CUT as usize;
+        assert_eq!(
+            pen(&m, a.drawing[cut].pen),
+            pen(&back.model, b.drawing[cut].pen)
+        );
+        assert_eq!(
+            lt(&m, a.ground.line_type),
+            lt(&back.model, b.ground.line_type)
+        );
+        assert_eq!(crate::szo::write(&back.model), roh, "bytegleich zurück");
+        // Neu gesetzt: nur diese Zeile steht wieder gültig in der Datei
+        let mut m2 = back.model;
+        let mut d2 = m2.attr().display().clone();
+        let fein = d2.drawing[crate::solid::edge_kind::FINE as usize].pen;
+        assert_ne!(d2.ground.pen, fein);
+        d2.ground.pen = fein;
+        m2.begin("Darstellung");
+        m2.set_display(d2);
+        m2.commit();
+        let neu = crate::szo::write(&m2);
+        assert!(neu.contains(&zeilen[0]) && !neu.contains(&zeilen[1]) && neu.contains(&zeilen[2]));
+        assert!(neu.contains(&format!("{view}\n{zweite}\n")));
+        let wieder = crate::szo::read(&neu, GuidGen::with_seed(9)).unwrap();
+        assert_eq!(wieder.hints.len(), 3, "{:?}", wieder.hints);
+        assert_eq!(crate::szo::write(&wieder.model), neu);
+    }
+
     /// Review #127 B2: Eine rohe Zeile „element“ vor einer gültigen Zeile
     /// „above“ bleibt vor ihr; die Datei kommt bytegleich zurück.
     #[test]

@@ -48,6 +48,9 @@ const HAEUSER: [(&str, &str); 5] = [
     // einem Namen mit Anführungszeichen
     // seit #109 ein Fenster im OG von Gebäude 2 über OE-001, beide unteren
     // Enden in einer Flucht und mit Breitenschloss gekoppelt (`lock=`)
+    // seit #126/#127 die Bemaßung (`[bemassung]` mit abweichendem Stil und
+    // genanntem `bezug`, zwei `[massversatz]`, `[massansicht]` am Grundriss)
+    // und die Darstellungsstellen `element` und `above`
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
