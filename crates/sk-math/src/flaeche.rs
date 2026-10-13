@@ -895,6 +895,10 @@ pub fn abstand(b: &Bereich, p: Vec3) -> f64 {
 /// besten liegt, die dem Schwerpunkt des Rands nächste: im Rechteck der
 /// Schwerpunkt selbst. In schmalen Räumen, wo `genau` an den besten Abstand
 /// heranreicht, höchstens ein Zehntel darunter, so bleibt die Stelle innen.
+/// Liegt der Schwerpunkt außerhalb, etwa in einem Pfeiler oder Kern, sind in
+/// symmetrischen Räumen mehrere Stellen gleich nah; der Weg dorthin ist
+/// darum leicht nach links unten geneigt ([`NEIGUNG`]), so gewinnt immer
+/// dieselbe (Review #140 W46).
 pub fn innenpunkt(b: &Bereich, genau: f64) -> (Vec3, f64) {
     innenpunkt_mit(b, genau, |_| f64::INFINITY)
 }
@@ -936,7 +940,10 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
         }
     }
 
+    // Wie oft der Abstand gerechnet wurde, für das Budget der zweiten Suche
+    let gerechnet = std::cell::Cell::new(0usize);
     let neu = |c: Vec3, h: f64| {
+        gerechnet.set(gerechnet.get() + 1);
         let d = abstand(b, c).min(weg(c));
         Zelle {
             c,
@@ -991,29 +998,46 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
         }
     }
 
-    // Unter den Stellen mit mindestens `soll` die dem Schwerpunkt nächste:
-    // Zellen aufsteigend nach ihrem kleinstmöglichen Weg dorthin teilen, bis
-    // keine um mehr als `fein` näher sein kann.
+    // Unter den Stellen mit mindestens `soll` die dem Schwerpunkt nächste,
+    // gemessen mit `weit`: der Weg dorthin, geneigt um `neigung`. Am
+    // Schwerpunkt ist `weit` null, sonst größer; gilt er, bleibt er es.
+    // Zellen aufsteigend nach ihrem kleinstmöglichen `weit` teilen, bis keine
+    // um mehr als `fein` besser sein kann, so genau, dass die Stelle beim
+    // Ziehen nicht zittert. Bei vielen Kanten (Rundungen) rechnet sie den
+    // Abstand höchstens doppelt so oft wie die erste Suche, dann gilt die
+    // beste Stelle bis dahin (Review #140 H1); mindestens aber [`BUDGET`]
+    // durch die Zahl der Kanten, bei 40 Kanten 5.000 Mal.
     let soll = best.d - genau.min(0.1 * best.d);
     let m = neu(mitte, 0.0);
     if m.d >= soll {
         return (m.c, m.d);
     }
-    let fein = genau / 10.0;
-    let nah = |c: Vec3, h: f64| Zelle {
-        rang: -((c - mitte).length() - h * std::f64::consts::SQRT_2).max(0.0),
-        ..neu(c, h)
+    let fein = genau / 100.0;
+    let neigung = vec3(1.0, 2.0, 0.0) * (NEIGUNG / 5f64.sqrt());
+    let weit = |c: Vec3| (c - mitte).length() + neigung.dot(c - mitte);
+    let nah = |c: Vec3, h: f64| {
+        // Je für sich das Kleinste in der Zelle: Weg zum Quadrat, Neigung
+        let s = c - mitte;
+        let (dx, dy) = ((s.x.abs() - h).max(0.0), (s.y.abs() - h).max(0.0));
+        let schraeg = neigung.dot(s) - h * (neigung.x.abs() + neigung.y.abs());
+        Zelle {
+            rang: -((dx * dx + dy * dy).sqrt() + schraeg).max(0.0),
+            ..neu(c, h)
+        }
     };
-    let mut wahl = (best.c, best.d, (best.c - mitte).length());
+    let mut wahl = (best.c, best.d, weit(best.c));
     let mut schlange = raster(&nah);
+    let kanten = pts.len() + b.inseln.iter().map(|i| i.punkte.len()).sum::<usize>();
+    let erste = gerechnet.get();
+    let budget = erste + (2 * erste).max(BUDGET / kanten.max(1));
     while let Some(z) = schlange.pop() {
         if z.d >= soll {
-            let r = (z.c - mitte).length();
+            let r = weit(z.c);
             if r < wahl.2 {
                 wahl = (z.c, z.d, r);
             }
         }
-        if -z.rang >= wahl.2 - fein {
+        if -z.rang >= wahl.2 - fein || gerechnet.get() > budget {
             break;
         }
         if z.hoechstens() < soll || z.h < fein {
@@ -1026,6 +1050,15 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
     }
     (wahl.0, wahl.1)
 }
+
+/// Neigung des Wegs zum Schwerpunkt bei [`innenpunkt`]: je mm nach rechts
+/// zählt er 0,045 mm mehr, je mm nach oben 0,089 mm (0,1 in Richtung (1, 2)).
+/// Kleiner als 1, so bleibt der Schwerpunkt selbst die nächste Stelle.
+const NEIGUNG: f64 = 0.1;
+
+/// Abstände mal Kanten, die die zweite Suche von [`innenpunkt`] mindestens
+/// rechnen darf.
+const BUDGET: usize = 200_000;
 
 #[cfg(test)]
 mod tests {
@@ -1300,7 +1333,8 @@ mod tests {
         assert!((p - vec3(2000.0, 1500.0, 0.0)).length() < 1e-6, "{p:?}");
         // L-Form: der breitere Schenkel gewinnt; von den Stellen höchstens
         // `genau` unter dem besten Abstand die dem Schwerpunkt (2500, 3000)
-        // nächste, am oberen Rand des Streifens um y = 2000
+        // nächste, am oberen Rand des Streifens um y = 2000, mit der Neigung
+        // ein Stück nach links: wo sie den Zuwachs des Wegs aufwiegt
         let l = vec![
             vec3(0.0, 0.0, 0.0),
             vec3(6000.0, 0.0, 0.0),
@@ -1311,9 +1345,11 @@ mod tests {
         ];
         let (p, d) = innenpunkt(&bereich(l, vec![]), 1.0);
         assert!(d > 1998.0 - 1e-6 && d < 2000.0 + 1e-6, "{d}");
+        let k = NEIGUNG / 5f64.sqrt();
+        let x = 2500.0 - (3000.0 - p.y) * k / (1.0 - k * k).sqrt();
         assert!(
-            (p.x - 2500.0).abs() < 1.0 && (p.y - (4000.0 - d)).abs() < 1.0,
-            "{p:?}"
+            (p.x - x).abs() < 1.0 && (p.y - (4000.0 - d)).abs() < 1.0,
+            "{p:?} {x}"
         );
     }
 
@@ -1344,6 +1380,100 @@ mod tests {
                 }
                 vorher = Some(p);
             }
+        }
+    }
+
+    /// Review #140 W46: Liegt der Schwerpunkt in einem Pfeiler, einem Kern
+    /// oder außerhalb eines symmetrischen U, sind mehrere Stellen gleich nah.
+    /// Wird eine Wand gezogen (200 Schritte zu 7,3 mm), bleibt die Stelle bei
+    /// derselben: Sprünge über 30 mm höchstens wenige (main: Pfeiler 42, Kern
+    /// 19), über 300 mm nur, wenn ein anderer Teil des Raums besser wird (beim
+    /// Kern der rechte Flur, in zwei Schritten); bleibt der Raum symmetrisch,
+    /// keiner.
+    #[test]
+    fn innenpunkt_springt_nicht_um_pfeiler_und_kern() {
+        let u = |w: f64, h: f64| {
+            vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(w, 0.0, 0.0),
+                vec3(w, h, 0.0),
+                vec3(w - 1500.0, h, 0.0),
+                vec3(w - 1500.0, 1500.0, 0.0),
+                vec3(1500.0, 1500.0, 0.0),
+                vec3(1500.0, h, 0.0),
+                vec3(0.0, h, 0.0),
+            ]
+        };
+        let pfeiler = rechteck(2300.0, 3800.0, 2700.0, 4200.0);
+        let pfeiler_quer = rechteck(3800.0, 2300.0, 4200.0, 2700.0);
+        let kern = rechteck(3000.0, 3000.0, 7000.0, 7000.0);
+        type Fall<'a> = (&'a str, Box<dyn Fn(f64) -> Bereich + 'a>, usize, usize);
+        let faelle: [Fall; 5] = [
+            (
+                "Pfeiler",
+                Box::new(|z| {
+                    bereich(
+                        rechteck(0.0, 0.0, 5000.0 + z, 8000.0),
+                        vec![pfeiler.clone()],
+                    )
+                }),
+                10,
+                1,
+            ),
+            (
+                "Pfeiler oben",
+                Box::new(|z| {
+                    bereich(
+                        rechteck(0.0, 0.0, 8000.0, 5000.0 + z),
+                        vec![pfeiler_quer.clone()],
+                    )
+                }),
+                10,
+                1,
+            ),
+            (
+                "Kern",
+                Box::new(|z| bereich(rechteck(0.0, 0.0, 10000.0 + z, 10000.0), vec![kern.clone()])),
+                10,
+                2,
+            ),
+            (
+                "U rechts",
+                Box::new(|z| bereich(u(8000.0 + z, 8000.0), vec![])),
+                0,
+                0,
+            ),
+            (
+                "U oben",
+                Box::new(|z| bereich(u(8000.0, 8000.0 + z), vec![])),
+                0,
+                0,
+            ),
+        ];
+        for (name, raum, ueber30, ueber300) in &faelle {
+            let mut vorher: Option<Vec3> = None;
+            let (mut n30, mut n300) = (0, 0);
+            for k in 0..200 {
+                let b = raum(7.3 * k as f64);
+                let (w, h) = b
+                    .rand
+                    .punkte
+                    .iter()
+                    .fold((0.0f64, 0.0f64), |m, p| (m.0.max(p.x), m.1.max(p.y)));
+                let (p, d) = innenpunkt(&b, 0.02 * w.min(h));
+                assert!(b.enthaelt(p) && d > 0.0, "{name} {k}: {p:?} {d}");
+                if let Some(q) = vorher {
+                    let s = (p - q).length();
+                    n30 += usize::from(s > 30.0);
+                    n300 += usize::from(s > 300.0);
+                }
+                vorher = Some(p);
+            }
+
+            assert!(
+                n30 <= *ueber30 && n300 <= *ueber300,
+                "{name}: {n30} über 30 mm, {n300} über 300 mm"
+            );
         }
     }
 
