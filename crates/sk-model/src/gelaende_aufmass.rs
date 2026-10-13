@@ -1274,6 +1274,45 @@ mod tests {
         assert_eq!(m.ground_bases()[0].terrain_nhn, None);
     }
 
+    /// OK Gelände an der Gründung setzen (Geschossmanager): ohne Aufmaß
+    /// der Gegenwert des Versatzes, mit Aufmaß wandert ±0,00 gegen das
+    /// Gelände, über den Versatz oder absolut über NHN; die Kote stimmt
+    /// danach, die Einbindetiefe bleibt (Geometrie zu #129).
+    #[test]
+    fn ok_gelaende_an_der_gruendung() {
+        let (mut m, b) = lindenhof_haus();
+        let gr = m.foundation_level().unwrap();
+        let setzen = |m: &mut Model, z: f64| {
+            m.begin("Gelände");
+            let ok = m.set_terrain_z_of_level(gr, z);
+            m.commit();
+            ok
+        };
+        assert_eq!(m.terrain_z_of_level_range(gr), (-3000.0, 3000.0));
+        assert!(setzen(&mut m, -300.0));
+        assert_eq!(m.terrain_offset_of(Some(b)), 300.0);
+        assert_eq!(m.terrain_z_of_level(gr), -300.0);
+        assert!(!setzen(&mut m, f64::NAN));
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(aufmass()));
+        m.commit();
+        for (href, dz) in [(HeightRef::High, -200.0), (HeightRef::Abs, 150.0)] {
+            if href == HeightRef::Abs {
+                m.begin("Höhe");
+                assert!(m.set_terrain_nhn(24.95));
+                m.commit();
+            }
+            let z0 = m.terrain_z_of_level(gr);
+            let (lo, hi) = m.terrain_z_of_level_range(gr);
+            assert!(lo < z0 && z0 < hi, "{lo} {z0} {hi}");
+            assert!(setzen(&mut m, z0 + dz));
+            let z1 = m.terrain_z_of_level(gr);
+            assert!((z1 - (z0 + dz)).abs() < 0.5, "{href:?}: {z0} + {dz} → {z1}");
+            assert_eq!(m.terrain().unwrap().href, href);
+            assert!((m.embedment_of(gr).unwrap() - 800.0).abs() < 1e-6);
+        }
+    }
+
     /// Ohne Lage liegt das Grundstück mittig unter dem Haus, die längste
     /// Grenze parallel zur längsten Wand, Nullpunkt auf vollen Metern.
     #[test]

@@ -6,6 +6,7 @@
 //! einen Mehrfachabtast-Puffer (MSAA), der anschließend ins Fenster kopiert wird.
 //! Darüber kommt die selbst gezeichnete Oberfläche (Titelleiste) als Textur.
 
+pub mod gelaende;
 pub mod gl;
 #[cfg(target_os = "linux")]
 pub mod glx;
@@ -518,6 +519,9 @@ pub struct Renderer {
     terrain: f32,
     /// OK Gelände je Gebäude (Rechteck im Grundriss, Höhe).
     terrain_boxes: Vec<([f32; 4], f32)>,
+    /// OK Gelände aus dem Aufmaß (G1): Textur des Rasters, sein Rechteck
+    /// und Stand (0 = keins).
+    terrain_grid: (GLuint, [f32; 4], u64),
     /// Höhe des Bodens in 3D (mm), sonst OK Gelände; Darstellungsschlüssel
     /// des Rasens (0 = keiner), Gelände G0.
     ground_z: Option<f32>,
@@ -542,6 +546,9 @@ pub struct Renderer {
 
 /// Einheit der Schattenkarte im Flächen- und Himmels-Shader.
 const SHADOW_UNIT: GLenum = 3;
+
+/// Einheit des Geländerasters im Flächen- und Kanten-Shader.
+const TERRAIN_UNIT: GLenum = 4;
 
 const SHADOW_VS: &str = r#"#version 330 core
 layout(location = 0) in vec3 a_pos;
@@ -696,13 +703,36 @@ uniform vec3 u_hatch_ink;
 // 2 gestrichelt; Flächen dort in Papierfarbe, sie verdecken weiter
 uniform int u_below;
 uniform vec3 u_paper_rgb;
-// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): je Gebäude ein
-// Rechteck im Grundriss (x0, y0, x1, y1) mit seiner Höhe, sonst u_terrain
+// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): mit Aufmaß aus
+// seinem Raster (G1), sonst je Gebäude ein Rechteck im Grundriss (x0, y0,
+// x1, y1) mit seiner Höhe, sonst u_terrain
 uniform float u_terrain;
 uniform int u_ter_n;
 uniform vec4 u_ter_box[16];
 uniform float u_ter_z[16];
+uniform int u_ter_grid;
+uniform vec4 u_ter_rect;
+uniform sampler2D u_ter_tex;
+// Wie TerrainGrid::z: bilinear zwischen den vier Gitterpunkten
+bool terrain_grid(vec2 p, out float z) {
+    vec4 r = u_ter_rect;
+    z = 0.0;
+    if (u_ter_grid == 0 || p.x < r.x || p.y < r.y || p.x > r.z || p.y > r.w) return false;
+    ivec2 n = textureSize(u_ter_tex, 0);
+    vec2 f = (p - r.xy) / (r.zw - r.xy) * vec2(n - 1);
+    ivec2 i = min(ivec2(f), n - 2);
+    vec2 t = f - vec2(i);
+    float a = texelFetch(u_ter_tex, i, 0).r;
+    float b = texelFetch(u_ter_tex, i + ivec2(1, 0), 0).r;
+    float c = texelFetch(u_ter_tex, i + ivec2(0, 1), 0).r;
+    float d = texelFetch(u_ter_tex, i + ivec2(1, 1), 0).r;
+    if (min(min(a, b), min(c, d)) < -0.5e30) return false;
+    z = mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
+    return true;
+}
 float terrain_at(vec2 p) {
+    float z;
+    if (terrain_grid(p, z)) return z;
     for (int i = 0; i < u_ter_n; i++) {
         vec4 b = u_ter_box[i];
         if (p.x >= b.x && p.y >= b.y && p.x <= b.z && p.y <= b.w) return u_ter_z[i];
@@ -1345,13 +1375,36 @@ flat out vec3 v_color_below;
 // OK Gelände an der Kante (Mitte im Grundriss)
 flat out float v_ter;
 uniform int u_below;
-// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): je Gebäude ein
-// Rechteck im Grundriss (x0, y0, x1, y1) mit seiner Höhe, sonst u_terrain
+// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): mit Aufmaß aus
+// seinem Raster (G1), sonst je Gebäude ein Rechteck im Grundriss (x0, y0,
+// x1, y1) mit seiner Höhe, sonst u_terrain
 uniform float u_terrain;
 uniform int u_ter_n;
 uniform vec4 u_ter_box[16];
 uniform float u_ter_z[16];
+uniform int u_ter_grid;
+uniform vec4 u_ter_rect;
+uniform sampler2D u_ter_tex;
+// Wie TerrainGrid::z: bilinear zwischen den vier Gitterpunkten
+bool terrain_grid(vec2 p, out float z) {
+    vec4 r = u_ter_rect;
+    z = 0.0;
+    if (u_ter_grid == 0 || p.x < r.x || p.y < r.y || p.x > r.z || p.y > r.w) return false;
+    ivec2 n = textureSize(u_ter_tex, 0);
+    vec2 f = (p - r.xy) / (r.zw - r.xy) * vec2(n - 1);
+    ivec2 i = min(ivec2(f), n - 2);
+    vec2 t = f - vec2(i);
+    float a = texelFetch(u_ter_tex, i, 0).r;
+    float b = texelFetch(u_ter_tex, i + ivec2(1, 0), 0).r;
+    float c = texelFetch(u_ter_tex, i + ivec2(0, 1), 0).r;
+    float d = texelFetch(u_ter_tex, i + ivec2(1, 1), 0).r;
+    if (min(min(a, b), min(c, d)) < -0.5e30) return false;
+    z = mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
+    return true;
+}
 float terrain_at(vec2 p) {
+    float z;
+    if (terrain_grid(p, z)) return z;
     for (int i = 0; i < u_ter_n; i++) {
         vec4 b = u_ter_box[i];
         if (p.x >= b.x && p.y >= b.y && p.x <= b.z && p.y <= b.w) return u_ter_z[i];
@@ -1730,6 +1783,7 @@ impl Renderer {
                 below: (0, [0.0; 2]),
                 terrain: 0.0,
                 terrain_boxes: Vec::new(),
+                terrain_grid: (0, [0.0; 4], 0),
                 ground_z: None,
                 grass: 0,
                 shadow_failed: shadow_error.is_some(),
@@ -3264,6 +3318,36 @@ unsafe fn upload_looks(gl: &Gl, tex: &mut GLuint, looks: &Looks) {
     gl.glBindTexture(TEXTURE_2D, 0);
 }
 
+/// Geländeraster als Gleitkomma-Textur (R32F, je Gitterpunkt eine Höhe).
+unsafe fn upload_grid(gl: &Gl, tex: &mut GLuint, g: &gelaende::TerrainGrid) {
+    if *tex == 0 {
+        gl.glGenTextures(1, tex);
+        gl.glBindTexture(TEXTURE_2D, *tex);
+        for (p, v) in [
+            (TEXTURE_MIN_FILTER, NEAREST),
+            (TEXTURE_MAG_FILTER, NEAREST),
+            (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
+            (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
+        ] {
+            gl.glTexParameteri(TEXTURE_2D, p, v);
+        }
+    }
+    gl.glBindTexture(TEXTURE_2D, *tex);
+    gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
+    gl.glTexImage2D(
+        TEXTURE_2D,
+        0,
+        R32F as GLint,
+        g.n[0] as i32,
+        g.n[1] as i32,
+        0,
+        RED,
+        FLOAT,
+        g.z.as_ptr() as *const c_void,
+    );
+    gl.glBindTexture(TEXTURE_2D, 0);
+}
+
 /// Verbandstabellen als Ganzzahl-Textur (R8UI, 128 breit); ohne wilden
 /// Verband eine leere Tabelle, damit die Textur vollständig ist.
 unsafe fn upload_bond(gl: &Gl, tex: &mut GLuint, bond: &[u8]) {
@@ -3456,6 +3540,21 @@ impl Renderer {
         self.grass = i32::from(key);
     }
 
+    /// OK Gelände aus dem Aufmaß als Raster (Gelände G1): gilt vor den
+    /// Rechtecken je Gebäude ([`Renderer::set_terrain_boxes`]); hochgeladen
+    /// nur, wenn ein anderes Gitter kommt. `None` ohne Aufmaß.
+    pub fn set_terrain_grid(&mut self, g: Option<&gelaende::TerrainGrid>) {
+        let stand = g.map_or(0, |g| g.stand);
+        if stand == self.terrain_grid.2 {
+            return;
+        }
+        self.terrain_grid.2 = stand;
+        if let Some(g) = g {
+            unsafe { upload_grid(&self.gl, &mut self.terrain_grid.0, g) };
+            self.terrain_grid.1 = g.rect.map(|v| v as f32);
+        }
+    }
+
     /// OK Gelände je Gebäude: Rechteck im Grundriss `[x0, y0, x1, y1]`
     /// (Modellkoordinaten, mm) und Höhe; das erste passende gilt, höchstens
     /// [`TERRAIN_BOXES`].
@@ -3467,6 +3566,13 @@ impl Renderer {
     fn terrain_uniforms(&self, gl: &Gl, p: GLuint) {
         unsafe {
             gl.glUniform1f(loc(gl, p, c"u_terrain"), self.terrain);
+            let (tex, r, stand) = self.terrain_grid;
+            gl.glUniform1i(loc(gl, p, c"u_ter_grid"), GLint::from(stand != 0));
+            gl.glUniform4f(loc(gl, p, c"u_ter_rect"), r[0], r[1], r[2], r[3]);
+            gl.glActiveTexture(TEXTURE0 + TERRAIN_UNIT);
+            gl.glBindTexture(TEXTURE_2D, tex);
+            gl.glUniform1i(loc(gl, p, c"u_ter_tex"), TERRAIN_UNIT as GLint);
+            gl.glActiveTexture(TEXTURE0);
             let n = self.terrain_boxes.len();
             gl.glUniform1i(loc(gl, p, c"u_ter_n"), n as GLint);
             if n > 0 {

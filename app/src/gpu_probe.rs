@@ -895,11 +895,16 @@ mod tests {
         let (hlo, hhi) = h.bounds().unwrap();
         let c = (hlo + hhi) * 0.5;
         let plane = (vec3(c.x, c.y, 0.0), vec3(0.0, -1.0, 0.0));
+        // „unter Gelände“ aus dem Raster des Netzes (Geometrie zu #129)
+        r.set_terrain_grid(h.terrain_grid().as_deref());
         for (v, n) in [
             (ViewKind::Plan, "grundriss-blass"),
             (ViewKind::Section, "schnitt"),
             (ViewKind::Front, "vorne"),
+            (ViewKind::Right, "rechts-unter-gelaende"),
         ] {
+            let unter = v == ViewKind::Right;
+            r.set_below_ground(unter.then_some(Some([6.0, 4.0])));
             h.set_theme(&theme);
             r.set_style(crate::style(&theme.env));
             r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
@@ -929,6 +934,8 @@ mod tests {
         r.set_mesh(gp::MESH_PLATE, &Default::default());
         r.set_ground_z(None);
         r.set_grass(0);
+        r.set_below_ground(None);
+        r.set_terrain_grid(None);
     }
 
     /// Ist-Bilder E4: die fünf Beispiel-Erweiterungen vor RH-1 in 3D, im

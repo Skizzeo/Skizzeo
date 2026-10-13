@@ -15,7 +15,9 @@ use crate::ui::{kote_text, Field, FieldRow, Props, Section, ViewKind};
 use crate::App;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame};
-use sk_model::{edge_kind, material, Model, Solid, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
+use sk_model::{
+    edge_kind, material, LevelKind, Model, Solid, TerrainPlate, PLATE_MARGIN, PLATE_THICK,
+};
 use sk_render::{Helper, MeshData};
 use sk_ui::theme::Theme;
 
@@ -460,11 +462,39 @@ impl App {
         linien(self.platte.platten(m, halten), view, plane, b, t, scale)
     }
 
-    /// Gelände im Renderer: OK Gelände je Gebäude für „unter Gelände“ und
-    /// der Boden in 3D auf der Unterkante der Platte (die Platte steht auf
-    /// ihm); ausgeblendet auf OK Gelände.
+    /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
+    /// dort ausblendet (S11). Aus `main.rs`.
+    pub(crate) fn ansicht_huelle(&self, v: ViewKind) -> Option<(Vec3, Vec3)> {
+        let (lo, hi) = self.scene.bounds()?;
+        let m = self.scene.model();
+        let ganz = crate::ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
+        // Das tiefste Gelände: über keinem Gebäude wird etwas abgeschnitten;
+        // mit Aufmaß zählt je Gründung ihr tiefster Punkt am Plattenrand
+        let gruendungen = m
+            .storeys()
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Foundation);
+        let g = m
+            .terrain_patches(TERRAIN_MARGIN)
+            .iter()
+            .map(|p| p.1)
+            .chain(gruendungen.map(|(id, _)| m.terrain_z_of_level(id)))
+            .fold(m.terrain_z(), f64::min);
+        Some(if ganz || hi.z <= g {
+            (lo, hi)
+        } else {
+            (vec3(lo.x, lo.y, lo.z.max(g)), hi)
+        })
+    }
+
+    /// Gelände im Renderer: OK Gelände für „unter Gelände“, mit Aufmaß
+    /// aus seinem Raster, sonst je Gebäude, und der Boden in 3D auf der
+    /// Unterkante der Platte (die Platte steht auf ihm); ausgeblendet auf
+    /// OK Gelände.
     pub(crate) fn gelaende_renderer(&mut self) {
         let halten = self.scene.zieht();
+        let raster = self.scene.terrain_grid();
+        self.renderer.set_terrain_grid(raster.as_deref());
         let m = self.scene.model();
         self.renderer.set_terrain(m.terrain_z() as f32);
         self.renderer
