@@ -50,9 +50,11 @@ pub(crate) struct Platte {
 
 impl Platte {
     /// Die Platten zum Modell; gerechnet nur, wenn es sich geändert hat.
-    pub(crate) fn platten(&mut self, m: &Model) -> &[TerrainPlate] {
+    /// Während eines Zugs (`halten`) bleiben sie stehen und folgen beim
+    /// Loslassen, statt je Mausbewegung alle Häuser neu zu rechnen.
+    pub(crate) fn platten(&mut self, m: &Model, halten: bool) -> &[TerrainPlate] {
         let rev = m.revision();
-        if self.stand != Some(rev) {
+        if self.stand != Some(rev) && !(halten && self.stand.is_some()) {
             self.stand = Some(rev);
             self.platten = m.terrain_plates();
         }
@@ -175,13 +177,35 @@ fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 2]) -> Solid {
         );
     }
     let gleich = |a: Vec3, b: Vec3| (a - b).length() < 1e-3;
+    // Kanten nach ihrem Endpunkt (Raster 1 mm, Nachbarzellen mit), statt
+    // je Kante alle zu durchsuchen
+    let zelle = |v: Vec3| (v.x.round() as i64, v.y.round() as i64);
+    let mut enden: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, e) in p.edges.iter().enumerate() {
+        enden.entry(zelle(e.1)).or_default().push(i);
+    }
+    let davor = |a: Vec3| {
+        let (x, y) = zelle(a);
+        let mut best: Option<usize> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for &i in enden.get(&(x + dx, y + dy)).into_iter().flatten() {
+                    if gleich(p.edges[i].1, a) && best.is_none_or(|b| i < b) {
+                        best = Some(i);
+                    }
+                }
+            }
+        }
+        best.map(|i| p.edges[i])
+    };
     for &(a, b) in &p.edges {
         let d = (b - a).normalized();
         s.quad(at(a, bot), at(b, bot), at(b, top), at(a, top), right_of(d));
         s.edge(at(a, top), at(b, top));
         s.edge(at(a, bot), at(b, bot));
         // Ecke am Anfang: die Kante davor läuft in eine andere Richtung
-        let davor = p.edges.iter().find(|e| gleich(e.1, a));
+        let davor = davor(a);
         let ecke = davor.is_none_or(|e| {
             let c = (e.1 - e.0).normalized();
             (c.x * d.y - c.y * d.x).abs() > 1e-6 || c.dot(d) < 0.0
@@ -358,7 +382,15 @@ impl App {
         let plane = self.plane();
         let view = self.ui.view;
         let m = self.scene.model();
-        let key = (m.revision(), view, plane.map(bits), keys, hidden);
+        let halten = self.scene.zieht();
+        self.platte.platten(m, halten);
+        let key = (
+            self.platte.stand.unwrap_or(0),
+            view,
+            plane.map(bits),
+            keys,
+            hidden,
+        );
         if self.platte.netz == Some(key) {
             return;
         }
@@ -366,7 +398,7 @@ impl App {
         let netz = if hidden {
             MeshData::default()
         } else {
-            netz(self.platte.platten(m), view, plane, keys)
+            netz(&self.platte.platten, view, plane, keys)
         };
         self.renderer.set_mesh(MESH_PLATE, &netz);
         self.renderer.set_grass(keys[0]);
@@ -374,12 +406,14 @@ impl App {
 
     /// Linien der Platte in Ansicht und Schnitt; ausgeblendet keine.
     pub(crate) fn platte_linien(&mut self, scale: f32) -> Vec<Helper> {
-        if self.scene.terrain_hidden() {
+        // nur Ansichten und Schnitt zeigen Linien der Platte
+        if self.scene.terrain_hidden() || matches!(self.ui.view, ViewKind::Plan | ViewKind::Persp) {
             return Vec::new();
         }
         let plane = self.plane();
+        let halten = self.scene.zieht();
         let m = self.scene.model();
-        let plates = self.platte.platten(m);
+        let plates = self.platte.platten(m, halten);
         let b = self.scene.bounds();
         linien(plates, self.ui.view, plane, b, self.scene.table(), scale)
     }
@@ -388,6 +422,7 @@ impl App {
     /// der Boden in 3D auf der Unterkante der Platte (die Platte steht auf
     /// ihm); ausgeblendet auf OK Gelände.
     pub(crate) fn gelaende_renderer(&mut self) {
+        let halten = self.scene.zieht();
         let m = self.scene.model();
         self.renderer.set_terrain(m.terrain_z() as f32);
         self.renderer
@@ -395,7 +430,7 @@ impl App {
         let unten = if self.scene.terrain_hidden() {
             None
         } else {
-            let p = self.platte.platten(m);
+            let p = self.platte.platten(m, halten);
             p.iter().map(|p| p.bottom as f32).reduce(f32::min)
         };
         self.renderer.set_ground_z(unten);
@@ -416,7 +451,7 @@ impl App {
             if !war {
                 self.ui.reset_props_scroll();
             }
-            let p = props(m, self.platte.platten(m));
+            let p = props(m, self.platte.platten(m, false));
             self.ui.set_props(Some(p));
         } else {
             self.ui.set_props(None);
@@ -424,6 +459,15 @@ impl App {
         }
         self.props_dirty = true;
         soll.is_some()
+    }
+
+    /// Neues Projekt (Neu, Öffnen, Sicherung): Objektbaum zu, Platte
+    /// abgewählt und neu zu rechnen (geladene Dateien beginnen alle bei
+    /// Revision 0, sonst zeigte B die Platte von A).
+    pub(crate) fn baum_neu(&mut self) {
+        self.tree.reset();
+        self.platte = Platte::default();
+        self.picking.plate = false;
     }
 
     /// Zeile „Geländeplatte“ im Objektbaum: die Platte wählen, die
@@ -471,6 +515,44 @@ mod tests {
         ];
         m.build_from_polygon(b, &pts).unwrap();
         m
+    }
+
+    /// Während eines Zugs bleiben die Platten stehen und folgen beim
+    /// Loslassen (Review W34 B1); ein neues Projekt rechnet neu, auch wenn
+    /// beide Dateien bei Revision 0 beginnen (B3).
+    #[test]
+    fn zug_und_neues_projekt() {
+        let mut s = crate::scene::Scene::with_model(haus());
+        let mut pl = Platte::default();
+        let a0 = pl.platten(s.model(), false)[0].area();
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        s.begin("Wand verschieben");
+        let moved = orig.with_segment_moved(0, 1000.0).unwrap();
+        assert!(s.set_run_points(run, &moved.points));
+        assert!(s.zieht());
+        assert_eq!(pl.platten(s.model(), s.zieht())[0].area(), a0, "steht");
+        s.commit();
+        assert!(!s.zieht());
+        let a1 = pl.platten(s.model(), s.zieht())[0].area();
+        assert!((a1 - a0).abs() > 1e6, "folgt beim Loslassen: {a0} {a1}");
+        // zwei Dateien nacheinander: beide Revision 0
+        let laden = |m: &Model| {
+            let t = sk_model::szo::write(m);
+            sk_model::szo::read(&t, sk_model::GuidGen::with_seed(1))
+                .unwrap()
+                .model
+        };
+        let (a, b) = (laden(&Model::with_seed(4)), laden(&haus()));
+        assert_eq!(a.revision(), b.revision());
+        let mut pl = Platte::default();
+        assert!(pl.platten(&a, false).is_empty());
+        assert!(pl.platten(&b, false).is_empty(), "ohne Zurücksetzen");
+        let mut pl = Platte::default();
+        assert_eq!(pl.platten(&b, false).len(), 1);
+        let main = include_str!("main.rs");
+        let install = &main[main.find("fn install_scene").unwrap()..];
+        assert!(install[..install.find("\n    }\n").unwrap()].contains("self.baum_neu();"));
     }
 
     /// In 3D ein geschlossener Körper: Rasen oben und Erdreich unten mit

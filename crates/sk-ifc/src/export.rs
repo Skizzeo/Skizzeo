@@ -18,9 +18,12 @@ use sk_math::{vec3, Vec3};
 use sk_model::qto::ElementQto;
 use sk_model::{
     library, Category, ElementId, ElementKind, Guid, LayerFunction, LayerSetId, LevelKind,
-    MatCategory, MaterialId, MaterialLayer, Model, StoreyId,
+    MatCategory, MaterialId, MaterialLayer, Model, RunId, StoreyId,
 };
 use std::collections::{BTreeMap, HashMap};
+
+#[path = "oeffnungen.rs"]
+mod oeffnungen;
 
 /// Angaben zum Export, die nicht im Modell stehen.
 #[derive(Clone, Debug)]
@@ -49,6 +52,12 @@ pub struct Bericht {
     pub gebaeude: usize,
     pub geschosse: usize,
     pub bauteile: usize,
+    /// Wandzüge als `IfcElementAssembly` (die Wände zählen in `bauteile`).
+    pub baugruppen: usize,
+    /// Öffnungen mit mindestens einer gelochten Wand (I5).
+    pub oeffnungen: usize,
+    /// Türen mit Blatt als `IfcDoor` in ihrer Öffnung (I5).
+    pub tueren: usize,
     /// Bauteile, die nicht geschrieben wurden, mit Nummer und Grund.
     pub ausgelassen: Vec<(String, Grund)>,
 }
@@ -60,9 +69,10 @@ pub enum Grund {
     OhneGeschoss,
     /// Kein Körper oder kein Dreieck.
     OhneForm,
-    /// Öffnungen brauchen das Bauteil, das sie lochen (`IfcRelVoidsElement`,
-    /// ifc/plan.md §5 I5); bis dahin nicht in der Datei.
-    OeffnungBisI5,
+    /// Eine Öffnung lochte keine Wand in der Datei (`IfcRelVoidsElement`
+    /// braucht sie), oder ein anderes Bauteil ist als `IfcOpeningElement`
+    /// eingestuft.
+    OhneWand,
     /// Räume (Grundriss G3) haben im Modell keinen Körper, ihre Form rechnet
     /// `sk-raum` aus den Wänden; als `IfcSpace` mit Form in I6 (ifc/plan.md
     /// §5), bis dahin nicht in der Datei.
@@ -74,7 +84,7 @@ impl Grund {
         match self {
             Grund::OhneGeschoss => "ohne Geschoss",
             Grund::OhneForm => "ohne Form",
-            Grund::OeffnungBisI5 => "Öffnung bis I5",
+            Grund::OhneWand => "ohne Wand",
             Grund::RaumBisI6 => "Raum bis I6",
         }
     }
@@ -170,7 +180,9 @@ struct Ctx<'a> {
     /// Kostengruppe → Bauteile.
     kg_nutzer: BTreeMap<u16, Vec<u32>>,
     /// Leistungsbereich der VOB/C (ATV-Nummer, Name) → Bauteile.
-    atv_nutzer: BTreeMap<(String, String), Vec<u32>>,
+    /// Nach ATV-Nummer: Name und Bauteile. Eine Nummer, eine Beziehung,
+    /// auch wenn zwei Gewerke sie tragen (Regel 48 meldet das nur).
+    atv_nutzer: BTreeMap<String, (String, Vec<u32>)>,
     /// Geschoss → Bauteile.
     inhalt: BTreeMap<u32, Vec<u32>>,
     /// Räume je Geschoss: hängen über `IfcRelAggregates` am Geschoss, nicht
@@ -179,7 +191,14 @@ struct Ctx<'a> {
     projekt: Guid,
     /// Zeilen der Mengenliste je Bauteil (I4).
     mengen: HashMap<ElementId, ElementQto>,
+    /// Bauteil → Objekt, Lage und Höhe seines Geschosses: dort hängen die
+    /// Öffnungen an (I5).
+    lage: HashMap<ElementId, (u32, u32, f64)>,
 }
+
+/// Wandzug als Baugruppe: Zug, Geschoss, Lage der Baugruppe, Wände mit
+/// ihrem Segment.
+type Zug = (RunId, u32, u32, Vec<(usize, u32)>);
 
 /// Exportiert das Modell als IFC4-Datei (Text) und sagt, was darin steht.
 pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
@@ -203,6 +222,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         raeume: BTreeMap::new(),
         projekt: p.guid,
         mengen: mengen_je_bauteil(m),
+        lage: HashMap::new(),
     };
     let mut bericht = Bericht::default();
     c.oh = c.owner_history(opt);
@@ -333,6 +353,27 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
     }
     c.aggregate(abgeleitet(p.guid, "aggregates.buildings"), site, &b_ids);
 
+    // Wandzüge mit mehr als einer Wand, die in die Datei kommt (Geschoss
+    // und Netz), werden Baugruppen (I4); die Netze dieser Wände bleiben für
+    // die Schleife unten (Review #114 H-a)
+    let mut wandzahl: HashMap<RunId, usize> = HashMap::new();
+    let mut wandnetze: HashMap<ElementId, Vec<Netz>> = HashMap::new();
+    for (&id, solid) in &solids {
+        let Some(el) = m.element(id) else { continue };
+        let (ElementKind::Wall(_), Some((run, _)), Some(&(_, _, elev))) =
+            (&el.kind, m.segment_of(id), storey_of.get(&el.storey))
+        else {
+            continue;
+        };
+        let netze = geometrie::netze(solid, vec3(0.0, 0.0, elev));
+        if !netze.is_empty() {
+            *wandzahl.entry(run).or_default() += 1;
+            wandnetze.insert(id, netze);
+        }
+    }
+    let mut zuege: BTreeMap<usize, Zug> = BTreeMap::new();
+    let mut oeffnungen = Vec::new();
+
     // Bauteile in der Reihenfolge des Modells
     let mut ids: Vec<ElementId> = m.elements().ids().collect();
     ids.sort_by_key(|id| id.index());
@@ -340,13 +381,17 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         let Some(el) = m.element(id) else {
             continue;
         };
-        // Öffnungen zuerst: sie haben (seit O2) keinen eigenen Körper und
-        // fehlen bis I5 aus diesem Grund, nicht „ohne Form“
+        // Öffnungen nach den Wänden, die sie lochen (I5); ein anderes
+        // Bauteil als Öffnung eingestuft lochte nichts
         let klasse = c.zuordnung(id).klasse.name;
         if klasse == "IfcOpeningElement" {
-            bericht
-                .ausgelassen
-                .push((el.number.clone(), Grund::OeffnungBisI5));
+            if matches!(el.kind, ElementKind::Opening(_)) {
+                oeffnungen.push(id);
+            } else {
+                bericht
+                    .ausgelassen
+                    .push((el.number.clone(), Grund::OhneWand));
+            }
             continue;
         }
         if matches!(el.kind, ElementKind::Space(_)) {
@@ -367,21 +412,76 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                 .push((el.number.clone(), Grund::OhneForm));
             continue;
         };
-        let netze = geometrie::netze(solid, vec3(0.0, 0.0, elev));
+        let netze = wandnetze
+            .remove(&id)
+            .unwrap_or_else(|| geometrie::netze(solid, vec3(0.0, 0.0, elev)));
         if netze.is_empty() {
             bericht
                 .ausgelassen
                 .push((el.number.clone(), Grund::OhneForm));
             continue;
         }
-        let pi = c.element(id, s_pl, elev, &netze);
-        if klasse == "IfcSpace" {
-            c.raeume.entry(si).or_default().push(pi);
-        } else {
-            c.inhalt.entry(si).or_default().push(pi);
-        }
+        let zug = match el.kind {
+            ElementKind::Wall(_) => m
+                .segment_of(id)
+                .filter(|(run, _)| wandzahl.get(run).is_some_and(|&n| n > 1)),
+            _ => None,
+        };
+        let Some((run, seg)) = zug else {
+            let pi = c.element(id, s_pl, elev, &netze);
+            if klasse == "IfcSpace" {
+                c.raeume.entry(si).or_default().push(pi);
+            } else {
+                c.inhalt.entry(si).or_default().push(pi);
+            }
+            bericht.bauteile += 1;
+            continue;
+        };
+        // Wand im Wandzug: Lage relativ zur Baugruppe, die im Geschoss steht
+        let z = zuege.entry(run.index() as usize).or_insert_with(|| {
+            let o = c.placement3(vec3(0.0, 0.0, 0.0));
+            let a_pl = c.w.add("IFCLOCALPLACEMENT", vec![r(s_pl), r(o)]);
+            (run, si, a_pl, Vec::new())
+        });
+        let a_pl = z.2;
+        let pi = c.element(id, a_pl, elev, &netze);
+        zuege
+            .get_mut(&(run.index() as usize))
+            .unwrap()
+            .3
+            .push((seg, pi));
         bericht.bauteile += 1;
     }
+    for (run, si, a_pl, mut waende) in zuege.into_values() {
+        let Some(w) = m.run(run) else { continue };
+        waende.sort_unstable();
+        // nur die Wände, die Teil der Baugruppe sind (Review #114 H-c)
+        let nummern: Vec<&str> = waende
+            .iter()
+            .filter_map(|&(seg, _)| m.element(*w.segments.get(seg)?))
+            .map(|e| e.number.as_str())
+            .collect();
+        let waende: Vec<u32> = waende.into_iter().map(|x| x.1).collect();
+        let gruppe = c.w.add(
+            "IFCELEMENTASSEMBLY",
+            vec![
+                gid(w.guid),
+                r(c.oh),
+                s("Wandzug"),
+                s(&nummern.join(", ")),
+                s("Wandzug"),
+                r(a_pl),
+                V::Null,
+                V::Null,
+                e("SITE"),
+                e("USERDEFINED"),
+            ],
+        );
+        c.aggregate(abgeleitet(w.guid, "aggregates.walls"), gruppe, &waende);
+        c.inhalt.entry(si).or_default().push(gruppe);
+        bericht.baugruppen += 1;
+    }
+    c.oeffnungen(&oeffnungen, &storey_of, &mut bericht);
 
     // Beziehungen gesammelt
     let geschosse: Vec<(StoreyId, (u32, u32, f64))> =
@@ -464,7 +564,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         }
     }
 
-    let atv: Vec<((String, String), Vec<u32>)> =
+    let atv: Vec<(String, (String, Vec<u32>))> =
         std::mem::take(&mut c.atv_nutzer).into_iter().collect();
     if !atv.is_empty() {
         let cls = c.w.add(
@@ -479,7 +579,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
                 V::Null,
             ],
         );
-        for ((code, name), els) in atv {
+        for (code, (name, els)) in atv {
             let rf = c.w.add(
                 "IFCCLASSIFICATIONREFERENCE",
                 vec![
@@ -981,6 +1081,7 @@ impl Ctx<'_> {
             _ => args.extend([s(&el.number), e(z.predefined)]),
         }
         let pi = self.w.add(&k.name.to_ascii_uppercase(), args);
+        self.lage.insert(id, (pi, pl, elev));
 
         // Typ und Baustoff
         let mut typ_name = String::new();
@@ -1164,10 +1265,16 @@ impl Ctx<'_> {
         // Als Klassifikation nur Leistungsbereiche der VOB/C (ATV DIN 18299
         // ff.); eigene Nummern der Firma bleiben nur Eigenschaft
         if let Some(t) = trade.filter(|t| atv(&t.code)) {
-            self.atv_nutzer
-                .entry((t.code.clone(), t.name.trim().to_string()))
-                .or_default()
-                .push(pi);
+            let name = t.name.trim();
+            let (n, els) = self
+                .atv_nutzer
+                .entry(t.code.clone())
+                .or_insert_with(|| (name.to_string(), Vec::new()));
+            // bei zwei Namen der kleinste, unabhängig von der Folge
+            if name < n.as_str() {
+                *n = name.to_string();
+            }
+            els.push(pi);
         }
         let mut eigen = vec![
             self.single("Nummer", typed("IFCIDENTIFIER", s(&el.number))),
@@ -1282,7 +1389,8 @@ impl Ctx<'_> {
     }
 }
 
-/// ATV-Nummer der VOB/C: „18299“ … „18459“ (fünf Ziffern, 18…).
+/// ATV-Nummer der VOB/C: fünf Ziffern, 18000 … 18999 (belegt sind 18299
+/// ff.; eine neue ATV soll nicht an der Grenze scheitern).
 fn atv(code: &str) -> bool {
     code.len() == 5 && code.starts_with("18") && code.bytes().all(|b| b.is_ascii_digit())
 }
