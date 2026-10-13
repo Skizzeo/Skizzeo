@@ -331,10 +331,17 @@ pub fn bindung_name(m: &Model, r: HeightRef) -> Option<String> {
     }
 }
 
+/// Steht die Kante auf OK Rohdecke ihres Geschosses? Gebunden und frei
+/// sind dort dasselbe: Sie geht mit dem Boden, darum gibt es dort kein
+/// Schloss (Review W43 B3).
+fn am_boden(r: HeightRef) -> bool {
+    matches!(r, HeightRef::Level(l) if l.edge == LevelEdge::Bottom && l.offset == 0.0)
+}
+
 /// Freie Höhe `z` (genau) als Maß über OK Rohdecke des Geschosses, in dem
-/// sie liegt. Genau auf OK Rohdecke wäre das die Bindung selbst (W43 B3):
-/// Dort zählt sie von der Oberkante desselben Geschosses nach unten, so
-/// bleibt die Öffnung in ihrem Geschoss.
+/// sie liegt; so behält die Kante ihren Abstand zum Boden, wenn sich eine
+/// Geschosshöhe ändert. Genau auf OK Rohdecke ist das die Bindung dort
+/// ([`am_boden`]).
 fn frei_bei(m: &Model, st: StoreyId, z: f64) -> LevelRef {
     let alle = geschosse(m, st);
     let (storey, e) = alle
@@ -344,28 +351,25 @@ fn frei_bei(m: &Model, st: StoreyId, z: f64) -> LevelRef {
         .or(alle.first())
         .copied()
         .unwrap_or((st, m.storey(st).map_or(0.0, |s| s.elevation)));
-    if (z - e).abs() > 1e-6 {
-        return LevelRef {
-            storey,
-            edge: LevelEdge::Bottom,
-            offset: z - e,
-        };
-    }
     LevelRef {
         storey,
-        edge: LevelEdge::Top,
-        offset: z - m.storey(storey).map_or(e, |x| x.top()),
+        edge: LevelEdge::Bottom,
+        offset: if (z - e).abs() > 1e-6 { z - e } else { 0.0 },
     }
 }
 
 /// Die Öffnung `id` mit gelöster bzw. gebundener Ober- (`oben`) oder
 /// Unterkante: gebunden wird sie frei auf ihrer Höhe; frei bindet sie an
-/// die Höhenlinie, auf der sie steht. `None`, wenn es keine solche gibt.
+/// die Höhenlinie, auf der sie steht. `None`, wenn es keine solche gibt
+/// oder die Kante auf OK Rohdecke steht ([`am_boden`]).
 pub fn umbinden(scene: &Scene, id: ElementId, oben: bool) -> Option<Opening> {
     let m = scene.model();
     let mut o = m.opening(id)?.clone();
     let st = m.element(id)?.storey;
     let r = if oben { o.top } else { o.bottom };
+    if am_boden(r) {
+        return None;
+    }
     let z = m.height_z(r)?;
     let neu = if bindung_name(m, r).is_some() {
         HeightRef::Level(frei_bei(m, st, z))
@@ -386,7 +390,7 @@ pub fn umbinden(scene: &Scene, id: ElementId, oben: bool) -> Option<Opening> {
 /// Schlösser an der Öffnung unter der Maus: das Breitenschloss je Ende mit
 /// Partner darüber oder darunter, neben der Seitenkante; die Höhenbindung
 /// an Ober- und Unterkante, wenn sie gebunden ist oder auf einer Linie
-/// steht.
+/// steht, nicht auf OK Rohdecke ([`am_boden`]).
 pub fn schloesser(scene: &Scene, t: Treffer) -> Vec<Schloss> {
     let m = scene.model();
     let Some(o) = m.opening(t.id) else {
@@ -424,7 +428,10 @@ pub fn schloesser(scene: &Scene, t: Treffer) -> Vec<Schloss> {
     let linien = linien(m, st, decke_grenzen(m, zug(scene, t.id)));
     for (oben, r, z) in [(false, o.bottom, z0), (true, o.top, z1)] {
         let gebunden = bindung_name(m, r).is_some();
-        if !gebunden && !linien.iter().any(|l| (l.z - z).abs() < 0.5) {
+        let auf_linie = linien
+            .iter()
+            .any(|l| (l.z - z).abs() < 0.5 && !am_boden(l.bind));
+        if am_boden(r) || (!gebunden && !auf_linie) {
             continue;
         }
         out.push(Schloss {
@@ -981,10 +988,10 @@ pub(super) mod tests {
         assert!(band(&s, id).0 == z0);
     }
 
-    /// Das Schloss an OK Rohdecke löst die Kante und bindet sie wieder, im
-    /// untersten Geschoss wie darüber (Review W43 B3).
+    /// An OK Rohdecke gibt es kein Schloss, im untersten Geschoss wie
+    /// darüber: Gebunden und frei wären dort dasselbe (Review W43 B3).
     #[test]
-    fn schloss_an_rohdecke() {
+    fn rohdecke_ohne_schloss() {
         let (mut s, cam, id, eg, og) = haus();
         for run in [eg, og] {
             let st = s.model().run(run).unwrap().storey;
@@ -1003,21 +1010,95 @@ pub(super) mod tests {
                 None,
             );
             let t = t.expect("Unterkante von außen");
-            let schloss = |s: &Scene| {
-                schloesser(s, t)
-                    .into_iter()
-                    .find(|c| c.art == Schlossart::Hoehe(false))
-                    .map(|c| c.linked)
-            };
-            assert_eq!(schloss(&s), Some(true));
-            let frei = umbinden(&s, id, false).unwrap();
-            assert_eq!(bindung_name(s.model(), frei.bottom), None);
-            assert!((s.model().height_z(frei.bottom).unwrap() - z).abs() < 1e-6);
-            assert!(s.opening_schritt(id, frei, "Höhe gelöst"));
-            assert_eq!(schloss(&s), Some(false));
-            let wieder = umbinden(&s, id, false).unwrap();
-            assert_eq!(wieder.bottom, unten);
+            let hoehe: Vec<_> = schloesser(&s, t)
+                .into_iter()
+                .filter(|c| matches!(c.art, Schlossart::Hoehe(_)))
+                .map(|c| c.art)
+                .collect();
+            assert_eq!(hoehe, [Schlossart::Hoehe(true)], "nur am Sturz");
+            assert!(umbinden(&s, id, false).is_none());
+            // Frei auf genau diese Höhe gezogen: dasselbe wie gebunden
+            assert_eq!(HeightRef::Level(frei_bei(s.model(), st, z)), unten);
         }
+    }
+
+    /// Ändert sich eine Geschosshöhe um ±200 mm, behält eine gelöste Kante
+    /// ihren Abstand zum Boden ihres Geschosses, die an OK Rohdecke
+    /// gebundene bleibt auf ihm (Review W43 B3).
+    #[test]
+    fn geschosshoehe_haelt_den_abstand() {
+        let (mut s, _, id, eg, og) = haus();
+        let (st, st_og) = (
+            s.model().run(eg).unwrap().storey,
+            s.model().run(og).unwrap().storey,
+        );
+        // Unterkante an der Brüstung OG gebunden, dann gelöst
+        let mut o = s.model().opening(id).unwrap().clone();
+        (o.bottom, o.top) = (
+            HeightRef::Line(st_og, HeightLine::Sill),
+            HeightRef::Line(st_og, HeightLine::Lintel),
+        );
+        assert!(s.opening_schritt(id, o, "Höhe gebunden"));
+        let frei = umbinden(&s, id, false).unwrap();
+        assert!(matches!(frei.bottom, HeightRef::Level(l) if l.storey == st_og && l.offset > 0.0));
+        assert!(s.opening_schritt(id, frei, "Höhe gelöst"));
+        let boden = |s: &Scene| s.model().storey(st_og).unwrap().elevation;
+        let ueber = |s: &Scene| band(s, id).0 - boden(s);
+        let a = ueber(&s);
+        for (geschoss, d) in [(st, 200.0), (st, -200.0), (st_og, 200.0), (st_og, -200.0)] {
+            let h = s.model().storey(geschoss).unwrap().height;
+            assert!(s.edit_model("Geschosshöhe", |m| m.set_storey_height(geschoss, h + d)));
+            assert!((ueber(&s) - a).abs() < 1e-6, "gelöst {geschoss:?} {d}");
+            assert!(s.edit_model("Geschosshöhe", |m| m.set_storey_height(geschoss, h)));
+        }
+        // An OK Rohdecke OG gebunden: geht mit dem Boden
+        let mut o = s.model().opening(id).unwrap().clone();
+        o.bottom = HeightRef::Level(LevelRef::bottom(st_og));
+        assert!(s.opening_schritt(id, o, "Höhe gebunden"));
+        for d in [200.0, -200.0] {
+            let h = s.model().storey(st).unwrap().height;
+            assert!(s.edit_model("Geschosshöhe", |m| m.set_storey_height(st, h + d)));
+            assert!(ueber(&s).abs() < 1e-6, "gebunden {d}");
+            assert!(s.edit_model("Geschosshöhe", |m| m.set_storey_height(st, h)));
+        }
+    }
+
+    /// Eine Öffnung im OG: Die Unterkante, nach unten bis ins EG gezogen,
+    /// endet auf der Decke darunter und fängt an keiner Linie des EG
+    /// (Review H5).
+    #[test]
+    fn unterkante_endet_auf_der_decke() {
+        let (mut s, cam, id, eg, og) = haus();
+        let st_og = s.model().run(og).unwrap().storey;
+        let mut o = s.model().opening(id).unwrap().clone();
+        (o.bottom, o.top) = (
+            HeightRef::Line(st_og, HeightLine::Sill),
+            HeightRef::Line(st_og, HeightLine::Lintel),
+        );
+        assert!(s.opening_schritt(id, o, "Höhe gebunden"));
+        assert_eq!(zug(&s, id), Some(og));
+        let (decke, oben) = decke_grenzen(s.model(), Some(og));
+        let ok = s.model().floor(eg).unwrap().unwrap().band().1;
+        assert_eq!(decke, ok);
+        assert!(oben > decke);
+        let z0 = band(&s, id).0;
+        let p = bei(&s, &cam, id, 7000.0, z0 + 5.0);
+        let t = treffer(&s, &cam, p, W, H, 1.0, None).unwrap();
+        assert_eq!(t.kante, Some(Kante::Unten));
+        let mut z = HoeheZug::greifen(&mut s, t, false, &cam, p, W, H, 1.0).unwrap();
+        let mods = Default::default();
+        let (x, y) = bei(&s, &cam, id, 7000.0, 1000.0);
+        z.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        let unten = s.model().opening(id).unwrap().bottom;
+        assert!(
+            matches!(unten, HeightRef::Level(l) if l.storey == st_og),
+            "{unten:?}"
+        );
+        let z1 = band(&s, id).0;
+        assert!(
+            z1 >= decke - 1e-6 && z1 < decke + RASTER + 1e-6,
+            "{z1} {decke}"
+        );
     }
 
     /// Frei gezogen steht die Unterkante im Raster über OK Rohdecke; Zahl +
