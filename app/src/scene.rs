@@ -39,6 +39,8 @@ mod schnitt;
 #[path = "scene_sicht.rs"]
 pub mod sicht;
 use schnitt::UnderMemo;
+#[path = "scene_kanten.rs"]
+pub mod kanten;
 #[path = "scene_lage.rs"]
 mod lage;
 #[path = "scene_massstand.rs"]
@@ -611,6 +613,8 @@ pub struct Scene {
     /// Masken je Zug und Teil (Review 3a G2), gültig für Revision,
     /// Sichtbarkeit und Übergang.
     vis_table: RefCell<VisTable>,
+    /// Öffnungsschenkel und Züge je Feld für den Strahl unter der Maus (O7).
+    kanten: RefCell<kanten::Raster>,
     /// Ein Schritt hätte dieses gesperrte Bauteil geändert (Paket 4).
     locked_hit: Option<ElementId>,
     /// Blasses Netz zum zuletzt zusammengesetzten Modellnetz.
@@ -924,6 +928,7 @@ impl Scene {
             vis_rev: 0,
             vis_anim: None,
             vis_table: RefCell::default(),
+            kanten: RefCell::default(),
             locked_hit: None,
             ghost: None,
             ext: Default::default(),
