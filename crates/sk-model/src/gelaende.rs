@@ -192,7 +192,7 @@ impl Model {
     }
 
     /// Merkt das Projekt im offenen Schritt.
-    fn note_project(&mut self) {
+    pub(super) fn note_project(&mut self) {
         match self.txn.as_mut() {
             Some(t) => {
                 if t.noted.insert(Key::Project) {
