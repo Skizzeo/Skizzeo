@@ -117,6 +117,15 @@ impl TerraceParams {
     }
 }
 
+/// Ein Stück eines Randdämmstreifens (siehe [`FloorSlab::strip_teile`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripTeil {
+    /// Außen Anfang, außen Ende, innen Ende, innen Anfang (z = 0).
+    pub q: [Vec3; 4],
+    /// Liegen Anfang und Ende an einer Lücke (Aussparung der Decke)?
+    pub luecke: (bool, bool),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloorSlab {
     /// Umriss gegen den Uhrzeigersinn, auf z = 0.
@@ -146,6 +155,9 @@ pub struct FloorSlab {
     /// Schicht der Rohdecke in ihrem Aufbau (Darstellung, Paket 3; das
     /// Modell setzt die Kernschicht des Typs).
     pub core_layer: u8,
+    /// Kerben im Umriss für Öffnungen, die durch die Decke laufen; der
+    /// Umriss trägt sie schon (das Modell setzt sie, `decke_aussparung`).
+    pub aussparungen: Vec<crate::decke_aussparung::Aussparung>,
 }
 
 impl FloorSlab {
@@ -292,6 +304,7 @@ impl FloorSlab {
             terrace: None,
             terraces: TerracePlan::default(),
             core_layer: 0,
+            aussparungen: Vec::new(),
         })
     }
 
@@ -875,14 +888,91 @@ impl FloorSlab {
     /// Wand und hat keine Kanten außer den Gebäudeecken außen (die Wand
     /// läuft fugenlos durch); als Schnitt oben trägt er seine Schraffur.
     fn strip_prism(&self, k: usize, z0: f64, z1: f64, cut_top: bool) -> Solid {
-        let (Some(sp), Some(q)) = (self.strip, self.strips.get(k)) else {
+        let mut s = Solid::default();
+        for t in self.strip_teile(k) {
+            s.append(&self.strip_stueck(k, t, z0, z1, cut_top));
+        }
+        s
+    }
+
+    /// Stücke des Streifens `k` ohne die Lücken an den Aussparungen der
+    /// Decke (Fenster über zwei Geschosse): je außen Anfang, außen Ende,
+    /// innen Ende, innen Anfang und ob Anfang und Ende an einer Lücke
+    /// liegen. Ohne Aussparung der ganze Streifen.
+    pub fn strip_teile(&self, k: usize) -> Vec<StripTeil> {
+        let Some(&q) = self.strips.get(k) else {
+            return Vec::new();
+        };
+        let ganz = StripTeil {
+            q,
+            luecke: (false, false),
+        };
+        let [o0, o1, i1, i0] = q;
+        let l = (o1 - o0).length();
+        if l < 1e-9 {
+            return vec![ganz];
+        }
+        let d = (o1 - o0) * (1.0 / l);
+        let w = (i0 - o0) - d * (i0 - o0).dot(d);
+        let mut luecken: Vec<(f64, f64)> = self
+            .aussparungen
+            .iter()
+            .filter(|a| a.seg == k)
+            .map(|a| {
+                let (u0, u1) = ((a.stelle.0 - o0).dot(d), (a.stelle.1 - o0).dot(d));
+                (u0.min(u1), u0.max(u1))
+            })
+            .filter(|g| g.1 > 0.0 && g.0 < l)
+            .collect();
+        if luecken.is_empty() {
+            return vec![ganz];
+        }
+        luecken.sort_by(|a, b| a.0.total_cmp(&b.0));
+        const EPS: f64 = 0.5;
+        let mut out = Vec::new();
+        // Anfang des nächsten Stücks: außen, innen, an einer Lücke?
+        let mut von = Some((o0, i0, false));
+        for (u0, u1) in luecken {
+            if let Some((a, ai, la)) = von {
+                let (b, ua) = (o0 + d * u0, (a - o0).dot(d));
+                // Innen nicht hinter den Anfang (Gehrung an der Ecke)
+                if u0 > ua + EPS && (b + w - ai).dot(d) > EPS {
+                    out.push(StripTeil {
+                        q: [a, b, b + w, ai],
+                        luecke: (la, true),
+                    });
+                }
+                if u1 < ua {
+                    von = Some((a, ai, la));
+                    continue;
+                }
+            }
+            von = (u1 < l - EPS).then(|| {
+                let a = o0 + d * u1;
+                (a, a + w, true)
+            });
+        }
+        if let Some((a, ai, la)) = von {
+            if (o1 - a).dot(d) > EPS && (i1 - ai).dot(d) > EPS {
+                out.push(StripTeil {
+                    q: [a, o1, i1, ai],
+                    luecke: (la, false),
+                });
+            }
+        }
+        out
+    }
+
+    /// Ein Stück `t` des Streifens `k` zwischen `z0` und `z1`.
+    fn strip_stueck(&self, k: usize, t: StripTeil, z0: f64, z1: f64, cut_top: bool) -> Solid {
+        let Some(sp) = self.strip else {
             return Solid::default();
         };
         let mut s = Solid {
             mat: sp.face,
             ..Solid::default()
         };
-        let [o0, o1, i1, i0] = *q;
+        let [o0, o1, i1, i0] = t.q;
         let up = vec3(0.0, 0.0, z1 - z0);
         let z = |p: Vec3| at_z(p, z0);
         let d = (o1 - o0).normalized();
@@ -907,13 +997,30 @@ impl FloorSlab {
         s.mat = sp.face;
         s.quad(z(o0), z(o1), z(o1) + up, z(o0) + up, out);
         s.quad(z(i1), z(i0), z(i0) + up, z(i1) + up, -out);
+        // An einer Lücke schließt eine Stirn das Stück (Laibung)
+        let (la, le) = t.luecke;
+        if la {
+            s.quad(z(i0), z(o0), z(o0) + up, z(i0) + up, -d);
+        }
+        if le {
+            s.quad(z(o1), z(i1), z(i1) + up, z(o1) + up, d);
+        }
         s.edge_kind = edge_kind::VIEW;
         let n = self.strips.len();
         let prev = self.strips[(k + n - 1) % n];
         let pd = (prev[1] - prev[0]).normalized();
         let straight = (pd.x * d.y - pd.y * d.x).abs() < 1e-9 && pd.dot(d) > 0.0;
-        if !straight {
+        if !straight || la {
             s.edge(z(o0), z(o0) + up);
+        }
+        for (a, b, ja) in [(o0, i0, la), (o1, i1, le)] {
+            if ja {
+                s.edge(z(b), z(b) + up);
+                s.edge(z(a), z(b));
+            }
+        }
+        if le {
+            s.edge(z(o1), z(o1) + up);
         }
         if cut_top {
             s.edge_kind = edge_kind::CUT;
@@ -921,6 +1028,11 @@ impl FloorSlab {
         // Oben außen: Gebäudekante; steht die OG-Wand darauf, nimmt
         // merge_seam sie mit deren Fußkante weg (gleiche Oberfläche)
         s.edge(z(o0) + up, z(o1) + up);
+        for (a, b, ja) in [(o0, i0, la), (o1, i1, le)] {
+            if ja {
+                s.edge(z(a) + up, z(b) + up);
+            }
+        }
         s.edge_kind = edge_kind::VIEW;
         s
     }
@@ -948,9 +1060,19 @@ impl FloorSlab {
     /// (F4): Dämmschraffur, ohne Linie zur Wand darüber und darunter; nur
     /// die Außenkontur der Wand läuft durch.
     pub fn strip_section_caps(&self, k: usize, p0: Vec3, n: Vec3) -> Solid {
-        let (Some(sp), Some(q)) = (self.strip, self.strips.get(k)) else {
+        let mut s = Solid::default();
+        for t in self.strip_teile(k) {
+            s.append(&self.strip_stueck_caps(k, t, p0, n));
+        }
+        s
+    }
+
+    /// [`FloorSlab::strip_section_caps`] für ein Stück `t`.
+    fn strip_stueck_caps(&self, k: usize, t: StripTeil, p0: Vec3, n: Vec3) -> Solid {
+        let Some(sp) = self.strip else {
             return Solid::default();
         };
+        let q = &t.q;
         let f = SectionFrame::new(p0, n);
         let (n, along) = (f.n, f.along);
         let pt = |u: f64, z: f64| f.pt(u, z);
@@ -970,6 +1092,14 @@ impl FloorSlab {
             let r = vec3(p.x, p.y, 0.0) - vec3(o0.x, o0.y, 0.0);
             (r.x * d.y - r.y * d.x).abs() / len < 1e-3
         };
+        // Stirn an einer Lücke: dort endet die Schnittfläche mit einer Linie
+        let an_luecke = |p: Vec3| {
+            [(t.luecke.0, q[0], q[3]), (t.luecke.1, q[1], q[2])]
+                .into_iter()
+                .any(|(ja, a, b)| {
+                    ja && sk_math::dist_to_segment((p.x, p.y), (a.x, a.y), (b.x, b.y)) < 1e-3
+                })
+        };
         // Musterkoordinaten wie in der Wand: u in Streifenbreiten nach oben,
         // v quer von außen (0) nach innen (1)
         let w = sp.width.max(1e-9);
@@ -986,7 +1116,7 @@ impl FloorSlab {
                 [[ub, v(a)], [ub, v(b)], [ut, v(b)], [ut, v(a)]],
             );
             for u in [a, b] {
-                if on_outer(pt(u, 0.0)) {
+                if on_outer(pt(u, 0.0)) || an_luecke(pt(u, 0.0)) {
                     s.edge(pt(u, zb), pt(u, zt));
                 }
             }
@@ -1002,16 +1132,27 @@ impl FloorSlab {
 
     /// Länge des Streifens `k` auf seiner Achse (Mittel aus außen und innen), mm.
     pub fn strip_length(&self, k: usize) -> f64 {
-        self.strips.get(k).map_or(0.0, |q| {
-            ((q[1] - q[0]).length() + (q[2] - q[3]).length()) * 0.5
-        })
+        self.strip_teile(k)
+            .iter()
+            .map(|t| ((t.q[1] - t.q[0]).length() + (t.q[2] - t.q[3]).length()) * 0.5)
+            .sum()
+    }
+
+    /// Länge des Streifens `k` innen, an der Decke (dort ersetzt er die
+    /// Randschalung), mm.
+    pub fn strip_inner_length(&self, k: usize) -> f64 {
+        self.strip_teile(k)
+            .iter()
+            .map(|t| (t.q[2] - t.q[3]).length())
+            .sum()
     }
 
     /// Volumen des Streifens `k` (Grundfläche × Deckendicke), mm³.
     pub fn strip_volume(&self, k: usize) -> f64 {
-        self.strips
-            .get(k)
-            .map_or(0.0, |q| polygon::area(q) * self.params.thickness)
+        self.strip_teile(k)
+            .iter()
+            .map(|t| polygon::area(&t.q) * self.params.thickness)
+            .sum()
     }
 
     // ---- Mengen (Grundlage für qto, Einheiten mm, mm², mm³) ----
@@ -1028,6 +1169,34 @@ impl FloorSlab {
 
     pub fn volume(&self) -> f64 {
         self.area() * self.params.thickness
+    }
+
+    /// Je Öffnung die Fläche ihrer Kerbe (mm², alle Schenkel zusammen).
+    pub fn kerben(&self) -> Vec<(Option<crate::ElementId>, f64)> {
+        let mut je: Vec<(Option<crate::ElementId>, f64)> = Vec::new();
+        for a in &self.aussparungen {
+            if je.iter().all(|x| x.0 != a.opening) {
+                je.push((a.opening, a.flaeche));
+            }
+        }
+        je
+    }
+
+    /// Fläche und Volumen nach VOB/C (DIN 18331 Abschnitt 5): Die Kerben
+    /// der Öffnungen werden übermessen, die Fläche bis 2,5 m², das Volumen
+    /// bis 0,5 m³, je Aussparung ([`crate::vob::ueber_grenze`]).
+    pub fn vob_mengen(&self) -> (f64, f64) {
+        let d = self.params.thickness;
+        let (mut a, mut v) = (self.area(), self.volume());
+        for (_, f) in self.kerben() {
+            if !crate::vob::ueber_grenze(f) {
+                a += f;
+            }
+            if !crate::vob::ueber_grenze_vol(f * d) {
+                v += f * d;
+            }
+        }
+        (a, v)
     }
 }
 

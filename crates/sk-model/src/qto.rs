@@ -614,7 +614,9 @@ pub fn foundation_qto_of(f: &Foundation) -> (SlabQto, FootingQto) {
 /// Mengen einer Geschossdecke (IFC: Qto_SlabBaseQuantities), Hauptmenge Fläche.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloorQto {
-    /// Fläche des Umrisses bis Außenseite Kern (mm²).
+    /// Fläche des Umrisses bis Außenseite Kern (mm²) und Volumen, nach
+    /// VOB/C: kleine Aussparungen für Fenster über zwei Geschosse übermessen
+    /// ([`FloorSlab::vob_mengen`]).
     pub area: f64,
     pub volume: f64,
     /// Umfang (Randschalung), mm.
@@ -1010,9 +1012,10 @@ pub fn floor_qto(model: &Model, run: RunId) -> Option<FloorQto> {
 
 /// Mengen aus einer schon berechneten Decke.
 pub fn floor_qto_of(f: &FloorSlab) -> FloorQto {
+    let (area, volume) = f.vob_mengen();
     FloorQto {
-        area: f.area(),
-        volume: f.volume(),
+        area,
+        volume,
         perimeter: f.perimeter(),
         thickness: f.params.thickness,
         top: f.params.top,
@@ -1160,7 +1163,7 @@ fn floor_formwork_from<'a>(
     }
     let lost: f64 = (0..f.strips.len())
         .filter(|&k| f.strip_length(k) > 1e-6)
-        .map(|k| (f.strips[k][2] - f.strips[k][3]).length())
+        .map(|k| f.strip_inner_length(k))
         .sum();
     let mut q = FormworkQto {
         soffit: 0.0,
@@ -1169,7 +1172,7 @@ fn floor_formwork_from<'a>(
         edge_lost: lost,
         supports,
     };
-    q.soffit = (f.area() - q.support_area()).max(0.0);
+    q.soffit = (f.vob_mengen().0 - q.support_area()).max(0.0);
     q
 }
 

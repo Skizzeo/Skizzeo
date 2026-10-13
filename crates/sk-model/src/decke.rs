@@ -1,6 +1,8 @@
 //! Erdgeschossdecke (B10): Methoden von `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
+use crate::wand_loch::Hole;
+use sk_math::polygon;
 
 impl Model {
     /// Decken über einem Wandzug (richtig: höchstens eine).
@@ -185,6 +187,7 @@ impl Model {
         let mut slab = FloorSlab::from_chain_over(chain, &p, strip, over);
         if let Ok(fs) = &mut slab {
             fs.core_layer = self.core_layer(id);
+            self.aussparen(run, chain, fs);
             if fs.strip.is_some_and(|sp| sp.covered) {
                 fs.strip_covered = self.covered_segments(run);
             }
@@ -231,6 +234,153 @@ impl Model {
         Some(slab)
     }
 
+    /// Kerbt die Decke `fs` über dem Zug `run` (Körper `chain`) für jede
+    /// Öffnung aus, die sichtbar in das Deckenband reicht, über die ganze
+    /// Dicke: so breit wie ihr Loch in der Schicht, in der der Deckenrand
+    /// sitzt (der erste Kern), bis zur Innenfläche der Wand (Fenster über
+    /// zwei Geschosse, `decke_aussparung`).
+    fn aussparen(&self, run: RunId, chain: &WallChain, fs: &mut FloorSlab) {
+        let (b, t) = fs.band();
+        let buendig = self.buendig_oben(run);
+        let loecher: Vec<_> = self
+            .holes_of(run, chain)
+            .into_iter()
+            .filter(|h| h.z.1 > b + 1.0 && h.z.0 < t - 1.0 && buendig(h.seg))
+            .collect();
+        let (neu, aus) = kerben(chain, &fs.outline, (b, t), &loecher);
+        if !aus.is_empty() {
+            fs.outline = neu;
+            fs.aussparungen = aus;
+        }
+    }
+
+    /// Steht über Segment `k` von `run` die Wand darüber bündig (kein Vor-
+    /// oder Rücksprung)? Nur dort läuft eine Öffnung durch die Decke weiter;
+    /// unter einer Dachterrasse oder einem Erker bleibt die Decke ganz.
+    fn buendig_oben(&self, run: RunId) -> impl Fn(usize) -> bool {
+        let o = self.offsets_above(run).unwrap_or_default();
+        move |k| o.get(k).is_some_and(|d| d.abs() < MIN_OFFSET)
+    }
+
+    /// Spart die Decke über `run` für die Öffnung `opening` aus, wenn diese
+    /// durch das ganze Deckenband reicht? Nein bei einem Vor- oder
+    /// Rücksprung der Wand darüber, ohne Kern am Deckenrand oder ohne
+    /// Decke; dort bleibt die
+    /// Kante der Öffnung unter der Decke (Kanten von außen, O7).
+    pub fn spart_aus(&self, run: RunId, opening: ElementId) -> bool {
+        let Some(chain) = self.base_chain(run) else {
+            return false;
+        };
+        let Some(Ok(fs)) = self.floor_of_chain(run, &chain) else {
+            return false;
+        };
+        if fs.aussparungen.iter().any(|a| a.opening == Some(opening)) {
+            return true;
+        }
+        let band = fs.band();
+        let buendig = self.buendig_oben(run);
+        let loecher: Vec<_> = self
+            .holes_of(run, &chain)
+            .into_iter()
+            .filter(|h| h.opening == Some(opening) && buendig(h.seg))
+            .map(|h| Hole { z: band, ..h })
+            .collect();
+        !kerben(&chain, &fs.outline, band, &loecher).1.is_empty()
+    }
+}
+
+/// Der Umriss `umriss` der Decke im Band `(b, t)` über dem Zug `chain` mit
+/// den Kerben für die Löcher `loecher`, und die Kerben (leer, wenn keine
+/// entsteht).
+fn kerben(
+    chain: &WallChain,
+    umriss: &[Vec3],
+    (b, t): (f64, f64),
+    loecher: &[Hole],
+) -> (Vec<Vec3>, Vec<crate::decke_aussparung::Aussparung>) {
+    use crate::decke_aussparung::{aussparen, Aussparung};
+    use crate::wall::{cross2, right_of};
+    let rand = chain.band_layers().start;
+    let Some((pts, _, dirs)) = chain.layout().filter(|_| !loecher.is_empty()) else {
+        return (umriss.to_vec(), Vec::new());
+    };
+    {
+        let (aussen, innen) = (chain.outer_offset(), chain.inner_offset());
+        let reach = chain.thickness();
+        let n = umriss.len();
+        let mut aus = Vec::new();
+        for h in loecher {
+            let u = h.kasten(rand < h.shell).0;
+            let (Some(&p0), Some(&d)) = (pts.get(h.seg), dirs.get(h.seg)) else {
+                continue;
+            };
+            let nr = right_of(d);
+            let lang = (pts[(h.seg + 1) % pts.len()] - p0).length();
+            // Offene Enden bis über die Ecke
+            let (lo, hi) = (u.0.max(-reach), u.1.min(lang + reach));
+            for k in 0..n {
+                let (a, e) = (umriss[k], umriss[(k + 1) % n]);
+                let l = (e - a).length();
+                if l < 1.0 {
+                    continue;
+                }
+                let dk = (e - a) * (1.0 / l);
+                // Kante parallel zum Segment und in der Wanddicke
+                let quer = (a - p0).dot(nr);
+                if cross2(dk, d).abs() > 1e-3
+                    || quer < aussen.min(innen) - 1.0
+                    || quer > aussen.max(innen) + 1.0
+                {
+                    continue;
+                }
+                let nk = vec3(-dk.y, dk.x, 0.0);
+                let tiefe = (p0 + nr * innen - a).dot(nk);
+                let (ua, ub) = ((p0 + d * lo - a).dot(dk), (p0 + d * hi - a).dot(dk));
+                let u = (ua.min(ub), ua.max(ub));
+                if tiefe <= 1.0 || u.1 <= 0.0 || u.0 >= l {
+                    continue;
+                }
+                aus.push(Aussparung {
+                    opening: h.opening,
+                    seg: h.seg,
+                    stelle: (p0 + d * lo, p0 + d * hi),
+                    kante: k,
+                    u,
+                    tiefe,
+                    dicke: t - b,
+                    flaeche: 0.0,
+                    stirn: 0.0,
+                    seiten: 0,
+                });
+            }
+        }
+        let neu = aussparen(umriss, &mut aus);
+        aus.retain(|a| a.seiten > 0 || a.stirn > 0.0);
+        // Fläche der Kerbe je Öffnung, alle Schenkel zusammen (VOB/C: eine
+        // Aussparung)
+        let flaeche = polygon::area(&neu);
+        let mut je: Vec<(Option<ElementId>, f64)> = Vec::new();
+        for a in &aus {
+            if je.iter().all(|x| x.0 != a.opening) {
+                let mut ohne: Vec<_> = aus
+                    .iter()
+                    .filter(|x| x.opening != a.opening)
+                    .copied()
+                    .collect();
+                je.push((
+                    a.opening,
+                    polygon::area(&aussparen(umriss, &mut ohne)) - flaeche,
+                ));
+            }
+        }
+        for a in &mut aus {
+            a.flaeche = je.iter().find(|x| x.0 == a.opening).map_or(0.0, |x| x.1);
+        }
+        (neu, aus)
+    }
+}
+
+impl Model {
     /// Versatz nach außen je Segment von `run` für die Wand darüber, wie sie
     /// steht (gekoppelt oder gelöst; Stufen dazwischen zählen nicht, W-12).
     /// `None` ohne Zug darüber oder wenn die Züge nicht zusammenpassen.
