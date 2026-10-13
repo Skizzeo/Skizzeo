@@ -8,24 +8,29 @@
 //!
 //! Gezeigt wird nur, was das Zahnrad der Ansicht erlaubt ([`Model::mass_sicht`]);
 //! „Maßbezugspunkte zeigen“ setzt an jeden Bezugspunkt einen Punkt mit
-//! gestrichelter Linie zur Kette, in der Spurlinienfarbe.
+//! gestrichelter Linie zur Kette, in der Spurlinienfarbe. Gewählte Ketten,
+//! die Kette oder Zahl unter der Maus und das Maß in Arbeit leuchten in den
+//! Farben der Interaktion ([`Hervor`]); bedient wird in
+//! [`crate::wall_edit::mass_edit`].
 
 use crate::camera::Camera;
-use crate::scene::{neuer_stand, Scene};
+use crate::scene::{naechster_stand, neuer_stand, Scene};
 use crate::ui::ViewKind;
+use crate::wall_edit::mass_edit::Hervor;
+use crate::wall_edit::mass_treffer::{finde, id_von, KettenId, MassId};
 use sk_math::{vec3, Vec3};
-use sk_model::bemassung::{Kettenart, Stil};
+use sk_model::bemassung::{Kettenart, Stil, VersatzKey};
 use sk_model::{ElementId, LevelKind, Model, StoreyId};
 use sk_paint::font::Font;
 use sk_plan::aussen::{aussenmasse_mit, Aussenmasse, Verzeichnis};
-use sk_plan::bild::{bild, Bild, Strichart};
-use sk_plan::platz::{dazu, kasten, nachbarn, ohne, zu_zweit, Weg};
+use sk_plan::bild::{bild, Bild, Strichart, Zahlart};
+use sk_plan::platz::{dazu, kasten, nachbarn, nachbarn_neu, ohne, zu_zweit, Weg};
 use sk_plan::schrift::Schrift;
 use sk_render::{Helper, Ink, SOLID};
 use sk_ui::theme::Theme;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -53,6 +58,11 @@ const BEZUG_STRICH: f32 = 4.0;
 /// (Review W30, weit herausgezoomt über viele Häuser).
 const LESBAR_PX: f64 = 2.0;
 const SYMBOL_PX: f64 = 1.5;
+/// Pfeil am bewegten Ende einer Maßzahl in Eingabe: Länge und Spitze (mm
+/// auf dem Papier), Strichbreite (dip).
+const PFEIL_MM: f64 = 5.0;
+const SPITZE_MM: f64 = 1.5;
+const PFEIL_STRICH: f32 = 2.0;
 
 /// Kamera und Größe der Ansicht (Bildpunkte): Geschosse außerhalb des
 /// Bildes zeichnet die Bemaßung nicht.
@@ -69,13 +79,13 @@ impl Blick<'_> {
     fn massstab(&self, [lo, hi]: [Vec3; 2]) -> Option<f64> {
         let (cam, w, h) = (self.cam, self.w, self.h);
         let ecken = [lo, vec3(hi.x, lo.y, lo.z), hi, vec3(lo.x, hi.y, hi.z)];
-        let Some(p) = ecken
-            .iter()
-            .map(|&e| cam.project(e, w, h))
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Some(f64::INFINITY);
-        };
+        let mut p = [(0.0, 0.0); 4];
+        for (q, &e) in p.iter_mut().zip(&ecken) {
+            match cam.project(e, w, h) {
+                Some(x) => *q = x,
+                None => return Some(f64::INFINITY),
+            }
+        }
         let (x0, x1) = p
             .iter()
             .fold((f64::MAX, f64::MIN), |a, q| (a.0.min(q.0), a.1.max(q.0)));
@@ -94,20 +104,99 @@ impl Blick<'_> {
             _ => Some(f64::INFINITY),
         }
     }
+
+    /// Rechteck im Bild (x0, y0, x1, y1) um alle acht Ecken des Quaders
+    /// `[lo, hi]`; `None`, wenn eine hinter der Kamera liegt.
+    fn rechteck(&self, [lo, hi]: [Vec3; 2]) -> Option<[f64; 4]> {
+        let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for i in 0..8 {
+            let e = vec3(
+                if i & 1 == 0 { lo.x } else { hi.x },
+                if i & 2 == 0 { lo.y } else { hi.y },
+                if i & 4 == 0 { lo.z } else { hi.z },
+            );
+            let (x, y) = self.cam.project(e, self.w, self.h)?;
+            r = [r[0].min(x), r[1].min(y), r[2].max(x), r[3].max(y)];
+        }
+        Some(r)
+    }
 }
 
-/// Bild der Ketten eines Geschosses, mit Linien und Tinte, wie sie
-/// zuletzt gezeichnet wurden.
+/// Ketten eines Geschosses (ohne die weichenden) und ihr Bild, mit Linien
+/// und Tinte, wie sie zuletzt gezeichnet wurden.
 pub struct Geschoss {
+    pub a: Rc<Aussenmasse>,
     pub b: Bild,
     /// Eindeutig je Rechnung: Schlüssel der Tinte im Renderer.
     nr: u64,
     /// Kleinster Quader um das Bild.
     rahmen: [Vec3; 2],
+    /// Schrifthöhe am Bau (mm).
+    schrift: f64,
     /// Linien mit und ohne Kreise der Begrenzung; Tinte im Grundriss und
     /// verdeckbar in 3D.
     linien: RefCell<[Option<Linien>; 2]>,
     tinte: RefCell<[Option<Rc<[Ink]>>; 2]>,
+}
+
+impl Geschoss {
+    /// Liegt etwas von diesem Geschoss im Blick und im Rechteck `r`
+    /// (Bildpunkte x0, y0, x1, y1), und sind seine Zahlen dort lesbar wie
+    /// beim Zeichnen? `None`, wenn nicht (Review W36: die Maus prüft nur,
+    /// was zu sehen ist und unter ihr liegt).
+    pub fn im_bereich(&self, blick: &Blick, r: [f64; 4]) -> Option<bool> {
+        if let Some(q) = blick.rechteck(self.rahmen) {
+            if q[2] < r[0] || q[0] > r[2] || q[3] < r[1] || q[1] > r[3] {
+                return None;
+            }
+        }
+        let px = blick.massstab(self.rahmen)?;
+        Some(self.schrift * px >= LESBAR_PX)
+    }
+
+    /// Wie [`Geschoss::im_bereich`] für den Blickstrahl `(o, d)` der Maus
+    /// mit Spielraum `r` (Bildpunkte): geprüft am Quader in Weltkoordinaten,
+    /// ohne ihn ins Bild zu rechnen (Review W39); nur getroffene Geschosse
+    /// fragen nach dem Maßstab.
+    pub fn unter_strahl(&self, blick: &Blick, (o, d): (Vec3, Vec3), r: f64) -> Option<bool> {
+        let [lo, hi] = self.rahmen;
+        let cam = blick.cam;
+        // Spielraum in mm am Bau, in 3D am fernsten Punkt des Quaders
+        let mm_px = match cam.ortho {
+            Some(half) => 2.0 * half / blick.h,
+            None => {
+                let tiefe =
+                    ((lo + hi) * 0.5 - cam.eye).dot(cam.forward()) + (hi - lo).length() * 0.5;
+                if tiefe <= 0.0 {
+                    return None;
+                }
+                2.0 * tiefe * (cam.fov_y * 0.5).tan() / blick.h
+            }
+        };
+        let e = r * mm_px;
+        let (mut t0, mut t1) = (0.0f64, f64::MAX);
+        for (o, d, lo, hi) in [
+            (o.x, d.x, lo.x, hi.x),
+            (o.y, d.y, lo.y, hi.y),
+            (o.z, d.z, lo.z, hi.z),
+        ] {
+            let (lo, hi) = (lo - e, hi + e);
+            if d.abs() < 1e-12 {
+                if o < lo || o > hi {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((lo - o) / d, (hi - o) / d);
+            t0 = t0.max(a.min(b));
+            t1 = t1.min(a.max(b));
+            if t0 > t1 {
+                return None;
+            }
+        }
+        let px = blick.massstab(self.rahmen)?;
+        Some(self.schrift * px >= LESBAR_PX)
+    }
 }
 
 /// Wofür die gemerkten Linien eines Geschosses gelten: Maßstab der
@@ -125,6 +214,26 @@ pub struct Stand {
     pub geschosse: Vec<Rc<Geschoss>>,
 }
 
+impl Stand {
+    /// Ketten und Bild je Geschoss.
+    pub fn paare(&self) -> impl Iterator<Item = (&Aussenmasse, &Bild)> {
+        self.geschosse.iter().map(|g| (&*g.a, &g.b))
+    }
+}
+
+/// Linien und Tinte eines hervorgehobenen Geschosses (gemerkt unter seiner
+/// Nummer und ob verdeckbar) und wofür sie gelten: Farben je Kette und je
+/// Zahl, Art der Linien, mit Kreisen. Tinte nur, wenn die Zahlen lesbar
+/// waren.
+struct Hell {
+    ketten: Kettenfarben,
+    zahlen: Vec<Option<[f32; 4]>>,
+    art: Linienart,
+    kreise: bool,
+    linien: Rc<[Helper]>,
+    teil: Option<Teil>,
+}
+
 /// Wofür die Ketten eines Geschosses gelten: Stand der Szene im Geschoss
 /// ([`Scene::mass_stand`]) und seine Versätze. Der Stil gilt für alle.
 type Schluessel = ((u64, u64), Vec<((i32, Kettenart), f64)>);
@@ -136,6 +245,18 @@ struct Ketten {
     nr: u64,
     a: Rc<Aussenmasse>,
     kasten: Option<[f64; 4]>,
+}
+
+/// Wofür ein Stand gilt: nächste Nummer ([`naechster_stand`]), Stand aller
+/// Ketten der Szene, Geschosse und Versätze.
+type Zuletzt = (u64, u64, Vec<StoreyId>, BTreeMap<VersatzKey, f64>);
+
+/// Zuletzt geprüfter Platz: Nummern der Ketten, Paare von Nachbarn (Plätze
+/// in den Nummern) und was je Geschoss weicht.
+struct Platz {
+    nrn: Vec<u64>,
+    paare: Vec<(usize, usize)>,
+    wege: Vec<Weg>,
 }
 
 /// Bemaßung der App: gemerkte Schriften, je Geschoss die zuletzt
@@ -151,9 +272,7 @@ pub struct Massketten {
     /// „Abbrechen“ im Einstellungsfenster).
     stil: Option<Stil>,
     ketten: HashMap<StoreyId, (Schluessel, Option<Ketten>)>,
-    /// Zuletzt geprüfter Platz: Nummern der Ketten und was je Geschoss
-    /// weicht.
-    platz: Option<(Vec<u64>, Vec<Weg>)>,
+    platz: Option<Platz>,
     /// Was je Paar von Nachbarn weicht, nach den Nummern ihrer Ketten.
     paare: HashMap<(u64, u64), [Weg; 2]>,
     /// Ab so vielen Paaren fallen die mit nicht mehr gemerkten Ketten heraus.
@@ -162,6 +281,12 @@ pub struct Massketten {
     geschosse: HashMap<StoreyId, ((u64, Weg), Rc<Geschoss>)>,
     /// Zuletzt zusammengestellter Stand und die Nummern seiner Geschosse.
     stand: Option<(Vec<u64>, Rc<Stand>)>,
+    /// Wofür der Stand zuletzt galt. Ist nichts davon neu, gilt er ohne Gang
+    /// durch die Geschosse (Review L24).
+    zuletzt: Option<Zuletzt>,
+    /// Tinte hervorgehobener Geschosse beim letzten Zeichnen: Gleiche
+    /// Farben behalten ihren Schlüssel, der Renderer lädt nichts neu.
+    hell: HashMap<(u64, bool), Hell>,
 }
 
 /// Ansicht mit Bemaßung (Stufe 1: Grundriss und 3D).
@@ -241,9 +366,19 @@ impl Massketten {
             self.geschosse.clear();
             self.platz = None;
             self.paare.clear();
+            self.zuletzt = None;
             self.stil = Some(stil.clone());
         }
         let schrift = self.schrift(&stil.schrift, ui)?;
+        // Seit dem letzten Mal nichts neu (keine Nummer vergeben, dieselbe
+        // Szene, Geschosse und Versätze): derselbe Stand (Review L24)
+        let versatz = &m.bemassung().versatz;
+        if let (Some((nr, alle, alt, v)), Some((_, s))) = (&self.zuletzt, &self.stand) {
+            if *nr == naechster_stand() && *alle == scene.mass_alle() && *alt == st && v == versatz
+            {
+                return Some(s.clone());
+            }
+        }
         // Gemerkt bleiben alle Geschosse, die es noch gibt: Zurück auf eine
         // andere Ebene rechnet nichts neu (Review W33)
         if self.ketten.keys().any(|&k| m.storey(k).is_none()) {
@@ -281,10 +416,21 @@ impl Massketten {
             da.extend(k.map(|k| (s, k)));
         }
         let nrn: Vec<u64> = da.iter().map(|(_, k)| k.nr).collect();
-        if self.platz.as_ref().is_none_or(|(k, _)| *k != nrn) {
+        if self.platz.as_ref().is_none_or(|p| p.nrn != nrn) {
             let kaesten: Vec<_> = da.iter().map(|(_, k)| k.kasten).collect();
             let mut wege = vec![Weg::new(); da.len()];
-            let paare = nachbarn(&kaesten);
+            // Gleiche Nummer am gleichen Platz: dieselben Ketten, derselbe
+            // Kasten. Sind nur wenige neu (Ziehen), nur sie prüfen (Review L24)
+            let neu: Option<Vec<usize>> = self
+                .platz
+                .as_ref()
+                .filter(|p| p.nrn.len() == nrn.len())
+                .map(|p| (0..nrn.len()).filter(|&i| p.nrn[i] != nrn[i]).collect())
+                .filter(|neu: &Vec<usize>| neu.len() <= 8);
+            let paare = match (&self.platz, neu) {
+                (Some(p), Some(neu)) => nachbarn_neu(&kaesten, &p.paare, &neu),
+                _ => nachbarn(&kaesten),
+            };
             for &(i, j) in &paare {
                 let (a, b) = (&da[i].1, &da[j].1);
                 let w = self
@@ -306,9 +452,9 @@ impl Massketten {
                     .retain(|(a, b), _| lebend.contains(a) && lebend.contains(b));
                 self.paare_grenze = 2 * self.paare.len() + 16;
             }
-            self.platz = Some((nrn, wege));
+            self.platz = Some(Platz { nrn, paare, wege });
         }
-        let wege = &self.platz.as_ref()?.1;
+        let wege = &self.platz.as_ref()?.wege;
         let mut liste = Vec::new();
         for ((s, k), weg) in da.iter().zip(wege) {
             let (n, a) = (k.nr, &k.a);
@@ -316,11 +462,11 @@ impl Massketten {
                 Some(((kn, kw), g)) if *kn == n && kw == weg => g.clone(),
                 _ => {
                     let a = if weg.is_empty() {
-                        Cow::Borrowed(&**a)
+                        a.clone()
                     } else {
-                        Cow::Owned(ohne(a, weg))
+                        Rc::new(ohne(a, weg))
                     };
-                    let g = Rc::new(geschoss(&a, stil, &schrift));
+                    let g = Rc::new(geschoss(a, stil, &schrift));
                     self.geschosse.insert(*s, ((n, weg.clone()), g.clone()));
                     g
                 }
@@ -328,23 +474,38 @@ impl Massketten {
             liste.push(g);
         }
         let nr: Vec<u64> = liste.iter().map(|g| g.nr).collect();
-        if let Some((k, s)) = &self.stand {
-            if *k == nr {
-                return Some(s.clone());
-            }
+        if self.stand.as_ref().is_none_or(|(k, _)| *k != nr) {
+            self.stand = Some((nr, Rc::new(Stand { geschosse: liste })));
         }
-        let s = Rc::new(Stand { geschosse: liste });
-        self.stand = Some((nr, s.clone()));
-        Some(s)
+        self.zuletzt = Some((naechster_stand(), scene.mass_alle(), st, versatz.clone()));
+        self.stand.as_ref().map(|(_, s)| s.clone())
+    }
+
+    /// Ketten der Ansicht `v`, wenn das Zahnrad sie zeigt.
+    pub fn gezeigt(
+        &mut self,
+        scene: &Scene,
+        v: ViewKind,
+        gewaehlt: &[ElementId],
+        ui: Option<&Font>,
+    ) -> Option<Rc<Stand>> {
+        if !ansicht(v) || !scene.mass_sicht(v).0 {
+            return None;
+        }
+        let st = geschosse(scene, v, gewaehlt);
+        self.stand(scene, st, ui)
     }
 
     /// Hilfslinien und Tinte der Bemaßung für die Ansicht `v` (leer, wenn
-    /// das Zahnrad sie ausblendet oder es nichts zu bemaßen gibt). Die
+    /// das Zahnrad sie ausblendet oder es nichts zu bemaßen gibt), mit der
+    /// Hervorhebung `hervor`. Die
     /// Tinte kommt in Teilen je Geschoss mit einem Schlüssel für ihren
     /// Inhalt ([`sk_render::Renderer::set_ink_teile`]); Linien und Tinte
     /// eines Geschosses werden nur neu gebaut, wenn es neu gerechnet wurde
     /// oder Maßstab, Ansicht oder Farben wechseln. Geschosse außerhalb von
-    /// `blick` fehlen, sehr kleine ohne Schrift und Kreise.
+    /// `blick` fehlen, sehr kleine ohne Schrift und Kreise. Hervorgehobene
+    /// Geschosse bekommen ihre Linien bei jedem Zeichnen neu, ihre Tinte,
+    /// wenn sich die Farben ändern.
     #[allow(clippy::too_many_arguments)]
     pub fn zeichnen(
         &mut self,
@@ -355,16 +516,13 @@ impl Massketten {
         blick: &Blick,
         scale: f32,
         theme: &Theme,
+        hervor: &Hervor,
     ) -> (Vec<Helper>, Vec<Teil>) {
-        let m = scene.model();
-        let (zeigen, bezug) = scene.mass_sicht(v);
-        if !ansicht(v) || !zeigen {
-            return (Vec::new(), Vec::new());
-        }
-        let st = geschosse(scene, v, gewaehlt);
-        let Some(stand) = self.stand(scene, st, ui) else {
+        let Some(stand) = self.gezeigt(scene, v, gewaehlt, ui) else {
+            self.hell.clear();
             return (Vec::new(), Vec::new());
         };
+        let (m, bezug) = (scene.model(), scene.mass_sicht(v).1);
         let occlude = v == ViewKind::Persp;
         let stil = m.massstil();
         let art: Linienart = (
@@ -375,15 +533,66 @@ impl Massketten {
             theme.interact.track.map(f32::to_bits),
         );
         let (mut out, mut ink) = (Vec::new(), Vec::new());
+        let mut hell = HashMap::new();
+        // Gewählte Ketten je Geschoss, einmal je Bild (Review W39)
+        let mut wahl: HashMap<StoreyId, Vec<KettenId>> = HashMap::new();
+        for k in &hervor.gewaehlt {
+            wahl.entry(k.st).or_default().push(*k);
+        }
         for g in &stand.geschosse {
             let Some(px) = blick.massstab(g.rahmen) else {
                 continue;
             };
             let kreise = stil.am_bau(stil.symbol_mm) * 0.5 * px >= SYMBOL_PX;
+            let lesbar = g.schrift * px >= LESBAR_PX;
+            let w = wahl.get(&g.a.storey).map_or(&[][..], Vec::as_slice);
+            let (ketten, zahlen) = farben(&g.a, &g.b, w, hervor, theme);
+            if !ketten.is_empty() || !zahlen.is_empty() {
+                // Hervorgehoben: Linien und Tinte gemerkt, solange Farben
+                // und Art gleich bleiben
+                let alt = self.hell.remove(&(g.nr, occlude));
+                let linien = match &alt {
+                    Some(h) if h.ketten == ketten && h.art == art && h.kreise == kreise => {
+                        h.linien.clone()
+                    }
+                    _ => {
+                        let mut v = linien(&g.b, stil, scale, theme, occlude, &ketten);
+                        if !kreise {
+                            v.retain(|h| !h.round);
+                        }
+                        if bezug {
+                            v.extend(bezugspunkte(&g.b, scale, theme, occlude));
+                        }
+                        v.into()
+                    }
+                };
+                out.extend_from_slice(&linien);
+                let teil =
+                    lesbar.then(
+                        || match alt.and_then(|h| h.teil.filter(|_| h.zahlen == zahlen)) {
+                            Some(t) => t,
+                            None => {
+                                let t = tinte(&g.b, stil, occlude, &je_dreieck(&g.b, &zahlen));
+                                (neuer_stand() << 1 | occlude as u64, t.into())
+                            }
+                        },
+                    );
+                ink.extend(teil.clone());
+                let h = Hell {
+                    ketten,
+                    zahlen,
+                    art,
+                    kreise,
+                    linien,
+                    teil,
+                };
+                hell.insert((g.nr, occlude), h);
+                continue;
+            }
             let mut l = g.linien.borrow_mut();
             let l = &mut l[!kreise as usize];
             if l.as_ref().is_none_or(|(a, _)| *a != art) {
-                let mut v = linien(&g.b, stil, scale, theme, occlude);
+                let mut v = linien(&g.b, stil, scale, theme, occlude, &[]);
                 if !kreise {
                     v.retain(|h| !h.round);
                 }
@@ -393,16 +602,130 @@ impl Massketten {
                 *l = Some((art, v.into()));
             }
             out.extend_from_slice(&l.as_ref().unwrap().1);
-            if stil.am_bau(stil.schrift_mm) * px < LESBAR_PX {
+            if !lesbar {
                 continue;
             }
             let t = g.tinte.borrow_mut()[occlude as usize]
-                .get_or_insert_with(|| tinte(&g.b, stil, occlude).into())
+                .get_or_insert_with(|| tinte(&g.b, stil, occlude, &[]).into())
                 .clone();
             ink.push((g.nr << 1 | occlude as u64, t));
         }
+        self.hell = hell;
+        let pfeil = hervor.ende.and_then(|(z, e)| pfeil(&stand, z, e, stil));
+        for (a, b) in pfeil.into_iter().flatten() {
+            out.push(Helper {
+                a: a.to_f32(),
+                b: b.to_f32(),
+                color: theme.interact.drag,
+                width: PFEIL_STRICH * scale,
+                dash: 0.0,
+                pattern: SOLID,
+                occlude: false,
+                round: true,
+            });
+        }
         (out, ink)
     }
+}
+
+/// Pfeil am bewegten Ende `ende` (0 Anfang, 1 Ende) der Maßzahl `m`:
+/// Schaft und Spitze, auf der Maßlinie nach außen, hinter dem
+/// Begrenzungssymbol.
+fn pfeil(stand: &Stand, m: MassId, ende: usize, stil: &Stil) -> Option<[(Vec3, Vec3); 3]> {
+    let f = finde(stand, m.kette)?;
+    let r = f.kette.bezuege.get(m.i + ende)?;
+    let (t, n) = (f.seite.t, f.seite.n);
+    let q = t * r.t + n * f.kette.lage;
+    let p = vec3(q.x, q.y, f.a.z);
+    let d = if ende == 1 { t } else { t * -1.0 };
+    let luft = stil.am_bau(stil.symbol_mm);
+    let (lang, spitze) = (stil.am_bau(PFEIL_MM), stil.am_bau(SPITZE_MM));
+    let a = p + d * luft;
+    let b = a + d * lang;
+    let s = b - d * spitze;
+    Some([
+        (a, b),
+        (b, s + n * (0.6 * spitze)),
+        (b, s - n * (0.6 * spitze)),
+    ])
+}
+
+/// Farben der Hervorhebung je Kette (Seite, Kette) im Bild.
+type Kettenfarben = Vec<((usize, usize), [f32; 4])>;
+
+/// Farben der Hervorhebung im Geschoss `a` mit den dort gewählten Ketten
+/// `gewaehlt`: je Kette und je Zahl des Bildes (`None` in der Farbe des
+/// Stils; leer, wenn keine hervorgehoben ist).
+fn farben(
+    a: &Aussenmasse,
+    b: &Bild,
+    gewaehlt: &[KettenId],
+    h: &Hervor,
+    theme: &Theme,
+) -> (Kettenfarben, Vec<Option<[f32; 4]>>) {
+    // Nichts in diesem Geschoss hervorgehoben: nichts anlegen (Review W36)
+    let hier = |k: &KettenId| k.st == a.storey;
+    if gewaehlt.is_empty()
+        && !h.ueber.as_ref().is_some_and(hier)
+        && !h.zahl.is_some_and(|(m, _)| hier(&m.kette))
+    {
+        return (Vec::new(), Vec::new());
+    }
+    let col = &theme.interact;
+    let mut ketten = Vec::new();
+    for (si, s) in a.seiten.iter().enumerate() {
+        for ki in 0..s.ketten.len() {
+            let Some(k) = id_von(a, si, ki) else { continue };
+            if gewaehlt.contains(&k) {
+                ketten.push(((si, ki), col.select));
+            } else if h.ueber == Some(k) {
+                ketten.push(((si, ki), col.drag_hot));
+            }
+        }
+    }
+    let mut zahlen = vec![None; b.zahlen.len()];
+    let mut hell = false;
+    for (z, f) in b.zahlen.iter().zip(&mut zahlen) {
+        let (si, ki) = match z.art {
+            Zahlart::Mass { seite, kette, .. } => (seite, kette),
+            Zahlart::Hoehe { seite, .. } | Zahlart::Brh { seite, .. } => {
+                let Some(ki) = a.seiten[seite]
+                    .ketten
+                    .iter()
+                    .position(|k| k.art == Kettenart::Oeffnung)
+                else {
+                    continue;
+                };
+                (seite, ki)
+            }
+        };
+        let mut c = ketten.iter().find(|x| x.0 == (si, ki)).map(|x| x.1);
+        if let (Zahlart::Mass { seite, kette, i }, Some((hm, aktiv))) = (z.art, h.zahl) {
+            let m = id_von(a, seite, kette).map(|k| MassId { kette: k, i });
+            if m == Some(hm) {
+                c = Some(if aktiv { col.drag } else { col.drag_hot });
+            }
+        }
+        if c.is_some() {
+            hell = true;
+            *f = c;
+        }
+    }
+    if !hell {
+        zahlen.clear();
+    }
+    (ketten, zahlen)
+}
+
+/// Farbe je Dreieck der Tinte aus der Farbe je Zahl.
+fn je_dreieck(b: &Bild, zahlen: &[Option<[f32; 4]>]) -> Vec<Option<[f32; 4]>> {
+    let mut out = vec![None; b.tinte.len()];
+    for (z, c) in b.zahlen.iter().zip(zahlen) {
+        if c.is_some() {
+            out[z.tinte.clone()].fill(*c);
+        }
+    }
+    out
 }
 
 /// Versätze der Ketten im Geschoss `st` (nur dessen Abschnitt der
@@ -431,13 +754,15 @@ fn ketten(scene: &Scene, vz: &Verzeichnis, st: StoreyId) -> Option<Aussenmasse> 
 }
 
 /// Bild der Ketten `a`, eindeutig nummeriert.
-fn geschoss(a: &Aussenmasse, stil: &Stil, schrift: &Schrift) -> Geschoss {
-    let b = bild(a, stil, schrift);
+fn geschoss(a: Rc<Aussenmasse>, stil: &Stil, schrift: &Schrift) -> Geschoss {
+    let b = bild(&a, stil, schrift);
     let punkte = b
         .striche
         .iter()
         .flat_map(|s| [s.a, s.b])
         .chain(b.tinte.iter().flatten().copied())
+        .chain(b.linien.iter().flat_map(|l| [l.a, l.b]))
+        .chain(b.zahlen.iter().flat_map(|z| z.rahmen))
         .chain(b.bezuege.iter().map(|r| r.am_bauteil));
     let (lo, hi) = (
         vec3(f64::MAX, f64::MAX, f64::MAX),
@@ -450,9 +775,11 @@ fn geschoss(a: &Aussenmasse, stil: &Stil, schrift: &Schrift) -> Geschoss {
         ]
     });
     Geschoss {
+        a,
         b,
         nr: neuer_stand(),
         rahmen,
+        schrift: stil.am_bau(stil.schrift_mm),
         linien: RefCell::new([None, None]),
         tinte: RefCell::new([None, None]),
     }
@@ -470,13 +797,24 @@ pub fn farbe(s: &Stil) -> [f32; 4] {
 }
 
 /// Striche des Bildes als Hilfslinien: Strichstärke aus dem Stil (mm auf
-/// dem Papier) wie bei allen Stiften.
-pub fn linien(b: &Bild, s: &Stil, scale: f32, theme: &Theme, occlude: bool) -> Vec<Helper> {
+/// dem Papier) wie bei allen Stiften; hervorgehobene Ketten in ihrer Farbe.
+pub fn linien(
+    b: &Bild,
+    s: &Stil,
+    scale: f32,
+    theme: &Theme,
+    occlude: bool,
+    hervor: &[((usize, usize), [f32; 4])],
+) -> Vec<Helper> {
     let px = theme.px_per_mm * scale;
-    let color = farbe(s);
+    let stil = farbe(s);
     b.striche
         .iter()
         .map(|st| {
+            let color = hervor
+                .iter()
+                .find(|h| h.0 == st.kette)
+                .map_or(stil, |h| h.1);
             let mm = match st.art {
                 Strichart::Masslinie => s.linie,
                 Strichart::Hilfslinie => s.hilfslinie,
@@ -496,14 +834,16 @@ pub fn linien(b: &Bild, s: &Stil, scale: f32, theme: &Theme, occlude: bool) -> V
         .collect()
 }
 
-/// Gefüllte Dreiecke des Bildes in der Farbe des Stils.
-pub fn tinte(b: &Bild, s: &Stil, occlude: bool) -> Vec<Ink> {
-    let color = farbe(s);
+/// Gefüllte Dreiecke des Bildes in der Farbe des Stils, hervorgehobene in
+/// ihrer (`hervor` je Dreieck, leer: keine).
+pub fn tinte(b: &Bild, s: &Stil, occlude: bool, hervor: &[Option<[f32; 4]>]) -> Vec<Ink> {
+    let stil = farbe(s);
     b.tinte
         .iter()
-        .map(|d| Ink {
+        .enumerate()
+        .map(|(i, d)| Ink {
             p: d.map(|p| p.to_f32()),
-            color,
+            color: hervor.get(i).copied().flatten().unwrap_or(stil),
             occlude,
         })
         .collect()

@@ -651,6 +651,101 @@ mod tests {
         assert_eq!(swing(&s), alt.other_hand());
     }
 
+    /// Grundriss G7 (Jörn): Wird die Innenwand gezogen, wandern die Griffe
+    /// ihrer Tür mit, nicht erst beim Loslassen, und die Raumstempel rücken
+    /// stetig mit, statt längs der Raummitte zu springen.
+    #[test]
+    fn wand_ziehen_fuehrt_griffe_und_stempel_mit() {
+        use crate::raum_app::stempel::Stempel;
+        use sk_platform::Modifiers;
+        use sk_ui::widgets::Fonts;
+        use std::collections::BTreeMap;
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(
+            vec3(5000.0, 4000.0, 20000.0),
+            vec3(5000.0, 4001.0, 0.0),
+            45.0,
+        );
+        let mut s = Scene::with_model(Model::with_seed(412));
+        let mut tuer = None;
+        assert!(s.edit_model("Haus", |m| {
+            tuer = Some(haus_in(m));
+            true
+        }));
+        let run = s.model().door_leaf(tuer.unwrap()).unwrap().run;
+        let f = s.model().outer_face(run, 0).unwrap();
+        // Auf dem Band der Wand, knapp 0,5 m unter der Tür
+        let p0 = f.at(f.u_of(vec3(5000.0, 2100.0, 0.0)), 0.0);
+        let mods = Modifiers::default();
+        let mut e = crate::wall_edit::WallEdit::default();
+        e.stand(None, Some(0.0), None);
+        let maus = |p: Vec3| cam.project(p, W, H).unwrap();
+        let geh = |e: &mut crate::wall_edit::WallEdit, s: &mut Scene, p: Vec3| {
+            let (x, y) = maus(p);
+            e.handle(&Event::MouseMove { x, y, mods }, s, &cam, W, H, 1.0, true)
+        };
+        geh(&mut e, &mut s, p0);
+        assert!(e.active_wall().is_some());
+        // Griffe gegen die Wand gemessen
+        let x0 = |s: &Scene| s.model().run(run).unwrap().points[0].x;
+        let lage = |e: &crate::wall_edit::WallEdit, s: &Scene| {
+            let breiten = e.breiten.iter().map(|g| g.2);
+            let p: Vec<_> = e.tueren.iter().map(|g| g.1).chain(breiten).collect();
+            p.iter().map(|p| (p.x - x0(s), p.y)).collect::<Vec<_>>()
+        };
+        let griffe = lage(&e, &s);
+        assert!(!e.tueren.is_empty() && e.breiten.len() == 2, "{griffe:?}");
+        let (x, y) = maus(p0);
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods,
+        };
+        assert!(e.handle(&down, &mut s, &cam, W, H, 1.0, true).consumed);
+        assert!(e.drag.is_some());
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let mut st = Stempel::default();
+        let mut stempel = |s: &Scene| {
+            st.auslegen(s, &cam, W, H, 1.0, &fonts, &Theme::dark(), &[]);
+            st.bilder
+                .iter()
+                .map(|b| (b.name.clone(), b.punkt))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let mut vorher = stempel(&s);
+        assert_eq!(vorher.len(), 2, "{vorher:?}");
+        for k in 1..=12 {
+            let dx = 30.0 * k as f64;
+            assert!(geh(&mut e, &mut s, p0 + vec3(dx, 0.0, 0.0)).changed);
+            assert!((x0(&s) - 5000.0 - dx).abs() < 1e-6, "{k}: {}", x0(&s));
+            let jetzt = lage(&e, &s);
+            assert_eq!(jetzt.len(), griffe.len(), "{k}");
+            for (a, b) in griffe.iter().zip(&jetzt) {
+                assert!(
+                    (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6,
+                    "{k}: {a:?} → {b:?}"
+                );
+            }
+            // Je Schritt rückt die Mitte eines Raums um 15 mm
+            let neu = stempel(&s);
+            assert_eq!(
+                neu.keys().collect::<Vec<_>>(),
+                vorher.keys().collect::<Vec<_>>()
+            );
+            for (name, p) in &neu {
+                let q = vorher[name];
+                assert!((*p - q).length() < 20.0, "{k} {name}: {q:?} → {p:?}");
+            }
+            vorher = neu;
+        }
+    }
+
     /// Grundriss G7: Ein Klick in Loch oder Aufschlag wählt die Tür, nicht
     /// Wand oder Decke, und das Band der Wand meldet sich dort nicht. Das
     /// Paneel zeigt Art, Breite, Höhe, Anschlag mit dem Raum und die Wand,
