@@ -43,6 +43,8 @@ pub mod sicht;
 use schnitt::UnderMemo;
 #[path = "scene_kanten.rs"]
 pub mod kanten;
+#[path = "scene_lage.rs"]
+mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
 #[path = "scene_raster.rs"]
@@ -569,6 +571,12 @@ pub struct Scene {
     /// Züge, die sich im offenen Schritt live geändert haben (der gezogene und
     /// die mitgeführten oder angeschlossenen).
     live: Vec<RunId>,
+    /// Laufender Zug an OK Gelände mit den Sohlplatten-Zügen des gezogenen
+    /// Gebäudes ([`Scene::drag_terrain`]).
+    gelaende_zug: Option<(sk_model::model::GelaendeZug, Vec<RunId>)>,
+    /// Züge mit Sohlplatte der übrigen Gebäude, die einem Gelände-Zug im
+    /// Leerlauf folgen ([`Scene::nachziehen`]).
+    nachzug: Vec<RunId>,
     bounds: Option<Aabb>,
     /// Aufgelöste Attributtabellen des Modells.
     table: DrawTable,
@@ -917,6 +925,8 @@ impl Scene {
             mass_alle: neuer_stand(),
             unsettled: Vec::new(),
             live: Vec::new(),
+            gelaende_zug: None,
+            nachzug: Vec::new(),
             bounds: None,
             table,
             theme,
@@ -1479,38 +1489,6 @@ impl Scene {
         self.model.init_project(p);
     }
 
-    /// Projektdaten samt Breite und Länge aus der Maske (Sonnenstand S1)
-    /// als ein Schritt. `false`, wenn sich nichts geändert hat.
-    pub fn projektdaten_setzen(
-        &mut self,
-        label: &'static str,
-        p: sk_model::Project,
-        ort: sk_model::Location,
-    ) -> bool {
-        self.begin(label);
-        let soil = p.soil;
-        let a = self.model.set_project(p);
-        let b = self.model.set_location(ort);
-        // Bodenkennwerte der Erdarbeiten (Gruppe Baugrund) im selben Schritt
-        let c = self.model.set_soil(soil);
-        self.commit();
-        a || b || c
-    }
-
-    /// Nordpfeil setzen, drehen oder verschieben (Sonnenstand S2): ein
-    /// Schritt `label`. `false`, wenn sich nichts geändert hat.
-    pub fn nordpfeil_setzen(
-        &mut self,
-        label: &'static str,
-        nord: f64,
-        fuss: Option<sk_model::Foot>,
-    ) -> bool {
-        self.begin(label);
-        let ok = self.model.set_north_arrow(nord, fuss);
-        self.commit();
-        ok
-    }
-
     /// Breite und Länge eines neuen Projekts: ohne Rückgängig-Schritt wie
     /// [`Scene::projekt_anfang`].
     pub fn lage_anfang(&mut self, ort: sk_model::Location) {
@@ -1553,6 +1531,7 @@ impl Scene {
         if self.all_dirty {
             self.all_dirty = false;
             self.dirty.clear();
+            self.nachzug.clear();
             let builds: Vec<u32> = self
                 .cache
                 .iter()
@@ -1566,12 +1545,18 @@ impl Scene {
                 self.store(id, b, false);
             }
         } else {
-            for id in std::mem::take(&mut self.dirty) {
+            let ids = std::mem::take(&mut self.dirty);
+            self.nachzug_ohne(&ids);
+            for id in ids {
                 let b = self.cached(id).map_or(0, |c| c.builds);
                 self.store(id, b, live);
             }
         }
         self.ext.sync(&self.model);
+        self.bounds_neu();
+    }
+
+    fn bounds_neu(&mut self) {
         self.bounds = self
             .cache
             .iter()
@@ -1952,6 +1937,7 @@ impl Scene {
     /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
+        self.gelaende_loslassen();
         // Räume folgen den Wänden im selben Schritt (G3)
         let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
@@ -1992,6 +1978,7 @@ impl Scene {
     /// Verwirft den offenen Schritt (Esc beim Ziehen); nur die betroffenen
     /// Wandzüge werden neu berechnet.
     pub fn rollback(&mut self) {
+        self.gelaende_zug = None;
         let touched = self.model.rollback();
         self.live.clear();
         self.mark_touched(&touched);
@@ -2986,37 +2973,6 @@ impl Scene {
         };
         if self.model.drag_foundation_bottom_of(gr, z) {
             self.relevel(gr);
-        }
-    }
-
-    /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
-    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur seine Züge
-    /// mit Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an
-    /// OK Gelände, und andere Gebäude bleiben (Entscheidung B). Die Mengen
-    /// rechnet das Loslassen nach (Review Gelände).
-    pub fn drag_terrain(&mut self, z: f64) {
-        let max = sk_model::MAX_TERRAIN_OFFSET;
-        let Some(b) = self.active_building() else {
-            return;
-        };
-        if z.is_finite() && self.model.set_terrain_offset_of(b, (-z).clamp(-max, max)) {
-            let runs: Vec<RunId> = self
-                .model
-                .elements()
-                .iter()
-                .filter_map(|(_, e)| match e.kind {
-                    sk_model::ElementKind::GroundSlab(s) => Some(s.run),
-                    _ => None,
-                })
-                .filter(|r| {
-                    let st = self.model.run(*r).map(|x| x.storey);
-                    st.and_then(|st| self.model.building_of(st)) == Some(b)
-                })
-                .collect();
-            for r in runs {
-                self.mark(r);
-            }
-            self.rebuild_dirty(true);
         }
     }
 

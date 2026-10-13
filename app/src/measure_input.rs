@@ -19,6 +19,9 @@ pub struct MeasureInput {
     /// Grund, warum der Wert nicht gilt (für die Statuszeile); Rand rot.
     pub error: Option<crate::meldung::Meldung>,
     kinds: [Option<MeasureKind>; 2],
+    /// Das aktive Feld trägt einen vorbelegten Wert, markiert: die erste
+    /// Ziffer ersetzt ihn, Rücktaste löscht ihn (Bedienbarkeit 40.3).
+    markiert: bool,
 }
 
 /// Was eine Taste in der Eingabe bewirkt hat.
@@ -58,6 +61,27 @@ impl MeasureInput {
             active: 0,
             error: None,
             kinds: [Some(first), second],
+            markiert: false,
+        }
+    }
+
+    /// Belegt das aktive Feld mit `text` vor, markiert wie in einem Feld,
+    /// dessen Inhalt ausgewählt ist.
+    pub fn vorbelegen(&mut self, text: &str) {
+        self.fields[self.active] = text.chars().take(MAX_CHARS).collect();
+        self.markiert = true;
+        self.check();
+    }
+
+    /// Steht noch der vorbelegte, markierte Wert im Feld?
+    pub fn vorbelegt(&self) -> bool {
+        self.markiert
+    }
+
+    /// Markierten Wert verwerfen, bevor die Eingabe ihn ändert.
+    fn markierung_ersetzen(&mut self) {
+        if std::mem::take(&mut self.markiert) {
+            self.fields[self.active].clear();
         }
     }
 
@@ -94,8 +118,12 @@ impl MeasureInput {
     /// Ein Zeichen anhängen (ohne Strg und Alt).
     pub fn push(&mut self, ch: char) -> bool {
         let kind = self.kind();
+        if !accepts(ch, kind) {
+            return false;
+        }
+        self.markierung_ersetzen();
         let f = &mut self.fields[self.active];
-        if !accepts(ch, kind) || f.chars().count() >= MAX_CHARS {
+        if f.chars().count() >= MAX_CHARS {
             return false;
         }
         f.push(ch);
@@ -111,11 +139,14 @@ impl MeasureInput {
                 InputOutcome::Changed
             }
             Key::Tab if self.kinds[1].is_some() => {
+                self.markiert = false;
                 self.active = 1 - self.active;
                 InputOutcome::Changed
             }
             Key::Backspace => {
-                if self.fields[self.active].pop().is_none() && self.is_empty() {
+                if self.markiert {
+                    self.markierung_ersetzen();
+                } else if self.fields[self.active].pop().is_none() && self.is_empty() {
                     return InputOutcome::Ignored;
                 }
                 self.check();
@@ -168,6 +199,7 @@ impl MeasureInput {
         // Stücke je Feld: (Text, Farbe); `None` = Trennstrich
         let mut parts: Vec<Option<(String, Rgba)>> = Vec::new();
         let mut caret_after = 0;
+        let mut markiert = None;
         for (i, label) in labels.iter().enumerate() {
             let Some(k) = self.kinds[i] else {
                 continue;
@@ -184,6 +216,9 @@ impl MeasureInput {
                 }
                 parts.push(Some(("–".into(), t.ui.text_dim)));
             } else {
+                if i == self.active && self.markiert {
+                    markiert = Some(parts.len());
+                }
                 parts.push(Some((v.clone(), t.ui.text)));
                 if i == self.active {
                     caret_after = parts.len();
@@ -226,6 +261,15 @@ impl MeasureInput {
             }
             match part {
                 Some((text, col)) => {
+                    if markiert == Some(n) {
+                        c.fill_rect(
+                            x.round(),
+                            base - cap - 3.0 * s,
+                            width(text).ceil(),
+                            cap + 6.0 * s,
+                            t.ui.text_select,
+                        );
+                    }
                     sk_ui::widgets::text(&mut c, f, text, px, x, base, *col);
                 }
                 None => {
@@ -308,6 +352,27 @@ mod tests {
         }
         assert_eq!(m.key(Key::Backspace, OHNE), InputOutcome::Emptied);
         assert_eq!(m.key(Key::Enter, OHNE), InputOutcome::EnterEmpty);
+    }
+
+    /// Vorbelegt und markiert (Bedienbarkeit 40.3): die erste Ziffer
+    /// ersetzt den Wert, Rücktaste löscht ihn ganz.
+    #[test]
+    fn vorbelegt_ersetzt_die_erste_ziffer() {
+        let mut m = MeasureInput::new(MeasureKind::Length, None);
+        m.vorbelegen("0,88");
+        assert!(m.vorbelegt());
+        assert_eq!(m.value(0), Some(Ok(880.0)));
+        assert_eq!(m.key(Key::Char('9'), OHNE), InputOutcome::Changed);
+        assert!(!m.vorbelegt());
+        assert_eq!(m.fields[0], "9");
+        m.key(Key::Char('0'), OHNE);
+        assert_eq!(m.value(0), Some(Ok(90_000.0)));
+        m.vorbelegen("0,88");
+        assert_eq!(m.key(Key::Backspace, OHNE), InputOutcome::Emptied);
+        assert_eq!(m.fields[0], "");
+        m.vorbelegen("0,88");
+        assert_eq!(m.key(Key::Char('x'), OHNE), InputOutcome::Ignored);
+        assert!(m.vorbelegt(), "ein fremdes Zeichen lässt den Wert");
     }
 
     #[test]

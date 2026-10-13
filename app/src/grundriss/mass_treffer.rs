@@ -123,10 +123,17 @@ pub fn beweglich(a: &Bezug, b: &Bezug, ende: usize) -> bool {
     q.quelle.is_some() && !ein_bauteil(a, b)
 }
 
-/// Ende, das sich beim Überschreiben zuerst bewegt: das rechte bzw. obere
-/// (größeres `t`), sonst das andere; `None`, wenn keins.
+/// Ende, das sich beim Überschreiben zuerst bewegt: eine Öffnung gegen
+/// eine Ecke (Bedienbarkeit 40.4: wie auf dem Papierplan wandert das
+/// Fenster, nicht die Hauswand), sonst das rechte bzw. obere (größeres
+/// `t`), sonst das andere; `None`, wenn keins.
 pub fn erstes_ende(a: &Bezug, b: &Bezug) -> Option<usize> {
-    [1, 0].into_iter().find(|&e| beweglich(a, b, e))
+    let oeffnung = |q: &Bezug| matches!(q.quelle, Some(Quelle::Oeffnung { .. }));
+    let zuerst = match (oeffnung(a), oeffnung(b)) {
+        (true, false) => [0, 1],
+        _ => [1, 0],
+    };
+    zuerst.into_iter().find(|&e| beweglich(a, b, e))
 }
 
 fn bp(cam: &Camera, p: Vec3, w: f64, h: f64) -> Option<(f64, f64)> {
@@ -696,5 +703,19 @@ pub(crate) mod tests {
         let (r0, r1) = (&wand.bezuege[i - 1], &wand.bezuege[i]);
         assert_eq!(erstes_ende(r0, r1), Some(1));
         assert!(beweglich(r0, r1, 0));
+        // Öffnungskette: Ecke, Fenster, Ecke. Zwischen Fenster und Ecke
+        // wandert das Fenster, auch wenn es links steht (Bedienbarkeit
+        // 40.4); die Breite ändert sich nach rechts
+        let o = sued
+            .ketten
+            .iter()
+            .find(|k| k.art == Kettenart::Oeffnung)
+            .unwrap();
+        let b = &o.bezuege;
+        assert_eq!(b.len(), 4);
+        assert_eq!(erstes_ende(&b[0], &b[1]), Some(1));
+        assert_eq!(erstes_ende(&b[1], &b[2]), Some(1));
+        assert_eq!(erstes_ende(&b[2], &b[3]), Some(0));
+        assert!(beweglich(&b[2], &b[3], 1), "Tab nimmt die Hauswand");
     }
 }

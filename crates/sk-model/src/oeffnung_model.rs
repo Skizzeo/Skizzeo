@@ -286,6 +286,17 @@ impl Model {
     /// Pfadstück, das auf der Außenfläche eines Segments liegt, ein Loch;
     /// zur Außenecke hin offen.
     pub(crate) fn holes_of(&self, run: RunId, c: &WallChain) -> Vec<Hole> {
+        self.holes_in_band(run, c, None)
+    }
+
+    /// [`Model::holes_of`], mit `band` nur für die Öffnungen, die in die
+    /// Höhe `band` reichen (Deckenband, Review W48 B3).
+    pub(crate) fn holes_in_band(
+        &self,
+        run: RunId,
+        c: &WallChain,
+        band: Option<(f64, f64)>,
+    ) -> Vec<Hole> {
         if !self.category_of(run).is_some_and(Category::takes_openings) {
             return Vec::new();
         }
@@ -327,7 +338,14 @@ impl Model {
             let ElementKind::Opening(op) = &e.kind else {
                 continue;
             };
-            if self.storey(e.storey).and_then(|s| s.building) != building || !nah(&op.path) {
+            if self.storey(e.storey).and_then(|s| s.building) != building {
+                continue;
+            }
+            let reicht = |(b, t): (f64, f64)| {
+                self.opening_band(op)
+                    .is_some_and(|z| z.1 > b + 1.0 && z.0 < t - 1.0)
+            };
+            if !band.is_none_or(reicht) || !nah(&op.path) {
                 continue;
             }
             out.extend(
@@ -755,6 +773,7 @@ impl Model {
             n: nr * (o - c.inner_offset()).signum(),
             u: (u_of(*corners.get(seg)?), u_of(*corners.get(j)?)),
             free: (s0 + rand, s1 - rand),
+            span: (s0, s1),
             z: (c.base, c.base + c.height),
         })
     }

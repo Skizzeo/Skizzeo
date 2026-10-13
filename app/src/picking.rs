@@ -14,12 +14,16 @@ pub struct Picking {
     /// Bauteile einer Gruppenzeile unter der Maus im Mengenfenster (B7),
     /// etwa alle EG-Außenwände.
     pub hover_group: Vec<ElementId>,
+    /// Die Geländeplatte ist gewählt (nur über den Objektbaum, Gelände G0);
+    /// dann sind keine Bauteile gewählt.
+    pub plate: bool,
 }
 
 impl Picking {
     /// Klick auf ein Bauteil: ersetzt die Auswahl; mit Strg fügt er hinzu
     /// oder nimmt weg.
     pub fn click(&mut self, id: ElementId, ctrl: bool) {
+        self.plate = false;
         if !ctrl {
             self.selected = vec![id];
         } else if let Some(i) = self.selected.iter().position(|&e| e == id) {
@@ -32,8 +36,9 @@ impl Picking {
     /// Genau dieses Bauteil wählen (oder nichts). `true`, wenn sich etwas ändert.
     pub fn select_only(&mut self, id: Option<ElementId>) -> bool {
         let new: Vec<ElementId> = id.into_iter().collect();
-        let changed = new != self.selected;
+        let changed = new != self.selected || self.plate;
         self.selected = new;
+        self.plate = false;
         changed
     }
 

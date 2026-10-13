@@ -1,24 +1,20 @@
 //! Raster für den Strahl unter der Maus an Außenwandöffnungen (Paket O7,
-//! Review W43 B1): Schenkel der Öffnungen und Wandzüge je Feld, einmal je
-//! Modellstand gesammelt. Der Strahl läuft nur durch die Felder, die er
-//! kreuzt, und hört auf, sobald dahinter nichts Näheres mehr liegen kann.
-//! So bleibt jede Mausbewegung gleich teuer, wie groß das Modell auch ist.
+//! Review W43 B1): die Schenkel der Öffnungen, einmal je Modellstand
+//! gesammelt, im selben Raster wie die Wandzüge der Szene (Review H2 zu
+//! #142). Der Strahl läuft nur durch die Zellen, die er kreuzt, und hört
+//! auf, sobald dahinter nichts Näheres mehr liegen kann. So bleibt jede
+//! Mausbewegung gleich teuer, wie groß das Modell auch ist.
 
+use super::raster::{self, ZELLE};
 use super::{ray_hits_box, Aabb, Scene, Vis};
 use crate::visible::Class;
 use sk_math::{vec3, Vec3};
-use sk_model::{ElementId, ElementKind, RunId, Tri};
-use std::collections::{HashMap, HashSet};
+use sk_model::{ElementId, ElementKind, Tri};
+use std::collections::HashSet;
 
-/// Kantenlänge eines Felds (mm).
-const FELD: f64 = 5000.0;
 /// Rand um die Schenkel (mm): So weit neben einer Kante greift die Maus
-/// noch, auch wenn der Strahl das Feld der Öffnung knapp verfehlt.
+/// noch, auch wenn der Strahl die Zelle der Öffnung knapp verfehlt.
 const RAND: f64 = 1000.0;
-/// Was über mehr Felder reicht, wird bei jedem Strahl geprüft.
-const MAX_FELDER: i64 = 256;
-/// Weiter läuft kein Strahl (Felder).
-const MAX_SCHRITTE: usize = 20_000;
 /// Abstand, um den eine Wand vor der Öffnung liegen darf (die eigene
 /// Fläche, knapp neben dem Loch).
 pub const VOR_WAND: f64 = 20.0;
@@ -36,49 +32,14 @@ pub struct Schenkel {
     pub z1: f64,
 }
 
-type Feld = (i64, i64);
-
-/// Die Raster eines Modellstands.
+/// Die Schenkel eines Modellstands; die Wandzüge stehen im Raster der
+/// Szene, das jeder neu berechnete Zug selbst nachführt.
 #[derive(Default)]
 pub(super) struct Raster {
-    /// Modellstand und ob die Züge dabei fertig gerechnet waren.
-    stand: Option<(u64, bool)>,
+    stand: Option<u64>,
     schenkel: Vec<Schenkel>,
-    oeffnungen: HashMap<Feld, Vec<usize>>,
-    zuege: HashMap<Feld, Vec<RunId>>,
-    /// Über sehr viele Felder: bei jedem Strahl.
-    gross_o: Vec<usize>,
-    gross_z: Vec<RunId>,
-    /// Quader um alles.
-    rahmen: Option<Aabb>,
-}
-
-fn feld(v: f64) -> i64 {
-    (v / FELD).floor() as i64
-}
-
-fn vereinen(r: &mut Option<Aabb>, (lo, hi): Aabb) {
-    *r = Some(match *r {
-        Some((a, b)) => (
-            vec3(a.x.min(lo.x), a.y.min(lo.y), a.z.min(lo.z)),
-            vec3(b.x.max(hi.x), b.y.max(hi.y), b.z.max(hi.z)),
-        ),
-        None => (lo, hi),
-    });
-}
-
-/// Trägt `t` in die Felder des Quaders ein; `false`, wenn er zu groß ist.
-fn eintragen<T: Copy>(felder: &mut HashMap<Feld, Vec<T>>, (lo, hi): Aabb, t: T) -> bool {
-    let (x0, x1, y0, y1) = (feld(lo.x), feld(hi.x), feld(lo.y), feld(hi.y));
-    if (x1 - x0 + 1).saturating_mul(y1 - y0 + 1) > MAX_FELDER {
-        return false;
-    }
-    for x in x0..=x1 {
-        for y in y0..=y1 {
-            felder.entry((x, y)).or_default().push(t);
-        }
-    }
-    true
+    /// Je Schenkel sein Quader mit [`RAND`].
+    felder: raster::Raster,
 }
 
 /// Abschnitt des Strahls im Quader: Eintritt und Austritt.
@@ -103,21 +64,15 @@ fn im_quader(o: Vec3, d: Vec3, (lo, hi): Aabb) -> Option<(f64, f64)> {
 }
 
 impl Scene {
-    /// Baut das Raster neu, wenn sich das Modell geändert hat oder die
-    /// Züge seitdem fertig gerechnet sind.
+    /// Sammelt die Schenkel neu, wenn sich das Modell geändert hat.
     fn kanten_raster(&self) {
-        let stand = (
-            self.model.revision(),
-            self.dirty.is_empty() && !self.all_dirty,
-        );
+        let stand = self.model.revision();
         if self.kanten.borrow().stand == Some(stand) {
             return;
         }
-        let mut r = Raster {
-            stand: Some(stand),
-            ..Raster::default()
-        };
         let m = &self.model;
+        let mut schenkel = Vec::new();
+        let mut quader = Vec::new();
         for (id, e) in m.elements().iter() {
             let ElementKind::Opening(op) = &e.kind else {
                 continue;
@@ -129,8 +84,7 @@ impl Scene {
             for (k, &(a, b)) in legs.iter().enumerate() {
                 let lo = vec3(a.x.min(b.x) - RAND, a.y.min(b.y) - RAND, z0 - RAND);
                 let hi = vec3(a.x.max(b.x) + RAND, a.y.max(b.y) + RAND, z1 + RAND);
-                let i = r.schenkel.len();
-                r.schenkel.push(Schenkel {
+                schenkel.push(Schenkel {
                     id,
                     k,
                     n,
@@ -139,30 +93,34 @@ impl Scene {
                     z0,
                     z1,
                 });
-                if !eintragen(&mut r.oeffnungen, (lo, hi), i) {
-                    r.gross_o.push(i);
-                }
-                vereinen(&mut r.rahmen, (lo, hi));
+                quader.push(Some((lo, hi)));
             }
         }
-        for c in self.cache.iter().flatten() {
-            let Some(b) = c.bounds else {
-                continue;
-            };
-            if !eintragen(&mut r.zuege, b, c.id) {
-                r.gross_z.push(c.id);
-            }
-            vereinen(&mut r.rahmen, b);
-        }
-        *self.kanten.borrow_mut() = r;
+        *self.kanten.borrow_mut() = Raster {
+            stand: Some(stand),
+            schenkel,
+            felder: raster::Raster::aus(quader),
+        };
     }
 
-    /// Erster deckender Treffer des Strahls am Zug `run`.
-    fn zug_strahl(&self, run: RunId, o: Vec3, d: Vec3, vis: &Vis, filter: bool) -> Option<f64> {
-        let c = self.cache.get(run.index() as usize)?.as_ref()?;
-        if c.id != run || !c.bounds.is_some_and(|b| ray_hits_box(o, d, b)) {
+    /// Sichtbarkeit für [`Scene::zug_strahl`] und ob sie filtert.
+    fn sicht(&self) -> (Vis<'_>, bool) {
+        let vis = Vis {
+            model: &self.model,
+            anim: self.vis_anim.as_ref(),
+            table: &self.vis_table,
+            stamp: self.vis_stamp(),
+        };
+        (vis, self.filtering())
+    }
+
+    /// Erster deckender Treffer des Strahls am Zug auf Platz `platz`.
+    fn zug_strahl(&self, platz: usize, o: Vec3, d: Vec3, vis: &Vis, filter: bool) -> Option<f64> {
+        let c = self.cache.get(platz)?.as_ref()?;
+        if !c.bounds.is_some_and(|b| ray_hits_box(o, d, b)) {
             return None;
         }
+        let run = c.id;
         let keep = |t: &Tri| !filter || vis.class(run, t.elem, t.layer) == Class::Solid;
         c.solid.raycast_where(o, d, keep).map(|h| h.0)
     }
@@ -180,29 +138,25 @@ impl Scene {
     ) -> (Option<f64>, Option<f64>) {
         self.kanten_raster();
         let r = self.kanten.borrow();
-        let Some((t0, t1)) = r.rahmen.and_then(|b| im_quader(o, d, b)) else {
+        let (felder, zuege) = (&r.felder, &self.raster);
+        let rahmen = super::union(felder.quader(), zuege.quader());
+        let Some((t0, t1)) = rahmen.and_then(|b| im_quader(o, d, b)) else {
             return (None, None);
         };
-        let filter = self.filtering();
-        let vis = Vis {
-            model: &self.model,
-            anim: self.vis_anim.as_ref(),
-            table: &self.vis_table,
-            stamp: self.vis_stamp(),
-        };
+        let (vis, filter) = self.sicht();
         let (mut best_o, mut best_w): (Option<f64>, Option<f64>) = (None, None);
         let (mut gesehen_o, mut gesehen_z) = (HashSet::new(), HashSet::new());
-        let mut feld_pruefen = |os: &[usize], zs: &[RunId]| {
+        let mut pruefen = |os: &[u32], zs: &[u32]| {
             for &i in os {
                 if gesehen_o.insert(i) {
-                    if let Some(t) = pruefe(&r.schenkel[i]) {
+                    if let Some(t) = pruefe(&r.schenkel[i as usize]) {
                         best_o = Some(best_o.map_or(t, |b: f64| b.min(t)));
                     }
                 }
             }
             for &z in zs {
                 if gesehen_z.insert(z) {
-                    if let Some(t) = self.zug_strahl(z, o, d, &vis, filter) {
+                    if let Some(t) = self.zug_strahl(z as usize, o, d, &vis, filter) {
                         best_w = Some(best_w.map_or(t, |b: f64| b.min(t)));
                     }
                 }
@@ -212,26 +166,31 @@ impl Scene {
                 (a, b) => a.or(b),
             }
         };
-        feld_pruefen(&r.gross_o, &r.gross_z);
-        // Felder in der Reihenfolge, in der der Strahl sie kreuzt
-        let p = o + d * t0;
-        let (mut x, mut y) = (feld(p.x), feld(p.y));
+        pruefen(felder.immer(), zuege.immer());
+        // Zellen in der Reihenfolge, in der der Strahl sie kreuzt; wären es
+        // mehr als Einträge, gleich alle (ohne Raster)
+        let (p, q) = (o + d * t0, o + d * t1);
+        let (mut x, mut y) = (raster::zelle(p.x), raster::zelle(p.y));
+        let schritte = (raster::zelle(q.x) as i64 - x as i64).abs()
+            + (raster::zelle(q.y) as i64 - y as i64).abs();
+        if schritte as usize >= felder.plaetze() + zuege.plaetze() {
+            let alle =
+                |r: &raster::Raster| r.alle().into_iter().map(|p| p as u32).collect::<Vec<_>>();
+            pruefen(&alle(felder), &alle(zuege));
+            return (best_o, best_w);
+        }
         let schritt = |dv: f64| if dv > 0.0 { 1 } else { -1 };
-        let grenze = |c: i64, ov: f64, dv: f64| {
+        let grenze = |c: i32, ov: f64, dv: f64| {
             if dv.abs() < 1e-12 {
                 return (f64::INFINITY, f64::INFINITY);
             }
-            let rand = if dv > 0.0 { c + 1 } else { c } as f64 * FELD;
-            ((rand - ov) / dv, FELD / dv.abs())
+            let rand = if dv > 0.0 { c + 1 } else { c } as f64 * ZELLE;
+            ((rand - ov) / dv, ZELLE / dv.abs())
         };
         let ((mut tx, dx), (mut ty, dy)) = (grenze(x, o.x, d.x), grenze(y, o.y, d.y));
-        let leer = Vec::new();
-        let leer_z = Vec::new();
-        for _ in 0..MAX_SCHRITTE {
+        for _ in 0..=schritte {
             let aus = tx.min(ty).min(t1);
-            let os = r.oeffnungen.get(&(x, y)).unwrap_or(&leer);
-            let zs = r.zuege.get(&(x, y)).unwrap_or(&leer_z);
-            if let Some(t) = feld_pruefen(os, zs) {
+            if let Some(t) = pruefen(felder.in_zelle((x, y)), zuege.in_zelle((x, y))) {
                 if t + VOR_WAND <= aus {
                     break;
                 }
@@ -246,5 +205,128 @@ impl Scene {
             }
         }
         (best_o, best_w)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::raster::tests::{kameras, siedlung, H, W};
+    use super::*;
+    use crate::camera::Camera;
+
+    /// Ein Schenkel greift, wenn der Strahl seine Fläche bis 300 mm neben
+    /// dem Band trifft.
+    fn greift(s: &Schenkel, o: Vec3, d: Vec3) -> Option<f64> {
+        let len = (s.b - s.a).length();
+        let dir = (s.b - s.a) * (1.0 / len);
+        let nrm = vec3(-dir.y, dir.x, 0.0);
+        let dn = d.dot(nrm);
+        if len < 1.0 || dn.abs() < 1e-9 {
+            return None;
+        }
+        let t = (s.a - o).dot(nrm) / dn;
+        let p = o + d * t;
+        let u = (p - s.a).dot(dir);
+        let im_band = u > -300.0 && u < len + 300.0 && p.z > s.z0 - 300.0 && p.z < s.z1 + 300.0;
+        (t > 0.0 && im_band).then_some(t)
+    }
+
+    /// Nächster Schenkel über alle Öffnungen des Modells und nächste Wand
+    /// über alle Züge, ohne Raster.
+    fn ueber_alle(s: &Scene, o: Vec3, d: Vec3) -> (Option<f64>, Option<f64>) {
+        let m = s.model();
+        let min = |a: Option<f64>, t: Option<f64>| match (a, t) {
+            (Some(a), Some(t)) => Some(a.min(t)),
+            (a, t) => a.or(t),
+        };
+        let mut best_o = None;
+        for (id, e) in m.elements().iter() {
+            let ElementKind::Opening(op) = &e.kind else {
+                continue;
+            };
+            let Some((legs, z0, z1)) = crate::wall_edit::oeffnung_kanten::schenkel(m, op) else {
+                continue;
+            };
+            for (k, &(a, b)) in legs.iter().enumerate() {
+                let n = legs.len();
+                let sch = Schenkel {
+                    id,
+                    k,
+                    n,
+                    a,
+                    b,
+                    z0,
+                    z1,
+                };
+                best_o = min(best_o, greift(&sch, o, d));
+            }
+        }
+        let (vis, filter) = s.sicht();
+        let best_w = (0..s.cache.len())
+            .filter_map(|p| s.zug_strahl(p, o, d, &vis, filter))
+            .min_by(f64::total_cmp);
+        (best_o, best_w)
+    }
+
+    /// Über das gemeinsame Raster der Szene entscheidet der Strahl wie über
+    /// alle Schenkel und Züge: der vorderste Schenkel, wenn keine Wand mehr
+    /// als [`VOR_WAND`] davor liegt, sonst die Wand; auch nach Ziehen einer
+    /// Wand, ohne dass sich die Schenkel neu sammeln (Review H2 zu #142).
+    #[test]
+    fn strahl_wie_ueber_alle() {
+        let mut s = siedlung();
+        let pruefen = |s: &Scene| {
+            let mut kameras = kameras().to_vec();
+            kameras.push(Camera::looking_at(
+                vec3(60_000.0, -50_000.0, 8000.0),
+                vec3(60_000.0, 60_000.0, 0.0),
+                45.0,
+            ));
+            let mut fenster = 0;
+            for cam in &kameras {
+                let mut px: Vec<(f64, f64)> = (0..24 * 14)
+                    .map(|k| ((k % 24) as f64 * W / 23.0, (k / 24) as f64 * H / 13.0))
+                    .collect();
+                // Auf jedes Fenster und knapp daneben
+                for (_, e) in s.model().elements().iter() {
+                    let ElementKind::Opening(op) = &e.kind else {
+                        continue;
+                    };
+                    let (z0, z1) = s.model().opening_band(op).unwrap();
+                    let q = (op.path[0] + op.path[1]) * 0.5;
+                    if let Some((x, y)) = cam.project(vec3(q.x, q.y, (z0 + z1) / 2.0), W, H) {
+                        px.extend([(x, y), (x + 6.0, y), (x, y - 40.0)]);
+                    }
+                }
+                for (x, y) in px {
+                    let (o, d) = cam.ray(x, y, W, H);
+                    let (bo, bw) = s.kanten_strahl(o, d, |sch| greift(sch, o, d));
+                    let (go, gw) = ueber_alle(s, o, d);
+                    let vorn = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    };
+                    assert_eq!(vorn(bo, bw), vorn(go, gw), "{x} {y}");
+                    if let Some(t) = go.filter(|&t| gw.is_none_or(|w| t < w + VOR_WAND)) {
+                        assert_eq!(bo, Some(t), "{x} {y}: Schenkel");
+                        fenster += 1;
+                    }
+                    if let Some(w) = gw.filter(|&w| go.is_none_or(|t| w < t)) {
+                        assert_eq!(bw, Some(w), "{x} {y}: Wand");
+                    }
+                }
+            }
+            assert!(fenster > 100, "{fenster} Fenster");
+        };
+        pruefen(&s);
+        // Eine Wand ziehen: die Schenkel bleiben, die Züge kommen aus dem
+        // Raster der Szene
+        let run = s.model().runs().ids().nth(10).unwrap();
+        let moved = s.chain(run).unwrap().with_segment_moved(1, 3000.0).unwrap();
+        s.begin("Wand verschieben");
+        assert!(s.set_run_points(run, &moved.points));
+        s.commit();
+        s.rebuild_dirty(false);
+        pruefen(&s);
     }
 }
