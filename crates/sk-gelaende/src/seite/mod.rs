@@ -103,6 +103,9 @@ struct Zustand {
 
 /// Tiefer verschachtelte Formulare liest Skizzeo nicht.
 const FORMTIEFE: usize = 12;
+/// Höchstens so viele Formularaufrufe je Seite, auch in der Breite (zehn
+/// Aufrufe je Stufe wären sonst 10^12, Review W37 B4).
+const FORMLAEUFE: usize = 20_000;
 
 struct Lauf<'p> {
     pdf: &'p Pdf,
@@ -120,6 +123,8 @@ struct Lauf<'p> {
     anschluss: Option<usize>,
     /// Formulare im Aufruf (gegen Kreise).
     formulare: Vec<u32>,
+    /// Formularaufrufe bisher (gegen Bomben in der Breite).
+    laeufe: usize,
 }
 
 fn farbe(v: &[f64]) -> Farbe {
@@ -165,8 +170,15 @@ impl<'p> Lauf<'p> {
         ops.iter().filter_map(Objekt::zahl).collect()
     }
 
+    /// Aktueller Punkt; nach `h` der Anfang des geschlossenen Zugs
+    /// (Geometrie zu #128: `c` direkt nach `h` begann sonst am letzten Punkt).
     fn letzter(&self) -> Option<[f64; 2]> {
-        self.pfad.last().and_then(|z| z.punkte.last().copied())
+        let z = self.pfad.last()?;
+        if z.zu {
+            z.punkte.first().copied()
+        } else {
+            z.punkte.last().copied()
+        }
     }
 
     fn hin(&mut self, p: [f64; 2]) {
@@ -318,10 +330,11 @@ impl<'p> Lauf<'p> {
         };
         match s.verz.name("Subtype") {
             Some("Image") => self.bild(),
-            Some("Form") if tiefe < FORMTIEFE => {
+            Some("Form") if tiefe < FORMTIEFE && self.laeufe < FORMLAEUFE => {
                 if nr.is_some_and(|n| self.formulare.contains(&n)) {
                     return;
                 }
+                self.laeufe += 1;
                 let Some(d) = self.pdf.daten(&s) else { return };
                 let m: Vec<f64> = s
                     .verz
@@ -597,6 +610,7 @@ pub fn seite(pdf: &Pdf, blatt: &Blatt) -> Seite {
         schrift_nr: BTreeMap::new(),
         anschluss: None,
         formulare: Vec::new(),
+        laeufe: 0,
     };
     l.lesen(&inhalt, &blatt.ressourcen, 0);
     l.seite

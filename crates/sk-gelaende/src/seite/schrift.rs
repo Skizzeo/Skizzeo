@@ -108,8 +108,14 @@ fn utf16(t: &[u8]) -> String {
 }
 
 /// Bereiche, CIDs und Unicode aus einer CMap lesen.
+/// Höchstens so viele Einträge schreibt eine CMap und eine Breitenliste,
+/// auch wenn dieselben Codes immer wieder vorkommen; eine Schrift mit mehr
+/// braucht der Lageplan nicht (Review W37 B5).
+const EINTRAEGE: usize = 1 << 20;
+
 fn cmap(d: &[u8], s: &mut Schrift) {
     let mut l = Leser::neu(d, 0);
+    let mut schritte = 0usize;
     let mut werte: Vec<Objekt> = Vec::new();
     let mut art: &[u8] = b"";
     while let Some(w) = l.wort() {
@@ -139,7 +145,12 @@ fn cmap(d: &[u8], s: &mut Schrift) {
                             {
                                 let (a, e) = (code(a), code(e));
                                 for k in a..=e.min(a.saturating_add(65_535)) {
-                                    s.cids.insert(k, (c + (k - a) as i64).max(0) as u32);
+                                    schritte += 1;
+                                    if schritte > EINTRAEGE {
+                                        break;
+                                    }
+                                    let cid = c.saturating_add((k - a) as i64);
+                                    s.cids.insert(k, cid.clamp(0, u32::MAX as i64) as u32);
                                 }
                             }
                         }
@@ -147,14 +158,20 @@ fn cmap(d: &[u8], s: &mut Schrift) {
                     b"begincidchar" => {
                         for p in werte.chunks_exact(2) {
                             if let (Some(a), Some(c)) = (p[0].text(), p[1].ganz()) {
-                                s.cids.insert(code(a), c.max(0) as u32);
+                                schritte += 1;
+                                if schritte <= EINTRAEGE {
+                                    s.cids.insert(code(a), c.clamp(0, u32::MAX as i64) as u32);
+                                }
                             }
                         }
                     }
                     b"beginbfchar" => {
                         for p in werte.chunks_exact(2) {
                             if let (Some(a), Some(z)) = (p[0].text(), p[1].text()) {
-                                s.unicode.insert(code(a), utf16(z));
+                                schritte += 1;
+                                if schritte <= EINTRAEGE {
+                                    s.unicode.insert(code(a), utf16(z));
+                                }
                             }
                         }
                     }
@@ -169,6 +186,10 @@ fn cmap(d: &[u8], s: &mut Schrift) {
                                 Objekt::Text(z) if !z.is_empty() => {
                                     let mut z = z.clone();
                                     for k in a..=e {
+                                        schritte += 1;
+                                        if schritte > EINTRAEGE {
+                                            break;
+                                        }
                                         s.unicode.insert(k, utf16(&z));
                                         // letztes Byte hochzählen
                                         if let Some(x) = z.last_mut() {
@@ -178,6 +199,10 @@ fn cmap(d: &[u8], s: &mut Schrift) {
                                 }
                                 Objekt::Feld(f) => {
                                     for (k, z) in (a..=e).zip(f) {
+                                        schritte += 1;
+                                        if schritte > EINTRAEGE {
+                                            break;
+                                        }
                                         if let Some(z) = z.text() {
                                             s.unicode.insert(k, utf16(z));
                                         }
@@ -225,13 +250,16 @@ impl Schrift {
                 if let Some(Objekt::Feld(w)) = cid.get("W").map(|o| pdf.aufloesen(o)) {
                     let w: Vec<Objekt> = w.iter().map(|o| pdf.aufloesen(o)).collect();
                     let mut i = 0;
-                    while i + 1 < w.len() {
+                    let cid = |c: i64| c.clamp(0, u32::MAX as i64) as u32;
+                    let mut schritte = 0usize;
+                    while i + 1 < w.len() && schritte < EINTRAEGE {
                         let Some(c0) = w[i].ganz() else { break };
                         match &w[i + 1] {
                             Objekt::Feld(f) => {
                                 for (k, b) in f.iter().enumerate().take(65_536) {
+                                    schritte += 1;
                                     if let Some(b) = zahl(b) {
-                                        s.breiten.insert((c0 + k as i64).max(0) as u32, b);
+                                        s.breiten.insert(cid(c0.saturating_add(k as i64)), b);
                                     }
                                 }
                                 i += 2;
@@ -241,8 +269,12 @@ impl Schrift {
                                 else {
                                     break;
                                 };
-                                for c in c0.max(0)..=c1.min(c0 + 65_535) {
-                                    s.breiten.insert(c as u32, b);
+                                for c in c0.max(0)..=c1.min(c0.saturating_add(65_535)) {
+                                    schritte += 1;
+                                    if schritte > EINTRAEGE {
+                                        break;
+                                    }
+                                    s.breiten.insert(cid(c), b);
                                 }
                                 i += 3;
                             }
@@ -256,7 +288,7 @@ impl Schrift {
             if let Some(Objekt::Feld(w)) = v.get("Widths").map(|o| pdf.aufloesen(o)) {
                 for (k, b) in w.iter().enumerate().take(256) {
                     if let Some(b) = zahl(b) {
-                        s.breiten.insert(erst + k as u32, b);
+                        s.breiten.insert(erst.saturating_add(k as u32), b);
                     }
                 }
             }

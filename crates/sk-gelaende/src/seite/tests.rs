@@ -187,3 +187,158 @@ fn beispiel_lageplan() {
         .collect();
     assert_eq!(nummern, ["1", "2", "3", "4"]);
 }
+
+/// Bomben (Review W37): je eine kleine Datei, die ohne Grenze Gigabytes
+/// oder Stunden kostete. Sie öffnen, kosten höchstens das Budget und
+/// brechen nie ab.
+mod bomben {
+    use super::*;
+    use std::time::Instant;
+
+    /// Gespeicherter Deflate-Block (BTYPE 00) um `d`.
+    fn gespeichert(d: &[u8]) -> Vec<u8> {
+        let n = d.len() as u16;
+        let mut v = vec![1];
+        v.extend_from_slice(&n.to_le_bytes());
+        v.extend_from_slice(&(!n).to_le_bytes());
+        v.extend_from_slice(d);
+        v
+    }
+
+    fn katalog_und_seite(contents: &str, res: &str) -> Vec<Vec<u8>> {
+        vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents {contents} /Resources << {res} >> >>")
+                .into_bytes(),
+        ]
+    }
+
+    /// B1 und B2: /Contents nennt tausendmal denselben Strom (je 1 MB
+    /// entpackt), und eine Filterkette entpackt zweimal hintereinander.
+    #[test]
+    fn inhalt_und_filterkette() {
+        let bombe = crate::inflate::bombe(4064);
+        let refs = vec!["4 0 R"; 1000].join(" ");
+        let mut o = katalog_und_seite(&format!("[{refs}]"), "");
+        o.push(strom("/Filter /FlateDecode", &bombe));
+        let roh = pdf_aus(&o);
+        let pdf = Pdf::lesen_mit(&roh, 8 << 20).unwrap();
+        let b = pdf.seiten().remove(0);
+        let t = Instant::now();
+        let inhalt = pdf.inhalt(&b);
+        assert!(pdf.zu_gross());
+        assert!(inhalt.len() <= 8 << 20, "{}", inhalt.len());
+        assert!(t.elapsed().as_secs_f64() < 10.0);
+        // zweimal Flate: außen gespeichert, innen die Bombe
+        let mut o = katalog_und_seite("4 0 R", "");
+        o.push(strom(
+            "/Filter [/FlateDecode /FlateDecode]",
+            &gespeichert(&bombe),
+        ));
+        let roh = pdf_aus(&o);
+        let pdf = Pdf::lesen_mit(&roh, 1 << 20).unwrap();
+        let b = pdf.seiten().remove(0);
+        assert!(pdf.inhalt(&b).is_empty());
+        assert!(pdf.zu_gross());
+        let pdf = Pdf::lesen_mit(&roh, 2 << 20).unwrap();
+        assert_eq!(pdf.inhalt(&b).len(), 1 + 258 * 4064 + 1);
+        assert!(!pdf.zu_gross());
+    }
+
+    /// B3: ein Objektstrom mit 1000 Nummern, alle auf demselben 100-kB-Feld;
+    /// nur das erste gilt, die übrigen reichen in es hinein.
+    #[test]
+    fn objektstrom_mit_gleichen_stellen() {
+        let feld = format!("[{}]", "0 ".repeat(50_000));
+        let paare: String = (0..1000).map(|i| format!("{} 0 ", 10 + i)).collect();
+        let mut d = paare.into_bytes();
+        let erst = d.len();
+        d.extend_from_slice(feld.as_bytes());
+        let mut o = katalog_und_seite("[]", "");
+        o.push(strom(&format!("/Type /ObjStm /N 1000 /First {erst}"), &d));
+        let mut roh = pdf_aus(&o);
+        // kaputte Querverweise: Skizzeo sucht und findet den Objektstrom
+        let p = roh.windows(9).rposition(|w| w == b"startxref").unwrap();
+        roh.truncate(p);
+        roh.extend_from_slice(b"startxref\n9\n%%EOF\n");
+        let t = Instant::now();
+        let pdf = Pdf::lesen(&roh).unwrap();
+        assert!(t.elapsed().as_secs_f64() < 10.0);
+        assert_eq!(
+            pdf.objekt(10).and_then(|o| o.feld().map(|f| f.len())),
+            Some(50_000)
+        );
+        assert!(pdf.objekt(11).is_none());
+    }
+
+    /// B4: zwölf Stufen Formulare, jedes ruft das nächste zehnmal auf
+    /// (10^12 Läufe ohne Grenze in der Breite).
+    #[test]
+    fn formulare_in_der_breite() {
+        let mut o = katalog_und_seite("4 0 R", "/XObject << /X 5 0 R >>");
+        o.push(strom("", b"/X Do"));
+        for k in 0..12 {
+            let aufruf = "/X Do ".repeat(10);
+            o.push(strom(
+                &format!(
+                    "/Type /XObject /Subtype /Form /Resources << /XObject << /X {} 0 R >> >>",
+                    6 + k
+                ),
+                format!("0 0 m 1 1 l S {aufruf}").as_bytes(),
+            ));
+        }
+        o.push(strom("/Type /XObject /Subtype /Form", b"0 0 m 1 1 l S"));
+        let roh = pdf_aus(&o);
+        let pdf = Pdf::lesen(&roh).unwrap();
+        let b = pdf.seiten().remove(0);
+        let t = Instant::now();
+        let s = seite(&pdf, &b);
+        assert!(t.elapsed().as_secs_f64() < 20.0);
+        assert!(s.pfade.len() <= 20_001, "{}", s.pfade.len());
+    }
+
+    /// B5 und B8: tausend bfrange-Tripel über alle Codes, riesige CIDs und
+    /// Breiten am Rand von i64 laufen weder lange noch über.
+    #[test]
+    fn cmap_und_breiten() {
+        let mut cm = String::from("1000 beginbfrange ");
+        for _ in 0..1000 {
+            cm.push_str("<0000> <FFFF> <0041> ");
+        }
+        cm.push_str("endbfrange 1 begincidrange <0000> <0010> 9223372036854775807 endcidrange");
+        let res = "/Font << /F1 5 0 R >>";
+        let mut o = katalog_und_seite("4 0 R", res);
+        o.push(strom("", b"BT /F1 12 Tf 10 10 Td <0001> Tj ET"));
+        o.push(b"<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding 6 0 R /ToUnicode 6 0 R /DescendantFonts [7 0 R] >>".to_vec());
+        o.push(strom("", cm.as_bytes()));
+        o.push(b"<< /Type /Font /Subtype /CIDFontType2 /W [9223372036854775807 [500 500] 9223372036854775000 9223372036854775807 300] >>".to_vec());
+        let roh = pdf_aus(&o);
+        let pdf = Pdf::lesen(&roh).unwrap();
+        let b = pdf.seiten().remove(0);
+        let t = Instant::now();
+        let s = seite(&pdf, &b);
+        assert!(t.elapsed().as_secs_f64() < 20.0);
+        assert_eq!(s.texte.len(), 1);
+    }
+
+    /// B6 und B8: viele Ströme ohne endstream und ohne Querverweise, dazu
+    /// eine Tabelle mit riesiger Anfangsnummer.
+    #[test]
+    fn ohne_endstream_und_ueberlauf() {
+        let mut roh = b"%PDF-1.4\n".to_vec();
+        for i in 1..5000 {
+            roh.extend_from_slice(format!("{i} 0 obj << /Length 999999 >> stream\n").as_bytes());
+            roh.extend_from_slice(&[b'x'; 200]);
+            roh.push(b'\n');
+        }
+        let t = Instant::now();
+        assert!(Pdf::lesen(&roh).is_err());
+        assert!(t.elapsed().as_secs_f64() < 10.0);
+        let mut o = katalog_und_seite("[]", "");
+        o.push(b"<< >>".to_vec());
+        let roh = pdf_aus(&o);
+        let x = String::from_utf8_lossy(&roh).replace("xref\n0 5", "xref\n9223372036854775807 5");
+        let _ = Pdf::lesen(x.as_bytes());
+    }
+}

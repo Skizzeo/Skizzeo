@@ -458,23 +458,38 @@ pub fn nummer_im_kopf(texte: &[Text]) -> Option<String> {
 /// Stelle der Nummer in der Karte: als ein Text („123/4“) oder als Bruch
 /// („45“ über „6“, Mitte zwischen beiden). Texte in `aus` zählen nicht.
 pub fn nummer_in_karte(texte: &[Text], nummer: &str, aus: &[usize]) -> Option<[f64; 2]> {
-    let frei = |i: &usize| !aus.contains(i);
+    // frei als Maske statt `aus.contains` in der Doppelschleife (Review
+    // W37 B7)
+    let mut frei = vec![true; texte.len()];
+    for &i in aus {
+        if let Some(f) = frei.get_mut(i) {
+            *f = false;
+        }
+    }
     if let Some((_, t)) = texte
         .iter()
         .enumerate()
-        .filter(|(i, _)| frei(i))
+        .filter(|(i, _)| frei[*i])
         .find(|(_, t)| t.text.trim() == nummer)
     {
         return Some(lage::mitte(t));
     }
     let (z, n) = nummer.split_once('/')?;
-    for (i, a) in texte.iter().enumerate() {
-        if !frei(&i) || a.text.trim() != z {
-            continue;
-        }
+    // Zähler und Nenner vorab, je höchstens 1000 Kandidaten
+    let wahl = |w: &str| -> Vec<&Text> {
+        texte
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| frei[*i] && t.text.trim() == w)
+            .map(|(_, t)| t)
+            .take(1000)
+            .collect()
+    };
+    let (zaehler, nenner) = (wahl(z), wahl(n));
+    for a in &zaehler {
         let ma = lage::mitte(a);
-        for (j, b) in texte.iter().enumerate() {
-            if i == j || !frei(&j) || b.text.trim() != n {
+        for b in &nenner {
+            if std::ptr::eq(*a, *b) {
                 continue;
             }
             let mb = lage::mitte(b);
@@ -654,6 +669,9 @@ pub fn auswerten(seite: Seite, erzeuger_text: &str) -> Lageplan {
     plan
 }
 
+/// Hinweis, wenn die Datei mehr als das Budget des PDF-Lesers wollte.
+pub const ZU_GROSS: &str = "Die Datei verlangt über 512 MB entpackter Daten; Skizzeo hat dort aufgehört, der Lageplan kann unvollständig sein.";
+
 /// PDF-Lageplan lesen und auswerten (erste Seite).
 pub fn lesen(roh: &[u8]) -> Result<Lageplan, String> {
     let pdf = Pdf::lesen(roh)?;
@@ -663,6 +681,9 @@ pub fn lesen(roh: &[u8]) -> Result<Lageplan, String> {
     };
     let s = seite(&pdf, b);
     let mut plan = auswerten(s, &pdf.erzeuger());
+    if pdf.zu_gross() {
+        plan.hinweise.insert(0, ZU_GROSS.into());
+    }
     if seiten.len() > 1 {
         plan.hinweise.insert(
             0,

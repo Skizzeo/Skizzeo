@@ -314,3 +314,49 @@ fn eingescannter_plan_und_unsinn() {
     assert_eq!(unterlage(&plan), Unterlage::default());
     assert!(lesen(b"%PDF-1.4 kaputt").is_err());
 }
+
+/// Bomben (Review W37 B7, B8): 20.000 dünne Striche aus Stücken, die sich
+/// alle verbinden ließen; 20.000 Grenzstriche im Gitter; 5000 gleiche
+/// Nummern; Koordinaten am Rand von f64. Alles bleibt schnell und läuft
+/// nicht über.
+#[test]
+fn bomben_der_auswertung() {
+    use std::time::Instant;
+    // je Zeile 40 kollineare Stücke von 1 pt, 500 Zeilen
+    let mut s = Seite::default();
+    for z in 0..500 {
+        for k in 0..40 {
+            let (x, y) = (k as f64, z as f64 * 2.0);
+            s.pfade.push(linie(&[[x, y], [x + 1.0, y]], [0; 3], 0.1));
+        }
+    }
+    let t = Instant::now();
+    let _ = lage::gitterkreuze(&s);
+    assert!(t.elapsed().as_secs_f64() < 10.0, "verbinden");
+    // Grenzen als Gitter aus 20.000 kurzen Strichen
+    let mut g = Vec::new();
+    for i in 0..100 {
+        for j in 0..100 {
+            let (x, y) = (i as f64 * 10.0, j as f64 * 10.0);
+            g.push([[x, y], [x + 10.0, y]]);
+            g.push([[x, y], [x, y + 10.0]]);
+        }
+    }
+    let t = Instant::now();
+    let r = flaeche::kleinste_um(&g, [55.0, 55.0]).unwrap();
+    assert!((flaeche::flaeche(&r).abs() - 100.0).abs() < 1e-6);
+    assert!(t.elapsed().as_secs_f64() < 10.0, "Graph");
+    // ganz außen: kein Überlauf im Raster
+    let fern = [
+        [[1e300, 1e300], [-1e300, 1e300]],
+        [[f64::MAX, 0.0], [0.0, f64::MAX]],
+    ];
+    let _ = flaeche::kleinste_um(&fern, [0.0, 0.0]);
+    // 5000-mal dieselbe Zahl als Zähler und Nenner
+    let texte: Vec<Text> = (0..5000)
+        .map(|i| text("1", [i as f64 * 0.01, 0.0], 2.0, 0.0))
+        .collect();
+    let t = Instant::now();
+    let _ = nummer_in_karte(&texte, "1/1", &[1, 2, 3]);
+    assert!(t.elapsed().as_secs_f64() < 10.0, "Nummer");
+}
