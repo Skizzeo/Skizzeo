@@ -6,26 +6,41 @@
 use super::objekt::{Objekt, Verz};
 use crate::inflate;
 
-/// Daten durch einen Filter mit seinen Parametern; `None`, wenn der Filter
-/// unbekannt ist oder die Daten nichts ergeben.
-pub fn filter(name: &str, d: &[u8], parm: Option<&Verz>) -> Option<Vec<u8>> {
+/// Warum ein Filter nichts ergab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fehler {
+    /// Unbekannter Filter oder Daten, die nichts ergeben.
+    Nichts,
+    /// Die Daten ergäben mehr als die erlaubten Bytes (Bombe).
+    Voll,
+}
+
+/// Daten durch einen Filter mit seinen Parametern, höchstens `grenze`
+/// Bytes.
+pub fn filter(name: &str, d: &[u8], parm: Option<&Verz>, grenze: usize) -> Result<Vec<u8>, Fehler> {
     let aus = match name {
         "FlateDecode" | "Fl" => {
-            let (aus, ganz) = inflate::nachsichtig(d);
+            let (aus, ganz, voll) = inflate::nachsichtig_bis(d, grenze);
+            if voll {
+                return Err(Fehler::Voll);
+            }
             if aus.is_empty() && !ganz {
-                return None;
+                return Err(Fehler::Nichts);
             }
             aus
         }
         "ASCIIHexDecode" | "AHx" => hex(d),
-        "ASCII85Decode" | "A85" => a85(d)?,
-        "RunLengthDecode" | "RL" => lauflaenge(d),
+        "ASCII85Decode" | "A85" => a85(d, grenze)?,
+        "RunLengthDecode" | "RL" => lauflaenge(d, grenze)?,
         "Crypt" => d.to_vec(),
-        _ => return None,
+        _ => return Err(Fehler::Nichts),
     };
+    if aus.len() > grenze {
+        return Err(Fehler::Voll);
+    }
     match parm {
-        Some(p) => praediktor(aus, p),
-        None => Some(aus),
+        Some(p) => praediktor(aus, p).ok_or(Fehler::Nichts),
+        None => Ok(aus),
     }
 }
 
@@ -49,7 +64,7 @@ fn hex(d: &[u8]) -> Vec<u8> {
     aus
 }
 
-fn a85(d: &[u8]) -> Option<Vec<u8>> {
+fn a85(d: &[u8], grenze: usize) -> Result<Vec<u8>, Fehler> {
     let mut aus = Vec::new();
     let mut gruppe = [0u8; 5];
     let mut n = 0;
@@ -57,18 +72,20 @@ fn a85(d: &[u8]) -> Option<Vec<u8>> {
     for &b in d {
         match b {
             b'~' => break,
+            _ if aus.len() > grenze => return Err(Fehler::Voll),
             b'z' if n == 0 => aus.extend_from_slice(&[0; 4]),
             b'!'..=b'u' => {
                 gruppe[n] = b - b'!';
                 n += 1;
                 if n == 5 {
                     let v = gruppe.iter().fold(0u64, |a, &g| a * 85 + g as u64);
-                    aus.extend_from_slice(&u32::try_from(v).ok()?.to_be_bytes());
+                    let v = u32::try_from(v).map_err(|_| Fehler::Nichts)?;
+                    aus.extend_from_slice(&v.to_be_bytes());
                     n = 0;
                 }
             }
             _ if super::objekt::leer(b) => {}
-            _ => return None,
+            _ => return Err(Fehler::Nichts),
         }
     }
     if n > 1 {
@@ -76,15 +93,19 @@ fn a85(d: &[u8]) -> Option<Vec<u8>> {
             *g = 84;
         }
         let v = gruppe.iter().fold(0u64, |a, &g| a * 85 + g as u64);
-        aus.extend_from_slice(&u32::try_from(v).ok()?.to_be_bytes()[..n - 1]);
+        let v = u32::try_from(v).map_err(|_| Fehler::Nichts)?;
+        aus.extend_from_slice(&v.to_be_bytes()[..n - 1]);
     }
-    Some(aus)
+    Ok(aus)
 }
 
-fn lauflaenge(d: &[u8]) -> Vec<u8> {
+fn lauflaenge(d: &[u8], grenze: usize) -> Result<Vec<u8>, Fehler> {
     let mut aus = Vec::new();
     let mut i = 0;
     while let Some(&n) = d.get(i) {
+        if aus.len() > grenze {
+            return Err(Fehler::Voll);
+        }
         match n {
             128 => break,
             0..=127 => {
@@ -100,7 +121,7 @@ fn lauflaenge(d: &[u8]) -> Vec<u8> {
             }
         }
     }
-    aus
+    Ok(aus)
 }
 
 /// PNG-Prädiktor (10 bis 15, je Zeile ein Filterbyte) oder TIFF 2 für
@@ -114,7 +135,9 @@ fn praediktor(d: Vec<u8>, p: &Verz) -> Option<Vec<u8>> {
     let bits = p.ganz("BitsPerComponent").unwrap_or(8).clamp(1, 16) as usize;
     let spalten = p.ganz("Columns").unwrap_or(1).clamp(1, 1 << 20) as usize;
     let bpp = (farben * bits).div_ceil(8);
-    let zeile = (farben * bits * spalten).div_ceil(8);
+    // eine Zeile länger als die Daten ergibt nichts mehr (kein Speicher
+    // nach /Columns, L1)
+    let zeile = (farben * bits * spalten).div_ceil(8).min(d.len().max(1));
     if art == 2 {
         if bits != 8 {
             return Some(d);
@@ -196,18 +219,61 @@ mod tests {
     fn hex_a85_lauflaenge() {
         assert_eq!(hex(b"48 65 6c 6C 6f 2>"), b"Hello ".to_vec());
         // „Man is“ aus dem Beispiel der Spezifikation
+        const G: usize = 1 << 20;
         assert_eq!(
-            a85(b"9jqo^BlbD-BleB1DJ+*+F(f,q~>"),
-            Some(b"Man is distinguished".to_vec())
+            a85(b"9jqo^BlbD-BleB1DJ+*+F(f,q~>", G),
+            Ok(b"Man is distinguished".to_vec())
         );
-        assert_eq!(a85(b"z~>"), Some(vec![0; 4]));
-        assert_eq!(a85(b"<~87cURD]i,\"Ebo7~>"), Some(b"Hello World".to_vec()));
-        assert_eq!(a85(b"\xff"), None);
+        assert_eq!(a85(b"z~>", G), Ok(vec![0; 4]));
+        assert_eq!(a85(b"<~87cURD]i,\"Ebo7~>", G), Ok(b"Hello World".to_vec()));
+        assert_eq!(a85(b"\xff", G), Err(Fehler::Nichts));
         assert_eq!(
-            lauflaenge(&[2, b'a', b'b', b'c', 254, b'x', 128]),
-            b"abcxxx".to_vec()
+            lauflaenge(&[2, b'a', b'b', b'c', 254, b'x', 128], G),
+            Ok(b"abcxxx".to_vec())
         );
-        assert_eq!(lauflaenge(&[5, b'a']), b"a".to_vec());
+        assert_eq!(lauflaenge(&[5, b'a'], G), Ok(b"a".to_vec()));
+    }
+
+    /// Bomben (Review W37 B2): sechsmal RunLength macht aus wenigen Bytes
+    /// Gigabytes; jede Stufe hält an der Grenze an, ebenso Flate und
+    /// ASCII85 mit „z“.
+    #[test]
+    fn bomben_halten_an_der_grenze() {
+        let g = 1 << 16;
+        let mut d = vec![129u8, b'x'];
+        let mut stufen = 0;
+        loop {
+            match filter("RunLengthDecode", &d, None, g) {
+                Ok(x) => {
+                    stufen += 1;
+                    // nächste Stufe: jedes Byte 128-mal
+                    d = x.iter().flat_map(|&b| [129u8, b]).collect();
+                }
+                Err(e) => {
+                    assert_eq!(e, Fehler::Voll);
+                    break;
+                }
+            }
+            assert!(stufen < 6, "keine Grenze");
+        }
+        let z = vec![b'z'; 1 << 20];
+        assert_eq!(filter("A85", &z, None, g), Err(Fehler::Voll));
+        // knapp 1 MB Nullen aus 6,6 kB: über der Grenze voll, darunter ganz
+        let null = crate::inflate::bombe(4064);
+        assert!(null.len() < 7000);
+        assert_eq!(filter("FlateDecode", &null, None, g), Err(Fehler::Voll));
+        assert_eq!(
+            filter("FlateDecode", &null, None, 1 << 20).map(|v| v.len()),
+            Ok(1 + 258 * 4064)
+        );
+        assert_eq!(filter("LZWDecode", b"x", None, g), Err(Fehler::Nichts));
+        // Prädiktor mit riesigen /Columns: Zeile höchstens so lang wie die Daten
+        let mut p = Verz::default();
+        p.setzen("Predictor", Objekt::Ganz(12));
+        p.setzen("Columns", Objekt::Ganz(1 << 20));
+        p.setzen("Colors", Objekt::Ganz(32));
+        p.setzen("BitsPerComponent", Objekt::Ganz(16));
+        assert_eq!(praediktor(vec![0, 1, 2, 3], &p), Some(vec![1, 2, 3]));
     }
 
     #[test]

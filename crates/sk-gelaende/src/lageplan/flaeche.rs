@@ -23,7 +23,7 @@ fn punkt_id(
     let k = ((p[0] / FANG).floor() as i64, (p[1] / FANG).floor() as i64);
     for dx in -1..=1 {
         for dy in -1..=1 {
-            if let Some(v) = raster.get(&(k.0 + dx, k.1 + dy)) {
+            if let Some(v) = raster.get(&(k.0.saturating_add(dx), k.1.saturating_add(dy))) {
                 for &i in v {
                     let q = punkte[i];
                     if (q[0] - p[0]).hypot(q[1] - p[1]) < FANG {
@@ -66,6 +66,8 @@ fn fuss(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, f64) {
 
 impl Graph {
     fn neu(strecken: &[[[f64; 2]; 2]]) -> Graph {
+        // höchstens so viele Striche wie bei den Gitterkreuzen
+        let strecken = &strecken[..strecken.len().min(20_000)];
         // Teilungsstellen je Strecke: Kreuzungen und Enden anderer Strecken
         let n = strecken.len();
         let mut teile: Vec<Vec<f64>> = vec![vec![0.0, 1.0]; n];
@@ -80,29 +82,35 @@ impl Graph {
                 ]
             })
             .collect();
-        for i in 0..n {
-            for j in 0..n {
-                if i == j {
+        // Paare nur, wo sich die Kästen überdecken: nach linkem Rand
+        // sortiert, je Strecke die folgenden bis zu ihrem rechten Rand
+        // (statt aller n² Paare, Review W37 B7); die Teilungsstellen werden
+        // danach sortiert, die Reihenfolge der Paare zählt nicht
+        let mut nach_x: Vec<usize> = (0..n).collect();
+        nach_x.sort_by(|&i, &j| kasten[i][0].total_cmp(&kasten[j][0]));
+        for (o, &i) in nach_x.iter().enumerate() {
+            for &j in &nach_x[o + 1..] {
+                if kasten[j][0] > kasten[i][2] {
+                    break;
+                }
+                if kasten[i][1] > kasten[j][3] || kasten[j][1] > kasten[i][3] {
                     continue;
                 }
-                let (ki, kj) = (kasten[i], kasten[j]);
-                if ki[0] > kj[2] || kj[0] > ki[2] || ki[1] > kj[3] || kj[1] > ki[3] {
-                    continue;
-                }
-                let (a, b) = (strecken[i][0], strecken[i][1]);
-                for e in strecken[j] {
-                    let (d, t) = fuss(e, a, b);
-                    if d < FANG && t > 0.0 && t < 1.0 {
-                        teile[i].push(t);
+                for (i, j) in [(i, j), (j, i)] {
+                    let (a, b) = (strecken[i][0], strecken[i][1]);
+                    for e in strecken[j] {
+                        let (d, t) = fuss(e, a, b);
+                        if d < FANG && t > 0.0 && t < 1.0 {
+                            teile[i].push(t);
+                        }
                     }
                 }
-                if i < j {
-                    let (c, d) = (strecken[j][0], strecken[j][1]);
-                    if let Some((t, u)) = schnitt(a, b, c, d) {
-                        if t > 0.0 && t < 1.0 && u > 0.0 && u < 1.0 {
-                            teile[i].push(t);
-                            teile[j].push(u);
-                        }
+                let (a, b) = (strecken[i][0], strecken[i][1]);
+                let (c, d) = (strecken[j][0], strecken[j][1]);
+                if let Some((t, u)) = schnitt(a, b, c, d) {
+                    if t > 0.0 && t < 1.0 && u > 0.0 && u < 1.0 {
+                        teile[i].push(t);
+                        teile[j].push(u);
                     }
                 }
             }

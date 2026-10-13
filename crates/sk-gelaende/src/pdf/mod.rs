@@ -13,7 +13,13 @@ pub mod schutz;
 
 use objekt::{Leser, Objekt, Strom, Verz, Wort};
 use schutz::Schutz;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// So viele Bytes darf eine Datei insgesamt kosten: entpackte und kopierte
+/// Ströme, je Filterstufe, und gelesene Objekte, auch wiederholt (Schutz vor
+/// Bomben, Review W37). Ein Lageplan braucht wenige MB.
+pub const BUDGET: usize = 512 << 20;
 
 /// Wo ein Objekt steht.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,8 +35,14 @@ enum Ort {
 pub struct Pdf {
     d: Vec<u8>,
     orte: BTreeMap<u32, Ort>,
-    /// Objekte aus Objektströmen, beim Öffnen gelesen.
-    aus_stroemen: BTreeMap<u32, Objekt>,
+    /// Objekte aus Objektströmen, beim Öffnen gelesen, mit ihrer Länge
+    /// (jede Kopie kostet sie).
+    aus_stroemen: BTreeMap<u32, (Objekt, usize)>,
+    /// Wo „endstream“ steht, aufsteigend (einmal gesucht).
+    endstreams: Vec<usize>,
+    /// Was vom [`BUDGET`] übrig ist; `voll`, wenn eine Datei mehr wollte.
+    rest: Cell<usize>,
+    voll: Cell<bool>,
     pub trailer: Verz,
     schutz: Option<Schutz>,
     /// Nummer des `/Encrypt`-Verzeichnisses (wird nicht entschlüsselt).
@@ -52,6 +64,17 @@ pub struct Blatt {
 
 /// So oft folgt Skizzeo Bezügen auf Bezüge.
 const KETTE: usize = 32;
+
+/// Wo `muster` in `d` beginnt, aufsteigend.
+fn suchen(d: &[u8], muster: &[u8]) -> Vec<usize> {
+    let mut aus = Vec::new();
+    let mut i = 0;
+    while let Some(k) = ab(d, i).windows(muster.len()).position(|w| w == muster) {
+        aus.push(i + k);
+        i += k + 1;
+    }
+    aus
+}
 
 /// Rest des Puffers ab `p`, leer jenseits des Endes.
 fn ab(d: &[u8], p: usize) -> &[u8] {
@@ -91,6 +114,11 @@ impl Pdf {
     /// Datei öffnen. Fehler sind Sätze für den Dialog, z. B. „Die Datei ist
     /// mit Kennwort geschützt.“
     pub fn lesen(roh: &[u8]) -> Result<Pdf, String> {
+        Pdf::lesen_mit(roh, BUDGET)
+    }
+
+    /// Wie [`Pdf::lesen`] mit eigenem Budget (Tests mit kleinen Bomben).
+    pub fn lesen_mit(roh: &[u8], budget: usize) -> Result<Pdf, String> {
         let kopf = roh
             .windows(5)
             .take(1024)
@@ -100,11 +128,15 @@ impl Pdf {
             d: roh[kopf..].to_vec(),
             orte: BTreeMap::new(),
             aus_stroemen: BTreeMap::new(),
+            endstreams: Vec::new(),
+            rest: Cell::new(budget),
+            voll: Cell::new(false),
             trailer: Verz::default(),
             schutz: None,
             encrypt_nr: None,
             hinweise: Vec::new(),
         };
+        pdf.endstreams = suchen(&pdf.d, b"endstream");
         let gut = pdf.querverweise().is_some()
             && pdf.trailer.get("Root").is_some()
             && pdf.orte.iter().all(|(&nr, o)| match *o {
@@ -181,7 +213,7 @@ impl Pdf {
                                 Wort::Befehl(a) => a,
                                 _ => return None,
                             };
-                            let nr = u32::try_from(start + i).ok()?;
+                            let nr = u32::try_from(start.saturating_add(i)).ok()?;
                             let ort = if art == b"n" && ofs > 0 {
                                 Ort::Datei(ofs as usize, gen.clamp(0, 65535) as u16)
                             } else {
@@ -241,7 +273,7 @@ impl Pdf {
                 let Some(z) = zeilen.next() else { break };
                 let art = if w[0] == 0 { 1 } else { feld(z, 0, w[0]) };
                 let (f2, f3) = (feld(z, w[0], w[1]), feld(z, w[0] + w[1], w[2]));
-                let Ok(nr) = u32::try_from(paar[0] + i) else {
+                let Ok(nr) = u32::try_from(paar[0].saturating_add(i)) else {
                     continue;
                 };
                 let ort = match art {
@@ -379,7 +411,13 @@ impl Pdf {
                     _ => break,
                 }
             }
-            for (i, (nr, ofs)) in paare.into_iter().enumerate() {
+            // Objekte liegen nacheinander; eines, das in ein früheres reicht,
+            // gilt nicht (sonst liest eine Bombe dasselbe Feld je Nummer neu,
+            // Review W37 B3)
+            let mut paare: Vec<(usize, (i64, i64))> = paare.into_iter().enumerate().collect();
+            paare.sort_by_key(|(_, (_, ofs))| *ofs);
+            let mut ende = 0;
+            for (i, (nr, ofs)) in paare {
                 let Ok(nr) = u32::try_from(nr) else { continue };
                 // nur, wenn die Querverweise das Objekt hier sehen (sonst ist es überholt)
                 let gilt = match self.orte.get(&nr) {
@@ -390,9 +428,18 @@ impl Pdf {
                 if !gilt || ofs < 0 {
                     continue;
                 }
-                let mut l = Leser::neu(&d, erst + ofs as usize);
+                let start = erst.saturating_add(ofs as usize);
+                if start < ende {
+                    continue;
+                }
+                let mut l = Leser::neu(&d, start);
                 if let Some(o) = l.objekt() {
-                    self.aus_stroemen.insert(nr, o);
+                    ende = l.pos;
+                    let n = l.pos - start;
+                    if self.kosten(n).is_none() {
+                        break;
+                    }
+                    self.aus_stroemen.insert(nr, (o, n));
                     self.orte.entry(nr).or_insert(Ort::InStrom(s, i as u32));
                 }
             }
@@ -405,6 +452,7 @@ impl Pdf {
         let (nr, gen, nach) = kopf_an(&self.d, pos)?;
         let mut l = Leser::neu(&self.d, nach);
         let mut o = l.objekt()?;
+        self.kosten(l.pos - nach)?;
         if let Objekt::Verz(v) = &o {
             l.leerraum();
             if ab(&self.d, l.pos).starts_with(b"stream") {
@@ -427,8 +475,10 @@ impl Pdf {
                     ab(&self.d, q.pos).starts_with(b"endstream").then_some(e)
                 };
                 let e = laenge.and_then(passt).or_else(|| {
-                    let k = ab(&self.d, a).windows(9).position(|w| w == b"endstream")?;
-                    let mut e = a + k;
+                    // das nächste „endstream“ aus der Liste, ohne neu zu suchen
+                    // (Review W37 B6)
+                    let i = self.endstreams.partition_point(|&p| p < a);
+                    let mut e = *self.endstreams.get(i)?;
                     if e > a && self.d[e - 1] == b'\n' {
                         e -= 1;
                     }
@@ -437,6 +487,7 @@ impl Pdf {
                     }
                     Some(e)
                 })?;
+                self.kosten(e - a)?;
                 o = Objekt::Strom(Strom {
                     verz: v.clone(),
                     daten: self.d[a..e].to_vec(),
@@ -466,7 +517,7 @@ impl Pdf {
                 let (_, _, nach) = kopf_an(&self.d, p)?;
                 Leser::neu(&self.d, nach).objekt()?.ganz()
             }
-            Ort::InStrom(..) => self.aus_stroemen.get(&nr)?.ganz(),
+            Ort::InStrom(..) => self.aus_stroemen.get(&nr)?.0.ganz(),
             Ort::Frei => None,
         }
     }
@@ -483,7 +534,11 @@ impl Pdf {
                 let (n, _, o) = self.lesen_an(p, schutz)?;
                 (n == nr).then_some(o)
             }
-            Ort::InStrom(..) => self.aus_stroemen.get(&nr).cloned(),
+            Ort::InStrom(..) => {
+                let (o, n) = self.aus_stroemen.get(&nr)?;
+                self.kosten(*n)?;
+                Some(o.clone())
+            }
             Ort::Frei => None,
         }
     }
@@ -516,11 +571,44 @@ impl Pdf {
                 Objekt::Feld(f) => Objekt::Feld(f.iter().map(|x| self.aufloesen(x)).collect()),
                 x => x,
             });
+        self.kosten(s.daten.len())?;
         let mut d = s.daten.clone();
         for (name, parm) in filter::liste(f.as_ref(), p.as_ref()) {
-            d = filter::filter(&name, &d, parm.as_ref())?;
+            match filter::filter(&name, &d, parm.as_ref(), self.rest.get()) {
+                Ok(x) => {
+                    self.kosten(x.len())?;
+                    d = x;
+                }
+                Err(filter::Fehler::Voll) => {
+                    self.rest.set(0);
+                    self.voll.set(true);
+                    return None;
+                }
+                Err(filter::Fehler::Nichts) => return None,
+            }
         }
         Some(d)
+    }
+
+    /// `n` Bytes vom [`BUDGET`]; `None`, wenn es nicht reicht (dann ist es
+    /// aufgebraucht und [`Pdf::zu_gross`] gilt).
+    fn kosten(&self, n: usize) -> Option<()> {
+        match self.rest.get().checked_sub(n) {
+            Some(r) => {
+                self.rest.set(r);
+                Some(())
+            }
+            None => {
+                self.rest.set(0);
+                self.voll.set(true);
+                None
+            }
+        }
+    }
+
+    /// Wollte die Datei mehr als das [`BUDGET`]? Dann fehlt, was danach kam.
+    pub fn zu_gross(&self) -> bool {
+        self.voll.get()
     }
 
     /// Der Katalog (`/Root`).

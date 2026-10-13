@@ -136,12 +136,32 @@ const REIHE: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];
 
+/// Ziel des Entpackens: höchstens `grenze` Bytes; `voll`, wenn die Daten
+/// mehr wollten.
+struct Ziel<'a> {
+    aus: &'a mut Vec<u8>,
+    grenze: usize,
+    voll: bool,
+}
+
+impl Ziel<'_> {
+    /// Passen noch `n` Bytes?
+    fn platz(&mut self, n: usize) -> Option<()> {
+        if self.aus.len().saturating_add(n) > self.grenze {
+            self.voll = true;
+            return None;
+        }
+        Some(())
+    }
+}
+
 /// Einen komprimierten Block bis zum Endzeichen 256 entpacken.
-fn block(b: &mut Bits, aus: &mut Vec<u8>, lit: &Huffman, abst: &Huffman) -> Option<()> {
+fn block(b: &mut Bits, ziel: &mut Ziel, lit: &Huffman, abst: &Huffman) -> Option<()> {
     loop {
         let z = lit.lesen(b)? as usize;
         if z < 256 {
-            aus.push(z as u8);
+            ziel.platz(1)?;
+            ziel.aus.push(z as u8);
         } else if z == 256 {
             return Some(());
         } else {
@@ -150,9 +170,11 @@ fn block(b: &mut Bits, aus: &mut Vec<u8>, lit: &Huffman, abst: &Huffman) -> Opti
             let k = abst.lesen(b)? as usize;
             let abstand =
                 *ABSTAND_BASIS.get(k)? as usize + b.bits(*ABSTAND_EXTRA.get(k)? as u32)? as usize;
-            if abstand > aus.len() || aus.len() + laenge > GRENZE {
+            if abstand > ziel.aus.len() {
                 return None;
             }
+            ziel.platz(laenge)?;
+            let aus = &mut *ziel.aus;
             let von = aus.len() - abstand;
             for j in 0..laenge {
                 let c = aus[von + j];
@@ -218,7 +240,7 @@ fn eigen(b: &mut Bits) -> Option<(Huffman, Huffman)> {
 /// Entpackt in `aus`, bis zum letzten Block oder zum ersten Fehler; gibt
 /// die Zahl der gelesenen Bytes bei Erfolg zurück. Was vor einem Fehler
 /// entpackt wurde, bleibt in `aus`.
-fn entpacken(d: &[u8], aus: &mut Vec<u8>) -> Option<usize> {
+fn entpacken(d: &[u8], ziel: &mut Ziel) -> Option<usize> {
     let mut b = Bits::neu(d);
     loop {
         let letzter = b.bits(1)? == 1;
@@ -229,19 +251,21 @@ fn entpacken(d: &[u8], aus: &mut Vec<u8>) -> Option<usize> {
                 let kopf = d.get(p..p + 4)?;
                 let n = u16::from_le_bytes([kopf[0], kopf[1]]);
                 let nn = u16::from_le_bytes([kopf[2], kopf[3]]);
-                if n != !nn || aus.len() + n as usize > GRENZE {
+                if n != !nn {
                     return None;
                 }
-                aus.extend_from_slice(d.get(p + 4..p + 4 + n as usize)?);
+                ziel.platz(n as usize)?;
+                ziel.aus
+                    .extend_from_slice(d.get(p + 4..p + 4 + n as usize)?);
                 b.setze(p + 4 + n as usize);
             }
             1 => {
                 let (lit, abst) = fest();
-                block(&mut b, aus, &lit, &abst)?;
+                block(&mut b, ziel, &lit, &abst)?;
             }
             2 => {
                 let (lit, abst) = eigen(&mut b)?;
-                block(&mut b, aus, &lit, &abst)?;
+                block(&mut b, ziel, &lit, &abst)?;
             }
             _ => return None,
         }
@@ -255,8 +279,16 @@ fn entpacken(d: &[u8], aus: &mut Vec<u8>) -> Option<usize> {
 /// Rohen Deflate-Strom entpacken (RFC 1951).
 pub fn inflate(d: &[u8]) -> Option<Vec<u8>> {
     let mut aus = Vec::new();
-    entpacken(d, &mut aus)?;
+    entpacken(d, &mut ziel(&mut aus, GRENZE))?;
     Some(aus)
+}
+
+fn ziel(aus: &mut Vec<u8>, grenze: usize) -> Ziel<'_> {
+    Ziel {
+        aus,
+        grenze,
+        voll: false,
+    }
 }
 
 /// Prüfsumme Adler-32 (RFC 1950).
@@ -289,7 +321,7 @@ pub fn zlib(d: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let mut aus = Vec::new();
-    let n = entpacken(&d[2..], &mut aus)?;
+    let n = entpacken(&d[2..], &mut ziel(&mut aus, GRENZE))?;
     let summe = d.get(2 + n..2 + n + 4)?;
     (u32::from_be_bytes([summe[0], summe[1], summe[2], summe[3]]) == adler32(&aus)).then_some(aus)
 }
@@ -298,9 +330,43 @@ pub fn zlib(d: &[u8]) -> Option<Vec<u8>> {
 /// einem Fehler entpackt wurde, zählt (abgeschnittene Ströme kommen vor).
 /// `true`, wenn der Strom vollständig war.
 pub fn nachsichtig(d: &[u8]) -> (Vec<u8>, bool) {
-    let mut aus = Vec::new();
-    let ganz = entpacken(if kopf(d) { &d[2..] } else { d }, &mut aus).is_some();
+    let (aus, ganz, _) = nachsichtig_bis(d, GRENZE);
     (aus, ganz)
+}
+
+/// Wie [`nachsichtig`], höchstens `grenze` Bytes (höchstens [`GRENZE`]);
+/// drittens `true`, wenn der Strom mehr ergäbe.
+pub fn nachsichtig_bis(d: &[u8], grenze: usize) -> (Vec<u8>, bool, bool) {
+    let mut aus = Vec::new();
+    let mut z = ziel(&mut aus, grenze.min(GRENZE));
+    let ganz = entpacken(if kopf(d) { &d[2..] } else { d }, &mut z).is_some();
+    let voll = z.voll;
+    (aus, ganz, voll)
+}
+
+/// Deflate mit fester Tabelle: eine Null, dann `n`-mal „258 Bytes ab
+/// Abstand 1“, also 1 + 258·n Nullen aus 13·n Bits (eine Bombe für Tests).
+#[cfg(test)]
+pub(crate) fn bombe(n: usize) -> Vec<u8> {
+    let mut bits: Vec<bool> = vec![true, true, false];
+    let code = |v: u32, len: u32, bits: &mut Vec<bool>| {
+        for i in (0..len).rev() {
+            bits.push(v >> i & 1 == 1);
+        }
+    };
+    code(0x30, 8, &mut bits);
+    for _ in 0..n {
+        code(0b1100_0101, 8, &mut bits);
+        code(0, 5, &mut bits);
+    }
+    code(0, 7, &mut bits);
+    bits.chunks(8)
+        .map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u8, |b, (i, &x)| b | (x as u8) << i)
+        })
+        .collect()
 }
 
 #[cfg(test)]

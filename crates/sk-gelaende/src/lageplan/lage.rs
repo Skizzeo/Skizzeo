@@ -292,36 +292,69 @@ fn laenge(s: &[[f64; 2]; 2]) -> f64 {
 }
 
 /// Kollineare Strecken mit gemeinsamem Ende zusammenfassen (ein Kreuzarm
-/// aus zwei Hälften wird ein Strich).
-fn verbinden(mut s: Vec<[[f64; 2]; 2]>) -> Vec<[[f64; 2]; 2]> {
-    let nah = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < 0.02;
-    'aussen: loop {
-        for i in 0..s.len() {
-            for j in i + 1..s.len() {
-                let (a, b) = (s[i], s[j]);
-                let (la, lb) = (laenge(&a), laenge(&b));
-                if la < 1e-6 || lb < 1e-6 || la > 60.0 || lb > 60.0 {
-                    continue;
+/// aus zwei Hälften wird ein Strich). Partner kommen aus einem Raster der
+/// Enden; nach einer Verschmelzung sucht nur die neue Strecke weiter, ohne
+/// Neustart (Review W37 B7).
+fn verbinden(s: Vec<[[f64; 2]; 2]>) -> Vec<[[f64; 2]; 2]> {
+    const NAH: f64 = 0.02;
+    let nah = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < NAH;
+    let zelle = |p: [f64; 2]| ((p[0] / NAH).floor() as i64, (p[1] / NAH).floor() as i64);
+    let brauchbar = |l: f64| (1e-6..=60.0).contains(&l);
+    let mut s: Vec<Option<[[f64; 2]; 2]>> = s.into_iter().map(Some).collect();
+    let mut raster: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, x) in s.iter().enumerate() {
+        for p in x.iter().flatten() {
+            raster.entry(zelle(*p)).or_default().push(i);
+        }
+    }
+    for i in 0..s.len() {
+        'weiter: while let Some(a) = s[i] {
+            let la = laenge(&a);
+            if !brauchbar(la) {
+                break;
+            }
+            let da = [a[1][0] - a[0][0], a[1][1] - a[0][1]];
+            for k in 0..2 {
+                let (cx, cy) = zelle(a[k]);
+                let mut kand: Vec<usize> = Vec::new();
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        let c = (cx.saturating_add(dx), cy.saturating_add(dy));
+                        kand.extend(raster.get(&c).into_iter().flatten());
+                    }
                 }
-                let da = [a[1][0] - a[0][0], a[1][1] - a[0][1]];
-                let db = [b[1][0] - b[0][0], b[1][1] - b[0][1]];
-                if (da[0] * db[1] - da[1] * db[0]).abs() > 0.01 * la * lb {
-                    continue;
-                }
-                for (k, l) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                    if nah(a[k], b[l]) {
+                kand.sort_unstable();
+                kand.dedup();
+                for j in kand {
+                    let Some(b) = s.get(j).copied().flatten().filter(|_| j != i) else {
+                        continue;
+                    };
+                    let lb = laenge(&b);
+                    if !brauchbar(lb) {
+                        continue;
+                    }
+                    let db = [b[1][0] - b[0][0], b[1][1] - b[0][1]];
+                    if (da[0] * db[1] - da[1] * db[0]).abs() > 0.01 * la * lb {
+                        continue;
+                    }
+                    for l in 0..2 {
                         let neu = [a[1 - k], b[1 - l]];
-                        if laenge(&neu) > la.max(lb) {
-                            s[i] = neu;
-                            s.swap_remove(j);
-                            continue 'aussen;
+                        if nah(a[k], b[l]) && laenge(&neu) > la.max(lb) {
+                            s[i] = Some(neu);
+                            s[j] = None;
+                            for p in neu {
+                                raster.entry(zelle(p)).or_default().push(i);
+                            }
+                            continue 'weiter;
                         }
                     }
                 }
             }
+            break;
         }
-        return s;
     }
+    s.into_iter().flatten().collect()
 }
 
 /// Gitterkreuze: zwei dünne, gleich lange Striche (4 bis 60 pt), die sich
@@ -331,9 +364,27 @@ pub fn gitterkreuze(seite: &Seite) -> Vec<[f64; 2]> {
         .into_iter()
         .filter(|s| (4.0..=60.0).contains(&laenge(s)))
         .collect();
+    // Partner nur aus der Nähe der Mitte (ein Kreuz hat beide Mitten
+    // höchstens 3 pt auseinander): Raster der Mitten statt aller Paare
+    let mitte = |a: &[[f64; 2]; 2]| [(a[0][0] + a[1][0]) / 2.0, (a[0][1] + a[1][1]) / 2.0];
+    let zelle = |p: [f64; 2]| ((p[0] / 3.0).floor() as i64, (p[1] / 3.0).floor() as i64);
+    let mut raster: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, x) in s.iter().enumerate() {
+        raster.entry(zelle(mitte(x))).or_default().push(i);
+    }
     let mut aus: Vec<[f64; 2]> = Vec::new();
     for i in 0..s.len() {
-        for j in i + 1..s.len() {
+        let (cx, cy) = zelle(mitte(&s[i]));
+        let mut nachbarn: Vec<usize> = Vec::new();
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                let c = (cx.saturating_add(dx), cy.saturating_add(dy));
+                nachbarn.extend(raster.get(&c).into_iter().flatten().filter(|&&j| j > i));
+            }
+        }
+        nachbarn.sort_unstable();
+        for j in nachbarn {
             let (a, b) = (s[i], s[j]);
             let (la, lb) = (laenge(&a), laenge(&b));
             if (la - lb).abs() > 0.05 * la.max(lb) {
@@ -429,15 +480,15 @@ pub fn gitter(
         return None;
     }
     let grob = |p: [f64; 2]| [ve + (p[0] - xe) * s, vn + (p[1] - yn) * s];
-    // Rastermaß aus dem kleinsten Abstand der Kreuze in einer Richtung
+    // Rastermaß aus dem kleinsten Abstand zweier Kreuze; je Achse gemessen
+    // wäre bei gedrehtem Plan der Querversatz (Abstand · sin θ) das Maß und
+    // die Lage fehlte (Geometrie zu #128)
     let mut d = f64::MAX;
     for a in &kreuze {
         for b in &kreuze {
-            for k in 0..2 {
-                let x = (a[k] - b[k]).abs() * s;
-                if x > 1.0 {
-                    d = d.min(x);
-                }
+            let x = (a[0] - b[0]).hypot(a[1] - b[1]) * s;
+            if x > 1.0 {
+                d = d.min(x);
             }
         }
     }
