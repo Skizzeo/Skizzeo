@@ -235,16 +235,25 @@ impl Model {
         neu
     }
 
-    /// Lage schreiben, ohne die Gründungen nachzuführen.
+    /// Lage schreiben, ohne die Gründungen nachzuführen. Ändert sich nur
+    /// die Höhe von ±0,00, bleibt die Lage im Aufmaß gemerkt.
     pub(crate) fn put_location(&mut self, l: Location) -> bool {
         let l = l.normalized();
         if l == self.location {
             return false;
         }
+        let nur_hoehe = Location {
+            nhn: self.location.nhn,
+            ..l
+        } == self.location;
         self.note_location();
         self.location = l;
         self.location_raw = None;
-        self.touch();
+        if nur_hoehe {
+            self.touch_height();
+        } else {
+            self.touch();
+        }
         true
     }
 

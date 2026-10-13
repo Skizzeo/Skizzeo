@@ -1,11 +1,14 @@
-//! Lage und Nordpfeil in der Szene, aus `scene.rs` ausgelagert. Mit
-//! Höhenaufmaß (Review #123 W45 B3): Liegt ein Aufmaß im Projekt, bewegen
-//! Lage und Nordrichtung das Gelände unter dem Haus und mit ihm die
-//! Gründungen. Ändert sich dabei eine Unterkante, rechnet die Szene alles
-//! neu; sonst blieben 3D-Körper und Mengen beim alten Stand.
+//! Lage, Nordpfeil und Gelände ziehen in der Szene, aus `scene.rs`
+//! ausgelagert. Mit Höhenaufmaß (Review #123 W45 B3): Liegt ein Aufmaß im
+//! Projekt, bewegen Lage und Nordrichtung das Gelände unter dem Haus und
+//! mit ihm die Gründungen. Ändert sich dabei eine Unterkante, rechnet die
+//! Szene alles neu; sonst blieben 3D-Körper und Mengen beim alten Stand.
+//! Beim Ziehen von OK Gelände folgen so die Züge der Gebäude, deren
+//! Gründung sich bewegt hat (W45-Nachprüfung N1).
 
 use super::Scene;
-use sk_model::LevelKind;
+use sk_model::{BuildingId, ElementKind, LevelKind, RunId, StoreyId};
+use std::collections::HashSet;
 
 impl Scene {
     /// Projektdaten samt Breite und Länge aus der Maske (Sonnenstand S1)
@@ -44,18 +47,60 @@ impl Scene {
         ok
     }
 
+    /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
+    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur die Züge mit
+    /// Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an OK
+    /// Gelände. Ohne Aufmaß bleiben andere Gebäude (Entscheidung B). Mit
+    /// Aufmaß bestimmt ein Gebäude ±0,00 für alle; zieht man dessen
+    /// Gelände, folgen im Modell auch die Gründungen der anderen, und ihre
+    /// Züge mit Sohlplatte werden hier neu (W45-Nachprüfung N1). Die Mengen
+    /// rechnet das Loslassen nach (Review Gelände).
+    pub fn drag_terrain(&mut self, z: f64) {
+        let max = sk_model::MAX_TERRAIN_OFFSET;
+        let Some(b) = self.active_building() else {
+            return;
+        };
+        let uk = self.gruendungen_uk();
+        if !(z.is_finite() && self.model.set_terrain_offset_of(b, (-z).clamp(-max, max))) {
+            return;
+        }
+        let m = &self.model;
+        let mut neu: HashSet<Option<BuildingId>> = HashSet::from([Some(b)]);
+        for ((gr, alt), (_, jetzt)) in uk.iter().zip(self.gruendungen_uk()) {
+            if *alt != jetzt {
+                neu.insert(m.building_of(*gr));
+            }
+        }
+        let runs: Vec<RunId> = m
+            .elements()
+            .iter()
+            .filter_map(|(_, e)| match e.kind {
+                ElementKind::GroundSlab(s) => Some(s.run),
+                _ => None,
+            })
+            .filter(|r| {
+                let st = m.run(*r).map(|x| x.storey);
+                neu.contains(&st.and_then(|st| m.building_of(st)))
+            })
+            .collect();
+        for r in runs {
+            self.mark(r);
+        }
+        self.rebuild_dirty(true);
+    }
+
     /// Unterkanten aller Gründungen.
-    fn gruendungen_uk(&self) -> Vec<f64> {
+    fn gruendungen_uk(&self) -> Vec<(StoreyId, f64)> {
         self.model
             .storeys()
             .iter()
             .filter(|(_, s)| s.kind == LevelKind::Foundation)
-            .map(|(_, s)| s.elevation)
+            .map(|(id, s)| (id, s.elevation))
             .collect()
     }
 
     /// Alles neu, wenn eine Unterkante nicht mehr wie `vorher` liegt.
-    fn gruendungen_folgen(&mut self, vorher: &[f64]) {
+    fn gruendungen_folgen(&mut self, vorher: &[(StoreyId, f64)]) {
         if self.gruendungen_uk() != vorher {
             self.mark_all();
         }
@@ -74,16 +119,24 @@ mod tests {
     /// Haus 10 × 8 m auf einem Aufmaß an seinem Platz (UTM 32), das nach
     /// Osten gewölbt ansteigt.
     fn haus_am_hang() -> Scene {
+        haeuser_am_hang(&[0.0])
+    }
+
+    /// Häuser 10 × 8 m, je eines ab `ox` (mm) nach Osten, auf demselben
+    /// Aufmaß; das erste bestimmt die Höhenlage.
+    fn haeuser_am_hang(ox: &[f64]) -> Scene {
         let mut m = Model::new();
-        let b = m.add_building(1);
-        let ecken = [
-            (0.0, 0.0),
-            (0.0, 8000.0),
-            (10_000.0, 8000.0),
-            (10_000.0, 0.0),
-        ];
-        let ecken: Vec<_> = ecken.iter().map(|&(x, y)| vec3(x, y, 0.0)).collect();
-        m.build_from_polygon(b, &ecken).unwrap();
+        for &ox in ox {
+            let b = m.add_building(1);
+            let ecken = [
+                (0.0, 0.0),
+                (0.0, 8000.0),
+                (10_000.0, 8000.0),
+                (10_000.0, 0.0),
+            ];
+            let ecken: Vec<_> = ecken.iter().map(|&(x, y)| vec3(ox + x, y, 0.0)).collect();
+            m.build_from_polygon(b, &ecken).unwrap();
+        }
         let mut t = Terrain::new(Crs::Utm(32));
         for i in 0..7 {
             for j in 0..7 {
@@ -139,5 +192,39 @@ mod tests {
         assert!(s.nordpfeil_setzen("Nordpfeil gedreht", 20.0, None));
         assert!((uk(&s) - vorher).abs() > 1.0, "{vorher} {}", uk(&s));
         assert!((tief(&s) - uk(&s)).abs() < 1e-3, "{} {}", tief(&s), uk(&s));
+    }
+
+    /// Gelände ziehen mit Aufmaß (W45-Nachprüfung N1): Das erste Haus
+    /// bestimmt ±0,00. Zieht man sein Gelände, folgt die Gründung des
+    /// zweiten im Modell, und die Szene zeigt dasselbe wie nach einem
+    /// Neuaufbau.
+    #[test]
+    fn gelaende_ziehen_mit_aufmass_wie_neuaufbau() {
+        use crate::ui::ViewKind;
+        let mut s = haeuser_am_hang(&[0.0, 20_000.0]);
+        let m = s.model();
+        let erstes = m.building_of(m.defaults().storey);
+        assert_eq!(m.level_building(), erstes);
+        let gr2 = m
+            .storeys()
+            .iter()
+            .find(|(_, x)| x.kind == LevelKind::Foundation && x.building != erstes)
+            .map(|(id, _)| id)
+            .unwrap();
+        let uk2 = |s: &Scene| s.model().storey(gr2).unwrap().elevation;
+        let bild = |s: &mut Scene| {
+            let m = s.mesh(ViewKind::Front, None, &[]);
+            (m.faces.clone(), m.edges.clone())
+        };
+        let vorher = uk2(&s);
+        s.begin("Gelände ziehen");
+        for z in [-300.0, 250.0, -900.0] {
+            s.drag_terrain(z);
+        }
+        s.commit();
+        assert!((uk2(&s) - vorher).abs() > 100.0, "{vorher} {}", uk2(&s));
+        let mut neu = Scene::with_model(s.model().clone());
+        assert!(bild(&mut s) == bild(&mut neu), "Bild wie nach Neuaufbau");
+        assert_eq!(s.bounds(), neu.bounds());
     }
 }
