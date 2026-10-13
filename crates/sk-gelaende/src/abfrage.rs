@@ -159,6 +159,9 @@ impl Abfrage {
     /// Höhe an (x, y); außerhalb die Höhe des nächsten Randpunkts, ohne
     /// Netz `None`.
     pub fn hoehe(&self, x: f64, y: f64) -> Option<f64> {
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
         if let Some(t) = self.dreieck(x, y) {
             let l = self.anteile(t, x, y);
             let z = self.dreiecke[t].map(|i| self.punkte[i as usize][2]);
@@ -290,6 +293,8 @@ mod tests {
         // außen: nächster Randpunkt
         assert!((a.hoehe(-5.0, 4.0).unwrap() - 10.2).abs() < 1e-12);
         assert!((a.hoehe(15.0, 12.0).unwrap() - (10.0 + 1.0 + 0.4)).abs() < 1e-12);
+        assert_eq!(a.hoehe(f64::NAN, 1.0), None);
+        assert_eq!(a.hoehe(1.0, f64::INFINITY), None);
         let leer = Abfrage::neu(&netz(&[], &[], Rand::Huelle));
         assert_eq!(leer.hoehe(0.0, 0.0), None);
     }
