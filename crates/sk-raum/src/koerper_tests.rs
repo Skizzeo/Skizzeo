@@ -3,7 +3,7 @@
 //! wie die Mengen; OK Fertigfußboden 0,160, UK Deckenputz 2,625.
 
 use super::*;
-use crate::raumbuch::koerper::{koerper, Koerper};
+use crate::raumbuch::koerper::{estrich, koerper, Koerper};
 use sk_math::Vec3;
 use sk_model::Solid;
 
@@ -298,6 +298,31 @@ fn ecktuer_koerper() {
         v(Flaeche::Sockel, (OAK_SKIRTING_TYPE_GUID, 0)),
         (15.0 * 3015.0 - 337.5 + 15.0 * 2015.0 - 337.5 + 3955.0 * 15.0 + 2955.0 * 15.0) * 60.0,
     );
+}
+
+/// Nur der Estrich: dieselben Körper wie unter allen, in derselben Folge.
+#[test]
+fn nur_der_estrich() {
+    let h = haus();
+    let raeume = [
+        (wohnzimmer(&h), LIVING_SPACE_GUID),
+        (bad(&h), BATH_SPACE_GUID),
+        (diele(&h), HALL_SPACE_GUID),
+        (ecke(&h), LIVING_SPACE_GUID),
+    ];
+    for (f, g) in raeume {
+        let a = RaumAusbau::nach_vorlage(&h.m, &f, &vorlage(g));
+        let text = |k: &Koerper| format!("{k:?}");
+        let alle = koerper(&h.m, &f, &a);
+        let alle: Vec<String> = alle
+            .iter()
+            .filter(|k| k.flaeche == Flaeche::Estrich)
+            .map(text)
+            .collect();
+        let nur: Vec<String> = estrich(&h.m, &f, &a).iter().map(text).collect();
+        assert!(!nur.is_empty());
+        assert_eq!(nur, alle);
+    }
 }
 
 #[test]

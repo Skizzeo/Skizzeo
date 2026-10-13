@@ -1448,7 +1448,7 @@ fn perf_gelaende_ziehen() {
 #[ignore]
 fn perf_automenge() {
     use sk_model::qto_earth::{erd_mengen, ErdBasis};
-    use sk_model::qto_site::site_mengen;
+    use sk_model::qto_site::{huellen, site_mengen_in, Huelle};
     println!();
     for (name, buildings, storeys, annexes) in [
         ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
@@ -1475,6 +1475,9 @@ fn perf_automenge() {
         let mut zeilen = 0;
         let auto = time(20, || {
             zeilen = 0;
+            // Außenwände je Gebäude einmal, wie `auto_rows`
+            let h = huellen(m);
+            let leer = Huelle::default();
             let mut gebaeude = Vec::new();
             for &run in &runs {
                 let Some(g) = m.ground_basis(run) else {
@@ -1486,7 +1489,9 @@ fn perf_automenge() {
                 });
                 let erste = !gebaeude.contains(&g.building);
                 gebaeude.push(g.building);
-                zeilen += site_mengen(m, run, &g.outline, &vorlage, g.terrain_z, erste).len();
+                let b = m.run(run).and_then(|r| m.building_of(r.storey));
+                let hb = h.get(&b).unwrap_or(&leer);
+                zeilen += site_mengen_in(hb, run, &g.outline, &vorlage, g.terrain_z, erste).len();
             }
         });
         let ganz = time(10, || {
@@ -1500,7 +1505,7 @@ fn perf_automenge() {
         );
         assert!(zeilen >= sched.auto.len(), "Nachbau zählt {zeilen} Zeilen");
         // Budget am Maßstab (bis zwei Häuser); die Reserve ×4 zeigt nur den
-        // Verlauf: `site_mengen` sucht je Platte alle Züge ab
+        // Verlauf
         if buildings <= 2 {
             assert!(auto <= 1.0, "{name}: AutoMengen {auto:.3} ms > 1 ms");
         }
@@ -1842,8 +1847,9 @@ fn perf_raumbuch_paneel() {
 /// G7: Raumstempel mit Türaufschlägen (je Haus zwei Innentüren) gegen
 /// dieselbe Stadt ohne Türen. Erste Auslegung mit frischem Speicher (Türen,
 /// Aufschläge, Ausweichstellen; die Erkennung der Szene ist gerechnet) und
-/// Auslegung je Bild, wenn sich die Ansicht ändert, für das ganze Modell
-/// und das erste Haus.
+/// Auslegung je Bild, wenn sich die Ansicht ändert, für das ganze Modell,
+/// eine mittlere Ansicht, in der die Räume zu schmal für ihren Stempel
+/// sind, und das erste Haus.
 #[test]
 #[ignore]
 fn perf_stempel_tueren() {
@@ -1854,12 +1860,13 @@ fn perf_stempel_tueren() {
     use std::f64::consts::FRAC_PI_2;
     println!();
     println!(
-        "{:>6} {:>6} {:>10} {:>10} {:>10} {:>10} {:>8} {:>10}",
+        "{:>6} {:>6} {:>10} {:>10} {:>10} {:>11} {:>10} {:>8} {:>10}",
         "Häuser",
         "Türen",
         "erst alle",
         "erst nah",
         "Bild alle",
+        "Bild mittel",
         "Bild nah",
         "Stempel",
         "Ausweichen"
@@ -1878,6 +1885,8 @@ fn perf_stempel_tueren() {
             }
             let alle = crate::fit_parallel(ViewKind::Plan, s.bounds(), W, H);
             let nah = Camera::parallel(vec3(5000.0, 4000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 6000.0);
+            let mittel =
+                Camera::parallel(vec3(40000.0, 30000.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 34000.0);
             let aus = |sp: &mut Stempel, c: &Camera, w: f64| {
                 sp.auslegen(&s, c, w, H, 1.0, &fonts, &t, &[]);
             };
@@ -1893,7 +1902,7 @@ fn perf_stempel_tueren() {
                     aus(&mut sp, c, if flip { W - 1.0 } else { W });
                 })
             };
-            let (bild_alle, bild_nah) = (bild(&alle), bild(&nah));
+            let (bild_alle, bild_mittel, bild_nah) = (bild(&alle), bild(&mittel), bild(&nah));
             let zahl = sp.bilder.len();
             let tueren = if mit { 2 * n } else { 0 };
             // Ausweichstelle im größten Raum, ein Bogen 88,5 cm um seine Mitte
@@ -1908,7 +1917,7 @@ fn perf_stempel_tueren() {
                 std::hint::black_box(f.form.mitte_ohne(weg));
             });
             println!(
-                "{n:>6} {tueren:>6} {erst_alle:>10.3} {erst_nah:>10.3} {bild_alle:>10.3} {bild_nah:>10.3} {zahl:>8} {ausweichen:>10.3}"
+                "{n:>6} {tueren:>6} {erst_alle:>10.3} {erst_nah:>10.3} {bild_alle:>10.3} {bild_mittel:>11.3} {bild_nah:>10.3} {zahl:>8} {ausweichen:>10.3}"
             );
         }
     }
@@ -2016,9 +2025,11 @@ fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
 /// drei Räumen im EG und einem darüber, Schalter aus und an in allen drei
 /// Ansichten. 3D: erstes Netz, Loslassen samt Netz (Median aus sieben
 /// Wandschritten), Netz ohne Änderung, geprüfte Räume je Loslassen.
-/// Schnitt durch die mittlere Häuserreihe: erstes Netz, Ebene ziehen (je
-/// 10 mm, Median aus sieben Netzen) und Loslassen mit einer Wand dieser
-/// Reihe. Grundriss: neue Schnitthöhe (je 10 mm, Median aus sieben).
+/// Schnitt durch die mittlere Häuserreihe: erstes Netz einer frischen Szene
+/// (kalt, Review #137 N2) und nach dem 3D, Ebene ziehen (je 10 mm, Median
+/// aus sieben Netzen) und Loslassen mit einer Wand dieser Reihe. Grundriss:
+/// neue Schnitthöhe (je 10 mm, Median aus sieben), Schnitthöhe im
+/// Geschossmanager ziehen und loslassen (Median aus sieben, N1).
 #[test]
 #[ignore]
 fn perf_ausbau_innen() {
@@ -2026,7 +2037,7 @@ fn perf_ausbau_innen() {
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
     println!();
     println!(
-        "{:>6} {:>6} {:>3} | {:>8} {:>9} {:>7} {:>7} | {:>8} {:>7} {:>9} | {:>7} {:>7}",
+        "{:>6} {:>6} {:>3} | {:>8} {:>9} {:>7} {:>7} | {:>6} {:>8} {:>7} {:>9} | {:>7} {:>7} {:>7}",
         "Häuser",
         "Räume",
         "an",
@@ -2034,11 +2045,13 @@ fn perf_ausbau_innen() {
         "Loslassen",
         "gleich",
         "geprüft",
+        "kalt",
         "Schnitt",
         "ziehen",
         "Loslassen",
         "Höhe",
-        "ziehen"
+        "ziehen",
+        "los"
     );
     for n in [1, 100, 1000] {
         for an in [false, true] {
@@ -2059,6 +2072,16 @@ fn perf_ausbau_innen() {
                 .unwrap()
                 .0;
             let orig = s.model().run(iw).unwrap().points.clone();
+            let ebene = |dy: f64| Some((vec3(0.0, y0 + 4000.0 + dy, 0.0), vec3(0.0, 1.0, 0.0)));
+            let kalt = {
+                let mut s = town_with_interior(n);
+                for i in 0..3 {
+                    s.set_view_finish(i, an);
+                }
+                let t0 = Instant::now();
+                std::hint::black_box(s.mesh(ViewKind::Section, ebene(0.0), &[]));
+                ms(t0)
+            };
             let mut k = 0;
             let mut los = |s: &mut Scene, view: ViewKind, ebene| {
                 let mut v = Vec::new();
@@ -2085,7 +2108,6 @@ fn perf_ausbau_innen() {
             let gleich = time(10, || {
                 std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
             });
-            let ebene = |dy: f64| Some((vec3(0.0, y0 + 4000.0 + dy, 0.0), vec3(0.0, 1.0, 0.0)));
             let t0 = Instant::now();
             std::hint::black_box(s.mesh(ViewKind::Section, ebene(0.0), &[]));
             let schnitt = ms(t0);
@@ -2122,8 +2144,19 @@ fn perf_ausbau_innen() {
                 .collect();
             s.commit();
             let hoehe_ziehen = median(&mut v).0;
+            let mut v = Vec::new();
+            for i in 1..=7 {
+                s.begin("Geschoss ziehen");
+                s.drag_plan_cut(el + 1200.0 + 10.0 * i as f64);
+                std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                let t = Instant::now();
+                s.commit();
+                std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                v.push(ms(t));
+            }
+            let hoehe_los = median(&mut v).0;
             println!(
-                "{n:>6} {raeume:>6} {:>3} | {erstes:>8.1} {los3d:>9.2} {gleich:>7.2} {geprueft:>7} | {schnitt:>8.1} {ziehen:>7.2} {los_schnitt:>9.2} | {hoehe:>7.2} {hoehe_ziehen:>7.2}",
+                "{n:>6} {raeume:>6} {:>3} | {erstes:>8.1} {los3d:>9.2} {gleich:>7.2} {geprueft:>7} | {kalt:>6.1} {schnitt:>8.1} {ziehen:>7.2} {los_schnitt:>9.2} | {hoehe:>7.2} {hoehe_ziehen:>7.2} {hoehe_los:>7.2}",
                 if an { "an" } else { "aus" }
             );
         }

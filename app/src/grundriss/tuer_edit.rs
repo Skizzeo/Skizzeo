@@ -47,7 +47,7 @@ fn griff_der_tuer(m: &Model, id: ElementId, k: Koerper) -> Option<(Vec3, Vec3, f
 }
 
 /// Griffe der Türen des aktiven Geschosses, bei denen die Maus (Punkt `p`
-/// im Grundriss) steht.
+/// im Grundriss) steht; ausgeblendete Türen haben keinen.
 pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
     let m = scene.model();
     let st = scene.active_storey();
@@ -58,7 +58,7 @@ pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
             let ElementKind::Opening(o) = &e.kind else {
                 return None;
             };
-            if e.storey != st || o.swing.is_none() || o.path.len() != 2 {
+            if e.storey != st || o.swing.is_none() || o.path.len() != 2 || !scene.pickable(id) {
                 return None;
             }
             // Erst am Pfad filtern, das Blatt nur für Türen bei der Maus
@@ -91,14 +91,18 @@ pub fn oeffnung_bei(scene: &Scene, p: Vec3) -> Option<ElementId> {
             || p.y > hi.y + AUFSCHLAG
     };
     let mut bogen: Option<(f64, ElementId)> = None;
-    for (run, c, quader) in scene.zuege() {
+    let (lo, hi) = (
+        (p.x - AUFSCHLAG, p.y - AUFSCHLAG),
+        (p.x + AUFSCHLAG, p.y + AUFSCHLAG),
+    );
+    for (run, c, quader) in scene.zuege_im(lo, hi) {
         if quader.is_some_and(weit) || m.run(run).is_none_or(|r| r.storey != st) {
             continue;
         }
         let geschnitten = |z: (f64, f64)| z.0 < cut && cut < z.1;
-        for (h, q) in c.hole_quads() {
+        for (h, q) in scene.loecher(run) {
             if let Some(id) = h.opening.filter(|_| geschnitten(h.z)) {
-                if super::ecke_edit::innen(&q, p) {
+                if super::ecke_edit::innen(q, p) {
                     return Some(id);
                 }
             }
@@ -603,6 +607,52 @@ mod tests {
             crate::delete::locked_card(s.model(), id, Some((id, crate::delete::Act::Field)));
         assert_eq!(karte.len(), 1);
         assert!(karte[0].ends_with(" ist gesperrt."), "{karte:?}");
+    }
+
+    /// Eine ausgeblendete Tür zeigt keinen Griff und kippt nicht, auch
+    /// nicht gewählt mit der Maus weit weg (Review #132 H1).
+    #[test]
+    fn ausgeblendete_tuer_bleibt() {
+        const W: f64 = 1200.0;
+        const H: f64 = 800.0;
+        let cam = Camera::looking_at(
+            vec3(5000.0, 3000.0, 20000.0),
+            vec3(5000.0, 3001.0, 0.0),
+            45.0,
+        );
+        let (m, id) = haus();
+        let mut s = Scene::with_model(m);
+        let mut e = crate::wall_edit::WallEdit::default();
+        e.stand(None, Some(0.0), Some(id));
+        let mods = sk_platform::Modifiers::default();
+        let geh = |e: &mut crate::wall_edit::WallEdit, s: &mut Scene, p: Vec3| {
+            let (x, y) = cam.project(p, W, H).unwrap();
+            e.handle(&Event::MouseMove { x, y, mods }, s, &cam, W, H, 1.0, true);
+        };
+        let taste = Event::Key {
+            key: LEERTASTE,
+            down: true,
+            mods,
+            repeat: false,
+        };
+        let swing = |s: &Scene| s.model().opening(id).unwrap().swing.unwrap();
+        let alt = swing(&s);
+        let mut v = s.model().visibility().clone();
+        v.hidden.insert(s.model().element(id).unwrap().guid);
+        assert!(s.set_visibility(v));
+        for p in [vec3(5300.0, 3000.0, 0.0), vec3(9000.0, 7000.0, 0.0)] {
+            geh(&mut e, &mut s, p);
+            let o = e.handle(&taste, &mut s, &cam, W, H, 1.0, true);
+            assert!(!o.changed, "bei {p:?}");
+            assert_eq!(swing(&s), alt);
+        }
+        // Wieder eingeblendet kippt sie gewählt mit der Maus weit weg
+        let mut v = s.model().visibility().clone();
+        v.hidden.clear();
+        assert!(s.set_visibility(v));
+        geh(&mut e, &mut s, vec3(9000.0, 7000.0, 0.0));
+        assert!(e.handle(&taste, &mut s, &cam, W, H, 1.0, true).changed);
+        assert_eq!(swing(&s), alt.other_hand());
     }
 
     /// Grundriss G7 (Jörn): Wird die Innenwand gezogen, wandern die Griffe
