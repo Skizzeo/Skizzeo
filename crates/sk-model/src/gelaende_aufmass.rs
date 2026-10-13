@@ -1268,6 +1268,29 @@ mod tests {
         assert_eq!(m.terrain_nhn().map(gerundet), vorher);
     }
 
+    /// Eine Kopie mit abgewähltem Punkt bringt nicht das alte Netz mit,
+    /// der Punkt fehlt sofort; Verschieben behält das Netz (Review W45 B2).
+    #[test]
+    fn abwahl_rechnet_neues_netz() {
+        let (mut m, _) = lindenhof_haus();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(aufmass()));
+        m.commit();
+        let netz = m.terrain().unwrap().mesh();
+        m.begin("Verschieben");
+        assert!(m.move_terrain([1000.0, 0.0]));
+        m.commit();
+        assert!(Arc::ptr_eq(&netz, &m.terrain().unwrap().mesh()));
+        let mut t = m.terrain().unwrap().clone();
+        t.points[netz.index[0]].off = true;
+        m.begin("Abwahl");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        let neu = m.terrain().unwrap().mesh();
+        assert_eq!(neu.index.len() + 1, netz.index.len());
+        assert!(!neu.index.contains(&netz.index[0]));
+    }
+
     /// Frostschürze ab dem tiefsten Gelände am Plattenrand, Erdmengen aus
     /// dem Flächenmittel unter der Platte (sollwerte-lindenhof-7.md): bei
     /// ±0,00 = 24,95 liegt UK Schürze auf 23,723, das Mittel auf 24,753.
