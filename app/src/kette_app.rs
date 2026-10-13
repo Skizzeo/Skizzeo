@@ -10,7 +10,7 @@
 
 use crate::delete::{self, HintCard, Link};
 use crate::ui::Id;
-use crate::wall_edit::{breite_edit, ecke_edit, EditOutcome};
+use crate::wall_edit::{breite_edit, ecke_edit, oeffnung_kanten, EditOutcome};
 use crate::{link_view, meldung, relink_lines, teilen_edit, App, NOTICE_TIME};
 use sk_model::{ElementId, FugeError};
 use sk_platform::MouseButton;
@@ -44,6 +44,8 @@ impl App {
             Some(z) if !self.edit.is_dragging() => {
                 breite_edit::schloesser(&self.scene, self.edit.oeffnungs_enden(), z)
             }
+            // Von außen: an der Öffnung unter der Maus (Paket O7)
+            None => self.edit.aussen_schloesser(&self.scene),
             _ => Vec::new(),
         };
         link_view::chips(&link_view::Want {
@@ -64,9 +66,10 @@ impl App {
     /// Hinweis am Kettensymbol unter der Maus.
     pub(crate) fn chain_tip(&self) -> Option<String> {
         if let Some(c) = self.chips.iter().find(|c| c.schloss.is_some() && c.hover) {
-            return Some(link_view::schloss_tip(c.linked).into());
+            let art = c.schloss?;
+            return Some(link_view::schloss_tip(art, c.linked).into());
         }
-        let (wall, fuge) = self.chip_hover?;
+        let (wall, fuge, _) = self.chip_hover?;
         if fuge.is_some() {
             return Some(link_view::FUGE_TIP.into());
         }
@@ -85,8 +88,28 @@ impl App {
         let Some(&chip) = link_view::chip_at(&self.chips, x, y, sc) else {
             return false;
         };
+        // Höhenbindung an Ober- oder Unterkante: lösen bzw. binden (O7)
+        if let Some(link_view::Schlossart::Hoehe(oben)) = chip.schloss {
+            if let Some(l) = sk_model::edit_blocked(self.scene.model(), &[chip.wall]) {
+                self.show_locked(l, Some((chip.wall, delete::Act::Field)));
+                return true;
+            }
+            if let Some(o) = oeffnung_kanten::umbinden(self.scene.model(), chip.wall, oben) {
+                let schritt = if chip.linked {
+                    "Höhe gelöst"
+                } else {
+                    "Höhe gebunden"
+                };
+                if self.scene.opening_schritt(chip.wall, o, schritt) {
+                    self.upload_model();
+                    self.sync_props();
+                    self.redraw = true;
+                }
+            }
+            return true;
+        }
         // Breitenschloss am Öffnungsende: mit allen Partnern koppeln bzw. lösen
-        if let Some(k) = chip.schloss {
+        if let Some(link_view::Schlossart::Ende(k)) = chip.schloss {
             let partner = breite_edit::partner(self.scene.model(), chip.wall, k);
             // Gesperrte Öffnungen bleiben, wie sie sind (Review #109 B5)
             let mut ids = vec![chip.wall];
@@ -103,7 +126,7 @@ impl App {
             }
             return true;
         }
-        let (wall, fuge) = chip.glied();
+        let (wall, fuge, _) = chip.glied();
         match fuge {
             Some(a) => self.merge(a, Some(wall)),
             None => self.toggle_link(wall),

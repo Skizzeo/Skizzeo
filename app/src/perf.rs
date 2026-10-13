@@ -2366,3 +2366,122 @@ fn perf_mengen_haeuser() {
         );
     }
 }
+
+/// Öffnung von außen (Paket O7): ein Fenster je Außenwandzug, Maus vor dem
+/// Fenster im zuletzt gebauten Haus. Treffer je Mausbewegung (alle
+/// Öffnungen und ein Strahl), Schlösser, Greifen der Oberkante, Ziehen je
+/// Bewegung und Loslassen.
+#[test]
+#[ignore]
+fn perf_kanten() {
+    use crate::wall_edit::oeffnung_kanten::{schloesser, treffer, HoeheZug, Kante};
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    use sk_platform::MouseButton;
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>9}",
+        "Häuser", "Treffer", "Kette", "Greifen", "Ziehen", "Loslassen"
+    );
+    for n in [1, 10, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let st = s.active_storey();
+        assert!(s.edit_model("Fenster", |m| {
+            let aussen: Vec<_> = m
+                .runs()
+                .iter()
+                .filter(|(_, run)| {
+                    run.segments
+                        .first()
+                        .and_then(|e| m.element(*e))
+                        .is_some_and(|e| e.category.is_outer_wall())
+                })
+                .map(|(r, _)| r)
+                .collect();
+            for r in aussen {
+                let f = m.outer_face(r, 0).unwrap();
+                let o = Opening {
+                    kind: OpeningKind::Window,
+                    path: vec![f.at(f.u.0 + 1500.0, 0.0), f.at(f.u.0 + 2750.0, 0.0)],
+                    bottom: HeightRef::Line(st, HeightLine::Sill),
+                    top: HeightRef::Line(st, HeightLine::Lintel),
+                    reveal: None,
+                    install: Default::default(),
+                    swing: None,
+                    lock: Default::default(),
+                };
+                m.add_opening(o);
+            }
+            true
+        }));
+        let m = s.model();
+        let (_, o) = m
+            .elements()
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, o.clone())),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        let (z0, z1) = m.opening_band(&o).unwrap();
+        let (a, b) = (o.path[0], o.path[1]);
+        let d = (b - a).normalized();
+        let nrm = vec3(-d.y, d.x, 0.0);
+        let q = (a + b) * 0.5;
+        let mitte = vec3(q.x, q.y, (z0 + z1) / 2.0);
+        // Aus der Gasse zwischen den Häusern (5 m breit): der Strahl trifft frei
+        let cam = [nrm, nrm * -1.0]
+            .into_iter()
+            .map(|v| Camera::looking_at(mitte + v * 2500.0, mitte, 45.0))
+            .find(|c| {
+                let p = c.project(mitte, W, H).unwrap();
+                treffer(&s, c, p, W, H, 1.0, None).is_some()
+            })
+            .expect("Fenster von außen zu sehen");
+        let px = |z: f64| cam.project(vec3(q.x, q.y, z), W, H).unwrap();
+        let mut t = None;
+        let treffen = time(50, || {
+            t = treffer(&s, &cam, px(z1 - 5.0), W, H, 1.0, None);
+        });
+        let t = t.unwrap();
+        assert_eq!(t.kante, Some(Kante::Oben));
+        let kette = time(50, || {
+            std::hint::black_box(schloesser(&s, t));
+        });
+        let greifen = time(20, || {
+            assert!(HoeheZug::greifen(&mut s, t, true, &cam, px(z1), W, H, 1.0).is_some());
+            s.rollback();
+        });
+        let mods = Modifiers::default();
+        let bei = |z: f64| {
+            let (x, y) = px(z);
+            Event::MouseMove { x, y, mods }
+        };
+        let mut z = HoeheZug::greifen(&mut s, t, true, &cam, px(z1), W, H, 1.0).unwrap();
+        let mut flip = false;
+        let ziehen = time(20, || {
+            flip = !flip;
+            let e = bei(if flip { z1 + 150.0 } else { z1 + 300.0 });
+            assert!(z.handle(&e, &mut s, &cam, W, H).changed);
+        });
+        s.rollback();
+        let mut los = 0.0;
+        for i in 0..5 {
+            let mut z = HoeheZug::greifen(&mut s, t, true, &cam, px(z1), W, H, 1.0).unwrap();
+            z.handle(&bei(z1 + 150.0 + 20.0 * i as f64), &mut s, &cam, W, H);
+            let (x, y) = px(z1);
+            let up = Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods,
+            };
+            let t = Instant::now();
+            z.handle(&up, &mut s, &cam, W, H);
+            los += t.elapsed().as_secs_f64() * 1000.0 / 5.0;
+        }
+        assert!(s.model().check().is_empty());
+        println!("{n:>6} {treffen:>8.3} {kette:>8.3} {greifen:>8.3} {ziehen:>8.3} {los:>9.3}");
+    }
+    println!("Zeiten in ms je Mausbewegung, je Bild bzw. je Griff.");
+}
