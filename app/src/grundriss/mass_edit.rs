@@ -22,7 +22,7 @@ use crate::meldung::Meldung;
 use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
-use sk_model::oeffnung::Opening;
+use sk_model::oeffnung::{Opening, MAX_REVEAL};
 use sk_model::{ElementId, RunId, WallChain};
 use sk_plan::aussen::{Bezug, Quelle};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
@@ -147,8 +147,21 @@ impl Bauteil {
                 let d = vec3(t.x, t.y, 0.0) * dt;
                 let mut o = o.clone();
                 let mut bewegt = false;
+                // Bei „Tragende Schicht“ steht die Kante um den Anschlag
+                // vor dem Pfad (Bedienbarkeit 40.1): der nächste Pfadpunkt
+                let naechst = kante.map_or(0.0, |k| {
+                    o.path
+                        .iter()
+                        .map(|p| (p.dot(t) - k).abs())
+                        .fold(f64::INFINITY, f64::min)
+                });
+                let weit = if naechst <= MAX_REVEAL {
+                    naechst + 1.0
+                } else {
+                    1.0
+                };
                 for p in &mut o.path {
-                    if kante.is_none_or(|k| (p.dot(t) - k).abs() < 1.0) {
+                    if kante.is_none_or(|k| (p.dot(t) - k).abs() < weit) {
                         *p += d;
                         bewegt = true;
                     }
@@ -193,7 +206,7 @@ impl Eingabe {
         scene.rollback();
         scene.begin(SCHRITT_MASS);
         self.input.error = self.input.value(0).and_then(Result::err);
-        let Some(Ok(v)) = self.input.value(0) else {
+        let Some(Ok(v)) = self.input.value(0).filter(|_| !self.input.vorbelegt()) else {
             return;
         };
         if v < 1.0 {
@@ -219,7 +232,9 @@ impl Eingabe {
 
     /// Gültiger Wert, der gesetzt ist?
     fn gilt(&self) -> bool {
-        matches!(self.input.value(0), Some(Ok(_))) && self.input.error.is_none()
+        matches!(self.input.value(0), Some(Ok(_)))
+            && self.input.error.is_none()
+            && !self.input.vorbelegt()
     }
 }
 
@@ -530,6 +545,10 @@ impl Masse {
             return;
         };
         scene.begin(SCHRITT_MASS);
+        // Mit dem Maß in m vorbelegt und markiert: Die Zahl steht in cm,
+        // getippt wird in m (Bedienbarkeit 40.3)
+        let mut input = MeasureInput::new(MeasureKind::Length, None);
+        input.vorbelegen(&crate::ui::m_text(r1.t - r0.t));
         self.eingabe = Some(Eingabe {
             mass: m,
             r,
@@ -538,7 +557,7 @@ impl Masse {
             ende,
             lauf: bauteil.lauf(scene),
             bauteil,
-            input: MeasureInput::new(MeasureKind::Length, None),
+            input,
         });
     }
 
@@ -1026,6 +1045,118 @@ mod tests {
         assert!(e.is_dragging(), "Enter mit Fehler schließt nicht");
         taste(&mut e, &mut s, &c, Key::Escape);
         assert_eq!(s.step_serial(), serial);
+    }
+
+    /// Das Feld steht mit dem Maß in m vorbelegt und markiert (Bedienbarkeit
+    /// 40.3); Enter ohne Tippen ändert nichts. Zwischen Fenster und Ecke
+    /// wandert das Fenster, nicht die Hauswand (40.4).
+    #[test]
+    fn oeffnungskette_vorbelegt_und_fenster_wandert() {
+        let (mut s, _, _, fenster) = haus();
+        if stand(&s).is_none() {
+            return;
+        }
+        let c = kamera();
+        let mut e = WallEdit::default();
+        let gesamt = mass(&s, 270, Kettenart::Gesamt, 0);
+        let (p, wert) = zahl(&s, &c, 270, Kettenart::Oeffnung, 2);
+        assert!((wert - 7490.0).abs() < 0.5, "{wert}");
+        let serial = s.step_serial();
+        klick(&mut e, &mut s, &c, p, Modifiers::default());
+        let i = e.input().unwrap();
+        assert_eq!((i.fields[0].as_str(), i.vorbelegt()), ("7,49", true));
+        assert_eq!(e.mass_hervor(&s).ende.map(|(_, ende)| ende), Some(0));
+        taste(&mut e, &mut s, &c, Key::Enter);
+        assert!(!e.is_dragging());
+        assert_eq!(s.step_serial(), serial, "unverändert: kein Schritt");
+        klick(&mut e, &mut s, &c, p, Modifiers::default());
+        tippen(&mut e, &mut s, &c, "7");
+        taste(&mut e, &mut s, &c, Key::Enter);
+        assert_eq!(s.step_serial(), serial + 1);
+        let xs: Vec<f64> = s
+            .model()
+            .opening(fenster)
+            .unwrap()
+            .path
+            .iter()
+            .map(|p| p.x)
+            .collect();
+        assert!(xs.iter().any(|x| (x - 1990.0).abs() < 0.5), "{xs:?}");
+        assert!(xs.iter().any(|x| (x - 3000.0).abs() < 0.5), "{xs:?}");
+        assert!((mass(&s, 270, Kettenart::Gesamt, 0) - gesamt).abs() < 0.5);
+    }
+
+    /// F1 über einer Kette und bei offener Maßzahl: Thema „Bemaßung“
+    /// (Bedienbarkeit 40.2); im Freien wieder kein eigenes Thema.
+    #[test]
+    fn f1_ueber_der_kette_zeigt_bemassung() {
+        let (mut s, ..) = haus();
+        if stand(&s).is_none() {
+            return;
+        }
+        let c = kamera();
+        let mut e = WallEdit::default();
+        let (p, _) = zahl(&s, &c, 270, Kettenart::Wand, 3);
+        let m = Modifiers::default();
+        ev(
+            &mut e,
+            &mut s,
+            &c,
+            Event::MouseMove {
+                x: p.0,
+                y: p.1,
+                mods: m,
+            },
+        );
+        assert!(e.eigenes_thema());
+        assert_eq!(e.thema(), crate::help::Topic::Bemassung);
+        klick(&mut e, &mut s, &c, p, m);
+        assert!(e.input().is_some());
+        assert_eq!(e.thema(), crate::help::Topic::Bemassung);
+        taste(&mut e, &mut s, &c, Key::Escape);
+        ev(
+            &mut e,
+            &mut s,
+            &c,
+            Event::MouseMove {
+                x: 5.0,
+                y: 5.0,
+                mods: m,
+            },
+        );
+        assert!(!e.eigenes_thema());
+    }
+
+    /// Bei „Tragende Schicht“ misst die Kette das Loch im Mauerwerk, 3 cm
+    /// je Seite größer als das gezeichnete Fenster im WDVS (Bedienbarkeit
+    /// 40.1); überschrieben wird dieses Maß.
+    #[test]
+    fn tragende_schicht_ueberschreibt_das_loch_im_mauerwerk() {
+        let (mut s, _, _, fenster) = haus();
+        if stand(&s).is_none() {
+            return;
+        }
+        let mut stil = s.model().massstil().clone();
+        stil.bezug = sk_model::bemassung::Aussenbezug::Rohbau;
+        assert!(s.edit_attr(|m| m.set_massstil(stil)));
+        let c = kamera();
+        let mut e = WallEdit::default();
+        let (p, wert) = zahl(&s, &c, 270, Kettenart::Oeffnung, 1);
+        assert!((wert - 1070.0).abs() < 0.5, "{wert}");
+        klick(&mut e, &mut s, &c, p, Modifiers::default());
+        assert_eq!(e.input().unwrap().fields[0], "1,07");
+        tippen(&mut e, &mut s, &c, "1,32");
+        taste(&mut e, &mut s, &c, Key::Enter);
+        let xs: Vec<f64> = s
+            .model()
+            .opening(fenster)
+            .unwrap()
+            .path
+            .iter()
+            .map(|p| p.x)
+            .collect();
+        assert!(xs.iter().any(|x| (x - 1500.0).abs() < 0.5), "{xs:?}");
+        assert!(xs.iter().any(|x| (x - 2760.0).abs() < 0.5), "{xs:?}");
     }
 
     /// Maßlinie greifen und nach außen ziehen: Versatz in 10-mm-Schritten,
