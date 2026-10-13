@@ -960,8 +960,8 @@ impl App {
     /// Paneel „Eigenschaften“ an Auswahl und Modell angleichen. Beim Ziehen bleibt
     /// es stehen; die neuen Mengen kommen beim Loslassen.
     fn sync_props(&mut self) {
-        // Beim Gleiten („Bündig setzen“) bleibt das Paneel auf dem Stand davor
-        if self.edit.is_dragging() || self.level_dragging().is_some() || self.flush_anim.is_some() {
+        // Beim Ziehen und Gleiten bleibt das Paneel auf dem Stand davor
+        if self.paneel_ruht() {
             return;
         }
         if self.picking.validate(&self.scene) {
@@ -4300,9 +4300,6 @@ impl App {
                         };
                         self.redraw |= eo.redraw;
                         self.after_edit(&eo);
-                        if let Some((id, wall)) = eo.locked {
-                            self.show_locked(id, Some((wall, delete::Act::Drag)));
-                        }
                         if !eo.consumed {
                             // Ohne Wandeingabe wählt ein Klick ein Bauteil (beim Loslassen)
                             if let (Event::MouseDown { x, y, .. }, MouseButton::Left, false) =

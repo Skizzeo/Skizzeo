@@ -13,8 +13,12 @@ use sk_ui::theme::Theme;
 
 #[path = "props_fallrohr.rs"]
 pub mod fallrohr;
+#[path = "grundriss/oeffnung_props.rs"]
+mod oeffnung;
 #[path = "grundriss/raum_props.rs"]
 mod raum;
+#[path = "raumbuch/eigenschaften.rs"]
+mod raumbuch;
 
 /// Bis zu so vielen Pixeln Bewegung zwischen Drücken und Loslassen gilt als Klick.
 const CLICK_PX: f64 = 4.0;
@@ -117,6 +121,15 @@ pub fn pick_at(
     h: f64,
 ) -> Option<ElementId> {
     let (o, d) = cam.ray(x, y, w, h);
+    // Im Grundriss zuerst die Öffnungen: ihr Loch und ihr Aufschlag
+    // (Grundriss G7); sonst träfe der Strahl Decke oder Brüstung
+    if view == ViewKind::Plan && d.z.abs() > 1e-9 {
+        let p = o + d * ((scene.plan_cut() - o.z) / d.z);
+        let tuer = crate::wall_edit::tuer_edit::oeffnung_bei(scene, p);
+        if let Some(id) = tuer.filter(|&id| scene.pickable(id)) {
+            return Some(id);
+        }
+    }
     scene.pick(view, section, o, d)
 }
 
@@ -500,6 +513,7 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
             return crate::selection::fallrohr::downpipe_props(scene, id, values)
         }
         ElementKind::Space(_) => return raum::props(scene, id, values),
+        ElementKind::Opening(_) => return oeffnung::props(scene, id, values),
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -1279,6 +1293,19 @@ fn outline(
                 return Vec::new();
             }
             lines.extend(body.edges.iter().map(|e| (e.a, e.b)));
+        }
+        (None, Some(ElementKind::Opening(_))) => {
+            // Öffnung: ihre Löcher, im Grundriss dazu der Aufschlag
+            for (q, (b, t)) in oeffnung::loecher(scene, id) {
+                if view == ViewKind::Plan && b >= scene.plan_cut() {
+                    continue;
+                }
+                prism(&q, b, clip(t));
+            }
+            if view == ViewKind::Plan {
+                let z = scene.plan_cut();
+                lines.extend(oeffnung::aufschlag(scene, id).map(|(a, b)| (at(a, z), at(b, z))));
+            }
         }
         (None, Some(ElementKind::Downpipe { roof, drain, .. })) => {
             // Regenfallrohr: die Kanten seines Körpers, aus dem Flachdach

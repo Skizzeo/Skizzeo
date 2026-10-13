@@ -7,7 +7,7 @@
 use super::{RunCache, Scene};
 use sk_math::{vec3, Vec3};
 use sk_model::{
-    Change, Direction, ElementId, ElementKind, Model, RunId, Space, StoreyId, Txn, WallChain,
+    Change, Direction, ElementId, ElementKind, Guid, Model, RunId, Space, StoreyId, Txn, WallChain,
 };
 use std::borrow::Cow;
 
@@ -50,7 +50,7 @@ fn raum_geschosse(t: &Txn) -> Option<Vec<StoreyId>> {
 /// Ketten für die Raumerkennung aus den berechneten Wandzügen; ein Zug,
 /// der neu gerechnet werden muss, kommt aus dem Modell. Fassung ist der
 /// Bauzähler des Zugs.
-struct SzenenKetten<'a> {
+pub(crate) struct SzenenKetten<'a> {
     model: &'a Model,
     cache: &'a [Option<RunCache>],
     dirty: &'a [RunId],
@@ -83,7 +83,9 @@ impl sk_raum::Ketten for SzenenKetten<'_> {
 }
 
 impl Scene {
-    fn ketten(&self) -> SzenenKetten<'_> {
+    /// Ketten der Wandzüge aus den berechneten der Szene, für Erkennung und
+    /// Raumbuch (Review #112 B1).
+    pub(crate) fn ketten(&self) -> SzenenKetten<'_> {
         SzenenKetten {
             model: &self.model,
             cache: &self.cache,
@@ -147,7 +149,9 @@ impl Scene {
 
     /// Beim Abschluss eines Schritts: Räume der Geschosse, deren Wände er
     /// ändert, folgen den Wänden (Öffnen allein legt keine an, alte Dateien
-    /// bleiben bytegleich). Die neu angelegten warten auf ihr Namensfeld
+    /// bleiben bytegleich). Die neu angelegten bekommen im selben Schritt
+    /// Vorlage und Ausbautypen ihrer Nutzung ([`sk_raum::ausbau::typen_anlegen`],
+    /// Einstellungen #112 B1) und warten auf ihr Namensfeld
     /// ([`Scene::neuer_raum`]). Ergebnis: wie der Stand je Geschoss
     /// wechselt, für Rückgängig und Wiederholen.
     pub(super) fn raeume_abgleichen(&mut self) -> Vec<(StoreyId, sk_raum::Wechsel)> {
@@ -167,6 +171,9 @@ impl Scene {
             let lage = self.raumlage(g);
             let alt = self.staende.remove(&g);
             let a = sk_raum::abgleichen_lage(&mut self.model, &lage, alt);
+            for &(id, _) in &a.neu {
+                sk_raum::ausbau::typen_anlegen(&mut self.model, id);
+            }
             if !raum.contains(&g) {
                 self.staende.insert(g, a.stand);
                 wechsel.extend(a.wechsel.map(|w| (g, w)));
@@ -230,24 +237,47 @@ impl Scene {
     }
 
     /// Raum für eine Fläche ohne Raum anlegen (etwa aus einer Datei vor G3,
-    /// bevor dort eine Wand geändert wurde), Anker an `p`: ein Schritt.
+    /// bevor dort eine Wand geändert wurde), Anker an `p`, mit Vorlage und
+    /// Ausbautypen: ein Schritt.
     pub fn raum_anlegen(&mut self, g: StoreyId, p: Vec3) -> ElementId {
         self.begin("Raum angelegt");
         let name = self.model.naechster_raumname();
         let id = self.model.add_space(g, Space::neu(p, name));
+        sk_raum::ausbau::typen_anlegen(&mut self.model, id);
         self.commit();
         id
     }
 
-    /// Raum umbenennen, ein Schritt „Raum benannt“; `false`, wenn der Name
-    /// schon so lautet oder leer ist.
-    pub fn raum_benennen(&mut self, id: ElementId, name: &str) -> bool {
+    /// Raum umbenennen, ein Schritt „Raum benannt“. `vorlage`: im Stempel
+    /// gewählte Raumvorlage; ohne sie wählt ein Name, der genau eine Vorlage
+    /// nennt (ohne Groß- und Kleinschreibung), diese. Die Vorlage setzt die
+    /// Nutzung (fehlt sie im Projekt, kommt sie samt Ausbautypen hinzu), ein
+    /// freier Name lässt sie stehen. `false`, wenn sich nichts ändert oder
+    /// der Name leer ist.
+    pub fn raum_benennen(&mut self, id: ElementId, name: &str, vorlage: Option<Guid>) -> bool {
         let name = name.trim();
-        if name.is_empty() || self.model.space(id).is_none_or(|s| s.name == name) {
+        let Some(alt) = self.model.space(id).filter(|_| !name.is_empty()) else {
+            return false;
+        };
+        let klein = name.to_lowercase();
+        let vorlage = vorlage.or_else(|| {
+            let mut v = self.model.space_type_choices().into_iter();
+            v.find(|(_, n)| n.to_lowercase() == klein).map(|(g, _)| g)
+        });
+        if alt.name == name && vorlage.is_none_or(|g| alt.nutzung == Some(g)) {
             return false;
         }
         self.begin("Raum benannt");
-        self.model.set_space(id, |s| s.name = name.into());
+        let nutzung = vorlage.and_then(|g| self.model.ensure_space_type(g));
+        self.model.set_space(id, |s| {
+            s.name = name.into();
+            if nutzung.is_some() {
+                s.nutzung = nutzung;
+            }
+        });
+        if nutzung.is_some() {
+            sk_raum::ausbau::typen_anlegen(&mut self.model, id);
+        }
         self.commit();
         true
     }
@@ -319,7 +349,7 @@ mod tests {
                 .unwrap()
                 .0
                 .raum;
-            assert!(s.raum_benennen(id.unwrap(), n));
+            assert!(s.raum_benennen(id.unwrap(), n, None));
         }
         s.begin("Wand verschieben");
         for x in [2500.0, 2000.0, 1400.0] {
@@ -431,7 +461,7 @@ mod tests {
                     let ids = s.model().spaces(st);
                     if !ids.is_empty() {
                         let id = ids[wuerfel(ids.len() as u64) as usize];
-                        s.raum_benennen(id, &format!("Raum {}", wuerfel(1000)));
+                        s.raum_benennen(id, &format!("Raum {}", wuerfel(1000)), None);
                     }
                 }
                 4 => {

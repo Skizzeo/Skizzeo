@@ -741,10 +741,12 @@ impl Model {
         d.pattern.pen = pen;
         attr.set_display(d);
         // Einbauelement (Integration F20): Linientyp „Strichlinie fein“,
-        // ebenfalls mit fester Guid
+        // ebenfalls mit fester Guid; über der Schnittebene (G7b) zunächst
+        // ebenso
         let lt = attr.add_line_type(attr::element_line_type());
         let mut d = attr.display().clone();
         d.element.line_type = lt;
+        d.above.line_type = lt;
         attr.set_display(d);
         // Paket 1a: Gewerk je Startbaustoff
         let ids: Vec<MaterialId> = materials.ids().collect();
@@ -3360,11 +3362,15 @@ impl Model {
             }
             Change::LayerSet { id, old, new } => {
                 m.layer_sets.set(*id, pick(dir, old, new));
-                touched.library = true;
+                // Ein neuer oder entfernter Aufbau trägt keine Wand, die nicht
+                // selbst im Schritt steht (Ausbautypen mit dem Raum, RB3):
+                // Rückgängig rechnet dann nur die Züge des Schritts
+                touched.library |= old.is_some() && new.is_some();
             }
             Change::Material { id, old, new } => {
-                // Nur Darstellungsverweise geändert: allein die Zeichentabelle
-                if bim_equal(old.as_ref(), new.as_ref()) {
+                // Nur Darstellungsverweise geändert: allein die Zeichentabelle;
+                // ebenso ein neuer oder entfernter Baustoff (wie beim Aufbau)
+                if old.is_none() || new.is_none() || bim_equal(old.as_ref(), new.as_ref()) {
                     touched.attr = true;
                 } else {
                     touched.library = true;
@@ -3400,10 +3406,8 @@ impl Model {
             }
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
             Change::Trades { old, new } => m.trades = pick(dir, old, new),
-            Change::SpaceTypes { old, new } => {
-                m.space_types = pick(dir, old, new);
-                touched.library = true;
-            }
+            // Raumvorlagen tragen keine Wand
+            Change::SpaceTypes { old, new } => m.space_types = pick(dir, old, new),
             Change::ForeignRecords { old, new } => m.foreign.records = pick(dir, old, new),
             Change::ExtDefs { old, new } => m.ext_defs = pick(dir, old, new),
             Change::Ext {
