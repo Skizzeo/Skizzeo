@@ -9,7 +9,6 @@
 //! Zeilen bleiben roh stehen (Regel 72).
 
 use super::Model;
-use crate::Change;
 
 /// Ansichten mit dem Schalter, in dieser Reihenfolge.
 pub const FINISH_VIEWS: [&str; 3] = ["plan", "section", "3d"];
@@ -40,13 +39,6 @@ impl Model {
     /// `[viewfinish]`-Zeilen der Datei, die nicht zählen, roh.
     pub(crate) fn view_finish_raw(&self) -> &[String] {
         &self.view_finish_raw
-    }
-
-    /// Die Änderungen des offenen Schritts bisher, leer ohne Schritt; den
-    /// neuen Stand hat das Modell. Die Szene merkt sich daran, was ein
-    /// Schritt am Ausbau innen berührt.
-    pub fn schritt_aenderungen(&self) -> &[Change] {
-        self.txn.as_ref().map_or(&[], |t| &t.changes)
     }
 
     /// Je Ansicht: an, und ob die Datei sie nannte.

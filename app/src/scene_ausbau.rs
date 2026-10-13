@@ -406,9 +406,10 @@ fn zeiger(f: &Rc<[Raumflaeche]>) -> usize {
 }
 
 impl RaumCache {
-    /// Nimmt auf, was ein Schritt geändert hat: beim Abschluss und
-    /// Verwerfen der offene Schritt ([`Model::schritt_aenderungen`]), bei
-    /// Rückgängig und Wiederholen der angewandte.
+    /// Nimmt auf, was ein Schritt geändert hat: beim Abschluss der
+    /// geschlossene, bei Rückgängig und Wiederholen der angewandte. Ein
+    /// verworfener Schritt ändert nichts, denn im offenen gleicht der
+    /// Speicher nie ab ([`RaumCache::sync`]).
     pub(super) fn merken(&mut self, m: &Model, cs: &[Change]) {
         self.offen.aus(m, cs);
     }
@@ -416,12 +417,11 @@ impl RaumCache {
     /// Gleicht den Speicher mit dem Modell ab, die Flächen aus der
     /// Erkennung der Szene, die Züge aus ihren berechneten. Im offenen
     /// Schritt (Ziehen im Geschossmanager, einer Wand) bleibt der Ausbau,
-    /// wie er war, und folgt beim Abschluss.
+    /// wie er war, und folgt beim Abschluss; vor dem ersten Abgleich zeigt
+    /// er bis dahin nichts.
     fn sync(&mut self, s: &Scene) {
         let m = s.model();
-        if self.rev.is_some()
-            && (m.in_step() || self.rev == Some(m.revision()) && self.offen.leer())
-        {
+        if m.in_step() || self.rev == Some(m.revision()) && self.offen.leer() {
             return;
         }
         let erst = self.rev.is_none();
@@ -678,30 +678,42 @@ pub fn platz(v: ViewKind) -> Option<usize> {
 }
 
 impl Scene {
-    /// Vor Abschluss und Verwerfen: Der Ausbau merkt sich, was der offene
-    /// Schritt berührt.
-    pub(super) fn ausbau_schritt(&mut self) {
-        self.ausbau
-            .merken(&self.model, self.model.schritt_aenderungen());
-    }
-
     /// Schalter „Ausbau innen“ der Ansicht `i` (Ansichtszustand ohne
     /// Schritt, wie die Schnitthöhe).
     pub fn set_view_finish(&mut self, i: usize, an: bool) {
         self.model.set_view_finish(i, an);
     }
 
-    /// Was zu den Wandzügen ins ruhende Netz kommt: Erweiterungen und
-    /// Ausbau innen. Das Live-Netz beim Ziehen ([`Scene::mesh_runs`]) trägt
-    /// nur die gezogenen Züge, sonst stünde beides doppelt im Bild.
-    pub(super) fn zusatz_into(
+    /// Ruhendes Netz (deckend, blass): die Wandzüge `runs` und, was dazu
+    /// kommt, Erweiterungen und Ausbau innen. Das Live-Netz beim Ziehen
+    /// ([`Scene::mesh_runs`]) trägt nur die gezogenen Züge, sonst stünde
+    /// beides doppelt im Bild.
+    pub(super) fn mesh_ruhend(
         &mut self,
-        m: &mut [MeshData; 2],
         view: ViewKind,
         section: Option<Plane>,
-    ) {
-        self.ext_into(m, view, section);
-        self.ausbau_into(m, view, section);
+        runs: &[RunId],
+    ) -> [MeshData; 2] {
+        let mut m = self.mesh_split(view, section, runs);
+        self.ext_into(&mut m, view, section);
+        self.ausbau_into(&mut m, view, section);
+        m
+    }
+
+    /// Was Erweiterungen und Ausbau in einer Ansicht zeigen: Grundriss
+    /// (Geschoss, Schnitthöhe) oder Schnittebene; `None`: Schnitt ohne
+    /// Ebene.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn ext_view(
+        &self,
+        view: ViewKind,
+        section: Option<Plane>,
+    ) -> Option<(Option<(StoreyId, f64)>, Option<Plane>)> {
+        match view {
+            ViewKind::Plan => Some((Some((self.active_storey(), self.plan_cut())), None)),
+            ViewKind::Section => section.map(|p| (None, Some(p))),
+            _ => Some((None, None)),
+        }
     }
 
     /// Ausbau innen ins Netz: ohne Filter die Netze der Hausgruppen
@@ -1085,6 +1097,33 @@ mod tests {
         s.mesh(ViewKind::Plan, None, &[]);
         let (geprueft, (netze, schnitte)) = stand(&s);
         assert!(geprueft > vorher.0 && netze > vorher.1 .0 && schnitte > vorher.1 .1);
+    }
+
+    /// Esc beim Ziehen: Der verworfene Schritt baut keinen Körper neu, das
+    /// Netz ist danach wie davor. Zeigt eine Ansicht den Ausbau zum ersten
+    /// Mal im offenen Schritt, gleicht der Speicher erst nach ihm ab.
+    #[test]
+    fn verworfener_schritt() {
+        let mut s = Scene::new();
+        let innen = haeuser(&mut s, 0, 2);
+        s.set_view_finish(2, true);
+        let ziehen = |s: &mut Scene| {
+            let pts: Vec<_> = s.model().run(innen[0]).unwrap().points.clone();
+            let pts: Vec<_> = pts.iter().map(|p| *p + vec3(-150.0, 0.0, 0.0)).collect();
+            s.begin("Wand verschieben");
+            s.set_run_points(innen[0], &pts);
+            s.mesh(ViewKind::Persp, None, &[]);
+            s.rollback();
+        };
+        ziehen(&mut s);
+        assert_eq!(s.ausbau_geprueft(), 0);
+        let vorher = s.mesh(ViewKind::Persp, None, &[]);
+        let gebaut = s.ausbau_builds();
+        assert!(s.ausbau_geprueft() > 0 && gebaut > 0);
+        ziehen(&mut s);
+        let nachher = s.mesh(ViewKind::Persp, None, &[]);
+        assert_eq!(s.ausbau_builds(), gebaut);
+        assert!(nachher.faces == vorher.faces && nachher.edges == vorher.edges);
     }
 
     /// Eine andere Nutzung baut nur diesen Raum neu; bringt sie neue Typen
