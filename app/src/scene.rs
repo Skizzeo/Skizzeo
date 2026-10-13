@@ -575,6 +575,9 @@ pub struct Scene {
     /// Laufender Zug an OK Gelände mit den Sohlplatten-Zügen des gezogenen
     /// Gebäudes ([`Scene::drag_terrain`]).
     gelaende_zug: Option<(sk_model::model::GelaendeZug, Vec<RunId>)>,
+    /// Züge mit Sohlplatte der übrigen Gebäude, die einem Gelände-Zug im
+    /// Leerlauf folgen ([`Scene::nachziehen`]).
+    nachzug: Vec<RunId>,
     bounds: Option<Aabb>,
     /// Aufgelöste Attributtabellen des Modells.
     table: DrawTable,
@@ -927,6 +930,7 @@ impl Scene {
             unsettled: Vec::new(),
             live: Vec::new(),
             gelaende_zug: None,
+            nachzug: Vec::new(),
             bounds: None,
             table,
             theme,
@@ -1531,6 +1535,7 @@ impl Scene {
         if self.all_dirty {
             self.all_dirty = false;
             self.dirty.clear();
+            self.nachzug.clear();
             let builds: Vec<u32> = self
                 .cache
                 .iter()
@@ -1544,12 +1549,18 @@ impl Scene {
                 self.store(id, b, false);
             }
         } else {
-            for id in std::mem::take(&mut self.dirty) {
+            let ids = std::mem::take(&mut self.dirty);
+            self.nachzug_ohne(&ids);
+            for id in ids {
                 let b = self.cached(id).map_or(0, |c| c.builds);
                 self.store(id, b, live);
             }
         }
         self.ext.sync(&self.model);
+        self.bounds_neu();
+    }
+
+    fn bounds_neu(&mut self) {
         self.bounds = self
             .cache
             .iter()
