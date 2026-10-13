@@ -796,6 +796,19 @@ impl Model {
         chain_of: &dyn Fn(RunId) -> Option<WallChain>,
     ) -> Option<DoorLeaf> {
         let o = self.opening(id)?;
+        let st = self.element(id)?.storey;
+        self.opening_runs(o)
+            .into_iter()
+            .filter(|r| self.run(*r).is_some_and(|x| x.storey == st))
+            .find_map(|r| self.door_leaf_on(id, r, &chain_of(r)?))
+    }
+
+    /// [`Model::door_leaf`] im Zug `run` mit Körper `c`, ohne Suche über die
+    /// Züge; `None`, wenn die Tür dort kein Loch hat. Wer die Züge bei der
+    /// Tür schon kennt (Grundriss: Raster der Szene), fragt sie der Reihe
+    /// nach wie [`Model::door_leaf_in`] (Review #149 B2).
+    pub fn door_leaf_on(&self, id: ElementId, run: RunId, c: &WallChain) -> Option<DoorLeaf> {
+        let o = self.opening(id)?;
         let sw = o.swing?;
         let (a, b) = (flat(*o.path.first()?), flat(*o.path.last()?));
         let len = (b - a).length();
@@ -804,16 +817,8 @@ impl Model {
         }
         let along = (b - a) / len;
         let into = sw.side.normal(along);
-        let st = self.element(id)?.storey;
-        let (run, c, h) = self
-            .opening_runs(o)
-            .into_iter()
-            .filter(|r| self.run(*r).is_some_and(|x| x.storey == st))
-            .find_map(|r| {
-                let c = chain_of(r)?;
-                let (_, h) = self.legs_on(r, &c, Some(id), o).into_iter().next()?;
-                Some((r, c, h))
-            })?;
+        let (_, h) = self.legs_on(run, c, Some(id), o).into_iter().next()?;
+        // Mit Aufschlag und zwei Pfadpunkten hat jedes Loch ein Blatt
         let leaf = h.leaf?;
         let (pts, _, dirs) = c.layout()?;
         let d = dirs[h.seg];

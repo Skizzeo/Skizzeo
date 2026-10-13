@@ -50,7 +50,7 @@ const SPUR_HOCH: f64 = 1500.0;
 
 /// Die Griffe erscheinen, wenn die Maus so nah am Pfad steht (mm), bei
 /// breiten Öffnungen bis zur halben Breite.
-const NAH: f64 = 500.0;
+pub(super) const NAH: f64 = 500.0;
 
 fn flat(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
@@ -71,14 +71,18 @@ pub(crate) fn flaeche_bei(
     flaeche_unter(m, k, st, p, m.runs().ids())
 }
 
-/// So weit darf die Bezugslinie eines Zugs über den Quader seines Körpers
-/// hinausragen (mm), großzügig (Anschluss an eine dicke Wand).
-const RAGT: f64 = 2000.0;
+/// So weit neben ihrer Fläche nimmt [`flaeche_unter`] einen Punkt noch an
+/// (mm): quer unter 1 mm ([`OuterFace::on_line`]), längs 1 mm über die
+/// Ecken hinaus, mit Rundung.
+const AUF_FLAECHE: f64 = 2.0;
 
-/// [`flaeche_bei`] über das Raster der Szene: nur die Züge, deren Körper
-/// bis [`DICKE`] + [`RAGT`] an `p` reicht (Review #140, Zugschritt).
+/// [`flaeche_bei`] über das Raster der Szene (Review #140, Zugschritt):
+/// Die Fläche, auf der `p` liegt, ist der Wandfuß eines Segments
+/// ([`sk_model::WallChain::outer_foot`]), und der liegt im Quader des Zugs
+/// im Raster; also nur die Züge, deren Quader bis [`AUF_FLAECHE`] an `p`
+/// reicht. Wo die Bezugslinie aus dem Körper ragt, zählt sie dafür nicht.
 pub(crate) fn flaeche_in(scene: &Scene, st: StoreyId, p: Vec3) -> Option<(OuterFace, f64, bool)> {
-    let r = DICKE + RAGT;
+    let r = AUF_FLAECHE;
     let zuege = scene.zuege_im((p.x - r, p.y - r), (p.x + r, p.y + r));
     let k = |r| scene.koerper(r);
     flaeche_unter(scene.model(), &k, st, p, zuege.map(|(id, ..)| id))
@@ -141,10 +145,14 @@ fn zeichenpunkt(f: &OuterFace, p: Vec3, dicke: f64, innen: bool) -> Vec3 {
 /// Grundriss); `r_min` (mm) hält sie auch weit herausgezoomt nah genug,
 /// dass die Maus das Kettensymbol daneben erreicht.
 pub fn sichtbar(scene: &Scene, p: Vec3, r_min: f64) -> Vec<Griff> {
-    // Ein Pfadstück liegt auf der Fläche eines Zugs, also in dessen Quader;
-    // reicht es über zwei Züge, ist es höchstens doppelt so lang wie einer
-    let r = NAH.max(r_min) + scene.zug_diagonale() + DICKE;
-    let ids = super::tuer_edit::oeffnungen_nah(scene, p, r);
+    // Das Raster der Griffe reicht so weit wie die Türgriffe, also weiter
+    // als [`NAH`] und die halbe Breite; `r_min` gibt die Abfrage dazu
+    let mut ids: Vec<ElementId> = scene
+        .oeffnungen_bei(p, r_min)
+        .into_iter()
+        .map(|k| k.0)
+        .collect();
+    ids.dedup();
     griffe_von(scene, p, r_min, ids)
 }
 
@@ -858,6 +866,14 @@ mod tests {
             assert!(gesehen > 0 && flaechen > 0);
         };
         pruefen(&s);
+        // Knapp vor der Außenfläche bei y = 0, in der Zellreihe darunter:
+        // Die Fläche nimmt den Punkt noch an, das Raster nur mit Spielraum
+        let st = s.active_storey();
+        let k = |r| s.koerper(r);
+        let p = vec3(7000.0, -0.9, 0.0);
+        let f = flaeche_in(&s, st, p);
+        assert!(f.is_some());
+        assert_eq!(f, flaeche_bei(s.model(), &k, st, p));
         let mut zwei = Scene::with_model(m);
         for st in geschosse {
             zwei.set_active_storey(st);

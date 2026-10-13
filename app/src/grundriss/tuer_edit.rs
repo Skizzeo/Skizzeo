@@ -13,7 +13,7 @@ use super::ende_edit::{self, Outcome, GRIFF_PX};
 use crate::camera::Camera;
 use crate::scene::Scene;
 use sk_math::{vec3, Vec3};
-use sk_model::oeffnung::{Din, FaceSide, Swing};
+use sk_model::oeffnung::{Din, DoorLeaf, FaceSide, Swing};
 use sk_model::{ElementId, ElementKind, Model, RunId, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
@@ -29,6 +29,24 @@ const NAH: f64 = 1.25;
 /// Vorfilter der Griffe am Pfad der Tür (mm): Das Blatt liegt auf der
 /// Rohbauflucht, höchstens eine Wanddicke neben dem Pfad (Review #99 B1).
 const DICKE: f64 = 1000.0;
+/// Spielraum der Reichweite (mm): Der Pfad liegt bis `ON_FACE` neben der
+/// Fläche, dazu Rundung.
+const SPIEL: f64 = 10.0;
+
+/// So weit um den Pfad einer Öffnung der Breite `breite` (mm) kann die Maus
+/// stehen, wenn sie einen Griff der Öffnung zeigt: der Türgriff bis
+/// [`NAH`] Breiten um die Mitte des Blatts, das höchstens [`DICKE`] neben
+/// dem Pfad liegt; die Breitengriffe bis [`super::breite_edit::NAH`] oder
+/// die halbe Breite um den Pfad, beides weniger (den Spielraum beim
+/// Herauszoomen gibt die Abfrage dazu). Für jeden Zug mit einem Loch der
+/// Öffnung derselbe Bereich im Raster der Griffe
+/// ([`Scene::oeffnungen_bei`], Review #149 B1).
+pub(crate) fn griff_reichweite(breite: f64) -> f64 {
+    NAH * breite + DICKE + SPIEL
+}
+
+// Die Breitengriffe reichen nicht weiter als die Türgriffe
+const _: () = assert!(DICKE >= super::breite_edit::NAH && NAH >= 0.5);
 
 fn flat(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
@@ -37,31 +55,45 @@ fn flat(p: Vec3) -> Vec3 {
 /// Wandkörper je Zug (aus dem Zwischenspeicher der Szene).
 type Koerper<'a> = &'a dyn Fn(RunId) -> Option<WallChain>;
 
-/// Griff der Tür `id` (z = 0) und ihre Mitte und Breite; `None` ohne
-/// Aufschlag.
-fn griff_der_tuer(m: &Model, id: ElementId, k: Koerper) -> Option<(Vec3, Vec3, f64)> {
-    let l = m.door_leaf_in(id, k)?;
+/// Griff am Blatt `l` (z = 0), die Mitte des Blatts und seine Breite.
+fn griff_am_blatt(l: &DoorLeaf) -> (Vec3, Vec3, f64) {
     let w = (l.u.1 - l.u.0).abs();
     let mitte = (l.line.0 + l.line.1) * 0.5;
-    Some((flat(l.hinge + l.swing_into * w), flat(mitte), w))
+    (flat(l.hinge + l.swing_into * w), flat(mitte), w)
+}
+
+/// [`griff_am_blatt`] der Tür `id` mit dem Blatt im ersten der Züge
+/// `zuege` ihres Geschosses, der sie trägt, wie [`Model::door_leaf_in`]
+/// über alle Züge (Review #149 B2); `None` ohne Aufschlag.
+fn griff_der_tuer(scene: &Scene, id: ElementId, zuege: &[RunId]) -> Option<(Vec3, Vec3, f64)> {
+    let m = scene.model();
+    let st = m.element(id)?.storey;
+    let l = zuege
+        .iter()
+        .filter(|&&r| m.run(r).is_some_and(|x| x.storey == st))
+        .find_map(|&r| match scene.chain(r) {
+            Some(c) => m.door_leaf_on(id, r, c),
+            None => m.door_leaf_on(id, r, &m.chain(r)?),
+        })?;
+    Some(griff_am_blatt(&l))
 }
 
 /// Griffe der Türen des aktiven Geschosses, bei denen die Maus (Punkt `p`
 /// im Grundriss) steht; ausgeblendete Türen haben keinen.
 pub fn sichtbar(scene: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
-    // Das Blatt liegt im Körper seines Zugs und ist nicht breiter, als ein
-    // Zug lang ist
-    let r = NAH * scene.zug_diagonale() + DICKE;
-    griffe_von(scene, p, oeffnungen_nah(scene, p, r))
+    griffe_von(scene, p, &scene.oeffnungen_bei(p, 0.0))
 }
 
-/// [`sichtbar`] unter den Öffnungen `ids`.
-fn griffe_von(scene: &Scene, p: Vec3, ids: Vec<ElementId>) -> Vec<(ElementId, Vec3)> {
+/// [`sichtbar`] unter den Öffnungen und Zügen `kandidaten` (nach Bauteil
+/// und Zug aufsteigend, [`Scene::oeffnungen_bei`]).
+fn griffe_von(scene: &Scene, p: Vec3, kandidaten: &[(ElementId, RunId)]) -> Vec<(ElementId, Vec3)> {
     let m = scene.model();
     let st = scene.active_storey();
     let p = flat(p);
-    ids.into_iter()
-        .filter_map(|id| {
+    kandidaten
+        .chunk_by(|a, b| a.0 == b.0)
+        .filter_map(|je| {
+            let id = je[0].0;
             let e = m.element(id)?;
             let ElementKind::Opening(o) = &e.kind else {
                 return None;
@@ -74,27 +106,11 @@ fn griffe_von(scene: &Scene, p: Vec3, ids: Vec<ElementId>) -> Vec<(ElementId, Ve
             if (p - (a + b) * 0.5).length() > NAH * (b - a).length() + DICKE {
                 return None;
             }
-            let (g, mitte, w) = griff_der_tuer(m, id, &|r| scene.koerper(r))?;
+            let zuege: Vec<RunId> = je.iter().map(|k| k.1).collect();
+            let (g, mitte, w) = griff_der_tuer(scene, id, &zuege)?;
             ((p - mitte).length() <= NAH * w).then_some((id, g))
         })
         .collect()
-}
-
-/// Öffnungen mit einem Loch in einem Wandzug, dessen Körper das Quadrat um
-/// den Punkt `p` des Grundrisses mit halber Seite `r` (mm) berühren kann,
-/// in der Reihenfolge der Bauteile. Vorfilter der Griffe je Mausbewegung
-/// und Zugschritt über das Raster der Szene statt über alle Bauteile
-/// (Review #140, Zugschritt). Züge aller Geschosse; das Geschoss prüft der
-/// Aufrufer an der Öffnung.
-pub(super) fn oeffnungen_nah(scene: &Scene, p: Vec3, r: f64) -> Vec<ElementId> {
-    let mut ids: Vec<ElementId> = scene
-        .zuege_im((p.x - r, p.y - r), (p.x + r, p.y + r))
-        .flat_map(|(run, ..)| scene.loecher(run))
-        .filter_map(|(h, _)| h.opening)
-        .collect();
-    ids.sort_by_key(|id| id.index());
-    ids.dedup();
-    ids
 }
 
 /// So weit reicht ein Aufschlag höchstens über den Wandkörper hinaus (mm):
@@ -279,7 +295,7 @@ impl TuerZug {
         let k = |r| scene.koerper(r);
         let alt = m.opening(id)?.swing?;
         let lage = lage(m, id, &k)?;
-        let griff = griff_der_tuer(m, id, &k).map(|g| g.0);
+        let griff = griff_der_tuer(scene, id, &[lage.run]).map(|g| g.0);
         scene.begin(SCHRITT);
         Some(TuerZug {
             id,
@@ -307,8 +323,7 @@ impl TuerZug {
                 if let Some(s) = s.filter(|s| *s != self.jetzt) {
                     if scene.set_swing(self.id, s, self.lage.run) {
                         self.jetzt = s;
-                        let k = |r| scene.koerper(r);
-                        self.griff = griff_der_tuer(scene.model(), self.id, &k).map(|g| g.0);
+                        self.griff = griff_der_tuer(scene, self.id, &[self.lage.run]).map(|g| g.0);
                         out.changed = true;
                         out.redraw = true;
                     }
@@ -371,19 +386,24 @@ mod tests {
     /// Wie [`haus`], in ein Modell gebaut (in einem Schritt der Szene
     /// entstehen dabei die Räume).
     fn haus_in(m: &mut Model) -> ElementId {
+        haus_bei(m, 0.0)
+    }
+
+    /// [`haus_in`], um `dx` (mm) nach +x verschoben, als eigenes Gebäude.
+    fn haus_bei(m: &mut Model, dx: f64) -> ElementId {
         let b = m.add_building(1);
         let pts = [
-            vec3(0.0, 0.0, 0.0),
-            vec3(0.0, 8000.0, 0.0),
-            vec3(10000.0, 8000.0, 0.0),
-            vec3(10000.0, 0.0, 0.0),
+            vec3(dx, 0.0, 0.0),
+            vec3(dx, 8000.0, 0.0),
+            vec3(dx + 10000.0, 8000.0, 0.0),
+            vec3(dx + 10000.0, 0.0, 0.0),
         ];
         let eg = m.build_from_polygon(b, &pts).unwrap();
         let st = m.run(eg).unwrap().storey;
         let set = m.defaults().interior_wall;
         let iw = m
             .add_wall_run(
-                &[vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)],
+                &[vec3(dx + 5000.0, 0.0, 0.0), vec3(dx + 5000.0, 8000.0, 0.0)],
                 false,
                 RefSide::Center,
                 st,
@@ -392,7 +412,7 @@ mod tests {
             )
             .unwrap();
         let f = m.outer_face(iw, 0).unwrap();
-        let u = f.u_of(vec3(5000.0, 3000.0, 0.0));
+        let u = f.u_of(vec3(dx + 5000.0, 3000.0, 0.0));
         let o = Opening {
             kind: OpeningKind::Door,
             path: vec![f.at(u - 442.5, 0.0), f.at(u + 442.5, 0.0)],
@@ -409,10 +429,34 @@ mod tests {
         m.add_opening(o).unwrap()
     }
 
-    /// Vorfilter je Wandzug (Review #140, Zugschritt): Rund um das Haus,
-    /// auch an einer Tür, die ihre kurze Wand fast füllt und bei der die
-    /// Maus über die Zellgrenze x = 0 des Rasters reicht, stehen dieselben
-    /// Griffe wie über alle Bauteile.
+    /// Griffe über alle Bauteile, jedes Blatt über alle Züge
+    /// ([`Model::door_leaf_in`]): wie vor dem Raster der Griffe.
+    fn ueber_alle(s: &Scene, p: Vec3) -> Vec<(ElementId, Vec3)> {
+        let m = s.model();
+        let p = flat(p);
+        m.elements()
+            .iter()
+            .filter_map(|(id, e)| {
+                let ElementKind::Opening(o) = &e.kind else {
+                    return None;
+                };
+                let tuer = o.swing.is_some() && o.path.len() == 2;
+                if e.storey != s.active_storey() || !tuer || !s.pickable(id) {
+                    return None;
+                }
+                let (g, mitte, w) = griff_am_blatt(&m.door_leaf_in(id, &|r| s.koerper(r))?);
+                ((p - mitte).length() <= NAH * w).then_some((id, g))
+            })
+            .collect()
+    }
+
+    /// Raster der Griffe (Review #140, Zugschritt; Review #149 B1, B2):
+    /// Rund um das Haus, auch an einer Tür, die ihre kurze Wand fast füllt
+    /// und bei der die Maus über die Zellgrenze x = 0 des Rasters reicht,
+    /// stehen dieselben Griffe wie über alle Bauteile und Züge. An einer 4 m
+    /// breiten Tür erscheint der Griff noch knapp [`NAH`] Breiten hinter dem
+    /// Blatt, auf der Seite fern vom Pfad: Dort reicht weder die Breite
+    /// ohne [`NAH`] noch [`NAH`] Breiten ohne die Wanddicke.
     #[test]
     fn vorfilter_wie_alle() {
         let (mut m, tuer) = haus();
@@ -433,18 +477,94 @@ mod tests {
         let mut o = m.opening(tuer).unwrap().clone();
         o.path = vec![f.at(u - 505.0, 0.0), f.at(u + 505.0, 0.0)];
         let breit = m.add_opening(o).unwrap();
+        // 4 m breit in der Innenwand bei x = 5 m, Blatt fern vom Pfad
+        let iw = m.door_leaf(tuer).unwrap().run;
+        let f = m.outer_face(iw, 0).unwrap();
+        let u = f.u_of(vec3(5000.0, 5600.0, 0.0));
+        let mut o = m.opening(tuer).unwrap().clone();
+        o.path = vec![f.at(u - 2000.0, 0.0), f.at(u + 2000.0, 0.0)];
+        let vier = m.add_opening(o.clone()).unwrap();
+        let fern = |m: &Model| {
+            let l = m.door_leaf(vier).unwrap();
+            let pfad = (flat(o.path[0]) + flat(o.path[1])) * 0.5;
+            (flat(l.line.0 + l.line.1) * 0.5, pfad)
+        };
+        if (fern(&m).0 - fern(&m).1).length() < 50.0 {
+            let mut x = m.opening(vier).unwrap().clone();
+            x.swing = x.swing.map(|s| s.flipped());
+            assert!(m.set_opening(vier, x));
+        }
+        let (blatt, pfad) = fern(&m);
+        let weg = (blatt - pfad) * (1.0 / (blatt - pfad).length());
+        assert!((blatt - pfad).length() > 50.0);
+        let nah_am_rand = blatt + weg * (NAH * 4000.0 - 10.0);
         let s = Scene::with_model(m);
-        let alle: Vec<ElementId> = s.model().elements().ids().collect();
         let mut gesehen = Vec::new();
-        for x in (-3000..=13000).step_by(125) {
-            for y in (-3000..=11000).step_by(125) {
-                let p = vec3(x as f64, y as f64, 0.0);
-                let g = sichtbar(&s, p);
-                assert_eq!(g, griffe_von(&s, p, alle.clone()), "{p:?}");
-                gesehen.extend(g.iter().map(|g| g.0));
-            }
+        let mut punkte: Vec<Vec3> = (-3000..=13000)
+            .step_by(125)
+            .flat_map(|x| {
+                (-3000..=11000)
+                    .step_by(125)
+                    .map(move |y| vec3(x as f64, y as f64, 0.0))
+            })
+            .collect();
+        punkte.push(nah_am_rand);
+        for p in punkte {
+            let g = sichtbar(&s, p);
+            assert_eq!(g, ueber_alle(&s, p), "{p:?}");
+            gesehen.extend(g.iter().map(|g| g.0));
         }
         assert!(gesehen.contains(&tuer) && gesehen.contains(&breit));
+        assert!(sichtbar(&s, nah_am_rand).iter().any(|g| g.0 == vier));
+    }
+
+    /// Je Mausbewegung fragt das Raster der Griffe nur die Öffnungen beim
+    /// Haus unter der Maus, wie viele Häuser es auch gibt und wie lang der
+    /// längste Zug ist (Review #149 B1): 1 und 20 Häuser, dazu eine 300 m
+    /// lange Wand mit einer Tür an ihrem fernen Ende.
+    #[test]
+    fn griffe_unabhaengig_von_der_modellgroesse() {
+        let kandidaten = |n: usize| {
+            let mut m = Model::with_seed(412);
+            let tueren: Vec<ElementId> = (0..n)
+                .map(|k| haus_bei(&mut m, k as f64 * 20_000.0))
+                .collect();
+            let st = m.element(tueren[0]).unwrap().storey;
+            let set = m.defaults().interior_wall;
+            let mauer = m
+                .add_wall_run(
+                    &[
+                        vec3(-20_000.0, -20_000.0, 0.0),
+                        vec3(280_000.0, -20_000.0, 0.0),
+                    ],
+                    false,
+                    RefSide::Center,
+                    st,
+                    set,
+                    Category::InteriorWall,
+                )
+                .unwrap();
+            let f = m.outer_face(mauer, 0).unwrap();
+            let u = f.u_of(vec3(270_000.0, -20_000.0, 0.0));
+            let mut o = m.opening(tueren[0]).unwrap().clone();
+            o.path = vec![f.at(u - 442.5, 0.0), f.at(u + 442.5, 0.0)];
+            let fern = m.add_opening(o).unwrap();
+            let mut s = Scene::with_model(m);
+            s.set_active_storey(st);
+            let p = vec3(5300.0, 3200.0, 0.0);
+            assert_eq!(sichtbar(&s, p).len(), 1);
+            let k = s.oeffnungen_bei(p, 0.0);
+            assert!(k.iter().all(|&(id, _)| id == tueren[0]), "{k:?}");
+            assert!(!s
+                .oeffnungen_bei(vec3(270_000.0, -19_000.0, 0.0), 0.0)
+                .is_empty());
+            assert!(s
+                .oeffnungen_bei(vec3(270_000.0, -19_000.0, 0.0), 0.0)
+                .iter()
+                .all(|k| k.0 == fern));
+            k.len()
+        };
+        assert_eq!(kandidaten(1), kandidaten(20));
     }
 
     /// Der Griff steht am freien Ende des offenen Blatts: über dem
@@ -453,7 +573,7 @@ mod tests {
     fn griff_am_blattende() {
         let (m, id) = haus();
         let l = m.door_leaf(id).unwrap();
-        let (g, mitte, w) = griff_der_tuer(&m, id, &|r| m.chain(r)).unwrap();
+        let (g, mitte, w) = griff_am_blatt(&l);
         assert_eq!(w, 885.0);
         assert!((g - flat(l.hinge) - l.swing_into * w).length() < 1e-6);
         assert!(((mitte.y) - 3000.0).abs() < 1e-6, "{mitte:?}");
@@ -477,7 +597,7 @@ mod tests {
             let l = m.door_leaf(id).unwrap();
             assert!((l.swing_into.x - x_into).abs() < 1e-9, "{p:?}: {l:?}");
             assert!((l.hinge.y - y_band).abs() < 1e-6, "{p:?}: {l:?}");
-            let (g, ..) = griff_der_tuer(&m, id, &|r| m.chain(r)).unwrap();
+            let (g, ..) = griff_am_blatt(&l);
             // Der Griff landet in der Hälfte und auf der Seite der Maus
             assert!((g.x - 5000.0) * (p.x - 5000.0) > 0.0);
             assert!((g.y - 3000.0) * (p.y - 3000.0) > 0.0);
