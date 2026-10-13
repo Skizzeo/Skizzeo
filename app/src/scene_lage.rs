@@ -1,15 +1,51 @@
-//! Lage und Nordpfeil mit Höhenaufmaß (Review #123 W45 B3): Liegt ein
-//! Aufmaß im Projekt, bewegen Lage und Nordrichtung das Gelände unter dem
-//! Haus und mit ihm die Gründungen. Ändert sich dabei eine Unterkante,
-//! rechnet die Szene alles neu; sonst blieben 3D-Körper und Mengen beim
-//! alten Stand.
+//! Lage und Nordpfeil in der Szene, aus `scene.rs` ausgelagert. Mit
+//! Höhenaufmaß (Review #123 W45 B3): Liegt ein Aufmaß im Projekt, bewegen
+//! Lage und Nordrichtung das Gelände unter dem Haus und mit ihm die
+//! Gründungen. Ändert sich dabei eine Unterkante, rechnet die Szene alles
+//! neu; sonst blieben 3D-Körper und Mengen beim alten Stand.
 
 use super::Scene;
 use sk_model::LevelKind;
 
 impl Scene {
+    /// Projektdaten samt Breite und Länge aus der Maske (Sonnenstand S1)
+    /// als ein Schritt. `false`, wenn sich nichts geändert hat.
+    pub fn projektdaten_setzen(
+        &mut self,
+        label: &'static str,
+        p: sk_model::Project,
+        ort: sk_model::Location,
+    ) -> bool {
+        self.begin(label);
+        let uk = self.gruendungen_uk();
+        let soil = p.soil;
+        let a = self.model.set_project(p);
+        let b = self.model.set_location(ort);
+        // Bodenkennwerte der Erdarbeiten (Gruppe Baugrund) im selben Schritt
+        let c = self.model.set_soil(soil);
+        self.gruendungen_folgen(&uk);
+        self.commit();
+        a || b || c
+    }
+
+    /// Nordpfeil setzen, drehen oder verschieben (Sonnenstand S2): ein
+    /// Schritt `label`. `false`, wenn sich nichts geändert hat.
+    pub fn nordpfeil_setzen(
+        &mut self,
+        label: &'static str,
+        nord: f64,
+        fuss: Option<sk_model::Foot>,
+    ) -> bool {
+        self.begin(label);
+        let uk = self.gruendungen_uk();
+        let ok = self.model.set_north_arrow(nord, fuss);
+        self.gruendungen_folgen(&uk);
+        self.commit();
+        ok
+    }
+
     /// Unterkanten aller Gründungen.
-    pub(super) fn gruendungen_uk(&self) -> Vec<f64> {
+    fn gruendungen_uk(&self) -> Vec<f64> {
         self.model
             .storeys()
             .iter()
@@ -19,7 +55,7 @@ impl Scene {
     }
 
     /// Alles neu, wenn eine Unterkante nicht mehr wie `vorher` liegt.
-    pub(super) fn gruendungen_folgen(&mut self, vorher: &[f64]) {
+    fn gruendungen_folgen(&mut self, vorher: &[f64]) {
         if self.gruendungen_uk() != vorher {
             self.mark_all();
         }
