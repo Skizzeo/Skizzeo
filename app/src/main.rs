@@ -22,6 +22,7 @@ mod abnahme_s4;
 mod ansicht_linien;
 mod ansicht_schatten;
 mod attr_pick;
+mod ausbau_app;
 mod auswahl;
 mod autosave;
 mod ava_view;
@@ -931,8 +932,7 @@ impl App {
         let plane = self.plane();
         if self.mesh_dirty {
             self.mesh_dirty = false;
-            let mesh = self.scene.mesh(self.ui.view, plane, &self.live_runs);
-            self.renderer.set_mesh(MESH_MODEL, &mesh);
+            let mesh = self.netz_hochladen(plane);
             self.ecken = if self.sonne_an().is_some() {
                 sonne_view::ecken(&mesh.faces)
             } else {

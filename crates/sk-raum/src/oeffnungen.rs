@@ -8,8 +8,9 @@
 use crate::erkennung::{Begrenzung, Kante, RaumForm, Seite};
 use crate::speicher::Ketten;
 use sk_model::oeffnung::FaceSide;
-use sk_model::{ElementId, LevelKind, Model, RunId, StoreyId, WallChain};
+use sk_model::{BuildingId, ElementId, ElementKind, LevelKind, Model, RunId, StoreyId, WallChain};
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 /// Art der Öffnung für das Raumbuch. Das Modell kennt die Innentür als Tür
 /// in einer Innenwand (Öffnungen #99), das Raumbuch rechnet sie anders als
@@ -69,6 +70,91 @@ pub struct Rohbau {
     pub oeffnungen: Vec<OeffnungAmRaum>,
 }
 
+/// Ein Geschoss, wie Rohbau und Ausbau eines Raums es brauchen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Lage {
+    gebaeude: Option<BuildingId>,
+    art: LevelKind,
+    /// Höhenlage, Höhe und lichte Höhe (mm).
+    z: f64,
+    hoehe: f64,
+    licht: f64,
+}
+
+/// Die Geschosse des Modells mit Höhenlage, Höhe und lichter Höhe, aus
+/// einem Gang über Geschosse und Bauteile. Wer viele Räume rechnet, hält
+/// sie einmal je Stand; sonst ginge jeder Raum und jede Öffnung über alle
+/// Bauteile, um die dickste Decke zu finden (Review #137 B2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Geschosse {
+    lagen: HashMap<StoreyId, Lage>,
+    /// Je Gebäude seine Geschosse in der Reihenfolge des Modells.
+    gebaeude: HashMap<Option<BuildingId>, Vec<StoreyId>>,
+}
+
+impl Geschosse {
+    pub fn aus(model: &Model) -> Geschosse {
+        // Dickste Decke an der OK jedes Geschosses, wie
+        // `Model::clear_height`
+        let mut decke: HashMap<StoreyId, f64> = HashMap::new();
+        for (_, e) in model.elements().iter() {
+            if let ElementKind::Floor(f) = &e.kind {
+                let d = decke.entry(f.top.storey).or_insert(f.thickness);
+                *d = d.max(f.thickness);
+            }
+        }
+        let mut g = Geschosse::default();
+        for (id, s) in model.storeys().iter() {
+            let d = decke.get(&id).copied().unwrap_or(sk_model::FLOOR_THICKNESS);
+            g.lagen.insert(
+                id,
+                Lage {
+                    gebaeude: s.building,
+                    art: s.kind,
+                    z: s.elevation,
+                    hoehe: s.height,
+                    licht: s.height - d,
+                },
+            );
+            g.gebaeude.entry(s.building).or_default().push(id);
+        }
+        g
+    }
+
+    /// Lichte Höhe des Geschosses (mm) wie `Model::clear_height`, 0 ohne
+    /// das Geschoss.
+    pub fn licht(&self, g: StoreyId) -> f64 {
+        self.lagen.get(&g).map_or(0.0, |l| l.licht)
+    }
+
+    /// OK Rohdecke und UK Rohdecke darüber (mm, absolut) wie
+    /// [`hoehen_roh`].
+    fn roh(&self, g: StoreyId) -> (f64, f64) {
+        let z = self.lagen.get(&g).map_or(0.0, |l| l.z);
+        (z, z + self.licht(g))
+    }
+
+    /// Liegt das Geschoss direkt über der Gründung seines Gebäudes, auf der
+    /// Sohlplatte ([`crate::ausbau::estrich_vorgabe`])?
+    pub fn auf_sohle(&self, g: StoreyId) -> bool {
+        let Some(s) = self.lagen.get(&g) else {
+            return false;
+        };
+        self.im_gebaeude(s.gebaeude).any(|(_, l)| auf_sohle(l, s))
+    }
+
+    /// Die Geschosse des Gebäudes `b`.
+    fn im_gebaeude(&self, b: Option<BuildingId>) -> impl Iterator<Item = (StoreyId, &Lage)> {
+        let ids = self.gebaeude.get(&b).map_or(&[][..], Vec::as_slice);
+        ids.iter().filter_map(|id| Some((*id, self.lagen.get(id)?)))
+    }
+}
+
+/// Ist `g` die Gründung, auf deren Oberkante das Geschoss `s` steht?
+fn auf_sohle(g: &Lage, s: &Lage) -> bool {
+    g.art == LevelKind::Foundation && g.gebaeude == s.gebaeude && (g.z + g.hoehe - s.z).abs() < 1.0
+}
+
 impl Rohbau {
     /// Rohbau des Raums, die Wandzüge aus dem Modell.
     pub fn neu(model: &Model, form: RaumForm) -> Rohbau {
@@ -79,8 +165,18 @@ impl Rohbau {
     /// der Szene, damit das Paneel nicht je Zug die Kette neu rechnet
     /// (Review #112 B1).
     pub fn mit(model: &Model, k: &(impl Ketten + ?Sized), form: RaumForm) -> Rohbau {
-        let (z_boden, z_decke) = hoehen_roh(model, &form);
-        let oeffnungen = oeffnungen(model, k, &form, (z_boden, z_decke));
+        Rohbau::mit_geschossen(model, k, form, &Geschosse::aus(model))
+    }
+
+    /// Wie [`Rohbau::mit`], die Geschosse aus `g` (Review #137 B2).
+    pub fn mit_geschossen(
+        model: &Model,
+        k: &(impl Ketten + ?Sized),
+        form: RaumForm,
+        g: &Geschosse,
+    ) -> Rohbau {
+        let (z_boden, z_decke) = g.roh(form.geschoss);
+        let oeffnungen = oeffnungen(model, k, &form, (z_boden, z_decke), g);
         Rohbau {
             form,
             z_boden,
@@ -115,7 +211,8 @@ pub fn hoehen_roh(model: &Model, form: &RaumForm) -> (f64, f64) {
 /// Wandsegments, das eine Kante berührt, das Stück in der Kante, im Maß der
 /// raumseitigen Schicht (hinter einer Außenschale um den Anschlag größer).
 pub fn am_raum(model: &Model, form: &RaumForm) -> Vec<OeffnungAmRaum> {
-    oeffnungen(model, model, form, hoehen_roh(model, form))
+    let g = Geschosse::aus(model);
+    oeffnungen(model, model, form, g.roh(form.geschoss), &g)
 }
 
 /// [`am_raum`] mit den Ketten aus `ketten` und den Höhen des Raums.
@@ -124,16 +221,17 @@ fn oeffnungen(
     ketten: &(impl Ketten + ?Sized),
     form: &RaumForm,
     (z_boden, z_decke): (f64, f64),
+    geschosse: &Geschosse,
 ) -> Vec<OeffnungAmRaum> {
     let mut zuege: Vec<(RunId, Option<Cow<'_, WallChain>>)> = Vec::new();
-    let andere = andere_geschosse(model, form);
+    let andere = andere_geschosse(geschosse, form);
     // Die lichte Höhe eines anderen Geschosses nur, wenn die Öffnung in
     // seinen Rohbau reicht; sonst ist ihr Stück dort ohnehin leer
     let weiter = |z0: f64, z1: f64, unten: bool| -> f64 {
         andere
             .iter()
             .filter(|g| z1 > g.1 && z0 < g.2)
-            .map(|&(id, z, _)| (z, z + model.clear_height(id)))
+            .map(|&(id, z, _)| (z, z + geschosse.licht(id)))
             .filter(|g| {
                 if unten {
                     g.1 <= z_boden + 0.5
@@ -224,17 +322,14 @@ fn oeffnungen(
 }
 
 /// Die anderen Geschosse im Gebäude des Raums mit OK Rohdecke und Oberkante
-/// des Geschosses (mm, absolut); die lichte Höhe darin kostet einen Gang
-/// über alle Bauteile und kommt erst, wenn eine Öffnung hineinreicht.
-fn andere_geschosse(model: &Model, form: &RaumForm) -> Vec<(StoreyId, f64, f64)> {
-    let Some(b) = model.storey(form.geschoss).map(|s| s.building) else {
+/// des Geschosses (mm, absolut).
+fn andere_geschosse(g: &Geschosse, form: &RaumForm) -> Vec<(StoreyId, f64, f64)> {
+    let Some(b) = g.lagen.get(&form.geschoss).map(|s| s.gebaeude) else {
         return Vec::new();
     };
-    model
-        .storeys()
-        .iter()
-        .filter(|(id, s)| *id != form.geschoss && s.building == b && s.kind == LevelKind::Storey)
-        .map(|(id, s)| (id, s.elevation, s.elevation + s.height))
+    g.im_gebaeude(b)
+        .filter(|(id, s)| *id != form.geschoss && s.art == LevelKind::Storey)
+        .map(|(id, s)| (id, s.z, s.z + s.hoehe))
         .collect()
 }
 
@@ -517,6 +612,61 @@ mod tests {
                 assert!((nische[0].wert - 885.0 * t).abs() < 1e-3, "{nische:?}");
             }
         }
+    }
+
+    /// Die Geschosse aus einem Gang geben dieselben Höhen, denselben Rohbau
+    /// und denselben Estrich wie die Gänge je Raum (Review #137 B2), auch
+    /// mit dickerer Decke und einem zweiten Gebäude daneben.
+    #[test]
+    fn geschosse_wie_das_modell() {
+        use crate::ausbau::{estrich_vorgabe, RaumAusbau};
+        let (mut m, run, st) = haus();
+        let og = m.run(m.runs_above(run)[0]).unwrap().storey;
+        let f = aussen(&m, run);
+        let d = (f[1] - f[0]).normalized();
+        let o = Opening {
+            top: HeightRef::Line(og, HeightLine::Lintel),
+            ..oeffnung(st, vec![f[0] + d * 2000.0, f[0] + d * 3000.0])
+        };
+        m.add_opening(o).unwrap();
+        let decke = m.elements().iter().find_map(|(id, e)| match e.kind {
+            ElementKind::Floor(f) if f.top.storey == st => Some(id),
+            _ => None,
+        });
+        assert!(m.set_floor_thickness(decke.unwrap(), 300.0));
+        let b = m.add_building(1);
+        let pts = [
+            (20000.0, 0.0),
+            (20000.0, 6000.0),
+            (26000.0, 6000.0),
+            (26000.0, 0.0),
+        ];
+        let pts = pts.map(|(x, y)| vec3(x, y, 0.0));
+        m.build_from_polygon(b, &pts).unwrap();
+        let g = Geschosse::aus(&m);
+        let (mut sohle, mut raeume_) = (0, 0);
+        for (id, _) in m.storeys().iter() {
+            assert_eq!(g.licht(id), m.clear_height(id));
+            let s = estrich_vorgabe(&m, id) == sk_model::model::SCREED_SLAB_TYPE_GUID;
+            assert_eq!(g.auf_sohle(id), s);
+            sohle += usize::from(s);
+            for form in raeume(&m, id) {
+                let r = Rohbau::mit_geschossen(&m, &m, form.clone(), &g);
+                assert_eq!((r.z_boden, r.z_decke), hoehen_roh(&m, &form));
+                let a = RaumAusbau::fuer_in(&m, &r, &g);
+                assert!(a.is_some());
+                assert_eq!(a, RaumAusbau::fuer(&m, &r));
+                raeume_ += 1;
+            }
+        }
+        assert_eq!((sohle, raeume_), (2, 3));
+        // Die Öffnung reicht im OG bis über die dickere Decke des EG
+        let oben = Rohbau::mit_geschossen(&m, &m, raeume(&m, og).remove(0), &g);
+        let x = oben.oeffnungen[0];
+        let s = m.storey(st).unwrap();
+        let ok_eg = s.elevation + m.clear_height(st);
+        assert_eq!(ok_eg, s.elevation + s.height - 300.0);
+        assert!((x.weiter[0] - (ok_eg - x.uk)).abs() < 1e-6, "{x:?}");
     }
 
     #[test]

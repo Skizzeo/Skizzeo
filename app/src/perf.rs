@@ -2029,12 +2029,21 @@ fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
 /// (kalt, Review #137 N2) und nach dem 3D, Ebene ziehen (je 10 mm, Median
 /// aus sieben Netzen) und Loslassen mit einer Wand dieser Reihe. Grundriss:
 /// neue Schnitthöhe (je 10 mm, Median aus sieben), Schnitthöhe im
-/// Geschossmanager ziehen und loslassen (Median aus sieben, N1).
+/// Geschossmanager ziehen und loslassen (Median aus sieben, N1). Jedes
+/// Netz wie in der App mit den geänderten Teilen des Ausbaus für seine
+/// Ablagen (B1).
 #[test]
 #[ignore]
 fn perf_ausbau_innen() {
     use sk_math::Vec3;
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    let netz = |s: &mut Scene, v: ViewKind, e: Option<(Vec3, Vec3)>| {
+        s.ausbau_getrennt();
+        std::hint::black_box(s.mesh(v, e, &[]));
+        s.ausbau_liefern(|_, t| {
+            std::hint::black_box(t);
+        });
+    };
     println!();
     println!(
         "{:>6} {:>6} {:>3} | {:>8} {:>9} {:>7} {:>7} | {:>6} {:>8} {:>7} {:>9} | {:>7} {:>7} {:>7}",
@@ -2079,7 +2088,7 @@ fn perf_ausbau_innen() {
                     s.set_view_finish(i, an);
                 }
                 let t0 = Instant::now();
-                std::hint::black_box(s.mesh(ViewKind::Section, ebene(0.0), &[]));
+                netz(&mut s, ViewKind::Section, ebene(0.0));
                 ms(t0)
             };
             let mut k = 0;
@@ -2095,37 +2104,37 @@ fn perf_ausbau_innen() {
                     let g0 = s.ausbau_geprueft();
                     let t = Instant::now();
                     s.commit();
-                    std::hint::black_box(s.mesh(view, ebene, &[]));
+                    netz(s, view, ebene);
                     v.push(ms(t));
                     geprueft = geprueft.max(s.ausbau_geprueft() - g0);
                 }
                 (median(&mut v).0, geprueft)
             };
             let t0 = Instant::now();
-            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+            netz(&mut s, ViewKind::Persp, None);
             let erstes = ms(t0);
             let (los3d, geprueft) = los(&mut s, ViewKind::Persp, None);
             let gleich = time(10, || {
-                std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+                netz(&mut s, ViewKind::Persp, None);
             });
             let t0 = Instant::now();
-            std::hint::black_box(s.mesh(ViewKind::Section, ebene(0.0), &[]));
+            netz(&mut s, ViewKind::Section, ebene(0.0));
             let schnitt = ms(t0);
             let mut v: Vec<f64> = (1..=7)
                 .map(|i| {
                     let t = Instant::now();
-                    std::hint::black_box(s.mesh(ViewKind::Section, ebene(10.0 * i as f64), &[]));
+                    netz(&mut s, ViewKind::Section, ebene(10.0 * i as f64));
                     ms(t)
                 })
                 .collect();
             let ziehen = median(&mut v).0;
             let (los_schnitt, _) = los(&mut s, ViewKind::Section, ebene(0.0));
-            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+            netz(&mut s, ViewKind::Plan, None);
             let mut v: Vec<f64> = (1..=7)
                 .map(|i| {
                     s.set_plan_cut_height(1000.0 + 10.0 * i as f64);
                     let t = Instant::now();
-                    std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                    netz(&mut s, ViewKind::Plan, None);
                     ms(t)
                 })
                 .collect();
@@ -2138,7 +2147,7 @@ fn perf_ausbau_innen() {
                 .map(|i| {
                     let t = Instant::now();
                     s.drag_plan_cut(el + 1100.0 + 10.0 * i as f64);
-                    std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                    netz(&mut s, ViewKind::Plan, None);
                     ms(t)
                 })
                 .collect();
@@ -2148,10 +2157,10 @@ fn perf_ausbau_innen() {
             for i in 1..=7 {
                 s.begin("Geschoss ziehen");
                 s.drag_plan_cut(el + 1200.0 + 10.0 * i as f64);
-                std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                netz(&mut s, ViewKind::Plan, None);
                 let t = Instant::now();
                 s.commit();
-                std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                netz(&mut s, ViewKind::Plan, None);
                 v.push(ms(t));
             }
             let hoehe_los = median(&mut v).0;
