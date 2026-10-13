@@ -893,7 +893,8 @@ pub fn abstand(b: &Bereich, p: Vec3) -> f64 {
 /// und Rundung und spränge, während eine Wand gezogen wird (Grundriss G7).
 /// Darum gilt unter den Stellen, deren Abstand höchstens `genau` unter dem
 /// besten liegt, die dem Schwerpunkt des Rands nächste: im Rechteck der
-/// Schwerpunkt selbst.
+/// Schwerpunkt selbst. In schmalen Räumen, wo `genau` an den besten Abstand
+/// heranreicht, höchstens ein Zehntel darunter, so bleibt die Stelle innen.
 pub fn innenpunkt(b: &Bereich, genau: f64) -> (Vec3, f64) {
     innenpunkt_mit(b, genau, |_| f64::INFINITY)
 }
@@ -993,7 +994,7 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
     // Unter den Stellen mit mindestens `soll` die dem Schwerpunkt nächste:
     // Zellen aufsteigend nach ihrem kleinstmöglichen Weg dorthin teilen, bis
     // keine um mehr als `fein` näher sein kann.
-    let soll = best.d - genau;
+    let soll = best.d - genau.min(0.1 * best.d);
     let m = neu(mitte, 0.0);
     if m.d >= soll {
         return (m.c, m.d);
@@ -1343,6 +1344,37 @@ mod tests {
                 }
                 vorher = Some(p);
             }
+        }
+    }
+
+    /// Schmaler U-Raum 20 × 20 m (Flur um einen Kern), `genau` größer als
+    /// der halbe Flur: Die Stelle bleibt innen, mit Abstand zu den Wänden
+    /// (Geometrie, Befund zu #140).
+    #[test]
+    fn innenpunkt_bleibt_im_schmalen_u() {
+        for (s, genau) in [
+            (600.0, 400.0),
+            (900.0, 400.0),
+            (1200.0, 400.0),
+            (600.0, 200.0),
+        ] {
+            let u = vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(20000.0, 0.0, 0.0),
+                vec3(20000.0, 20000.0, 0.0),
+                vec3(20000.0 - s, 20000.0, 0.0),
+                vec3(20000.0 - s, s, 0.0),
+                vec3(s, s, 0.0),
+                vec3(s, 20000.0, 0.0),
+                vec3(0.0, 20000.0, 0.0),
+            ];
+            let b = bereich(u, vec![]);
+            let (p, d) = innenpunkt(&b, genau);
+            assert!(b.enthaelt(p), "{s} {genau}: {p:?} {d}");
+            assert!(
+                d > s / 3.0 && (abstand(&b, p) - d).abs() < 1e-6,
+                "{s} {genau}: {d}"
+            );
         }
     }
 
