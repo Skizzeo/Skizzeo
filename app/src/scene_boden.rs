@@ -39,8 +39,17 @@ impl Boden<'_> {
 impl Scene {
     /// OK Gelände aus dem Aufmaß als Raster; `None` ohne Aufmaß, Lage
     /// oder Netz. Neu gerechnet nur, wenn sich Aufmaß, Lage oder die Höhe
-    /// von ±0,00 geändert haben.
+    /// von ±0,00 geändert haben. Im offenen Schritt bleibt es stehen wie
+    /// die Platte und folgt beim Loslassen oder Esc: Die Höhe von ±0,00
+    /// fragt die Lage ab, und die rechnet nach jeder Wandbewegung alle Züge
+    /// neu (Review #129 B1: 8,5 ms je Bewegung bei 1000 Häusern, 71 ms bei
+    /// 4000).
     pub fn terrain_grid(&mut self) -> Option<Rc<TerrainGrid>> {
+        if self.model.in_step() {
+            if let Some((_, g)) = &self.gelaende_raster {
+                return g.clone();
+            }
+        }
         let m = &self.model;
         let key = match (m.terrain(), m.survey_frame(), m.terrain_nhn()) {
             (Some(t), Some(f), Some(h)) => Some((
@@ -138,7 +147,8 @@ mod tests {
     }
 
     /// Das Raster kommt mit dem Aufmaß, bleibt dasselbe, solange sich
-    /// nichts am Gelände ändert, und folgt einer neuen Höhenlage.
+    /// nichts am Gelände ändert, und folgt einer neuen Höhenlage; im
+    /// offenen Schritt erst beim Loslassen (Review #129 B1).
     #[test]
     fn raster_mit_dem_aufmass() {
         let text = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
@@ -156,6 +166,19 @@ mod tests {
         let (x, y) = (5000.0, 5000.0);
         let z = s.model().terrain_z_at(None, x, y);
         assert!((a.z(x, y).unwrap() - z).abs() < 20.0, "{z}");
+        // Ein Gelände-Zug ändert den Versatz und damit ±0,00: Das Raster
+        // steht, bis er losgelassen ist
+        let nhn = s.model().terrain_nhn();
+        s.begin("Gelände ziehen");
+        s.drag_terrain(-900.0);
+        assert_ne!(s.model().terrain_nhn(), nhn);
+        assert!(Rc::ptr_eq(&a, &s.terrain_grid().unwrap()), "steht im Zug");
+        s.commit();
+        let neu = s.terrain_grid().unwrap();
+        assert!(!Rc::ptr_eq(&a, &neu));
+        let z = s.model().terrain_z_at(None, x, y);
+        assert!((neu.z(x, y).unwrap() - z).abs() < 20.0, "{z}");
+        let a = neu;
         assert!(s.edit_model("Höhenlage", |m| m.set_terrain_nhn(30.0)));
         let b = s.terrain_grid().unwrap();
         assert!(!Rc::ptr_eq(&a, &b));

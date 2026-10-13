@@ -61,6 +61,12 @@ pub(crate) struct Zustand {
 }
 
 impl Zustand {
+    /// Bleibt die Leiste, wie sie ist? Beim selben Modellstand, und im
+    /// offenen Schritt, wenn es sie schon gibt; `neu` erzwingt den Abgleich.
+    fn steht(&self, m: &Model) -> bool {
+        !self.neu && (self.stand == Some(m.revision()) || (self.stand.is_some() && m.in_step()))
+    }
+
     /// Leiste zu: Eingaben und Meldungen fallen weg.
     fn zu(&mut self) {
         self.offen = false;
@@ -281,7 +287,9 @@ fn lageplan_saetze(p: &SitePlan) -> Vec<String> {
     v
 }
 
-/// Heutiges Datum als `JJJJ-MM-TT` (Vermerk `[terrain] read=`).
+/// Heutiges Datum (UTC) als `JJJJ-MM-TT` (Vermerk `[terrain] read=`):
+/// ohne Zeitzonendaten zählt der Tag nach UTC, kurz nach Mitternacht steht
+/// also noch der Vortag da.
 fn heute() -> String {
     let s = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -547,20 +555,23 @@ impl App {
     }
 
     /// Paneel „Werkzeuge“ an die Leiste angleichen; ein Zeichenwerkzeug
-    /// oder der Nordpfeil schließt sie.
+    /// oder der Nordpfeil schließt sie. Im offenen Schritt (Wand, Ebene,
+    /// Gelände ziehen) bleibt sie auf dem Stand davor und folgt beim
+    /// Loslassen, wie das Paneel „Eigenschaften“ (Review #129 B2: sonst je
+    /// Mausbewegung 8,2 ms bei 1000 Häusern, 1 s bei 4000).
     pub(crate) fn gelaende_sync(&mut self) {
         let z = &mut self.platte.leiste;
         let zeichnet = self.tool.enabled || self.tool.oeffnung.is_some() || self.nord.aktiv;
         if z.offen && zeichnet {
             z.zu();
         }
-        let rev = self.scene.model().revision();
-        if !z.neu && z.stand == Some(rev) {
+        let m = self.scene.model();
+        if z.steht(m) {
             return;
         }
         z.neu = false;
-        z.stand = Some(rev);
-        let soll = z.offen.then(|| leiste(self.scene.model(), z));
+        z.stand = Some(m.revision());
+        let soll = z.offen.then(|| leiste(m, z));
         if soll != self.ui.gelaende {
             self.ui.gelaende = soll;
             self.overlay_dirty = true;
@@ -613,6 +624,29 @@ mod tests {
             Some("Höhenlinien alle 1 m, bei 0,25 m wären es zu viele")
         );
         assert!(crate::gelaende_netz::Gelaende::aus(&m).is_some());
+    }
+
+    /// Im offenen Schritt bleibt die Leiste stehen und folgt beim
+    /// Loslassen (Review #129 B2); „neu“ erzwingt den Abgleich.
+    #[test]
+    fn leiste_steht_im_schritt() {
+        let mut m = lindenhof();
+        let mut z = Zustand::default();
+        assert!(!z.steht(&m), "noch keine");
+        z.stand = Some(m.revision());
+        assert!(z.steht(&m));
+        let run = m.runs().ids().next().unwrap();
+        let pts = m.runs().get(run).unwrap().points.clone();
+        let moved: Vec<_> = pts.iter().map(|p| *p + vec3(500.0, 0.0, 0.0)).collect();
+        m.begin("Wand verschieben");
+        assert!(m.set_run_points(run, &moved).is_some());
+        assert_ne!(z.stand, Some(m.revision()));
+        assert!(z.steht(&m), "im Schritt");
+        z.neu = true;
+        assert!(!z.steht(&m), "neu");
+        z.neu = false;
+        m.commit();
+        assert!(!z.steht(&m), "nach dem Loslassen");
     }
 
     /// Ebenes Aufmaß: keine Höhenlinien, aber nicht „zu viele“
