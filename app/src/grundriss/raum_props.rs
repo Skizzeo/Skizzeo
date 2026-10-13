@@ -1,6 +1,8 @@
-//! Paneel „Eigenschaften“ eines Raums (Grundriss G3): Name, Fläche und
-//! Umfang im Rohbau aus der Erkennung, die Wände um ihn; ruhend, wenn ihn
-//! keine Fläche trägt (vereint oder ohne Umschließung).
+//! Paneel „Eigenschaften“ eines Raums (Grundriss G3): Name, zuerst die
+//! Grundfläche an der fertigen Oberfläche wie am Stempel (Bedienbarkeit
+//! 39.4), dann Fläche und Umfang im Rohbau aus der Erkennung, die Wände um
+//! ihn; ruhend, wenn ihn keine Fläche trägt (vereint oder ohne
+//! Umschließung).
 
 use super::de;
 use crate::scene::Scene;
@@ -18,11 +20,8 @@ pub fn props(
     values.push(("Name", m.space(id)?.name.clone()));
     // Aus dem Speicher je Hausgruppe wie die Stempel (Review #87)
     let formen = scene.raumgruppen(e.storey);
-    let form = formen
-        .flaechen()
-        .map(|f| &f.form)
-        .find(|f| f.raum == Some(id));
-    let Some(f) = form else {
+    let flaeche = formen.flaechen().find(|f| f.form.raum == Some(id));
+    let Some(r) = flaeche else {
         values.push(("Zustand", "ruht, keine Fläche".into()));
         return Some(Props {
             values,
@@ -31,7 +30,13 @@ pub fn props(
             ..Default::default()
         });
     };
+    let f = &r.form;
     values.extend([
+        // Wie am Stempel, mit derselben Rundung
+        (
+            "Grundfläche (fertig)",
+            format!("{} m²", de(r.grundflaeche / 1e6, 2)),
+        ),
         ("Fläche (Rohbau)", format!("{} m²", de(f.flaeche / 1e6, 2))),
         ("Umfang (Rohbau)", format!("{} m", de(f.umfang / 1e3, 2))),
     ]);
@@ -94,6 +99,21 @@ mod tests {
         let wert = |k: &str| p.values.iter().find(|v| v.0 == k).map(|v| v.1.clone());
         assert_eq!(wert("Name").as_deref(), Some("Raum 3"), "Raum 2 ist das OG");
         assert!(wert("Fläche (Rohbau)").unwrap().ends_with(" m²"));
+        // Zuerst die Grundfläche wie am Stempel, dann der Rohbau (39.4)
+        let stelle = |k: &str| p.values.iter().position(|v| v.0 == k).unwrap();
+        assert!(stelle("Grundfläche (fertig)") < stelle("Fläche (Rohbau)"));
+        let zahl = |k: &str| {
+            let w = wert(k).unwrap();
+            w.trim_end_matches(" m²")
+                .replace(',', ".")
+                .parse::<f64>()
+                .unwrap()
+        };
+        let fertig = zahl("Grundfläche (fertig)");
+        assert!(
+            fertig > 0.0 && fertig < zahl("Fläche (Rohbau)"),
+            "ohne Putz"
+        );
         assert_eq!(p.set_label, "Begrenzung");
         assert!(p.set_umbruch, "bricht im Paneel um");
         assert!(p.layer_set.contains("IW-001"), "{}", p.layer_set);
