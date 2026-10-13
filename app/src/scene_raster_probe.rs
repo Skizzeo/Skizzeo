@@ -73,7 +73,7 @@ fn ms(t: Instant, reps: usize) -> f64 {
 fn probe_maus_ueber_wand() {
     println!();
     println!(
-        "{:>7} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "{:>7} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
         "Häuser",
         "Wahl",
         "Strahl3D",
@@ -82,6 +82,8 @@ fn probe_maus_ueber_wand() {
         "Gummi3D",
         "Maß3D",
         "MaßFern",
+        "Maß×20",
+        "Maß×60",
         "MaßErst"
     );
     let mods = Modifiers::default();
@@ -170,11 +172,15 @@ fn probe_maus_ueber_wand() {
         // Siedlung im Bild
         let (lo, hi) = s.bounds().unwrap();
         let mitte = (lo + hi) * 0.5;
-        let fern = Camera::looking_at(
-            mitte + vec3(0.55, -1.0, 0.9).normalized() * (1.5 * (hi - lo).length()),
-            mitte,
-            45.0,
-        );
+        // Abstand f × Diagonale der Siedlung (Review W47 B1: 20 und 60)
+        let weit = |f: f64| {
+            Camera::looking_at(
+                mitte + vec3(0.55, -1.0, 0.9).normalized() * (f * (hi - lo).length()),
+                mitte,
+                45.0,
+            )
+        };
+        let fern = weit(1.5);
         let mass = |cam: &Camera| {
             let f = font.as_ref()?;
             let mut mk = Massketten::default();
@@ -192,10 +198,14 @@ fn probe_maus_ueber_wand() {
             Some((ms(t, reps), erstes))
         };
         let nan = (f64::NAN, f64::NAN);
-        let ((nah, erstes), (weit, _)) = (mass(&cam3).unwrap_or(nan), mass(&fern).unwrap_or(nan));
+        let ((nah, erstes), (fern, _)) = (mass(&cam3).unwrap_or(nan), mass(&fern).unwrap_or(nan));
+        let (f20, f60) = (
+            mass(&weit(20.0)).unwrap_or(nan).0,
+            mass(&weit(60.0)).unwrap_or(nan).0,
+        );
         println!(
             "{n:>7} {wahl:>9.4} {strahl:>9.4} {oeffnung:>9.4} {daneben:>9.4} {gummi:>9.4} \
-             {nah:>9.4} {weit:>9.4} {erstes:>9.4}"
+             {nah:>9.4} {fern:>9.4} {f20:>9.4} {f60:>9.4} {erstes:>9.4}"
         );
     }
     println!(
@@ -203,7 +213,8 @@ fn probe_maus_ueber_wand() {
          Wand unter der Maus in 3D (Scene::raycast), Öffnung/Daneben = Öffnung unter der Maus \
          im Loch und im Freien, Gummi3D = Mausbewegung des Wandwerkzeugs am Wandfuß in 3D, \
          Maß3D/MaßFern = Maßzahl oder Maßlinie unter der Maus in 3D nah am Haus und mit der \
-         ganzen Siedlung im Bild, MaßErst = erstes Zeigen nach einer Änderung (baut das \
+         ganzen Siedlung im Bild, Maß×20/×60 = ebenso aus 20 bzw. 60 Diagonalen der Siedlung \
+         Abstand, MaßErst = erstes Zeigen nach einer Änderung (baut das \
          Raster der Geschosse)."
     );
 }

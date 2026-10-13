@@ -344,26 +344,86 @@ impl Raster {
     /// Plätze, deren Quader der Strahl `o` + t·`d` (t ≥ 0) mit Spielraum
     /// `rand` (mm) berühren kann, aufsteigend: die Zellen längs seines
     /// Stücks im Quader um alles, mit so vielen Nachbarzellen, wie der
-    /// Spielraum reicht.
+    /// Spielraum reicht, jede Zelle einmal. Wären das mehr Zellen als
+    /// Einträge (ferne Kamera in 3D, Review W47 B1), alle Plätze wie ohne
+    /// Raster.
     pub fn am_strahl(&self, o: Vec3, d: Vec3, rand: f64) -> Vec<usize> {
-        let mut out: Vec<u32> = self.immer.clone();
+        let nur_immer = || fertig(self.immer.clone());
         let Some((lo, hi)) = self.alles else {
-            return fertig(out);
+            return nur_immer();
         };
         let Some((t0, t1)) = stueck(o, d, (lo, hi), rand) else {
-            return fertig(out);
+            return nur_immer();
         };
         let (a, b) = (o + d * t0, o + d * t1);
-        let k = (rand / ZELLE).ceil().clamp(0.0, 64.0) as i32;
-        let mut nimm = |(x, y): (i32, i32)| {
-            for i in x - k..=x + k {
-                for j in y - k..=y + k {
-                    out.extend(self.in_zelle((i, j)));
-                }
+        // Außerhalb der Zellen des Quaders um alles steht nichts
+        let g = [zelle(lo.x), zelle(lo.y), zelle(hi.x), zelle(hi.y)];
+        let breit = g[2] as i64 - g[0] as i64 + g[3] as i64 - g[1] as i64 + 1;
+        let k = (rand / ZELLE).ceil().clamp(0.0, breit as f64) as i64;
+        let (ai, aj, bi, bj) = (zelle(a.x), zelle(a.y), zelle(b.x), zelle(b.y));
+        let schritte = (bi as i64 - ai as i64).abs() + (bj as i64 - aj as i64).abs();
+        if schritte as usize >= self.lage.len() {
+            return self.alle();
+        }
+        // Je Zeile der Strecke das kleinste und größte x; die Strecke läuft
+        // in x und y nur in eine Richtung, die Zeilen kommen der Reihe nach
+        let mut zeilen: Vec<(i64, i64, i64)> = Vec::new();
+        zellen_der_strecke((a.x, a.y), (b.x, b.y), &mut |(i, j)| {
+            let (i, j) = (i as i64, j as i64);
+            match zeilen.last_mut() {
+                Some(z) if z.0 == j => (z.1, z.2) = (z.1.min(i), z.2.max(i)),
+                _ => zeilen.push((j, i, i)),
             }
-        };
-        zellen_der_strecke((a.x, a.y), (b.x, b.y), &mut nimm);
+        });
+        if zeilen
+            .first()
+            .zip(zeilen.last())
+            .is_some_and(|(f, l)| f.0 > l.0)
+        {
+            zeilen.reverse();
+        }
+        // Je Zeile y des Ergebnisses die Spanne über die Zeilen der Strecke
+        // bis k darüber und darunter; weil beide Enden der Spannen mit y
+        // nur in eine Richtung laufen, liegt das Äußerste am Rand des
+        // Fensters
+        let (y0, y1) = (
+            (zeilen[0].0 - k).max(g[1] as i64),
+            (zeilen[zeilen.len() - 1].0 + k).min(g[3] as i64),
+        );
+        let mut spannen = Vec::new();
+        let (mut von, mut bis, mut zahl) = (0, 0, 0usize);
+        for y in y0..=y1 {
+            while zeilen[von].0 < y - k {
+                von += 1;
+            }
+            while bis + 1 < zeilen.len() && zeilen[bis + 1].0 <= y + k {
+                bis += 1;
+            }
+            let (p, q) = (zeilen[von], zeilen[bis]);
+            let x0 = (p.1.min(q.1) - k).max(g[0] as i64);
+            let x1 = (p.2.max(q.2) + k).min(g[2] as i64);
+            if x0 <= x1 {
+                zahl += (x1 - x0 + 1) as usize;
+                spannen.push((y as i32, x0 as i32, x1 as i32));
+            }
+            if zahl >= self.lage.len() {
+                return self.alle();
+            }
+        }
+        let mut out = self.immer.clone();
+        for (y, x0, x1) in spannen {
+            for x in x0..=x1 {
+                out.extend(self.in_zelle((x, y)));
+            }
+        }
         fertig(out)
+    }
+
+    /// Alle eingetragenen Plätze, aufsteigend.
+    fn alle(&self) -> Vec<usize> {
+        (0..self.lage.len())
+            .filter(|&i| self.lage[i] != Lage::Frei)
+            .collect()
     }
 }
 
@@ -576,6 +636,52 @@ mod tests {
                 assert!(p.len() < q.len() / 2, "Strahl {k}, Rand {e}: {}", p.len());
             }
         }
+    }
+
+    /// Ferne Kamera (Review W47 B1): Der Spielraum reicht über viele Zellen,
+    /// auch über 64 (H1); jede Zelle zählt einmal, und wären es mehr Zellen
+    /// als Einträge, kommen alle Plätze wie ohne Raster. Nichts fehlt.
+    #[test]
+    fn weiter_spielraum_verpasst_nichts_und_hoechstens_alle() {
+        let q: Vec<Option<Aabb>> = (0..2500)
+            .map(|i| {
+                kasten(
+                    (i % 50) as f64 * 17_000.0,
+                    (i / 50) as f64 * 13_000.0,
+                    9000.0,
+                )
+            })
+            .collect();
+        let r = Raster::aus(q.iter().copied());
+        let mut fast = 0;
+        for (k, (o, d)) in [
+            (vec3(-3e6, -4e6, 4e6), vec3(0.5, 0.6, -0.5)),
+            (vec3(425_000.0, -2e6, 3e6), vec3(0.0, 0.6, -0.8)),
+            (vec3(-1e6, 300_000.0, 10_000.0), vec3(1.0, 0.0, -0.005)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let d = d.normalized();
+            for e in [40_000.0, 120_000.0, 800_000.0, 1e9] {
+                let p = r.am_strahl(o, d, e);
+                for (i, b) in q.iter().enumerate() {
+                    if stueck(o, d, b.unwrap(), e).is_some() {
+                        assert!(p.contains(&i), "Strahl {k}, Rand {e}: Quader {i} fehlt");
+                    }
+                }
+                assert!(p.len() <= q.len() && p.windows(2).all(|w| w[0] < w[1]));
+                if e >= 800_000.0 {
+                    assert_eq!(p.len(), q.len(), "Strahl {k}, Rand {e}: alle");
+                } else if p.len() < q.len() {
+                    fast += 1;
+                }
+            }
+        }
+        assert!(
+            fast >= 3,
+            "mit 40 und 120 m bleibt es meist ein Teil: {fast}"
+        );
     }
 
     const W: f64 = 1600.0;

@@ -368,6 +368,12 @@ fn hover_nur_am_strahl() {
             45.0,
         ),
         Camera::looking_at(vec3(-20_000.0, 90_000.0, 1700.0), mitte, 60.0),
+        // Weit weg (Review W47 B1): der Spielraum reicht über viele Zellen
+        Camera::looking_at(
+            mitte + vec3(0.55, -1.0, 0.9).normalized() * (60.0 * (hi - lo).length()),
+            mitte,
+            45.0,
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -378,8 +384,14 @@ fn hover_nur_am_strahl() {
             h: H,
         };
         let (mut getroffen, mut gefragt) = (0, 0);
-        for i in 0..(32 * 18) {
-            let (x, y) = ((i % 32) as f64 * W / 31.0, (i / 32) as f64 * H / 17.0);
+        // Ein Raster über das Bild und die Mitte jedes zehnten Geschosses
+        let mitten = st
+            .geschosse
+            .iter()
+            .step_by(10)
+            .filter_map(|g| cam.project((g.rahmen[0] + g.rahmen[1]) * 0.5, W, H));
+        let bild = (0..(32 * 18)).map(|i| ((i % 32) as f64 * W / 31.0, (i / 32) as f64 * H / 17.0));
+        for (x, y) in bild.chain(mitten) {
             let strahl = cam.ray(x, y, W, H);
             let nah = st.am_strahl(&blick, strahl, 12.0);
             gefragt += nah.len();
@@ -394,8 +406,14 @@ fn hover_nur_am_strahl() {
             }
         }
         assert!(getroffen > 0, "Kamera {k}");
-        // Im Schnitt nur ein Bruchteil der Geschosse je Mausbewegung
-        assert!(gefragt < 32 * 18 * 100 / 4, "Kamera {k}: {gefragt}");
+        // Im Schnitt nur ein Bruchteil der Geschosse je Mausbewegung; weit
+        // weg höchstens alle
+        let grenze = if k < 4 {
+            32 * 18 * 100 / 4
+        } else {
+            42 * 18 * 100
+        };
+        assert!(gefragt < grenze, "Kamera {k}: {gefragt}");
     }
 }
 
