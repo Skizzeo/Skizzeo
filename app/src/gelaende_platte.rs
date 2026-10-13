@@ -952,9 +952,9 @@ mod tests {
 
     /// Budget (Review W34 B6, 15 ms je Bild): Der UI-Faden kopiert für den
     /// Nachzug nur das Modell und holt das Ergebnis ab; Platten und Netz
-    /// rechnet der Faden. Die Linien je Bild sind gemerkt (B7). 1000 und 4000 Häuser in einem Gebäude (synchron
-    /// waren es 20 und 53 ms); im Debug nur 1000, das Bauen von 4000
-    /// dauerte dort Minuten.
+    /// rechnet der Faden; die Linien je Bild sind gemerkt (B7). 1000 und
+    /// 4000 Häuser in einem Gebäude (synchron waren es 20 und 53 ms); im
+    /// Debug nur 1000, das Bauen von 4000 dauerte dort Minuten.
     #[test]
     fn nachzug_im_budget() {
         let budget = |ms: f64| {
