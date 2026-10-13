@@ -1397,7 +1397,7 @@ impl App {
     }
 
     fn refresh_cursor(&mut self) {
-        self.edit.stand(self.plane(), self.plan_z(), self.sel.id);
+        self.edit_stand();
         let (vw, vh, sc) = self.view_size();
         self.tool.refresh(&self.cam, vw, vh, sc);
         let en = self.edit_enabled();
@@ -3966,7 +3966,7 @@ impl App {
         ) {
             self.finish_flush();
         }
-        self.edit.stand(self.plane(), self.plan_z(), self.sel.id);
+        self.edit_stand();
         let th = self.top() as f64;
         let (vw, vh, sc) = self.view_size();
         // Ereignis in Koordinaten der 3D-Ansicht (unterhalb der Titelleiste)

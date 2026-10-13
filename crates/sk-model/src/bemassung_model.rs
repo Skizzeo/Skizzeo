@@ -179,6 +179,33 @@ mod tests {
         assert!(m.bemassung().versatz.is_empty());
     }
 
+    /// Stil und Versatz ändern nur das Bild der Ketten: Der Schritt
+    /// gleicht keine abgeleiteten Bauteile ab (Review W39 zu #126: sonst
+    /// lief jeder Versatz über das ganze Modell).
+    #[test]
+    fn versatz_gleicht_nichts_ab() {
+        let mut m = Model::new();
+        m.begin("Haus");
+        let b = m.add_building(2);
+        let pts = [
+            sk_math::vec3(0.0, 0.0, 0.0),
+            sk_math::vec3(0.0, 8000.0, 0.0),
+            sk_math::vec3(10_000.0, 8000.0, 0.0),
+            sk_math::vec3(10_000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        m.commit();
+        let st = m.run(eg).unwrap().storey;
+        m.begin("Kette verschieben");
+        assert!(m.set_massversatz(st, 270, Kettenart::Gesamt, 500.0));
+        let mut s = m.massstil().clone();
+        s.symbol = Symbol::Punkt;
+        assert!(m.set_massstil(s));
+        assert_eq!(m.sync_scope(), Some(Vec::new()));
+        let t = m.commit().unwrap();
+        assert_eq!(t.changes.len(), 1);
+    }
+
     /// Ein gelöschtes Geschoss nimmt seine Versätze im selben Schritt mit:
     /// Die Datei bekommt keine `[massversatz]`-Zeile ohne Geschoss, und ein
     /// wieder eingeschaltetes Flachdach (gleiche Guid) erbt keinen alten
