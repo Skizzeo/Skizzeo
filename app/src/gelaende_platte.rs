@@ -41,6 +41,9 @@ pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)>
 /// Schlüssel von Rasen und Erdreich, ausgeblendet.
 type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool);
 
+/// Gelände-Rechtecke (x0, y0, x1, y1) mit Höhe, wie der Renderer sie nimmt.
+type Kisten = Vec<([f32; 4], f32)>;
+
 /// Platten des Modells und was davon gezeigt wird.
 #[derive(Default)]
 pub(crate) struct Platte {
@@ -50,8 +53,10 @@ pub(crate) struct Platte {
     /// Gelände aus dem Höhenaufmaß; statt der Platten, wenn da.
     gelaende: Option<Gelaende>,
     netz: Option<NetzKey>,
-    /// Das Paneel „Eigenschaften“ zeigt die Platte (zum Modellstand).
+    /// Das Paneel „Eigenschaften“ zeigt die Platte (zum Stand der Platten).
     props: Option<u64>,
+    /// Gelände-Rechtecke für „unter Gelände“ zum Modellstand.
+    kisten: Option<(u64, Kisten)>,
     /// Leiste „Gelände“ (G1).
     pub(crate) leiste: crate::gelaende_app::Zustand,
     /// Der Lageplan der Unterlage, gelesen (G1c).
@@ -84,6 +89,30 @@ impl Platte {
             let u = &mut self.unterlage;
             self.gelaende = Gelaende::aus(m).map(|g| g.mit_unterlage(u.linien(m)));
         }
+    }
+
+    /// Für das Bild: die Platten, wie sie stehen; gerechnet nur, wenn es
+    /// noch keine gibt. Einer Änderung folgen sie im Leerlauf
+    /// ([`Platte::nachziehen`]), nicht im Loslassen selbst: Bei 1000
+    /// Häusern kostete das Loslassen sonst 13 bis 29 ms statt höchstens 8
+    /// (Review #119 B4).
+    pub(crate) fn im_bild(&mut self, m: &Model) -> &[TerrainPlate] {
+        self.platten(m, true)
+    }
+
+    /// Das Gelände für das Bild, wie [`Platte::im_bild`].
+    pub(crate) fn gelaende_im_bild(&mut self, m: &Model) -> Option<&Gelaende> {
+        self.gelaende(m, true)
+    }
+
+    /// Im Leerlauf: die Platten einer Änderung nachziehen, nicht in einem
+    /// offenen Schritt; `true`, wenn sie neu sind (dann folgt ein Bild).
+    pub(crate) fn nachziehen(&mut self, m: &Model) -> bool {
+        if m.in_step() || self.stand == Some(m.revision()) {
+            return false;
+        }
+        self.abgleich(m, false);
+        true
     }
 }
 
@@ -410,8 +439,7 @@ impl App {
         let plane = self.plane();
         let view = self.ui.view;
         let m = self.scene.model();
-        let halten = self.scene.model().in_step();
-        self.platte.platten(m, halten);
+        self.platte.im_bild(m);
         let key = (
             self.platte.stand.unwrap_or(0),
             view,
@@ -448,11 +476,10 @@ impl App {
         }
         let plane = self.plane();
         let view = self.ui.view;
-        let halten = self.scene.model().in_step();
         let b = self.scene.bounds();
         let t = self.scene.table();
         let m = self.scene.model();
-        if let Some(g) = self.platte.gelaende(m, halten) {
+        if let Some(g) = self.platte.gelaende_im_bild(m) {
             if view == ViewKind::Plan && !self.scene.ground_active() {
                 return Vec::new();
             }
@@ -464,7 +491,7 @@ impl App {
         if matches!(view, ViewKind::Plan | ViewKind::Persp) {
             return Vec::new();
         }
-        linien(self.platte.platten(m, halten), view, plane, b, t, scale)
+        linien(self.platte.im_bild(m), view, plane, b, t, scale)
     }
 
     /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
@@ -497,19 +524,25 @@ impl App {
     /// Unterkante der Platte (die Platte steht auf ihm); ausgeblendet auf
     /// OK Gelände.
     pub(crate) fn gelaende_renderer(&mut self) {
-        let halten = self.scene.model().in_step();
         let raster = self.scene.terrain_grid();
         self.renderer.set_terrain_grid(raster.as_deref());
         let m = self.scene.model();
         self.renderer.set_terrain(m.terrain_z() as f32);
-        self.renderer
-            .set_terrain_boxes(&terrain_boxes(&m.terrain_patches(TERRAIN_MARGIN)));
+        // die Rechtecke je Modellstand, nicht je Bild
+        let rev = m.revision();
+        if self.platte.kisten.as_ref().is_none_or(|k| k.0 != rev) {
+            let k = terrain_boxes(&m.terrain_patches(TERRAIN_MARGIN));
+            self.platte.kisten = Some((rev, k));
+        }
+        if let Some((_, k)) = &self.platte.kisten {
+            self.renderer.set_terrain_boxes(k);
+        }
         let unten = if self.scene.terrain_hidden() {
             None
-        } else if let Some(g) = self.platte.gelaende(m, halten) {
+        } else if let Some(g) = self.platte.gelaende_im_bild(m) {
             Some(g.unten as f32)
         } else {
-            let p = self.platte.platten(m, halten);
+            let p = self.platte.im_bild(m);
             p.iter().map(|p| p.bottom as f32).reduce(f32::min)
         };
         self.renderer.set_ground_z(unten);
@@ -520,7 +553,14 @@ impl App {
     /// sich das Paneel für die übliche Auswahl.
     pub(crate) fn platte_props(&mut self) -> bool {
         let m = self.scene.model();
-        let soll = (self.picking.plate && self.sel.id.is_none()).then_some(m.revision());
+        // am Stand der Platten, nicht an der Revision: im Zug rechnet das
+        // Paneel nicht je Mausbewegung neu (Review #119)
+        let soll = if self.picking.plate && self.sel.id.is_none() {
+            self.platte.im_bild(m);
+            self.platte.stand
+        } else {
+            None
+        };
         if soll == self.platte.props {
             return soll.is_some();
         }
@@ -530,7 +570,7 @@ impl App {
             if !war {
                 self.ui.reset_props_scroll();
             }
-            let p = props(m, self.platte.platten(m, false));
+            let p = props(m, &self.platte.platten);
             self.ui.set_props(Some(p));
         } else {
             self.ui.set_props(None);
@@ -538,6 +578,12 @@ impl App {
         }
         self.props_dirty = true;
         soll.is_some()
+    }
+
+    /// Leerlauf: die Platten einer Änderung nachziehen ([`Platte::nachziehen`]);
+    /// `true`, wenn ein Bild folgen soll.
+    pub(crate) fn platte_nachziehen(&mut self) -> bool {
+        self.platte.nachziehen(self.scene.model())
     }
 
     /// Neues Projekt (Neu, Öffnen, Sicherung): Objektbaum zu, Platte
@@ -599,6 +645,39 @@ mod tests {
         ];
         m.build_from_polygon(b, &pts).unwrap();
         m
+    }
+
+    /// Nach dem Loslassen rechnet das Bild die Platten nicht, erst der
+    /// Leerlauf; im offenen Schritt auch er nicht (Review #119 B4).
+    #[test]
+    fn leerlauf_zieht_nach() {
+        let mut s = crate::scene::Scene::with_model(haus());
+        let mut pl = Platte::default();
+        let a0 = pl.im_bild(s.model())[0].area();
+        assert!(!pl.nachziehen(s.model()), "aktuell");
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        s.begin("Wand verschieben");
+        let moved = orig.with_segment_moved(0, 1000.0).unwrap();
+        assert!(s.set_run_points(run, &moved.points));
+        assert!(!pl.nachziehen(s.model()), "im Schritt nicht");
+        s.commit();
+        assert_eq!(
+            pl.im_bild(s.model())[0].area(),
+            a0,
+            "das Bild rechnet nicht"
+        );
+        assert!(pl.nachziehen(s.model()));
+        let a1 = pl.im_bild(s.model())[0].area();
+        assert!((a1 - a0).abs() > 1e6, "{a0} {a1}");
+        assert!(!pl.nachziehen(s.model()));
+        // der Leerlauf ruft es; die App fragt im Bild nur `im_bild`
+        let main = include_str!("main.rs");
+        assert!(main.contains("a.redraw |= a.platte_nachziehen();"));
+        let quelle = include_str!("gelaende_platte.rs");
+        let app = &quelle[quelle.find("impl App {").unwrap()..quelle.find("#[cfg(test)]").unwrap()];
+        assert!(!app.contains(concat!("platte.", "platten(")));
+        assert!(!app.contains(concat!("platte.", "gelaende(")));
     }
 
     /// Während eines Zugs bleiben die Platten stehen und folgen beim

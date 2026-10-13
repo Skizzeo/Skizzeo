@@ -7781,6 +7781,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if a.ui.view == ViewKind::Plan && a.scene.plans_pending() {
                 a.scene.prepare_neighbor_plans();
             }
+            // die Geländeplatte folgt einer Änderung hier, nicht im Loslassen
+            a.redraw |= a.platte_nachziehen();
             let dlg_wait = match (&a.catalog, &a.materials) {
                 (Some(c), _) => c.wait(&a.theme),
                 (None, Some(v)) => v.wait(&a.theme),
@@ -7797,6 +7799,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let wait = match (wait, a.quantity_busy || !a.bond_wait.is_empty()) {
                 (w, true) => Some(w.map_or(FRAME, |w| w.min(FRAME))),
                 (w, false) => w,
+            };
+            let wait = if a.redraw {
+                Some(std::time::Duration::ZERO)
+            } else {
+                wait
             };
             let next = match wait {
                 Some(d) => surface.wait_event_timeout(d),
