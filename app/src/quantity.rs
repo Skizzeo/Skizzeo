@@ -2,8 +2,9 @@
 //! wie das Hauptfenster; darunter das Blatt der Mengenermittlung
 //! ([`ListView`]). Hover und Auswahl laufen über den gemeinsamen Zustand.
 //! Entf, Kontextmenü und Hinweis nach dem Löschen wie im Hauptfenster (H119).
-//! Über den Blättern die Kartenleiste (KA-2a): Mengen und Kosten
-//! ([`KostenView`]) mit ihrer lebenden Zahl; ein Klick wechselt das Blatt.
+//! Über den Blättern die Kartenleiste (KA-2a): Mengen, Wohnfläche (eine
+//! zweite [`ListView`]), Kosten ([`KostenView`]) und AVA mit ihrer lebenden
+//! Zahl; ein Klick wechselt das Blatt.
 
 use crate::ava_view::AvaView;
 use crate::cards::{self, Blatt, Karten};
@@ -76,6 +77,8 @@ pub struct QuantityWindow {
     pub h: u32,
     pub title: TitleBar,
     pub list: Option<ListView>,
+    /// Blatt Wohnfläche (G8): die Liste in ihrer zweiten Art.
+    pub wohn: Option<ListView>,
     /// Kartenleiste und das Blatt Kosten (KA-2).
     pub karten: Karten,
     pub kosten: Option<KostenView>,
@@ -131,6 +134,7 @@ impl QuantityWindow {
             h: 0,
             title,
             list: None,
+            wohn: None,
             karten: Karten::new(Blatt::Mengen),
             kosten: None,
             ava: None,
@@ -184,7 +188,7 @@ impl QuantityWindow {
     /// Nach dem Löschen aus der Liste (Entf oder Menü): Hinweis, Aufleuchten
     /// der abgelehnten Zeilen, bereinigte Auswahl.
     pub fn erased(&mut self, s: &Scene, d: &Deleted, p: &mut Picking, now: Instant) {
-        let Some(l) = self.list.as_mut() else { return };
+        let Some(l) = self.liste_mut() else { return };
         let (lines, link) = l.erased(s, d, p, now);
         self.show_hint(lines, link, now);
     }
@@ -192,8 +196,24 @@ impl QuantityWindow {
     /// Entf löscht hier etwas (sonst „Hier ist kein Bauteil gewählt.“).
     pub fn part_selected(&self, p: &Picking) -> bool {
         match self.blatt() {
-            Blatt::Mengen => self.list.as_ref().is_some_and(|l| l.part_selected(p)),
+            Blatt::Mengen | Blatt::Wohnflaeche => self.liste().is_some_and(|l| l.part_selected(p)),
             Blatt::Kosten | Blatt::Ava => !p.selected.is_empty(),
+        }
+    }
+
+    /// Die Liste des gezeigten Blatts: Wohnfläche, sonst die Mengen (auch
+    /// für Hinweis und Menü, die nur in diesen beiden Blättern entstehen).
+    fn liste(&self) -> Option<&ListView> {
+        match self.blatt() {
+            Blatt::Wohnflaeche => self.wohn.as_ref(),
+            _ => self.list.as_ref(),
+        }
+    }
+
+    fn liste_mut(&mut self) -> Option<&mut ListView> {
+        match self.blatt() {
+            Blatt::Wohnflaeche => self.wohn.as_mut(),
+            _ => self.list.as_mut(),
         }
     }
 
@@ -375,31 +395,46 @@ impl QuantityWindow {
         let aktiv = self.karten.aktiv;
         let list = self.list.get_or_insert_with(|| ListView::grouped(s, g));
         list.set_modus(self.modus);
+        let wohn = self.wohn.get_or_insert_with(|| ListView::wohnflaeche(s));
         let kosten = self.kosten.get_or_insert_with(KostenView::new);
         let ava = self.ava.get_or_insert_with(AvaView::new);
         ava.blatt_wahl = self.blatt_wahl;
         // Der Umfang gilt für alle Blätter; das gezeigte gibt ihn vor
         let umfang = match aktiv {
             Blatt::Mengen => list.leiste.umfang.clone(),
+            Blatt::Wohnflaeche => wohn.leiste.umfang.clone(),
             Blatt::Kosten => kosten.leiste.umfang.clone(),
             Blatt::Ava => ava.leiste.umfang.clone(),
         };
         list.leiste.umfang = umfang.clone();
+        wohn.leiste.umfang = umfang.clone();
         kosten.leiste.umfang = umfang.clone();
         ava.leiste.umfang = umfang;
         list.top = Self::sheet_top();
+        wohn.top = Self::sheet_top();
         kosten.top = Self::sheet_top();
         ava.top = Self::sheet_top();
         if ava.datei != self.datei {
             ava.datei.clone_from(&self.datei);
         }
         list.scale = self.title.scale;
+        wohn.scale = self.title.scale;
         kosten.scale = self.title.scale;
         ava.scale = self.title.scale;
         (list.w, list.h) = (self.w, self.h);
+        (wohn.w, wohn.h) = (self.w, self.h);
         (kosten.w, kosten.h) = (self.w, self.h);
         (ava.w, ava.h) = (self.w, self.h);
         if list.sync(s, animate && aktiv == Blatt::Mengen) && aktiv == Blatt::Mengen {
+            self.dirty = true;
+        }
+        // Die Wohnfläche rechnet je Modellstand, wie die Mengen: Ihre Karte
+        // zeigt die Summe
+        let auf_wohn = aktiv == Blatt::Wohnflaeche;
+        if wohn.sync(s, animate && auf_wohn) && auf_wohn {
+            self.dirty = true;
+        }
+        if wohn.follow(s, p) && auf_wohn {
             self.dirty = true;
         }
         // Kosten und AVA folgen der Auswahl vor dem Aufbau: Eine Auswahl
@@ -442,10 +477,14 @@ impl QuantityWindow {
         let netto = kosten.blatt().map_or_else(String::new, |b| {
             format!("{} netto", kosten_view::euro_ganz(b.netto))
         });
+        let wohn_zahl = wohn.wohn_rechnung().map_or_else(String::new, |w| {
+            crate::schedule_view::wohn_karte(&w, &wohn.leiste.umfang)
+        });
         let a = self.karten.set_zahl(Blatt::Mengen, mengen, now);
+        let w = self.karten.set_zahl(Blatt::Wohnflaeche, wohn_zahl, now);
         let b = self.karten.set_zahl(Blatt::Kosten, netto, now);
         let c = self.karten.set_zahl(Blatt::Ava, ava_zahl, now);
-        if a || b || c {
+        if a || w || b || c {
             self.dirty = true;
         }
     }
@@ -481,6 +520,12 @@ impl QuantityWindow {
             flashing = true;
         }
         if self.blatt() == Blatt::Kosten && self.kosten.as_mut().is_some_and(|k| k.tick(t, now)) {
+            flashing = true;
+        }
+        // Die Wohnfläche zeichnet beim Rollen ganz (Teilbilder kennt nur
+        // das Mengenblatt)
+        if self.blatt() == Blatt::Wohnflaeche && self.wohn.as_mut().is_some_and(|l| l.tick(t, now))
+        {
             flashing = true;
         }
         if self.blatt() == Blatt::Ava && self.ava.as_mut().is_some_and(|a| a.tick(t, now)) {
@@ -576,7 +621,9 @@ impl QuantityWindow {
         match *e {
             Event::MouseMove { x, y, .. } if self.context.is_none() => {
                 let want = match self.blatt() {
-                    Blatt::Mengen => self.list.as_ref().and_then(|l| l.tip_at(t, fonts, x, y)),
+                    Blatt::Mengen | Blatt::Wohnflaeche => {
+                        self.liste().and_then(|l| l.tip_at(t, fonts, x, y))
+                    }
                     Blatt::Kosten => self.kosten.as_ref().and_then(|k| k.tip_at(t, fonts, x, y)),
                     Blatt::Ava => self.ava.as_ref().and_then(|a| a.tip_at(t, fonts, x, y)),
                 };
@@ -596,7 +643,7 @@ impl QuantityWindow {
         match *e {
             Event::Resized { width, height } => {
                 (self.w, self.h) = (width, height);
-                if let Some(l) = self.list.as_mut() {
+                for l in self.list.iter_mut().chain(self.wohn.iter_mut()) {
                     (l.w, l.h) = (width, height);
                 }
                 if let Some(k) = self.kosten.as_mut() {
@@ -610,7 +657,7 @@ impl QuantityWindow {
             }
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
-                if let Some(l) = self.list.as_mut() {
+                for l in self.list.iter_mut().chain(self.wohn.iter_mut()) {
                     l.scale = s;
                 }
                 if let Some(k) = self.kosten.as_mut() {
@@ -648,7 +695,9 @@ impl QuantityWindow {
                     self.dirty = true;
                 }
                 let o = match self.blatt() {
-                    Blatt::Mengen => self.list.as_mut()?.mouse_move(t, fonts, p, x, y),
+                    Blatt::Mengen | Blatt::Wohnflaeche => {
+                        self.liste_mut()?.mouse_move(t, fonts, p, x, y)
+                    }
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_move(t, fonts, p, x, y),
                     Blatt::Ava => self.ava.as_mut()?.mouse_move(t, fonts, p, x, y),
                 };
@@ -662,7 +711,7 @@ impl QuantityWindow {
                     self.dirty = true;
                 }
                 let o = match self.blatt() {
-                    Blatt::Mengen => self.list.as_mut()?.mouse_leave(p),
+                    Blatt::Mengen | Blatt::Wohnflaeche => self.liste_mut()?.mouse_leave(p),
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_leave(p),
                     Blatt::Ava => self.ava.as_mut()?.mouse_leave(p),
                 };
@@ -690,7 +739,9 @@ impl QuantityWindow {
                     }
                 }
                 let o = match self.blatt() {
-                    Blatt::Mengen => self.list.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
+                    Blatt::Mengen | Blatt::Wohnflaeche => {
+                        self.liste_mut()?.mouse_down(t, fonts, p, (x, y), mods)
+                    }
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
                     Blatt::Ava => self.ava.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
                 };
@@ -714,7 +765,9 @@ impl QuantityWindow {
                     });
                 }
                 let o = match self.blatt() {
-                    Blatt::Mengen => self.list.as_mut()?.mouse_up(t, fonts, x, y),
+                    Blatt::Mengen | Blatt::Wohnflaeche => {
+                        self.liste_mut()?.mouse_up(t, fonts, x, y)
+                    }
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_up(t, fonts, x, y),
                     Blatt::Ava => self.ava.as_mut()?.mouse_up(t, fonts, x, y),
                 };
@@ -727,6 +780,10 @@ impl QuantityWindow {
                     Blatt::Mengen => {
                         self.list.as_mut()?.wheel(delta, t, anim);
                         None
+                    }
+                    Blatt::Wohnflaeche => {
+                        let o = self.wohn.as_mut()?.wheel(delta, t, anim);
+                        self.list_out(o, t)
                     }
                     Blatt::Kosten => {
                         let o = self.kosten.as_mut()?.wheel(delta, t);
@@ -777,7 +834,7 @@ impl QuantityWindow {
             } => {
                 let had = !p.selected.is_empty();
                 match self.blatt() {
-                    Blatt::Mengen => self.list.as_mut()?.clear_selection(p),
+                    Blatt::Mengen | Blatt::Wohnflaeche => self.liste_mut()?.clear_selection(p),
                     Blatt::Kosten => {
                         p.selected.clear();
                         self.kosten.as_mut()?.follow(p);
@@ -929,6 +986,7 @@ impl QuantityWindow {
             let bands = std::mem::take(&mut self.bands_dirty);
             let overlay = match self.blatt() {
                 Blatt::Ava => self.ava.as_ref().is_some_and(|a| a.overlay_open()),
+                Blatt::Wohnflaeche => self.wohn.as_ref().is_some_and(|l| l.overlay_open()),
                 _ => self.kosten.as_ref().is_some_and(|k| k.overlay_open()),
             };
             if !(self.dirty || bands || overlay || self.shown.len() != (w * h * 4) as usize) {
@@ -1077,6 +1135,11 @@ impl QuantityWindow {
                     l.paint(c, t, fonts, now);
                 }
             }
+            Blatt::Wohnflaeche => {
+                if let Some(l) = &self.wohn {
+                    l.paint(c, t, fonts, now);
+                }
+            }
             Blatt::Kosten => {
                 if let Some(k) = &self.kosten {
                     k.paint(c, t, fonts, now);
@@ -1093,7 +1156,11 @@ impl QuantityWindow {
 
     /// Hinweis unter seine Zeile legen (folgt dem Rollen).
     fn place_hint(&mut self, t: &Theme, fonts: &Fonts) {
-        let (Some(h), Some(l)) = (self.hint.as_mut(), self.list.as_ref()) else {
+        let l = match self.karten.aktiv {
+            Blatt::Wohnflaeche => self.wohn.as_ref(),
+            _ => self.list.as_ref(),
+        };
+        let (Some(h), Some(l)) = (self.hint.as_mut(), l) else {
             return;
         };
         let s = self.title.scale;
@@ -1557,10 +1624,17 @@ mod tests {
         );
         assert_eq!(q.karten.zahl(Blatt::Kosten), "76.002 € netto");
         assert!(matches!(q.frame(&t, &fonts, now), Some((_, None))));
-        // Klick auf die Karte Kosten (rechts neben Mengen)
+        // Klick auf die Karte Kosten (die dritte, nach Mengen und Wohnfläche)
         let s1 = q.title.scale as f64;
-        let x = q.cards_x0(&t) as f64 + (236.0 + 12.0 + 100.0) * s1;
         let y = (32.0 + 14.0 + 37.0) * s1;
+        let karte = |q: &QuantityWindow, b: Blatt| {
+            let x = (0..q.w)
+                .map(|x| x as f64)
+                .find(|&x| q.karte_at(&t, x, y) == Some(b))
+                .expect("Karte");
+            x + 20.0 * s1
+        };
+        let x = karte(&q, Blatt::Kosten);
         assert_eq!(q.handle(&klick(x, y), &t, &fonts, &mut p), None);
         assert_eq!(q.blatt(), Blatt::Kosten);
         let doc = crate::document::Document::new(s.model().revision());
@@ -1591,6 +1665,22 @@ mod tests {
             q.list.as_ref().unwrap().leiste.umfang,
             q.kosten.as_ref().unwrap().leiste.umfang
         );
+        // Wohnfläche: zweite Karte, derselbe Umfang, eigener Titel
+        let x = karte(&q, Blatt::Wohnflaeche);
+        assert_eq!(q.handle(&klick(x, y), &t, &fonts, &mut p), None);
+        assert_eq!(q.blatt(), Blatt::Wohnflaeche);
+        q.sync(&mut s, &p, true);
+        assert_eq!(
+            q.wohn.as_ref().unwrap().leiste.umfang,
+            q.kosten.as_ref().unwrap().leiste.umfang
+        );
+        let titel = crate::windows::blatt_caption(q.blatt(), &doc, s.model().revision());
+        assert!(titel.starts_with("Wohnflächenberechnung – "), "{titel}");
+        assert!(!q.karten.zahl(Blatt::Wohnflaeche).is_empty());
+        assert!(matches!(
+            q.frame(&t, &fonts, Instant::now()),
+            Some((_, None))
+        ));
         // Zurück: Mengenblatt mit demselben Umfang, Titel wie B7
         let x0 = q.cards_x0(&t) as f64 + 100.0 * s1;
         q.handle(&klick(x0, y), &t, &fonts, &mut p);

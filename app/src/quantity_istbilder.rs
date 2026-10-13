@@ -729,3 +729,63 @@ fn istbilder_rechenweg() {
         b.ablegen(&mut q, n);
     }
 }
+
+/// Haus in L-Form mit einer Innenwand: zwei Räume, einer davon ein L.
+fn haus_l() -> Scene {
+    use sk_math::vec3;
+    use sk_model::{RefSide, WallChain};
+    let mut s = Scene::new();
+    let wall = |points, closed, ref_side| WallChain {
+        base: 0.0,
+        points,
+        closed,
+        ref_side,
+        layers: Vec::new(),
+        height: 2750.0,
+        joints: Default::default(),
+    };
+    let aussen = vec![
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(6000.0, 8000.0, 0.0),
+        vec3(6000.0, 5000.0, 0.0),
+        vec3(10000.0, 5000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    s.add_wall(&wall(aussen, true, RefSide::Left));
+    let innen = vec![vec3(3500.0, 315.0, 0.0), vec3(3500.0, 7685.0, 0.0)];
+    s.add_wall_as(
+        &wall(innen, false, RefSide::Center),
+        sk_model::Category::InteriorWall,
+    );
+    s
+}
+
+/// Blatt Wohnfläche (G8) an einem Haus in L-Form: zugeklappt breit und
+/// schmal, aufgeklappt mit den Mengenansätzen.
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_wohnflaeche() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mut s = haus_l();
+    let mut q = b.fenster(&mut s, 1440, 760, Blatt::Wohnflaeche);
+    b.ablegen(&mut q, "ist-wohnflaeche.png");
+    let mut q = b.fenster(&mut s, 720, 760, Blatt::Wohnflaeche);
+    b.ablegen(&mut q, "ist-wohnflaeche-schmal.png");
+    let mut q = b.fenster(&mut s, 1240, 1400, Blatt::Wohnflaeche);
+    q.wohn.as_mut().unwrap().alles_aufklappen();
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-wohnflaeche-ansaetze.png");
+}

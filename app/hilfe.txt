@@ -346,7 +346,7 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 
 [thema] id=mengen titel="Mengen, Kosten, AVA"
 Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“; wegziehen löst das Fenster, an der Kante rastet es wieder ein
-Karten | Mengen, Kosten und AVA; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
+Karten | Mengen, Wohnfläche, Kosten und AVA; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit. „Wohnfläche“ rechnet nach WoFlV an der fertigen Oberfläche: je Raum Faktor, Grund- und Wohnfläche; das Dreieck klappt die Mengenansätze auf (Teilflächen, Nischen, Pfeiler, Anrechnung)
 Gebäude | ab zwei Gebäuden wählt das Feld vor den Chips ein Gebäude oder das ganze Projekt
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
 Gliedern | „Gliedern“ nach Geschoss oder Gewerk, bei Kosten auch Kostengruppe; nach Geschoss steht je Raum eine Gruppe mit seiner Grundfläche (fertig), darin Boden (VOB), Estrich, Wandseiten, Decke und Längen, nach Gewerk stehen die Schichten der Räume unter „… · Räume“, ihre Längen (Sockelleiste, Randdämmstreifen, Eckschienen, Silikonfugen) im Gewerk ihrer Fläche, nicht in seiner Summe

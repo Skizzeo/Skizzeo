@@ -2733,7 +2733,7 @@ impl App {
                 self.help.open_with(match self.quantity.blatt() {
                     cards::Blatt::Kosten => help::Topic::Costs,
                     cards::Blatt::Ava => help::Topic::Ava,
-                    cards::Blatt::Mengen => help::Topic::Quantities,
+                    cards::Blatt::Mengen | cards::Blatt::Wohnflaeche => help::Topic::Quantities,
                 });
                 if !was {
                     self.help_toggled();

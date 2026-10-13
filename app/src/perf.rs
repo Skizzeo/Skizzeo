@@ -3575,3 +3575,53 @@ fn perf_stempel_ziehen() {
     }
     println!("Zeiten in ms je Bild (Release).");
 }
+
+/// Wohnfläche (G8) im Mengenfenster: Rechnung aus der Szene nach der
+/// Mengenliste (Erkennung und Ketten schon gerechnet) und nach dem
+/// Verschieben einer Innenwand. Bis 1000 Häuser (höchstens
+/// `SKIZZEO_PERF_BIS`).
+#[test]
+#[ignore]
+fn perf_wohnflaeche() {
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>9}",
+        "Häuser", "Räume", "Szene", "Loslassen"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 1000].into_iter().filter(|&n| n <= bis) {
+        let mut s = town_with_interior(n);
+        s.schedule();
+        let t = Instant::now();
+        let w = crate::schedule_view::wohn_rechnen(&s);
+        let szene = t.elapsed().as_secs_f64() * 1000.0;
+        let raeume = w.raeume().count();
+        let st = s.active_storey();
+        let (iw, _) = s
+            .model()
+            .runs()
+            .iter()
+            .find(|(_, r)| r.storey == st && !r.closed)
+            .unwrap();
+        let pts: Vec<sk_math::Vec3> = s
+            .model()
+            .run(iw)
+            .unwrap()
+            .points
+            .iter()
+            .map(|p| *p + vec3(-200.0, 0.0, 0.0))
+            .collect();
+        s.begin("Wand verschieben");
+        s.set_run_points(iw, &pts);
+        s.commit();
+        s.schedule();
+        let t = Instant::now();
+        std::hint::black_box(crate::schedule_view::wohn_rechnen(&s));
+        let los = t.elapsed().as_secs_f64() * 1000.0;
+        println!("{n:>6} {raeume:>6} {szene:>9.1} {los:>9.1}");
+    }
+    println!("Zeiten in ms, je ein Lauf.");
+}
