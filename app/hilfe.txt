@@ -196,6 +196,9 @@ Maßzahlen | unter 1 m in cm, ab 1 m in m mit zwei Stellen, Millimeter hochgeste
 Zahnrad | „Maßketten zeigen“ und „Maßbezugspunkte zeigen“ je Ansicht; die Bezugspunkte zeigen, an welcher Kante jede Hilfslinie misst
 Stil | Einstellungen, Reiter „Bemaßung“: Linien, Begrenzung (Kreis, Schrägstrich, Punkt, Pfeil), Schrift, Rundung 1 oder 5 mm, Farbe, Abstände, welche Ketten, BRH ab Rohdecke oder Estrich
 Firmenstandard | „Als Firmenstandard speichern“ gilt mit **OK** für neue Projekte; „Firmenstandard übernehmen“ setzt ihn in dieses Projekt
+Maß ändern | Klick auf eine Maßzahl öffnet sie zur Eingabe in m; es wandert das Bauteil am rechten bzw. oberen Ende (Pfeil), **Tab** nimmt das andere Ende; Klick ins Freie oder **Enter** übernimmt, **Esc** bricht ab
+Mit Richtung | Wand am Gummiband greifen und ziehen: das Maß dahinter leuchtet auf; nach dem Loslassen die Zahl tippen, die Wand springt mit
+Ketten verschieben | Maßlinie greifen und ziehen (10-mm-Raster); **Strg**+Klick wählt dazu, **Umschalt**+Klick den ganzen Block, ein Rechteck von rechts nach links jede berührte Kette; Doppelklick setzt zurück
 
 [thema] id=nordpfeil titel="Nordpfeil"
 Setzen | startet nach dem ersten geschlossenen Umriss einmal von selbst (**Esc** = später), sonst Kachel rechts neben „Projektdaten“; dann im 3D-Fenster oder Grundriss den Fußpunkt (Mitte des Pfeilfußes) klicken und die Richtung zeigen; danach ist der Sonnenstand an

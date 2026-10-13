@@ -5,6 +5,9 @@ use super::*;
 impl Model {
     /// Decken über einem Wandzug (richtig: höchstens eine).
     pub(super) fn floors_of(&self, run: RunId) -> Vec<ElementId> {
+        if let Some(v) = self.verz() {
+            return v.decken(run);
+        }
         self.elements
             .iter()
             .filter(|(_, e)| matches!(e.kind, ElementKind::Floor(f) if f.run == run))

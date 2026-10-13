@@ -1119,6 +1119,60 @@ fn abgleich_nur_an_den_zuegen_des_schritts() {
     assert!(m.check().is_empty(), "{:?}", m.check());
 }
 
+/// Bemaßung zu #112: Der erste Wandschritt legt mit dem ersten Raum dessen
+/// Raumvorlage, Ausbautypen, Baustoffe und Oberflächen an. Das gleicht nur
+/// die Züge des Schritts ab, nicht alle (vorher 1 s bei 2000 Häusern), und
+/// das Ergebnis gleicht dem Abgleich über das ganze Modell. Ein geänderter
+/// Baustoff oder Typ gleicht weiter alles ab.
+#[test]
+fn neue_typen_gleichen_nur_die_zuege_des_schritts_ab() {
+    let (mut m, eg, og) = gebaeude();
+    let b2 = m.add_building(2);
+    let pts = [
+        vec3(20000.0, 0.0, 0.0),
+        vec3(20000.0, 8000.0, 0.0),
+        vec3(30000.0, 8000.0, 0.0),
+        vec3(30000.0, 0.0, 0.0),
+    ];
+    let eg2 = m.build_from_polygon(b2, &pts).unwrap();
+    let og2 = m.runs_above(eg2)[0];
+    let w = m.wall_at(og, 1).unwrap();
+    m.begin("Wand verschoben");
+    m.set_linked(w, false);
+    assert!(m.set_offset(w, -1500.0).is_some());
+    let vorher = (m.materials.len(), m.layer_sets.len());
+    assert_eq!(
+        m.ensure_space_type(crate::model::BATH_SPACE_GUID),
+        Some(crate::model::BATH_SPACE_GUID)
+    );
+    for t in &crate::model::FINISH_TYPES {
+        assert!(m.ensure_finish_type(t.guid).is_some());
+    }
+    assert!(m.materials.len() > vorher.0 && m.layer_sets.len() > vorher.1);
+    let scope = m.sync_scope().expect("neue Typen gleichen nicht alles ab");
+    assert!([eg, og].iter().all(|r| scope.contains(r)), "{scope:?}");
+    assert!([eg2, og2].iter().all(|r| !scope.contains(r)), "{scope:?}");
+    m.commit();
+    let mut x = m.clone();
+    x.sync_edge_strips(None);
+    x.sync_soffits();
+    assert_eq!(x.sync_terraces(), (0, 0));
+    assert_eq!(x.elements.len(), m.elements.len());
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    // Ein bestehender Baustoff ändert sich: Abgleich über alles
+    let (id, mut b) = m
+        .materials
+        .iter()
+        .next()
+        .map(|(id, b)| (id, b.clone()))
+        .unwrap();
+    b.name += " geändert";
+    m.begin("Baustoff");
+    assert!(m.set_material(id, b));
+    assert!(m.sync_scope().is_none());
+    m.commit();
+}
+
 /// AW-49: Verblender und Kerndämmung wachsen um die Attika, der Kern
 /// bleibt (A195); monolithisch läuft die Zone des Randdämmstreifens hoch.
 #[test]
