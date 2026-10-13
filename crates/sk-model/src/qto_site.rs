@@ -169,27 +169,14 @@ pub fn huellen(model: &Model) -> HashMap<Option<BuildingId>, Huelle> {
         .collect()
 }
 
-/// Automatikmengen `site.*` des Gebäudes mit dem Plattenumriss `platte` am
-/// Wandzugs `run` (der Zug, unter dem die Sohlplatte liegt), mit Sohlplatte,
+/// Automatikmengen `site.*` des Gebäudes mit der Hülle `h` (aus
+/// [`huellen`], je Durchlauf einmal) und dem Plattenumriss `platte` am
+/// Wandzug `run` (der Zug, unter dem die Sohlplatte liegt), mit Sohlplatte,
 /// Geschoss und Gebäude aus `vorlage`. `gelaende`: OK Gelände relativ zu
 /// ±0,00 (mm, nach oben positiv), Aufstandsfläche des Gerüsts.
 /// `erste`: die erste Sohlplatte des Gebäudes; nur sie trägt Pauschale,
 /// Vorhaltemonate und Bauzaun, die je Gebäude einmal gelten. Das Gerüst
 /// steht an jeder Platte für ihre eigene Fassade.
-pub fn site_mengen(
-    model: &Model,
-    run: RunId,
-    platte: &[Vec3],
-    vorlage: &AutoMenge,
-    gelaende: f64,
-    erste: bool,
-) -> Vec<AutoMenge> {
-    let gebaeude = model.run(run).and_then(|r| model.building_of(r.storey));
-    let h = huellen(model).remove(&gebaeude).unwrap_or_default();
-    site_mengen_in(&h, run, platte, vorlage, gelaende, erste)
-}
-
-/// [`site_mengen`] mit der schon gesammelten [`Huelle`] des Gebäudes.
 pub fn site_mengen_in(
     h: &Huelle,
     run: RunId,
