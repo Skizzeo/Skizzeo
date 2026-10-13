@@ -810,7 +810,7 @@ pub fn kosten_mit(
     let mut befunde: Vec<Befund> = Vec::new();
     let mut lose_gemeldet: Vec<ElementId> = Vec::new();
     // Bauteilmengen (Umfang, Schalung) je (Bauteil, Folge) nur einmal
-    let mut einmal: Vec<(ElementId, Guid)> = Vec::new();
+    let mut einmal: std::collections::HashSet<(ElementId, Guid)> = Default::default();
     let mut ep_fest: HashMap<Guid, (Cent, Cent, Cent, Option<Cent>)> = HashMap::new();
 
     let rows = s.layer_rows(m);
@@ -966,11 +966,8 @@ pub fn kosten_mit(
                 for (fg, faktor, stoff, pf) in &w.folgen {
                     let Some(fl) = k.leistung(*fg) else { continue };
                     let bauteilmenge = matches!(fl.bezug, Bezug::Umfang | Bezug::Schalung);
-                    if bauteilmenge {
-                        if einmal.contains(&(r.element, *fg)) {
-                            continue;
-                        }
-                        einmal.push((r.element, *fg));
+                    if bauteilmenge && !einmal.insert((r.element, *fg)) {
+                        continue;
                     }
                     let Some(menge) = menge_von(fl.bezug, true) else {
                         befunde.push(Befund::warnung(
