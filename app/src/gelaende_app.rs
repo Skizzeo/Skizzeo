@@ -167,6 +167,21 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     if l.grenze {
         l.grundstueck = Some(format!("Grundstück {} m²", de(t.parcel_area(), 2)));
     }
+    // zu viele Höhenlinien: gröber oder keine, mit Hinweis (Auflage H1)
+    let wunsch = crate::gelaende_netz::STUFE;
+    let meter = |s: f64| {
+        let t = de(s, 2);
+        t.trim_end_matches('0').trim_end_matches(',').to_string()
+    };
+    l.hoehenlinien = match m.terrain_contour_step(wunsch) {
+        Some(s) if s == wunsch => None,
+        Some(s) => Some(format!(
+            "Höhenlinien alle {} m, bei {} m wären es zu viele",
+            meter(s),
+            meter(wunsch)
+        )),
+        None => Some("Höhenlinien: zu viele, keine gezeigt".into()),
+    };
     l
 }
 
@@ -357,6 +372,31 @@ mod tests {
         m
     }
 
+    /// Zu viele Höhenlinien bei 0,25 m: gröber, und die Leiste sagt es
+    /// (Review #121, Auflage H1).
+    #[test]
+    fn zu_viele_hoehenlinien() {
+        let mut m = lindenhof();
+        // jede zweite Reihe 400 m höher: bei 0,25 m 2,7 Mio. Stücke
+        let mut text = String::new();
+        for i in 0..30 {
+            for j in 0..30 {
+                let h = 10.1 + (i % 2) as f64 * 400.0;
+                text.push_str(&format!("{} {j} {i} {h}\n", i * 30 + j + 1));
+            }
+        }
+        let (t, ..) = Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-13", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let l = leiste(&m, &Zustand::default());
+        assert_eq!(
+            l.hoehenlinien.as_deref(),
+            Some("Höhenlinien alle 1 m, bei 0,25 m wären es zu viele")
+        );
+        assert!(crate::gelaende_netz::Gelaende::aus(&m).is_some());
+    }
+
     /// Ohne Aufmaß nur das Einlesen; mit Aufmaß Höhenlage, Folgen und
     /// Grundstück wie in der Abnahme (§12).
     #[test]
@@ -390,6 +430,7 @@ mod tests {
         assert_eq!(l.steckt, None);
         // 822,865 m² (Abnahme: 822,87 ± 0,01)
         assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,86 m²"));
+        assert_eq!(l.hoehenlinien, None, "Höhenlinien wie gewünscht");
         // Absolut: das Feld trägt die Höhe; 0,30 m tiefer steckt das Haus
         m.begin("absolut");
         assert!(m.set_terrain_href(HeightRef::Abs));

@@ -84,6 +84,8 @@ pub struct GelaendeLeiste {
     pub steckt: Option<Meldung>,
     /// „Grundstück 822,87 m²“.
     pub grundstueck: Option<String>,
+    /// Höhenlinien gröber als gewünscht oder keine, weil es zu viele wären.
+    pub hoehenlinien: Option<String>,
     /// Ergebnis des letzten Einlesens (Satz, Hinweise) bzw. sein Fehler;
     /// umgebrochen auf die Breite des Paneels.
     pub meldung: Vec<String>,
@@ -157,6 +159,7 @@ impl Ui {
                 ]);
             }
             rows.extend(l.grundstueck.clone().map(Row::Text));
+            rows.extend(l.hoehenlinien.clone().map(Row::Text));
         } else if l.meldung.is_empty() && l.fehler.is_none() {
             rows.extend([
                 Row::Hint("Höhen: Punktliste des"),
