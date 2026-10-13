@@ -311,6 +311,33 @@ pub fn decke_grenzen(scene: &Scene, run: Option<RunId>, id: ElementId) -> (f64, 
     (unten, oben)
 }
 
+/// Warum eine freie Kante an der Decke stehen bleibt, für die Pille
+/// (Bedienbarkeit 41.3): unten, weil ein Fenster über zwei Geschosse vom
+/// unteren Geschoss aus aufgezogen wird; oben, weil darüber kein Geschoss
+/// steht oder die Wand darüber vorspringt. `None`, wenn die Grenze schon die
+/// nächste Decke ist oder kein Grund bekannt ist.
+pub fn decke_grund(scene: &Scene, run: Option<RunId>, id: ElementId, oben: bool) -> Option<String> {
+    let m = scene.model();
+    let r = run?;
+    if !oben {
+        let unter = m.run(m.run_below(r)?)?.storey;
+        return Some(format!(
+            "vom {} aus nach oben ziehen",
+            m.storey(unter)?.short
+        ));
+    }
+    let (spart, buendig) = mit_decke(scene, r, |f| (m.spart_aus_bei(r, id, f), f.buendig.clone()))?;
+    if spart {
+        None
+    } else if buendig.is_empty() {
+        Some("kein Geschoss darüber".into())
+    } else if buendig.contains(&false) {
+        Some("Wand darüber springt vor".into())
+    } else {
+        None
+    }
+}
+
 /// `f` zur Decke über `run`: aus dem Cache der Szene, sonst gebaut (Review
 /// W48 B3). `None` ohne Decke.
 fn mit_decke<T>(scene: &Scene, run: RunId, f: impl FnOnce(&FloorSlab) -> T) -> Option<T> {
@@ -491,6 +518,10 @@ pub struct HoeheZug {
     linien: Vec<FaceLine>,
     /// Spielraum zwischen den Decken ([`decke_grenzen`]).
     grenzen: (f64, f64),
+    /// Warum die Kante an der Decke stehen bleibt ([`decke_grund`]).
+    grund: Option<String>,
+    /// Die Maus steht jenseits der Decke (dann nennt die Pille den Grund).
+    drueber: bool,
     /// Geschoss der Öffnung.
     st: StoreyId,
     /// Höhe der anderen Kante.
@@ -540,6 +571,7 @@ impl HoeheZug {
         let tol = FANG_PX * scale * mm.unwrap_or(0.0);
         let run = zug(scene, t.id);
         let grenzen = decke_grenzen(scene, run, t.id);
+        let grund = decke_grund(scene, run, t.id, oben);
         let linien = linien(m, st, grenzen);
         scene.begin(SCHRITT);
         Some(HoeheZug {
@@ -550,6 +582,8 @@ impl HoeheZug {
             nrm,
             linien,
             grenzen,
+            grund,
+            drueber: false,
             st,
             gegen: if oben { z0 } else { z1 },
             tol,
@@ -653,6 +687,12 @@ impl HoeheZug {
     fn zur_maus(&mut self, scene: &mut Scene, cam: &Camera, w: f64, h: f64) -> bool {
         let Some(z) = self.maus_z(cam, w, h) else {
             return false;
+        };
+        let (lo, hi) = self.grenzen;
+        self.drueber = if self.oben {
+            z > hi + self.tol
+        } else {
+            z < lo - self.tol
         };
         let r = self.bindung(scene.model(), z);
         self.setzen(scene, r) == Some(true)
@@ -805,19 +845,23 @@ impl HoeheZug {
         let hoehe = crate::ui::live_length_text(wert);
         let r = if self.oben { o.top } else { o.bottom };
         // Frei an der Decke: sagen, warum die Kante dort stehen bleibt
-        // (Einstellungen zu #136)
+        // (Einstellungen zu #136), mit dem Grund (Bedienbarkeit 41.3)
         let (z, grenze, an) = if self.oben {
             (z1, self.grenzen.1, "bis unter die Decke")
         } else {
             (z0, self.grenzen.0, "bis auf die Decke")
         };
-        Some(match bindung_name(m, r) {
-            Some(b) => (format!("{label} {hoehe} · {b}"), false),
-            None if grenze.is_finite() && (z - grenze).abs() < RASTER + 1e-6 => {
-                (format!("{label} {hoehe} · {an}"), false)
-            }
-            None => (format!("{label} {hoehe}"), false),
-        })
+        let an_der_decke = grenze.is_finite() && (z - grenze).abs() < RASTER + 1e-6;
+        let mut text = match bindung_name(m, r) {
+            Some(b) => format!("{label} {hoehe} · {b}"),
+            None if an_der_decke => format!("{label} {hoehe} · {an}"),
+            None => format!("{label} {hoehe}"),
+        };
+        // Zieht die Maus über die Decke hinaus, auch gebunden
+        if let Some(g) = self.grund.as_ref().filter(|_| an_der_decke && self.drueber) {
+            text = format!("{text} · {g}");
+        }
+        Some((text, false))
     }
 
     /// Die gezogene Kante als Band; gebunden dazu die Höhenlinie über die
@@ -1278,7 +1322,8 @@ pub(super) mod tests {
         );
         let pille = e.pill(&s).unwrap().0;
         assert!(
-            !pille.contains("OG") && pille.ends_with("bis unter die Decke"),
+            !pille.contains("OG")
+                && pille.ends_with("bis unter die Decke · Wand darüber springt vor"),
             "{pille}"
         );
         // Getippt über die Decke: rot, Enter gilt nicht
@@ -1427,6 +1472,11 @@ pub(super) mod tests {
         assert!(
             z1 >= decke - 1e-6 && z1 < decke + RASTER + 1e-6,
             "{z1} {decke}"
+        );
+        let pille = z.pill(&s).unwrap().0;
+        assert!(
+            pille.ends_with("OK Rohdecke OG · vom EG aus nach oben ziehen"),
+            "{pille}"
         );
     }
 
