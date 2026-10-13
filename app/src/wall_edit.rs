@@ -555,9 +555,21 @@ impl WallEdit {
 
     /// Hat das laufende Tun an der Wand ein eigenes Hilfethema ([`Self::thema`])
     /// statt „Wand verschieben“? Teilen, Ecke, Breite, Höhe und Aufschlag
-    /// (39.2).
+    /// (39.2), eine Kette oder Maßzahl unter der Maus oder in Arbeit (40.2).
     pub fn eigenes_thema(&self) -> bool {
-        self.splitting() || self.oeffnung_zieht()
+        self.splitting() || self.oeffnung_zieht() || self.masse_thema()
+    }
+
+    /// Bemaßung unter der Maus, in Eingabe oder beim Ziehen einer Kette,
+    /// solange an der Wand selbst nichts läuft (ihr Ziehen samt
+    /// Nachkorrektur bleibt „Wand verschieben“).
+    fn masse_thema(&self) -> bool {
+        self.masse.is_busy()
+            && self.drag.is_none()
+            && self.ende.is_none()
+            && self.input.is_none()
+            && !self.splitting()
+            && !self.oeffnung_zieht()
     }
 
     /// Läuft ein Ziehen an einer Öffnung (Breite, Höhe, Aufschlag)?
@@ -571,6 +583,8 @@ impl WallEdit {
             crate::help::Topic::Openings
         } else if self.ecke.is_some() {
             crate::help::Topic::InnerWall
+        } else if self.masse_thema() {
+            crate::help::Topic::Bemassung
         } else {
             crate::help::Topic::Split
         }

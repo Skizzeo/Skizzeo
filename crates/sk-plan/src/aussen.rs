@@ -122,6 +122,20 @@ struct Zug {
     haut: Vec<Vec3>,
     /// Gegen den Uhrzeigersinn umlaufend?
     ccw: bool,
+    /// Nur bei „Tragende Schicht“: Löcher, die in der tragenden Schicht um
+    /// den Anschlag größer sind als außen (WDVS, Verblender; Bedienbarkeit
+    /// 40.1).
+    anschlaege: Vec<Anschlag>,
+}
+
+/// Anschlag einer Öffnung in Kante `seg` eines Zugs: so viel größer ist ihr
+/// Loch in der tragenden Schicht am Anfang und Ende längs der Kante
+/// (unendlich offene Enden ohne) sowie unten und oben.
+struct Anschlag {
+    id: ElementId,
+    seg: usize,
+    u: (f64, f64),
+    z: (f64, f64),
 }
 
 impl Zug {
@@ -263,9 +277,37 @@ fn zuege<C: Borrow<WallChain>>(
             haut: c.face_corners(c.outer_offset()),
             bezug,
             ccw: flaeche > 0.0,
+            anschlaege: anschlaege(c, stil.bezug),
         });
     }
     out
+}
+
+/// Anschläge der Öffnungen in `c`, die die Ketten bei `bezug` messen: Bei
+/// „Tragende Schicht“ liegt die Messfläche hinter der Außenschale, das
+/// Loch dort ist um den Anschlag größer ([`sk_model::wand_loch::Hole`]).
+fn anschlaege(c: &WallChain, bezug: Aussenbezug) -> Vec<Anschlag> {
+    if bezug != Aussenbezug::Rohbau {
+        return Vec::new();
+    }
+    let Some(kern) = c.layers.iter().position(|l| l.core) else {
+        return Vec::new();
+    };
+    let offen = |u: f64, r: f64| if u.is_finite() { r } else { 0.0 };
+    c.joints
+        .holes
+        .iter()
+        .filter(|h| h.shell <= kern)
+        .filter_map(|h| {
+            Some(Anschlag {
+                id: h.opening?,
+                seg: h.seg,
+                u: (offen(h.u.0, h.reveal_u.0), offen(h.u.1, h.reveal_u.1)),
+                z: h.reveal_z,
+            })
+        })
+        .filter(|a| a.u != (0.0, 0.0) || a.z != (0.0, 0.0))
+        .collect()
 }
 
 /// Hauptrichtung: die längste Außenwand, gedreht in (−45°, 45°].
@@ -631,9 +673,21 @@ fn oeffnungen(
                     let p = w[k];
                     (p.dot(n) - haut_bei(z, i, p.dot(t), n, t)).abs() < AUF_FLAECHE
                 });
-                auf.then(|| haut_bei(z, i, tm, n, t))
+                auf.then(|| (haut_bei(z, i, tm, n, t), z, i))
             });
-            let Some(wand) = haut else { continue };
+            let Some((wand, z, i)) = haut else { continue };
+            // „Tragende Schicht“: das Loch im Mauerwerk, nicht die sichtbare
+            // Öffnung in der Dämmung (Bedienbarkeit 40.1)
+            let (mut t0, mut t1, mut z0, mut z1) = (t0, t1, z0, z1);
+            if let Some(a) = z.anschlaege.iter().find(|a| a.id == id && a.seg == i) {
+                let (p, q) = z.kante(i);
+                let (lo, hi) = if (q - p).dot(t) > 0.0 {
+                    a.u
+                } else {
+                    (a.u.1, a.u.0)
+                };
+                (t0, t1, z0, z1) = (t0 - lo, t1 + hi, z0 - a.z.0, z1 + a.z.1);
+            }
             for (ende, at) in [(0, t0), (1, t1)] {
                 kanten.push(Bezug {
                     t: at,
