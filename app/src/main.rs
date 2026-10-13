@@ -1756,7 +1756,7 @@ impl App {
             select,
             self.mat_more,
         );
-        m.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
+        m.set_rahmen(self.rolle() == sk_cost::Rolle::Nutzer, self.ui.frei);
         self.materials = Some(m);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
@@ -3866,7 +3866,8 @@ impl App {
         let planung = if neu { self.settings.planung() } else { None };
         self.projektdaten = Some(
             projektdaten::Maske::new(self.scene.model().project(), neu, planung)
-                .mit_ort(self.scene.model().location()),
+                .mit_ort(self.scene.model().location())
+                .mit_frei(self.ui.frei),
         );
         self.tip = None;
         self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);

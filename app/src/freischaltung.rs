@@ -319,6 +319,19 @@ impl Eingang for Topic {
     }
 }
 
+/// Zeilen der Hilfe, die von einem Modul sprechen (Review #120 H5): Sie
+/// fehlen, solange es gesperrt ist. Thema und Beschriftung wie in
+/// `hilfe.txt`; den Knopf zum Mengenfenster nennt die Hilfe mit den freien
+/// Blättern ([`Freischaltung::knopf`]).
+pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
+    match (t, beschriftung) {
+        (Topic::Start, "Mengen") => Some(Modul::Mengen),
+        (Topic::Materials, "Preise") => Some(Modul::Kosten),
+        (Topic::Materials, "Bestellung") => Some(Modul::Mengen),
+        _ => None,
+    }
+}
+
 impl Eingang for crate::delete::Action {
     fn modul(self) -> Option<Modul> {
         use crate::delete::Action;
@@ -343,6 +356,9 @@ impl crate::App {
         self.menu.frei = f;
         self.help.frei = f;
         self.quantity.set_frei(f);
+        if let Some(m) = self.materials.as_mut() {
+            m.set_frei(f);
+        }
         self.redraw = true;
     }
 }
@@ -522,6 +538,26 @@ mod tests {
                 ..Props::default()
             }));
             assert_eq!(ui.props().unwrap().layers[0].2.is_empty(), !mengen, "{w}");
+            // Raumbuchmengen ebenso (Review #120 B2): die Zeilen in `mengen`
+            let werte = |p: Option<&Props>| -> Vec<&str> {
+                p.unwrap().values.iter().map(|v| v.0).collect()
+            };
+            ui.set_props(Some(Props {
+                values: vec![
+                    ("Nutzung", "Wohnen".into()),
+                    ("Bodenfläche", "20,00 m²".into()),
+                    ("", "Estrich".into()),
+                    ("Lichte Höhe", "2,50 m".into()),
+                ],
+                mengen: 1..3,
+                ..Props::default()
+            }));
+            let soll = if mengen {
+                vec!["Nutzung", "Bodenfläche", "", "Lichte Höhe"]
+            } else {
+                vec!["Nutzung", "Lichte Höhe"]
+            };
+            assert_eq!(werte(ui.props()), soll, "{w}");
             // Dateimenü: „Verwaltung …“ nur mit Kosten; Öffnen und Schließen
             // behalten die Freischaltung
             let mut menu = FileMenu::default();

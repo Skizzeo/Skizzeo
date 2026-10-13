@@ -557,6 +557,30 @@ pub struct HelpCard {
 }
 
 impl HelpCard {
+    /// Titel des Themas; das Mengenfenster heißt nach den freien Blättern
+    /// (Review #120 H5).
+    fn titel(&self, t: Topic) -> &'static str {
+        match (t, self.frei.blaetter()) {
+            (Topic::Quantities, 1) => "Mengen",
+            (Topic::Quantities, 2) => "Mengen, Kosten",
+            _ => t.title(),
+        }
+    }
+
+    /// Zeilen des Themas ohne die gesperrter Module
+    /// ([`crate::freischaltung::hilfe_zeile`]); der Knopf zum Mengenfenster
+    /// heißt wie im Paneel.
+    fn zeilen(&self, t: Topic) -> Vec<(String, String)> {
+        let knopf = self.frei.knopf();
+        t.rows()
+            .into_iter()
+            .filter(|(a, _)| {
+                crate::freischaltung::hilfe_zeile(t, a).is_none_or(|m| self.frei.frei(m))
+            })
+            .map(|(a, b)| (a, b.replace(crate::cards::KNOPF, knopf)))
+            .collect()
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -783,7 +807,7 @@ impl HelpCard {
             y
         } else {
             let mut h = 0.0;
-            for (a, b) in topic.rows() {
+            for (a, b) in self.zeilen(topic) {
                 let left = widgets::wrap(reg, &a, px, left_w - 4.0 * s);
                 let lines = rich_wrap(reg, bold, &b, px, right_w);
                 h += lines.len().max(left.len()).max(1) as f32 * line + gap;
@@ -845,7 +869,7 @@ impl HelpCard {
         let title = if self.list {
             "Alle Themen"
         } else {
-            topic.title()
+            self.titel(topic)
         };
         let title = widgets::ellipsize(bold, title, px_head, ox + close.x - tx - 4.0 * s);
         widgets::text(c, bold, &title, px_head, tx, hy, t.ui.text);
@@ -915,8 +939,12 @@ impl HelpCard {
                 }
                 let nw = if current { width(reg, now) } else { 0.0 };
                 let x = pad + (6.0 * s).round();
-                let label =
-                    widgets::ellipsize(reg, tp.title(), px, w - x - pad - nw - (12.0 * s).round());
+                let label = widgets::ellipsize(
+                    reg,
+                    self.titel(*tp),
+                    px,
+                    w - x - pad - nw - (12.0 * s).round(),
+                );
                 widgets::text(sub, reg, &label, px, x, base(y, *ih), t.ui.text);
                 if current {
                     widgets::text(
@@ -1028,7 +1056,7 @@ impl HelpCard {
             r
         };
         let (all, back) = if self.picked.is_some() || self.list {
-            let label = format!("‹ Zurück zu „{}“", self.doing.title());
+            let label = format!("‹ Zurück zu „{}“", self.titel(self.doing));
             let r = link(c, &label, self.hover == Some(Hit::Back), None);
             (None, Some(r))
         } else {
@@ -1363,5 +1391,39 @@ mod tests {
         assert_eq!(k.wait(0), None);
         k.follow(Topic::Drag, 100);
         assert_eq!(k.wait(200), Some(50));
+    }
+
+    /// Review #120 H5: Das Mengenfenster heißt nach den freien Blättern,
+    /// und Zeilen gesperrter Module fehlen; der Knopf heißt wie im Paneel.
+    #[test]
+    fn hilfe_nach_stufe() {
+        use crate::freischaltung::Freischaltung;
+        let mut k = HelpCard::default();
+        let zeile = |k: &HelpCard, t: Topic, a: &str| k.zeilen(t).into_iter().find(|z| z.0 == a);
+        for (w, titel, mengen, preise) in [
+            ("basis", Topic::Quantities.title(), false, false),
+            ("pro", "Mengen", true, false),
+            ("ultimate", "Mengen, Kosten, AVA", true, true),
+        ] {
+            k.frei = Freischaltung::stufe(w).unwrap();
+            assert_eq!(k.titel(Topic::Quantities), titel, "{w}");
+            assert_eq!(k.titel(Topic::Draw), Topic::Draw.title(), "{w}");
+            let start = zeile(&k, Topic::Start, "Mengen");
+            assert_eq!(start.is_some(), mengen, "{w}");
+            if let Some((_, b)) = start {
+                assert!(b.contains(k.frei.knopf()), "{w}: {b}");
+            }
+            assert_eq!(
+                zeile(&k, Topic::Materials, "Bestellung").is_some(),
+                mengen,
+                "{w}"
+            );
+            assert_eq!(
+                zeile(&k, Topic::Materials, "Preise").is_some(),
+                preise,
+                "{w}"
+            );
+            assert!(zeile(&k, Topic::Materials, "Ansehen").is_some(), "{w}");
+        }
     }
 }

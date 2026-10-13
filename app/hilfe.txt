@@ -4,7 +4,7 @@ Umsehen | Mausrad gedrückt dreht, **Umschalt** + Mausrad verschiebt, Mausrad dr
 Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts
 Bauteil wählen | Klick auf das Bauteil; rechts stehen Maße, Mengen und Felder
 Ändern | am violetten Band ziehen oder im Paneel Werte eintippen
-Mengen und Kosten | Knopf „Mengen · Kosten · AVA“
+Mengen | Knopf „Mengen · Kosten · AVA“
 Datei | Klick auf das Logo oben links, **F10** oder **Alt**
 Rückgängig | **Strg+Z**, wiederholen **Strg+Y**
 Hilfe | **F1** zeigt die Hilfe zu dem, was du gerade tust
@@ -308,8 +308,8 @@ Einzelne Wand anders | dafür einen neuen Typ anlegen
 
 [thema] id=baustoffe titel="Baustoffe"
 Öffnen | Dateimenü › „Baustoffe …“, Baustoffname im Paneel oder Rechtsklick auf eine Schicht
-Ansehen | Reiter Projekt und Firma; λ, Rohdichte, Richtpreis und „Verwendet in“
-Preise | nach Dicke und Güte; ändern unter Datei › Verwaltung
+Ansehen | Reiter Projekt und Firma; λ, Rohdichte und „Verwendet in“
+Preise | Richtpreis nach Dicke und Güte; ändern unter Datei › Verwaltung
 Mehr | „Mehr“ klappt alle Kennwerte auf
 Bestellung | Verschnittzuschlag in % für die Bestellmenge, leer: Vorgabe nach Baustoffart; Öffnungen ab dieser Größe (m²) von der Bestellmenge abziehen, leer: alle übermessen
 Ändern | Werte tippen; **OK** ist ein Rückgängig-Schritt

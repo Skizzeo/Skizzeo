@@ -26,12 +26,18 @@ const FLAECHEN: [(&str, Gehoert); 6] = [
 ];
 
 /// Zeilen für das Paneel des Raums mit der Form `form`, die Wandzüge aus
-/// `k` (die berechneten der Szene, Review #112 B1).
-pub fn werte(m: &Model, k: &impl Ketten, form: &RaumForm) -> Vec<(&'static str, String)> {
+/// `k` (die berechneten der Szene, Review #112 B1), und welche davon die
+/// Mengen der Flächen mit ihren Ausbautypen sind: Sie gehören zu Mengen,
+/// Nutzung und Höhen zu keinem Modul (Review #120 B2).
+pub fn werte(
+    m: &Model,
+    k: &impl Ketten,
+    form: &RaumForm,
+) -> (Vec<(&'static str, String)>, std::ops::Range<usize>) {
     let mut v = Vec::new();
     let g = ausbau::nutzung(m, form);
     let Some(s) = ausbau::vorlage(m, g) else {
-        return v;
+        return (v, 0..0);
     };
     let gewaehlt = form
         .raum
@@ -43,7 +49,7 @@ pub fn werte(m: &Model, k: &impl Ketten, form: &RaumForm) -> Vec<(&'static str, 
     }
     let roh = Rohbau::mit(m, k, form.clone());
     let Some(a) = RaumAusbau::fuer(m, &roh) else {
-        return v;
+        return (v, 0..0);
     };
     let (ffb, ufd) = ausbau::hoehen(m, &roh, &a);
     let vz = if ffb < -0.5 { "−" } else { "+" };
@@ -53,18 +59,20 @@ pub fn werte(m: &Model, k: &impl Ketten, form: &RaumForm) -> Vec<(&'static str, 
     ));
     v.push(("Lichte Höhe", format!("{} m", de_m(ufd - ffb))));
     let zeilen = raumbuch::rechnen(m, &roh, &a, &Regeln::default());
+    let ab = v.len();
     for (name, gehoert) in FLAECHEN {
         if let Some((wert, typen)) = flaeche(m, &zeilen, gehoert) {
             v.push((name, wert));
             v.extend(typen.into_iter().map(|t| ("", t)));
         }
     }
+    let mengen = ab..v.len();
     // Die Typen kommen, wenn der Raum entsteht; fehlen sie danach (im
     // Katalog gelöscht), holt eine Änderung der Vorlage sie zurück
     if !ausbau::fehlende_typen(m, form).is_empty() {
         v.extend([("Ausbau", "Typen fehlen".into()), ("", FEHLT_WEG.into())]);
     }
-    v
+    (v, mengen)
 }
 
 /// Unter der Nutzung, wenn keine gewählt ist.

@@ -888,6 +888,9 @@ pub struct Props {
     /// `layer_set` bricht an Leerzeichen auf die Innenbreite um, ungekürzt
     /// (Wände um einen Raum), statt rechts überzulaufen.
     pub set_umbruch: bool,
+    /// Zeilen in `values`, die zu Mengen gehören (Raumbuchmengen, Review
+    /// #120 B2); ohne Mengen fehlen sie.
+    pub mengen: std::ops::Range<usize>,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -1664,13 +1667,17 @@ impl Ui {
         if !p.as_ref().is_some_and(|p| p.more) {
             self.more_open = false;
         }
-        // Die Menge je Schicht gehört zu Mengen
+        // Die Menge je Schicht und die Raumbuchmengen gehören zu Mengen
         let mengen = self.frei.frei(Modul::Mengen);
         self.props = p.map(|mut p| {
-            p.layers
-                .iter_mut()
-                .filter(|_| !mengen)
-                .for_each(|l| l.2.clear());
+            if !mengen {
+                for l in &mut p.layers {
+                    l.2.clear();
+                }
+                let n = p.values.len();
+                p.values.drain(p.mengen.start.min(n)..p.mengen.end.min(n));
+                p.mengen = 0..0;
+            }
             p
         });
     }

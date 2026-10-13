@@ -12,6 +12,7 @@
 use crate::attr_pick::{self, Pick, Tiles};
 use crate::catalog::{Company, SaveResult};
 use crate::catalog_view::Frame;
+use crate::freischaltung::{Freischaltung, Modul};
 use crate::prefs::Win;
 use crate::scene::Scene;
 use crate::window_kit::{
@@ -309,7 +310,30 @@ enum Field {
     NewValue(String),
 }
 
+/// Modul eines Kennwerts (Review #120 B2): Richtpreis, Stand und
+/// Preisquelle gehören zu Kosten, Verschnittzuschlag und „Öffnungen abziehen
+/// ab“ zu Mengen. Alle übrigen Kennwerte und das Fenster selbst gehören zu
+/// keinem.
+fn kennwert_modul(k: &str) -> Option<Modul> {
+    match k {
+        PRICE | PRICE_DATE | "Preisquelle" => Some(Modul::Kosten),
+        matprop::WASTE | matprop::OPENING_FROM => Some(Modul::Mengen),
+        _ => None,
+    }
+}
+
 impl Field {
+    /// Modul des Felds ([`kennwert_modul`]); Suche, Name und eigene
+    /// Kennwerte gehören zu keinem.
+    fn modul(&self) -> Option<Modul> {
+        match self {
+            Field::Key(k) => kennwert_modul(k),
+            Field::Search | Field::Name | Field::Custom(_) | Field::NewKey | Field::NewValue(_) => {
+                None
+            }
+        }
+    }
+
     fn numeric(&self) -> bool {
         match self {
             Field::Key(k) => {
@@ -453,6 +477,9 @@ pub struct MaterialView {
     pub tab: Tab,
     /// Rolle Nutzer (KA-3b1): die Firma nur lesen.
     nutzer: bool,
+    /// Freie Module: Felder zu Kosten und Mengen nur, wenn frei
+    /// ([`Field::modul`]).
+    frei: Freischaltung,
     sel: Option<Guid>,
     csel: Option<Guid>,
     company: Option<(Library, String)>,
@@ -522,6 +549,7 @@ impl MaterialView {
             work,
             tab: Tab::Project,
             nutzer: false,
+            frei: Freischaltung::ALLES,
             sel: None,
             csel: None,
             company: None,
@@ -565,8 +593,28 @@ impl MaterialView {
     }
 
     /// Rolle Nutzer (KA-3b1): „In den Firmenkatalog …“ gesperrt.
-    pub fn set_nutzer(&mut self, nutzer: bool) {
+    /// Rolle Nutzer (KA-3b1) und freie Module.
+    pub fn set_rahmen(&mut self, nutzer: bool, frei: Freischaltung) {
         self.nutzer = nutzer;
+        self.set_frei(frei);
+    }
+
+    /// Freie Module: Felder gesperrter Module fehlen (Review #120 B2).
+    pub fn set_frei(&mut self, frei: Freischaltung) {
+        if self.frei != frei {
+            self.frei = frei;
+            self.full_frame = true;
+        }
+    }
+
+    /// Das Feld gehört zu einem Modul, das nicht frei ist.
+    fn gesperrt(&self, f: &Field) -> bool {
+        f.modul().is_some_and(|m| !self.frei.frei(m))
+    }
+
+    /// Der Kennwert gehört zu einem Modul, das nicht frei ist.
+    fn kennwert_gesperrt(&self, k: &str) -> bool {
+        kennwert_modul(k).is_some_and(|m| !self.frei.frei(m))
     }
 
     /// Neuer Stand des Firmenkatalogs (nach Neuladen oder neuem Ort).
@@ -1042,7 +1090,21 @@ impl MaterialView {
                 "Oberfläche".into(),
             ),
         ];
-        [left, right]
+        [left, right].map(|c| self.ohne_gesperrte(c))
+    }
+
+    /// Zeilen ohne Felder gesperrter Module; ein Gruppenkopf ohne Felder
+    /// fällt mit weg.
+    fn ohne_gesperrte(&self, rows: Vec<(Option<Target>, String)>) -> Vec<(Option<Target>, String)> {
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|(tg, _)| !matches!(tg, Some(Target::Field(f)) if self.gesperrt(f)))
+            .collect();
+        let kopf = |i: usize| rows.get(i).is_none_or(|r| r.0.is_none());
+        (0..rows.len())
+            .filter(|&i| !(kopf(i) && kopf(i + 1)))
+            .map(|i| rows[i].clone())
+            .collect()
     }
 
     /// Lage der Zeilen von „Mehr“ in Fensterkoordinaten (mit Bildlauf):
@@ -1157,6 +1219,9 @@ impl MaterialView {
 
     /// Lage eines Felds in Fensterkoordinaten.
     fn field_rect(&self, t: &Theme, w: &Win, f: &Field) -> Option<Rect> {
+        if self.gesperrt(f) {
+            return None;
+        }
         let nw = t.size.mat_num_w;
         Some(match f {
             Field::Search => self.search_rect(t, w),
@@ -3157,6 +3222,7 @@ impl MaterialView {
                 keys.push((k.clone(), k));
             }
         }
+        keys.retain(|(k, _)| !self.kennwert_gesperrt(k));
         // Name und Gewerk, wenn sie abweichen: Die Liste nennt den Baustoff
         // dann „abweichend“ (Review 3n/9)
         let trade_text = |x: Option<&Material>, from_lib: bool| -> String {
@@ -3359,5 +3425,47 @@ mod einheit_tests {
             Some(&PropValue::Number(2.5))
         );
         assert!(!input(&mut m, id, matprop::WASTE, "viel"));
+    }
+}
+
+#[cfg(test)]
+mod freischaltung_tests {
+    use super::*;
+
+    fn zeilen(v: &MaterialView) -> Vec<String> {
+        v.more_rows().concat().into_iter().map(|z| z.1).collect()
+    }
+
+    /// Review #120 B2: Richtpreis, Stand und Preisquelle gehören zu Kosten,
+    /// Verschnittzuschlag und „Öffnungen abziehen ab“ zu Mengen; ohne sie
+    /// fehlen die Felder, der leere Kopf „BESTELLUNG“ mit. Das Fenster und
+    /// die übrigen Kennwerte bleiben in jeder Stufe.
+    #[test]
+    fn felder_nach_modul() {
+        let s = Scene::new();
+        let mut v = MaterialView::open(&s);
+        let alle = zeilen(&v);
+        let kosten = ["Preisquelle"];
+        let mengen = ["BESTELLUNG", "Verschnittzuschlag", "Öffnungen abziehen ab"];
+        for z in kosten.iter().chain(&mengen) {
+            assert!(alle.iter().any(|a| a == z), "{z}");
+        }
+        for (w, fehlt) in [
+            ("basis", [&kosten[..], &mengen[..]].concat()),
+            ("pro", kosten.to_vec()),
+            ("ultimate", vec![]),
+        ] {
+            let f = Freischaltung::stufe(w).unwrap();
+            v.set_frei(f);
+            let da = zeilen(&v);
+            assert_eq!(da.len(), alle.len() - fehlt.len(), "{w}: {da:?}");
+            assert!(fehlt.iter().all(|z| !da.iter().any(|a| a == z)), "{w}");
+            for k in [PRICE, PRICE_DATE] {
+                assert_eq!(v.gesperrt(&Field::Key(k)), !f.frei(Modul::Kosten), "{w}");
+            }
+            for k in ["λ", "Rohdichte", matprop::MU] {
+                assert!(!v.gesperrt(&Field::Key(k)), "{w}");
+            }
+        }
     }
 }
