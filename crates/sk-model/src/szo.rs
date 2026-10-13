@@ -14,15 +14,17 @@ pub(crate) mod ausbau;
 mod bemassung;
 pub use bemassung::{firmenstil_lesen, firmenstil_text};
 mod dach;
+mod darstellung;
 mod hoehen;
 mod lage;
 mod oeffnung;
 mod raum;
 mod sicht;
 
+pub(crate) use darstellung::Roh;
+
 use crate::attr::{
-    Attributes, Dash, Display, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen,
-    Surface,
+    Attributes, Dash, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen, Surface,
 };
 use crate::element::{
     Building, Category, Coupling, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind,
@@ -748,7 +750,7 @@ fn write_known(m: &Model) -> String {
         write_pen(&mut out, p);
     }
     // Der Werks-Linientyp der Einbauelemente steht nur in der Datei, wenn er
-    // geändert ist (F20); beim Lesen entsteht er wieder
+    // geändert ist (F20, G7b); beim Lesen entsteht er wieder
     let werk = crate::attr::element_line_type();
     for l in sorted(a.line_types().iter(), |l| l.guid) {
         if *l == werk {
@@ -780,9 +782,15 @@ fn write_known(m: &Model) -> String {
     slot(&mut out, "section_ends", &d.section_ends);
     slot(&mut out, "background", &d.background);
     slot(&mut out, "pattern", &d.pattern);
+    // Rohe Zeilen der Werksstellen jeweils an ihrer Stelle (Review #127 B2)
     if !a.element_is_default() {
         slot(&mut out, "element", &d.element);
     }
+    darstellung::write_raw(a, "element", &mut out);
+    if !a.above_is_default() {
+        slot(&mut out, "above", &d.above);
+    }
+    darstellung::write_raw(a, "above", &mut out);
     Line::new("display")
         .word("slot", "paper")
         .color("color", d.paper)
@@ -1660,27 +1668,15 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             }
         }
     });
-    // F20: Ohne Einbauelement-Stelle gilt die Werksdarstellung; den
-    // Werks-Linientyp ergänzen, wenn sie oder eine Stelle ihn braucht
-    let has_element = recs("display")
-        .iter()
-        .any(|r| r.get("slot").is_ok_and(|s| s == "element"));
-    let werk_lt = crate::attr::ELEMENT_LINE_TYPE_GUID;
-    let uses_werk = recs("display")
-        .iter()
-        .any(|r| r.guid("lt").is_ok_and(|g| g == werk_lt));
-    if !lt_ids.contains_key(&werk_lt) && (!has_element || uses_werk) {
-        let id = line_types.insert(crate::attr::element_line_type());
-        lt_ids.insert(werk_lt, id);
-    }
-    let element_lt = (!has_element).then(|| lt_ids[&werk_lt]);
-    let display = read_display(
+    let werk = darstellung::werk_linientyp(recs("display"), &pen_ids, &mut line_types, &mut lt_ids);
+    let (display, display_raw) = darstellung::read(
         recs("display"),
+        &lines,
         &pens,
         &line_types,
         &pen_ids,
         &lt_ids,
-        (pattern_pen, element_lt),
+        (pattern_pen, werk),
         &mut hints,
     )?;
 
@@ -2742,7 +2738,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         assign_codes(&mut layer_sets, &elements, &defaults);
     }
     add_lambda(&mut materials);
-    let attr = Attributes::from_parts(pens, line_types, fills, surfaces, display);
+    let attr = Attributes::from_parts(pens, line_types, fills, surfaces, display, display_raw);
     let mut model = Model::from_parts(
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
     );
@@ -3243,143 +3239,6 @@ fn assign_codes(layer_sets: &mut Arena<LayerSet>, elements: &Arena<Element>, def
             (t.category, t.code, t.changed) = (category, code, 1);
         }
     }
-}
-
-/// Liest die Darstellungs-Slots. Fehlt einer, gilt sein Startwert (gleiche
-/// Stiftnummer bzw. gleicher Linientyp-Name wie in den Starttabellen).
-fn read_display(
-    recs: &[Record],
-    pens: &Arena<Pen>,
-    line_types: &Arena<LineType>,
-    pen_ids: &HashMap<Guid, Id<Pen>>,
-    lt_ids: &HashMap<Guid, Id<LineType>>,
-    (pattern_pen, element_lt): (Option<Id<Pen>>, Option<Id<LineType>>),
-    hints: &mut Vec<String>,
-) -> Result<Display, LoadError> {
-    let (std_attr, _) = crate::attr::defaults(&mut GuidGen::with_seed(0));
-    let sd = std_attr.display();
-    let first_lt = line_types.ids().next();
-    // Startwert in den geladenen Tabellen: Stift mit derselben Nummer
-    let fallback = |slot: &str, s: &EdgeStyle| -> Option<EdgeStyle> {
-        let nr = std_attr.pen(s.pen)?.number;
-        // Die Schnittlinie A–A ist im Startsatz Strichpunkt (E4)
-        let lt_name = match slot {
-            "section_line" => crate::attr::SECTION_LINE_TYPE,
-            _ => &std_attr.line_type(s.line_type)?.name,
-        };
-        let pen = pens
-            .iter()
-            .find(|(_, p)| p.number == nr)
-            .map(|(id, _)| id)?;
-        let line_type = line_types
-            .iter()
-            .find(|(_, l)| l.name == lt_name)
-            .map(|(id, _)| id)
-            .or(first_lt)?;
-        Some(EdgeStyle { pen, line_type })
-    };
-    let mut slots: Vec<(String, EdgeStyle)> = Vec::new();
-    for (prefix, table) in [("drawing", &sd.drawing), ("model3d", &sd.model3d)] {
-        for (name, k) in EDGE_NAMES {
-            slots.push((format!("{prefix}.{name}"), table[k as usize]));
-        }
-    }
-    slots.push(("ground".into(), sd.ground));
-    slots.push(("section_line".into(), sd.section_line));
-    slots.push(("section_ends".into(), sd.section_ends));
-    slots.push(("background".into(), sd.background));
-    slots.push(("pattern".into(), sd.pattern));
-    slots.push(("element".into(), sd.element));
-    let mut styles: Vec<Option<EdgeStyle>> = vec![None; slots.len()];
-    let mut paper = None;
-    for r in recs {
-        let slot = r.get("slot")?;
-        if slot == "paper" {
-            paper = Some(r.color("color")?);
-            continue;
-        }
-        match slots.iter().position(|s| s.0 == slot) {
-            Some(i) => {
-                styles[i] = Some(EdgeStyle {
-                    pen: r.link("pen", pen_ids)?,
-                    line_type: r.link("lt", lt_ids)?,
-                })
-            }
-            None => hints.push(format!(
-                "Zeile {}: unbekannter Darstellungs-Slot „{slot}“ übersprungen",
-                r.line
-            )),
-        }
-    }
-    let mut resolved = Vec::with_capacity(slots.len());
-    for ((name, std), s) in slots.iter().zip(styles) {
-        let s = match s {
-            Some(s) => s,
-            None => {
-                // Fugen in Ansichten (Paket 6): der ergänzte Stift, Volllinie
-                if let (Some(pen), "pattern") = (pattern_pen, name.as_str()) {
-                    // Volllinie: leeres Strichmuster, sonst der erste Typ
-                    // (Review 3q/1: nicht die kleinste Guid, die ist oft die
-                    // Strichlinie)
-                    let line_type = line_types
-                        .iter()
-                        .find(|(_, l)| l.pattern.is_empty())
-                        .map(|(id, _)| id)
-                        .or_else(|| line_types.ids().next())
-                        .ok_or_else(|| err(0, "Darstellung „pattern“ fehlt, kein Linientyp"))?;
-                    resolved.push(EdgeStyle { pen, line_type });
-                    continue;
-                }
-                // Einbauelement (F20): Stift der feinen Linie in Zeichnungen,
-                // der ergänzte Linientyp
-                if let (Some(line_type), "element") = (element_lt, name.as_str()) {
-                    let fine = EDGE_NAMES
-                        .iter()
-                        .position(|(_, k)| *k == edge_kind::FINE)
-                        .and_then(|i| resolved.get(i).copied())
-                        .ok_or_else(|| err(0, "Darstellung „element“ fehlt, keine feine Linie"))?;
-                    resolved.push(EdgeStyle {
-                        pen: fine.pen,
-                        line_type,
-                    });
-                    continue;
-                }
-                // Der Hintergrund (E16) fehlt in allen älteren Dateien: still ergänzen
-                if name != "background" {
-                    hints.push(format!("Darstellung „{name}“ fehlt, Startwert gesetzt"));
-                }
-                fallback(name, std).ok_or_else(|| {
-                    err(
-                        0,
-                        format!("Darstellung „{name}“ fehlt, kein passender Stift"),
-                    )
-                })?
-            }
-        };
-        resolved.push(s);
-    }
-    let paper = paper.unwrap_or_else(|| {
-        hints.push("Darstellung „paper“ fehlt, Startwert gesetzt".into());
-        sd.paper
-    });
-    let n = edge_kind::COUNT;
-    let mut drawing = [resolved[0]; edge_kind::COUNT];
-    let mut model3d = [resolved[0]; edge_kind::COUNT];
-    for (i, (_, k)) in EDGE_NAMES.iter().enumerate() {
-        drawing[*k as usize] = resolved[i];
-        model3d[*k as usize] = resolved[n + i];
-    }
-    Ok(Display {
-        drawing,
-        model3d,
-        ground: resolved[2 * n],
-        section_line: resolved[2 * n + 1],
-        section_ends: resolved[2 * n + 2],
-        background: resolved[2 * n + 3],
-        pattern: resolved[2 * n + 4],
-        element: resolved[2 * n + 5],
-        paper,
-    })
 }
 
 #[cfg(test)]
