@@ -296,6 +296,10 @@ pub struct OuterFace {
     /// samt Anschlag innerhalb aller Schichtflächen des Segments, also nicht
     /// an der Ecke ([`crate::Model::opening_fault`]).
     pub free: (f64, f64),
+    /// Bereich längs `d` zwischen den Flächen der anschließenden Wände:
+    /// innerhalb aller Schichtflächen des Segments, ohne Anschlag. Von hier
+    /// misst die Maßkette der Innentür (Grundriss G7).
+    pub span: (f64, f64),
     /// Wandfuß und Wandkrone (z absolut).
     pub z: (f64, f64),
 }
