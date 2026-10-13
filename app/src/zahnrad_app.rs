@@ -8,7 +8,7 @@
 //! Hier die Verdrahtung in der App: Wahl, Lage, Ereignisse, Tasten,
 //! Tooltip und Bilder.
 
-use crate::scene::ausbau_platz;
+use crate::scene::scene_ausbau::platz as ausbau_platz;
 use crate::ui::{Panel, ViewKind};
 use crate::{
     ansicht_schatten, bemassung, grundriss_schnitt, sicht_zahnrad, App, OVERLAY_ANSICHT,

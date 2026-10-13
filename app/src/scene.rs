@@ -33,8 +33,7 @@ mod gefaelle;
 #[path = "scene_raum.rs"]
 mod raum;
 #[path = "scene_ausbau.rs"]
-mod scene_ausbau;
-pub use scene_ausbau::platz as ausbau_platz;
+pub mod scene_ausbau;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
@@ -1947,7 +1946,6 @@ impl Scene {
     pub fn commit(&mut self) {
         // Räume folgen den Wänden im selben Schritt (G3)
         let raeume = self.raeume_abgleichen();
-        self.ausbau_schritt();
         match self.model.try_commit() {
             Ok(Some(txn)) => {
                 self.ausbau.merken(&self.model, &txn.changes);
@@ -1986,7 +1984,6 @@ impl Scene {
     /// Verwirft den offenen Schritt (Esc beim Ziehen); nur die betroffenen
     /// Wandzüge werden neu berechnet.
     pub fn rollback(&mut self) {
-        self.ausbau_schritt();
         let touched = self.model.rollback();
         self.live.clear();
         self.mark_touched(&touched);
@@ -3386,9 +3383,7 @@ impl Scene {
 
     fn plain_mesh(&mut self, key: &MeshKey) -> MeshData {
         let runs = self.mesh_keys(key);
-        let mut mg = self.mesh_split(key.0, key.1, &runs);
-        self.zusatz_into(&mut mg, key.0, key.1);
-        let [m, g] = mg;
+        let [m, g] = self.mesh_ruhend(key.0, key.1, &runs);
         self.ghost = if self.filtering() {
             Some((key.clone(), self.vis_stamp(), g))
         } else {
@@ -3757,21 +3752,6 @@ impl Scene {
         }
     }
 
-    /// Was die Erweiterungen in einer Ansicht zeigen: Grundriss (Geschoss,
-    /// Schnitthöhe) oder Schnittebene; `None`: Schnitt ohne Ebene.
-    #[allow(clippy::type_complexity)]
-    fn ext_view(
-        &self,
-        view: ViewKind,
-        section: Option<Plane>,
-    ) -> Option<(Option<(StoreyId, f64)>, Option<Plane>)> {
-        match view {
-            ViewKind::Plan => Some((Some((self.active_storey(), self.plan_cut())), None)),
-            ViewKind::Section => section.map(|p| (None, Some(p))),
-            _ => Some((None, None)),
-        }
-    }
-
     /// Blasses Netz (Isolieren, Übergänge) zur Ansicht wie [`Scene::mesh`];
     /// leer, wenn nichts blass ist.
     pub fn ghost_mesh(
@@ -3792,9 +3772,7 @@ impl Scene {
             }
         }
         let runs = self.mesh_keys(&key);
-        let mut mg = self.mesh_split(view, section, &runs);
-        self.zusatz_into(&mut mg, view, section);
-        let [_, g] = mg;
+        let [_, g] = self.mesh_ruhend(view, section, &runs);
         g
     }
 
