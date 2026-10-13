@@ -69,18 +69,34 @@ impl App {
     }
 
     /// Nimmt ein offenes Feld die Taste (Zahnräder, Namensfeld)?
-    pub(crate) fn feld_will(&self, key: Key) -> bool {
-        self.zahnrad_will(key) || self.stempel.s.will(key)
+    pub(crate) fn feld_will(&self, key: Key, mods: Modifiers) -> bool {
+        self.zahnrad_will(key) || self.stempel.s.will(key, mods)
     }
 
     /// Taste an das Feld, das sie nimmt (nach [`App::feld_will`]).
     pub(crate) fn feld_key(&mut self, key: Key, mods: Modifiers) {
-        if self.stempel.s.will(key) {
+        if self.stempel.s.will(key, mods) {
             let out = self.stempel.s.key(key, mods, &mut self.scene);
             self.stempel_folgen(out);
         } else {
             self.zahnrad_key(key, mods);
         }
+    }
+
+    /// Befehl zur Taste; ein offenes Namensfeld übernimmt vorher den Namen,
+    /// damit etwa **Strg+S** ihn mitspeichert (Bedienbarkeit 39.3).
+    pub(crate) fn kuerzel(
+        &mut self,
+        key: Key,
+        down: bool,
+        mods: Modifiers,
+        free: bool,
+    ) -> Option<crate::menu::Command> {
+        let c = self.shortcuts.key(key, down, mods, free);
+        if c.is_some() && self.stempel.s.namen.is_some() && stempel::kuerzel(key, mods) {
+            self.feld_ab();
+        }
+        c
     }
 
     /// Ein Klick in die Paneele beendet die Eingaben der Zahnräder und das

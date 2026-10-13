@@ -3,7 +3,8 @@
 //! bei 100 und 1000 Häusern mit je eigenem Gebäude (je Haus eine Gründung):
 //! Einlesen, Versatz eines Gebäudes, eine Mausbewegung im Geschossmanager
 //! (UK ziehen, dann Einbindetiefe und Bereich wie `sync_levels`; die Lage
-//! bleibt dabei gemerkt) und das Loslassen mit Platten und Erdmengen.
+//! bleibt dabei gemerkt) und das Loslassen mit Platten und Erdmengen; dazu
+//! OK EG und OK Gelände ziehen bei 1000 und 4000 Häusern.
 
 use super::*;
 use std::collections::HashMap;
@@ -141,6 +142,69 @@ fn aufmass_im_budget() {
             (los, grenzen[3], "Loslassen"),
         ] {
             assert!(wert < budget(grenze), "{n} Häuser, {was}: {wert:.1} ms");
+        }
+    }
+}
+
+/// Ziehen im Geschossmanager mit Aufmaß (W45-Nachprüfung B1): je
+/// Mausbewegung OK EG des ersten Gebäudes oder sein OK Gelände, danach
+/// Einbindetiefe und Bereich wie `sync_levels`. Die Lage bleibt dabei
+/// gemerkt; beim Gelände folgen alle Gründungen in einem Gang, weil das
+/// erste Gebäude die Höhenlage bestimmt. Vorher 15,5 und 67,9 ms (OK EG)
+/// und 26,2 und 1020 ms (Gelände) bei 1000 und 4000 Häusern. 4000 Häuser
+/// nur in Release, im Debug dauert schon das Bauen zu lange.
+#[test]
+fn zuege_im_budget() {
+    let mut faelle = vec![(1000, [1.0, 5.0])];
+    if !cfg!(debug_assertions) {
+        faelle.push((4000, [2.0, 20.0]));
+    }
+    for (n, grenzen) in faelle {
+        let (mut m, t) = haeuser_am_hang(n);
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let b = m.building_of(m.defaults().storey).unwrap();
+        assert_eq!(m.level_building(), Some(b));
+        let gr = m.foundation_level().unwrap();
+        let eg = m.ground_storey(gr).unwrap();
+        let ok = m.storey(eg).unwrap().top();
+        m.begin("OK EG ziehen");
+        let t0 = Instant::now();
+        for k in 1..=10 {
+            assert!(m.drag_storey_top(eg, ok + 10.0 * k as f64));
+            std::hint::black_box((m.embedment_of(gr), m.foundation_bottom_range_of(gr)));
+        }
+        let eg_zug = ms_seit(t0) / 10.0;
+        m.rollback();
+        // Gelände ziehen; zum Vergleich derselbe Versatz in einem Schritt
+        let mut gleich = m.clone();
+        gleich.begin("Versatz");
+        assert!(gleich.set_terrain_offset_of(b, 400.0));
+        gleich.commit();
+        m.begin("Gelände ziehen");
+        let t0 = Instant::now();
+        for k in 1..=10 {
+            assert!(m.set_terrain_offset_of(b, 40.0 * k as f64));
+            std::hint::black_box((m.embedment_of(gr), m.foundation_bottom_range_of(gr)));
+        }
+        let gelaende_zug = ms_seit(t0) / 10.0;
+        m.commit();
+        wie_gerechnet(&m);
+        for (id, s) in m.storeys().iter() {
+            let soll = gleich.storey(id).unwrap();
+            assert!((s.elevation - soll.elevation).abs() < 1e-6, "{id:?}");
+            assert_eq!(s.embed, soll.embed, "{id:?}");
+        }
+        eprintln!(
+            "{n} Häuser mit Aufmaß je Mausbewegung: OK EG {eg_zug:.2} ms, \
+             Gelände {gelaende_zug:.2} ms"
+        );
+        for (wert, grenze, was) in [
+            (eg_zug, grenzen[0], "OK EG ziehen"),
+            (gelaende_zug, grenzen[1], "Gelände ziehen"),
+        ] {
+            assert!(wert < budget(grenze), "{n} Häuser, {was}: {wert:.2} ms");
         }
     }
 }

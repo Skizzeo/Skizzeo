@@ -1,6 +1,7 @@
 //! Geschossbänder (B11): Methoden von `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
+use std::collections::HashMap;
 
 impl Model {
     /// Absolute Höhe eines Höhenbezugs (mm), `None` ohne das Geschoss.
@@ -150,10 +151,34 @@ impl Model {
             .ground_storey(gr)
             .and_then(|e| self.storey(e))
             .map_or(0.0, |s| s.elevation);
-        (
-            eg - MAX_FOUNDATION,
-            (eg - self.max_slab_depth(gr) - MIN_FOOTING).min(t - FROST_DEPTH),
-        )
+        bereich_der_gruendung(eg, self.max_slab_depth(gr), t)
+    }
+
+    /// OK Erdgeschoss und tiefste Plattenunterkante je Gebäude in einem
+    /// Gang über Geschosse und Bauteile, für Gänge über viele Gründungen
+    /// (Review #123 W45-Nachprüfung B1: je Gründung beides zu suchen war
+    /// quadratisch). Gleich wie [`Model::ground_of`] und
+    /// [`Model::max_slab_depth`].
+    pub(super) fn gruendungs_basis(&self) -> GruendungsBasis {
+        let mut eg: HashMap<Option<BuildingId>, f64> = HashMap::new();
+        for (_, s) in self.storeys.iter() {
+            if s.kind != LevelKind::Foundation {
+                // wie die Sortierung in `levels_in`: bei Gleichstand das erste
+                let x = eg.entry(s.building).or_insert(s.elevation);
+                if s.elevation.total_cmp(x).is_lt() {
+                    *x = s.elevation;
+                }
+            }
+        }
+        let mut platte: HashMap<Option<BuildingId>, f64> = HashMap::new();
+        for (_, e) in self.elements.iter() {
+            if let ElementKind::GroundSlab(s) = e.kind {
+                let d = s.thickness + s.insulation.max(0.0);
+                let x = platte.entry(self.building_of(s.top.storey)).or_insert(d);
+                *x = x.max(d);
+            }
+        }
+        GruendungsBasis { eg, platte }
     }
 
     /// Erlaubter Bereich der Unterkante der Gründung des ersten Gebäudes.
@@ -197,7 +222,7 @@ impl Model {
                 s.elevation += delta;
             }
         }
-        self.touch();
+        self.touch_height();
     }
 
     /// Oberkante eines Geschosses als Zahl (mm). Außerhalb der Grenzen
@@ -443,4 +468,30 @@ impl Model {
         }
         out
     }
+}
+
+/// OK Erdgeschoss und tiefste Plattenunterkante je Gebäude
+/// ([`Model::gruendungs_basis`]).
+pub(super) struct GruendungsBasis {
+    eg: HashMap<Option<BuildingId>, f64>,
+    platte: HashMap<Option<BuildingId>, f64>,
+}
+
+impl GruendungsBasis {
+    /// Wie [`Model::foundation_bottom_range_at`] für die Gründung `gr` im
+    /// Gebäude `b`.
+    pub(super) fn bereich(&self, b: Option<BuildingId>, t: f64) -> (f64, f64) {
+        let eg = self.eg.get(&b).copied().unwrap_or(0.0);
+        let platte = self.platte.get(&b).copied().unwrap_or(SLAB_THICKNESS);
+        bereich_der_gruendung(eg, platte, t)
+    }
+}
+
+/// Erlaubter Bereich der UK Gründung bei OK EG `eg`, Plattenunterkante
+/// `platte` unter OK Platte und OK Gelände `t` (mm).
+fn bereich_der_gruendung(eg: f64, platte: f64, t: f64) -> (f64, f64) {
+    (
+        eg - MAX_FOUNDATION,
+        (eg - platte - MIN_FOOTING).min(t - FROST_DEPTH),
+    )
 }

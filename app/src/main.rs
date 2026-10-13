@@ -4408,7 +4408,7 @@ impl App {
                 down: true,
                 mods,
                 ..
-            } if self.feld_will(key) => self.feld_key(key, mods),
+            } if self.feld_will(key, mods) => self.feld_key(key, mods),
             // Ein Feld der Sonnenstands-Leiste in Eingabe nimmt jede Taste (S4)
             Event::Key {
                 key, down, mods, ..
@@ -4462,7 +4462,7 @@ impl App {
                 let free = !self.tool.is_active()
                     && !(self.edit.is_dragging() || self.edit.splitting())
                     && !self.nord.zieht();
-                let command = self.shortcuts.key(key, down, mods, free);
+                let command = self.kuerzel(key, down, mods, free);
                 let en = self.edit_enabled();
                 let eo = self
                     .edit
@@ -4484,7 +4484,7 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
-                } else if down && self.oeffnung_taste(key) {
+                } else if down && self.oeffnung_taste(key, mods) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);

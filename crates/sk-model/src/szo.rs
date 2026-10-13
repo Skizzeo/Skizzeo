@@ -2786,6 +2786,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     for (section, l) in ext_lines {
         model.ext.push_read(&section, l);
     }
+    // die `load_*` erhöhen den Lagestand nicht (W45-Nachprüfung H-e)
+    model.lage_vergessen();
     Ok(Loaded { model, hints })
 }
 

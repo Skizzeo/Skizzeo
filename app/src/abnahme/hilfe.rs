@@ -681,6 +681,10 @@ fn a293_genannte_tasten_sind_belegt() {
         ("→", "Kachelwahl der Sicherungskarte (backup_card)"),
         ("Leertaste", "Bandseite der Tür bei der Maus (tuer_edit)"),
         ("Umschalt+Leertaste", "anderer Raum (tuer_edit)"),
+        (
+            "Strg+A",
+            "alles wählen im Namensfeld des Raumstempels (stempel)",
+        ),
         ("OK", "Knopf, keine Taste"),
     ];
     for t in fett(hilfetext()) {
