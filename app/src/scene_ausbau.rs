@@ -1,38 +1,39 @@
 //! Ausbau innen in der Szene (Raumbuch RB4, `raumbuch/plan.md` §8): die
 //! Körper des Ausbaus je Raum ([`sk_raum::raumbuch::koerper`]). Den Estrich
-//! zeigen Schnitt und 3D immer; Innenputz, Wandbeläge, Deckenputz,
-//! Bodenbelag und Sockelleisten nur, wo der Schalter „Ausbau innen“ der
-//! Ansicht an ist ([`sk_model::FINISH_VIEWS`]). Der Grundriss zeigt ohne
-//! Schalter nichts davon, mit ihm die Räume des aktiven Geschosses in
-//! seiner Schnitthöhe.
+//! zeigt der Schnitt immer (Jörn 11.10., 17:43); Innenputz, Wandbeläge,
+//! Deckenputz, Bodenbelag und Sockelleisten nur, wo der Schalter „Ausbau
+//! innen“ der Ansicht an ist ([`sk_model::FINISH_VIEWS`]). Grundriss und 3D
+//! zeigen ohne Schalter nichts davon und rechnen dafür nichts; mit ihm zeigt
+//! der Grundriss die Räume des aktiven Geschosses in seiner Schnitthöhe, 3D
+//! den ganzen Ausbau samt Estrich.
 //!
-//! Zwischenspeicher je Geschoss, Hausgruppe und Raum (Review #112 B1: nie
-//! je Revision alle Räume): Ein Geschoss wird nur angesehen, wenn sich seine
-//! Wandzüge (Fassung der Szene), seine Räume, die Geschosse seines Gebäudes,
-//! die Raumvorlagen oder die Typen geändert haben; darin eine Hausgruppe der
-//! Erkennung nur, wenn ihre Flächen, die Fassungen ihrer Züge, ihre Räume
-//! oder eins der anderen drei anders sind. Erst dann rechnet ein Raum
-//! Rohbau und Ausbau, und seine Körper nur, wenn sich das ändert, was sie
-//! bestimmt. Baut die Szene alle Züge neu (Baustoffe, Geschosse), prüft
-//! jeder Raum. Ein Raum ohne gespeicherten Raum (Datei vor G3, vor dem
-//! ersten Wandschritt) zeigt keinen Ausbau.
+//! Zwischenspeicher je Geschoss, Hausgruppe und Raum (Review #112 B1, #137
+//! B1): Jeder Schritt meldet, was er berührt ([`RaumCache::merken`]); dazu
+//! kommen die Züge, die die Szene neu gebaut hat. Angesehen wird nur ein
+//! berührtes Geschoss, darin eine Hausgruppe der Erkennung nur, wenn ihre
+//! Flächen, die Fassungen ihrer Züge oder ihre Räume anders sind. Erst dann
+//! rechnet ein Raum Rohbau und Ausbau, und seine Körper nur, wenn sich das
+//! ändert, was sie bestimmt. Typen, Raumvorlagen und Baustoffe lassen jeden
+//! Raum prüfen, andere Höhen eines Gebäudes (Geschosse, Decken, Gelände)
+//! jeden Raum darin. Das Netz hält jede Hausgruppe je Ansicht selbst, das
+//! volle Netz hängt es nur an. Grundriss und Schnitt schneiden nur Räume,
+//! durch die die Ebene geht; was ganz dahinter liegt, zeigt seine ganzen
+//! Körper. Ein Raum ohne gespeicherten Raum (Datei vor G3, vor dem ersten
+//! Wandschritt) zeigt keinen Ausbau.
 
-use super::{class_in, mesh_into, Class, Plane, Scene, Vis};
+use super::{class_in, mesh_into, union, Aabb, Class, Plane, Scene, Vis};
 use crate::scene::MeshData;
 use crate::ui::ViewKind;
 use sk_math::vec3;
 use sk_model::{
-    ElementId, ElementKind, LayerSet, LayerSetId, LevelKind, Model, RunId, Solid, Space, SpaceType,
-    StoreyId,
+    BuildingId, Change, ElementId, ElementKind, LayerSet, LevelKind, Model, RunId, Solid, StoreyId,
 };
 use sk_raum::ausbau::RaumAusbau;
 use sk_raum::oeffnungen::Rohbau;
 use sk_raum::raumbuch::koerper::{koerper, Koerper};
 use sk_raum::raumbuch::Flaeche;
 use sk_raum::{Begrenzung, Ketten, Raumflaeche};
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Was die Körper eines Raums bestimmt.
@@ -47,51 +48,313 @@ struct Schluessel {
 /// Estrich und alles andere.
 type Paar = [Solid; 2];
 
+/// Wie eine Ansicht den Ausbau sieht.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Sicht {
+    /// 3D: die ganzen Körper.
+    Voll,
+    /// Grundriss in Schnitthöhe.
+    Plan(f64),
+    /// Schnitt an der Ebene.
+    Schnitt(Plane),
+}
+
+impl Sicht {
+    /// Ebene (Punkt, Normale), an der geschnitten wird; es bleibt, was
+    /// dahinter liegt.
+    fn ebene(self) -> Option<Plane> {
+        match self {
+            Sicht::Voll => None,
+            Sicht::Plan(z) => Some((vec3(0.0, 0.0, z), vec3(0.0, 0.0, 1.0))),
+            Sicht::Schnitt(p) => Some(p),
+        }
+    }
+}
+
+/// Lage eines Quaders zur Ebene einer Sicht.
+#[derive(Clone, Copy, PartialEq)]
+enum Lage {
+    /// Ganz dahinter oder ohne Ebene: ganz zu sehen.
+    Ganz,
+    /// Ganz davor (oder leer): weggeschnitten.
+    Weg,
+    Geschnitten,
+}
+
+fn lage(k: Option<Aabb>, sicht: Sicht) -> Lage {
+    let Some(e) = sicht.ebene() else {
+        return Lage::Ganz;
+    };
+    let Some((lo, hi)) = k else {
+        return Lage::Weg;
+    };
+    let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for i in 0..8 {
+        let p = vec3(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        );
+        let d = (p - e.0).dot(e.1);
+        min = min.min(d);
+        max = max.max(d);
+    }
+    if max < 0.0 {
+        Lage::Ganz
+    } else if min > 0.0 {
+        Lage::Weg
+    } else {
+        Lage::Geschnitten
+    }
+}
+
 struct Eintrag {
     id: ElementId,
     storey: StoreyId,
     schluessel: Schluessel,
     koerper: Vec<Koerper>,
     voll: Paar,
-    /// Grundrisse je Schnitthöhe und Schnitte je Ebene, zuletzt gefragte
-    /// zuerst.
-    plan: Vec<(f64, Paar)>,
-    section: Vec<(Plane, Paar)>,
+    kasten: Option<Aabb>,
+    /// Geschnittene Körper je Sicht, zuletzt gefragte zuerst.
+    schnitte: Vec<(Sicht, Paar)>,
 }
 
-/// So viele Grundrisse und Schnitte behält ein Raum.
+/// So viele Schnitte behält ein Raum und so viele Netze eine Hausgruppe.
 const KEEP: usize = 3;
+
+impl Eintrag {
+    /// Was der Raum in der Sicht zeigt; `n` zählt die Schnitte (Tests).
+    fn paar(&mut self, sicht: Sicht, n: &mut u64) -> Option<&Paar> {
+        match lage(self.kasten, sicht) {
+            Lage::Weg => None,
+            Lage::Ganz => Some(&self.voll),
+            Lage::Geschnitten => {
+                if let Some(i) = self.schnitte.iter().position(|s| s.0 == sicht) {
+                    let hit = self.schnitte.remove(i);
+                    self.schnitte.insert(0, hit);
+                } else {
+                    let (p0, nv) = sicht.ebene()?;
+                    let p = paar(&self.koerper, |k| k.geschnitten(p0, nv));
+                    *n += 1;
+                    self.schnitte.truncate(KEEP - 1);
+                    self.schnitte.insert(0, (sicht, p));
+                }
+                Some(&self.schnitte[0].1)
+            }
+        }
+    }
+}
+
+/// Netz einer Hausgruppe je Sicht und Schalter.
+type Netz = (Sicht, bool, MeshData);
+
+/// Was eine geänderte Hausgruppe vorher hatte: ihre Räume, Netze und OK
+/// Gelände dazu.
+type Vorher = (Vec<ElementId>, Vec<Netz>, Option<f64>);
 
 /// Eine Hausgruppe, wie die Erkennung sie gibt (dieselben Flächen, solange
 /// sie aus ihrem Speicher kommen), mit den Wandzügen an ihren Räumen und
-/// dem Fingerabdruck, mit dem diese zuletzt gerechnet wurden.
+/// deren Fassung, als die Räume gerechnet wurden.
 struct Gruppe {
     flaechen: Rc<[Raumflaeche]>,
-    zuege: Vec<RunId>,
-    kennung: u64,
+    zuege: Vec<(RunId, Option<u64>)>,
+    items: Vec<Eintrag>,
+    kasten: Option<Aabb>,
+    /// Netze je Sicht und Schalter für OK Gelände `boden`, zuletzt
+    /// gefragte zuerst.
+    netze: Vec<Netz>,
+    boden: Option<f64>,
 }
 
-/// Ein Geschoss mit seinem Fingerabdruck beim letzten Abgleich.
+impl Gruppe {
+    /// Ist die Gruppe noch, wie sie gerechnet wurde (dieselben Flächen
+    /// vorausgesetzt)?
+    fn gleich(&self, k: &impl Ketten, b: &Beruehrt) -> bool {
+        self.zuege
+            .iter()
+            .all(|&(run, f)| f.is_some() && k.fassung(run) == f)
+            && !self
+                .flaechen
+                .iter()
+                .filter_map(|f| f.form.raum)
+                .any(|r| b.raeume.contains(&r))
+    }
+
+    /// Netz der Gruppe in der Sicht, mit `alles` samt übrigem Ausbau; ganz
+    /// dahinter wie in 3D, ganz davor keins. `z` zählt Netze und Schnitte.
+    fn netz(
+        &mut self,
+        sicht: Sicht,
+        alles: bool,
+        boden: f64,
+        z: &mut (u64, u64),
+    ) -> Option<&MeshData> {
+        let sicht = match lage(self.kasten, sicht) {
+            Lage::Weg => return None,
+            Lage::Ganz => Sicht::Voll,
+            Lage::Geschnitten => sicht,
+        };
+        if self.boden != Some(boden) {
+            self.netze.clear();
+            self.boden = Some(boden);
+        }
+        if let Some(i) = self.netze.iter().position(|n| n.0 == sicht && n.1 == alles) {
+            let hit = self.netze.remove(i);
+            self.netze.insert(0, hit);
+        } else {
+            let mut m = MeshData::default();
+            for x in &mut self.items {
+                if let Some(p) = x.paar(sicht, &mut z.1) {
+                    mesh_into(&mut m, &p[0], boden);
+                    if alles {
+                        mesh_into(&mut m, &p[1], boden);
+                    }
+                }
+            }
+            z.0 += 1;
+            self.netze.truncate(KEEP - 1);
+            self.netze.insert(0, (sicht, alles, m));
+        }
+        Some(&self.netze[0].2)
+    }
+}
+
+/// Ein Geschoss mit seinen Hausgruppen.
 struct Geschoss {
     id: StoreyId,
-    kennung: Kennung,
     gruppen: Vec<Gruppe>,
-    items: Vec<Eintrag>,
+}
+
+/// Was Schritte am Ausbau berühren können.
+#[derive(Default)]
+struct Beruehrt {
+    /// Typen, Raumvorlagen oder Baustoffe: Jeder Raum prüft.
+    alles: bool,
+    /// Geschosse mit geänderten Zügen, Bauteilen oder Räumen.
+    geschosse: HashSet<StoreyId>,
+    /// Gebäude mit geänderten Geschossen, Decken oder Gelände: Ihre Höhen
+    /// werden verglichen.
+    gebaeude: HashSet<Option<BuildingId>>,
+    /// Geänderte Räume.
+    raeume: HashSet<ElementId>,
+}
+
+impl Beruehrt {
+    fn leer(&self) -> bool {
+        !self.alles
+            && self.geschosse.is_empty()
+            && self.gebaeude.is_empty()
+            && self.raeume.is_empty()
+    }
+
+    /// Nimmt die Änderungen `cs` auf; je Datensatz zählen der Stand vorher,
+    /// nachher und der im Modell (im offenen Schritt fehlt „nachher“).
+    fn aus(&mut self, m: &Model, cs: &[Change]) {
+        for c in cs {
+            match c {
+                Change::Run { id, old, new } => {
+                    for r in old.iter().chain(new).chain(m.run(*id)) {
+                        self.geschosse.insert(r.storey);
+                    }
+                }
+                Change::Element { id, old, new } => {
+                    for e in old.iter().chain(new).chain(m.element(*id)) {
+                        self.geschosse.insert(e.storey);
+                        match &e.kind {
+                            ElementKind::Space(_) => {
+                                self.raeume.insert(*id);
+                            }
+                            // Dickste Decke: lichte Höhe ([`Model::clear_height`])
+                            ElementKind::Floor(f) => {
+                                self.gebaeude.insert(m.building_of(e.storey));
+                                self.gebaeude.insert(m.building_of(f.top.storey));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Change::Storey { id, old, new } => {
+                    self.geschosse.insert(*id);
+                    for s in old.iter().chain(new).chain(m.storey(*id)) {
+                        self.gebaeude.insert(s.building);
+                    }
+                }
+                Change::Building { id, .. } => {
+                    self.gebaeude.insert(Some(*id));
+                }
+                Change::LayerSet { .. } | Change::Material { .. } | Change::SpaceTypes { .. } => {
+                    self.alles = true;
+                }
+                Change::Pen { .. }
+                | Change::LineType { .. }
+                | Change::Fill { .. }
+                | Change::Surface { .. }
+                | Change::Display { .. }
+                | Change::Defaults { .. }
+                | Change::Trades { .. }
+                | Change::ForeignRecords { .. }
+                | Change::Ext { .. }
+                | Change::ExtDefs { .. }
+                | Change::Project { .. }
+                | Change::Location { .. }
+                | Change::Bemassung { .. } => {}
+            }
+        }
+    }
+}
+
+/// Was die Höhen der Räume eines Gebäudes bestimmt: OK Gelände und je
+/// Geschoss Art, Höhenlage, Höhe und dickste Decke darauf.
+#[derive(Clone, PartialEq)]
+struct Hoehen {
+    gelaende: f64,
+    geschosse: Vec<(StoreyId, LevelKind, f64, f64, Option<f64>)>,
+}
+
+/// Höhen der Gebäude `welche`, aus einem Gang über die Bauteile.
+fn hoehen(m: &Model, welche: &HashSet<Option<BuildingId>>) -> HashMap<Option<BuildingId>, Hoehen> {
+    let mut decke: HashMap<StoreyId, f64> = HashMap::new();
+    for (_, e) in m.elements().iter() {
+        if let ElementKind::Floor(f) = &e.kind {
+            let d = decke.entry(f.top.storey).or_insert(f.thickness);
+            *d = d.max(f.thickness);
+        }
+    }
+    let mut out: HashMap<Option<BuildingId>, Hoehen> = HashMap::new();
+    for (id, st) in m.storeys().iter() {
+        if !welche.contains(&st.building) {
+            continue;
+        }
+        let h = out.entry(st.building).or_insert_with(|| Hoehen {
+            gelaende: m.terrain_z_of(st.building),
+            geschosse: Vec::new(),
+        });
+        let d = decke.get(&id).copied();
+        h.geschosse.push((id, st.kind, st.elevation, st.height, d));
+    }
+    out
 }
 
 #[derive(Default)]
 pub(crate) struct RaumCache {
+    /// Was die Schritte seit dem letzten Abgleich berührt haben.
+    offen: Beruehrt,
+    /// Modellstand beim letzten Abgleich; `None`: noch keiner.
     rev: Option<u64>,
-    /// Raumvorlagen und Typen des Projekts beim letzten Abgleich; ändert
-    /// sich eins davon, zählt `stand` weiter.
-    vorlagen: Vec<SpaceType>,
-    typen: Vec<(LayerSetId, LayerSet)>,
-    stand: u64,
+    /// Je Platz der Züge in der Szene Zug, Bauzähler und Geschoss beim
+    /// letzten Abgleich.
+    zuege: Vec<Option<(RunId, u32, StoreyId)>>,
+    hoehen: HashMap<Option<BuildingId>, Hoehen>,
     geschosse: Vec<Geschoss>,
+    /// Schnitthöhe des letzten Grundrisses.
+    plan: Option<f64>,
     /// Wie oft die Körper eines Raums gerechnet wurden (Tests).
     pub builds: u64,
     /// Wie oft ein Raum Rohbau und Ausbau gerechnet hat (Tests).
     pub geprueft: u64,
+    /// Wie oft eine Hausgruppe ihr Netz und ein Raum seinen Schnitt
+    /// gerechnet hat (Tests).
+    pub netze: (u64, u64),
 }
 
 /// Estrich und Rest, je aus den Körpern zusammengesetzt.
@@ -121,74 +384,6 @@ fn typen(m: &Model, a: &RaumAusbau) -> Vec<LayerSet> {
     out
 }
 
-/// Was ein Raum für die Zuordnung und seinen Ausbau trägt.
-fn raum_in(h: &mut DefaultHasher, id: ElementId, s: &Space) {
-    id.hash(h);
-    [s.anker.x, s.anker.y].map(f64::to_bits).hash(h);
-    s.stempel.map(|p| [p.x, p.y].map(f64::to_bits)).hash(h);
-    s.nutzung.hash(h);
-}
-
-/// Fassung eines Zugs; ohne Fassung (eben geändert) jedes Mal anders.
-fn fassung_in(h: &mut DefaultHasher, k: &impl Ketten, rev: u64, run: RunId) {
-    run.hash(h);
-    match k.fassung(run) {
-        Some(f) => (0u8, f).hash(h),
-        None => (1u8, rev).hash(h),
-    }
-}
-
-/// Fingerabdruck eines Geschosses: `gebaeude` aus den Geschossen seines
-/// Gebäudes (Höhen, dickste Decke darüber) und dem Stand von Vorlagen und
-/// Typen, `alles` dazu aus den Fassungen seiner Züge und seinen Räumen.
-#[derive(Clone, Copy, Default, PartialEq)]
-struct Kennung {
-    gebaeude: u64,
-    alles: u64,
-}
-
-/// Fingerabdrücke aller Geschosse aus einem Gang über Bauteile und
-/// Wandzüge.
-fn geschoss_kennungen(m: &Model, k: &impl Ketten, stand: u64) -> HashMap<StoreyId, Kennung> {
-    let mut decke: HashMap<StoreyId, f64> = HashMap::new();
-    let mut raeume: HashMap<StoreyId, DefaultHasher> = HashMap::new();
-    for (id, e) in m.elements().iter() {
-        match &e.kind {
-            ElementKind::Floor(f) => {
-                let d = decke.entry(f.top.storey).or_insert(f.thickness);
-                *d = d.max(f.thickness);
-            }
-            ElementKind::Space(s) => raum_in(raeume.entry(e.storey).or_default(), id, s),
-            _ => {}
-        }
-    }
-    let mut gebaeude: HashMap<Option<sk_model::BuildingId>, DefaultHasher> = HashMap::new();
-    for (id, st) in m.storeys().iter() {
-        let h = gebaeude.entry(st.building).or_default();
-        id.hash(h);
-        (st.kind as u8).hash(h);
-        [st.elevation, st.height].map(f64::to_bits).hash(h);
-        decke.get(&id).map(|d| d.to_bits()).hash(h);
-    }
-    let rev = m.revision();
-    let mut zuege: HashMap<StoreyId, DefaultHasher> = HashMap::new();
-    for (id, r) in m.runs().iter() {
-        fassung_in(zuege.entry(r.storey).or_default(), k, rev, id);
-    }
-    m.storeys()
-        .iter()
-        .map(|(id, st)| {
-            let mut h = DefaultHasher::new();
-            (stand, gebaeude.get(&st.building).map(|g| g.finish())).hash(&mut h);
-            let gebaeude = h.finish();
-            zuege.get(&id).map(|z| z.finish()).hash(&mut h);
-            raeume.get(&id).map(|r| r.finish()).hash(&mut h);
-            let alles = h.finish();
-            (id, Kennung { gebaeude, alles })
-        })
-        .collect()
-}
-
 /// Wandzüge an den Räumen einer Hausgruppe.
 fn zuege_der(m: &Model, flaechen: &[Raumflaeche]) -> Vec<RunId> {
     let mut v: Vec<RunId> = Vec::new();
@@ -205,49 +400,40 @@ fn zuege_der(m: &Model, flaechen: &[Raumflaeche]) -> Vec<RunId> {
     v
 }
 
-/// Fingerabdruck einer Hausgruppe: Gebäude und Stand ([`Kennung`]), die
-/// Fassungen ihrer Züge und ihre Räume. Was sonst im Geschoss geschieht,
-/// geht sie nichts an.
-fn gruppe_kennung(m: &Model, k: &impl Ketten, gebaeude: u64, gr: &Gruppe) -> u64 {
-    let mut h = DefaultHasher::new();
-    gebaeude.hash(&mut h);
-    for &run in &gr.zuege {
-        fassung_in(&mut h, k, m.revision(), run);
-    }
-    for f in gr.flaechen.iter() {
-        if let Some((id, s)) = f.form.raum.and_then(|id| Some((id, m.space(id)?))) {
-            raum_in(&mut h, id, s);
-        }
-    }
-    h.finish()
+/// Schlüssel einer Hausgruppe: die Adresse ihrer Flächen.
+fn zeiger(f: &Rc<[Raumflaeche]>) -> usize {
+    Rc::as_ptr(f).cast::<()>() as usize
 }
 
 impl RaumCache {
-    /// Gleicht den Speicher mit dem Modell ab (einmal je Modellstand), die
-    /// Flächen aus der Erkennung der Szene, die Züge aus ihren berechneten.
+    /// Nimmt auf, was ein Schritt geändert hat: beim Abschluss und
+    /// Verwerfen der offene Schritt ([`Model::schritt_aenderungen`]), bei
+    /// Rückgängig und Wiederholen der angewandte.
+    pub(super) fn merken(&mut self, m: &Model, cs: &[Change]) {
+        self.offen.aus(m, cs);
+    }
+
+    /// Gleicht den Speicher mit dem Modell ab, die Flächen aus der
+    /// Erkennung der Szene, die Züge aus ihren berechneten. Im offenen
+    /// Schritt (Ziehen im Geschossmanager, einer Wand) bleibt der Ausbau,
+    /// wie er war, und folgt beim Abschluss.
     fn sync(&mut self, s: &Scene) {
         let m = s.model();
-        if self.rev == Some(m.revision()) {
+        if self.rev.is_some()
+            && (m.in_step() || self.rev == Some(m.revision()) && self.offen.leer())
+        {
             return;
         }
+        let erst = self.rev.is_none();
         self.rev = Some(m.revision());
-        let k = s.ketten();
-        // Eine geänderte Raumvorlage oder ein geänderter Typ kann jeden Raum
-        // treffen; seine Körper bleiben, wenn sie ihn nicht trifft
-        let typen = m.layer_sets();
-        if self.vorlagen.as_slice() != m.space_types()
-            || self.typen.len() != typen.len()
-            || !self
-                .typen
-                .iter()
-                .zip(typen.iter())
-                .all(|(a, b)| a.0 == b.0 && a.1 == *b.1)
-        {
-            self.vorlagen = m.space_types().to_vec();
-            self.typen = typen.iter().map(|(id, t)| (id, t.clone())).collect();
-            self.stand += 1;
+        let mut b = std::mem::take(&mut self.offen);
+        self.neu_gebaut(s, &mut b);
+        if !erst && b.leer() {
+            return;
         }
-        let kennungen = geschoss_kennungen(m, &k, self.stand);
+        let alle = erst || b.alles;
+        let hoch = self.hoehen_abgleichen(m, &b.gebaeude, alle);
+        let k = s.ketten();
         let mut alt: HashMap<StoreyId, Geschoss> = std::mem::take(&mut self.geschosse)
             .into_iter()
             .map(|g| (g.id, g))
@@ -256,68 +442,164 @@ impl RaumCache {
             if st.kind != LevelKind::Storey {
                 continue;
             }
-            let kennung = kennungen.get(&g).copied().unwrap_or_default();
-            let vorher = alt.remove(&g);
-            let neu = match vorher {
-                Some(x) if x.kennung == kennung => x,
-                x => self.geschoss(s, &k, g, kennung, x),
+            let ganz = alle || hoch.contains(&st.building);
+            let neu = match alt.remove(&g) {
+                Some(x) if !ganz && !b.geschosse.contains(&g) => x,
+                x => self.geschoss(s, &k, g, &b, ganz, x),
             };
             self.geschosse.push(neu);
         }
     }
 
-    /// Ein Geschoss neu ansehen: je Hausgruppe der Erkennung, die anders
-    /// ist als vorher, ihre Räume.
+    /// Die Geschosse der Züge, die die Szene seit dem letzten Abgleich neu
+    /// gebaut oder entfernt hat (auch Nachbarn und gekoppelte Züge), und
+    /// der noch nicht gebauten.
+    fn neu_gebaut(&mut self, s: &Scene, b: &mut Beruehrt) {
+        let m = s.model();
+        if self.zuege.len() < s.cache.len() {
+            self.zuege.resize(s.cache.len(), None);
+        }
+        for (i, alt) in self.zuege.iter_mut().enumerate() {
+            let jetzt = s.cache.get(i).and_then(Option::as_ref);
+            let jetzt = jetzt.map(|c| (c.id, c.builds));
+            if jetzt == alt.map(|a| (a.0, a.1)) {
+                continue;
+            }
+            b.geschosse.extend(alt.map(|a| a.2));
+            *alt = jetzt.and_then(|(id, n)| Some((id, n, m.run(id)?.storey)));
+            b.geschosse.extend(alt.map(|a| a.2));
+        }
+        if s.all_dirty {
+            b.geschosse.extend(m.storeys().ids());
+        }
+        b.geschosse
+            .extend(s.dirty.iter().filter_map(|&id| Some(m.run(id)?.storey)));
+    }
+
+    /// Vergleicht die Höhen der Gebäude `welche` (aller mit `alle`);
+    /// Ergebnis: die Gebäude, deren Höhen anders sind.
+    fn hoehen_abgleichen(
+        &mut self,
+        m: &Model,
+        welche: &HashSet<Option<BuildingId>>,
+        alle: bool,
+    ) -> HashSet<Option<BuildingId>> {
+        let welche: HashSet<Option<BuildingId>> = if alle {
+            m.storeys().iter().map(|(_, s)| s.building).collect()
+        } else if welche.is_empty() {
+            return HashSet::new();
+        } else {
+            welche.clone()
+        };
+        let mut neu = hoehen(m, &welche);
+        let mut anders = HashSet::new();
+        for g in welche {
+            let h = neu.remove(&g);
+            if self.hoehen.get(&g) != h.as_ref() {
+                anders.insert(g);
+            }
+            match h {
+                Some(h) => self.hoehen.insert(g, h),
+                None => self.hoehen.remove(&g),
+            };
+        }
+        anders
+    }
+
+    /// Ein berührtes Geschoss: Hausgruppen der Erkennung, die gleich
+    /// geblieben sind, bleiben samt Netz; in den anderen prüft jeder Raum
+    /// (mit `ganz` in allen).
     fn geschoss(
         &mut self,
         s: &Scene,
         k: &impl Ketten,
         g: StoreyId,
-        kennung: Kennung,
+        b: &Beruehrt,
+        ganz: bool,
         vorher: Option<Geschoss>,
     ) -> Geschoss {
         let m = s.model();
-        let (gruppen, items) = vorher.map_or((Vec::new(), Vec::new()), |x| (x.gruppen, x.items));
         // Nach dem Zeiger ihrer Flächen; die alte Gruppe hält sie am Leben
-        let mut gruppen: HashMap<usize, Gruppe> = gruppen
+        let mut alte: HashMap<usize, Gruppe> = vorher
+            .map(|x| x.gruppen)
+            .unwrap_or_default()
             .into_iter()
-            .map(|gr| (Rc::as_ptr(&gr.flaechen).cast::<()>() as usize, gr))
+            .map(|gr| (zeiger(&gr.flaechen), gr))
             .collect();
-        let mut alt: HashMap<ElementId, Eintrag> = items.into_iter().map(|x| (x.id, x)).collect();
-        let mut out = Geschoss {
-            id: g,
-            kennung,
-            gruppen: Vec::new(),
-            items: Vec::new(),
-        };
-        for flaechen in s.raumgruppen(g).gruppen {
-            let zeiger = Rc::as_ptr(&flaechen).cast::<()>() as usize;
-            let vorige = gruppen.remove(&zeiger);
-            let mut gr = Gruppe {
-                zuege: vorige
-                    .as_ref()
-                    .map_or_else(|| zuege_der(m, &flaechen), |v| v.zuege.clone()),
-                flaechen,
-                kennung: 0,
-            };
-            gr.kennung = gruppe_kennung(m, k, kennung.gebaeude, &gr);
-            let gleich = vorige.is_some_and(|v| v.kennung == gr.kennung);
-            for f in gr.flaechen.iter() {
-                let Some(id) = f.form.raum else {
-                    continue;
-                };
-                match alt.remove(&id).filter(|x| x.storey == g) {
-                    Some(x) if gleich => out.items.push(x),
-                    x => {
-                        if let Some(e) = self.raum(m, k, g, f, x) {
-                            out.items.push(e);
-                        }
-                    }
+        let neue = s.raumgruppen(g).gruppen;
+        let mut bleiben: Vec<Option<Gruppe>> = Vec::with_capacity(neue.len());
+        // Netze der Gruppen mit denselben Flächen, die prüfen: Sie bleiben,
+        // wenn danach alle Räume dieselben sind
+        let mut netze: HashMap<usize, Vorher> = HashMap::new();
+        for f in &neue {
+            let z = zeiger(f);
+            match alte.remove(&z) {
+                Some(gr) if !ganz && gr.gleich(k, b) => bleiben.push(Some(gr)),
+                Some(mut gr) => {
+                    let ids = gr.items.iter().map(|x| x.id).collect();
+                    netze.insert(z, (ids, std::mem::take(&mut gr.netze), gr.boden));
+                    alte.insert(z, gr);
+                    bleiben.push(None);
                 }
+                None => bleiben.push(None),
             }
-            out.gruppen.push(gr);
         }
-        out
+        // Die Räume der übrigen, falls sie gleich bleiben
+        let mut pool: HashMap<ElementId, Eintrag> = alte
+            .into_values()
+            .flat_map(|gr| gr.items)
+            .map(|x| (x.id, x))
+            .collect();
+        let gruppen = neue
+            .into_iter()
+            .zip(bleiben)
+            .map(|(f, gr)| {
+                gr.unwrap_or_else(|| {
+                    let (z, gebaut) = (zeiger(&f), self.builds);
+                    let mut gr = self.gruppe(m, k, g, f, &mut pool);
+                    let ids: Vec<ElementId> = gr.items.iter().map(|x| x.id).collect();
+                    let gleich = |n: &Vorher| n.0 == ids && self.builds == gebaut;
+                    if let Some((_, n, boden)) = netze.remove(&z).filter(gleich) {
+                        gr.netze = n;
+                        gr.boden = boden;
+                    }
+                    gr
+                })
+            })
+            .collect();
+        Geschoss { id: g, gruppen }
+    }
+
+    /// Eine neue oder geänderte Hausgruppe: Jeder ihrer Räume prüft.
+    fn gruppe(
+        &mut self,
+        m: &Model,
+        k: &impl Ketten,
+        g: StoreyId,
+        flaechen: Rc<[Raumflaeche]>,
+        pool: &mut HashMap<ElementId, Eintrag>,
+    ) -> Gruppe {
+        let zuege = zuege_der(m, &flaechen)
+            .into_iter()
+            .map(|r| (r, k.fassung(r)))
+            .collect();
+        let mut items = Vec::new();
+        for f in flaechen.iter() {
+            let Some(id) = f.form.raum else {
+                continue;
+            };
+            let alt = pool.remove(&id).filter(|x| x.storey == g);
+            items.extend(self.raum(m, k, g, f, alt));
+        }
+        let kasten = items.iter().fold(None, |a, x| union(a, x.kasten));
+        Gruppe {
+            flaechen,
+            zuege,
+            items,
+            kasten,
+            netze: Vec::new(),
+            boden: None,
+        }
     }
 
     /// Rohbau und Ausbau eines Raums; die Körper nur, wenn sie sich ändern.
@@ -343,64 +625,41 @@ impl RaumCache {
         }
         let k = koerper(m, &s.roh, &s.aus);
         self.builds += 1;
+        let voll = paar(&k, |x| x.solid.clone());
         Some(Eintrag {
             id,
             storey: g,
-            voll: paar(&k, |x| x.solid.clone()),
+            kasten: union(voll[0].bounds(), voll[1].bounds()),
+            voll,
             koerper: k,
             schluessel: s,
-            plan: Vec::new(),
-            section: Vec::new(),
+            schnitte: Vec::new(),
         })
     }
 
-    /// Körper je Raum für eine Ansicht: je Raum der Estrich und, mit
-    /// `alles`, der übrige Ausbau. Grundriss: nur die Räume des Geschosses,
-    /// geschnitten in Schnitthöhe; Schnitt: geschnitten an der Ebene; sonst
-    /// die ganzen Körper.
+    /// Körper je Raum für eine Ansicht mit Filter (Isolieren, Übergänge):
+    /// Grundriss nur die Räume des Geschosses `plan`; je Raum der Estrich
+    /// und mit `alles` der übrige Ausbau.
     fn shown(
         &mut self,
-        plan: Option<(StoreyId, f64)>,
-        section: Option<Plane>,
+        plan: Option<StoreyId>,
+        sicht: Sicht,
         alles: bool,
     ) -> Vec<(ElementId, &Solid)> {
-        for x in self.geschosse.iter_mut().flat_map(|g| g.items.iter_mut()) {
-            match (plan, section) {
-                (Some((st, cut)), _) if x.storey == st => {
-                    if let Some(i) = x.plan.iter().position(|p| p.0 == cut) {
-                        let hit = x.plan.remove(i);
-                        x.plan.insert(0, hit);
-                    } else {
-                        let p0 = vec3(0.0, 0.0, cut);
-                        let s = paar(&x.koerper, |k| k.geschnitten(p0, vec3(0.0, 0.0, 1.0)));
-                        x.plan.truncate(KEEP - 1);
-                        x.plan.insert(0, (cut, s));
-                    }
-                }
-                (None, Some(pl)) => {
-                    if let Some(i) = x.section.iter().position(|p| p.0 == pl) {
-                        let hit = x.section.remove(i);
-                        x.section.insert(0, hit);
-                    } else {
-                        let s = paar(&x.koerper, |k| k.geschnitten(pl.0, pl.1));
-                        x.section.truncate(KEEP - 1);
-                        x.section.insert(0, (pl, s));
-                    }
-                }
-                _ => {}
-            }
-        }
         let mut out = Vec::new();
-        for x in self.geschosse.iter().flat_map(|g| g.items.iter()) {
-            let p = match (plan, section) {
-                (Some((st, _)), _) if x.storey != st => continue,
-                (Some(_), _) => &x.plan[0].1,
-                (None, Some(_)) => &x.section[0].1,
-                (None, None) => &x.voll,
-            };
-            out.push((x.id, &p[0]));
-            if alles {
-                out.push((x.id, &p[1]));
+        let n = &mut self.netze.1;
+        let gruppen = self
+            .geschosse
+            .iter_mut()
+            .filter(|g| plan.is_none_or(|p| g.id == p))
+            .flat_map(|g| g.gruppen.iter_mut());
+        for x in gruppen.flat_map(|gr| gr.items.iter_mut()) {
+            let id = x.id;
+            if let Some(p) = x.paar(sicht, n) {
+                out.push((id, &p[0]));
+                if alles {
+                    out.push((id, &p[1]));
+                }
             }
         }
         out
@@ -419,6 +678,13 @@ pub fn platz(v: ViewKind) -> Option<usize> {
 }
 
 impl Scene {
+    /// Vor Abschluss und Verwerfen: Der Ausbau merkt sich, was der offene
+    /// Schritt berührt.
+    pub(super) fn ausbau_schritt(&mut self) {
+        self.ausbau
+            .merken(&self.model, self.model.schritt_aenderungen());
+    }
+
     /// Schalter „Ausbau innen“ der Ansicht `i` (Ansichtszustand ohne
     /// Schritt, wie die Schnitthöhe).
     pub fn set_view_finish(&mut self, i: usize, an: bool) {
@@ -438,24 +704,67 @@ impl Scene {
         self.ausbau_into(m, view, section);
     }
 
-    /// Ausbau innen ins Netz, deckend oder blass wie die Erweiterungen.
+    /// Ausbau innen ins Netz: ohne Filter die Netze der Hausgruppen
+    /// angehängt, mit Filter je Raum deckend oder blass wie die
+    /// Erweiterungen.
     fn ausbau_into(&mut self, m: &mut [MeshData; 2], view: ViewKind, section: Option<Plane>) {
         let Some(i) = platz(view) else {
             return;
         };
         let alles = self.model.view_finish(i);
-        if view == ViewKind::Plan && !alles {
+        // Ohne Schalter zeigt nur der Schnitt etwas: den Estrich
+        if !alles && view != ViewKind::Section {
             return;
         }
         let Some((plan, section)) = self.ext_view(view, section) else {
             return;
         };
+        let sicht = match (plan, section) {
+            // Beim Ziehen der Schnitthöhe bleibt der letzte Schnitt bis zum
+            // Loslassen
+            (Some((_, cut)), _) => {
+                let ziehen = self.model.in_step();
+                let z = self.ausbau.plan.filter(|_| ziehen).unwrap_or(cut);
+                self.ausbau.plan = Some(z);
+                Sicht::Plan(z)
+            }
+            (None, Some(p)) => Sicht::Schnitt(p),
+            (None, None) => Sicht::Voll,
+        };
+        let plan = plan.map(|p| p.0);
         // Der Speicher liest die Szene (Erkennung, berechnete Züge)
         let mut c = std::mem::take(&mut self.ausbau);
         c.sync(self);
         self.ausbau = c;
         let filter = self.filtering();
         let model = &self.model;
+        if !filter {
+            // Erst die Netze, dann einmal Platz und anhängen
+            let z = &mut self.ausbau.netze;
+            let mut teile = Vec::new();
+            let (mut nf, mut ne) = (0, 0);
+            for (i, g) in self.ausbau.geschosse.iter_mut().enumerate() {
+                if plan.is_some_and(|p| p != g.id) {
+                    continue;
+                }
+                let boden = model.terrain_z_of(model.building_of(g.id));
+                for (j, gr) in g.gruppen.iter_mut().enumerate() {
+                    if let Some(n) = gr.netz(sicht, alles, boden, z) {
+                        nf += n.faces.len();
+                        ne += n.edges.len();
+                        teile.push((i, j));
+                    }
+                }
+            }
+            m[0].faces.reserve_exact(nf);
+            m[0].edges.reserve_exact(ne);
+            for (i, j) in teile {
+                let n = &self.ausbau.geschosse[i].gruppen[j].netze[0].2;
+                m[0].faces.extend_from_slice(&n.faces);
+                m[0].edges.extend_from_slice(&n.edges);
+            }
+            return;
+        }
         let ground = |id: ElementId| model.terrain_z_of(model.building_of_element(id));
         let vis = Vis {
             model: &self.model,
@@ -463,15 +772,11 @@ impl Scene {
             table: &self.vis_table,
             stamp: self.vis_stamp(),
         };
-        for (id, s) in self.ausbau.shown(plan, section, alles) {
-            let k = if filter {
-                match class_in(vis.element_masks(id), sk_model::NO_LAYER) {
-                    Class::Solid => 0,
-                    Class::Ghost => 1,
-                    Class::Hidden => continue,
-                }
-            } else {
-                0
+        for (id, s) in self.ausbau.shown(plan, sicht, alles) {
+            let k = match class_in(vis.element_masks(id), sk_model::NO_LAYER) {
+                Class::Solid => 0,
+                Class::Ghost => 1,
+                Class::Hidden => continue,
             };
             mesh_into(&mut m[k], s, ground(id));
         }
@@ -487,6 +792,13 @@ impl Scene {
     #[cfg(test)]
     pub fn ausbau_geprueft(&self) -> u64 {
         self.ausbau.geprueft
+    }
+
+    /// Wie oft eine Hausgruppe ihr Netz und ein Raum seinen Schnitt
+    /// gerechnet hat (Tests).
+    #[cfg(test)]
+    pub fn ausbau_netze(&self) -> (u64, u64) {
+        self.ausbau.netze
     }
 }
 
@@ -558,9 +870,9 @@ mod tests {
         assert_eq!(ganz.edges.len(), rest.edges.len() + gezogen.edges.len());
     }
 
-    /// Estrich im Schnitt und im 3D immer, Putz nur mit dem Schalter der
-    /// Ansicht; im Grundriss ohne Schalter nichts. Umschalten rechnet keinen
-    /// Raum neu.
+    /// Estrich im Schnitt immer, Putz nur mit dem Schalter der Ansicht;
+    /// Grundriss und 3D ohne Schalter nichts, 3D mit ihm auch den Estrich.
+    /// Umschalten rechnet keinen Raum neu.
     #[test]
     fn ausbau_innen_je_ansicht() {
         let (mut s, _) = haus();
@@ -592,12 +904,15 @@ mod tests {
                 .all(|f| f[5] > 0.99),
             "Schnittfläche nach oben"
         );
-        // 3D: Estrich immer, Putz mit Schalter
+        // 3D: ohne Schalter nichts, mit ihm Estrich und Putz
         let m = s.mesh(ViewKind::Persp, None, &[]);
-        assert!(flaechen(&m, &estrich, false) > 0);
-        assert_eq!(flaechen(&m, &putz, false), 0);
+        assert_eq!(
+            flaechen(&m, &estrich, false) + flaechen(&m, &putz, false),
+            0
+        );
         s.set_view_finish(2, true);
         let m = s.mesh(ViewKind::Persp, None, &[]);
+        assert!(flaechen(&m, &estrich, false) > 0);
         assert!(flaechen(&m, &putz, false) > 0);
         // Ansichten ohne Ausbau
         let m = s.mesh(ViewKind::Front, None, &[]);
@@ -639,14 +954,75 @@ mod tests {
         innen
     }
 
-    /// Geprüfte und gebaute Räume seit dem letzten Aufruf, nach dem Netz
-    /// der 3D-Ansicht.
-    fn neu(s: &mut Scene, vorher: &mut (u64, u64)) -> (u64, u64) {
+    /// Geprüfte und gebaute Räume und gerechnete Netze der Hausgruppen
+    /// seit dem letzten Aufruf, nach dem Netz der 3D-Ansicht.
+    fn neu(s: &mut Scene, vorher: &mut (u64, u64, u64)) -> (u64, u64, u64) {
         s.mesh(ViewKind::Persp, None, &[]);
-        let jetzt = (s.ausbau_geprueft(), s.ausbau_builds());
-        let d = (jetzt.0 - vorher.0, jetzt.1 - vorher.1);
+        let jetzt = (s.ausbau_geprueft(), s.ausbau_builds(), s.ausbau_netze().0);
+        let d = (jetzt.0 - vorher.0, jetzt.1 - vorher.1, jetzt.2 - vorher.2);
         *vorher = jetzt;
         d
+    }
+
+    /// Die Wand `w` um `dx` verschoben, in einem Schritt.
+    fn wand_schritt(s: &mut Scene, w: RunId, dx: f64) {
+        let pts: Vec<_> = s.model().run(w).unwrap().points.clone();
+        let pts: Vec<_> = pts.iter().map(|p| *p + vec3(dx, 0.0, 0.0)).collect();
+        s.begin("Wand verschieben");
+        s.set_run_points(w, &pts);
+        s.commit();
+    }
+
+    /// Review #137 B1: Grundriss und 3D ohne Schalter prüfen keinen Raum
+    /// und rechnen kein Netz, auch nicht nach einem Schritt oder
+    /// Rückgängig.
+    #[test]
+    fn ohne_schalter_nichts() {
+        let mut s = Scene::new();
+        let innen = haeuser(&mut s, 0, 2);
+        let netze = |s: &mut Scene| {
+            for v in [ViewKind::Persp, ViewKind::Plan] {
+                s.mesh(v, None, &[]);
+            }
+            (s.ausbau_geprueft(), s.ausbau_netze())
+        };
+        assert_eq!(netze(&mut s), (0, (0, 0)));
+        wand_schritt(&mut s, innen[0], -150.0);
+        assert!(s.undo());
+        assert_eq!(netze(&mut s), (0, (0, 0)));
+    }
+
+    /// Review #137 H5: Eine Schnittebene schneidet nur die Räume, durch die
+    /// sie geht; was ganz dahinter liegt, zeigt seine ganzen Körper, was
+    /// davor liegt, nichts. Eine verschobene Ebene schneidet nur diese
+    /// Räume neu, eine schon gesehene keinen.
+    #[test]
+    fn schnitt_nur_durch_getroffene_raeume() {
+        let mut s = Scene::new();
+        haeuser(&mut s, 0, 3);
+        let estrich = schluessel(&s, SCREED_SLAB_TYPE_GUID);
+        let ebene = |x: f64| Some((vec3(x, 4000.0, 0.0), vec3(1.0, 0.0, 0.0)));
+        let mut z = s.ausbau_netze();
+        let mut neu = |s: &mut Scene, x: f64| {
+            let m = s.mesh(ViewKind::Section, ebene(x), &[]);
+            let jetzt = s.ausbau_netze();
+            let d = (jetzt.0 - z.0, jetzt.1 - z.1);
+            z = jetzt;
+            (
+                d,
+                flaechen(&m, &estrich, true),
+                flaechen(&m, &estrich, false),
+            )
+        };
+        // Haus A: der mittlere Raum und der darüber geschnitten, der linke
+        // ganz, der rechte nicht; die Häuser B und C liegen davor
+        let (d, geschnitten, ganz) = neu(&mut s, 5000.0);
+        assert_eq!(d, (2, 2));
+        assert!(geschnitten > 0 && ganz > 0);
+        assert_eq!(neu(&mut s, 5100.0).0, (2, 2));
+        assert_eq!(neu(&mut s, 5000.0).0, (0, 0), "schon gesehen");
+        // Hinter allen Häusern: je Hausgruppe das ganze Netz, kein Schnitt
+        assert_eq!(neu(&mut s, 60000.0).0, (6, 0));
     }
 
     /// Review #112 B1: Ein Wandschritt rechnet nur die Räume seines Hauses
@@ -659,9 +1035,9 @@ mod tests {
         s.set_view_finish(2, true);
         let st = s.active_storey();
         assert_eq!(s.model().spaces(st).len(), 6);
-        let mut z = (0, 0);
-        assert_eq!(neu(&mut s, &mut z), (8, 8));
-        assert_eq!(neu(&mut s, &mut z), (0, 0), "Netz ohne Änderung");
+        let mut z = (0, 0, 0);
+        assert_eq!(neu(&mut s, &mut z), (8, 8, 4));
+        assert_eq!(neu(&mut s, &mut z), (0, 0, 0), "Netz ohne Änderung");
         // Erste Innenwand von Haus A schrittweise nach links
         let iw = innen[0];
         let orig = s.model().run(iw).unwrap().points.clone();
@@ -673,26 +1049,54 @@ mod tests {
             s.commit();
             assert_eq!(
                 neu(&mut s, &mut z),
-                (3, 2),
+                (3, 2, 1),
                 "Haus A, zwei Räume an der Wand ({i})"
             );
         }
+        // Rückgängig: Haus A wieder, aus dem Speicher der Räume
+        assert!(s.undo());
+        assert_eq!(neu(&mut s, &mut z), (3, 2, 1));
         // Ein drittes Haus: nur seine Räume
         haeuser(&mut s, 2, 3);
         assert_eq!(s.model().spaces(st).len(), 9);
-        assert_eq!(neu(&mut s, &mut z), (4, 4));
+        assert_eq!(neu(&mut s, &mut z), (4, 4, 2));
+    }
+
+    /// Im offenen Schritt (Ziehen im Geschossmanager) prüft kein Raum und
+    /// schneidet keiner neu, auch nicht in neuer Schnitthöhe oder mit
+    /// höherem Geschoss; beim Loslassen folgt der Ausbau.
+    #[test]
+    fn im_schritt_folgt_der_ausbau_beim_loslassen() {
+        let mut s = Scene::new();
+        haeuser(&mut s, 0, 2);
+        s.set_view_finish(0, true);
+        s.mesh(ViewKind::Plan, None, &[]);
+        let stand = |s: &Scene| (s.ausbau_geprueft(), s.ausbau_netze());
+        let vorher = stand(&s);
+        let st = s.active_storey();
+        let g = s.model().storey(st).unwrap().clone();
+        s.begin("Geschoss ziehen");
+        s.drag_plan_cut(g.elevation + 1200.0);
+        s.mesh(ViewKind::Plan, None, &[]);
+        s.drag_storey_top(st, g.elevation + g.height + 200.0);
+        s.mesh(ViewKind::Plan, None, &[]);
+        assert_eq!(stand(&s), vorher);
+        s.commit();
+        s.mesh(ViewKind::Plan, None, &[]);
+        let (geprueft, (netze, schnitte)) = stand(&s);
+        assert!(geprueft > vorher.0 && netze > vorher.1 .0 && schnitte > vorher.1 .1);
     }
 
     /// Eine andere Nutzung baut nur diesen Raum neu; bringt sie neue Typen
     /// ins Projekt oder ändert sich ein Typ, prüft jeder Raum, gebaut wird
-    /// nur, wen es trifft.
+    /// nur, wen es trifft, und nur dessen Hausgruppe rechnet ihr Netz neu.
     #[test]
     fn nutzung_und_typ() {
         let mut s = Scene::new();
         haeuser(&mut s, 0, 2);
         s.set_view_finish(2, true);
         let st = s.active_storey();
-        let mut z = (0, 0);
+        let mut z = (0, 0, 0);
         neu(&mut s, &mut z);
         let raeume = s.model().spaces(st).to_vec();
         let bad = BATH_SPACE_GUID;
@@ -705,14 +1109,14 @@ mod tests {
         };
         // Das erste Bad bringt Fliesen und ihre Typen
         nutzung(&mut s, raeume[0]);
-        assert_eq!(neu(&mut s, &mut z), (8, 1));
+        assert_eq!(neu(&mut s, &mut z), (8, 1, 1));
         // Das zweite nur noch sich, geprüft werden die Räume seines Hauses
         let b = *raeume
             .iter()
             .find(|&&r| !same_haus(&s, raeume[0], r))
             .unwrap();
         nutzung(&mut s, b);
-        assert_eq!(neu(&mut s, &mut z), (3, 1));
+        assert_eq!(neu(&mut s, &mut z), (3, 1, 1));
         // Wandfliesen dicker: nur die zwei Bäder
         let m = s.model();
         let id = SPACE_TEMPLATES
@@ -723,7 +1127,7 @@ mod tests {
         let mut t = m.layer_set(id).unwrap().clone();
         t.layers[0].thickness += 5.0;
         assert!(s.edit_types("Typ", |m| m.set_layer_set(id, t)));
-        assert_eq!(neu(&mut s, &mut z), (8, 2));
+        assert_eq!(neu(&mut s, &mut z), (8, 2, 2));
     }
 
     /// Liegen die Anker der Räume `a` und `b` im selben Haus?

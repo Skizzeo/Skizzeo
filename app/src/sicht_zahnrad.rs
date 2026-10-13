@@ -39,7 +39,7 @@ pub const PUNKTE: &str = "Maßbezugspunkte zeigen";
 /// Aus.
 pub const AUSBAU: &str = "Ausbau innen";
 pub const AUSBAU_TIP: &str =
-    "Putz, Wandbeläge, Bodenbelag und Sockelleisten; den Estrich zeigen Schnitt und 3D immer";
+    "Putz, Wandbeläge, Bodenbelag und Sockelleisten, in 3D auch der Estrich; der Schnitt zeigt ihn immer";
 /// Leise Zeile unter „Auf alle Ansichten übertragen“: die Dachentwässerung
 /// geht an alle sieben Ansichten, der Schalter nur an die drei, die ihn
 /// haben (wie Einstellungen H1).

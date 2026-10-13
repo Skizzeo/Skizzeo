@@ -44,8 +44,9 @@ pub(super) fn known(base: &[&'static str], s: &str) -> Option<&'static str> {
 /// Was das Raumbuch aus der `.szo` liest.
 pub(crate) struct Daten {
     pub(crate) space_types: Vec<SpaceType>,
-    /// Schalter je Ansicht und die Zeilen, die nicht zählen (roh).
-    pub(crate) view_finish: ([bool; 3], Vec<String>),
+    /// Schalter je Ansicht mit „in der Datei“ und die Zeilen, die nicht
+    /// zählen (roh).
+    pub(crate) view_finish: ([(bool, bool); 3], Vec<String>),
 }
 
 /// Schreibt die Abschnitte des Raumbuchs (nach den Bauteiltypen).

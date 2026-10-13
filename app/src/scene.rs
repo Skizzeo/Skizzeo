@@ -1942,8 +1942,10 @@ impl Scene {
     pub fn commit(&mut self) {
         // Räume folgen den Wänden im selben Schritt (G3)
         let raeume = self.raeume_abgleichen();
+        self.ausbau_schritt();
         match self.model.try_commit() {
             Ok(Some(txn)) => {
+                self.ausbau.merken(&self.model, &txn.changes);
                 self.undo.push(raum::Schritt { txn, raeume });
                 self.serial += 1;
                 if self.undo.len() > HISTORY {
@@ -1979,6 +1981,7 @@ impl Scene {
     /// Verwirft den offenen Schritt (Esc beim Ziehen); nur die betroffenen
     /// Wandzüge werden neu berechnet.
     pub fn rollback(&mut self) {
+        self.ausbau_schritt();
         let touched = self.model.rollback();
         self.live.clear();
         self.mark_touched(&touched);
@@ -3337,6 +3340,7 @@ impl Scene {
             return false;
         };
         let touched = self.model.apply(&t.txn, dir);
+        self.ausbau.merken(&self.model, &t.txn.changes);
         self.staende_folgen(&t, dir);
         match dir {
             Direction::Undo => self.redo.push(t),

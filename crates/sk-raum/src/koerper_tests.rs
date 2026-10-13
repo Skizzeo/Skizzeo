@@ -431,3 +431,74 @@ fn schnitt_durch_den_raum() {
         .all(|t| t.n == n));
     gleich_v(inhalt(&d), 2500.0 * 4000.0 * 10.0);
 }
+
+/// Geometrie zu #137: Jeder Körper der vier Räume, geschnitten in sechs
+/// Höhen und an senkrechten Ebenen (auch genau auf Flächen und Fugen, bei
+/// 500 und 2000): Teil dahinter und Teil davor sind je geschlossen und
+/// ergeben zusammen den ganzen Körper.
+#[test]
+fn schnitt_teilt_den_inhalt() {
+    let h = haus();
+    let raeume = [
+        (wohnzimmer(&h), LIVING_SPACE_GUID),
+        (bad(&h), BATH_SPACE_GUID),
+        (diele(&h), HALL_SPACE_GUID),
+        (ecke(&h), LIVING_SPACE_GUID),
+    ];
+    let mut schnitte = 0;
+    let mut schlecht = Vec::new();
+    let o = vec3(1234.0, -5678.0, 910.0);
+    for (f, g) in &raeume {
+        let a = RaumAusbau::nach_vorlage(&h.m, f, &vorlage(*g));
+        for k in koerper(&h.m, f, &a) {
+            let ganz = inhalt_von(&k.solid, vec3(0.0, 0.0, 0.0));
+            let mut ebenen = Vec::new();
+            for z in [100.0, 170.0, 1000.0, 2000.0, 2500.0, 2630.0] {
+                ebenen.push((vec3(0.0, 0.0, z), vec3(0.0, 0.0, 1.0)));
+            }
+            for x in [500.37, 1234.5, 2000.37, 3500.37, 4100.37, 500.0, 2000.0] {
+                ebenen.push((vec3(x, 0.0, 0.0), vec3(1.0, 0.0, 0.0)));
+                ebenen.push((vec3(0.0, x, 0.0), vec3(0.0, 1.0, 0.0)));
+            }
+            for (p0, n) in ebenen {
+                let unten = k.geschnitten(p0, n);
+                let oben = k.geschnitten(p0, n * -1.0);
+                let v =
+                    [&unten, &oben].map(|s| (inhalt_von(s, vec3(0.0, 0.0, 0.0)), inhalt_von(s, o)));
+                schnitte += 1;
+                let tol = 1e-6 * ganz.abs().max(1.0);
+                if v.iter().any(|(a, b)| (a - b).abs() > tol)
+                    || (v[0].0 + v[1].0 - ganz).abs() > tol
+                {
+                    schlecht.push(format!(
+                        "{:?} {} {p0:?} {n:?}: {ganz:.0} {v:?}",
+                        k.flaeche, k.schicht
+                    ));
+                }
+            }
+        }
+    }
+    assert_eq!(schnitte, 53 * 20);
+    assert!(schlecht.is_empty(), "{schlecht:#?}");
+}
+
+/// Geometrie zu #137: Liegt die Ebene auf der Putzfläche (Bad, Wand 2 bei
+/// y = 2000), entsteht keine Schnittfläche; mitten durch den Putz die volle
+/// (Wohnzimmer, Wand 1: 15 × 2625).
+#[test]
+fn ebene_auf_der_putzflaeche() {
+    let h = haus();
+    let flaeche = |f: &Rohbau, g, w, schicht, y| {
+        let a = RaumAusbau::nach_vorlage(&h.m, f, &vorlage(g));
+        let k = koerper(&h.m, f, &a)
+            .into_iter()
+            .find(|k| k.flaeche == Flaeche::Wand(w) && k.schicht == schicht)
+            .unwrap();
+        schnittflaeche(&k.geschnitten(vec3(0.0, y, 0.0), vec3(0.0, 1.0, 0.0)))
+    };
+    assert!(flaeche(&bad(&h), BATH_SPACE_GUID, 2, 1, 2000.0).abs() < 1e-6);
+    gleich_v(
+        flaeche(&wohnzimmer(&h), LIVING_SPACE_GUID, 1, 2, 2000.0),
+        15.0 * 2625.0,
+    );
+}
