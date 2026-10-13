@@ -48,12 +48,14 @@ impl Symbol {
     }
 }
 
-/// Bezug der Außenmaße.
+/// Welche Flächen der Wände die Außenmaßketten messen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Aussenbezug {
-    /// Außenseite der tragenden Schicht (Rohbaumaß).
+    /// Nur die tragende Schicht (Rohbaumaß ohne Dämmung, Vorsatzschale und
+    /// Putz).
     Rohbau,
-    /// Außenseite der Wand mit Dämmung und Putz.
+    /// Das ganze Wandpaket von der Außen- bis zur Innenkante (Werk, Jörn
+    /// 13.10.).
     Wand,
 }
 
@@ -69,8 +71,8 @@ impl Aussenbezug {
 
     pub fn name(self) -> &'static str {
         match self {
-            Aussenbezug::Rohbau => "Rohbau (tragende Schicht)",
-            Aussenbezug::Wand => "Außenkante Wand",
+            Aussenbezug::Rohbau => "Tragende Schicht",
+            Aussenbezug::Wand => "Ganzes Wandpaket",
         }
     }
 }
@@ -307,7 +309,7 @@ impl Stil {
             rundung: 1,
             erste: 2000.0,
             abstand: 1000.0,
-            bezug: Aussenbezug::Rohbau,
+            bezug: Aussenbezug::Wand,
             ketten: [true; 4],
             hoehe: true,
             brh: true,

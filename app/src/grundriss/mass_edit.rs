@@ -973,7 +973,7 @@ mod tests {
         let mut e = WallEdit::default();
         // Von der Westecke zum Fenster: rechts wandert das Fenster
         let (p, wert) = zahl(&s, &c, 270, Kettenart::Oeffnung, 0);
-        assert!((wert - 1380.0).abs() < 0.5);
+        assert!((wert - 1500.0).abs() < 0.5, "{wert}");
         klick(&mut e, &mut s, &c, p, Modifiers::default());
         tippen(&mut e, &mut s, &c, "12");
         assert!(
