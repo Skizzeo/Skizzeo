@@ -55,7 +55,7 @@ impl GelaendeKnopf {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GelaendeFeld {
     /// Höhenlage „über Gelände“: OK Sohle über dem höchsten Geländepunkt
-    /// am Plattenrand (cm).
+    /// am Plattenrand (mm; das Feld zeigt ihn wie jede Länge).
     Versatz,
     /// Höhenlage „absolut“: ±0,00 in m ü. NHN.
     Nhn,

@@ -1321,6 +1321,10 @@ impl Prefs {
             Target::Field(FieldId::Softness),
         ));
         y += 34.0 * s;
+        // Ohne Modul (Freischaltung): Darstellungsvorlieben, sie ändern
+        // keine Daten. Rasen und Erdreich färben auch die Geländeplatte
+        // (G0), „Umgebung blass“ das Gelände eines Aufmaßes, das jede Stufe
+        // zeigt (Review #129 F1)
         for (name, role) in [
             ("Gelände Rasen", "env.terrain_grass"),
             ("Gelände Erdreich", "env.terrain_soil"),

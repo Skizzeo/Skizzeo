@@ -1354,14 +1354,19 @@ impl Model {
     /// Folgen der Höhenlage am bestimmenden Gebäude (§4.3): Sockel (OK
     /// Sohle über Gelände) und Einbindung der Schürze (Gelände bis UK
     /// Gründung) am Plattenrand, je kleinster und größter Wert in mm.
-    /// `None` ohne Aufmaß oder Haus.
+    /// `None` ohne Aufmaß oder Haus. Umrisse nur der Züge dieses Gebäudes
+    /// (Review #129 B2: über alle Züge wuchs es mit dem Quadrat der Häuser).
     pub fn terrain_folgen(&self) -> Option<TerrainFolgen> {
         let t = self.terrain()?;
         let f = self.survey_frame()?;
         let h0 = self.terrain_nhn()?;
         let b = self.level_building()?;
         let mut hoehen: Vec<f64> = Vec::new();
-        for (_, ring) in self.plate_outlines().into_iter().filter(|o| o.0 == b) {
+        let zuege = self
+            .runs
+            .iter()
+            .filter(|(_, r)| self.building_of(r.storey) == Some(b));
+        for ring in zuege.filter_map(|(id, _)| self.plate_outline(id)) {
             let r: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
             hoehen.extend(t.along(&r).into_iter().map(|h| (h - h0) * 1000.0));
         }
