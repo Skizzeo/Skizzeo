@@ -94,7 +94,7 @@ impl App {
                 self.show_locked(l, Some((chip.wall, delete::Act::Field)));
                 return true;
             }
-            if let Some(o) = oeffnung_kanten::umbinden(self.scene.model(), chip.wall, oben) {
+            if let Some(o) = oeffnung_kanten::umbinden(&self.scene, chip.wall, oben) {
                 let schritt = if chip.linked {
                     "Höhe gelöst"
                 } else {

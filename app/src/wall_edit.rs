@@ -845,10 +845,7 @@ impl WallEdit {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.drag.is_some()
-            || self.ende.is_some()
-            || self.oeffnung_zieht()
-            || self.masse.aktiv()
+        self.drag.is_some() || self.ende.is_some() || self.oeffnung_zieht() || self.masse.aktiv()
     }
 
     /// Wandzug, der gerade gezogen wird.

@@ -47,7 +47,7 @@ fn gpu_istbilder_kanten() {
     let t = treffer(&s, &cam, p, W, H, 1.0, None).unwrap();
     let h = baender(&s, &cam, t, 1.0, true, &theme);
     ab(&bild(&mut r, &mut s, &cam, &h), "ist-o7-kanten.png");
-    // 2: Oberkante bis an den Sturz des OG gezogen, gebunden
+    // 2: Oberkante Richtung Sturz OG gezogen: sie endet unter der Decke
     let mut z = HoeheZug::greifen(&mut s, t, true, &cam, p, W, H, 1.0).unwrap();
     let st_og = s.model().run(og).unwrap().storey;
     let z_og = s
