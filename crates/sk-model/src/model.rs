@@ -771,10 +771,12 @@ impl Model {
         d.pattern.pen = pen;
         attr.set_display(d);
         // Einbauelement (Integration F20): Linientyp „Strichlinie fein“,
-        // ebenfalls mit fester Guid
+        // ebenfalls mit fester Guid; über der Schnittebene (G7b) zunächst
+        // ebenso
         let lt = attr.add_line_type(attr::element_line_type());
         let mut d = attr.display().clone();
         d.element.line_type = lt;
+        d.above.line_type = lt;
         attr.set_display(d);
         // Paket 1a: Gewerk je Startbaustoff
         let ids: Vec<MaterialId> = materials.ids().collect();

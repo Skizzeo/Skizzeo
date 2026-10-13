@@ -1723,6 +1723,13 @@ impl Renderer {
                 shadow_error.get_or_insert(e);
             }
             let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
+            // Geländeraster auf seiner Einheit, auch für Bilder ohne
+            // terrain_uniforms (Vorschau): nie zwei Samplerarten auf Einheit 0
+            for p in [faces.id, edges.id] {
+                gl.glUseProgram(p);
+                gl.glUniform1i(loc(&gl, p, c"u_ter_tex"), TERRAIN_UNIT as GLint);
+            }
+            gl.glUseProgram(0);
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
             let ink = program(&gl, INK_VS, INK_FS)?;

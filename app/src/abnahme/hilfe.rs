@@ -679,6 +679,8 @@ fn a293_genannte_tasten_sind_belegt() {
         ("Bild↓", "Geschoss bzw. Schnitt (wheel::KEY_PAGE_DOWN)"),
         ("←", "Kachelwahl der Sicherungskarte (backup_card)"),
         ("→", "Kachelwahl der Sicherungskarte (backup_card)"),
+        ("Leertaste", "Bandseite der Tür bei der Maus (tuer_edit)"),
+        ("Umschalt+Leertaste", "anderer Raum (tuer_edit)"),
         ("OK", "Knopf, keine Taste"),
     ];
     for t in fett(hilfetext()) {
@@ -703,6 +705,7 @@ fn a293_genannte_tasten_sind_belegt() {
     );
     assert_eq!(crate::wheel::KEY_PAGE_UP, Key::Other(0x21));
     assert_eq!(crate::wheel::KEY_PAGE_DOWN, Key::Other(0x22));
+    assert_eq!(crate::wall_edit::tuer_edit::LEERTASTE, Key::Other(0x20));
 
     // Werkzeug: Tab, R, Umschalt, Rücktaste, Enter, Esc
     let s = Scene::with_model(Model::with_seed(293));
