@@ -2,7 +2,10 @@
 //! die Endung: Zeichensatz, Trennzeichen, Dezimalzeichen, Kopfzeile und die
 //! Rolle jeder Spalte erkennt es selbst (plan-gelaendemodul.md §5 G1). Nur
 //! Bytes rein, Punkte und Hinweise raus; was nicht passt, wird ein Satz und
-//! nie ein Abbruch.
+//! nie ein Abbruch. Eine DXF liest [`crate::dxf`] (G1b).
+
+use crate::codes::Codetabelle;
+use crate::dxf::{self, Linie, Linienart};
 
 /// Ein gemessener Punkt in Landeskoordinaten (m), Rechtswert ohne
 /// Zonenkennzahl.
@@ -104,16 +107,23 @@ pub struct Vorgaben {
     pub spalten: Option<Vec<Spalte>>,
     /// Rechts und Hoch tauschen.
     pub tauschen: bool,
-    /// Meter je Einheit der Datei (1, 0,01, 0,001); `None` = Meter.
+    /// Meter je Einheit der Datei (1, 0,01, 0,001); `None` = Meter, bei
+    /// einer DXF die Einheit aus ihrem Kopf.
     pub einheit: Option<f64>,
+    /// Layer einer DXF, die nicht gelesen werden.
+    pub ebenen_aus: Vec<String>,
 }
 
 /// Ergebnis des Lesens.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Aufmass {
     pub punkte: Vec<Punkt>,
+    /// Linien der Datei (nur DXF): Bruchkanten, Netzflächen, Grenzen.
+    pub linien: Vec<Linie>,
     pub erkannt: Erkannt,
     pub hinweise: Vec<String>,
+    /// Was nur eine DXF hat; `None` bei einer Punktliste.
+    pub dxf: Option<dxf::Datei>,
 }
 
 impl Aufmass {
@@ -122,29 +132,48 @@ impl Aufmass {
     /// Höhen 24,15 bis 26,04 m“.
     pub fn satz(&self) -> String {
         let e = &self.erkannt;
-        let mut s = vec![match self.punkte.len() {
-            1 => "1 Punkt".to_string(),
-            n => format!("{n} Punkte"),
-        }];
-        s.push(
-            match e.trenner {
-                Trenner::Semikolon => "Semikolon",
-                Trenner::Tab => "Tabulator",
-                Trenner::Komma => "Komma",
-                Trenner::Leerzeichen => "Leerzeichen",
+        let anzahl = |n: usize, eins: &str, viele: &str| match n {
+            1 => format!("1 {eins}"),
+            n => format!("{n} {viele}"),
+        };
+        let mut s = vec![anzahl(self.punkte.len(), "Punkt", "Punkte")];
+        if let Some(d) = &self.dxf {
+            s.push(format!("DXF {}", d.version_name()).trim_end().to_string());
+            if let Some(t) = &d.hoehe {
+                s.push(format!("Höhe aus Attribut {t}"));
             }
-            .into(),
-        );
-        s.push(
-            if e.komma {
-                "Dezimalkomma"
-            } else {
-                "Dezimalpunkt"
+            let art = |a: Linienart| self.linien.iter().filter(|l| l.art == a).count();
+            for (n, eins, viele) in [
+                (art(Linienart::Bruchkante), "Bruchkante", "Bruchkanten"),
+                (art(Linienart::Masche), "Netzfläche", "Netzflächen"),
+                (d.hoehenlinien, "Höhenlinie", "Höhenlinien"),
+                (art(Linienart::Grenze), "Grenze", "Grenzen"),
+            ] {
+                if n > 0 {
+                    s.push(anzahl(n, eins, viele));
+                }
             }
-            .into(),
-        );
-        if e.zeichensatz == Zeichensatz::Windows1252 {
-            s.push("Windows-1252".into());
+        } else {
+            s.push(
+                match e.trenner {
+                    Trenner::Semikolon => "Semikolon",
+                    Trenner::Tab => "Tabulator",
+                    Trenner::Komma => "Komma",
+                    Trenner::Leerzeichen => "Leerzeichen",
+                }
+                .into(),
+            );
+            s.push(
+                if e.komma {
+                    "Dezimalkomma"
+                } else {
+                    "Dezimalpunkt"
+                }
+                .into(),
+            );
+            if e.zeichensatz == Zeichensatz::Windows1252 {
+                s.push("Windows-1252".into());
+            }
         }
         s.push(match e.lage {
             Lage::Utm { zone: Some(z) } => {
@@ -166,6 +195,30 @@ impl Aufmass {
         let h0 = it.next()?;
         Some(it.fold((h0, h0), |(lo, hi), h| (lo.min(h), hi.max(h))))
     }
+
+    /// Bruchkanten aus den Linien-Codes und aus den Linien der Datei
+    /// (Bruchkanten und Kanten der Netzflächen), jede Kante einmal, nur
+    /// zwischen Punkten mit `drin`. Indizes in `punkte`.
+    pub fn bruchkanten(&self, codes: &Codetabelle, drin: &[bool]) -> Vec<[usize; 2]> {
+        let mut k = codes.bruchkanten(&self.punkte, drin);
+        let mut da: std::collections::HashSet<[usize; 2]> =
+            k.iter().map(|&[a, b]| [a.min(b), a.max(b)]).collect();
+        let ok = |i: usize| i < self.punkte.len() && drin.get(i).copied().unwrap_or(true);
+        for l in self
+            .linien
+            .iter()
+            .filter(|l| matches!(l.art, Linienart::Bruchkante | Linienart::Masche))
+        {
+            let n = l.punkte.len();
+            let schluss = (l.geschlossen && n > 2).then(|| [l.punkte[n - 1], l.punkte[0]]);
+            for [a, b] in l.punkte.windows(2).map(|w| [w[0], w[1]]).chain(schluss) {
+                if a != b && ok(a) && ok(b) && da.insert([a.min(b), a.max(b)]) {
+                    k.push([a, b]);
+                }
+            }
+        }
+        k
+    }
 }
 
 /// Zahl mit Dezimalkomma und `n` Stellen.
@@ -176,12 +229,13 @@ pub fn dez(v: f64, n: usize) -> String {
     format!("{r:.n$}").replace('.', ",")
 }
 
-/// Satz, wenn die Datei keine Punktliste ist, sonst `None`.
+/// Satz, wenn Skizzeo die Datei nicht liest, sonst `None` (Punktliste
+/// und DXF).
 pub fn fremd(f: Format) -> Option<&'static str> {
     match f {
         Format::Punktliste => None,
         Format::Dwg => Some("DWG ist ein geschlossenes Format. Bitte beim Vermesser die Punktliste oder eine DXF anfordern."),
-        Format::Dxf => Some("Das ist eine DXF-Datei. DXF liest Skizzeo mit der Stufe G1b; bis dahin bitte die Punktliste des Vermessers einlesen."),
+        Format::Dxf => None,
         Format::LandXml => Some("Das ist eine LandXML-Datei. LandXML liest Skizzeo mit der Stufe G6; bis dahin bitte die Punktliste des Vermessers einlesen."),
         Format::Gsi => Some("Das ist eine Leica-GSI-Datei. GSI liest Skizzeo mit der Stufe G6; bis dahin bitte die Punktliste des Vermessers einlesen."),
     }
@@ -218,7 +272,7 @@ pub fn text(roh: &[u8], z: Option<Zeichensatz>) -> (String, Zeichensatz) {
 }
 
 /// Zeilen, getrennt an \r\n, \n und einzelnem \r (alte Mac-Dateien).
-fn zeilen(s: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn zeilen(s: &str) -> impl Iterator<Item = &str> {
     let mut rest = Some(s);
     std::iter::from_fn(move || {
         let r = rest.take()?;
@@ -235,8 +289,13 @@ fn zeilen(s: &str) -> impl Iterator<Item = &str> {
 
 /// Format am Inhalt erkennen.
 pub fn format(roh: &[u8]) -> Format {
+    // UTF-8-BOM vor „0 / SECTION“ (Review #150 B4)
+    let roh = roh.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(roh);
     if roh.starts_with(b"AC10") {
         return Format::Dwg;
+    }
+    if roh.starts_with(b"AutoCAD Binary DXF") {
+        return Format::Dxf;
     }
     let kopf = String::from_utf8_lossy(&roh[..roh.len().min(4096)]);
     if kopf.contains("<LandXML") {
@@ -257,7 +316,7 @@ pub fn format(roh: &[u8]) -> Format {
 }
 
 /// Zahl lesen; nur Ziffern, Vorzeichen, Dezimalzeichen und Exponent.
-fn zahl(s: &str, komma: bool) -> Option<f64> {
+pub(crate) fn zahl(s: &str, komma: bool) -> Option<f64> {
     let s = s.trim().trim_matches('"').trim();
     if s.is_empty()
         || !s.bytes().any(|b| b.is_ascii_digit())
@@ -330,7 +389,7 @@ fn rolle(w: &str) -> Option<Spalte> {
 
 /// Art einer Koordinatenspalte nach ihrem Wertebereich.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Art {
+pub(crate) enum Art {
     /// UTM-Rechtswert mit Zonenkennzahl.
     UtmZone(u8),
     Utm,
@@ -341,7 +400,7 @@ enum Art {
     Klein,
 }
 
-fn art(lo: f64, hi: f64) -> Art {
+pub(crate) fn art(lo: f64, hi: f64) -> Art {
     let in_ = |a: f64, b: f64| lo >= a && hi <= b;
     for z in 31..=33u8 {
         let z0 = z as f64 * 1e6;
@@ -374,8 +433,13 @@ pub fn lesen(roh: &[u8]) -> Result<Aufmass, String> {
 
 /// Punktliste lesen; was in `v` steht, gilt statt der Erkennung.
 pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
-    if let Some(s) = fremd(format(roh)) {
-        return Err(s.into());
+    match format(roh) {
+        Format::Dxf => return dxf::lesen(roh, v),
+        f => {
+            if let Some(s) = fremd(f) {
+                return Err(s.into());
+            }
+        }
     }
     let (inhalt, zeichensatz) = text(roh, v.zeichensatz);
     let zeilen: Vec<(usize, &str)> = zeilen(&inhalt)
@@ -655,16 +719,14 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         );
     }
     if let Lage::GaussKrueger { .. } = lage {
-        hinweise.push(
-            "Gauß-Krüger liest Skizzeo als örtliches System: Auf dem Grundstück stimmt alles, nur die Verbindung zu UTM und zum IFC-Export fehlt, bis der Nullpunkt in UTM eingetragen ist."
-                .into(),
-        );
+        hinweise.push(GAUSS_KRUEGER.into());
     }
     if millimeter && v.einheit.is_none() {
-        hinweise.push("Die Werte sehen nach Millimetern aus. Die Einheit lässt sich unter „Einstellungen der Datei“ umstellen.".into());
+        hinweise.push(MILLIMETER.into());
     }
     Ok(Aufmass {
         punkte,
+        linien: Vec::new(),
         erkannt: Erkannt {
             zeichensatz,
             trenner,
@@ -676,8 +738,15 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             millimeter,
         },
         hinweise,
+        dxf: None,
     })
 }
+
+/// Hinweis zu Werten in Millimetern ohne Angabe (Punktliste und DXF).
+pub(crate) const MILLIMETER: &str = "Die Werte sehen nach Millimetern aus. Die Einheit lässt sich unter „Einstellungen der Datei“ umstellen.";
+
+/// Hinweis zu Gauß-Krüger (Punktliste und DXF).
+pub(crate) const GAUSS_KRUEGER: &str = "Gauß-Krüger liest Skizzeo als örtliches System: Auf dem Grundstück stimmt alles, nur die Verbindung zu UTM und zum IFC-Export fehlt, bis der Nullpunkt in UTM eingetragen ist.";
 
 /// Kleinster und größter Wert einer Spalte.
 fn bereich(daten: &[(usize, Vec<&str>)], k: usize, komma: bool) -> Option<(f64, f64)> {
