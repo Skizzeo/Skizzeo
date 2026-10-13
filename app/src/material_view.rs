@@ -975,6 +975,13 @@ impl MaterialView {
         }
     }
 
+    /// „Mehr“ steht unter „Verwendet in“ (dip): in Zeile 3 ohne Versatz, je
+    /// Zeile darüber oder darunter 32 dip anders, ohne Kosten also eine
+    /// Zeile höher statt mit einer Lücke (Review #155 H2).
+    fn mehr_versatz(&self) -> f32 {
+        (self.uses_row() as f32 - 3.0) * 32.0
+    }
+
     fn more_link(&self, t: &Theme, w: &Win, fonts: &Fonts) -> Rect {
         let s = w.scale;
         let label = if self.more { "Weniger" } else { "Mehr" };
@@ -985,16 +992,15 @@ impl MaterialView {
             .or(fonts.regular.as_ref())
             .map_or(60.0 * s, |f| f.width(label, t.size.font_small * s))
             + MORE_ARROW * s;
-        let extra = if self.uses_row() == 4 { 32.0 } else { 0.0 };
-        let r = self.r(t, w, self.rx(t), HEAD + 196.0 + extra, 0.0, 22.0);
+        let y = HEAD + 196.0 + self.mehr_versatz();
+        let r = self.r(t, w, self.rx(t), y, 0.0, 22.0);
         Rect::new(r.x - 2.0 * s, r.y, tw + 4.0 * s, r.h)
     }
 
     /// Bereich von „Mehr“ (zwei Spalten, mit Bildlauf).
     fn more_body(&self, t: &Theme, w: &Win) -> Rect {
         let (ww, hh) = self.dip(t, w);
-        let extra = if self.uses_row() == 4 { 32.0 } else { 0.0 };
-        let y0 = HEAD + 220.0 + extra;
+        let y0 = HEAD + 220.0 + self.mehr_versatz();
         let x0 = self.rx(t);
         self.r(t, w, x0, y0, ww - x0 - 6.0, hh - FOOT - 4.0 - y0)
     }
@@ -3545,6 +3551,10 @@ mod freischaltung_tests {
             v.set_frei(Freischaltung::stufe(w).unwrap());
             assert_eq!(v.preis_hinweis(id).is_some(), hinweis, "{w}");
             assert_eq!(v.uses_row(), zeile, "{w}");
+            // „Mehr“ steht 35 dip unter dem Feld von „Verwendet in“
+            // (Zeile i bei HEAD + 65 + 32 i), ohne Lücke (Review #155 H2)
+            let feld = HEAD + 65.0 + zeile as f32 * 32.0;
+            assert_eq!(HEAD + 196.0 + v.mehr_versatz(), feld + 35.0, "{w}");
         }
         x.props.remove(PRICE_UNIT);
         x.props.remove(PRICE);
