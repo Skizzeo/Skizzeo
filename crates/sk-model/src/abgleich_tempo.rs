@@ -1,8 +1,9 @@
 //! Tempo des Abgleichs beim Schließen eines Schritts, der nur Geschoss-
 //! bänder oder den Geländeversatz eines Gebäudes ändert (Review L39).
 
-use crate::{BuildingId, Category, Model};
+use crate::{BuildingId, Category, Model, StoreyId};
 use sk_math::vec3;
+use std::collections::HashSet;
 use std::time::Instant;
 
 /// `n` Häuser 10 × 8 m mit zwei Geschossen im Raster zu 15 m, je Haus ein
@@ -149,18 +150,28 @@ fn budget_geschosszug() {
 fn budget_grossgebaeude() {
     let (mut m, gb) = haeuser_mit(200, false, 5);
     let eg = m.ground_of(Some(gb[0])).unwrap();
-    // Bestwert aus drei: Die Tests laufen nebeneinander
-    let ms = [100.0, -100.0, 100.0]
-        .map(|dz| {
-            let top = m.storey(eg).unwrap().top();
-            m.begin("Geschoss ziehen");
-            assert!(m.set_storey_top(eg, top + dz));
-            let t = Instant::now();
-            assert!(m.commit().is_some());
-            ms(t)
-        })
-        .into_iter()
-        .fold(f64::INFINITY, f64::min);
+    // Einmal aufwärmen, dann Bestwert aus mindestens sieben Zügen über
+    // mindestens 300 ms: Die Tests laufen nebeneinander, und ein kurzer
+    // Lastspitzen-Abschnitt soll nicht alle Proben treffen (Review zu
+    // #148, H3; die Grenze bleibt 8 ms)
+    let mut zug = |dz: f64| {
+        let top = m.storey(eg).unwrap().top();
+        m.begin("Geschoss ziehen");
+        assert!(m.set_storey_top(eg, top + dz));
+        let t = Instant::now();
+        assert!(m.commit().is_some());
+        ms(t)
+    };
+    zug(100.0);
+    let start = Instant::now();
+    let mut best = f64::INFINITY;
+    for k in 0..200 {
+        best = best.min(zug(if k % 2 == 0 { -100.0 } else { 100.0 }));
+        if k >= 6 && ms(start) >= 300.0 {
+            break;
+        }
+    }
+    let ms = best;
     let budget = if cfg!(debug_assertions) { 200.0 } else { 8.0 };
     assert!(ms < budget, "{ms:.1} ms");
 }
@@ -214,6 +225,33 @@ fn zufall_wie_ueber_alles() {
                 m.set_flat_roof(st, an)
             }
         };
+        // Die Bereichswahl selbst (Review zu #148, H2): nur Züge dieses
+        // Gebäudes (ein im Schritt entfernter Zug zählt nicht mit); ein Band oder die Gründung bringt höchstens sich und
+        // die Nachbarn, nicht das ganze Gebäude
+        let scope = m.sync_scope().expect("nur ein Gebäude");
+        let geschosse: HashSet<StoreyId> = scope
+            .iter()
+            .filter_map(|&r| m.run(r).map(|x| x.storey))
+            .collect();
+        assert!(
+            geschosse
+                .iter()
+                .all(|&s| m.storey(s).and_then(|s| s.building) == Some(b)),
+            "Schritt {k}, Art {was}: fremde Züge"
+        );
+        if was < 4 {
+            assert!(
+                geschosse.len() <= 3,
+                "Schritt {k}, Art {was}: {geschosse:?}"
+            );
+            // Ein Schritt, der etwas ändert, bringt Züge mit
+            let leer = m.txn.as_ref().is_some_and(|t| t.changes.is_empty());
+            assert_eq!(
+                scope.is_empty(),
+                leer,
+                "Schritt {k}, Art {was}, {geaendert}"
+            );
+        }
         m.commit();
         assert_eq!(
             ganz(&m),
