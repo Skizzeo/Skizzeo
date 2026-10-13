@@ -362,7 +362,7 @@ mod gelaende;
 
 #[path = "gelaende_platte.rs"]
 mod gelaende_platte;
-pub use gelaende_platte::{PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
+pub use gelaende_platte::{PlateInput, PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
 
 #[path = "gelaende_aufmass.rs"]
 mod gelaende_aufmass;
