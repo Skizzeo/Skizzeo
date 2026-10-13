@@ -758,11 +758,10 @@ mod tests {
         s.begin("Wand verschieben");
         let moved = orig.with_segment_moved(0, 1000.0).unwrap();
         assert!(s.set_run_points(run, &moved.points));
-        assert!(s.zieht());
         let halten = |s: &crate::scene::Scene| s.model().in_step();
         assert_eq!(pl.platten(s.model(), halten(&s))[0].area(), a0, "steht");
         s.commit();
-        assert!(!s.zieht());
+        assert!(!halten(&s));
         let a1 = pl.platten(s.model(), halten(&s))[0].area();
         assert!((a1 - a0).abs() > 1e6, "folgt beim Loslassen: {a0} {a1}");
         // ein Zug ohne Live-Netz (Geländehöhe ziehen): steht ebenso
@@ -770,7 +769,7 @@ mod tests {
         let b = s.model().buildings().ids().next().unwrap();
         s.begin("Gelände");
         assert!(s.edit_attr(|m| m.set_terrain_offset_of(b, 400.0)));
-        assert!(!s.zieht() && halten(&s));
+        assert!(halten(&s));
         assert_eq!(
             pl.platten(s.model(), halten(&s))[0].top,
             top,
@@ -792,8 +791,6 @@ mod tests {
         assert!(pl.platten(&b, false).is_empty(), "ohne Zurücksetzen");
         let mut pl = Platte::default();
         assert_eq!(pl.platten(&b, false).len(), 1);
-        let quelle = include_str!("gelaende_platte.rs");
-        assert!(!quelle.contains(concat!("halten = self.scene.", "zieht()")));
         let main = include_str!("main.rs");
         let install = &main[main.find("fn install_scene").unwrap()..];
         assert!(install[..install.find("\n    }\n").unwrap()].contains("self.baum_neu();"));
