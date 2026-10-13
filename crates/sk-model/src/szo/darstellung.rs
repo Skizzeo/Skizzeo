@@ -64,12 +64,14 @@ pub(super) fn werk_linientyp(
 }
 
 /// Zeile, die beim Lesen nicht zählte: ihre Stelle, der Wert, der statt
-/// ihrer gilt, ob sie an der Stelle allein stand, und die Zeile selbst.
+/// ihrer gilt, ob sie an der Stelle allein stand, ob sie vor der gültigen
+/// Zeile der Stelle stand, und die Zeile selbst.
 #[derive(Clone, Debug)]
 pub(crate) struct RohZeile {
     stelle: String,
     statt: EdgeStyle,
     allein: bool,
+    vor: bool,
     zeile: String,
 }
 
@@ -78,13 +80,22 @@ pub(crate) type Roh = Vec<RohZeile>;
 
 /// Schreibt die Darstellungs-Stellen. Gilt an einer Stelle noch der Wert,
 /// der beim Lesen statt ungültiger Zeilen gesetzt wurde, stehen dort die
-/// Zeilen bytegleich (neben einer gültigen Zeile der Stelle danach); neu
-/// gesetzt steht die Stelle nur gültig in der Datei.
+/// Zeilen bytegleich, neben einer gültigen Zeile der Stelle davor oder
+/// danach wie beim Lesen; neu gesetzt steht die Stelle nur gültig in der
+/// Datei.
 pub(super) fn write(a: &Attributes, out: &mut String) {
     let d = a.display();
     let mut slot = |name: &str, s: &EdgeStyle, schreiben: bool| {
         let roh = a.display_raw().iter();
         let roh: Vec<&RohZeile> = roh.filter(|r| r.stelle == name && r.statt == *s).collect();
+        let zeilen = |out: &mut String, vor: bool| {
+            for r in roh.iter().filter(|r| r.vor == vor) {
+                out.push_str(&r.zeile);
+                out.push('\n');
+            }
+        };
+        // Ungültige Zeilen vor der gültigen bleiben davor (Review #133 H1)
+        zeilen(out, true);
         if schreiben && !roh.iter().any(|r| r.allein) {
             Line::new("display")
                 .word("slot", name)
@@ -92,10 +103,7 @@ pub(super) fn write(a: &Attributes, out: &mut String) {
                 .guid("lt", a.line_type(s.line_type).map(|l| l.guid))
                 .finish(out);
         }
-        for r in roh {
-            out.push_str(&r.zeile);
-            out.push('\n');
-        }
+        zeilen(out, false);
     };
     for (prefix, table) in [("drawing", &d.drawing), ("model3d", &d.model3d)] {
         for (name, k) in EDGE_NAMES {
@@ -165,8 +173,9 @@ pub(super) fn read(
     slots.push(("above".into(), sd.above));
     let mut styles: Vec<Option<EdgeStyle>> = vec![None; slots.len()];
     let mut paper = None;
-    // Ungültige Zeilen je Stelle (Nummer in `slots`)
-    let mut ungueltig: Vec<(usize, &str)> = Vec::new();
+    // Ungültige Zeilen je Stelle (Nummer in `slots`), ob noch vor einer
+    // gültigen
+    let mut ungueltig: Vec<(usize, bool, &str)> = Vec::new();
     for r in recs {
         let slot = r.get("slot")?;
         if slot == "paper" {
@@ -182,7 +191,7 @@ pub(super) fn read(
         };
         if !zaehlt(r, pen_ids, lt_ids) {
             r.skip();
-            ungueltig.push((i, lines[r.line - 1]));
+            ungueltig.push((i, styles[i].is_none(), lines[r.line - 1]));
             let gilt = match werksstelle(r) {
                 Some(_) => "die Werksdarstellung gilt",
                 None => "der Startwert gilt",
@@ -256,10 +265,11 @@ pub(super) fn read(
     }
     let roh = ungueltig
         .into_iter()
-        .map(|(i, zeile)| RohZeile {
+        .map(|(i, vor, zeile)| RohZeile {
             stelle: slots[i].0.clone(),
             statt: resolved[i],
             allein: allein[i],
+            vor,
             zeile: zeile.to_string(),
         })
         .collect();
