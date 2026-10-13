@@ -259,6 +259,8 @@ pub struct Werkzeug {
     pub grundriss: bool,
     /// Nummer der Tinte der Vorschau beim Renderer, neu mit jeder anderen.
     pub tinte_nr: u64,
+    /// Stand des Themas, in dessen Ziehfarbe die Tinte gefärbt ist.
+    pub tinte_rev: u64,
 }
 
 /// Was ein Klick mit [`Werkzeug::setzen`] ergibt.
@@ -303,6 +305,7 @@ impl Werkzeug {
             innen: Default::default(),
             grundriss: false,
             tinte_nr: 0,
+            tinte_rev: 0,
         }
     }
 
