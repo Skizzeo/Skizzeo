@@ -81,7 +81,8 @@ impl Dicht {
     }
 }
 
-/// Raster je Platz (Arena-Platz eines Wandzugs, Nummer eines Geschosses).
+/// Raster je Platz (Arena-Platz eines Wandzugs, Nummer eines Geschosses,
+/// Schenkel einer Öffnung).
 #[derive(Default)]
 pub struct Raster {
     zellen: Zellen,
@@ -95,7 +96,8 @@ pub struct Raster {
     diagonale: f64,
 }
 
-fn zelle(v: f64) -> i32 {
+/// Zelle, in der die Koordinate `v` liegt.
+pub(super) fn zelle(v: f64) -> i32 {
     (v / ZELLE).floor().clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
@@ -212,7 +214,8 @@ impl Raster {
         }
     }
 
-    fn in_zelle(&self, c: (i32, i32)) -> &[u32] {
+    /// Plätze in Zelle `c`, ohne die, die zu jeder Abfrage gehören.
+    pub(super) fn in_zelle(&self, c: (i32, i32)) -> &[u32] {
         match &self.dicht {
             Some(d) => d.zelle(c),
             None => self.zellen.get(&c).map_or(&[], Vec::as_slice),
@@ -267,6 +270,21 @@ impl Raster {
     /// Längste Diagonale eines eingetragenen Quaders.
     pub fn diagonale(&self) -> f64 {
         self.diagonale
+    }
+
+    /// Quader um alles Eingetragene; wächst nur, bis [`Raster::leeren`].
+    pub fn quader(&self) -> Option<Aabb> {
+        self.alles
+    }
+
+    /// Plätze, die zu jeder Abfrage gehören.
+    pub(super) fn immer(&self) -> &[u32] {
+        &self.immer
+    }
+
+    /// Zahl der Plätze, auch der freien.
+    pub(super) fn plaetze(&self) -> usize {
+        self.lage.len()
     }
 
     /// Spielraum in mm um den Blickstrahl `(o, d)`, der `px` Bildpunkten
@@ -421,7 +439,7 @@ impl Raster {
     }
 
     /// Alle eingetragenen Plätze, aufsteigend.
-    fn alle(&self) -> Vec<usize> {
+    pub(super) fn alle(&self) -> Vec<usize> {
         (0..self.lage.len())
             .filter(|&i| self.lage[i] != Lage::Frei)
             .collect()
@@ -551,7 +569,7 @@ impl Scene {
 mod probe;
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use sk_math::{dist_to_segment, vec3};
     use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
@@ -706,11 +724,11 @@ mod tests {
         );
     }
 
-    const W: f64 = 1600.0;
-    const H: f64 = 900.0;
+    pub(in crate::scene) const W: f64 = 1600.0;
+    pub(in crate::scene) const H: f64 = 900.0;
 
     /// 7 × 7 Häuser 10 × 8 m im Abstand von 18 m, je mit einem Fenster.
-    fn siedlung() -> Scene {
+    pub(in crate::scene) fn siedlung() -> Scene {
         let mut m = Model::new();
         m.begin("Siedlung");
         for i in 0..49 {
@@ -768,7 +786,7 @@ mod tests {
             .min_by(f64::total_cmp)
     }
 
-    fn kameras() -> [Camera; 3] {
+    pub(in crate::scene) fn kameras() -> [Camera; 3] {
         let mitte = vec3(60_000.0, 60_000.0, 0.0);
         [
             Camera::parallel(mitte, 0.3, -89.9f64.to_radians(), 70_000.0),

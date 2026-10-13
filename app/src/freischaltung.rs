@@ -321,6 +321,22 @@ impl Eingang for Topic {
     }
 }
 
+/// Zeilen der Hilfe, die von einem Modul sprechen (Review #120 H5): Sie
+/// fehlen, solange es gesperrt ist. Thema und Beschriftung wie in
+/// `hilfe.txt`; den Knopf zum Mengenfenster nennt die Hilfe mit den freien
+/// Blättern ([`Freischaltung::knopf`]). „Baugrund“ in der Gründung zeigt auf
+/// die Gruppe der Projektdaten, die ohne Mengen fehlt.
+pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
+    match (t, beschriftung) {
+        (Topic::Start, "Mengen") => Some(Modul::Mengen),
+        (Topic::Materials, "Preise") => Some(Modul::Kosten),
+        (Topic::Materials, "Bestellung") => Some(Modul::Mengen),
+        (Topic::Foundation, "Baugrund") => Some(Modul::Mengen),
+        (Topic::Terrace, "Mengen") => Some(Modul::Mengen),
+        _ => None,
+    }
+}
+
 impl Eingang for crate::delete::Action {
     fn modul(self) -> Option<Modul> {
         use crate::delete::Action;
@@ -345,6 +361,9 @@ impl crate::App {
         self.menu.frei = f;
         self.help.frei = f;
         self.quantity.set_frei(f);
+        if let Some(m) = self.materials.as_mut() {
+            m.set_frei(f);
+        }
         self.redraw = true;
     }
 }
@@ -359,6 +378,48 @@ mod tests {
 
     fn stufe(s: &str) -> Freischaltung {
         Freischaltung::stufe(s).unwrap()
+    }
+
+    /// Review #120 H4: Beim Start liest `read_settings` ein gemerktes,
+    /// angedocktes Mengenfenster vor `freischalten`. Gesperrt kehrt
+    /// `open_quantity` vorher um; ungezeigt nimmt das Fenster keinen Platz,
+    /// das Hauptfenster füllt beim Maximieren den ganzen Bildschirm. Gemerkt
+    /// bleibt es offen und angedockt, in Pro kommt es wieder.
+    #[test]
+    fn gemerktes_mengenfenster_in_basis() {
+        use crate::windows::{read_settings, write_settings_mengen};
+        let work = (0, 0, 1920, 1040);
+        let main = (0, 0, 1280, 800);
+        let text = "[mengenfenster] offen=1 angedockt=1 blatt=kosten\n";
+        for (w, gezeigt) in [("basis", false), ("pro", true), ("ultimate", true)] {
+            let mut l = read_settings(text, &[work]);
+            assert!(l.quantity_open() && l.docked(), "{w}");
+            let f = stufe(w);
+            if !f.gesperrt(Id::Quantity) {
+                l.open_quantity(main, false, work, 1.0);
+            }
+            assert_eq!(l.fills_on_maximize(work), gezeigt, "{w}");
+            // Blatt wie beim Start: erst gemerkt, dann freigeschaltet
+            let mut q = crate::cards::Karten::new(crate::cards::Blatt::Mengen);
+            q.merken(crate::cards::Blatt::Kosten);
+            q.set_frei(f.blaetter());
+            let blatt = if w == "ultimate" {
+                crate::cards::Blatt::Kosten
+            } else {
+                crate::cards::Blatt::Mengen
+            };
+            assert_eq!(q.aktiv, blatt, "{w}");
+            let neu = write_settings_mengen(
+                &l,
+                crate::schedule_view::Grouping::Storey,
+                q.aktiv,
+                sk_model::rechenweg::Modus::Vob,
+            );
+            assert!(
+                neu.starts_with("[mengenfenster] offen=1 angedockt=1"),
+                "{w}: {neu}"
+            );
+        }
     }
 
     #[test]
@@ -524,6 +585,26 @@ mod tests {
                 ..Props::default()
             }));
             assert_eq!(ui.props().unwrap().layers[0].2.is_empty(), !mengen, "{w}");
+            // Raumbuchmengen ebenso (Review #120 B2): die Zeilen in `mengen`
+            let werte = |p: Option<&Props>| -> Vec<&str> {
+                p.unwrap().values.iter().map(|v| v.0).collect()
+            };
+            ui.set_props(Some(Props {
+                values: vec![
+                    ("Nutzung", "Wohnen".into()),
+                    ("Bodenfläche", "20,00 m²".into()),
+                    ("", "Estrich".into()),
+                    ("Lichte Höhe", "2,50 m".into()),
+                ],
+                mengen: 1..3,
+                ..Props::default()
+            }));
+            let soll = if mengen {
+                vec!["Nutzung", "Bodenfläche", "", "Lichte Höhe"]
+            } else {
+                vec!["Nutzung", "Lichte Höhe"]
+            };
+            assert_eq!(werte(ui.props()), soll, "{w}");
             // Dateimenü: „Verwaltung …“ nur mit Kosten; Öffnen und Schließen
             // behalten die Freischaltung
             let mut menu = FileMenu::default();

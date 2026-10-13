@@ -615,9 +615,12 @@ pub struct ContextMenu {
 }
 
 /// Skalierung und freie Module für das Kontextmenü im Hauptfenster; eine
-/// Zahl allein ist die Skalierung mit allem frei.
+/// Zahl allein (nur in Tests) ist die Skalierung mit allem frei.
 pub struct Rahmen(pub f32, pub Freischaltung);
 
+/// Nur für Tests: alles frei. Im Programm kommt der Rahmen aus der Ui, die
+/// Freischaltung also aus dem Schlüssel (Review #120 H3).
+#[cfg(test)]
 impl From<f32> for Rahmen {
     fn from(s: f32) -> Rahmen {
         Rahmen(s, Freischaltung::ALLES)
