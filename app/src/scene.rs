@@ -3168,7 +3168,9 @@ impl Scene {
     }
 
     /// Läuft gerade ein Zug: Wandzüge im offenen Schritt live verschoben
-    /// (bis Loslassen oder Esc).
+    /// (bis Loslassen oder Esc). Die Geländeplatte hält in jedem offenen
+    /// Schritt (Review W34 B1), nur die Prüfung fragt noch danach.
+    #[cfg(test)]
     pub fn zieht(&self) -> bool {
         self.model.in_step() && !self.live.is_empty()
     }

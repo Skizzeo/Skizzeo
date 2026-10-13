@@ -50,8 +50,10 @@ pub(crate) struct Platte {
 
 impl Platte {
     /// Die Platten zum Modell; gerechnet nur, wenn es sich geändert hat.
-    /// Während eines Zugs (`halten`) bleiben sie stehen und folgen beim
-    /// Loslassen, statt je Mausbewegung alle Häuser neu zu rechnen.
+    /// Solange ein Schritt offen ist (`halten`: jeder Zug, auch Gelände,
+    /// Höhen und Öffnungen ohne Live-Netz, Review W34 B1) bleiben sie stehen
+    /// und folgen beim Loslassen, statt je Mausbewegung alle Häuser neu zu
+    /// rechnen.
     pub(crate) fn platten(&mut self, m: &Model, halten: bool) -> &[TerrainPlate] {
         let rev = m.revision();
         if self.stand != Some(rev) && !(halten && self.stand.is_some()) {
@@ -382,7 +384,7 @@ impl App {
         let plane = self.plane();
         let view = self.ui.view;
         let m = self.scene.model();
-        let halten = self.scene.zieht();
+        let halten = self.scene.model().in_step();
         self.platte.platten(m, halten);
         let key = (
             self.platte.stand.unwrap_or(0),
@@ -411,7 +413,7 @@ impl App {
             return Vec::new();
         }
         let plane = self.plane();
-        let halten = self.scene.zieht();
+        let halten = self.scene.model().in_step();
         let m = self.scene.model();
         let plates = self.platte.platten(m, halten);
         let b = self.scene.bounds();
@@ -422,7 +424,7 @@ impl App {
     /// der Boden in 3D auf der Unterkante der Platte (die Platte steht auf
     /// ihm); ausgeblendet auf OK Gelände.
     pub(crate) fn gelaende_renderer(&mut self) {
-        let halten = self.scene.zieht();
+        let halten = self.scene.model().in_step();
         let m = self.scene.model();
         self.renderer.set_terrain(m.terrain_z() as f32);
         self.renderer
@@ -531,11 +533,25 @@ mod tests {
         let moved = orig.with_segment_moved(0, 1000.0).unwrap();
         assert!(s.set_run_points(run, &moved.points));
         assert!(s.zieht());
-        assert_eq!(pl.platten(s.model(), s.zieht())[0].area(), a0, "steht");
+        let halten = |s: &crate::scene::Scene| s.model().in_step();
+        assert_eq!(pl.platten(s.model(), halten(&s))[0].area(), a0, "steht");
         s.commit();
         assert!(!s.zieht());
-        let a1 = pl.platten(s.model(), s.zieht())[0].area();
+        let a1 = pl.platten(s.model(), halten(&s))[0].area();
         assert!((a1 - a0).abs() > 1e6, "folgt beim Loslassen: {a0} {a1}");
+        // ein Zug ohne Live-Netz (Geländehöhe ziehen): steht ebenso
+        let top = pl.platten(s.model(), false)[0].top;
+        let b = s.model().buildings().ids().next().unwrap();
+        s.begin("Gelände");
+        assert!(s.edit_attr(|m| m.set_terrain_offset_of(b, 400.0)));
+        assert!(!s.zieht() && halten(&s));
+        assert_eq!(
+            pl.platten(s.model(), halten(&s))[0].top,
+            top,
+            "steht im Schritt"
+        );
+        s.commit();
+        assert_eq!(pl.platten(s.model(), halten(&s))[0].top, top - 400.0);
         // zwei Dateien nacheinander: beide Revision 0
         let laden = |m: &Model| {
             let t = sk_model::szo::write(m);
@@ -550,6 +566,8 @@ mod tests {
         assert!(pl.platten(&b, false).is_empty(), "ohne Zurücksetzen");
         let mut pl = Platte::default();
         assert_eq!(pl.platten(&b, false).len(), 1);
+        let quelle = include_str!("gelaende_platte.rs");
+        assert!(!quelle.contains(concat!("halten = self.scene.", "zieht()")));
         let main = include_str!("main.rs");
         let install = &main[main.find("fn install_scene").unwrap()..];
         assert!(install[..install.find("\n    }\n").unwrap()].contains("self.baum_neu();"));

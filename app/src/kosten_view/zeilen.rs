@@ -180,9 +180,10 @@ impl Bau<'_> {
     /// Gründung mit der ganzen Gründung ([`fokus::bauteile`]).
     fn bauteile(&self, ansatz: &[&Ansatz]) -> Vec<ElementId> {
         let mut els: Vec<ElementId> = Vec::new();
+        let mut schon = HashSet::new();
         for a in ansatz {
             for e in fokus::bauteile(self.m, a) {
-                if !els.contains(&e) {
+                if schon.insert(e) {
                     els.push(e);
                 }
             }
@@ -321,9 +322,10 @@ impl Bau<'_> {
             None => String::new(),
         };
         let mut els: Vec<ElementId> = Vec::new();
+        let mut schon = HashSet::new();
         for k in &kinder {
             for e in &k.elements {
-                if !els.contains(e) {
+                if schon.insert(*e) {
                     els.push(*e);
                 }
             }
@@ -385,10 +387,14 @@ pub fn zeilen(
         offen,
         fokus,
     };
-    bau.alle(match g {
-        Gliederung::Gewerk => Teilung::Gewerk,
-        Gliederung::Geschoss => Teilung::Geschoss,
-        Gliederung::Kostengruppe => Teilung::Kostengruppe,
+    // Ein Gang über alle Positionen: die Gründung je Platte aus dem
+    // Verzeichnis des Modells, nicht je Zeile über alle Bauteile
+    m.lesend(|| {
+        bau.alle(match g {
+            Gliederung::Gewerk => Teilung::Gewerk,
+            Gliederung::Geschoss => Teilung::Geschoss,
+            Gliederung::Kostengruppe => Teilung::Kostengruppe,
+        })
     })
 }
 
