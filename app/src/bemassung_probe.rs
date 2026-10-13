@@ -1,19 +1,23 @@
-//! Tests und Probe zu Review W30, W33, L24 und W36: nur geänderte Geschosse
-//! rechnen neu, ein Ebenenwechsel rechnet nichts, Geschosse außerhalb des
-//! Bildes fehlen; die Probe misst das erste Bild, Ebenenwechsel, Maus im
-//! Freien, Ziehen, Loslassen und Neuzeichnen bei 1, 10, 100, 1000, 2000
-//! und 4000 Häusern (je ein Gebäude 10 × 8 m mit einer angeschlossenen
-//! Innenwand und einem Fenster, alle EG auf ±0,00), dazu 1000 dicht
-//! stehende.
+//! Tests und Probe zu Review W30, W33, L24, W36 und W39: nur geänderte
+//! Geschosse rechnen neu, ein Ebenenwechsel rechnet nichts, Geschosse
+//! außerhalb des Bildes fehlen; die Probe misst das erste Bild,
+//! Ebenenwechsel, Maus im Freien, Ziehen, Loslassen, Neuzeichnen, Ketten
+//! ziehen und loslassen, große Wahl, Tippen und Enter bei 1, 10, 100, 1000,
+//! 2000 und 4000 Häusern (je ein Gebäude 10 × 8 m mit einer
+//! angeschlossenen Innenwand und einem Fenster, alle EG auf ±0,00), dazu
+//! 1000 dicht stehende.
 //!
 //! Probe: `cargo test --release -p skizzeo probe_bemassung -- --ignored --nocapture`
 
 use super::*;
 use crate::camera::Camera;
-use crate::wall_edit::mass_treffer::treffer;
+use crate::wall_edit::mass_treffer::{finde, treffer, Treffer};
+use crate::wall_edit::WallEdit;
 use sk_math::vec3;
 use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
 use sk_model::{Category, RefSide};
+use sk_plan::bild::Zahlart;
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -392,6 +396,167 @@ fn ms(t: Instant, reps: usize) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0 / reps as f64
 }
 
+/// Bedienen nah am ersten Haus wie in der App ([`crate::bemassung_app`]):
+/// je Ereignis die Ketten der Ansicht, das Ereignis und das Bild. Ergebnis
+/// in ms: Gesamtkette Süd ziehen je Mausschritt, je Taste beim
+/// Überschreiben ihres Maßes (Live-Vorschau) und Enter (Review W42,
+/// Hinweis zur Probe).
+fn bedienen(
+    s: &mut Scene,
+    mk: &mut Massketten,
+    f: &Font,
+    cam: &Camera,
+    theme: &Theme,
+    reps: usize,
+) -> (f64, f64, f64) {
+    let blick = Blick { cam, w: W, h: H };
+    let mut e = WallEdit::default();
+    let ev = |e: &mut WallEdit, s: &mut Scene, mk: &mut Massketten, x: Event| {
+        let st = mk.gezeigt(s, ViewKind::Plan, &[], Some(f));
+        e.masse.setze(st, s);
+        e.handle(&x, s, cam, W, H, 1.0, true);
+        let h = e.mass_hervor(s);
+        std::hint::black_box(mk.zeichnen(s, ViewKind::Plan, &[], Some(f), &blick, 1.0, theme, &h));
+    };
+    let m = Modifiers::default();
+    let taste = |key| Event::Key {
+        key,
+        down: true,
+        repeat: false,
+        mods: m,
+    };
+    // Gesamtkette Süd des ersten Hauses: Zahl und Linie
+    let gesamt = |s: &Scene, mk: &mut Massketten| {
+        let st = mk.gezeigt(s, ViewKind::Plan, &[], Some(f)).unwrap();
+        let mut best: Option<(f64, Vec3, KettenId)> = None;
+        for (a, b) in st.paare() {
+            for z in &b.zahlen {
+                let Zahlart::Mass { seite, kette, .. } = z.art else {
+                    continue;
+                };
+                let sd = &a.seiten[seite];
+                if sd.grad != 270 || sd.ketten[kette].art != Kettenart::Gesamt {
+                    continue;
+                }
+                let p = z.rahmen.iter().fold(Vec3::ZERO, |s, p| s + *p) * 0.25;
+                let d = (p - vec3(5000.0, -3000.0, 0.0)).length();
+                if best.is_none_or(|b| d < b.0) {
+                    let k = KettenId {
+                        st: a.storey,
+                        grad: 270,
+                        art: Kettenart::Gesamt,
+                    };
+                    best = Some((d, p, k));
+                }
+            }
+        }
+        let (_, p, k) = best.unwrap();
+        let fund = finde(&st, k).unwrap();
+        let linie = fund.kette.lage;
+        let n = fund.seite.n;
+        let zahl = cam.project(p, W, H).unwrap();
+        assert!(matches!(
+            treffer(&st, cam, W, H, 1.0, zahl.0, zahl.1),
+            Some(Treffer::Zahl(_))
+        ));
+        // Auf der Linie neben der Zahl
+        let am = p + n * (linie - p.dot(n)) - fund.seite.t * 1500.0;
+        (zahl, am, n)
+    };
+    let maus = |x: f64, y: f64| {
+        [
+            Event::MouseMove { x, y, mods: m },
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: m,
+            },
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: m,
+            },
+        ]
+    };
+    // Kette ziehen: greifen, dann je Mausschritt 10 mm nach außen
+    let (_, am, n) = gesamt(s, mk);
+    let a = cam.project(am, W, H).unwrap();
+    let [mv, down, _] = maus(a.0, a.1);
+    ev(&mut e, s, mk, mv);
+    ev(&mut e, s, mk, down);
+    let schritt = |k: usize| {
+        let q = cam
+            .project(am + n * (300.0 + 10.0 * k as f64), W, H)
+            .unwrap();
+        Event::MouseMove {
+            x: q.0,
+            y: q.1,
+            mods: m,
+        }
+    };
+    ev(&mut e, s, mk, schritt(0));
+    let t = Instant::now();
+    for k in 1..=reps {
+        ev(&mut e, s, mk, schritt(k));
+    }
+    let kette_z = ms(t, reps);
+    let q = cam.project(am + n * 300.0, W, H).unwrap();
+    ev(
+        &mut e,
+        s,
+        mk,
+        Event::MouseUp {
+            button: MouseButton::Left,
+            x: q.0,
+            y: q.1,
+            mods: m,
+        },
+    );
+    // Überschreiben: Zahl anklicken, je Taste Live-Vorschau und Bild
+    let (z, ..) = gesamt(s, mk);
+    for x in maus(z.0, z.1) {
+        ev(&mut e, s, mk, x);
+    }
+    assert!(e.input().is_some(), "Feld offen");
+    let tasten = [
+        Key::Char('1'),
+        Key::Char('1'),
+        Key::Backspace,
+        Key::Backspace,
+    ];
+    let t = Instant::now();
+    for _ in 0..reps {
+        for k in tasten {
+            ev(&mut e, s, mk, taste(k));
+        }
+    }
+    let je_taste = ms(t, reps * tasten.len());
+    ev(&mut e, s, mk, taste(Key::Escape));
+    // Enter: je Runde neu anklicken und tippen, gemessen nur das Enter
+    let mut dauer = 0.0;
+    let serial = s.step_serial();
+    for k in 0..reps {
+        let (z, ..) = gesamt(s, mk);
+        for x in maus(z.0, z.1) {
+            ev(&mut e, s, mk, x);
+        }
+        for ch in if k % 2 == 0 { "11" } else { "10" }.chars() {
+            ev(&mut e, s, mk, taste(Key::Char(ch)));
+        }
+        let t = Instant::now();
+        ev(&mut e, s, mk, taste(Key::Enter));
+        dauer += ms(t, 1);
+    }
+    assert_eq!(
+        s.step_serial(),
+        serial + reps as u64,
+        "je Enter ein Schritt"
+    );
+    (kette_z, je_taste, dauer / reps as f64)
+}
+
 #[test]
 #[ignore]
 fn probe_bemassung() {
@@ -405,7 +570,7 @@ fn probe_bemassung() {
     let theme = Theme::dark();
     println!();
     println!(
-        "{:>7} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
+        "{:>7} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8}",
         "Häuser",
         "Kalt",
         "Stand",
@@ -420,6 +585,9 @@ fn probe_bemassung() {
         "Drehen",
         "KetteLos",
         "Wahl",
+        "KetteZ",
+        "Taste",
+        "Enter",
         "Linien",
         "Dreiecke",
         "Teile",
@@ -665,8 +833,9 @@ fn probe_bemassung() {
             zeichne(&mut mk, &s, &alle);
         }
         let wahl = ms(t, reps);
+        let (kette_z, taste, enter) = bedienen(&mut s, &mut mk, &f, &nah, &theme, reps);
         println!(
-            "{:>7} {:>8.2} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
+            "{:>7} {:>8.2} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>9} {:>8.3} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8} {:>9} {:>8} {:>8}",
             format!("{n}{}", if eng { " eng" } else { "" }),
             kalt,
             stand,
@@ -681,6 +850,9 @@ fn probe_bemassung() {
             drehen,
             kette_los,
             wahl,
+            kette_z,
+            taste,
+            enter,
             linien.len(),
             dreiecke,
             ink.len(),
@@ -696,7 +868,9 @@ fn probe_bemassung() {
          Zeichn. = Bild ohne Änderung, Loslass = Loslassen und erstes \
          Bild, Drehen = Bild in 3D ohne Änderung, \
          KetteLos = Kette loslassen (Versatz als Schritt) und Bild, Wahl = Bild mit allen \
-         Ketten gewählt. Linien, Dreiecke, Teile = im Bild der ganzen \
+         Ketten gewählt; nah am ersten Haus wie in der App je Ereignis Ketten der Ansicht, \
+         Ereignis und Bild: KetteZ = Gesamtkette ziehen je Mausschritt, Taste = je Taste \
+         beim Überschreiben des Gesamtmaßes (Live-Vorschau), Enter = Übernehmen. Linien, Dreiecke, Teile = im Bild der ganzen \
          Siedlung (weit weg ohne Schrift und Kreise), TeilNah = Geschosse mit Schrift nah am \
          Haus."
     );
