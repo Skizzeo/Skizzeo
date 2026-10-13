@@ -59,6 +59,8 @@ SZO 4
 [display] slot=section_ends pen=37Dql8EnnDLftRZGORVd2e lt=2tPWXx8yr62xOuexxUL_tQ
 [display] slot=background pen=1jdANtKH9C1PAEdsu_nqoE lt=2tPWXx8yr62xOuexxUL_tQ
 [display] slot=pattern pen=0brDuOHIvDXAkZqFqruReo lt=2tPWXx8yr62xOuexxUL_tQ
+[display] slot=element pen=0brDuOHIvDXAkZqFqruReo lt=2sL$Z8POX98RRpBjqO_A3p
+[display] slot=above pen=1jdANtKH9C1PAEdsu_nqoE lt=2sL$Z8POX98RRpBjqO_A3p
 [display] slot=paper color=f5f4ef
 [trade] guid=1S7Wf_00100800000004UR code="18331" name="Betonarbeiten" order=5
 [trade] guid=1S7Wf_00100800000004UQ code="18330" name="Mauerarbeiten" order=6
@@ -247,6 +249,10 @@ SZO 4
 [space] guid=1dIrSPIIL5SulaBsBPBA7K number="R-001" at=20000,4000 name="Wohnen" stamp=19000,3000 use=3L0qftDQBqEiFKla5DswQ4 factor=0.5 seq=0 storey=0w$UUoIID0CgN5lvvTdnI6
 [viewhide] view=plan cat=downpipe
 [viewhide] view=front cat=downpipe
+[bemassung] key=project linie=0.35 symbol=punkt schrift="Arial" rundung=5 bezug=rohbau kette_sprung=0 hoehe=0 brh_bezug=estrich
+[massversatz] storey=0w$UUoIID0CgN5lvvTdnI6 seite=270 kette=wand versatz=250
+[massversatz] storey=2raHMuYTD64hQ6K56DbC_u seite=90 kette=gesamt versatz=-120
+[massansicht] view=plan zeigen=1 bezug=1
 [plancut] h=1200
 [pattern] surface=0193nkAlT2LhksTCegVeuh gen=concrete w=2500 h=500 joint=0 anchors=0 cloud=2 pores=0.5 seed=11
 [pattern] surface=0cjmYoBNs8lV6uBVR4Q0GU gen=plaster grain=0.8 spread=4 seed=7
