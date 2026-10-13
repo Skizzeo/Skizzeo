@@ -30,8 +30,9 @@ const UEBER: [(&str, usize); 2] = [
 
 /// Die Kanten aus architektur.md §2: jede Crate mit den eigenen Crates, die
 /// sie nennt. Eine neue Kante kommt nur zusammen mit architektur.md hierher.
-const KANTEN: [(&str, &[&str]); 12] = [
+const KANTEN: [(&str, &[&str]); 13] = [
     ("sk-math", &[]),
+    ("sk-gelaende", &[]),
     ("sk-szb", &[]),
     ("sk-paint", &[]),
     ("sk-platform", &[]),
