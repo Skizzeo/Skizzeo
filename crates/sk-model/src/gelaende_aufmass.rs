@@ -568,6 +568,13 @@ impl Model {
         }
     }
 
+    /// Die gemerkte [`Lage`] verwerfen, etwa nach dem Lesen einer Datei:
+    /// Dessen `load_*` erhöhen den Lagestand nicht, und eine Abfrage
+    /// mittendrin hätte eine halbe Lage gemerkt (W45-Nachprüfung H-e).
+    pub(crate) fn lage_vergessen(&self) {
+        self.lagemerker.vergessen();
+    }
+
     /// Die [`Lage`] zum jetzigen Modellstand, gerechnet beim ersten Bedarf.
     fn lage(&self) -> Arc<Lage> {
         let stand = self.lagemerker.stand;
