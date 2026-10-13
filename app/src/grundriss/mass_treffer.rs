@@ -196,9 +196,10 @@ pub fn treffer(
     let blick = Blick { cam, w, h };
     let r = ZAHL_PX.max(LINIE_PX) * scale;
     let strahl = cam.ray(x, y, w, h);
+    // Nur Geschosse aus dem Raster nahe dem Strahl (Review L29)
     let nah: Vec<(&Aussenmasse, &Bild, bool)> = stand
-        .geschosse
-        .iter()
+        .am_strahl(&blick, strahl, r)
+        .into_iter()
         .filter_map(|g| Some((&*g.a, &g.b, g.unter_strahl(&blick, strahl, r)?)))
         .collect();
     // Zahlen zuerst, die nächste zur Mitte

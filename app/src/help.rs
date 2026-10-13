@@ -152,6 +152,8 @@ pub enum Topic {
     Ext,
     /// Wand- und Türöffnungen (Paket O3).
     Openings,
+    /// Räume und Raumstempel (Grundriss G3, G4; Bedienbarkeit 39.5).
+    Rooms,
     /// Rückfrage „Bauteil einlesen“ (E9).
     Einlesen,
     Drag,
@@ -194,7 +196,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 39] = [
+    pub const ALL: [Topic; 40] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -202,6 +204,7 @@ impl Topic {
         Topic::InnerWall,
         Topic::Ext,
         Topic::Openings,
+        Topic::Rooms,
         Topic::Einlesen,
         Topic::Drag,
         Topic::Split,
@@ -250,6 +253,7 @@ impl Topic {
                 Topic::InnerWall,
                 Topic::Ext,
                 Topic::Openings,
+                Topic::Rooms,
                 Topic::Einlesen,
                 Topic::Drag,
                 Topic::Split,
@@ -309,6 +313,7 @@ impl Topic {
             Topic::InnerWall => "innenwand",
             Topic::Ext => "erweiterungen",
             Topic::Openings => "oeffnungen",
+            Topic::Rooms => "raeume",
             Topic::Einlesen => "einlesen",
             Topic::Drag => "ziehen",
             Topic::Split => "teilen",
@@ -387,6 +392,8 @@ pub enum SelKind {
     Terrace,
     /// Fenster oder Tür (Bedienbarkeit 38.4).
     Opening,
+    /// Raum (Bedienbarkeit 39.5).
+    Space,
 }
 
 /// Art des Bauteils `id` für die Themenwahl; `None` für Erweiterungen
@@ -402,7 +409,8 @@ pub fn sel_kind(m: &sk_model::Model, id: sk_model::ElementId) -> Option<SelKind>
         K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
         K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
         K::Opening(_) => SelKind::Opening,
-        K::Ext(_) | K::Downpipe { .. } | K::Space(_) => return None,
+        K::Space(_) => SelKind::Space,
+        K::Ext(_) | K::Downpipe { .. } => return None,
     })
 }
 
@@ -469,6 +477,7 @@ pub fn topic(c: &HelpCtx) -> Topic {
             SelKind::Floor => Topic::Floor,
             SelKind::Terrace => Topic::Terrace,
             SelKind::Opening => Topic::Openings,
+            SelKind::Space => Topic::Rooms,
         };
     }
     match c.view {
@@ -1161,6 +1170,52 @@ mod tests {
             assert!(s.rows.iter().any(|(x, _)| x == a), "{a}");
         }
         assert!(s.rows.len() <= 10);
+    }
+
+    /// Bedienbarkeit 39.5: Mit gewähltem Raum zeigt F1 „Räume“; das Thema
+    /// nennt Entstehen, Benennen, Verschieben, Paneel und Entfernen.
+    #[test]
+    fn thema_raeume() {
+        let c = HelpCtx {
+            window: None,
+            dialog: false,
+            flush_pick: false,
+            dragging: false,
+            tool: None,
+            opening: false,
+            isolating: false,
+            selection: Some(SelKind::Space),
+            view: ViewKind::Plan,
+        };
+        assert_eq!(topic(&c), Topic::Rooms);
+        let mut s = crate::scene::Scene::with_model(sk_model::Model::with_seed(3));
+        let st = s.model().defaults().storey;
+        assert!(s.edit_model("Haus", |m| {
+            let aw = m.defaults().exterior_wall;
+            let pts = [
+                sk_math::vec3(0.0, 0.0, 0.0),
+                sk_math::vec3(0.0, 5000.0, 0.0),
+                sk_math::vec3(5000.0, 5000.0, 0.0),
+                sk_math::vec3(5000.0, 0.0, 0.0),
+            ];
+            let art = sk_model::Category::ExteriorWall;
+            m.add_wall_run(&pts, true, sk_model::RefSide::Left, st, aw, art)
+                .is_some()
+        }));
+        let raum = s.model().spaces(st);
+        assert_eq!(raum.len(), 1, "der Raum entsteht von selbst");
+        assert_eq!(sel_kind(s.model(), raum[0]), Some(SelKind::Space));
+        let t = help().section("raeume").expect("Thema Räume");
+        for a in [
+            "Entstehen",
+            "Benennen",
+            "Verschieben",
+            "Paneel",
+            "Entfernen",
+        ] {
+            assert!(t.rows.iter().any(|(x, _)| x == a), "{a}");
+        }
+        assert!(t.rows.len() <= 10);
     }
 
     /// KA-2d (paket-ka2 §7): Thema „Kosten“ mit Verrechnungslohn, „Auch für

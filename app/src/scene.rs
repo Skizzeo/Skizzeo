@@ -45,6 +45,8 @@ pub mod kanten;
 mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
+#[path = "scene_raster.rs"]
+pub mod raster;
 #[path = "scene_bemassung.rs"]
 mod scene_bemassung;
 #[path = "scene_oeffnung.rs"]
@@ -104,6 +106,9 @@ struct RunCache {
     foot_bounds: Option<Aabb>,
     /// Fugen des Zugs (W-11), für die Plättchen in jedem Bild.
     joints: Vec<usize>,
+    /// Löcher im Grundriss ([`WallChain::hole_quads`]), mit dem Zug
+    /// berechnet (Review L26).
+    loecher: Vec<(sk_model::wand_loch::Hole, [Vec3; 4])>,
     /// Mengen je Segment; leer, solange der Zug gezogen wird.
     qto: Vec<WallQto>,
     /// Gekoppelter Zug darunter (gestapelte Außenwand, B12): kein eigenes
@@ -164,9 +169,12 @@ impl RunCache {
             .iter()
             .flat_map(|&(a, b)| [a, b])
             .fold(None, |acc, p| union(acc, Some((p, p))));
+        let loecher = chain.hole_quads();
+        let loecher = loecher.into_iter().map(|(h, q)| (h.clone(), q)).collect();
         RunCache {
             id,
             joints: chain.straight_joints(),
+            loecher,
             plan: Vec::new(),
             under: Vec::new(),
             bounds: solid.bounds(),
@@ -548,6 +556,8 @@ pub struct Scene {
     serial: u64,
     /// Zwischenspeicher je Wandzug, über den Arena-Platz der [`RunId`].
     cache: Vec<Option<RunCache>>,
+    /// Quader der Wandzüge je Platz im Raster (Review L26).
+    raster: raster::Raster,
     /// Wandzüge, die neu berechnet werden müssen.
     dirty: Vec<RunId>,
     all_dirty: bool,
@@ -898,6 +908,7 @@ impl Scene {
             erkennung: RefCell::default(),
             staende: HashMap::new(),
             cache: Vec::new(),
+            raster: Default::default(),
             dirty: Vec::new(),
             all_dirty: true,
             mass_stand: HashMap::new(),
@@ -1513,6 +1524,7 @@ impl Scene {
                 .map(|c| c.as_ref().map_or(0, |c| c.builds))
                 .collect();
             self.cache.clear();
+            self.raster.leeren();
             let ids: Vec<RunId> = self.model.runs().ids().collect();
             for id in ids {
                 let b = builds.get(id.index() as usize).copied().unwrap_or(0);
@@ -1563,12 +1575,17 @@ impl Scene {
                         rc.splits = std::mem::take(&mut old.splits);
                     }
                 }
+                let q = rc
+                    .bounds
+                    .map(|b| union(Some(b), rc.foot_bounds).unwrap_or(b));
+                self.raster.setze(slot, q);
                 self.cache[slot] = Some(rc);
             }
             // Gelöscht: Platz nur räumen, wenn kein neuerer Zug darin steht
             None => {
                 if self.cache[slot].as_ref().is_some_and(|c| c.id == id) {
                     self.cache[slot] = None;
+                    self.raster.entferne(slot);
                 }
             }
         }
@@ -1822,15 +1839,6 @@ impl Scene {
 
     pub fn chain(&self, run: RunId) -> Option<&WallChain> {
         self.cached(run).map(|c| &c.chain)
-    }
-
-    /// Berechnete Wandzüge mit dem Quader ihres Körpers (Vortest beim
-    /// Zeigen auf eine Wand, Review #82 1).
-    pub fn zuege(&self) -> impl Iterator<Item = (RunId, &WallChain, Option<Aabb>)> + '_ {
-        self.cache
-            .iter()
-            .flatten()
-            .map(|c| (c.id, &c.chain, c.bounds))
     }
 
     /// Fangziele eines Geschosses ([`Model::fangziele`]) aus den berechneten
@@ -3946,7 +3954,8 @@ impl Scene {
             stamp: self.vis_stamp(),
         };
         let mut best: Option<(f64, RunId, u32)> = None;
-        for c in self.cache.iter().flatten() {
+        let plaetze = self.plaetze_am_strahl(origin, dir, 0.0);
+        for c in plaetze.iter().filter_map(|&i| self.cache.get(i)?.as_ref()) {
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
                 continue;
             }
@@ -3976,10 +3985,11 @@ impl Scene {
         self.sicht_fuer(view);
         let cut = self.plan_cut();
         let active = self.active_storey();
-        let modes: Vec<(RunId, PlanMode)> = self
-            .cache
+        // Nur Züge nahe dem Strahl (Review L26)
+        let plaetze = self.plaetze_am_strahl(origin, dir, 0.0);
+        let modes: Vec<(RunId, PlanMode)> = plaetze
             .iter()
-            .flatten()
+            .filter_map(|&i| self.cache.get(i)?.as_ref())
             .map(|c| (c.id, self.plan_mode(c.id, active)))
             .collect();
         let filter = self.filtering();
@@ -3990,7 +4000,10 @@ impl Scene {
             stamp: self.vis_stamp(),
         };
         let mut best: Option<(f64, RunId, u32)> = None;
-        for c in self.cache.iter_mut().flatten() {
+        for &i in &plaetze {
+            let Some(Some(c)) = self.cache.get_mut(i) else {
+                continue;
+            };
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
                 continue;
             }
