@@ -861,7 +861,8 @@ pub type LayerRow = (Rgba, String, String, Option<(sk_model::Guid, usize)>);
 /// Inhalt des Paneels „Eigenschaften“.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Props {
-    /// Zeilen aus Bezeichnung und Wert, z. B. („Länge“, „10,00 m“).
+    /// Zeilen aus Bezeichnung und Wert, z. B. („Länge“, „10,00 m“); ohne
+    /// Bezeichnung blass, eingerückt und gekürzt unter der Zeile davor.
     pub values: Vec<(&'static str, String)>,
     /// Name des Aufbaus.
     pub layer_set: String,
@@ -1192,7 +1193,10 @@ fn props_rows(
     umbruch: impl Fn(&str) -> Vec<String>,
 ) -> Vec<Row> {
     let mut rows = vec![Row::Title("Eigenschaften")];
-    rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
+    rows.extend(p.values.iter().map(|(k, v)| match *k {
+        "" => Row::Detail(v.clone()),
+        k => Row::Value(k, v.clone()),
+    }));
     if let Some(z) = &p.ext {
         ext_rows(&mut rows, p, z, edit);
         return rows;

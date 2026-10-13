@@ -224,6 +224,35 @@ fn erdmengen_aus_dem_aufmass_geben_hinweis() {
         .expect("Graben im LV");
     assert_eq!(im_lv[0].ort, Ort::Position(lv_pos.oz.clone()));
 
+    // Aufmaß ohne Lage (UTM, das Projekt hat keine Landeslage): die Mengen
+    // bleiben auf der Ebene, also auch kein Hinweis (H123-1)
+    let mut z = vec![aushub.clone()];
+    z.extend(
+        [
+            "[terrain] src=\"aufmass.csv\" crs=utm32 hsys=DHHN2016",
+            "[tpoint] nr=1 e=467100 n=5878700 h=10",
+            "[tpoint] nr=2 e=467300 n=5878700 h=11",
+            "[tpoint] nr=3 e=467300 n=5878900 h=12",
+            "[tpoint] nr=4 e=467100 n=5878900 h=11",
+        ]
+        .map(String::from),
+    );
+    let ohne_lage = haus(&z);
+    assert!(ohne_lage.terrain().is_some());
+    let b = blatt(&ohne_lage);
+    assert_eq!(hinweis(&b.befunde), 0, "{:?}", b.befunde);
+    assert!(b.positionen.iter().all(|p| p.ansatz.iter().all(|x| !x
+        .formel
+        .as_deref()
+        .unwrap_or("")
+        .contains("Aufmaß"))));
+    let lv = lv_aus(&ohne_lage, &b, &lesen::katalog(&ohne_lage, None), &w);
+    assert!(
+        lv.befunde.iter().all(|x| x.satz != ERDE_AUS_MITTEL),
+        "{:?}",
+        lv.befunde
+    );
+
     let ohne = haus(&[aushub]);
     let b = blatt(&ohne);
     assert_eq!(hinweis(&b.befunde), 0);

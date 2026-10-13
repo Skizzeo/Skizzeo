@@ -38,6 +38,8 @@ pub const FLOAT: GLenum = 0x1406;
 pub const UNSIGNED_BYTE: GLenum = 0x1401;
 pub const R8UI: GLenum = 0x8232;
 pub const RED_INTEGER: GLenum = 0x8D94;
+pub const R32F: GLenum = 0x822E;
+pub const RED: GLenum = 0x1903;
 pub const FALSE: GLboolean = 0;
 pub const TRUE: GLboolean = 1;
 pub const VERTEX_SHADER: GLenum = 0x8B31;
@@ -171,8 +173,10 @@ gl_api! {
     fn glUniformMatrix4fv(l: GLint, n: GLsizei, transpose: GLboolean, v: *const GLfloat);
 
     fn glGenVertexArrays(n: GLsizei, out: *mut GLuint);
+    fn glDeleteVertexArrays(n: GLsizei, v: *const GLuint);
     fn glBindVertexArray(v: GLuint);
     fn glGenBuffers(n: GLsizei, out: *mut GLuint);
+    fn glDeleteBuffers(n: GLsizei, b: *const GLuint);
     fn glBindBuffer(t: GLenum, b: GLuint);
     fn glBufferData(t: GLenum, size: GLsizeiptr, data: *const c_void, usage: GLenum);
     fn glVertexAttribPointer(i: GLuint, n: GLint, t: GLenum, norm: GLboolean, stride: GLsizei, off: *const c_void);

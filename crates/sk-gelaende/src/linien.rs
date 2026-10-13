@@ -25,11 +25,19 @@ fn kante(a: u32, b: u32) -> (u32, u32) {
     (a.min(b), a.max(b))
 }
 
-/// Höhen von `stufe`-Vielfachen zwischen tiefstem und höchstem Punkt.
+/// Kleinster Abstand der Höhenlinien (m); feinere Wünsche gelten als dieser.
+pub const MIN_STUFE: f64 = 0.01;
+/// Höchstens so viele Höhen; darüber entstehen keine Linien (unplausible
+/// Höhen oder ein Kommafehler in der Datei).
+pub const MAX_STUFEN: usize = 2000;
+
+/// Höhen von `stufe`-Vielfachen zwischen tiefstem und höchstem Punkt; leer,
+/// wenn es mehr als [`MAX_STUFEN`] wären.
 pub fn hoehen(netz: &Netz, stufe: f64) -> Vec<f64> {
     if stufe.is_nan() || stufe <= 0.0 {
         return Vec::new();
     }
+    let stufe = stufe.max(MIN_STUFE);
     let mut it = netz
         .dreiecke
         .iter()
@@ -39,8 +47,13 @@ pub fn hoehen(netz: &Netz, stufe: f64) -> Vec<f64> {
         return Vec::new();
     };
     let (lo, hi) = it.fold((z0, z0), |(lo, hi), z| (lo.min(z), hi.max(z)));
-    let (k0, k1) = ((lo / stufe).floor() as i64, (hi / stufe).ceil() as i64);
-    (k0..=k1).map(|k| k as f64 * stufe).collect()
+    let (k0, k1) = ((lo / stufe).floor(), (hi / stufe).ceil());
+    // in f64 gezählt: unendliche oder riesige Höhen laufen nicht über
+    let n = k1 - k0;
+    if n.is_nan() || n >= MAX_STUFEN as f64 {
+        return Vec::new();
+    }
+    (k0 as i64..=k1 as i64).map(|k| k as f64 * stufe).collect()
 }
 
 /// Stücke auf Höhe `z`, gerichtet mit dem höheren Gelände links.
@@ -215,6 +228,27 @@ impl Hoehenlinie {
 mod tests {
     use super::*;
     use crate::netz::{netz, Rand};
+
+    #[test]
+    fn grenzhoehen_geben_keine_linien() {
+        // Kommafehler: ein Punkt 1e30 m hoch, oder eine winzige Stufe
+        let mut p = vec![[0.0, 0.0, 24.345], [10.0, 0.0, 24.5], [0.0, 10.0, 24.0]];
+        let n = netz(&p, &[], Rand::Huelle);
+        assert_eq!(hoehen(&n, 0.25), [24.0, 24.25, 24.5]);
+        assert_eq!(hoehen(&n, 1e-12), hoehen(&n, MIN_STUFE));
+        p.push([10.0, 10.0, 1e30]);
+        let n = netz(&p, &[], Rand::Huelle);
+        assert!(hoehen(&n, 0.25).is_empty());
+        assert!(hoehenlinien(&n, 0.25).is_empty());
+        p[3][2] = 2434.5;
+        let n = netz(&p, &[], Rand::Huelle);
+        assert!(hoehen(&n, 0.25).is_empty());
+        assert_eq!(hoehen(&n, 5.0).len(), 484);
+        // unendliche Höhen nimmt das Netz gar nicht erst auf
+        p[3][2] = f64::INFINITY;
+        let n = netz(&p, &[], Rand::Huelle);
+        assert_eq!(hoehen(&n, 0.25), [24.0, 24.25, 24.5]);
+    }
 
     #[test]
     fn kegel_gibt_ringe() {

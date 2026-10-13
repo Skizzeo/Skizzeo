@@ -217,6 +217,22 @@ pub fn text(roh: &[u8], z: Option<Zeichensatz>) -> (String, Zeichensatz) {
     (s, Zeichensatz::Windows1252)
 }
 
+/// Zeilen, getrennt an \r\n, \n und einzelnem \r (alte Mac-Dateien).
+fn zeilen(s: &str) -> impl Iterator<Item = &str> {
+    let mut rest = Some(s);
+    std::iter::from_fn(move || {
+        let r = rest.take()?;
+        match r.find(['\n', '\r']) {
+            Some(i) => {
+                let n = if r[i..].starts_with("\r\n") { 2 } else { 1 };
+                rest = Some(&r[i + n..]);
+                Some(&r[..i])
+            }
+            None => (!r.is_empty()).then_some(r),
+        }
+    })
+}
+
 /// Format am Inhalt erkennen.
 pub fn format(roh: &[u8]) -> Format {
     if roh.starts_with(b"AC10") {
@@ -226,7 +242,7 @@ pub fn format(roh: &[u8]) -> Format {
     if kopf.contains("<LandXML") {
         return Format::LandXml;
     }
-    let mut zeilen = kopf.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut zeilen = zeilen(&kopf).map(str::trim).filter(|l| !l.is_empty());
     let erste: Vec<&str> = zeilen.by_ref().take(8).collect();
     if erste.windows(2).any(|w| w[0] == "0" && w[1] == "SECTION") {
         return Format::Dxf;
@@ -362,11 +378,10 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         return Err(s.into());
     }
     let (inhalt, zeichensatz) = text(roh, v.zeichensatz);
-    let zeilen: Vec<(usize, &str)> = inhalt
-        .lines()
+    let zeilen: Vec<(usize, &str)> = zeilen(&inhalt)
         .enumerate()
         .skip(v.ueberspringen)
-        .map(|(i, l)| (i + 1, l.trim_end_matches('\r')))
+        .map(|(i, l)| (i + 1, l))
         .collect();
     let inhalt_zeilen = || zeilen.iter().filter(|(_, l)| !kommentar(l));
     // Trennzeichen: die Wahl mit den meisten Zeilen aus drei oder mehr Zahlen
@@ -576,6 +591,7 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
     };
     let mut punkte = Vec::with_capacity(daten.len());
     let mut ohne = Vec::new();
+    let mut voll = Vec::new();
     let datenzeilen: std::collections::HashSet<usize> = daten.iter().map(|d| d.0).collect();
     for (i, l) in inhalt_zeilen().filter(|(i, _)| *i >= erste) {
         if !datenzeilen.contains(i) {
@@ -585,6 +601,9 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             continue;
         }
         let f = felder(l, trenner);
+        if breite >= 3 && f.len() >= 2 * breite {
+            voll.push(*i);
+        }
         let wert = |k: usize| f.get(k).and_then(|s| zahl(s, komma));
         let (Some(e), Some(n), Some(h)) = (wert(ke), wert(kn), wert(kh)) else {
             ohne.push(*i);
@@ -620,6 +639,14 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             "Zeile",
             "Zeilen",
             &ohne,
+        ));
+    }
+    if !voll.is_empty() {
+        hinweise.push(liste(
+            "mit doppelt so vielen Spalten wie die übrigen, vielleicht fehlt ein Zeilenumbruch",
+            "Zeile",
+            "Zeilen",
+            &voll,
         ));
     }
     if ellipsoid {
@@ -785,6 +812,30 @@ mod tests {
         assert!(!a.erkannt.komma);
         assert_eq!(a.erkannt.lage, Lage::Utm { zone: None });
         assert_eq!(a.punkte[0].code, "10");
+    }
+
+    #[test]
+    fn zeilenenden_cr_lf_und_crlf() {
+        let lf = "1 100.0 200.0 30.0\n2 101.0 201.0 30.2\n\n3 102.0 199.0 30.5\n";
+        let a = lies(lf);
+        for s in [lf.replace('\n', "\r"), lf.replace('\n', "\r\n")] {
+            let b = lies(&s);
+            assert_eq!(b.punkte, a.punkte, "{s:?}");
+            assert!(b.hinweise.is_empty());
+        }
+        assert_eq!(a.punkte[2].zeile, 4);
+        assert_eq!(
+            zeilen("a\r\rb\r\nc").collect::<Vec<_>>(),
+            ["a", "", "b", "c"]
+        );
+        // fehlender Umbruch: doppelt so viele Spalten
+        let c =
+            lies("1 100.0 200.0 30.0\n2 101.0 201.0 30.2 3 102.0 199.0 30.5\n4 103.0 198.0 31.0\n");
+        assert_eq!(c.punkte.len(), 3);
+        assert_eq!(
+            c.hinweise,
+            ["Zeile 2 mit doppelt so vielen Spalten wie die übrigen, vielleicht fehlt ein Zeilenumbruch."]
+        );
     }
 
     #[test]

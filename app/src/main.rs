@@ -19,12 +19,15 @@ mod abnahme_s1;
 mod abnahme_s2;
 #[cfg(test)]
 mod abnahme_s4;
+mod ansicht_linien;
 mod ansicht_schatten;
 mod attr_pick;
 mod auswahl;
 mod autosave;
 mod ava_view;
 mod backup_card;
+mod bemassung;
+mod bemassung_app;
 mod camera;
 mod cards;
 mod catalog;
@@ -106,9 +109,9 @@ mod window_kit;
 mod windows;
 mod zahnrad_app;
 
+use ansicht_linien::level_guide;
 use camera::{fit_perspective, Camera};
 use document::Document;
-use gelaende_platte::TERRAIN_MARGIN;
 use menu::Command;
 use nav::Navigation;
 use scene::Scene;
@@ -436,51 +439,6 @@ pub(crate) fn section_camera(
     }
 }
 
-/// Hilfslinie der gezogenen Ebene in Höhe `z`: in 3D ein Rechteck um den
-/// Grundriss des Modells (0,5 m Überstand), in Schnitt und Ansichten eine
-/// waagerechte Linie wie die Geländelinie, im Grundriss nichts.
-fn level_guide(
-    v: ViewKind,
-    bounds: Option<(Vec3, Vec3)>,
-    z: f64,
-    scale: f32,
-    theme: &Theme,
-) -> Vec<sk_render::Helper> {
-    let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 0.0)));
-    let line = |a: Vec3, b: Vec3| sk_render::Helper {
-        a: a.to_f32(),
-        b: b.to_f32(),
-        color: theme.interact.drag,
-        width: theme.size.level_guide * scale,
-        dash: 0.0,
-        pattern: sk_render::SOLID,
-        occlude: false,
-        round: true,
-    };
-    match v {
-        ViewKind::Plan => Vec::new(),
-        ViewKind::Persp => {
-            let m = 500.0;
-            let (x0, y0, x1, y1) = (lo.x - m, lo.y - m, hi.x + m, hi.y + m);
-            let c = [
-                vec3(x0, y0, z),
-                vec3(x1, y0, z),
-                vec3(x1, y1, z),
-                vec3(x0, y1, z),
-            ];
-            (0..4).map(|i| line(c[i], c[(i + 1) % 4])).collect()
-        }
-        ViewKind::Left | ViewKind::Right => {
-            let m = 3000.0;
-            vec![line(vec3(lo.x, lo.y - m, z), vec3(lo.x, hi.y + m, z))]
-        }
-        _ => {
-            let m = 3000.0;
-            vec![line(vec3(lo.x - m, lo.y, z), vec3(hi.x + m, lo.y, z))]
-        }
-    }
-}
-
 /// Weiche Kamerafahrt (Doppelklick in der Mengenliste).
 struct Fly {
     from: Camera,
@@ -574,6 +532,7 @@ struct App {
     sect: Sections,
     /// Nordpfeil: Aufziehen, Drehen, Verschieben (Sonnenstand S2).
     nord: nordpfeil::Nordpfeil,
+    massketten: bemassung::Massketten,
     /// Sonnenstands-System: Sonne ziehen, Leiste (Sonnenstand S4).
     sonne: sonne_view::Sonnensystem,
     /// Gewähltes Bauteil.
@@ -992,8 +951,8 @@ impl App {
     /// Paneel „Eigenschaften“ an Auswahl und Modell angleichen. Beim Ziehen bleibt
     /// es stehen; die neuen Mengen kommen beim Loslassen.
     fn sync_props(&mut self) {
-        // Beim Gleiten („Bündig setzen“) bleibt das Paneel auf dem Stand davor
-        if self.edit.is_dragging() || self.level_dragging().is_some() || self.flush_anim.is_some() {
+        // Beim Ziehen und Gleiten bleibt das Paneel auf dem Stand davor
+        if self.paneel_ruht() {
             return;
         }
         if self.picking.validate(&self.scene) {
@@ -1538,25 +1497,6 @@ impl App {
         }
     }
 
-    /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
-    /// dort ausblendet (S11).
-    fn ansicht_huelle(&self, v: ViewKind) -> Option<(Vec3, Vec3)> {
-        let (lo, hi) = self.scene.bounds()?;
-        let m = self.scene.model();
-        let ganz = ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
-        // Das tiefste Gelände: über keinem Gebäude wird etwas abgeschnitten
-        let g = m
-            .terrain_patches(TERRAIN_MARGIN)
-            .iter()
-            .map(|p| p.1)
-            .fold(m.terrain_z(), f64::min);
-        Some(if ganz || hi.z <= g {
-            (lo, hi)
-        } else {
-            (vec3(lo.x, lo.y, lo.z.max(g)), hi)
-        })
-    }
-
     /// Ersetzt das Modell (Neu, Öffnen). Verlauf, Auswahl und angefangene
     /// Eingaben gehen weg; die Kamera zeigt das ganze Modell.
     fn replace_scene(&mut self, model: sk_model::Model) {
@@ -1582,7 +1522,7 @@ impl App {
         self.sect = Sections::default();
         self.sect.load(&self.scene);
         self.sel = Selection::default();
-        self.tree.reset();
+        self.baum_neu();
         self.props_key = None;
         self.ui.set_props(None);
         self.props_dirty = true;
@@ -2304,6 +2244,7 @@ impl App {
         let p = prefs::Prefs::open(&mut self.scene, &self.theme)
             .with_memory(&self.prefs_mem)
             .with_vorgaben(self.settings.vorgaben)
+            .with_firmenstil(self.settings.firmenstil())
             .with_pattern_error(self.renderer.pattern_error());
         self.prefs = Some(p);
         if let (Some(p), Some(c)) = (self.prefs.as_mut(), &self.company) {
@@ -2660,7 +2601,9 @@ impl App {
     fn perform(&mut self, c: Command, surface: &Surface) {
         match c {
             Command::New | Command::Close => {
-                self.replace_scene(new_model(self.company.as_ref(), self.settings.vorgaben));
+                let mut m = new_model(self.company.as_ref(), self.settings.vorgaben);
+                m.init_massstil(self.settings.firmenstil());
+                self.replace_scene(m);
                 self.doc = Document::new(self.scene.model().revision());
                 // Bei „Neu“ zuerst die Projektdaten (Paket PD-2)
                 if c == Command::New {
@@ -4780,7 +4723,7 @@ impl App {
                 help::Topic::Ext
             }
             _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
-            help::Topic::Drag if self.edit.splitting() => self.edit.thema(),
+            help::Topic::Drag if self.edit.eigenes_thema() => self.edit.thema(),
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
             _ if ctx.window.is_none()
@@ -7416,7 +7359,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     if !hints.is_empty() && screenshot.is_none() {
         surface.message(&meldungen(&hints), false);
     }
-    let mut scene = Scene::with_model(new_model(company.as_ref(), settings.vorgaben));
+    let mut m = new_model(company.as_ref(), settings.vorgaben);
+    m.init_massstil(settings.firmenstil());
+    let mut scene = Scene::with_model(m);
     scene.set_theme(&theme);
     let mut renderer = match Renderer::new(gl, style(&theme.env)) {
         Err(e) if probe.is_some() => {
@@ -7460,6 +7405,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         drains: drain_edit::DrainEdit::default(),
         sect: Sections::default(),
         nord: Default::default(),
+        massketten: Default::default(),
         sonne: Default::default(),
         sel: Selection::default(),
         props_key: None,
@@ -8185,6 +8131,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(p.helpers(&a.scene, a.ui.view, plane, scale, &a.theme));
             }
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
+            helpers.extend(a.mass_zeichnen(scale));
             if a.tool_allowed() {
                 let (width, ink) = a.scene.table().section_line;
                 let st = a.nord_stand(vh, scale as f64);

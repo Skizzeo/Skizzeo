@@ -220,13 +220,17 @@ fn zahl(x: f64, teiler: f64) -> String {
     format!("{:.2}", x / teiler).replace('.', ",")
 }
 
+/// Zusatz im Mengenansatz, wenn die Menge an der Geländehöhe aus dem
+/// Aufmaß hängt; Kostenblatt und LV geben ihren Hinweis genau dann.
+pub const AUS_AUFMASS: &str = "; Gelände aus Aufmaß";
+
 /// Erdmengen einer Gründung (Bauteil `element`, Nummer `number` der
 /// Sohlplatte). Mengen ≤ 0 entstehen nicht.
 pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static str, f64, String)) {
     // Mit Aufmaß nennt jeder Ansatz, der an der Geländehöhe hängt, die
     // Ebene (plan-gelaendemodul.md §5 G1)
     let gelaende = b.aufmass.map_or(String::new(), |h| {
-        format!("; Gelände aus Aufmaß, Mittel {}", zahl(h, 1.0))
+        format!("{AUS_AUFMASS}, Mittel {}", zahl(h, 1.0))
     });
     let mut menge = |key: &'static str, wert: f64, ansatz: String| {
         if matches!(key, TOPSOIL | SUBGRADE | GRAVEL) {

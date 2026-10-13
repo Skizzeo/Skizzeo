@@ -17,7 +17,9 @@ Projektordner.
 | `sk-szb` | Erweiterungsbauteile im Format SZB 0: lesen, Formeln, prüfen wie die Werkbank, Körper und Mengen rechnen |
 | `sk-paint` | Eigene 2D-Vektorgrafik mit Kantenglättung, eigener TrueType-Leser, PNG-, SVG- und PDF-Ausgabe |
 | `sk-ui` | SK-Logo als Vektor, Farbwerte, eigene Titelleiste, Paneele, Knöpfe und Texteingabe |
+| `sk-gelaende` | Rechenkern des Geländemoduls: Höhenaufmaß lesen und prüfen, Geländenetz (Delaunay mit Bruchkanten), Höhen, Profile, Höhenlinien, Flächen und Mengen über dem Netz |
 | `sk-model` | Gebäudemodell als Datenbank: Bauteile mit Guid und Nummer, Baustoff- und Aufbau-Bibliothek, Geschosse, Gelände je Gebäude; Dateiformat `.szo`; Mengen (qto) mit Automatikmengen für Erdarbeiten und Bauvorbereitung; Erweiterungsexemplare |
+| `sk-plan` | Plangrafik: Außenmaßketten nach DIN 1356-1 aus dem Modell, Maßzahlen in m und cm mit hochgestellten mm, Schrift als Dreiecke flach auf der Geschossebene |
 | `sk-cost` | Kosten, AVA und Stammdaten: Katalog (Projekt, Firma, Werk), Rechnung, Leistungsverzeichnis, Verwaltung des Firmenkatalogs `.szk` |
 | `sk-platform` | Windows-Fenster ohne System-Titelleiste, Eingabe, OpenGL-Kontext (eigene Win32-FFI) |
 | `sk-render` | OpenGL-3.3-Darstellung: Himmel, Boden, Flächen, Schraffuren, Kanten, Schatten. Netze tragen nur Baustoffschlüssel und Kantenart; Farben, Schraffuren und Strichbreiten liest der Shader aus einer Tabelle (Textur) |
@@ -48,6 +50,13 @@ Schnittlinie A–A im Grundriss (nach DIN 1356: Strichpunktlinie, kräftige
 Enden, Pfeile in Blickrichtung, Kennbuchstabe): liegt zuerst in der
 Modellmitte, lässt sich mit der linken Maustaste greifen und quer verschieben
 (10-mm-Raster). Die Ansicht „Schnitt“ zeigt den Schnitt an dieser Stelle.
+
+Bemaßung (DIN 1356-1, 1:100): Grundriss und 3D zeigen um jedes Gebäude die
+Außenmaßketten, von der Wand nach außen Öffnungen (mit Höhe und BRH), Wände,
+Vor- und Rücksprünge, Gesamtmaß; in 3D flach auf der Geschossebene. Das
+Zahnrad der Ansicht blendet sie aus und zeigt auf Wunsch die
+Maßbezugspunkte; den Stil stellt der Reiter „Bemaßung“ der Einstellungen ein,
+als Projektwert und als Firmenstandard.
 
 Knopf „Gebäude“ (Paneel „Werkzeuge“, links) startet die Außenwand-Eingabe.
 Außenwand zweischalig, 31,5 cm: 14 cm Dämmung (WDVS) außen, 17,5 cm Porenbeton

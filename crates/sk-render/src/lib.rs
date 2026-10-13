@@ -6,6 +6,7 @@
 //! einen Mehrfachabtast-Puffer (MSAA), der anschließend ins Fenster kopiert wird.
 //! Darüber kommt die selbst gezeichnete Oberfläche (Titelleiste) als Textur.
 
+pub mod gelaende;
 pub mod gl;
 #[cfg(target_os = "linux")]
 pub mod glx;
@@ -292,6 +293,9 @@ struct Program {
     id: GLuint,
 }
 
+/// So viele leere Tintenpuffer bleiben zum Wiederverwenden.
+const INK_FREI: usize = 64;
+
 /// Vertex-Array mit eigenem Puffer.
 #[derive(Default)]
 struct GpuBuffer {
@@ -325,6 +329,18 @@ pub struct Helper {
     pub occlude: bool,
     /// Runde Enden; mit `a == b` ein runder Punkt vom Durchmesser `width`.
     pub round: bool,
+}
+
+/// Tinte: einfarbiges Dreieck in Modellkoordinaten (Schrift und gefüllte
+/// Begrenzungen der Bemaßung). Liegt flach auf seiner Ebene und wird mit dem
+/// Bild perspektivisch, im Grundriss bleibt es in jeder Zoomstufe scharf.
+#[derive(Clone, Copy, Debug)]
+pub struct Ink {
+    pub p: [[f32; 3]; 3],
+    /// RGBA, 0..1, nicht vormultipliziert.
+    pub color: [f32; 4],
+    /// Wie [`Helper::occlude`]: Verdecktes nur blass, sonst obenauf.
+    pub occlude: bool,
 }
 
 /// Bild der Oberfläche an einer Stelle im Fenster.
@@ -447,9 +463,14 @@ pub struct Renderer {
     edges: Program,
     overlay: Program,
     helpers: Program,
+    ink: Program,
     empty_vao: GLuint,
     meshes: Vec<GpuMesh>,
     helper_mesh: GpuBuffer,
+    /// Tinte in Teilen mit ihrem Schlüssel ([`Renderer::set_ink_teile`]) und
+    /// freie Puffer zum Wiederverwenden.
+    ink_teile: Vec<(u64, GpuBuffer)>,
+    ink_frei: Vec<GpuBuffer>,
     overlays: Vec<Overlay>,
     samples: i32,
     target: Option<Target>,
@@ -498,6 +519,9 @@ pub struct Renderer {
     terrain: f32,
     /// OK Gelände je Gebäude (Rechteck im Grundriss, Höhe).
     terrain_boxes: Vec<([f32; 4], f32)>,
+    /// OK Gelände aus dem Aufmaß (G1): Textur des Rasters, sein Rechteck
+    /// und Stand (0 = keins).
+    terrain_grid: (GLuint, [f32; 4], u64),
     /// Höhe des Bodens in 3D (mm), sonst OK Gelände; Darstellungsschlüssel
     /// des Rasens (0 = keiner), Gelände G0.
     ground_z: Option<f32>,
@@ -522,6 +546,9 @@ pub struct Renderer {
 
 /// Einheit der Schattenkarte im Flächen- und Himmels-Shader.
 const SHADOW_UNIT: GLenum = 3;
+
+/// Einheit des Geländerasters im Flächen- und Kanten-Shader.
+const TERRAIN_UNIT: GLenum = 4;
 
 const SHADOW_VS: &str = r#"#version 330 core
 layout(location = 0) in vec3 a_pos;
@@ -676,13 +703,36 @@ uniform vec3 u_hatch_ink;
 // 2 gestrichelt; Flächen dort in Papierfarbe, sie verdecken weiter
 uniform int u_below;
 uniform vec3 u_paper_rgb;
-// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): je Gebäude ein
-// Rechteck im Grundriss (x0, y0, x1, y1) mit seiner Höhe, sonst u_terrain
+// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): mit Aufmaß aus
+// seinem Raster (G1), sonst je Gebäude ein Rechteck im Grundriss (x0, y0,
+// x1, y1) mit seiner Höhe, sonst u_terrain
 uniform float u_terrain;
 uniform int u_ter_n;
 uniform vec4 u_ter_box[16];
 uniform float u_ter_z[16];
+uniform int u_ter_grid;
+uniform vec4 u_ter_rect;
+uniform sampler2D u_ter_tex;
+// Wie TerrainGrid::z: bilinear zwischen den vier Gitterpunkten
+bool terrain_grid(vec2 p, out float z) {
+    vec4 r = u_ter_rect;
+    z = 0.0;
+    if (u_ter_grid == 0 || p.x < r.x || p.y < r.y || p.x > r.z || p.y > r.w) return false;
+    ivec2 n = textureSize(u_ter_tex, 0);
+    vec2 f = (p - r.xy) / (r.zw - r.xy) * vec2(n - 1);
+    ivec2 i = min(ivec2(f), n - 2);
+    vec2 t = f - vec2(i);
+    float a = texelFetch(u_ter_tex, i, 0).r;
+    float b = texelFetch(u_ter_tex, i + ivec2(1, 0), 0).r;
+    float c = texelFetch(u_ter_tex, i + ivec2(0, 1), 0).r;
+    float d = texelFetch(u_ter_tex, i + ivec2(1, 1), 0).r;
+    if (min(min(a, b), min(c, d)) < -0.5e30) return false;
+    z = mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
+    return true;
+}
 float terrain_at(vec2 p) {
+    float z;
+    if (terrain_grid(p, z)) return z;
     for (int i = 0; i < u_ter_n; i++) {
         vec4 b = u_ter_box[i];
         if (p.x >= b.x && p.y >= b.y && p.x <= b.z && p.y <= b.w) return u_ter_z[i];
@@ -1325,13 +1375,36 @@ flat out vec3 v_color_below;
 // OK Gelände an der Kante (Mitte im Grundriss)
 flat out float v_ter;
 uniform int u_below;
-// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): je Gebäude ein
-// Rechteck im Grundriss (x0, y0, x1, y1) mit seiner Höhe, sonst u_terrain
+// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): mit Aufmaß aus
+// seinem Raster (G1), sonst je Gebäude ein Rechteck im Grundriss (x0, y0,
+// x1, y1) mit seiner Höhe, sonst u_terrain
 uniform float u_terrain;
 uniform int u_ter_n;
 uniform vec4 u_ter_box[16];
 uniform float u_ter_z[16];
+uniform int u_ter_grid;
+uniform vec4 u_ter_rect;
+uniform sampler2D u_ter_tex;
+// Wie TerrainGrid::z: bilinear zwischen den vier Gitterpunkten
+bool terrain_grid(vec2 p, out float z) {
+    vec4 r = u_ter_rect;
+    z = 0.0;
+    if (u_ter_grid == 0 || p.x < r.x || p.y < r.y || p.x > r.z || p.y > r.w) return false;
+    ivec2 n = textureSize(u_ter_tex, 0);
+    vec2 f = (p - r.xy) / (r.zw - r.xy) * vec2(n - 1);
+    ivec2 i = min(ivec2(f), n - 2);
+    vec2 t = f - vec2(i);
+    float a = texelFetch(u_ter_tex, i, 0).r;
+    float b = texelFetch(u_ter_tex, i + ivec2(1, 0), 0).r;
+    float c = texelFetch(u_ter_tex, i + ivec2(0, 1), 0).r;
+    float d = texelFetch(u_ter_tex, i + ivec2(1, 1), 0).r;
+    if (min(min(a, b), min(c, d)) < -0.5e30) return false;
+    z = mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
+    return true;
+}
 float terrain_at(vec2 p) {
+    float z;
+    if (terrain_grid(p, z)) return z;
     for (int i = 0; i < u_ter_n; i++) {
         vec4 b = u_ter_box[i];
         if (p.x >= b.x && p.y >= b.y && p.x <= b.z && p.y <= b.w) return u_ter_z[i];
@@ -1501,6 +1574,36 @@ void main() {
 }
 "#;
 
+const INK_VS: &str = r#"#version 330 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec4 a_color;
+layout(location = 2) in float a_occl;
+uniform mat4 u_vp;
+uniform vec3 u_origin;
+uniform vec4 u_pull;
+out vec4 v_color;
+void main() {
+    // Wie die Hilfslinien: verdeckbar ein wenig zur Kamera gezogen, sonst
+    // ganz vorne
+    bool occl = a_occl > 0.5;
+    vec4 pull = occl ? u_pull : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 c = u_vp * vec4((a_pos + u_origin) * pull.w + pull.xyz, 1.0);
+    v_color = a_color;
+    if (!occl) c.z = -c.w;
+    gl_Position = c;
+}
+"#;
+
+const INK_FS: &str = r#"#version 330 core
+in vec4 v_color;
+uniform float u_hidden;
+out vec4 o_color;
+void main() {
+    float a = v_color.a * (u_hidden > 0.5 ? 0.3 : 1.0);
+    o_color = vec4(v_color.rgb * a, a);
+}
+"#;
+
 const OVERLAY_FS: &str = r#"#version 330 core
 in vec2 v_ndc;
 out vec4 o_color;
@@ -1622,6 +1725,7 @@ impl Renderer {
             let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
+            let ink = program(&gl, INK_VS, INK_FS)?;
             let snap_prog = program(&gl, FULLSCREEN_VS, SNAPSHOT_FS)?;
             let shadow_prog = program(&gl, SHADOW_VS, SHADOW_FS)?;
             let shadow_dummy = depth_texture(&gl, 1, &[u32::MAX]);
@@ -1642,9 +1746,12 @@ impl Renderer {
                 edges,
                 overlay,
                 helpers,
+                ink,
                 empty_vao: vao,
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
+                ink_teile: Vec::new(),
+                ink_frei: Vec::new(),
                 overlays: Vec::new(),
                 samples: max_samples.clamp(1, 8),
                 target: None,
@@ -1676,6 +1783,7 @@ impl Renderer {
                 below: (0, [0.0; 2]),
                 terrain: 0.0,
                 terrain_boxes: Vec::new(),
+                terrain_grid: (0, [0.0; 4], 0),
                 ground_z: None,
                 grass: 0,
                 shadow_failed: shadow_error.is_some(),
@@ -2011,6 +2119,56 @@ impl Renderer {
                 &v,
                 &[(3, 0), (3, 12), (2, 24), (4, 32), (3, 48), (4, 60), (4, 76)],
             );
+        }
+    }
+
+    /// Tinte (gefüllte Dreiecke in Modellkoordinaten) für das nächste Bild,
+    /// in einem Teil, immer neu hochgeladen.
+    pub fn set_ink(&mut self, tris: &[Ink]) {
+        self.set_ink_teile::<&[Ink]>(&[]);
+        self.set_ink_teile(&[(u64::MAX, tris)]);
+    }
+
+    /// Tinte in Teilen, je mit einem Schlüssel für ihren Inhalt (Review W30
+    /// zu #116): hochgeladen wird nur ein Teil mit neuem Schlüssel, Teile, die
+    /// fehlen, fallen weg und geben ihren Puffer frei.
+    pub fn set_ink_teile<T: AsRef<[Ink]>>(&mut self, teile: &[(u64, T)]) {
+        // Meist dasselbe wie im letzten Bild
+        if self.ink_teile.len() == teile.len()
+            && self.ink_teile.iter().zip(teile).all(|(a, b)| a.0 == b.0)
+        {
+            return;
+        }
+        let mut alt: std::collections::HashMap<u64, GpuBuffer> =
+            std::mem::take(&mut self.ink_teile).into_iter().collect();
+        for (key, tris) in teile {
+            if let Some(b) = alt.remove(key) {
+                self.ink_teile.push((*key, b));
+                continue;
+            }
+            let mut b = self.ink_frei.pop().unwrap_or_default();
+            let mut v: Vec<[f32; 8]> = Vec::with_capacity(tris.as_ref().len() * 3);
+            for t in tris.as_ref() {
+                let [r, g, bl, a] = t.color;
+                for p in t.p {
+                    v.push([p[0], p[1], p[2], r, g, bl, a, t.occlude as u8 as f32]);
+                }
+            }
+            unsafe {
+                fill(&self.gl, &mut b, &v, &[(3, 0), (4, 12), (1, 28)]);
+            }
+            self.ink_teile.push((*key, b));
+        }
+        self.ink_frei.extend(alt.into_values());
+        // Leere Puffer bleiben nur bis zu einer Obergrenze für später, der
+        // Rest wird freigegeben (Review W33)
+        while self.ink_frei.len() > INK_FREI {
+            if let Some(b) = self.ink_frei.pop() {
+                unsafe {
+                    self.gl.glDeleteBuffers(1, &b.buf);
+                    self.gl.glDeleteVertexArrays(1, &b.vao);
+                }
+            }
         }
     }
 
@@ -2865,7 +3023,9 @@ impl Renderer {
             // Fang hinter Blassem bleiben sichtbar (Review 3h, Hinweis). Erst
             // nach dem Boden, sonst tönt er den Geist über leerem Boden (3l);
             // ohne Hilfslinien braucht niemand die Tiefe
-            if ghost.is_some_and(|g| g.1 > 0.0) && self.helper_mesh.count > 0 {
+            let tinte = self.ink_teile.iter().any(|(_, b)| b.count > 0);
+            let marks = self.helper_mesh.count > 0 || tinte;
+            if ghost.is_some_and(|g| g.1 > 0.0) && marks {
                 gl.glClear(DEPTH_BUFFER_BIT);
                 let p = self.faces.id;
                 gl.glUseProgram(p);
@@ -2900,6 +3060,30 @@ impl Renderer {
                     gl.glDepthFunc(func);
                     gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
                     gl.glDrawArrays(TRIANGLES, 0, self.helper_mesh.count);
+                }
+                gl.glDisable(BLEND);
+                gl.glDepthMask(TRUE);
+            }
+
+            // Tinte (Schrift der Bemaßung) über den Linien, ebenso erst
+            // sichtbar, dann verdeckt blass
+            if tinte {
+                gl.glDepthMask(FALSE);
+                gl.glEnable(BLEND);
+                gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
+                let p = self.ink.id;
+                gl.glUseProgram(p);
+                mat(gl, p, c"u_vp", &view.view_proj);
+                vec3(gl, p, c"u_origin", view.origin_rel);
+                let q = view.pull;
+                gl.glUniform4f(loc(gl, p, c"u_pull"), q[0], q[1], q[2], q[3]);
+                for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
+                    gl.glDepthFunc(func);
+                    gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
+                    for (_, b) in self.ink_teile.iter().filter(|(_, b)| b.count > 0) {
+                        gl.glBindVertexArray(b.vao);
+                        gl.glDrawArrays(TRIANGLES, 0, b.count);
+                    }
                 }
                 gl.glDisable(BLEND);
                 gl.glDepthMask(TRUE);
@@ -3134,6 +3318,36 @@ unsafe fn upload_looks(gl: &Gl, tex: &mut GLuint, looks: &Looks) {
     gl.glBindTexture(TEXTURE_2D, 0);
 }
 
+/// Geländeraster als Gleitkomma-Textur (R32F, je Gitterpunkt eine Höhe).
+unsafe fn upload_grid(gl: &Gl, tex: &mut GLuint, g: &gelaende::TerrainGrid) {
+    if *tex == 0 {
+        gl.glGenTextures(1, tex);
+        gl.glBindTexture(TEXTURE_2D, *tex);
+        for (p, v) in [
+            (TEXTURE_MIN_FILTER, NEAREST),
+            (TEXTURE_MAG_FILTER, NEAREST),
+            (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
+            (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
+        ] {
+            gl.glTexParameteri(TEXTURE_2D, p, v);
+        }
+    }
+    gl.glBindTexture(TEXTURE_2D, *tex);
+    gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
+    gl.glTexImage2D(
+        TEXTURE_2D,
+        0,
+        R32F as GLint,
+        g.n[0] as i32,
+        g.n[1] as i32,
+        0,
+        RED,
+        FLOAT,
+        g.z.as_ptr() as *const c_void,
+    );
+    gl.glBindTexture(TEXTURE_2D, 0);
+}
+
 /// Verbandstabellen als Ganzzahl-Textur (R8UI, 128 breit); ohne wilden
 /// Verband eine leere Tabelle, damit die Textur vollständig ist.
 unsafe fn upload_bond(gl: &Gl, tex: &mut GLuint, bond: &[u8]) {
@@ -3326,6 +3540,21 @@ impl Renderer {
         self.grass = i32::from(key);
     }
 
+    /// OK Gelände aus dem Aufmaß als Raster (Gelände G1): gilt vor den
+    /// Rechtecken je Gebäude ([`Renderer::set_terrain_boxes`]); hochgeladen
+    /// nur, wenn ein anderes Gitter kommt. `None` ohne Aufmaß.
+    pub fn set_terrain_grid(&mut self, g: Option<&gelaende::TerrainGrid>) {
+        let stand = g.map_or(0, |g| g.stand);
+        if stand == self.terrain_grid.2 {
+            return;
+        }
+        self.terrain_grid.2 = stand;
+        if let Some(g) = g {
+            unsafe { upload_grid(&self.gl, &mut self.terrain_grid.0, g) };
+            self.terrain_grid.1 = g.rect.map(|v| v as f32);
+        }
+    }
+
     /// OK Gelände je Gebäude: Rechteck im Grundriss `[x0, y0, x1, y1]`
     /// (Modellkoordinaten, mm) und Höhe; das erste passende gilt, höchstens
     /// [`TERRAIN_BOXES`].
@@ -3337,6 +3566,13 @@ impl Renderer {
     fn terrain_uniforms(&self, gl: &Gl, p: GLuint) {
         unsafe {
             gl.glUniform1f(loc(gl, p, c"u_terrain"), self.terrain);
+            let (tex, r, stand) = self.terrain_grid;
+            gl.glUniform1i(loc(gl, p, c"u_ter_grid"), GLint::from(stand != 0));
+            gl.glUniform4f(loc(gl, p, c"u_ter_rect"), r[0], r[1], r[2], r[3]);
+            gl.glActiveTexture(TEXTURE0 + TERRAIN_UNIT);
+            gl.glBindTexture(TEXTURE_2D, tex);
+            gl.glUniform1i(loc(gl, p, c"u_ter_tex"), TERRAIN_UNIT as GLint);
+            gl.glActiveTexture(TEXTURE0);
             let n = self.terrain_boxes.len();
             gl.glUniform1i(loc(gl, p, c"u_ter_n"), n as GLint);
             if n > 0 {
