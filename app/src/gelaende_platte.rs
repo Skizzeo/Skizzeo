@@ -618,7 +618,7 @@ pub(crate) fn props(m: &Model, plates: &[TerrainPlate]) -> Props {
                 feld(Field::PlateThick, "Dicke", s.thick, PLATE_THICK),
                 feld(Field::PlateMargin, "Außenoffset", s.margin, PLATE_MARGIN),
             ],
-            hint: "Höhe aus dem Geschossmanager. Echtes Gelände mit dem Geländemodul.",
+            hint: "Höhe aus dem Geschossmanager. Echtes Gelände: Knopf „Gelände“.",
             buttons: Vec::new(),
         }],
         ..Default::default()
