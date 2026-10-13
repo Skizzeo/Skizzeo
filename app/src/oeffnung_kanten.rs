@@ -117,8 +117,12 @@ pub fn treffer(
 ) -> Option<Treffer> {
     let (o, d) = cam.ray(x, y, w, h);
     let mut best: Option<(f64, Treffer)> = None;
-    // Nur die Schenkel in den Feldern, die der Strahl kreuzt (W43 B1)
-    let (_, wand) = scene.kanten_strahl(o, d, |s| {
+    // Nur die Schenkel in den Zellen, die der Strahl kreuzt, und so weit
+    // daneben, wie die Maus greift (W43 B1, Review H1 zu #147)
+    let griff = |p: Vec3| {
+        mm_je_px(cam, p, w, h).map_or(f64::INFINITY, |mm| GRIFF_PX.max(HALTEN_PX) * scale * mm)
+    };
+    let (_, wand) = scene.kanten_strahl(o, d, griff, |s| {
         if !scene.pickable(s.id) {
             return None;
         }
@@ -885,6 +889,32 @@ pub(super) mod tests {
         let pick =
             crate::selection::pick_at(&mut s, &cam, crate::ui::ViewKind::Persp, None, x, y, W, H);
         assert_eq!(pick, Some(id));
+    }
+
+    /// Von weit weg greift die Maus weiter als der feste Rand des Rasters
+    /// um die Schenkel: Die gehaltene Öffnung bleibt 50 Bildpunkte neben
+    /// ihrer Kante getroffen, Meter außerhalb des Hauses (Review H1 zu #147).
+    #[test]
+    fn halten_von_weit_weg() {
+        let (s, _, id, ..) = haus();
+        let cam = Camera::looking_at(
+            vec3(7500.0, -96_000.0, 3500.0),
+            vec3(7500.0, 0.0, 1500.0),
+            45.0,
+        );
+        let (z0, z1) = band(&s, id);
+        let (x, y) = bei(&s, &cam, id, 7500.0, (z0 + z1) / 2.0);
+        let p = (x + 50.0, y);
+        // So weit rechts der Öffnung, in ihrer Fläche: neben dem Haus
+        let (o, d) = cam.ray(p.0, p.1, W, H);
+        let fy = s.model().opening(id).unwrap().path[0].y;
+        let neben = o.x + d.x * (fy - o.y) / d.y;
+        assert!(neben > 11_500.0, "{neben}");
+        assert!(treffer(&s, &cam, p, W, H, 1.0, None).is_none());
+        assert_eq!(
+            treffer(&s, &cam, p, W, H, 1.0, Some(id)).map(|t| t.id),
+            Some(id)
+        );
     }
 
     /// Oberkante über das Wandband greifen und bis an den Sturz des OG
