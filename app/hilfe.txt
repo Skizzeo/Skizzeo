@@ -4,7 +4,7 @@ Umsehen | Mausrad gedrückt dreht, **Umschalt** + Mausrad verschiebt, Mausrad dr
 Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts
 Bauteil wählen | Klick auf das Bauteil; rechts stehen Maße, Mengen und Felder
 Ändern | am violetten Band ziehen oder im Paneel Werte eintippen
-Mengen und Kosten | Knopf „Mengen · Kosten · AVA“
+Mengen | Knopf „Mengen · Kosten · AVA“
 Datei | Klick auf das Logo oben links, **F10** oder **Alt**
 Rückgängig | **Strg+Z**, wiederholen **Strg+Y**
 Hilfe | **F1** zeigt die Hilfe zu dem, was du gerade tust
@@ -99,6 +99,7 @@ Preise | Preise aus der Datei gelten, bis der Firmenkatalog eigene hat; das LV n
 Greifen | über den Wandfuß fahren, violettes Band greifen und ziehen (10-mm-Raster)
 Wert tippen | beim Ziehen eine Zahl tippen, **Enter** übernimmt genau auf den Millimeter
 Nachkorrektur | direkt nach dem Loslassen Zahl tippen und **Enter** ersetzt den Schritt
+Mit Maßketten | sind Maßketten zu sehen, ist die getippte Zahl das Maß zum Nachbarn in der Kette (Feld „Maß“), sonst die Verschiebung
 Versatz | an gelöster Wand: „0,30“ springt vor, „-0,30“ zurück; unter 2 cm bündig
 Nur diese Wand | mit **Strg** ziehen; ohne **Strg** geht der ganze Stapel mit
 Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht das Ziehen ab
@@ -203,10 +204,10 @@ Ketten | von der Wand nach außen: Öffnungen (Breite, darunter die Höhe, BRH i
 Maßzahlen | unter 1 m in cm, ab 1 m in m mit zwei Stellen, Millimeter hochgestellt; passt die Zahl nicht zwischen die Hilfslinien, steht sie daneben oder eine Zeile höher
 3D | die Ketten liegen flach auf der Ebene des gewählten Bauteils, sonst des aktiven Geschosses; verdeckte Teile blass
 Zahnrad | „Maßketten zeigen“ und „Maßbezugspunkte zeigen“ je Ansicht; die Bezugspunkte zeigen, an welcher Kante jede Hilfslinie misst
-Stil | Einstellungen, Reiter „Bemaßung“: Linien, Begrenzung (Kreis, Schrägstrich, Punkt, Pfeil), Schrift, Rundung 1 oder 5 mm, Farbe, Abstände, welche Ketten, BRH ab Rohdecke oder Estrich
-Firmenstandard | „Als Firmenstandard speichern“ gilt mit **OK** für neue Projekte; „Firmenstandard übernehmen“ setzt ihn in dieses Projekt
-Maß ändern | Klick auf eine Maßzahl öffnet sie zur Eingabe in m; es wandert das Bauteil am rechten bzw. oberen Ende (Pfeil), **Tab** nimmt das andere Ende; Klick ins Freie oder **Enter** übernimmt, **Esc** bricht ab
-Mit Richtung | Wand am Gummiband greifen und ziehen: das Maß dahinter leuchtet auf; nach dem Loslassen die Zahl tippen, die Wand springt mit
+Bezug | Werk: das ganze Wandpaket, außen über Dämmung und Putz; Rohbaumaße mit „Tragende Schicht“ im Reiter „Bemaßung“ unter „Wände bemaßen“, dann misst die Öffnungskette das Loch im Mauerwerk (bei WDVS und Verblender um den Anschlag größer als die gezeichnete Öffnung)
+Stil | Einstellungen, Reiter „Bemaßung“: Linien, Begrenzung (Kreis, Schrägstrich, Punkt, Pfeil), Schrift, Rundung 1 oder 5 mm, Farbe, Abstände, welche Ketten, BRH ab Rohdecke oder Estrich; „Als Firmenstandard speichern“ gilt mit **OK** für neue Projekte, „Firmenstandard übernehmen“ setzt ihn in dieses Projekt
+Maß ändern | Klick auf eine Maßzahl öffnet sie zur Eingabe in m, mit dem Maß vorbelegt und markiert („88“ öffnet als „0,88“), die erste Ziffer ersetzt es; es wandert das Bauteil am rechten bzw. oberen Ende, in der Öffnungskette die Öffnung (Pfeil), **Tab** nimmt das andere Ende; Klick ins Freie oder **Enter** übernimmt, **Esc** bricht ab
+Mit Richtung | Wand am Gummiband greifen und ziehen: das Maß dahinter leuchtet auf; schon beim Ziehen oder nach dem Loslassen die Zahl tippen, die Wand springt mit
 Ketten verschieben | Maßlinie greifen und ziehen (10-mm-Raster); **Strg**+Klick wählt dazu, **Umschalt**+Klick den ganzen Block, ein Rechteck von rechts nach links jede berührte Kette; Doppelklick setzt zurück
 
 [thema] id=nordpfeil titel="Nordpfeil"
@@ -307,8 +308,8 @@ Einzelne Wand anders | dafür einen neuen Typ anlegen
 
 [thema] id=baustoffe titel="Baustoffe"
 Öffnen | Dateimenü › „Baustoffe …“, Baustoffname im Paneel oder Rechtsklick auf eine Schicht
-Ansehen | Reiter Projekt und Firma; λ, Rohdichte, Richtpreis und „Verwendet in“
-Preise | nach Dicke und Güte; ändern unter Datei › Verwaltung
+Ansehen | Reiter Projekt und Firma; λ, Rohdichte und „Verwendet in“
+Preise | Richtpreis nach Dicke und Güte; ändern unter Datei › Verwaltung
 Mehr | „Mehr“ klappt alle Kennwerte auf
 Bestellung | Verschnittzuschlag in % für die Bestellmenge, leer: Vorgabe nach Baustoffart; Öffnungen ab dieser Größe (m²) von der Bestellmenge abziehen, leer: alle übermessen
 Ändern | Werte tippen; **OK** ist ein Rückgängig-Schritt

@@ -1604,6 +1604,56 @@ mod tests {
         assert!(f.haken[0].text.ends_with("vorhanden, Firmenpreis gilt"));
     }
 
+    /// Review #120 B1: Die Stufe ändert nicht, was gespeichert wird. Ohne
+    /// Kosten fehlen nur die Haken; „Einlesen“ legt in Basis dieselben
+    /// Hinweise ab und schreibt dieselben neuen Sätze in den Firmenkatalog
+    /// wie mit allem frei.
+    #[test]
+    fn firmenkatalog_in_jeder_stufe_gleich() {
+        use crate::catalog::Company;
+        use crate::freischaltung::Freischaltung;
+        let dir = ordner("stufe");
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Import, "2026-10-13", "18:00");
+        let mut katalog = Vec::new();
+        for (i, f) in [Freischaltung::stufe("basis").unwrap(), Freischaltung::ALLES]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut c, _) = Company::load(&dir.join(format!("firma{i}.szk")), true);
+            let m = Model::new();
+            let frage = crate::ext_fenster_app::frage_zur_datei(
+                "werk.stuetze.szb",
+                Ok(STUETZE.to_string()),
+                &Ablage::default(),
+                &m,
+                Some(c.library()),
+                f,
+            );
+            assert_eq!(frage.haken.len(), [0, 2][i], "{f:?}");
+            let mut w = Fenster::mit_frage(Vec::new(), frage);
+            let r = w.rect(1.0, 1280, 800, 32);
+            // „column“ ist neu: erst die eigene Rückfrage
+            assert!(drueck(&mut w, r, Knopf::Ja).is_none());
+            let Some(Antwort::Tat(Tat::Einlesen(v))) = drueck(&mut w, r, Knopf::Ja) else {
+                panic!("{f:?}: kein Einlesen");
+            };
+            let (n, op) = crate::ext_fenster_app::saetze_op(&v, None).unwrap();
+            assert_eq!(n, 2);
+            c.fuer_firma(&h, &[op]).unwrap();
+            // die Kennung des Katalogs entsteht je Datei neu
+            let szk: Vec<String> = sk_model::write_szk(c.library())
+                .lines()
+                .map(|z| match z.strip_prefix("[catalog] guid=") {
+                    Some(r) => r.split_once(' ').map_or("", |x| x.1).to_string(),
+                    None => z.to_string(),
+                })
+                .collect();
+            katalog.push((v.hinweise.clone(), szk));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(katalog[0], katalog[1]);
+    }
+
     /// §2 Nr. 7: Neue Bauteilart und Gewerk ohne Titel nur nach eigener
     /// Rückfrage; „Abbrechen“ liest nichts ein, „Trotzdem einlesen“ schon.
     /// Bekannt ist danach, was die eingelesene Fassung schon nannte.
