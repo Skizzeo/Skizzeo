@@ -2,7 +2,7 @@
 //! ausgelagert.
 
 use crate::ui::Id;
-use crate::{cards, help, nordpfeil, sonne_view, tip_text, App};
+use crate::{help, nordpfeil, sonne_view, App};
 
 impl App {
     /// Tooltip an Werkzeug- und Ansichtsknöpfen (9b): Name, Satz aus
@@ -21,7 +21,7 @@ impl App {
             Id::Sprung(_) => "Winkelsprung",
             Id::Ext if self.tool.ext.is_none() => "Erweiterungen",
             Id::Opening(k) => k.name(),
-            Id::Quantity => cards::KNOPF,
+            Id::Quantity => self.ui.frei.knopf(),
             Id::Projektdaten => "Projektdaten",
             Id::Nord => nord.as_str(),
             Id::View(v) => v.knopf(None),
@@ -51,4 +51,14 @@ impl App {
         }
         Some(tip_text(lines))
     }
+}
+
+/// Zeilen eines Tooltips als Text für [`sk_ui::widgets::tooltip`] (erste
+/// Zeile fett), ohne Fettschrift-Marken.
+pub(crate) fn tip_text(lines: Vec<String>) -> String {
+    lines
+        .iter()
+        .map(|l| help::plain(l))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
