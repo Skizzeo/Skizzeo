@@ -1,5 +1,6 @@
 //! Gelände und Perimeterdämmung (Gelände Themen 1 und 4): Methoden von `Model`, aus `model.rs` ausgelagert.
 
+use super::geschossbaender::GruendungsBasis;
 use super::*;
 
 impl Model {
@@ -167,6 +168,132 @@ impl Model {
         self.terrain_nhn_merken();
         self.resettle_foundations(vorher);
         true
+    }
+
+    /// Beginnt einen Zug an OK Gelände des Gebäudes `b` (Geschossmanager,
+    /// Review #123 B1 zum Gelände-Zug): merkt einmal OK Gelände je Gründung
+    /// und den Bereich je Gebäude. `None` ohne Gebäude.
+    pub fn gelaende_zug(&self, b: BuildingId) -> Option<GelaendeZug> {
+        self.building(b)?;
+        let vorher = self.foundation_terrain();
+        let eigene = vorher
+            .iter()
+            .filter(|(gr, _)| self.building_of(*gr) == Some(b))
+            .filter_map(|&(gr, t)| {
+                let s = self.storey(gr)?;
+                Some((gr, s.embed.unwrap_or(t - s.elevation)))
+            })
+            .collect();
+        Some(GelaendeZug {
+            haus: b,
+            basis: self.gruendungs_basis(),
+            vorher,
+            eigene,
+        })
+    }
+
+    /// Eine Mausbewegung im Zug: Versatz wie
+    /// [`Model::set_terrain_offset_of`], aber nur die Gründungen des
+    /// gezogenen Gebäudes folgen, mit der Einbindetiefe vom Beginn. Bestimmt
+    /// es mit Aufmaß ±0,00, stehen die anderen bis zum Loslassen auf ihrer
+    /// alten Gründung (Vorschau). Kostet so viel wie das Gebäude, nicht wie
+    /// das Modell.
+    pub fn gelaende_ziehen(&mut self, zug: &GelaendeZug, offset: f64) -> bool {
+        if !self.versatz_im_zug(zug.haus, offset) {
+            return false;
+        }
+        self.zug_folgen(zug);
+        true
+    }
+
+    /// Eine Mausbewegung im Zug an der Kote (Geschossmanager): OK Gelände
+    /// an der Gründung `gr` auf `z` über denselben Hebel wie
+    /// [`Model::set_terrain_z_of_level`], aber wie bei
+    /// [`Model::gelaende_ziehen`] folgen nur die Gründungen des gezogenen
+    /// Gebäudes. Wandert mit Aufmaß ±0,00, stehen die anderen bis zum
+    /// Loslassen auf ihrer alten Gründung.
+    pub fn gelaende_ziehen_auf(&mut self, zug: &GelaendeZug, gr: StoreyId, z: f64) -> bool {
+        if !z.is_finite() {
+            return false;
+        }
+        let d = self.terrain_z_of_level(gr) - z;
+        let neu = match self.terrain_hebel(gr) {
+            Some(Hebel::Eben(b)) => self.versatz_im_zug(b, -z),
+            Some(Hebel::Versatz(b)) => {
+                let o = self.terrain_offset_of(Some(b)) + d;
+                self.versatz_im_zug(b, o)
+            }
+            Some(Hebel::Nhn(h)) => self.nhn_im_zug((h * 1000.0 + d).round() / 1000.0),
+            None => false,
+        };
+        if neu {
+            self.zug_folgen(zug);
+        }
+        neu
+    }
+
+    /// Versatz des Gebäudes `b` im Zug, ohne die Gründungen; `false`, wenn
+    /// er ungültig ist oder gleich bleibt.
+    fn versatz_im_zug(&mut self, b: BuildingId, offset: f64) -> bool {
+        if !(offset.is_finite() && offset.abs() <= MAX_TERRAIN_OFFSET + 1e-9) {
+            return false;
+        }
+        if self.building(b).is_none_or(|x| x.terrain == offset) {
+            return false;
+        }
+        self.put_terrain(b, offset);
+        true
+    }
+
+    /// Höhe von ±0,00 ü. NHN im Zug (Höhenlage schon absolut), ohne die
+    /// Gründungen; die Lage im Aufmaß bleibt gemerkt.
+    fn nhn_im_zug(&mut self, h: f64) -> bool {
+        if !super::location::im_bereich(h, super::location::NHN) {
+            return false;
+        }
+        let l = Location {
+            nhn: Some(h),
+            ..self.location().normalized()
+        };
+        self.put_location(l)
+    }
+
+    /// Die Gründungen des gezogenen Gebäudes folgen mit der Einbindetiefe
+    /// vom Beginn des Zugs.
+    fn zug_folgen(&mut self, zug: &GelaendeZug) {
+        for &(gr, want) in &zug.eigene {
+            let t = self.terrain_z_of_level(gr);
+            let bereich = zug.basis.bereich(Some(zug.haus), t);
+            self.settle_foundation_in(gr, want, t, bereich);
+        }
+    }
+
+    /// Loslassen: Die übrigen Gründungen folgen ihrem Gelände in einem
+    /// Gang, wie es [`Model::set_terrain_offset_of`] getan hätte. Mit
+    /// Aufmaß hat sich OK Gelände für alle um dasselbe Δ bewegt; jede
+    /// Gründung wandert um Δ, eine an einer Grenze bleibt dort und merkt
+    /// sich ihre Tiefe. Die Gebäude, deren Unterkante sich bewegt hat.
+    pub fn gelaende_loslassen(&mut self, zug: GelaendeZug) -> Vec<BuildingId> {
+        let mut bewegt = std::collections::HashSet::new();
+        for (gr, alt) in zug.vorher {
+            if zug.eigene.iter().any(|e| e.0 == gr) {
+                continue;
+            }
+            let t = self.terrain_z_of_level(gr);
+            let Some(s) = self.storey(gr).filter(|_| (t - alt).abs() > 1e-6) else {
+                continue;
+            };
+            let (b, z0, want) = (
+                s.building,
+                s.elevation,
+                s.embed.unwrap_or(alt - s.elevation),
+            );
+            self.settle_foundation_in(gr, want, t, zug.basis.bereich(b, t));
+            if self.storey(gr).is_some_and(|s| s.elevation != z0) {
+                bewegt.extend(b);
+            }
+        }
+        bewegt.into_iter().collect()
     }
 
     /// Schreibt den Versatz eines Gebäudes (mit Rückgängig). Die Lage im
@@ -564,4 +691,15 @@ enum Hebel {
     Eben(BuildingId),
     Versatz(BuildingId),
     Nhn(f64),
+}
+
+/// Ein laufender Zug an OK Gelände ([`Model::gelaende_zug`]).
+pub struct GelaendeZug {
+    haus: BuildingId,
+    /// OK EG und Plattentiefe je Gebäude; der Zug ändert beides nicht.
+    basis: GruendungsBasis,
+    /// OK Gelände je Gründung beim Beginn.
+    vorher: Vec<(StoreyId, f64)>,
+    /// Gründungen des gezogenen Gebäudes mit ihrer gewollten Einbindetiefe.
+    eigene: Vec<(StoreyId, f64)>,
 }
