@@ -150,20 +150,29 @@ fn budget_geschosszug() {
 fn budget_grossgebaeude() {
     let (mut m, gb) = haeuser_mit(200, false, 5);
     let eg = m.ground_of(Some(gb[0])).unwrap();
-    // Bestwert aus drei: Die Tests laufen nebeneinander
-    let ms = [100.0, -100.0, 100.0]
-        .map(|dz| {
-            let top = m.storey(eg).unwrap().top();
-            m.begin("Geschoss ziehen");
-            assert!(m.set_storey_top(eg, top + dz));
-            let t = Instant::now();
-            assert!(m.commit().is_some());
-            ms(t)
-        })
-        .into_iter()
-        .fold(f64::INFINITY, f64::min);
-    // Vor #148 27 ms, danach 4,8–7,2 ms je nach Last (Review zu #148, H3)
-    let budget = if cfg!(debug_assertions) { 200.0 } else { 15.0 };
+    // Einmal aufwärmen, dann Bestwert aus mindestens sieben Zügen über
+    // mindestens 300 ms: Die Tests laufen nebeneinander, und ein kurzer
+    // Lastspitzen-Abschnitt soll nicht alle Proben treffen (Review zu
+    // #148, H3; die Grenze bleibt 8 ms)
+    let mut zug = |dz: f64| {
+        let top = m.storey(eg).unwrap().top();
+        m.begin("Geschoss ziehen");
+        assert!(m.set_storey_top(eg, top + dz));
+        let t = Instant::now();
+        assert!(m.commit().is_some());
+        ms(t)
+    };
+    zug(100.0);
+    let start = Instant::now();
+    let mut best = f64::INFINITY;
+    for k in 0..200 {
+        best = best.min(zug(if k % 2 == 0 { -100.0 } else { 100.0 }));
+        if k >= 6 && ms(start) >= 300.0 {
+            break;
+        }
+    }
+    let ms = best;
+    let budget = if cfg!(debug_assertions) { 200.0 } else { 8.0 };
     assert!(ms < budget, "{ms:.1} ms");
 }
 
