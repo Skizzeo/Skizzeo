@@ -345,6 +345,10 @@ mod anschluesse;
 #[path = "dach.rs"]
 mod dach;
 
+#[cfg(test)]
+#[path = "abgleich_tempo.rs"]
+mod abgleich_tempo;
+
 #[path = "decke.rs"]
 mod decke;
 
@@ -4611,9 +4615,34 @@ fn room_inside(c: &WallChain) -> bool {
     !c.closed || sk_math::polygon::inset(&c.face_corners(c.outer_offset()), c.thickness()).is_ok()
 }
 
+/// Züge im Bereich, ab denen sich das [`Model::lesend`]-Verzeichnis für den
+/// Abgleich lohnt: Darunter rechnet jede Decke ohne es schneller, als es zu
+/// bauen dauert (Review L39).
+const VERZ_AB: usize = 16;
+
+impl Model {
+    /// `f` im Abgleich über `scope`: bei vielen Zügen mit dem Verzeichnis
+    /// ([`Model::lesend`]), bei wenigen ohne.
+    pub(super) fn abgleich_lesend<R>(&self, scope: Option<&[RunId]>, f: impl FnOnce() -> R) -> R {
+        if scope.is_some_and(|s| s.len() < VERZ_AB) {
+            f()
+        } else {
+            self.lesend(f)
+        }
+    }
+}
+
 /// `run` liegt in `scope` (`None`: alles).
 fn in_scope(scope: Option<&[RunId]>, run: RunId) -> bool {
-    scope.is_none_or(|s| s.contains(&run))
+    // `scope` ist nach Platz geordnet ([`Model::sync_scope`]); so bleibt der
+    // Abgleich bei einem großen Bereich linear (Review L39)
+    scope.is_none_or(|s| {
+        let i = s.partition_point(|r| r.index() < run.index());
+        s[i..]
+            .iter()
+            .take_while(|r| r.index() == run.index())
+            .any(|r| *r == run)
+    })
 }
 
 #[cfg(test)]

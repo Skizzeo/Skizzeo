@@ -378,7 +378,7 @@ impl Model {
         if self.foamglass_material().is_none() && self.foot_wanted() {
             self.ensure_foamglass_material();
         }
-        let want = self.terrace_floors_in(scope);
+        let want = self.abgleich_lesend(scope, || self.terrace_floors_in(scope));
         if !want.is_empty() {
             self.ensure_terrace_type();
             if want.iter().any(|f| {
@@ -480,12 +480,29 @@ impl Model {
     /// Bauteile zurückfallen, legt deren Abgleich mit dem ersten an (wie
     /// `touched.library` in `apply`, RB3). So gleicht der erste Wandschritt,
     /// der mit dem ersten Raum dessen Ausbautypen anlegt, nur seine Züge ab
-    /// (Bemaßung, Review #112). `None` (alle), sobald der Schritt mehr als
-    /// Züge und Bauteile ändert, etwa einen bestehenden Typ, einen Baustoff
-    /// oder ein Geschoss.
+    /// (Bemaßung, Review #112). Ein Geschoss oder Gebäude (Band ziehen,
+    /// Gelände) gleicht die Züge seines Gebäudes samt Anschlüssen ab, nicht
+    /// alle (Review L39). `None` (alle), sobald der Schritt mehr ändert,
+    /// etwa einen bestehenden Typ, einen Baustoff oder ein Geschoss ohne
+    /// Gebäude.
     pub(super) fn sync_scope(&self) -> Option<Vec<RunId>> {
         let open = self.txn.as_ref()?;
-        open.changes
+        let mut gebaeude: Vec<BuildingId> = Vec::new();
+        for c in &open.changes {
+            match c {
+                // `new` füllt erst das Schließen: das Geschoss, wie es jetzt
+                // ist (auch ein neu angelegtes, etwa die Ebene Flachdach)
+                Change::Storey { id, old, .. } => {
+                    for s in [old.as_ref(), self.storeys.get(*id)].into_iter().flatten() {
+                        gebaeude.push(s.building?);
+                    }
+                }
+                Change::Building { id, .. } => gebaeude.push(*id),
+                _ => {}
+            }
+        }
+        let nur_zuege = open
+            .changes
             .iter()
             .filter(|c| {
                 !matches!(
@@ -506,8 +523,39 @@ impl Model {
                         | Change::LayerSet { old: None, .. }
                 )
             })
-            .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
-            .then(|| self.step_touched())
+            .all(|c| {
+                matches!(
+                    c,
+                    Change::Run { .. }
+                        | Change::Element { .. }
+                        | Change::Storey { .. }
+                        | Change::Building { .. }
+                )
+            });
+        if !nur_zuege {
+            return None;
+        }
+        let mut runs = self.step_touched();
+        if !gebaeude.is_empty() {
+            let dazu: Vec<RunId> = self
+                .runs
+                .iter()
+                .filter(|(_, r)| {
+                    self.storey(r.storey)
+                        .and_then(|s| s.building)
+                        .is_some_and(|b| gebaeude.contains(&b))
+                })
+                .map(|(id, _)| id)
+                .collect();
+            let joined: Vec<RunId> = dazu.iter().flat_map(|&r| self.joined_runs(r)).collect();
+            runs.extend(dazu);
+            runs.extend(joined);
+        }
+        // Nach Platz geordnet, ohne Doppelte: [`in_scope`] sucht binär
+        let mut gesehen = std::collections::HashSet::with_capacity(runs.len());
+        runs.retain(|r| gesehen.insert(*r));
+        runs.sort_by_key(|r| r.index());
+        Some(runs)
     }
 
     /// Nach dem Laden: Dachterrassen und Attikableche passend zu den

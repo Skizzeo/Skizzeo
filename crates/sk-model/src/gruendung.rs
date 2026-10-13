@@ -157,7 +157,7 @@ impl Model {
     /// Mit `scope` nur an den Decken dieser Züge (Z4, die übrigen stehen
     /// unverändert).
     pub(super) fn sync_edge_strips(&mut self, scope: Option<&[RunId]>) {
-        let want = self.edge_strip_pairs_in(scope);
+        let want = self.abgleich_lesend(scope, || self.edge_strip_pairs_in(scope));
         let have: Vec<(ElementId, (ElementId, ElementId))> = self
             .elements
             .iter()

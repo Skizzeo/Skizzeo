@@ -666,17 +666,18 @@ impl Model {
     }
 
     pub(super) fn sync_flat_roofs_in(&mut self, scope: Option<&[RunId]>) -> (usize, usize) {
-        let want: Vec<(ElementId, StoreyId, u16)> = self
-            .roof_floors_in(scope)
-            .into_iter()
-            .filter_map(|floor| {
-                let ElementKind::Floor(f) = self.element(floor)?.kind else {
-                    return None;
-                };
-                let ak = self.run(self.parapet_above(f.run)?)?.storey;
-                Some((floor, ak, self.element(floor)?.seq))
-            })
-            .collect();
+        let want: Vec<(ElementId, StoreyId, u16)> = self.abgleich_lesend(scope, || {
+            self.roof_floors_in(scope)
+                .into_iter()
+                .filter_map(|floor| {
+                    let ElementKind::Floor(f) = self.element(floor)?.kind else {
+                        return None;
+                    };
+                    let ak = self.run(self.parapet_above(f.run)?)?.storey;
+                    Some((floor, ak, self.element(floor)?.seq))
+                })
+                .collect()
+        });
         if !want.is_empty() {
             self.ensure_roof_type();
             // Kronendämmung mit eigenem Baustoff (W9 an #60), auch beim

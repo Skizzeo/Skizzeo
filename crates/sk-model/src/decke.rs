@@ -465,7 +465,7 @@ impl Model {
 
     /// [`Model::sync_soffits`] nur an den Decken der Züge `scope` (Z4).
     pub(super) fn sync_soffits_in(&mut self, scope: Option<&[RunId]>) {
-        let want = self.soffit_floors_in(scope);
+        let want = self.abgleich_lesend(scope, || self.soffit_floors_in(scope));
         // Bekleidung (W3): der eingebaute Baustoff bei der ersten
         if self.material_by_guid(CLADDING_MAT_GUID).is_none()
             && want.iter().any(|f| {
