@@ -343,7 +343,7 @@ pub fn schrift_laden(name: &str, ui: Option<&Font>) -> Option<Schrift> {
 
 impl Massketten {
     /// Schrift des Stils, einmal geladen.
-    fn schrift(&mut self, name: &str, ui: Option<&Font>) -> Option<Rc<Schrift>> {
+    pub(crate) fn schrift(&mut self, name: &str, ui: Option<&Font>) -> Option<Rc<Schrift>> {
         self.schriften
             .entry(name.to_string())
             .or_insert_with(|| schrift_laden(name, ui).map(Rc::new))
@@ -815,11 +815,7 @@ pub fn linien(
                 .iter()
                 .find(|h| h.0 == st.kette)
                 .map_or(stil, |h| h.1);
-            let mm = match st.art {
-                Strichart::Masslinie => s.linie,
-                Strichart::Hilfslinie => s.hilfslinie,
-                Strichart::Symbol => s.symbol_strich,
-            };
+            let mm = staerke(s, st.art);
             Helper {
                 a: st.a.to_f32(),
                 b: st.b.to_f32(),
@@ -832,6 +828,16 @@ pub fn linien(
             }
         })
         .collect()
+}
+
+/// Strichstärke einer Strichart nach dem Stil (mm auf dem Papier); auch
+/// für die Live-Kette der Innentür (Grundriss G7).
+pub fn staerke(s: &Stil, art: Strichart) -> f64 {
+    match art {
+        Strichart::Masslinie => s.linie,
+        Strichart::Hilfslinie => s.hilfslinie,
+        Strichart::Symbol => s.symbol_strich,
+    }
 }
 
 /// Gefüllte Dreiecke des Bildes in der Farbe des Stils, hervorgehobene in

@@ -6,20 +6,27 @@
 //! gesehen); das Mausrad blättert durch die Normbreiten nach DIN 18101. Ein
 //! Klick setzt die Tür: unten OK Rohdecke, oben die Innentürlinie, DIN
 //! links. Eine Maßkette auf der Wandseite gegenüber dem Aufschlag zeigt
-//! die Abstände zu den Flächen der anschließenden Wände, die Pille den zur
-//! näheren; eine Ziffer öffnet dort die Eingabe, **Enter** setzt die Tür
-//! in diesem Abstand (plan.md §4.3, Grundriss G7).
+//! die Abstände zu den Flächen der anschließenden Wände und die Breite,
+//! gezeichnet wie die Außenmaßketten (Bemaßung Stufe 2) in der Ziehfarbe;
+//! die Pille zeigt den Abstand zur näheren. Eine Ziffer öffnet dort die
+//! Eingabe, **Enter** setzt die Tür in diesem Abstand (plan.md §4.3,
+//! Grundriss G7).
 //!
 //! Hier steht die reine Rechnung; Maus und Szene in `oeffnung_app.rs`.
 
 use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
+use sk_model::bemassung::{Kettenart, Stil};
 use sk_model::hoehen::DOOR_WIDTHS;
 use sk_model::oeffnung::{
     Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, OuterFace, Swing,
 };
 use sk_model::{Category, LevelRef, Model, RunId, StoreyId, WallChain};
+use sk_plan::aussen::{Aussenmasse, Bezug as Massbezug, Herkunft, Kette, Seite as Massseite};
+use sk_plan::bild::{bild, Bild};
+use sk_plan::schrift::Schrift;
+use sk_plan::zahl::masszahl;
 use sk_platform::{Key, Modifiers};
 
 /// Raster längs der Wand für den Bezugspunkt (mm).
@@ -30,8 +37,6 @@ const BOGEN: usize = 12;
 const BREITE: usize = 2;
 /// Abstand der Maßkette von der Wandfläche (mm).
 const KETTE: f64 = 250.0;
-/// Halbe Länge der Schrägstriche an der Maßkette (mm).
-const STRICH: f64 = 60.0;
 
 /// Bezugspunkt der Tür am Cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -332,8 +337,8 @@ impl Innentuer {
     }
 
     /// Pille an der Maßkette: der Abstand zur näheren Wandfläche, von der
-    /// Fläche zur Kante der Tür.
-    pub fn label(&self) -> Option<([Vec3; 2], String)> {
+    /// Fläche zur Kante der Tür, als Maßzahl auf `rundung` mm.
+    pub fn label(&self, rundung: u8) -> Option<([Vec3; 2], String)> {
         let v = self.hover.as_ref()?;
         let (seite, a) = naeher(v);
         if a < 1.0 {
@@ -345,7 +350,7 @@ impl Innentuer {
             Seite::Ende => (s1, v.u.1),
         };
         let auf = kette_auf(v);
-        Some(([auf(von), auf(bis)], crate::ui::live_length_text(a)))
+        Some(([auf(von), auf(bis)], masszahl(a, rundung).text()))
     }
 
     fn vorschau(
@@ -465,14 +470,19 @@ fn naeher(v: &Vorschau) -> (Seite, f64) {
     }
 }
 
+/// Steht die Maßkette vor der Fläche der Vorschau (sonst vor der
+/// Gegenfläche)? Sie steht auf der Wandseite gegenüber dem Aufschlag: Die
+/// Fläche liegt zur Normale `n`; schlägt die Tür dorthin auf, steht die
+/// Kette vor der Gegenfläche.
+fn vor_der_flaeche(v: &Vorschau) -> bool {
+    v.swing.side != flaechenseite(&v.face)
+}
+
 /// Punkt der Maßkette bei `u`: neben der Wandseite gegenüber dem
 /// Aufschlag, [`KETTE`] vor ihrer Fläche, in Zeichenhöhe.
 fn kette_auf(v: &Vorschau) -> impl Fn(f64) -> Vec3 + '_ {
     let f = &v.face;
-    // Die Fläche liegt zur Normale `n`; schlägt die Tür dorthin auf, steht
-    // die Kette vor der Gegenfläche
-    let vor_der_flaeche = v.swing.side != flaechenseite(f);
-    let quer = if vor_der_flaeche {
+    let quer = if vor_der_flaeche(v) {
         f.n * KETTE
     } else {
         -f.n * (v.dicke + KETTE)
@@ -483,28 +493,74 @@ fn kette_auf(v: &Vorschau) -> impl Fn(f64) -> Vec3 + '_ {
     }
 }
 
-/// Maßkette der Vorschau als Strecken in Zeichenhöhe: von der Fläche der
-/// anschließenden Wand bis zur Tür auf beiden Seiten, mit Schrägstrichen
-/// an Flächen und Kanten.
-pub fn kette(v: &Vorschau) -> Vec<(Vec3, Vec3)> {
+/// Maßkette der Vorschau, gezeichnet wie die Außenmaßketten (Bemaßung
+/// Stufe 2, [`sk_plan::bild::bild`]): Maßlinie, Hilfslinien, Begrenzung
+/// und Maßzahlen nach dem Stil `stil` in der Schrift `schrift`, von den
+/// Flächen der anschließenden Wände über die Kanten der Tür, in
+/// Zeichenhöhe. Leer, wenn die Tür nicht zwischen die Flächen passt.
+pub fn kette(v: &Vorschau, st: StoreyId, stil: &Stil, schrift: &Schrift) -> Bild {
     let (s0, s1) = v.face.span;
     if s1 - s0 < v.u.1 - v.u.0 {
-        return Vec::new();
+        return Bild::default();
     }
-    let auf = kette_auf(v);
-    let schraeg = (v.face.d + v.face.n) * (STRICH / std::f64::consts::SQRT_2);
-    let mut out = vec![(auf(s0), auf(v.u.0)), (auf(v.u.1), auf(s1))];
-    for u in [s0, v.u.0, v.u.1, s1] {
-        let p = auf(u);
-        out.push((p - schraeg, p + schraeg));
-    }
-    out
+    // Von der Wand zur Kette
+    let n = if vor_der_flaeche(v) {
+        v.face.n
+    } else {
+        -v.face.n
+    };
+    let n = vec3(n.x, n.y, 0.0).normalized();
+    // Maßzahlen von unten oder von rechts lesbar, wie bei den Außenmaßen
+    let t = vec3(-n.y, n.x, 0.0);
+    let t = if t.x > 1e-9 || (t.x.abs() <= 1e-9 && t.y > 0.0) {
+        t
+    } else {
+        -t
+    };
+    let bezug = |u: f64, herkunft| {
+        let p = v.face.at(u, 0.0);
+        let p = vec3(p.x, p.y, 0.0);
+        Massbezug {
+            t: p.dot(t),
+            p,
+            herkunft,
+            quelle: None,
+        }
+    };
+    let mut bezuege = vec![
+        bezug(s0, Herkunft::Innenwand),
+        bezug(v.u.0, Herkunft::Oeffnung),
+        bezug(v.u.1, Herkunft::Oeffnung),
+        bezug(s1, Herkunft::Innenwand),
+    ];
+    bezuege.sort_by(|a, b| a.t.total_cmp(&b.t));
+    let lage = kette_auf(v)(s0);
+    let lage = vec3(lage.x, lage.y, 0.0).dot(n);
+    let a = Aussenmasse {
+        storey: st,
+        z: v.z,
+        seiten: vec![Massseite {
+            grad: 0,
+            n,
+            t,
+            aussen: lage,
+            ketten: vec![Kette {
+                art: Kettenart::Wand,
+                bezuege,
+                lage,
+                versatz: 0.0,
+            }],
+            oeffnungen: Vec::new(),
+        }],
+    };
+    bild(&a, stil, schrift)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use sk_model::{RefSide, RunId};
+    use sk_plan::bild::Strichart;
 
     /// Prüfhaus 10 × 8 m mit Innenwand bei x = 5 m (Zeichenrichtung +y).
     fn haus() -> (Model, RunId, StoreyId) {
@@ -670,17 +726,37 @@ mod tests {
         let y = |u: f64| v.face.at(u, 0.0).y;
         let (ya, yb) = (y(s0).min(y(s1)), y(s0).max(y(s1)));
         assert!((ya - 315.0).abs() < 1e-6 && (yb - 7685.0).abs() < 1e-6);
-        // Aufschlag nach +x, die Kette steht bei x < 5 m vor der Gegenfläche
-        let kette = kette(&v);
-        assert_eq!(kette.len(), 2 + 4);
+        // Aufschlag nach +x, die Kette steht bei x < 5 m vor der Gegenfläche,
+        // gezeichnet wie die Außenmaße: drei Maßzahlen, Fläche, Tür, Fläche
+        let stil = m.massstil();
         let x_gegen = 5000.0 - v.dicke / 2.0;
-        assert!(kette
-            .iter()
-            .all(|(a, b)| a.x < x_gegen && b.x < x_gegen && a.z == 1500.0 && b.z == 1500.0));
-        assert!((kette[0].0.x - (x_gegen - KETTE)).abs() < 1e-6, "{kette:?}");
-        // Pille: zur näheren Fläche (unten, y = 0,315 m)
-        let (ends, text) = t.label().unwrap();
-        assert_eq!(text, crate::ui::live_length_text(2557.5 - 315.0));
+        if let Some(f) =
+            std::fs::read("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf")
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+                .map(Schrift::new)
+        {
+            let b = kette(&v, st, stil, &f);
+            let mut werte: Vec<f64> = b.zahlen.iter().map(|z| z.wert).collect();
+            werte.sort_by(f64::total_cmp);
+            assert_eq!(werte, [885.0, 2242.5, 4242.5]);
+            assert!(!b.tinte.is_empty());
+            assert!(b.striche.iter().all(|s| s.a.x <= x_gegen + 1e-6
+                && s.b.x <= x_gegen + 1e-6
+                && s.a.z == 1500.0
+                && s.b.z == 1500.0));
+            let masslinie = b.striche.iter().filter(|s| s.art == Strichart::Masslinie);
+            assert!(masslinie
+                .clone()
+                .all(|s| (s.a.x - (x_gegen - KETTE)).abs() < 1e-6
+                    && (s.b.x - (x_gegen - KETTE)).abs() < 1e-6));
+            assert!(masslinie.count() > 0);
+        } else {
+            eprintln!("Liberation Sans fehlt, Kette nicht geprüft");
+        }
+        // Pille: zur näheren Fläche (unten, y = 0,315 m), Maßzahl im Stil
+        let (ends, text) = t.label(stil.rundung).unwrap();
+        assert_eq!(text, masszahl(2557.5 - 315.0, stil.rundung).text());
         assert!((ends[0].y - 315.0).abs() < 1e-6 && (ends[1].y - 2557.5).abs() < 1e-6);
         // 0,5 m und Enter: die Tür 50 cm von der Fläche, das Modell nimmt sie
         tippe(&mut t, "0,5");
@@ -711,7 +787,7 @@ mod tests {
         // Fort von der Wand: keine Eingabe, keine Pille, Ziffern gehen weiter
         tippe(&mut t, "1");
         t.suchen(&m, &k, st, vec3(3000.0, 3000.0, 0.0), 30.0, 1500.0);
-        assert!(t.eingabe.is_none() && t.label().is_none());
+        assert!(t.eingabe.is_none() && t.label(1).is_none());
         assert_eq!(t.taste(Key::Char('1'), mods), Taste::Frei);
     }
 }

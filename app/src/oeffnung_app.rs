@@ -287,12 +287,35 @@ impl App {
             return;
         };
         f(&mut w.innen, scene.model(), &|r| scene.koerper(r), st);
-        let bild = w.innen.hover.as_ref().map_or_else(Bild::default, |v| Bild {
-            linien: Vec::new(),
-            umriss: innentuer::umriss(v),
-            kette: innentuer::kette(v),
-            punkt: Some((v.punkt, false)),
+        // Maßkette im Stil und in der Schrift der Außenmaßketten (G7)
+        let stil = scene.model().massstil();
+        let ui = self.ui.fonts.regular.as_ref();
+        let schrift = w
+            .innen
+            .hover
+            .as_ref()
+            .and_then(|_| self.massketten.schrift(&stil.schrift, ui));
+        let bild = w.innen.hover.as_ref().map_or_else(Bild::default, |v| {
+            let masse = schrift
+                .as_ref()
+                .map(|f| innentuer::kette(v, st, stil, f))
+                .unwrap_or_default();
+            let kette = masse.striche.iter().map(|s| {
+                let rund = s.art == sk_plan::bild::Strichart::Symbol;
+                (s.a, s.b, crate::bemassung::staerke(stil, s.art), rund)
+            });
+            Bild {
+                linien: Vec::new(),
+                umriss: innentuer::umriss(v),
+                kette: kette.collect(),
+                tinte: masse.tinte,
+                pille: w.innen.label(stil.rundung),
+                punkt: Some((v.punkt, false)),
+            }
         });
+        if w.vorschau.tinte != bild.tinte {
+            w.tinte_nr = crate::scene::neuer_stand();
+        }
         self.redraw |= w.vorschau != bild;
         w.vorschau = bild;
     }

@@ -6,7 +6,7 @@
 
 use crate::bemassung::Blick;
 use crate::App;
-use sk_render::Helper;
+use sk_render::{Helper, Ink};
 
 impl App {
     /// Stand der Ansicht vor jedem Ereignis: Schnittebene, Höhe und gewählte
@@ -34,9 +34,21 @@ impl App {
             &self.picking.selected,
             self.ui.fonts.regular.as_ref(),
         );
-        let (linien, tinte) =
+        let (linien, mut tinte) =
             self.massketten
                 .zeichnen(&self.scene, v, sel, f, &blick, scale, &self.theme, &h);
+        // Live-Kette der Innentür: Zahlen und Begrenzung in der Ziehfarbe
+        // (Grundriss G7)
+        let tuer = self.tool.oeffnung.as_ref();
+        if let Some(w) = tuer.filter(|w| !w.vorschau.tinte.is_empty()) {
+            let color = self.theme.interact.drag;
+            let ink = w.vorschau.tinte.iter().map(|d| Ink {
+                p: d.map(|p| p.to_f32()),
+                color,
+                occlude: false,
+            });
+            tinte.push((w.tinte_nr << 1, ink.collect()));
+        }
         self.renderer.set_ink_teile(&tinte);
         linien
     }
