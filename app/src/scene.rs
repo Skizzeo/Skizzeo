@@ -1465,42 +1465,6 @@ impl Scene {
         self.model.init_project(p);
     }
 
-    /// Projektdaten samt Breite und Länge aus der Maske (Sonnenstand S1)
-    /// als ein Schritt. `false`, wenn sich nichts geändert hat.
-    pub fn projektdaten_setzen(
-        &mut self,
-        label: &'static str,
-        p: sk_model::Project,
-        ort: sk_model::Location,
-    ) -> bool {
-        self.begin(label);
-        let uk = self.gruendungen_uk();
-        let soil = p.soil;
-        let a = self.model.set_project(p);
-        let b = self.model.set_location(ort);
-        // Bodenkennwerte der Erdarbeiten (Gruppe Baugrund) im selben Schritt
-        let c = self.model.set_soil(soil);
-        self.gruendungen_folgen(&uk);
-        self.commit();
-        a || b || c
-    }
-
-    /// Nordpfeil setzen, drehen oder verschieben (Sonnenstand S2): ein
-    /// Schritt `label`. `false`, wenn sich nichts geändert hat.
-    pub fn nordpfeil_setzen(
-        &mut self,
-        label: &'static str,
-        nord: f64,
-        fuss: Option<sk_model::Foot>,
-    ) -> bool {
-        self.begin(label);
-        let uk = self.gruendungen_uk();
-        let ok = self.model.set_north_arrow(nord, fuss);
-        self.gruendungen_folgen(&uk);
-        self.commit();
-        ok
-    }
-
     /// Breite und Länge eines neuen Projekts: ohne Rückgängig-Schritt wie
     /// [`Scene::projekt_anfang`].
     pub fn lage_anfang(&mut self, ort: sk_model::Location) {
