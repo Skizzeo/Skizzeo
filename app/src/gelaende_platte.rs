@@ -27,6 +27,10 @@ pub(crate) const MESH_PLATE: usize = 4;
 /// Sockel.
 pub(crate) const TERRAIN_MARGIN: f64 = 1500.0;
 
+/// Höchstens so lange je Durchlauf der Hauptschleife folgen nach einem
+/// Gelände-Zug die übrigen Gebäude (Review #123 F1; Loslassen 8 ms).
+pub(crate) const NACHZUG: std::time::Duration = std::time::Duration::from_millis(6);
+
 /// Gelände-Rechtecke für den Renderer.
 pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)> {
     patches
@@ -661,16 +665,28 @@ impl App {
 
     /// Je Durchlauf, auch während Animationen (Review W34 H3): die
     /// Platten einer Änderung nachziehen ([`Platte::nachziehen`]); `true`,
-    /// wenn ein Bild folgen soll.
+    /// wenn ein Bild folgen soll. Davor folgen nach einem Gelände-Zug die
+    /// Körper der übrigen Gebäude, je Durchlauf höchstens [`NACHZUG`] lang
+    /// ([`Scene::nachziehen`](crate::scene::Scene::nachziehen), Review #123
+    /// F1); sind alle neu, folgen Bild, Mengen und Paneel.
     pub(crate) fn platte_nachziehen(&mut self) -> bool {
+        if self.scene.nachziehen(NACHZUG) == Some(true) {
+            self.upload_model();
+            self.quantity.dirty = true;
+            self.props_key = None;
+        }
         let sicht = self.platte_sicht();
         self.platte.nachziehen(self.scene.model(), sicht)
     }
 
-    /// Etwas rechnet im Hintergrund (Mengen, Verbände, die Platte): das
-    /// Warten der Hauptschleife fragt dann je Bild nach.
+    /// Etwas rechnet im Hintergrund (Mengen, Verbände, die Platte, der
+    /// Nachzug eines Gelände-Zugs): das Warten der Hauptschleife fragt dann
+    /// je Bild nach.
     pub(crate) fn rechnet_noch(&self) -> bool {
-        self.quantity_busy || !self.bond_wait.is_empty() || self.platte.rechnet()
+        self.quantity_busy
+            || !self.bond_wait.is_empty()
+            || self.platte.rechnet()
+            || self.scene.zieht_nach()
     }
 
     /// Neues Projekt (Neu, Öffnen, Sicherung): Objektbaum zu, Platte

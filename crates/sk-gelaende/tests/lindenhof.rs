@@ -174,7 +174,7 @@ fn gelaende_wie_soll() {
             (m - 24.753).abs() <= 0.0005,
             "Mittel unter der Platte {m:.4}"
         );
-        assert_eq!(strecken(&n, 0.25), 139);
+        assert_eq!(strecken(&n, 0.25), Some(139));
         let l = hoehenlinien(&n, 0.25);
         assert!(l.iter().all(|x| x.punkte.len() >= 2));
         // Flurstück 1-2-3-4
