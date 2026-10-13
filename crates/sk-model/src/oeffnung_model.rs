@@ -755,6 +755,7 @@ impl Model {
             n: nr * (o - c.inner_offset()).signum(),
             u: (u_of(*corners.get(seg)?), u_of(*corners.get(j)?)),
             free: (s0 + rand, s1 - rand),
+            span: (s0, s1),
             z: (c.base, c.base + c.height),
         })
     }
