@@ -8,8 +8,10 @@
 //! Öffnung bleibt die Deckenstirn bündig mit der Innenfläche stehen, die
 //! beiden Seiten der Kerbe setzen die Laibungen fort. Über eine Ecke
 //! treffen sich die Kerben in der inneren Wandecke, über einen Knick ohne
-//! Richtungswechsel laufen sie durch; an einer zu spitzen Ecke bleiben sie
-//! getrennt.
+//! Richtungswechsel laufen sie durch. An einer zu spitzen Ecke (unter etwa
+//! 29°, `MAX_ECKE`) treffen sie sich nicht; kreuzen sie sich dabei, werden
+//! sie verworfen und der Umriss bleibt ganz, die Öffnung endet dann an der
+//! Decke (`Model::spart_aus`).
 //!
 //! Hier nur die Geometrie des Umrisses; welche Öffnungen eine Decke
 //! aussparen, weiß das Modell (`decke.rs`).
@@ -272,8 +274,8 @@ mod tests {
         assert!((aus[0].stirn + aus[1].stirn - 1260.0).abs() < 1e-6);
     }
 
-    /// An einer spitzen Ecke läge die innere Ecke weit draußen: die Kerben
-    /// bleiben getrennt, oder der Umriss bleibt, wenn sie sich kreuzen.
+    /// An einer zu spitzen Ecke läge die innere Ecke weit draußen: Die
+    /// Kerben treffen sich nicht, und kreuzen sie sich, bleibt der Umriss.
     #[test]
     fn spitze_ecke_ohne_weite_spitze() {
         let o = vec![
