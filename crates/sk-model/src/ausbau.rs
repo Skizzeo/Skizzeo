@@ -63,9 +63,6 @@ const SKIRTING_SURFACE: Guid = Guid(0x3098c1a2bd0868199668b513664b1e40);
 
 /// λ des Gipsputzes (W/(mK), DIN 4108-4).
 const GYPSUM_LAMBDA: f64 = 0.51;
-/// Innenputz im U-Wert einer Außenwand ohne eigene Bekleidung innen
-/// ([`crate::Model::u_value_of`]): Dicke (mm) und λ, 15 mm Gips.
-pub(crate) const INNER_PLASTER_U: (f64, f64) = (15.0, GYPSUM_LAMBDA);
 
 /// Die eingebauten Baustoffe des Ausbaus. Estrich und seine Dämmung legt
 /// der Estrichleger, die Verbundabdichtung der Fliesenleger, die
@@ -943,12 +940,11 @@ mod tests {
             .any(|p| p.contains("Schichtdicke ungültig")));
     }
 
-    /// U-Wert der Außenwand mit dem Innenputz des Raumbuchs (plan.md §5.6):
-    /// ohne Bekleidung innen zählen 15 mm Gips mit; mit eigenem Gipsputz
-    /// 15 mm ergibt der Typ denselben Wert, mit Kalkzementputz 10 mm den
-    /// seinen. Innenwände haben keinen.
+    /// Review #137 H2 (Geometrie): Der U-Wert des Typs ist die reine
+    /// Summe seiner Schichten, ohne Innenputz des Raumbuchs; eine eigene
+    /// Putzschicht zählt mit. Innenwände haben keinen.
     #[test]
-    fn u_wert_mit_innenputz() {
+    fn u_wert_nur_aus_den_schichten() {
         let mut m = Model::with_seed(71);
         let aw = m.layer_set(m.defaults().exterior_wall).unwrap().clone();
         assert_ne!(aw.layers.last().unwrap().function, LayerFunction::Finish);
@@ -960,25 +956,17 @@ mod tests {
             };
         }
         let u = m.u_value_of(&aw).unwrap();
-        assert!((u - 1.0 / (r + 0.015 / 0.51)).abs() < 1e-12, "{u}");
-        let schicht = |mat, d| MaterialLayer {
-            material: mat,
-            thickness: d,
+        assert!((u - 1.0 / r).abs() < 1e-12, "{u}");
+        let gips = m.ensure_finish_material(GYPSUM_PLASTER_GUID).unwrap();
+        let mut x = aw.clone();
+        x.layers.push(MaterialLayer {
+            material: gips,
+            thickness: 15.0,
             function: LayerFunction::Finish,
             core: false,
             ..aw.layers[0]
-        };
-        let gips = m.ensure_finish_material(GYPSUM_PLASTER_GUID).unwrap();
-        let kalk = m.ensure_finish_material(LIME_PLASTER_GUID).unwrap();
-        let mut x = aw.clone();
-        x.layers.push(schicht(gips, 15.0));
-        assert!(
-            (m.u_value_of(&x).unwrap() - u).abs() < 1e-12,
-            "nicht doppelt"
-        );
-        let mut x = aw.clone();
-        x.layers.push(schicht(kalk, 10.0));
-        let soll = 1.0 / (r + 0.010 / 1.0);
+        });
+        let soll = 1.0 / (r + 0.015 / GYPSUM_LAMBDA);
         assert!((m.u_value_of(&x).unwrap() - soll).abs() < 1e-12);
         let iw = m.layer_set(m.defaults().interior_wall).unwrap().clone();
         assert_eq!(m.u_value_of(&iw), None);

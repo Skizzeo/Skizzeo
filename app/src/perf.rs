@@ -2012,57 +2012,123 @@ fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
     }));
 }
 
-/// Raumbuch RB4: Ausbau innen bei `n` Häusern (je drei Räume) in 3D, mit
-/// dem Schalter aus (nur Estrich) und an: erstes Netz, Loslassen nach dem
-/// Verschieben einer Innenwand (Schritt schließen und Netz neu) und ein
-/// Netz ohne Änderung.
+/// Raumbuch RB4 (Review #137 B1, H5): Ausbau innen bei `n` Häusern mit je
+/// drei Räumen im EG und einem darüber, Schalter aus und an in allen drei
+/// Ansichten. 3D: erstes Netz, Loslassen samt Netz (Median aus sieben
+/// Wandschritten), Netz ohne Änderung, geprüfte Räume je Loslassen.
+/// Schnitt durch die mittlere Häuserreihe: erstes Netz, Ebene ziehen (je
+/// 10 mm, Median aus sieben Netzen) und Loslassen mit einer Wand dieser
+/// Reihe. Grundriss: neue Schnitthöhe (je 10 mm, Median aus sieben).
 #[test]
 #[ignore]
 fn perf_ausbau_innen() {
+    use sk_math::Vec3;
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
     println!();
     println!(
-        "{:>6} {:>6} {:>4} {:>9} {:>9} {:>8} {:>9}",
-        "Häuser", "Räume", "an", "erstes", "Loslassen", "geprüft", "gleich"
+        "{:>6} {:>6} {:>3} | {:>8} {:>9} {:>7} {:>7} | {:>8} {:>7} {:>9} | {:>7} {:>7}",
+        "Häuser",
+        "Räume",
+        "an",
+        "3D erst",
+        "Loslassen",
+        "gleich",
+        "geprüft",
+        "Schnitt",
+        "ziehen",
+        "Loslassen",
+        "Höhe",
+        "ziehen"
     );
     for n in [1, 100, 1000] {
         for an in [false, true] {
             let mut s = town_with_interior(n);
             let st = s.active_storey();
             let raeume = s.model().spaces(st).len();
-            s.set_view_finish(2, an);
-            let t0 = Instant::now();
-            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
-            let erstes = t0.elapsed().as_secs_f64() * 1000.0;
+            for i in 0..3 {
+                s.set_view_finish(i, an);
+            }
+            // Innenwand in der mittleren Reihe
+            let side = (n as f64).sqrt().ceil() as usize;
+            let y0 = (side / 2) as f64 * 15000.0;
             let iw = s
                 .model()
                 .runs()
                 .iter()
-                .find(|(_, r)| r.storey == st && !r.closed);
-            let iw = iw.unwrap().0;
+                .find(|(_, r)| r.storey == st && !r.closed && (r.points[0].y - y0).abs() < 8000.0)
+                .unwrap()
+                .0;
             let orig = s.model().run(iw).unwrap().points.clone();
-            let (mut los, mut geprueft) = (Vec::new(), 0);
-            for k in 0..7 {
-                let d = vec3(-100.0 - 10.0 * k as f64, 0.0, 0.0);
-                let pts: Vec<sk_math::Vec3> = orig.iter().map(|p| *p + d).collect();
-                s.begin("Wand verschieben");
-                s.set_run_points(iw, &pts);
-                let g0 = s.ausbau_geprueft();
-                let t = Instant::now();
-                s.commit();
-                std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
-                los.push(t.elapsed().as_secs_f64() * 1000.0);
-                geprueft = geprueft.max(s.ausbau_geprueft() - g0);
-            }
-            let (los, ..) = median(&mut los);
+            let mut k = 0;
+            let mut los = |s: &mut Scene, view: ViewKind, ebene| {
+                let mut v = Vec::new();
+                let mut geprueft = 0;
+                for _ in 0..7 {
+                    k += 1;
+                    let d = vec3(-100.0 - 10.0 * (k % 9) as f64, 0.0, 0.0);
+                    let pts: Vec<Vec3> = orig.iter().map(|p| *p + d).collect();
+                    s.begin("Wand verschieben");
+                    s.set_run_points(iw, &pts);
+                    let g0 = s.ausbau_geprueft();
+                    let t = Instant::now();
+                    s.commit();
+                    std::hint::black_box(s.mesh(view, ebene, &[]));
+                    v.push(ms(t));
+                    geprueft = geprueft.max(s.ausbau_geprueft() - g0);
+                }
+                (median(&mut v).0, geprueft)
+            };
+            let t0 = Instant::now();
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+            let erstes = ms(t0);
+            let (los3d, geprueft) = los(&mut s, ViewKind::Persp, None);
             let gleich = time(10, || {
                 std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
             });
+            let ebene = |dy: f64| Some((vec3(0.0, y0 + 4000.0 + dy, 0.0), vec3(0.0, 1.0, 0.0)));
+            let t0 = Instant::now();
+            std::hint::black_box(s.mesh(ViewKind::Section, ebene(0.0), &[]));
+            let schnitt = ms(t0);
+            let mut v: Vec<f64> = (1..=7)
+                .map(|i| {
+                    let t = Instant::now();
+                    std::hint::black_box(s.mesh(ViewKind::Section, ebene(10.0 * i as f64), &[]));
+                    ms(t)
+                })
+                .collect();
+            let ziehen = median(&mut v).0;
+            let (los_schnitt, _) = los(&mut s, ViewKind::Section, ebene(0.0));
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+            let mut v: Vec<f64> = (1..=7)
+                .map(|i| {
+                    s.set_plan_cut_height(1000.0 + 10.0 * i as f64);
+                    let t = Instant::now();
+                    std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                    ms(t)
+                })
+                .collect();
+            let hoehe = median(&mut v).0;
+            // Schnitthöhe im Geschossmanager ziehen: der Ausbau folgt beim
+            // Loslassen
+            let el = s.model().storey(st).unwrap().elevation;
+            s.begin("Geschoss ziehen");
+            let mut v: Vec<f64> = (1..=7)
+                .map(|i| {
+                    let t = Instant::now();
+                    s.drag_plan_cut(el + 1100.0 + 10.0 * i as f64);
+                    std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+                    ms(t)
+                })
+                .collect();
+            s.commit();
+            let hoehe_ziehen = median(&mut v).0;
             println!(
-                "{n:>6} {raeume:>6} {an:>4} {erstes:>9.2} {los:>9.3} {geprueft:>8} {gleich:>9.3}"
+                "{n:>6} {raeume:>6} {:>3} | {erstes:>8.1} {los3d:>9.2} {gleich:>7.2} {geprueft:>7} | {schnitt:>8.1} {ziehen:>7.2} {los_schnitt:>9.2} | {hoehe:>7.2} {hoehe_ziehen:>7.2}",
+                if an { "an" } else { "aus" }
             );
         }
     }
-    println!("Zeiten in ms; Loslassen samt Netz der 3D-Ansicht, geprüft: Räume je Loslassen.");
+    println!("Zeiten in ms (Release); geprüft: Räume je Loslassen.");
 }
 
 /// Review #99 B1/B2: Innentüren bei `n` Häusern (je zwei Innenwände mit
@@ -2372,9 +2438,15 @@ fn perf_mengen_haeuser() {
             .filter(|(_, e)| e.category == Category::InteriorWall)
             .count();
         assert_eq!(innen, 2 * n);
-        let t = Instant::now();
-        let sched = sk_model::qto::schedule(s.model());
-        let mengen = t.elapsed().as_secs_f64() * 1000.0;
+        // Bestes von drei Läufen: eine Lastspitze kippt die Probe nicht
+        let mut mengen = f64::INFINITY;
+        let mut sched = None;
+        for _ in 0..3 {
+            let t = Instant::now();
+            sched = Some(sk_model::qto::schedule(s.model()));
+            mengen = mengen.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let sched = sched.unwrap();
         let zeilen = sched.auto.len()
             + sched
                 .buildings
@@ -2392,15 +2464,24 @@ fn perf_mengen_haeuser() {
         let haus = fenster / n as f64;
         println!("{n:>6} {zeilen:>8} {mengen:>10.0} {fenster:>10.0} {haus:>12.2}");
         if n >= 100 {
-            je_haus.push(haus);
+            je_haus.push((mengen / n as f64, haus));
         }
     }
-    println!("Zeiten in ms (Mengenliste, erstes Öffnen des Mengenfensters).");
-    // Höchstens linear: je Haus ab 100 Häusern nicht mehr als das Doppelte
+    println!("Zeiten in ms (Mengenliste bester von 3 Läufen, erstes Öffnen des Mengenfensters).");
+    // Höchstens linear: je Haus ab 100 Häusern die Mengenliste nicht mehr
+    // als das Doppelte; das Fenster (ein Lauf) mit Spielraum für Last
     if let (Some(a), Some(b)) = (je_haus.first(), je_haus.last()) {
         assert!(
-            b <= &(2.0 * a),
-            "je Haus {a:.2} ms bei 100, {b:.2} ms zuletzt"
+            b.0 <= 2.0 * a.0,
+            "Mengenliste je Haus {:.3} ms bei 100, {:.3} ms zuletzt",
+            a.0,
+            b.0
+        );
+        assert!(
+            b.1 <= 3.0 * a.1,
+            "Fenster je Haus {:.2} ms bei 100, {:.2} ms zuletzt",
+            a.1,
+            b.1
         );
     }
 }

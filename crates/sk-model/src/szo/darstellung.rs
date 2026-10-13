@@ -1,12 +1,13 @@
 //! Darstellung in der `.szo`: `[display] slot=… pen=… lt=…` je Stelle
 //! ([`crate::Display`]). Die Werksdarstellung des Einbauelements (F20) und
 //! der Stelle „Über der Schnittebene“ (G7b) steht nicht in der Datei, beim
-//! Lesen entsteht sie wieder. Eine Zeile dieser beiden Stellen, die auf einen
-//! unbekannten Stift oder Linientyp zeigt, zählt nicht: Hinweis, die
-//! Werksdarstellung gilt, und die Zeile wird bytegleich zurückgeschrieben,
-//! solange niemand die Stelle neu setzt (Regel 72/73).
+//! Lesen entsteht sie wieder. Eine Zeile, die auf einen unbekannten Stift oder
+//! Linientyp zeigt, zählt nicht: Hinweis, es gilt der Startwert der Stelle
+//! (bei diesen beiden die Werksdarstellung), und die Zeile wird an ihrer
+//! Stelle bytegleich zurückgeschrieben, solange niemand die Stelle neu setzt
+//! (Regel 72/73).
 
-use super::{err, LoadError, Record, EDGE_NAMES};
+use super::{err, Line, LoadError, Record, EDGE_NAMES};
 use crate::attr::{Attributes, Display, EdgeStyle, LineType, Pen};
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
@@ -26,8 +27,8 @@ fn werksstelle(r: &Record) -> Option<&'static str> {
     WERKSSTELLEN.into_iter().find(|w| *w == slot)
 }
 
-/// Zählt die Zeile einer Werksstelle? Sie zeigt auf einen gelesenen Stift
-/// und einen gelesenen Linientyp oder den Werks-Linientyp.
+/// Zählt die Zeile? Sie zeigt auf einen gelesenen Stift und einen gelesenen
+/// Linientyp oder den Werks-Linientyp.
 fn zaehlt(
     r: &Record,
     pen_ids: &HashMap<Guid, Id<Pen>>,
@@ -47,11 +48,8 @@ pub(super) fn werk_linientyp(
     line_types: &mut Arena<LineType>,
     lt_ids: &mut HashMap<Guid, Id<LineType>>,
 ) -> Werk {
-    let gilt = |r: &Record| werksstelle(r).is_none() || zaehlt(r, pen_ids, lt_ids);
-    let has = |slot: &str| {
-        recs.iter()
-            .any(|r| werksstelle(r) == Some(slot) && zaehlt(r, pen_ids, lt_ids))
-    };
+    let gilt = |r: &Record| zaehlt(r, pen_ids, lt_ids);
+    let has = |slot: &str| recs.iter().any(|r| werksstelle(r) == Some(slot) && gilt(r));
     let (has_element, has_above) = (has("element"), has("above"));
     let werk_lt = crate::attr::ELEMENT_LINE_TYPE_GUID;
     let uses_werk = recs
@@ -65,24 +63,56 @@ pub(super) fn werk_linientyp(
     (werk(has_element), werk(has_above))
 }
 
-/// Zeilen der Werksstellen, die beim Lesen nicht zählten, mit ihrer Stelle.
-pub(crate) type Roh = Vec<(&'static str, String)>;
+/// Zeile, die beim Lesen nicht zählte: ihre Stelle, der Wert, der statt
+/// ihrer gilt, ob sie an der Stelle allein stand, und die Zeile selbst.
+#[derive(Clone, Debug)]
+pub(crate) struct RohZeile {
+    stelle: String,
+    statt: EdgeStyle,
+    allein: bool,
+    zeile: String,
+}
 
-/// Schreibt die Zeilen der Werksstelle `stelle`, die beim Lesen nicht
-/// zählten, zurück, solange die Stelle nicht neu gesetzt ist (dann steht sie
-/// gültig in der Datei).
-pub(super) fn write_raw(a: &Attributes, stelle: &str, out: &mut String) {
-    let gesetzt = match stelle {
-        "element" => !a.element_is_default(),
-        _ => !a.above_is_default(),
+/// Zeilen der Darstellung, die beim Lesen nicht zählten.
+pub(crate) type Roh = Vec<RohZeile>;
+
+/// Schreibt die Darstellungs-Stellen. Gilt an einer Stelle noch der Wert,
+/// der beim Lesen statt ungültiger Zeilen gesetzt wurde, stehen dort die
+/// Zeilen bytegleich (neben einer gültigen Zeile der Stelle danach); neu
+/// gesetzt steht die Stelle nur gültig in der Datei.
+pub(super) fn write(a: &Attributes, out: &mut String) {
+    let d = a.display();
+    let mut slot = |name: &str, s: &EdgeStyle, schreiben: bool| {
+        let roh = a.display_raw().iter();
+        let roh: Vec<&RohZeile> = roh.filter(|r| r.stelle == name && r.statt == *s).collect();
+        if schreiben && !roh.iter().any(|r| r.allein) {
+            Line::new("display")
+                .word("slot", name)
+                .guid("pen", a.pen(s.pen).map(|p| p.guid))
+                .guid("lt", a.line_type(s.line_type).map(|l| l.guid))
+                .finish(out);
+        }
+        for r in roh {
+            out.push_str(&r.zeile);
+            out.push('\n');
+        }
     };
-    if gesetzt {
-        return;
+    for (prefix, table) in [("drawing", &d.drawing), ("model3d", &d.model3d)] {
+        for (name, k) in EDGE_NAMES {
+            slot(&format!("{prefix}.{name}"), &table[k as usize], true);
+        }
     }
-    for (_, zeile) in a.display_raw().iter().filter(|r| r.0 == stelle) {
-        out.push_str(zeile);
-        out.push('\n');
-    }
+    slot("ground", &d.ground, true);
+    slot("section_line", &d.section_line, true);
+    slot("section_ends", &d.section_ends, true);
+    slot("background", &d.background, true);
+    slot("pattern", &d.pattern, true);
+    slot("element", &d.element, !a.element_is_default());
+    slot("above", &d.above, !a.above_is_default());
+    Line::new("display")
+        .word("slot", "paper")
+        .color("color", d.paper)
+        .finish(out);
 }
 
 /// Liest die Darstellungs-Slots. Fehlt einer, gilt sein Startwert (gleiche
@@ -135,37 +165,42 @@ pub(super) fn read(
     slots.push(("above".into(), sd.above));
     let mut styles: Vec<Option<EdgeStyle>> = vec![None; slots.len()];
     let mut paper = None;
-    let mut roh = Roh::new();
+    // Ungültige Zeilen je Stelle (Nummer in `slots`)
+    let mut ungueltig: Vec<(usize, &str)> = Vec::new();
     for r in recs {
         let slot = r.get("slot")?;
         if slot == "paper" {
             paper = Some(r.color("color")?);
             continue;
         }
-        if let Some(w) = werksstelle(r).filter(|_| !zaehlt(r, pen_ids, lt_ids)) {
-            r.skip();
-            roh.push((w, lines[r.line - 1].to_string()));
+        let Some(i) = slots.iter().position(|s| s.0 == slot) else {
             hints.push(format!(
-                "Zeile {}: Darstellung „{w}“ zeigt auf einen unbekannten Stift oder Linientyp, übersprungen; die Werksdarstellung gilt, die Zeile bleibt",
+                "Zeile {}: unbekannter Darstellungs-Slot „{slot}“ übersprungen",
+                r.line
+            ));
+            continue;
+        };
+        if !zaehlt(r, pen_ids, lt_ids) {
+            r.skip();
+            ungueltig.push((i, lines[r.line - 1]));
+            let gilt = match werksstelle(r) {
+                Some(_) => "die Werksdarstellung gilt",
+                None => "der Startwert gilt",
+            };
+            hints.push(format!(
+                "Zeile {}: Darstellung „{slot}“ zeigt auf einen unbekannten Stift oder Linientyp, übersprungen; {gilt}, die Zeile bleibt",
                 r.line
             ));
             continue;
         }
-        match slots.iter().position(|s| s.0 == slot) {
-            Some(i) => {
-                styles[i] = Some(EdgeStyle {
-                    pen: r.link("pen", pen_ids)?,
-                    line_type: r.link("lt", lt_ids)?,
-                })
-            }
-            None => hints.push(format!(
-                "Zeile {}: unbekannter Darstellungs-Slot „{slot}“ übersprungen",
-                r.line
-            )),
-        }
+        styles[i] = Some(EdgeStyle {
+            pen: r.link("pen", pen_ids)?,
+            line_type: r.link("lt", lt_ids)?,
+        });
     }
+    let allein: Vec<bool> = styles.iter().map(Option::is_none).collect();
     let mut resolved = Vec::with_capacity(slots.len());
-    for ((name, std), s) in slots.iter().zip(styles) {
+    for (i, ((name, std), s)) in slots.iter().zip(styles).enumerate() {
         let s = match s {
             Some(s) => s,
             None => {
@@ -204,8 +239,9 @@ pub(super) fn read(
                     });
                     continue;
                 }
-                // Der Hintergrund (E16) fehlt in allen älteren Dateien: still ergänzen
-                if name != "background" {
+                // Der Hintergrund (E16) fehlt in allen älteren Dateien: still
+                // ergänzen; zu einer ungültigen Zeile steht der Hinweis schon
+                if name != "background" && !ungueltig.iter().any(|u| u.0 == i) {
                     hints.push(format!("Darstellung „{name}“ fehlt, Startwert gesetzt"));
                 }
                 fallback(name, std).ok_or_else(|| {
@@ -218,6 +254,15 @@ pub(super) fn read(
         };
         resolved.push(s);
     }
+    let roh = ungueltig
+        .into_iter()
+        .map(|(i, zeile)| RohZeile {
+            stelle: slots[i].0.clone(),
+            statt: resolved[i],
+            allein: allein[i],
+            zeile: zeile.to_string(),
+        })
+        .collect();
     let paper = paper.unwrap_or_else(|| {
         hints.push("Darstellung „paper“ fehlt, Startwert gesetzt".into());
         sd.paper

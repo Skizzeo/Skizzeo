@@ -176,68 +176,78 @@ fn kette(b: &mut Bild, e: &Ebene, stil: &Stil, schrift: &Schrift, id: (usize, us
 
 /// Begrenzung an jedem Bezugspunkt.
 fn begrenzungen(b: &mut Bild, e: &Ebene, stil: &Stil, id: (usize, usize), l: f64, rs: &[Bezug]) {
-    let g = stil.am_bau(stil.symbol_mm);
     for (i, r) in rs.iter().enumerate() {
-        let m = e.p(r.t, l);
-        match stil.symbol {
-            Symbol::Kreis => {
-                let rad = 0.5 * g;
-                let at = |k: usize| {
-                    let w = std::f64::consts::TAU * k as f64 / KREIS as f64;
-                    m + e.t * (rad * w.cos()) + e.n * (rad * w.sin())
-                };
-                for k in 0..KREIS {
-                    b.striche.push(Strich {
-                        a: at(k),
-                        b: at(k + 1),
-                        art: Strichart::Symbol,
-                        kette: id,
-                    });
-                }
-            }
-            Symbol::Schraeg => {
-                // 45°, von links unten nach rechts oben in Leserichtung
-                let h = 0.5 * g;
-                let d = (e.t + e.oben) * h;
-                b.striche.push(Strich {
-                    a: m - d,
-                    b: m + d,
-                    art: Strichart::Symbol,
-                    kette: id,
-                });
-            }
-            Symbol::Punkt => {
-                let rad = 0.5 * g;
-                let at = |k: usize| {
-                    let w = std::f64::consts::TAU * k as f64 / KREIS as f64;
-                    m + e.t * (rad * w.cos()) + e.n * (rad * w.sin())
-                };
-                for k in 0..KREIS {
-                    b.tinte.push([m, at(k), at(k + 1)]);
-                }
-            }
-            Symbol::Pfeil => {
-                // Spitze an der Hilfslinie, je ein Pfeil zu jedem Nachbarmaß
-                let breit = g / 3.0;
-                let mut pfeil = |s: f64| {
-                    let fuss = m + e.t * (s * g);
-                    b.tinte
-                        .push([m, fuss + e.n * (0.5 * breit), fuss - e.n * (0.5 * breit)]);
-                };
-                if i > 0 {
-                    pfeil(-1.0);
-                }
-                if i + 1 < rs.len() {
-                    pfeil(1.0);
-                }
-            }
-        }
+        let (striche, tinte) = begrenzung(e.p(r.t, l), e.t, e.n, stil, i > 0, i + 1 < rs.len());
+        b.striche.extend(striche.into_iter().map(|(a, z)| Strich {
+            a,
+            b: z,
+            art: Strichart::Symbol,
+            kette: id,
+        }));
+        b.tinte.extend(tinte);
     }
 }
 
-/// Setzt `z` (Hauptzahl und Hochzahl) mit der linken Grundlinie bei
-/// `(x, y)` in Leserichtung; gibt die Breite und die Dreiecke zurück.
-fn satz(schrift: &Schrift, stil: &Stil, z: &Masszahl, vor: &str) -> (Dreiecke, f64) {
+/// Begrenzung des Stils an `m` auf einer Maßlinie längs `t`, quer dazu `n`
+/// (Einheitsvektoren in der Grundrissebene), am Bau bemessen: Striche
+/// (Kreis, Schrägstrich) und gefüllte Dreiecke (Punkt, Pfeil). `vor` und
+/// `nach`: Es gibt ein Maß davor bzw. danach, dorthin zeigt je ein Pfeil.
+/// Auch für Live-Ketten anderer Werkzeuge, damit sie aussehen wie die
+/// Außenmaßketten.
+pub fn begrenzung(
+    m: Vec3,
+    t: Vec3,
+    n: Vec3,
+    stil: &Stil,
+    vor: bool,
+    nach: bool,
+) -> (Vec<(Vec3, Vec3)>, Vec<[Vec3; 3]>) {
+    let g = stil.am_bau(stil.symbol_mm);
+    let (mut striche, mut tinte) = (Vec::new(), Vec::new());
+    let kreis = |rad: f64, k: usize| {
+        let w = std::f64::consts::TAU * k as f64 / KREIS as f64;
+        m + t * (rad * w.cos()) + n * (rad * w.sin())
+    };
+    match stil.symbol {
+        Symbol::Kreis => {
+            for k in 0..KREIS {
+                striche.push((kreis(0.5 * g, k), kreis(0.5 * g, k + 1)));
+            }
+        }
+        Symbol::Schraeg => {
+            // 45°, von links unten nach rechts oben in Leserichtung
+            let oben = vec3(-t.y, t.x, 0.0);
+            let d = (t + oben) * (0.5 * g);
+            striche.push((m - d, m + d));
+        }
+        Symbol::Punkt => {
+            for k in 0..KREIS {
+                tinte.push([m, kreis(0.5 * g, k), kreis(0.5 * g, k + 1)]);
+            }
+        }
+        Symbol::Pfeil => {
+            // Spitze an der Hilfslinie, je ein Pfeil zu jedem Nachbarmaß
+            let breit = g / 3.0;
+            let mut pfeil = |s: f64| {
+                let fuss = m + t * (s * g);
+                tinte.push([m, fuss + n * (0.5 * breit), fuss - n * (0.5 * breit)]);
+            };
+            if vor {
+                pfeil(-1.0);
+            }
+            if nach {
+                pfeil(1.0);
+            }
+        }
+    }
+    (striche, tinte)
+}
+
+/// Setzt `z` (Hauptzahl und Hochzahl, davor `vor`) in der Schrift des
+/// Stils, am Bau bemessen, in der Leseebene (x längs, y nach oben, linke
+/// Grundlinie im Ursprung); gibt die Dreiecke und die Breite zurück. Auch
+/// für Live-Ketten anderer Werkzeuge.
+pub fn satz(schrift: &Schrift, stil: &Stil, z: &Masszahl, vor: &str) -> (Dreiecke, f64) {
     let h = stil.am_bau(stil.schrift_mm);
     let hs = h * stil.hochzahl / 100.0;
     let mut v = Vec::new();

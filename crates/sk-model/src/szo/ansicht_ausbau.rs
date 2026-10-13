@@ -1,6 +1,7 @@
 //! Schalter „Ausbau innen“ je Ansicht in der `.szo` (Raumbuch RB4,
 //! [`crate::FINISH_VIEWS`]): `[viewfinish] view=plan on=1`, nur wo er an
-//! ist, nach den Raumvorlagen. Eine Zeile, die nicht zählt, gibt einen
+//! ist oder die gelesene Datei die Ansicht nannte (Review #137 H4), nach
+//! den Raumvorlagen. Eine Zeile, die nicht zählt, gibt einen
 //! Hinweis und bleibt roh stehen (Regel 72), wie `[viewbelow]`.
 
 use super::{Line, Record};
@@ -8,10 +9,10 @@ use crate::{Model, FINISH_VIEWS};
 
 pub(super) fn write(m: &Model, out: &mut String) {
     for (i, name) in FINISH_VIEWS.iter().enumerate() {
-        if m.view_finish(i) {
+        if m.view_finish_line(i) {
             Line::new("viewfinish")
                 .word("view", name)
-                .flag("on", true)
+                .flag("on", m.view_finish(i))
                 .finish(out);
         }
     }
@@ -21,14 +22,14 @@ pub(super) fn write(m: &Model, out: &mut String) {
     }
 }
 
-/// Schalter je Ansicht und die Zeilen, die nicht zählen (roh).
+/// Schalter je Ansicht mit „in der Datei“ und die Zeilen, die nicht
+/// zählen (roh).
 pub(super) fn read(
     recs: &[Record],
     lines: &[&str],
     hints: &mut Vec<String>,
-) -> ([bool; 3], Vec<String>) {
-    let mut an = [false; 3];
-    let mut gesehen = [false; 3];
+) -> ([(bool, bool); 3], Vec<String>) {
+    let mut an = [(false, false); 3];
     let mut roh = Vec::new();
     for r in recs {
         let view = r
@@ -36,10 +37,7 @@ pub(super) fn read(
             .and_then(|v| FINISH_VIEWS.iter().position(|n| *n == v));
         let on = r.opt("on").and_then(|_| r.flag("on").ok());
         match (view, on) {
-            (Some(i), Some(o)) if !gesehen[i] => {
-                gesehen[i] = true;
-                an[i] = o;
-            }
+            (Some(i), Some(o)) if !an[i].1 => an[i] = (o, true),
             _ => {
                 r.skip();
                 roh.push(lines[r.line - 1].to_string());
@@ -58,8 +56,9 @@ mod tests {
     use crate::szo::{read, write};
     use crate::{GuidGen, Model};
 
-    /// Ohne Schalter keine Zeile, alte Dateien bytegleich, keine neue
-    /// Revision; an je Ansicht, Unlesbares bleibt roh mit Hinweis.
+    /// Ohne Schalter keine Zeile, alte Dateien bytegleich (auch mit `on=0`),
+    /// keine neue Revision; an je Ansicht, Unlesbares bleibt roh mit
+    /// Hinweis.
     #[test]
     fn ausbau_innen_in_der_datei() {
         let mut m = Model::with_seed(1);
@@ -81,6 +80,15 @@ mod tests {
         let l = read(&t, GuidGen::with_seed(2)).unwrap();
         assert!(l.model.view_finish(0) && !l.model.view_finish(1) && l.model.view_finish(2));
         assert_eq!(write(&l.model), t);
+        // Eine Zeile `on=0` bleibt, auch nach Umschalten (Review #137 H4)
+        let aus = t.replace("view=plan on=1", "view=plan on=0");
+        let mut l = read(&aus, GuidGen::with_seed(4)).unwrap().model;
+        assert!(!l.view_finish(0) && l.view_finish(2));
+        assert_eq!(write(&l), aus);
+        l.set_view_finish(0, true);
+        assert_eq!(write(&l), t);
+        l.set_view_finish(0, false);
+        assert_eq!(write(&l), aus);
         // unlesbar und doppelt: roh mit Hinweis, die erste lesbare gilt
         let kaputt = t.replace(
             "[viewfinish] view=3d on=1",
@@ -98,11 +106,13 @@ mod tests {
             l.hints
         );
         assert_eq!(write(&l.model), kaputt);
-        // Umschalten nimmt die rohe Zeile dieser Ansicht weg
+        // Umschalten nimmt die rohe Zeile dieser Ansicht weg, die gelesene
+        // bleibt mit `on=0`
         let mut m = l.model;
         m.set_view_finish(2, false);
         let t = write(&m);
-        assert!(!t.contains("view=3d"), "{t}");
+        assert_eq!(t.matches("view=3d").count(), 1, "{t}");
+        assert!(t.contains("[viewfinish] view=3d on=0"), "{t}");
         assert!(t.contains("view=keller"));
     }
 }

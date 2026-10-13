@@ -60,8 +60,14 @@ impl Koerper {
     /// [`Koerper::schnitt`] und Schnittkonturen, wie die Körper der
     /// Erweiterung. Grundriss: `n` nach oben, `p0` in Schnitthöhe; Schnitt:
     /// `n` waagerecht. Eine schräge Ebene schneidet ohne Schnittflächen.
+    /// Liegt die Ebene auf einer Fläche oder Fuge eines Prismas, gehört die
+    /// Fläche zu dem Teil, aus dem sie nach vorn zeigt; das Prisma dahinter
+    /// bekommt dort keine Schnittfläche (Geometrie zu #137).
     pub fn geschnitten(&self, p0: Vec3, n: Vec3) -> Solid {
         let mut s = self.solid.clipped(p0, n);
+        let auf = |p: Vec3| (p - p0).dot(n).abs() < 1e-6;
+        s.triangles
+            .retain(|t| t.n.dot(n) > 0.0 || !t.p.iter().all(|&p| auf(p)));
         let mut k = Solid {
             mat: self.schnitt | material::CUT,
             edge_kind: edge_kind::CUT,
@@ -99,7 +105,8 @@ impl Koerper {
 }
 
 /// Strecken der senkrechten Ebene durch `p0` mit Normale `n` im Grundriss
-/// innerhalb der Ringe (Umriss und Löcher).
+/// innerhalb der Ringe (Umriss und Löcher), ohne die auf einer Kante der
+/// Ringe: Dort liegt das Prisma nur hinter der Ebene und hat seine Fläche.
 fn quer(ringe: &[Vec<Vec3>], p0: Vec3, n: Vec3) -> Vec<(Vec3, Vec3)> {
     let n = vec3(n.x, n.y, 0.0).normalized();
     let r = vec3(-n.y, n.x, 0.0);
@@ -115,8 +122,14 @@ fn quer(ringe: &[Vec<Vec3>], p0: Vec3, n: Vec3) -> Vec<(Vec3, Vec3)> {
         }
     }
     t.sort_by(f64::total_cmp);
+    let auf_kante = |u: f64| {
+        ringe.iter().flat_map(|ring| kanten(ring)).any(|(a, b)| {
+            let (ua, ub) = ((hoch(a, 0.0) - o).dot(r), (hoch(b, 0.0) - o).dot(r));
+            seite(a).abs() < 1e-9 && seite(b).abs() < 1e-9 && ua.min(ub) <= u && u <= ua.max(ub)
+        })
+    };
     t.chunks_exact(2)
-        .filter(|c| c[1] - c[0] > 1e-9)
+        .filter(|c| c[1] - c[0] > 1e-9 && !auf_kante((c[0] + c[1]) / 2.0))
         .map(|c| (o + r * c[0], o + r * c[1]))
         .collect()
 }
