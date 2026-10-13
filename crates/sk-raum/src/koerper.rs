@@ -883,6 +883,21 @@ impl Lagen {
     }
 }
 
+/// Nur die Körper des Estrichs, wie in [`koerper`]: Was der Schnitt ohne
+/// den Schalter „Ausbau innen“ zeigt, rechnet ein Raum ohne die übrigen
+/// (Review #137 N2).
+pub fn estrich(model: &Model, form: &Rohbau, aus: &RaumAusbau) -> Vec<Koerper> {
+    let regeln = super::Regeln::default();
+    let r = Raum::new(model, form, aus, &regeln);
+    let mut out = Vec::new();
+    r.boden_koerper(&mut out);
+    out.retain(|k| k.flaeche == Flaeche::Estrich);
+    for k in &mut out {
+        kontur(&mut k.solid);
+    }
+    out
+}
+
 /// Die Körper des Ausbaus eines Raums: Estrich und Belag je Schicht, Decke,
 /// Putz je Wandseite, Wandfliesen, Sockelleisten je Typ.
 pub fn koerper(model: &Model, form: &Rohbau, aus: &RaumAusbau) -> Vec<Koerper> {
