@@ -32,6 +32,10 @@ impl App {
             Id::Building | Id::Interior | Id::Opening(_) if self.ui.foundation_active => {
                 Some("Im Fundament wird nicht gezeichnet.")
             }
+            // Bedienbarkeit 41.5: grau, mit der Stufe und dem Weg zur Übersicht
+            Id::Quantity if self.ui.frei.gesperrt(id) => {
+                Some("Ab der Ausbaustufe Pro (Datei › Ausbaustufe …).")
+            }
             _ => None,
         };
         let mut lines = help::tooltip_lines(name);

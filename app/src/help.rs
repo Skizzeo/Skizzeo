@@ -192,11 +192,14 @@ pub enum Topic {
     Ava,
     Delete,
     Backups,
+    /// Ausbaustufen und was jede kann, „Ausbaustufe …“ im Dateimenü
+    /// (Bedienbarkeit 41.5).
+    Ausbaustufen,
 }
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 40] = [
+    pub const ALL: [Topic; 41] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -237,13 +240,20 @@ impl Topic {
         Topic::Ava,
         Topic::Delete,
         Topic::Backups,
+        Topic::Ausbaustufen,
     ];
 
     /// Gruppen der Liste „Alle Themen“ (Darstellung p9 §2, Liste).
     pub const GROUPS: [(&'static str, &'static [Topic]); 5] = [
         (
             "Grundlagen",
-            &[Topic::Start, Topic::Navigation, Topic::File, Topic::Delete],
+            &[
+                Topic::Start,
+                Topic::Navigation,
+                Topic::File,
+                Topic::Delete,
+                Topic::Ausbaustufen,
+            ],
         ),
         (
             "Zeichnen",
@@ -346,6 +356,7 @@ impl Topic {
             Topic::Ava => "ava",
             Topic::Delete => "loeschen",
             Topic::Backups => "sicherungen",
+            Topic::Ausbaustufen => "ausbaustufen",
         }
     }
 
@@ -368,6 +379,9 @@ impl Topic {
         }
     }
 }
+
+/// Erste Zeile im Thema „Ausbaustufen“, rechts die Stufe dieser Installation.
+pub const STUFE_HIER: &str = "Diese Installation";
 
 /// Offenes Fenster für die Themenwahl.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -569,11 +583,14 @@ impl HelpCard {
 
     /// Zeilen des Themas ohne die gesperrter Module
     /// ([`crate::freischaltung::hilfe_zeigt`]); der Knopf zum Mengenfenster
-    /// heißt wie im Paneel.
+    /// heißt wie im Paneel. „Ausbaustufen“ nennt zuerst die Stufe dieser
+    /// Installation.
     fn zeilen(&self, t: Topic) -> Vec<(String, String)> {
         let knopf = self.frei.knopf();
-        t.rows()
+        let stufe = (t == Topic::Ausbaustufen).then(|| (STUFE_HIER.into(), self.frei.name()));
+        stufe
             .into_iter()
+            .chain(t.rows())
             .filter(|(a, _)| crate::freischaltung::hilfe_zeigt(self.frei, t, a))
             .map(|(a, b)| (a, b.replace(crate::cards::KNOPF, knopf)))
             .collect()
@@ -1442,6 +1459,14 @@ mod tests {
                 let z = zeile(&k, Topic::Einlesen, a);
                 assert!(z.is_some_and(|z| !z.1.contains("angehakt")), "{w}: {a}");
             }
+            // Bedienbarkeit 41.5: „Ausbaustufen“ nennt zuerst diese Stufe,
+            // dann jede Stufe, in jeder Stufe gleich
+            let stufen = k.zeilen(Topic::Ausbaustufen);
+            assert_eq!(stufen[0], (STUFE_HIER.into(), k.frei.name()), "{w}");
+            let namen: Vec<&str> = stufen[1..5].iter().map(|z| z.0.as_str()).collect();
+            assert_eq!(namen, ["Basis", "Pro", "Ultimate", "Geländemodul"], "{w}");
+            assert!(!k.frei.gesperrt(Topic::Ausbaustufen), "{w}");
         }
+        assert_eq!(Freischaltung::ALLES.name(), "Ultimate mit Geländemodul");
     }
 }
