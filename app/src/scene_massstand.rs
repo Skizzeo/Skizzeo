@@ -17,6 +17,13 @@ pub fn neuer_stand() -> u64 {
     STAND.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Die Nummer, die [`neuer_stand`] als nächste vergibt: gleich, solange
+/// keine neue vergeben wurde, also kein Zug, kein Geschoss und keine
+/// Bemaßung neu ist (Review L24).
+pub fn naechster_stand() -> u64 {
+    STAND.load(Ordering::Relaxed)
+}
+
 impl Scene {
     /// Der Wandzug `run` wird neu gerechnet: sein Geschoss bekommt einen
     /// neuen Stand; gibt es den Zug nicht mehr, alle.
@@ -27,6 +34,12 @@ impl Scene {
             }
             None => self.mass_alle = neuer_stand(),
         }
+    }
+
+    /// Stand aller Maßketten der Szene: neu mit der Szene und mit allem, was
+    /// alle Geschosse betrifft.
+    pub fn mass_alle(&self) -> u64 {
+        self.mass_alle
     }
 
     /// Stand der Maßketten im Geschoss `st`: neu mit jeder Änderung an
