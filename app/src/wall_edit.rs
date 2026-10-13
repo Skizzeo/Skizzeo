@@ -290,6 +290,9 @@ pub struct EditOutcome {
     /// Greifen abgelehnt: dieses Bauteil ist gesperrt (Paket 4 §1.7),
     /// dazu die gegriffene Wand.
     pub locked: Option<(ElementId, ElementId)>,
+    /// Ändern abgelehnt (Leertaste an der Tür): dieses Bauteil ist
+    /// gesperrt, dazu die Tür.
+    pub gesperrt: Option<(ElementId, ElementId)>,
     /// Bündig zusammengeschoben (W-11): diese Wand steht jetzt an einer
     /// oder zwei Fugen in einer Flucht mit ihren Nachbarn.
     pub joined: Option<ElementId>,
@@ -859,6 +862,30 @@ impl WallEdit {
             .filter(|&e| scene.pickable(e) && !scene.model().element(e).is_some_and(|x| x.locked))
     }
 
+    /// Tür für die Leertaste: die mit dem Griff unter der Maus, sonst die
+    /// mit dem nächsten Griff.
+    fn tuer_bei_maus(&self, cam: &Camera, w: f64, h: f64) -> Option<ElementId> {
+        if self.tuer_griff.is_some() {
+            return self.tuer_griff;
+        }
+        let ((x, y), z) = (self.mouse?, self.plan_z?);
+        self.tueren
+            .iter()
+            .filter_map(|&(id, p)| {
+                let (px, py) = cam.project(vec3(p.x, p.y, z), w, h)?;
+                Some(((px - x).hypot(py - y), id))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, id)| id)
+    }
+
+    /// Gewählte Tür mit Aufschlag, im Grundriss (Grundriss G7).
+    fn gewaehlte_tuer(&self, scene: &Scene) -> Option<ElementId> {
+        let id = self.gewaehlt.filter(|_| self.plan_z.is_some())?;
+        let o = scene.model().opening(id)?;
+        o.swing.map(|_| id)
+    }
+
     /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).
     pub fn refresh(
         &mut self,
@@ -904,7 +931,14 @@ impl WallEdit {
             || breite_griff != self.breite_griff;
         (self.tueren, self.tuer_griff) = (tueren, tuer_griff);
         (self.breiten, self.breite_griff) = (breiten, breite_griff);
-        let hover = if frei && !griff {
+        // In Loch und Aufschlag einer Öffnung gilt der Klick ihr, nicht
+        // dem Band der Wand (Grundriss G7)
+        let in_oeffnung = || {
+            punkt
+                .and_then(|p| tuer_edit::oeffnung_bei(scene, p))
+                .is_some_and(|id| scene.pickable(id))
+        };
+        let hover = if frei && !griff && !in_oeffnung() {
             self.pick(scene, cam, w, h, scale)
         } else {
             None
@@ -1238,6 +1272,39 @@ impl WallEdit {
                     out.consumed = true;
                     out.redraw = true;
                     self.refresh(scene, cam, w, h, scale, enabled);
+                }
+            }
+            // Leertaste an der Tür bei der Maus, sonst an der gewählten
+            // (plan.md §4.3); mit Strg oder Alt nicht (Alt+Leertaste ist
+            // unter Windows das Systemmenü), gehalten nur einmal (Review #127
+            // H1)
+            Event::Key {
+                key: tuer_edit::LEERTASTE,
+                down: true,
+                mods,
+                repeat,
+            } if self.input.is_none()
+                && self.drag.is_none()
+                && (!self.tueren.is_empty() || enabled && self.gewaehlte_tuer(scene).is_some())
+                && !mods.ctrl
+                && !mods.alt =>
+            {
+                let tuer = self.tuer_bei_maus(cam, w, h);
+                let gewaehlt = || self.gewaehlte_tuer(scene).filter(|_| enabled);
+                if let Some(id) = tuer.or_else(gewaehlt) {
+                    out.consumed = true;
+                    if repeat {
+                        return out;
+                    }
+                    if let Some(l) = sk_model::edit_blocked(scene.model(), &[id]) {
+                        out.gesperrt = Some((l, id));
+                        return out;
+                    }
+                    if tuer_edit::umschlagen(scene, id, mods.shift) {
+                        out.changed = true;
+                        out.redraw = true;
+                        self.refresh(scene, cam, w, h, scale, enabled);
+                    }
                 }
             }
             Event::Key {

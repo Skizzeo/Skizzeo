@@ -309,6 +309,7 @@ impl RunCache {
                 let mut s = self.chain.solid_cut_at(cut);
                 s.edges.extend(self.chain.element_edges(cut));
                 s.edges.extend(self.chain.swing_edges(cut));
+                s.edges.extend(self.chain.lintel_edges(cut));
                 s
             }
             PlanMode::Foundation | PlanMode::Lower => Solid::default(),

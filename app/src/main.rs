@@ -4282,9 +4282,6 @@ impl App {
                         };
                         self.redraw |= eo.redraw;
                         self.after_edit(&eo);
-                        if let Some((id, wall)) = eo.locked {
-                            self.show_locked(id, Some((wall, delete::Act::Drag)));
-                        }
                         if !eo.consumed {
                             // Ohne Wandeingabe wählt ein Klick ein Bauteil (beim Loslassen)
                             if let (Event::MouseDown { x, y, .. }, MouseButton::Left, false) =
