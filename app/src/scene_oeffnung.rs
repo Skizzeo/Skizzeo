@@ -158,6 +158,23 @@ impl Scene {
         ok
     }
 
+    /// Ändert die Öffnung `id` als eigener Schritt `schritt` (Schloss der
+    /// Höhenbindung, Paket O7). `false`, wenn das Modell sie ablehnt oder
+    /// sich nichts ändert.
+    pub fn opening_schritt(&mut self, id: ElementId, o: Opening, schritt: &'static str) -> bool {
+        if self.model.opening(id) == Some(&o) {
+            return false;
+        }
+        self.begin(schritt);
+        if self.set_opening(id, o) {
+            self.commit();
+            true
+        } else {
+            self.rollback();
+            false
+        }
+    }
+
     /// Rechnet die Züge `runs` live neu, damit die Zeichnung beim Ziehen am
     /// Griff mitgeht: Ohne das blieb die Tür beim alten Aufschlag stehen und
     /// der Griff schwebte daneben (Jörn 12.10. 14:44).
