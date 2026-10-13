@@ -350,26 +350,22 @@ impl App {
     }
 
     /// Klick mit der Innentür am Cursor bzw. **Enter** nach dem Abstand:
-    /// setzt sie als ein Schritt; lehnt das Modell ab, sagt die Statuszeile
-    /// warum. Eine getippte Zahl gilt danach nicht mehr.
+    /// setzt sie als ein Schritt, eine getippte Zahl gilt danach nicht mehr.
+    /// Lehnt das Modell ab, sagt die Statuszeile warum, und die Zahl bleibt
+    /// rot stehen (Review W49 B2).
     fn tuer_setzen(&mut self) -> bool {
-        let o = self.tool.oeffnung.as_ref().and_then(|w| w.innen.oeffnung());
-        let Some(o) = o else {
-            return false;
-        };
         let m = self.scene.model();
-        match m.opening_fault(&o, None).map(|f| f.text(m)) {
-            Some(t) => self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME),
-            None => {
+        let r = self.tool.oeffnung.as_mut().and_then(|w| w.innen.pruefen(m));
+        match r {
+            None => return false,
+            Some(Err(t)) => self.status(Meldung::mit("{}.", &[&t]), crate::NOTICE_TIME),
+            Some(Ok(o)) => {
                 if self.scene.add_opening(o).is_some() {
                     self.upload_model();
                 }
+                self.tuer_bild(|t, m, k, st| t.nochmal(m, k, st));
             }
         }
-        self.tuer_bild(|t, m, k, st| {
-            t.eingabe = None;
-            t.nochmal(m, k, st);
-        });
         self.redraw = true;
         true
     }

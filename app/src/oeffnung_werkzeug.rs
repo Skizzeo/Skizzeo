@@ -286,7 +286,8 @@ pub struct Bild {
     /// Pfeile).
     pub kette: Vec<(Vec3, Vec3, f64, bool)>,
     pub tinte: Vec<[Vec3; 3]>,
-    /// Pille der Innentür am Cursor: Abstand zur näheren Wandfläche.
+    /// Pille der Innentür am Cursor: Abstand zur näheren Wandfläche oder
+    /// die getippte Zahl.
     pub pille: Option<([Vec3; 2], String)>,
     /// Die Ecke unter der Maus und ob sie auf einer Linie gefangen ist.
     pub punkt: Option<(Vec3, bool)>,
@@ -329,7 +330,8 @@ impl Werkzeug {
         if !self.grundriss {
             return None;
         }
-        // Innentür am Cursor: Abstand zur näheren Wandfläche (G7)
+        // Innentür am Cursor: Abstand zur näheren Wandfläche oder die
+        // getippte Zahl (G7, Review W49 B1)
         if self.erste.is_none() && self.innen.hover.is_some() {
             return self.vorschau.pille.clone();
         }
