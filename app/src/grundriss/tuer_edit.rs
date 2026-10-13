@@ -91,14 +91,18 @@ pub fn oeffnung_bei(scene: &Scene, p: Vec3) -> Option<ElementId> {
             || p.y > hi.y + AUFSCHLAG
     };
     let mut bogen: Option<(f64, ElementId)> = None;
-    for (run, c, quader) in scene.zuege() {
+    let (lo, hi) = (
+        (p.x - AUFSCHLAG, p.y - AUFSCHLAG),
+        (p.x + AUFSCHLAG, p.y + AUFSCHLAG),
+    );
+    for (run, c, quader) in scene.zuege_im(lo, hi) {
         if quader.is_some_and(weit) || m.run(run).is_none_or(|r| r.storey != st) {
             continue;
         }
         let geschnitten = |z: (f64, f64)| z.0 < cut && cut < z.1;
-        for (h, q) in c.hole_quads() {
+        for (h, q) in scene.loecher(run) {
             if let Some(id) = h.opening.filter(|_| geschnitten(h.z)) {
-                if super::ecke_edit::innen(&q, p) {
+                if super::ecke_edit::innen(q, p) {
                     return Some(id);
                 }
             }
