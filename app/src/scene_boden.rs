@@ -51,11 +51,11 @@ impl Scene {
             )),
             _ => None,
         };
-        if self.raster.as_ref().map(|r| r.0) != Some(key) {
+        if self.gelaende_raster.as_ref().map(|r| r.0) != Some(key) {
             let g = key.and_then(|_| TerrainGrid::aus_dreiecken(&m.terrain_triangles()));
-            self.raster = Some((key, g.map(Rc::new)));
+            self.gelaende_raster = Some((key, g.map(Rc::new)));
         }
-        self.raster.as_ref().and_then(|r| r.1.clone())
+        self.gelaende_raster.as_ref().and_then(|r| r.1.clone())
     }
 }
 

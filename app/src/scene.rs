@@ -622,7 +622,7 @@ pub struct Scene {
     /// Zähler der Sichtbarkeitsänderungen (Paket 3); ändert die Revision nicht.
     vis_rev: u64,
     /// OK Gelände aus dem Aufmaß als Raster, zu seinem Schlüssel.
-    raster: Option<(
+    gelaende_raster: Option<(
         Option<boden::RasterKey>,
         Option<Rc<sk_render::gelaende::TerrainGrid>>,
     )>,
@@ -945,7 +945,7 @@ impl Scene {
             grow: None,
             blend_shown: false,
             vis_rev: 0,
-            raster: None,
+            gelaende_raster: None,
             vis_anim: None,
             vis_table: RefCell::default(),
             kanten: RefCell::default(),
