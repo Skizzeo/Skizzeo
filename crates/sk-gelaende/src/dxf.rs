@@ -1,12 +1,14 @@
 //! ASCII-DXF des Vermessers lesen (G1b, plan-gelaendemodul.md §5 G1b).
-//! Punkte kommen aus POINT und INSERT. Die Höhe ist Z; ist Z überall 0
-//! (2D-Plan aus einer DWG), gilt ein Höhenattribut des Blocks. Nummer und
+//! Punkte kommen aus POINT und INSERT. Die Höhe ist Z; auf Z = 0 gilt ein
+//! Höhenattribut des Blocks (2D-Plan aus einer DWG oder einzelne Blöcke),
+//! sonst bleibt der Punkt mit Hinweis außen vor. Nummer und
 //! Code kommen aus Attributen, die Nummer sonst aus einem Nummerntext
 //! daneben, der Code aus dem Layer. 3D-Polylinien sind Bruchkanten,
 //! Polylinien mit Erhebung Höhenlinien (Punkte alle höchstens 2 m), 3DFACE
 //! und Polyface-Netze geben ihre Ecken und Kanten. Grenzen und Gebäude
-//! erkennt Skizzeo am Namen des Layers. Wie bei der Punktliste: nur Bytes
-//! rein, Punkte, Linien und Hinweise raus.
+//! erkennt Skizzeo am Namen des Layers. Blockinhalte, Bögen, Kreise,
+//! Splines und Schraffuren liest Skizzeo nicht, ein Hinweis nennt sie. Wie
+//! bei der Punktliste: nur Bytes rein, Punkte, Linien und Hinweise raus.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,8 +20,16 @@ pub const HOEHENLINIE_ABSTAND: f64 = 2.0;
 pub const NUMMER_ABSTAND: f64 = 1.0;
 /// Ecken einer Linie und Punkte gelten bis hierhin als gleich (m).
 const GLEICH: f64 = 0.005;
+/// Größter Betrag einer Koordinate in Zeichnungseinheiten. Ein Rechtswert
+/// mit Zonenkennzahl in Millimetern hat 3,3·10¹⁰; was darüber liegt, gibt
+/// es auf der Erde nicht, und das Objekt bleibt außen vor (Review #150
+/// B1). So bleiben alle Rechnungen endlich und jeder Rasterindex im
+/// Bereich von `i64`.
+pub const MAX_KOORDINATE: f64 = 1e12;
 /// Höchstens so viele Punkte; mehr entstehen nur aus riesigen Höhenlinien.
 pub const MAX_PUNKTE: usize = 2_000_000;
+/// Höchstens so viele Punkte aus Höhenlinien (500 km Linie bei 2 m).
+pub const MAX_HOEHENLINIENPUNKTE: usize = 250_000;
 
 /// Was eine Linie der Datei ist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,7 +84,7 @@ pub struct Ebene {
 pub struct Datei {
     /// `$ACADVER`, z. B. „AC1009“; leer, wenn der Kopf fehlt.
     pub version: String,
-    /// Attribut, aus dem die Höhen kommen (Z überall 0).
+    /// Attribut, aus dem Höhen auf Z = 0 kommen.
     pub hoehe: Option<String>,
     /// Höhenlinien, deren Punkte im Aufmaß stehen.
     pub hoehenlinien: usize,
@@ -230,11 +240,72 @@ impl<'a> Obj<'a> {
             self.f(30 + k).unwrap_or(0.0),
         ])
     }
+    /// Eine Koordinate, Erhebung oder Extrusion ist keine endliche Zahl
+    /// bis [`MAX_KOORDINATE`].
+    fn unmoeglich(&self) -> bool {
+        self.w.iter().any(|&(c, v)| {
+            matches!(c, 10..=39 | 210..=239)
+                && v.parse::<f64>()
+                    .is_ok_and(|v| !(v.is_finite() && v.abs() <= MAX_KOORDINATE))
+        })
+    }
+    /// Extrusionsrichtung (210, 220, 230), ohne Angabe +Z.
+    fn extrusion(&self) -> [f64; 3] {
+        let n = [
+            self.f(210).unwrap_or(0.0),
+            self.f(220).unwrap_or(0.0),
+            self.f(230).unwrap_or(1.0),
+        ];
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if l > 1e-12 {
+            [n[0] / l, n[1] / l, n[2] / l]
+        } else {
+            [0.0, 0.0, 1.0]
+        }
+    }
+}
+
+/// Punkt im Objektkoordinatensystem (OCS) mit Extrusion `n` nach WCS,
+/// nach dem Arbitrary-Axis-Verfahren der DXF-Referenz. INSERT, TEXT,
+/// LWPOLYLINE und 2D-POLYLINE stehen in OCS; gespiegelte Blöcke haben
+/// n = (0, 0, −1), dort ist X und Z gegenüber WCS umgekehrt.
+fn ocs(n: [f64; 3], p: [f64; 3]) -> [f64; 3] {
+    if n == [0.0, 0.0, 1.0] {
+        return p;
+    }
+    let kreuz = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let einheit = |a: [f64; 3]| {
+        let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        [a[0] / l, a[1] / l, a[2] / l]
+    };
+    let ax = if n[0].abs() < 1.0 / 64.0 && n[1].abs() < 1.0 / 64.0 {
+        einheit(kreuz([0.0, 1.0, 0.0], n))
+    } else {
+        einheit(kreuz([0.0, 0.0, 1.0], n))
+    };
+    let ay = einheit(kreuz(n, ax));
+    [
+        p[0] * ax[0] + p[1] * ay[0] + p[2] * n[0],
+        p[0] * ax[1] + p[1] * ay[1] + p[2] * n[1],
+        p[0] * ax[2] + p[1] * ay[2] + p[2] * n[2],
+    ]
+}
+
+/// Liegt die Extrusion senkrecht (±Z), ist eine OCS-Ebene in WCS waagrecht.
+fn senkrecht(n: [f64; 3]) -> bool {
+    n[0].abs() < 1e-9 && n[1].abs() < 1e-9
 }
 
 /// Objekte der Datei nacheinander, mit einem Objekt Vorschau.
 struct Objekte<'a> {
-    zeilen: std::str::Split<'a, char>,
+    /// Zeilen an \r\n, \n und einzelnem \r getrennt (Review #150).
+    zeilen: Box<dyn Iterator<Item = &'a str> + 'a>,
     nr: usize,
     /// Nächstes Paar, schon gelesen.
     paar: Option<(i32, &'a str, usize)>,
@@ -246,7 +317,7 @@ struct Objekte<'a> {
 impl<'a> Objekte<'a> {
     fn neu(s: &'a str) -> Objekte<'a> {
         let mut o = Objekte {
-            zeilen: s.split('\n'),
+            zeilen: Box::new(lesen::zeilen(s)),
             nr: 0,
             paar: None,
             vor: None,
@@ -364,6 +435,9 @@ struct Kandidat {
     attribut: Option<(f64, String)>,
     nr: Option<String>,
     code: Option<String>,
+    /// Block ohne Attribute: auf Z = 0 in einer 3D-Datei ein Symbol
+    /// (Schriftfeld, Nordpfeil), kein Punkt.
+    symbol: bool,
     zeile: usize,
 }
 
@@ -413,7 +487,7 @@ impl Raster {
     fn nahe(&self, x: f64, y: f64) -> impl Iterator<Item = usize> + '_ {
         let (a, b) = self.k(x, y);
         (-1..=1)
-            .flat_map(move |i| (-1..=1).map(move |j| (a + i, b + j)))
+            .flat_map(move |i| (-1..=1).map(move |j| (a.saturating_add(i), b.saturating_add(j))))
             .filter_map(|k| self.z.get(&k))
             .flatten()
             .copied()
@@ -427,12 +501,95 @@ struct Inhalt {
     kandidaten: Vec<Kandidat>,
     texte: Vec<([f64; 2], String)>,
     linien: Vec<LinieRoh>,
+    /// Objekte mit unmöglichen Koordinaten (Review #150 B1).
+    unmoeglich: usize,
+    /// Bögen, Kreise, Ellipsen, Splines und Schraffuren.
+    kurven: usize,
+    /// Polylinien mit Bögen (Gruppencode 42).
+    boegen: usize,
+    /// Blockreihen (INSERT mit mehr als einer Spalte oder Zeile).
+    reihen: usize,
+    /// Blöcke mit 3D-Punkten, 3D-Linien oder Flächen im Inhalt.
+    bloecke_3d: HashSet<String>,
+    /// Blöcke, die in den Objekten eingefügt sind.
+    eingefuegt: HashSet<String>,
 }
 
+impl Inhalt {
+    /// Hinweise zu dem, was Skizzeo aus der Datei nicht liest.
+    fn hinweise(&self) -> Vec<String> {
+        let mut h = Vec::new();
+        if self.unmoeglich > 0 {
+            h.push(match self.unmoeglich {
+                1 => "1 Objekt mit unmöglichen Koordinaten bleibt außen vor.".into(),
+                n => format!("{n} Objekte mit unmöglichen Koordinaten bleiben außen vor."),
+            });
+        }
+        let bloecke = self.bloecke_3d.intersection(&self.eingefuegt).count();
+        if bloecke > 0 {
+            h.push(format!(
+                "{} 3D-Punkte, 3D-Linien oder Flächen; Skizzeo liest von einem Block nur den Einfügepunkt. Bitte Blöcke mit Geländedaten im CAD auflösen.",
+                match bloecke {
+                    1 => "1 eingefügter Block enthält".to_string(),
+                    n => format!("{n} eingefügte Blöcke enthalten"),
+                }
+            ));
+        }
+        if self.reihen > 0 {
+            h.push(match self.reihen {
+                1 => "1 Blockreihe (Spalten oder Zeilen) zählt nur mit ihrem ersten Block.".into(),
+                n => format!(
+                    "{n} Blockreihen (Spalten oder Zeilen) zählen nur mit ihrem ersten Block."
+                ),
+            });
+        }
+        let mut s = Vec::new();
+        if self.kurven > 0 {
+            s.push(format!(
+                "Bögen, Kreise, Splines und Schraffuren liest Skizzeo nicht ({} in der Datei).",
+                self.kurven
+            ));
+        }
+        if self.boegen > 0 {
+            s.push(match self.boegen {
+                1 => "1 Polylinie mit Bögen gilt mit geraden Kanten.".into(),
+                n => format!("{n} Polylinien mit Bögen gelten mit geraden Kanten."),
+            });
+        }
+        if !s.is_empty() {
+            h.push(s.join(" "));
+        }
+        h
+    }
+}
+
+/// Liegt in einem Block etwas, das Geländedaten sein kann: 3D-Punkte,
+/// 3D-Linien, 3D-Polylinien, Netze oder Flächen.
+fn gelaende_im_block(x: &Obj) -> bool {
+    let hoch = |k: i32| x.f(30 + k).is_some_and(|z| z != 0.0);
+    match x.typ {
+        "3DFACE" => true,
+        "POLYLINE" => x.i(70) & (8 | 16 | 64) != 0,
+        "POINT" => hoch(0),
+        "LINE" => hoch(0) || hoch(1),
+        _ => false,
+    }
+}
+
+/// Liest Skizzeo diesen Objekttyp.
+fn gelesen(typ: &str) -> bool {
+    matches!(
+        typ,
+        "POINT" | "INSERT" | "TEXT" | "MTEXT" | "POLYLINE" | "LWPOLYLINE" | "LINE" | "3DFACE"
+    )
+}
+
+/// Objekte der Datei sammeln; abgewählte Layer zählen nur in der Tabelle.
 fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
     let mut c = Inhalt::default();
     let mut ebene_nr: HashMap<String, usize> = HashMap::new();
     let mut abschnitt = String::new();
+    let mut block = String::new();
     while let Some(x) = o.naechstes() {
         match x.typ {
             "SECTION" => {
@@ -444,6 +601,22 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                 continue;
             }
             "EOF" => break,
+            // Blockinhalte liest Skizzeo nicht, merkt sich aber, welche
+            // Blöcke Geländedaten tragen
+            "BLOCK" if abschnitt == "BLOCKS" => {
+                block = unicode(x.s(2).unwrap_or(""));
+                continue;
+            }
+            "ENDBLK" => {
+                block.clear();
+                continue;
+            }
+            _ if abschnitt == "BLOCKS" => {
+                if !block.is_empty() && !block.starts_with('*') && gelaende_im_block(&x) {
+                    c.bloecke_3d.insert(block.clone());
+                }
+                continue;
+            }
             _ if abschnitt != "ENTITIES" => continue,
             _ => {}
         }
@@ -465,6 +638,26 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
             });
             c.ebenen.len() - 1
         });
+        if !c.ebenen[ei].aus {
+            if gelesen(x.typ) && (x.unmoeglich() || folge.iter().any(Obj::unmoeglich)) {
+                c.unmoeglich += 1;
+                continue;
+            }
+            let bogen = |o: &Obj| {
+                o.w.iter()
+                    .any(|p| p.0 == 42 && p.1.parse::<f64>().is_ok_and(|b| b != 0.0))
+            };
+            match x.typ {
+                "ARC" | "CIRCLE" | "ELLIPSE" | "SPLINE" | "HATCH" => c.kurven += 1,
+                "LWPOLYLINE" if bogen(&x) => c.boegen += 1,
+                "POLYLINE" if folge.iter().any(bogen) => c.boegen += 1,
+                "INSERT" => {
+                    c.eingefuegt.insert(unicode(x.s(2).unwrap_or("")));
+                    c.reihen += usize::from(x.i(70) > 1 || x.i(71) > 1);
+                }
+                _ => {}
+            }
+        }
         let e = &mut c.ebenen[ei];
         let art = e.art;
         let linie = |form: Form, ecken: Vec<[f64; 3]>, geschlossen: bool| LinieRoh {
@@ -480,11 +673,17 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                 let Some(p) = x.xyz(0).filter(|_| !e.aus) else {
                     continue;
                 };
+                let p = if x.typ == "INSERT" {
+                    ocs(x.extrusion(), p)
+                } else {
+                    p
+                };
                 let mut k = Kandidat {
                     p,
                     attribut: None,
                     nr: None,
                     code: None,
+                    symbol: x.typ == "INSERT" && folge.is_empty(),
                     zeile: x.zeile,
                 };
                 for a in &folge {
@@ -494,7 +693,9 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                     let w = unicode(w).trim().to_string();
                     match tag(t) {
                         Some(Tag::Hoehe) if k.attribut.is_none() => {
-                            k.attribut = zahl(&w).map(|h| (h, t.to_string()));
+                            k.attribut = zahl(&w)
+                                .filter(|h| h.is_finite() && h.abs() <= MAX_KOORDINATE)
+                                .map(|h| (h, t.to_string()));
                         }
                         Some(Tag::Nr) if k.nr.is_none() && !w.is_empty() => k.nr = Some(w),
                         Some(Tag::Code) if k.code.is_none() => k.code = Some(w),
@@ -509,6 +710,11 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
             "TEXT" | "MTEXT" => {
                 e.texte += 1;
                 if let (false, Some(p), Some(s)) = (e.aus, x.xyz(0), x.s(1)) {
+                    let p = if x.typ == "TEXT" {
+                        ocs(x.extrusion(), p)
+                    } else {
+                        p
+                    };
                     if nummernebene(&name) {
                         c.texte.push(([p[0], p[1]], unicode(s).trim().to_string()));
                     }
@@ -545,11 +751,16 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                     f if f & 16 != 0 => Form::Punkte,
                     f if f & 8 != 0 => Form::Ecken,
                     _ => {
+                        let n = x.extrusion();
                         let h = x.f(30).unwrap_or(0.0);
                         for p in &mut ecken {
-                            p[2] = h;
+                            *p = ocs(n, [p[0], p[1], h]);
                         }
-                        Form::Eben(h)
+                        if senkrecht(n) {
+                            Form::Eben(h * n[2])
+                        } else {
+                            Form::Ecken
+                        }
                     }
                 };
                 c.linien.push(linie(form, ecken, flags & 1 != 0));
@@ -564,13 +775,18 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                         .filter(move |p| p.0 == g)
                         .map(|p| p.1.parse::<f64>().ok().filter(|v| v.is_finite()))
                 };
+                let n = x.extrusion();
+                let hoehe = x.f(38).unwrap_or(0.0);
                 let ecken: Vec<[f64; 3]> = wert(10)
                     .zip(wert(20))
-                    .filter_map(|(a, b)| Some([a?, b?, 0.0]))
+                    .filter_map(|(a, b)| Some(ocs(n, [a?, b?, hoehe])))
                     .collect();
-                let hoehe = x.f(38).unwrap_or(0.0);
-                c.linien
-                    .push(linie(Form::Eben(hoehe), ecken, x.i(70) & 1 != 0));
+                let form = if senkrecht(n) {
+                    Form::Eben(hoehe * n[2])
+                } else {
+                    Form::Ecken
+                };
+                c.linien.push(linie(form, ecken, x.i(70) & 1 != 0));
             }
             "LINE" => {
                 e.linien += 1;
@@ -595,27 +811,33 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
     c
 }
 
-/// Meter je Zeichnungseinheit nach `$INSUNITS` und der Satz dazu.
-fn einheit(insunits: i64) -> (f64, Option<&'static str>) {
-    match insunits {
-        1 => (
-            0.0254,
-            Some("Die DXF ist in Zoll gezeichnet; Skizzeo rechnet in Meter um."),
-        ),
-        2 => (
-            0.3048,
-            Some("Die DXF ist in Fuß gezeichnet; Skizzeo rechnet in Meter um."),
-        ),
-        4 => (
-            0.001,
-            Some("Die DXF ist in Millimetern gezeichnet; Skizzeo rechnet in Meter um."),
-        ),
-        5 => (
-            0.01,
-            Some("Die DXF ist in Zentimetern gezeichnet; Skizzeo rechnet in Meter um."),
-        ),
-        _ => (1.0, None),
-    }
+/// Meter je Zeichnungseinheit nach `$INSUNITS` und der Satz dazu. Ohne
+/// Angabe (0) und in Metern (6) kein Satz; eine unbekannte Einheit liest
+/// Skizzeo als Meter und sagt es.
+fn einheit(insunits: i64) -> (f64, Option<String>) {
+    let (f, name) = match insunits {
+        0 | 6 => return (1.0, None),
+        1 => (0.0254, "Zoll"),
+        2 => (0.3048, "Fuß"),
+        4 => (0.001, "Millimetern"),
+        5 => (0.01, "Zentimetern"),
+        7 => (1000.0, "Kilometern"),
+        14 => (0.1, "Dezimetern"),
+        n => {
+            return (
+                1.0,
+                Some(format!(
+                    "Die DXF nennt die Einheit {n} ($INSUNITS), die Skizzeo nicht kennt; gelesen ist in Metern. Die Einheit lässt sich unter „Einstellungen der Datei“ umstellen."
+                )),
+            )
+        }
+    };
+    (
+        f,
+        Some(format!(
+            "Die DXF ist in {name} gezeichnet; Skizzeo rechnet in Meter um."
+        )),
+    )
 }
 
 /// Umringe aus Strecken, an den Enden auf mm verbunden; offene Ketten
@@ -672,6 +894,8 @@ fn ringe(strecken: &[([f64; 2], [f64; 2])]) -> (Vec<Vec<[f64; 2]>>, usize) {
 
 /// DXF lesen; aus `v` gelten Zeichensatz, Einheit und abgewählte Layer.
 pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
+    // UTF-8-BOM vor dem ersten Gruppencode (Review #150 B4)
+    let roh = roh.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(roh);
     if roh.starts_with(b"AutoCAD Binary DXF") {
         return Err(
             "Das ist eine Binär-DXF. Bitte im CAD als ASCII-DXF speichern und diese einlesen."
@@ -679,6 +903,10 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         );
     }
     let k = kopf(&String::from_utf8_lossy(&roh[..roh.len().min(1 << 18)]));
+    let (faktor, satz) = match v.einheit {
+        Some(f) => (f, None),
+        None => einheit(k.einheiten),
+    };
     let (inhalt, zeichensatz) = lesen::text(roh, v.zeichensatz);
     let mut objekte = Objekte::neu(&inhalt);
     let c = sammeln(&mut objekte, &v.ebenen_aus);
@@ -698,34 +926,31 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             k.codepage.as_deref().unwrap_or_default()
         ));
     }
-    let (faktor, satz) = match v.einheit {
-        Some(f) => (f, None),
-        None => einheit(k.einheiten),
-    };
-    hinweise.extend(satz.map(String::from));
+    hinweise.extend(satz);
+    hinweise.extend(c.hinweise());
     let m = |p: [f64; 3]| [p[0] * faktor, p[1] * faktor, p[2] * faktor];
 
-    // Höhe aus Z, oder aus dem Attribut, wenn Z überall 0 ist
+    // Höhe je Punkt (Review #150 B2): Z, auf Z = 0 ein Höhenattribut,
+    // sonst ohne Höhe. In einer 3D-Datei (nicht alle Z = 0) ist ein Block
+    // ohne Attribute auf Z = 0 ein Symbol (Schriftfeld, Nordpfeil).
     let z_null = c.kandidaten.iter().all(|k| k.p[2] == 0.0);
     let mut hoehe_aus: Option<String> = None;
-    let mut ohne = 0usize;
+    let (mut ohne, mut symbole) = (0usize, 0usize);
     let mut punkte: Vec<Punkt> = Vec::new();
     let mut nr_fehlt: Vec<usize> = Vec::new();
     for k in &c.kandidaten {
         let p = m(k.p);
-        let h = if z_null {
-            match &k.attribut {
-                Some((h, t)) => {
-                    hoehe_aus.get_or_insert_with(|| t.clone());
-                    *h
-                }
-                None => {
-                    ohne += 1;
-                    continue;
-                }
-            }
-        } else {
+        let h = if k.p[2] != 0.0 {
             p[2]
+        } else if let Some((h, t)) = &k.attribut {
+            hoehe_aus.get_or_insert_with(|| t.clone());
+            *h
+        } else if k.symbol && !z_null {
+            symbole += 1;
+            continue;
+        } else {
+            ohne += 1;
+            continue;
         };
         if k.nr.is_none() {
             nr_fehlt.push(punkte.len());
@@ -741,9 +966,17 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         });
     }
     if ohne > 0 {
-        hinweise.push(match ohne {
-            1 => "1 Punkt ohne Höhe (Z = 0, kein Höhenattribut) bleibt außen vor.".into(),
-            n => format!("{n} Punkte ohne Höhe (Z = 0, kein Höhenattribut) bleiben außen vor."),
+        hinweise.push(match (ohne, z_null) {
+            (1, true) => "1 Punkt ohne Höhe (Z = 0, kein Höhenattribut) bleibt außen vor.".into(),
+            (n, true) => format!("{n} Punkte ohne Höhe (Z = 0, kein Höhenattribut) bleiben außen vor."),
+            (1, false) => "1 Punkt auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleibt außen vor.".into(),
+            (n, false) => format!("{n} Punkte auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleiben außen vor."),
+        });
+    }
+    if symbole > 0 {
+        hinweise.push(match symbole {
+            1 => "1 Block ohne Attribute auf Z = 0 (Schriftfeld, Nordpfeil, Symbol) zählt nicht als Punkt.".into(),
+            n => format!("{n} Blöcke ohne Attribute auf Z = 0 (Schriftfeld, Nordpfeil, Symbole) zählen nicht als Punkte."),
         });
     }
     nummern(&mut punkte, &nr_fehlt, &c.texte, faktor);
@@ -757,6 +990,8 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
     let mut grenze: Vec<([f64; 2], [f64; 2])> = Vec::new();
     let mut grenzringe: Vec<(String, Vec<[f64; 2]>)> = Vec::new();
     let (mut hoehenlinien, mut verworfen, mut zu_viele) = (0usize, 0usize, false);
+    // Punkte aus Höhenlinien und ob deren Grenze erreicht ist (Review #150)
+    let (mut aus_linien, mut zu_viele_hl) = (0usize, false);
     let (mut neu_l, mut neu_n) = (0usize, 0usize);
     for l in &c.linien {
         let ecken: Vec<[f64; 3]> = l.ecken.iter().map(|&p| m(p)).collect();
@@ -792,11 +1027,13 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
                     ring.push(ring[0]);
                 }
                 let mut lage: Vec<[f64; 2]> = Vec::new();
+                let mut abgeschnitten = false;
                 for w in ring.windows(2) {
                     let d = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
                     let schritte = (d / HOEHENLINIE_ABSTAND).ceil().max(1.0);
-                    let platz = MAX_PUNKTE.saturating_sub(punkte.len() + lage.len());
-                    let nimm = (schritte as usize).min(platz);
+                    let frei = MAX_PUNKTE.saturating_sub(punkte.len() + lage.len());
+                    let frei_hl = MAX_HOEHENLINIENPUNKTE.saturating_sub(aus_linien + lage.len());
+                    let nimm = (schritte as usize).min(frei).min(frei_hl);
                     lage.extend((0..nimm).map(|s| {
                         let t = s as f64 / schritte;
                         [
@@ -805,13 +1042,19 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
                         ]
                     }));
                     if nimm < schritte as usize {
-                        zu_viele = true;
+                        if frei_hl < frei {
+                            zu_viele_hl = true;
+                        } else {
+                            zu_viele = true;
+                        }
+                        abgeschnitten = true;
                         break;
                     }
                 }
-                if let (Some(q), false, false) = (ring.last(), l.geschlossen, zu_viele) {
+                if let (Some(q), false, false) = (ring.last(), l.geschlossen, abgeschnitten) {
                     lage.push([q[0], q[1]]);
                 }
+                aus_linien += lage.len();
                 for (k, q) in lage.into_iter().enumerate() {
                     punkte.push(Punkt {
                         nr: format!("H{hoehenlinien}-{}", k + 1),
@@ -919,6 +1162,11 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             "Mehr als {MAX_PUNKTE} Punkte; Skizzeo liest nur die ersten."
         ));
     }
+    if zu_viele_hl {
+        hinweise.push(format!(
+            "Die Höhenlinien geben mehr als {MAX_HOEHENLINIENPUNKTE} Punkte; Skizzeo liest nur die ersten."
+        ));
+    }
     if verworfen > 0 {
         hinweise.push(format!(
             "{verworfen} Linien ohne zwei verschiedene Ecken bleiben außen vor."
@@ -951,6 +1199,7 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
     };
     let (e0, e1) = bereich(|p| p.e);
     let (n0, n1) = bereich(|p| p.n);
+    let (h0, h1) = bereich(|p| p.h);
     let lage = match (lesen::art(e0, e1), lesen::art(n0, n1)) {
         (lesen::Art::UtmZone(z), lesen::Art::Hoch) => Lage::Utm { zone: Some(z) },
         (lesen::Art::Utm, lesen::Art::Hoch) => Lage::Utm { zone: None },
@@ -977,6 +1226,17 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
     if let Lage::GaussKrueger { .. } = lage {
         hinweise.push(lesen::GAUSS_KRUEGER.into());
     }
+    // ohne Einheit wie bei der Punktliste: Millimeter, wenn Lage und Höhe
+    // über 10.000 liegen (Review #150)
+    let gross = |lo: f64, hi: f64| lo.abs().max(hi.abs()) > 10_000.0;
+    let millimeter = k.einheiten == 0
+        && v.einheit.is_none()
+        && lage == Lage::Oertlich
+        && gross(h0, h1)
+        && (gross(e0, e1) || gross(n0, n1));
+    if millimeter {
+        hinweise.push(lesen::MILLIMETER.into());
+    }
     linien.extend(grenzringe.into_iter().map(|(ebene, lage)| Linie {
         art: Linienart::Grenze,
         ebene,
@@ -995,7 +1255,7 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             spalten: Vec::new(),
             lage,
             zweifel: false,
-            millimeter: false,
+            millimeter,
         },
         hinweise,
         dxf: Some(Datei {
@@ -1480,7 +1740,8 @@ mod tests {
 
     /// 100.000 Punkte mit Nummerntext, eine Bruchkante über 1.000 von
     /// ihnen und 4 km Höhenlinie bleiben im Budget; riesige Höhenlinien
-    /// enden bei [`MAX_PUNKTE`].
+    /// enden bei [`MAX_HOEHENLINIENPUNKTE`] (Review #150: 82 Byte gaben
+    /// vorher 2 Mio. Punkte und 300 MB).
     #[test]
     fn viele_punkte_im_budget() {
         let mut s = String::from("0\nSECTION\n2\nENTITIES\n");
@@ -1532,11 +1793,12 @@ mod tests {
         let t = std::time::Instant::now();
         let b = lesen(&riesig, &Vorgaben::default()).unwrap();
         assert!(t.elapsed().as_secs_f64() < 5.0);
-        assert!(b.punkte.len() <= MAX_PUNKTE);
-        assert!(
-            b.hinweise[0].starts_with("Mehr als 2000000 Punkte"),
-            "{:?}",
-            b.hinweise
+        assert_eq!(b.punkte.len(), MAX_HOEHENLINIENPUNKTE);
+        assert_eq!(
+            b.hinweise,
+            [format!(
+                "Die Höhenlinien geben mehr als {MAX_HOEHENLINIENPUNKTE} Punkte; Skizzeo liest nur die ersten."
+            )]
         );
     }
 
@@ -1550,5 +1812,295 @@ mod tests {
         assert_eq!(ebenenart("GEB_UMRING"), Ebenenart::Gebaeude);
         assert_eq!(ebenenart("PKT_GR"), Ebenenart::Gelaende);
         assert!(nummernebene("PUNKTNUMMER") && nummernebene("PNR") && !nummernebene("HOEHE"));
+    }
+}
+
+#[cfg(test)]
+mod ocs_und_z_null {
+    use super::*;
+
+    fn lies(s: &str) -> Aufmass {
+        let s = format!("0\nSECTION\n2\nENTITIES\n{s}0\nENDSEC\n0\nEOF\n");
+        lesen(s.as_bytes(), &Vorgaben::default()).unwrap()
+    }
+    fn pt(e: f64, n: f64, z: f64) -> String {
+        format!("0\nPOINT\n8\nPKT\n10\n{e}\n20\n{n}\n30\n{z}\n")
+    }
+    fn umgebung() -> String {
+        [
+            (0.0, 0.0, 24.1),
+            (30.0, 0.0, 24.2),
+            (0.0, 30.0, 24.3),
+            (30.0, 30.0, 24.4),
+        ]
+        .iter()
+        .map(|(x, y, z)| pt(467100.0 + x, 5878700.0 + y, *z))
+        .collect()
+    }
+
+    /// Geometrie-Befund #150: gespiegelter Block (Extrusion 0,0,−1): Einfügepunkt steht in OCS.
+    #[test]
+    fn sonde_insert_extrusion_minus_z() {
+        let s = umgebung()
+            + "0\nINSERT\n8\nPKT\n2\nHP\n10\n-467110.0\n20\n5878710.0\n30\n-24.25\n210\n0.0\n220\n0.0\n230\n-1.0\n";
+        let a = lies(&s);
+        let p = a.punkte.last().unwrap();
+        assert!(
+            (p.e - 467110.0).abs() < 1e-6 && (p.h - 24.25).abs() < 1e-6,
+            "e={} h={}",
+            p.e,
+            p.h
+        );
+    }
+
+    /// Höhenlinie als LWPOLYLINE mit Extrusion 0,0,−1: Erhebung in OCS.
+    #[test]
+    fn sonde_hoehenlinie_extrusion_minus_z() {
+        let s = umgebung()
+            + "0\nLWPOLYLINE\n8\nHL\n90\n2\n38\n-24.0\n10\n-467105.0\n20\n5878705.0\n10\n-467106.0\n20\n5878705.0\n210\n0.0\n220\n0.0\n230\n-1.0\n";
+        let a = lies(&s);
+        let p = a.punkte.last().unwrap();
+
+        assert!(
+            (p.e - 467106.0).abs() < 1e-6 && (p.h - 24.0).abs() < 1e-6,
+            "e={} h={}",
+            p.e,
+            p.h
+        );
+    }
+
+    /// 3D-Datei, ein Block auf Z = 0 mit Höhenattribut.
+    #[test]
+    fn sonde_gemischt_z_und_attribut() {
+        let s = umgebung()
+            + "0\nINSERT\n8\nPKT\n66\n1\n2\nHP\n10\n467110.0\n20\n5878710.0\n30\n0.0\n0\nATTRIB\n2\nHOEHE\n1\n24.35\n0\nSEQEND\n";
+        let a = lies(&s);
+        let p = a.punkte.last().unwrap();
+        assert!((p.h - 24.35).abs() < 1e-6, "h={}", p.h);
+    }
+
+    /// 3D-Datei, ein POINT ohne Höhe (Z = 0) zwischen Punkten um 24 m.
+    #[test]
+    fn sonde_gemischt_z_null_ohne_attribut() {
+        let s = umgebung() + &pt(467110.0, 5878710.0, 0.0);
+        let a = lies(&s);
+        let n0 = a.punkte.iter().filter(|p| p.h == 0.0).count();
+        assert_eq!(n0, 0);
+    }
+}
+
+/// Befunde aus Review #150 zu `a953651`.
+#[cfg(test)]
+mod grenzfaelle {
+    use super::*;
+
+    fn datei(vorn: &str, objekte: &str) -> String {
+        format!("{vorn}0\nSECTION\n2\nENTITIES\n{objekte}0\nENDSEC\n0\nEOF\n")
+    }
+    fn lies(s: &str) -> Aufmass {
+        lesen(s.as_bytes(), &Vorgaben::default()).unwrap()
+    }
+    fn pt(e: f64, n: f64, z: f64) -> String {
+        format!("0\nPOINT\n8\nPKT\n10\n{e}\n20\n{n}\n30\n{z}\n")
+    }
+    fn umgebung() -> String {
+        [
+            (0.0, 0.0, 24.1),
+            (30.0, 0.0, 24.2),
+            (0.0, 30.0, 24.3),
+            (30.0, 30.0, 24.4),
+        ]
+        .iter()
+        .map(|(x, y, z)| pt(467100.0 + x, 5878700.0 + y, *z))
+        .collect()
+    }
+
+    /// B1: Riesige Zahlen geben weder Überlauf noch NaN; die Objekte
+    /// bleiben mit Hinweis außen vor.
+    #[test]
+    fn unmoegliche_koordinaten_bleiben_aussen_vor() {
+        let s = umgebung()
+            + &pt(1e300, 1e300, 24.0)
+            + "0\nLWPOLYLINE\n8\nHL\n90\n2\n38\n-1e308\n10\n-1e308\n20\n0\n10\n1e308\n20\n0\n"
+            + "0\nLINE\n8\nBK\n10\n467100\n20\n5878700\n30\n24\n11\n1e300\n21\n5878700\n31\n24\n"
+            + "0\nTEXT\n8\nPNR\n10\n1e300\n20\n1e300\n1\n7\n"
+            + "0\nINSERT\n8\nPKT\n66\n1\n2\nHP\n10\n467110\n20\n5878710\n30\n0\n0\nATTRIB\n2\nHOEHE\n1\n1e300\n0\nSEQEND\n";
+        let a = lies(&datei("", &s));
+        assert_eq!(a.punkte.len(), 4);
+        assert!(a
+            .punkte
+            .iter()
+            .all(|p| p.e.is_finite() && p.n.is_finite() && p.h.is_finite()));
+        assert_eq!(
+            a.hinweise,
+            [
+                "4 Objekte mit unmöglichen Koordinaten bleiben außen vor.",
+                "1 Punkt auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleibt außen vor."
+            ]
+        );
+        // am Rand des Rasters zählt die Nachbarschaft ohne Überlauf
+        let mut r = Raster::neu(1.0);
+        r.rein(1e19, -1e19, 0);
+        let nahe: Vec<usize> = r.nahe(1e19, -1e19).collect();
+        assert!(!nahe.is_empty() && nahe.iter().all(|&i| i == 0));
+        // bis zur Grenze gilt jede Zahl (UTM in Millimetern mit Zone)
+        let a = lies(&datei("", &pt(32_467_100_000.0, 5_878_700_000.0, 24_500.0)));
+        assert_eq!(a.punkte.len(), 1);
+    }
+
+    /// B2: In einer 3D-Datei sind Blöcke ohne Attribute auf Z = 0 Symbole.
+    /// Ein Block mit Höhenattribut gibt seine Höhe, einer nur mit Nummer
+    /// und ein POINT auf Z = 0 bleiben mit Hinweis außen vor; kein Punkt
+    /// bekommt die Höhe 0.
+    #[test]
+    fn bloecke_auf_z_null_in_3d_datei() {
+        let insert = |name: &str, attrib: &str| {
+            let folge = if attrib.is_empty() { "" } else { "66\n1\n" };
+            format!(
+                "0\nINSERT\n8\nPKT\n{folge}2\n{name}\n10\n467110.0\n20\n5878710.0\n30\n0.0\n{attrib}"
+            )
+        };
+        let s = umgebung()
+            + &insert("SCHRIFTFELD", "")
+            + &insert("NORD", "")
+            + &insert("HP", "0\nATTRIB\n2\nHOEHE\n1\n24,8\n0\nSEQEND\n")
+            + &insert("HP", "0\nATTRIB\n2\nPNR\n1\n77\n0\nSEQEND\n")
+            + &pt(467111.0, 5878711.0, 0.0);
+        let a = lies(&datei("", &s));
+        assert_eq!(a.punkte.len(), 5);
+        assert!(a.punkte.iter().all(|p| p.h != 0.0));
+        assert_eq!(a.punkte[4].h, 24.8);
+        assert_eq!(a.dxf.as_ref().unwrap().hoehe.as_deref(), Some("HOEHE"));
+        assert_eq!(
+            a.hinweise,
+            [
+                "2 Punkte auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleiben außen vor.",
+                "2 Blöcke ohne Attribute auf Z = 0 (Schriftfeld, Nordpfeil, Symbole) zählen nicht als Punkte."
+            ]
+        );
+    }
+
+    /// B3 wie im Befund: LWPOLYLINE mit Extrusion (0, 0, −1) und Erhebung
+    /// 25 liegt in WCS bei x = −10 bis −20 auf −25.
+    #[test]
+    fn gespiegelte_hoehenlinie_wie_im_befund() {
+        let s = "0\nLWPOLYLINE\n8\nHL\n90\n2\n38\n25\n10\n10\n20\n5\n10\n20\n20\n5\n210\n0\n220\n0\n230\n-1\n";
+        let a = lies(&datei("", s));
+        assert_eq!(a.punkte.len(), 6);
+        for p in &a.punkte {
+            assert!(
+                (-20.0..=-10.0).contains(&p.e) && p.n == 5.0 && p.h == -25.0,
+                "{p:?}"
+            );
+        }
+    }
+
+    /// B3: Bei schräger Extrusion liegt die Polylinie schräg im Raum und
+    /// gilt als Bruchkante mit den Höhen ihrer Ecken.
+    #[test]
+    fn schraege_extrusion_gibt_bruchkante() {
+        // n = (0, 0,6, 0,8): OCS-x ist −x, OCS-y ist (0, −0,8, 0,6)
+        let s = "0\nLWPOLYLINE\n8\nBK\n90\n2\n38\n25\n10\n0\n20\n0\n10\n0\n20\n10\n210\n0\n220\n0.6\n230\n0.8\n";
+        let a = lies(&datei("", s));
+        let ecken: Vec<[f64; 3]> = a.punkte.iter().map(|p| [p.e, p.n, p.h]).collect();
+        let soll = [[0.0, 15.0, 20.0], [0.0, 7.0, 26.0]];
+        assert_eq!(ecken.len(), 2);
+        for (p, q) in ecken.iter().zip(soll) {
+            assert!((0..3).all(|k| (p[k] - q[k]).abs() < 1e-9), "{p:?} {q:?}");
+        }
+        assert_eq!(a.linien.len(), 1);
+        assert_eq!(
+            (a.linien[0].art, a.linien[0].punkte.as_slice()),
+            (Linienart::Bruchkante, [0, 1].as_slice())
+        );
+    }
+
+    /// B4: UTF-8-BOM vor „0 / SECTION“: Die Datei ist eine DXF, und die
+    /// Einheit aus dem Kopf gilt.
+    #[test]
+    fn bom_vor_dem_kopf() {
+        let kopf = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
+        let mut roh = b"\xEF\xBB\xBF".to_vec();
+        roh.extend(datei(kopf, &pt(1000.0, 2000.0, 24500.0)).bytes());
+        assert_eq!(lesen::format(&roh), lesen::Format::Dxf);
+        let a = lesen(&roh, &Vorgaben::default()).unwrap();
+        assert_eq!((a.punkte[0].e, a.punkte[0].h), (1.0, 24.5));
+        assert_eq!(
+            a.hinweise,
+            ["Die DXF ist in Millimetern gezeichnet; Skizzeo rechnet in Meter um."]
+        );
+    }
+
+    /// Nur \r als Zeilenende (alte Mac-Dateien) liest sich wie \n.
+    #[test]
+    fn nur_cr_als_zeilenende() {
+        let s = datei("", &umgebung());
+        let a = lies(&s);
+        let b = lies(&s.replace('\n', "\r"));
+        assert_eq!(a.punkte, b.punkte);
+        assert!(b.hinweise.is_empty(), "{:?}", b.hinweise);
+    }
+
+    /// Was Skizzeo nicht liest, nennt ein Hinweis: Blöcke mit Geländedaten,
+    /// Blockreihen, Bögen, Kreise und Polylinien mit Bögen.
+    #[test]
+    fn bloecke_reihen_und_boegen_mit_hinweis() {
+        let flaeche = "0\n3DFACE\n8\n0\n10\n0\n20\n0\n30\n24\n11\n1\n21\n0\n31\n24\n12\n0\n22\n1\n32\n24\n13\n0\n23\n1\n33\n24\n";
+        let bloecke = format!(
+            "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\nDGM\n{flaeche}0\nENDBLK\n0\nBLOCK\n8\n0\n2\nKREUZ\n0\nLINE\n8\n0\n10\n-1\n20\n0\n30\n0\n11\n1\n21\n0\n31\n0\n0\nENDBLK\n0\nBLOCK\n8\n0\n2\n*U1\n{flaeche}0\nENDBLK\n0\nENDSEC\n"
+        );
+        let s = umgebung()
+            + "0\nINSERT\n8\nDGM\n2\nDGM\n10\n467100\n20\n5878700\n30\n24\n"
+            + "0\nINSERT\n8\nPKT\n2\nKREUZ\n70\n3\n71\n2\n10\n467105\n20\n5878705\n30\n24.2\n"
+            + "0\nINSERT\n8\nPKT\n2\n*U1\n10\n467106\n20\n5878706\n30\n24.2\n"
+            + "0\nCIRCLE\n8\nBAUM\n10\n467101\n20\n5878701\n30\n0\n40\n2\n"
+            + "0\nARC\n8\nBORD\n10\n467102\n20\n5878702\n30\n0\n40\n2\n50\n0\n51\n90\n"
+            + "0\nLWPOLYLINE\n8\nWEG\n90\n2\n10\n467100\n20\n5878700\n42\n0.5\n10\n467110\n20\n5878700\n";
+        let a = lies(&datei(&bloecke, &s));
+        assert_eq!(a.punkte.len(), 7);
+        assert_eq!(
+            a.hinweise,
+            [
+                "1 eingefügter Block enthält 3D-Punkte, 3D-Linien oder Flächen; Skizzeo liest von einem Block nur den Einfügepunkt. Bitte Blöcke mit Geländedaten im CAD auflösen.",
+                "1 Blockreihe (Spalten oder Zeilen) zählt nur mit ihrem ersten Block.",
+                "Bögen, Kreise, Splines und Schraffuren liest Skizzeo nicht (2 in der Datei). 1 Polylinie mit Bögen gilt mit geraden Kanten."
+            ]
+        );
+    }
+
+    /// Ohne `$INSUNITS` sehen UTM-Werte in Millimetern wie bei der
+    /// Punktliste nach Millimetern aus: Hinweis und Merker, gelesen wird
+    /// unverändert. Dezimeter (`$INSUNITS` 14) rechnet Skizzeo um.
+    #[test]
+    fn millimeter_ohne_einheit_und_dezimeter() {
+        let s: String = [
+            (0.0, 0.0, 24_337.0),
+            (30_000.0, 0.0, 24_624.0),
+            (0.0, 30_000.0, 24_500.0),
+        ]
+        .iter()
+        .map(|(x, y, z)| pt(467_100_000.0 + x, 5_878_700_000.0 + y, *z))
+        .collect();
+        let a = lies(&datei("", &s));
+        assert!(a.erkannt.millimeter);
+        assert_eq!(a.hinweise, [lesen::MILLIMETER]);
+        let v = Vorgaben {
+            einheit: Some(0.001),
+            ..Vorgaben::default()
+        };
+        let b = lesen(datei("", &s).as_bytes(), &v).unwrap();
+        assert!(
+            !b.erkannt.millimeter && b.hinweise.is_empty(),
+            "{:?}",
+            b.hinweise
+        );
+        assert!((b.punkte[0].h - 24.337).abs() < 1e-9);
+        let kopf = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n14\n0\nENDSEC\n";
+        let d = lies(&datei(kopf, &pt(10.0, 20.0, 245.0)));
+        assert_eq!(d.punkte[0].h, 24.5);
+        assert_eq!(
+            d.hinweise,
+            ["Die DXF ist in Dezimetern gezeichnet; Skizzeo rechnet in Meter um."]
+        );
     }
 }

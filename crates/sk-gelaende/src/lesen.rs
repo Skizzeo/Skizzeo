@@ -272,7 +272,7 @@ pub fn text(roh: &[u8], z: Option<Zeichensatz>) -> (String, Zeichensatz) {
 }
 
 /// Zeilen, getrennt an \r\n, \n und einzelnem \r (alte Mac-Dateien).
-fn zeilen(s: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn zeilen(s: &str) -> impl Iterator<Item = &str> {
     let mut rest = Some(s);
     std::iter::from_fn(move || {
         let r = rest.take()?;
@@ -289,6 +289,8 @@ fn zeilen(s: &str) -> impl Iterator<Item = &str> {
 
 /// Format am Inhalt erkennen.
 pub fn format(roh: &[u8]) -> Format {
+    // UTF-8-BOM vor „0 / SECTION“ (Review #150 B4)
+    let roh = roh.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(roh);
     if roh.starts_with(b"AC10") {
         return Format::Dwg;
     }
@@ -720,7 +722,7 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         hinweise.push(GAUSS_KRUEGER.into());
     }
     if millimeter && v.einheit.is_none() {
-        hinweise.push("Die Werte sehen nach Millimetern aus. Die Einheit lässt sich unter „Einstellungen der Datei“ umstellen.".into());
+        hinweise.push(MILLIMETER.into());
     }
     Ok(Aufmass {
         punkte,
@@ -739,6 +741,9 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         dxf: None,
     })
 }
+
+/// Hinweis zu Werten in Millimetern ohne Angabe (Punktliste und DXF).
+pub(crate) const MILLIMETER: &str = "Die Werte sehen nach Millimetern aus. Die Einheit lässt sich unter „Einstellungen der Datei“ umstellen.";
 
 /// Hinweis zu Gauß-Krüger (Punktliste und DXF).
 pub(crate) const GAUSS_KRUEGER: &str = "Gauß-Krüger liest Skizzeo als örtliches System: Auf dem Grundstück stimmt alles, nur die Verbindung zu UTM und zum IFC-Export fehlt, bis der Nullpunkt in UTM eingetragen ist.";
