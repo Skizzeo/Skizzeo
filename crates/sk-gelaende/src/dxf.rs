@@ -18,6 +18,9 @@ pub const HOEHENLINIE_ABSTAND: f64 = 2.0;
 pub const NUMMER_ABSTAND: f64 = 1.0;
 /// Ecken einer Linie und Punkte gelten bis hierhin als gleich (m).
 const GLEICH: f64 = 0.005;
+/// Liegen alle anderen Höhen weiter als so weit von 0 (m), ist Z = 0 in
+/// einer 3D-Datei eine fehlende Höhe.
+const Z_NULL_FERN: f64 = 10.0;
 /// Höchstens so viele Punkte; mehr entstehen nur aus riesigen Höhenlinien.
 pub const MAX_PUNKTE: usize = 2_000_000;
 
@@ -230,6 +233,57 @@ impl<'a> Obj<'a> {
             self.f(30 + k).unwrap_or(0.0),
         ])
     }
+    /// Extrusionsrichtung (210, 220, 230), ohne Angabe +Z.
+    fn extrusion(&self) -> [f64; 3] {
+        let n = [
+            self.f(210).unwrap_or(0.0),
+            self.f(220).unwrap_or(0.0),
+            self.f(230).unwrap_or(1.0),
+        ];
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if l > 1e-12 {
+            [n[0] / l, n[1] / l, n[2] / l]
+        } else {
+            [0.0, 0.0, 1.0]
+        }
+    }
+}
+
+/// Punkt im Objektkoordinatensystem (OCS) mit Extrusion `n` nach WCS,
+/// nach dem Arbitrary-Axis-Verfahren der DXF-Referenz. INSERT, TEXT,
+/// LWPOLYLINE und 2D-POLYLINE stehen in OCS; gespiegelte Blöcke haben
+/// n = (0, 0, −1), dort ist X und Z gegenüber WCS umgekehrt.
+fn ocs(n: [f64; 3], p: [f64; 3]) -> [f64; 3] {
+    if n == [0.0, 0.0, 1.0] {
+        return p;
+    }
+    let kreuz = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let einheit = |a: [f64; 3]| {
+        let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        [a[0] / l, a[1] / l, a[2] / l]
+    };
+    let ax = if n[0].abs() < 1.0 / 64.0 && n[1].abs() < 1.0 / 64.0 {
+        einheit(kreuz([0.0, 1.0, 0.0], n))
+    } else {
+        einheit(kreuz([0.0, 0.0, 1.0], n))
+    };
+    let ay = einheit(kreuz(n, ax));
+    [
+        p[0] * ax[0] + p[1] * ay[0] + p[2] * n[0],
+        p[0] * ax[1] + p[1] * ay[1] + p[2] * n[1],
+        p[0] * ax[2] + p[1] * ay[2] + p[2] * n[2],
+    ]
+}
+
+/// Liegt die Extrusion senkrecht (±Z), ist eine OCS-Ebene in WCS waagrecht.
+fn senkrecht(n: [f64; 3]) -> bool {
+    n[0].abs() < 1e-9 && n[1].abs() < 1e-9
 }
 
 /// Objekte der Datei nacheinander, mit einem Objekt Vorschau.
@@ -480,6 +534,11 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                 let Some(p) = x.xyz(0).filter(|_| !e.aus) else {
                     continue;
                 };
+                let p = if x.typ == "INSERT" {
+                    ocs(x.extrusion(), p)
+                } else {
+                    p
+                };
                 let mut k = Kandidat {
                     p,
                     attribut: None,
@@ -509,6 +568,11 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
             "TEXT" | "MTEXT" => {
                 e.texte += 1;
                 if let (false, Some(p), Some(s)) = (e.aus, x.xyz(0), x.s(1)) {
+                    let p = if x.typ == "TEXT" {
+                        ocs(x.extrusion(), p)
+                    } else {
+                        p
+                    };
                     if nummernebene(&name) {
                         c.texte.push(([p[0], p[1]], unicode(s).trim().to_string()));
                     }
@@ -545,11 +609,16 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                     f if f & 16 != 0 => Form::Punkte,
                     f if f & 8 != 0 => Form::Ecken,
                     _ => {
+                        let n = x.extrusion();
                         let h = x.f(30).unwrap_or(0.0);
                         for p in &mut ecken {
-                            p[2] = h;
+                            *p = ocs(n, [p[0], p[1], h]);
                         }
-                        Form::Eben(h)
+                        if senkrecht(n) {
+                            Form::Eben(h * n[2])
+                        } else {
+                            Form::Ecken
+                        }
                     }
                 };
                 c.linien.push(linie(form, ecken, flags & 1 != 0));
@@ -564,13 +633,18 @@ fn sammeln(o: &mut Objekte, aus: &[String]) -> Inhalt {
                         .filter(move |p| p.0 == g)
                         .map(|p| p.1.parse::<f64>().ok().filter(|v| v.is_finite()))
                 };
+                let n = x.extrusion();
+                let hoehe = x.f(38).unwrap_or(0.0);
                 let ecken: Vec<[f64; 3]> = wert(10)
                     .zip(wert(20))
-                    .filter_map(|(a, b)| Some([a?, b?, 0.0]))
+                    .filter_map(|(a, b)| Some(ocs(n, [a?, b?, hoehe])))
                     .collect();
-                let hoehe = x.f(38).unwrap_or(0.0);
-                c.linien
-                    .push(linie(Form::Eben(hoehe), ecken, x.i(70) & 1 != 0));
+                let form = if senkrecht(n) {
+                    Form::Eben(hoehe * n[2])
+                } else {
+                    Form::Ecken
+                };
+                c.linien.push(linie(form, ecken, x.i(70) & 1 != 0));
             }
             "LINE" => {
                 e.linien += 1;
@@ -707,20 +781,34 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
 
     // Höhe aus Z, oder aus dem Attribut, wenn Z überall 0 ist
     let z_null = c.kandidaten.iter().all(|k| k.p[2] == 0.0);
+    // In einer 3D-Datei ist Z = 0 eine fehlende Höhe, wenn alle anderen
+    // Punkte weit weg von 0 liegen (NHN); dann gilt ein Höhenattribut,
+    // sonst bleibt der Punkt außen vor. Liegen Höhen nahe 0 (örtliche
+    // Höhen), ist Z = 0 eine echte Höhe.
+    let fern = !z_null
+        && c.kandidaten
+            .iter()
+            .filter(|k| k.p[2] != 0.0)
+            .all(|k| (k.p[2] * faktor).abs() > Z_NULL_FERN);
     let mut hoehe_aus: Option<String> = None;
     let mut ohne = 0usize;
+    let mut z_fehlt = 0usize;
     let mut punkte: Vec<Punkt> = Vec::new();
     let mut nr_fehlt: Vec<usize> = Vec::new();
     for k in &c.kandidaten {
         let p = m(k.p);
-        let h = if z_null {
+        let h = if z_null || (k.p[2] == 0.0 && (fern || k.attribut.is_some())) {
             match &k.attribut {
                 Some((h, t)) => {
                     hoehe_aus.get_or_insert_with(|| t.clone());
                     *h
                 }
-                None => {
+                None if z_null => {
                     ohne += 1;
+                    continue;
+                }
+                None => {
+                    z_fehlt += 1;
                     continue;
                 }
             }
@@ -744,6 +832,12 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         hinweise.push(match ohne {
             1 => "1 Punkt ohne Höhe (Z = 0, kein Höhenattribut) bleibt außen vor.".into(),
             n => format!("{n} Punkte ohne Höhe (Z = 0, kein Höhenattribut) bleiben außen vor."),
+        });
+    }
+    if z_fehlt > 0 {
+        hinweise.push(match z_fehlt {
+            1 => "1 Punkt auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleibt außen vor.".into(),
+            n => format!("{n} Punkte auf Z = 0 zwischen Punkten mit Höhe, ohne Höhenattribut, bleiben außen vor."),
         });
     }
     nummern(&mut punkte, &nr_fehlt, &c.texte, faktor);
@@ -1550,5 +1644,79 @@ mod tests {
         assert_eq!(ebenenart("GEB_UMRING"), Ebenenart::Gebaeude);
         assert_eq!(ebenenart("PKT_GR"), Ebenenart::Gelaende);
         assert!(nummernebene("PUNKTNUMMER") && nummernebene("PNR") && !nummernebene("HOEHE"));
+    }
+}
+
+#[cfg(test)]
+mod ocs_und_z_null {
+    use super::*;
+
+    fn lies(s: &str) -> Aufmass {
+        let s = format!("0\nSECTION\n2\nENTITIES\n{s}0\nENDSEC\n0\nEOF\n");
+        lesen(s.as_bytes(), &Vorgaben::default()).unwrap()
+    }
+    fn pt(e: f64, n: f64, z: f64) -> String {
+        format!("0\nPOINT\n8\nPKT\n10\n{e}\n20\n{n}\n30\n{z}\n")
+    }
+    fn umgebung() -> String {
+        [
+            (0.0, 0.0, 24.1),
+            (30.0, 0.0, 24.2),
+            (0.0, 30.0, 24.3),
+            (30.0, 30.0, 24.4),
+        ]
+        .iter()
+        .map(|(x, y, z)| pt(467100.0 + x, 5878700.0 + y, *z))
+        .collect()
+    }
+
+    /// Geometrie-Befund #150: gespiegelter Block (Extrusion 0,0,−1): Einfügepunkt steht in OCS.
+    #[test]
+    fn sonde_insert_extrusion_minus_z() {
+        let s = umgebung()
+            + "0\nINSERT\n8\nPKT\n2\nHP\n10\n-467110.0\n20\n5878710.0\n30\n-24.25\n210\n0.0\n220\n0.0\n230\n-1.0\n";
+        let a = lies(&s);
+        let p = a.punkte.last().unwrap();
+        assert!(
+            (p.e - 467110.0).abs() < 1e-6 && (p.h - 24.25).abs() < 1e-6,
+            "e={} h={}",
+            p.e,
+            p.h
+        );
+    }
+
+    /// Höhenlinie als LWPOLYLINE mit Extrusion 0,0,−1: Erhebung in OCS.
+    #[test]
+    fn sonde_hoehenlinie_extrusion_minus_z() {
+        let s = umgebung()
+            + "0\nLWPOLYLINE\n8\nHL\n90\n2\n38\n-24.0\n10\n-467105.0\n20\n5878705.0\n10\n-467106.0\n20\n5878705.0\n210\n0.0\n220\n0.0\n230\n-1.0\n";
+        let a = lies(&s);
+        let p = a.punkte.last().unwrap();
+
+        assert!(
+            (p.e - 467106.0).abs() < 1e-6 && (p.h - 24.0).abs() < 1e-6,
+            "e={} h={}",
+            p.e,
+            p.h
+        );
+    }
+
+    /// 3D-Datei, ein Block auf Z = 0 mit Höhenattribut.
+    #[test]
+    fn sonde_gemischt_z_und_attribut() {
+        let s = umgebung()
+            + "0\nINSERT\n8\nPKT\n66\n1\n2\nHP\n10\n467110.0\n20\n5878710.0\n30\n0.0\n0\nATTRIB\n2\nHOEHE\n1\n24.35\n0\nSEQEND\n";
+        let a = lies(&s);
+        let p = a.punkte.last().unwrap();
+        assert!((p.h - 24.35).abs() < 1e-6, "h={}", p.h);
+    }
+
+    /// 3D-Datei, ein POINT ohne Höhe (Z = 0) zwischen Punkten um 24 m.
+    #[test]
+    fn sonde_gemischt_z_null_ohne_attribut() {
+        let s = umgebung() + &pt(467110.0, 5878710.0, 0.0);
+        let a = lies(&s);
+        let n0 = a.punkte.iter().filter(|p| p.h == 0.0).count();
+        assert_eq!(n0, 0);
     }
 }
