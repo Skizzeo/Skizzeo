@@ -673,8 +673,19 @@ mod tests {
         assert_eq!(wert(&s, "Breite").as_deref(), Some("0,885 m"));
         assert!(wert(&s, "Höhe (Rohbau)").is_some_and(|h| h.ends_with(" m")));
         assert_eq!(wert(&s, "Brüstung (Rohbau)"), None, "Tür ab Rohdecke");
-        let vorher = wert(&s, "Anschlag").unwrap();
-        assert!(vorher.starts_with("DIN links, öffnet in Raum"), "{vorher}");
+        // Der Raum steht als Detailzeile unter dem Anschlag (Einstellungen #132 B1)
+        let anschlag = |s: &Scene| {
+            let v = selection::props(s, id).unwrap().values;
+            let i = v.iter().position(|v| v.0 == "Anschlag").unwrap();
+            (v[i].1.clone(), v.get(i + 1).cloned())
+        };
+        let (din, vorher) = anschlag(&s);
+        assert_eq!(din, "DIN links");
+        let vorher = vorher.unwrap();
+        assert!(
+            vorher.0.is_empty() && vorher.1.starts_with("öffnet in Raum"),
+            "{vorher:?}"
+        );
         let p = selection::props(&s, id).unwrap();
         assert_eq!(p.set_label, "Wand");
         assert!(p.layer_set.starts_with("IW-"), "{}", p.layer_set);
@@ -697,8 +708,9 @@ mod tests {
             repeat: false,
         };
         assert!(e.handle(&taste, &mut s, &cam, W, H, 1.0, true).changed);
-        let nachher = wert(&s, "Anschlag").unwrap();
-        assert!(nachher.contains(", öffnet in Raum"), "{nachher}");
+        let (_, nachher) = anschlag(&s);
+        let nachher = nachher.unwrap();
+        assert!(nachher.1.starts_with("öffnet in Raum"), "{nachher:?}");
         assert_ne!(nachher, vorher, "anderer Raum");
         // Löschen nimmt sie aus der Wand, auch im Kontextmenü
         let menu = crate::delete::ContextMenu::new(
@@ -719,6 +731,89 @@ mod tests {
         assert_ne!(wahl(&mut s, vec3(5000.0, 3000.0, 0.0)), Some(id));
         assert!(s.undo());
         assert_eq!(wahl(&mut s, vec3(5000.0, 3000.0, 0.0)), Some(id));
+    }
+
+    /// Ist-Bilder G7c (Einstellungen #132 B1): Paneel einer Tür mit kurzem,
+    /// mittlerem und langem Raumnamen bei 100 % und 150 %, links die alte
+    /// Wertzeile „DIN links, öffnet in …“, rechts Anschlag und Raum als
+    /// Detailzeile. Nur auf Wunsch:
+    /// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbilder_g7c -- --ignored`
+    #[test]
+    #[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+    fn istbilder_g7c() {
+        use crate::selection;
+        use crate::ui::{Panel, Ui};
+        use sk_paint::Canvas;
+        use sk_ui::theme::Theme;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let lade = |n: &str| {
+            std::fs::read(lib.join(n))
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+        };
+        let fonts = || sk_ui::widgets::Fonts {
+            regular: lade("LiberationSans-Regular.ttf"),
+            bold: lade("LiberationSans-Bold.ttf"),
+            italic: None,
+        };
+        if fonts().regular.is_none() {
+            return;
+        }
+        std::fs::create_dir_all(&ziel).unwrap();
+        let t = Theme::dark();
+        let mut s = Scene::with_model(Model::with_seed(412));
+        let mut tuer = None;
+        assert!(s.edit_model("Haus", |m| {
+            tuer = Some(haus_in(m));
+            true
+        }));
+        let id = tuer.unwrap();
+        let raeume = s.model().spaces(s.active_storey());
+        let namen = [
+            "Küche",
+            "Hauswirtschaftsraum",
+            "Hauswirtschafts- und Abstellraum mit Waschmaschine",
+        ];
+        for sk in [1.0f32, 1.5] {
+            let (w, h) = ((1440.0 * sk) as u32, (900.0 * sk) as u32);
+            let mut bilder: Vec<Canvas> = Vec::new();
+            for name in namen {
+                assert!(s.edit_model("Name", |m| raeume
+                    .iter()
+                    .all(|&r| m.set_space(r, |sp| sp.name = name.into()))));
+                let neu = selection::props(&s, id).unwrap();
+                let i = neu.values.iter().position(|v| v.0 == "Anschlag").unwrap();
+                assert_eq!(neu.values[i + 1].1, format!("öffnet in {name}"));
+                // vorher: eine Wertzeile
+                let mut alt = neu.clone();
+                let raum = alt.values.remove(i + 1).1;
+                alt.values[i].1 = format!("{}, {raum}", alt.values[i].1);
+                for p in [alt, neu] {
+                    let mut ui = Ui::new(sk, &t);
+                    ui.fit(sk, w, h);
+                    ui.fonts = fonts();
+                    ui.set_props(Some(p));
+                    let (c, ..) = ui.paint(&t, Panel::Props, w, (32.0 * sk) as u32);
+                    bilder.push(c.clone());
+                }
+            }
+            // je Name eine Zeile: vorher, nachher
+            let rand = (20.0 * sk) as usize;
+            let bw = bilder.iter().map(|c| c.width).max().unwrap();
+            let bh = bilder.iter().map(|c| c.height).max().unwrap();
+            let (breite, hoehe) = (2 * bw + 3 * rand, 3 * bh + 4 * rand);
+            let mut m = Canvas::new(breite, hoehe);
+            m.fill_rect(0.0, 0.0, breite as f32, hoehe as f32, t.ui.bg);
+            for (k, c) in bilder.iter().enumerate() {
+                let (x, y) = (rand + (k % 2) * (bw + rand), rand + (k / 2) * (bh + rand));
+                m.blit(c, x as i32, y as i32);
+            }
+            let datei = format!("ist-g7c-anschlag-{}.png", (sk * 100.0) as u32);
+            std::fs::write(ziel.join(datei), m.to_png()).unwrap();
+        }
     }
 
     /// Sturz im Grundriss (G7b): eigene Stelle „Über der Schnittebene“ der
