@@ -504,3 +504,86 @@ fn ungueltiges_auflager_aus_datei() {
     assert_eq!(m2.warnings(wall), ["Deckenauflager des Typs ungültig"]);
     assert!(szo::write(&m2).contains("bearing=400"), "Wert bleibt");
 }
+
+/// Offene Außenwand mit kurzem Schenkel, Bezug Achse.
+fn haken(m: &mut Model, l: f64, set: LayerSetId) -> RunId {
+    let eg = m.defaults().storey;
+    m.add_wall_run(
+        &[
+            vec3(0.0, 0.0, 0.0),
+            vec3(6000.0, 0.0, 0.0),
+            vec3(6000.0, l, 0.0),
+        ],
+        false,
+        RefSide::Center,
+        eg,
+        set,
+        Category::ExteriorWall,
+    )
+    .unwrap()
+}
+
+/// 20 cm Dämmung + 24 cm Porenbeton (44 cm).
+fn aw_44(m: &mut Model) -> LayerSetId {
+    let mut t = aw_36(m);
+    t.layers[0].thickness = 200.0;
+    t.guid = m.new_guid();
+    t.code = "AW-44".into();
+    m.add_layer_set(t).unwrap()
+}
+
+/// Review zu #163 (H-160d): Kippte mit dem dickeren Typ die Gehrung am
+/// kurzen Schenkel, lehnt das Setzen der Linie ab. Dann bleibt auch der
+/// alte Typ, und der Wechsel meldet `false`, statt den Typ ohne die
+/// verschobene Linie zu setzen.
+#[test]
+fn typwechsel_abgelehnt_wenn_gehrung_kippt() {
+    for l in [-220.0, -250.0, -280.0] {
+        let mut m = Model::with_seed(5);
+        let alt = m.defaults().exterior_wall;
+        let run = haken(&mut m, l, alt);
+        assert!(m.check().is_empty(), "{l}: {:?}", m.check());
+        let neu = aw_44(&mut m);
+        let vorher = m.run(run).unwrap().points.clone();
+        m.begin("Typ");
+        assert!(!m.set_run_type(run, neu), "{l}");
+        m.commit();
+        let r = m.run(run).unwrap();
+        assert_eq!(r.points, vorher, "{l}");
+        for w in &r.segments {
+            assert_eq!(m.element(*w).unwrap().layer_set, Some(alt), "{l}");
+        }
+        assert!(m.check().is_empty(), "{l}: {:?}", m.check());
+    }
+    // Mit langem Schenkel geht der Wechsel
+    let mut m = Model::with_seed(5);
+    let alt = m.defaults().exterior_wall;
+    let run = haken(&mut m, -2000.0, alt);
+    let neu = aw_44(&mut m);
+    assert!(m.set_run_type(run, neu));
+    assert!(m.check().is_empty(), "{:?}", m.check());
+}
+
+/// Review zu #163: Ein Zug, der schon kippt (etwa aus einer Datei),
+/// bleibt beweglich; die Ablehnung gilt nur neuem Kippen.
+#[test]
+fn gekippter_zug_bleibt_beweglich() {
+    let mut m = Model::with_seed(5);
+    let neu = aw_44(&mut m);
+    let run = haken(&mut m, -150.0, neu);
+    assert!(!m.chain(run).unwrap().koerper_kippt().is_empty());
+    let weiter: Vec<_> = m
+        .run(run)
+        .unwrap()
+        .points
+        .iter()
+        .map(|p| *p + vec3(100.0, 0.0, 0.0))
+        .collect();
+    assert!(m.set_run_points(run, &weiter).is_some());
+    // Der lange Schenkel behebt es
+    let mut lang = weiter.clone();
+    lang[2].y = -2000.0;
+    assert!(m.set_run_points(run, &lang).is_some());
+    assert!(m.chain(run).unwrap().koerper_kippt().is_empty());
+    assert!(m.check().is_empty(), "{:?}", m.check());
+}

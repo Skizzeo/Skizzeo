@@ -27,7 +27,8 @@ pub enum FugeError {
     Types,
     /// Der Stapel würde ungültig (Wandrest zu kurz, Umriss kreuzt sich).
     Invalid,
-    /// Die Wand ist die Stufe eines Teilrücksprungs (W-12, Review #69).
+    /// Die Wand ist die Stufe eines Teilrücksprungs oder steht auf einer
+    /// (W-12, Review #69, H-160d).
     Step,
 }
 
@@ -46,7 +47,7 @@ impl FugeError {
                 "Das geht hier nicht: Ein Wandstück würde zu kurz oder der Grundriss ungültig."
             }
             FugeError::Step => {
-                "Eine Stufe lässt sich nicht teilen; zieh sie, dann wird der Rücksprung breiter oder schmaler."
+                "Eine Stufe lässt sich nicht teilen, auch keine Wand, die auf ihr steht; zieh die Stufe, dann wird der Rücksprung breiter oder schmaler."
             }
         }
     }
@@ -900,6 +901,26 @@ mod tests {
         pruefen(&mut m);
         // Weit genug zurück kippt nichts
         assert!(m.set_offset(rechts, -1500.0).is_some());
+        pruefen(&mut m);
+    }
+
+    /// Review zu #163: Die Prüfung aufs Kippen gilt auch für die Züge
+    /// darüber. Rückt das EG-Stück neben einem schmalen Stück um 200 mm
+    /// ein, ginge die gekoppelte OG-Wand mit, und die Zunge im OG kippte;
+    /// das EG selbst kippt dabei nicht.
+    #[test]
+    fn kippen_im_og_haelt_das_eg_an() {
+        let (mut m, eg, og) = rechteck();
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 3200.0]).unwrap();
+        let mut ohne = m.clone();
+        assert!(ziehen(&mut ohne, eg, 3, -200.0));
+        pruefen(&mut ohne);
+        let links = m.wall_at(og, 1).unwrap();
+        assert!(m.set_offset(links, -1500.0).is_some());
+        let vorher = m.run(eg).unwrap().points.clone();
+        assert!(!ziehen(&mut m, eg, 3, -200.0));
+        assert_eq!(m.run(eg).unwrap().points, vorher);
         pruefen(&mut m);
     }
 
