@@ -103,13 +103,19 @@ struct Job {
 /// sie hochlädt ([`sk_render::helper_ecken`]).
 pub(crate) type Ecken = HashMap<u64, Vec<[f32; 23]>>;
 
-/// Was der Renderer von der Unterlage hochladen soll
-/// ([`Platte::unterlage_im_bild`], [`sk_render::Renderer::set_unterlage`]):
-/// alle Schlüssel und die Ecken der neuen Kacheln.
-#[derive(Debug)]
+/// Höchstens so viel lädt ein Bild von der Unterlage hoch (Bytes, mindestens
+/// eine Kachel); der Rest folgt in den nächsten Bildern (Review #139 N3:
+/// alle Kacheln in einem Bild 22 ms unter llvmpipe).
+pub(crate) const HOCHLADEN_JE_BILD: usize = 4 << 20;
+
+/// Was der Renderer in diesem Bild mit der Unterlage tun soll
+/// ([`Platte::unterlage_im_bild`]): Kacheln in den Vorrat laden
+/// ([`sk_render::Renderer::unterlage_laden`]) und, wenn alle da sind, die
+/// gezeigten Kacheln tauschen ([`sk_render::Renderer::set_unterlage`]).
+#[derive(Debug, Default)]
 pub(crate) struct Hochladen {
-    pub(crate) keys: Vec<u64>,
-    pub(crate) ecken: Ecken,
+    pub(crate) laden: Vec<(u64, Vec<[f32; 23]>)>,
+    pub(crate) keys: Option<Vec<u64>>,
 }
 
 /// Gelände-Rechtecke (x0, y0, x1, y1) mit Höhe, wie der Renderer sie nimmt.
@@ -172,11 +178,16 @@ pub(crate) struct Platte {
     /// Der Lageplan kam nach dem letzten Nachzug: das Gelände zieht mit
     /// der Unterlage nach, auch beim selben Modellstand.
     mit_plan: bool,
-    /// Schlüssel der Kacheln, die der Renderer hat, und die Ecken neuer
-    /// Kacheln aus einem eigenen Faden, bis sie fertig sind (Review #139
-    /// N2).
+    /// Schlüssel der Kacheln, die der Renderer zeigt, und die im Vorrat;
+    /// die Ecken neuer Kacheln aus einem eigenen Faden, bis sie fertig sind
+    /// (Review #139 N2), dann je Bild ein Teil davon (N3).
     im_renderer: Vec<u64>,
+    im_vorrat: std::collections::HashSet<u64>,
     ecken_job: Option<mpsc::Receiver<Ecken>>,
+    wartend: Option<(Vec<u64>, Ecken)>,
+    /// Der Renderer hat, was `im_renderer` sagt; eine neue Platte (Neu,
+    /// Öffnen) weiß es nicht und leert ihn im ersten Bild (Review #139 N3).
+    renderer_bekannt: bool,
 }
 
 impl Platte {
@@ -369,40 +380,60 @@ impl Platte {
             Some(g) => unterlage_keys(g, stil_key(t, scale)),
             None => Vec::new(),
         };
-        if keys == self.im_renderer {
+        if keys == self.im_renderer && self.renderer_bekannt {
             self.ecken_job = None;
-            return None;
+            self.wartend = None;
+            // übrige Kacheln im Vorrat fallen weg
+            return (!self.im_vorrat.is_empty()).then(|| self.tauschen(keys));
         }
-        let da: std::collections::HashSet<u64> = self.im_renderer.iter().copied().collect();
-        if let Some(rx) = &self.ecken_job {
-            match rx.try_recv() {
-                Ok(ecken) => {
-                    self.ecken_job = None;
-                    let keys: Vec<u64> = keys
-                        .into_iter()
-                        .filter(|k| da.contains(k) || ecken.contains_key(k))
-                        .collect();
-                    self.im_renderer.clone_from(&keys);
-                    return Some(Hochladen { keys, ecken });
+        if self.wartend.as_ref().is_some_and(|w| w.0 != keys) {
+            self.wartend = None;
+        }
+        if self.wartend.is_none() {
+            if let Some(rx) = &self.ecken_job {
+                match rx.try_recv() {
+                    Ok(ecken) => {
+                        self.ecken_job = None;
+                        self.wartend = Some((keys.clone(), ecken));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => return None,
+                    Err(mpsc::TryRecvError::Disconnected) => self.ecken_job = None,
                 }
-                Err(mpsc::TryRecvError::Empty) => return None,
-                Err(mpsc::TryRecvError::Disconnected) => self.ecken_job = None,
             }
+        }
+        if let Some((ziel, mut rest)) = self.wartend.take() {
+            // je Bild höchstens HOCHLADEN_JE_BILD, mindestens eine Kachel
+            let mut folge: Vec<u64> = rest.keys().copied().collect();
+            folge.sort_unstable();
+            let (mut laden, mut bytes) = (Vec::new(), 0);
+            for k in folge {
+                if bytes >= HOCHLADEN_JE_BILD {
+                    break;
+                }
+                if let Some(e) = rest.remove(&k) {
+                    bytes += std::mem::size_of_val(&e[..]).max(1);
+                    laden.push((k, e));
+                }
+            }
+            self.im_vorrat.extend(laden.iter().map(|l| l.0));
+            if !rest.is_empty() {
+                self.wartend = Some((ziel, rest));
+                return Some(Hochladen { laden, keys: None });
+            }
+            let mut h = self.tauschen(keys);
+            h.laden = laden;
+            return Some(h);
         }
         let fehlt: Vec<(usize, u64)> = keys
             .iter()
             .enumerate()
-            .filter(|(_, k)| !da.contains(k))
+            .filter(|(_, k)| !self.im_renderer.contains(k) && !self.im_vorrat.contains(k))
             .map(|(i, k)| (i, *k))
             .collect();
         let g = self.gelaende.clone().filter(|_| !fehlt.is_empty());
         let Some(g) = g else {
-            // nur weniger Kacheln: nichts zu bauen
-            self.im_renderer.clone_from(&keys);
-            return Some(Hochladen {
-                keys,
-                ecken: Ecken::new(),
-            });
+            // alles da: nur tauschen (oder leeren)
+            return Some(self.tauschen(keys));
         };
         let stil = gelaende_netz::unterlage_stil(t, scale);
         let (tx, rx) = mpsc::channel();
@@ -419,6 +450,22 @@ impl Platte {
         });
         self.ecken_job = Some(rx);
         None
+    }
+
+    /// Die Kacheln `keys` zeigen, aus den gezeigten und dem Vorrat; was
+    /// fehlt, fällt weg, der übrige Vorrat auch.
+    fn tauschen(&mut self, keys: Vec<u64>) -> Hochladen {
+        let keys: Vec<u64> = keys
+            .into_iter()
+            .filter(|k| self.im_renderer.contains(k) || self.im_vorrat.contains(k))
+            .collect();
+        self.im_renderer.clone_from(&keys);
+        self.im_vorrat.clear();
+        self.renderer_bekannt = true;
+        Hochladen {
+            laden: Vec::new(),
+            keys: Some(keys),
+        }
     }
 
     /// Ein Nachzug oder ein Netz zur Sicht rechnet (die Hauptschleife fragt
@@ -938,7 +985,12 @@ impl App {
         self.renderer.set_unterlage_sichtbar(zeigen);
         let (m, t) = (self.scene.model(), self.scene.table());
         if let Some(h) = self.platte.unterlage_im_bild(m, zeigen, t, scale) {
-            self.renderer.set_unterlage(&h.keys, h.ecken);
+            for (k, e) in &h.laden {
+                self.renderer.unterlage_laden(*k, e);
+            }
+            if let Some(keys) = &h.keys {
+                self.renderer.set_unterlage(keys);
+            }
         }
     }
 
@@ -1068,6 +1120,8 @@ impl App {
     pub(crate) fn baum_neu(&mut self) {
         self.tree.reset();
         self.platte = Platte::default();
+        // die Kacheln des alten Projekts (Review #139 N3)
+        self.renderer.set_unterlage(&[]);
         self.picking.plate = false;
     }
 

@@ -273,7 +273,7 @@ struct Lageplan {
     /// Nach einem Schritt im UI-Faden: den Nachzug beginnen.
     nachzug: f64,
     /// Nach einem Wandschritt über dem Plan im UI-Faden, bis die neuen
-    /// Kacheln hochgeladen sind: höchste Zeit je Bild, und wie viel
+    /// Kacheln hochgeladen sind: höchste Zeit je Bild, und wie viel je Bild
     /// hochgeladen wird (MB); die Ecken baut ein eigener Faden.
     schritt: f64,
     hoch: f64,
@@ -281,9 +281,11 @@ struct Lageplan {
     /// lädt nichts hoch (Review #139 N2).
     rueckweg: f64,
     /// Gelände verschieben: höchste Zeit je Bild im UI-Faden, bis alle
-    /// Kacheln neu hochgeladen sind (MB).
+    /// Kacheln neu hochgeladen sind, und wie viel je Bild und insgesamt
+    /// hochgeladen wird (MB; Review #139 N3: über mehrere Bilder verteilt).
     lage: f64,
     lage_hoch: f64,
+    lage_gesamt: f64,
     /// Kacheln je Plan und höchstens neu je Wandschritt.
     kacheln: usize,
     neu: usize,
@@ -300,29 +302,33 @@ fn kacheln_bauen(g: &Gelaende, ix: &[usize], t: &DrawTable) -> f64 {
     ms(t0)
 }
 
-/// Bilder im EG-Grundriss, bis der Renderer alle Kacheln hat, wie die App
-/// sie zeigt (`App::platte_unterlage`): höchste Zeit je Bild im
-/// UI-Faden (ms), hochgeladen (MB) und Zahl neuer Kacheln.
-fn bis_hochgeladen(pl: &mut Platte, m: &Model, t: &DrawTable) -> (f64, f64, usize) {
-    let (mut zeit, mut bytes, mut neu) = (0.0f64, 0, 0);
+/// Bilder im EG-Grundriss, bis der Renderer alle Kacheln zeigt, wie die
+/// App sie zeigt (`App::platte_unterlage`): höchste Zeit je Bild im
+/// UI-Faden (ms), höchstens je Bild und insgesamt hochgeladen (MB), Zahl
+/// neuer Kacheln.
+fn bis_hochgeladen(pl: &mut Platte, m: &Model, t: &DrawTable) -> (f64, f64, f64, usize) {
+    let (mut zeit, mut je_bild, mut gesamt, mut neu) = (0.0f64, 0.0f64, 0.0, 0);
     loop {
         let t0 = Instant::now();
         let h = pl.unterlage_im_bild(m, true, t, 1.0);
         zeit = zeit.max(ms(t0));
         match h {
             Some(h) => {
-                neu += h.ecken.len();
-                bytes += h
-                    .ecken
-                    .values()
-                    .map(|e| std::mem::size_of_val(&e[..]))
-                    .sum::<usize>();
+                let b = h
+                    .laden
+                    .iter()
+                    .map(|(_, e)| std::mem::size_of_val(&e[..]))
+                    .sum::<usize>() as f64
+                    / 1e6;
+                je_bild = je_bild.max(b);
+                gesamt += b;
+                neu += h.laden.len();
             }
-            None if pl.ecken_job.is_none() => break,
+            None if pl.ecken_job.is_none() && pl.wartend.is_none() => break,
             None => std::thread::sleep(Duration::from_millis(1)),
         }
     }
-    (zeit, bytes as f64 / 1e6, neu)
+    (zeit, je_bild, gesamt, neu)
 }
 
 /// Lageplan mit `k` Strichen; `dicht`: alle zusätzlichen Striche in 20 ×
@@ -424,7 +430,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     let m = s.model();
     let t = DrawTable::resolve(m, &Theme::dark());
     pl.im_bild(m);
-    let n0 = bis_hochgeladen(&mut pl, m, &t).2;
+    let n0 = bis_hochgeladen(&mut pl, m, &t).3;
     let keys = pl.im_renderer.clone();
     assert_eq!(n0, keys.len());
     let g = pl.gelaende.clone().unwrap();
@@ -476,7 +482,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(pl.unterlage.abbild(m).unwrap().gemerkt());
-        let (z, mb, n) = bis_hochgeladen(&mut pl, m, &t);
+        let (z, mb, _, n) = bis_hochgeladen(&mut pl, m, &t);
         let jetzt = pl.im_renderer.clone();
         let g = pl.gelaende.clone().unwrap();
         let ix: Vec<usize> = (0..jetzt.len())
@@ -504,7 +510,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
         pl.nachziehen(m, sicht);
         std::thread::sleep(Duration::from_millis(1));
     }
-    let (lage, lage_hoch, n) = bis_hochgeladen(&mut pl, m, &t);
+    let (lage, lage_hoch, lage_gesamt, n) = bis_hochgeladen(&mut pl, m, &t);
     assert_eq!(n, pl.im_renderer.len(), "alle Kacheln neu");
     assert!(pl.im_renderer.iter().all(|k| !vorher.contains(k)));
     if dicht {
@@ -519,9 +525,31 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
         rueckweg,
         lage,
         lage_hoch,
+        lage_gesamt,
         kacheln: keys.len(),
         neu,
     }
+}
+
+/// Eine neue Platte (Neu, Öffnen) leert im ersten Bild die Kacheln des
+/// alten Projekts, auch ohne eigenen Lageplan (Review #139 N3).
+#[test]
+fn neues_projekt_leert_die_unterlage() {
+    let mut m = viele(4);
+    m.begin("ohne Aufmaß");
+    assert!(m.set_terrain(None));
+    m.commit();
+    let t = DrawTable::resolve(&m, &Theme::dark());
+    let mut pl = Platte::default();
+    pl.im_bild(&m);
+    let h = pl.unterlage_im_bild(&m, true, &t, 1.0).expect("leeren");
+    assert!(h.laden.is_empty());
+    assert_eq!(h.keys, Some(Vec::new()));
+    assert!(pl.unterlage_im_bild(&m, true, &t, 1.0).is_none());
+    // ausgeblendet erst im nächsten EG-Grundriss
+    let mut pl = Platte::default();
+    assert!(pl.unterlage_im_bild(&m, false, &t, 1.0).is_none());
+    assert!(pl.unterlage_im_bild(&m, true, &t, 1.0).is_some());
 }
 
 /// Lageplan unter dem Gelände (Review #139): Je Bild und je Mausbewegung
@@ -570,7 +598,13 @@ fn lageplan_im_budget() {
         // (Review #139 N2: vorher 28 ms und 57 MB je Wechsel)
         assert!(x.rueckweg < 1.0 * f, "{x:?}");
         assert!(x.lage < 8.0 * f, "{x:?}");
-        assert!(x.lage_hoch >= x.hoch, "verschoben sind alle Kacheln neu: {x:?}");
+        assert!(
+            x.lage_gesamt >= x.hoch,
+            "verschoben sind alle Kacheln neu: {x:?}"
+        );
+        // je Bild höchstens 4 MB und eine Kachel (höchstens 1.024 Striche)
+        let kachel = (1024 * 6 * 23 * 4) as f64 / 1e6;
+        assert!(x.lage_hoch <= 4.2 + kachel, "{x:?}");
     }
     assert!(
         gross.rueckweg < 2.0 * klein.rueckweg + 0.2 * f,

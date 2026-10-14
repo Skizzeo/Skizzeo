@@ -470,6 +470,9 @@ pub struct Renderer {
     /// Linien unter den Hilfslinien in Teilen mit ihrem Schlüssel
     /// ([`Renderer::set_unterlage`]), hochgeladen nur bei neuem Schlüssel.
     unterlage: Vec<(u64, GpuBuffer)>,
+    /// Kacheln, hochgeladen, aber noch nicht gezeigt
+    /// ([`Renderer::unterlage_laden`]).
+    unterlage_vorrat: std::collections::HashMap<u64, GpuBuffer>,
     /// Die Unterlage wird gezeichnet ([`Renderer::set_unterlage_sichtbar`]);
     /// ausgeblendet bleiben ihre Puffer stehen.
     unterlage_sichtbar: bool,
@@ -1764,6 +1767,7 @@ impl Renderer {
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
                 unterlage: Vec::new(),
+                unterlage_vorrat: std::collections::HashMap::new(),
                 unterlage_sichtbar: false,
                 ink_teile: Vec::new(),
                 ink_frei: Vec::new(),
@@ -2103,44 +2107,44 @@ impl Renderer {
     }
 
     /// Linien, die unter den Hilfslinien liegen und selten wechseln (etwa
-    /// der Lageplan unter dem Gelände, Review #139 B1, N1 und N2), in Teilen
-    /// mit je einem Schlüssel `keys`: gezeichnet wie Hilfslinien. Teile mit
-    /// einem Schlüssel, der schon da ist, bleiben; neue kommen fertig als
-    /// Ecken ([`helper_ecken`], gebaut außerhalb des UI-Fadens) aus `ecken`
-    /// und werden nur hochgeladen. Ein Schlüssel ohne Puffer und ohne Ecken
-    /// fällt weg, ebenso Teile, die fehlen.
-    pub fn set_unterlage(
-        &mut self,
-        keys: &[u64],
-        mut ecken: std::collections::HashMap<u64, Vec<[f32; 23]>>,
-    ) {
+    /// der Lageplan unter dem Gelände, Review #139 B1, N1 bis N3), in Teilen
+    /// mit je einem Schlüssel: gezeichnet wie Hilfslinien. Ein Teil kommt
+    /// fertig als Ecken ([`helper_ecken`], gebaut außerhalb des UI-Fadens)
+    /// in den Vorrat ([`Renderer::unterlage_laden`]), gern über mehrere
+    /// Bilder verteilt; `set_unterlage` zeigt dann die Teile `keys` aus den
+    /// gezeigten und dem Vorrat. Was fehlt, fällt weg, ebenso alle übrigen
+    /// Puffer; `&[]` leert alles.
+    pub fn set_unterlage(&mut self, keys: &[u64]) {
         let mut alt: std::collections::HashMap<u64, GpuBuffer> =
             std::mem::take(&mut self.unterlage).into_iter().collect();
         for key in keys {
-            if let Some(b) = alt.remove(key) {
+            if let Some(b) = alt
+                .remove(key)
+                .or_else(|| self.unterlage_vorrat.remove(key))
+            {
                 self.unterlage.push((*key, b));
-                continue;
             }
-            let Some(v) = ecken.remove(key) else {
-                continue;
-            };
-            let mut b = alt
-                .keys()
-                .next()
-                .copied()
-                .and_then(|k| alt.remove(&k))
-                .unwrap_or_default();
-            unsafe {
-                fill(&self.gl, &mut b, &v, &HELPER_ATTRS);
-            }
-            self.unterlage.push((*key, b));
         }
-        for b in alt.into_values() {
+        let weg: Vec<GpuBuffer> = alt
+            .into_values()
+            .chain(self.unterlage_vorrat.drain().map(|(_, b)| b))
+            .collect();
+        for b in weg {
             unsafe {
                 self.gl.glDeleteBuffers(1, &b.buf);
                 self.gl.glDeleteVertexArrays(1, &b.vao);
             }
         }
+    }
+
+    /// Einen Teil der Unterlage hochladen, ohne ihn schon zu zeigen
+    /// ([`Renderer::set_unterlage`]).
+    pub fn unterlage_laden(&mut self, key: u64, ecken: &[[f32; 23]]) {
+        let mut b = self.unterlage_vorrat.remove(&key).unwrap_or_default();
+        unsafe {
+            fill(&self.gl, &mut b, ecken, &HELPER_ATTRS);
+        }
+        self.unterlage_vorrat.insert(key, b);
     }
 
     /// Die Unterlage zeigen oder nicht; ihre Puffer bleiben dabei stehen
