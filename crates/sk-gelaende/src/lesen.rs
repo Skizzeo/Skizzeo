@@ -657,6 +657,7 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
     let mut ohne = Vec::new();
     let mut voll = Vec::new();
     let datenzeilen: std::collections::HashSet<usize> = daten.iter().map(|d| d.0).collect();
+    let mut zu_viele = false;
     for (i, l) in inhalt_zeilen().filter(|(i, _)| *i >= erste) {
         if !datenzeilen.contains(i) {
             if kopf.as_ref().is_none_or(|k| k.0 != *i) {
@@ -687,6 +688,11 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         if nr.is_empty() {
             nr = (punkte.len() + 1).to_string();
         }
+        // wie in der DXF (Review #152)
+        if punkte.len() >= dxf::MAX_PUNKTE {
+            zu_viele = true;
+            break;
+        }
         punkte.push(Punkt {
             nr,
             e: (e - zone_m) * faktor,
@@ -711,6 +717,12 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
             "Zeile",
             "Zeilen",
             &voll,
+        ));
+    }
+    if zu_viele {
+        hinweise.push(format!(
+            "Mehr als {} Punkte; Skizzeo liest nur die ersten.",
+            dxf::MAX_PUNKTE
         ));
     }
     if ellipsoid {

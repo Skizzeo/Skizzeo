@@ -387,7 +387,7 @@ mod gelaende_aufmass;
 mod gelaende_aufmass_budget;
 pub use gelaende_aufmass::{
     Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
-    TerrainMesh, TerrainPoint, Trim,
+    TerrainLine, TerrainMesh, TerrainPoint, Trim,
 };
 
 #[path = "gelaende_lageplan.rs"]

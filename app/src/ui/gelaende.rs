@@ -179,8 +179,8 @@ impl Ui {
             rows.extend([
                 Row::Hint("Lageplan: PDF, Maßstab"),
                 Row::Hint("und Flurstück erkannt."),
-                Row::Hint("Höhen: Punktliste des"),
-                Row::Hint("Vermessers einlesen."),
+                Row::Hint("Höhen: Punktliste oder"),
+                Row::Hint("DXF des Vermessers."),
             ]);
         }
         if !l.meldung.is_empty() || l.fehler.is_some() {

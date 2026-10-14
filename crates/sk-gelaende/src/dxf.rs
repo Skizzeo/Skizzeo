@@ -32,7 +32,8 @@ pub const MAX_KOORDINATE: f64 = 1e12;
 /// Höhenattribut eine fehlende Höhe (NHN: Schriftfeld, Rahmen,
 /// Nordpfeil). Bei örtlichen Höhen ist ±0,00 echt.
 const Z_NULL_FERN: f64 = 10.0;
-/// Höchstens so viele Punkte; mehr entstehen nur aus riesigen Höhenlinien.
+/// Höchstens so viele Punkte, in der DXF wie in der Punktliste; mehr
+/// entstehen nur aus riesigen Dateien.
 pub const MAX_PUNKTE: usize = 2_000_000;
 /// Höchstens so viele Punkte aus Höhenlinien (500 km Linie bei 2 m).
 pub const MAX_HOEHENLINIENPUNKTE: usize = 250_000;
