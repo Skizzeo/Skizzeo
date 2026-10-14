@@ -2220,8 +2220,11 @@ fn auto_rows(
     }
     // Geländeflächen (G3b) mit der Bilanz über alle Gründungen, in fester
     // Reihenfolge wie der Träger: nach Speichern und Öffnen verteilt sie
-    // sich gleich auf die Häuser (Review #173 B2)
-    gruende.sort_by_cached_key(|g| model.element(g.vorlage.element).map(rang));
+    // sich gleich auf die Häuser (Review #173 B2); sortiert nur mit
+    // Flächen (H-173n)
+    if !model.site_patches().is_empty() {
+        gruende.sort_by_cached_key(|g| model.element(g.vorlage.element).map(rang));
+    }
     crate::qto_earth::gelaende_mengen(model, &gruende, &boden, &mut out, hinweise);
     out
 }
@@ -2345,6 +2348,15 @@ impl Schedule {
         }
         out.formwork = formwork_rows(&out);
         out.hinweise = self.hinweise.clone();
+        // Erdarbeiten des Grundstücks stehen bei keinem Haus; bei gewähltem
+        // Haus sagt es ein Hinweis (VOB-Prüfung G3, E1)
+        if u.gebaeude.is_some()
+            && self.auto.iter().any(|a| {
+                a.building.is_none() && crate::qto_earth::GRUNDSTUECK_SCHLUESSEL.contains(&a.key)
+            })
+        {
+            out.hinweise.push(crate::qto_earth::GRUNDSTUECK.to_string());
+        }
         out.auto = self
             .auto
             .iter()
