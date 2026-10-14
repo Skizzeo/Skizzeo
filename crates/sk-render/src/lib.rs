@@ -467,6 +467,9 @@ pub struct Renderer {
     empty_vao: GLuint,
     meshes: Vec<GpuMesh>,
     helper_mesh: GpuBuffer,
+    /// Linien unter den Hilfslinien mit ihrem Schlüssel
+    /// ([`Renderer::set_unterlage`]), hochgeladen nur bei neuem Schlüssel.
+    unterlage: (Option<u64>, GpuBuffer),
     /// Tinte in Teilen mit ihrem Schlüssel ([`Renderer::set_ink_teile`]) und
     /// freie Puffer zum Wiederverwenden.
     ink_teile: Vec<(u64, GpuBuffer)>,
@@ -1757,6 +1760,7 @@ impl Renderer {
                 empty_vao: vao,
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
+                unterlage: (None, GpuBuffer::default()),
                 ink_teile: Vec::new(),
                 ink_frei: Vec::new(),
                 overlays: Vec::new(),
@@ -2088,45 +2092,25 @@ impl Renderer {
 
     /// Hilfslinien und Markierungen für das nächste Bild.
     pub fn set_helpers(&mut self, helpers: &[Helper]) {
-        let mut v: Vec<[f32; 23]> = Vec::with_capacity(helpers.len() * 6);
-        for h in helpers {
-            let [p0, p1] = h.pattern;
-            for c in CORNERS {
-                v.push([
-                    h.a[0],
-                    h.a[1],
-                    h.a[2],
-                    h.b[0],
-                    h.b[1],
-                    h.b[2],
-                    c[0],
-                    c[1],
-                    h.color[0],
-                    h.color[1],
-                    h.color[2],
-                    h.color[3],
-                    h.width,
-                    h.dash,
-                    h.occlude as u8 as f32 + 2.0 * h.round as u8 as f32,
-                    p0[0],
-                    p0[1],
-                    p0[2],
-                    p0[3],
-                    p1[0],
-                    p1[1],
-                    p1[2],
-                    p1[3],
-                ]);
-            }
-        }
+        let v = helper_ecken(helpers);
         unsafe {
-            fill(
-                &self.gl,
-                &mut self.helper_mesh,
-                &v,
-                &[(3, 0), (3, 12), (2, 24), (4, 32), (3, 48), (4, 60), (4, 76)],
-            );
+            fill(&self.gl, &mut self.helper_mesh, &v, &HELPER_ATTRS);
         }
+    }
+
+    /// Linien, die unter den Hilfslinien liegen und selten wechseln (etwa
+    /// der Lageplan unter dem Gelände, Review #139 B1): gezeichnet wie
+    /// Hilfslinien, aber hochgeladen nur, wenn sich `key` ändert; `linien`
+    /// rechnet nur dann. Jedes Bild zeichnet den Puffer, wie er steht.
+    pub fn set_unterlage(&mut self, key: u64, linien: impl FnOnce() -> Vec<Helper>) {
+        if self.unterlage.0 == Some(key) {
+            return;
+        }
+        let v = helper_ecken(&linien());
+        unsafe {
+            fill(&self.gl, &mut self.unterlage.1, &v, &HELPER_ATTRS);
+        }
+        self.unterlage.0 = Some(key);
     }
 
     /// Tinte (gefüllte Dreiecke in Modellkoordinaten) für das nächste Bild,
@@ -3031,7 +3015,8 @@ impl Renderer {
             // nach dem Boden, sonst tönt er den Geist über leerem Boden (3l);
             // ohne Hilfslinien braucht niemand die Tiefe
             let tinte = self.ink_teile.iter().any(|(_, b)| b.count > 0);
-            let marks = self.helper_mesh.count > 0 || tinte;
+            let unterlage = self.unterlage.1.count > 0;
+            let marks = self.helper_mesh.count > 0 || unterlage || tinte;
             if ghost.is_some_and(|g| g.1 > 0.0) && marks {
                 gl.glClear(DEPTH_BUFFER_BIT);
                 let p = self.faces.id;
@@ -3050,7 +3035,7 @@ impl Renderer {
 
             // Hilfslinien und Markierungen: erst die sichtbaren Teile, dann die
             // verdeckten Teile verdeckbarer Linien blass
-            if self.helper_mesh.count > 0 {
+            if self.helper_mesh.count > 0 || unterlage {
                 gl.glDepthMask(FALSE);
                 gl.glEnable(BLEND);
                 gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
@@ -3062,11 +3047,15 @@ impl Renderer {
                 gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
                 let q = view.pull;
                 gl.glUniform4f(loc(gl, p, c"u_pull"), q[0], q[1], q[2], q[3]);
-                gl.glBindVertexArray(self.helper_mesh.vao);
+                // die Unterlage zuerst, die Hilfslinien darüber
+                let puffer = [&self.unterlage.1, &self.helper_mesh];
                 for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
                     gl.glDepthFunc(func);
                     gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
-                    gl.glDrawArrays(TRIANGLES, 0, self.helper_mesh.count);
+                    for b in puffer.iter().filter(|b| b.count > 0) {
+                        gl.glBindVertexArray(b.vao);
+                        gl.glDrawArrays(TRIANGLES, 0, b.count);
+                    }
                 }
                 gl.glDisable(BLEND);
                 gl.glDepthMask(TRUE);
@@ -3388,6 +3377,47 @@ unsafe fn upload_bond(gl: &Gl, tex: &mut GLuint, bond: &[u8]) {
     );
     gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
     gl.glBindTexture(TEXTURE_2D, 0);
+}
+
+/// Merkmale einer Hilfslinien-Ecke: Punkt a, Punkt b, Ecke, Farbe, Breite,
+/// Strich und Art, Muster.
+const HELPER_ATTRS: [(i32, usize); 7] =
+    [(3, 0), (3, 12), (2, 24), (4, 32), (3, 48), (4, 60), (4, 76)];
+
+/// Je Hilfslinie sechs Ecken (zwei Dreiecke), wie der Shader sie nimmt.
+fn helper_ecken(helpers: &[Helper]) -> Vec<[f32; 23]> {
+    let mut v: Vec<[f32; 23]> = Vec::with_capacity(helpers.len() * 6);
+    for h in helpers {
+        let [p0, p1] = h.pattern;
+        for c in CORNERS {
+            v.push([
+                h.a[0],
+                h.a[1],
+                h.a[2],
+                h.b[0],
+                h.b[1],
+                h.b[2],
+                c[0],
+                c[1],
+                h.color[0],
+                h.color[1],
+                h.color[2],
+                h.color[3],
+                h.width,
+                h.dash,
+                h.occlude as u8 as f32 + 2.0 * h.round as u8 as f32,
+                p0[0],
+                p0[1],
+                p0[2],
+                p0[3],
+                p1[0],
+                p1[1],
+                p1[2],
+                p1[3],
+            ]);
+        }
+    }
+    v
 }
 
 unsafe fn fill<T>(gl: &Gl, b: &mut GpuBuffer, data: &[T], attrs: &[(i32, usize)]) {

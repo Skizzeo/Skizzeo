@@ -9,6 +9,7 @@
 //! Gelände da ([`crate::gelaende_netz`], G1).
 
 use crate::draw_table::{fallback_look, fill_kind, DrawTable, LineLook, MatLook, Stroke};
+use crate::gelaende_app::unterlage::{Schluessel, Striche};
 use crate::gelaende_netz::{self, Gelaende};
 use crate::selection::de;
 use crate::ui::{kote_text, Field, FieldRow, Props, Section, ViewKind};
@@ -33,6 +34,16 @@ pub(crate) const TERRAIN_MARGIN: f64 = 1500.0;
 /// Gelände-Zug die übrigen Gebäude (Review #123 F1; Loslassen 8 ms).
 pub(crate) const NACHZUG: std::time::Duration = std::time::Duration::from_millis(6);
 
+/// Schlüssel des Lageplans im Renderer zu seinen Strecken
+/// ([`Gelaende::unterlage_key`]), Zeichentabelle, Farbschema und Maßstab;
+/// `None`: keiner gezeigt.
+pub(crate) fn unterlage_key(k: Option<(u64, u64, u64, u32)>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    k.hash(&mut h);
+    h.finish()
+}
+
 /// Gelände-Rechtecke für den Renderer.
 pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)> {
     patches
@@ -54,12 +65,13 @@ fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
 }
 
 /// Neue Platten, ihre Eingaben, das Gelände und ihr Netz zur Sicht beim
-/// Start.
+/// Start, dazu die im Faden abgebildeten Linien der Unterlage.
 type Neues = (
     Arc<PlateInput>,
     Vec<TerrainPlate>,
     Option<Gelaende>,
     MeshData,
+    Option<(Schluessel, Arc<Striche>)>,
 );
 
 /// Was der Faden zurückgibt.
@@ -135,6 +147,9 @@ pub(crate) struct Platte {
     pub(crate) unterlage: crate::gelaende_app::Unterlage,
     /// Linien in Ansicht und Schnitt.
     linien: Option<Linien>,
+    /// Der Lageplan kam nach dem letzten Nachzug: das Gelände zieht mit
+    /// der Unterlage nach, auch beim selben Modellstand.
+    mit_plan: bool,
 }
 
 impl Platte {
@@ -163,8 +178,9 @@ impl Platte {
             self.netz_job = None;
             self.stand = Some(rev);
             let e = m.terrain_plate_input();
+            // ohne gelesenen Plan ohne Unterlage; sie folgt im Nachzug
             let u = &mut self.unterlage;
-            let g = Gelaende::aus(m).map(|g| g.mit_unterlage(u.linien(m)));
+            let g = Gelaende::aus(m).map(|g| g.mit_unterlage(&u.linien(m)));
             let neu = self.eingabe.as_deref() != Some(&e);
             if neu {
                 self.platten = e.build();
@@ -200,29 +216,38 @@ impl Platte {
     /// 53 ms bei 4000). `true`, wenn der Stand neu ist (dann folgt ein
     /// Bild).
     pub(crate) fn nachziehen(&mut self, m: &Model, sicht: Sicht) -> bool {
+        if self.unterlage.abholen() {
+            // ein laufender Nachzug brächte das Gelände ohne den Plan
+            self.job = None;
+            self.mit_plan = true;
+        }
         let netz = self.netz_abholen();
         if self.abholen() || netz {
             return true;
         }
-        if self.job.is_some() || m.in_step() || self.stand == Some(m.revision()) {
+        let neu = self.stand != Some(m.revision()) || self.mit_plan;
+        if self.job.is_some() || m.in_step() || !neu {
             return false;
         }
+        self.mit_plan = false;
         let kopie = m.clone();
         let alt = self.eingabe.clone();
         let ohne = self.gelaende.is_none();
-        // die Linien des Lageplans liest der UI-Faden (Datei je Quelle
-        // einmal), ans Gelände legt sie der Faden
-        let unterlage = self.unterlage.linien(m);
+        // Den Lageplan liest ein eigener Faden; die Linien bildet dieser
+        // Faden ab, wenn sie nicht schon gemerkt sind (Review #139 B2, B3)
+        let abbild = self.unterlage.abbild(m);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let e = kopie.terrain_plate_input();
-            let g = Gelaende::aus(&kopie).map(|g| g.mit_unterlage(unterlage));
+            let u = abbild.map(|a| (a.key, a.linien(&kopie)));
+            let l = u.as_ref().map_or(&[][..], |u| &u.1[..]);
+            let g = Gelaende::aus(&kopie).map(|g| g.mit_unterlage(l));
             let r = if alt.as_deref() == Some(&e) && ohne && g.is_none() {
                 Ergebnis::Gleich
             } else {
                 let p = e.build();
                 let n = netz_der_sicht(&p, g.as_ref(), sicht);
-                Ergebnis::Neu(Box::new((Arc::new(e), p, g, n)))
+                Ergebnis::Neu(Box::new((Arc::new(e), p, g, n, u)))
             };
             // fällt weg, wenn die Platte inzwischen neu begonnen hat
             let _ = tx.send(r);
@@ -251,11 +276,18 @@ impl Platte {
         (scale, mm_px): (f32, f64),
     ) -> &[Helper] {
         self.im_bild(m);
+        // im Grundriss hängt das Gelände nicht an den Modellgrenzen: kein
+        // Neubau je Mausbewegung, wenn sie sich im Zug ändern (Review #139)
+        let grenzen = if self.gelaende.is_some() && view == ViewKind::Plan {
+            None
+        } else {
+            bounds.map(bits)
+        };
         let key = (
             self.fassung,
             view,
             plane.map(bits),
-            bounds.map(bits),
+            grenzen,
             scale.to_bits(),
             t.rev,
             t.theme_rev,
@@ -288,10 +320,30 @@ impl Platte {
         self.linien.as_ref().map_or(&[], |l| &l.helfer)
     }
 
+    /// Schlüssel des Lageplans im Renderer ([`unterlage_key`]) und das
+    /// Gelände, aus dem er kommt (`None`, wenn nichts zu zeigen ist). Je
+    /// Bild gleich teuer, wie viele Striche der Plan auch hat.
+    pub(crate) fn unterlage_im_bild(
+        &mut self,
+        m: &Model,
+        zeigen: bool,
+        t: &DrawTable,
+        scale: f32,
+    ) -> (u64, Option<Arc<Gelaende>>) {
+        let g = zeigen
+            .then(|| self.gelaende_im_bild(m).map(|g| g.unterlage_key))
+            .flatten();
+        let key = unterlage_key(g.map(|k| (k, t.rev, t.theme_rev, scale.to_bits())));
+        (key, g.and(self.gelaende.clone()))
+    }
+
     /// Ein Nachzug oder ein Netz zur Sicht rechnet (die Hauptschleife fragt
     /// dann je Bild nach).
     pub(crate) fn rechnet(&self) -> bool {
-        self.job.is_some() || self.netz_job.is_some()
+        self.job.is_some()
+            || self.netz_job.is_some()
+            || self.unterlage.liest()
+            || self.leiste.liest()
     }
 
     /// Netz zum Schlüssel `key`: fertig aus einem Faden, der gemerkte
@@ -373,7 +425,10 @@ impl Platte {
         let Ok(Ergebnis::Neu(neu)) = r else {
             return true;
         };
-        let (e, p, g, n) = *neu;
+        let (e, p, g, n, u) = *neu;
+        if let Some((key, l)) = u {
+            self.unterlage.merke_linien(key, l);
+        }
         self.fassung += 1;
         self.platten = p;
         self.eingabe = Some(e);
@@ -762,6 +817,7 @@ impl App {
     /// ([`Platte::linien_im_bild`]), ausgeblendet keine. `vh`: Höhe der
     /// Ansicht in Bildpunkten.
     pub(crate) fn platte_linien(&mut self, vh: f64, scale: f32) -> &[Helper] {
+        self.platte_unterlage(scale);
         if self.scene.terrain_hidden() {
             return &[];
         }
@@ -781,6 +837,24 @@ impl App {
         let sicht = (view, self.plane());
         let (b, t) = (self.scene.bounds(), self.scene.table());
         self.platte.linien_im_bild(m, sicht, b, t, (scale, mm_px))
+    }
+
+    /// Der Lageplan unter dem Gelände im eigenen Puffer des Renderers
+    /// ([`gelaende_netz::unterlage_linien`]): je Bild nur der Vergleich des
+    /// Schlüssels, hochgeladen nur, wenn sich seine Strecken, die
+    /// Zeichentabelle oder der Maßstab ändern (Review #139 B1). Gezeigt im
+    /// Grundriss des Erdgeschosses, nicht ausgeblendet.
+    fn platte_unterlage(&mut self, scale: f32) {
+        let zeigen = !self.scene.terrain_hidden()
+            && self.ui.view == ViewKind::Plan
+            && self.scene.ground_active();
+        let (m, t) = (self.scene.model(), self.scene.table());
+        let (key, g) = self.platte.unterlage_im_bild(m, zeigen, t, scale);
+        self.renderer.set_unterlage(key, || {
+            g.map_or(Vec::new(), |g| {
+                gelaende_netz::unterlage_linien(&g, ViewKind::Plan, t, scale)
+            })
+        });
     }
 
     /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
@@ -881,8 +955,16 @@ impl App {
             self.quantity.dirty = true;
             self.props_key = None;
         }
+        // Lageplan und Unterlage aus ihren Fäden (Review #139 B2)
+        let ordner = self.doc.path.as_deref().and_then(std::path::Path::parent);
+        if self.platte.unterlage.ordner(ordner) {
+            self.platte.mit_plan = true;
+        }
+        let gelesen = self.lageplan_abholen();
         let sicht = self.platte_sicht();
-        self.platte.nachziehen(self.scene.model(), sicht)
+        let neu = self.platte.nachziehen(self.scene.model(), sicht);
+        self.unterlage_stand();
+        neu || gelesen
     }
 
     /// Etwas rechnet im Hintergrund (Mengen, Verbände, die Platte, der
