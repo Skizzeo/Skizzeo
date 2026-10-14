@@ -17,10 +17,12 @@ const FELDER: [(&str, &str, (f64, f64, f64)); 2] = [
     ("margin", "Abstand der Geländeplatte", PLATE_MARGIN),
 ];
 
-/// `[terrainplate]` und das Höhenaufmaß (Gelände G0 und G1).
+/// `[terrainplate]`, das Höhenaufmaß und die Geländeflächen (Gelände G0,
+/// G1 und G3b).
 pub(super) fn write(m: &Model, out: &mut String) {
     write_plate(m, out);
     super::aufmass::write(m, out);
+    super::flaeche::write(m, out);
 }
 
 fn write_plate(m: &Model, out: &mut String) {
@@ -68,7 +70,8 @@ pub(super) fn bereich(
     None
 }
 
-/// Geländeplatte und Höhenaufmaß ins Projekt (Gelände G0 und G1).
+/// Geländeplatte, Höhenaufmaß und Geländeflächen ins Projekt (Gelände G0,
+/// G1 und G3b).
 pub(super) fn read_project<'r>(
     project: &mut crate::model::Project,
     recs: &dyn Fn(&str) -> &'r [Record],
@@ -77,7 +80,7 @@ pub(super) fn read_project<'r>(
 ) -> Result<(), LoadError> {
     (project.terrain_plate, project.terrain_plate_raw) = read(recs("terrainplate"), lines, hints)?;
     project.terrain = super::aufmass::read(recs, lines, hints)?.map(std::sync::Arc::new);
-    Ok(())
+    super::flaeche::read_project(project, recs, lines, hints)
 }
 
 /// Dicke und Abstand; dazu die Zeile roh, wenn ein Wert nicht gilt

@@ -16,6 +16,7 @@ mod bemassung;
 pub use bemassung::{firmenstil_lesen, firmenstil_text};
 mod dach;
 mod darstellung;
+mod flaeche;
 mod gelaende;
 mod hoehen;
 mod lage;
@@ -1538,7 +1539,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let Some(r) = Record::parse(i + 1, l)? else {
             continue;
         };
-        match ausbau::known(&KNOWN, &r.section).or_else(|| bemassung::known(&r.section)) {
+        match ausbau::known(&KNOWN, &r.section)
+            .or_else(|| bemassung::known(&r.section))
+            .or_else(|| flaeche::known(&r.section))
+        {
             Some(k) => by.entry(k).or_default().push(r),
             None if ext.contains(&r.section.as_str()) => ext_lines.push((r.section.clone(), l)),
             None => alien.push(i + 1),
