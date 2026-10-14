@@ -832,7 +832,20 @@ impl Stempel {
                 }
                 false
             }
+            // Enter: Ist genau eine Vorlage übrig, gilt sie als Nutzung
+            // (Bedienbarkeit 40.5); beginnt sie mit dem Getippten, ergänzt
+            // sie auch den Namen („Kü“ wird Küche), sonst bleibt er („WC“
+            // mit Nutzung Gäste-WC, Review H-176a)
             Key::Enter => {
+                if let (None, Some(q)) = (n.vorlage, n.such.as_deref()) {
+                    let v = vorschlaege(s.model().space_type_choices(), Some(q));
+                    if let [(g, name)] = v.as_slice() {
+                        if name.to_lowercase().starts_with(&q.trim().to_lowercase()) {
+                            n.feld = TextEdit::new(name);
+                        }
+                        n.vorlage = Some(*g);
+                    }
+                }
                 out.changed = self.ab(s);
                 return out;
             }
@@ -1362,9 +1375,25 @@ mod tests {
         benennen(&mut st, &mut s, "Speis", true);
         assert_eq!(s.model().space(id).unwrap().name, "Speis");
         assert_eq!(nutzung(&s), Some(vorlage("Küche")));
-        // Ein Name, der genau eine Vorlage nennt, wählt sie
+        // Bleibt beim Tippen genau eine Vorlage, nimmt Enter sie als
+        // Nutzung, den Namen nur, wenn sie mit dem Getippten beginnt
+        // (Bedienbarkeit 40.5, Review H-176a)
+        benennen(&mut st, &mut s, "flur", false);
+        assert_eq!(s.model().space(id).unwrap().name, "flur");
+        assert_eq!(nutzung(&s), Some(vorlage("Diele, Flur")));
         benennen(&mut st, &mut s, "bad", false);
-        assert_eq!(s.model().space(id).unwrap().name, "bad");
+        assert_eq!(s.model().space(id).unwrap().name, "Bad");
+        assert_eq!(nutzung(&s), Some(vorlage("Bad")));
+        benennen(&mut st, &mut s, "Kü", false);
+        assert_eq!(s.model().space(id).unwrap().name, "Küche");
+        assert_eq!(nutzung(&s), Some(vorlage("Küche")));
+        // Ein Name, der eine Vorlage als Wort nennt, wählt sie
+        benennen(&mut st, &mut s, "Bad OG", false);
+        assert_eq!(s.model().space(id).unwrap().name, "Bad OG");
+        assert_eq!(nutzung(&s), Some(vorlage("Bad")));
+        // Mehrere Vorschläge: Enter lässt den Namen
+        benennen(&mut st, &mut s, "Zimmer", false);
+        assert_eq!(s.model().space(id).unwrap().name, "Zimmer");
         assert_eq!(nutzung(&s), Some(vorlage("Bad")));
     }
 
