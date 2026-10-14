@@ -2,6 +2,8 @@
 //! [`crate::gpu_probe`]):
 //!
 //! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_bemassung -- --ignored`
+//!
+//! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_innentuer -- --ignored`
 
 use super::Massketten;
 use crate::camera::Camera;
@@ -373,4 +375,139 @@ fn gpu_istbilder_bedienen() {
         &bild_mit(&mut r, &mut s, ViewKind::Plan, &cam, false, Some(&e)),
         "ist-bem-rh1-verschoben.png",
     );
+}
+
+/// Grundriss G7d: Innentür am Cursor mit der Live-Kette in der Ziehfarbe
+/// bei 100 %, im Prüfhaus 10 × 8 m mit den Außenmaßketten, ganz und näher
+/// (Einstellungen zu #146). Die Pille zeichnet die Oberfläche, sie fehlt.
+#[test]
+#[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+fn gpu_istbilder_innentuer() {
+    use crate::oeffnung_app::innentuer::{kette, umriss, Innentuer};
+    use crate::oeffnung_app::werkzeug::{helpers, Bild as Vorschau};
+    use sk_model::{Category, Model, RefSide};
+    use sk_render::Ink;
+    let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+    let theme = Theme::dark();
+    let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+    let mut m = Model::with_seed(411);
+    let b = m.add_building(1);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let eg = m.build_from_polygon(b, &pts).unwrap();
+    let st = m.run(eg).unwrap().storey;
+    let set = m.defaults().interior_wall;
+    m.add_wall_run(
+        &[vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)],
+        false,
+        RefSide::Center,
+        st,
+        set,
+        Category::InteriorWall,
+    )
+    .unwrap();
+    let mut s = Scene::with_model(m);
+    s.set_active_storey(st);
+    let z = s.plan_cut();
+    let mut t = Innentuer::default();
+    t.suchen(
+        s.model(),
+        &|r| s.koerper(r),
+        st,
+        vec3(5020.0, 3000.0, 0.0),
+        30.0,
+        z,
+    );
+    let v = t.hover.clone().expect("Tür an der Innenwand");
+    let stil = s.model().massstil().clone();
+    let f = schrift()
+        .map(sk_plan::schrift::Schrift::new)
+        .expect("Liberation Sans");
+    let masse = kette(&v, st, &stil, &f);
+    let vorschau = Vorschau {
+        linien: Vec::new(),
+        umriss: umriss(&v),
+        kette: masse
+            .striche
+            .iter()
+            .map(|x| {
+                let rund = x.art == sk_plan::bild::Strichart::Symbol;
+                (x.a, x.b, crate::bemassung::staerke(&stil, x.art), rund)
+            })
+            .collect(),
+        tinte: masse.tinte.clone(),
+        pille: None,
+        punkt: Some((v.punkt, false)),
+    };
+    let ui = schrift();
+    let (lo, hi) = s.bounds().unwrap();
+    let mitte = v.punkt;
+    for (name, (a, c)) in [
+        (
+            "ist-g7d-kette-100.png",
+            (
+                lo - vec3(3000.0, 3000.0, 0.0),
+                hi + vec3(3000.0, 3000.0, 0.0),
+            ),
+        ),
+        (
+            "ist-g7d-kette-100-nah.png",
+            (
+                mitte - vec3(3000.0, 3500.0, 0.0),
+                mitte + vec3(3000.0, 3500.0, 0.0),
+            ),
+        ),
+    ] {
+        let cam = crate::fit_parallel(ViewKind::Plan, Some((a, c)), f64::from(W), f64::from(H));
+        s.set_theme(&theme);
+        r.set_style(crate::style(&theme.env));
+        r.set_looks(&s.table().looks_with(1.0, |_| 1.0));
+        r.set_mesh(crate::MESH_MODEL, &s.mesh(ViewKind::Plan, None, &[]));
+        r.set_sun(None);
+        let mut mk = Massketten::default();
+        s.set_mass_sicht(ViewKind::Plan, true, false);
+        let blick = super::Blick {
+            cam: &cam,
+            w: f64::from(W),
+            h: f64::from(H),
+        };
+        let (mut h, mut tinte) = mk.zeichnen(
+            &s,
+            ViewKind::Plan,
+            &[],
+            ui.as_ref(),
+            &blick,
+            1.0,
+            &theme,
+            &Default::default(),
+        );
+        h.extend(helpers(&vorschau, 1.0, &theme));
+        let ink: Vec<Ink> = vorschau
+            .tinte
+            .iter()
+            .map(|d| Ink {
+                p: d.map(|p| p.to_f32()),
+                color: theme.interact.drag,
+                occlude: false,
+            })
+            .collect();
+        tinte.push((u64::MAX - 1, ink.into()));
+        r.set_helpers(&h);
+        r.set_ink_teile(&tinte);
+        let mut view = cam.view(W, H);
+        view.paper = Some(s.table().paper);
+        r.draw(W, H, 0, &view).unwrap();
+        std::fs::write(
+            ziel.join(name),
+            sk_paint::encode_png(W, H, &r.read_pixels(W, H)),
+        )
+        .unwrap();
+    }
 }

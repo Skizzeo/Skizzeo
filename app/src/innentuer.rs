@@ -187,12 +187,16 @@ fn wand_unter(
     let p = vec3(p.x, p.y, 0.0);
     let mut best: Option<(f64, (OuterFace, f64, bool, f64))> = None;
     for (id, run) in m.runs().iter() {
+        // Das Bauteil erst bei Zügen nahe `p` (Review #140, Zugschritt)
+        if run.storey != st || !nah(&run.points, p, tol + DICKE) {
+            continue;
+        }
         let passt = run
             .segments
             .first()
             .and_then(|e| m.element(*e))
             .is_some_and(|e| art(e.category));
-        if run.storey != st || !passt || !nah(&run.points, p, tol + DICKE) {
+        if !passt {
             continue;
         }
         // Ein Körper je Zug für alle Segmente (Review #99 B1)
@@ -536,12 +540,7 @@ pub fn kette(v: &Vorschau, st: StoreyId, stil: &Stil, schrift: &Schrift) -> Bild
     };
     let n = vec3(n.x, n.y, 0.0).normalized();
     // Maßzahlen von unten oder von rechts lesbar, wie bei den Außenmaßen
-    let t = vec3(-n.y, n.x, 0.0);
-    let t = if t.x > 1e-9 || (t.x.abs() <= 1e-9 && t.y > 0.0) {
-        t
-    } else {
-        -t
-    };
+    let t = sk_plan::aussen::laengs(n);
     let bezug = |u: f64, herkunft| {
         let p = v.face.at(u, 0.0);
         let p = vec3(p.x, p.y, 0.0);
