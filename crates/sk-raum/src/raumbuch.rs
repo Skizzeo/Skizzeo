@@ -122,14 +122,29 @@ impl Zeile {
     }
 }
 
-/// „4,240“ aus mm.
+/// „4,240“ aus mm, kaufmännisch auf den Millimeter (4567,5 → „4,568“).
 fn m(x: f64) -> String {
-    format!("{:.3}", x / 1e3).replace('.', ",")
+    format!("{:.3}", kaufm(x) / 1e3).replace('.', ",")
 }
 
-/// „2,156 m²“ aus mm².
+/// „2,156 m²“ aus mm², kaufmännisch auf 1000 mm².
 fn qm(x: f64) -> String {
-    format!("{} m²", format!("{:.3}", x / 1e6).replace('.', ","))
+    let t = kaufm(x / 1e3) * 1e3;
+    format!("{} m²", format!("{:.3}", t / 1e6).replace('.', ","))
+}
+
+/// Auf ganze Einheiten, die Hälfte vom Nullpunkt weg, auch wenn die
+/// Rechnung sie knapp darunter ablegt; Toleranz fest in Einheiten, nur so
+/// groß wie das Rechenrauschen großer Zahlen (Review #170 H-170a).
+fn kaufm(x: f64) -> f64 {
+    (x + x.signum() * 1e-6f64.max(x.abs() * 1e-15)).round()
+}
+
+/// Länge (mm) auf 1/1000 mm: Rechenrauschen der Lage (ein getipptes statt
+/// geklicktes Rechteck) ändert so keine Menge, auch nicht an der vierten
+/// Stelle des Mengenblatts (Abnahme A280).
+fn glatt(x: f64) -> f64 {
+    (x * 1e3).round() / 1e3
 }
 
 fn term(text: String, wert: f64, art: Art) -> Term {
@@ -179,14 +194,17 @@ impl<'a> Raum<'a> {
             .enumerate()
             .map(|(i, k)| ausbau::putz(model, k, aus.seiten.get(i).unwrap_or(&leer)))
             .collect();
-        let roh = kanten.iter().map(|k| ring::laenge(k.a, k.b)).collect();
+        let roh = kanten
+            .iter()
+            .map(|k| glatt(ring::laenge(k.a, k.b)))
+            .collect();
         let ringe_putz: Vec<Versatz> = ringe
             .iter()
             .map(|(e, p)| ring::versetzt(p, &putz[*e..*e + p.len()]))
             .collect();
         let an_putz = ringe_putz
             .iter()
-            .flat_map(|v| v.laengen.iter().copied())
+            .flat_map(|v| v.laengen.iter().map(|&l| glatt(l)))
             .collect();
         let (belag, estrich) = ausbau::boden(model, aus);
         let ffb = form.z_boden + estrich.iter().sum::<f64>() + belag;

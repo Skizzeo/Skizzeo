@@ -111,6 +111,21 @@ impl Scene {
             .raumformen(&self.model, &self.ketten(), g)
     }
 
+    /// Mengenliste mit den Räumen und ihrem Raumbuch (RB5): Räume aus der
+    /// Erkennung der Szene, Züge und Platten aus ihren berechneten Ketten,
+    /// die Platten erst beim ersten Raum (Review #112 H8).
+    pub(super) fn mengenliste(&self) -> sk_model::qto::Schedule {
+        let k = self.ketten();
+        let platten = std::cell::OnceCell::new();
+        let raeume = |m: &sk_model::Model, g: StoreyId| {
+            let formen = self.raumgruppen(g);
+            let formen = formen.flaechen().map(|f| f.form.clone());
+            let p = platten.get_or_init(|| sk_raum::raumliste::Platten::neu(m, &k));
+            sk_raum::mengen::raeume_mit(m, &k, p, formen)
+        };
+        sk_model::qto::schedule_mit(&self.model, &raeume)
+    }
+
     /// Wie oft einer Hausgruppe die Räume neu zugeteilt wurden (Tests).
     #[cfg(test)]
     pub fn raum_zuteilungen(&self) -> u64 {
