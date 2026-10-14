@@ -2450,6 +2450,55 @@ fn perf_ifc_export() {
     println!("Zeiten in ms (Aufbau des Modells, Export der Datei).");
 }
 
+/// Räume und Ausbau im IFC-Export (I6, Review #138 B1) bei 1 bis 1000
+/// Häusern (höchstens `SKIZZEO_PERF_BIS`) mit ihren Räumen samt
+/// Ausbautypen: Zeit für den Aufbau und für die ganze Datei. Die Zeit je
+/// Haus darf mit der Stadt nicht wachsen (Träger einmal je Export gesucht).
+#[test]
+#[ignore]
+fn perf_ifc_raeume() {
+    println!();
+    println!(
+        "{:>6} {:>8} {:>12} {:>10} {:>10} {:>12}",
+        "Häuser", "Räume", "Bekleidung", "Aufbau", "Export", "je Haus"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let mut je_haus = Vec::new();
+    let mut raeume = None;
+    for n in [1, 10, 100, 300, 1000].into_iter().filter(|&n| n <= bis) {
+        let t = Instant::now();
+        // Räume und ihre Typen entstehen mit den Wänden (G3)
+        let s = town_with_interior(n);
+        let aufbau = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let (ifc, b) = sk_ifc::export(s.model(), &sk_ifc::Optionen::default());
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        std::hint::black_box(ifc);
+        // Jedes Haus gleich
+        let r = *raeume.get_or_insert(b.raeume);
+        assert!(r > 0 && b.bekleidungen > 0);
+        assert_eq!(b.raeume, r * n, "Räume je Haus");
+        je_haus.push((n, ms / n as f64));
+        println!(
+            "{n:>6} {:>8} {:>12} {aufbau:>10.0} {ms:>10.0} {:>12.2}",
+            b.raeume,
+            b.bekleidungen,
+            ms / n as f64
+        );
+    }
+    println!("Zeiten in ms (Aufbau des Modells, Export der Datei, Export je Haus).");
+    // Linear: je Haus höchstens doppelt so viel wie bei 10 Häusern
+    if let (Some(&(10, a)), Some(&(n, z))) = (je_haus.get(1), je_haus.last()) {
+        assert!(
+            z <= 2.0 * a,
+            "Export je Haus bei {n} Häusern {z:.2} ms, bei 10 {a:.2} ms"
+        );
+    }
+}
+
 /// Breite am Griff (Review #109 B1, B4), Tür im zuletzt gebauten Haus:
 /// Griffe je Mausbewegung, Kettensymbole, Greifen, Ziehen je Bewegung und
 /// Loslassen.
