@@ -155,8 +155,8 @@ fn zahl(n: usize, eins: &str, mehr: &str) -> String {
 
 /// Satz der Statuszeile nach dem Export: „IFC gespeichert: 2 Geschosse,
 /// 34 Bauteile“, bei mehreren Gebäuden mit deren Zahl vorn, mit den
-/// Öffnungen und Türen, wenn es welche gibt, und was nicht in die Datei
-/// kam.
+/// Öffnungen, Türen und Räumen, wenn es welche gibt, und was nicht in die
+/// Datei kam.
 pub(crate) fn ifc_meldung(b: &sk_ifc::Bericht) -> String {
     let mut teile = Vec::new();
     if b.gebaeude > 1 {
@@ -169,6 +169,9 @@ pub(crate) fn ifc_meldung(b: &sk_ifc::Bericht) -> String {
     }
     if b.tueren > 0 {
         teile.push(zahl(b.tueren, "Tür", "Türen"));
+    }
+    if b.raeume > 0 {
+        teile.push(zahl(b.raeume, "Raum", "Räume"));
     }
     let mut s = format!("IFC gespeichert: {}", teile.join(", "));
     if !b.ausgelassen.is_empty() {
@@ -191,6 +194,8 @@ mod tests {
             baugruppen: 0,
             oeffnungen: 0,
             tueren: 0,
+            raeume: 0,
+            bekleidungen: 0,
             ausgelassen: vec![],
         };
         assert_eq!(ifc_meldung(&b), "IFC gespeichert: 2 Geschosse, 34 Bauteile");
@@ -199,7 +204,9 @@ mod tests {
             ifc_meldung(&b),
             "IFC gespeichert: 2 Geschosse, 34 Bauteile, 3 Öffnungen, 1 Tür"
         );
-        (b.oeffnungen, b.tueren) = (0, 0);
+        b.raeume = 4;
+        assert!(ifc_meldung(&b).ends_with(", 1 Tür, 4 Räume"));
+        (b.oeffnungen, b.tueren, b.raeume) = (0, 0, 0);
         b.gebaeude = 2;
         b.geschosse = 1;
         b.bauteile = 1;

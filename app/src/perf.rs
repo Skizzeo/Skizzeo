@@ -2514,6 +2514,125 @@ fn perf_ifc_export() {
     println!("Zeiten in ms (Aufbau des Modells, Export der Datei).");
 }
 
+/// Räume und Ausbau im IFC-Export (I6, Review #138 B1, H-138g): Zeit für
+/// den Aufbau und für die ganze Datei bei 1 bis 1000 Häusern (höchstens
+/// `SKIZZEO_PERF_BIS`, 4000 mit `SKIZZEO_PERF_BIS=4000`), einmal alle in
+/// einem Gebäude mit einem Geschoss, einmal je Haus ein Gebäude mit zwei
+/// Geschossen samt Decken und Sohlplatte. Die Zeit je Haus darf mit der
+/// Stadt nicht wachsen (Träger einmal je Export gesucht).
+#[test]
+#[ignore]
+fn perf_ifc_raeume() {
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    // Räume und ihre Typen entstehen mit den Wänden (G3)
+    ifc_raeume_messen("ein Gebäude", bis, |n| {
+        town_with_interior(n).model().clone()
+    });
+    ifc_raeume_messen("je Haus ein Gebäude", bis, haeuser_je_gebaeude);
+}
+
+/// `n` Häuser 10 × 8 m im Raster zu 15 m, je Haus ein Gebäude mit zwei
+/// Geschossen (Außenwand gestapelt, im EG zwei Innenwände), Räume
+/// abgeglichen und ihre Typen angelegt wie beim Entstehen im Grundriss.
+fn haeuser_je_gebaeude(n: usize) -> sk_model::Model {
+    use sk_model::{Category, ElementKind, LevelKind};
+    let mut m = sk_model::Model::with_seed(5);
+    let side = (n as f64).sqrt().ceil() as usize;
+    m.begin("Häuser");
+    let innen = m.defaults().interior_wall;
+    for i in 0..n {
+        let b = m.add_building(2);
+        let (ox, oy) = ((i % side) as f64 * 15000.0, (i / side) as f64 * 15000.0);
+        let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+        let umriss = [
+            p(0.0, 0.0),
+            p(0.0, 8000.0),
+            p(10000.0, 8000.0),
+            p(10000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &umriss).unwrap();
+        let eg = m.ground_of(Some(b)).unwrap();
+        for x in [3500.0, 6500.0] {
+            let pts = [p(x, 315.0), p(x, 7685.0)];
+            m.add_wall_run(
+                &pts,
+                false,
+                RefSide::Center,
+                eg,
+                innen,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        }
+    }
+    let geschosse: Vec<_> = m
+        .storeys()
+        .iter()
+        .filter(|(_, g)| g.kind == LevelKind::Storey)
+        .map(|(g, _)| g)
+        .collect();
+    sk_raum::abgleichen(&mut m, &geschosse);
+    let raeume: Vec<_> = m
+        .elements()
+        .iter()
+        .filter(|(_, e)| matches!(e.kind, ElementKind::Space(_)))
+        .map(|(id, _)| id)
+        .collect();
+    for id in raeume {
+        assert!(sk_raum::ausbau::typen_anlegen(&mut m, id));
+    }
+    assert!(m.commit().is_some());
+    m
+}
+
+/// Misst den Export der Modelle aus `bau` bei 1 bis 4000 Häusern (höchstens
+/// `bis`) und prüft, dass die Zeit je Haus höchstens doppelt so groß wird
+/// wie bei 10 Häusern.
+fn ifc_raeume_messen(titel: &str, bis: usize, bau: impl Fn(usize) -> sk_model::Model) {
+    println!();
+    println!("{titel}:");
+    println!(
+        "{:>6} {:>8} {:>12} {:>10} {:>10} {:>12}",
+        "Häuser", "Räume", "Bekleidung", "Aufbau", "Export", "je Haus"
+    );
+    let mut je_haus = Vec::new();
+    let mut raeume = None;
+    for n in [1, 10, 100, 300, 1000, 4000]
+        .into_iter()
+        .filter(|&n| n <= bis)
+    {
+        let t = Instant::now();
+        let m = bau(n);
+        let aufbau = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let (ifc, b) = sk_ifc::export(&m, &sk_ifc::Optionen::default());
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        std::hint::black_box(ifc);
+        // Jedes Haus gleich
+        let r = *raeume.get_or_insert(b.raeume);
+        assert!(r > 0 && b.bekleidungen > 0);
+        assert_eq!(b.raeume, r * n, "Räume je Haus");
+        je_haus.push((n, ms / n as f64));
+        println!(
+            "{n:>6} {:>8} {:>12} {aufbau:>10.0} {ms:>10.0} {:>12.2}",
+            b.raeume,
+            b.bekleidungen,
+            ms / n as f64
+        );
+    }
+    println!("Zeiten in ms (Aufbau des Modells, Export der Datei, Export je Haus).");
+    // Linear: je Haus höchstens doppelt so viel wie bei 10 Häusern
+    if let (Some(&(10, a)), Some(&(n, z))) = (je_haus.get(1), je_haus.last()) {
+        assert!(
+            z <= 2.0 * a,
+            "{titel}: Export je Haus bei {n} Häusern {z:.2} ms, bei 10 {a:.2} ms"
+        );
+    }
+}
+
 /// Breite am Griff (Review #109 B1, B4), Tür im zuletzt gebauten Haus:
 /// Griffe je Mausbewegung, Kettensymbole, Greifen, Ziehen je Bewegung und
 /// Loslassen.

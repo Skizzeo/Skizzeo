@@ -21,6 +21,7 @@ version = "0.2.0"
 dependencies = [
  "sk-math",
  "sk-model",
+ "sk-raum",
 ]
 
 [[package]]
