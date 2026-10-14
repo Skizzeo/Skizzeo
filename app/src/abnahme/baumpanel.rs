@@ -1036,7 +1036,7 @@ fn a227_kurzname_datei() {
     }
     alle.sort();
     alle.dedup();
-    assert_eq!(alle.len(), 35, "eindeutig");
+    assert_eq!(alle.len(), 36, "eindeutig");
 
     // Nur `[trade]`-Zeilen: `[storey]` trägt seit B11 ein eigenes
     // `short=` (z. B. „EG“).

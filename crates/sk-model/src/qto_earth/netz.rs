@@ -246,10 +246,7 @@ pub(super) fn mengen(
     let z_p = z_b - g;
     let z_f = b.footing_bottom_z;
     let sohle = if a > 0.0 {
-        let Some(s) = sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()]) else {
-            return None;
-        };
-        s
+        sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()])?
     } else {
         b.outline.clone()
     };

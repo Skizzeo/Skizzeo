@@ -295,6 +295,11 @@ pub fn valid_kg(kg: u16) -> bool {
     (311..=399).contains(&kg)
 }
 
+/// KG einer Bauleistung: Bauwerk (300) oder Außenanlagen (500).
+pub fn valid_kg_leistung(kg: u16) -> bool {
+    valid_kg(kg) || (511..=599).contains(&kg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,7 +326,7 @@ mod tests {
             short: None,
         };
         let m = merge(vec![maurer.clone(), eigen.clone()]);
-        assert_eq!(m.len(), 36);
+        assert_eq!(m.len(), 37);
         assert_eq!(m[5], maurer);
         assert_eq!(m.last(), Some(&eigen));
     }

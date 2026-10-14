@@ -74,8 +74,8 @@ fn fall_1_rohbau_mit_preisen() {
     assert_eq!(titel("04"), ["04.0010"]);
     assert!(titel("05").is_empty() && titel("06").is_empty(), "{o:?}");
     assert_eq!(lv.anzahl(), o.iter().map(|x| x.1.len()).sum::<usize>());
-    // alle Gewerke des Loses: Baustelleneinrichtung, Gerüst, Erdbau, Beton, Mauer
-    let gewerke = ["18330", "18331", "18300", "18451"].map(|c| Some(gewerk(&m, c)));
+    // alle Gewerke des Loses: Baustelleneinrichtung, Gerüst, Erdbau, Oberboden, Beton, Mauer
+    let gewerke = ["18330", "18331", "18300", "18320", "18451"].map(|c| Some(gewerk(&m, c)));
     let beton_mauer: Cent = b
         .nach_gewerk
         .iter()

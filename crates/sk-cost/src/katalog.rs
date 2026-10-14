@@ -1034,7 +1034,7 @@ pub fn lesen<'a>(
             }
         }
         let kg = s.ganz("kg").map(|v| v as u16);
-        if let Some(v) = kg.filter(|v| !sk_model::trade::valid_kg(*v)) {
+        if let Some(v) = kg.filter(|v| !sk_model::trade::valid_kg_leistung(*v)) {
             bf.push(Befund::fehler(
                 79,
                 befund::r79(&kurz, "kg", &v.to_string()),

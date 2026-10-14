@@ -639,7 +639,7 @@ mod tests {
             paved: true,
             ..flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0)
         };
-        let v = mit(&m, &[p.clone()]);
+        let v = mit(&m, std::slice::from_ref(&p));
         // N 0,20 − Q 0,10
         assert!(nah(wert(&v, CUT), 10.0));
         assert!(nah(wert(&v, SPREAD), 63.0));
