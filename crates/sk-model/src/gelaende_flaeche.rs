@@ -84,7 +84,15 @@ impl TerrainPatch {
                 .iter()
                 .flatten()
                 .all(|v| v.abs() <= PATCH_XY_MAX)
-            && flaeche(&self.outline).abs() > 1.0;
+            && flaeche(&self.outline).abs() > 1.0
+            // Schleife oder Rückläufer: Fläche, Gefälle und Mengen sinnlos (Geometrie #173)
+            && sk_math::polygon::is_simple(
+                &self
+                    .outline
+                    .iter()
+                    .map(|q| sk_math::vec3(q[0], q[1], 0.0))
+                    .collect::<Vec<_>>(),
+            );
         let z_ok = |z: f64| {
             if self.abs {
                 (PATCH_NHN.0..=PATCH_NHN.1).contains(&z)
@@ -397,6 +405,34 @@ mod tests {
             fall: 10.0,
         };
         assert!((p.z_at(0.0, 1_000.0, 24.0) - 400.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn umriss_einfach() {
+        // beide Umlaufrichtungen gelten
+        let mut p = TerrainPatch::flat(quadrat(), 0.0);
+        assert!(p.valid());
+        p.outline.reverse();
+        assert!(p.valid());
+        // schiefe Schleife: Umlauffläche 20 m², aber kein Umriss
+        p.outline = vec![
+            [0.0, 0.0],
+            [10_000.0, 6_000.0],
+            [10_000.0, 0.0],
+            [0.0, 10_000.0],
+        ];
+        assert!(flaeche(&p.outline).abs() > 1.0);
+        assert!(!p.valid());
+        // Rückläufer auf einer Kante
+        p.outline = vec![
+            [0.0, 0.0],
+            [10_000.0, 0.0],
+            [10_000.0, 10_000.0],
+            [10_000.0, 4_000.0],
+            [10_000.0, 10_000.0],
+            [0.0, 10_000.0],
+        ];
+        assert!(!p.valid());
     }
 
     #[test]
