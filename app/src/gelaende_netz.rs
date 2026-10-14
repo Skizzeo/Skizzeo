@@ -97,16 +97,42 @@ pub(crate) struct Gelaende {
     pub(crate) unterlage: Vec<Kachel>,
 }
 
-/// Kacheln je Seite, in die der Lageplan geteilt wird (Review #139 N1):
-/// Ein Schritt an einem Haus ändert nur die Kacheln unter ihm, der
-/// Renderer baut und lädt nur sie neu. Mehr Kacheln hießen mehr
-/// Zeichenaufrufe je Bild.
-const KACHELN: usize = 8;
+/// Höchstens so viele Strecken des Lageplans liegen in einer Kachel
+/// (Review #139 N1): Ein Schritt an einem Haus ändert nur die Kacheln mit
+/// Strecken, die es schneidet; der Renderer baut und lädt nur sie neu, wie
+/// dicht der Plan auch ist. Kleinere Kacheln hießen mehr Zeichenaufrufe
+/// je Bild.
+const KACHEL: usize = 1024;
+
+/// Teile der Strecken `ix` (Mitten `mitte`) im Rechteck `r` (x0, y0, x1,
+/// y1) in Kacheln mit höchstens [`KACHEL`] Strecken: Das Rechteck wird
+/// geviertelt, bis es passt (höchstens 12 Stufen).
+fn kacheln(mitte: &[P2], ix: Vec<usize>, r: [f64; 4], stufe: u32, out: &mut Vec<Vec<usize>>) {
+    if ix.len() <= KACHEL || stufe >= 12 {
+        if !ix.is_empty() {
+            out.push(ix);
+        }
+        return;
+    }
+    let (cx, cy) = ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+    let mut teil: [Vec<usize>; 4] = Default::default();
+    for i in ix {
+        let p = mitte[i];
+        teil[usize::from(p[0] >= cx) + 2 * usize::from(p[1] >= cy)].push(i);
+    }
+    let [a, b, c, d] = teil;
+    kacheln(mitte, a, [r[0], r[1], cx, cy], stufe + 1, out);
+    kacheln(mitte, b, [cx, r[1], r[2], cy], stufe + 1, out);
+    kacheln(mitte, c, [r[0], cy, cx, r[3]], stufe + 1, out);
+    kacheln(mitte, d, [cx, cy, r[2], r[3]], stufe + 1, out);
+}
 
 /// Ein Stück des Lageplans: Strecken (mm, auf dem Gelände, nicht im Haus),
 /// ob sie Grenzen sind, und ihre Prüfsumme als Schlüssel ihres Puffers im
 /// Renderer. Welche Strecke in welche Kachel fällt, hängt nur am Plan und
-/// seiner Lage, nicht an den Häusern.
+/// seiner Lage (über ihre Mitte), nicht an den Häusern; schneidet ein
+/// Haus eine lange Strecke, ändert sich die Prüfsumme ihrer Kachel, wo
+/// diese auch liegt.
 #[derive(Clone, Debug)]
 pub(crate) struct Kachel {
     pub(crate) key: u64,
@@ -270,38 +296,48 @@ impl Gelaende {
     }
 
     /// Linien des Lageplans (Modell, mm) auf das Gelände legen, in
-    /// [`KACHELN`]² Kacheln über dem Bereich des Plans.
+    /// Kacheln über dem Bereich des Plans ([`KACHEL`]).
     pub(crate) fn mit_unterlage(mut self, l: &[(Vec<P2>, bool, UnderlayKind)]) -> Gelaende {
         // außerhalb des Netzes auf seiner mittleren Höhe
         let n = (self.dreiecke.len() * 3).max(1) as f64;
         let mittel = self.dreiecke.iter().flatten().map(|p| p.z).sum::<f64>() / n;
-        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
-        for q in l.iter().flat_map(|x| &x.0) {
-            lo = [lo[0].min(q[0]), lo[1].min(q[1])];
-            hi = [hi[0].max(q[0]), hi[1].max(q[1])];
-        }
-        let k = KACHELN as f64;
-        let groesse = [(hi[0] - lo[0]) / k, (hi[1] - lo[1]) / k].map(|x| x.max(1.0));
-        let kachel = |p: P2| {
-            let i = |a: usize| (((p[a] - lo[a]) / groesse[a]).max(0.0) as usize).min(KACHELN - 1);
-            i(1) * KACHELN + i(0)
-        };
-        // im Haus liegt nichts: jede Strecke einzeln, am Haus geteilt; die
-        // Stücke bleiben in der Kachel ihrer Strecke
-        let mut u = vec![Vec::new(); KACHELN * KACHELN];
+        let mut strecken = Vec::new();
         for (p, zu, art) in l {
             let k = p.len();
-            let strecken = if *zu && k > 2 { k } else { k.saturating_sub(1) };
-            for i in 0..strecken {
-                let (a, b) = (p[i], p[(i + 1) % k]);
-                let ziel = &mut u[kachel(lerp2(a, b, 0.5))];
-                for (t0, t1, _) in self.teile(a, b) {
-                    let q = [lerp2(a, b, t0), lerp2(a, b, t1)]
-                        .map(|p| vec3(p[0], p[1], self.hoehe(p).unwrap_or(mittel)));
-                    ziel.push((q, *art == UnderlayKind::Boundary));
-                }
+            let m = if *zu && k > 2 { k } else { k.saturating_sub(1) };
+            for i in 0..m {
+                strecken.push((p[i], p[(i + 1) % k], *art == UnderlayKind::Boundary));
             }
         }
+        let mitte: Vec<P2> = strecken.iter().map(|s| lerp2(s.0, s.1, 0.5)).collect();
+        let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for q in &mitte {
+            r = [
+                r[0].min(q[0]),
+                r[1].min(q[1]),
+                r[2].max(q[0]),
+                r[3].max(q[1]),
+            ];
+        }
+        let mut ix = Vec::new();
+        kacheln(&mitte, (0..strecken.len()).collect(), r, 0, &mut ix);
+        // im Haus liegt nichts: jede Strecke einzeln, am Haus geteilt; die
+        // Stücke bleiben in der Kachel ihrer Strecke
+        let u: Vec<Vec<([Vec3; 2], bool)>> = ix
+            .iter()
+            .map(|k| {
+                let mut v = Vec::with_capacity(k.len());
+                for &i in k {
+                    let (a, b, grenze) = strecken[i];
+                    for (t0, t1, _) in self.teile(a, b) {
+                        let q = [lerp2(a, b, t0), lerp2(a, b, t1)]
+                            .map(|p| vec3(p[0], p[1], self.hoehe(p).unwrap_or(mittel)));
+                        v.push((q, grenze));
+                    }
+                }
+                v
+            })
+            .collect();
         self.unterlage = u
             .into_iter()
             .enumerate()
