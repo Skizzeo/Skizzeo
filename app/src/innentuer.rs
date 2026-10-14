@@ -15,6 +15,7 @@
 //! Hier steht die reine Rechnung; Maus und Szene in `oeffnung_app.rs`.
 
 use crate::measure_input::{opens, InputOutcome, MeasureInput};
+use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
 use sk_model::bemassung::{Aussenbezug, Kettenart, Stil};
@@ -169,7 +170,7 @@ fn flaechenseite(f: &OuterFace) -> FaceSide {
 /// (Review #99 B1).
 pub type Koerper<'a> = &'a dyn Fn(RunId) -> Option<WallChain>;
 
-/// Vorfilter für [`treffer`] (mm): So weit darf eine Wandfläche von der
+/// Vorfilter für [`wand_unter`] (mm): So weit darf eine Wandfläche von der
 /// Bezugslinie ihres Zuges liegen.
 pub(crate) const DICKE: f64 = 1000.0;
 
@@ -182,9 +183,9 @@ pub(crate) fn nah(pts: &[Vec3], p: Vec3, rand: f64) -> bool {
     p.x >= lo.0 - rand && p.x <= hi.0 + rand && p.y >= lo.1 - rand && p.y <= hi.1 + rand
 }
 
-/// Innenwand des Geschosses `st` unter dem Grundrisspunkt `p` (Toleranz
-/// `tol` in mm): ihre Fläche, die Lage längs, ob `p` auf der Seite der
-/// Fläche liegt, und die Wanddicke. Die nächste Wandmitte gewinnt.
+/// Wie [`treffer_in`], doch unter allen Zügen des Modells mit den Körpern
+/// aus `k`: der Vergleich in den Tests.
+#[cfg(test)]
 pub fn treffer(
     m: &Model,
     k: Koerper,
@@ -192,11 +193,30 @@ pub fn treffer(
     p: Vec3,
     tol: f64,
 ) -> Option<(OuterFace, f64, bool, f64)> {
-    wand_unter(m, k, st, p, tol, |c| c == Category::InteriorWall)
+    let zuege = m.runs().ids();
+    wand_unter(m, k, st, p, tol, zuege, |c| c == Category::InteriorWall)
 }
 
-/// Wie [`treffer`] für Außenwände: Fenster und Außentür im Grundriss
-/// (Jörn 12.10. 09:26); die Fläche ist die Außenfläche.
+/// Innenwand des Geschosses `st` unter dem Grundrisspunkt `p` (Toleranz
+/// `tol` in mm): ihre Fläche, die Lage längs, ob `p` auf der Seite der
+/// Fläche liegt, und die Wanddicke. Die nächste Wandmitte gewinnt. Über das
+/// Raster der Szene (Review #158 H1): nur unter den Zügen, deren Quader bis
+/// `tol` an `p` reicht, statt über alle Züge des Modells.
+pub fn treffer_in(
+    scene: &Scene,
+    st: StoreyId,
+    p: Vec3,
+    tol: f64,
+) -> Option<(OuterFace, f64, bool, f64)> {
+    let k = |r| scene.koerper(r);
+    let zuege = zuege_bei(scene, p, tol);
+    wand_unter(scene.model(), &k, st, p, tol, zuege, |c| {
+        c == Category::InteriorWall
+    })
+}
+
+/// Wie [`treffer_aussen_in`] unter allen Zügen des Modells.
+#[cfg(test)]
 pub fn treffer_aussen(
     m: &Model,
     k: Koerper,
@@ -204,21 +224,63 @@ pub fn treffer_aussen(
     p: Vec3,
     tol: f64,
 ) -> Option<(OuterFace, f64, bool, f64)> {
-    wand_unter(m, k, st, p, tol, Category::is_outer_wall)
+    let zuege = m.runs().ids();
+    wand_unter(m, k, st, p, tol, zuege, Category::is_outer_wall)
 }
 
-/// Wand des Geschosses `st` mit einer Kategorie nach `art` unter `p`.
+/// Wie [`treffer_in`] für Außenwände: Fenster und Außentür im Grundriss
+/// (Jörn 12.10. 09:26); die Fläche ist die Außenfläche.
+pub fn treffer_aussen_in(
+    scene: &Scene,
+    st: StoreyId,
+    p: Vec3,
+    tol: f64,
+) -> Option<(OuterFace, f64, bool, f64)> {
+    let k = |r| scene.koerper(r);
+    let zuege = zuege_bei(scene, p, tol);
+    wand_unter(
+        scene.model(),
+        &k,
+        st,
+        p,
+        tol,
+        zuege,
+        Category::is_outer_wall,
+    )
+}
+
+/// Züge der Szene, deren Quader bis `tol` an `p` reicht, aufsteigend wie
+/// [`Model::runs`]. Eine Fläche, auf die [`wand_unter`] `p` nimmt, ist
+/// eine Seite des Körpers ihres Zugs, und `p` liegt höchstens `tol` neben
+/// ihr; der Körper steckt im Quader.
+fn zuege_bei(scene: &Scene, p: Vec3, tol: f64) -> Vec<RunId> {
+    let r = tol;
+    let mut zuege: Vec<RunId> = scene
+        .zuege_im((p.x - r, p.y - r), (p.x + r, p.y + r))
+        .map(|(id, ..)| id)
+        .collect();
+    zuege.sort_by_key(|id| id.index());
+    zuege.dedup();
+    zuege
+}
+
+/// Wand des Geschosses `st` mit einer Kategorie nach `art` unter `p`, unter
+/// den Zügen `zuege` (aufsteigend; bei gleichem Abstand gewinnt der erste).
 fn wand_unter(
     m: &Model,
     k: Koerper,
     st: StoreyId,
     p: Vec3,
     tol: f64,
+    zuege: impl IntoIterator<Item = RunId>,
     art: impl Fn(Category) -> bool,
 ) -> Option<(OuterFace, f64, bool, f64)> {
     let p = vec3(p.x, p.y, 0.0);
     let mut best: Option<(f64, (OuterFace, f64, bool, f64))> = None;
-    for (id, run) in m.runs().iter() {
+    for id in zuege {
+        let Some(run) = m.run(id) else {
+            continue;
+        };
         // Das Bauteil erst bei Zügen nahe `p` (Review #140, Zugschritt)
         if run.storey != st || !nah(&run.points, p, tol + DICKE) {
             continue;
@@ -288,12 +350,34 @@ impl Innentuer {
         self.bezug = self.bezug.next();
     }
 
+    /// Wie [`Innentuer::suchen_in`], die Wand über alle Züge des Modells
+    /// ([`treffer`]).
+    #[cfg(test)]
+    pub fn suchen(&mut self, m: &Model, k: Koerper, st: StoreyId, p: Vec3, tol: f64, z: f64) {
+        let wand = treffer(m, k, st, p, tol);
+        self.zeigen(m, k, wand, (p, tol, z));
+    }
+
     /// Vorschau für den Grundrisspunkt `p` im Geschoss `st`, gezeichnet in
     /// Höhe `z`; `None` neben jeder Innenwand oder wenn die Tür dort nicht
-    /// in die Wandfläche passt.
-    pub fn suchen(&mut self, m: &Model, k: Koerper, st: StoreyId, p: Vec3, tol: f64, z: f64) {
-        self.ort = Some((p, tol, z));
-        self.hover = self.vorschau(m, k, st, p, tol, z);
+    /// in die Wandfläche passt. Die Wand über das Raster der Szene
+    /// ([`treffer_in`], Review #158 H1).
+    pub fn suchen_in(&mut self, scene: &Scene, st: StoreyId, p: Vec3, tol: f64, z: f64) {
+        let wand = treffer_in(scene, st, p, tol);
+        self.zeigen(scene.model(), &|r| scene.koerper(r), wand, (p, tol, z));
+    }
+
+    /// Vorschau an der Wand `wand` für die Suche `ort` (Punkt, Toleranz,
+    /// Zeichenhöhe).
+    fn zeigen(
+        &mut self,
+        m: &Model,
+        k: Koerper,
+        wand: Option<(OuterFace, f64, bool, f64)>,
+        ort: (Vec3, f64, f64),
+    ) {
+        self.ort = Some(ort);
+        self.hover = wand.and_then(|w| self.vorschau(m, k, w, ort.2));
         // Fort von der Innenwand: die Eingabe hat keine Tür mehr
         if self.hover.is_none() {
             self.eingabe = None;
@@ -301,9 +385,9 @@ impl Innentuer {
     }
 
     /// Sucht an der letzten Stelle neu (nach Tab, Mausrad oder Klick).
-    pub fn nochmal(&mut self, m: &Model, k: Koerper, st: StoreyId) {
+    pub fn nochmal_in(&mut self, scene: &Scene, st: StoreyId) {
         if let Some((p, tol, z)) = self.ort {
-            self.suchen(m, k, st, p, tol, z);
+            self.suchen_in(scene, st, p, tol, z);
         }
     }
 
@@ -420,12 +504,9 @@ impl Innentuer {
         &mut self,
         m: &Model,
         k: Koerper,
-        st: StoreyId,
-        p: Vec3,
-        tol: f64,
+        (face, u, auf_flaeche, dicke): (OuterFace, f64, bool, f64),
         z: f64,
     ) -> Option<Vorschau> {
-        let (face, u, auf_flaeche, dicke) = treffer(m, k, st, p, tol)?;
         let fs = flaechenseite(&face);
         // Raum auf der Seite des Cursors, zur Pfadrichtung (= Flächenrichtung)
         let raum = if auf_flaeche { fs } else { fs.other() };
@@ -1186,6 +1267,89 @@ mod tests {
         stil.bezug = Aussenbezug::Rohbau;
         assert!(m.set_massstil(stil));
         assert_eq!(bei(&mut t, &m, 4980.0, 2000.0).1, 4);
+        // Wechsel auf eine andere Wand und zurück (Review #158 H2)
+        let k = |r| m.chain(r);
+        t.suchen(&m, &k, st, vec3(7000.0, 4020.0, 0.0), 30.0, 1500.0);
+        assert_eq!(t.hover.as_ref().map(|v| v.face.run), Some(quer));
+        assert_eq!(t.neu_gerechnet, 5);
+        assert_eq!(bei(&mut t, &m, 4980.0, 2000.0), ((315.0, 4000.0 - d), 6));
+    }
+
+    /// Review #158 H2: Der Bezug der Außenmaße zählt im Schlüssel der
+    /// gemerkten Kette auch bei gleichem Modellstand. „Abbrechen“ im
+    /// Einstellungsfenster setzt die Revision zurück, die nächste Änderung
+    /// bekommt dieselbe Nummer wie ein verworfener Stand. Im Fenster selbst
+    /// sucht die Tür nicht (modal); der Test tut es, um den Fall zu bauen.
+    #[test]
+    fn kette_bezug_ohne_revision() {
+        let (m, st) = haus_mit_putz();
+        let d = 102.5;
+        let mut s = Scene::with_model(m);
+        let mut t = Innentuer::default();
+        let bei = |t: &mut Innentuer, s: &Scene| {
+            t.suchen_in(s, st, vec3(4980.0, 2000.0, 0.0), 30.0, 1500.0);
+            (spanne_y(&t.hover.clone().unwrap()), t.neu_gerechnet)
+        };
+        assert_eq!(bei(&mut t, &s), ((330.0, 4000.0 - d), 1));
+        let rohbau = |m: &mut Model| {
+            let mut stil = m.massstil().clone();
+            stil.bezug = Aussenbezug::Rohbau;
+            m.set_massstil(stil)
+        };
+        let rev = s.begin_settings();
+        assert!(s.edit_attr(rohbau));
+        assert_eq!(bei(&mut t, &s), ((315.0, 4000.0 - d + 15.0), 2));
+        s.cancel_settings(rev);
+        assert_eq!(s.model().revision(), rev);
+        // Eine andere Änderung am Stil, Bezug bleibt das ganze Wandpaket:
+        // dieselbe Revision wie der verworfene Stand
+        assert!(s.edit_model("Stil", |m| {
+            let mut stil = m.massstil().clone();
+            stil.farbe = [1, 2, 3];
+            m.set_massstil(stil)
+        }));
+        assert_eq!(
+            t.merk.as_ref().map(|g| g.revision),
+            Some(s.model().revision())
+        );
+        assert_eq!(bei(&mut t, &s), ((330.0, 4000.0 - d), 3));
+    }
+
+    /// Review #158 H1: Der Fang über das Raster der Szene findet auf einem
+    /// Gitter über dem Haus dieselbe Wand wie die Suche über alle Züge, für
+    /// Innen- und Außenwände, auch an einer schrägen Wand und am T-Stoß.
+    #[test]
+    fn treffer_ueber_raster() {
+        let (mut m, st) = haus_mit_putz();
+        let set = m.defaults().interior_wall;
+        m.add_wall_run(
+            &[vec3(5000.0, 6000.0, 0.0), vec3(8000.0, 4000.0, 0.0)],
+            false,
+            RefSide::Center,
+            st,
+            set,
+            Category::InteriorWall,
+        )
+        .unwrap();
+        let s = Scene::with_model(m);
+        let k = |r| s.koerper(r);
+        let (mut innen, mut aussen) = (0, 0);
+        for i in 0..=110 {
+            for j in 0..=90 {
+                let p = vec3(
+                    -500.0 + i as f64 * 100.0 + 7.0,
+                    -500.0 + j as f64 * 100.0 + 3.0,
+                    0.0,
+                );
+                let a = treffer(s.model(), &k, st, p, 30.0);
+                assert_eq!(treffer_in(&s, st, p, 30.0), a, "{p:?}");
+                innen += a.is_some() as usize;
+                let b = treffer_aussen(s.model(), &k, st, p, 30.0);
+                assert_eq!(treffer_aussen_in(&s, st, p, 30.0), b, "{p:?}");
+                aussen += b.is_some() as usize;
+            }
+        }
+        assert!(innen > 100 && aussen > 100, "{innen} {aussen}");
     }
 
     /// Review W49 H2: Am Knick eines Innenwandzugs reicht die Kette außen
