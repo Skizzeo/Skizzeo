@@ -42,6 +42,11 @@ pub struct Oberflaeche {
 /// Unter dieser Fläche (m²) gilt ein Stück als leer.
 const LEER: f64 = 1e-10;
 
+/// Unter diesem Höhenunterschied (m) gelten zwei Ebenen an einer Ecke als
+/// gleich hoch: Gleiche Ebenen (zwei Kanten in einer Flucht) teilen sonst
+/// am Rundungsrauschen in Stücke, die sich decken (Geometrie #183).
+const GLEICH: f64 = 1e-9;
+
 /// Höchstens so viele Schraffen je Planung.
 const MAX_SCHRAFFEN: usize = 100_000;
 
@@ -224,7 +229,7 @@ fn teilen(
                     .into_iter()
                     .flat_map(|s| {
                         let w: Vec<f64> = s.iter().map(|&q| f(q)).collect();
-                        if w.iter().all(|&x| x >= 0.0) || w.iter().all(|&x| x <= 0.0) {
+                        if w.iter().all(|&x| x >= -GLEICH) || w.iter().all(|&x| x <= GLEICH) {
                             return vec![s];
                         }
                         [halbieren(&s, f), halbieren(&s, |q| -f(q))]
@@ -589,6 +594,30 @@ mod tests {
         let umfang = 400.0 * 2.0 * 4.0 * (std::f64::consts::PI / 400.0).sin();
         assert_eq!(s.len(), (umfang / 0.5).round() as usize);
         assert_eq!(lang, s.len().div_ceil(2));
+    }
+
+    #[test]
+    fn kanten_in_einer_flucht() {
+        // Zwischenpunkte: die Böschungen der Kanten einer Flucht haben
+        // dieselbe Ebene, auf Hügeln mit Gefälle der Fläche
+        let u =
+            gelaende(|x, y| 10.0 + 0.05 * x - 0.03 * y + 0.4 * (x / 3.0).sin() * (y / 4.0).cos());
+        let ring = [
+            [0.0, 0.0],
+            [5.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 8.0],
+            [6.5, 8.0],
+            [6.5, 2.0],
+            [5.8, 2.0],
+            [5.8, 8.0],
+            [5.799, 8.0],
+            [0.0, 8.0],
+        ];
+        let p = Planung::neu(&baustein(&ring, [10.0, 0.2, 0.05], 1.5), &u);
+        let o = oberflaeche(&u, &[&p]);
+        deckt(&u, &o);
+        wie_hoehe(&u, &[&p], &o);
     }
 
     #[test]
