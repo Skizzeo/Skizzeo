@@ -205,12 +205,29 @@ pub fn treffer(
         let p = o + d * t;
         let (u, z) = ((p - s.a).dot(dir), p.z);
         let innen = (0.0..=len).contains(&u) && (s.z0..=s.z1).contains(&z);
-        let seiten = seiten_px(cam, w, h, (x, y), s);
         let px = if halten == Some(s.id) {
             HALTEN_PX
         } else {
             GRIFF_PX
         } * scale;
+        // Liegt schon die Kugel um das Band weiter vom Strahl, als die Maus
+        // in ihrer größten Tiefe greift, liegt es im Bild weiter weg
+        let mitte = vec3(
+            (s.a.x + s.b.x) * 0.5,
+            (s.a.y + s.b.y) * 0.5,
+            (s.z0 + s.z1) * 0.5,
+        );
+        let r = 0.5 * len.hypot(s.z1 - s.z0);
+        let v = mitte - o;
+        let quer = (v - d * v.dot(d)).length();
+        if !innen && quer - r > px * mm_quer(cam, mitte + cam.forward() * r, h) {
+            debug_assert!(seiten_px(cam, w, h, (x, y), s)
+                .iter()
+                .flatten()
+                .all(|&a| a > px));
+            return None;
+        }
+        let seiten = seiten_px(cam, w, h, (x, y), s);
         let nah = seiten
             .iter()
             .flatten()
