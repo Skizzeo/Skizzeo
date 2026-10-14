@@ -67,6 +67,11 @@ pub fn raeume_mit(
 fn raum(model: &Model, platten: &Platten, roh: Rohbau) -> Option<(ElementId, RoomQto)> {
     let id = roh.form.raum?;
     let aus = RaumAusbau::fuer_in(model, &roh, &platten.geschosse)?;
+    // Ohne Ausbautypen im Projekt fehlt der Raum, auch wenn der Putz der
+    // Wandtypen Eckschienen ergäbe (wie die Grundfläche, Review #182 B1)
+    if !aus.mit_typen() {
+        return None;
+    }
     let (_, m, _) = fertigmass(model, &roh, &aus);
     let kanten: Vec<&Kante> = roh.kanten().collect();
     // Unter dem Boden: Sohlplatte oder Decke, einmal je Raum
@@ -473,7 +478,7 @@ mod tests {
     fn grundflaeche_wie_im_mengenblatt() {
         use crate::flaechen::{grundflaeche, grundflaeche_fertig};
         use sk_model::model::BATH_SPACE_GUID;
-        let gleich = |m: &Model, bad: bool| {
+        let gleich = |m: &Model, bad: bool, putz: f64| {
             for (g, _) in m.storeys().iter() {
                 let mengen = raeume(m, g);
                 for f in formen(m, g) {
@@ -486,13 +491,14 @@ mod tests {
                         // Putz 15 mm und Fliese 10 mm statt Putz 15 mm
                         assert!(grundflaeche(&f) - ist > 0.0, "Fliese abgezogen");
                     } else {
-                        assert!((ist - grundflaeche(&f)).abs() < 1.0, "Putz 15 mm");
+                        let soll = f.flaeche - f.umfang * putz + 4.0 * putz * putz;
+                        assert!((ist - soll).abs() < 1.0, "Putz {putz} mm: {ist} {soll}");
                     }
                 }
             }
         };
         let mut m = haus();
-        gleich(&m, false);
+        gleich(&m, false, 15.0);
         let g = m.storeys().iter().next().unwrap().0;
         let id = m.spaces(g)[0];
         m.begin("Bad");
@@ -500,7 +506,20 @@ mod tests {
         assert!(m.set_space(id, |s| s.nutzung = Some(BATH_SPACE_GUID)));
         assert!(crate::ausbau::typen_anlegen(&mut m, id));
         m.commit();
-        gleich(&m, true);
+        gleich(&m, true, 15.0);
+        // Vorlage ohne Wandbekleidung, Boden im Projekt: Das Mengenblatt
+        // zeigt den Raum mit der Rohbaufläche, die Grundfläche ebenso
+        // (Review #182 B1)
+        let mut m = haus();
+        m.begin("Ohne Wand");
+        let mut w = m
+            .space_type(sk_model::model::DEFAULT_SPACE_GUID)
+            .unwrap()
+            .clone();
+        (w.wall, w.tiles) = (None, None);
+        assert!(m.put_space_type(w));
+        m.commit();
+        gleich(&m, false, 0.0);
         // Ohne Ausbau im Projekt: wie bisher
         let m = crate::raumliste::tests::haus_roh();
         for (g, _) in m.storeys().iter() {

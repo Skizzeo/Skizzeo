@@ -54,8 +54,10 @@ pub fn grundflaeche(f: &RaumForm) -> f64 {
 /// Wandfliese, [`crate::ausbau::dicken_der_form`]), zerfällt er, 0 wie
 /// dort; sonst [`grundflaeche`]. Was außer der Form gelesen wird, nennt
 /// [`crate::ausbau::dicken_der_form`]: Nutzung des Raums, Raumvorlage,
-/// Typen von Wandbekleidung und Wandfliesen, Ausbau der Wandtypen; keine
-/// Platten, Öffnungen oder Höhen.
+/// Typen des Ausbaus, Ausbau der Wandtypen; keine Platten, Öffnungen oder
+/// Höhen. Abweichung: Für Räume ohne Ausbau rechnet die Raumliste des
+/// IFC-Exports (`raumliste::raum`) das Fertigmaß bisher ohne Putz, hier gilt
+/// der Putz der Vorgabe (Review #182 H1, mit IFC zu klären).
 pub fn grundflaeche_fertig(m: &Model, f: &RaumForm) -> f64 {
     let Some(d) = crate::ausbau::dicken_der_form(m, f) else {
         return grundflaeche(f);
