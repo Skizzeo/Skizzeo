@@ -367,7 +367,9 @@ impl<'p> Lauf<'p> {
 
     /// Einen Inhaltsstrom mit seinen Ressourcen lesen.
     fn lesen(&mut self, d: &[u8], res: &Verz, tiefe: usize) {
-        let mut l = Leser::neu(d, 0);
+        // Felder und Verzeichnisse zehren vom Budget der Datei (Review #128 N1)
+        let pdf = self.pdf;
+        let mut l = Leser::mit_budget(d, 0, pdf.budget());
         let mut ops: Vec<Objekt> = Vec::new();
         while let Some(w) = l.wort() {
             let befehl = match w {

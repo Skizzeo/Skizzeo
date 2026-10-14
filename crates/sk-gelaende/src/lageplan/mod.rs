@@ -670,7 +670,7 @@ pub fn auswerten(seite: Seite, erzeuger_text: &str) -> Lageplan {
 }
 
 /// Hinweis, wenn die Datei mehr als das Budget des PDF-Lesers wollte.
-pub const ZU_GROSS: &str = "Die Datei verlangt über 512 MB entpackter Daten; Skizzeo hat dort aufgehört, der Lageplan kann unvollständig sein.";
+pub const ZU_GROSS: &str = "Die Datei verlangt mehr Daten, als Skizzeo liest (64 MB je Strom, 256 MB insgesamt); dort fehlt etwas, der Lageplan kann unvollständig sein.";
 
 /// PDF-Lageplan lesen und auswerten (erste Seite).
 pub fn lesen(roh: &[u8]) -> Result<Lageplan, String> {

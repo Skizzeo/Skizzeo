@@ -3,7 +3,7 @@
 //! `/Differences`, Type0 mit CMap (Codebereiche, CIDs) und `/W`; eine
 //! Unicode-Tabelle (`/ToUnicode`, bfchar und bfrange) geht immer vor.
 
-use crate::pdf::objekt::{Leser, Objekt, Verz, Wort};
+use crate::pdf::objekt::{Budget, Leser, Objekt, Verz, Wort, ELEMENT};
 use crate::pdf::Pdf;
 use std::collections::BTreeMap;
 
@@ -113,8 +113,9 @@ fn utf16(t: &[u8]) -> String {
 /// braucht der Lageplan nicht (Review W37 B5).
 const EINTRAEGE: usize = 1 << 20;
 
-fn cmap(d: &[u8], s: &mut Schrift) {
-    let mut l = Leser::neu(d, 0);
+/// Jeder gelesene Wert zehrt vom `budget` der Datei (Review #128 N1).
+fn cmap(d: &[u8], s: &mut Schrift, budget: &Budget) {
+    let mut l = Leser::mit_budget(d, 0, budget);
     let mut schritte = 0usize;
     let mut werte: Vec<Objekt> = Vec::new();
     let mut art: &[u8] = b"";
@@ -122,6 +123,9 @@ fn cmap(d: &[u8], s: &mut Schrift) {
         match w {
             Wort::Objekt(o) => {
                 if !art.is_empty() {
+                    if budget.kosten(ELEMENT).is_none() {
+                        break;
+                    }
                     werte.push(o);
                 }
             }
@@ -222,6 +226,45 @@ fn cmap(d: &[u8], s: &mut Schrift) {
     }
 }
 
+/// Breiten einer CID-Schrift aus `/W`: `c [b b …]` oder `c1 c2 b`. Einmal
+/// über das Feld, ohne es zu kopieren; Bezüge löst es erst beim Gebrauch
+/// auf, nach [`EINTRAEGE`] Breiten oder 3 · [`EINTRAEGE`] Elementen hört es
+/// auf (Review #128 N1).
+fn breiten_cid(pdf: &Pdf, w: &[Objekt], s: &mut Schrift) {
+    let zahl = |o: &Objekt| pdf.aufgeloest(o).zahl();
+    let cid = |c: i64| c.clamp(0, u32::MAX as i64) as u32;
+    let mut w = w.iter().take(3 * EINTRAEGE).map(|o| pdf.aufgeloest(o));
+    let mut schritte = 0usize;
+    while let (Some(c0), Some(zweit)) = (w.next(), w.next()) {
+        if schritte >= EINTRAEGE {
+            break;
+        }
+        let Some(c0) = c0.ganz() else { break };
+        match zweit.as_ref() {
+            Objekt::Feld(f) => {
+                for (k, b) in f.iter().enumerate().take(65_536) {
+                    schritte += 1;
+                    if let Some(b) = zahl(b) {
+                        s.breiten.insert(cid(c0.saturating_add(k as i64)), b);
+                    }
+                }
+            }
+            o => {
+                let (Some(c1), Some(b)) = (o.ganz(), w.next().and_then(|b| b.zahl())) else {
+                    break;
+                };
+                for c in c0.max(0)..=c1.min(c0.saturating_add(65_535)) {
+                    schritte += 1;
+                    if schritte > EINTRAEGE {
+                        break;
+                    }
+                    s.breiten.insert(cid(c), b);
+                }
+            }
+        }
+    }
+}
+
 impl Schrift {
     /// Schrift aus ihrem Verzeichnis.
     pub fn neu(pdf: &Pdf, v: &Verz) -> Schrift {
@@ -235,7 +278,7 @@ impl Schrift {
             // eigene CMap; Identity-H und andere fertige CMaps: zwei Bytes je Code
             if let Objekt::Strom(st) = pdf.aufloesen(v.get("Encoding").unwrap_or(&Objekt::Null)) {
                 if let Some(d) = pdf.daten(&st) {
-                    cmap(&d, &mut s);
+                    cmap(&d, &mut s, pdf.budget());
                 }
             }
             if s.bereiche.is_empty() {
@@ -247,45 +290,17 @@ impl Schrift {
                 .and_then(|f| f.first().map(|o| pdf.aufloesen(o)));
             if let Some(cid) = nachfahr.as_ref().and_then(Objekt::verz) {
                 s.standard_breite = cid.get("DW").and_then(zahl).unwrap_or(1000.0);
-                if let Some(Objekt::Feld(w)) = cid.get("W").map(|o| pdf.aufloesen(o)) {
-                    let w: Vec<Objekt> = w.iter().map(|o| pdf.aufloesen(o)).collect();
-                    let mut i = 0;
-                    let cid = |c: i64| c.clamp(0, u32::MAX as i64) as u32;
-                    let mut schritte = 0usize;
-                    while i + 1 < w.len() && schritte < EINTRAEGE {
-                        let Some(c0) = w[i].ganz() else { break };
-                        match &w[i + 1] {
-                            Objekt::Feld(f) => {
-                                for (k, b) in f.iter().enumerate().take(65_536) {
-                                    schritte += 1;
-                                    if let Some(b) = zahl(b) {
-                                        s.breiten.insert(cid(c0.saturating_add(k as i64)), b);
-                                    }
-                                }
-                                i += 2;
-                            }
-                            o => {
-                                let (Some(c1), Some(b)) = (o.ganz(), w.get(i + 2).and_then(zahl))
-                                else {
-                                    break;
-                                };
-                                for c in c0.max(0)..=c1.min(c0.saturating_add(65_535)) {
-                                    schritte += 1;
-                                    if schritte > EINTRAEGE {
-                                        break;
-                                    }
-                                    s.breiten.insert(cid(c), b);
-                                }
-                                i += 3;
-                            }
-                        }
+                if let Some(w) = cid.get("W").map(|o| pdf.aufgeloest(o)) {
+                    if let Objekt::Feld(w) = w.as_ref() {
+                        breiten_cid(pdf, w, &mut s);
                     }
                 }
             }
         } else {
             s.kodierung = (0..=255u8).map(win_ansi).collect();
             let erst = v.get("FirstChar").and_then(zahl).unwrap_or(0.0).max(0.0) as u32;
-            if let Some(Objekt::Feld(w)) = v.get("Widths").map(|o| pdf.aufloesen(o)) {
+            let w = v.get("Widths").map(|o| pdf.aufgeloest(o));
+            if let Some(Objekt::Feld(w)) = w.as_deref() {
                 for (k, b) in w.iter().enumerate().take(256) {
                     if let Some(b) = zahl(b) {
                         s.breiten.insert(erst.saturating_add(k as u32), b);
@@ -321,7 +336,7 @@ impl Schrift {
         if let Objekt::Strom(st) = pdf.aufloesen(v.get("ToUnicode").unwrap_or(&Objekt::Null)) {
             if let Some(d) = pdf.daten(&st) {
                 let mut u = Schrift::default();
-                cmap(&d, &mut u);
+                cmap(&d, &mut u, pdf.budget());
                 s.unicode = u.unicode;
             }
         }
@@ -385,6 +400,7 @@ mod tests {
     #[test]
     fn cmap_bfchar_bfrange_und_bereiche() {
         let mut s = Schrift::default();
+        let budget = Budget::neu(1 << 20);
         cmap(
             b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap
               1 begincodespacerange <0000> <FFFF> endcodespacerange
@@ -393,6 +409,7 @@ mod tests {
               1 begincidrange <0100> <0102> 7 endcidrange
               endcmap",
             &mut s,
+            &budget,
         );
         assert_eq!(s.bereiche, vec![(2, 0, 0xFFFF)]);
         assert_eq!(s.unicode[&3], " ");
