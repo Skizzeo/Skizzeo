@@ -191,6 +191,13 @@ impl Abfrage {
         best
     }
 
+    /// Tiefste und höchste Höhe des Netzes; `None` ohne Punkte.
+    pub fn hoehenbereich(&self) -> Option<(f64, f64)> {
+        let mut it = self.punkte.iter().map(|p| p[2]);
+        let z = it.next()?;
+        Some(it.fold((z, z), |(lo, hi), z| (lo.min(z), hi.max(z))))
+    }
+
     /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
     /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
     /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.

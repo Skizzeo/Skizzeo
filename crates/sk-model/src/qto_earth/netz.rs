@@ -129,6 +129,8 @@ impl ErdNetz {
             flaeche: e[i].flaeche * 1e6,
             ueber: e[i].ueber * 1e9,
             unter: e[i].unter * 1e9,
+            flaeche_ueber: e[i].flaeche_ueber * 1e6,
+            flaeche_unter: e[i].flaeche_unter * 1e6,
             steil: e[i].steil,
         })
     }
