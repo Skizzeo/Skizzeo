@@ -1778,7 +1778,7 @@ mod tests {
         let innen = haeuser(&mut s, 0, 2);
         s.set_view_finish(2, true);
         let st = s.active_storey();
-        let mut z = (0, 0);
+        let mut z = (0, 0, 0);
         neu(&mut s, &mut z);
         let r = s.model().spaces(st)[0];
         let zug = s.build_count(innen[0]);
@@ -1788,7 +1788,8 @@ mod tests {
             hoehe: None,
         };
         assert!(s.raeume_aendern("Raumbuch ändern", |m| m.set_space_finish(r, a).is_ok()));
-        assert_eq!(neu(&mut s, &mut z), (3, 1));
+        let (geprueft, gebaut, _) = neu(&mut s, &mut z);
+        assert_eq!((geprueft, gebaut), (3, 1));
         assert_eq!(s.build_count(innen[0]), zug, "kein Wandzug neu");
     }
 
