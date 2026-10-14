@@ -360,12 +360,17 @@ impl Raumliste {
     /// ihre Anker davor und danach. Bis 16 Räume kommen je einzeln an ihre
     /// Stelle (je ein Verschieben des Rests der Liste), mehr in einem Gang
     /// über die Liste (Review #175 B1, H-175g). `None` ohne Änderung an der
-    /// Liste, wenn `ids` mehr als 16 und mindestens halb so viele Kennungen
-    /// hat, wie Räume in der Liste stehen (auch Räume anderer Geschosse und
-    /// doppelte gezählt): dann ist neu sammeln nicht langsamer, und schon
-    /// das Nachschlagen aller Kennungen fällt weg (Review H-175f).
+    /// Liste, wenn mehr als 16 und mindestens halb so viele Räume von `ids`
+    /// auf `g` liegen, wie Räume in der Liste stehen (doppelte gezählt):
+    /// dann ist neu sammeln nicht langsamer (Review H-175f). Räume anderer
+    /// Geschosse zählen nicht (Review H-181a); das kostet ein Nachschlagen
+    /// je Kennung, die Schlüssel erst danach.
     fn flicken(&mut self, m: &Model, g: StoreyId, ids: &[ElementId]) -> Option<Vec<Vec3>> {
-        if ids.len() > 16 && 2 * ids.len() >= self.raeume.len() {
+        let auf_g = ids
+            .iter()
+            .filter(|&&id| m.element(id).is_some_and(|e| e.storey == g))
+            .count();
+        if auf_g > 16 && 2 * auf_g >= self.raeume.len() {
             return None;
         }
         let ids: HashSet<ElementId> = ids.iter().copied().collect();
@@ -1695,6 +1700,55 @@ mod tests {
         assert!(m.set_space(x, |s| s.name = "Frei".into()));
         wie_neu(&mut e, &m);
         assert_eq!(e.raumlisten(), n0 + 2, "beide Geschosse neu");
+    }
+
+    /// Review H-181a: Ein Schritt an vielen Räumen eines Geschosses sammelt
+    /// nur dessen Räume neu, nicht die eines anderen mit wenigen Räumen.
+    #[test]
+    fn viele_raeume_im_anderen_geschoss() {
+        use sk_model::LevelKind;
+        let mut m = Model::new();
+        let b = m.add_building(2);
+        let gs: Vec<StoreyId> = m
+            .levels_in(Some(b))
+            .into_iter()
+            .filter(|&g| m.storey(g).is_some_and(|s| s.kind == LevelKind::Storey))
+            .collect();
+        let (eg, og) = (gs[0], gs[1]);
+        let aw = m.defaults().exterior_wall;
+        for g in [eg, og] {
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            m.add_wall_run(&pts, true, RefSide::Left, g, aw, Category::ExteriorWall)
+                .unwrap();
+        }
+        crate::abgleichen(&mut m, &[eg, og]);
+        m.begin("Räume");
+        let viele: Vec<ElementId> = (0..20)
+            .map(|i| {
+                let p = vec3(20000.0 + 1000.0 * i as f64, 0.0, 0.0);
+                m.add_space(og, sk_model::Space::neu(p, format!("R{i}")))
+            })
+            .collect();
+        m.commit();
+        let mut e = Erkennung::default();
+        for g in [eg, og] {
+            e.raumformen(&m, &m, g);
+        }
+        let n0 = e.raumlisten();
+        m.begin("Namen");
+        for &id in &viele {
+            assert!(m.set_space(id, |s| s.name.push('x')));
+        }
+        m.commit();
+        for g in [eg, og] {
+            e.raumformen(&m, &m, g);
+        }
+        assert_eq!(e.raumlisten(), n0 + 1, "nur das OG neu gesammelt");
     }
 
     /// Review H-175h: Im offenen Schritt Stempel ziehen, einen Raum anlegen
