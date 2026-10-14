@@ -90,8 +90,8 @@ Neu | „Einlesen“ legt sie im Ordner „Erweiterungen“ ab; setzen im Bautei
 Neue Version | die Rückfrage nennt je gesetztem Bauteil, was sich ändert; erst „Aktualisieren“ ändert das Projekt
 Neues Gewerk | neue Bauteilart oder Gewerk ohne Titel: eigene Rückfrage mit der Folge; „Trotzdem einlesen“ legt keinen Titel an
 Firmenkatalog | unter „Für den Firmenkatalog“ je neuer Bauleistung und neuem Artikel ein Haken; ohne Haken gilt der Satz nur im Projekt
-Einzelplatz | angehakte Sätze kommen gleich in den Firmenkatalog, als unbestätigt markiert
-Mit Kennwort | angehakte Sätze gehen als Vorschlag in den Entwurf; unter „Verwaltung …“ übernehmen oder ablehnen, freigeben erst danach
+Neue Sätze | jede neue Bauleistung und jeder neue Artikel der Datei kommt in den Firmenkatalog
+Einzelplatz oder Kennwort | am Einzelplatz kommen die Sätze für den Firmenkatalog gleich hinein, als unbestätigt markiert; mit Verwaltungskennwort gehen sie als Vorschlag in den Entwurf, unter „Verwaltung …“ übernehmen oder ablehnen, freigeben erst danach
 Eigener Baustoff | wird mit dem ersten gesetzten Bauteil ein Baustoff des Projekts; Rückgängig nimmt ihn mit heraus
 Preise | Preise aus der Datei gelten, bis der Firmenkatalog eigene hat; das LV nennt die Herkunft im Detail der Position
 
@@ -387,6 +387,14 @@ Nach einem Absturz | **Enter** stellt die Sicherung her, **Esc** verwirft sie
 Kachel wählen | **←** / **→**
 Alle Sicherungen | Dateimenü › „Sicherungen …“; ein Klick öffnet eine
 Scheitert es | Karte „Automatisches Sichern klappt gerade nicht.“ mit „Jetzt speichern“
+
+[thema] id=ausbaustufen titel="Ausbaustufen"
+Basis | Zeichnen, Bauteile, Grundriss, Schnitte, Ansichten, Bemaßung, IFC, Bauteilkatalog, Baustoffe und Firmenkatalog
+Pro | dazu das Mengenfenster: Mengen nach VOB/C und Bestellmengen
+Ultimate | dazu Kosten mit Material und Lohn, „Verwaltung …“ für Preise und Firmenwerte, AVA mit Leistungsverzeichnis
+Geländemodul | Zusatz zu jeder Stufe: echtes Gelände aus Höhenaufmaß und Lageplan; seine Erdmengen ab Pro
+Gesperrt | steht grau da, daneben die Stufe, ab der es das gibt: Knöpfe, Zeilen im Dateimenü und im Rechtsklick-Menü, Karten im Mengenfenster
+Öffnen | Dateimenü › „Ausbaustufe …“
 
 [knopf]
 Gebäude | Außenwand als Polygon zeichnen; beim Schließen entsteht das ganze Haus.

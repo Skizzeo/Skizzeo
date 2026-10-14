@@ -983,20 +983,35 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
     let mitte =
         crate::polygon::centroid(pts).unwrap_or(vec3((x0 + x1) / 2.0, (y0 + y1) / 2.0, 0.0));
     let mitte = vec3(mitte.x, mitte.y, 0.0);
+    // Zellen teilen, bis keine den besten Abstand um mehr als `bis()`
+    // verbessern kann; die, die ihn noch um mehr als `scharf` verbessern
+    // könnten, kommen nach `rest`
+    let scharf = genau / 1000.0;
+    let teilen = |mut schlange: BinaryHeap<Zelle>,
+                  best: &mut Zelle,
+                  bis: &dyn Fn() -> f64,
+                  rest: &mut Vec<Zelle>| {
+        while let Some(z) = schlange.pop() {
+            if z.d > best.d {
+                *best = Zelle { h: 0.0, ..z };
+            }
+            let luft = z.hoechstens() - best.d;
+            if luft <= bis() {
+                if luft > scharf {
+                    rest.push(z);
+                }
+                continue;
+            }
+            let h = z.h / 2.0;
+            for (sx, sy) in viertel {
+                schlange.push(neu(z.c + vec3(sx * h, sy * h, 0.0), h));
+            }
+        }
+    };
     let mut best = neu(mitte, 0.0);
-    let mut schlange = raster(&neu);
-    while let Some(z) = schlange.pop() {
-        if z.d > best.d {
-            best = Zelle { h: 0.0, ..z };
-        }
-        if z.hoechstens() - best.d <= genau {
-            continue;
-        }
-        let h = z.h / 2.0;
-        for (sx, sy) in viertel {
-            schlange.push(neu(z.c + vec3(sx * h, sy * h, 0.0), h));
-        }
-    }
+    let mut rest = Vec::new();
+    teilen(raster(&neu), &mut best, &|| genau, &mut rest);
+    let erste = gerechnet.get();
 
     // Unter den Stellen mit mindestens `soll` die dem Schwerpunkt nächste,
     // gemessen mit `weit`: der Weg dorthin, geneigt um `neigung`. Am
@@ -1007,8 +1022,32 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
     // Abstand höchstens doppelt so oft wie die erste Suche, dann gilt die
     // beste Stelle bis dahin (Review #140 H1); mindestens aber [`BUDGET`]
     // durch die Zahl der Kanten, bei 40 Kanten 5.000 Mal.
-    let soll = best.d - genau.min(0.1 * best.d);
+    let soll = |d: f64| d - genau.min(0.1 * d);
     let m = neu(mitte, 0.0);
+    // Der beste Abstand liegt höchstens `genau` über `best.d`. Reicht der
+    // Schwerpunkt auch dafür, gilt er (im Rechteck immer). Sonst hängt die
+    // Stelle an `soll`; schwankte der beste Abstand beim Ziehen um `genau`,
+    // wechselte sie, wo `soll` an der halben Breite weiter Teile liegt,
+    // zwischen ihnen hin und her (Review #140 H2: U mit 1,5 m breiten
+    // Schenkeln). Darum ihn dann auf `scharf` genau, mit höchstens viermal
+    // so vielen Abständen wie bis hier und höchstens einem Viertel von
+    // [`BUDGET`] durch die Zahl der Kanten; wo der beste Abstand auf einer
+    // Linie liegt (Flur, Kreisring), reicht das nicht, dort bleibt `genau`.
+    if m.d >= soll(best.d + genau) {
+        return (m.c, m.d);
+    }
+    let kanten = pts.len() + b.inseln.iter().map(|i| i.punkte.len()).sum::<usize>();
+    let vorab = erste + (4 * erste).min(BUDGET / 4 / kanten.max(1));
+    let bis = || {
+        if gerechnet.get() > vorab {
+            genau
+        } else {
+            scharf
+        }
+    };
+    let schlange = std::mem::take(&mut rest).into_iter().collect();
+    teilen(schlange, &mut best, &bis, &mut rest);
+    let soll = soll(best.d);
     if m.d >= soll {
         return (m.c, m.d);
     }
@@ -1027,9 +1066,7 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
     };
     let mut wahl = (best.c, best.d, weit(best.c));
     let mut schlange = raster(&nah);
-    let kanten = pts.len() + b.inseln.iter().map(|i| i.punkte.len()).sum::<usize>();
-    let erste = gerechnet.get();
-    let budget = erste + (2 * erste).max(BUDGET / kanten.max(1));
+    let budget = gerechnet.get() + (2 * erste).max(BUDGET / kanten.max(1));
     while let Some(z) = schlange.pop() {
         if z.d >= soll {
             let r = weit(z.c);
@@ -1057,7 +1094,7 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
 const NEIGUNG: f64 = 0.1;
 
 /// Abstände mal Kanten, die die zweite Suche von [`innenpunkt`] mindestens
-/// rechnen darf.
+/// rechnen darf; für den genaueren besten Abstand höchstens ein Viertel.
 const BUDGET: usize = 200_000;
 
 #[cfg(test)]
@@ -1408,7 +1445,7 @@ mod tests {
         let pfeiler_quer = rechteck(3800.0, 2300.0, 4200.0, 2700.0);
         let kern = rechteck(3000.0, 3000.0, 7000.0, 7000.0);
         type Fall<'a> = (&'a str, Box<dyn Fn(f64) -> Bereich + 'a>, usize, usize);
-        let faelle: [Fall; 5] = [
+        let faelle: [Fall; 6] = [
             (
                 "Pfeiler",
                 Box::new(|z| {
@@ -1448,6 +1485,16 @@ mod tests {
                 Box::new(|z| bereich(u(8000.0, 8000.0 + z), vec![])),
                 0,
                 0,
+            ),
+            // Review #140 H2: Bei 6,0 bis 7,45 m Breite liegt `soll` an der
+            // halben Breite von Schenkeln und Steg, vorher sieben Sprünge.
+            // Einmal wechselt die Stelle in der Ecke links unten um 0,5 m
+            // die Seite, wenn der Schwerpunkt über die Diagonale wandert.
+            (
+                "U 6 bis 7,45 m",
+                Box::new(|z| bereich(u(6000.0 + z, 8000.0), vec![])),
+                1,
+                1,
             ),
         ];
         for (name, raum, ueber30, ueber300) in &faelle {
