@@ -12,8 +12,8 @@ use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, ElementKind, Tri};
 use std::collections::HashSet;
 
-/// Rand um die Schenkel (mm): So weit neben einer Kante greift die Maus
-/// noch, auch wenn der Strahl die Zelle der Öffnung knapp verfehlt.
+/// Fester Rand um die Schenkel (mm); dazu kommt je Strahl der Spielraum,
+/// in dem die Maus greift ([`Scene::kanten_strahl`]).
 const RAND: f64 = 1000.0;
 /// Abstand, um den eine Wand vor der Öffnung liegen darf (die eigene
 /// Fläche, knapp neben dem Loch).
@@ -125,24 +125,50 @@ impl Scene {
         c.solid.raycast_where(o, d, keep).map(|h| h.0)
     }
 
-    /// Läuft den Strahl `o` + t·`d` durch das Raster. `pruefe` testet einen
-    /// Schenkel und gibt den Abstand, wenn die Maus ihn greift. Ergebnis:
-    /// der nächste Schenkeltreffer und die erste deckende Wand, beide so
-    /// weit, wie sie über die Sicht entscheiden (eine Wand mehr als
+    /// Läuft den Strahl `o` + t·`d` (aus dem Auge, `d` Länge 1) durch das
+    /// Raster. `pruefe` testet einen Schenkel und gibt den Abstand, wenn die
+    /// Maus ihn greift; `griff` sagt, wie weit (mm) sie an einem Punkt des
+    /// Strahls höchstens greift, und wächst längs des Strahls. Die Schenkel
+    /// der Öffnung `halten` prüft er immer, sie darf weiter greifen.
+    /// Ergebnis: der nächste Schenkeltreffer und die erste deckende Wand,
+    /// beide so weit, wie sie über die Sicht entscheiden (eine Wand mehr als
     /// [`VOR_WAND`] vor dem Schenkel verdeckt ihn).
     pub fn kanten_strahl(
         &self,
         o: Vec3,
         d: Vec3,
+        griff: impl Fn(Vec3) -> f64,
+        halten: Option<ElementId>,
         mut pruefe: impl FnMut(&Schenkel) -> Option<f64>,
     ) -> (Option<f64>, Option<f64>) {
         self.kanten_raster();
         let r = self.kanten.borrow();
         let (felder, zuege) = (&r.felder, &self.raster);
-        let rahmen = super::union(felder.quader(), zuege.quader());
-        let Some((t0, t1)) = rahmen.and_then(|b| im_quader(o, d, b)) else {
+        let Some((lo, hi)) = super::union(felder.quader(), zuege.quader()) else {
             return (None, None);
         };
+        // Spielraum um den Strahl (Review H1 zu #147): der größte Griff am
+        // fernsten Punkt, an dem der Strahl einem Schenkel nahekommen kann;
+        // ein Bildpunkt wächst längs des Strahls mit der Tiefe
+        let fern = (0..8)
+            .map(|i| {
+                let c = vec3(
+                    if i & 1 == 0 { lo.x } else { hi.x },
+                    if i & 2 == 0 { lo.y } else { hi.y },
+                    if i & 4 == 0 { lo.z } else { hi.z },
+                );
+                (c - o).dot(d)
+            })
+            .fold(0.0, f64::max);
+        let mut spiel = 0.0;
+        for _ in 0..3 {
+            spiel = griff(o + d * (fern + spiel)).max(0.0);
+        }
+        let spiel = if spiel.is_finite() { spiel } else { 1e12 };
+        let rahmen = (
+            lo - vec3(spiel, spiel, spiel),
+            hi + vec3(spiel, spiel, spiel),
+        );
         let (vis, filter) = self.sicht();
         let (mut best_o, mut best_w): (Option<f64>, Option<f64>) = (None, None);
         let (mut gesehen_o, mut gesehen_z) = (HashSet::new(), HashSet::new());
@@ -167,18 +193,42 @@ impl Scene {
             }
         };
         pruefen(felder.immer(), zuege.immer());
-        // Zellen in der Reihenfolge, in der der Strahl sie kreuzt; wären es
-        // mehr als Einträge, gleich alle (ohne Raster)
+        // Die gehaltene Öffnung; die Schenkel stehen nach den Bauteilen
+        // geordnet
+        if let Some(id) = halten {
+            let von = r.schenkel.partition_point(|s| s.id.index() < id.index());
+            let ihre: Vec<u32> = (von..r.schenkel.len())
+                .take_while(|&i| r.schenkel[i].id == id)
+                .map(|i| i as u32)
+                .collect();
+            pruefen(&ihre, &[]);
+        }
+        let Some((t0, t1)) = im_quader(o, d, rahmen) else {
+            return (best_o, best_w);
+        };
+        // Zellen in der Reihenfolge, in der der Strahl sie kreuzt; für die
+        // Schenkel dazu die Zellen, die sein Stück darin mit dem Spielraum am
+        // Austritt berührt (dort ist er im Stück am größten), ohne die schon
+        // beim vorigen Stück geprüften. Wären es mehr als Einträge, gleich
+        // alle (ohne Raster)
         let (p, q) = (o + d * t0, o + d * t1);
         let (mut x, mut y) = (raster::zelle(p.x), raster::zelle(p.y));
         let schritte = (raster::zelle(q.x) as i64 - x as i64).abs()
             + (raster::zelle(q.y) as i64 - y as i64).abs();
+        let alle = |r: &raster::Raster| r.alle().into_iter().map(|p| p as u32).collect::<Vec<_>>();
         if schritte as usize >= felder.plaetze() + zuege.plaetze() {
-            let alle =
-                |r: &raster::Raster| r.alle().into_iter().map(|p| p as u32).collect::<Vec<_>>();
             pruefen(&alle(felder), &alle(zuege));
             return (best_o, best_w);
         }
+        let k = (spiel / ZELLE).ceil().min(1e6) as i32;
+        // je Schritt kommt höchstens ein Streifen neuer Zellen dazu
+        let breite = 2 * k as i64 + 1;
+        let k = if breite.saturating_mul(schritte + 1 + breite) >= felder.plaetze() as i64 {
+            pruefen(&alle(felder), &[]);
+            None
+        } else {
+            Some(k)
+        };
         let schritt = |dv: f64| if dv > 0.0 { 1 } else { -1 };
         let grenze = |c: i32, ov: f64, dv: f64| {
             if dv.abs() < 1e-12 {
@@ -188,9 +238,32 @@ impl Scene {
             ((rand - ov) / dv, ZELLE / dv.abs())
         };
         let ((mut tx, dx), (mut ty, dy)) = (grenze(x, o.x, d.x), grenze(y, o.y, d.y));
+        let (mut ein, mut vorher) = (t0, None);
         for _ in 0..=schritte {
             let aus = tx.min(ty).min(t1);
-            if let Some(t) = pruefen(felder.in_zelle((x, y)), zuege.in_zelle((x, y))) {
+            let mut naechst = pruefen(&[], zuege.in_zelle((x, y)));
+            if let Some(k) = k {
+                let g = griff(o + d * aus).max(0.0).min(k as f64 * ZELLE);
+                let (a, b) = (o + d * ein, o + d * aus);
+                let um = |u: f64, v: f64, c: i32| {
+                    let zu =
+                        |w: f64| raster::zelle(w).clamp(c.saturating_sub(k), c.saturating_add(k));
+                    (zu(u.min(v) - g).min(c), zu(u.max(v) + g).max(c))
+                };
+                let ((x0, x1), (y0, y1)) = (um(a.x, b.x, x), um(a.y, b.y, y));
+                for cy in y0..=y1 {
+                    for cx in x0..=x1 {
+                        let alt = vorher.is_some_and(|(a0, a1, b0, b1)| {
+                            (a0..=a1).contains(&cx) && (b0..=b1).contains(&cy)
+                        });
+                        if !alt {
+                            naechst = pruefen(felder.in_zelle((cx, cy)), &[]);
+                        }
+                    }
+                }
+                vorher = Some((x0, x1, y0, y1));
+            }
+            if let Some(t) = naechst {
                 if t + VOR_WAND <= aus {
                     break;
                 }
@@ -198,6 +271,7 @@ impl Scene {
             if aus >= t1 {
                 break;
             }
+            ein = aus;
             if tx < ty {
                 (x, tx) = (x + schritt(d.x), tx + dx);
             } else {
@@ -214,9 +288,9 @@ mod tests {
     use super::*;
     use crate::camera::Camera;
 
-    /// Ein Schenkel greift, wenn der Strahl seine Fläche bis 300 mm neben
-    /// dem Band trifft.
-    fn greift(s: &Schenkel, o: Vec3, d: Vec3) -> Option<f64> {
+    /// Ein Schenkel greift, wenn der Strahl seine Fläche bis `tol` (mm am
+    /// Treffpunkt) neben dem Band trifft.
+    fn greift(s: &Schenkel, o: Vec3, d: Vec3, tol: &dyn Fn(Vec3) -> f64) -> Option<f64> {
         let len = (s.b - s.a).length();
         let dir = (s.b - s.a) * (1.0 / len);
         let nrm = vec3(-dir.y, dir.x, 0.0);
@@ -226,14 +300,19 @@ mod tests {
         }
         let t = (s.a - o).dot(nrm) / dn;
         let p = o + d * t;
-        let u = (p - s.a).dot(dir);
-        let im_band = u > -300.0 && u < len + 300.0 && p.z > s.z0 - 300.0 && p.z < s.z1 + 300.0;
+        let (u, tol) = ((p - s.a).dot(dir), tol(p));
+        let im_band = u > -tol && u < len + tol && p.z > s.z0 - tol && p.z < s.z1 + tol;
         (t > 0.0 && im_band).then_some(t)
     }
 
     /// Nächster Schenkel über alle Öffnungen des Modells und nächste Wand
     /// über alle Züge, ohne Raster.
-    fn ueber_alle(s: &Scene, o: Vec3, d: Vec3) -> (Option<f64>, Option<f64>) {
+    fn ueber_alle(
+        s: &Scene,
+        o: Vec3,
+        d: Vec3,
+        tol: &dyn Fn(Vec3) -> f64,
+    ) -> (Option<f64>, Option<f64>) {
         let m = s.model();
         let min = |a: Option<f64>, t: Option<f64>| match (a, t) {
             (Some(a), Some(t)) => Some(a.min(t)),
@@ -258,7 +337,7 @@ mod tests {
                     z0,
                     z1,
                 };
-                best_o = min(best_o, greift(&sch, o, d));
+                best_o = min(best_o, greift(&sch, o, d, tol));
             }
         }
         let (vis, filter) = s.sicht();
@@ -272,16 +351,23 @@ mod tests {
     /// alle Schenkel und Züge: der vorderste Schenkel, wenn keine Wand mehr
     /// als [`VOR_WAND`] davor liegt, sonst die Wand; auch nach Ziehen einer
     /// Wand, ohne dass sich die Schenkel neu sammeln (Review H2 zu #142).
+    /// Greift die Maus weiter, als der feste Rand um die Schenkel reicht,
+    /// zählen die Nachbarzellen im Spielraum mit (Review H1 zu #147), auch
+    /// wenn er wie in der Perspektive mit dem Abstand wächst.
     #[test]
     fn strahl_wie_ueber_alle() {
         let mut s = siedlung();
-        let pruefen = |s: &Scene| {
+        let fest = |t: f64| move |_: Vec3, _: Vec3| t;
+        let wachsend = |f: f64| move |o: Vec3, p: Vec3| f * (p - o).length();
+        let pruefen = |s: &Scene, tol: &dyn Fn(Vec3, Vec3) -> f64| {
             let mut kameras = kameras().to_vec();
             kameras.push(Camera::looking_at(
                 vec3(60_000.0, -50_000.0, 8000.0),
                 vec3(60_000.0, 60_000.0, 0.0),
                 45.0,
             ));
+            // Von oben, 89,5° geneigt (Review B1 zu #151)
+            kameras.push(von_oben(150_000.0));
             let mut fenster = 0;
             for cam in &kameras {
                 let mut px: Vec<(f64, f64)> = (0..24 * 14)
@@ -295,13 +381,15 @@ mod tests {
                     let (z0, z1) = s.model().opening_band(op).unwrap();
                     let q = (op.path[0] + op.path[1]) * 0.5;
                     if let Some((x, y)) = cam.project(vec3(q.x, q.y, (z0 + z1) / 2.0), W, H) {
-                        px.extend([(x, y), (x + 6.0, y), (x, y - 40.0)]);
+                        px.extend([(x, y), (x + 6.0, y), (x, y - 40.0), (x - 60.0, y)]);
+                        px.extend([(x + 60.0, y), (x, y + 60.0), (x + 40.0, y - 40.0)]);
                     }
                 }
                 for (x, y) in px {
                     let (o, d) = cam.ray(x, y, W, H);
-                    let (bo, bw) = s.kanten_strahl(o, d, |sch| greift(sch, o, d));
-                    let (go, gw) = ueber_alle(s, o, d);
+                    let tol = |p: Vec3| tol(o, p);
+                    let (bo, bw) = s.kanten_strahl(o, d, tol, None, |sch| greift(sch, o, d, &tol));
+                    let (go, gw) = ueber_alle(s, o, d, &tol);
                     let vorn = |a: Option<f64>, b: Option<f64>| match (a, b) {
                         (Some(a), Some(b)) => Some(a.min(b)),
                         (a, b) => a.or(b),
@@ -318,7 +406,9 @@ mod tests {
             }
             assert!(fenster > 100, "{fenster} Fenster");
         };
-        pruefen(&s);
+        pruefen(&s, &fest(300.0));
+        pruefen(&s, &fest(6000.0));
+        pruefen(&s, &wachsend(0.05));
         // Eine Wand ziehen: die Schenkel bleiben, die Züge kommen aus dem
         // Raster der Szene
         let run = s.model().runs().ids().nth(10).unwrap();
@@ -327,6 +417,53 @@ mod tests {
         assert!(s.set_run_points(run, &moved.points));
         s.commit();
         s.rebuild_dirty(false);
-        pruefen(&s);
+        pruefen(&s, &fest(300.0));
+        pruefen(&s, &fest(6000.0));
+        pruefen(&s, &wachsend(0.05));
+    }
+
+    /// Blick von `hoch` mm über der Mitte der Siedlung, 89,5° geneigt.
+    fn von_oben(hoch: f64) -> Camera {
+        let mitte = vec3(60_000.0, 60_000.0, 0.0);
+        let neigung = 89.5f64.to_radians();
+        let cam = Camera::looking_at(mitte + vec3(-hoch / neigung.tan(), 0.0, hoch), mitte, 45.0);
+        assert!((cam.forward().z + neigung.sin()).abs() < 1e-9);
+        cam
+    }
+
+    /// Von oben aus 1,5 km, 89,5° geneigt, greift die Maus quer zum Blick so
+    /// weit wie überall in dieser Tiefe: Der Strahl prüft wenige Schenkel,
+    /// nicht alle, und entscheidet wie über alle (Review B1 zu #151; nach
+    /// dem Maß einer senkrechten Strecke griff sie dort 1,6 km weit).
+    #[test]
+    fn draufsicht_prueft_wenige() {
+        let s = siedlung();
+        let cam = von_oben(1_500_000.0);
+        let griff = crate::wall_edit::oeffnung_kanten::griff(&cam, H, 1.0);
+        let (mut strahlen, mut geprueft) = (0usize, 0usize);
+        // Um die Bildmitte, wo die senkrechte Strecke am kürzesten ist
+        for k in 0..11 * 11 {
+            let (x, y) = (
+                W / 2.0 + (k % 11) as f64 * 10.0 - 50.0,
+                H / 2.0 + (k / 11) as f64 * 10.0 - 50.0,
+            );
+            let (o, d) = cam.ray(x, y, W, H);
+            let (bo, bw) = s.kanten_strahl(o, d, &griff, None, |sch| {
+                geprueft += 1;
+                greift(sch, o, d, &griff)
+            });
+            let (go, gw) = ueber_alle(&s, o, d, &griff);
+            let vorn = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            assert_eq!(vorn(bo, bw), vorn(go, gw), "{x} {y}");
+            strahlen += 1;
+        }
+        // 49 Fenster mit je einem Schenkel
+        assert!(
+            geprueft * 5 < strahlen * 49,
+            "{geprueft} Schenkel für {strahlen} Strahlen"
+        );
     }
 }

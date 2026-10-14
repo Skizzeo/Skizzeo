@@ -2673,12 +2673,13 @@ fn perf_kanten() {
     use sk_platform::MouseButton;
     println!();
     println!(
-        "{:>6} {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7}",
+        "{:>6} {:>7} {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7}",
         "Häuser",
         "Öffn.",
         "Raster",
         "Frei",
         "Fern",
+        "Oben",
         "Refresh",
         "Schl.",
         "Chips",
@@ -2688,7 +2689,12 @@ fn perf_kanten() {
         "Los"
     );
     let mut je_bild = Vec::new();
-    for n in [1, 10, 100, 1000] {
+    // `SKIZZEO_PERF_BIS=4000` misst auch 4000 Häuser (Review zu #151)
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 1000, 4000].into_iter().filter(|&n| n <= bis) {
         let mut s = siedlung_mit_fenstern(n);
         let m = s.model();
         let oeffnungen: Vec<_> = m
@@ -2735,6 +2741,14 @@ fn perf_kanten() {
             .expect("eine ferne Öffnung von oben zu treffen");
         let fern_t = time(50, || {
             std::hint::black_box(treffer(&s, &ueber, fern_px, W, H, 1.0, None));
+        });
+        // Von oben aus 1,5 km, 89,5° geneigt, die Maus in der Bildmitte
+        // (Review B1 zu #151)
+        let neigung = 89.5f64.to_radians();
+        let hoch = 1_500_000.0;
+        let oben = Camera::looking_at(ziel + vec3(-hoch / neigung.tan(), 0.0, hoch), ziel, 45.0);
+        let oben_t = time(50, || {
+            std::hint::black_box(treffer(&s, &oben, (W / 2.0, H / 2.0), W, H, 1.0, None));
         });
         // Orbit aus der Gasse vor einer Öffnung des letzten Hauses, die
         // Maus bleibt auf ihr
@@ -2840,10 +2854,10 @@ fn perf_kanten() {
         assert!(s.model().check().is_empty());
         let bild = refresh + chips_ms;
         println!(
-            "{n:>6} {:>7} {raster:>7.2} {frei:>7.3} {fern_t:>7.3} | {refresh:>7.3} {schl:>7.3} {chips_ms:>7.3} {bild:>7.3} | {greifen:>7.3} {ziehen:>7.3} {los:>7.3}",
+            "{n:>6} {:>7} {raster:>7.2} {frei:>7.3} {fern_t:>7.3} {oben_t:>7.3} | {refresh:>7.3} {schl:>7.3} {chips_ms:>7.3} {bild:>7.3} | {greifen:>7.3} {ziehen:>7.3} {los:>7.3}",
             15 * n
         );
-        je_bild.push((n, frei.max(fern_t), refresh + schl));
+        je_bild.push((n, frei.max(fern_t).max(oben_t), refresh + schl));
     }
     println!("Zeiten in ms je Mausbewegung, je Bild bzw. je Griff; Raster einmal je Modellstand.");
     println!("Chips: alle Kettensymbole, Schl.: der Anteil der Öffnung (O7).");
