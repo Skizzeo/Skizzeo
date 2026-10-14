@@ -38,7 +38,7 @@ pub(crate) fn raeume_im(
     g: StoreyId,
     filter: impl Fn(Vec3) -> bool,
 ) -> Vec<(ElementId, &Space)> {
-    let mut v: Vec<(&str, ElementId, &Space)> = m
+    let v: Vec<(&str, ElementId, &Space)> = m
         .elements()
         .iter()
         .filter_map(|(id, e)| match &e.kind {
@@ -48,6 +48,14 @@ pub(crate) fn raeume_im(
             _ => None,
         })
         .collect();
+    aeltere_zuerst(v)
+}
+
+/// Räume mit ihrer Nummer, in der Reihenfolge der Bauteile: ältere zuerst
+/// wie [`raeume_im`], bei gleicher Nummer in der Reihenfolge der Bauteile.
+pub(crate) fn aeltere_zuerst<'a>(
+    mut v: Vec<(&str, ElementId, &'a Space)>,
+) -> Vec<(ElementId, &'a Space)> {
     v.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
     v.into_iter().map(|(_, id, s)| (id, s)).collect()
 }

@@ -217,9 +217,20 @@ impl Lage {
     }
 
     fn mit_grundflaeche_wenn(&self, m: &Model, grund: bool) -> Vec<(RaumForm, f64)> {
-        let fl = self.flaechen();
         let raeume = crate::abgleich::raeume_im(m, self.geschoss, |_| true);
-        let z = zuteilen(&fl, &raeume);
+        self.mit_raeumen(m, &raeume, grund)
+    }
+
+    /// Wie [`Lage::mit_grundflaeche`] mit den Räumen des Geschosses, ältere
+    /// zuerst ([`crate::abgleich::raeume_im`]).
+    fn mit_raeumen(
+        &self,
+        m: &Model,
+        raeume: &[(ElementId, &Space)],
+        grund: bool,
+    ) -> Vec<(RaumForm, f64)> {
+        let fl = self.flaechen();
+        let z = zuteilen(&fl, raeume);
         fl.iter()
             .zip(z)
             .map(|(f, r)| {
@@ -482,17 +493,70 @@ impl Erkennung {
     /// werden nur die Gruppen der geänderten Züge und der Züge ohne Fassung
     /// neu gebildet.
     pub fn lage(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Lage {
-        self.lauf += 1;
         let jetzt: Vec<(RunId, Option<u64>)> = m
             .runs()
             .iter()
             .filter(|(_, r)| r.storey == g)
             .map(|(id, _)| (id, k.fassung(id)))
             .collect();
-        if let Some(l) = self.nachfuehren(m, k, g, &jetzt) {
+        self.lage_aus(m, k, g, &jetzt)
+    }
+
+    /// [`Erkennung::lage`] mit den Zügen `jetzt` des Geschosses
+    /// (Modellreihenfolge, je mit Fassung).
+    fn lage_aus(
+        &mut self,
+        m: &Model,
+        k: &(impl Ketten + ?Sized),
+        g: StoreyId,
+        jetzt: &[(RunId, Option<u64>)],
+    ) -> Lage {
+        self.lauf += 1;
+        if let Some(l) = self.nachfuehren(m, k, g, jetzt) {
             return l;
         }
-        self.neu(m, k, g, &jetzt)
+        self.neu(m, k, g, jetzt)
+    }
+
+    /// Räume der Geschosse `geschosse` wie [`crate::raeume`] je Geschoss,
+    /// in derselben Reihenfolge. Züge und Räume des Modells werden einmal
+    /// nach Geschoss geordnet, eine Erkennung rechnet alle Geschosse; so
+    /// wächst die Arbeit mit dem Modell, nicht mit Geschossen mal Bauteilen
+    /// (Review #138 H-138f, Raumliste für den IFC-Export).
+    pub fn raeume_alle(m: &Model, geschosse: &[StoreyId]) -> Vec<Vec<RaumForm>> {
+        let mut zuege: HashMap<StoreyId, Vec<(RunId, Option<u64>)>> = HashMap::new();
+        for (id, r) in m.runs().iter() {
+            zuege
+                .entry(r.storey)
+                .or_default()
+                .push((id, Ketten::fassung(m, id)));
+        }
+        let mut raeume: HashMap<StoreyId, Vec<(&str, ElementId, &Space)>> = HashMap::new();
+        for (id, e) in m.elements().iter() {
+            if let ElementKind::Space(s) = &e.kind {
+                raeume
+                    .entry(e.storey)
+                    .or_default()
+                    .push((e.number.as_str(), id, &**s));
+            }
+        }
+        let raeume: HashMap<StoreyId, Vec<(ElementId, &Space)>> = raeume
+            .into_iter()
+            .map(|(g, v)| (g, crate::abgleich::aeltere_zuerst(v)))
+            .collect();
+        let mut e = Erkennung::default();
+        geschosse
+            .iter()
+            .map(|&g| {
+                let jetzt = zuege.get(&g).map_or(&[][..], |v| &v[..]);
+                let r = raeume.get(&g).map_or(&[][..], |v| &v[..]);
+                e.lage_aus(m, m, g, jetzt)
+                    .mit_raeumen(m, r, false)
+                    .into_iter()
+                    .map(|(f, _)| f)
+                    .collect()
+            })
+            .collect()
     }
 
     /// Rohbau des Zugs, aus dem Speicher, solange seine Fassung gleich ist.
@@ -586,6 +650,10 @@ impl Erkennung {
     ) -> Lage {
         self.voll += 1;
         let lauf = self.lauf;
+        // Was ein Geschoss im Speicher hat, kam aus einem früheren Aufruf
+        // für dieses Geschoss; ein neues muss nichts aufräumen (so bleibt
+        // [`Erkennung::raeume_alle`] linear in den Geschossen)
+        let bekannt = self.geschosse.contains_key(&g);
         let mut zuege: Vec<(RunId, Rc<Roh>)> = Vec::new();
         for &(id, fassung) in jetzt {
             if let Some(roh) = self.roh(m, k, id, fassung, g) {
@@ -594,11 +662,13 @@ impl Erkennung {
                 }
             }
         }
-        for e in &mut self.roh {
-            if e.as_ref()
-                .is_some_and(|e| e.geschoss == g && e.lauf != lauf)
-            {
-                *e = None;
+        if bekannt {
+            for e in &mut self.roh {
+                if e.as_ref()
+                    .is_some_and(|e| e.geschoss == g && e.lauf != lauf)
+                {
+                    *e = None;
+                }
             }
         }
         let kaesten: Vec<Kasten> = zuege
@@ -615,8 +685,10 @@ impl Erkennung {
             let gr = self.gruppe(g, &zg);
             letzte.einsetzen(gr, glieder[b].iter().map(|&i| zuege[i].0).collect());
         }
-        self.gruppen
-            .retain(|_, e| e.geschoss != g || e.lauf == lauf);
+        if bekannt {
+            self.gruppen
+                .retain(|_, e| e.geschoss != g || e.lauf == lauf);
+        }
         let lage = letzte.lage(g);
         let gs = self.geschosse.entry(g).or_default();
         gs.letzte = Some(Letzte {
@@ -1659,6 +1731,112 @@ mod tests {
         m.apply(&namen, Direction::Undo);
         wie_neu(&mut e, &m);
         assert_eq!(e.raumlisten(), n0, "nur eingereiht");
+    }
+
+    /// Alle Geschosse in einem Durchgang wie je Geschoss (Review #138
+    /// H-138f): Häuser je mit eigenem Gebäude über zwei Geschosse, ein
+    /// Raum ins andere Geschoss gehängt, neue am Anker eines älteren mit
+    /// kleinerer und mit größerer Nummer, ein Geschoss ohne Wände;
+    /// Geschosse in anderer Reihenfolge als im Modell und eines doppelt.
+    #[test]
+    fn alle_geschosse_wie_je_geschoss() {
+        use sk_model::{Change, Direction, LevelKind, Txn};
+        let mut m = Model::new();
+        let (aw, iw) = (m.defaults().exterior_wall, m.defaults().interior_wall);
+        let t: f64 = m.wall_layers(aw).iter().map(|l| l.thickness).sum();
+        let geschosse = |m: &Model, b| -> Vec<StoreyId> {
+            m.levels_in(Some(b))
+                .into_iter()
+                .filter(|&g| m.storey(g).is_some_and(|s| s.kind == LevelKind::Storey))
+                .collect()
+        };
+        let mut gs = Vec::new();
+        for i in 0..3 {
+            let b = m.add_building(2);
+            let ox = i as f64 * 15000.0;
+            let p = |x: f64, y: f64| vec3(ox + x, y, 0.0);
+            for g in geschosse(&m, b) {
+                gs.push(g);
+                let pts = [
+                    p(0.0, 0.0),
+                    p(0.0, 8000.0),
+                    p(10000.0, 8000.0),
+                    p(10000.0, 0.0),
+                ];
+                m.add_wall_run(&pts, true, RefSide::Left, g, aw, Category::ExteriorWall)
+                    .unwrap();
+                let x = 3000.0 + 1000.0 * i as f64;
+                let iwp = [p(x, t), p(x, 8000.0 - t)];
+                m.add_wall_run(&iwp, false, RefSide::Center, g, iw, Category::InteriorWall)
+                    .unwrap();
+            }
+        }
+        // Ein Gebäude ohne Wände
+        let b = m.add_building(1);
+        let leer = geschosse(&m, b)[0];
+        gs.push(leer);
+        crate::abgleichen(&mut m, &gs);
+        assert!(gs[..6].iter().all(|g| m.spaces(*g).len() == 2));
+        let umsetzen = |m: &mut Model, id: ElementId, f: &dyn Fn(&mut sk_model::Element)| {
+            let alt = m.element(id).unwrap().clone();
+            let mut neu = alt.clone();
+            f(&mut neu);
+            let changes = vec![Change::Element {
+                id,
+                old: Some(alt),
+                new: Some(neu),
+            }];
+            m.apply(
+                &Txn {
+                    label: "Test",
+                    changes,
+                },
+                Direction::Redo,
+            );
+        };
+        // Raum des ersten EG ins OG des zweiten Hauses
+        let id = m.spaces(gs[0])[0];
+        let anker = m.space(id).unwrap().anker;
+        umsetzen(&mut m, id, &|e| e.storey = gs[3]);
+        // Neuer Raum am Anker eines älteren, mit kleinerer Nummer
+        let a2 = m.space(m.spaces(gs[0])[0]).unwrap().anker;
+        let x = m.add_space(gs[0], sk_model::Space::neu(a2, "Neu".into()));
+        umsetzen(&mut m, x, &|e| e.number = "0".into());
+        // Neuer Raum am Anker eines älteren, mit größerer Nummer
+        let alt = m.spaces(gs[2])[0];
+        let a3 = m.space(alt).unwrap().anker;
+        let y = m.add_space(gs[2], sk_model::Space::neu(a3, "Später".into()));
+        umsetzen(&mut m, y, &|e| e.number = "R-999".into());
+        // Raum im Geschoss ohne Wände
+        m.add_space(leer, sk_model::Space::neu(anker, "Ohne".into()));
+
+        let reihe = [leer, gs[5], gs[2], gs[0], gs[3], gs[1], gs[4], gs[0]];
+        let alle = Erkennung::raeume_alle(&m, &reihe);
+        assert_eq!(alle.len(), reihe.len());
+        for (g, v) in reihe.iter().zip(&alle) {
+            assert_eq!(*v, crate::raeume(&m, *g), "{g:?}");
+        }
+        assert!(alle[0].is_empty(), "ohne Wände keine Fläche");
+        assert!(alle[3].iter().any(|f| f.raum == Some(x)), "kleinere Nummer");
+        assert!(alle[2].iter().any(|f| f.raum == Some(alt)), "ältere Nummer");
+        assert!(alle[2].iter().all(|f| f.raum != Some(y)));
+        assert!(alle[3].iter().any(|f| f.raum.is_none()), "Anker ins OG");
+        assert!(
+            alle[4].iter().all(|f| f.raum != Some(id)),
+            "Anker im OG fremd"
+        );
+        assert_eq!(alle.iter().map(Vec::len).sum::<usize>(), 7 * 2);
+        // Nach einem Schritt an Räumen: wieder je Geschoss gleich
+        m.begin("Raum");
+        let z = m.add_space(gs[4], sk_model::Space::neu(a3, "Fremd".into()));
+        assert!(m.set_space(alt, |s| s.anker = a2));
+        m.commit();
+        let alle = Erkennung::raeume_alle(&m, &reihe);
+        for (g, v) in reihe.iter().zip(&alle) {
+            assert_eq!(*v, crate::raeume(&m, *g), "{g:?}");
+        }
+        assert!(alle[2].iter().any(|f| f.raum == Some(y)), "Anker gerückt");
+        assert!(alle[6].iter().all(|f| f.raum != Some(z)));
     }
 
     #[test]
