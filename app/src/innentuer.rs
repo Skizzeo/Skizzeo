@@ -105,6 +105,26 @@ pub struct Innentuer {
     pub ort: Option<(Vec3, f64, f64)>,
     /// Getippter Abstand zur näheren Wandfläche.
     pub eingabe: Option<MeasureInput>,
+    /// Zuletzt gerechnete Seite der Kette.
+    merk: Option<KettenMerk>,
+    /// Wie oft die Vorschau die Seite der Kette neu gerechnet hat.
+    #[cfg(test)]
+    neu_gerechnet: usize,
+}
+
+/// Seite der Kette ([`kettenseite`]) mit allem, wovon sie abhängt. Sie geht
+/// über alle Anschlüsse des Modells; längs derselben Wandfläche und beim
+/// selben Stand des Modells nimmt die Vorschau sie von hier, statt sie je
+/// Mausbewegung neu zu rechnen (Review #158 B1).
+#[derive(Clone, Debug, PartialEq)]
+struct KettenMerk {
+    face: OuterFace,
+    vor: bool,
+    dicke: f64,
+    bezug: Aussenbezug,
+    revision: u64,
+    seite: (f64, f64),
+    stoesse: Vec<(f64, f64)>,
 }
 
 /// Was eine Taste mit der Tür am Cursor bewirkt hat.
@@ -129,6 +149,9 @@ impl Default for Innentuer {
             hover: None,
             ort: None,
             eingabe: None,
+            merk: None,
+            #[cfg(test)]
+            neu_gerechnet: 0,
         }
     }
 }
@@ -394,7 +417,7 @@ impl Innentuer {
     }
 
     fn vorschau(
-        &self,
+        &mut self,
         m: &Model,
         k: Koerper,
         st: StoreyId,
@@ -431,8 +454,34 @@ impl Innentuer {
         let u0 = u0.clamp(f0, f1 - w);
         let mitte = face.at(uc.clamp(f0, f1), 0.0) - face.n * (dicke / 2.0);
         // Die Kette steht gegenüber dem Aufschlag
-        let bezug = m.massstil().bezug;
-        let (seite, stoesse) = kettenseite(m, k, &face, raum != fs, dicke, bezug);
+        let (vor, bezug, revision) = (raum != fs, m.massstil().bezug, m.revision());
+        let gilt = |g: &KettenMerk| {
+            g.face == face
+                && g.vor == vor
+                && g.dicke == dicke
+                && g.bezug == bezug
+                && g.revision == revision
+        };
+        let (seite, stoesse) = match self.merk.as_ref().filter(|g| gilt(g)) {
+            Some(g) => (g.seite, g.stoesse.clone()),
+            None => {
+                let (seite, stoesse) = kettenseite(m, k, &face, vor, dicke, bezug);
+                self.merk = Some(KettenMerk {
+                    face: face.clone(),
+                    vor,
+                    dicke,
+                    bezug,
+                    revision,
+                    seite,
+                    stoesse: stoesse.clone(),
+                });
+                #[cfg(test)]
+                {
+                    self.neu_gerechnet += 1;
+                }
+                (seite, stoesse)
+            }
+        };
         Some(Vorschau {
             u: (u0, u0 + w),
             swing: Swing {
@@ -1095,6 +1144,52 @@ mod tests {
 
     /// Review W49 H2: Am Knick eines Innenwandzugs reicht die Kette außen
     /// bis zur Außenecke, innen bis zur Innenecke.
+    /// Review #158 B1: Längs derselben Wandfläche rechnet die Vorschau die
+    /// Seite der Kette nur einmal. Auf der anderen Seite der Wand, nach
+    /// einer Änderung des Modells und mit anderem Bezug rechnet sie neu.
+    #[test]
+    fn kette_gemerkt() {
+        let (mut m, _, st) = haus();
+        let mut t = Innentuer::default();
+        let bei = |t: &mut Innentuer, m: &Model, x: f64, y: f64| {
+            let k = |r| m.chain(r);
+            t.suchen(m, &k, st, vec3(x, y, 0.0), 30.0, 1500.0);
+            (spanne_y(&t.hover.clone().unwrap()), t.neu_gerechnet)
+        };
+        // Kette bei −x
+        assert_eq!(bei(&mut t, &m, 5020.0, 2000.0).1, 1);
+        // Andere Seite, Kette bei +x; die Maus wandert längs der Wand
+        for y in [1000.0, 2000.0, 3500.0, 6000.0] {
+            assert_eq!(bei(&mut t, &m, 4980.0, y), ((315.0, 7685.0), 2));
+        }
+        // Eine Wand im T-Stoß kommt dazu, die Wandfläche bleibt: Die Kette
+        // endet an der neuen Wand
+        let set = m.defaults().interior_wall;
+        let quer = m
+            .add_wall_run(
+                &[vec3(5000.0, 4000.0, 0.0), vec3(10000.0, 4000.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let d = m.chain(quer).unwrap().thickness() / 2.0;
+        let k = |r| m.chain(r);
+        let f = treffer(&m, &k, st, vec3(4980.0, 2000.0, 0.0), 30.0)
+            .unwrap()
+            .0;
+        assert_eq!(Some(&f), t.merk.as_ref().map(|g| &g.face));
+        assert_eq!(bei(&mut t, &m, 4980.0, 2000.0), ((315.0, 4000.0 - d), 3));
+        assert_eq!(bei(&mut t, &m, 4980.0, 2500.0).1, 3);
+        // Anderer Bezug der Außenmaße
+        let mut stil = m.massstil().clone();
+        stil.bezug = Aussenbezug::Rohbau;
+        assert!(m.set_massstil(stil));
+        assert_eq!(bei(&mut t, &m, 4980.0, 2000.0).1, 4);
+    }
+
     #[test]
     fn kette_am_knick() {
         let (mut m, iw, st) = haus();
