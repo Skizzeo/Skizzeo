@@ -28,6 +28,7 @@ use crate::scene::kanten::VOR_WAND;
 use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
+use sk_model::bemassung::BrhBezug;
 use sk_model::oeffnung::{FaceLine, HeightLine, HeightRef, Opening, MIN_OPENING};
 use sk_model::{ElementId, FloorSlab, LevelEdge, LevelKind, LevelRef, Model, RunId, StoreyId};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -39,8 +40,9 @@ pub const SCHRITT: &str = "Öffnungshöhe geändert";
 /// Feldname der Eingabe an der Oberkante: die Höhe der Öffnung.
 pub const LABEL: &str = "Höhe";
 /// Feldname an der Unterkante: die Brüstung über OK Rohdecke
-/// (Bedienbarkeit 40.7).
-pub const LABEL_UNTEN: &str = "Brüstung";
+/// (Bedienbarkeit 40.7), benannt wie im Eigenschaftenfeld, denn die
+/// Maßkette misst die BRH nach Einstellung auch ab Estrich (42.1).
+pub const LABEL_UNTEN: &str = "Brüstung (Rohbau)";
 /// Raster der freien Höhe (mm).
 const RASTER: f64 = 10.0;
 /// Fangabstand an den Höhenlinien (Pixel, 96 dpi), wie beim Aufziehen.
@@ -922,7 +924,15 @@ impl HoeheZug {
         } else {
             z0 - m.level_z(LevelRef::bottom(self.st))?
         };
-        let hoehe = crate::ui::live_length_text(wert);
+        let mut hoehe = crate::ui::live_length_text(wert);
+        // Misst die Maßkette die BRH ab Estrich, steht ihre Zahl daneben
+        // (Bedienbarkeit 42.1); unter OK Estrich (Tür) keine (Review H-167a)
+        let bezug = m.massstil().brh_bezug;
+        if !self.oben && bezug == BrhBezug::Estrich {
+            if let Some(null) = m.brh_null(self.st, bezug).filter(|n| z0 > *n) {
+                hoehe = format!("{hoehe} · BRH {}", crate::ui::live_length_text(z0 - null));
+            }
+        }
         let r = if self.oben { o.top } else { o.bottom };
         // Frei an der Decke: sagen, warum die Kante dort stehen bleibt
         // (Einstellungen zu #136), mit dem Grund (Bedienbarkeit 41.3)
@@ -1660,6 +1670,31 @@ pub(super) mod tests {
         );
     }
 
+    /// Steht die Unterkante auf OK Rohdecke (Tür), nennt die Pille bei „BRH
+    /// ab Estrich“ keine negative BRH (Review H-167a).
+    #[test]
+    fn keine_brh_unter_dem_estrich() {
+        let (mut m, id, eg, _) = haus_modell();
+        let st = m.run(eg).unwrap().storey;
+        let mut stil = m.massstil().clone();
+        stil.brh_bezug = BrhBezug::Estrich;
+        m.init_massstil(stil);
+        let mut o = m.opening(id).unwrap().clone();
+        o.bottom = HeightRef::Level(LevelRef::bottom(st));
+        m.begin("Tür");
+        assert!(m.set_opening(id, o));
+        m.commit();
+        let (mut s, cam) = (Scene::with_model(m), kamera());
+        let z0 = band(&s, id).0;
+        let p = bei(&s, &cam, id, 7000.0, z0 + 5.0);
+        let t = treffer(&s, &cam, p, W, H, 1.0, None).unwrap();
+        assert_eq!(t.kante, Some(Kante::Unten));
+        let z = HoeheZug::greifen(&mut s, t, false, &cam, p, W, H, 1.0).unwrap();
+        let pille = z.pill(&s).unwrap().0;
+        assert!(pille.starts_with("Brüstung (Rohbau) 0,00 m"), "{pille}");
+        assert!(!pille.contains("BRH"), "{pille}");
+    }
+
     /// Frei gezogen steht die Unterkante im Raster über OK Rohdecke; Zahl +
     /// Enter setzt die Brüstung genau, zu hoch gilt Enter nicht.
     #[test]
@@ -1713,7 +1748,7 @@ pub(super) mod tests {
         for ch in "0,9".chars() {
             taste(&mut z, &mut s, Key::Char(ch));
         }
-        assert_eq!(z.pill(&s), Some(("Brüstung 0,9 m".into(), true)));
+        assert_eq!(z.pill(&s), Some(("Brüstung (Rohbau) 0,9 m".into(), true)));
         assert!(taste(&mut z, &mut s, Key::Enter).fertig);
         assert!((band(&s, id).0 - (boden + 900.0)).abs() < 1e-6);
         assert_eq!(band(&s, id).1, z1);
@@ -1725,7 +1760,12 @@ pub(super) mod tests {
     /// anderen Schritt oder dem Ausblenden nicht mehr.
     #[test]
     fn nachkorrektur_nach_dem_loslassen() {
-        let (mut s, cam, id, eg, _) = haus();
+        // Maßkette mit BRH ab Estrich (Bedienbarkeit 42.1)
+        let (mut m, id, eg, _) = haus_modell();
+        let mut stil = m.massstil().clone();
+        stil.brh_bezug = BrhBezug::Estrich;
+        m.init_massstil(stil);
+        let (mut s, cam) = (Scene::with_model(m), kamera());
         let st = s.model().run(eg).unwrap().storey;
         let boden = s.model().level_z(LevelRef::bottom(st)).unwrap();
         let vorher = s.model().opening(id).unwrap().clone();
@@ -1775,15 +1815,20 @@ pub(super) mod tests {
         assert_eq!(s.undo_label(), Some(SCHRITT));
         let gezogen = band(&s, id).0;
         assert!(gezogen < z0 - 300.0, "{gezogen} {z0}");
-        // Die Pille zeigt die Brüstung, die man tippen würde
+        // Die Pille zeigt die Brüstung, die man tippen würde, und die BRH
+        // der Maßkette dahinter
         let (pille, tippt) = e.pill(&s).unwrap();
-        assert!(!tippt && pille.starts_with("Brüstung "), "{pille}");
+        assert!(!tippt && pille.starts_with("Brüstung (Rohbau) "), "{pille}");
+        let estrich = s.model().screed_top(st).unwrap();
+        assert!(estrich > boden);
+        let brh = format!(" · BRH {}", crate::ui::live_length_text(gezogen - estrich));
+        assert!(pille.contains(&brh), "{pille} {brh}");
         // Tippen und Enter: ersetzt den Schritt
         for ch in "0,8".chars() {
             assert!(taste(&mut e, &mut s, Key::Char(ch)).consumed);
         }
         assert_eq!(e.input_label(), LABEL_UNTEN);
-        assert_eq!(e.pill(&s), Some(("Brüstung 0,8 m".into(), true)));
+        assert_eq!(e.pill(&s), Some(("Brüstung (Rohbau) 0,8 m".into(), true)));
         assert_eq!(band(&s, id).0, gezogen, "erst Enter ändert");
         let o = taste(&mut e, &mut s, Key::Enter);
         assert!(o.consumed && o.changed);
