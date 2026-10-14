@@ -8,6 +8,7 @@ use super::{Aabb, Scene};
 use crate::camera::Camera;
 use sk_math::Vec3;
 use sk_model::{RunId, WallChain};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
@@ -92,11 +93,11 @@ pub struct Raster {
     immer: Vec<u32>,
     /// Quader je Platz.
     quader: Vec<Option<Aabb>>,
-    /// Quader um alles Eingetragene und die längste Diagonale; geht ein
-    /// Quader an ihrem Rand, rechnet das Raster beide neu (Review H2 zu
-    /// #147).
-    alles: Option<Aabb>,
-    diagonale: f64,
+    /// Quader um alles Eingetragene und die längste Diagonale (Review H2
+    /// zu #147); `None`, seit ein Quader an ihrem Rand ging, bis sie jemand
+    /// liest: dann einmal über alle Plätze, nicht je Zug (Review B2 zu
+    /// #151).
+    rahmen: Cell<Option<(Option<Aabb>, f64)>>,
 }
 
 /// Zelle, in der die Koordinate `v` liegt.
@@ -184,8 +185,10 @@ impl Raster {
         let Some((lo, hi)) = q else {
             return Lage::Immer;
         };
-        self.alles = super::union(self.alles, q);
-        self.diagonale = self.diagonale.max((hi - lo).length());
+        if let Some((alles, diagonale)) = self.rahmen.get() {
+            let diagonale = diagonale.max((hi - lo).length());
+            self.rahmen.set(Some((super::union(alles, q), diagonale)));
+        }
         let z = [zelle(lo.x), zelle(lo.y), zelle(hi.x), zelle(hi.y)];
         let n = (z[2] as i64 - z[0] as i64 + 1) * (z[3] as i64 - z[1] as i64 + 1);
         if n > GROSS {
@@ -233,6 +236,7 @@ impl Raster {
     /// Trägt Platz `platz` mit Quader `q` ein (`None`: ohne Quader, gehört
     /// zu jeder Abfrage); ersetzt, was dort stand.
     pub fn setze(&mut self, platz: usize, q: Option<Aabb>) {
+        let alt = self.quader.get(platz).copied().flatten();
         let am_rand = self.raus(platz);
         if self.lage.len() <= platz {
             self.lage.resize(platz + 1, Lage::Frei);
@@ -246,43 +250,58 @@ impl Raster {
         }
         self.lage[platz] = lage;
         self.quader[platz] = q;
-        if am_rand {
-            self.rahmen_neu();
+        // Gleich groß oder größer: der Rahmen mit dem neuen deckt den alten
+        let deckt = match (alt, q) {
+            (Some((a, b)), Some((lo, hi))) => {
+                lo.x <= a.x
+                    && lo.y <= a.y
+                    && lo.z <= a.z
+                    && hi.x >= b.x
+                    && hi.y >= b.y
+                    && hi.z >= b.z
+            }
+            _ => false,
+        };
+        if am_rand && !deckt {
+            self.rahmen.set(None);
         }
     }
 
     /// Nimmt Platz `platz` heraus.
     pub fn entferne(&mut self, platz: usize) {
         if self.raus(platz) {
-            self.rahmen_neu();
+            self.rahmen.set(None);
         }
     }
 
-    /// Quader um alles und längste Diagonale aus den Quadern der Plätze.
-    fn rahmen_neu(&mut self) {
+    /// Quader um alles und längste Diagonale; nach einer Änderung am Rand
+    /// aus den Quadern der Plätze.
+    fn rahmen(&self) -> (Option<Aabb>, f64) {
+        if let Some(r) = self.rahmen.get() {
+            return r;
+        }
         let mut alles = None;
         let mut diagonale = 0.0f64;
-        for (q, l) in self.quader.iter().zip(&self.lage) {
-            if let (Some((lo, hi)), false) = (q, *l == Lage::Frei) {
-                alles = super::union(alles, Some((*lo, *hi)));
-                diagonale = diagonale.max((*hi - *lo).length());
-            }
+        for &(lo, hi) in self.quader.iter().flatten() {
+            alles = super::union(alles, Some((lo, hi)));
+            diagonale = diagonale.max((hi - lo).length());
         }
-        (self.alles, self.diagonale) = (alles, diagonale);
+        self.rahmen.set(Some((alles, diagonale)));
+        (alles, diagonale)
     }
 
     /// Nimmt Platz `platz` heraus; `true`, wenn sein Quader am Rand des
     /// Quaders um alles lag oder die längste Diagonale hatte.
     fn raus(&mut self, platz: usize) -> bool {
-        let am_rand = match (self.quader.get(platz).copied().flatten(), self.alles) {
-            (Some((lo, hi)), Some((a, b))) if self.lage.get(platz) != Some(&Lage::Frei) => {
+        let am_rand = match (self.quader.get(platz).copied().flatten(), self.rahmen.get()) {
+            (Some((lo, hi)), Some((Some((a, b)), diagonale))) => {
                 lo.x <= a.x
                     || lo.y <= a.y
                     || lo.z <= a.z
                     || hi.x >= b.x
                     || hi.y >= b.y
                     || hi.z >= b.z
-                    || (hi - lo).length() >= self.diagonale
+                    || (hi - lo).length() >= diagonale
             }
             _ => false,
         };
@@ -315,12 +334,12 @@ impl Raster {
 
     /// Längste Diagonale eines eingetragenen Quaders.
     pub fn diagonale(&self) -> f64 {
-        self.diagonale
+        self.rahmen().1
     }
 
     /// Quader um alles Eingetragene.
     pub fn quader(&self) -> Option<Aabb> {
-        self.alles
+        self.rahmen().0
     }
 
     /// Plätze, die zu jeder Abfrage gehören.
@@ -339,7 +358,7 @@ impl Raster {
     /// dazu `tiefer` mm, die das Gefragte hinter dem berührten Punkt liegen
     /// darf. Unendlich, wenn nichts vor der Kamera liegt.
     pub fn rand(&self, cam: &Camera, h: f64, px: f64, (o, d): (Vec3, Vec3), tiefer: f64) -> f64 {
-        let Some((lo, hi)) = self.alles else {
+        let Some((lo, hi)) = self.quader() else {
             return 0.0;
         };
         if let Some(half) = cam.ortho {
@@ -413,7 +432,7 @@ impl Raster {
     /// Raster.
     pub fn am_strahl(&self, o: Vec3, d: Vec3, rand: f64) -> Vec<usize> {
         let nur_immer = || fertig(self.immer.clone());
-        let Some((lo, hi)) = self.alles else {
+        let Some((lo, hi)) = self.quader() else {
             return nur_immer();
         };
         let Some((t0, t1)) = stueck(o, d, (lo, hi), rand) else {
@@ -676,6 +695,38 @@ pub(super) mod tests {
         r.entferne(1);
         assert_eq!(r.quader(), None);
         assert_eq!(r.diagonale(), 0.0);
+    }
+
+    /// Viele gleich große Quader, jeder mit der längsten Diagonale: Wird
+    /// einer gleich groß oder größer neu eingetragen, bleibt der Rahmen ohne
+    /// Rechnen über alle; rücken die am Rand nach innen, rechnet ihn erst das
+    /// nächste Lesen, einmal für alle (Review B2 zu #151: sonst je Zug über
+    /// alle Plätze, 247 ms für viele Züge bei 4000 Häusern).
+    #[test]
+    fn rahmen_traege() {
+        let ort = |i: usize| ((i % 50) as f64 * 20_000.0, (i / 50) as f64 * 20_000.0);
+        let mut r = Raster::aus((0..2000).map(|i| kasten(ort(i).0, ort(i).1, 5000.0)));
+        let voll = r.quader();
+        assert_eq!(voll.unwrap().1.x, 985_000.0);
+        for i in 0..2000 {
+            r.setze(i, kasten(ort(i).0, ort(i).1, 5000.0));
+            assert!(r.rahmen.get().is_some(), "Platz {i}");
+        }
+        assert_eq!(r.quader(), voll);
+        // Einer wächst: nur dazu
+        r.setze(7, kasten(ort(7).0 - 1000.0, ort(7).1 - 1000.0, 7000.0));
+        assert!(r.rahmen.get().is_some());
+        assert_eq!(r.diagonale(), vec3(7000.0, 7000.0, 3000.0).length());
+        // Die am rechten Rand rücken nach innen: erst das Lesen rechnet
+        for i in (49..2000).step_by(50) {
+            r.setze(i, kasten(ort(i).0 - 10_000.0, ort(i).1, 5000.0));
+        }
+        assert!(r.rahmen.get().is_none());
+        let neu = Raster::aus((0..2000).map(|i| r.quader[i]));
+        assert_eq!(r.quader(), neu.quader());
+        assert_eq!(r.quader().unwrap().1.x, 975_000.0);
+        assert_eq!(r.diagonale(), neu.diagonale());
+        assert!(r.rahmen.get().is_some());
     }
 
     #[test]

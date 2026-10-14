@@ -366,6 +366,8 @@ mod tests {
                 vec3(60_000.0, 60_000.0, 0.0),
                 45.0,
             ));
+            // Von oben, 89,5° geneigt (Review B1 zu #151)
+            kameras.push(von_oben(150_000.0));
             let mut fenster = 0;
             for cam in &kameras {
                 let mut px: Vec<(f64, f64)> = (0..24 * 14)
@@ -418,5 +420,50 @@ mod tests {
         pruefen(&s, &fest(300.0));
         pruefen(&s, &fest(6000.0));
         pruefen(&s, &wachsend(0.05));
+    }
+
+    /// Blick von `hoch` mm über der Mitte der Siedlung, 89,5° geneigt.
+    fn von_oben(hoch: f64) -> Camera {
+        let mitte = vec3(60_000.0, 60_000.0, 0.0);
+        let neigung = 89.5f64.to_radians();
+        let cam = Camera::looking_at(mitte + vec3(-hoch / neigung.tan(), 0.0, hoch), mitte, 45.0);
+        assert!((cam.forward().z + neigung.sin()).abs() < 1e-9);
+        cam
+    }
+
+    /// Von oben aus 1,5 km, 89,5° geneigt, greift die Maus quer zum Blick so
+    /// weit wie überall in dieser Tiefe: Der Strahl prüft wenige Schenkel,
+    /// nicht alle, und entscheidet wie über alle (Review B1 zu #151; nach
+    /// dem Maß einer senkrechten Strecke griff sie dort 1,6 km weit).
+    #[test]
+    fn draufsicht_prueft_wenige() {
+        let s = siedlung();
+        let cam = von_oben(1_500_000.0);
+        let griff = crate::wall_edit::oeffnung_kanten::griff(&cam, H, 1.0);
+        let (mut strahlen, mut geprueft) = (0usize, 0usize);
+        // Um die Bildmitte, wo die senkrechte Strecke am kürzesten ist
+        for k in 0..11 * 11 {
+            let (x, y) = (
+                W / 2.0 + (k % 11) as f64 * 10.0 - 50.0,
+                H / 2.0 + (k / 11) as f64 * 10.0 - 50.0,
+            );
+            let (o, d) = cam.ray(x, y, W, H);
+            let (bo, bw) = s.kanten_strahl(o, d, &griff, None, |sch| {
+                geprueft += 1;
+                greift(sch, o, d, &griff)
+            });
+            let (go, gw) = ueber_alle(&s, o, d, &griff);
+            let vorn = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            assert_eq!(vorn(bo, bw), vorn(go, gw), "{x} {y}");
+            strahlen += 1;
+        }
+        // 49 Fenster mit je einem Schenkel
+        assert!(
+            geprueft * 5 < strahlen * 49,
+            "{geprueft} Schenkel für {strahlen} Strahlen"
+        );
     }
 }
