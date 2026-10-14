@@ -168,14 +168,23 @@ fn raum(model: &Model, platten: &Platten, f: RaumForm) -> Option<RaumDaten> {
 }
 
 /// Fertigumriss, Mengen roh und fertig und OK Fertigfußboden bzw. UK
-/// Fertigdecke (mm, absolut) eines Raums mit Ausbau.
+/// Fertigdecke (mm, absolut) eines Raums mit Ausbau. Führt das Projekt
+/// keinen Typ seines Ausbaus ([`RaumAusbau::mit_typen`]), gilt an jeder
+/// Kante der Ausbau des Grundrisses ([`crate::flaechen::ausbau`]: Putz der
+/// Vorgabe bzw. Bekleidung des Wandtyps), so dass die Fertigfläche der
+/// Grundfläche am Stempel gleicht (Review #182 H1, mit IFC abgestimmt).
 pub(crate) fn fertigmass(
     model: &Model,
     roh: &Rohbau,
     aus: &RaumAusbau,
 ) -> (Option<Umriss>, RaumMengen, (f64, f64)) {
     let ringe: Vec<&[Kante]> = roh.ringe().collect();
-    let fertig = fertigumriss(&ringe, &ausbau::dicken(model, roh, aus));
+    let dicken = if aus.mit_typen() {
+        ausbau::dicken(model, roh, aus)
+    } else {
+        roh.kanten().map(crate::flaechen::ausbau).collect()
+    };
+    let fertig = fertigumriss(&ringe, &dicken);
     let (z_ffb, z_fd) = ausbau::hoehen(model, roh, aus);
     let flaeche = |u: &Umriss| {
         sk_math::polygon::area(&u.0) - u.1.iter().map(|l| sk_math::polygon::area(l)).sum::<f64>()
