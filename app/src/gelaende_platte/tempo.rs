@@ -277,6 +277,9 @@ struct Lageplan {
     /// hochgeladen wird (MB); die Ecken baut ein eigener Faden.
     schritt: f64,
     hoch: f64,
+    /// Dasselbe als Median der Schritte: ein einzelner Ausreißer im
+    /// parallelen Gesamtlauf kippt den Vergleich der Plangrößen nicht.
+    schritt_mitte: f64,
     /// EG-Grundriss → 3D → EG-Grundriss: Zeit im ersten Bild zurück; es
     /// lädt nichts hoch (Review #139 N2).
     rueckweg: f64,
@@ -465,6 +468,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     let (mut nachzug, mut schritt, mut hoch, mut neu) = (f64::INFINITY, 0.0f64, 0.0f64, 0);
     let mut vorher = keys.clone();
     let mut lang_neu = false;
+    let mut je_schritt = Vec::new();
     for i in 0..6 {
         let moved = orig
             .with_segment_moved(i % 4, 300.0 * (1 + i % 2) as f64)
@@ -498,6 +502,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
         });
         neu = neu.max(n);
         schritt = schritt.max(z);
+        je_schritt.push(z);
         hoch = hoch.max(mb);
         vorher = jetzt;
     }
@@ -513,6 +518,8 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     let (lage, lage_hoch, lage_gesamt, n) = bis_hochgeladen(&mut pl, m, &t);
     assert_eq!(n, pl.im_renderer.len(), "alle Kacheln neu");
     assert!(pl.im_renderer.iter().all(|k| !vorher.contains(k)));
+    je_schritt.sort_by(f64::total_cmp);
+    let schritt_mitte = je_schritt[je_schritt.len() / 2];
     if dicht {
         assert!(lang_neu, "der lange Strich wird am Haus neu geschnitten");
     }
@@ -522,6 +529,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
         nachzug,
         schritt,
         hoch,
+        schritt_mitte,
         rueckweg,
         lage,
         lage_hoch,
@@ -611,8 +619,10 @@ fn lageplan_im_budget() {
         "{klein:?} {gross:?}"
     );
     assert!(gross.neu * 4 <= gross.kacheln, "{gross:?}");
+    // wächst nicht mit der Zahl der Striche: im Median der Schritte, die
+    // höchste Zeit hält oben die 8 ms
     assert!(
-        gross.schritt < 2.0 * klein.schritt + 1.0 * f,
+        gross.schritt_mitte < 2.0 * klein.schritt_mitte + 1.0 * f,
         "{klein:?} {gross:?}"
     );
 }

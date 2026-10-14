@@ -116,7 +116,7 @@ pub use model::{
 };
 pub use model::{
     Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
-    TerrainMesh, TerrainPoint, Trim,
+    TerrainLine, TerrainMesh, TerrainPoint, Trim,
 };
 pub use model::{EckeFehler, Fangziele, OpeningFault, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{FreieRaumnamen, Space, SPACE_SEQ};

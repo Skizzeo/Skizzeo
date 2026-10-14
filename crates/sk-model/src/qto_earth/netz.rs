@@ -28,6 +28,18 @@ pub const STEIL: &str = "; Gelände steigt an der Baugrube mit ";
 /// (DIN 4124 4.2.2).
 pub const STEIL_AB: f64 = 0.1;
 
+/// Mittlere Höhe der Menge `v` (mm³) über der Fläche `f` (mm²); Kleinstmengen
+/// am Rand des Netzes zeigen „unter 1 cm“ statt 0,00 m neben einer Menge über
+/// null.
+fn mittel(v: f64, f: f64) -> String {
+    let h = if f > 0.0 { v / f } else { 0.0 };
+    if h > 0.0 && h < 5.0 {
+        "unter 1 cm".to_string()
+    } else {
+        format!("{} m", zahl(h, 1e3))
+    }
+}
+
 /// Hinweis zu einem Ansatz mit [`STEIL`]; `None` ohne.
 pub fn steil_hinweis(ansatz: &str) -> Option<String> {
     let rest = &ansatz[ansatz.find(STEIL)? + STEIL.len()..];
@@ -82,7 +94,11 @@ impl ErdNetz {
             frame: m.survey_frame()?,
             h0: m.terrain_nhn()?,
             mesh: t.mesh(),
-            aufmass: format!("Aufmaß {}, {}", t.src, t.read),
+            aufmass: if t.read.is_empty() {
+                format!("Aufmaß {}", t.src)
+            } else {
+                format!("Aufmaß {}, {}", t.src, t.read)
+            },
             innen,
         })
     }
@@ -100,17 +116,23 @@ impl ErdNetz {
     /// Gelände über `umriss` gegen die Höhe `z` über ±0,00: Fläche im Netz
     /// (mm²), darüber und darunter (mm³), größtes Gefälle.
     fn menge(&self, umriss: &[Vec3], z: f64) -> Erdmenge {
+        self.mengen(umriss, &[z])[0]
+    }
+
+    /// [`ErdNetz::menge`] je Höhe in `zs`, der Umriss einmal geschnitten
+    /// (Review #164 H-164b).
+    fn mengen<const N: usize>(&self, umriss: &[Vec3], zs: &[f64; N]) -> [Erdmenge; N] {
         let r: Vec<[f64; 2]> = umriss.iter().map(|&p| self.im_netz(p)).collect();
-        let e = self
-            .mesh
-            .abfrage
-            .erdmenge(&r, [self.h0 + z / 1000.0, 0.0, 0.0]);
-        Erdmenge {
-            flaeche: e.flaeche * 1e6,
-            ueber: e.ueber * 1e9,
-            unter: e.unter * 1e9,
-            steil: e.steil,
-        }
+        let bezuege = zs.map(|z| [self.h0 + z / 1000.0, 0.0, 0.0]);
+        let e = self.mesh.abfrage.erdmengen(&r, &bezuege);
+        std::array::from_fn(|i| Erdmenge {
+            flaeche: e[i].flaeche * 1e6,
+            ueber: e[i].ueber * 1e9,
+            unter: e[i].unter * 1e9,
+            flaeche_ueber: e[i].flaeche_ueber * 1e6,
+            flaeche_unter: e[i].flaeche_unter * 1e6,
+            steil: e[i].steil,
+        })
     }
 
     /// Geländehöhe über ±0,00 an `p` (mm).
@@ -235,16 +257,10 @@ pub(super) fn mengen(
     if sohle_fl <= 0.0 || grube.flaeche < sohle_fl * (1.0 - 1e-6) {
         return false;
     }
-    let platte = n.menge(&b.outline, z_s + o).ueber;
-    let platte_f = n.menge(&b.outline, z_f + o).ueber;
+    let [platte, platte_f] = n.mengen(&b.outline, &[z_s + o, z_f + o]).map(|e| e.ueber);
     let (innen_fl, i_p, i_s, i_f) = if n.innen.len() >= 3 {
-        let i_p = n.menge(&n.innen, z_p + o);
-        (
-            sk_math::polygon::area(&n.innen),
-            i_p,
-            n.menge(&n.innen, z_s + o).ueber,
-            n.menge(&n.innen, z_f + o).ueber,
-        )
+        let [i_p, i_s, i_f] = n.mengen(&n.innen, &[z_p + o, z_s + o, z_f + o]);
+        (sk_math::polygon::area(&n.innen), i_p, i_s.ueber, i_f.ueber)
     } else {
         (0.0, Erdmenge::default(), 0.0, 0.0)
     };
@@ -260,7 +276,6 @@ pub(super) fn mengen(
         n.aufmass
     );
     let breite = |x: f64| format!("{} m", zahl(x, 1e3));
-    let mittel = |v: f64, f: f64| breite(if f > 0.0 { v / f } else { 0.0 });
 
     // Oberboden über das Baufeld, mindestens bis zum Rand der Böschung
     let beta = boden.boeschung.clamp(1.0, 90.0).to_radians();
@@ -380,4 +395,16 @@ pub(super) fn mengen(
         );
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mittel_unter_1_cm() {
+        assert_eq!(super::mittel(30e6, 10e6), "unter 1 cm");
+        assert_eq!(super::mittel(50e6, 10e6), "0,01 m");
+        assert_eq!(super::mittel(1.2e9, 1e6), "1,20 m");
+        assert_eq!(super::mittel(0.0, 1e6), "0,00 m");
+        assert_eq!(super::mittel(1.0, 0.0), "0,00 m");
+    }
 }

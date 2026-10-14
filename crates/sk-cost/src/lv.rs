@@ -894,7 +894,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     if kopf.vorbemerkungen.is_none() {
         befunde.push(Befund::hinweis(
             107,
-            format!("Los {} hat keine Vorbemerkungen.", kopf.los),
+            format!("Los {} hat keine allgemeinen Vorbemerkungen.", kopf.los),
             Ort::Kopf,
         ));
     }

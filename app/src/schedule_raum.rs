@@ -123,7 +123,7 @@ pub(super) fn gruppe(
         lines.push(gl);
         let schichten = sk_model::qto_raum::layer_rows(m, r, st.id, q);
         for (i, l) in q.lines.iter().enumerate() {
-            let key = Key::LayerRow(e.index(), e.generation(), i.min(255) as u8);
+            let key = Key::LayerRow(e.index(), e.generation(), i.min(u16::MAX as usize) as u16);
             let mut rl = Line::new(Kind::Row, 2, key);
             rl.storey = skey;
             rl.group = gkey;
@@ -155,9 +155,9 @@ pub(super) fn gruppe(
                             Key::Term(
                                 e.index(),
                                 e.generation(),
-                                i.min(255) as u8,
+                                i.min(u16::MAX as usize) as u16,
                                 spalte(b) as u8,
-                                j.min(255) as u8,
+                                j.min(u16::MAX as usize) as u16,
                             )
                         };
                         term_zeilen(&l.weg, &mut rl, tk, &mut weg);

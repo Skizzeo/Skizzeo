@@ -26,8 +26,23 @@ fn schriften() -> Option<Fonts> {
 }
 
 fn standardhaus() -> Scene {
+    haus(include_str!(
+        "../../crates/sk-cost/referenz/rh1-standardhaus.szo"
+    ))
+}
+
+/// RH-1 mit einer Dämmung hart, zu der das Werk keine Bauleistung kennt
+/// (wie `kosten_view::tests::haus_grau`): ihre Zeile bleibt grau.
+fn standardhaus_grau() -> Scene {
+    haus(
+        &include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo")
+            .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9"),
+    )
+}
+
+fn haus(szo: &str) -> Scene {
     let m = sk_model::szo::read_with(
-        include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+        szo,
         sk_model::GuidGen::with_seed(1),
         &sk_cost::lesen::ABSCHNITTE_SZO,
     )
@@ -254,15 +269,15 @@ fn istbilder_ka1_ka2() {
     b.ablegen(&mut q, "ist-ka-3a5-unterschiede.png");
     let _ = std::fs::remove_dir_all(&d);
 
-    // KA-2e: „Bauleistung wählen …“ an Dachterrasse · Dämmung hart
-    let mut s = standardhaus();
+    // KA-2e: „Bauleistung wählen …“ an Dachterrasse · Dämmung hart; das Werk
+    // kennt für sie inzwischen eine Bauleistung, darum ohne deren Baustoff
+    let mut s = standardhaus_grau();
     b.p = Picking::default();
     let mut q = b.fenster(&mut s, 1240, 960, Blatt::Kosten);
     let k = q.kosten.as_mut().unwrap();
     let (x, y) = k
         .waehlen_mitte(&b.t, &b.fonts, "Dämmung hart")
-        .or_else(|| k.waehlen_mitte(&b.t, &b.fonts, ""))
-        .expect("graue Zeile mit Wahl");
+        .expect("graue Zeile Dämmung hart mit Wahl");
     k.mouse_move(&b.t, &b.fonts, &mut b.p, x, y);
     k.mouse_down(&b.t, &b.fonts, &mut b.p, (x, y), mods);
     q.sync(&mut s, &b.p, false);

@@ -113,7 +113,7 @@ pub struct RoomQto {
 }
 
 /// Zeilen der Räume eines Geschosses: Raum und seine Mengen. Rechnet
-/// sk-raum (`sk_raum::mengen::raeume`).
+/// sk-raum (`sk_raum::mengen::raeume_mit`, Review #170 H-170b).
 pub type RoomFn<'a> = &'a dyn Fn(&Model, StoreyId) -> Vec<(ElementId, RoomQto)>;
 
 /// „4,240 − 0,885 = 3,355 m“: Rechenweg einer Länge für den Mengenansatz.

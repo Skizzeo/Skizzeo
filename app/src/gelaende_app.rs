@@ -17,9 +17,10 @@ use std::sync::{mpsc, Arc};
 pub(crate) mod unterlage;
 pub(crate) use unterlage::Unterlage;
 
-/// Größte Punktliste, die gelesen wird (Bytes); ein Aufmaß mit 100.000
-/// Punkten hat etwa 5 MB.
-const MAX_DATEI: u64 = 32 << 20;
+/// Größtes Höhenaufmaß, das gelesen wird (Bytes); eins mit 100.000
+/// Punkten hat als Punktliste etwa 5 MB, als DXF mit Nummerntexten etwa
+/// 15 MB.
+const MAX_DATEI: u64 = 64 << 20;
 
 /// Größtes PDF, das als Lageplan gelesen wird (Bytes): so viel, wie der
 /// PDF-Leser höchstens hält (#128, Review #139 H5).
@@ -32,11 +33,12 @@ const FILTER_PDF: [(&str, &str); 2] = [
 ];
 
 /// Dateiarten im Dialog; die Endung zählt nicht, Skizzeo liest den Inhalt.
-const FILTER: [(&str, &str); 2] = [
+const FILTER: [(&str, &str); 3] = [
     (
-        "Punktliste (*.csv, *.txt, *.xyz, …)",
-        "*.csv;*.txt;*.xyz;*.asc;*.pkt;*.dat;*.koo;*.kor;*.coo",
+        "Punktliste oder DXF (*.csv, *.txt, *.dxf, …)",
+        "*.csv;*.txt;*.xyz;*.asc;*.pkt;*.dat;*.koo;*.kor;*.coo;*.dxf",
     ),
+    ("DXF des Vermessers (*.dxf)", "*.dxf"),
     ("Alle Dateien (*.*)", "*.*"),
 ];
 
@@ -66,6 +68,9 @@ pub(crate) struct Zustand {
     plan: Option<(String, Arc<SitePlan>)>,
     /// Ein Lageplan wird im eigenen Faden gelesen (Review #139 B2).
     lesen: Option<(PathBuf, mpsc::Receiver<Result<SitePlan, Meldung>>)>,
+    /// Ein Höhenaufmaß wird samt Netz im eigenen Faden gelesen (Review
+    /// #152 B1), mit der Datei und der Zone, die dabei gilt.
+    hoehen: Option<(PathBuf, u8, mpsc::Receiver<Ergebnis>)>,
     /// Wie es um die Unterlage im Modell steht (gelesen, fehlt).
     pub(crate) unterlage: unterlage::Stand,
     /// Modellstand der Leiste im Paneel; `neu` erzwingt einen Abgleich.
@@ -88,12 +93,13 @@ impl Zustand {
         self.fehler = None;
         self.plan = None;
         self.lesen = None;
+        self.hoehen = None;
         self.neu = true;
     }
 
-    /// Ein Lageplan wird gelesen.
+    /// Ein Lageplan oder ein Höhenaufmaß wird gelesen.
     pub(crate) fn liest(&self) -> bool {
-        self.lesen.is_some()
+        self.lesen.is_some() || self.hoehen.is_some()
     }
 }
 
@@ -153,6 +159,9 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     };
     if z.lesen.is_some() {
         l.meldung.push("Lageplan wird gelesen …".into());
+    }
+    if z.hoehen.is_some() {
+        l.meldung.push("Höhenaufmaß wird gelesen …".into());
     }
     match &z.unterlage {
         Stand::Gut => {}
@@ -319,6 +328,33 @@ fn datei(p: &Path, max: u64) -> std::io::Result<Vec<u8>> {
     Ok(b)
 }
 
+/// Satz, wenn das Flurstück aus dem Lageplan die Grenze aus der Datei
+/// (`eigene`, z. B. aus der DXF) ersetzt hat (Review #152 H-152a).
+fn grenze_ersetzt(eigene: &[Vec<(f64, f64)>], m: &Model) -> Option<&'static str> {
+    let t = m.terrain()?;
+    (!eigene.is_empty() && t.underlay.is_some() && t.parcels != eigene).then_some(
+        "Grundstück bleibt das Flurstück aus dem Lageplan; die Grenze aus der Datei ist nicht übernommen.",
+    )
+}
+
+/// Ein gelesenes Höhenaufmaß: Gelände mit Netz, Satz und Hinweise.
+type Gelesen = (Terrain, String, Vec<String>);
+
+/// Was der Faden von [`App::hoehen_einlesen`] schickt.
+type Ergebnis = Result<Gelesen, Meldung>;
+
+/// Punktliste oder DXF `p` lesen und vernetzen (im Faden von
+/// [`App::hoehen_einlesen`]); das Netz bleibt am Gelände gemerkt.
+fn hoehen_lesen(p: &Path, zone: u8) -> Ergebnis {
+    let name = p
+        .file_name()
+        .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+    let roh = datei(p, MAX_DATEI)
+        .map_err(|e| Meldung::aus_io("Höhenaufmaß nicht eingelesen", "Einlesen", p, &e))?;
+    Terrain::lesen(&roh, &name, &heute(), zone)
+        .map_err(|e| Meldung::mit("Höhenaufmaß nicht eingelesen: {}", &[&e]))
+}
+
 /// PDF `p` als Lageplan lesen (im Faden von [`App::lageplan_einlesen`]).
 fn lageplan_lesen(p: &Path, zone: u8) -> Result<SitePlan, Meldung> {
     let roh = datei(p, MAX_PDF)
@@ -427,30 +463,67 @@ impl App {
         }
     }
 
-    /// Punktliste `p` lesen und als Aufmaß übernehmen (ein Schritt). Was
-    /// erkannt wurde, steht in der Leiste, ebenso ein Fehler.
+    /// Punktliste oder DXF `p` im eigenen Faden lesen und vernetzen (Review
+    /// #152: 100.000 Punkte hielten sonst die Oberfläche an); übernommen
+    /// wird beim Abholen ([`App::hoehen_abholen`]).
     pub(crate) fn hoehen_einlesen(&mut self, p: &Path) {
-        let name = p
-            .file_name()
-            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-        let m = self.scene.model();
-        let zone = m.location().utm.map_or(32, |u| u.zone);
-        let gelesen = datei(p, MAX_DATEI)
-            .map_err(|e| Meldung::aus_io("Höhenaufmaß nicht eingelesen", "Einlesen", p, &e))
-            .and_then(|roh| {
-                Terrain::lesen(&roh, &name, &heute(), zone)
-                    .map_err(|e| Meldung::mit("Höhenaufmaß nicht eingelesen: {}", &[&e]))
-            });
-        let mit_unterlage = m.terrain().is_some_and(|t| t.underlay.is_some());
+        let zone = self.scene.model().location().utm.map_or(32, |u| u.zone);
+        let pfad = p.to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            // fällt weg, wenn die Leiste inzwischen zu ist
+            let _ = tx.send(hoehen_lesen(&pfad, zone));
+        });
         let z = &mut self.platte.leiste;
         z.neu = true;
         z.meldung.clear();
         z.fehler = None;
+        z.hoehen = Some((p.to_path_buf(), zone, rx));
+        self.gelaende_sync();
+        self.redraw = true;
+    }
+
+    /// Ein fertig gelesenes Höhenaufmaß übernehmen; `true`, wenn eins kam
+    /// (dann folgt ein Bild). Ein Ergebnis, das nicht mehr gilt, fällt weg:
+    /// Leiste zu oder neues Einlesen verwerfen den Empfänger; hat das
+    /// Modell inzwischen eine andere UTM-Zone (die Vorgabe für Dateien ohne
+    /// Zonenkennzahl), wird neu gelesen. Sonst hängt das Gelesene nicht am
+    /// Modell.
+    pub(crate) fn hoehen_abholen(&mut self) -> bool {
+        let Some((_, zone, rx)) = &self.platte.leiste.hoehen else {
+            return false;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => Err(Meldung::satz(
+                "Höhenaufmaß nicht eingelesen: Das Lesen brach ab.",
+            )),
+        };
+        let jetzt = self.scene.model().location().utm.map_or(32, |u| u.zone);
+        let zone = *zone;
+        let (p, _, _) = self.platte.leiste.hoehen.take().expect("Lesen");
+        if r.is_ok() && jetzt != zone {
+            self.hoehen_einlesen(&p);
+            return false;
+        }
+        self.hoehen_gelesen(r);
+        true
+    }
+
+    /// Das gelesene Aufmaß als Schritt übernehmen. Was erkannt wurde, steht
+    /// in der Leiste, ebenso ein Fehler.
+    fn hoehen_gelesen(&mut self, gelesen: Ergebnis) {
+        let m = self.scene.model();
+        let mit_unterlage = m.terrain().is_some_and(|t| t.underlay.is_some());
+        let z = &mut self.platte.leiste;
+        z.neu = true;
         match gelesen {
             Err(e) => z.fehler = Some(e),
             Ok((t, satz, hinweise)) => {
                 z.meldung.push(satz);
                 hinweise_anhaengen(&mut z.meldung, &hinweise);
+                let eigene = t.parcels.clone();
                 match self.lageplan_einpassen(&t) {
                     Einpassen::Nicht => {
                         self.gelaende_schritt("Höhenaufmaß eingelesen", |m| m.import_terrain(t));
@@ -478,6 +551,9 @@ impl App {
                             );
                         }
                     }
+                }
+                if let Some(satz) = grenze_ersetzt(&eigene, self.scene.model()) {
+                    self.platte.leiste.meldung.push(satz.into());
                 }
             }
         }
@@ -819,6 +895,106 @@ mod tests {
                 Field::Gelaende(GelaendeFeld::Nhn)
             ]
         );
+    }
+
+    /// 100.000 Punkte lesen und vernetzen im Faden; im UI-Faden bleibt nur
+    /// das Übernehmen ins Modell (Review #152).
+    #[test]
+    fn grosses_aufmass_im_faden() {
+        let ordner = std::env::temp_dir().join(format!("sk-hoehen-{}", std::process::id()));
+        std::fs::create_dir_all(&ordner).unwrap();
+        let p = ordner.join("gross.csv");
+        let mut s = String::with_capacity(4 << 20);
+        for i in 0..317 {
+            for j in 0..317 {
+                let (x, y) = (i as f64 * 0.5, j as f64 * 0.5);
+                s.push_str(&format!(
+                    "{},{:.3},{:.3},{:.3}\n",
+                    i * 317 + j + 1,
+                    467_000.0 + x,
+                    5_878_000.0 + y,
+                    24.0 + 0.02 * x + 0.3 * (y / 7.0).sin()
+                ));
+            }
+        }
+        std::fs::write(&p, s).unwrap();
+        let t0 = std::time::Instant::now();
+        let gelesen = std::thread::spawn({
+            let p = p.clone();
+            move || hoehen_lesen(&p, 32)
+        })
+        .join()
+        .unwrap();
+        let faden = t0.elapsed().as_secs_f64();
+        std::fs::remove_dir_all(&ordner).ok();
+        let (t, satz, _) = gelesen.unwrap();
+        assert!(satz.starts_with("100489 Punkte"), "{satz}");
+        let im_faden = t.mesh();
+        let mut m = lindenhof();
+        let t1 = std::time::Instant::now();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let netz = m.terrain().unwrap().mesh();
+        let ui = t1.elapsed().as_secs_f64();
+        // das Netz aus dem Faden, nicht neu trianguliert
+        assert!(Arc::ptr_eq(&im_faden, &netz));
+        assert!(netz.netz.dreiecke.len() > 190_000);
+        eprintln!("Höhenaufmaß 100.489 Punkte: Faden {faden:.3} s, UI {ui:.3} s");
+        assert!(ui < 0.25 * faden + 0.05, "Faden {faden} s, UI {ui} s");
+    }
+
+    /// „Höhen“ nimmt auch die DXF des Vermessers (G1b): Der Dialog bietet
+    /// sie an, und die Leiste zeigt dasselbe Grundstück wie mit der CSV.
+    #[test]
+    fn dxf_in_der_leiste() {
+        const DXF: &[u8] =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.dxf");
+        assert!(FILTER[0].1.split(';').any(|f| f == "*.dxf"));
+        let mut m = lindenhof();
+        let (t, satz, hinweise) = Terrain::lesen(DXF, "aufmass.dxf", "2026-10-13", 32).unwrap();
+        assert_eq!(
+            satz,
+            "109 Punkte · DXF R12 · 4 Bruchkanten · 1 Grenze · ETRS89/UTM · Höhen 24,15 bis 26,04 m"
+        );
+        assert!(hinweise.is_empty(), "{hinweise:?}");
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let l = leiste(&m, &Zustand::default());
+        assert!(l.aufmass && l.grenze);
+        assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,86 m²"));
+    }
+
+    /// Ersetzt das Flurstück aus dem Lageplan die Grenze der DXF, sagt es
+    /// die Leiste (Review #152 H-152a).
+    #[test]
+    fn dxf_grenze_weicht_dem_flurstueck() {
+        const DXF: &[u8] =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.dxf");
+        let plan = SitePlan::read(PLAN, 32).unwrap();
+        let mut m = lindenhof();
+        m.begin("Lageplan");
+        assert!(m.import_parcel(&plan, "lageplan.pdf", None));
+        m.commit();
+        let (t, _, _) = Terrain::lesen(DXF, "aufmass.dxf", "2026-10-14", 32).unwrap();
+        let eigene = t.parcels.clone();
+        assert_eq!(eigene.len(), 1);
+        // der Plan liegt nur im Maßstab vor: eingepasst wie in der App
+        let (fit, _) = plan.fit_to(&t.points).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain_fitted(t, fit));
+        m.commit();
+        assert!(m.terrain().unwrap().underlay.is_some());
+        assert!(grenze_ersetzt(&eigene, &m).is_some());
+        // ohne Lageplan bleibt die Grenze der DXF, kein Satz
+        let mut n = lindenhof();
+        let (t, _, _) = Terrain::lesen(DXF, "aufmass.dxf", "2026-10-14", 32).unwrap();
+        n.begin("Aufmaß");
+        assert!(n.import_terrain(t));
+        n.commit();
+        assert_eq!(n.terrain().unwrap().parcels, eigene);
+        assert!(grenze_ersetzt(&eigene, &n).is_none());
     }
 
     /// Jeder Knopf hat einen Namen mit Satz in der Hilfe.

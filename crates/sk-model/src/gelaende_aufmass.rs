@@ -13,11 +13,12 @@
 use super::*;
 use sk_gelaende::abfrage::Abfrage;
 use sk_gelaende::codes::{Bedeutung, Codetabelle};
+use sk_gelaende::dxf::Linienart;
 use sk_gelaende::lesen::Punkt;
 use sk_gelaende::linien::Hoehenlinie;
 use sk_gelaende::{netz, Netz, Rand};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
@@ -30,6 +31,15 @@ pub struct TerrainPoint {
     pub code: String,
     /// Vom Nutzer aus dem Gelände genommen.
     pub off: bool,
+}
+
+/// Eine Bruchkante aus der Datei (DXF, G1b): Punktnummern im Verlauf, wie
+/// sie nach dem Prüfen heißen (doppelte mit „-2“), damit jede Nummer genau
+/// einen Punkt trifft. Kanten einer Netzfläche sind geschlossen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainLine {
+    pub pts: Vec<String>,
+    pub closed: bool,
 }
 
 /// Lagesystem der Messpunkte.
@@ -311,6 +321,9 @@ pub struct Terrain {
     pub points: Vec<TerrainPoint>,
     /// Grenzen als Punktnummern im Umlauf, je Flurstück eine.
     pub boundaries: Vec<Vec<String>>,
+    /// Bruchkanten und Kanten der Netzflächen aus der Datei (G1b); die aus
+    /// Linien-Codes entstehen beim Vernetzen.
+    pub breaks: Vec<TerrainLine>,
     /// Grenzen als Landeswerte (Ost, Nord in m) im Umlauf, aus dem
     /// Lageplan (G1c).
     pub parcels: Vec<Vec<(f64, f64)>>,
@@ -334,6 +347,7 @@ impl PartialEq for Terrain {
             &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
         ) && (&self.points, &self.boundaries, &self.codes, &self.raw)
             == (&o.points, &o.boundaries, &o.codes, &o.raw)
+            && self.breaks == o.breaks
             && (&self.parcels, &self.underlay) == (&o.parcels, &o.underlay)
             && self.head_raw == o.head_raw
     }
@@ -353,6 +367,7 @@ impl Terrain {
             local: None,
             points: Vec::new(),
             boundaries: Vec::new(),
+            breaks: Vec::new(),
             parcels: Vec::new(),
             underlay: None,
             codes: Vec::new(),
@@ -391,7 +406,8 @@ impl Terrain {
     }
 
     /// Prüfsumme über alles, woraus das Netz entsteht (Rand, Codes,
-    /// Punkte mit Abwahl), wie [`Terrain::netz_gleich`] vergleicht.
+    /// Punkte mit Abwahl, Bruchkanten der Datei), wie
+    /// [`Terrain::netz_gleich`] vergleicht.
     fn netz_schluessel(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -409,6 +425,9 @@ impl Terrain {
                 p.off,
             )
                 .hash(&mut h);
+        }
+        for l in &self.breaks {
+            (&l.pts, l.closed).hash(&mut h);
         }
         h.finish()
     }
@@ -456,9 +475,13 @@ impl Terrain {
         for (k, &i) in index.iter().enumerate() {
             nach[i] = k;
         }
+        // Kanten aus Linien-Codes und aus der Datei, jede einmal
+        let mut da = HashSet::new();
         let bruch: Vec<[usize; 2]> = codes
             .bruchkanten(&punkte, &pr.drin)
             .into_iter()
+            .chain(self.kanten_der_datei(&punkte, &pr.drin))
+            .filter(|&[a, b]| da.insert([a.min(b), a.max(b)]))
             .map(|[a, b]| [nach[a], nach[b]])
             .collect();
         let rand = match self.trim {
@@ -518,8 +541,9 @@ impl Terrain {
     }
 
     /// Flächenmittel der Höhe über einem Polygon (Landeswerte), exakt über
-    /// die Dreiecke; liegt es ganz außerhalb des Netzes, die Höhe in seiner
-    /// Mitte (nächster Randpunkt).
+    /// die Dreiecke unter ihm (über das Gitter, Review #164 H-164a); liegt es
+    /// ganz außerhalb des Netzes, die Höhe in seiner Mitte (nächster
+    /// Randpunkt).
     pub fn mean_over(&self, ring: &[(f64, f64)]) -> Option<f64> {
         let m = self.mesh();
         if m.netz.dreiecke.is_empty() || ring.is_empty() {
@@ -527,13 +551,16 @@ impl Terrain {
         }
         let (e0, n0) = m.bezug;
         let r: Vec<[f64; 2]> = ring.iter().map(|p| [p.0 - e0, p.1 - n0]).collect();
-        sk_gelaende::volumen::mittel(&m.netz, &r).or_else(|| {
-            let k = r.len() as f64;
-            let (x, y) = r
-                .iter()
-                .fold((0.0, 0.0), |a, p| (a.0 + p[0] / k, a.1 + p[1] / k));
-            m.abfrage.hoehe(x, y)
-        })
+        let e = m.abfrage.erdmenge(&r, [0.0, 0.0, 0.0]);
+        (e.flaeche > 1e-12)
+            .then(|| (e.ueber - e.unter) / e.flaeche)
+            .or_else(|| {
+                let k = r.len() as f64;
+                let (x, y) = r
+                    .iter()
+                    .fold((0.0, 0.0), |a, p| (a.0 + p[0] / k, a.1 + p[1] / k));
+                m.abfrage.hoehe(x, y)
+            })
     }
 
     /// Abtrag und Auftrag über einem Polygon (Landeswerte) gegen eine
@@ -541,6 +568,7 @@ impl Terrain {
     /// Dreiecke (G2, [`sk_gelaende::volumen::Erdmenge`]): `ueber` ist das
     /// Gelände über der Sohle, `unter` darunter. Teile außerhalb des Netzes
     /// zählen nicht; `flaeche` sagt, wie viel im Netz liegt.
+    #[cfg(test)] // nur Tests rechnen so (Review #164 H-164e)
     pub fn erdmenge_over(&self, ring: &[(f64, f64)], h: f64) -> sk_gelaende::volumen::Erdmenge {
         let m = self.mesh();
         let (e0, n0) = m.bezug;
@@ -555,9 +583,46 @@ impl Terrain {
         (n > 0).then(|| m.index.iter().map(|&i| self.points[i].h).sum::<f64>() / n as f64)
     }
 
-    /// Dasselbe Netz: gleiche Punkte (mit „aus“), Codes und Rand.
+    /// Dasselbe Netz: gleiche Punkte (mit „aus“), Codes, Bruchkanten der
+    /// Datei und Rand.
     fn netz_gleich(&self, o: &Terrain) -> bool {
-        self.trim == o.trim && self.codes == o.codes && self.points == o.points
+        self.trim == o.trim
+            && self.codes == o.codes
+            && self.points == o.points
+            && self.breaks == o.breaks
+    }
+
+    /// Kanten der Bruchkanten aus der Datei als Index in `punkte` (nach
+    /// dem Prüfen, die Nummern sind dann eindeutig), nur zwischen Punkten
+    /// mit `drin`; Nummern ohne Punkt fallen weg.
+    fn kanten_der_datei(&self, punkte: &[Punkt], drin: &[bool]) -> Vec<[usize; 2]> {
+        if self.breaks.is_empty() {
+            return Vec::new();
+        }
+        let nach_nr: HashMap<&str, usize> = punkte
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| drin[i])
+            .map(|(i, p)| (p.nr.as_str(), i))
+            .collect();
+        let mut k = Vec::new();
+        for l in &self.breaks {
+            let i: Vec<Option<usize>> = l
+                .pts
+                .iter()
+                .map(|nr| nach_nr.get(nr.as_str()).copied())
+                .collect();
+            let n = i.len();
+            let schluss = (l.closed && n > 2).then(|| [i[n - 1], i[0]]);
+            for [a, b] in i.windows(2).map(|w| [w[0], w[1]]).chain(schluss) {
+                if let (Some(a), Some(b)) = (a, b) {
+                    if a != b {
+                        k.push([a, b]);
+                    }
+                }
+            }
+        }
+        k
     }
 
     /// Gleiche Werte in der `[terrain]`-Zeile.
@@ -759,6 +824,7 @@ impl Model {
     /// Abtrag und Auftrag des Aufmaßes über dem Umriss `outline` (Modell,
     /// mm) gegen eine waagerechte Sohle in `z` mm über ±0,00 (G2): Fläche in
     /// m², Mengen in m³. `None` ohne Aufmaß mit Lage und Höhenbezug.
+    #[cfg(test)] // nur Tests rechnen so (Review #164 H-164e)
     pub fn terrain_erdmenge(
         &self,
         outline: &[Vec3],
@@ -821,10 +887,58 @@ fn gefaltet(w: f64) -> f64 {
     w
 }
 
+/// Bruchkanten und Netzflächen einer DXF als Nummernfolgen. Die Nummern
+/// heißen wie nach dem Prüfen ([`sk_gelaende::pruefen::eindeutig`] benennt
+/// doppelte um), so trifft jede genau einen Punkt.
+fn linien_der_datei(a: &sk_gelaende::lesen::Aufmass) -> Vec<TerrainLine> {
+    let mut linien = a
+        .linien
+        .iter()
+        .filter(|l| matches!(l.art, Linienart::Bruchkante | Linienart::Masche))
+        .peekable();
+    if linien.peek().is_none() {
+        return Vec::new();
+    }
+    let mut punkte = a.punkte.clone();
+    sk_gelaende::pruefen::eindeutig(&mut punkte);
+    let mut aus = Vec::new();
+    for l in linien {
+        // Eine Nummer mit Komma ließe sich in der `.szo` nicht trennen: Die
+        // Linie teilt sich dort, die Kanten an diesem Punkt fallen weg.
+        let nr: Vec<Option<&str>> = l
+            .punkte
+            .iter()
+            .map(|&i| {
+                punkte
+                    .get(i)
+                    .map(|p| p.nr.as_str())
+                    .filter(|n| !n.contains(','))
+            })
+            .collect();
+        if nr.iter().all(Option::is_some) {
+            aus.push(TerrainLine {
+                pts: nr.iter().flatten().map(|n| n.to_string()).collect(),
+                closed: l.geschlossen && nr.len() > 2,
+            });
+        } else {
+            for teil in nr.split(Option::is_none) {
+                aus.push(TerrainLine {
+                    pts: teil.iter().flatten().map(|n| n.to_string()).collect(),
+                    closed: false,
+                });
+            }
+        }
+    }
+    aus.retain(|l| l.pts.len() >= 2);
+    aus
+}
+
 impl Terrain {
-    /// Aufmaß aus einer gelesenen Punktliste. Grenzpunkte (bis acht) werden
-    /// im Umlauf zur Grenze verbunden (§4.5); die Lage setzt
-    /// [`Model::import_terrain`].
+    /// Aufmaß aus einer gelesenen Punktliste oder DXF. Grenzen der DXF
+    /// gelten als Landeswerte (wie aus dem Lageplan); ohne sie werden
+    /// Grenzpunkte (bis acht) im Umlauf zur Grenze verbunden (§4.5).
+    /// Bruchkanten und Netzflächen der DXF bleiben als Nummernfolgen. Die
+    /// Lage setzt [`Model::import_terrain`].
     pub fn from_survey(
         a: &sk_gelaende::lesen::Aufmass,
         src: &str,
@@ -854,10 +968,17 @@ impl Terrain {
             })
             .collect();
         let codes = t.code_table();
+        t.breaks = linien_der_datei(a);
+        t.parcels = a
+            .linien
+            .iter()
+            .filter(|l| l.art == Linienart::Grenze && l.geschlossen && l.lage.len() >= 3)
+            .map(|l| l.lage.iter().map(|q| (q[0], q[1])).collect())
+            .collect();
         let grenze: Vec<usize> = (0..t.points.len())
             .filter(|&i| codes.bedeutung(&t.points[i].code) == Bedeutung::Grenzpunkt)
             .collect();
-        if (3..=8).contains(&grenze.len()) {
+        if t.parcels.is_empty() && (3..=8).contains(&grenze.len()) {
             let lage: Vec<(f64, f64)> = grenze
                 .iter()
                 .map(|&i| (t.points[i].e, t.points[i].n))
@@ -1973,5 +2094,112 @@ mod tests {
         let netz3 = m.terrain().unwrap().mesh();
         assert!(!Arc::ptr_eq(&netz, &netz3));
         assert_eq!(netz3.index.len() + 1, netz.index.len());
+    }
+
+    /// Abnahme G1b im Modell: Beide DXF des Beispiels geben dieselben
+    /// Punkte, dasselbe Netz, dieselbe Grundstücksfläche und dieselbe
+    /// Höhenlage wie die CSV. Die Grenze der DXF steht als Landeswerte,
+    /// ihre 3D-Polylinien als Bruchkanten (Nummern der Punkte).
+    #[test]
+    fn lindenhof_aus_dxf() {
+        const DXF: &[u8] =
+            include_bytes!("../../sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.dxf");
+        const BLOECKE: &[u8] =
+            include_bytes!("../../sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7-bloecke.dxf");
+        let soll = aufmass();
+        let soll_netz = soll.mesh();
+        let hoehe = |m: &Model| m.terrain_nhn().unwrap();
+        let mit = |t: Terrain| {
+            let (mut m, _) = lindenhof_haus();
+            m.begin("Aufmaß");
+            assert!(m.import_terrain(t));
+            m.commit();
+            m
+        };
+        let h_soll = hoehe(&mit(soll.clone()));
+        for (roh, linien) in [(DXF, 4), (BLOECKE, 0)] {
+            let (t, satz, hinweise) =
+                Terrain::lesen(roh, "lindenhof.dxf", "2026-10-13", 32).unwrap();
+            assert!(satz.contains("DXF R12"), "{satz}");
+            assert!(hinweise.is_empty(), "{hinweise:?}");
+            // die Punktliste trägt die Zonenkennzahl, ihr Abzug lässt einen
+            // Rest unter einem Mikrometer
+            assert_eq!(t.points.len(), soll.points.len());
+            for (p, q) in t.points.iter().zip(&soll.points) {
+                assert_eq!((&p.nr, &p.code, p.h, p.off), (&q.nr, &q.code, q.h, q.off));
+                assert!(
+                    (p.e - q.e).abs() < 1e-6 && (p.n - q.n).abs() < 1e-6,
+                    "{p:?} {q:?}"
+                );
+            }
+            assert_eq!(t.breaks.len(), linien);
+            assert!(t.breaks.iter().all(|l| !l.closed && l.pts.len() >= 2));
+            assert!(t.boundaries.is_empty());
+            assert_eq!(t.parcels.len(), 1);
+            assert!(
+                (t.parcel_area() - 822.87).abs() < 0.01,
+                "{}",
+                t.parcel_area()
+            );
+            let netz = t.mesh();
+            assert_eq!(netz.netz.dreiecke.len(), soll_netz.netz.dreiecke.len());
+            assert_eq!(netz.netz.bruch.len(), soll_netz.netz.bruch.len());
+            for (e, n) in [(467115.0, 5878750.0), (467125.3, 5878768.1)] {
+                let (a, b) = (t.height(e, n).unwrap(), soll.height(e, n).unwrap());
+                assert!((a - b).abs() < 1e-9, "{a} {b}");
+            }
+            let m = mit(t);
+            assert!((hoehe(&m) - h_soll).abs() < 1e-9);
+            assert_eq!(m.terrain().unwrap().show(), Show::Parcel);
+        }
+    }
+
+    /// Bruchkanten der Datei treffen auch doppelt nummerierte Punkte: Die
+    /// Nummern heißen wie nach dem Prüfen („5-2“), und die Kante zwingt das
+    /// Netz auf die längere Diagonale der Raute.
+    #[test]
+    fn bruchkante_der_datei_mit_doppelter_nummer() {
+        use sk_gelaende::dxf::{Linie, Linienart};
+        let mut a =
+            sk_gelaende::lesen::lesen(b"5;0;0;20\nB;5;6;21\nC;10;0;20\n5;5;-6;19\n").unwrap();
+        let netz = |a: &sk_gelaende::lesen::Aufmass| {
+            let mut t = Terrain::from_survey(a, "x.csv", "2026-10-13", 32);
+            t.trim = Trim::Hull;
+            let m = t.mesh();
+            let hat = |p: usize, q: usize| {
+                let (p, q) = (
+                    m.index.iter().position(|&i| i == p).unwrap() as u32,
+                    m.index.iter().position(|&i| i == q).unwrap() as u32,
+                );
+                m.netz
+                    .dreiecke
+                    .iter()
+                    .any(|d| d.contains(&p) && d.contains(&q))
+            };
+            (t.breaks.clone(), hat(0, 2), hat(1, 3))
+        };
+        // ohne Kante die kurze Diagonale 5–C
+        assert_eq!(netz(&a), (Vec::new(), true, false));
+        a.linien.push(Linie {
+            art: Linienart::Bruchkante,
+            ebene: "BRUCH".into(),
+            punkte: vec![1, 3],
+            lage: Vec::new(),
+            geschlossen: false,
+        });
+        let (breaks, kurz, lang) = netz(&a);
+        assert_eq!(
+            breaks,
+            [TerrainLine {
+                pts: vec!["B".into(), "5-2".into()],
+                closed: false
+            }]
+        );
+        assert!(!kurz && lang);
+        // die Kante zählt im Schlüssel des Netzes
+        let mut t = Terrain::from_survey(&a, "x.csv", "2026-10-13", 32);
+        let k = t.netz_schluessel();
+        t.breaks.clear();
+        assert_ne!(k, t.netz_schluessel());
     }
 }

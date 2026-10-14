@@ -35,7 +35,8 @@ const KG_DECKENBEKLEIDUNG: u16 = 354;
 /// Die gespeicherten Räume des Geschosses `geschoss` mit den Zeilen ihres
 /// Raumbuchs. Ein Raum ohne Ausbau (die Ausbautypen seiner Vorlage fehlen
 /// im Projekt) hat keine Mengen und fehlt, so bleiben Listen ohne
-/// Raumbuch, wie sie waren.
+/// Raumbuch, wie sie waren. Baut Platten und Ketten je Aufruf; für eine
+/// ganze Mengenliste [`raeume_mit`] (Review #170 H-170b).
 pub fn raeume(model: &Model, geschoss: StoreyId) -> Vec<(ElementId, RoomQto)> {
     let platten = Platten::neu(model, model);
     raeume_mit(model, model, &platten, formen(model, geschoss))
