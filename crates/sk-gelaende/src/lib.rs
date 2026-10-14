@@ -22,6 +22,7 @@ pub mod lesen;
 pub mod linien;
 pub mod netz;
 pub mod pdf;
+pub mod planung;
 pub mod praedikate;
 pub mod pruefen;
 pub mod seite;

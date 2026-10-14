@@ -57,6 +57,10 @@ pub struct Erdmenge {
     pub ueber: f64,
     /// ∫ (Bezug − Gelände)⁺ dA (m³): Gelände unter dem Bezug.
     pub unter: f64,
+    /// Fläche, auf der das Gelände über bzw. unter dem Bezug liegt (m²,
+    /// waagerecht projiziert; G3: wo eine Böschung wirklich entsteht).
+    pub flaeche_ueber: f64,
+    pub flaeche_unter: f64,
     /// Größtes Gefälle des Geländes über dem Polygon (m/m, Dreiecke mit
     /// Fläche darin): DIN 4124 erlaubt senkrechte Wände nur bis 1:10.
     pub steil: f64,
@@ -104,10 +108,18 @@ pub(crate) fn erdmenge_dreieck(
         e.flaeche += a;
         e.steil = e.steil.max(steil);
         let f = |q: [f64; 2]| ebene(&p, q) - bezug_an(bezug, q);
-        for (vz, summe) in [(1.0, &mut e.ueber), (-1.0, &mut e.unter)] {
+        for (vz, summe, fl) in [
+            (1.0, &mut e.ueber, &mut e.flaeche_ueber),
+            (-1.0, &mut e.unter, &mut e.flaeche_unter),
+        ] {
             let halb = halbieren(&teil, |q| vz * f(q));
             if let Some((a, c)) = flaeche_schwerpunkt(&halb) {
-                *summe += a * (vz * f(c)).max(0.0);
+                let h = (vz * f(c)).max(0.0);
+                *summe += a * h;
+                // wo Gelände und Bezug zusammenfallen, entsteht nichts
+                if h > 1e-12 {
+                    *fl += a;
+                }
             }
         }
     }
@@ -149,7 +161,7 @@ fn ueberlappt(p: &[[f64; 3]; 3], ring: &[[f64; 2]]) -> bool {
 /// Der Teil des Polygons `v`, in dem die lineare Funktion `f` nicht
 /// negativ ist (Sutherland-Hodgman an einer Halbebene; ein nicht konvexer
 /// Teil bekommt Stege ohne Fläche, Fläche und Schwerpunkt stimmen).
-fn halbieren(v: &[[f64; 2]], f: impl Fn([f64; 2]) -> f64) -> Vec<[f64; 2]> {
+pub(crate) fn halbieren(v: &[[f64; 2]], f: impl Fn([f64; 2]) -> f64) -> Vec<[f64; 2]> {
     let w: Vec<f64> = v.iter().map(|&q| f(q)).collect();
     let mut neu = Vec::with_capacity(v.len() + 1);
     for i in 0..v.len() {
