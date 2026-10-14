@@ -39,8 +39,14 @@ impl App {
                 .zeichnen(&self.scene, v, sel, f, &blick, scale, &self.theme, &h);
         // Live-Kette der Innentür: Zahlen und Begrenzung in der Ziehfarbe
         // (Grundriss G7)
-        let tuer = self.tool.oeffnung.as_ref();
+        let tuer = self.tool.oeffnung.as_mut();
         if let Some(w) = tuer.filter(|w| !w.vorschau.tinte.is_empty()) {
+            // Ein anderes Thema färbt sie neu, auch ohne Mausbewegung
+            // (Review W49 H3)
+            if w.tinte_rev != self.theme.rev {
+                w.tinte_rev = self.theme.rev;
+                w.tinte_nr = crate::scene::neuer_stand();
+            }
             let color = self.theme.interact.drag;
             let ink = w.vorschau.tinte.iter().map(|d| Ink {
                 p: d.map(|p| p.to_f32()),

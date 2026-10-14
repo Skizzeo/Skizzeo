@@ -490,9 +490,11 @@ impl Model {
         // Geschosse, deren Züge mitkommen: geänderte samt den Nachbarn im
         // Gebäude. Ein Band, das nur mitwandert (allein seine UK ändert
         // sich), bringt keine; ebenso wenig das Gebäude selbst (Versatz,
-        // Nummer): Davon hängt kein abgeleitetes Bauteil ab, und die
-        // Gründungen, die dem Gelände folgen, kommen als Geschosse
-        // (Review zu #148, B2)
+        // Nummer) und eine Gründung, deren OK bleibt (UK, Höhe und gewollte
+        // Einbindetiefe wandern, etwa mit dem Gelände): Von der Tiefe der
+        // Gründung hängt kein abgeleitetes Bauteil ab (Review zu #148, B2;
+        // Review L42: beim Loslassen eines Gelände-Zugs sonst je Haus ihr
+        // Geschoss und das EG im Abgleich)
         let mut geschosse: HashSet<StoreyId> = HashSet::new();
         let mut gebaeude: HashSet<BuildingId> = HashSet::new();
         for c in &open.changes {
@@ -507,6 +509,15 @@ impl Model {
                         elevation: b.elevation,
                         ..a.clone()
                     } == *b => {}
+                (Some(a), Some(b))
+                    if b.kind == LevelKind::Foundation
+                        && (a.top() - b.top()).abs() < 1e-6
+                        && Storey {
+                            elevation: b.elevation,
+                            height: b.height,
+                            embed: b.embed,
+                            ..a.clone()
+                        } == *b => {}
                 (old, Some(b)) => {
                     b.building?;
                     if old.is_some_and(|a| a.building != b.building) {
