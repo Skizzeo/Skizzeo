@@ -196,7 +196,9 @@ impl Planung {
                 let alpha = (grad[0] * g.o[0] + grad[1] * g.o[1]) * vz;
                 let r_max = (spanne / alpha.max(1e-9) + 1.0).min(u.diagonale() + 1.0);
                 let (r, offen) = reichweite(u, k, &g, &ebene, vz, r_max);
-                if offen {
+                // je Kante einmal, auch wenn Auftrag und Abtrag offen enden
+                // (H-169i)
+                if offen && !p.hinweise.contains(&Hinweis::OffenesEnde(nummer[i])) {
                     p.hinweise.push(Hinweis::OffenesEnde(nummer[i]));
                 }
                 if r <= 0.0 {
@@ -958,6 +960,13 @@ mod tests {
             "{:?}",
             p.hinweise
         );
+        // einmal je Kante (H-169i)
+        let n = p
+            .hinweise
+            .iter()
+            .filter(|h| **h == Hinweis::OffenesEnde(1))
+            .count();
+        assert_eq!(n, 1, "{:?}", p.hinweise);
         let osten = p.auftrag.iter().find(|b| b.kante == 1).unwrap();
         assert!(osten.ring.iter().all(|q| q[0] <= 40.0 + 1e-6), "{osten:?}");
         // auf den anderen Seiten trifft sie das Gelände
@@ -1028,11 +1037,15 @@ mod tests {
             }
             let t = std::time::Instant::now();
             let pl = Planung::neu(&baustein(&ring, [11.0, 0.0, 0.0], 1.5), &u);
+            let neu = t.elapsed().as_secs_f64() * 1e3;
+            let t = std::time::Instant::now();
+            let m = pl.mengen(&u);
             println!(
-                "{} Dreiecke, Spitze {spitze}: {:.1} ms, {} Bereiche",
+                "{} Dreiecke, Spitze {spitze}: neu {neu:.1} ms, mengen {:.1} ms, {} Bereiche, {:.1} m³",
                 2 * n * n,
                 t.elapsed().as_secs_f64() * 1e3,
-                pl.auftrag.len()
+                pl.auftrag.len(),
+                m.auftrag
             );
         }
     }
