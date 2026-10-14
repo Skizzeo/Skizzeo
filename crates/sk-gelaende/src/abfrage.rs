@@ -217,22 +217,6 @@ impl Abfrage {
         (self.nx as f64 * self.zelle).hypot(self.ny as f64 * self.zelle)
     }
 
-    /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
-    /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
-    /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.
-    pub fn erdmenge(&self, ring: &[[f64; 2]], bezug: Bezug) -> Erdmenge {
-        self.erdmengen(ring, &[bezug])[0]
-    }
-
-    /// [`Abfrage::erdmenge`] je Bezug, das Polygon einmal geschnitten.
-    pub fn erdmengen(&self, ring: &[[f64; 2]], bezuege: &[Bezug]) -> Vec<Erdmenge> {
-        let mut e = vec![Erdmenge::default(); bezuege.len()];
-        for p in self.dreiecke_unter(ring) {
-            erdmenge_dreieck(p, ring, bezuege, &mut e);
-        }
-        e
-    }
-
     /// Die Dreiecke in den Zellen unter dem Polygon `ring`, je einmal, mit
     /// ihren Punkten.
     pub(crate) fn dreiecke_unter(&self, ring: &[[f64; 2]]) -> Vec<[[f64; 3]; 3]> {
@@ -259,6 +243,43 @@ impl Abfrage {
         ts.into_iter()
             .map(|t| self.dreiecke[t as usize].map(|i| self.punkte[i as usize]))
             .collect()
+    }
+
+    /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
+    /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
+    /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.
+    pub fn erdmenge(&self, ring: &[[f64; 2]], bezug: Bezug) -> Erdmenge {
+        self.erdmengen(ring, &[bezug])[0]
+    }
+
+    /// [`Abfrage::erdmenge`] je Bezug, das Polygon einmal geschnitten.
+    pub fn erdmengen(&self, ring: &[[f64; 2]], bezuege: &[Bezug]) -> Vec<Erdmenge> {
+        let mut e = vec![Erdmenge::default(); bezuege.len()];
+        if ring.len() < 3 || self.dreiecke.is_empty() {
+            return e;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for q in ring {
+            x0 = x0.min(q[0]);
+            y0 = y0.min(q[1]);
+            x1 = x1.max(q[0]);
+            y1 = y1.max(q[1]);
+        }
+        let ((cx0, cy0), (cx1, cy1)) = (self.zelle_von(x0, y0), self.zelle_von(x1, y1));
+        let mut ts = Vec::new();
+        for cy in cy0..=cy1 {
+            let c = cy * self.nx;
+            ts.extend_from_slice(
+                &self.inhalt[self.start[c + cx0] as usize..self.start[c + cx1 + 1] as usize],
+            );
+        }
+        ts.sort_unstable();
+        ts.dedup();
+        for t in ts {
+            let p = self.dreiecke[t as usize].map(|i| self.punkte[i as usize]);
+            erdmenge_dreieck(p, ring, bezuege, &mut e);
+        }
+        e
     }
 
     /// Profil von `a` nach `b`: (Abstand ab `a`, Höhe) an `a`, an jedem
