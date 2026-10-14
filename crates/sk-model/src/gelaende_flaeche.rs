@@ -11,7 +11,11 @@
 //! und B5).
 
 use super::{Model, SurveyFrame};
-use sk_gelaende::planung::{Baustein, Kante, Teil};
+use sk_gelaende::planung::{oberflaeche, schraffen, Baustein, Herkunft, Kante, Teil};
+use sk_math::{vec3, Vec3};
+
+/// Abstand der Böschungsschraffen im Grundriss (mm).
+pub const PATCH_HATCH: f64 = 1000.0;
 
 /// Vorgabe der Böschung 1:n am Rand einer Geländefläche.
 pub const PATCH_SLOPE: f64 = 1.5;
@@ -303,7 +307,72 @@ impl SiteSoil {
     }
 }
 
+/// Das Planungsgelände für die Darstellung (G3c) im Modell (mm, z zu
+/// ±0,00): die Dreiecke des Urgeländes, die es ersetzt, und die Dreiecke an
+/// ihrer Stelle ([`sk_gelaende::planung::oberflaeche`]), dazu die
+/// Böschungsschraffen und die Umrisse der Flächen auf ihrer Höhe.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlannedTerrain {
+    /// Nummern in [`Model::terrain_triangles`], aufsteigend.
+    pub replaced: Vec<u32>,
+    /// Gegen den Uhrzeigersinn, wie das Urgelände.
+    pub triangles: Vec<[Vec3; 3]>,
+    /// Je Dreieck: auf einer befestigten Fläche.
+    pub paved: Vec<bool>,
+    /// Böschungsschraffen vom Kopf zum Fuß, je Stück; `true` lang.
+    pub hatch: Vec<([Vec3; 2], bool)>,
+    /// Umriss jeder Fläche, die sich bauen lässt, auf ihrer Höhe.
+    pub outlines: Vec<Vec<Vec3>>,
+}
+
 impl Model {
+    /// Das Planungsgelände der Geländeflächen über dem Urgelände; `None`
+    /// ohne Fläche, Aufmaß, Lage oder Netz.
+    pub fn planned_terrain(&self) -> Option<PlannedTerrain> {
+        if self.site_patches().is_empty() {
+            return None;
+        }
+        let (t, f, h0) = (self.terrain()?, self.survey_frame()?, self.terrain_nhn()?);
+        let mesh = t.mesh();
+        let plaene = crate::qto_earth::planungen(self, &f, h0, &mesh);
+        let gilt: Vec<(usize, &sk_gelaende::planung::Planung)> = plaene
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
+            .collect();
+        let refs: Vec<_> = gilt.iter().map(|x| x.1).collect();
+        let o = oberflaeche(&mesh.abfrage, &refs);
+        let s = schraffen(&o, &refs, PATCH_HATCH / 1000.0);
+        let im_modell = |q: [f64; 3]| {
+            let [x, y] = f.to_model(q[0] + mesh.bezug.0, q[1] + mesh.bezug.1);
+            vec3(x, y, (q[2] - h0) * 1000.0)
+        };
+        let patches = self.site_patches();
+        Some(PlannedTerrain {
+            replaced: o.ersetzt.clone(),
+            triangles: o.dreiecke.iter().map(|(d, _)| d.map(im_modell)).collect(),
+            paved: o
+                .dreiecke
+                .iter()
+                .map(|(_, h)| matches!(h, Herkunft::Flaeche(k) if patches[gilt[*k].0].paved))
+                .collect(),
+            hatch: s
+                .iter()
+                .map(|(q, lang)| (q.map(im_modell), *lang))
+                .collect(),
+            outlines: gilt
+                .iter()
+                .map(|&(i, _)| {
+                    let p = &patches[i];
+                    p.outline
+                        .iter()
+                        .map(|q| vec3(q[0], q[1], p.z_at(q[0], q[1], h0)))
+                        .collect()
+                })
+                .collect(),
+        })
+    }
+
     /// Die Geländeflächen in der Reihenfolge, in der sie gesetzt wurden
     /// (bei Überlappung gilt die spätere).
     pub fn site_patches(&self) -> &[TerrainPatch] {
@@ -538,6 +607,72 @@ mod tests {
             let t = &b.teile[0].ebene;
             assert!((t[0] + t[1] * a[0] + t[2] * a[1] - soll).abs() < 1e-9);
         }
+    }
+
+    /// Auf ebenem Aufmaß (10,00 m ü. NHN, ±0,00 auf 9,50) eine Fläche 1 m
+    /// über dem Gelände: Das Planungsgelände ersetzt die Dreiecke darunter,
+    /// deckt sie genau, liegt zwischen Gelände und Fläche und hat
+    /// Schraffen auf der Böschung.
+    #[test]
+    fn planungsgelaende_im_modell() {
+        use crate::model::Terrain;
+        let mut m = Model::with_seed(7);
+        let a = sk_gelaende::lesen::lesen(b"1 0 0 10\n2 60 0 10\n3 60 60 10\n4 0 60 10\n").unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "eben.txt", "2026-10-14", 32)));
+        assert!(m.set_terrain_nhn(9.5));
+        m.commit();
+        assert_eq!(m.planned_terrain(), None, "ohne Fläche");
+        let r = vec![
+            [-5_000.0, -4_000.0],
+            [5_000.0, -4_000.0],
+            [5_000.0, 4_000.0],
+            [-5_000.0, 4_000.0],
+        ];
+        m.begin("Fläche");
+        let mut p = TerrainPatch::flat(r, 1500.0);
+        p.paved = true;
+        assert!(m.add_site_patch(p).is_some());
+        m.commit();
+        let g = m.planned_terrain().unwrap();
+        assert!(!g.replaced.is_empty());
+        assert_eq!(g.triangles.len(), g.paved.len());
+        let flaeche = |d: &[Vec3; 3]| ((d[1] - d[0]).cross(d[2] - d[0])).z / 2.0;
+        let alt = m.terrain_triangles();
+        let weg: f64 = g.replaced.iter().map(|&i| flaeche(&alt[i as usize])).sum();
+        let neu: f64 = g.triangles.iter().map(flaeche).sum();
+        assert!((weg - neu).abs() < 1.0, "{weg} {neu}");
+        assert!(g.triangles.iter().all(|d| flaeche(d) > 0.0));
+        for (d, befestigt) in g.triangles.iter().zip(&g.paved) {
+            let z: Vec<f64> = d.iter().map(|q| q.z).collect();
+            assert!(
+                z.iter().all(|z| (500.0 - 1e-6..=1500.0 + 1e-6).contains(z)),
+                "{z:?}"
+            );
+            let auf = z.iter().all(|z| (z - 1500.0).abs() < 1e-6);
+            let mitte = (d[0] + d[1] + d[2]) * (1.0 / 3.0);
+            let innen =
+                (-5_000.0..=5_000.0).contains(&mitte.x) && (-4_000.0..=4_000.0).contains(&mitte.y);
+            assert_eq!(*befestigt, innen, "{d:?}");
+            assert!(!innen || auf);
+        }
+        // Böschung 1:1,5 bis 1,5 m vor der Kante
+        let x_max = g
+            .triangles
+            .iter()
+            .filter(|d| d.iter().any(|q| q.z > 500.0 + 1e-6))
+            .flatten()
+            .map(|q| q.x)
+            .fold(0.0, f64::max);
+        assert!((x_max - 6_500.0).abs() < 1e-6, "{x_max}");
+        assert!(!g.hatch.is_empty());
+        for ([a, b], _) in &g.hatch {
+            for q in [a, b] {
+                assert!((500.0 - 1e-6..=1500.0 + 1e-6).contains(&q.z), "{q:?}");
+            }
+        }
+        assert_eq!(g.outlines.len(), 1);
+        assert!(g.outlines[0].iter().all(|q| q.z == 1500.0));
     }
 
     #[test]

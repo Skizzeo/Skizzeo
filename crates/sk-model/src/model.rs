@@ -412,7 +412,8 @@ pub use gelaende_aufmass::{
 #[path = "gelaende_flaeche.rs"]
 mod gelaende_flaeche;
 pub use gelaende_flaeche::{
-    PatchHeight, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_SLOPE, PATCH_SLOPE_RANGE,
+    PatchHeight, PlannedTerrain, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_HATCH, PATCH_SLOPE,
+    PATCH_SLOPE_RANGE,
 };
 
 #[path = "gelaende_lageplan.rs"]

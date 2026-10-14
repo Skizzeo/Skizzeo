@@ -938,6 +938,104 @@ mod tests {
         r.set_terrain_grid(None);
     }
 
+    /// Ist-Bilder Gelände G3c: RH-1 auf dem Höhenaufmaß „Am Lindenhof 7“
+    /// mit zwei Geländeflächen, einer Terrasse 0,60 m über dem Gelände vor
+    /// dem Haus und einem Garten 0,80 m unter dem Gelände daneben, je mit
+    /// Böschung 1:1,5. 3D von Südwesten, Grundriss mit Umriss und
+    /// Schraffen, Schnitt durch beide Flächen mit dem Urgelände
+    /// gestrichelt. `ist-flaeche-{3d,grundriss,schnitt}.png`.
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_gelaendeflaeche -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_gelaendeflaeche() {
+        use crate::gelaende_netz::{self as gn, Gelaende};
+        use crate::gelaende_platte as gp;
+        use sk_model::{Show, TerrainPatch};
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let csv =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
+        let (t, ..) = sk_model::Terrain::lesen(csv, "aufmass.csv", "2026-10-12", 32).unwrap();
+        let mut h = haus();
+        assert!(h.edit_model("Höhenaufmaß", |m| m.import_terrain(t)));
+        h.edit_model("Zuschnitt", |m| m.set_terrain_show(Show::All));
+        let (hlo, hhi) = h.bounds().unwrap();
+        let rechteck =
+            |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        let terrasse = rechteck(hlo.x, hlo.y - 5_000.0, hhi.x, hlo.y - 1_000.0);
+        let garten = rechteck(hhi.x + 3_000.0, hlo.y, hhi.x + 9_000.0, hhi.y);
+        let z = |m: &sk_model::Model, r: &[[f64; 2]]| {
+            let c = [(r[0][0] + r[2][0]) / 2.0, (r[0][1] + r[2][1]) / 2.0];
+            m.terrain_z_at(None, c[0], c[1])
+        };
+        assert!(h.edit_model("Flächen", |m| {
+            let (zt, zg) = (z(m, &terrasse) + 600.0, z(m, &garten) - 800.0);
+            m.add_site_patch(TerrainPatch::flat(terrasse.clone(), zt))
+                .is_some()
+                && m.add_site_patch(TerrainPatch::flat(garten.clone(), zg))
+                    .is_some()
+        }));
+        h.set_theme(&theme);
+        let g = Gelaende::aus(h.model()).unwrap();
+        let keys = h.table().terrain;
+        r.set_ground_z(Some(g.unten as f32));
+        r.set_grass(keys[0]);
+        r.set_mesh(
+            gp::MESH_PLATE,
+            &crate::scene::mesh_of(&gn::koerper(&g, keys)),
+        );
+        let sun = sonne(6, 21, 15 * 60);
+        let cam = blick(&h, vec3(-1.0, -1.3, 0.8), 40_000.0);
+        let px = bild(&mut r, &mut h, sun, &cam);
+        ab(&px, "ist-flaeche-3d.png");
+        r.set_mesh(gp::MESH_PLATE, &Default::default());
+        // Grundriss und Schnitt durch beide Flächen auf Papier, um Haus und
+        // Flächen
+        let y = (hlo.y + hhi.y) / 2.0 - 3_000.0;
+        let plane = (vec3(hhi.x, y, 0.0), vec3(0.0, -1.0, 0.0));
+        let b = Some((
+            vec3(hlo.x - 6_000.0, hlo.y - 9_000.0, g.unten),
+            vec3(hhi.x + 13_000.0, hhi.y + 4_000.0, hhi.z),
+        ));
+        for (v, n) in [
+            (ViewKind::Plan, "grundriss"),
+            (ViewKind::Section, "schnitt"),
+        ] {
+            h.set_theme(&theme);
+            r.set_style(crate::style(&theme.env));
+            r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
+            let p = (v == ViewKind::Section).then_some(plane);
+            r.set_mesh(crate::MESH_MODEL, &h.mesh(v, p, &[]));
+            let kappe = match p {
+                Some((p0, nn)) => {
+                    let f = sk_model::solid::SectionFrame::new(p0, nn);
+                    crate::scene::mesh_of(&gn::kappen(&g, &f, p0, keys[1]))
+                }
+                None => Default::default(),
+            };
+            r.set_mesh(gp::MESH_PLATE, &kappe);
+            let cam = crate::fit_parallel(v, b, W as f64, H as f64);
+            let mm_px = cam.ortho.map_or(10.0, |half| 2.0 * half / H as f64);
+            r.set_helpers(&gn::linien(&g, v, p, None, h.table(), 1.0, mm_px));
+            let mut view = cam.view(W, H);
+            view.paper = Some(h.table().paper);
+            view.patterns = crate::draw_table::pattern_mode(v, theme.env.patterns_3d);
+            r.draw(W, H, 0, &view).unwrap();
+            ab(&r.read_pixels(W, H), &format!("ist-flaeche-{n}.png"));
+        }
+        r.set_helpers(&[]);
+        r.set_mesh(gp::MESH_PLATE, &Default::default());
+        r.set_ground_z(None);
+        r.set_grass(0);
+    }
+
     /// Ist-Bilder G1c: der Beispiel-Lageplan übernommen (eben, in Form des
     /// Grundstücks, Unterlage im Grundriss), dann das Aufmaß über die
     /// Grenzpunkte eingepasst. `ist-lageplan-{3d,grundriss}.png`,

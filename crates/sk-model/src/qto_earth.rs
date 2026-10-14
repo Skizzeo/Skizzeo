@@ -17,7 +17,7 @@ use sk_math::Vec3;
 
 mod flaechen;
 mod netz;
-pub(crate) use flaechen::{gelaende_mengen, Merker as FlaechenMerker};
+pub(crate) use flaechen::{gelaende_mengen, planungen, Merker as FlaechenMerker};
 pub use flaechen::{
     Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, KEIL, OHNE_AUFMASS, OHNE_TRAEGER, UNGUELTIG,
 };

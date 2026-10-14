@@ -622,6 +622,37 @@ pub(crate) fn gelaende_mengen(
     out.splice(nach..nach, neu);
 }
 
+/// Das Planungsgelände jeder Fläche des Modells `m` im Netz `mesh` (für die
+/// Darstellung, G3c), in der Reihenfolge der Flächen; `None`, wo sie sich
+/// nicht bauen lässt. Was der Merker der Mengen zu Netz, Lage und Fläche
+/// schon weiß, rechnet nicht neu.
+pub(crate) fn planungen(
+    m: &Model,
+    frame: &SurveyFrame,
+    h0: f64,
+    mesh: &Arc<TerrainMesh>,
+) -> Vec<Option<Planung>> {
+    let lage = [frame.e0, frame.n0, frame.g, h0].map(f64::to_bits);
+    let alt = m
+        .flaechenmerker()
+        .alt()
+        .filter(|g| Arc::ptr_eq(&g.netz, mesh) && g.lage == lage);
+    m.site_patches()
+        .iter()
+        .map(|p| {
+            let gemerkt = alt
+                .as_ref()
+                .and_then(|g| g.flaechen.iter().find(|x| x.patch == *p));
+            match gemerkt {
+                Some(x) => x.plan.planung.as_ref().map(|(pl, _)| pl.clone()),
+                None => p
+                    .baustein(frame, h0, mesh.bezug)
+                    .map(|b| Planung::neu(&b, &mesh.abfrage)),
+            }
+        })
+        .collect()
+}
+
 fn gleiche_flaechen(alt: &[Gerechnet], p: &[TerrainPatch]) -> bool {
     alt.len() == p.len() && alt.iter().zip(p).all(|(a, p)| a.patch == *p)
 }
@@ -1447,6 +1478,17 @@ mod tests {
             let t = Instant::now();
             let _ = crate::qto::schedule(&m);
             let warm = ms(t);
+            // Darstellung (G3c): das Planungsgelände mit den Plänen aus dem
+            // Merker
+            let t = Instant::now();
+            let pt = m.planned_terrain().unwrap();
+            let bild = ms(t);
+            eprintln!(
+                "{anzahl} × 400 Kanten: Planungsgelände {bild:.1} ms, {} Dreiecke ersetzt durch {}, {} Schraffen",
+                pt.replaced.len(),
+                pt.triangles.len(),
+                pt.hatch.len()
+            );
             m.begin("eine");
             assert!(m.set_site_patch(0, kreis(-10_000.0, 30_000.0, 700.0)));
             m.commit();

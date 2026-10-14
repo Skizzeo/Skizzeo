@@ -265,6 +265,17 @@ impl Abfrage {
             .collect()
     }
 
+    /// Die Nummern der Dreiecke in den Zellen unter dem Polygon `ring`, je
+    /// einmal, aufsteigend.
+    pub(crate) fn nummern_unter(&self, ring: &[[f64; 2]]) -> Vec<u32> {
+        self.zellen_unter(ring).map_or(Vec::new(), |(_, _, ts)| ts)
+    }
+
+    /// Die Punkte des Dreiecks `t`.
+    pub(crate) fn punkte_von(&self, t: u32) -> [[f64; 3]; 3] {
+        self.dreiecke[t as usize].map(|i| self.punkte[i as usize])
+    }
+
     /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
     /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
     /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.
