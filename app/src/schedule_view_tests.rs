@@ -13,6 +13,14 @@ fn zahlen_deutsch() {
     assert_eq!(cm(175.0), "17,5 cm");
     assert_eq!(csv_num(17.6), "17,6000");
     assert_eq!(csv_num(-1.31593), "-1,3159");
+    // Kaufmännisch: die Hälfte vom Nullpunkt weg, auch knapp darunter
+    // abgelegt; große Zahlen behalten die letzte Stelle (H-170a)
+    assert_eq!(de(4.5675, 3), "4,568");
+    assert_eq!(de(23.815, 2), "23,82");
+    assert_eq!(de(-23.815, 2), "−23,82");
+    assert_eq!(csv_num(236000.12341), "236000,1234");
+    assert_eq!(csv_num(236000.12345), "236000,1235");
+    assert_eq!(de(236000.12341, 4), "236.000,1234");
 }
 
 #[test]

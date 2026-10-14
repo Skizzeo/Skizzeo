@@ -1752,7 +1752,10 @@ pub fn schedule(model: &Model) -> Schedule {
 }
 
 /// Mengenliste mit den Räumen (RB5): `raeume` liefert je Geschoss die
-/// Räume mit den Zeilen ihres Raumbuchs (`sk_raum::mengen::raeume`). Ein
+/// Räume mit den Zeilen ihres Raumbuchs (in der App
+/// `sk_raum::mengen::raeume_mit` mit Erkennung, Zügen und Platten einmal je
+/// Liste; `sk_raum::mengen::raeume` baut die Platten je Aufruf und ist für
+/// Tests und einzelne Geschosse). Ein
 /// Raum ist eine Zeile der Gruppe Räume seines Geschosses; seine Schichten
 /// zählen nach Gewerk und Kostengruppe, seine Längen mit Schlüssel als
 /// Automatikmengen ([`crate::qto_raum`]). Räume, die `raeume` nicht nennt,

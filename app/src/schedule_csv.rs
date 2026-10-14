@@ -227,16 +227,18 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                     },
                     "",
                 ]);
+                // Je Bauteil seine erste Schicht der Gruppe und ihre Zahl,
+                // einmal je Gruppe (Review #170 B1)
+                let mut je: HashMap<ElementId, (usize, usize)> = HashMap::new();
+                for (k, y) in t.rows[i - n..i].iter().enumerate() {
+                    je.entry(y.element).or_insert((i - n + k, 0)).1 += 1;
+                }
                 for x in &rows {
                     // Rechenweg, wenn das Bauteil hier nur eine Schicht hat;
                     // beim Raum die Flächen zusammen, je mit Namen
-                    let eigene: Vec<&LayerRow> = t.rows[i - n..i]
-                        .iter()
-                        .filter(|y| y.element == x.element)
-                        .collect();
-                    let weg = match eigene.as_slice() {
+                    let weg = match je.get(&x.element) {
                         _ if x.category == Category::Space => weg_text(m, x, modus),
-                        [y] => weg_text(m, y, modus),
+                        Some(&(k, 1)) => weg_text(m, &t.rows[k], modus),
                         _ => String::new(),
                     };
                     let bauteil = if x.category == Category::Space {

@@ -134,9 +134,10 @@ fn qm(x: f64) -> String {
 }
 
 /// Auf ganze Einheiten, die Hälfte vom Nullpunkt weg, auch wenn die
-/// Rechnung sie knapp darunter ablegt.
+/// Rechnung sie knapp darunter ablegt; Toleranz fest in Einheiten, nur so
+/// groß wie das Rechenrauschen großer Zahlen (Review #170 H-170a).
 fn kaufm(x: f64) -> f64 {
-    (x + x.signum() * x.abs().max(1.0) * 1e-9).round()
+    (x + x.signum() * 1e-6f64.max(x.abs() * 1e-15)).round()
 }
 
 /// Länge (mm) auf 1/1000 mm: Rechenrauschen der Lage (ein getipptes statt

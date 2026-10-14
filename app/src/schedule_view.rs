@@ -123,8 +123,9 @@ enum Key {
     /// Schichtgruppe: Gebäude und Reihe (je 16 Bit), Bauteilart, Baustoff,
     /// Dicke in 1/100 mm.
     Layer(u32, u8, u32, u32),
-    /// Bauteil mit Schicht.
-    LayerRow(u32, u32, u8),
+    /// Bauteil mit Schicht (beim Raum die Zeile des Raumbuchs; 16 Bit,
+    /// Review #170 H-170e).
+    LayerRow(u32, u32, u16),
     /// Menge eines Erweiterungsbauteils: Bauteil (Index, Generation), Satz.
     ExtMenge(u32, u32, u16),
     /// Summe einer Menge in einer Erweiterungsgruppe: Geschoss bzw.
@@ -134,7 +135,7 @@ enum Key {
     ExtGewerk(u32, u32),
     /// Term im Rechenweg einer Schichtzeile: Bauteil (Index, Generation),
     /// Schicht, Bezug und Reihe.
-    Term(u32, u32, u8, u8, u8),
+    Term(u32, u32, u16, u8, u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2207,11 +2208,13 @@ pub fn de(v: f64, dec: usize) -> String {
 /// Kaufmännisch auf `dec` Stellen: Die Hälfte rundet vom Nullpunkt weg,
 /// auch wenn die Rechnung sie als Binärzahl knapp darunter ablegt
 /// (4,5675 → 4,568, 23,815 → 23,82; Raumbuch RB5 mit Innenwänden, deren
-/// Achse auf halben Millimetern liegt).
+/// Achse auf halben Millimetern liegt). Die Toleranz ist fest in Einheiten
+/// der letzten Stelle, nur so groß wie das Rechenrauschen großer Zahlen
+/// (Review #170 H-170a: 236.000,12341 bleibt 236.000,1234).
 pub fn kaufmaennisch(v: f64, dec: usize) -> f64 {
     let f = 10f64.powi(dec as i32);
     let y = v * f;
-    (y + y.signum() * y.abs().max(1.0) * 1e-9).round() / f
+    (y + y.signum() * 1e-6f64.max(y.abs() * 1e-15)).round() / f
 }
 
 fn m_len(mm: f64) -> String {
@@ -2365,18 +2368,19 @@ fn layer_row_label(m: &Model, r: &LayerRow) -> String {
 /// Schichten aus gleichem Baustoff und gleicher Dicke) zusammen. Die
 /// Flächen eines Raums mit derselben Kostengruppe (Wandseiten mit gleichem
 /// Putz) zählen zusammen, ihre Rechenwege hintereinander, je mit dem Namen
-/// der Fläche (`namen`).
+/// der Fläche (`namen`). Der Platz je Bauteil (beim Raum je Bauteil und
+/// Kostengruppe) steht in einem Index, so wächst das mit den Zeilen, nicht
+/// mit ihrem Quadrat (Review #170 B1).
 fn per_element(rows: &[LayerRow], namen: &raum::Namen) -> Vec<LayerRow> {
     let mut out: Vec<LayerRow> = Vec::new();
+    let mut platz: HashMap<(ElementId, Option<Option<u16>>), usize> = HashMap::new();
     for r in rows {
         let mut r = r.clone();
         if r.category == Category::Space {
             raum::mit_namen(&mut r, namen);
         }
-        let mit = |x: &LayerRow| {
-            x.element == r.element && (r.category != Category::Space || x.kg == r.kg)
-        };
-        match out.iter_mut().find(|x| mit(x)) {
+        let k = (r.element, (r.category == Category::Space).then_some(r.kg));
+        match platz.get(&k).map(|&j| &mut out[j]) {
             Some(x) => {
                 x.volume += r.volume;
                 x.area += r.area;
@@ -2390,7 +2394,10 @@ fn per_element(rows: &[LayerRow], namen: &raum::Namen) -> Vec<LayerRow> {
                     x.terms.extend(r.terms);
                 }
             }
-            None => out.push(r),
+            None => {
+                platz.insert(k, out.len());
+                out.push(r);
+            }
         }
     }
     out
@@ -2467,7 +2474,11 @@ fn trade_rows(
             let r = &t.rows[i];
             let row_key = |r: &LayerRow| {
                 let e = r.element;
-                Key::LayerRow(e.index(), e.generation(), r.layer.min(255) as u8)
+                Key::LayerRow(
+                    e.index(),
+                    e.generation(),
+                    r.layer.min(u16::MAX as usize) as u16,
+                )
             };
             if !layer_grouped(r.category) {
                 let mut rl = Line::new(Kind::Row, 1, row_key(r));
@@ -2539,6 +2550,14 @@ fn trade_rows(
                 gl.cells[4] = m_vol(rows.iter().map(|x| zeig(x, Bezug::Volumen)).sum());
             }
             lines.push(gl);
+            // Je Bauteil seine erste Schicht dieser Gruppe und ihre Zahl,
+            // einmal je Gruppe statt je Zeile (Review #170 B1, H-170f)
+            let mut je: HashMap<ElementId, (usize, usize)> = HashMap::new();
+            if r.category != Category::Space {
+                for (k, y) in t.rows.iter().enumerate().filter(|(_, y)| same(y)) {
+                    je.entry(y.element).or_insert((k, 0)).1 += 1;
+                }
+            }
             for x in &rows {
                 let mut rl = Line::new(Kind::Row, 2, row_key(x));
                 rl.storey = tkey;
@@ -2563,21 +2582,14 @@ fn trade_rows(
                 if !ohne_volumen(x) {
                     rl.cells[4] = m_vol(zeig(x, Bezug::Volumen));
                 }
-                // Rechenweg der Schicht dieses Bauteils (bei zwei Schichten
-                // aus gleichem Baustoff die erste)
-                let erste = t.rows.iter().find(|y| y.element == x.element && same(y));
+                // Rechenweg der Schicht dieses Bauteils, wenn es hier nur
+                // eine hat
                 let mut weg = Vec::new();
                 // Raum: die Flächen zusammen, je mit Namen
                 if x.category == Category::Space {
                     weg_zeilen(m, x, &mut rl, (modus, offen), &mut weg);
-                } else if let Some(y) = erste.filter(|y| {
-                    t.rows
-                        .iter()
-                        .filter(|z| z.element == y.element && same(z))
-                        .count()
-                        == 1
-                }) {
-                    weg_zeilen(m, y, &mut rl, (modus, offen), &mut weg);
+                } else if let Some(&(k, 1)) = je.get(&x.element) {
+                    weg_zeilen(m, &t.rows[k], &mut rl, (modus, offen), &mut weg);
                 }
                 lines.push(rl);
                 lines.extend(weg);
