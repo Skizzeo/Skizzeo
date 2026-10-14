@@ -50,9 +50,9 @@ fn bestwert(mut f: impl FnMut()) -> f64 {
     f();
     let (start, mut best, mut k) = (Instant::now(), f64::INFINITY, 0);
     while k < 7 || start.elapsed() < Duration::from_millis(300) {
-        let t = Instant::now();
+        let u = Uhr::an();
         f();
-        best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+        best = best.min(u.ms());
         k += 1;
     }
     best
@@ -60,6 +60,31 @@ fn bestwert(mut f: impl FnMut()) -> f64 {
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Wie lange dieser Faden bisher lauffähig auf eine CPU gewartet hat, in
+/// ms (Linux: zweites Feld von /proc/thread-self/schedstat; sonst 0).
+fn auf_cpu_gewartet() -> f64 {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
+        .map_or(0.0, |ns| ns / 1e6)
+}
+
+/// Uhr für ein Bild im UI-Faden: Wanduhr ohne die Zeit, in der der Faden
+/// lauffähig auf eine CPU wartete. Die nebeneinander laufenden Tests
+/// verdrängen ihn sonst einmal für 10 bis 20 ms, ohne dass das Bild mehr
+/// Arbeit hätte; Warten auf Sperren oder den Faden der Ecken zählt weiter.
+struct Uhr(Instant, f64);
+
+impl Uhr {
+    fn an() -> Uhr {
+        Uhr(Instant::now(), auf_cpu_gewartet())
+    }
+
+    fn ms(&self) -> f64 {
+        (ms(self.0) - (auf_cpu_gewartet() - self.1)).max(0.0)
+    }
 }
 
 /// Zeiten in ms bei einer Zahl von Häusern.
@@ -312,9 +337,9 @@ fn kacheln_bauen(g: &Gelaende, ix: &[usize], t: &DrawTable) -> f64 {
 fn bis_hochgeladen(pl: &mut Platte, m: &Model, t: &DrawTable) -> (f64, f64, f64, usize) {
     let (mut zeit, mut je_bild, mut gesamt, mut neu) = (0.0f64, 0.0f64, 0.0, 0);
     loop {
-        let t0 = Instant::now();
+        let u = Uhr::an();
         let h = pl.unterlage_im_bild(m, true, t, 1.0);
-        zeit = zeit.max(ms(t0));
+        zeit = zeit.max(u.ms());
         match h {
             Some(h) => {
                 let b = h
