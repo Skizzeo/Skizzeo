@@ -200,8 +200,8 @@ pub fn treffer(
 /// Innenwand des Geschosses `st` unter dem Grundrisspunkt `p` (Toleranz
 /// `tol` in mm): ihre Fläche, die Lage längs, ob `p` auf der Seite der
 /// Fläche liegt, und die Wanddicke. Die nächste Wandmitte gewinnt. Über das
-/// Raster der Szene (Review #158 H1): nur unter den Zügen, deren Quader bis
-/// `tol` an `p` reicht, statt über alle Züge des Modells.
+/// Raster der Szene (Review #158 H1): nur unter den Zügen, deren Quader
+/// nahe an `p` reicht ([`zuege_bei`]), statt über alle Züge des Modells.
 pub fn treffer_in(
     scene: &Scene,
     st: StoreyId,
@@ -249,12 +249,15 @@ pub fn treffer_aussen_in(
     )
 }
 
-/// Züge der Szene, deren Quader bis `tol` an `p` reicht, aufsteigend wie
-/// [`Model::runs`]. Eine Fläche, auf die [`wand_unter`] `p` nimmt, ist
-/// eine Seite des Körpers ihres Zugs, und `p` liegt höchstens `tol` neben
-/// ihr; der Körper steckt im Quader.
+/// Züge der Szene, deren Quader bis `tol`·√2 plus [`DICKE`] an `p`
+/// reicht, aufsteigend wie [`Model::runs`]. [`wand_unter`] nimmt `p` im
+/// Rechteck über der Fläche an, längs bis `tol` über ihre Enden hinaus und
+/// quer bis Wanddicke plus `tol` dahinter: An einer schrägen Wand liegt `p`
+/// so bis `tol`·√2 neben dem Quader des Körpers, an einem Gehrungsstoß ragt
+/// das Rechteck an der Innenecke bis zur Wanddicke aus dem Körper (Review
+/// #162 B1).
 fn zuege_bei(scene: &Scene, p: Vec3, tol: f64) -> Vec<RunId> {
-    let r = tol;
+    let r = tol * std::f64::consts::SQRT_2 + DICKE;
     let mut zuege: Vec<RunId> = scene
         .zuege_im((p.x - r, p.y - r), (p.x + r, p.y + r))
         .map(|(id, ..)| id)
@@ -1350,6 +1353,48 @@ mod tests {
             }
         }
         assert!(innen > 100 && aussen > 100, "{innen} {aussen}");
+    }
+
+    /// Review #162 B1/B2: Auch an den Zellgrenzen des Rasters findet der
+    /// Fang dieselbe Wand wie die Suche über alle Züge. Eine freie 45°-Wand
+    /// endet knapp vor der Grenze bei 2 Zellen, ein Gehrungsstoß zweier
+    /// Innenwände knapp vor der Grenze bei 1 Zelle, je in mehreren Abständen;
+    /// abgetastet im Abstand von 1 cm um das Ende bzw. die Ecke, mit 3 und
+    /// 30 cm Toleranz.
+    #[test]
+    fn treffer_an_zellgrenzen() {
+        use crate::scene::raster::ZELLE;
+        let mut proben = 0;
+        for vor in [20.0, 60.0, 100.0, 150.0, 250.0] {
+            let (mut m, st) = haus_mit_putz();
+            let set = m.defaults().interior_wall;
+            let wand = |m: &mut Model, pts: &[Vec3]| {
+                m.add_wall_run(pts, false, RefSide::Center, st, set, Category::InteriorWall)
+                    .unwrap();
+            };
+            // Freie 45°-Wand bis knapp vor x = 2 Zellen
+            let schraeg = vec3(2.0 * ZELLE - vor, 3000.0, 0.0);
+            wand(&mut m, &[schraeg - vec3(3000.0, 3000.0, 0.0), schraeg]);
+            // Gehrungsstoß: Ecke knapp vor x = 1 Zelle, oben rechts
+            let ecke = vec3(ZELLE - vor, 20_000.0 - vor, 0.0);
+            wand(&mut m, &[ecke - vec3(3000.0, 0.0, 0.0), ecke]);
+            wand(&mut m, &[ecke, ecke - vec3(0.0, 3000.0, 0.0)]);
+            let s = Scene::with_model(m);
+            let k = |r| s.koerper(r);
+            for mitte in [schraeg, ecke] {
+                for i in -60..=60 {
+                    for j in -60..=60 {
+                        let p = mitte + vec3(i as f64 * 10.0, j as f64 * 10.0, 0.0);
+                        for tol in [30.0, 300.0] {
+                            let a = treffer(s.model(), &k, st, p, tol);
+                            assert_eq!(treffer_in(&s, st, p, tol), a, "{vor} {p:?} {tol}");
+                            proben += a.is_some() as usize;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(proben > 10_000, "{proben}");
     }
 
     /// Review W49 H2: Am Knick eines Innenwandzugs reicht die Kette außen
