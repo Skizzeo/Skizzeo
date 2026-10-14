@@ -3,13 +3,22 @@
 use super::*;
 
 impl AvaView {
-    /// Mitte der ersten Position, deren Kurztext `teil` enthält.
-    pub(crate) fn position_mitte(&self, t: &Theme, teil: &str) -> Option<(f64, f64)> {
+    /// Mitte der ersten Position, deren Kurztext `teil` enthält; liegt sie
+    /// nicht ganz im Fenster, wird zuerst zu ihr gerollt.
+    pub(crate) fn position_mitte(&mut self, t: &Theme, teil: &str) -> Option<(f64, f64)> {
         let i = self
             .zeilen
             .iter()
             .position(|z| z.art == Art::Position && z.text.contains(teil))?;
-        let (_, y, h) = self.sichtbar().into_iter().find(|(j, _, _)| *j == i)?;
+        let ganz = |v: &Self| {
+            let (oben, unten) = v.liste_y();
+            let (_, y, h) = v.sichtbar().into_iter().find(|(j, _, _)| *j == i)?;
+            (y >= oben && y + h <= unten).then_some((y, h))
+        };
+        if ganz(self).is_none() {
+            self.springe(&Sprung::Oz(self.zeilen[i].oz.clone()));
+        }
+        let (y, h) = ganz(self)?;
         let (tx, _) = self.tabelle_x(t);
         Some(((tx + 40.0) as f64, (y + h * 0.5) as f64))
     }
