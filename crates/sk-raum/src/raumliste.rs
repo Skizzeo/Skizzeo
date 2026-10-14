@@ -15,7 +15,8 @@ use crate::raumbuch::{rechnen, Flaeche, Regeln};
 use crate::Ketten;
 use sk_math::Vec3;
 use sk_model::{
-    ElementId, ElementKind, Guid, LayerSetId, LevelKind, Model, Solid, SpaceGroup, StoreyId,
+    BuildingId, ElementId, ElementKind, Guid, LayerSetId, LevelKind, Model, RunId, Solid,
+    SpaceGroup, StoreyId,
 };
 use std::collections::HashMap;
 
@@ -312,6 +313,7 @@ pub(crate) fn traeger(
 
 /// Decke oder Sohlplatte mit dem Umriss ihres Zugs (Bezugslinie) und dem
 /// Rechteck darum.
+#[derive(Clone)]
 struct Platte {
     id: ElementId,
     umriss: Vec<Vec3>,
@@ -330,13 +332,14 @@ impl Platte {
     }
 }
 
-/// Decken je Geschoss und Sohlplatten, einmal je Liste gesammelt (Review
-/// #112 H8): Vorher ging jede Bodenzeile alle Bauteile durch und rechnete
-/// je Decke die Kette ihres Zugs, quadratisch mit dem Modell. Dazu die
-/// Höhen der Geschosse, ebenfalls einmal je Liste (Review #137 B2).
+/// Decken je Geschoss und Sohlplatten je Gebäude, einmal je Liste
+/// gesammelt (Review #112 H8, #138 B1): Vorher ging jede Bodenzeile alle
+/// Bauteile durch und rechnete je Decke die Kette ihres Zugs, quadratisch
+/// mit dem Modell. Die Kette eines Zugs rechnet es höchstens einmal. Dazu
+/// die Höhen der Geschosse, ebenfalls einmal je Liste (Review #137 B2).
 pub struct Platten {
     decken: HashMap<StoreyId, Vec<Platte>>,
-    sohlen: Vec<Platte>,
+    sohlen: HashMap<Option<BuildingId>, Vec<Platte>>,
     pub(crate) geschosse: Geschosse,
 }
 
@@ -346,30 +349,36 @@ impl Platten {
     pub fn neu(model: &Model, k: &(impl Ketten + ?Sized)) -> Platten {
         let mut p = Platten {
             decken: HashMap::new(),
-            sohlen: Vec::new(),
+            sohlen: HashMap::new(),
             geschosse: Geschosse::aus(model),
         };
+        // Umriss und Rechteck je Zug, die Kette einmal
+        let mut zuege: HashMap<RunId, Option<Platte>> = HashMap::new();
         for (id, e) in model.elements().iter() {
             let (run, sohle) = match e.kind {
                 ElementKind::Floor(ref d) => (d.run, false),
                 ElementKind::GroundSlab(ref s) => (s.run, true),
                 _ => continue,
             };
-            let Some(umriss) = k.kette(run).map(|c| c.clean_points()) else {
+            let zug = zuege.entry(run).or_insert_with(|| {
+                let umriss = k.kette(run)?.clean_points();
+                let mut kasten = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+                for q in &umriss {
+                    kasten = [
+                        kasten[0].min(q.x),
+                        kasten[1].min(q.y),
+                        kasten[2].max(q.x),
+                        kasten[3].max(q.y),
+                    ];
+                }
+                Some(Platte { id, umriss, kasten })
+            });
+            let Some(platte) = zug.clone().map(|z| Platte { id, ..z }) else {
                 continue;
             };
-            let mut kasten = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-            for q in &umriss {
-                kasten = [
-                    kasten[0].min(q.x),
-                    kasten[1].min(q.y),
-                    kasten[2].max(q.x),
-                    kasten[3].max(q.y),
-                ];
-            }
-            let platte = Platte { id, umriss, kasten };
             if sohle {
-                p.sohlen.push(platte);
+                let b = model.building_of(e.storey);
+                p.sohlen.entry(b).or_default().push(platte);
             } else {
                 p.decken.entry(e.storey).or_default().push(platte);
             }
@@ -397,7 +406,10 @@ fn boden(model: &Model, platten: &Platten, form: &RaumForm) -> Option<ElementId>
     });
     match geschoss {
         Some(g) => platten.decke(form, g),
-        None => platten.sohlen.iter().find(|p| p.traegt(form)).map(|p| p.id),
+        None => {
+            let sohlen = platten.sohlen.get(&model.building_of(form.geschoss))?;
+            sohlen.iter().find(|p| p.traegt(form)).map(|p| p.id)
+        }
     }
 }
 

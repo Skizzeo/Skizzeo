@@ -3246,3 +3246,50 @@ fn perf_mengen_raeume() {
     }
     println!("Zeiten in ms, je ein Lauf.");
 }
+
+/// Review #138 B1: Raumliste für den Austausch (IFC I6) bei `n` Häusern,
+/// der Träger jeder Ausbaufläche aus `raumliste::Platten` (Decken je
+/// Geschoss, Sohlplatten je Gebäude, die Kette je Zug einmal). Bis 1000
+/// Häuser (höchstens `SKIZZEO_PERF_BIS`, 4000 mit `SKIZZEO_PERF_BIS=4000`).
+#[test]
+#[ignore]
+fn perf_raumliste() {
+    use sk_model::ElementKind;
+    println!();
+    println!(
+        "{:>6} {:>6} {:>7} {:>7} {:>9} {:>9} {:>9}",
+        "Häuser", "Räume", "Sohlen", "Decken", "Platten", "Erkennung", "Liste"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 1000, 4000].into_iter().filter(|&n| n <= bis) {
+        let s = town_in_einem_schritt(n);
+        let m = s.model();
+        let zahl =
+            |f: fn(&ElementKind) -> bool| m.elements().iter().filter(|(_, e)| f(&e.kind)).count();
+        let sohlen = zahl(|k| matches!(k, ElementKind::GroundSlab(_)));
+        let decken = zahl(|k| matches!(k, ElementKind::Floor(_)));
+        let t = Instant::now();
+        std::hint::black_box(sk_raum::raumliste::Platten::neu(m, m));
+        let platten = t.elapsed().as_secs_f64() * 1000.0;
+        // Die Erkennung der Räume je Geschoss, die die Liste darin aufruft
+        let t = Instant::now();
+        for (g, _) in m.storeys().iter() {
+            std::hint::black_box(sk_raum::raeume(m, g));
+        }
+        let erkennung = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let liste = sk_raum::raumliste::raumliste(m);
+        let zeit = t.elapsed().as_secs_f64() * 1000.0;
+        let raeume = liste.len();
+        assert!(liste
+            .iter()
+            .all(|r| r.ausbau.iter().any(|a| a.traeger.is_some())));
+        println!(
+            "{n:>6} {raeume:>6} {sohlen:>7} {decken:>7} {platten:>9.1} {erkennung:>9.1} {zeit:>9.1}"
+        );
+    }
+    println!("Zeiten in ms (Release), je ein Lauf.");
+}
