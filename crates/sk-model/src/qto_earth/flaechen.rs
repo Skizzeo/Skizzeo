@@ -17,10 +17,12 @@ use super::{BACKFILL, CUT, DISPOSAL, EMBANK, EMBANK_SUPPLY, SURPLUS, TOPSOIL, TO
 use super::{KG, KG_ANDECKEN, KG_GELAENDE, SPREAD, SPREAD_SLOPE, TOPSOIL_REMOVE, TOPSOIL_SUPPLY};
 use crate::model::{SurveyFrame, TerrainMesh, TerrainPatch};
 use crate::qto::AutoMenge;
+use crate::ElementId;
 use crate::Model;
 use sk_gelaende::planung::{Aufbau, Erdbau, Grube, Hinweis, Planung, Zerlegt, Zonen};
 use sk_math::Vec3;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Eine Gründung, wie die Geländeflächen sie sehen: die Vorlage ihrer
@@ -172,6 +174,17 @@ impl Merker {
     }
 }
 
+/// Die Zeilen einer Gründung, die die Bilanz ändert: Summen und erste
+/// Zeile von Verfüllung und Abfuhr, die letzte ihrer Erdmengen.
+#[derive(Default)]
+struct Zeilen {
+    verf: f64,
+    abf: f64,
+    verf_ix: Option<usize>,
+    abf_ix: Option<usize>,
+    letzte: Option<usize>,
+}
+
 /// Rechteck um ein Polygon (x0, y0, x1, y1).
 fn rechteck(ring: &[[f64; 2]]) -> [f64; 4] {
     ring.iter()
@@ -255,11 +268,7 @@ pub(crate) fn gelaende_mengen(
         Some(g) => g.teil.clone(),
         None => {
             let alt = alt.filter(|g| Arc::ptr_eq(&g.netz, &mesh) && g.lage == lage);
-            let ueberlappt = alt
-                .as_ref()
-                .filter(|g| gleiche_flaechen(&g.flaechen, m.site_patches()))
-                .map(|g| g.ueberlappt);
-            let g = rechnen(m, gr, &frame, h0, &mesh, o, d, alt.as_deref(), ueberlappt);
+            let g = rechnen(m, gr, &frame, h0, &mesh, o, d, alt.as_deref());
             let teil = g.teil.clone();
             *m.flaechenmerker().0.borrow_mut() = Some(Arc::new(Gemerkt { lage, werte, ..g }));
             teil
@@ -291,61 +300,50 @@ pub(crate) fn gelaende_mengen(
         }
     };
 
+    // Die Zeilen der Gründungen einmal suchen, die Änderungen am Ende in
+    // einem Gang setzen (Review #173 B3: vorher je Gründung über alle
+    // Zeilen)
+    let mut ix: HashMap<ElementId, Zeilen> = gr
+        .iter()
+        .map(|g| (g.vorlage.element, Zeilen::default()))
+        .collect();
+    for (k, r) in out.iter().enumerate() {
+        let Some(z) = ix.get_mut(&r.element) else {
+            continue;
+        };
+        if r.key.starts_with("earth.") {
+            z.letzte = Some(k);
+        }
+        if r.key == BACKFILL {
+            z.verf += r.value;
+            z.verf_ix.get_or_insert(k);
+        } else if r.key == DISPOSAL {
+            z.abf += r.value;
+            z.abf_ix.get_or_insert(k);
+        }
+    }
+
     // B3: weniger Verfüllung je Gründung, um so viel mehr Überschuss
     let mut ueberschuss = 0.0;
     let mut abfuhr: Vec<f64> = vec![0.0; gr.len()];
+    let mut verfuellen: Vec<Option<(f64, String)>> = vec![None; gr.len()];
+    let mut zusatz: Vec<Option<String>> = vec![None; gr.len()];
     for (i, g) in gr.iter().enumerate() {
-        let el = g.vorlage.element;
-        let wert = |out: &[AutoMenge], key: &str| {
-            out.iter()
-                .filter(|r| r.element == el && r.key == key)
-                .map(|r| r.value)
-                .sum::<f64>()
-        };
-        let verf = wert(out, BACKFILL);
-        let w = (weniger[i] * 1e9).min(verf);
-        abfuhr[i] = wert(out, DISPOSAL) + w;
+        let z = &ix[&g.vorlage.element];
+        let w = (weniger[i] * 1e9).min(z.verf);
+        abfuhr[i] = z.abf + w;
         ueberschuss += abfuhr[i];
         if w <= REST * 1e9 {
             continue;
         }
-        let neu = verf - w;
-        let zusatz = format!(
-            "; − Geländeabtrag im Arbeitsraum {} (VOB-Prüfung G3 B3)",
-            m3(w / 1e9)
-        );
-        match out
-            .iter()
-            .position(|r| r.element == el && r.key == BACKFILL)
-        {
-            Some(k) if neu > 0.0 => {
-                out[k].value = neu;
-                out[k].formula.push_str(&zusatz);
-            }
-            Some(k) => {
-                out.remove(k);
-            }
-            None => {}
-        }
-        abfuhr_setzen(
-            out,
-            &g.vorlage,
-            abfuhr[i],
-            &format!("; + weniger Verfüllung {}", m3(w / 1e9)),
-        );
-    }
-
-    for (g, _) in gr.iter().zip(keil).filter(|(_, k)| **k) {
-        let el = g.vorlage.element;
-        if let Some(r) = out
-            .iter_mut()
-            .find(|r| r.element == el && r.key == BACKFILL)
-        {
-            if !r.hinweis.is_empty() {
-                r.hinweis.push('\n');
-            }
-            r.hinweis.push_str(KEIL);
-        }
+        verfuellen[i] = Some((
+            z.verf - w,
+            format!(
+                "; − Geländeabtrag im Arbeitsraum {} (VOB-Prüfung G3 B3)",
+                m3(w / 1e9)
+            ),
+        ));
+        zusatz[i] = Some(format!("; + weniger Verfüllung {}", m3(w / 1e9)));
     }
 
     // B4: Bilanz in m³ (fest bzw. verdichtet)
@@ -357,7 +355,7 @@ pub(crate) fn gelaende_mengen(
     let liefer = (auf - eigen1 - eigen2).max(0.0);
     // aus der Baugrube entnommen, in der Reihenfolge der Gründungen
     let mut entnehmen = eigen2 / f * 1e9;
-    for (i, g) in gr.iter().enumerate() {
+    for i in 0..gr.len() {
         if entnehmen <= 0.0 {
             break;
         }
@@ -367,12 +365,73 @@ pub(crate) fn gelaende_mengen(
         }
         entnehmen -= x;
         abfuhr[i] -= x;
-        abfuhr_setzen(
-            out,
-            &g.vorlage,
-            abfuhr[i],
-            &format!("; − Einbau im Gelände {} (VOB-Prüfung G3 B4)", m3(x / 1e9)),
-        );
+        zusatz[i].get_or_insert_with(String::new).push_str(&format!(
+            "; − Einbau im Gelände {} (VOB-Prüfung G3 B4)",
+            m3(x / 1e9)
+        ));
+    }
+
+    // Verfüllung und Abfuhr setzen: bei 0 fällt die Zeile weg, eine fehlende
+    // Abfuhr entsteht hinter den Erdmengen ihrer Gründung; Keil (C2) an der
+    // Verfüllung, die bleibt
+    let mut weg = vec![false; out.len()];
+    let mut danach: Vec<(usize, AutoMenge)> = Vec::new();
+    let mut am_ende = Vec::new();
+    for (i, g) in gr.iter().enumerate() {
+        let z = &ix[&g.vorlage.element];
+        if let (Some(k), Some((neu, text))) = (z.verf_ix, &verfuellen[i]) {
+            if *neu > 0.0 {
+                out[k].value = *neu;
+                out[k].formula.push_str(text);
+            } else {
+                weg[k] = true;
+            }
+        }
+        if keil[i] {
+            if let Some(k) = z.verf_ix.filter(|&k| !weg[k]) {
+                anhaengen(&mut out[k], KEIL);
+            }
+        }
+        let Some(text) = &zusatz[i] else {
+            continue;
+        };
+        match z.abf_ix {
+            Some(k) if abfuhr[i] > 0.0 => {
+                out[k].value = abfuhr[i];
+                out[k].formula.push_str(text);
+            }
+            Some(k) => weg[k] = true,
+            None if abfuhr[i] > 0.0 => {
+                let r = AutoMenge {
+                    key: DISPOSAL,
+                    unit: "m3",
+                    value: abfuhr[i],
+                    kg: Some(KG),
+                    formula: text.trim_start_matches("; ").to_string(),
+                    hinweis: String::new(),
+                    ..g.vorlage.clone()
+                };
+                match z.letzte {
+                    Some(k) => danach.push((k, r)),
+                    None => am_ende.push(r),
+                }
+            }
+            None => {}
+        }
+    }
+    if weg.contains(&true) || !danach.is_empty() || !am_ende.is_empty() {
+        danach.sort_by_key(|x| x.0);
+        let mut danach = danach.into_iter().peekable();
+        let alt = std::mem::take(out);
+        for (k, r) in alt.into_iter().enumerate() {
+            if !weg[k] {
+                out.push(r);
+            }
+            while let Some((_, r)) = danach.next_if(|x| x.0 == k) {
+                out.push(r);
+            }
+        }
+        out.extend(am_ende);
     }
     let begrenzt = liefer > 1e-9 || rest_gel > 1e-9 || ueberschuss / 1e9 - eigen2 / f > 1e-9;
     let mut h_erdbau: Vec<String> = s.hinweise.iter().map(|h| h.to_string()).collect();
@@ -579,8 +638,8 @@ struct Zone {
 /// Die Flächen des Modells `m` über dem Netz `mesh` gegen die Gründungen
 /// `gr`; Oberboden `o` und Andeckung `d` in mm, ±0,00 auf `h0` m ü. NHN.
 /// Was `alt` (bei gleichem Netz und gleicher Lage) zu einer gleichen
-/// Fläche schon weiß, rechnet nicht neu; `ueberlappt` ist schon bekannt,
-/// wenn die Flächen gleich blieben.
+/// Fläche schon weiß, rechnet nicht neu, auch nicht die Überlappung
+/// zweier solcher Flächen (H-173k).
 #[allow(clippy::too_many_arguments)]
 fn rechnen(
     m: &Model,
@@ -591,7 +650,6 @@ fn rechnen(
     o: f64,
     d: f64,
     alt: Option<&Gemerkt>,
-    ueberlappt: Option<bool>,
 ) -> Gemerkt {
     let im_netz = |x: f64, y: f64| {
         let (e, n) = frame.to_survey(x, y);
@@ -708,11 +766,13 @@ fn rechnen(
     let mut frei: Vec<&Gerechnet> = alt.map(|g| g.flaechen.iter().collect()).unwrap_or_default();
     let mut flaechen = Vec::new();
     let mut nahe = Vec::new();
+    let mut neu = Vec::new();
     for p in m.site_patches() {
         let vorher = frei
             .iter()
             .position(|x| x.patch == *p)
             .map(|k| frei.swap_remove(k));
+        neu.push(vorher.is_none());
         let plan = match vorher {
             Some(x) => x.plan.clone(),
             None => Arc::new(plan_neu(p)),
@@ -785,10 +845,20 @@ fn rechnen(
             })
         })
         .collect();
-    let ueberlappt = ueberlappt.unwrap_or_else(|| {
-        let z: Vec<&Zerlegt> = flaechen.iter().map(|x| &x.plan.zerlegt).collect();
-        (0..z.len()).any(|i| (i + 1..z.len()).any(|j| z[i].ueberlappung(z[j]) > 100.0))
-    });
+    // Überlappten sich die alten Flächen nicht, genügen die Paare mit
+    // einer neuen Fläche; sonst alle (das überlappende Paar kann weg sein)
+    let z: Vec<&Zerlegt> = flaechen.iter().map(|x| &x.plan.zerlegt).collect();
+    let pruefen = |i: usize, j: usize| z[i].ueberlappung(z[j]) > 100.0;
+    let alle = |i: usize| (i + 1..z.len()).any(|j| pruefen(i, j));
+    let ueberlappt = match alt.map(|g| g.ueberlappt) {
+        Some(false) => {
+            (0..z.len()).any(|i| (i + 1..z.len()).any(|j| (neu[i] || neu[j]) && pruefen(i, j)))
+        }
+        Some(true) if !neu.contains(&true) && alt.is_some_and(|g| g.flaechen.len() == z.len()) => {
+            true
+        }
+        _ => (0..z.len()).any(alle),
+    };
     if ueberlappt {
         hinweis(&mut s, UEBERLAPPT);
     }
@@ -808,43 +878,6 @@ fn anhaengen(r: &mut AutoMenge, h: &str) {
         r.hinweis.push('\n');
     }
     r.hinweis.push_str(h);
-}
-
-/// Abfuhr der Gründung auf `wert` (mm³) setzen und den Ansatz ergänzen;
-/// fehlt die Zeile, entsteht sie, bei 0 fällt sie weg.
-fn abfuhr_setzen(out: &mut Vec<AutoMenge>, vorlage: &AutoMenge, wert: f64, zusatz: &str) {
-    let el = vorlage.element;
-    match out
-        .iter()
-        .position(|r| r.element == el && r.key == DISPOSAL)
-    {
-        Some(k) if wert > 0.0 => {
-            out[k].value = wert;
-            out[k].formula.push_str(zusatz);
-        }
-        Some(k) => {
-            out.remove(k);
-        }
-        None if wert > 0.0 => {
-            let nach = out
-                .iter()
-                .rposition(|r| r.element == el && r.key.starts_with("earth."))
-                .map_or(out.len(), |k| k + 1);
-            out.insert(
-                nach,
-                AutoMenge {
-                    key: DISPOSAL,
-                    unit: "m3",
-                    value: wert,
-                    kg: Some(KG),
-                    formula: zusatz.trim_start_matches("; ").to_string(),
-                    hinweis: String::new(),
-                    ..vorlage.clone()
-                },
-            );
-        }
-        None => {}
-    }
 }
 
 #[cfg(test)]
@@ -1225,6 +1258,58 @@ mod tests {
         assert_ne!(z1[1].1, z0[1].1);
         assert_eq!(m.ground_bases().len(), 3);
         assert!(wert(&v, CUT) > 0.0);
+    }
+
+    /// Die Bilanz verteilt Abfuhr und Einbau in fester Reihenfolge der
+    /// Gründungen: nach Entfernen und neuem Bauen eines Hauses und nach
+    /// Speichern und Öffnen gleich je Haus (Review #173 B2).
+    #[test]
+    fn bilanz_je_haus_nach_speichern_gleich() {
+        use std::collections::BTreeMap;
+        let neues_haus = |m: &mut Model, x0: f64, y0: f64| {
+            let b = m.add_building(1);
+            let pts = [
+                sk_math::vec3(x0, y0, 0.0),
+                sk_math::vec3(x0, y0 + 6000.0, 0.0),
+                sk_math::vec3(x0 + 7000.0, y0 + 6000.0, 0.0),
+                sk_math::vec3(x0 + 7000.0, y0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+            b
+        };
+        // je Haus (Nummer der Sohlplatte) und Schlüssel die Menge in mm³
+        let je_haus = |m: &Model| -> BTreeMap<(String, &'static str), i64> {
+            let mut out = BTreeMap::new();
+            for r in crate::qto::schedule(m).auto {
+                if r.key.starts_with("earth.") {
+                    *out.entry((r.number.clone(), r.key)).or_insert(0) += r.value.round() as i64;
+                }
+            }
+            out
+        };
+        let mut m = haus();
+        let b = neues_haus(&mut m, 25e3, 5e3);
+        neues_haus(&mut m, 25e3, -15e3);
+        assert!(m.remove_building(b));
+        neues_haus(&mut m, 25e3, 5e3);
+        m.begin("Fläche");
+        // Auftrag 0,70 − 0,20 = 0,50 m auf 8 × 8 m: aus den Baugruben
+        assert!(m
+            .add_site_patch(flaeche(rechteck(-10e3, 30e3, -2e3, 38e3), 900.0))
+            .is_some());
+        m.commit();
+        let vorher = je_haus(&m);
+        let einbau: Vec<_> = crate::qto::schedule(&m)
+            .auto
+            .into_iter()
+            .filter(|r| r.key == DISPOSAL && r.formula.contains("Einbau im Gelände"))
+            .collect();
+        assert!(!einbau.is_empty(), "{vorher:?}");
+        let text = crate::szo::write(&m);
+        let wieder = crate::szo::read(&text, crate::GuidGen::with_seed(3))
+            .unwrap()
+            .model;
+        assert_eq!(je_haus(&wieder), vorher);
     }
 
     /// Ohne Flächen oder ohne Aufmaß hält der Merker nichts fest, auch
