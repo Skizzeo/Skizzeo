@@ -13,6 +13,7 @@
 use super::{Model, SurveyFrame};
 use sk_gelaende::planung::{oberflaeche, schraffen, Baustein, Herkunft, Kante, Teil};
 use sk_math::{vec3, Vec3};
+use std::sync::{Arc, Mutex};
 
 /// Abstand der Böschungsschraffen im Grundriss (mm).
 pub const PATCH_HATCH: f64 = 1000.0;
@@ -323,18 +324,84 @@ pub struct PlannedTerrain {
     pub hatch: Vec<([Vec3; 2], bool)>,
     /// Umriss jeder Fläche, die sich bauen lässt, auf ihrer Höhe.
     pub outlines: Vec<Vec<Vec3>>,
+    /// Senkrechte Wände, wo die Höhe am Rand einer Fläche springt (Kante
+    /// ohne Böschung); die Normale zeigt zur tieferen Seite.
+    pub walls: Vec<[Vec3; 3]>,
+}
+
+/// Das zuletzt gerechnete Planungsgelände mit Netz, Lage und Flächen, aus
+/// denen es folgt.
+struct Geplant {
+    netz: Arc<crate::model::TerrainMesh>,
+    lage: [u64; 4],
+    flaechen: Vec<TerrainPatch>,
+    plan: PlannedTerrain,
+}
+
+/// Platz für das zuletzt gerechnete Planungsgelände, geteilt über die
+/// Kopien des Modells (Review #183 a): Das Gelände rechnet ein eigener
+/// Faden auf einer Kopie; ein Schritt, der Flächen, Aufmaß und ±0,00 lässt,
+/// rechnet es nicht neu, auch wenn die Mengen es nicht gemerkt haben.
+#[derive(Clone, Default)]
+pub(crate) struct PlanMerker(Arc<Mutex<Option<Arc<Geplant>>>>);
+
+impl std::fmt::Debug for PlanMerker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Planmerker")
+    }
+}
+
+impl PlanMerker {
+    fn alt(&self) -> Option<Arc<Geplant>> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+
+    fn setzen(&self, g: Option<Geplant>) {
+        if let Ok(mut x) = self.0.lock() {
+            *x = g.map(Arc::new);
+        }
+    }
 }
 
 impl Model {
     /// Das Planungsgelände der Geländeflächen über dem Urgelände; `None`
     /// ohne Fläche, Aufmaß, Lage oder Netz.
     pub fn planned_terrain(&self) -> Option<PlannedTerrain> {
+        let merker = self.planmerker();
+        let (Some(t), Some(f), Some(h0)) =
+            (self.terrain(), self.survey_frame(), self.terrain_nhn())
+        else {
+            merker.setzen(None);
+            return None;
+        };
         if self.site_patches().is_empty() {
+            merker.setzen(None);
             return None;
         }
-        let (t, f, h0) = (self.terrain()?, self.survey_frame()?, self.terrain_nhn()?);
         let mesh = t.mesh();
-        let plaene = crate::qto_earth::planungen(self, &f, h0, &mesh);
+        let lage = [f.e0, f.n0, f.g, h0].map(f64::to_bits);
+        if let Some(g) = merker.alt().filter(|g| {
+            Arc::ptr_eq(&g.netz, &mesh) && g.lage == lage && g.flaechen == self.site_patches()
+        }) {
+            return Some(g.plan.clone());
+        }
+        let plan = self.planungsgelaende(&f, h0, &mesh);
+        merker.setzen(Some(Geplant {
+            netz: mesh,
+            lage,
+            flaechen: self.site_patches().to_vec(),
+            plan: plan.clone(),
+        }));
+        Some(plan)
+    }
+
+    fn planungsgelaende(
+        &self,
+        f: &SurveyFrame,
+        h0: f64,
+        mesh: &Arc<crate::model::TerrainMesh>,
+    ) -> PlannedTerrain {
+        let plaene = crate::qto_earth::planungen(self, f, h0, mesh);
         let gilt: Vec<(usize, &sk_gelaende::planung::Planung)> = plaene
             .iter()
             .enumerate()
@@ -348,7 +415,7 @@ impl Model {
             vec3(x, y, (q[2] - h0) * 1000.0)
         };
         let patches = self.site_patches();
-        Some(PlannedTerrain {
+        PlannedTerrain {
             replaced: o.ersetzt.clone(),
             triangles: o.dreiecke.iter().map(|(d, _)| d.map(im_modell)).collect(),
             paved: o
@@ -370,7 +437,8 @@ impl Model {
                         .collect()
                 })
                 .collect(),
-        })
+            walls: o.waende.iter().map(|d| d.map(im_modell)).collect(),
+        }
     }
 
     /// Die Geländeflächen in der Reihenfolge, in der sie gesetzt wurden
@@ -634,8 +702,14 @@ mod tests {
         p.paved = true;
         assert!(m.add_site_patch(p).is_some());
         m.commit();
-        let g = m.planned_terrain().unwrap();
+        // in einer Kopie gerechnet, im Modell gemerkt (Review #183 a)
+        let kopie = m.clone();
+        assert!(m.planmerker().alt().is_none());
+        let g = kopie.planned_terrain().unwrap();
+        assert!(m.planmerker().alt().is_some());
+        assert_eq!(m.planned_terrain().as_ref(), Some(&g));
         assert!(!g.replaced.is_empty());
+        assert!(g.walls.is_empty(), "mit Böschung keine Wand");
         assert_eq!(g.triangles.len(), g.paved.len());
         let flaeche = |d: &[Vec3; 3]| ((d[1] - d[0]).cross(d[2] - d[0])).z / 2.0;
         let alt = m.terrain_triangles();
@@ -673,6 +747,26 @@ mod tests {
         }
         assert_eq!(g.outlines.len(), 1);
         assert!(g.outlines[0].iter().all(|q| q.z == 1500.0));
+        // senkrecht: neu gerechnet, Wände 1,00 m hoch rings um 10 × 8 m
+        m.begin("senkrecht");
+        let mut p = m.site_patches()[0].clone();
+        p.slopes = vec![0.0];
+        assert!(m.set_site_patch(0, p));
+        m.commit();
+        let s = m.planned_terrain().unwrap();
+        assert_ne!(s, g);
+        let wand: f64 = s
+            .walls
+            .iter()
+            .map(|d| (d[1] - d[0]).cross(d[2] - d[0]).length() / 2.0)
+            .sum();
+        assert!((wand - 36_000.0 * 1_000.0).abs() < 1.0, "{wand}");
+        // ohne Flächen nichts gemerkt
+        m.begin("weg");
+        assert!(m.remove_site_patch(0));
+        m.commit();
+        assert_eq!(m.planned_terrain(), None);
+        assert!(m.planmerker().alt().is_none());
     }
 
     #[test]

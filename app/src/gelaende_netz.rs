@@ -108,6 +108,13 @@ pub(crate) struct Gelaende {
     /// Böschungsschraffen (lang: `true`) und Umrisse der Geländeflächen.
     schraffen: Vec<([Vec3; 2], bool)>,
     umrisse: Vec<Vec<Vec3>>,
+    /// Senkrechte Wände am Rand der Flächen ohne Böschung (Review #183 b).
+    waende: Vec<[Vec3; 3]>,
+    /// Außenrand des Netzes, mit Planungsgelände aus dem Urgelände
+    /// bestimmt: Die Stücke an seiner Stelle teilen die Kanten, an denen
+    /// sie an ungeteilte Dreiecke stoßen, das sind keine Ränder. `None`:
+    /// der Rand der Dreiecke.
+    rand: Option<Vec<(Vec3, Vec3)>>,
 }
 
 /// Höchstens so viele Strecken des Lageplans liegen in einer Kachel
@@ -180,6 +187,7 @@ impl Gelaende {
             .zip(&weg)
             .filter_map(|(d, w)| w.then_some(*d))
             .collect();
+        let rand = (!ur.is_empty()).then(|| rand_mit_plan(&dreiecke, &weg, &plan.triangles));
         if !ur.is_empty() {
             let mut k = 0;
             dreiecke.retain(|_| {
@@ -237,6 +245,8 @@ impl Gelaende {
         g.ur = ur;
         g.schraffen = plan.hatch;
         g.umrisse = plan.outlines;
+        g.waende = plan.walls;
+        g.rand = rand;
         g.marken = t
             .points
             .iter()
@@ -276,6 +286,8 @@ impl Gelaende {
             ur: Vec::new(),
             schraffen: Vec::new(),
             umrisse: Vec::new(),
+            waende: Vec::new(),
+            rand: None,
         }
     }
 
@@ -546,7 +558,9 @@ impl Gelaende {
     /// `n`: Strecken (Lauflänge, Höhe) je Dreieck, an der Grenze geteilt,
     /// mit Sichtbarkeit wie [`Gelaende::zeigen`].
     fn profil(&self, f: &SectionFrame, p0: Vec3) -> Vec<([f64; 2], [f64; 2], bool)> {
-        self.profil_von(&self.dreiecke, f, p0)
+        let mut p = self.profil_von(&self.dreiecke, f, p0);
+        p.extend(self.profil_von(&self.waende, f, p0));
+        p
     }
 
     /// [`Gelaende::profil`] der Dreiecke `d`.
@@ -811,6 +825,14 @@ fn im_grundstueck(g: &Gelaende) -> Vec<[Vec3; 3]> {
 
 /// Kanten, die nur ein Dreieck hat (Rand des Netzes), in seinem Umlauf.
 fn randkanten(d: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
+    randkanten_mit_nummer(d)
+        .into_iter()
+        .map(|(_, a, b)| (a, b))
+        .collect()
+}
+
+/// [`randkanten`] mit der Nummer des Dreiecks.
+fn randkanten_mit_nummer(d: &[[Vec3; 3]]) -> Vec<(usize, Vec3, Vec3)> {
     use std::collections::HashMap;
     type Ecke = (u64, u64);
     let key = |p: Vec3| -> Ecke { (p.x.to_bits(), p.y.to_bits()) };
@@ -822,12 +844,48 @@ fn randkanten(d: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
         }
     }
     let mut out = Vec::new();
-    for t in d {
+    for (j, t) in d.iter().enumerate() {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
             let (ka, kb) = (key(a), key(b));
             if n[&if ka < kb { (ka, kb) } else { (kb, ka) }] == 1 {
-                out.push((a, b));
+                out.push((j, a, b));
+            }
+        }
+    }
+    out
+}
+
+/// Außenrand des Netzes mit Planungsgelände: die Randkanten der Dreiecke
+/// `alt` des Urgeländes; wo das Dreieck ersetzt ist (`weg`), die Kanten der
+/// Stücke `neu`, die auf ihr liegen, auf ihrer Höhe.
+fn rand_mit_plan(alt: &[[Vec3; 3]], weg: &[bool], neu: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
+    let mut out = Vec::new();
+    let mut geteilt = Vec::new();
+    for (i, a, b) in randkanten_mit_nummer(alt) {
+        if weg[i] {
+            geteilt.push((a, b));
+        } else {
+            out.push((a, b));
+        }
+    }
+    if geteilt.is_empty() {
+        return out;
+    }
+    // Kante q→r eines Stücks auf der Randkante a→b (gleiche Richtung, wie
+    // das ersetzte Dreieck sie umläuft)
+    let auf = |a: Vec3, b: Vec3, q: Vec3| {
+        let (d, w) = ([b.x - a.x, b.y - a.y], [q.x - a.x, q.y - a.y]);
+        let l2 = d[0] * d[0] + d[1] * d[1];
+        let t = (w[0] * d[0] + w[1] * d[1]) / l2;
+        let quer = (w[0] * d[1] - w[1] * d[0]) / l2.sqrt();
+        quer.abs() < 1e-3 && (-1e-9..=1.0 + 1e-9).contains(&t)
+    };
+    for t in neu {
+        for k in 0..3 {
+            let (q, r) = (t[k], t[(k + 1) % 3]);
+            if geteilt.iter().any(|&(a, b)| auf(a, b, q) && auf(a, b, r)) {
+                out.push((q, r));
             }
         }
     }
@@ -869,8 +927,14 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
             dreieck(&mut s, t.map(|p| heben(p, HEBEN)), normale(&t));
         }
     }
-    // Boden und Rand in Erdreich
+    // Boden, Rand und Wände in Erdreich
     s.mat = keys[1];
+    for t in &g.waende {
+        let m = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
+        if g.zeigen(g.innen([m.x, m.y])).is_some() {
+            dreieck(&mut s, *t, normale(t));
+        }
+    }
     let unten = g.unten;
     let down = vec3(0.0, 0.0, -1.0);
     for t in &ganz {
@@ -884,7 +948,8 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
             }
         }
         Show::All | Show::Fade => {
-            for (a, b) in randkanten(&g.dreiecke) {
+            let rand = g.rand.clone().unwrap_or_else(|| randkanten(&g.dreiecke));
+            for (a, b) in rand {
                 seite(&mut s, a, b, unten);
             }
         }
@@ -1540,5 +1605,36 @@ mod tests {
             .iter()
             .flatten()
             .any(|p| (p.z - z).abs() < 1e-6 && (p.x - 12_000.0).abs() < 3_000.0));
+        // der Rand bleibt der Rand des Netzes: die geteilten Kanten am
+        // ersetzten Bereich sind keiner (sonst Seiten und Kanten mitten im
+        // Gelände)
+        let lang = |r: &[(Vec3, Vec3)]| -> f64 {
+            r.iter()
+                .map(|(a, b)| ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt())
+                .sum()
+        };
+        let soll = lang(&randkanten(&ohne.dreiecke));
+        assert!((lang(g.rand.as_ref().unwrap()) - soll).abs() < 1.0);
+        assert!(lang(&randkanten(&g.dreiecke)) > soll + 1_000.0);
+        assert!(g.waende.is_empty());
+        // senkrecht: Wand 0,60 m hoch, im Schnitt ein senkrechtes Stück
+        m.begin("senkrecht");
+        let mut p = m.site_patches()[0].clone();
+        p.slopes = vec![0.0];
+        assert!(m.set_site_patch(0, p));
+        m.commit();
+        let g = Gelaende::aus(&m).unwrap();
+        assert!(!g.waende.is_empty());
+        let erde = koerper(&g, [10, 11, 12]);
+        assert!(erde
+            .triangles
+            .iter()
+            .any(|t| t.mat == 11 && t.n.z.abs() < 1e-9 && (t.p[0].x - 12_000.0).abs() < 3_100.0));
+        let senkrecht = g
+            .profil(&SectionFrame::new(p0, n), p0)
+            .iter()
+            .filter(|(a, b, _)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() > 1.0)
+            .count();
+        assert!(senkrecht >= 2, "{senkrecht}");
     }
 }

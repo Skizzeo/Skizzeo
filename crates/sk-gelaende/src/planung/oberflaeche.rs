@@ -11,6 +11,10 @@
 //! gesetzte vor den früheren (die Leiste sagt es mit dem Hinweis
 //! „überlappt“). Außerhalb der Flächen gilt min(max(U, Auftrag), Abtrag)
 //! über die Böschungen aller Flächen, wie [`Planung::hoehe`] für eine.
+//!
+//! Wo eine Fläche ohne Böschung (senkrechte Kante) an ein anderes Stück
+//! grenzt, springt die Höhe; dort steht eine senkrechte Wand, damit das
+//! Netz geschlossen bleibt (Review #183 b).
 
 use super::{an, flaeche, innen, rahmen, Planung};
 use crate::abfrage::Abfrage;
@@ -37,6 +41,9 @@ pub struct Oberflaeche {
     pub ersetzt: Vec<u32>,
     /// Die Dreiecke an ihrer Stelle, gegen den Uhrzeigersinn, mit Herkunft.
     pub dreiecke: Vec<([[f64; 3]; 3], Herkunft)>,
+    /// Senkrechte Wände, wo die Höhe am Rand einer Fläche springt; die
+    /// Normale zeigt zur tieferen Seite.
+    pub waende: Vec<[[f64; 3]; 3]>,
 }
 
 /// Unter dieser Fläche (m²) gilt ein Stück als leer.
@@ -101,6 +108,8 @@ pub fn oberflaeche(u: &Abfrage, planungen: &[&Planung]) -> Oberflaeche {
             continue;
         }
         out.ersetzt.push(t);
+        let nah: Vec<&Gebiet> = je[&t].iter().map(|&i| &gebiete[i]).collect();
+        waende(&stuecke, &nah, &ebene_durch(&d), &mut out.waende);
         for (ring, h, e) in stuecke {
             let p: Vec<[f64; 3]> = ring
                 .iter()
@@ -115,6 +124,148 @@ pub fn oberflaeche(u: &Abfrage, planungen: &[&Planung]) -> Oberflaeche {
         }
     }
     out
+}
+
+/// Senkrechte Wände an den Kanten der Flächenstücke in `stuecke` (die
+/// Stücke eines Dreiecks des Urgeländes mit der Ebene `ur`), wo das Stück
+/// daneben auf anderer Höhe liegt. Eine Kante wird an den Ecken der
+/// anderen Stücke auf ihr geteilt; je Abschnitt gilt draußen das Stück an
+/// seiner Mitte, am Rand des Dreiecks das Planungsgelände nach den Gebieten
+/// `gebiete` dort (das Urgelände ist auf der gemeinsamen Kante in beiden
+/// Dreiecken gleich). Zwischen zwei Flächenstücken entsteht die Wand
+/// einmal, in einer Fläche keine.
+fn waende(
+    stuecke: &[(Vec<[f64; 2]>, Herkunft, Bezug)],
+    gebiete: &[&Gebiet],
+    ur: &Bezug,
+    out: &mut Vec<[[f64; 3]; 3]>,
+) {
+    let drin = |q: [f64; 2], r: &[[f64; 2]]| {
+        (0..r.len()).all(|k| kreuz(r[k], r[(k + 1) % r.len()], q) >= 0.0)
+    };
+    for (i, (r, h, e)) in stuecke.iter().enumerate() {
+        let Herkunft::Flaeche(p) = *h else {
+            continue;
+        };
+        let n = r.len();
+        for k in 0..n {
+            let (a, b) = (r[k], r[(k + 1) % n]);
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let l2 = d[0] * d[0] + d[1] * d[1];
+            if l2 < LEER {
+                continue;
+            }
+            let l = l2.sqrt();
+            // Teilpunkte: Ecken der anderen Stücke auf der Kante
+            let mut ts = vec![0.0, 1.0];
+            for (j, (rj, _, _)) in stuecke.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                for q in rj {
+                    let w = [q[0] - a[0], q[1] - a[1]];
+                    let t = (w[0] * d[0] + w[1] * d[1]) / l2;
+                    let quer = (w[0] * d[1] - w[1] * d[0]) / l;
+                    if quer.abs() < 1e-9 && t > 1e-9 && t < 1.0 - 1e-9 {
+                        ts.push(t);
+                    }
+                }
+            }
+            ts.sort_by(f64::total_cmp);
+            ts.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
+            // draußen ist rechts der Kante (Stücke gegen den Uhrzeigersinn)
+            let o = [d[1] / l * 1e-7, -d[0] / l * 1e-7];
+            for w in ts.windows(2) {
+                let pt = |t: f64| [a[0] + d[0] * t, a[1] + d[1] * t];
+                let (pa, pb) = (pt(w[0]), pt(w[1]));
+                let m = pt((w[0] + w[1]) / 2.0);
+                let q = [m[0] + o[0], m[1] + o[1]];
+                let nachbar = stuecke
+                    .iter()
+                    .enumerate()
+                    .find(|(j, s)| *j != i && drin(q, &s.0));
+                let ee = match nachbar {
+                    // zwischen zwei Flächen nur von der einen Seite
+                    Some((j, (_, Herkunft::Flaeche(pj), _))) if (*pj, j) > (p, i) => continue,
+                    Some((_, (_, _, ee))) => *ee,
+                    None => match ebene_bei(q, gebiete, ur) {
+                        (Herkunft::Flaeche(pj), _) if pj >= p => continue,
+                        (_, ee) => ee,
+                    },
+                };
+                let zi = [an(e, pa[0], pa[1]), an(e, pb[0], pb[1])];
+                let zj = [an(&ee, pa[0], pa[1]), an(&ee, pb[0], pb[1])];
+                wand(pa, pb, zi, zj, out);
+            }
+        }
+    }
+}
+
+/// Ebene des Planungsgeländes am Punkt `q` nach den Gebieten `gebiete`
+/// über einem Dreieck mit dem Urgelände `ur`, wie in [`teilen`].
+fn ebene_bei(q: [f64; 2], gebiete: &[&Gebiet], ur: &Bezug) -> (Herkunft, Bezug) {
+    let drin: Vec<&&Gebiet> = gebiete
+        .iter()
+        .filter(|g| treffen(&g.rahmen, &[q[0], q[1], q[0], q[1]]) && innen(g.ring, q[0], q[1]))
+        .collect();
+    if let Some(g) = drin
+        .iter()
+        .rev()
+        .find(|g| matches!(g.herkunft, Herkunft::Flaeche(_)))
+    {
+        return (g.herkunft, g.ebene);
+    }
+    let z = |e: &Bezug| an(e, q[0], q[1]);
+    let mut best = (z(ur), Herkunft::Ur, *ur);
+    for g in &drin {
+        if matches!(g.herkunft, Herkunft::Boeschung { auftrag: true, .. }) && z(&g.ebene) > best.0 {
+            best = (z(&g.ebene), g.herkunft, g.ebene);
+        }
+    }
+    for g in &drin {
+        if matches!(g.herkunft, Herkunft::Boeschung { auftrag: false, .. }) && z(&g.ebene) < best.0
+        {
+            best = (z(&g.ebene), g.herkunft, g.ebene);
+        }
+    }
+    (best.1, best.2)
+}
+
+/// Wand über der Strecke `a`→`b` zwischen den Höhen `zi` (links, innen)
+/// und `zj` (rechts) an ihren Enden; die Normale zeigt zur tieferen Seite.
+/// Kreuzen sich die Höhen, zwei Dreiecke mit je eigener Seite.
+fn wand(a: [f64; 2], b: [f64; 2], zi: [f64; 2], zj: [f64; 2], out: &mut Vec<[[f64; 3]; 3]>) {
+    let (da, db) = (zi[0] - zj[0], zi[1] - zj[1]);
+    if da.abs() < GLEICH && db.abs() < GLEICH {
+        return;
+    }
+    let p = |q: [f64; 2], z: f64| [q[0], q[1], z];
+    // links höher: Normale nach rechts (draußen)
+    let dazu = |out: &mut Vec<[[f64; 3]; 3]>, d: [[f64; 3]; 3], rechts: bool| {
+        out.push(if rechts { d } else { [d[0], d[2], d[1]] });
+    };
+    if da * db >= 0.0 {
+        let rechts = da + db > 0.0;
+        let (lo, hi) = (
+            [zi[0].min(zj[0]), zi[1].min(zj[1])],
+            [zi[0].max(zj[0]), zi[1].max(zj[1])],
+        );
+        if hi[1] - lo[1] > GLEICH {
+            dazu(out, [p(a, lo[0]), p(b, lo[1]), p(b, hi[1])], rechts);
+        }
+        if hi[0] - lo[0] > GLEICH {
+            dazu(out, [p(a, lo[0]), p(b, hi[1]), p(a, hi[0])], rechts);
+        }
+        return;
+    }
+    // die Höhen kreuzen sich bei s
+    let s = da / (da - db);
+    let c = [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
+    let zc = zi[0] + (zi[1] - zi[0]) * s;
+    let (lo_a, hi_a) = (zi[0].min(zj[0]), zi[0].max(zj[0]));
+    let (lo_b, hi_b) = (zi[1].min(zj[1]), zi[1].max(zj[1]));
+    dazu(out, [p(a, lo_a), p(c, zc), p(a, hi_a)], da > 0.0);
+    dazu(out, [p(c, zc), p(b, lo_b), p(b, hi_b)], db > 0.0);
 }
 
 /// Kreuzprodukt (b − a) × (c − a).
@@ -594,6 +745,63 @@ mod tests {
         let umfang = 400.0 * 2.0 * 4.0 * (std::f64::consts::PI / 400.0).sin();
         assert_eq!(s.len(), (umfang / 0.5).round() as usize);
         assert_eq!(lang, s.len().div_ceil(2));
+    }
+
+    /// Fläche ohne Böschung: an ihrem Rand eine Wand so hoch wie der
+    /// Sprung, zur tieferen Seite gewandt; mit Böschung keine (Review #183
+    /// b).
+    #[test]
+    fn senkrechter_rand_mit_wand() {
+        let u = gelaende(|_, _| 10.0);
+        let flaeche3 = |d: &[[f64; 3]; 3]| {
+            let (a, b) = (
+                [d[1][0] - d[0][0], d[1][1] - d[0][1], d[1][2] - d[0][2]],
+                [d[2][0] - d[0][0], d[2][1] - d[0][1], d[2][2] - d[0][2]],
+            );
+            let n = [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ];
+            (n, 0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt())
+        };
+        // L-Form, 1 m hoch bzw. 0,5 m tief, Umfang 2 × (7 + 5) = 24 m
+        let ring = [
+            [0.1, 0.1],
+            [7.1, 0.1],
+            [7.1, 2.1],
+            [3.1, 2.1],
+            [3.1, 5.1],
+            [0.1, 5.1],
+        ];
+        for (z, aussen) in [(11.0, true), (9.5, false)] {
+            let mut b = baustein(&ring, [z, 0.0, 0.0], 1.5);
+            for k in &mut b.rand {
+                k.neigung = None;
+            }
+            let p = Planung::neu(&b, &u);
+            let o = oberflaeche(&u, &[&p]);
+            deckt(&u, &o);
+            let flaeche: f64 = o.waende.iter().map(|d| flaeche3(d).1).sum();
+            let soll = 24.0 * (z - 10.0_f64).abs();
+            assert!((flaeche - soll).abs() < 1e-6, "{flaeche} {soll}");
+            // die Normale zeigt zur tieferen Seite: beim Auftrag nach
+            // außen, beim Abtrag nach innen
+            for d in &o.waende {
+                let (n, _) = flaeche3(d);
+                assert!(n[2].abs() < 1e-9);
+                let m = [
+                    (d[0][0] + d[1][0] + d[2][0]) / 3.0 + n[0] * 1e-3,
+                    (d[0][1] + d[1][1] + d[2][1]) / 3.0 + n[1] * 1e-3,
+                ];
+                assert_eq!(!innen(&ring, m[0], m[1]), aussen, "{d:?}");
+            }
+        }
+        // mit Böschung schließt das Netz ohne Wand
+        let p = Planung::neu(&baustein(&ring, [11.0, 0.0, 0.0], 1.5), &u);
+        let o = oberflaeche(&u, &[&p]);
+        let flaeche: f64 = o.waende.iter().map(|d| flaeche3(d).1).sum();
+        assert!(flaeche < 1e-6, "{flaeche}");
     }
 
     #[test]
