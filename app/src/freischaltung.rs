@@ -10,9 +10,12 @@
 //! Hilfethema sagt so beim Anlegen, wozu er gehört; vergessen meldet der
 //! Compiler.
 //!
-//! Gefiltert wird dort, wo Listen gezeichnet werden (Dateimenü, Paneele,
-//! Kontextmenü, Kartenleiste, Liste der Hilfethemen), und noch einmal dort, wo ein Befehl
-//! oder Knopf ausgeführt wird. So ist auch ein Tastenkürzel mitgesperrt.
+//! Gesperrtes bleibt sichtbar (Bedienbarkeit 41.5): Knöpfe, Zeilen im
+//! Dateimenü und im Kontextmenü und Karten des Mengenfensters stehen grau da,
+//! mit der Stufe, ab der es sie gibt ([`Modul::ab`]); „Ausbaustufe …“ im
+//! Dateimenü öffnet das Hilfethema dazu. Nur die Liste der Hilfethemen und
+//! einzelne Zeilen der Hilfe lassen Gesperrtes weg. Ausgeführt wird ein
+//! gesperrter Befehl oder Knopf nie, auch nicht über ein Tastenkürzel.
 
 use crate::cards::Blatt;
 use crate::help::Topic;
@@ -42,6 +45,26 @@ impl Modul {
             Modul::Kosten => Some(Modul::Mengen),
             Modul::Ava => Some(Modul::Kosten),
             Modul::Mengen | Modul::Gelaende => None,
+        }
+    }
+
+    /// Ab welcher Stufe es das Modul gibt, kurz für graue Knöpfe und
+    /// Menüzeilen (Bedienbarkeit 41.5).
+    pub fn ab(self) -> &'static str {
+        match self {
+            Modul::Mengen => "ab Pro",
+            Modul::Kosten | Modul::Ava => "Ultimate",
+            Modul::Gelaende => "Geländemodul",
+        }
+    }
+
+    /// Satz im Tooltip eines grauen Knopfs: die Stufe und der Weg zur
+    /// Übersicht (Bedienbarkeit 41.5).
+    pub fn grund(self) -> &'static str {
+        match self {
+            Modul::Mengen => "Ab der Ausbaustufe Pro (Datei › Ausbaustufe …).",
+            Modul::Kosten | Modul::Ava => "In der Ausbaustufe Ultimate (Datei › Ausbaustufe …).",
+            Modul::Gelaende => "Mit dem Geländemodul (Datei › Ausbaustufe …).",
         }
     }
 }
@@ -79,7 +102,29 @@ impl Freischaltung {
 
     /// Der Eingang gehört zu einem Modul, das nicht frei ist.
     pub fn gesperrt(self, e: impl Eingang) -> bool {
-        e.modul().is_some_and(|m| !self.frei(m))
+        self.sperre(e).is_some()
+    }
+
+    /// Das Modul, das den Eingang sperrt.
+    pub fn sperre(self, e: impl Eingang) -> Option<Modul> {
+        e.modul().filter(|m| !self.frei(*m))
+    }
+
+    /// Name der Stufe für das Hilfethema „Ausbaustufen“: „Basis“, „Pro“
+    /// oder „Ultimate“, je auch „mit Geländemodul“.
+    pub fn name(self) -> String {
+        let stufe = if self.frei(Modul::Ava) {
+            "Ultimate"
+        } else if self.frei(Modul::Mengen) {
+            "Pro"
+        } else {
+            "Basis"
+        };
+        if self.frei(Modul::Gelaende) {
+            format!("{stufe} mit Geländemodul")
+        } else {
+            stufe.into()
+        }
     }
 
     /// Stufe als Wort: `basis`, `pro` oder `ultimate`, je auch mit
@@ -114,25 +159,16 @@ impl Freischaltung {
         })
     }
 
-    /// Die Zeilen ohne gesperrte Knöpfe (Freischaltung); vom Knopfpaar bleibt
-    /// der freie. Eine Trennlinie, die danach am Ende oder doppelt steht, fällt
-    /// mit weg.
+    /// Die Zeilen eines Paneels: Knöpfe und Knopfpaare bleiben, auch
+    /// gesperrt; die `Ui` zeichnet sie grau und nimmt keinen Klick an
+    /// (Bedienbarkeit 41.5). Andere Zeilen mit gesperrtem Eingang fallen weg,
+    /// eine Trennlinie, die danach am Ende oder doppelt steht, mit ihnen.
     pub(crate) fn zeilen(self, rows: Vec<Row>) -> Vec<Row> {
         let mut out: Vec<Row> = Vec::with_capacity(rows.len());
         let mut weg = false;
         for r in rows {
             let r = match r {
-                Row::Button(id, _) | Row::More(id) | Row::TypeChip(id) | Row::Link(id, _)
-                    if self.gesperrt(id) =>
-                {
-                    None
-                }
-                Row::Pair([a, b]) => match (self.gesperrt(a.0), self.gesperrt(b.0)) {
-                    (false, false) => Some(Row::Pair([a, b])),
-                    (true, false) => Some(Row::Button(b.0, b.1)),
-                    (false, true) => Some(Row::Button(a.0, a.1)),
-                    (true, true) => None,
-                },
+                Row::More(id) | Row::TypeChip(id) | Row::Link(id, _) if self.gesperrt(id) => None,
                 Row::Segments(items) if items.iter().any(|i| self.gesperrt(i.0)) => None,
                 r => Some(r),
             };
@@ -168,12 +204,13 @@ impl Freischaltung {
     }
 
     /// Beschriftung des Knopfs in zwei Zeilen (ab KA-4); mit nur einem Blatt
-    /// bleibt die zweite leer.
+    /// bleibt die zweite leer, ohne Mengen steht darunter „ab Pro“.
     pub fn knopf_zeilen(self) -> (&'static str, &'static str) {
         match self.blaetter() {
             3 => crate::cards::KNOPF_ZEILEN,
             2 => ("Mengen", "Kosten"),
-            _ => ("Mengen", ""),
+            1 => ("Mengen", ""),
+            _ => ("Mengen", Modul::Mengen.ab()),
         }
     }
 }
@@ -210,7 +247,8 @@ impl Eingang for Command {
             | Command::Help
             | Command::MeasureFrameTime
             | Command::ExportIfc
-            | Command::IfcVorschau => None,
+            | Command::IfcVorschau
+            | Command::Ausbaustufe => None,
         }
     }
 }
@@ -314,7 +352,8 @@ impl Eingang for Topic {
             | Topic::Materials
             | Topic::Patterns
             | Topic::Delete
-            | Topic::Backups => None,
+            | Topic::Backups
+            | Topic::Ausbaustufen => None,
         }
     }
 }
@@ -369,8 +408,23 @@ impl Eingang for crate::delete::Action {
 }
 
 impl crate::App {
+    /// „Hilfe“ und „Ausbaustufe …“ aus dem Dateimenü: die Hilfekarte, für
+    /// die Ausbaustufe mit dem Thema „Ausbaustufen“ (Bedienbarkeit 41.5).
+    pub(crate) fn hilfe_befehl(&mut self, c: Command) {
+        let war = self.help.is_open();
+        if c == Command::Ausbaustufe {
+            self.help.open_with(Topic::Ausbaustufen);
+            self.redraw = true;
+        } else {
+            self.help.set_open(true);
+        }
+        if !war {
+            self.help_toggled();
+        }
+    }
+
     /// Freischaltung setzen: Paneele, Dateimenü, Kartenleiste und Hilfe
-    /// zeigen danach nur noch die freien Eingänge.
+    /// zeigen danach Gesperrtes grau bzw. ohne die gesperrten Themen.
     pub(crate) fn freischalten(&mut self, f: Freischaltung) {
         self.ui.frei = f;
         self.menu.frei = f;
@@ -494,6 +548,24 @@ mod tests {
         );
         assert_eq!(p.knopf(), "Mengen");
         assert_eq!(p.knopf_zeilen(), ("Mengen", ""));
+        // Bedienbarkeit 41.5: grau mit der Stufe, ab der es den Eingang gibt
+        assert_eq!(b.knopf_zeilen(), ("Mengen", "ab Pro"));
+        assert_eq!(b.sperre(Id::Quantity).map(Modul::ab), Some("ab Pro"));
+        assert_eq!(
+            b.sperre(Command::Verwaltung).map(Modul::ab),
+            Some("Ultimate")
+        );
+        assert_eq!(p.sperre(Blatt::Ava).map(Modul::ab), Some("Ultimate"));
+        assert_eq!(stufe("ultimate").sperre(Command::Verwaltung), None);
+        // der Satz im Tooltip nennt dieselbe Stufe wie das kurze Wort
+        for m in [Modul::Mengen, Modul::Kosten, Modul::Ava, Modul::Gelaende] {
+            let stufe = m.ab().trim_start_matches("ab ");
+            assert!(m.grund().contains(stufe), "{m:?}");
+        }
+        assert_eq!(
+            [b, p, stufe("ultimate"), stufe("pro+gelaende")].map(Freischaltung::name),
+            ["Basis", "Pro", "Ultimate", "Pro mit Geländemodul"]
+        );
         assert_eq!(Freischaltung::ALLES.knopf(), crate::cards::KNOPF);
         // Jedes Hilfethema der freien Blätter ist frei, jedes gesperrte
         // Blatt nimmt sein Thema mit
@@ -526,8 +598,9 @@ mod tests {
         ids
     }
 
-    /// Abnahme je Stufe (Plan §4.7): sichtbar und bedienbar sind genau die
-    /// Eingänge der Stufe, alle übrigen bleiben wie mit allem frei.
+    /// Abnahme je Stufe (Plan §4.7, Bedienbarkeit 41.5): bedienbar sind genau
+    /// die Eingänge der Stufe; die übrigen stehen grau mit ihrer Stufe am
+    /// selben Platz, alles andere bleibt wie mit allem frei.
     #[test]
     fn abnahme_je_stufe() {
         let th = Theme::dark();
@@ -576,17 +649,12 @@ mod tests {
             ("ultimate+gelaende", true, true, 3),
         ] {
             let f = stufe(w);
-            // Paneele: „Mengen“ nur mit Mengen, sonst dieselben Knöpfe
+            // Paneele: dieselben Knöpfe, „Mengen“ ohne Mengen grau
             let mut ui = Ui::new(1.0, &th);
             ui.fit(1.0, 1440, 900);
             ui.frei = f;
-            let ansichten = knoepfe(&mut ui, Panel::Views);
-            let erwartet: Vec<Id> = alle_ansichten
-                .iter()
-                .copied()
-                .filter(|id| mengen || *id != Id::Quantity)
-                .collect();
-            assert_eq!(ansichten, erwartet, "{w}");
+            assert_eq!(knoepfe(&mut ui, Panel::Views), alle_ansichten, "{w}");
+            assert_eq!(ui.is_disabled(Id::Quantity), !mengen, "{w}");
             assert_eq!(knoepfe(&mut ui, Panel::Tools), alle_werkzeuge, "{w}");
             // Menge je Schicht im Paneel „Eigenschaften“ nur mit Mengen
             let layer = (
@@ -620,26 +688,28 @@ mod tests {
                 vec!["Nutzung", "Lichte Höhe"]
             };
             assert_eq!(werte(ui.props()), soll, "{w}");
-            // Dateimenü: „Verwaltung …“ nur mit Kosten; Öffnen und Schließen
-            // behalten die Freischaltung
+            // Dateimenü: dieselben Zeilen, „Verwaltung …“ ohne Kosten grau
+            // mit „Ultimate“; Öffnen und Schließen behalten die Freischaltung
             let mut menu = FileMenu::default();
             menu.frei = f;
             menu.open();
             menu.close();
-            let befehle: Vec<Command> = menu
-                .items(true, &Recent::default())
+            let zeilen = menu.items(true, &Recent::default());
+            let befehle: Vec<Command> = zeilen.iter().filter_map(|i| i.command).collect();
+            assert_eq!(befehle, alle_befehle, "{w}");
+            let verwaltung = zeilen
                 .iter()
-                .filter_map(|i| i.command)
-                .collect();
-            let erwartet: Vec<Command> = alle_befehle
-                .iter()
-                .copied()
-                .filter(|c| kosten || *c != Command::Verwaltung)
-                .collect();
-            assert_eq!(befehle, erwartet, "{w}");
-            // Kontextmenü am Bauteil: „Mengen …“ nur mit Mengen, mit dem
-            // Namen der freien Blätter
-            let zeilen: Vec<String> = crate::delete::ContextMenu::new(
+                .find(|i| i.command == Some(Command::Verwaltung))
+                .unwrap();
+            assert_eq!(verwaltung.enabled, kosten, "{w}");
+            assert_eq!(
+                verwaltung.shortcut,
+                if kosten { "" } else { "Ultimate" },
+                "{w}"
+            );
+            // Kontextmenü am Bauteil: „Mengen …“ mit dem Namen der freien
+            // Blätter, ohne Mengen grau
+            let zeilen = crate::delete::ContextMenu::new(
                 &m,
                 wand,
                 &[wand],
@@ -649,16 +719,16 @@ mod tests {
                 &th,
                 &ui,
             )
-            .actions()
-            .into_iter()
-            .map(|z| z.0)
-            .collect();
+            .actions();
+            let namen: Vec<String> = zeilen.iter().map(|z| z.0.clone()).collect();
             let erwartet: Vec<String> = alle_zeilen
                 .iter()
-                .filter(|z| mengen || z.as_str() != crate::cards::KNOPF)
                 .map(|z| z.replace(crate::cards::KNOPF, f.knopf()))
                 .collect();
-            assert_eq!(zeilen, erwartet, "{w}");
+            assert_eq!(namen, erwartet, "{w}");
+            let quantity = Some(crate::delete::Action::Quantity);
+            let z = zeilen.iter().find(|z| z.2 == quantity).unwrap();
+            assert_eq!(z.1, mengen, "{w}");
             // Kartenleiste: ein gemerktes gesperrtes Blatt fällt auf Mengen
             let mut q = crate::quantity::QuantityWindow::new();
             assert!(q.waehlen(Blatt::Ava, &th));
