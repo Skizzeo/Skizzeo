@@ -29,6 +29,9 @@ pub struct Gruendung {
     pub zone: ErdZone,
 }
 
+/// Hinweis, solange der Böschungskeil der Baugrube nicht exakt zählt
+/// (VOB-Prüfung G3, C2; exakt mit G5).
+pub const KEIL: &str = "Baugrube mit Böschung: Geländeabtrag über dem Böschungskeil angenähert";
 /// Hinweis an befestigten Flächen bis G4 (B2).
 pub const BEFESTIGT: &str = "Aufbau der befestigten Fläche ab G4, Auftrag bis OK Fläche";
 /// Hinweis, wenn die Bilanz begrenzt (B4).
@@ -157,6 +160,28 @@ pub(crate) fn gelaende_mengen(
             }
         }
     }
+    // C2: über dem Böschungskeil einer Baugrube ist schon ausgehoben; exakt
+    // erst mit G5, bis dahin ein Hinweis an Abtrag und Verfüllung
+    let keil: Vec<bool> = gr
+        .iter()
+        .zip(&baufelder)
+        .map(|(g, bf)| {
+            let Some(bf) = bf.as_ref().filter(|_| g.zone.keil) else {
+                return false;
+            };
+            let flach = |v: &[Vec3]| v.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>();
+            let (feld, sohle) = (flach(bf), flach(&g.zone.sohle));
+            m.site_patches().iter().any(|p| {
+                let im_feld = sk_gelaende::planung::ueberlappung(&p.outline, &feld);
+                let in_sohle = if sohle.len() >= 3 {
+                    sk_gelaende::planung::ueberlappung(&p.outline, &sohle)
+                } else {
+                    0.0
+                };
+                im_feld - in_sohle > 100.0
+            })
+        })
+        .collect();
     if m.site_patches().len() > 1 && ueberlappen(m) {
         s.hinweise
             .push("Geländeflächen überlappen sich: Menge dort doppelt gezählt, Flächen prüfen");
@@ -230,6 +255,19 @@ pub(crate) fn gelaende_mengen(
         );
     }
 
+    for (g, _) in gr.iter().zip(&keil).filter(|(_, k)| **k) {
+        let el = g.vorlage.element;
+        if let Some(r) = out
+            .iter_mut()
+            .find(|r| r.element == el && r.key == BACKFILL)
+        {
+            if !r.hinweis.is_empty() {
+                r.hinweis.push('\n');
+            }
+            r.hinweis.push_str(KEIL);
+        }
+    }
+
     // B4: Bilanz in m³ (fest bzw. verdichtet)
     let gel = s.abtrag;
     let auf = s.auftrag;
@@ -280,6 +318,9 @@ pub(crate) fn gelaende_mengen(
     }
     if gel > 0.0 {
         let mut h = h_erdbau.clone();
+        if keil.contains(&true) {
+            h.push(KEIL.to_string());
+        }
         if s.unter_sohle > 0.0 {
             h.push(format!(
                 "Planum unter UK Platte, die Gründung läge frei: {} Abtrag unter der Sohle",
@@ -355,13 +396,22 @@ pub(crate) fn gelaende_mengen(
         let rest = (feld - s.im_baufeld).max(0.0);
         let eben = s.andecken + rest;
         let dicke = format!("Dicke {} m", zahl(d, 1e3));
-        if eben > 0.0 {
+        // die Zulage steiler als 1:4 setzt die Grundposition voraus: dort
+        // stehen alle Flächen (VOB-Prüfung G3, C1)
+        let alle = eben + s.andecken_steil;
+        if alle > 0.0 {
+            let steil = if s.andecken_steil > 0.0 {
+                format!(" + Böschungen steiler als 1:4 {}", m2(s.andecken_steil))
+            } else {
+                String::new()
+            };
             neu.push(zeile(
                 SPREAD,
                 KG_ANDECKEN,
-                eben * 1e6,
+                alle * 1e6,
                 format!(
-                    "Geländeflächen {} + Baufeld außerhalb {} (waagerecht), {dicke}",
+                    "Geländeflächen {} (schräg gemessen){steil} + Baufeld außerhalb {} \
+                     (waagerecht), {dicke}",
                     m2(s.andecken),
                     m2(rest)
                 ),
@@ -385,10 +435,10 @@ pub(crate) fn gelaende_mengen(
             .sum::<f64>()
             / 1e9
             + ob_site;
-        let bedarf = (eben + s.andecken_steil) * d / 1000.0;
+        let bedarf = alle * d / 1000.0;
         let ansatz = format!(
             "Andecken {} × {} m = {} gegen abgetragen {}",
-            m2(eben + s.andecken_steil),
+            m2(alle),
             zahl(d, 1e3),
             m3(bedarf),
             m3(ab)
@@ -396,7 +446,7 @@ pub(crate) fn gelaende_mengen(
         if bedarf > ab + 1e-9 {
             neu.push(zeile(
                 TOPSOIL_SUPPLY,
-                KG_GELAENDE,
+                KG_ANDECKEN,
                 (bedarf - ab) * 1e9,
                 ansatz,
                 Vec::new(),
@@ -469,7 +519,7 @@ fn ueberlappen(m: &Model) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use super::BEFESTIGT;
+    use super::{BEFESTIGT, KEIL};
     use crate::model::{SiteSoil, Terrain, TerrainPatch};
     use crate::qto::AutoMenge;
     use crate::Model;
@@ -629,6 +679,56 @@ mod tests {
             "{}",
             wert(&v, SPREAD)
         );
+    }
+
+    /// Auftrag mit Böschung 1:1,5 (steiler als 1:4): die Grundposition
+    /// Andecken enthält die Böschung, die Zulage nur sie (VOB-Prüfung G3,
+    /// C1); die Oberbodenbilanz zählt sie einmal.
+    #[test]
+    fn andecken_mit_zulage() {
+        let m = haus();
+        let p = TerrainPatch {
+            slopes: vec![1.5],
+            ..TerrainPatch::flat(rechteck(30e3, 30e3, 40e3, 40e3), 1500.0)
+        };
+        let v = mit(&m, &[p]);
+        let (alle, steil) = (wert(&v, SPREAD), wert(&v, SPREAD_SLOPE));
+        assert!(
+            steil > 0.0 && alle > 100.0 + 63.0 + steil - 1e-6,
+            "{alle} {steil}"
+        );
+        let spread = v.iter().find(|r| r.key == SPREAD).unwrap();
+        assert!(
+            spread.formula.contains("steiler als 1:4"),
+            "{}",
+            spread.formula
+        );
+        // Bilanz: alle × 0,20 gegen abgetragen
+        let ab = wert(&v, TOPSOIL) + wert(&v, TOPSOIL_SITE);
+        let bedarf = alle * 0.2;
+        let diff = wert(&v, TOPSOIL_SUPPLY) - wert(&v, TOPSOIL_REMOVE);
+        assert!((diff - (bedarf - ab)).abs() < 1e-6, "{diff} {bedarf} {ab}");
+        if let Some(r) = v.iter().find(|r| r.key == TOPSOIL_SUPPLY) {
+            assert_eq!(r.kg, Some(KG_ANDECKEN));
+        }
+    }
+
+    /// Baugrube tiefer als 1,25 m mit Böschungskeil, Fläche im Baufeld
+    /// außerhalb der Sohle: Hinweis an Abtrag und Verfüllung (C2).
+    #[test]
+    fn keil_der_baugrube() {
+        let mut m = haus();
+        m.begin("tiefer");
+        assert!(m.set_terrain_nhn(8.0));
+        m.commit();
+        let v = mit(&m, &[flaeche(rechteck(17.6e3, 6e3, 18.4e3, 14e3), 1800.0)]);
+        let c = v.iter().find(|r| r.key == CUT).unwrap();
+        assert!(c.hinweis.contains(KEIL), "{}", c.hinweis);
+        let b = v.iter().find(|r| r.key == BACKFILL).unwrap();
+        assert!(b.hinweis.contains(KEIL), "{}", b.hinweis);
+        // fern vom Haus kein Hinweis
+        let v = mit(&m, &[flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 1800.0)]);
+        assert!(v.iter().all(|r| !r.hinweis.contains(KEIL)));
     }
 
     /// Befestigt: Q = P, kein Andecken, Hinweis B2; überlappende Flächen

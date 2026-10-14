@@ -161,11 +161,11 @@ pub const SCHLUESSEL: [(&str, &str, &str); 18] = [
         "m3",
         "überschüssigen Oberboden laden und abfahren",
     ),
-    (SPREAD, "m2", "Oberboden andecken, eben bis 1:4"),
+    (SPREAD, "m2", "Oberboden andecken, alle Flächen"),
     (
         SPREAD_SLOPE,
         "m2",
-        "Oberboden andecken an Böschungen steiler als 1:4",
+        "Zulage Andecken an Böschungen steiler als 1:4",
     ),
 ];
 
