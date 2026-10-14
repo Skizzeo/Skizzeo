@@ -157,7 +157,9 @@ impl Model {
     /// Wänden lässt ihn stehen, auch beim Rückgängig. Im offenen Schritt
     /// bleibt er; welche Geschosse der Schritt an Räumen ändert, sagt
     /// [`Model::raum_geschosse_im_schritt`]. Anders als [`Model::revision`]
-    /// geht er nie zurück.
+    /// geht er nie zurück. Er gehört zu diesem Modell und beginnt mit ihm
+    /// bei 0, nach dem Laden also neu; wer ihn sich merkt, merkt sich das
+    /// Modell mit (die Erkennung der Szene, Review H-175c).
     pub fn raum_revision(&self) -> u64 {
         self.raum_log.revision
     }
@@ -165,8 +167,8 @@ impl Model {
     /// Die Räume, die sich seit dem Stand `stand` ([`Model::raum_revision`])
     /// geändert haben, auch gelöschte und solche in einem anderen Geschoss
     /// (eine Kennung kann mehrmals vorkommen); `None`, wenn das nicht
-    /// bekannt ist: nach einer Änderung ohne Schritt oder wenn `stand`
-    /// mehr als 64 Schritte an Räumen zurückliegt.
+    /// bekannt ist: nach einer Änderung ohne Schritt, wenn `stand` mehr als
+    /// 64 Schritte an Räumen zurückliegt oder noch gar nicht erreicht ist.
     pub fn raeume_geaendert_seit(&self, stand: u64) -> Option<Vec<ElementId>> {
         let l = &self.raum_log;
         if stand < l.ab || stand > l.revision {

@@ -3291,7 +3291,6 @@ impl Model {
         self.txn = Some(Open {
             building_number: self.building_number,
             numbers: self.numbers.to_vec(),
-            revision: self.revision,
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3301,11 +3300,6 @@ impl Model {
 
     pub fn in_step(&self) -> bool {
         self.txn.is_some()
-    }
-
-    /// Revision beim Öffnen des offenen Schritts; `None` ohne Schritt.
-    pub fn step_start_revision(&self) -> Option<u64> {
-        self.txn.as_ref().map(|t| t.revision)
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat

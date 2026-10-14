@@ -138,6 +138,13 @@ impl Scene {
         self.erkennung.borrow().raumlisten()
     }
 
+    /// Vergisst die gesammelten Räume, der nächste Abruf sammelt sie neu
+    /// (Messung).
+    #[cfg(test)]
+    pub fn raum_listen_vergessen(&self) {
+        self.erkennung.borrow_mut().raumlisten_vergessen();
+    }
+
     /// Räume des Geschosses wie [`sk_raum::raeume`], je mit Grundfläche
     /// (mm²), über alle Hausgruppen zugeteilt (Tests; die App liest
     /// [`Scene::raumgruppen`]).
