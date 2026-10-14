@@ -15,6 +15,10 @@ pub(crate) const MESH_AUSBAU: usize = MESH_PLATE + 1;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) const MESH_FREI: usize = MESH_AUSBAU + crate::scene::scene_ausbau::TEILE;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "ausbau_istbilder.rs"]
+mod istbilder;
+
 // Jede Ablage hat ihren eigenen Platz: lückenlos der Reihe nach, keine
 // zweimal
 const _: () = {

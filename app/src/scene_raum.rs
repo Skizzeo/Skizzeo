@@ -132,6 +132,19 @@ impl Scene {
         self.erkennung.borrow().zugeteilt()
     }
 
+    /// Wie oft die Räume eines Geschosses neu gesammelt wurden (Tests).
+    #[cfg(test)]
+    pub fn raum_listen(&self) -> u64 {
+        self.erkennung.borrow().raumlisten()
+    }
+
+    /// Vergisst die gesammelten Räume, der nächste Abruf sammelt sie neu
+    /// (Messung).
+    #[cfg(test)]
+    pub fn raum_listen_vergessen(&self) {
+        self.erkennung.borrow_mut().raumlisten_vergessen();
+    }
+
     /// Räume des Geschosses wie [`sk_raum::raeume`], je mit Grundfläche
     /// (mm²), über alle Hausgruppen zugeteilt (Tests; die App liest
     /// [`Scene::raumgruppen`]).
@@ -264,21 +277,17 @@ impl Scene {
     }
 
     /// Raum umbenennen, ein Schritt „Raum benannt“. `vorlage`: im Stempel
-    /// gewählte Raumvorlage; ohne sie wählt ein Name, der genau eine Vorlage
-    /// nennt (ohne Groß- und Kleinschreibung), diese. Die Vorlage setzt die
-    /// Nutzung (fehlt sie im Projekt, kommt sie samt Ausbautypen hinzu), ein
-    /// freier Name lässt sie stehen. `false`, wenn sich nichts ändert oder
-    /// der Name leer ist.
+    /// gewählte Raumvorlage; ohne sie wählt ein Name, der eine Vorlage
+    /// nennt ([`vorlage_im_namen`]), diese. Die Vorlage setzt die Nutzung
+    /// (fehlt sie im Projekt, kommt sie samt Ausbautypen hinzu), ein freier
+    /// Name lässt sie stehen. `false`, wenn sich nichts ändert oder der Name
+    /// leer ist.
     pub fn raum_benennen(&mut self, id: ElementId, name: &str, vorlage: Option<Guid>) -> bool {
         let name = name.trim();
         let Some(alt) = self.model.space(id).filter(|_| !name.is_empty()) else {
             return false;
         };
-        let klein = name.to_lowercase();
-        let vorlage = vorlage.or_else(|| {
-            let mut v = self.model.space_type_choices().into_iter();
-            v.find(|(_, n)| n.to_lowercase() == klein).map(|(g, _)| g)
-        });
+        let vorlage = vorlage.or_else(|| vorlage_im_namen(&self.model.space_type_choices(), name));
         if alt.name == name && vorlage.is_none_or(|g| alt.nutzung == Some(g)) {
             return false;
         }
@@ -298,9 +307,66 @@ impl Scene {
     }
 }
 
+/// Raumvorlage, die der Name `name` nennt (Bedienbarkeit 40.5): der ganze
+/// Name ohne Groß- und Kleinschreibung, sonst die längste Vorlage, die als
+/// eigenes Wort darin steht („Bad OG“ ist Bad, „Flur OG“ ist „Diele,
+/// Flur“, die Teile nach Komma zählen einzeln). Nennt er zwei gleich lange,
+/// keine.
+pub fn vorlage_im_namen(vorlagen: &[(Guid, String)], name: &str) -> Option<Guid> {
+    let klein = name.trim().to_lowercase();
+    if let Some((g, _)) = vorlagen.iter().find(|(_, n)| n.to_lowercase() == klein) {
+        return Some(*g);
+    }
+    let wort = |teil: &str| {
+        klein.match_indices(teil).any(|(i, _)| {
+            let vor = klein[..i].chars().next_back();
+            let nach = klein[i + teil.len()..].chars().next();
+            !vor.is_some_and(char::is_alphanumeric) && !nach.is_some_and(char::is_alphanumeric)
+        })
+    };
+    let mut best: Option<(usize, Option<Guid>)> = None;
+    for (g, n) in vorlagen {
+        let n = n.to_lowercase();
+        for teil in n.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            if !wort(teil) {
+                continue;
+            }
+            let l = teil.chars().count();
+            best = match best {
+                Some((b, _)) if b > l => best,
+                Some((b, Some(x))) if b == l && x != *g => Some((l, None)),
+                Some((b, None)) if b == l => best,
+                _ => Some((l, Some(*g))),
+            };
+        }
+    }
+    best.and_then(|(_, g)| g)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bedienbarkeit 40.5: Ein Name, der eine Raumvorlage als Wort nennt,
+    /// wählt sie; Teile vor und nach dem Komma zählen einzeln, die längste
+    /// gewinnt, zwei gleich lange heben sich auf.
+    #[test]
+    fn vorlage_aus_dem_namen() {
+        let m = sk_model::Model::with_seed(3);
+        let v = m.space_type_choices();
+        let g = |name: &str| v.iter().find(|x| x.1 == name).map(|x| x.0);
+        let wahl = |name: &str| vorlage_im_namen(&v, name);
+        assert_eq!(wahl("bad"), g("Bad"));
+        assert_eq!(wahl("Bad OG"), g("Bad"));
+        assert_eq!(wahl("OG-Bad"), g("Bad"));
+        assert_eq!(wahl("Flur OG"), g("Diele, Flur"));
+        assert_eq!(wahl("Küche 2"), g("Küche"));
+        assert_eq!(wahl("Gäste-WC"), g("Gäste-WC"));
+        assert_eq!(wahl("Gästezimmer mit Bad"), g("Gästezimmer"));
+        assert_eq!(wahl("Badezimmer"), None, "nur als eigenes Wort");
+        assert_eq!(wahl("Speis"), None);
+        assert_eq!(wahl("Diele Küche"), None, "zwei gleich lange: keine");
+    }
     use sk_model::{Category, RefSide};
 
     /// `n` Häuser 10 × 8 m nebeneinander, je eine Innenwand bei x = 3 m;
@@ -555,5 +621,49 @@ mod tests {
             assert_eq!(s.raum_zuteilungen(), z0 + k, "je Bewegung das eine Haus");
         }
         s.commit();
+    }
+
+    /// Review H-137b: Nach dem Loslassen einer Wand, deren Räume ihr mit
+    /// dem Anker folgen, nach dem Verschieben eines Raumstempels und nach
+    /// Rückgängig sammelt die Zuteilung die Räume des Geschosses nicht neu
+    /// über alle Bauteile, sie reiht nur die geänderten neu ein. Das
+    /// Ergebnis ist jedes Mal das der frischen Erkennung.
+    #[test]
+    fn loslassen_ohne_neue_raumliste() {
+        let (mut s, st, innen) = stadt(3);
+        let listen = |s: &Scene| s.raum_listen();
+        let wie_neu = |s: &Scene| {
+            let mitte = |f: &(sk_raum::RaumForm, f64)| (f.0.mitte.x, f.0.mitte.y);
+            let mut v: Vec<_> = s
+                .raumgruppen(st)
+                .flaechen()
+                .map(|f| (f.form.clone(), f.grundflaeche))
+                .collect();
+            let mut w = s.raumformen(st);
+            v.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            w.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            assert_eq!(v, w);
+        };
+        wie_neu(&s);
+        let n0 = listen(&s);
+        for k in 1..=3 {
+            s.begin("Wand verschieben");
+            wand_auf(&mut s, innen[1], 15000.0 + 3000.0 + 100.0 * k as f64);
+            s.commit();
+            wie_neu(&s);
+        }
+        assert_eq!(listen(&s), n0, "Wandschritte");
+        // Stempel eines Raums verschieben: ein Schritt an Räumen
+        let r = s.raumformen(st);
+        let id = r[0].0.raum.unwrap();
+        s.begin("Raumstempel verschoben");
+        assert!(s.raum_stempel(id, r[0].0.mitte + vec3(200.0, 0.0, 0.0)));
+        s.commit();
+        wie_neu(&s);
+        assert!(s.undo());
+        wie_neu(&s);
+        assert!(s.undo());
+        wie_neu(&s);
+        assert_eq!(listen(&s), n0, "Stempel und Rückgängig");
     }
 }

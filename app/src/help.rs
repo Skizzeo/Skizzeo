@@ -1262,10 +1262,27 @@ mod tests {
             "Verschieben",
             "Paneel",
             "Entfernen",
+            "Nutzung",
+            "Ausbau zeigen",
         ] {
             assert!(t.rows.iter().any(|(x, _)| x == a), "{a}");
         }
         assert!(t.rows.len() <= 10);
+    }
+
+    /// Bedienbarkeit 42.2: „Ausbau innen“ ist ab Werk aus. Die Themen, zu
+    /// denen F1 im Grundriss, im Schnitt und beim Raum führt, nennen den
+    /// Schalter im Zahnrad.
+    #[test]
+    fn ausbau_innen_in_den_themen_von_f1() {
+        let h = help();
+        for id in ["geschosse", "schnitt", "raeume"] {
+            let t = h.section(id).expect(id);
+            assert!(
+                t.rows.iter().any(|(_, b)| b.contains("„Ausbau innen“")),
+                "{id}"
+            );
+        }
     }
 
     /// KA-2d (paket-ka2 §7): Thema „Kosten“ mit Verrechnungslohn, „Auch für

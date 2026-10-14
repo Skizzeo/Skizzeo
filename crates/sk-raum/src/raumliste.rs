@@ -408,14 +408,13 @@ impl Platten {
 /// Unter dem Raum: die Decke des Geschosses darunter, im untersten
 /// Geschoss die Sohlplatte.
 fn boden(model: &Model, platten: &Platten, form: &RaumForm) -> Option<ElementId> {
-    let ebenen = model.levels_in(model.building_of(form.geschoss));
-    let i = ebenen.iter().position(|g| *g == form.geschoss)?;
-    let darunter = i.checked_sub(1).map(|j| ebenen[j]);
-    let geschoss = darunter.filter(|g| {
-        model
-            .storey(*g)
-            .is_some_and(|s| s.kind == LevelKind::Storey)
-    });
+    // Ebenen je Gebäude aus der Tafel der Liste (Review #138 H-138f)
+    let lagen = &platten.geschosse;
+    model.storey(form.geschoss)?;
+    let geschoss = lagen
+        .darunter(form.geschoss)
+        .filter(|d| d.1 == LevelKind::Storey)
+        .map(|d| d.0);
     match geschoss {
         Some(g) => platten.decke(form, g),
         None => {
