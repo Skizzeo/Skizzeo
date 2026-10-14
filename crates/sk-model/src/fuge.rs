@@ -433,6 +433,53 @@ mod tests {
         assert_eq!(s.points.len(), 6);
     }
 
+    /// Review H-163c: Nachbar und Flucht genau 1 mm. Das linke Stück der
+    /// Nordwand rückt bis 1 mm vor die Flucht des rechten: Der Nachbar
+    /// behielte 1 mm (fiele in `clean_points` weg), also fällt er weg und
+    /// das Stück liegt in der Flucht. Bei 1,5 mm bleibt er als Stufe.
+    #[test]
+    fn nachbar_und_flucht_genau_ein_millimeter() {
+        let c = l_form();
+        let s = c.with_segment_moved_snap(1, 1999.0, 0.0).unwrap();
+        assert_eq!(s.points.len(), 5, "{:?}", s.points);
+        let s = c.with_segment_moved_snap(1, 1998.5, 0.0).unwrap();
+        assert_eq!(s.points.len(), 6, "{:?}", s.points);
+        assert_eq!(s.clean_points().len(), 6);
+    }
+
+    /// Review H-163c: `with_segment_offsets` lässt kein Segment von genau
+    /// 1 mm stehen (die Stufe der L-Form schrumpft auf 1 mm), wohl aber
+    /// eines von 1,5 mm.
+    #[test]
+    fn versatz_laesst_kein_segment_von_einem_millimeter() {
+        let c = l_form();
+        let mut o = vec![0.0; c.segment_count()];
+        o[1] = -1999.0;
+        assert!(c.with_segment_offsets(&o).is_none());
+        o[1] = -1998.5;
+        let s = c.with_segment_offsets(&o).unwrap();
+        assert_eq!(s.clean_points().len(), s.points.len());
+    }
+
+    /// Review H-163c: Die Nordwand eines Trapezes (Schrägen 3 : 4, oben
+    /// 1501 mm) schrumpft beim Zurückziehen um 1,5 mm je mm. Genau 1 mm
+    /// bleibt nicht stehen, 1,75 mm schon; beim Ziehen wie beim Versatz.
+    #[test]
+    fn segment_genau_ein_millimeter() {
+        let c = zug(vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(3000.0, 4000.0, 0.0),
+            vec3(4501.0, 4000.0, 0.0),
+            vec3(7501.0, 0.0, 0.0),
+        ]);
+        assert!(c.moved(1, -1000.0, 0.0, false).is_none());
+        assert!(c.with_segment_offsets(&[0.0, 1000.0, 0.0, 0.0]).is_none());
+        let s = c.moved(1, -999.5, 0.0, false).unwrap();
+        assert!(near(s.points[2] - s.points[1], vec3(1.75, 0.0, 0.0)));
+        let s = c.with_segment_offsets(&[0.0, 999.5, 0.0, 0.0]).unwrap();
+        assert!(near(s.points[2] - s.points[1], vec3(1.75, 0.0, 0.0)));
+    }
+
     /// L: Nordwand links bei y = 8000, rechts bei y = 6000, Stufe bei x = 4000.
     fn l_form() -> WallChain {
         zug(vec![

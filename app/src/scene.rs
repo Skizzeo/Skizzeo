@@ -1965,7 +1965,8 @@ impl Scene {
     /// Typwechsel als Vorschau (K3: Typ in den Eigenschaften überfahren):
     /// ein offener Schritt „Typ gewechselt“, neu gerechnet werden nur die
     /// Züge, die er berührt, ohne Mengen. Eine vorige Vorschau wird vorher
-    /// verworfen. `false`, wenn ein Zug den Typ nicht annimmt.
+    /// verworfen. `false`, wenn ein Zug den Typ nicht annimmt; dann ist
+    /// nichts geändert und keine Vorschau offen.
     pub fn preview_run_type(&mut self, runs: &[RunId], id: LayerSetId) -> bool {
         self.grown(true, |s| s.preview_run_type_now(runs, id))
     }
@@ -1984,6 +1985,12 @@ impl Scene {
         let mut ok = true;
         for &r in runs {
             ok &= self.model.set_run_type(r, id);
+        }
+        if !ok {
+            // Lehnt ein Zug ab, wechselt keiner (Review H-163d)
+            self.type_preview = false;
+            self.rollback();
+            return false;
         }
         marks.extend(self.model.step_touched());
         for r in marks {
@@ -3988,6 +3995,44 @@ fn ziel(op: &sk_cost::Op) -> Option<sk_cost::SatzId> {
 
 #[cfg(test)]
 mod tests {
+    /// Review H-163d: Lehnt bei Mehrfachwahl ein Zug den dickeren Typ ab
+    /// (die Gehrung am kurzen Schenkel kippte), wechselt keiner. Es bleibt
+    /// keine Vorschau offen und kein Schritt im Verlauf.
+    #[test]
+    fn typwechsel_abgelehnt_aendert_keinen_zug() {
+        use sk_math::vec3;
+        use sk_model::{Category, RefSide};
+        let mut m = sk_model::Model::with_seed(5);
+        let (eg, alt) = (m.defaults().storey, m.defaults().exterior_wall);
+        let mut t = m.layer_set(alt).unwrap().clone();
+        t.layers[0].thickness = 200.0;
+        t.layers[1].thickness = 240.0;
+        t.guid = m.new_guid();
+        t.code = "AW-44".into();
+        let neu = m.add_layer_set(t).unwrap();
+        let mut zug = |y: f64, l: f64| {
+            let p = [
+                vec3(0.0, y, 0.0),
+                vec3(6000.0, y, 0.0),
+                vec3(6000.0, y + l, 0.0),
+            ];
+            m.add_wall_run(&p, false, RefSide::Center, eg, alt, Category::ExteriorWall)
+                .unwrap()
+        };
+        let (lang, kurz) = (zug(10000.0, 4000.0), zug(0.0, -250.0));
+        let mut s = Scene::with_model(m);
+        let vorher = sk_model::szo::write(s.model());
+        assert!(!s.preview_run_type(&[lang, kurz], neu));
+        assert!(!s.previewing_type());
+        s.end_run_type(true);
+        assert_eq!(sk_model::szo::write(s.model()), vorher);
+        assert!(!s.undo());
+        // allein nimmt der lange Zug den Typ an
+        assert!(s.preview_run_type(&[lang], neu));
+        s.end_run_type(true);
+        assert_ne!(sk_model::szo::write(s.model()), vorher);
+    }
+
     /// Paket PD Abnahme 1–3: Anfangswerte bei „Neu“ ohne Schritt, eine
     /// Änderung ist ein Schritt „Projektdaten geändert“, Strg+Z stellt die
     /// vorige Nummer her, Unverändertes gibt keinen Schritt.

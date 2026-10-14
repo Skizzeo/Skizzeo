@@ -3503,8 +3503,7 @@ impl App {
         }
         if menu.current != Some(id) {
             let runs = menu.runs.clone();
-            self.scene.preview_run_type(&runs, id);
-            self.close_type_menu(true);
+            self.typ_uebernehmen(&runs, id);
         } else {
             self.close_type_menu(false);
         }
