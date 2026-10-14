@@ -9,10 +9,11 @@
 //! gilt die Zahl als cm („120“ ist 1,20 m). Esc bricht die Eingabe ab und
 //! schließt danach das Feld.
 //!
-//! Darunter die Schnelloption „Dachentwässerung ausblenden“ des Grundrisses
-//! mit „Auf alle Ansichten übertragen“ ([`crate::sicht_zahnrad`]), zuletzt
-//! die Zeile „Bemaßung“ mit „Maßketten zeigen“ und „Maßbezugspunkte zeigen“
-//! (Konzept `bemassung/konzept.md` §7).
+//! Darunter die Schnelloption „Dachentwässerung ausblenden“ des Grundrisses,
+//! der Schalter „Ausbau innen“ (Raumbuch RB4) und „Auf alle Ansichten
+//! übertragen“ ([`crate::sicht_zahnrad`]), zuletzt die Zeile „Bemaßung“ mit
+//! „Maßketten zeigen“ und „Maßbezugspunkte zeigen“ (Konzept
+//! `bemassung/konzept.md` §7).
 
 use sk_model::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT};
 use sk_paint::Canvas;
@@ -63,9 +64,11 @@ pub enum Teil {
     Zahnrad,
     Wert,
     Vorgabe,
-    /// Häkchen „Dachentwässerung ausblenden“ und „Auf alle Ansichten
-    /// übertragen“ ([`crate::sicht_zahnrad`]).
+    /// Häkchen „Dachentwässerung ausblenden“, „Ausbau innen“ an (`true`)
+    /// oder aus und „Auf alle Ansichten übertragen“
+    /// ([`crate::sicht_zahnrad`]).
     Haken,
+    Ausbau(bool),
     Alle,
     /// Häkchen „Maßketten zeigen“ und „Maßbezugspunkte zeigen“.
     Ketten,
@@ -82,10 +85,15 @@ pub struct Lage {
     pub vorgabe: Rect,
     /// Zeile unter dem Wert ([`BEZUG`] oder [`FALSCH`]).
     pub bezug: Rect,
-    /// Zeile „Sichtbarkeit“: Name, Häkchen, „Auf alle Ansichten übertragen“.
+    /// Zeile „Sichtbarkeit“: Name, Häkchen; Zeile „Ausbau innen“: Name, An,
+    /// Aus; „Auf alle Ansichten übertragen“ und darunter leise, wohin.
     pub sicht: Rect,
     pub haken: Rect,
+    pub ausbau: Rect,
+    pub an: Rect,
+    pub aus: Rect,
     pub alle: Rect,
+    pub wohin: Rect,
     /// Zeile „Bemaßung“: Name und zwei Häkchen.
     pub mass: Rect,
     pub ketten: Rect,
@@ -113,17 +121,25 @@ pub fn lage(rechts: f32, s: f32, t: &Theme) -> Lage {
     let kx = x0 + PAD + NAME_W;
     let ys = y + 2.0 * h + GAP * 1.5;
     let sw = FELD_W + GAP + VORGABE_W;
-    let ym = ys + 2.0 * h + GAP * 2.5;
+    let ya = ys + h + GAP;
+    let kw = (sw - GAP) * 0.5;
+    let yl = ya + 2.0 * (h + GAP) - GAP * 0.5;
+    let leise = h * 0.8;
+    let ym = yl + leise + GAP * 1.5;
     Lage {
         zahnrad: r(x1 - RAD, m, RAD, RAD),
-        feld: r(x0, y0, BREITE, 2.0 * PAD + 6.0 * h + GAP * 5.0),
+        feld: r(x0, y0, BREITE, ym + 2.0 * h + GAP + PAD - y0),
         name: r(x0 + PAD, y, NAME_W, h),
         wert: r(kx, y, FELD_W, h),
         vorgabe: r(kx + FELD_W + GAP, y, VORGABE_W, h),
         bezug: r(x0 + PAD, y + h + GAP * 0.5, BREITE - 2.0 * PAD, h),
         sicht: r(x0 + PAD, ys, NAME_W, h),
         haken: r(kx, ys, sw, h),
-        alle: r(kx, ys + h + GAP, sw, h),
+        ausbau: r(x0 + PAD, ya, NAME_W, h),
+        an: r(kx, ya, kw, h),
+        aus: r(kx + kw + GAP, ya, kw, h),
+        alle: r(kx, ya + h + GAP, sw, h),
+        wohin: r(x0 + PAD, yl, BREITE - 2.0 * PAD, leise),
         mass: r(x0 + PAD, ym, NAME_W, h),
         ketten: r(kx, ym, sw, h),
         punkte: r(kx, ym + h + GAP, sw, h),
@@ -137,7 +153,12 @@ impl Lage {
         let mut teile = vec![(Teil::Zahnrad, self.zahnrad)];
         if offen {
             teile.push((Teil::Wert, self.wert));
-            teile.extend([(Teil::Haken, self.haken), (Teil::Alle, self.alle)]);
+            teile.extend([
+                (Teil::Haken, self.haken),
+                (Teil::Ausbau(true), self.an),
+                (Teil::Ausbau(false), self.aus),
+                (Teil::Alle, self.alle),
+            ]);
             teile.extend([(Teil::Ketten, self.ketten), (Teil::Punkte, self.punkte)]);
             if eigen {
                 teile.push((Teil::Vorgabe, self.vorgabe));
@@ -160,8 +181,10 @@ pub struct Bild {
     pub hover: Option<Teil>,
     pub eingabe: Option<TextEdit>,
     pub falsch: bool,
-    /// Der Grundriss blendet die Dachentwässerung aus.
+    /// Der Grundriss blendet die Dachentwässerung aus bzw. zeigt den
+    /// Ausbau innen.
     pub entw: bool,
+    pub ausbau: bool,
     /// Maßketten und Maßbezugspunkte zeigen.
     pub mass: (bool, bool),
     /// Linker Rand des Paneels „Ansichten“ (Bits) und Skalierung (Bits).
@@ -243,6 +266,12 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
     };
     let alle = crate::sicht_zahnrad::ALLE;
     widgets::button(&mut c, fonts, ab(l.alle), alle, st, s, t);
+    let hover = match b.hover {
+        Some(Teil::Ausbau(an)) => Some(an),
+        _ => None,
+    };
+    let q = [l.ausbau, l.an, l.aus, l.wohin].map(ab);
+    crate::sicht_zahnrad::ausbau(&mut c, fonts, q, b.ausbau, hover, s, t);
     use crate::sicht_zahnrad::{haken_mit, KETTEN, MASS, PUNKTE};
     zeile(&mut c, MASS, l.mass, t.size.font * s, t.ui.text);
     let (ketten, punkte) = b.mass;
@@ -286,9 +315,10 @@ pub struct Ausgang {
     pub redraw: bool,
     /// Neue Schnitthöhe (mm).
     pub neu: Option<f64>,
-    /// Klick aufs Häkchen „Dachentwässerung ausblenden“ bzw. auf „Auf alle
-    /// Ansichten übertragen“.
+    /// Klick aufs Häkchen „Dachentwässerung ausblenden“, auf An oder Aus
+    /// von „Ausbau innen“ bzw. auf „Auf alle Ansichten übertragen“.
     pub haken: bool,
+    pub ausbau: Option<bool>,
     pub alle: bool,
     /// Klick auf „Maßketten zeigen“ bzw. „Maßbezugspunkte zeigen“.
     pub ketten: bool,
@@ -338,13 +368,22 @@ impl Schalter {
                         self.falsch = false;
                         out.neu = Some(PLAN_CUT);
                     }
-                    Some(t @ (Teil::Haken | Teil::Alle | Teil::Ketten | Teil::Punkte)) => {
+                    Some(
+                        t @ (Teil::Haken
+                        | Teil::Ausbau(_)
+                        | Teil::Alle
+                        | Teil::Ketten
+                        | Teil::Punkte),
+                    ) => {
                         self.eingabe = None;
                         self.falsch = false;
                         out.haken = t == Teil::Haken;
                         out.alle = t == Teil::Alle;
                         out.ketten = t == Teil::Ketten;
                         out.punkte = t == Teil::Punkte;
+                        if let Teil::Ausbau(an) = t {
+                            out.ausbau = Some(an);
+                        }
                     }
                     None if out.consumed => {
                         self.eingabe = None;
@@ -510,7 +549,7 @@ mod tests {
         s.handle(&mitte(l.zahnrad), &l, 1500.0, false);
         // Dachentwässerung (Jörn 12.10.): Häkchen und „auf alle“ unter der
         // Höhe, im Feld; ein Klick dort beendet die Eingabe
-        for q in [l.sicht, l.haken, l.alle] {
+        for q in [l.sicht, l.haken, l.ausbau, l.an, l.aus, l.alle, l.wohin] {
             assert!(q.y > l.bezug.y && q.y + q.h <= l.feld.y + l.feld.h);
         }
         s.handle(&mitte(l.wert), &l, 1500.0, false);
@@ -528,5 +567,42 @@ mod tests {
         assert!(p.consumed && p.punkte && !p.ketten && !p.alle);
         let d = s.handle(&klick(5.0, 400.0), &l, 1500.0, false);
         assert!(!d.consumed && !s.offen, "Klick daneben");
+    }
+
+    /// „Ausbau innen“ (Raumbuch RB4) zwischen Dachentwässerung und „auf
+    /// alle“, im Feld, An und Aus unter dem Häkchen; ein Klick dort geht an
+    /// die App und beendet die Eingabe. Darunter leise, wohin „auf alle“
+    /// den Schalter gibt.
+    #[test]
+    fn ausbau_innen_im_feld() {
+        let t = Theme::dark();
+        let l = lage(1200.0, 1.0, &t);
+        let drin = |q: Rect| {
+            q.x >= l.feld.x
+                && q.y >= l.feld.y
+                && q.x + q.w <= l.feld.x + l.feld.w
+                && q.y + q.h <= l.feld.y + l.feld.h
+        };
+        for q in [l.ausbau, l.an, l.aus, l.alle, l.wohin] {
+            assert!(drin(q));
+        }
+        assert!(l.haken.y + l.haken.h < l.an.y && l.an.x + l.an.w < l.aus.x);
+        assert!(l.aus.y + l.aus.h < l.alle.y && l.alle.y + l.alle.h < l.wohin.y);
+        assert_eq!(
+            (l.an.x, l.aus.x + l.aus.w),
+            (l.haken.x, l.haken.x + l.haken.w)
+        );
+        let mut s = Schalter::default();
+        s.handle(&mitte(l.zahnrad), &l, 1500.0, true);
+        s.handle(&mitte(l.wert), &l, 1500.0, true);
+        let a = s.handle(&mitte(l.an), &l, 1500.0, true);
+        assert_eq!((a.ausbau, a.haken, a.alle), (Some(true), false, false));
+        assert!(a.consumed && s.eingabe.is_none() && s.offen);
+        let a = s.handle(&mitte(l.aus), &l, 1500.0, true);
+        assert_eq!(a.ausbau, Some(false));
+        let u = s.handle(&mitte(l.alle), &l, 1500.0, true);
+        assert!(u.alle && u.ausbau.is_none() && u.neu.is_none());
+        let w = s.handle(&mitte(l.wohin), &l, 1500.0, true);
+        assert!(w.consumed && w.ausbau.is_none() && !w.alle, "leise Zeile");
     }
 }

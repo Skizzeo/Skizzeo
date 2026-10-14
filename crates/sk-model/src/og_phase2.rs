@@ -1157,7 +1157,7 @@ fn neue_typen_gleichen_nur_die_zuege_des_schritts_ab() {
     x.sync_edge_strips(None);
     x.sync_soffits();
     assert_eq!(x.sync_terraces(), (0, 0));
-    assert_eq!(x.elements.len(), m.elements.len());
+    assert_eq!(crate::szo::write(&x), crate::szo::write(&m), "Vollabgleich");
     assert!(m.check().is_empty(), "{:?}", m.check());
     // Ein bestehender Baustoff ändert sich: Abgleich über alles
     let (id, mut b) = m

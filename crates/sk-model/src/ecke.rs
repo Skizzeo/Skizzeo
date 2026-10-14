@@ -864,24 +864,23 @@ mod tests {
         assert!(m.ende_punkte(w, 1, vec3(4000.0, 1100.0, 0.0)).is_ok());
         // Was durchgeht, ergibt Grundrisse, die nicht über die Ecke kippen
         // (konvexe Vierecke); das zu kurze Segment kippte
-        let konvex = |m: &Model| {
-            let q = m.chain(r).unwrap().segment_footprint(1).unwrap();
+        let konvex = |c: &WallChain| {
+            let q = c.segment_footprint(1).unwrap();
             let k: Vec<f64> = (0..4)
                 .map(|i| cross2(q[(i + 1) % 4] - q[i], q[(i + 2) % 4] - q[(i + 1) % 4]))
                 .collect();
             k.iter().all(|x| *x > 0.0) || k.iter().all(|x| *x < 0.0)
         };
-        let mut kurz = m.clone();
-        let (run, pts) = (r, {
-            let mut v = kurz.run(r).unwrap().points.clone();
-            v[2] = p(15.0, noetig - 20.0);
-            v
-        });
-        assert!(kurz.set_run_points(run, &pts).is_some());
+        let mut v = m.run(r).unwrap().points.clone();
+        v[2] = p(15.0, noetig - 20.0);
+        let mut kurz = m.chain(r).unwrap();
+        kurz.points = v.clone();
         assert!(!konvex(&kurz), "ohne Prüfung kippt das kurze Segment");
+        // Seit H-160d lehnt auch das Setzen der Punkte das ab
+        assert!(m.set_run_points(r, &v).is_none());
         let (run, pts) = m.ende_punkte(w, 1, p(15.0, noetig + 20.0)).unwrap();
         assert!(m.set_run_points(run, &pts).is_some());
-        assert!(konvex(&m));
+        assert!(konvex(&m.chain(r).unwrap()));
     }
 
     /// Gekippte Dreiecke im Körper des Zuges: Eckfolge gegen die Normale.

@@ -12,6 +12,7 @@ pub mod erkennung;
 pub mod flaechen;
 pub mod oeffnungen;
 pub mod raumbuch;
+pub mod raumliste;
 mod ring;
 pub mod speicher;
 
