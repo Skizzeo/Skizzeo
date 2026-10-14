@@ -3,6 +3,8 @@
 //! Derselbe Leser zerlegt den Inhaltsstrom einer Seite in Operanden und
 //! Befehle.
 
+use std::cell::Cell;
+
 /// Ein PDF-Objekt. Ein Strom trägt seine Bytes so, wie sie in der Datei
 /// stehen (nur entschlüsselt); die Filter löst [`super::Pdf::daten`].
 #[derive(Clone, Debug, PartialEq)]
@@ -131,6 +133,69 @@ pub enum Wort<'a> {
 /// Tiefer verschachtelte Felder und Verzeichnisse liest Skizzeo nicht.
 const TIEFE: usize = 64;
 
+/// So viele Bytes kostet ein Element eines Felds oder Verzeichnisses im
+/// Speicher höchstens. „0 “ sind zwei Bytes in der Datei, als Element ein
+/// Vielfaches; darum zählt das [`Budget`] jedes gelesene Element mit
+/// (Review #128 N1).
+pub const ELEMENT: usize = std::mem::size_of::<(String, Objekt)>();
+
+/// Ohne [`Budget`] liest ein [`Leser`] höchstens so viele Elemente.
+const OHNE_BUDGET: usize = 1 << 16;
+
+/// Was eine Datei noch kosten darf, in Bytes: entpackte und kopierte
+/// Ströme, gelesene Objekte und ihre Elemente (Review W37 und #128 N1).
+/// Alles, was aus derselben Datei liest, teilt es.
+#[derive(Debug)]
+pub struct Budget {
+    rest: Cell<usize>,
+    voll: Cell<bool>,
+}
+
+impl Budget {
+    pub fn neu(n: usize) -> Self {
+        Budget {
+            rest: Cell::new(n),
+            voll: Cell::new(false),
+        }
+    }
+
+    /// `n` Bytes; `None`, wenn es nicht reicht (dann ist es aufgebraucht
+    /// und [`Budget::voll`] gilt).
+    pub fn kosten(&self, n: usize) -> Option<()> {
+        match self.rest.get().checked_sub(n) {
+            Some(r) => {
+                self.rest.set(r);
+                Some(())
+            }
+            None => {
+                self.leeren();
+                None
+            }
+        }
+    }
+
+    /// Was übrig ist.
+    pub fn rest(&self) -> usize {
+        self.rest.get()
+    }
+
+    /// Wollte die Datei mehr, als übrig war?
+    pub fn voll(&self) -> bool {
+        self.voll.get()
+    }
+
+    /// Aufgebraucht: Danach liest nichts mehr aus der Datei.
+    pub fn leeren(&self) {
+        self.rest.set(0);
+        self.voll.set(true);
+    }
+
+    /// Eine Grenze war erreicht, das Übrige bleibt.
+    pub fn melden(&self) {
+        self.voll.set(true);
+    }
+}
+
 pub fn leer(b: u8) -> bool {
     matches!(b, 0 | 9 | 10 | 12 | 13 | 32)
 }
@@ -150,11 +215,43 @@ fn hexwert(b: u8) -> Option<u8> {
 pub struct Leser<'a> {
     pub d: &'a [u8],
     pub pos: usize,
+    /// Jedes Element eines Felds oder Verzeichnisses kostet [`ELEMENT`]
+    /// Bytes davon; reicht es nicht, ist das Objekt unlesbar.
+    budget: Option<&'a Budget>,
+    /// Elemente ohne Budget bisher (höchstens [`OHNE_BUDGET`]).
+    elemente: usize,
 }
 
 impl<'a> Leser<'a> {
+    /// Leser ohne Budget, für kleine Puffer.
     pub fn neu(d: &'a [u8], pos: usize) -> Self {
-        Leser { d, pos }
+        Leser {
+            d,
+            pos,
+            budget: None,
+            elemente: 0,
+        }
+    }
+
+    /// Leser, dessen Felder und Verzeichnisse vom `budget` der Datei
+    /// zehren (Review #128 N1).
+    pub fn mit_budget(d: &'a [u8], pos: usize, budget: &'a Budget) -> Self {
+        Leser {
+            budget: Some(budget),
+            ..Leser::neu(d, pos)
+        }
+    }
+
+    /// Ein Element mehr in einem Feld oder Verzeichnis; `None`, wenn es
+    /// nicht mehr ins Budget passt.
+    fn element(&mut self) -> Option<()> {
+        match self.budget {
+            Some(b) => b.kosten(ELEMENT),
+            None => {
+                self.elemente += 1;
+                (self.elemente <= OHNE_BUDGET).then_some(())
+            }
+        }
     }
 
     /// Leerraum und Kommentare überspringen.
@@ -219,6 +316,7 @@ impl<'a> Leser<'a> {
                                     return Some(Wort::Objekt(Objekt::Verz(v)));
                                 }
                             };
+                            self.element()?;
                             if o != Objekt::Null {
                                 v.setzen(&k, o);
                             }
@@ -244,7 +342,10 @@ impl<'a> Leser<'a> {
                 let mut f = Vec::new();
                 loop {
                     match self.wert(tiefe + 1)? {
-                        Some(o) => f.push(o),
+                        Some(o) => {
+                            self.element()?;
+                            f.push(o);
+                        }
                         None => return Some(Wort::Objekt(Objekt::Feld(f))),
                     }
                 }
@@ -538,6 +639,22 @@ y)"
         assert_eq!(lies("null"), Some(Objekt::Null));
         assert_eq!(text(b"\xFE\xFF\x00F\x00l\x00\xFC"), "Flü");
         assert_eq!(text(b"Stra\xDFe"), "Straße");
+    }
+
+    /// Review #128 N1: Elemente kosten Budget; ohne Budget gibt es eine
+    /// feste Grenze.
+    #[test]
+    fn elemente_kosten_budget() {
+        let b = Budget::neu(10 * ELEMENT);
+        let f = Leser::mit_budget(b"[1 2 3 4 5 6 7 8 9 10]", 0, &b).objekt();
+        assert_eq!(f.and_then(|f| f.feld().map(<[Objekt]>::len)), Some(10));
+        assert_eq!(b.rest(), 0);
+        assert!(!b.voll());
+        assert!(Leser::mit_budget(b"<< /A 1 >>", 0, &b).objekt().is_none());
+        assert!(b.voll());
+        assert!(lies(&format!("[{}]", "0 ".repeat(OHNE_BUDGET))).is_some());
+        assert!(lies(&format!("[{}]", "0 ".repeat(OHNE_BUDGET + 1))).is_none());
+        assert!(lies(&format!("<<{}>>", "/A 0 ".repeat(OHNE_BUDGET + 1))).is_none());
     }
 
     #[test]

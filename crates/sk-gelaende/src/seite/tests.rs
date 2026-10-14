@@ -193,6 +193,7 @@ fn beispiel_lageplan() {
 /// brechen nie ab.
 mod bomben {
     use super::*;
+    use crate::pdf::objekt::ELEMENT;
     use std::time::Instant;
 
     /// Gespeicherter Deflate-Block (BTYPE 00) um `d`.
@@ -320,6 +321,76 @@ mod bomben {
         let s = seite(&pdf, &b);
         assert!(t.elapsed().as_secs_f64() < 20.0);
         assert_eq!(s.texte.len(), 1);
+    }
+
+    /// Seite mit einem Text in einer CID-Schrift, deren `/W` mit `n`
+    /// Breiten 250 beginnt.
+    fn mit_breiten(n: usize) -> Vec<u8> {
+        let mut o = katalog_und_seite("4 0 R", "/Font << /F1 5 0 R >>");
+        o.push(strom("", b"BT /F1 12 Tf 10 10 Td <0041> Tj ET"));
+        o.push(b"<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /DescendantFonts [6 0 R] >>".to_vec());
+        o.push(
+            format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /W [0 [{}]] >>",
+                "250 ".repeat(n)
+            )
+            .into_bytes(),
+        );
+        pdf_aus(&o)
+    }
+
+    /// #128 N1: `/W` mit 5 Mio. Einträgen. Jedes Element eines Felds zehrt
+    /// vom Budget, so bleibt der Speicher beim Budget; die Breiten liest
+    /// Skizzeo ohne Kopie des Felds.
+    #[test]
+    fn breiten_mit_millionen_eintraegen() {
+        let roh = mit_breiten(1000);
+        let pdf = Pdf::lesen(&roh).unwrap();
+        let vorher = pdf.budget().rest();
+        assert!(pdf.objekt(6).is_some());
+        assert!(vorher - pdf.budget().rest() >= 1000 * ELEMENT);
+        let b = pdf.seiten().remove(0);
+        let s = seite(&pdf, &b);
+        assert_eq!(s.texte.len(), 1);
+        assert!((s.texte[0].ende[0] - 13.0).abs() < 1e-9, "{:?}", s.texte[0]);
+        assert!(!pdf.zu_gross());
+        let roh = mit_breiten(5_000_000);
+        let t = Instant::now();
+        let pdf = Pdf::lesen(&roh).unwrap();
+        let b = pdf.seiten().remove(0);
+        let s = seite(&pdf, &b);
+        assert!(t.elapsed().as_secs_f64() < 20.0);
+        assert!(pdf.zu_gross());
+        // die CID-Schrift ist unlesbar, der Text steht mit 500 je Zeichen da
+        assert_eq!(s.texte.len(), 1);
+        assert!((s.texte[0].ende[0] - 16.0).abs() < 1e-9, "{:?}", s.texte[0]);
+    }
+
+    /// Messprogramm zu #128 N1: eine 25-MB-Datei mit `/W`; Zeit und
+    /// Spitzenspeicher des Prozesses (`cargo test -p sk-gelaende --release
+    /// w_bombe_25_mb -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn w_bombe_25_mb() {
+        let status = |k: &str| {
+            std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|s| s.lines().find(|l| l.starts_with(k)).map(str::to_string))
+        };
+        let roh = mit_breiten(6_250_000);
+        let vorher = (status("VmRSS"), status("VmHWM"));
+        let t = Instant::now();
+        let pdf = Pdf::lesen(&roh).unwrap();
+        let b = pdf.seiten().remove(0);
+        let s = seite(&pdf, &b);
+        println!(
+            "{} MB Datei, {:.2} s, {} Text, zu groß: {}, vorher {vorher:?}, danach {:?}",
+            roh.len() >> 20,
+            t.elapsed().as_secs_f64(),
+            s.texte.len(),
+            pdf.zu_gross(),
+            status("VmHWM")
+        );
     }
 
     /// B6 und B8: viele Ströme ohne endstream und ohne Querverweise, dazu

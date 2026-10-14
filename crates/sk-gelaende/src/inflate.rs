@@ -7,8 +7,9 @@
 //! Tabellen zum Nachschlagen. Für die Ströme einer Karte (einige 10 kB)
 //! reicht das.
 
-/// Mehr als so viele Bytes entpackt Skizzeo nicht (Schutz vor Bomben).
-pub const GRENZE: usize = 1 << 28;
+/// Mehr als so viele Bytes entpackt Skizzeo je Strom nicht (Schutz vor
+/// Bomben, Review #128: ein Lageplan braucht wenige MB).
+pub const GRENZE: usize = 64 << 20;
 
 /// Bits lesen, das niedrigste zuerst.
 struct Bits<'a> {

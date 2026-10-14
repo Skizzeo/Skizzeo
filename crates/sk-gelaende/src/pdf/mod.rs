@@ -11,15 +11,17 @@ pub mod filter;
 pub mod objekt;
 pub mod schutz;
 
-use objekt::{Leser, Objekt, Strom, Verz, Wort};
+use crate::inflate::GRENZE;
+use objekt::{Budget, Leser, Objekt, Strom, Verz, Wort};
 use schutz::Schutz;
-use std::cell::Cell;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// So viele Bytes darf eine Datei insgesamt kosten: entpackte und kopierte
-/// Ströme, je Filterstufe, und gelesene Objekte, auch wiederholt (Schutz vor
-/// Bomben, Review W37). Ein Lageplan braucht wenige MB.
-pub const BUDGET: usize = 512 << 20;
+/// Ströme, je Filterstufe, und gelesene Objekte samt ihrer Elemente, auch
+/// wiederholt (Schutz vor Bomben, Review W37 und #128). Ein Lageplan
+/// braucht wenige MB.
+pub const BUDGET: usize = 256 << 20;
 
 /// Wo ein Objekt steht.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,14 +37,13 @@ enum Ort {
 pub struct Pdf {
     d: Vec<u8>,
     orte: BTreeMap<u32, Ort>,
-    /// Objekte aus Objektströmen, beim Öffnen gelesen, mit ihrer Länge
-    /// (jede Kopie kostet sie).
+    /// Objekte aus Objektströmen, beim Öffnen gelesen, mit ihren Kosten:
+    /// Länge und Elemente (jede Kopie kostet sie).
     aus_stroemen: BTreeMap<u32, (Objekt, usize)>,
     /// Wo „endstream“ steht, aufsteigend (einmal gesucht).
     endstreams: Vec<usize>,
-    /// Was vom [`BUDGET`] übrig ist; `voll`, wenn eine Datei mehr wollte.
-    rest: Cell<usize>,
-    voll: Cell<bool>,
+    /// Was vom [`BUDGET`] übrig ist.
+    budget: Budget,
     pub trailer: Verz,
     schutz: Option<Schutz>,
     /// Nummer des `/Encrypt`-Verzeichnisses (wird nicht entschlüsselt).
@@ -129,8 +130,7 @@ impl Pdf {
             orte: BTreeMap::new(),
             aus_stroemen: BTreeMap::new(),
             endstreams: Vec::new(),
-            rest: Cell::new(budget),
-            voll: Cell::new(false),
+            budget: Budget::neu(budget),
             trailer: Verz::default(),
             schutz: None,
             encrypt_nr: None,
@@ -196,7 +196,7 @@ impl Pdf {
 
     /// Ein Abschnitt (Tabelle oder Strom) an `pos`; gibt seinen Trailer.
     fn abschnitt(&mut self, pos: usize) -> Option<Verz> {
-        let mut l = Leser::neu(&self.d, pos);
+        let mut l = Leser::mit_budget(&self.d, pos, &self.budget);
         l.leerraum();
         if ab(&self.d, l.pos).starts_with(b"xref") {
             l.pos += 4;
@@ -337,7 +337,7 @@ impl Pdf {
         let mut p = 0;
         while let Some(k) = self.d[p..].windows(7).position(|w| w == b"trailer") {
             p += k + 7;
-            if let Some(Objekt::Verz(v)) = Leser::neu(&self.d, p).objekt() {
+            if let Some(Objekt::Verz(v)) = Leser::mit_budget(&self.d, p, &self.budget).objekt() {
                 for (k, o) in v.0 {
                     trailer.setzen(&k, o);
                 }
@@ -400,7 +400,7 @@ impl Pdf {
             let Some(d) = self.daten(&st) else { continue };
             let n = st.verz.ganz("N").unwrap_or(0).clamp(0, 1 << 20) as usize;
             let erst = st.verz.ganz("First").unwrap_or(0).max(0) as usize;
-            let mut l = Leser::neu(&d, 0);
+            let mut l = Leser::mit_budget(&d, 0, &self.budget);
             let mut paare = Vec::new();
             for _ in 0..n {
                 match (
@@ -432,14 +432,18 @@ impl Pdf {
                 if start < ende {
                     continue;
                 }
-                let mut l = Leser::neu(&d, start);
+                let vorher = self.budget.rest();
+                let mut l = Leser::mit_budget(&d, start, &self.budget);
                 if let Some(o) = l.objekt() {
                     ende = l.pos;
                     let n = l.pos - start;
+                    // die Elemente hat das Lesen schon gekostet; jede Kopie
+                    // kostet sie wieder (Review #128 N1)
+                    let elemente = vorher.saturating_sub(self.budget.rest());
                     if self.kosten(n).is_none() {
                         break;
                     }
-                    self.aus_stroemen.insert(nr, (o, n));
+                    self.aus_stroemen.insert(nr, (o, n + elemente));
                     self.orte.entry(nr).or_insert(Ort::InStrom(s, i as u32));
                 }
             }
@@ -450,7 +454,7 @@ impl Pdf {
     /// `schutz` gegeben ist.
     fn lesen_an(&self, pos: usize, schutz: Option<&Schutz>) -> Option<(u32, u16, Objekt)> {
         let (nr, gen, nach) = kopf_an(&self.d, pos)?;
-        let mut l = Leser::neu(&self.d, nach);
+        let mut l = Leser::mit_budget(&self.d, nach, &self.budget);
         let mut o = l.objekt()?;
         self.kosten(l.pos - nach)?;
         if let Objekt::Verz(v) = &o {
@@ -515,7 +519,9 @@ impl Pdf {
         match *self.orte.get(&nr)? {
             Ort::Datei(p, _) => {
                 let (_, _, nach) = kopf_an(&self.d, p)?;
-                Leser::neu(&self.d, nach).objekt()?.ganz()
+                Leser::mit_budget(&self.d, nach, &self.budget)
+                    .objekt()?
+                    .ganz()
             }
             Ort::InStrom(..) => self.aus_stroemen.get(&nr)?.0.ganz(),
             Ort::Frei => None,
@@ -555,6 +561,15 @@ impl Pdf {
         Objekt::Null
     }
 
+    /// Wie [`Pdf::aufloesen`], ein direktes Objekt aber ohne Kopie (ein
+    /// großes Feld kostet sonst noch einmal seinen Speicher, Review #128 N1).
+    pub fn aufgeloest<'o>(&self, o: &'o Objekt) -> Cow<'o, Objekt> {
+        match o {
+            Objekt::Bezug(..) => Cow::Owned(self.aufloesen(o)),
+            _ => Cow::Borrowed(o),
+        }
+    }
+
     /// Verzeichnis zu einem Schlüssel, Bezüge aufgelöst.
     pub fn verz(&self, v: &Verz, k: &str) -> Option<Verz> {
         self.aufloesen(v.get(k)?).verz().cloned()
@@ -574,14 +589,20 @@ impl Pdf {
         self.kosten(s.daten.len())?;
         let mut d = s.daten.clone();
         for (name, parm) in filter::liste(f.as_ref(), p.as_ref()) {
-            match filter::filter(&name, &d, parm.as_ref(), self.rest.get()) {
+            // je Strom höchstens `inflate::GRENZE` (Review #128)
+            let rest = self.budget.rest();
+            match filter::filter(&name, &d, parm.as_ref(), rest.min(GRENZE)) {
                 Ok(x) => {
                     self.kosten(x.len())?;
                     d = x;
                 }
+                Err(filter::Fehler::Voll) if rest > GRENZE => {
+                    // nur dieser Strom ist zu groß; was danach kommt, zählt
+                    self.budget.melden();
+                    return None;
+                }
                 Err(filter::Fehler::Voll) => {
-                    self.rest.set(0);
-                    self.voll.set(true);
+                    self.budget.leeren();
                     return None;
                 }
                 Err(filter::Fehler::Nichts) => return None,
@@ -593,22 +614,18 @@ impl Pdf {
     /// `n` Bytes vom [`BUDGET`]; `None`, wenn es nicht reicht (dann ist es
     /// aufgebraucht und [`Pdf::zu_gross`] gilt).
     fn kosten(&self, n: usize) -> Option<()> {
-        match self.rest.get().checked_sub(n) {
-            Some(r) => {
-                self.rest.set(r);
-                Some(())
-            }
-            None => {
-                self.rest.set(0);
-                self.voll.set(true);
-                None
-            }
-        }
+        self.budget.kosten(n)
     }
 
-    /// Wollte die Datei mehr als das [`BUDGET`]? Dann fehlt, was danach kam.
+    /// Das Budget der Datei, für Leser über ihren Strömen.
+    pub fn budget(&self) -> &Budget {
+        &self.budget
+    }
+
+    /// Wollte die Datei mehr als das [`BUDGET`] oder ein Strom mehr als
+    /// [`GRENZE`]? Dann fehlt, was danach kam.
     pub fn zu_gross(&self) -> bool {
-        self.voll.get()
+        self.budget.voll()
     }
 
     /// Der Katalog (`/Root`).
