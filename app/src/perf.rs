@@ -2021,6 +2021,158 @@ fn innentueren(s: &mut Scene, swing: sk_model::oeffnung::Swing) {
     }));
 }
 
+/// Raumbuch RB4 (Review #137 B1, H5): Ausbau innen bei `n` Häusern mit je
+/// drei Räumen im EG und einem darüber, Schalter aus und an in allen drei
+/// Ansichten. 3D: erstes Netz, Loslassen samt Netz (Median aus sieben
+/// Wandschritten), Netz ohne Änderung, geprüfte Räume je Loslassen.
+/// Schnitt durch die mittlere Häuserreihe: erstes Netz einer frischen Szene
+/// (kalt, Review #137 N2) und nach dem 3D, Ebene ziehen (je 10 mm, Median
+/// aus sieben Netzen) und Loslassen mit einer Wand dieser Reihe. Grundriss:
+/// neue Schnitthöhe (je 10 mm, Median aus sieben), Schnitthöhe im
+/// Geschossmanager ziehen und loslassen (Median aus sieben, N1). Jedes
+/// Netz wie in der App mit den geänderten Teilen des Ausbaus für seine
+/// Ablagen (B1).
+#[test]
+#[ignore]
+fn perf_ausbau_innen() {
+    use sk_math::Vec3;
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    let netz = |s: &mut Scene, v: ViewKind, e: Option<(Vec3, Vec3)>| {
+        s.ausbau_getrennt();
+        std::hint::black_box(s.mesh(v, e, &[]));
+        s.ausbau_liefern(|_, t| {
+            std::hint::black_box(t);
+        });
+    };
+    println!();
+    println!(
+        "{:>6} {:>6} {:>3} | {:>8} {:>9} {:>7} {:>7} | {:>6} {:>8} {:>7} {:>9} | {:>7} {:>7} {:>7}",
+        "Häuser",
+        "Räume",
+        "an",
+        "3D erst",
+        "Loslassen",
+        "gleich",
+        "geprüft",
+        "kalt",
+        "Schnitt",
+        "ziehen",
+        "Loslassen",
+        "Höhe",
+        "ziehen",
+        "los"
+    );
+    for n in [1, 100, 1000] {
+        for an in [false, true] {
+            let mut s = town_with_interior(n);
+            let st = s.active_storey();
+            let raeume = s.model().spaces(st).len();
+            for i in 0..3 {
+                s.set_view_finish(i, an);
+            }
+            // Innenwand in der mittleren Reihe
+            let side = (n as f64).sqrt().ceil() as usize;
+            let y0 = (side / 2) as f64 * 15000.0;
+            let iw = s
+                .model()
+                .runs()
+                .iter()
+                .find(|(_, r)| r.storey == st && !r.closed && (r.points[0].y - y0).abs() < 8000.0)
+                .unwrap()
+                .0;
+            let orig = s.model().run(iw).unwrap().points.clone();
+            let ebene = |dy: f64| Some((vec3(0.0, y0 + 4000.0 + dy, 0.0), vec3(0.0, 1.0, 0.0)));
+            let kalt = {
+                let mut s = town_with_interior(n);
+                for i in 0..3 {
+                    s.set_view_finish(i, an);
+                }
+                let t0 = Instant::now();
+                netz(&mut s, ViewKind::Section, ebene(0.0));
+                ms(t0)
+            };
+            let mut k = 0;
+            let mut los = |s: &mut Scene, view: ViewKind, ebene| {
+                let mut v = Vec::new();
+                let mut geprueft = 0;
+                for _ in 0..7 {
+                    k += 1;
+                    let d = vec3(-100.0 - 10.0 * (k % 9) as f64, 0.0, 0.0);
+                    let pts: Vec<Vec3> = orig.iter().map(|p| *p + d).collect();
+                    s.begin("Wand verschieben");
+                    s.set_run_points(iw, &pts);
+                    let g0 = s.ausbau_geprueft();
+                    let t = Instant::now();
+                    s.commit();
+                    netz(s, view, ebene);
+                    v.push(ms(t));
+                    geprueft = geprueft.max(s.ausbau_geprueft() - g0);
+                }
+                (median(&mut v).0, geprueft)
+            };
+            let t0 = Instant::now();
+            netz(&mut s, ViewKind::Persp, None);
+            let erstes = ms(t0);
+            let (los3d, geprueft) = los(&mut s, ViewKind::Persp, None);
+            let gleich = time(10, || {
+                netz(&mut s, ViewKind::Persp, None);
+            });
+            let t0 = Instant::now();
+            netz(&mut s, ViewKind::Section, ebene(0.0));
+            let schnitt = ms(t0);
+            let mut v: Vec<f64> = (1..=7)
+                .map(|i| {
+                    let t = Instant::now();
+                    netz(&mut s, ViewKind::Section, ebene(10.0 * i as f64));
+                    ms(t)
+                })
+                .collect();
+            let ziehen = median(&mut v).0;
+            let (los_schnitt, _) = los(&mut s, ViewKind::Section, ebene(0.0));
+            netz(&mut s, ViewKind::Plan, None);
+            let mut v: Vec<f64> = (1..=7)
+                .map(|i| {
+                    s.set_plan_cut_height(1000.0 + 10.0 * i as f64);
+                    let t = Instant::now();
+                    netz(&mut s, ViewKind::Plan, None);
+                    ms(t)
+                })
+                .collect();
+            let hoehe = median(&mut v).0;
+            // Schnitthöhe im Geschossmanager ziehen: der Ausbau folgt beim
+            // Loslassen
+            let el = s.model().storey(st).unwrap().elevation;
+            s.begin("Geschoss ziehen");
+            let mut v: Vec<f64> = (1..=7)
+                .map(|i| {
+                    let t = Instant::now();
+                    s.drag_plan_cut(el + 1100.0 + 10.0 * i as f64);
+                    netz(&mut s, ViewKind::Plan, None);
+                    ms(t)
+                })
+                .collect();
+            s.commit();
+            let hoehe_ziehen = median(&mut v).0;
+            let mut v = Vec::new();
+            for i in 1..=7 {
+                s.begin("Geschoss ziehen");
+                s.drag_plan_cut(el + 1200.0 + 10.0 * i as f64);
+                netz(&mut s, ViewKind::Plan, None);
+                let t = Instant::now();
+                s.commit();
+                netz(&mut s, ViewKind::Plan, None);
+                v.push(ms(t));
+            }
+            let hoehe_los = median(&mut v).0;
+            println!(
+                "{n:>6} {raeume:>6} {:>3} | {erstes:>8.1} {los3d:>9.2} {gleich:>7.2} {geprueft:>7} | {kalt:>6.1} {schnitt:>8.1} {ziehen:>7.2} {los_schnitt:>9.2} | {hoehe:>7.2} {hoehe_ziehen:>7.2} {hoehe_los:>7.2}",
+                if an { "an" } else { "aus" }
+            );
+        }
+    }
+    println!("Zeiten in ms (Release); geprüft: Räume je Loslassen.");
+}
+
 /// Eine 300 m lange Mauer südlich der Häuser (Review #149 B1): Auch mit
 /// ihr läuft kein Vortest je Mausbewegung über das ganze Modell.
 fn mauer(s: &mut Scene) {

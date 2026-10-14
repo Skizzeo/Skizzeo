@@ -6,7 +6,7 @@
 //! Fertigdecke.
 
 use crate::erkennung::{Kante, RaumForm};
-use crate::oeffnungen::{OpeningKind, Rohbau};
+use crate::oeffnungen::{Geschosse, OpeningKind, Rohbau};
 use sk_model::model::{
     DEFAULT_SPACE_GUID, SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID, SPACE_TEMPLATES,
 };
@@ -52,7 +52,11 @@ pub fn estrich_vorgabe(model: &Model, geschoss: StoreyId) -> Guid {
             && g.building == s.building
             && (g.elevation + g.height - s.elevation).abs() < 1.0
     });
-    if auf_sohle {
+    estrich_auf(auf_sohle)
+}
+
+fn estrich_auf(sohle: bool) -> Guid {
+    if sohle {
         SCREED_SLAB_TYPE_GUID
     } else {
         SCREED_FLOOR_TYPE_GUID
@@ -128,9 +132,19 @@ impl RaumAusbau {
     /// Ausbau des Raums nach seiner Nutzung ([`nutzung`], [`vorlage`]). Kennen
     /// weder Projekt noch Werk die Vorlage, gilt Wohnzimmer.
     pub fn fuer(model: &Model, roh: &Rohbau) -> Option<RaumAusbau> {
+        RaumAusbau::fuer_mit(model, roh, || estrich_vorgabe(model, roh.form.geschoss))
+    }
+
+    /// Wie [`RaumAusbau::fuer`], die Vorgabe des Estrichs aus den Geschossen
+    /// `g` statt aus einem Gang über alle (Review #137 B2).
+    pub fn fuer_in(model: &Model, roh: &Rohbau, g: &Geschosse) -> Option<RaumAusbau> {
+        RaumAusbau::fuer_mit(model, roh, || estrich_auf(g.auf_sohle(roh.form.geschoss)))
+    }
+
+    fn fuer_mit(model: &Model, roh: &Rohbau, vorgabe: impl FnOnce() -> Guid) -> Option<RaumAusbau> {
         let s = vorlage(model, nutzung(model, &roh.form))
             .or_else(|| vorlage(model, DEFAULT_SPACE_GUID))?;
-        Some(RaumAusbau::nach_vorlage(model, roh, &s))
+        Some(RaumAusbau::nach(model, roh, &s, vorgabe))
     }
 
     /// Ausbau nach der Raumvorlage `s`, jede Wandseite wie die Vorlage. Wo
@@ -139,10 +153,21 @@ impl RaumAusbau {
     /// Wandfliesen ab Boden liegen, keine Sockelleiste (§5.7). Typen, die das
     /// Projekt nicht führt, bleiben leer.
     pub fn nach_vorlage(model: &Model, form: &Rohbau, s: &SpaceType) -> RaumAusbau {
+        RaumAusbau::nach(model, form, s, || {
+            estrich_vorgabe(model, form.form.geschoss)
+        })
+    }
+
+    /// [`RaumAusbau::nach_vorlage`] mit der Vorgabe des Estrichs aus
+    /// `vorgabe`.
+    fn nach(
+        model: &Model,
+        form: &Rohbau,
+        s: &SpaceType,
+        vorgabe: impl FnOnce() -> Guid,
+    ) -> RaumAusbau {
         let typ = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g));
-        let estrich = s
-            .screed
-            .or(Some(estrich_vorgabe(model, form.form.geschoss)));
+        let estrich = s.screed.or_else(|| Some(vorgabe()));
         let fliesen = s
             .tiles
             .and_then(|t| Some((model.type_by_guid(t.set)?, t.height)));

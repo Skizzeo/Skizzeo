@@ -51,6 +51,8 @@ const HAEUSER: [(&str, &str); 5] = [
     // seit #126/#127 die Bemaßung (`[bemassung]` mit abweichendem Stil und
     // genanntem `bezug`, zwei `[massversatz]`, `[massansicht]` am Grundriss)
     // und die Darstellungsstellen `element` und `above`
+    // seit RB4 die Schalter „Ausbau innen“ (`[viewfinish]`, Schnitt an,
+    // Grundriss mit `on=0`)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
