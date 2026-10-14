@@ -10,6 +10,7 @@
 //! zurückkommt. Das rechnet `sk-raum`, gespeichert ist es nicht.
 
 use super::*;
+use std::collections::VecDeque;
 
 /// Gespeicherter Raum ([`ElementKind::Space`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +42,61 @@ impl Space {
 
 /// Bauabschnitt der Räume (ohne Ausführungsfolge).
 pub const SPACE_SEQ: u16 = 0;
+
+/// So viele Schritte an Räumen merkt sich [`RaumLog`].
+const RAUM_LOG: usize = 64;
+
+/// Stand der Räume und welche Räume die letzten Schritte geändert haben
+/// (Review H-137b): Damit sammelt `sk-raum` die Räume eines Geschosses nach
+/// einem Schritt nicht über alle Bauteile neu, sondern nimmt nur die
+/// geänderten heraus und wieder hinein.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RaumLog {
+    revision: u64,
+    /// Ab diesem Stand sind alle Änderungen in `schritte`.
+    ab: u64,
+    /// Je Schritt an Räumen: Stand danach, die Räume, die er anlegt,
+    /// ändert, löscht oder in ein anderes Geschoss hängt.
+    schritte: VecDeque<(u64, Box<[ElementId]>)>,
+}
+
+impl RaumLog {
+    /// Änderung ohne Schritt: Was sie an Räumen ändert, ist nicht bekannt.
+    pub(crate) fn unbekannt(&mut self) {
+        self.revision += 1;
+        self.ab = self.revision;
+        self.schritte.clear();
+    }
+
+    /// Abgeschlossener oder verworfener Schritt, Rückgängig oder
+    /// Wiederholen mit den Änderungen `changes`.
+    pub(crate) fn schritt(&mut self, changes: &[Change]) {
+        let ids: Box<[ElementId]> = changes
+            .iter()
+            .filter_map(|c| match c {
+                Change::Element { id, old, new }
+                    if old
+                        .iter()
+                        .chain(new)
+                        .any(|e| matches!(e.kind, ElementKind::Space(_))) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.revision += 1;
+        self.schritte.push_back((self.revision, ids));
+        if self.schritte.len() > RAUM_LOG {
+            if let Some((r, _)) = self.schritte.pop_front() {
+                self.ab = r;
+            }
+        }
+    }
+}
 
 impl Model {
     /// Der Raum hinter einem Bauteil.
@@ -92,6 +148,39 @@ impl Model {
         }
         self.touch();
         true
+    }
+
+    /// Stand der Räume (Review H-137b): steigt, wenn ein abgeschlossener
+    /// oder verworfener Schritt, Rückgängig oder Wiederholen einen Raum
+    /// anlegt, ändert, löscht oder in ein anderes Geschoss hängt, und
+    /// vorsichtshalber bei jeder Änderung ohne Schritt. Ein Schritt nur an
+    /// Wänden lässt ihn stehen, auch beim Rückgängig. Im offenen Schritt
+    /// bleibt er; welche Geschosse der Schritt an Räumen ändert, sagt
+    /// [`Model::raum_geschosse_im_schritt`]. Anders als [`Model::revision`]
+    /// geht er nie zurück. Er gehört zu diesem Modell und beginnt mit ihm
+    /// bei 0, nach dem Laden also neu; wer ihn sich merkt, merkt sich das
+    /// Modell mit (die Erkennung der Szene, Review H-175c).
+    pub fn raum_revision(&self) -> u64 {
+        self.raum_log.revision
+    }
+
+    /// Die Räume, die sich seit dem Stand `stand` ([`Model::raum_revision`])
+    /// geändert haben, auch gelöschte und solche in einem anderen Geschoss
+    /// (eine Kennung kann mehrmals vorkommen); `None`, wenn das nicht
+    /// bekannt ist: nach einer Änderung ohne Schritt, wenn `stand` mehr als
+    /// 64 Schritte an Räumen zurückliegt oder noch gar nicht erreicht ist.
+    pub fn raeume_geaendert_seit(&self, stand: u64) -> Option<Vec<ElementId>> {
+        let l = &self.raum_log;
+        if stand < l.ab || stand > l.revision {
+            return None;
+        }
+        Some(
+            l.schritte
+                .iter()
+                .filter(|(r, _)| *r > stand)
+                .flat_map(|(_, ids)| ids.iter().copied())
+                .collect(),
+        )
     }
 
     /// Geschosse, deren Wandzüge oder Wände der offene Schritt ändert
@@ -296,5 +385,70 @@ mod tests {
         let frei: Vec<String> = m.freie_raumnamen().take(4).collect();
         assert_eq!(frei, ["Raum 2", "Raum 4", "Raum 5", "Raum 7"]);
         m.commit();
+    }
+
+    /// Review H-137b: Der Stand der Räume steigt nur, wenn ein Schritt,
+    /// Verwerfen, Rückgängig oder Wiederholen Räume ändert, und bei jeder
+    /// Änderung ohne Schritt; ein Wandschritt lässt ihn stehen.
+    #[test]
+    fn raum_revision_nur_bei_raeumen() {
+        let mut m = Model::new();
+        let st = m.defaults().storey;
+        let iw = m.defaults().interior_wall;
+        let pts = [vec3(0.0, 0.0, 0.0), vec3(2000.0, 0.0, 0.0)];
+        // Ohne Schritt: vorsichtshalber neu
+        let r0 = m.raum_revision();
+        let r = m
+            .add_wall_run(&pts, false, RefSide::Center, st, iw, Category::InteriorWall)
+            .unwrap();
+        assert!(m.raum_revision() > r0);
+        assert_eq!(m.raeume_geaendert_seit(r0), None, "ohne Schritt unbekannt");
+        m.begin("Raum");
+        let a = m.add_space(st, Space::neu(vec3(500.0, 500.0, 0.0), "Raum 1".into()));
+        let r1 = m.raum_revision();
+        let t1 = m.commit().unwrap();
+        assert_eq!(m.raum_revision(), r1 + 1, "Raum angelegt");
+        assert_eq!(m.raeume_geaendert_seit(r1), Some(vec![a]));
+        assert_eq!(m.raeume_geaendert_seit(r1 + 1), Some(vec![]));
+        assert_eq!(
+            m.raeume_geaendert_seit(r1 + 2),
+            None,
+            "Stand aus der Zukunft"
+        );
+        // Wand verschieben: Revision steigt, Stand der Räume nicht
+        let rev = m.revision();
+        m.begin("Wand");
+        let weiter = [vec3(0.0, 100.0, 0.0), vec3(2000.0, 100.0, 0.0)];
+        assert!(m.set_run_points(r, &weiter).is_some());
+        let t2 = m.commit().unwrap();
+        assert!(m.revision() > rev);
+        assert_eq!(m.raum_revision(), r1 + 1, "Wandschritt");
+        m.apply(&t2, Direction::Undo);
+        assert_eq!(m.raum_revision(), r1 + 1, "Wand zurück");
+        // Raum ändern, im Schritt bleibt der Stand; Verwerfen, Rückgängig
+        // und Wiederholen eines Raums zählen
+        m.begin("Name");
+        assert!(m.set_space(a, |s| s.name = "Küche".into()));
+        assert_eq!(m.raum_revision(), r1 + 1, "im offenen Schritt");
+        m.rollback();
+        let r2 = m.raum_revision();
+        assert!(r2 > r1 + 1, "verworfen");
+        m.apply(&t1, Direction::Undo);
+        assert!(m.space(a).is_none());
+        assert!(m.raum_revision() > r2, "Raum zurück");
+        let r3 = m.raum_revision();
+        m.apply(&t1, Direction::Redo);
+        assert!(m.raum_revision() > r3, "Raum wieder da");
+        let seit = m.raeume_geaendert_seit(r1).unwrap();
+        assert!(seit.len() >= 4 && seit.iter().all(|&x| x == a));
+        // Gemerkt werden die letzten 64 Schritte an Räumen
+        let r4 = m.raum_revision();
+        for i in 0..64 {
+            m.begin("Name");
+            assert!(m.set_space(a, |s| s.name = format!("Raum {i}")));
+            m.commit();
+        }
+        assert_eq!(m.raeume_geaendert_seit(r4).map(|v| v.len()), Some(64));
+        assert_eq!(m.raeume_geaendert_seit(r4 - 1), None, "zu alt");
     }
 }

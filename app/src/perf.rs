@@ -3412,3 +3412,104 @@ fn perf_raumliste() {
     }
     println!("Zeiten in ms (Release), je ein Lauf.");
 }
+
+/// Review H-137b: Wand loslassen bei 1000 und 4000 Häusern und die Räume
+/// des Geschosses danach, beim ersten Abruf nach dem Schritt und aus dem
+/// Speicher; dazu, wie oft die Räume des Geschosses neu gesammelt wurden.
+/// Die Spalte Räume zählt alle gespeicherten Räume des Modells (Review
+/// H-175e). Zeiten in ms, Mittel aus neun Schritten.
+#[test]
+#[ignore]
+fn perf_raum_loslassen() {
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>8} {:>8} {:>7}",
+        "Häuser", "Räume", "Loslassen", "Räume 1.", "Räume 2.", "Listen"
+    );
+    for n in [1000, 4000] {
+        let mut s = town_in_einem_schritt(n);
+        let st = s.active_storey();
+        let raeume = s
+            .model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, sk_model::ElementKind::Space(_)))
+            .count();
+        std::hint::black_box(s.raumgruppen(st));
+        let run = s
+            .model()
+            .runs()
+            .iter()
+            .find(|(_, r)| r.points.len() == 2)
+            .map(|(id, _)| id)
+            .unwrap();
+        let orig = s.model().run(run).unwrap().points.clone();
+        let (mut los, mut erst, mut zweit) = (0.0, 0.0, 0.0);
+        let l0 = s.raum_listen();
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0 / 9.0;
+        for i in 0..9 {
+            let dx = if i % 2 == 0 { 50.0 } else { 0.0 };
+            let pts: Vec<_> = orig.iter().map(|p| *p + vec3(dx, 0.0, 0.0)).collect();
+            s.begin("Wand verschieben");
+            assert!(s.set_run_points(run, &pts));
+            let t = Instant::now();
+            s.commit();
+            los += ms(t);
+            let t = Instant::now();
+            std::hint::black_box(s.raumgruppen(st));
+            erst += ms(t);
+            let t = Instant::now();
+            std::hint::black_box(s.raumgruppen(st));
+            zweit += ms(t);
+        }
+        let listen = s.raum_listen() - l0;
+        println!("{n:>6} {raeume:>6} {los:>9.3} {erst:>8.3} {zweit:>8.3} {listen:>7}");
+    }
+    println!("Zeiten in ms je Schritt (Release).");
+}
+
+/// Review #175 B1: Ein Schritt verschiebt die Stempel von `k` Räumen in
+/// ebenso vielen Häusern, bei 4000 Häusern. Erster Abruf der Räume danach,
+/// geflickt und neu gesammelt (dieselbe Art Schritt, die Räume vorher
+/// vergessen), je das Beste aus drei Schritten in ms. Geflickt darf nicht
+/// länger brauchen als neu gesammelt, oder höchstens 8 ms.
+#[test]
+#[ignore]
+fn perf_raum_viele() {
+    println!();
+    println!("{:>6} {:>6} {:>9} {:>9}", "Häuser", "k", "geflickt", "neu");
+    let n = 4000;
+    let mut s = town_in_einem_schritt(n);
+    let st = s.active_storey();
+    let formen = s.raumformen(st);
+    let mut hin = false;
+    let mut schritt = |s: &mut Scene, k: usize, vergessen: bool| {
+        hin = !hin;
+        let d = vec3(if hin { 100.0 } else { -100.0 }, 0.0, 0.0);
+        s.begin("Stempel");
+        for (f, _) in formen.iter().step_by(formen.len() / k).take(k) {
+            assert!(s.raum_stempel(f.raum.unwrap(), f.mitte + d));
+        }
+        s.commit();
+        if vergessen {
+            s.raum_listen_vergessen();
+        }
+        let t = Instant::now();
+        std::hint::black_box(s.raumgruppen(st));
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    std::hint::black_box(s.raumgruppen(st));
+    for k in [500, 1500] {
+        let (mut geflickt, mut neu) = (f64::MAX, f64::MAX);
+        for _ in 0..3 {
+            geflickt = geflickt.min(schritt(&mut s, k, false));
+            neu = neu.min(schritt(&mut s, k, true));
+        }
+        println!("{n:>6} {k:>6} {geflickt:>9.3} {neu:>9.3}");
+        assert!(
+            geflickt <= neu || geflickt <= 8.0,
+            "k = {k}: {geflickt:.3} > {neu:.3}"
+        );
+    }
+    println!("Zeiten in ms (Release), je das Beste aus drei Schritten.");
+}

@@ -281,6 +281,8 @@ pub struct Model {
     pub(crate) ext: crate::ext::ExtStore,
     /// Steigt bei jeder Änderung im Erweiterungsspeicher.
     ext_revision: u64,
+    /// Stand der Räume und die zuletzt geänderten ([`Model::raum_revision`]).
+    raum_log: raum::RaumLog,
     /// Definitionen der Erweiterungsbauteile, nach `key` (E3).
     ext_defs: Vec<crate::erweiterung::ExtDef>,
     /// Zuletzt vergebene Nummer je Präfix einer Erweiterung.
@@ -855,6 +857,7 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            raum_log: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
@@ -943,6 +946,7 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            raum_log: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
@@ -1146,6 +1150,9 @@ impl Model {
 
     fn touch(&mut self) {
         self.revision += 1;
+        if self.txn.is_none() {
+            self.raum_log.unbekannt();
+        }
         self.lagemerker.weiter();
     }
 
@@ -1155,6 +1162,9 @@ impl Model {
     /// bleibt sie beim Ziehen im Geschossmanager gemerkt.
     fn touch_height(&mut self) {
         self.revision += 1;
+        if self.txn.is_none() {
+            self.raum_log.unbekannt();
+        }
     }
 
     /// Setzt die Revision nach einem verworfenen Schritt auf den Stand davor
@@ -3281,7 +3291,6 @@ impl Model {
         self.txn = Some(Open {
             building_number: self.building_number,
             numbers: self.numbers.to_vec(),
-            revision: self.revision,
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3291,11 +3300,6 @@ impl Model {
 
     pub fn in_step(&self) -> bool {
         self.txn.is_some()
-    }
-
-    /// Revision beim Öffnen des offenen Schritts; `None` ohne Schritt.
-    pub fn step_start_revision(&self) -> Option<u64> {
-        self.txn.as_ref().map(|t| t.revision)
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat
@@ -3334,6 +3338,7 @@ impl Model {
             self.fill_new(c);
         }
         changes.retain(|c| !c.is_noop());
+        self.raum_log.schritt(&changes);
         (!changes.is_empty()).then_some(Txn {
             label: open.label,
             changes,
@@ -3463,6 +3468,8 @@ impl Model {
     /// erhalten; Guid-Erzeuger und Nummernzähler laufen weiter, die Revision steigt.
     pub fn apply(&mut self, t: &Txn, dir: Direction) -> Touched {
         debug_assert!(self.txn.is_none(), "Rückgängig in einem offenen Schritt");
+        // Was hier ohne Schritt geändert wird, ist `t`
+        let raeume = std::mem::take(&mut self.raum_log);
         let mut touched = Touched::default();
         let mut footings = Vec::new();
         let mut floors = Vec::new();
@@ -3618,6 +3625,8 @@ impl Model {
             }
         }
         self.touch();
+        self.raum_log = raeume;
+        self.raum_log.schritt(&t.changes);
         touched
     }
 
