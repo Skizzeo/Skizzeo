@@ -264,6 +264,9 @@ pub fn saetze(q: &ElementQto, klasse: &str) -> Vec<Satz> {
                     .satz(EIGEN),
             );
         }
+        // Räume: Der Export nimmt die Liste ohne Räume (`qto::schedule`);
+        // Raum und Ausbau kommen mit I6 aus sk-raum (Qto_SpaceBaseQuantities)
+        ElementQto::Room(_) => {}
         ElementQto::Ext(x) => {
             let mut b = bau().m3("Volumen", x.volume);
             for m in &x.mengen {

@@ -15,6 +15,8 @@ use crate::wall::WallChain;
 use sk_math::{vec3, Vec3};
 use std::collections::HashMap;
 
+pub use crate::qto_raum::{RoomFn, RoomLine, RoomQto, Side};
+
 /// Mengen einer Schicht in einem Wandsegment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerQto {
@@ -1251,6 +1253,9 @@ pub enum ElementQto {
     Terrace(TerraceQto),
     Coping(CopingQto),
     Ext(ExtQto),
+    /// Raum mit den Zeilen seines Raumbuchs (RB5), nur über
+    /// [`schedule_mit`].
+    Room(RoomQto),
 }
 
 /// Eine `[menge]` eines Erweiterungsbauteils (E8), in ihrer Einheit.
@@ -1396,6 +1401,8 @@ impl ElementQto {
             ElementQto::Terrace(t) => t.volume,
             ElementQto::Coping(c) => c.volume + c.insulation.iter().map(|i| i.volume).sum::<f64>(),
             ElementQto::Ext(x) => x.volume,
+            // Ein Raum ist kein Baustoff; die Schichten stehen in den Zeilen
+            ElementQto::Room(_) => 0.0,
         }
     }
 }
@@ -1522,6 +1529,16 @@ pub struct LayerRow {
     /// abgezogen, von `face` (und bei Dämmung von `area`, `bill_area`) nur
     /// die über 2,5 m² ([`crate::vob`]).
     pub holes: Vec<crate::vob::Loch>,
+    /// Seite für die Regeln der Kosten (RB5): Raumzeilen Boden, Wand oder
+    /// Decke, Wandschichten vor (außen) bzw. hinter (innen) dem Kern, der
+    /// Kern und alle übrigen ohne.
+    pub side: Option<Side>,
+    /// Raumzeile: Ausbautyp und Stelle der Schicht darin; ein Raum hat
+    /// keine [`Model::element_layers`], `layer` ist dann die Stelle der
+    /// Zeile im Raum ([`crate::qto_raum::layer_rows`]).
+    pub finish: Option<(LayerSetId, usize)>,
+    /// Raumzeile: Rechenweg der Fläche bzw. Länge aus dem Raumbuch.
+    pub terms: Vec<crate::rechenweg::Term>,
 }
 
 /// Lage einer Wandschicht für die Abrechnungsfläche (Regel 84).
@@ -1728,14 +1745,28 @@ fn material_rank(c: MatCategory) -> u8 {
 }
 
 /// Baut die Mengenliste: Gebäude → Fundament und Geschosse von unten →
-/// Bauteilart (Wände je Aufbau) → Bauteile nach Nummer. Nur Lesen.
+/// Bauteilart (Wände je Aufbau) → Bauteile nach Nummer. Nur Lesen. Ohne
+/// Räume; mit ihnen [`schedule_mit`].
 pub fn schedule(model: &Model) -> Schedule {
-    // Ein Gang über das ganze Modell: Anschlüsse, Decken und Öffnungen aus
-    // dem Verzeichnis, sonst wächst er mit dem Quadrat der Züge
-    model.lesend(|| schedule_im_gang(model))
+    schedule_mit(model, &|_, _| Vec::new())
 }
 
-pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
+/// Mengenliste mit den Räumen (RB5): `raeume` liefert je Geschoss die
+/// Räume mit den Zeilen ihres Raumbuchs (in der App
+/// `sk_raum::mengen::raeume_mit` mit Erkennung, Zügen und Platten einmal je
+/// Liste; `sk_raum::mengen::raeume` baut die Platten je Aufruf und ist für
+/// Tests und einzelne Geschosse). Ein
+/// Raum ist eine Zeile der Gruppe Räume seines Geschosses; seine Schichten
+/// zählen nach Gewerk und Kostengruppe, seine Längen mit Schlüssel als
+/// Automatikmengen ([`crate::qto_raum`]). Räume, die `raeume` nicht nennt,
+/// fehlen wie bisher.
+pub fn schedule_mit(model: &Model, raeume: RoomFn) -> Schedule {
+    // Ein Gang über das ganze Modell: Anschlüsse, Decken und Öffnungen aus
+    // dem Verzeichnis, sonst wächst er mit dem Quadrat der Züge
+    model.lesend(|| schedule_im_gang(model, raeume))
+}
+
+pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
     // Je Wandzug einmal rechnen
     let mut walls: HashMap<RunId, Vec<WallQto>> = HashMap::new();
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
@@ -1752,7 +1783,28 @@ pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
     let mut groups: HashMap<Key, (Category, Vec<RowQto>)> = HashMap::new();
     let defs = model.ext_defs();
     let mut rechnungen = ExtRechnungen::default();
+    // Räume je Geschoss, einmal gerechnet
+    let mut raum_qto: HashMap<StoreyId, HashMap<ElementId, RoomQto>> = HashMap::new();
     for (id, e) in model.elements().iter() {
+        if let ElementKind::Space(_) = &e.kind {
+            let q = raum_qto
+                .entry(e.storey)
+                .or_insert_with(|| raeume(model, e.storey).into_iter().collect())
+                .remove(&id);
+            if let Some(q) = q {
+                groups
+                    .entry((e.storey, group_rank(e.category), None, 0))
+                    .or_insert_with(|| (e.category, Vec::new()))
+                    .1
+                    .push(RowQto {
+                        element: id,
+                        number: e.number.clone(),
+                        q: Some(ElementQto::Room(q)),
+                        note: None,
+                    });
+            }
+            continue;
+        }
         if let ElementKind::Ext(p) = &e.kind {
             let (q, note) = ext_qto(model, e.storey, p, &mut rechnungen);
             let i = defs
@@ -1930,8 +1982,8 @@ pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
                     ),
                 }
             }
-            // ohne Wandzug, oben gerechnet
-            // Räume zählen in der Wohnfläche (G8), nicht in der Mengenliste
+            // ohne Wandzug, oben gerechnet; Räume nur mit ihrem Raumbuch
+            // (oben), ihre Wohnfläche zählt in G8
             ElementKind::Ext(_) | ElementKind::Opening(_) | ElementKind::Space(_) => continue,
             // Mengen als Automatikmengen am Bauteil (`downpipe.*`)
             ElementKind::Downpipe { .. } => (None, None),
@@ -2078,6 +2130,9 @@ pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
     // Laibungen der Öffnungen und Diagonalbewehrung (VOB/C)
     let laibung = crate::qto_laibung::bauteil_mengen(model, &sched);
     sched.auto.extend(laibung);
+    // Längen der Räume mit Schlüssel (RB5)
+    let raum = crate::qto_raum::auto_mengen(model, &sched);
+    sched.auto.extend(raum);
     sched
 }
 
@@ -2334,6 +2389,7 @@ fn totals(rows: &[RowQto]) -> Totals {
                 t.pocket += f.bearing;
             }
             ElementQto::Ext(_) => {}
+            ElementQto::Room(r) => t.area += r.area,
         }
     }
     t
@@ -2354,6 +2410,10 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
         let (Some(q), Some(e)) = (&row.q, model.element(row.element)) else {
             continue;
         };
+        if let ElementQto::Room(r) = q {
+            out.extend(crate::qto_raum::layer_rows(model, row, st, r));
+            continue;
+        }
         let layers = model.element_layers(row.element);
         let insulation = |m: MaterialId| {
             model
@@ -2379,6 +2439,16 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             _ => None,
         };
         let interior = e.category == Category::InteriorWall;
+        // Seite einer Wandschicht: vor dem Kern außen, dahinter innen
+        let kern = (
+            layers.iter().position(|l| l.core),
+            layers.iter().rposition(|l| l.core),
+        );
+        let side = |i: usize| match (q, kern) {
+            (ElementQto::Wall(_), (Some(a), _)) if i < a => Some(Side::Outer),
+            (ElementQto::Wall(_), (_, Some(b))) if i > b => Some(Side::Inner),
+            _ => None,
+        };
         let mut push = |i: usize,
                         length: f64,
                         area: f64,
@@ -2484,6 +2554,9 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     _ => None,
                 },
                 holes,
+                side: side(i),
+                finish: None,
+                terms: Vec::new(),
             });
         };
         match q {
@@ -2519,7 +2592,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     ElementQto::Strip(f) => (f.length, 0.0),
                     ElementQto::Terrace(t) => (0.0, t.area),
                     ElementQto::Coping(c) => (c.length, 0.0),
-                    ElementQto::Wall(_) | ElementQto::Ext(_) => (0.0, 0.0),
+                    ElementQto::Wall(_) | ElementQto::Ext(_) | ElementQto::Room(_) => (0.0, 0.0),
                 };
                 let whole = layers.len() == 1;
                 for (i, l) in layers.iter().enumerate() {
@@ -2749,6 +2822,15 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 add(m, c.volume, 0.0, Some(c.length));
                 for k in &c.insulation {
                     add(k.material, k.volume, k.area, None);
+                }
+            }
+            // Schichten der Räume mit Dicke; Anstrich und Tapete haben kein
+            // Volumen und zählen nur nach Gewerk mit ihrer Fläche
+            (ElementQto::Room(r), _) => {
+                for l in r.lines.iter().filter(|l| l.is_layer() && !l.is_length()) {
+                    if let (Some(m), true) = (l.material, l.thickness > 0.0) {
+                        add(m, l.quantity() * l.thickness, l.quantity(), None);
+                    }
                 }
             }
             (q, Some(m)) => add(m, q.volume(), 0.0, None),
