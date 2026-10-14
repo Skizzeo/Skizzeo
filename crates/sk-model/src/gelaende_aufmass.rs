@@ -509,8 +509,9 @@ impl Terrain {
     }
 
     /// Flächenmittel der Höhe über einem Polygon (Landeswerte), exakt über
-    /// die Dreiecke; liegt es ganz außerhalb des Netzes, die Höhe in seiner
-    /// Mitte (nächster Randpunkt).
+    /// die Dreiecke unter ihm (über das Gitter, Review #164 H-164a); liegt es
+    /// ganz außerhalb des Netzes, die Höhe in seiner Mitte (nächster
+    /// Randpunkt).
     pub fn mean_over(&self, ring: &[(f64, f64)]) -> Option<f64> {
         let m = self.mesh();
         if m.netz.dreiecke.is_empty() || ring.is_empty() {
@@ -518,13 +519,16 @@ impl Terrain {
         }
         let (e0, n0) = m.bezug;
         let r: Vec<[f64; 2]> = ring.iter().map(|p| [p.0 - e0, p.1 - n0]).collect();
-        sk_gelaende::volumen::mittel(&m.netz, &r).or_else(|| {
-            let k = r.len() as f64;
-            let (x, y) = r
-                .iter()
-                .fold((0.0, 0.0), |a, p| (a.0 + p[0] / k, a.1 + p[1] / k));
-            m.abfrage.hoehe(x, y)
-        })
+        let e = m.abfrage.erdmenge(&r, [0.0, 0.0, 0.0]);
+        (e.flaeche > 1e-12)
+            .then(|| (e.ueber - e.unter) / e.flaeche)
+            .or_else(|| {
+                let k = r.len() as f64;
+                let (x, y) = r
+                    .iter()
+                    .fold((0.0, 0.0), |a, p| (a.0 + p[0] / k, a.1 + p[1] / k));
+                m.abfrage.hoehe(x, y)
+            })
     }
 
     /// Abtrag und Auftrag über einem Polygon (Landeswerte) gegen eine
@@ -532,6 +536,7 @@ impl Terrain {
     /// Dreiecke (G2, [`sk_gelaende::volumen::Erdmenge`]): `ueber` ist das
     /// Gelände über der Sohle, `unter` darunter. Teile außerhalb des Netzes
     /// zählen nicht; `flaeche` sagt, wie viel im Netz liegt.
+    #[cfg(test)] // nur Tests rechnen so (Review #164 H-164e)
     pub fn erdmenge_over(&self, ring: &[(f64, f64)], h: f64) -> sk_gelaende::volumen::Erdmenge {
         let m = self.mesh();
         let (e0, n0) = m.bezug;
@@ -750,6 +755,7 @@ impl Model {
     /// Abtrag und Auftrag des Aufmaßes über dem Umriss `outline` (Modell,
     /// mm) gegen eine waagerechte Sohle in `z` mm über ±0,00 (G2): Fläche in
     /// m², Mengen in m³. `None` ohne Aufmaß mit Lage und Höhenbezug.
+    #[cfg(test)] // nur Tests rechnen so (Review #164 H-164e)
     pub fn terrain_erdmenge(
         &self,
         outline: &[Vec3],
