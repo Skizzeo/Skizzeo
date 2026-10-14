@@ -121,6 +121,8 @@ fn datei_ist_vollstaendig_und_eindeutig() {
                             | "IFCELEMENTASSEMBLY"
                             | "IFCOPENINGELEMENT"
                             | "IFCDOOR"
+                            | "IFCSPACE"
+                            | "IFCCOVERING"
                     )
                 {
                     assert!(sk_model::Guid::from_ifc(g).is_some(), "{name}: {g}");
@@ -128,13 +130,14 @@ fn datei_ist_vollstaendig_und_eindeutig() {
                 }
             }
         }
-        // Jedes Bauteil mit Körper genau einmal, mit seiner Kennung
+        // Jedes Bauteil mit Körper genau einmal, mit seiner Kennung, dazu
+        // die Räume und ihr Ausbau (I6)
         let im = bauteile(&f);
-        assert_eq!(im.len(), b.bauteile, "{name}");
-        // Ausgelassen nur Räume bis I6 (ifc/plan.md §5); mit I6 fällt die
-        // Ausnahme weg
+        assert_eq!(im.len(), b.bauteile + b.raeume + b.bekleidungen, "{name}");
+        assert_eq!(f.all("IFCSPACE").count(), b.raeume, "{name}");
+        // Ausgelassen nur Räume ohne Fläche (r7: R-001 ankert in einer Wand)
         for (nr, g) in &b.ausgelassen {
-            assert_eq!(*g, sk_ifc::Grund::RaumBisI6, "{name}: {nr}");
+            assert_eq!(*g, sk_ifc::Grund::RaumOhneFlaeche, "{name}: {nr}");
         }
         let solids = m.element_solids();
         let draussen = |nr: &str| b.ausgelassen.iter().any(|(n, _)| n == nr);
@@ -165,17 +168,32 @@ fn datei_ist_vollstaendig_und_eindeutig() {
             }
         }
         // … direkt oder über genau eine Baugruppe (Wandzug, I4), nie beides
+        // (Räume hängen genau einmal am Geschoss, IFC4 WR31)
         let mut teil_von: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut am_geschoss: HashMap<u32, usize> = HashMap::new();
         for (_, e) in f.all("IFCRELAGGREGATES") {
             let ganz = liste(&e.args[4])[0];
-            if f.get(ganz).unwrap().name == "IFCELEMENTASSEMBLY" {
-                for x in liste(&e.args[5]) {
-                    teil_von.entry(x).or_default().push(ganz);
+            match f.get(ganz).unwrap().name.as_str() {
+                "IFCELEMENTASSEMBLY" => {
+                    for x in liste(&e.args[5]) {
+                        teil_von.entry(x).or_default().push(ganz);
+                    }
                 }
+                "IFCBUILDINGSTOREY" => {
+                    for x in liste(&e.args[5]) {
+                        *am_geschoss.entry(x).or_default() += 1;
+                    }
+                }
+                _ => {}
             }
         }
         let mut gruppen = HashSet::new();
-        for (g, (i, _)) in &im {
+        for (g, (i, klasse)) in &im {
+            if klasse == "IFCSPACE" {
+                assert_eq!(drin.get(i), None, "{name}: Raum {g} enthalten");
+                assert_eq!(am_geschoss.get(i), Some(&1), "{name}: Raum {g}");
+                continue;
+            }
             match teil_von.get(i).map(Vec::as_slice) {
                 Some(&[a]) => {
                     assert_eq!(drin.get(i), None, "{name}: {g} auch direkt");
@@ -400,7 +418,11 @@ fn vorschau_liest_den_export() {
         let (ifc, b) = export(&m, &opt());
         let v = sk_ifc::lesen::vorschau(&step::read(&ifc).unwrap());
         assert_eq!(v.schema, "IFC4");
-        assert_eq!(v.teile.len(), b.bauteile, "{name}");
+        assert_eq!(
+            v.teile.len(),
+            b.bauteile + b.raeume + b.bekleidungen,
+            "{name}"
+        );
         assert_eq!(v.ohne_form, 0, "{name}");
         let mut im_baum = vec![0; v.teile.len()];
         fn zaehlen(k: &sk_ifc::lesen::Knoten, n: &mut [u32], geschosse: &mut usize) {
@@ -483,7 +505,7 @@ fn oeffnungen_an_der_wand() {
     assert!(b
         .ausgelassen
         .iter()
-        .all(|(_, g)| *g == sk_ifc::Grund::RaumBisI6));
+        .all(|(_, g)| *g == sk_ifc::Grund::RaumOhneFlaeche));
     let wand_von: HashMap<u32, u32> = f
         .all("IFCRELVOIDSELEMENT")
         .map(|(_, e)| (liste(&e.args[5])[0], liste(&e.args[4])[0]))
@@ -518,30 +540,233 @@ fn oeffnungen_an_der_wand() {
     }
 }
 
-/// Befund Test zu #87: Räume haben im Modell keinen Körper. Sie stehen als
-/// „Raum bis I6“ im Bericht, nicht als „ohne Form“, und nicht in der Datei;
-/// ein Bauteil, das als `IfcSpace` eingestuft ist, bleibt davon unberührt.
+/// Eigenschaften des Satzes `satz` am Objekt `obj`: Name → Wert.
+fn eigenschaften(f: &File, obj: u32, satz: &str) -> HashMap<String, V> {
+    let mut out = HashMap::new();
+    for (_, rel) in f.all("IFCRELDEFINESBYPROPERTIES") {
+        let ps = f.get(liste(&rel.args[5])[0]).unwrap();
+        if ps.name != "IFCPROPERTYSET" || text(&ps.args[2]) != satz {
+            continue;
+        }
+        if !liste(&rel.args[4]).contains(&obj) {
+            continue;
+        }
+        for p in liste(&ps.args[4]) {
+            let p = f.get(p).unwrap();
+            let v = match &p.args[2] {
+                V::Typed(_, v) => (**v).clone(),
+                v => v.clone(),
+            };
+            out.insert(text(&p.args[0]).to_string(), v);
+        }
+    }
+    out
+}
+
+/// I6 (ifc/plan.md §5, schnittstelle-raum.md §5, raumbuch/plan.md §9): Ein
+/// gespeicherter Raum mit Fläche steht als `IfcSpace` mit seiner Kennung,
+/// Nummer und Namen, geschlossener Form von OK Fertigfußboden bis UK
+/// Fertigdecke, `Qto_SpaceBaseQuantities` aus Form, Fertigumriss und
+/// Raumbuch, Wohnfläche in `Skizzeo_Raum` und Nutzungsgruppe DIN 277. Sein
+/// Ausbau steht je Aufbau als `IfcCovering` mit den Körpern des Raumbuchs,
+/// am Raum und am bekleideten Bauteil, der Estrich mit wirksamen Dicken.
+/// R-001 ankert in einer Wand (ruht): ohne Fläche kein `IfcSpace`.
 #[test]
-fn raeume_bis_i6() {
-    let t = HAEUSER[5].1.replacen(
-        "[plancut]",
-        "[space] guid=2Kq7sVn0P1dA8xYwZ3fT9c number=\"R-009\" at=5000,4000 \
-         name=\"Küche\" seq=0 storey=2raHMuYTD64hQ6K56DbC_u\n[plancut]",
-        1,
-    );
-    let m = laden(&t);
-    assert!(m.elements().iter().any(|(_, e)| e.number == "R-009"));
+fn raum_mit_form_mengen_und_ausbau() {
+    use sk_raum::ausbau::{self, RaumAusbau};
+    use sk_raum::oeffnungen::Rohbau;
+    use sk_raum::raumbuch::{self, koerper, Flaeche};
+    let mut m = laden(HAEUSER[5].1);
+    let id = m
+        .elements()
+        .iter()
+        .find(|(_, e)| e.number == "R-002")
+        .unwrap()
+        .0;
+    // Typen wie beim Entstehen im Grundriss: Vorlage, Ausbau, Estrich
+    m.begin("Ausbau");
+    assert!(ausbau::typen_anlegen(&mut m, id));
+    assert!(m.commit().is_some());
+    let el = m.element(id).unwrap().clone();
+    let form = sk_raum::raeume(&m, el.storey)
+        .into_iter()
+        .find(|f| f.raum == Some(id))
+        .unwrap();
+    let roh = Rohbau::neu(&m, form);
+    let aus = RaumAusbau::fuer(&m, &roh).unwrap();
+    let (ffb, ufd) = ausbau::hoehen(&m, &roh, &aus);
+    assert_eq!(ffb - roh.z_boden, 160.0, "Fußbodenaufbau");
+
     let (ifc, b) = export(&m, &opt());
     let f = step::read(&ifc).unwrap();
-    assert!(b
-        .ausgelassen
-        .contains(&("R-009".to_string(), sk_ifc::Grund::RaumBisI6)));
-    assert!(!b
-        .ausgelassen
+    assert_eq!(b.raeume, 1);
+    assert_eq!(
+        b.ausgelassen,
+        vec![("R-001".to_string(), sk_ifc::Grund::RaumOhneFlaeche)]
+    );
+    assert_eq!(sk_ifc::Grund::RaumOhneFlaeche.text(), "Raum ohne Fläche");
+    let (si, sp) = f.all("IFCSPACE").next().unwrap();
+    assert_eq!(text(&sp.args[0]), el.guid.to_ifc());
+    assert_eq!(text(&sp.args[2]), "R-002");
+    assert_eq!(text(&sp.args[3]), "Wohnzimmer");
+    assert_eq!(text(&sp.args[7]), m.space(id).unwrap().name);
+    assert_eq!(zahl(&sp.args[10]), 160.0, "OK FFB über dem Geschoss");
+
+    // Mengen: roh aus der Form, fertig aus dem Fertigumriss
+    let rd = sk_raum::raumliste::raumliste(&m)
+        .into_iter()
+        .find(|r| r.raum == id)
+        .unwrap();
+    let (rand, loecher) = rd.fertig.clone().unwrap();
+    let netto = sk_math::polygon::area(&rand)
+        - loecher
+            .iter()
+            .map(|l| sk_math::polygon::area(l))
+            .sum::<f64>();
+    let nah = |a: f64, b: f64| (a - b).abs() <= b.abs() * 1e-9 + 1e-9;
+    let mengen = mengen_der_datei("r7", &f);
+    let q = &mengen[&el.guid.to_ifc()]["Qto_SpaceBaseQuantities"];
+    assert!(nah(q["NetFloorArea"], netto / 1e6), "{q:?}");
+    assert!(nah(q["GrossFloorArea"], roh.form.flaeche / 1e6), "{q:?}");
+    assert!(netto < roh.form.flaeche);
+    assert!(nah(q["GrossPerimeter"], roh.form.umfang), "{q:?}");
+    assert!(nah(q["Height"], roh.z_decke - roh.z_boden), "{q:?}");
+    assert!(nah(q["FinishCeilingHeight"], ufd - ffb), "{q:?}");
+    assert!(nah(q["FinishFloorHeight"], 160.0), "{q:?}");
+    assert!(nah(q["NetVolume"], netto * (ufd - ffb) / 1e9), "{q:?}");
+    let zeilen = raumbuch::rechnen(&m, &roh, &aus, &raumbuch::Regeln::default());
+    let wand: f64 = zeilen
         .iter()
-        .any(|(_, g)| *g == sk_ifc::Grund::OhneForm));
-    assert!(f.all("IFCSPACE").all(|(_, e)| text(&e.args[2]) != "R-009"));
-    assert_eq!(sk_ifc::Grund::RaumBisI6.text(), "Raum bis I6");
+        .filter(|z| matches!(z.flaeche, Flaeche::Wand(_) | Flaeche::Laibung(_)))
+        .filter(|z| matches!(z.typ, Some((_, 0))))
+        .map(|z| z.menge())
+        .sum();
+    assert!(wand > 0.0 && nah(q["NetWallArea"], wand / 1e6), "{q:?}");
+
+    // Form: geschlossen, Rauminhalt wie NetVolume
+    let v = sk_ifc::lesen::vorschau(&f);
+    let t = v.teile.iter().find(|t| t.guid == el.guid.to_ifc()).unwrap();
+    assert_eq!(t.klasse, "IfcSpace");
+    let netz = |n: &sk_ifc::lesen::Netz| geometrie::Netz {
+        mat: 0,
+        punkte: n.punkte.clone(),
+        dreiecke: n.dreiecke.clone(),
+    };
+    assert!(t.netze.iter().all(|n| geometrie::geschlossen(&netz(n))));
+    let vol: f64 = t.netze.iter().map(|n| geometrie::volumen(&netz(n))).sum();
+    assert!(
+        (vol / 1e9 - q["NetVolume"]).abs() < q["NetVolume"] * 1e-5,
+        "{vol}"
+    );
+
+    // Wohnfläche (Faktor der Vorlage Wohnzimmer: 1) und DIN 277
+    let r = eigenschaften(&f, si, "Skizzeo_Raum");
+    assert!(nah(zahl(&r["Wohnfläche"]), netto / 1e6), "{r:?}");
+    assert_eq!(zahl(&r["Wohnflächenfaktor"]), 1.0);
+    assert_eq!(text(&r["Nutzungsgruppe"]), "NUF 1 Wohnen und Aufenthalt");
+    let din277: Vec<_> = f
+        .all("IFCRELASSOCIATESCLASSIFICATION")
+        .filter(|(_, e)| text(&e.args[2]).starts_with("DIN 277"))
+        .collect();
+    assert_eq!(din277.len(), 1);
+    assert_eq!(text(&din277[0].1.args[2]), "DIN 277 NUF 1");
+    assert_eq!(liste(&din277[0].1.args[4]), vec![si]);
+
+    // Ausbau: je Fläche und Typ ein IfcCovering, alle am Raum
+    let koerper = koerper::koerper(&m, &roh, &aus);
+    let mut gruppen: Vec<(Flaeche, sk_model::LayerSetId)> = Vec::new();
+    for k in &koerper {
+        if !gruppen.contains(&(k.flaeche, k.typ)) {
+            gruppen.push((k.flaeche, k.typ));
+        }
+    }
+    assert!(gruppen.iter().any(|g| g.0 == Flaeche::Estrich));
+    assert_eq!(b.bekleidungen, gruppen.len());
+    let am_raum: Vec<(u32, Vec<u32>)> = f
+        .all("IFCRELCOVERSSPACES")
+        .map(|(_, e)| (liste(&e.args[4])[0], liste(&e.args[5])))
+        .collect();
+    assert_eq!(am_raum.len(), 1);
+    assert_eq!(am_raum[0].0, si);
+    let bekleidungen = &am_raum[0].1;
+    assert_eq!(bekleidungen.len(), gruppen.len());
+    assert_eq!(
+        f.all("IFCCOVERING")
+            .filter(|(i, _)| bekleidungen.contains(i))
+            .count(),
+        gruppen.len()
+    );
+    // Am bekleideten Bauteil: Wandseiten an ihrer Wand, Decke und Boden an
+    // der Decke bzw. Sohlplatte
+    let mut traeger: Vec<(String, String)> = Vec::new();
+    for (_, e) in f.all("IFCRELCOVERSBLDGELEMENTS") {
+        let t = f.get(liste(&e.args[4])[0]).unwrap();
+        for c in liste(&e.args[5]) {
+            let name = text(&f.get(c).unwrap().args[2]).to_string();
+            traeger.push((name, format!("{} {}", t.name, text(&t.args[0]))));
+        }
+    }
+    traeger.sort();
+    let bauteil = |g: sk_model::Guid| {
+        let (_, e) = m.elements().iter().find(|(_, e)| e.guid == g).unwrap();
+        let klasse = match e.kind {
+            sk_model::ElementKind::Wall(_) => "IFCWALL",
+            _ => "IFCSLAB",
+        };
+        format!("{klasse} {}", g.to_ifc())
+    };
+    let mut soll: Vec<(String, String)> = rd
+        .ausbau
+        .iter()
+        .filter(|a| a.schichten.iter().any(|s| s.koerper.is_some()))
+        .filter_map(|a| {
+            let name = match a.flaeche {
+                Flaeche::Wand(k) => format!("R-002 Wand {}", k + 1),
+                Flaeche::Fliesen(k) => format!("R-002 Fliesen Wand {}", k + 1),
+                f => format!("R-002 {f:?}"),
+            };
+            Some((name, bauteil(a.traeger?)))
+        })
+        .collect();
+    soll.sort();
+    assert_eq!(traeger, soll);
+    for s in ["Wand 1", "Decke", "Estrich"] {
+        assert!(traeger.iter().any(|t| t.0 == format!("R-002 {s}")), "{s}");
+    }
+    // Körper wie im Raumbuch: derselbe Rauminhalt
+    let soll: f64 = koerper
+        .iter()
+        .flat_map(|k| geometrie::netze(&k.solid, Default::default()))
+        .map(|n| geometrie::volumen(&n))
+        .sum();
+    let ist: f64 = v
+        .teile
+        .iter()
+        .filter(|t| t.klasse == "IfcCovering" && t.name.starts_with("R-002 "))
+        .flat_map(|t| t.netze.iter())
+        .map(|n| geometrie::volumen(&netz(n)))
+        .sum();
+    assert!((ist - soll).abs() < soll * 1e-5, "{ist} statt {soll}");
+    // Estrich mit wirksamen Dicken: mit dem Belag der Fußbodenaufbau
+    let estrich = v.teile.iter().find(|t| t.name == "R-002 Estrich").unwrap();
+    let belag = v.teile.iter().find(|t| t.name == "R-002 Boden").unwrap();
+    let dicke = |t: &sk_ifc::lesen::Teil| t.schichten.iter().map(|s| s.1).sum::<f64>();
+    assert!(
+        nah(dicke(estrich) + dicke(belag), 160.0),
+        "{:?}",
+        estrich.schichten
+    );
+    // Fläche des Belags aus dem Raumbuch
+    let boden: f64 = zeilen
+        .iter()
+        .filter(|z| z.flaeche == Flaeche::Boden && matches!(z.typ, Some((_, 0))))
+        .map(|z| z.menge())
+        .sum();
+    let g = &belag.guid;
+    assert!(nah(
+        mengen[g]["Qto_CoveringBaseQuantities"]["NetArea"],
+        boden / 1e6
+    ));
 }
 
 /// I5 (ifc/plan.md §2, Merkpunkt Integration): Eine Tür mit Blatt füllt
@@ -782,6 +1007,11 @@ fn klassifikation_din276_und_vob() {
                 assert!(id.starts_with("DIN 18") && id.len() == 9, "{id}");
                 assert!(!name.is_empty(), "{id}");
             }
+            // Nutzungsgruppe der Räume (I6)
+            "DIN 277" => {
+                assert!(id.starts_with("NUF ") || id == "TF" || id == "VF", "{id}");
+                assert!(!name.is_empty(), "{id}");
+            }
             q => panic!("Klassifikation {q}"),
         }
         for x in liste(&rel.args[4]) {
@@ -789,11 +1019,15 @@ fn klassifikation_din276_und_vob() {
         }
     }
     let teile = bauteile(&f);
-    assert_eq!(teile.len(), b.bauteile);
-    for (g, (i, _)) in teile {
+    assert_eq!(teile.len(), b.bauteile + b.raeume + b.bekleidungen);
+    for (g, (i, klasse)) in teile {
         let mut q = je.remove(&i).unwrap_or_default();
         q.sort();
-        assert_eq!(q, ["DIN 276", "VOB/C"], "{g}");
+        let soll: &[&str] = match klasse.as_str() {
+            "IFCSPACE" => &["DIN 277"],
+            _ => &["DIN 276", "VOB/C"],
+        };
+        assert_eq!(q, soll, "{g} {klasse}");
     }
 }
 

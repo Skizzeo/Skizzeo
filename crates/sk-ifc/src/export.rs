@@ -3,7 +3,9 @@
 //! Bauteil mit seiner Kennung, Klasse aus `kinds.rs` bzw. der Erweiterung,
 //! Form als Dreiecksnetz je Baustoff mit Farbe, Bauteiltyp mit Schichtaufbau,
 //! Baustoffkennwerte, allgemeine Eigenschaften, Mengen aus der Mengenliste
-//! ([`crate::mengen`]), Kostengruppe DIN 276 und Leistungsbereich VOB/C.
+//! ([`crate::mengen`]), Kostengruppe DIN 276 und Leistungsbereich VOB/C;
+//! Räume als `IfcSpace` mit ihrem Ausbau als `IfcCovering` (I6,
+//! `raeume.rs`).
 //!
 //! Der Export liest nur. Zwei Exporte desselben Modells mit derselben Zeit
 //! sind bytegleich; alle Kennungen, die das Modell nicht trägt (Grundstück,
@@ -24,6 +26,8 @@ use std::collections::{BTreeMap, HashMap};
 
 #[path = "oeffnungen.rs"]
 mod oeffnungen;
+#[path = "raeume.rs"]
+mod raeume;
 
 /// Angaben zum Export, die nicht im Modell stehen.
 #[derive(Clone, Debug)]
@@ -58,6 +62,10 @@ pub struct Bericht {
     pub oeffnungen: usize,
     /// Türen mit Blatt als `IfcDoor` in ihrer Öffnung (I5).
     pub tueren: usize,
+    /// Räume als `IfcSpace` mit Form (I6).
+    pub raeume: usize,
+    /// Ausbau der Räume als `IfcCovering`, je Aufbau einer (I6).
+    pub bekleidungen: usize,
     /// Bauteile, die nicht geschrieben wurden, mit Nummer und Grund.
     pub ausgelassen: Vec<(String, Grund)>,
 }
@@ -73,10 +81,9 @@ pub enum Grund {
     /// braucht sie), oder ein anderes Bauteil ist als `IfcOpeningElement`
     /// eingestuft.
     OhneWand,
-    /// Räume (Grundriss G3) haben im Modell keinen Körper, ihre Form rechnet
-    /// `sk-raum` aus den Wänden; als `IfcSpace` mit Form in I6 (ifc/plan.md
-    /// §5), bis dahin nicht in der Datei.
-    RaumBisI6,
+    /// Ein gespeicherter Raum ohne Fläche (ruht, bis seine Fläche
+    /// zurückkommt, schnittstelle-raum.md §4): ohne Form kein `IfcSpace`.
+    RaumOhneFlaeche,
 }
 
 impl Grund {
@@ -85,7 +92,7 @@ impl Grund {
             Grund::OhneGeschoss => "ohne Geschoss",
             Grund::OhneForm => "ohne Form",
             Grund::OhneWand => "ohne Wand",
-            Grund::RaumBisI6 => "Raum bis I6",
+            Grund::RaumOhneFlaeche => "Raum ohne Fläche",
         }
     }
 }
@@ -194,6 +201,8 @@ struct Ctx<'a> {
     /// Bauteil → Objekt, Lage und Höhe seines Geschosses: dort hängen die
     /// Öffnungen an (I5).
     lage: HashMap<ElementId, (u32, u32, f64)>,
+    /// Nutzungsgruppe DIN 277 (Kurzzeichen) → Name und Räume (I6).
+    nutzung_nutzer: BTreeMap<String, (String, Vec<u32>)>,
 }
 
 /// Wandzug als Baugruppe: Zug, Geschoss, Lage der Baugruppe, Wände mit
@@ -228,6 +237,7 @@ fn export_im_gang(m: &Model, opt: &Optionen) -> (String, Bericht) {
         projekt: p.guid,
         mengen: mengen_je_bauteil(m),
         lage: HashMap::new(),
+        nutzung_nutzer: BTreeMap::new(),
     };
     let mut bericht = Bericht::default();
     c.oh = c.owner_history(opt);
@@ -378,6 +388,7 @@ fn export_im_gang(m: &Model, opt: &Optionen) -> (String, Bericht) {
     }
     let mut zuege: BTreeMap<usize, Zug> = BTreeMap::new();
     let mut oeffnungen = Vec::new();
+    let mut raeume = Vec::new();
 
     // Bauteile in der Reihenfolge des Modells
     let mut ids: Vec<ElementId> = m.elements().ids().collect();
@@ -399,10 +410,9 @@ fn export_im_gang(m: &Model, opt: &Optionen) -> (String, Bericht) {
             }
             continue;
         }
+        // Räume nach den Wänden, die ihr Ausbau bekleidet (I6)
         if matches!(el.kind, ElementKind::Space(_)) {
-            bericht
-                .ausgelassen
-                .push((el.number.clone(), Grund::RaumBisI6));
+            raeume.push(id);
             continue;
         }
         let Some(&(si, s_pl, elev)) = storey_of.get(&el.storey) else {
@@ -487,6 +497,7 @@ fn export_im_gang(m: &Model, opt: &Optionen) -> (String, Bericht) {
         bericht.baugruppen += 1;
     }
     c.oeffnungen(&oeffnungen, &storey_of, &mut bericht);
+    c.raeume_schreiben(&raeume, &storey_of, &mut bericht);
 
     // Beziehungen gesammelt
     let geschosse: Vec<(StoreyId, (u32, u32, f64))> =
@@ -568,6 +579,8 @@ fn export_im_gang(m: &Model, opt: &Optionen) -> (String, Bericht) {
             );
         }
     }
+
+    c.din277_schreiben();
 
     let atv: Vec<(String, (String, Vec<u32>))> =
         std::mem::take(&mut c.atv_nutzer).into_iter().collect();
