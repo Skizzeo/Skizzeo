@@ -1142,8 +1142,6 @@ mod tests {
         assert_eq!(t.taste(Key::Enter, mods), Taste::PasstNicht);
     }
 
-    /// Review W49 H2: Am Knick eines Innenwandzugs reicht die Kette außen
-    /// bis zur Außenecke, innen bis zur Innenecke.
     /// Review #158 B1: Längs derselben Wandfläche rechnet die Vorschau die
     /// Seite der Kette nur einmal. Auf der anderen Seite der Wand, nach
     /// einer Änderung des Modells und mit anderem Bezug rechnet sie neu.
@@ -1190,6 +1188,8 @@ mod tests {
         assert_eq!(bei(&mut t, &m, 4980.0, 2000.0).1, 4);
     }
 
+    /// Review W49 H2: Am Knick eines Innenwandzugs reicht die Kette außen
+    /// bis zur Außenecke, innen bis zur Innenecke.
     #[test]
     fn kette_am_knick() {
         let (mut m, iw, st) = haus();
