@@ -155,6 +155,7 @@ pub(crate) fn gelaende_mengen(
     gr: &[Gruendung],
     boden: &Boden,
     out: &mut Vec<AutoMenge>,
+    projekt: &mut Vec<String>,
 ) {
     if m.site_patches().is_empty() {
         return;
@@ -165,18 +166,22 @@ pub(crate) fn gelaende_mengen(
         .iter()
         .min_by_key(|g| (g.vorlage.number.len(), g.vorlage.number.clone()))
     else {
-        if let Some(r) = out.first_mut() {
-            anhaengen(r, OHNE_TRAEGER);
-        }
+        projekt.push(OHNE_TRAEGER.to_string());
         return;
     };
     let (Some(t), Some(frame), Some(h0)) = (m.terrain(), m.survey_frame(), m.terrain_nhn()) else {
+        // an jeder Erdmenge des Trägers, so steht er an jeder Position
         let el = traeger.vorlage.element;
-        if let Some(r) = out
+        let mut da = false;
+        for r in out
             .iter_mut()
-            .find(|r| r.element == el && r.key.starts_with("earth."))
+            .filter(|r| r.element == el && r.key.starts_with("earth."))
         {
             anhaengen(r, OHNE_AUFMASS);
+            da = true;
+        }
+        if !da {
+            projekt.push(OHNE_AUFMASS.to_string());
         }
         return;
     };
@@ -497,6 +502,9 @@ pub(crate) fn gelaende_mengen(
     for h in [AUSSERHALB, GANZ_AUSSERHALB, UNGUELTIG] {
         if !s.hinweise.contains(&h) {
             continue;
+        }
+        if neu.is_empty() {
+            projekt.push(h.to_string());
         }
         for r in neu.iter_mut().filter(|r| !r.hinweis.contains(h)) {
             anhaengen(r, h);
@@ -1137,5 +1145,23 @@ mod tests {
                  eine Fläche geändert {eine:.1} ms"
             );
         }
+    }
+
+    /// Ohne Sohlplatte trägt keine Zeile den Hinweis: er steht in der
+    /// Mengenliste als Projekthinweis (VOB-Prüfung G3, D2).
+    #[test]
+    fn ohne_sohlplatte_projekthinweis() {
+        let mut m = Model::with_seed(7);
+        m.begin("Fläche");
+        assert!(m
+            .add_site_patch(flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0))
+            .is_some());
+        m.commit();
+        let s = crate::qto::schedule(&m);
+        assert!(s.auto.iter().all(|r| !r.key.starts_with("earth.")));
+        assert_eq!(s.hinweise, vec![super::OHNE_TRAEGER.to_string()]);
+        let u = crate::qto::Umfang::default();
+        assert_eq!(s.restrict(&m, &u).hinweise, s.hinweise);
+        assert!(crate::qto::schedule(&haus()).hinweise.is_empty());
     }
 }

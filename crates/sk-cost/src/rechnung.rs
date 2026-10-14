@@ -74,6 +74,9 @@ pub struct Ansatz {
     pub formel: Option<String>,
     /// Automatikmenge: ihr Schlüssel (`earth.excavation`, `site.scaffold` …).
     pub auto: Option<&'static str>,
+    /// Automatikmenge: ihre Hinweise, je Zeile einer
+    /// ([`sk_model::qto::AutoMenge::hinweis`], VOB-Prüfung G3, D1).
+    pub hinweis: Option<String>,
 }
 
 /// Was eine Position rechnet.
@@ -866,6 +869,7 @@ pub fn kosten_mit(
             grad: None,
             formel: None,
             auto: None,
+            hinweis: None,
         };
         let gewerk_schicht = r.trade.and_then(|t| m.trade(t)).map(|t| t.guid);
         let mut legen = |key: PosKey,
@@ -1497,6 +1501,7 @@ fn ext_ansaetze(
                         .then(|| (menge as f64 / (q.volume / 1e6)).round() as u32),
                     formel: None,
                     auto: None,
+                    hinweis: None,
                 },
                 t,
                 mat.map(|x| (x.guid, t)),
@@ -1528,6 +1533,26 @@ fn auto_ansaetze(
     // Netz, Böschung am Gelände), und Gelände steiler als 1:10
     let mut erde_aus_mittel: Option<Ort> = None;
     let mut steil: Option<(String, Ort)> = None;
+    // Hinweise der Mengen, je Satz einmal, auch ohne Bauleistung oder
+    // Menge (VOB-Prüfung G3, D1); dazu die ohne Zeile (D2)
+    let mut gesagt: Vec<&str> = Vec::new();
+    for a in &s.auto {
+        for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
+            if !gesagt.contains(&h) {
+                gesagt.push(h);
+                let ort = m
+                    .element(a.element)
+                    .map_or(Ort::Datei, |e| Ort::Bauteil(e.guid));
+                befunde.push(Befund::hinweis(0, h, ort));
+            }
+        }
+    }
+    for h in &s.hinweise {
+        if !gesagt.contains(&h.as_str()) {
+            gesagt.push(h);
+            befunde.push(Befund::hinweis(0, h.as_str(), Ort::Datei));
+        }
+    }
     for a in &s.auto {
         let leistungen = k
             .leistungen
@@ -1596,6 +1621,7 @@ fn auto_ansaetze(
                     grad: None,
                     formel: Some(a.formula.clone()),
                     auto: Some(a.key),
+                    hinweis: (!a.hinweis.is_empty()).then(|| a.hinweis.clone()),
                 },
                 Dez::NULL,
                 None,

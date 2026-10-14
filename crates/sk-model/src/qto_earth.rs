@@ -17,8 +17,10 @@ use sk_math::Vec3;
 
 mod flaechen;
 mod netz;
-pub use flaechen::Gruendung;
 pub(crate) use flaechen::{gelaende_mengen, Merker as FlaechenMerker};
+pub use flaechen::{
+    Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, KEIL, OHNE_AUFMASS, OHNE_TRAEGER, UNGUELTIG,
+};
 pub use netz::{steil_hinweis, ErdNetz, DREIECKSPRISMEN, STEIL, STEIL_AB};
 
 /// Bodenkennwerte des Projekts (mm, Grad); stehen am Projekt
