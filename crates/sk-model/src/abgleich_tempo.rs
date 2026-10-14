@@ -102,9 +102,10 @@ fn band_und_gelaende_nur_im_gebaeude() {
                 assert!(m.set_storey_top(eg, top - 150.0));
             }
             // nur Züge dieses Gebäudes; beim Band die des EG und darüber
-            // (Review zu #148: Nachbarn des geänderten Bands, nicht alle)
+            // (Review zu #148: Nachbarn des geänderten Bands, nicht alle).
+            // Folgt nur die Gründung dem Gelände, keine (Review L42)
             let scope = m.sync_scope().expect("nur ein Gebäude");
-            assert!(!scope.is_empty(), "{i} {gelaende}");
+            assert_eq!(scope.is_empty(), gelaende, "{i}");
             for &x in &gb {
                 if x != b {
                     assert!(zuege(&m, x).iter().all(|r| !scope.contains(r)), "{i}");
@@ -125,6 +126,41 @@ fn band_und_gelaende_nur_im_gebaeude() {
             assert!(m.check().is_empty(), "{:?}", m.check());
         }
     }
+}
+
+/// Loslassen eines Gelände-Zugs mit Aufmaß (Review L42): Die übrigen
+/// Gründungen folgen nur in der Tiefe. Der Abgleich hat dabei keinen
+/// Bereich, und der über alles findet danach nichts.
+#[test]
+fn gelaende_zug_ohne_bereich() {
+    let (mut m, _) = haeuser_mit(6, true, 3);
+    let mut t = crate::Terrain::new(crate::Crs::Local);
+    for i in 0..10 {
+        for j in 0..5 {
+            let (e, n) = (1000.0 + 20.0 * i as f64, 2000.0 + 20.0 * j as f64);
+            t.points.push(crate::TerrainPoint {
+                nr: (i * 5 + j + 1).to_string(),
+                e,
+                n,
+                h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (n / 23.0).cos(),
+                code: String::new(),
+                off: false,
+            });
+        }
+    }
+    m.begin("Aufmaß");
+    assert!(m.import_terrain(t));
+    m.commit();
+    assert_eq!(ganz(&m), ((0, 0), (0, 0), true));
+    let zug = m.gelaende_zug(m.level_building().unwrap()).unwrap();
+    m.begin("Gelände ziehen");
+    assert!(m.gelaende_ziehen(&zug, 300.0));
+    let bewegt = m.gelaende_loslassen(zug);
+    assert_eq!(bewegt.len(), 5, "{bewegt:?}");
+    assert_eq!(m.sync_scope(), Some(Vec::new()));
+    assert!(m.commit().is_some());
+    assert_eq!(ganz(&m), ((0, 0), (0, 0), true));
+    assert!(m.check().is_empty(), "{:?}", m.check());
 }
 
 /// Budget (Review L39): Loslassen nach einem Geschosszug bei 1000 Häusern
@@ -244,13 +280,23 @@ fn zufall_wie_ueber_alles() {
                 geschosse.len() <= 3,
                 "Schritt {k}, Art {was}: {geschosse:?}"
             );
-            // Ein Schritt, der etwas ändert, bringt Züge mit
+            // Ein Band, das sich ändert, bringt Züge mit. Gelände und UK
+            // Gründung ändern nur die Tiefe der Gründung und bringen keine
+            // (Review L42), die Höhe der Gründung ebenso; dass dabei nichts
+            // fehlt, zeigt der Abgleich über alles unten
             let leer = m.txn.as_ref().is_some_and(|t| t.changes.is_empty());
-            assert_eq!(
-                scope.is_empty(),
-                leer,
-                "Schritt {k}, Art {was}, {geaendert}"
-            );
+            let gruendung = m
+                .storey(st)
+                .is_some_and(|s| s.kind == crate::LevelKind::Foundation);
+            if was >= 2 {
+                assert!(scope.is_empty(), "Schritt {k}, Art {was}, {geaendert}");
+            } else if !gruendung {
+                assert_eq!(
+                    scope.is_empty(),
+                    leer,
+                    "Schritt {k}, Art {was}, {geaendert}"
+                );
+            }
         }
         m.commit();
         assert_eq!(
