@@ -90,8 +90,8 @@ Neu | „Einlesen“ legt sie im Ordner „Erweiterungen“ ab; setzen im Bautei
 Neue Version | die Rückfrage nennt je gesetztem Bauteil, was sich ändert; erst „Aktualisieren“ ändert das Projekt
 Neues Gewerk | neue Bauteilart oder Gewerk ohne Titel: eigene Rückfrage mit der Folge; „Trotzdem einlesen“ legt keinen Titel an
 Firmenkatalog | unter „Für den Firmenkatalog“ je neuer Bauleistung und neuem Artikel ein Haken; ohne Haken gilt der Satz nur im Projekt
-Einzelplatz | angehakte Sätze kommen gleich in den Firmenkatalog, als unbestätigt markiert
-Mit Kennwort | angehakte Sätze gehen als Vorschlag in den Entwurf; unter „Verwaltung …“ übernehmen oder ablehnen, freigeben erst danach
+Neue Sätze | jede neue Bauleistung und jeder neue Artikel der Datei kommt in den Firmenkatalog
+Einzelplatz oder Kennwort | am Einzelplatz kommen die Sätze für den Firmenkatalog gleich hinein, als unbestätigt markiert; mit Verwaltungskennwort gehen sie als Vorschlag in den Entwurf, unter „Verwaltung …“ übernehmen oder ablehnen, freigeben erst danach
 Eigener Baustoff | wird mit dem ersten gesetzten Bauteil ein Baustoff des Projekts; Rückgängig nimmt ihn mit heraus
 Preise | Preise aus der Datei gelten, bis der Firmenkatalog eigene hat; das LV nennt die Herkunft im Detail der Position
 

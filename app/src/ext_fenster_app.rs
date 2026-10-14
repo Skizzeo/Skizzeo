@@ -20,7 +20,11 @@ impl App {
             return;
         }
         self.ext_liste_zu();
-        let z = ev::zeilen(&self.ext_ablage, self.scene.model());
+        let z = ev::zeilen(
+            &self.ext_ablage,
+            self.scene.model(),
+            self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
+        );
         self.ext_fenster = Some(Fenster::new(z));
         self.tip = None;
         self.overlay_dirty = true;
@@ -67,7 +71,11 @@ impl App {
             Some(w) => w.frage(f),
             None => {
                 self.ext_liste_zu();
-                let z = ev::zeilen(&self.ext_ablage, self.scene.model());
+                let z = ev::zeilen(
+                    &self.ext_ablage,
+                    self.scene.model(),
+                    self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
+                );
                 self.ext_fenster = Some(Fenster::mit_frage(z, f));
             }
         }
@@ -84,7 +92,11 @@ impl App {
             self.prefs_dirty = true;
         }
         self.ext_sync();
-        let z = ev::zeilen(&self.ext_ablage, self.scene.model());
+        let z = ev::zeilen(
+            &self.ext_ablage,
+            self.scene.model(),
+            self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
+        );
         if let Some(w) = self.ext_fenster.as_mut() {
             w.setze_zeilen(z, key);
             w.meldung = Some(satz);
@@ -367,13 +379,7 @@ pub(crate) fn frage_zur_datei(
             v
         });
     match v {
-        Ok(v) => {
-            let mut f = Frage::einlesen(v);
-            if !frei.frei(crate::freischaltung::Modul::Kosten) {
-                f.haken.clear();
-            }
-            f
-        }
+        Ok(v) => Frage::einlesen_frei(v, frei.frei(crate::freischaltung::Modul::Kosten)),
         Err(e) => Frage::fehler(datei, e),
     }
 }
