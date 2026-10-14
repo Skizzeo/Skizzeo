@@ -41,8 +41,12 @@ mod schnitt;
 #[path = "scene_sicht.rs"]
 pub mod sicht;
 use schnitt::UnderMemo;
+#[path = "scene_boden.rs"]
+mod boden;
 #[path = "scene_kanten.rs"]
 pub mod kanten;
+#[path = "scene_lage.rs"]
+mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
 #[path = "scene_raster.rs"]
@@ -51,6 +55,7 @@ pub mod raster;
 mod scene_bemassung;
 #[path = "scene_oeffnung.rs"]
 mod scene_oeffnung;
+use boden::{mesh_into, Boden};
 pub use massstand::{naechster_stand, neuer_stand};
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
@@ -558,6 +563,8 @@ pub struct Scene {
     cache: Vec<Option<RunCache>>,
     /// Quader der Wandzüge je Platz im Raster (Review L26).
     raster: raster::Raster,
+    /// Je Platz der Bereich, in dem die Öffnungen des Zugs Griffe zeigen.
+    griffraster: raster::Raster,
     /// Wandzüge, die neu berechnet werden müssen.
     dirty: Vec<RunId>,
     all_dirty: bool,
@@ -569,6 +576,12 @@ pub struct Scene {
     /// Züge, die sich im offenen Schritt live geändert haben (der gezogene und
     /// die mitgeführten oder angeschlossenen).
     live: Vec<RunId>,
+    /// Laufender Zug an OK Gelände mit den Sohlplatten-Zügen des gezogenen
+    /// Gebäudes ([`Scene::drag_terrain`]).
+    gelaende_zug: Option<(sk_model::model::GelaendeZug, Vec<RunId>)>,
+    /// Züge mit Sohlplatte der übrigen Gebäude, die einem Gelände-Zug im
+    /// Leerlauf folgen ([`Scene::nachziehen`]).
+    nachzug: Vec<RunId>,
     bounds: Option<Aabb>,
     /// Aufgelöste Attributtabellen des Modells.
     table: DrawTable,
@@ -618,6 +631,11 @@ pub struct Scene {
     blend_shown: bool,
     /// Zähler der Sichtbarkeitsänderungen (Paket 3); ändert die Revision nicht.
     vis_rev: u64,
+    /// OK Gelände aus dem Aufmaß als Raster, zu seinem Schlüssel.
+    gelaende_raster: Option<(
+        Option<boden::RasterKey>,
+        Option<Rc<sk_render::gelaende::TerrainGrid>>,
+    )>,
     /// Laufender Übergang beim Aus- und Einblenden oder Isolieren.
     vis_anim: Option<VisAnim>,
     /// Masken je Zug und Teil (Review 3a G2), gültig für Revision,
@@ -911,12 +929,15 @@ impl Scene {
             staende: HashMap::new(),
             cache: Vec::new(),
             raster: Default::default(),
+            griffraster: Default::default(),
             dirty: Vec::new(),
             all_dirty: true,
             mass_stand: HashMap::new(),
             mass_alle: neuer_stand(),
             unsettled: Vec::new(),
             live: Vec::new(),
+            gelaende_zug: None,
+            nachzug: Vec::new(),
             bounds: None,
             table,
             theme,
@@ -939,6 +960,7 @@ impl Scene {
             grow: None,
             blend_shown: false,
             vis_rev: 0,
+            gelaende_raster: None,
             vis_anim: None,
             vis_table: RefCell::default(),
             kanten: RefCell::default(),
@@ -1479,38 +1501,6 @@ impl Scene {
         self.model.init_project(p);
     }
 
-    /// Projektdaten samt Breite und Länge aus der Maske (Sonnenstand S1)
-    /// als ein Schritt. `false`, wenn sich nichts geändert hat.
-    pub fn projektdaten_setzen(
-        &mut self,
-        label: &'static str,
-        p: sk_model::Project,
-        ort: sk_model::Location,
-    ) -> bool {
-        self.begin(label);
-        let soil = p.soil;
-        let a = self.model.set_project(p);
-        let b = self.model.set_location(ort);
-        // Bodenkennwerte der Erdarbeiten (Gruppe Baugrund) im selben Schritt
-        let c = self.model.set_soil(soil);
-        self.commit();
-        a || b || c
-    }
-
-    /// Nordpfeil setzen, drehen oder verschieben (Sonnenstand S2): ein
-    /// Schritt `label`. `false`, wenn sich nichts geändert hat.
-    pub fn nordpfeil_setzen(
-        &mut self,
-        label: &'static str,
-        nord: f64,
-        fuss: Option<sk_model::Foot>,
-    ) -> bool {
-        self.begin(label);
-        let ok = self.model.set_north_arrow(nord, fuss);
-        self.commit();
-        ok
-    }
-
     /// Breite und Länge eines neuen Projekts: ohne Rückgängig-Schritt wie
     /// [`Scene::projekt_anfang`].
     pub fn lage_anfang(&mut self, ort: sk_model::Location) {
@@ -1553,25 +1543,32 @@ impl Scene {
         if self.all_dirty {
             self.all_dirty = false;
             self.dirty.clear();
+            self.nachzug.clear();
             let builds: Vec<u32> = self
                 .cache
                 .iter()
                 .map(|c| c.as_ref().map_or(0, |c| c.builds))
                 .collect();
             self.cache.clear();
-            self.raster.leeren();
+            self.raster_leeren();
             let ids: Vec<RunId> = self.model.runs().ids().collect();
             for id in ids {
                 let b = builds.get(id.index() as usize).copied().unwrap_or(0);
                 self.store(id, b, false);
             }
         } else {
-            for id in std::mem::take(&mut self.dirty) {
+            let ids = std::mem::take(&mut self.dirty);
+            self.nachzug_ohne(&ids);
+            for id in ids {
                 let b = self.cached(id).map_or(0, |c| c.builds);
                 self.store(id, b, live);
             }
         }
         self.ext.sync(&self.model);
+        self.bounds_neu();
+    }
+
+    fn bounds_neu(&mut self) {
         self.bounds = self
             .cache
             .iter()
@@ -1613,14 +1610,14 @@ impl Scene {
                 let q = rc
                     .bounds
                     .map(|b| union(Some(b), rc.foot_bounds).unwrap_or(b));
-                self.raster.setze(slot, q);
+                self.raster_setzen(slot, q, &rc);
                 self.cache[slot] = Some(rc);
             }
             // Gelöscht: Platz nur räumen, wenn kein neuerer Zug darin steht
             None => {
                 if self.cache[slot].as_ref().is_some_and(|c| c.id == id) {
                     self.cache[slot] = None;
-                    self.raster.entferne(slot);
+                    self.raster_entfernen(slot);
                 }
             }
         }
@@ -1952,6 +1949,7 @@ impl Scene {
     /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
+        self.gelaende_loslassen();
         // Räume folgen den Wänden im selben Schritt (G3)
         let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
@@ -1992,6 +1990,7 @@ impl Scene {
     /// Verwirft den offenen Schritt (Esc beim Ziehen); nur die betroffenen
     /// Wandzüge werden neu berechnet.
     pub fn rollback(&mut self) {
+        self.gelaende_zug = None;
         let touched = self.model.rollback();
         self.live.clear();
         self.mark_touched(&touched);
@@ -2282,13 +2281,14 @@ impl Scene {
                 }),
             });
             if foundation {
-                // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)
-                let max = sk_model::MAX_TERRAIN_OFFSET;
-                let tz = m.terrain_z_of(m.building_of(id));
+                // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1); mit
+                // Aufmaß der tiefste Punkt am Plattenrand, ab dem die
+                // Einbindetiefe zählt (G1)
+                let tz = m.terrain_z_of_level(id);
                 l.terrain = Some(tz);
                 l.embedment = m.embedment_of(id);
-                l.fields
-                    .push(row(Field::Terrain, "OK Gelände", tz, (-max, max)));
+                let range = m.terrain_z_of_level_range(id);
+                l.fields.push(row(Field::Terrain, "OK Gelände", tz, range));
                 let (lo, hi) = m.foundation_bottom_range_of(id);
                 l.fields.push(row(
                     Field::LevelBottom,
@@ -2375,9 +2375,10 @@ impl Scene {
             Field::ClearHeight(id) => {
                 self.edit_model("lichte Höhe", |m| m.set_clear_height(id, mm))
             }
-            // Kote OK Gelände: der Versatz ist ihr Gegenwert
-            Field::Terrain => match self.active_building() {
-                Some(b) => self.edit_model("Gelände", |m| m.set_terrain_offset_of(b, -mm)),
+            // Kote OK Gelände an der Gründung: ohne Aufmaß der Gegenwert
+            // des Versatzes, mit Aufmaß wandert ±0,00 gegen das Gelände
+            Field::Terrain => match self.model.foundation_level_of(self.active_storey()) {
+                Some(gr) => self.edit_model("Gelände", |m| m.set_terrain_z_of_level(gr, mm)),
                 None => false,
             },
             _ => false,
@@ -2989,37 +2990,6 @@ impl Scene {
         }
     }
 
-    /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
-    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur seine Züge
-    /// mit Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an
-    /// OK Gelände, und andere Gebäude bleiben (Entscheidung B). Die Mengen
-    /// rechnet das Loslassen nach (Review Gelände).
-    pub fn drag_terrain(&mut self, z: f64) {
-        let max = sk_model::MAX_TERRAIN_OFFSET;
-        let Some(b) = self.active_building() else {
-            return;
-        };
-        if z.is_finite() && self.model.set_terrain_offset_of(b, (-z).clamp(-max, max)) {
-            let runs: Vec<RunId> = self
-                .model
-                .elements()
-                .iter()
-                .filter_map(|(_, e)| match e.kind {
-                    sk_model::ElementKind::GroundSlab(s) => Some(s.run),
-                    _ => None,
-                })
-                .filter(|r| {
-                    let st = self.model.run(*r).map(|x| x.storey);
-                    st.and_then(|st| self.model.building_of(st)) == Some(b)
-                })
-                .collect();
-            for r in runs {
-                self.mark(r);
-            }
-            self.rebuild_dirty(true);
-        }
-    }
-
     /// Nach einer Änderung der Geschossbänder des Gebäudes, zu dem `level`
     /// gehört: dessen Züge live neu. Jedes Gebäude hat eigene Geschosse, die
     /// Züge anderer Gebäude bleiben (U4); ohne Gebäude alle.
@@ -3562,13 +3532,15 @@ impl Scene {
         let cut = self.plan_cut();
         let filter = self.filtering();
         let stamp = self.vis_stamp();
-        // OK Gelände je Zug: das seines Gebäudes (Entscheidung B)
+        // OK Gelände je Zug: aus dem Aufmaß, sonst das seines Gebäudes
+        // (Entscheidung B)
+        let raster = self.terrain_grid();
         let model = &self.model;
-        let ground = |r: RunId| {
-            let b = model.run(r).and_then(|x| model.building_of(x.storey));
-            model.terrain_z_of(b)
+        let ground = |r: RunId| Boden {
+            raster: raster.as_deref(),
+            eben: model.terrain_z_of(model.run(r).and_then(|x| model.building_of(x.storey))),
         };
-        let grounds: Vec<f64> = runs.iter().map(|r| ground(*r)).collect();
+        let grounds: Vec<Boden> = runs.iter().map(|r| ground(*r)).collect();
         let mut m = [MeshData::default(), MeshData::default()];
         if view == ViewKind::Plan {
             let active = self.active_storey();
@@ -3738,8 +3710,12 @@ impl Scene {
             return;
         };
         let filter = self.filtering();
+        let raster = self.terrain_grid();
         let model = &self.model;
-        let ground = |id: ElementId| model.terrain_z_of(model.building_of_element(id));
+        let ground = |id: ElementId| Boden {
+            raster: raster.as_deref(),
+            eben: model.terrain_z_of(model.building_of_element(id)),
+        };
         let vis = Vis {
             model: &self.model,
             anim: self.vis_anim.as_ref(),
@@ -4078,7 +4054,7 @@ impl Scene {
 /// wie sie aussehen (3D oder Zeichnung), steht in der Tabelle des Renderers.
 pub fn mesh_of(s: &Solid) -> MeshData {
     let mut m = MeshData::default();
-    mesh_into(&mut m, s, 0.0);
+    mesh_into(&mut m, s, Boden::eben(0.0));
     m
 }
 
@@ -4096,48 +4072,6 @@ fn same_solid(a: &Solid, b: &Solid) -> bool {
         && a.edges.iter().zip(&b.edges).all(|(s, t)| {
             (v(s.a), v(s.b), s.kind, s.elem, s.layer) == (v(t.a), v(t.b), t.kind, t.elem, t.layer)
         })
-}
-
-/// Hängt das Netz eines Körpers an `m` an.
-fn mesh_into(m: &mut MeshData, s: &Solid, ground: f64) {
-    m.faces.reserve(s.triangles.len() * 3);
-    for t in &s.triangles {
-        let n = t.n.to_f32();
-        let key = t.mat as f32;
-        for (v, uv) in t.p.iter().zip(t.uv) {
-            let p = v.to_f32();
-            m.faces.push([
-                p[0],
-                p[1],
-                p[2],
-                n[0],
-                n[1],
-                n[2],
-                key,
-                uv[0] as f32,
-                uv[1] as f32,
-            ]);
-        }
-    }
-    // Kanten, die das Gelände kreuzen, an OK Gelände `ground` teilen: In
-    // den Ansichten zeichnet der untere Teil dann gestrichelt in der Breite
-    // der feinen Linie (S11, Review 3cf a); die Breite gilt je Kante.
-    m.edges.reserve(s.edges.len());
-    for e in &s.edges {
-        let k = e.kind as f32;
-        let (a, b) = (e.a, e.b);
-        // Nur echt kreuzende: endet eine Kante auf dem Gelände, entstünde
-        // ein Stück der Länge 0 (Toleranz wie im Shader, Review 3cg)
-        if a.z.min(b.z) < ground - 0.5 && a.z.max(b.z) > ground + 0.5 {
-            let t = (a.z - ground) / (a.z - b.z);
-            let mut g = a + (b - a) * t;
-            g.z = ground;
-            m.edges.push(([a.to_f32(), g.to_f32()], k));
-            m.edges.push(([g.to_f32(), b.to_f32()], k));
-        } else {
-            m.edges.push(([a.to_f32(), b.to_f32()], k));
-        }
-    }
 }
 
 /// Der Stammsatz, den eine Operation des Preisblatts oder der Lohnkarte
@@ -4356,7 +4290,7 @@ mod tests {
         s.edge(vec3(0.0, 0.0, -1000.0), vec3(0.0, 0.0, 500.0));
         s.edge(vec3(1.0, 0.0, -400.0), vec3(1.0, 0.0, 500.0));
         let mut m = MeshData::default();
-        mesh_into(&mut m, &s, -400.0);
+        mesh_into(&mut m, &s, Boden::eben(-400.0));
         let zs: Vec<_> = m.edges.iter().map(|(e, _)| (e[0][2], e[1][2])).collect();
         assert_eq!(zs, [(-1000.0, -400.0), (-400.0, 500.0), (-400.0, 500.0)]);
     }

@@ -2,6 +2,8 @@
 //! [`crate::gpu_probe`]):
 //!
 //! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_bemassung -- --ignored`
+//!
+//! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_innentuer -- --ignored`
 
 use super::Massketten;
 use crate::camera::Camera;
@@ -80,6 +82,24 @@ fn bild_mit(
     r.read_pixels(W, H)
 }
 
+/// Eingabefeld der Maßzahl wie in der App rechts unter der Maus
+/// (`App::paint_input_pill`); ohne Eingabe keins.
+fn pille(r: &mut Renderer, e: &WallEdit, (mx, my): (f64, f64)) {
+    let Some(i) = e.input() else {
+        r.set_overlay(crate::OVERLAY_INPUT, 0, 0, 0, 0, &[]);
+        return;
+    };
+    let fonts = sk_ui::widgets::Fonts {
+        regular: schrift(),
+        bold: schrift(),
+        italic: None,
+    };
+    let c = i.paint(&fonts, [e.input_label(), ""], 1.0, &Theme::dark());
+    let (x, y) = ((mx + 14.0).round() as i32, (my + 20.0).round() as i32);
+    let (w, h) = (c.width as u32, c.height as u32);
+    r.set_overlay(crate::OVERLAY_INPUT, x, y, w, h, &c.to_premul_rgba8());
+}
+
 #[test]
 #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
 fn gpu_istbilder_bemassung() {
@@ -136,12 +156,66 @@ fn gpu_istbilder_bemassung() {
             &bild(&mut r, &mut s, ViewKind::Persp, &cam3, false),
             &format!("ist-bem-{name}-3d.png"),
         );
+        // „Tragende Schicht“: Rohbaumaße, Öffnungen am Loch im Mauerwerk
+        // (Bedienbarkeit 40.1)
+        let bezug = |s: &mut Scene, b: sk_model::bemassung::Aussenbezug| {
+            let mut stil = s.model().massstil().clone();
+            stil.bezug = b;
+            s.begin_settings();
+            s.edit_attr(|m| m.set_massstil(stil));
+            s.commit();
+        };
+        bezug(&mut s, sk_model::bemassung::Aussenbezug::Rohbau);
+        ab(
+            &bild(&mut r, &mut s, ViewKind::Plan, &cam, false),
+            &format!("ist-bem-{name}-grundriss-rohbau.png"),
+        );
+        // RH1 (WDVS) mit einem Fenster in der Südwand: im Mauerwerk 3 cm je
+        // Seite breiter als außen in der Dämmung
+        if name == "rh1" {
+            bezug(&mut s, sk_model::bemassung::Aussenbezug::Wand);
+            fenster_sued(&mut s);
+            ab(
+                &bild(&mut r, &mut s, ViewKind::Plan, &cam, false),
+                "ist-bem-rh1-fenster-wandpaket.png",
+            );
+            bezug(&mut s, sk_model::bemassung::Aussenbezug::Rohbau);
+            ab(
+                &bild(&mut r, &mut s, ViewKind::Plan, &cam, false),
+                "ist-bem-rh1-fenster-rohbau.png",
+            );
+        }
     }
 }
 
+/// Fenster 1,01 m breit, 2 m von der Südwestecke der Außenhaut, zwischen
+/// Brüstung und Sturz des Geschosses (Ketten über das Wandpaket).
+fn fenster_sued(s: &mut Scene) {
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    let st = s.active_storey();
+    let a = sk_plan::aussen::aussenmasse(s.model(), st).expect("Ketten");
+    let sued = a.seiten.iter().find(|x| x.grad == 270).expect("Südseite");
+    let g = sued.ketten.iter().find(|k| k.art == Kettenart::Gesamt);
+    let t0 = g.expect("Gesamtmaß").bezuege[0].t;
+    let p = |t: f64| sued.t * t + sued.n * sued.aussen;
+    let o = Opening {
+        kind: OpeningKind::Window,
+        path: vec![p(t0 + 3010.0), p(t0 + 2000.0)],
+        bottom: HeightRef::Line(st, HeightLine::Sill),
+        top: HeightRef::Line(st, HeightLine::Lintel),
+        reveal: None,
+        install: Default::default(),
+        swing: None,
+        lock: Vec::new(),
+    };
+    assert!(s.add_opening(o).is_some(), "Fenster");
+}
+
 /// Stufe 2 (Bedienen) an RH1 im Grundriss: Block Süd gewählt und eine
-/// Maßzahl unter der Maus; dieselbe Zahl in Eingabe mit Pfeil und live
-/// gesetztem Wert; die Gesamtkette 1 m nach außen gezogen.
+/// Maßzahl unter der Maus; dieselbe Zahl in Eingabe, erst mit dem Maß
+/// vorbelegt und markiert (Bedienbarkeit 40.3), dann mit Pfeil und live
+/// gesetztem Wert, je mit dem Eingabefeld wie in der App (40.8); die
+/// Gesamtkette 1 m nach außen gezogen.
 #[test]
 #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
 fn gpu_istbilder_bedienen() {
@@ -241,6 +315,11 @@ fn gpu_istbilder_bedienen() {
     for x in maus(z.0, z.1, m) {
         ev(&mut e, &mut s, x);
     }
+    pille(&mut r, &e, z);
+    ab(
+        &bild_mit(&mut r, &mut s, ViewKind::Plan, &cam, false, Some(&e)),
+        "ist-bem-rh1-eingabe-offen.png",
+    );
     for ch in "4,5".chars() {
         ev(
             &mut e,
@@ -253,10 +332,12 @@ fn gpu_istbilder_bedienen() {
             },
         );
     }
+    pille(&mut r, &e, z);
     ab(
         &bild_mit(&mut r, &mut s, ViewKind::Plan, &cam, false, Some(&e)),
         "ist-bem-rh1-eingabe.png",
     );
+    pille(&mut r, &WallEdit::default(), z);
     let esc = Event::Key {
         key: Key::Escape,
         down: true,
@@ -294,4 +375,139 @@ fn gpu_istbilder_bedienen() {
         &bild_mit(&mut r, &mut s, ViewKind::Plan, &cam, false, Some(&e)),
         "ist-bem-rh1-verschoben.png",
     );
+}
+
+/// Grundriss G7d: Innentür am Cursor mit der Live-Kette in der Ziehfarbe
+/// bei 100 %, im Prüfhaus 10 × 8 m mit den Außenmaßketten, ganz und näher
+/// (Einstellungen zu #146). Die Pille zeichnet die Oberfläche, sie fehlt.
+#[test]
+#[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+fn gpu_istbilder_innentuer() {
+    use crate::oeffnung_app::innentuer::{kette, umriss, Innentuer};
+    use crate::oeffnung_app::werkzeug::{helpers, Bild as Vorschau};
+    use sk_model::{Category, Model, RefSide};
+    use sk_render::Ink;
+    let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+    let theme = Theme::dark();
+    let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+    let mut m = Model::with_seed(411);
+    let b = m.add_building(1);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let eg = m.build_from_polygon(b, &pts).unwrap();
+    let st = m.run(eg).unwrap().storey;
+    let set = m.defaults().interior_wall;
+    m.add_wall_run(
+        &[vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)],
+        false,
+        RefSide::Center,
+        st,
+        set,
+        Category::InteriorWall,
+    )
+    .unwrap();
+    let mut s = Scene::with_model(m);
+    s.set_active_storey(st);
+    let z = s.plan_cut();
+    let mut t = Innentuer::default();
+    t.suchen(
+        s.model(),
+        &|r| s.koerper(r),
+        st,
+        vec3(5020.0, 3000.0, 0.0),
+        30.0,
+        z,
+    );
+    let v = t.hover.clone().expect("Tür an der Innenwand");
+    let stil = s.model().massstil().clone();
+    let f = schrift()
+        .map(sk_plan::schrift::Schrift::new)
+        .expect("Liberation Sans");
+    let masse = kette(&v, st, &stil, &f);
+    let vorschau = Vorschau {
+        linien: Vec::new(),
+        umriss: umriss(&v),
+        kette: masse
+            .striche
+            .iter()
+            .map(|x| {
+                let rund = x.art == sk_plan::bild::Strichart::Symbol;
+                (x.a, x.b, crate::bemassung::staerke(&stil, x.art), rund)
+            })
+            .collect(),
+        tinte: masse.tinte.clone(),
+        pille: None,
+        punkt: Some((v.punkt, false)),
+    };
+    let ui = schrift();
+    let (lo, hi) = s.bounds().unwrap();
+    let mitte = v.punkt;
+    for (name, (a, c)) in [
+        (
+            "ist-g7d-kette-100.png",
+            (
+                lo - vec3(3000.0, 3000.0, 0.0),
+                hi + vec3(3000.0, 3000.0, 0.0),
+            ),
+        ),
+        (
+            "ist-g7d-kette-100-nah.png",
+            (
+                mitte - vec3(3000.0, 3500.0, 0.0),
+                mitte + vec3(3000.0, 3500.0, 0.0),
+            ),
+        ),
+    ] {
+        let cam = crate::fit_parallel(ViewKind::Plan, Some((a, c)), f64::from(W), f64::from(H));
+        s.set_theme(&theme);
+        r.set_style(crate::style(&theme.env));
+        r.set_looks(&s.table().looks_with(1.0, |_| 1.0));
+        r.set_mesh(crate::MESH_MODEL, &s.mesh(ViewKind::Plan, None, &[]));
+        r.set_sun(None);
+        let mut mk = Massketten::default();
+        s.set_mass_sicht(ViewKind::Plan, true, false);
+        let blick = super::Blick {
+            cam: &cam,
+            w: f64::from(W),
+            h: f64::from(H),
+        };
+        let (mut h, mut tinte) = mk.zeichnen(
+            &s,
+            ViewKind::Plan,
+            &[],
+            ui.as_ref(),
+            &blick,
+            1.0,
+            &theme,
+            &Default::default(),
+        );
+        h.extend(helpers(&vorschau, 1.0, &theme));
+        let ink: Vec<Ink> = vorschau
+            .tinte
+            .iter()
+            .map(|d| Ink {
+                p: d.map(|p| p.to_f32()),
+                color: theme.interact.drag,
+                occlude: false,
+            })
+            .collect();
+        tinte.push((u64::MAX - 1, ink.into()));
+        r.set_helpers(&h);
+        r.set_ink_teile(&tinte);
+        let mut view = cam.view(W, H);
+        view.paper = Some(s.table().paper);
+        r.draw(W, H, 0, &view).unwrap();
+        std::fs::write(
+            ziel.join(name),
+            sk_paint::encode_png(W, H, &r.read_pixels(W, H)),
+        )
+        .unwrap();
+    }
 }

@@ -200,7 +200,14 @@ impl QuantityWindow {
     /// Karte unter der Maus (Fensterpixel).
     fn karte_at(&self, t: &Theme, x: f64, y: f64) -> Option<Blatt> {
         let s = self.title.scale;
-        Karten::hit(self.cards_x0(t), 32.0 * s, s, self.cards_breit(t), x, y)
+        self.karten
+            .hit(self.cards_x0(t), 32.0 * s, s, self.cards_breit(t), x, y)
+    }
+
+    /// Liegt `(x, y)` auf einer Karte, auch einer blassen?
+    fn auf_karte(&self, t: &Theme, x: f64, y: f64) -> bool {
+        let s = self.title.scale;
+        Karten::auf_karte(self.cards_x0(t), 32.0 * s, s, self.cards_breit(t), x, y)
     }
 
     /// Rechtsklick auf eine Zeile: wählt sie und öffnet das Menü. `false`
@@ -324,7 +331,13 @@ impl QuantityWindow {
     pub fn read_settings(&mut self, text: &str) {
         self.grouping = crate::windows::read_grouping(text);
         self.modus = crate::windows::read_modus(text);
-        self.karten.aktiv = crate::windows::read_blatt(text);
+        self.karten.merken(crate::windows::read_blatt(text));
+    }
+
+    /// Freischaltung: die Kartenleiste zeigt nur die freien Blätter.
+    pub fn set_frei(&mut self, f: crate::freischaltung::Freischaltung) {
+        self.karten.set_frei(f.blaetter());
+        self.dirty = true;
     }
 
     /// Oberkante der Blätter unter Titelleiste und Karten (dip).
@@ -666,9 +679,15 @@ impl QuantityWindow {
                     self.dirty = true;
                     return None;
                 }
-                if let Some(b) = self.karte_at(t, x, y).filter(|_| !self.ava_gross()) {
-                    self.waehlen(b, t);
-                    return None;
+                if !self.ava_gross() {
+                    if let Some(b) = self.karte_at(t, x, y) {
+                        self.waehlen(b, t);
+                        return None;
+                    }
+                    // eine blasse Karte nimmt den Klick, ohne zu wählen
+                    if self.auf_karte(t, x, y) {
+                        return None;
+                    }
                 }
                 let o = match self.blatt() {
                     Blatt::Mengen => self.list.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),

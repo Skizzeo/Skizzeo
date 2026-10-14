@@ -398,7 +398,7 @@ fn bekleidung(model: &Model, typ: LayerSetId) -> Option<(usize, u16, u16)> {
 /// Halbflächen an der Stelle `m` einer Kante mit Richtung `u`: je Dreieck,
 /// das `m` berührt, die Richtung quer zur Kante, in die es von `m` aus
 /// reicht, und seine Normale.
-fn halbflaechen(tris: &[Tri], m: Vec3, u: Vec3) -> Vec<(Vec3, Vec3)> {
+fn halbflaechen(tris: &[&Tri], m: Vec3, u: Vec3) -> Vec<(Vec3, Vec3)> {
     const EPS: f64 = 1e-3;
     let mut out: Vec<(Vec3, Vec3)> = Vec::new();
     for t in tris {
@@ -434,7 +434,7 @@ fn halbflaechen(tris: &[Tri], m: Vec3, u: Vec3) -> Vec<(Vec3, Vec3)> {
 /// Deckungsgleiche gegenläufige Flächen (Fugen zwischen den Klötzen eines
 /// Körpers) heben sich auf; laufen danach genau zwei Flächen eben durch,
 /// knickt sie nicht.
-fn knickt(tris: &[Tri], m: Vec3, u: Vec3) -> bool {
+fn knickt(tris: &[&Tri], m: Vec3, u: Vec3) -> bool {
     let h = halbflaechen(tris, m, u);
     let gleich = |a: Vec3, b: Vec3| (a - b).length() < 1e-6;
     let rest: Vec<&(Vec3, Vec3)> = h
@@ -465,22 +465,26 @@ fn kontur(s: &mut Solid) {
     };
     let kaesten: Vec<([f64; 3], [f64; 3])> = s.triangles.iter().map(|t| kasten(&t.p)).collect();
     let mut neu: Vec<Edge> = Vec::new();
+    let mut teile = Vec::new();
+    let mut nah: Vec<&Tri> = Vec::new();
     for e in &s.edges {
         let l = (e.b - e.a).length();
         if l <= 1e-6 {
             continue;
         }
         let u = (e.b - e.a) * (1.0 / l);
-        // nur die Dreiecke in der Nähe der Kante
+        // nur die Dreiecke in der Nähe der Kante, in ihrer Reihenfolge
         let (lo, hi) = kasten(&[e.a, e.b]);
-        let nah: Vec<Tri> = s
-            .triangles
-            .iter()
-            .zip(&kaesten)
-            .filter(|(_, k)| (0..3).all(|i| k.0[i] <= hi[i] && k.1[i] >= lo[i]))
-            .map(|(t, _)| *t)
-            .collect();
-        let mut teile = vec![0.0, l];
+        nah.clear();
+        nah.extend(
+            s.triangles
+                .iter()
+                .zip(&kaesten)
+                .filter(|(_, k)| (0..3).all(|i| k.0[i] <= hi[i] && k.1[i] >= lo[i]))
+                .map(|(t, _)| t),
+        );
+        teile.clear();
+        teile.extend([0.0, l]);
         for p in nah.iter().flat_map(|t| t.p) {
             let t = (p - e.a).dot(u);
             if t > 1e-6 && t < l - 1e-6 && (e.a + u * t - p).length() < 1e-6 {

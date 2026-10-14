@@ -86,7 +86,7 @@ pub struct Zeile {
 
 /// Zeilen der Liste aus Ablage und Projekt: Eingelesene nach Gruppe und
 /// Name, dann die nur im Projekt, dann der Lieferumfang.
-pub fn zeilen(a: &Ablage, m: &Model) -> Vec<Zeile> {
+pub fn zeilen(a: &Ablage, m: &Model, kosten: bool) -> Vec<Zeile> {
     let detail = |d: &ExtDef| {
         let mut t = format!("{} · Version {}", d.key, d.version);
         let autor = d.def.bauteil_feld("autor").unwrap_or("");
@@ -124,11 +124,12 @@ pub fn zeilen(a: &Ablage, m: &Model) -> Vec<Zeile> {
             (true, None) => anzahl(n),
         };
         let mut entw = notizen(d);
-        if e.hinweise.is_empty() {
+        let hinweise = hinweise_gezeigt(&e.hinweise, kosten);
+        if hinweise.is_empty() {
             entw.push("Prüfung: ohne Befund".into());
         } else {
-            entw.push(format!("Prüfung: {} Hinweise", e.hinweise.len()));
-            entw.extend(e.hinweise.iter().cloned());
+            entw.push(format!("Prüfung: {} Hinweise", hinweise.len()));
+            entw.extend(hinweise);
         }
         entw.push(format!(
             "Quelle: {}",
@@ -234,9 +235,26 @@ pub struct Frage {
     pub zu: Option<bool>,
 }
 
+/// Hinweise der Prüfung, wie sie dastehen: Ohne Kosten fehlen die zu Folgen
+/// von Bauleistungen; gespeichert bleiben alle (Review #120 H4).
+fn hinweise_gezeigt(h: &[String], kosten: bool) -> Vec<String> {
+    h.iter()
+        .filter(|t| kosten || !sk_cost::erweiterung::ist_folgen_hinweis(t))
+        .cloned()
+        .collect()
+}
+
 impl Frage {
-    /// Ergebnis der Prüfung beim Einlesen.
+    /// Ergebnis der Prüfung beim Einlesen, mit allen Modulen.
+    #[cfg(test)]
     pub fn einlesen(v: Vorschlag) -> Frage {
+        Frage::einlesen_frei(v, true)
+    }
+
+    /// Ergebnis der Prüfung beim Einlesen. Ohne Kosten fehlen die Haken für
+    /// den Firmenkatalog, alle neuen Sätze gehen dann hin, und die Hinweise
+    /// zu Folgen ([`hinweise_gezeigt`]).
+    pub fn einlesen_frei(v: Vorschlag, kosten: bool) -> Frage {
         let alt = |a: u32| format!("Eingelesen ist Version {a}.");
         let (satz, ja, warnung) = match v.fall {
             Fall::Neu => ("Neue Erweiterung.".to_string(), "Einlesen", false),
@@ -293,17 +311,18 @@ impl Frage {
             };
             abschnitte.push((titel, z));
         }
-        if !v.hinweise.is_empty() {
+        let hinweise = hinweise_gezeigt(&v.hinweise, kosten);
+        if !hinweise.is_empty() {
             abschnitte.push((
-                format!("Hinweise der Prüfung ({})", v.hinweise.len()),
-                v.hinweise.clone(),
+                format!("Hinweise der Prüfung ({})", hinweise.len()),
+                hinweise,
             ));
         }
         let name = kopf(&v.def);
         let ja = (!ja.is_empty()).then_some(ja);
         // Neue Sätze für den Firmenkatalog (E8c), je einer mit Haken
         let haken = match ja {
-            Some(_) => v
+            Some(_) if kosten => v
                 .saetze
                 .iter()
                 .map(|n| {
@@ -320,7 +339,7 @@ impl Frage {
                     }
                 })
                 .collect(),
-            None => Vec::new(),
+            _ => Vec::new(),
         };
         Frage {
             titel: "Bauteil einlesen".into(),
@@ -1276,7 +1295,7 @@ mod tests {
     #[test]
     fn zeilen_aus_ordner_und_projekt() {
         let (dir, a, m) = lage("zeilen");
-        let z = zeilen(&a, &m);
+        let z = zeilen(&a, &m, true);
         let _ = std::fs::remove_dir_all(&dir);
         let kurz: Vec<(&str, Art, &str, bool)> = z
             .iter()
@@ -1334,7 +1353,7 @@ mod tests {
     #[test]
     fn fenster_bedienen() {
         let (dir, a, m) = lage("fenster");
-        let mut w = Fenster::new(zeilen(&a, &m));
+        let mut w = Fenster::new(zeilen(&a, &m, true));
         let _ = std::fs::remove_dir_all(&dir);
         let r = w.rect(1.0, 1280, 800, 32);
         let z0 = (
@@ -1428,11 +1447,11 @@ mod tests {
         m.add_building(1);
         let d = ExtDef::lesen(gelaender).unwrap();
         m.put_ext_def(d.clone()).unwrap();
-        let z = zeilen(&Ablage::default(), &m);
+        let z = zeilen(&Ablage::default(), &m, true);
         assert!(!z[0].baustoffe);
         let id = m.ext_material(&d, "stahl_s235").unwrap();
         assert!(m.remove_material(id));
-        let z = zeilen(&Ablage::default(), &m);
+        let z = zeilen(&Ablage::default(), &m, true);
         assert_eq!((z[0].art, z[0].baustoffe), (Art::NurProjekt, true));
         let mut w = Fenster::new(z);
         w.key(RUNTER);
@@ -1451,7 +1470,7 @@ mod tests {
             x => panic!("{x:?}"),
         }
         assert_eq!(m.ext_baustoffe_nachlegen("werk.stabgelaender"), 1);
-        assert!(!zeilen(&Ablage::default(), &m)[0].baustoffe);
+        assert!(!zeilen(&Ablage::default(), &m, true)[0].baustoffe);
     }
 
     /// E8c-b: Jede Knopfzeile mit „Baustoffe anlegen“: die Beschriftung
@@ -1480,7 +1499,7 @@ mod tests {
             ("an, gleiche Fassung", gleich),
             ("aus", aus),
         ] {
-            let mut w = Fenster::new(zeilen(&a, &m));
+            let mut w = Fenster::new(zeilen(&a, &m, true));
             w.key(RUNTER);
             let r = w.rect(1.0, 1280, 800, 32);
             let l = w.lage(1.0, r.h - KOPF_H - FUSS_H);
@@ -1556,6 +1575,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Review #120 H4: Ohne Kosten fehlen beim Einlesen die Hinweise zu
+    /// Folgen von Bauleistungen und die Haken; im Vorschlag, der gespeichert
+    /// wird, bleiben alle Hinweise.
+    #[test]
+    fn kostenhinweise_nur_mit_kosten() {
+        let a = Ablage::default();
+        let m = Model::new();
+        let mut v = ext_ablage::pruefen(STUETZE, &a, &m).unwrap();
+        v.saetze = sk_cost::neue_saetze::neue_saetze(&m, &sk_model::Library::standard(), &v.def);
+        let zeile = "Zeile 4: ein Hinweis".to_string();
+        let folge =
+            "Stütze nutzt „Beton“; deren Folge „Schalung“ kommt in der Definition nicht vor";
+        v.hinweise = vec![zeile.clone(), folge.to_string()];
+        let mit = Frage::einlesen_frei(v.clone(), true);
+        let ohne = Frage::einlesen_frei(v, false);
+        let hinweise = |f: &Frage| {
+            f.abschnitte
+                .iter()
+                .find(|a| a.0.starts_with("Hinweise der Prüfung"))
+                .cloned()
+        };
+        assert_eq!(
+            hinweise(&mit),
+            Some((
+                "Hinweise der Prüfung (2)".into(),
+                vec![zeile.clone(), folge.to_string()]
+            ))
+        );
+        assert_eq!(
+            hinweise(&ohne),
+            Some(("Hinweise der Prüfung (1)".into(), vec![zeile]))
+        );
+        assert_eq!((mit.haken.len(), ohne.haken.len()), (2, 0));
+        let Some(Tat::Einlesen(v)) = ohne.tat else {
+            panic!("kein Einlesen");
+        };
+        assert_eq!(v.hinweise.len(), 2);
+    }
+
     /// E8c: neue Sätze der Stütze mit Haken; abgehakt geht nur der Rest
     /// mit „Einlesen“ an die Firma, Vorhandenes ist nicht wählbar.
     #[test]
@@ -1602,6 +1660,56 @@ mod tests {
         let f = Frage::einlesen(v);
         assert!(!f.haken[0].an && !f.haken[0].waehlbar);
         assert!(f.haken[0].text.ends_with("vorhanden, Firmenpreis gilt"));
+    }
+
+    /// Review #120 B1: Die Stufe ändert nicht, was gespeichert wird. Ohne
+    /// Kosten fehlen nur die Haken; „Einlesen“ legt in Basis dieselben
+    /// Hinweise ab und schreibt dieselben neuen Sätze in den Firmenkatalog
+    /// wie mit allem frei.
+    #[test]
+    fn firmenkatalog_in_jeder_stufe_gleich() {
+        use crate::catalog::Company;
+        use crate::freischaltung::Freischaltung;
+        let dir = ordner("stufe");
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Import, "2026-10-13", "18:00");
+        let mut katalog = Vec::new();
+        for (i, f) in [Freischaltung::stufe("basis").unwrap(), Freischaltung::ALLES]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut c, _) = Company::load(&dir.join(format!("firma{i}.szk")), true);
+            let m = Model::new();
+            let frage = crate::ext_fenster_app::frage_zur_datei(
+                "werk.stuetze.szb",
+                Ok(STUETZE.to_string()),
+                &Ablage::default(),
+                &m,
+                Some(c.library()),
+                f,
+            );
+            assert_eq!(frage.haken.len(), [0, 2][i], "{f:?}");
+            let mut w = Fenster::mit_frage(Vec::new(), frage);
+            let r = w.rect(1.0, 1280, 800, 32);
+            // „column“ ist neu: erst die eigene Rückfrage
+            assert!(drueck(&mut w, r, Knopf::Ja).is_none());
+            let Some(Antwort::Tat(Tat::Einlesen(v))) = drueck(&mut w, r, Knopf::Ja) else {
+                panic!("{f:?}: kein Einlesen");
+            };
+            let (n, op) = crate::ext_fenster_app::saetze_op(&v, None).unwrap();
+            assert_eq!(n, 2);
+            c.fuer_firma(&h, &[op]).unwrap();
+            // die Kennung des Katalogs entsteht je Datei neu
+            let szk: Vec<String> = sk_model::write_szk(c.library())
+                .lines()
+                .map(|z| match z.strip_prefix("[catalog] guid=") {
+                    Some(r) => r.split_once(' ').map_or("", |x| x.1).to_string(),
+                    None => z.to_string(),
+                })
+                .collect();
+            katalog.push((v.hinweise.clone(), szk));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(katalog[0], katalog[1]);
     }
 
     /// §2 Nr. 7: Neue Bauteilart und Gewerk ohne Titel nur nach eigener
@@ -1697,7 +1805,7 @@ mod tests {
         std::fs::create_dir_all(&ziel).unwrap();
         let t = Theme::dark();
         let (dir, a, m) = lage("bilder");
-        let mut w = Fenster::new(zeilen(&a, &m));
+        let mut w = Fenster::new(zeilen(&a, &m, true));
         w.sel = Some(0);
         w.offen = Some(0);
         w.meldung = Some("„Stahlbetonstütze“ Version 2 eingelesen.".into());
@@ -1731,7 +1839,7 @@ mod tests {
             w.paint(&t, &fonts, 1.0, r).to_png(),
         )
         .unwrap();
-        let w = Fenster::new(zeilen(&Ablage::default(), &Model::new()));
+        let w = Fenster::new(zeilen(&Ablage::default(), &Model::new(), true));
         let r = w.rect(1.0, 1280, 800, 32);
         std::fs::write(
             ziel.join("ist-e5-leer.png"),

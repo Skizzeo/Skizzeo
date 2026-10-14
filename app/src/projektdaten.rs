@@ -5,6 +5,7 @@
 //! setzt sie (bei „Neu“ ohne Rückgängig-Schritt, sonst als ein Schritt).
 //! Die Maske zeigt keinen Befund und sperrt nichts.
 
+use crate::freischaltung::{Freischaltung, Modul};
 use sk_model::qto_earth::Boden;
 use sk_model::{Location, Project};
 use sk_paint::{Canvas, Path};
@@ -489,6 +490,9 @@ pub struct Maske {
     /// Sichtbare Höhe des Blatts (dip), aus [`Maske::rect`]; unendlich, bis
     /// das Fenster sie nennt.
     sicht: Cell<f32>,
+    /// Gruppe „Baugrund (Erdarbeiten)“ zeigen: Sie gehört zu Mengen
+    /// (Review #120 B2). Versteckt bleiben ihre Werte, wie sie sind.
+    boden: bool,
 }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -540,7 +544,24 @@ impl Maske {
             pressed: None,
             rollen: 0.0,
             sicht: Cell::new(f32::INFINITY),
+            boden: true,
         }
+    }
+
+    /// Freie Module: ohne Mengen fehlt die Gruppe „Baugrund (Erdarbeiten)“.
+    pub fn mit_frei(mut self, f: Freischaltung) -> Maske {
+        self.boden = f.frei(Modul::Mengen);
+        self
+    }
+
+    /// Das Feld `i` steht in der Maske.
+    fn gezeigt(&self, i: usize) -> bool {
+        self.boden || !(BODEN..UTM).contains(&i)
+    }
+
+    /// Felder in Lese- und Tab-Reihenfolge, ohne versteckte.
+    fn reihe(&self) -> impl Iterator<Item = usize> + '_ {
+        REIHE.into_iter().filter(|&i| self.gezeigt(i))
     }
 
     /// Breite und Länge aus der Lage des Projekts (Sonnenstand S1). Fehlt
@@ -627,11 +648,15 @@ impl Maske {
     }
 
     /// Die Projektdaten aus den Feldern. Ein Bodenkennwert, der keine Zahl
-    /// im Bereich ist, lässt den alten stehen (die Maske meldet ihn).
+    /// im Bereich ist, lässt den alten stehen (die Maske meldet ihn); ein
+    /// versteckter ebenso (Review #120 H1).
     pub fn projekt(&self) -> Project {
         let w = |i: usize| self.felder[i].text.clone();
         let mut boden = self.basis.soil.werte();
         for (k, b) in boden.iter_mut().enumerate() {
+            if !self.gezeigt(BODEN + k) {
+                continue;
+            }
             if let Ok(v) = boden_wert(k, &self.felder[BODEN + k].text) {
                 *b = v;
             }
@@ -653,7 +678,7 @@ impl Maske {
     /// Meldung zu einem Wert, der nicht passt (zu lang, Umbruch in einem
     /// einzeiligen Feld); er bleibt trotzdem erhalten (Regel 110).
     pub fn meldung(&self) -> Option<String> {
-        REIHE.iter().find_map(|&i| {
+        self.reihe().find_map(|i| {
             let (e, f, wort) = (&self.felder[i], &FELDER[i], WORT[i]);
             let n = e.text.chars().count();
             if n > f.max {
@@ -850,7 +875,7 @@ impl Maske {
         let mut y = KOPF_H + 12.0;
         let mut felder = [Rect::new(0.0, 0.0, 0.0, 0.0); N];
         let mut gruppen = [0.0; 5];
-        for i in REIHE {
+        for i in self.reihe() {
             let f = &FELDER[i];
             if let Some(g) = GRUPPEN.iter().position(|(a, _)| *a == i) {
                 gruppen[g] = y * s;
@@ -1132,9 +1157,10 @@ impl Maske {
                 }
             }
             Key::Tab => {
-                let n = REIHE.len();
-                let k = REIHE.iter().position(|&j| j == i).unwrap_or(0);
-                self.fokus_auf(REIHE[(k + if sh { n - 1 } else { 1 }) % n]);
+                let reihe: Vec<usize> = self.reihe().collect();
+                let n = reihe.len();
+                let k = reihe.iter().position(|&j| j == i).unwrap_or(0);
+                self.fokus_auf(reihe[(k + if sh { n - 1 } else { 1 }) % n]);
             }
             RUNTER if i == 0 => {
                 self.liste = Some(match self.liste {
@@ -1271,7 +1297,11 @@ impl Maske {
         c.fill_rect(m, m + KOPF_H * s, w, s.max(1.0), u.border);
         // Gruppen und Felder
         let gpx = 10.5 * s;
-        for (g, (_, name)) in GRUPPEN.iter().enumerate() {
+        for (g, (_, name)) in GRUPPEN
+            .iter()
+            .enumerate()
+            .filter(|(_, (a, _))| self.gezeigt(*a))
+        {
             let y = m + l.gruppen[g] + (GRUPPE_H * s * 0.5 + cap(gpx)) * 0.5 + 4.0 * s;
             widgets::text(&mut c, bold, name, gpx, x0, y, u.text_dim);
             if g == 2 && self.vom_letzten {
@@ -1287,7 +1317,7 @@ impl Maske {
             }
         }
         let fpx = t.size.font_small * s;
-        for (i, f) in FELDER.iter().enumerate() {
+        for (i, f) in FELDER.iter().enumerate().filter(|(i, _)| self.gezeigt(*i)) {
             let r = at(l.felder[i]);
             let fokus = i == self.fokus;
             let lbl_y = r.y + (ZEILE_H * s + cap(fpx)) * 0.5;
@@ -1518,6 +1548,28 @@ mod tests {
         m.fokus_auf(UTM + 2);
         m.key(Key::Tab, Modifiers::default());
         assert_eq!(m.fokus(), 0);
+    }
+
+    /// Review #120 B2: Ohne Mengen fehlt „Baugrund (Erdarbeiten)“. Tab
+    /// springt von der Planung zu den Landeskoordinaten, ein versteckter
+    /// Wert meldet sich nicht und bleibt, wie er ist.
+    #[test]
+    fn baugrund_nur_mit_mengen() {
+        let stufe = |w: &str| Freischaltung::stufe(w).unwrap();
+        let mut m = Maske::new(&ohne(), false, None).mit_frei(stufe("basis"));
+        assert!((0..N).all(|i| m.gezeigt(i) != (BODEN..UTM).contains(&i)));
+        m.fokus_auf(7);
+        m.key(Key::Tab, Modifiers::default());
+        assert_eq!(m.fokus(), UTM);
+        // 60 ° wäre gültig: versteckt zählt es trotzdem nicht (Review #120 H1)
+        m.felder[14] = TextEdit::new("60");
+        assert_eq!(m.meldung(), None);
+        assert_eq!(m.projekt().soil.boeschung, 45.0);
+        let mut p = Maske::new(&ohne(), false, None).mit_frei(stufe("pro"));
+        assert!((0..N).all(|i| p.gezeigt(i)));
+        p.felder[14] = TextEdit::new("60");
+        assert_eq!(p.meldung(), None);
+        assert_eq!(p.projekt().soil.boeschung, 60.0);
     }
 
     fn tippen(m: &mut Maske, s: &str) {

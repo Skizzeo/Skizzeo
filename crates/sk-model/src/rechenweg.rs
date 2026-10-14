@@ -210,7 +210,7 @@ pub fn weg(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Option<Rechen
             },
             ziel,
         )],
-        _ => match frost(model, r, b) {
+        _ => match frost(model, r, b).or_else(|| decke(model, r, b)) {
             Some(t) => t,
             None => sonst(r, b),
         },
@@ -513,6 +513,74 @@ fn frost(model: &Model, r: &LayerRow, b: Bezug) -> Option<Vec<Term>> {
         ),
         f.length * f.width * f.depth,
     )])
+}
+
+/// Decke mit Aussparungen für Fenster über zwei Geschosse (VOB-Prüfung
+/// vob/pruefung-deckenaussparung.md): der volle Umriss als Basis, jede
+/// Kerbe ein eigener Term, übermessen bis 2,5 m² bzw. 0,5 m³ oder
+/// abgezogen. `None` ohne Aussparung (dann [`sonst`]).
+fn decke(model: &Model, r: &LayerRow, b: Bezug) -> Option<Vec<Term>> {
+    let ElementKind::Floor(f) = &model.element(r.element)?.kind else {
+        return None;
+    };
+    let d = model.floor(f.run)?.ok()?;
+    let kerben = d.kerben();
+    if kerben.is_empty() || b == Bezug::Laenge {
+        return None;
+    }
+    let layers = model.element_layers(r.element);
+    let kern = layers.len() == 1 || layers.get(r.layer).is_some_and(|l| l.core);
+    if b == Bezug::Volumen && !kern {
+        return None;
+    }
+    let dicke = d.params.thickness;
+    let voll = d.area() + kerben.iter().map(|k| k.1).sum::<f64>();
+    let mut t = vec![match b {
+        Bezug::Volumen => basis(
+            format!(
+                "Fläche ohne Aussparungen {} × Dicke {} m",
+                menge_text(voll, Bezug::Flaeche),
+                m(dicke)
+            ),
+            voll * dicke,
+        ),
+        _ => basis("Fläche aus dem Umriss ohne Aussparungen".into(), voll),
+    }];
+    for (id, fl) in kerben {
+        let name = id
+            .and_then(|i| model.element(i))
+            .map_or("", |e| e.number.as_str());
+        let schenkel: Vec<_> = d.aussparungen.iter().filter(|a| a.opening == id).collect();
+        let mass = match schenkel[..] {
+            [a] => format!("{} × {} m", m(a.stirn), m(a.tiefe)),
+            _ => menge_text(fl, Bezug::Flaeche),
+        };
+        let (wert, ab, grenze) = match b {
+            Bezug::Volumen => (fl * dicke, vob::ueber_grenze_vol(fl * dicke), "0,5 m³"),
+            _ => (fl, vob::ueber_grenze(fl), "2,5 m²"),
+        };
+        t.push(if ab {
+            Term {
+                text: format!("Aussparung {name} {mass}"),
+                wert: -wert,
+                art: Art::Abzug,
+            }
+        } else {
+            Term {
+                text: format!("Aussparung {name} {mass} übermessen (bis {grenze}, VOB/C)"),
+                wert: 0.0,
+                art: Art::Hinweis,
+            }
+        });
+    }
+    if b == Bezug::Volumen && r.pocket > eps(b) {
+        t.push(Term {
+            text: format!("davon Auflager in den Wänden {}", menge_text(r.pocket, b)),
+            wert: 0.0,
+            art: Art::Hinweis,
+        });
+    }
+    Some(t)
 }
 
 /// Bauteile ohne Wandgeometrie: Platten, Decken, Dämmungen, Streifen.

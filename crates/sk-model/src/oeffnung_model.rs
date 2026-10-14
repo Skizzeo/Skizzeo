@@ -286,6 +286,17 @@ impl Model {
     /// Pfadstück, das auf der Außenfläche eines Segments liegt, ein Loch;
     /// zur Außenecke hin offen.
     pub(crate) fn holes_of(&self, run: RunId, c: &WallChain) -> Vec<Hole> {
+        self.holes_in_band(run, c, None)
+    }
+
+    /// [`Model::holes_of`], mit `band` nur für die Öffnungen, die in die
+    /// Höhe `band` reichen (Deckenband, Review W48 B3).
+    pub(crate) fn holes_in_band(
+        &self,
+        run: RunId,
+        c: &WallChain,
+        band: Option<(f64, f64)>,
+    ) -> Vec<Hole> {
         if !self.category_of(run).is_some_and(Category::takes_openings) {
             return Vec::new();
         }
@@ -327,7 +338,14 @@ impl Model {
             let ElementKind::Opening(op) = &e.kind else {
                 continue;
             };
-            if self.storey(e.storey).and_then(|s| s.building) != building || !nah(&op.path) {
+            if self.storey(e.storey).and_then(|s| s.building) != building {
+                continue;
+            }
+            let reicht = |(b, t): (f64, f64)| {
+                self.opening_band(op)
+                    .is_some_and(|z| z.1 > b + 1.0 && z.0 < t - 1.0)
+            };
+            if !band.is_none_or(reicht) || !nah(&op.path) {
                 continue;
             }
             out.extend(
@@ -574,30 +592,32 @@ impl Model {
             (lo.0, lo.1, hi.0, hi.1) = (lo.0.min(p.x), lo.1.min(p.y), hi.0.max(p.x), hi.1.max(p.y));
         }
         // Im lesenden Gang nur die Züge der Felder um den Pfad
-        let kandidaten: Box<dyn Iterator<Item = RunId>> = match self.verz() {
+        let kandidaten: Box<dyn Iterator<Item = (RunId, &WallRun)>> = match self.verz() {
             Some(v) => {
                 let r = RUN_REACH;
                 let (a, b) = (vec3(lo.0 - r, lo.1 - r, 0.0), vec3(hi.0 + r, hi.1 + r, 0.0));
-                Box::new(v.alle_zuege_bei(a, b).into_iter())
+                let ids = v.alle_zuege_bei(a, b);
+                Box::new(ids.into_iter().filter_map(|r| Some((r, self.run(r)?))))
             }
-            None => Box::new(self.runs.ids()),
+            None => Box::new(self.runs.iter()),
         };
+        // Erst Rechteck und Strecken des Zugs, dann die Art seiner Wände:
+        // Ein Blick in das erste Bauteil kostet je Zug mehr als das Rechteck,
+        // ohne Verzeichnis bei jedem Zug des Modells (Review #140, Zugschritt)
         kandidaten
-            .filter(|&r| {
-                self.category_of(r).is_some_and(Category::takes_openings)
-                    && self.run(r).is_some_and(|run| {
-                        let (mut a, mut b) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
-                        for p in &run.points {
-                            (a.0, a.1, b.0, b.1) =
-                                (a.0.min(p.x), a.1.min(p.y), b.0.max(p.x), b.1.max(p.y));
-                        }
-                        a.0 <= hi.0 + RUN_REACH
-                            && b.0 >= lo.0 - RUN_REACH
-                            && a.1 <= hi.1 + RUN_REACH
-                            && b.1 >= lo.1 - RUN_REACH
-                            && nah_am_pfad(run, &o.path)
-                    })
+            .filter(|(r, run)| {
+                let (mut a, mut b) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+                for p in &run.points {
+                    (a.0, a.1, b.0, b.1) = (a.0.min(p.x), a.1.min(p.y), b.0.max(p.x), b.1.max(p.y));
+                }
+                a.0 <= hi.0 + RUN_REACH
+                    && b.0 >= lo.0 - RUN_REACH
+                    && a.1 <= hi.1 + RUN_REACH
+                    && b.1 >= lo.1 - RUN_REACH
+                    && nah_am_pfad(run, &o.path)
+                    && self.category_of(*r).is_some_and(Category::takes_openings)
             })
+            .map(|(r, _)| r)
             .collect()
     }
 }
@@ -755,6 +775,7 @@ impl Model {
             n: nr * (o - c.inner_offset()).signum(),
             u: (u_of(*corners.get(seg)?), u_of(*corners.get(j)?)),
             free: (s0 + rand, s1 - rand),
+            span: (s0, s1),
             z: (c.base, c.base + c.height),
         })
     }
@@ -775,6 +796,19 @@ impl Model {
         chain_of: &dyn Fn(RunId) -> Option<WallChain>,
     ) -> Option<DoorLeaf> {
         let o = self.opening(id)?;
+        let st = self.element(id)?.storey;
+        self.opening_runs(o)
+            .into_iter()
+            .filter(|r| self.run(*r).is_some_and(|x| x.storey == st))
+            .find_map(|r| self.door_leaf_on(id, r, &chain_of(r)?))
+    }
+
+    /// [`Model::door_leaf`] im Zug `run` mit Körper `c`, ohne Suche über die
+    /// Züge; `None`, wenn die Tür dort kein Loch hat. Wer die Züge bei der
+    /// Tür schon kennt (Grundriss: Raster der Szene), fragt sie der Reihe
+    /// nach wie [`Model::door_leaf_in`] (Review #149 B2).
+    pub fn door_leaf_on(&self, id: ElementId, run: RunId, c: &WallChain) -> Option<DoorLeaf> {
+        let o = self.opening(id)?;
         let sw = o.swing?;
         let (a, b) = (flat(*o.path.first()?), flat(*o.path.last()?));
         let len = (b - a).length();
@@ -783,16 +817,8 @@ impl Model {
         }
         let along = (b - a) / len;
         let into = sw.side.normal(along);
-        let st = self.element(id)?.storey;
-        let (run, c, h) = self
-            .opening_runs(o)
-            .into_iter()
-            .filter(|r| self.run(*r).is_some_and(|x| x.storey == st))
-            .find_map(|r| {
-                let c = chain_of(r)?;
-                let (_, h) = self.legs_on(r, &c, Some(id), o).into_iter().next()?;
-                Some((r, c, h))
-            })?;
+        let (_, h) = self.legs_on(run, c, Some(id), o).into_iter().next()?;
+        // Mit Aufschlag und zwei Pfadpunkten hat jedes Loch ein Blatt
         let leaf = h.leaf?;
         let (pts, _, dirs) = c.layout()?;
         let d = dirs[h.seg];

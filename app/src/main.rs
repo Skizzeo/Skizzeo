@@ -22,6 +22,7 @@ mod abnahme_s4;
 mod ansicht_linien;
 mod ansicht_schatten;
 mod attr_pick;
+mod ausbau_app;
 mod auswahl;
 mod autosave;
 mod ava_view;
@@ -48,6 +49,10 @@ mod ext_werkzeug;
 mod flush_pick;
 mod fokus;
 mod frame_time;
+mod freischaltung;
+mod gelaende_app;
+mod gelaende_netz;
+mod gelaende_platte;
 mod geschosse_app;
 mod geschossfenster;
 #[cfg(all(test, target_os = "linux"))]
@@ -105,7 +110,7 @@ mod window_kit;
 mod windows;
 mod zahnrad_app;
 
-use ansicht_linien::{ground_line, level_guide, terrain_at, terrain_boxes, terrain_gaps};
+use ansicht_linien::level_guide;
 use camera::{fit_perspective, Camera};
 use document::Document;
 use menu::Command;
@@ -435,12 +440,6 @@ pub(crate) fn section_camera(
     }
 }
 
-/// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude
-/// hinaus) auf OK Gelände `z` (Gelände Thema 1).
-/// Rand der Geländeflächen um die Wandzüge eines Gebäudes (mm): deckt
-/// Dämmung, Schürze und Sockel.
-const TERRAIN_MARGIN: f64 = 1500.0;
-
 /// Weiche Kamerafahrt (Doppelklick in der Mengenliste).
 struct Fly {
     from: Camera,
@@ -589,8 +588,8 @@ struct App {
     /// Ecken des Gebäudes über dem Boden bei eingeschaltetem Sonnenstand:
     /// aus ihnen kommt die Schattenspitze (S6).
     ecken: Vec<Vec3>,
-    /// Lücken der Geländelinie im Schnitt (längs der Linie, mm).
-    terrain_gaps: Vec<(f64, f64)>,
+    /// Geländeplatte (Gelände G0): Platten, Netz und Eigenschaften.
+    platte: gelaende_platte::Platte,
     /// Der zuletzt gesuchte Griff an der Schattenspitze und wofür (Sonne,
     /// Lage, Stand der Ecken): Hover und Bild suchen nur neu, wenn sich
     /// davon etwas ändert, nicht je Mausbewegung über alle Ecken (Review 3cb).
@@ -931,22 +930,13 @@ impl App {
         let plane = self.plane();
         if self.mesh_dirty {
             self.mesh_dirty = false;
-            let mesh = self.scene.mesh(self.ui.view, plane, &self.live_runs);
-            self.renderer.set_mesh(MESH_MODEL, &mesh);
+            let mesh = self.netz_hochladen(plane);
             self.ecken = if self.sonne_an().is_some() {
                 sonne_view::ecken(&mesh.faces)
             } else {
                 Vec::new()
             };
             self.ecken_stand += 1;
-            self.terrain_gaps = if self.ui.view == ViewKind::Section {
-                let axis = usize::from(self.side_like(ViewKind::Section) == ViewKind::Left);
-                let patches = self.scene.model().terrain_patches(TERRAIN_MARGIN);
-                let z = self.scene.model().terrain_z();
-                terrain_gaps(&mesh.faces, |x, y| terrain_at(&patches, z, x, y), axis)
-            } else {
-                Vec::new()
-            };
             let ghost = self.scene.ghost_mesh(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_GHOST, &ghost);
         }
@@ -955,6 +945,7 @@ impl App {
             let mesh = self.scene.mesh_runs(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_LIVE, &mesh);
         }
+        self.platte_hochladen();
     }
 
     /// Paneel „Eigenschaften“ an Auswahl und Modell angleichen. Beim Ziehen bleibt
@@ -970,6 +961,9 @@ impl App {
         }
         if self.sel.set(self.picking.primary()) {
             self.redraw = true;
+        }
+        if self.platte_props() {
+            return;
         }
         let key = self.sel.id.map(|id| (id, self.scene.model().revision()));
         if key == self.props_key {
@@ -1503,25 +1497,6 @@ impl App {
         }
     }
 
-    /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
-    /// dort ausblendet (S11).
-    fn ansicht_huelle(&self, v: ViewKind) -> Option<(Vec3, Vec3)> {
-        let (lo, hi) = self.scene.bounds()?;
-        let m = self.scene.model();
-        let ganz = ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
-        // Das tiefste Gelände: über keinem Gebäude wird etwas abgeschnitten
-        let g = m
-            .terrain_patches(TERRAIN_MARGIN)
-            .iter()
-            .map(|p| p.1)
-            .fold(m.terrain_z(), f64::min);
-        Some(if ganz || hi.z <= g {
-            (lo, hi)
-        } else {
-            (vec3(lo.x, lo.y, lo.z.max(g)), hi)
-        })
-    }
-
     /// Ersetzt das Modell (Neu, Öffnen). Verlauf, Auswahl und angefangene
     /// Eingaben gehen weg; die Kamera zeigt das ganze Modell.
     fn replace_scene(&mut self, model: sk_model::Model) {
@@ -1547,7 +1522,7 @@ impl App {
         self.sect = Sections::default();
         self.sect.load(&self.scene);
         self.sel = Selection::default();
-        self.tree.reset();
+        self.baum_neu();
         self.props_key = None;
         self.ui.set_props(None);
         self.props_dirty = true;
@@ -1576,6 +1551,7 @@ impl App {
         self.menu.close();
         self.menu_dirty = true;
         match c {
+            _ if self.ui.frei.gesperrt(c) => {}
             Command::New | Command::Close | Command::Open | Command::Quit => {
                 self.confirm_then(c, surface)
             }
@@ -1605,7 +1581,7 @@ impl App {
             Command::Backups => self.open_backups(),
             Command::OpenBackup(_) => self.confirm_then(c, surface),
             Command::Delete => self.delete_selection(),
-            Command::Help => self.show_help(true),
+            Command::Help | Command::Ausbaustufe => self.hilfe_befehl(c),
             Command::MeasureFrameTime => self.start_frame_measure(),
             Command::ExportIfc => self.export_ifc(surface),
             Command::IfcVorschau => self.open_ifc_vorschau(surface),
@@ -1762,7 +1738,7 @@ impl App {
             select,
             self.mat_more,
         );
-        m.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
+        m.set_rahmen(self.rolle() == sk_cost::Rolle::Nutzer, self.ui.frei);
         self.materials = Some(m);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
@@ -2783,6 +2759,9 @@ impl App {
 
     /// Öffnet das Mengenfenster (F2) oder holt es nach vorn.
     fn open_quantity(&mut self, surface: &Surface) {
+        if self.ui.frei.gesperrt(Id::Quantity) {
+            return;
+        }
         self.quantity.open = true;
         self.quantity.dirty = true;
         let caption = windows::blatt_caption(
@@ -3190,6 +3169,7 @@ impl App {
 
     fn click(&mut self, id: Id) {
         match id {
+            _ if self.ui.frei.gesperrt(id) => {}
             Id::LevelsOpen => self.geschoss.wanted = true,
             Id::Building | Id::Interior => {
                 let cat = match id {
@@ -3266,6 +3246,7 @@ impl App {
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
             Id::Opening(k) => self.oeffnung_klick(k),
+            Id::Gelaende(k) => self.gelaende_klick(k),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
             Id::ExtJa(i) => self.ext_prop_wert(i, None),
             ui::kette_button!() => self.kette_klick(id),
@@ -3292,7 +3273,8 @@ impl App {
         if out.relayout {
             self.overlay_dirty = true;
         }
-        if let Some((Field::ExtTool(i), v)) = out.submit {
+        if self.platte_feld(out.submit) {
+        } else if let Some((Field::ExtTool(i), v)) = out.submit {
             self.ext_feld(i, v);
         } else if let Some((Field::ExtProp(i), v)) = out.submit {
             self.ext_prop_feld(i, v);
@@ -3867,7 +3849,8 @@ impl App {
         let planung = if neu { self.settings.planung() } else { None };
         self.projektdaten = Some(
             projektdaten::Maske::new(self.scene.model().project(), neu, planung)
-                .mit_ort(self.scene.model().location()),
+                .mit_ort(self.scene.model().location())
+                .mit_frei(self.ui.frei),
         );
         self.tip = None;
         self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
@@ -4502,7 +4485,7 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
-                } else if down && self.oeffnung_taste(key) {
+                } else if down && self.oeffnung_taste(key, mods) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
@@ -4528,7 +4511,10 @@ impl App {
                     // Esc ohne angefangenen Zug beendet die Gebäude-Eingabe
                     self.tool.set_enabled(false);
                     self.refresh_cursor();
-                } else if down && key == Key::Escape && !self.tool.enabled && self.sel.id.is_some()
+                } else if down
+                    && key == Key::Escape
+                    && !self.tool.enabled
+                    && (self.sel.id.is_some() || self.picking.plate)
                 {
                     self.select(None);
                 } else {
@@ -4580,7 +4566,7 @@ impl App {
             flush_pick: self.pick.is_some(),
             dragging: self.edit.is_dragging()
                 || self.edit.input().is_some()
-                || self.edit.splitting(),
+                || self.edit.eigenes_thema(),
             tool: self
                 .tool
                 .enabled
@@ -5595,7 +5581,6 @@ impl App {
             self.select(Some(hit));
         }
         self.close_type_menu(false);
-        let s = self.ui.scale;
         self.context = Some(delete::ContextMenu::new(
             self.scene.model(),
             hit,
@@ -5604,7 +5589,7 @@ impl App {
             y,
             (self.w, self.h, top),
             &self.theme,
-            s,
+            &self.ui,
         ));
         self.context_dirty = true;
         self.tip = None;
@@ -5899,7 +5884,7 @@ impl App {
         match self.title.hover {
             Some(Button::Undo) => return menu::history_hint(&self.scene, false),
             Some(Button::Redo) => return menu::history_hint(&self.scene, true),
-            Some(Button::Help) => return Some(tip_text(help::tooltip_lines("?"))),
+            Some(Button::Help) => return Some(knopf_tip::tip_text(help::tooltip_lines("?"))),
             Some(_) => return None,
             None => {}
         }
@@ -6652,6 +6637,7 @@ impl App {
         self.tree_picked = true;
         match a {
             A::Select(ids) => self.tree_select(ids),
+            A::Plate => self.platte_waehlen(),
             A::Storey(sid, ids) => {
                 self.tree_select(ids);
                 if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) {
@@ -6671,7 +6657,6 @@ impl App {
                     self.tree_select(vec![target]);
                 }
                 self.close_type_menu(false);
-                let s = self.ui.scale;
                 self.context = Some(delete::ContextMenu::new(
                     self.scene.model(),
                     target,
@@ -6680,7 +6665,7 @@ impl App {
                     y,
                     (self.w, self.h, self.top()),
                     &self.theme,
-                    s,
+                    &self.ui,
                 ));
                 self.context_dirty = true;
                 self.tip = None;
@@ -7265,16 +7250,6 @@ fn coalesce_moves(events: &mut Vec<Event>) {
     });
 }
 
-/// Zeilen eines Tooltips als Text für [`sk_ui::widgets::tooltip`] (erste
-/// Zeile fett), ohne Fettschrift-Marken.
-fn tip_text(lines: Vec<String>) -> String {
-    lines
-        .iter()
-        .map(|l| help::plain(l))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn write_timing(path: &Option<String>, log: &mut String) {
     use std::io::Write;
     if let Some(p) = path {
@@ -7487,7 +7462,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         nord_bild: None,
         sonne_bild: None,
         ecken: Vec::new(),
-        terrain_gaps: Vec::new(),
+        platte: Default::default(),
         zahnrad: Default::default(),
         griff_cache: None,
         ecken_stand: 0,
@@ -7741,6 +7716,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
     a.quantity.read_settings(&a.settings.windows);
+    a.freischalten(freischaltung::Freischaltung::aus_args(std::env::args()));
     a.quantity.blatt_wahl = a.settings.lv_blatt();
     // Baumpanel: Karte, zugeklappt, Grenze (Paket 4)
     let panel = a.settings.panel.clone();
@@ -7784,6 +7760,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         // Wandwerkzeug: Fangziele nach Modelländerungen, Einrast-Puls (G1)
         a.tool.fang_aus(&mut a.scene);
         a.redraw |= a.tool.pulsiert();
+        // Geländeplatte: Nachzug im eigenen Faden abholen oder beginnen
+        a.redraw |= a.platte_nachziehen();
         if !a.redraw
             && !a.overlay_dirty
             && !a.nav.is_animating()
@@ -7819,9 +7797,14 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (x, y) => x.or(y),
             };
-            let wait = match (wait, a.quantity_busy || !a.bond_wait.is_empty()) {
+            let wait = match (wait, a.rechnet_noch()) {
                 (w, true) => Some(w.map_or(FRAME, |w| w.min(FRAME))),
                 (w, false) => w,
+            };
+            let wait = if a.redraw {
+                Some(std::time::Duration::ZERO)
+            } else {
+                wait
             };
             let next = match wait {
                 Some(d) => surface.wait_event_timeout(d),
@@ -7863,9 +7846,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
 
-        if std::mem::take(&mut a.quantity_wanted) {
-            a.open_quantity(&surface);
-        }
+        a.offene_dialoge(&surface);
         // Automatisch sichern (F-13), nicht mitten im Ziehen
         if !a.edit.is_dragging() {
             let now = a.clock.elapsed();
@@ -8028,23 +8009,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let scale = a.title.scale;
             let mut helpers = Vec::new();
             let mut nord_bild = None;
-            match a.ui.view {
-                ViewKind::Plan => {
-                    helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme))
-                }
-                ViewKind::Persp => {}
-                // Gelände ausgeblendet: keine Geländelinie (Paket 3)
-                _ if a.scene.terrain_hidden() => {}
-                v => helpers.extend(ground_line(
-                    a.side_like(v),
-                    a.scene.bounds(),
-                    a.scene.model().terrain_z(),
-                    &a.scene.model().terrain_patches(TERRAIN_MARGIN),
-                    scale,
-                    a.scene.table(),
-                    &a.terrain_gaps,
-                )),
+            if a.ui.view == ViewKind::Plan {
+                helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme));
             }
+            // Gelände statt Geländelinie (G0), Höhenlinien und Grenze (G1)
+            helpers.extend(a.platte_linien(vh, scale));
             let plane = a.plane();
             // Hover aus der Mengenliste: leuchtender Umriss mit weichem Schein
             if a.hover_from_list {
@@ -8335,10 +8304,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 .map(|i| a.scene.model().view_below(i).then_some([2.0 * mm, mm]));
             a.renderer.set_below_ground(unten);
             // OK Gelände (Gelände Thema 1): Boden und Grenze „unter Gelände“
-            a.renderer.set_terrain(a.scene.model().terrain_z() as f32);
-            a.renderer.set_terrain_boxes(&terrain_boxes(
-                &a.scene.model().terrain_patches(TERRAIN_MARGIN),
-            ));
+            a.gelaende_renderer();
             a.zahnrad_bilder(th, scale);
 
             // Terrassenangaben und Raumstempel (G4) auf dem Papier
@@ -8461,94 +8427,6 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 mod tests {
     use super::*;
     use sk_platform::Modifiers;
-
-    /// Geschnittenes Rechteck in der Ebene y = 0 als zwei Dreiecke.
-    fn schnitt(x0: f32, x1: f32, z0: f32, z1: f32, cut: bool) -> Vec<[f32; 9]> {
-        let key = if cut {
-            sk_model::material::CUT as f32 + 1.0
-        } else {
-            1.0
-        };
-        let v = |x: f32, z: f32| [x, 0.0, z, 0.0, -1.0, 0.0, key, 0.0, 0.0];
-        vec![
-            v(x0, z0),
-            v(x1, z0),
-            v(x1, z1),
-            v(x0, z0),
-            v(x1, z1),
-            v(x0, z1),
-        ]
-    }
-
-    /// Gelände Thema 1: Im Schnitt setzt die Geländelinie über geschnittenen
-    /// Bauteilen aus und unter der Platte dazwischen, zwischen zwei Häusern
-    /// nicht; Ansichtsflächen zählen nicht.
-    #[test]
-    fn gelaendelinie_endet_an_geschnittenen_bauteilen() {
-        let mut f = Vec::new();
-        // Haus 1: zwei Schürzen, Platte darüber
-        f.extend(schnitt(0.0, 300.0, -1200.0, -320.0, true));
-        f.extend(schnitt(9700.0, 10000.0, -1200.0, -320.0, true));
-        f.extend(schnitt(0.0, 10000.0, -320.0, 0.0, true));
-        // Haus 2: nur eine Schürze trifft die Linie
-        f.extend(schnitt(20000.0, 20300.0, -1200.0, -320.0, true));
-        // Ansichtsfläche
-        f.extend(schnitt(-5000.0, -4000.0, -1000.0, 0.0, false));
-        assert_eq!(
-            terrain_gaps(&f, |_, _| -400.0, 0),
-            [(0.0, 10000.0), (20000.0, 20300.0)]
-        );
-        // Ohne Lücken eine Linie, mit zwei Lücken drei Stücke
-        let t = draw_table::DrawTable::resolve(&sk_model::Model::with_seed(1), &Theme::dark());
-        let b = Some((vec3(0.0, 0.0, 0.0), vec3(20300.0, 8000.0, 0.0)));
-        assert_eq!(
-            ground_line(ViewKind::Front, b, -400.0, &[], 1.0, &t, &[]).len(),
-            1
-        );
-        let l = ground_line(
-            ViewKind::Front,
-            b,
-            -400.0,
-            &[],
-            1.0,
-            &t,
-            &terrain_gaps(&f, |_, _| -400.0, 0),
-        );
-        let xs: Vec<_> = l.iter().map(|h| (h.a[0], h.b[0])).collect();
-        assert_eq!(xs, [(-3000.0, 0.0), (10000.0, 20000.0), (20300.0, 23300.0)]);
-    }
-
-    /// Entscheidung B: zwei Gebäude auf verschiedenem Gelände. Die Linie
-    /// liegt an jedem auf seiner Höhe, dazwischen auf der Vorgabe, mit
-    /// Stufen; im Schnitt zählt je Dreieck das Gelände seines Gebäudes.
-    #[test]
-    fn gelaendelinie_je_gebaeude() {
-        let t = draw_table::DrawTable::resolve(&sk_model::Model::with_seed(1), &Theme::dark());
-        let b = Some((vec3(0.0, 0.0, 0.0), vec3(20000.0, 8000.0, 0.0)));
-        let patches = [
-            ([-1000.0, -1000.0, 9000.0, 9000.0], -500.0),
-            ([11000.0, -1000.0, 21000.0, 9000.0], 0.0),
-        ];
-        let l = ground_line(ViewKind::Front, b, 0.0, &patches, 1.0, &t, &[]);
-        let ab: Vec<_> = l.iter().map(|h| (h.a[0], h.a[2], h.b[0], h.b[2])).collect();
-        assert_eq!(
-            ab,
-            [
-                (-3000.0, 0.0, -1000.0, 0.0),
-                (-1000.0, 0.0, -1000.0, -500.0),
-                (-1000.0, -500.0, 9000.0, -500.0),
-                (9000.0, -500.0, 9000.0, 0.0),
-                (9000.0, 0.0, 23000.0, 0.0),
-            ]
-        );
-        let mut f = Vec::new();
-        f.extend(schnitt(0.0, 300.0, -1300.0, -400.0, true));
-        f.extend(schnitt(12000.0, 12300.0, -1200.0, -320.0, true));
-        let ter = |x: f64, y: f64| terrain_at(&patches, 0.0, x, y);
-        // Haus 1 auf −0,50: seine Schürze trifft die Linie; Haus 2 auf 0:
-        // seine Schürze endet darunter
-        assert_eq!(terrain_gaps(&f, ter, 0), [(0.0, 300.0)]);
-    }
 
     fn mv(x: f64) -> Event {
         Event::MouseMove {

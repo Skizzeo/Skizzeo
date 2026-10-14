@@ -383,7 +383,7 @@ pub const ARTEN: [&str; 13] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 89] = [
+pub const LEISTUNGEN: [WerkLeistung; 91] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -919,6 +919,18 @@ pub const LEISTUNGEN: [WerkLeistung; 89] = [
         "m",
         "auto",
         "Zulage Laibung Verblendmauerwerk, Läufer und Binder verzahnt",
+    ),
+    l(
+        "1S7bUW001008020000001Q",
+        "m",
+        "auto",
+        "Laibung Innenputz Gips an Deckenaussparung, Kantenschutzprofil",
+    ),
+    l(
+        "1S7bUW001008020000001R",
+        "m",
+        "auto",
+        "Putz Deckenstirn in Aussparung, Kantenschutz oben und unten",
     ),
 ];
 

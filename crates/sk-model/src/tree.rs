@@ -37,6 +37,8 @@ impl Tab {
 pub enum NodeKey {
     Project,
     Terrain,
+    /// Geländeplatte unter „Gelände“ (Gelände G0): wählbar nur hier.
+    TerrainPlate,
     Building(Guid),
     Storey(Guid),
     /// Art in einem Geschoss (Geschoss-Guid, Art).
@@ -305,6 +307,13 @@ fn tree_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
         0,
     );
     let t = l.open(NodeKey::Terrain, "Gelände".into(), String::new(), 1);
+    let pl = l.open(
+        NodeKey::TerrainPlate,
+        "Geländeplatte".into(),
+        String::new(),
+        2,
+    );
+    l.close(pl);
     l.close(t);
     let mut buildings: Vec<_> = m.buildings().iter().collect();
     buildings.sort_by(|a, b| a.1.number.cmp(&b.1.number));
@@ -465,7 +474,7 @@ pub fn eye(m: &Model, t: &ProjectTree, tab: Tab, i: usize) -> State {
     };
     let v = m.visibility().of_tree();
     match n.key {
-        NodeKey::Terrain => {
+        NodeKey::Terrain | NodeKey::TerrainPlate => {
             return if v.terrain_hidden {
                 State::None
             } else {

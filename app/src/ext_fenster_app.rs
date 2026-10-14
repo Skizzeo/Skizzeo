@@ -20,7 +20,11 @@ impl App {
             return;
         }
         self.ext_liste_zu();
-        let z = ev::zeilen(&self.ext_ablage, self.scene.model());
+        let z = ev::zeilen(
+            &self.ext_ablage,
+            self.scene.model(),
+            self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
+        );
         self.ext_fenster = Some(Fenster::new(z));
         self.tip = None;
         self.overlay_dirty = true;
@@ -52,26 +56,14 @@ impl App {
 
     /// Rückfrage zum Text einer Datei (`Err`: nicht lesbar).
     pub(crate) fn ext_frage_zur_datei(&self, datei: &str, text: Result<String, String>) -> Frage {
-        let v = text
-            .map_err(|e| vec![e])
-            .and_then(|t| ext_ablage::pruefen(&t, &self.ext_ablage, self.scene.model()))
-            .map(|mut v| {
-                // Folgen der genutzten Bauleistungen im wirksamen Katalog
-                let firma = self.company.as_ref().map(|c| c.library());
-                let k = sk_cost::lesen::katalog(self.scene.model(), firma);
-                v.hinweise
-                    .extend(sk_cost::erweiterung::fehlende_folgen(&k, &v.def));
-                ext_ablage::gewerke_ohne_titel(&mut v, &self.ext_ablage, self.scene.model(), firma);
-                // Neue Sätze für den Firmenkatalog (E8c)
-                if let Some(f) = firma {
-                    v.saetze = sk_cost::neue_saetze::neue_saetze(self.scene.model(), f, &v.def);
-                }
-                v
-            });
-        match v {
-            Ok(v) => Frage::einlesen(v),
-            Err(e) => Frage::fehler(datei, e),
-        }
+        frage_zur_datei(
+            datei,
+            text,
+            &self.ext_ablage,
+            self.scene.model(),
+            self.company.as_ref().map(|c| c.library()),
+            self.ui.frei,
+        )
     }
 
     pub(crate) fn ext_frage_zeigen(&mut self, f: Frage) {
@@ -79,7 +71,11 @@ impl App {
             Some(w) => w.frage(f),
             None => {
                 self.ext_liste_zu();
-                let z = ev::zeilen(&self.ext_ablage, self.scene.model());
+                let z = ev::zeilen(
+                    &self.ext_ablage,
+                    self.scene.model(),
+                    self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
+                );
                 self.ext_fenster = Some(Fenster::mit_frage(z, f));
             }
         }
@@ -96,7 +92,11 @@ impl App {
             self.prefs_dirty = true;
         }
         self.ext_sync();
-        let z = ev::zeilen(&self.ext_ablage, self.scene.model());
+        let z = ev::zeilen(
+            &self.ext_ablage,
+            self.scene.model(),
+            self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
+        );
         if let Some(w) = self.ext_fenster.as_mut() {
             w.setze_zeilen(z, key);
             w.meldung = Some(satz);
@@ -186,32 +186,13 @@ impl App {
     /// mit Verwaltungskennwort als Vorschlag in den Entwurf, am Einzelplatz
     /// direkt mit Pille „unbestätigt“. Der Satz für die Meldung.
     fn ext_saetze_fuer_firma(&mut self, v: &crate::ext_ablage::Vorschlag) -> Option<String> {
-        use sk_cost::neue_saetze::{quelle_text, Stand};
-        let saetze: Vec<sk_cost::SatzNeu> = v
-            .saetze
-            .iter()
-            .filter(|n| n.stand == Stand::Neu)
-            .map(|n| sk_cost::SatzNeu {
-                rec: n.rec,
-                of: n.guid,
-                kurz: n.name.clone(),
-                zeilen: n.zeilen.clone(),
-            })
-            .collect();
-        if saetze.is_empty() {
-            return None;
-        }
-        let n = saetze.len();
+        use sk_cost::neue_saetze::quelle_text;
+        let projekt = (self.scene.model().project().guid, self.doc.name());
         let c = self.company.as_mut()?;
+        let mit_kennwort = sk_cost::verwaltung::hat_kennwort(c.library());
+        let (n, op) = saetze_op(v, mit_kennwort.then_some(projekt))?;
         let mut h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Import);
         h.quelle = quelle_text(&v.def);
-        let mit_kennwort = sk_cost::verwaltung::hat_kennwort(c.library());
-        let projekt = mit_kennwort.then(|| (self.scene.model().project().guid, self.doc.name()));
-        let op = sk_cost::Op::SaetzeAusErweiterung {
-            projekt,
-            quelle: quelle_text(&v.def),
-            saetze,
-        };
         let anzahl = if n == 1 {
             "Ein neuer Satz".to_string()
         } else {
@@ -368,6 +349,70 @@ impl App {
         self.renderer
             .set_overlay_fill(OVERLAY_EXT_SCRIM, 0, th as i32, self.w, h, scrim);
     }
+}
+
+/// Rückfrage zum Text einer Datei beim Einlesen (`Err`: nicht lesbar).
+/// Geprüft wird in jeder Stufe gleich, mit den Folgen der genutzten
+/// Bauleistungen im wirksamen Katalog und den neuen Sätzen für den
+/// Firmenkatalog (E8c). Die Freischaltung ändert nur das Blatt: Ohne Kosten
+/// fehlen die Haken, und „Ja“ schreibt dieselben neuen Sätze wie mit allem
+/// frei (Review #120 B1).
+pub(crate) fn frage_zur_datei(
+    datei: &str,
+    text: Result<String, String>,
+    ablage: &Ablage,
+    model: &sk_model::Model,
+    firma: Option<&sk_model::Library>,
+    frei: crate::freischaltung::Freischaltung,
+) -> Frage {
+    let v = text
+        .map_err(|e| vec![e])
+        .and_then(|t| ext_ablage::pruefen(&t, ablage, model))
+        .map(|mut v| {
+            let k = sk_cost::lesen::katalog(model, firma);
+            v.hinweise
+                .extend(sk_cost::erweiterung::fehlende_folgen(&k, &v.def));
+            ext_ablage::gewerke_ohne_titel(&mut v, ablage, model, firma);
+            if let Some(f) = firma {
+                v.saetze = sk_cost::neue_saetze::neue_saetze(model, f, &v.def);
+            }
+            v
+        });
+    match v {
+        Ok(v) => Frage::einlesen_frei(v, frei.frei(crate::freischaltung::Modul::Kosten)),
+        Err(e) => Frage::fehler(datei, e),
+    }
+}
+
+/// Die neuen Sätze eines Vorschlags als Operation an die Firma (E8c) und
+/// ihre Anzahl; `None` ohne neue. `projekt` nur mit Verwaltungskennwort.
+pub(crate) fn saetze_op(
+    v: &crate::ext_ablage::Vorschlag,
+    projekt: Option<(sk_model::Guid, String)>,
+) -> Option<(usize, sk_cost::Op)> {
+    use sk_cost::neue_saetze::{quelle_text, Stand};
+    let saetze: Vec<sk_cost::SatzNeu> = v
+        .saetze
+        .iter()
+        .filter(|n| n.stand == Stand::Neu)
+        .map(|n| sk_cost::SatzNeu {
+            rec: n.rec,
+            of: n.guid,
+            kurz: n.name.clone(),
+            zeilen: n.zeilen.clone(),
+        })
+        .collect();
+    let n = saetze.len();
+    (n > 0).then(|| {
+        (
+            n,
+            sk_cost::Op::SaetzeAusErweiterung {
+                projekt,
+                quelle: quelle_text(&v.def),
+                saetze,
+            },
+        )
+    })
 }
 
 /// Ablage aus dem Ordner neben den Einstellungen; ohne Einstellungen

@@ -5,16 +5,29 @@
 //! Türmitte, **Tab** schaltet zu links und rechts (aus diesem Raum zur Wand
 //! gesehen); das Mausrad blättert durch die Normbreiten nach DIN 18101. Ein
 //! Klick setzt die Tür: unten OK Rohdecke, oben die Innentürlinie, DIN
-//! links.
+//! links. Eine Maßkette auf der Wandseite gegenüber dem Aufschlag zeigt
+//! die Abstände zu den Flächen der anschließenden Wände und die Breite,
+//! gezeichnet wie die Außenmaßketten (Bemaßung Stufe 2) in der Ziehfarbe;
+//! die Pille zeigt den Abstand zur näheren. Eine Ziffer öffnet dort die
+//! Eingabe, **Enter** setzt die Tür in diesem Abstand (plan.md §4.3,
+//! Grundriss G7).
 //!
 //! Hier steht die reine Rechnung; Maus und Szene in `oeffnung_app.rs`.
 
+use crate::measure_input::{opens, InputOutcome, MeasureInput};
+use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
+use sk_model::bemassung::{Kettenart, Stil};
 use sk_model::hoehen::DOOR_WIDTHS;
 use sk_model::oeffnung::{
     Din, FaceSide, HeightLine, HeightRef, Opening, OpeningKind, OuterFace, Swing,
 };
 use sk_model::{Category, LevelRef, Model, RunId, StoreyId, WallChain};
+use sk_plan::aussen::{Aussenmasse, Bezug as Massbezug, Herkunft, Kette, Seite as Massseite};
+use sk_plan::bild::{bild, Bild};
+use sk_plan::schrift::Schrift;
+use sk_plan::zahl::masszahl;
+use sk_platform::{Key, Modifiers};
 
 /// Raster längs der Wand für den Bezugspunkt (mm).
 const RASTER: f64 = 10.0;
@@ -22,6 +35,10 @@ const RASTER: f64 = 10.0;
 const BOGEN: usize = 12;
 /// Vorgabe der Breite: 88,5 cm.
 const BREITE: usize = 2;
+/// Abstand der Maßkette von der Wandfläche (mm).
+const KETTE: f64 = 250.0;
+/// Felder der Pille beim Tippen des Abstands.
+pub const FELDER: [&str; 2] = ["Abstand", ""];
 
 /// Bezugspunkt der Tür am Cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,6 +94,22 @@ pub struct Innentuer {
     /// Letzte Suche: Grundrisspunkt, Toleranz, Zeichenhöhe (für Tab und
     /// Mausrad ohne Mausbewegung).
     pub ort: Option<(Vec3, f64, f64)>,
+    /// Getippter Abstand zur näheren Wandfläche.
+    pub eingabe: Option<MeasureInput>,
+}
+
+/// Was eine Taste mit der Tür am Cursor bewirkt hat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Taste {
+    /// Nicht für die Eingabe, sie geht weiter (Tab, Esc ohne Eingabe).
+    Frei,
+    /// Eingabe geöffnet, geändert oder geschlossen.
+    Geaendert,
+    /// Enter: Die Tür steht im getippten Abstand und wird gesetzt; die
+    /// Eingabe bleibt, bis [`Innentuer::pruefen`] die Tür annimmt.
+    Setzen,
+    /// Enter, doch so passt die Tür nicht in die Wand; die Eingabe bleibt.
+    PasstNicht,
 }
 
 impl Default for Innentuer {
@@ -86,6 +119,7 @@ impl Default for Innentuer {
             bezug: Bezug::Mitte,
             hover: None,
             ort: None,
+            eingabe: None,
         }
     }
 }
@@ -153,12 +187,16 @@ fn wand_unter(
     let p = vec3(p.x, p.y, 0.0);
     let mut best: Option<(f64, (OuterFace, f64, bool, f64))> = None;
     for (id, run) in m.runs().iter() {
+        // Das Bauteil erst bei Zügen nahe `p` (Review #140, Zugschritt)
+        if run.storey != st || !nah(&run.points, p, tol + DICKE) {
+            continue;
+        }
         let passt = run
             .segments
             .first()
             .and_then(|e| m.element(*e))
             .is_some_and(|e| art(e.category));
-        if run.storey != st || !passt || !nah(&run.points, p, tol + DICKE) {
+        if !passt {
             continue;
         }
         // Ein Körper je Zug für alle Segmente (Review #99 B1)
@@ -224,6 +262,10 @@ impl Innentuer {
     pub fn suchen(&mut self, m: &Model, k: Koerper, st: StoreyId, p: Vec3, tol: f64, z: f64) {
         self.ort = Some((p, tol, z));
         self.hover = self.vorschau(m, k, st, p, tol, z);
+        // Fort von der Innenwand: die Eingabe hat keine Tür mehr
+        if self.hover.is_none() {
+            self.eingabe = None;
+        }
     }
 
     /// Sucht an der letzten Stelle neu (nach Tab, Mausrad oder Klick).
@@ -233,10 +275,111 @@ impl Innentuer {
         }
     }
 
-    /// Maus fort: keine Vorschau.
+    /// Maus fort: keine Vorschau, die Eingabe schließt.
     pub fn weg(&mut self) {
         self.ort = None;
         self.hover = None;
+        self.eingabe = None;
+    }
+
+    /// Taste für die Eingabe des Abstands: Eine Ziffer öffnet sie, solange
+    /// die Tür an einer Innenwand hängt; **Enter** rückt die Tür so weit
+    /// von der näheren Wandfläche, dann wird sie gesetzt.
+    pub fn taste(&mut self, key: Key, mods: Modifiers) -> Taste {
+        let Some(i) = self.eingabe.as_mut() else {
+            let Key::Char(ch) = key else {
+                return Taste::Frei;
+            };
+            if self.hover.is_none() || !opens(ch, MeasureKind::Length, mods) {
+                return Taste::Frei;
+            }
+            let mut i = MeasureInput::new(MeasureKind::Length, None);
+            i.push(ch);
+            self.eingabe = Some(i);
+            return Taste::Geaendert;
+        };
+        match i.key(key, mods) {
+            InputOutcome::Ignored => Taste::Frei,
+            InputOutcome::Changed | InputOutcome::Refused => Taste::Geaendert,
+            InputOutcome::Emptied | InputOutcome::Escape | InputOutcome::EnterEmpty => {
+                self.eingabe = None;
+                Taste::Geaendert
+            }
+            InputOutcome::Enter => {
+                let a = i.value(0).and_then(Result::ok);
+                if a.is_some_and(|a| self.abstand_setzen(a)) {
+                    Taste::Setzen
+                } else {
+                    if let Some(i) = self.eingabe.as_mut() {
+                        i.error = Some(crate::meldung::Meldung::satz(PASST_NICHT));
+                    }
+                    Taste::PasstNicht
+                }
+            }
+        }
+    }
+
+    /// Rückt die Tür der Vorschau so, dass ihre Kante `a` mm von der
+    /// näheren Wandfläche steht. `false`, wenn sie dann nicht in die Wand
+    /// passt.
+    pub fn abstand_setzen(&mut self, a: f64) -> bool {
+        let Some(v) = self.hover.as_mut() else {
+            return false;
+        };
+        let w = v.u.1 - v.u.0;
+        let (s0, s1) = v.face.span;
+        let u0 = match naeher(v).0 {
+            Seite::Anfang => s0 + a,
+            Seite::Ende => s1 - a - w,
+        };
+        let (f0, f1) = v.face.free;
+        if u0 < f0 - 1e-6 || u0 + w > f1 + 1e-6 {
+            return false;
+        }
+        v.u = (u0, u0 + w);
+        let m = v.face.at(u0 + w / 2.0, 0.0) - v.face.n * (v.dicke / 2.0);
+        v.punkt = vec3(m.x, m.y, v.z);
+        true
+    }
+
+    /// Pille an der Maßkette: der Abstand zur näheren Wandfläche, von der
+    /// Fläche zur Kante der Tür, als Maßzahl auf `rundung` mm, beim Tippen
+    /// die Eingabe nach jeder Taste (Review W49 B1).
+    pub fn label(&self, rundung: u8) -> Option<([Vec3; 2], String)> {
+        let v = self.hover.as_ref()?;
+        let (seite, a) = naeher(v);
+        let text = match &self.eingabe {
+            Some(i) => i.text(FELDER),
+            None if a >= 1.0 => masszahl(a, rundung).text(),
+            None => return None,
+        };
+        let (s0, s1) = v.face.span;
+        let (von, bis) = match seite {
+            Seite::Anfang => (s0, v.u.0),
+            Seite::Ende => (s1, v.u.1),
+        };
+        let auf = kette_auf(v);
+        Some(([auf(von), auf(bis)], text))
+    }
+
+    /// Die Tür der Vorschau, wenn das Modell sie nimmt (Klick oder
+    /// **Enter**); dann schließt die Eingabe. Lehnt es ab, steht der Grund
+    /// in `Err`, und eine getippte Zahl bleibt mit diesem Fehler offen, die
+    /// Tür im getippten Abstand (Review W49 B2). `None` ohne Vorschau.
+    pub fn pruefen(&mut self, m: &Model) -> Option<Result<Opening, String>> {
+        let o = self.oeffnung()?;
+        match m.opening_fault(&o, None).map(|f| f.text(m)) {
+            None => {
+                self.eingabe = None;
+                Some(Ok(o))
+            }
+            Some(t) => {
+                if let Some(i) = self.eingabe.as_mut() {
+                    i.error = Some(crate::meldung::Meldung::mit("{}.", &[&t]));
+                }
+                Some(Err(t))
+            }
+        }
     }
 
     fn vorschau(
@@ -335,10 +478,113 @@ pub fn umriss(v: &Vorschau) -> Vec<(Vec3, Vec3)> {
     out
 }
 
+/// Satz, wenn die Tür im getippten Abstand nicht in die Wand passt.
+pub const PASST_NICHT: &str = "So passt die Tür nicht in die Wand";
+
+/// Seite der Wand längs, an der eine Fläche liegt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seite {
+    Anfang,
+    Ende,
+}
+
+/// Nähere Fläche der anschließenden Wände und der Abstand der Tür zu ihr.
+fn naeher(v: &Vorschau) -> (Seite, f64) {
+    let (s0, s1) = v.face.span;
+    let (a0, a1) = (v.u.0 - s0, s1 - v.u.1);
+    if a0 <= a1 {
+        (Seite::Anfang, a0)
+    } else {
+        (Seite::Ende, a1)
+    }
+}
+
+/// Steht die Maßkette vor der Fläche der Vorschau (sonst vor der
+/// Gegenfläche)? Sie steht auf der Wandseite gegenüber dem Aufschlag: Die
+/// Fläche liegt zur Normale `n`; schlägt die Tür dorthin auf, steht die
+/// Kette vor der Gegenfläche.
+fn vor_der_flaeche(v: &Vorschau) -> bool {
+    v.swing.side != flaechenseite(&v.face)
+}
+
+/// Punkt der Maßkette bei `u`: neben der Wandseite gegenüber dem
+/// Aufschlag, [`KETTE`] vor ihrer Fläche, in Zeichenhöhe.
+fn kette_auf(v: &Vorschau) -> impl Fn(f64) -> Vec3 + '_ {
+    let f = &v.face;
+    let quer = if vor_der_flaeche(v) {
+        f.n * KETTE
+    } else {
+        -f.n * (v.dicke + KETTE)
+    };
+    move |u: f64| {
+        let p = f.at(u, 0.0) + quer;
+        vec3(p.x, p.y, v.z)
+    }
+}
+
+/// Maßkette der Vorschau, gezeichnet wie die Außenmaßketten (Bemaßung
+/// Stufe 2, [`sk_plan::bild::bild`]): Maßlinie, Hilfslinien, Begrenzung
+/// und Maßzahlen nach dem Stil `stil` in der Schrift `schrift`, von den
+/// Flächen der anschließenden Wände über die Kanten der Tür, in
+/// Zeichenhöhe. Leer, wenn die Tür nicht zwischen die Flächen passt.
+pub fn kette(v: &Vorschau, st: StoreyId, stil: &Stil, schrift: &Schrift) -> Bild {
+    let (s0, s1) = v.face.span;
+    if s1 - s0 < v.u.1 - v.u.0 {
+        return Bild::default();
+    }
+    // Von der Wand zur Kette
+    let n = if vor_der_flaeche(v) {
+        v.face.n
+    } else {
+        -v.face.n
+    };
+    let n = vec3(n.x, n.y, 0.0).normalized();
+    // Maßzahlen von unten oder von rechts lesbar, wie bei den Außenmaßen
+    let t = sk_plan::aussen::laengs(n);
+    let bezug = |u: f64, herkunft| {
+        let p = v.face.at(u, 0.0);
+        let p = vec3(p.x, p.y, 0.0);
+        Massbezug {
+            t: p.dot(t),
+            p,
+            herkunft,
+            quelle: None,
+        }
+    };
+    let mut bezuege = vec![
+        bezug(s0, Herkunft::Innenwand),
+        bezug(v.u.0, Herkunft::Oeffnung),
+        bezug(v.u.1, Herkunft::Oeffnung),
+        bezug(s1, Herkunft::Innenwand),
+    ];
+    bezuege.sort_by(|a, b| a.t.total_cmp(&b.t));
+    let lage = kette_auf(v)(s0);
+    let lage = vec3(lage.x, lage.y, 0.0).dot(n);
+    let a = Aussenmasse {
+        storey: st,
+        z: v.z,
+        seiten: vec![Massseite {
+            grad: 0,
+            n,
+            t,
+            aussen: lage,
+            ketten: vec![Kette {
+                art: Kettenart::Wand,
+                bezuege,
+                lage,
+                versatz: 0.0,
+            }],
+            oeffnungen: Vec::new(),
+        }],
+    };
+    bild(&a, stil, schrift)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sk_model::{RefSide, RunId};
+    use sk_plan::bild::Strichart;
 
     /// Prüfhaus 10 × 8 m mit Innenwand bei x = 5 m (Zeichenrichtung +y).
     fn haus() -> (Model, RunId, StoreyId) {
@@ -476,5 +722,135 @@ mod tests {
         assert_eq!(t.anzeige(), "Tür 76 cm · Bezug Mitte");
         t.rad(-1.0);
         assert_eq!(lichte(&mut t), (2682.5, 3317.5));
+    }
+
+    /// Grundriss G7: Die Maßkette steht auf der Wandseite gegenüber dem
+    /// Aufschlag und reicht von den Flächen der anschließenden Wände bis zur
+    /// Tür; die Pille zeigt den Abstand zur näheren. Eine Ziffer öffnet die
+    /// Eingabe, **Enter** rückt die Tür so weit von der näheren Fläche, an
+    /// beiden Enden der Wand. Passt sie so nicht, bleibt die Eingabe mit
+    /// Fehler; **Esc** schließt sie, **Tab** geht weiter an den Bezugspunkt.
+    #[test]
+    fn kette_und_abstand() {
+        let (m, _, st) = haus();
+        let mut t = Innentuer::default();
+        let k = |r| m.chain(r);
+        let mods = Modifiers::default();
+        let tippe = |t: &mut Innentuer, s: &str| {
+            for ch in s.chars() {
+                assert_eq!(t.taste(Key::Char(ch), mods), Taste::Geaendert, "{s}");
+            }
+        };
+        t.suchen(&m, &k, st, vec3(5020.0, 3000.0, 0.0), 30.0, 1500.0);
+        let v = t.hover.clone().unwrap();
+        let (s0, s1) = v.face.span;
+        let (f0, f1) = v.face.free;
+        assert!(s0 < f0 && f1 < s1, "{:?} {:?}", v.face.span, v.face.free);
+        // Die anschließenden Außenwände: innen bei y = 0,315 m und 7,685 m
+        let y = |u: f64| v.face.at(u, 0.0).y;
+        let (ya, yb) = (y(s0).min(y(s1)), y(s0).max(y(s1)));
+        assert!((ya - 315.0).abs() < 1e-6 && (yb - 7685.0).abs() < 1e-6);
+        // Aufschlag nach +x, die Kette steht bei x < 5 m vor der Gegenfläche,
+        // gezeichnet wie die Außenmaße: drei Maßzahlen, Fläche, Tür, Fläche
+        let stil = m.massstil();
+        let x_gegen = 5000.0 - v.dicke / 2.0;
+        if let Some(f) =
+            std::fs::read("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf")
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+                .map(Schrift::new)
+        {
+            let b = kette(&v, st, stil, &f);
+            let mut werte: Vec<f64> = b.zahlen.iter().map(|z| z.wert).collect();
+            werte.sort_by(f64::total_cmp);
+            assert_eq!(werte, [885.0, 2242.5, 4242.5]);
+            assert!(!b.tinte.is_empty());
+            assert!(b.striche.iter().all(|s| s.a.x <= x_gegen + 1e-6
+                && s.b.x <= x_gegen + 1e-6
+                && s.a.z == 1500.0
+                && s.b.z == 1500.0));
+            let masslinie = b.striche.iter().filter(|s| s.art == Strichart::Masslinie);
+            assert!(masslinie
+                .clone()
+                .all(|s| (s.a.x - (x_gegen - KETTE)).abs() < 1e-6
+                    && (s.b.x - (x_gegen - KETTE)).abs() < 1e-6));
+            assert!(masslinie.count() > 0);
+        } else {
+            eprintln!("Liberation Sans fehlt, Kette nicht geprüft");
+        }
+        // Pille: zur näheren Fläche (unten, y = 0,315 m), Maßzahl im Stil
+        let (ends, text) = t.label(stil.rundung).unwrap();
+        assert_eq!(text, masszahl(2557.5 - 315.0, stil.rundung).text());
+        assert!((ends[0].y - 315.0).abs() < 1e-6 && (ends[1].y - 2557.5).abs() < 1e-6);
+        // 0,5 m und Enter: die Tür 50 cm von der Fläche, das Modell nimmt sie
+        tippe(&mut t, "0,5");
+        assert!(t.eingabe.is_some());
+        assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
+        let v = t.hover.clone().unwrap();
+        let lichte = |v: &Vorschau| {
+            let (a, b) = (y(v.u.0), y(v.u.1));
+            (a.min(b), a.max(b))
+        };
+        assert_eq!(lichte(&v), (815.0, 1700.0));
+        assert!((v.punkt.y - 1257.5).abs() < 1e-6, "{:?}", v.punkt);
+        assert!(t.pruefen(&m).unwrap().is_ok());
+        assert!(t.eingabe.is_none(), "angenommen: die Eingabe schließt");
+        // Oben ist die obere Fläche die nähere
+        t.suchen(&m, &k, st, vec3(5020.0, 6500.0, 0.0), 30.0, 1500.0);
+        tippe(&mut t, "0,3");
+        assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
+        assert_eq!(lichte(t.hover.as_ref().unwrap()), (6500.0, 7385.0));
+        assert!(t.pruefen(&m).unwrap().is_ok());
+        // Zu weit: bleibt offen, mit Fehler
+        tippe(&mut t, "7,2");
+        assert_eq!(t.taste(Key::Enter, mods), Taste::PasstNicht);
+        assert!(t.eingabe.as_ref().unwrap().error.is_some());
+        assert_eq!(t.taste(Key::Tab, mods), Taste::Frei, "Tab: Bezugspunkt");
+        assert_eq!(t.taste(Key::Escape, mods), Taste::Geaendert);
+        assert!(t.eingabe.is_none());
+        assert_eq!(t.taste(Key::Escape, mods), Taste::Frei, "dann schließt Esc");
+        // Fort von der Wand: keine Eingabe, keine Pille, Ziffern gehen weiter
+        tippe(&mut t, "1");
+        t.suchen(&m, &k, st, vec3(3000.0, 3000.0, 0.0), 30.0, 1500.0);
+        assert!(t.eingabe.is_none() && t.label(1).is_none());
+        assert_eq!(t.taste(Key::Char('1'), mods), Taste::Frei);
+    }
+
+    /// Review W49: Die Pille zeigt nach jeder Taste die getippte Zahl (B1).
+    /// Lehnt das Modell die Tür im getippten Abstand ab, hier wegen einer
+    /// Tür, die dort schon steht, bleibt die Eingabe mit dem Grund offen
+    /// und die Tür im getippten Abstand (B2); **Esc** schließt sie.
+    #[test]
+    fn eingabe_in_der_pille_und_abgelehnt() {
+        let (mut m, _, st) = haus();
+        let mut t = Innentuer::default();
+        let mods = Modifiers::default();
+        let p = vec3(5020.0, 3000.0, 0.0);
+        t.suchen(&m, &|r| m.chain(r), st, p, 30.0, 1500.0);
+        let mut texte = vec![t.label(1).unwrap().1];
+        for ch in "0,5".chars() {
+            assert_eq!(t.taste(Key::Char(ch), mods), Taste::Geaendert);
+            let (_, text) = t.label(1).unwrap();
+            assert_eq!(text, t.eingabe.as_ref().unwrap().text(FELDER));
+            assert!(!texte.contains(&text), "{text} nach {texte:?}");
+            texte.push(text);
+        }
+        assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
+        let o = t.pruefen(&m).unwrap().unwrap();
+        m.add_opening(o).unwrap();
+        // Noch einmal 0,5 m von derselben Fläche: Dort steht die Tür schon
+        t.suchen(&m, &|r| m.chain(r), st, p, 30.0, 1500.0);
+        for ch in "0,5".chars() {
+            t.taste(Key::Char(ch), mods);
+        }
+        assert_eq!(t.taste(Key::Enter, mods), Taste::Setzen);
+        let vorher = t.hover.clone();
+        assert!(t.pruefen(&m).unwrap().is_err());
+        let i = t.eingabe.as_ref().expect("die Eingabe bleibt");
+        assert!(i.error.is_some());
+        assert_eq!(t.label(1).unwrap().1, i.text(FELDER));
+        assert_eq!(t.hover, vorher, "die Tür bleibt im getippten Abstand");
+        assert_eq!(t.taste(Key::Escape, mods), Taste::Geaendert);
+        assert!(t.eingabe.is_none());
     }
 }

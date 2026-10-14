@@ -5,6 +5,7 @@
 //! „Eigenschaften“.
 
 use crate::ext_props::ExtZeile;
+use crate::freischaltung::{Freischaltung, Modul};
 use crate::meldung::Meldung;
 use crate::type_look::TypeLook;
 use crate::wall_tool::Sprung;
@@ -16,10 +17,15 @@ use sk_ui::theme::{Sizes, Theme};
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
 mod fenster;
+mod gelaende;
 mod hoehenlinien;
 #[cfg(test)]
 mod umbruch_tests;
+mod werkzeuge;
 use hoehenlinien::check_word;
+use werkzeuge::tool_rows;
+
+pub use gelaende::{GelaendeFeld, GelaendeKnopf, GelaendeLeiste};
 
 pub use fenster::TITEL as LEVELS_TITEL;
 
@@ -200,6 +206,9 @@ pub enum Id {
     /// „Wandöffnung“ und „Türöffnung“ unter den Wandknöpfen (Paket O3):
     /// schaltet das Werkzeug der Art ein und aus.
     Opening(OpeningKind),
+    /// Knopf „Gelände“ und die Knöpfe seiner Leiste (plan-gelaendemodul.md
+    /// §4.7).
+    Gelaende(GelaendeKnopf),
 }
 
 /// Muster der Knöpfe der Eigenschaften, die `App::drain_button` ausführt:
@@ -297,6 +306,11 @@ pub enum Field {
     /// Parameter `i` einer gewählten Erweiterung im Paneel „Eigenschaften“
     /// (E7).
     ExtProp(u8),
+    /// Geländeplatte (Gelände G0): Dicke in cm, Außenoffset in m.
+    PlateThick,
+    PlateMargin,
+    /// Felder der Leiste „Gelände“ (G1).
+    Gelaende(GelaendeFeld),
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
@@ -377,7 +391,10 @@ impl Field {
     /// Zahl in Metern (sonst in Zentimetern).
     fn in_metres(self) -> bool {
         self.is_level()
-            || matches!(self, Field::Offset | Field::DownpipeSpacing)
+            || matches!(
+                self,
+                Field::Offset | Field::DownpipeSpacing | Field::PlateMargin
+            )
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
     }
 
@@ -881,6 +898,9 @@ pub struct Props {
     /// `layer_set` bricht an Leerzeichen auf die Innenbreite um, ungekürzt
     /// (Wände um einen Raum), statt rechts überzulaufen.
     pub set_umbruch: bool,
+    /// Zeilen in `values`, die zu Mengen gehören (Raumbuchmengen, Review
+    /// #120 B2); ohne Mengen fehlen sie.
+    pub mengen: std::ops::Range<usize>,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -969,6 +989,8 @@ pub struct Ui {
     pub view: ViewKind,
     /// Mengenfenster offen: Knopf „Mengen · Kosten · AVA“ in `accent`.
     pub quantity_open: bool,
+    /// Freie Module: gesperrte Knöpfe fehlen in den Paneelen.
+    pub frei: Freischaltung,
     pub building: bool,
     /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
     pub interior: bool,
@@ -985,6 +1007,8 @@ pub struct Ui {
     pub ext_knopf: bool,
     /// Werkzeug „Wandöffnung“ bzw. „Türöffnung“ läuft (Paket O3).
     pub opening: Option<OpeningKind>,
+    /// Leiste „Gelände“ offen (G1): ihre Zeilen statt der Wandvorgaben.
+    pub gelaende: Option<GelaendeLeiste>,
     /// Ein Obergeschoss ist aktiv: Außenwände entstehen aus dem EG, der Knopf
     /// „Gebäude“ ist gesperrt (E16).
     pub upper_active: bool,
@@ -1112,7 +1136,7 @@ pub fn projekt_zeilen(p: &sk_model::Project) -> Vec<String> {
 }
 
 /// Zeilen des Werkzeug-Paneels (für Zeichnen und Treffertest gleich).
-enum Row {
+pub(crate) enum Row {
     Title(&'static str),
     Button(Id, &'static str),
     Label(&'static str),
@@ -1149,155 +1173,7 @@ enum Row {
 /// Beschriftung der Öffnungsknöpfe: „Wandöffnung“ passt fett nicht in einen
 /// halben Knopf (Gate #86 mit Windows-Schriften), der Tooltip nennt das
 /// Werkzeug mit vollem Namen.
-fn opening_label(k: OpeningKind) -> &'static str {
-    match k {
-        OpeningKind::Window => "Fenster",
-        OpeningKind::Door => "Tür",
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn tool_rows(
-    projekt: &[String],
-    nord: bool,
-    interior: bool,
-    chip: bool,
-    layers: &[(Rgba, String)],
-    upper_active: bool,
-    foundation_active: bool,
-    ext: Option<(&ExtPanel, Option<&Edit>)>,
-    ext_knopf: bool,
-    opening: Option<(OpeningKind, bool)>,
-) -> Vec<Row> {
-    // Projektdaten als eigener Abschnitt über den Werkzeugen (Paket PD-2)
-    let mut rows = vec![Row::Button(Id::Projektdaten, "Projektdaten")];
-    let n = projekt.len();
-    rows.extend(
-        projekt
-            .iter()
-            .enumerate()
-            .map(|(i, z)| Row::Caption(z.clone(), i + 1 == n)),
-    );
-    rows.extend([
-        Row::Separator,
-        Row::Title("Werkzeuge"),
-        // Wände und Öffnungen je ein Knopfpaar (Paket O3), damit das
-        // Diagramm der Geschosse darunter nicht schrumpft
-        Row::Pair([(Id::Building, "Gebäude"), (Id::Interior, "Innenwand")]),
-        Row::Pair([
-            (
-                Id::Opening(OpeningKind::Window),
-                opening_label(OpeningKind::Window),
-            ),
-            (
-                Id::Opening(OpeningKind::Door),
-                opening_label(OpeningKind::Door),
-            ),
-        ]),
-    ]);
-    // Werkzeug „Erweiterungen“ (E6, Vertrag §14): Knopf des Bauteils, Typ,
-    // Felder, woher die Maße kommen, drei feste Hinweise
-    if let Some((x, edit)) = ext {
-        rows.push(Row::Button(Id::Ext, x.name));
-        if x.chip.is_some() {
-            rows.push(Row::TypeChip(Id::ExtTyp));
-        }
-        for f in &x.felder {
-            rows.push(Row::Field(f.field, f.label));
-            match edit.filter(|e| e.field == f.field) {
-                Some(e) => rows.extend(e.error.clone().map(Row::Error)),
-                None => rows.extend(f.ausserhalb().map(Row::Error)),
-            }
-        }
-        if let Some((last, first)) = x.aus_eingabe.split_last() {
-            rows.extend(first.iter().map(|t| Row::Hint(t)));
-            rows.push(Row::Text(last.to_string()));
-        }
-        rows.push(Row::Separator);
-        rows.extend(x.hinweise.map(Row::Hint));
-        return rows;
-    }
-    if ext_knopf {
-        rows.push(Row::Button(Id::Ext, "Erweiterungen"));
-    }
-    // Öffnungen (Paket O3): statt der Wandvorgaben drei kurze Zeilen, im
-    // Grundriss Außenwand mit zwei Klicks und die Innentür (Jörn 09:26)
-    if let Some((kind, plan)) = opening {
-        rows.push(Row::Separator);
-        rows.extend(if plan && kind == OpeningKind::Door {
-            [
-                Row::Hint("Innenwand: Klick setzt,"),
-                Row::Hint("Tab: Bezug, Rad: Breite."),
-                Row::Hint("Außenwand: Klick, Klick"),
-            ]
-        } else if plan {
-            [
-                Row::Hint("Klick auf die Außenwand,"),
-                Row::Hint("Breite ziehen, Klick."),
-                Row::Hint("Esc: zurück"),
-            ]
-        } else {
-            [
-                Row::Hint("Ecke auf der Außenwand,"),
-                Row::Hint("dann die Gegenecke."),
-                Row::Hint("Linien fangen, Esc: zurück"),
-            ]
-        });
-        return rows;
-    }
-    // Zweizeilig ohne Abstand dazwischen, damit nichts am Rand abbricht
-    if foundation_active {
-        rows.push(Row::Hint("Im Fundament gibt es noch"));
-        rows.push(Row::Text("nichts zu zeichnen".into()));
-    } else if upper_active {
-        rows.push(Row::Hint("Außenwände entstehen"));
-        rows.push(Row::Text("aus dem EG".into()));
-    }
-    rows.extend([Row::Label(if interior {
-        "Innenwand"
-    } else {
-        "Außenwand"
-    })]);
-    if chip {
-        rows.push(Row::TypeChip(Id::ToolType));
-    } else {
-        rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone(), None)));
-    }
-    rows.extend([
-        Row::Label("Bezugsseite"),
-        Row::Segments([
-            (Id::Ref(RefSide::Left), "Außen"),
-            (Id::Ref(RefSide::Center), "Achse"),
-            (Id::Ref(RefSide::Right), "Innen"),
-        ]),
-        // Winkelsprung (G2) ohne eigene Überschrift: gleiche Höhe wie der
-        // frühere Knopf „90°-Sprung“, der Tooltip nennt ihn
-        Row::Segments([
-            (Id::Sprung(Sprung::R90), "90°"),
-            (Id::Sprung(Sprung::R45), "45°"),
-            (Id::Sprung(Sprung::Frei), "frei"),
-        ]),
-        Row::Separator,
-    ]);
-    // Drei kurze Zeilen (Paket 8, Darstellung §2.7); mehr in der Hilfe (F1).
-    // Beim Aufziehen des Nordpfeils gilt Tab nicht (Hinweis W, S2).
-    rows.extend(if nord {
-        [
-            Row::Hint("Fußpunkt, dann Richtung."),
-            Row::Hint("Zahl + Enter setzt genau."),
-            Row::Hint("Umschalt: 15°, Esc: zu"),
-        ]
-    } else {
-        [
-            Row::Hint("Klick setzt Punkte."),
-            Row::Hint("Zahl + Enter setzt genau."),
-            Row::Hint("Tab: Winkel, Esc: zu"),
-        ]
-    });
-    rows
-}
-
-fn view_rows(nord: Option<f64>) -> Vec<Row> {
+fn view_rows(nord: Option<f64>, frei: Freischaltung) -> Vec<Row> {
     let v = |k: ViewKind| (Id::View(k), k.knopf(nord));
     vec![
         Row::Title("Ansichten"),
@@ -1308,7 +1184,7 @@ fn view_rows(nord: Option<f64>) -> Vec<Row> {
         Row::Pair([v(ViewKind::Front), v(ViewKind::Back)]),
         Row::Pair([v(ViewKind::Left), v(ViewKind::Right)]),
         Row::Separator,
-        Row::Button(Id::Quantity, crate::cards::KNOPF),
+        Row::Button(Id::Quantity, frei.knopf()),
     ]
 }
 
@@ -1511,6 +1387,7 @@ impl Ui {
             pressed: None,
             view: ViewKind::Persp,
             quantity_open: false,
+            frei: Freischaltung::ALLES,
             building: false,
             interior: false,
             ref_side: RefSide::Left,
@@ -1519,6 +1396,7 @@ impl Ui {
             tool_chip: None,
             ext_tool: None,
             ext_knopf: false,
+            gelaende: None,
             opening: None,
             upper_active: false,
             foundation_active: false,
@@ -1567,7 +1445,7 @@ impl Ui {
     }
 
     fn rows(&self, p: Panel) -> Vec<Row> {
-        match p {
+        let rows = match p {
             Panel::Tools => tool_rows(
                 &self.projekt_zeilen,
                 self.nord_aktiv,
@@ -1579,8 +1457,9 @@ impl Ui {
                 self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
                 self.ext_knopf,
                 self.opening.map(|k| (k, self.view == ViewKind::Plan)),
+                self.gelaende.as_ref().map(|l| self.gelaende_rows(l)),
             ),
-            Panel::Views => view_rows(self.nord),
+            Panel::Views => view_rows(self.nord, self.frei),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
                 // In dip: die Zeilen sind in jedem Maßstab dieselben
                 let breite = self.width(Panel::Props) - 2.0 * self.size.panel_pad;
@@ -1593,7 +1472,8 @@ impl Ui {
             Panel::Levels if self.levels_diagramm() => self.levels_kopf(),
             Panel::Levels => vec![Row::Button(Id::LevelsOpen, fenster::KNOPF)],
             Panel::Dialog => Vec::new(),
-        }
+        };
+        self.frei.zeilen(rows)
     }
 
     pub fn props(&self) -> Option<&Props> {
@@ -1653,7 +1533,19 @@ impl Ui {
         if !p.as_ref().is_some_and(|p| p.more) {
             self.more_open = false;
         }
-        self.props = p;
+        // Die Menge je Schicht und die Raumbuchmengen gehören zu Mengen
+        let mengen = self.frei.frei(Modul::Mengen);
+        self.props = p.map(|mut p| {
+            if !mengen {
+                for l in &mut p.layers {
+                    l.2.clear();
+                }
+                let n = p.values.len();
+                p.values.drain(p.mengen.start.min(n)..p.mengen.end.min(n));
+                p.mengen = 0..0;
+            }
+            p
+        });
     }
 
     fn field_row(&self, f: Field) -> Option<&FieldRow> {
@@ -1662,6 +1554,9 @@ impl Ui {
         }
         if let Field::ExtTool(_) = f {
             return self.ext_tool.as_ref()?.felder.iter().find(|r| r.field == f);
+        }
+        if let Field::Gelaende(_) = f {
+            return self.gelaende.as_ref()?.felder.iter().find(|r| r.field == f);
         }
         if let Field::ExtProp(_) = f {
             return self.ext_zeilen().find_map(|z| match z {
@@ -1682,7 +1577,7 @@ impl Ui {
     fn field_panel(f: Field) -> Panel {
         if let Field::Draft(_) = f {
             Panel::Dialog
-        } else if let Field::ExtTool(_) = f {
+        } else if let Field::ExtTool(_) | Field::Gelaende(_) = f {
             Panel::Tools
         } else if f.is_level() {
             Panel::Levels
@@ -2166,7 +2061,7 @@ impl Ui {
                 }
                 Row::Field(f, _) => {
                     let fw = match f {
-                        Field::ExtTool(_) | Field::ExtProp(_) => EXT_FIELD_W,
+                        Field::ExtTool(_) | Field::ExtProp(_) | Field::Gelaende(_) => EXT_FIELD_W,
                         _ => FIELD_W,
                     } * s;
                     out.push((Id::Field(f), Rect::new(x + inner_w - fw, y, fw, h), ""));
@@ -2206,6 +2101,7 @@ impl Ui {
             Id::Nord => self.nord_aktiv || self.sonne_an,
             Id::Ext => self.ext_tool.is_some(),
             Id::Opening(k) => self.opening == Some(k),
+            Id::Gelaende(k) => self.gelaende_an(k),
             Id::ExtWahl(..) | Id::ExtJa(_) => self.ext_zeilen().any(|z| match (z, id) {
                 (ExtZeile::Wahl { i, an, .. }, Id::ExtWahl(j, k)) => *i == j && *an == Some(k),
                 (ExtZeile::Janein { i, an, .. }, Id::ExtJa(j)) => *i == j && *an,
@@ -2243,13 +2139,16 @@ impl Ui {
     }
 
     /// Gesperrte Knöpfe: „Gebäude“ im OG, beide Wandknöpfe im Fundament,
-    /// der Zähler im Dialog (fest 2).
-    fn is_disabled(&self, id: Id) -> bool {
+    /// der Zähler im Dialog (fest 2) und die Knöpfe gesperrter Module
+    /// (Bedienbarkeit 41.5).
+    pub(crate) fn is_disabled(&self, id: Id) -> bool {
         match id {
+            id if self.frei.gesperrt(id) => true,
             Id::Building => self.upper_active || self.foundation_active,
             Id::Interior | Id::Opening(_) => self.foundation_active,
             Id::DialogMinus | Id::DialogPlus => true,
             Id::DialogStart => self.dialog_invalid(),
+            Id::Gelaende(k) => self.gelaende_blass(k),
             Id::PropsFlush => {
                 self.props_locked()
                     || self
@@ -2629,7 +2528,8 @@ impl Ui {
             // Zweizeilig ab KA-4 (Einstellungen §3 KA-4 Punkt 8): „Mengen“ /
             // „Kosten · AVA“, 12 fett, Zeilenabstand 16
             widgets::button(c, &self.fonts, b, "", st, s, t);
-            let (oben, unten) = crate::cards::KNOPF_ZEILEN;
+            // Nur Mengen frei: einzeilig in der Mitte
+            let (oben, unten) = self.frei.knopf_zeilen();
             if let Some(f) = self.fonts.bold.as_ref().or(self.fonts.regular.as_ref()) {
                 let px = 12.0 * s;
                 let col = if st.disabled {
@@ -2640,7 +2540,12 @@ impl Ui {
                     t.ui.text
                 };
                 let mitte = b.y + b.h * 0.5 + f.cap_height(px) * 0.5;
-                for (text, y) in [(oben, mitte - 8.0 * s), (unten, mitte + 8.0 * s)] {
+                let zeilen = if unten.is_empty() {
+                    vec![(oben, mitte)]
+                } else {
+                    vec![(oben, mitte - 8.0 * s), (unten, mitte + 8.0 * s)]
+                };
+                for (text, y) in zeilen {
                     let x = b.x + (b.w - f.width(text, px)) * 0.5;
                     f.draw(c, text, px, x.round(), y.round(), col);
                 }

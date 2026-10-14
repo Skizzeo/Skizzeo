@@ -52,7 +52,7 @@ pub struct RowIcons {
 pub fn slots(tab: Tab, key: &NodeKey) -> &'static [Icon] {
     match (tab, key) {
         (Tab::Tree, NodeKey::Project) => &[Icon::Lock, Icon::Eye],
-        (Tab::Tree, NodeKey::Terrain) => &[Icon::Eye],
+        (Tab::Tree, NodeKey::Terrain | NodeKey::TerrainPlate) => &[Icon::Eye],
         (Tab::Tree, _) => &ICONS,
         (Tab::Kind, _) => &[Icon::Lock, Icon::Eye, Icon::Isolate],
         (Tab::Trade, NodeKey::Trade(_)) => &[Icon::Eye, Icon::Isolate],
@@ -160,6 +160,8 @@ impl Hit {
 pub enum Action {
     /// Neue Auswahl (Reihenfolge des Wählens).
     Select(Vec<ElementId>),
+    /// Zeile „Geländeplatte“: die Platte wählen (Gelände G0).
+    Plate,
     /// Geschosszeile: alles darunter wählen und das Geschoss zusätzlich
     /// aktiv machen.
     Storey(sk_model::StoreyId, Vec<ElementId>),
@@ -261,6 +263,7 @@ struct Look {
     rev: u64,
     vis: Visibility,
     selected: Vec<ElementId>,
+    plate: bool,
     theme: u64,
     scale: f32,
 }
@@ -285,6 +288,8 @@ struct RowCx<'a> {
     regular: Option<&'a Font>,
     bold: Option<&'a Font>,
     selected: BTreeSet<Guid>,
+    /// Die Geländeplatte ist gewählt.
+    plate: bool,
     model_hover: Option<Guid>,
     iso: bool,
     w: f32,
@@ -423,6 +428,7 @@ impl TreePanel {
             rev,
             vis: m.visibility().clone(),
             selected: picking.selected.clone(),
+            plate: picking.plate,
             theme: t.rev,
             scale,
         };
@@ -705,7 +711,9 @@ impl TreePanel {
         let ids = self.tree.elements(self.tab, i);
         let lock_faded = lock_faded(m, &self.tree, self.tab, i);
         let delete_faded = match n.key {
-            NodeKey::Project | NodeKey::Terrain | NodeKey::Storey(_) => true,
+            NodeKey::Project | NodeKey::Terrain | NodeKey::TerrainPlate | NodeKey::Storey(_) => {
+                true
+            }
             NodeKey::Building(_) => false,
             _ => {
                 !ids.is_empty()
@@ -857,6 +865,10 @@ impl TreePanel {
         mods: Modifiers,
     ) -> Option<Action> {
         let i = self.rows[vi];
+        if self.nodes()[i].key == NodeKey::TerrainPlate {
+            self.anchor = None;
+            return Some(Action::Plate);
+        }
         let ids = self.tree.elements(self.tab, i).to_vec();
         let now = Instant::now();
         let double = self
@@ -1009,7 +1021,7 @@ impl TreePanel {
             .filter_map(|&id| m.element(id).map(|e| e.guid))
             .collect();
         match (self.tab, &n.key) {
-            (_, NodeKey::Terrain) => v.terrain_hidden = hide,
+            (_, NodeKey::Terrain | NodeKey::TerrainPlate) => v.terrain_hidden = hide,
             (Tab::Tree, NodeKey::Project) if !hide => return show_all(m),
             (Tab::Kind, NodeKey::Kind(c)) => {
                 if hide {
@@ -1396,6 +1408,7 @@ impl TreePanel {
                 .iter()
                 .filter_map(|&id| m.element(id).map(|e| e.guid))
                 .collect(),
+            plate: picking.plate,
             model_hover: self.glow_guid(m, picking),
             iso: m.visibility().isolate.is_some(),
             w: self.rect.w,
@@ -1451,7 +1464,8 @@ impl TreePanel {
             NodeKey::Element(g) | NodeKey::TradeElement(_, g) => Some(g),
             _ => None,
         };
-        let sel = guid.is_some_and(|g| cx.selected.contains(&g));
+        let sel = guid.is_some_and(|g| cx.selected.contains(&g))
+            || (cx.plate && n.key == NodeKey::TerrainPlate);
         let glow = guid.is_some() && guid == cx.model_hover;
         if sel || hovered || glow {
             let mut p = Path::new();
@@ -1714,7 +1728,10 @@ impl TreePanel {
 /// Äste der Karte „Baum“, die beim Öffnen und nach dem Abwählen offen
 /// stehen: Projekt und Gebäude (Jörn 12.10.2026: Geschosse zu).
 fn opens_first(key: &NodeKey) -> bool {
-    matches!(key, NodeKey::Project | NodeKey::Building(_))
+    matches!(
+        key,
+        NodeKey::Project | NodeKey::Building(_) | NodeKey::Terrain
+    )
 }
 
 /// Schloss der Zeile `i` der Karte `tab` blass: Es wirkt nicht, weil das
@@ -1887,7 +1904,7 @@ fn row_tip(m: &Model, n: &Node, ids: &[ElementId]) -> Option<String> {
 fn delete_reason(m: &Model, n: &Node, ids: &[ElementId]) -> String {
     match n.key {
         NodeKey::Storey(_) => "Geschosse entstehen mit dem Gebäude.".into(),
-        NodeKey::Terrain | NodeKey::Project => String::new(),
+        NodeKey::Terrain | NodeKey::TerrainPlate | NodeKey::Project => String::new(),
         _ => {
             let Some(&id) = ids.first() else {
                 return String::new();
@@ -2099,6 +2116,32 @@ mod tests {
         assert!(p.rows.len() > zu.len(), "Gruppe offen");
         p.fold();
         assert_eq!(p.rows, zu, "Bauteil wieder zu");
+    }
+
+    /// Gelände G0 (Jörn 12.10.): Unter „Gelände“ steht die Zeile
+    /// „Geländeplatte“, gleich zu sehen; ein Klick wählt die Platte (nicht
+    /// Bauteile), sie hat nur das Auge, und das blendet das Gelände aus.
+    #[test]
+    fn gelaendeplatte_im_baum() {
+        let (s, t) = (haus(), Theme::dark());
+        let m = s.model();
+        let mut p = panel(&s, &t, 400.0);
+        let vi = p
+            .rows
+            .iter()
+            .position(|&i| p.nodes()[i].key == NodeKey::TerrainPlate)
+            .expect("Zeile sichtbar");
+        assert_eq!(p.nodes()[p.rows[vi]].label, "Geländeplatte");
+        assert_eq!(slots(Tab::Tree, &NodeKey::TerrainPlate), &[Icon::Eye]);
+        let a = p.click_row(m, &Picking::default(), vi, Modifiers::default());
+        assert_eq!(a, Some(Action::Plate));
+        assert!(p.eye_toggle(m, p.rows[vi]).terrain_hidden);
+        let mut pk = Picking {
+            plate: true,
+            ..Default::default()
+        };
+        assert!(pk.select_only(None), "Abwählen ändert etwas");
+        assert!(!pk.plate);
     }
 
     /// Review 3j B4: Gleitet die Höhe, wird nicht je Bild neu gemalt; das

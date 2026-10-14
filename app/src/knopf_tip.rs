@@ -1,8 +1,9 @@
 //! Tooltip an den Werkzeug- und Ansichtsknöpfen (9b), aus `main.rs`
 //! ausgelagert.
 
+use crate::freischaltung::Modul;
 use crate::ui::Id;
-use crate::{cards, help, nordpfeil, sonne_view, tip_text, App};
+use crate::{help, nordpfeil, sonne_view, App};
 
 impl App {
     /// Tooltip an Werkzeug- und Ansichtsknöpfen (9b): Name, Satz aus
@@ -21,10 +22,11 @@ impl App {
             Id::Sprung(_) => "Winkelsprung",
             Id::Ext if self.tool.ext.is_none() => "Erweiterungen",
             Id::Opening(k) => k.name(),
-            Id::Quantity => cards::KNOPF,
+            Id::Quantity => self.ui.frei.knopf(),
             Id::Projektdaten => "Projektdaten",
             Id::Nord => nord.as_str(),
             Id::View(v) => v.knopf(None),
+            Id::Gelaende(k) => crate::gelaende_app::knopf_name(k),
             _ => return None,
         };
         let reason = match id {
@@ -32,7 +34,8 @@ impl App {
             Id::Building | Id::Interior | Id::Opening(_) if self.ui.foundation_active => {
                 Some("Im Fundament wird nicht gezeichnet.")
             }
-            _ => None,
+            // Bedienbarkeit 41.5: grau, mit der Stufe und dem Weg zur Übersicht
+            _ => self.ui.frei.sperre(id).map(Modul::grund),
         };
         let mut lines = help::tooltip_lines(name);
         if let (Some(r), true) = (reason, lines.len() == 3) {
@@ -51,4 +54,14 @@ impl App {
         }
         Some(tip_text(lines))
     }
+}
+
+/// Zeilen eines Tooltips als Text für [`sk_ui::widgets::tooltip`] (erste
+/// Zeile fett), ohne Fettschrift-Marken.
+pub(crate) fn tip_text(lines: Vec<String>) -> String {
+    lines
+        .iter()
+        .map(|l| help::plain(l))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

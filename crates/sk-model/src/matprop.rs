@@ -13,14 +13,23 @@ pub enum MatPropKind {
     Text,
 }
 
+/// Bereich eines festen Kennwerts: Mengen oder Kosten (Review #120 H5);
+/// ohne Bereich ist er allgemein. Was daraus folgt, entscheidet die App.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatPropModule {
+    Quantities,
+    Costs,
+}
+
 /// Fester Kennwert: Schlüssel, Einheit zur Anzeige, Art, Stufe (Grundstufe
-/// oder „Mehr“).
+/// oder „Mehr“), Zusatzmodul.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatProp {
     pub key: &'static str,
     pub unit: &'static str,
     pub kind: MatPropKind,
     pub basic: bool,
+    pub module: Option<MatPropModule>,
 }
 
 pub const PRICE: &str = "Richtpreis";
@@ -30,6 +39,7 @@ pub const SUBGROUP: &str = "Untergruppe";
 pub const MU: &str = "\u{3bc}";
 pub const EUROCLASS: &str = "Euroklasse";
 pub const MAKER: &str = "Hersteller";
+pub const PRICE_SOURCE: &str = "Preisquelle";
 /// Verschnitt der Bestellmenge in % (Mengenpanel „Bestellung“, vob/plan-
 /// rechenweg-bestellmengen.md); ohne Wert gilt [`waste_default`]. War
 /// vorher ein freier eigener Kennwert: Altwerte als Text („5 %“) bleiben
@@ -44,34 +54,44 @@ pub const OPENING_FROM: &str = "Öffnungen abziehen ab";
 /// besteht, bleibt roh erhalten (Review #77/4).
 const FRUEHER_FREI: [&str; 2] = [WASTE, OPENING_FROM];
 
-const fn prop(key: &'static str, unit: &'static str, kind: MatPropKind, basic: bool) -> MatProp {
+const fn prop(
+    key: &'static str,
+    unit: &'static str,
+    kind: MatPropKind,
+    basic: bool,
+    module: Option<MatPropModule>,
+) -> MatProp {
     MatProp {
         key,
         unit,
         kind,
         basic,
+        module,
     }
 }
 
 /// Feste Kennwerte in Anzeige- und Dateireihenfolge. Die Einheit des
 /// Richtpreises steht am Baustoff ([`PRICE_UNIT`]); λ und Rohdichte sind
-/// Felder des Baustoffs.
+/// Felder des Baustoffs. Preis, Einheit, Stand und Quelle gehören zu Kosten,
+/// Verschnitt und Öffnungen zu Mengen (Review #120 B2).
 pub const MAT_PROPS: [MatProp; 13] = {
     use MatPropKind::{Number as N, Text as T};
+    const K: Option<MatPropModule> = Some(MatPropModule::Costs);
+    const M: Option<MatPropModule> = Some(MatPropModule::Quantities);
     [
-        prop(PRICE, "", N, true),
-        prop(PRICE_UNIT, "", T, true),
-        prop(PRICE_DATE, "", T, true),
-        prop(SUBGROUP, "", T, false),
-        prop(MU, "", N, false),
-        prop("c", "J/(kg\u{b7}K)", N, false),
-        prop(EUROCLASS, "", T, false),
-        prop(MAKER, "", T, false),
-        prop("Produkt", "", T, false),
-        prop("Bemerkung", "", T, false),
-        prop("Preisquelle", "", T, false),
-        prop(WASTE, "%", N, false),
-        prop(OPENING_FROM, "m\u{b2}", N, false),
+        prop(PRICE, "", N, true, K),
+        prop(PRICE_UNIT, "", T, true, K),
+        prop(PRICE_DATE, "", T, true, K),
+        prop(SUBGROUP, "", T, false, None),
+        prop(MU, "", N, false, None),
+        prop("c", "J/(kg\u{b7}K)", N, false, None),
+        prop(EUROCLASS, "", T, false, None),
+        prop(MAKER, "", T, false, None),
+        prop("Produkt", "", T, false, None),
+        prop("Bemerkung", "", T, false, None),
+        prop(PRICE_SOURCE, "", T, false, K),
+        prop(WASTE, "%", N, false, M),
+        prop(OPENING_FROM, "m\u{b2}", N, false, M),
     ]
 };
 

@@ -81,7 +81,10 @@ impl Model {
 
     /// [`Model::edge_strip_pairs`] nur an den Decken der Züge `scope`
     /// (`None`: alle).
-    fn edge_strip_pairs_in(&self, scope: Option<&[RunId]>) -> Vec<(ElementId, ElementId)> {
+    pub(super) fn edge_strip_pairs_in(
+        &self,
+        scope: Option<&[RunId]>,
+    ) -> Vec<(ElementId, ElementId)> {
         let mut floors: Vec<(String, f64, ElementId, RunId)> = self
             .elements
             .iter()
@@ -156,8 +159,19 @@ impl Model {
     /// und Nummer.
     /// Mit `scope` nur an den Decken dieser Züge (Z4, die übrigen stehen
     /// unverändert).
+    #[cfg(test)]
     pub(super) fn sync_edge_strips(&mut self, scope: Option<&[RunId]>) {
-        let want = self.edge_strip_pairs_in(scope);
+        self.sync_edge_strips_mit(scope, None);
+    }
+
+    /// [`Model::sync_edge_strips`] mit schon gesuchten Paaren
+    /// ([`Model::abgleich_wunsch`]).
+    pub(super) fn sync_edge_strips_mit(
+        &mut self,
+        scope: Option<&[RunId]>,
+        want: Option<Vec<(ElementId, ElementId)>>,
+    ) {
+        let want = want.unwrap_or_else(|| self.edge_strip_pairs_in(scope));
         let have: Vec<(ElementId, (ElementId, ElementId))> = self
             .elements
             .iter()

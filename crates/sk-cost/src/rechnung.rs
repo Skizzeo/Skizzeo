@@ -1524,6 +1524,8 @@ fn auto_ansaetze(
     let mut befunde = Vec::new();
     let mut stoffe: HashMap<Guid, (Cent, bool)> = HashMap::new();
     let mut gemeldet: Vec<Guid> = Vec::new();
+    // Erdmengen mit Höhenaufmaß rechnen in G1 mit dem Flächenmittel
+    let mut erde_aus_mittel: Option<Ort> = None;
     for a in &s.auto {
         let leistungen = k
             .leistungen
@@ -1552,6 +1554,13 @@ fn auto_ansaetze(
             let menge = a.value.round() as i128;
             if menge <= 0 {
                 continue;
+            }
+            // der Hinweis folgt dem Ansatz, nicht dem bloßen Aufmaß (H123-1)
+            if a.key.starts_with("earth.")
+                && a.formula.contains(sk_model::qto_earth::AUS_AUFMASS)
+                && erde_aus_mittel.is_none()
+            {
+                erde_aus_mittel = Some(ort.clone());
             }
             let (stoff, pf) = *stoffe.entry(l.guid).or_insert_with(|| {
                 let mut bf = Vec::new();
@@ -1588,8 +1597,15 @@ fn auto_ansaetze(
             );
         }
     }
+    if let Some(ort) = erde_aus_mittel {
+        befunde.push(Befund::hinweis(0, ERDE_AUS_MITTEL, ort));
+    }
     befunde
 }
+
+/// Hinweis, solange die Erdmengen mit Höhenaufmaß aus der mittleren
+/// Geländehöhe unter der Platte rechnen (plan-gelaendemodul.md §5 G1).
+pub const ERDE_AUS_MITTEL: &str = "Erdmengen vorläufig aus mittlerer Geländehöhe";
 
 /// „Ohne Bauleistung: Stahlbetonstütze ST-001 · Schalung Stütze (Einheit
 /// m² passt nicht zur Bauleistung in m)“ (Kosten, Prüfung E8 Frage 4).

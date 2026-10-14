@@ -18,7 +18,7 @@ mod tests {
     const H: u32 = 1000;
     /// Ablage für ein Netz dazu (Würfel als Testkörper, Probestück); die
     /// App lässt sie seit S9 leer.
-    const MESH_DAZU: usize = 4;
+    const MESH_DAZU: usize = 5;
 
     fn haus() -> Scene {
         let text = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
@@ -624,13 +624,16 @@ mod tests {
             }
         }
     }
-    /// Ist-Bilder Gelände (Jörn 10.10., Themen 1 und 4): RH-1 mit OK Sohle
-    /// 0,40 über Gelände und 12 cm Perimeterdämmung, vorne ausgeblendet und
-    /// gestrichelt, dazu 0,30 unter Gelände gestrichelt und ein Schnitt.
+    /// Ist-Bilder Gelände (Jörn 10.10., Themen 1 und 4; Geländeplatte G0,
+    /// Jörn 12.10.): RH-1 mit OK Sohle 0,40 über Gelände und 12 cm
+    /// Perimeterdämmung, vorne ausgeblendet und gestrichelt, dazu 0,30
+    /// unter Gelände gestrichelt und ein Schnitt; statt der Geländelinie das
+    /// Band bzw. die Schnittfläche der Geländeplatte.
     /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_gelaende -- --ignored`
     #[test]
     #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
     fn gpu_istbilder_gelaende() {
+        use crate::gelaende_platte as gp;
         use sk_model::ViewShade;
         let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
             return;
@@ -638,6 +641,7 @@ mod tests {
         let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
         let theme = Theme::dark();
         let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        assert_eq!(r.pattern_error(), None);
         let ab = |px: &[u8], n: &str| {
             std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
         };
@@ -654,15 +658,14 @@ mod tests {
         let sun = sonne(6, 21, 15 * 60);
         let leer = sk_render::MeshData::default;
         let mm = theme.px_per_mm;
-        let linie = |h: &Scene, v: ViewKind| {
-            crate::ground_line(
+        let linien = |h: &Scene, v: ViewKind, plane| {
+            gp::linien(
+                &h.model().terrain_plates(),
                 v,
+                plane,
                 h.bounds(),
-                h.model().terrain_z(),
-                &h.model().terrain_patches(crate::TERRAIN_MARGIN),
-                1.0,
                 h.table(),
-                &[],
+                1.0,
             )
         };
         for (versatz, modus, n) in [
@@ -673,7 +676,7 @@ mod tests {
             h.edit_model("Gelände", |m| m.set_terrain_offset(versatz));
             r.set_terrain(h.model().terrain_z() as f32);
             r.set_below_ground(modus);
-            r.set_helpers(&linie(&h, ViewKind::Front));
+            r.set_helpers(&linien(&h, ViewKind::Front, None));
             let (px, _) = ansicht(
                 &mut r,
                 &mut h,
@@ -684,8 +687,8 @@ mod tests {
             );
             ab(&px, &format!("ist-gelaende-vorne-{n}.png"));
         }
-        // Schnitt quer durch die Mitte: Platte, Dämmung, Schürze; die
-        // Geländelinie endet an geschnittenen Bauteilen
+        // Schnitt quer durch die Mitte: Platte, Dämmung, Schürze und die
+        // Schnittfläche der Geländeplatte bis an die Wand
         r.set_below_ground(None);
         let (lo, hi) = h.bounds().unwrap();
         let c = (lo + hi) * 0.5;
@@ -693,31 +696,38 @@ mod tests {
         h.set_theme(&theme);
         r.set_style(crate::style(&theme.env));
         r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
-        for (versatz, n) in [
-            (400.0, "ecke"),
-            (100.0, "ecke-plus10"),
-            (-300.0, "ecke-minus30"),
+        for (versatz, n, b) in [
+            (400.0, "ecke", None),
+            (100.0, "ecke-plus10", None),
+            (-300.0, "ecke-minus30", None),
+            (
+                -300.0,
+                "ganz",
+                Some((
+                    vec3(lo.x - 4000.0, c.y, -3500.0),
+                    vec3(hi.x + 4000.0, c.y, hi.z),
+                )),
+            ),
         ] {
             h.edit_model("Gelände", |m| m.set_terrain_offset(versatz));
             let z = h.model().terrain_z();
             r.set_terrain(z as f32);
-            let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
-            r.set_mesh(crate::MESH_MODEL, &netz);
-            let luecken = crate::terrain_gaps(&netz.faces, |_, _| z, 0);
-            r.set_helpers(&crate::ground_line(
-                ViewKind::Section,
-                h.bounds(),
-                z,
-                &[],
-                1.0,
-                h.table(),
-                &luecken,
-            ));
+            r.set_mesh(
+                crate::MESH_MODEL,
+                &h.mesh(ViewKind::Section, Some(plane), &[]),
+            );
+            let plates = h.model().terrain_plates();
+            let keys = h.table().terrain;
+            r.set_mesh(
+                gp::MESH_PLATE,
+                &gp::netz(&plates, ViewKind::Section, Some(plane), keys),
+            );
+            r.set_helpers(&linien(&h, ViewKind::Section, Some(plane)));
             // Ausschnitt: linke Ecke der Gründung
-            let b = Some((
-                vec3(lo.x - 600.0, c.y, -1500.0),
+            let b = b.or(Some((
+                vec3(lo.x - 3600.0, c.y, -1500.0),
                 vec3(lo.x + 1800.0, c.y, 600.0),
-            ));
+            )));
             let cam = crate::fit_parallel(ViewKind::Section, b, W as f64, H as f64);
             let mut view = cam.view(W, H);
             view.paper = Some(h.table().paper);
@@ -729,9 +739,9 @@ mod tests {
                 &format!("ist-gelaende-schnitt-{n}.png"),
             );
         }
+        r.set_mesh(gp::MESH_PLATE, &leer());
         // Entscheidung B: ein zweites Haus daneben auf eigenem Gelände
         // (RH-1 +0,40, das neue −0,30), gestrichelt unter dem jeweiligen
-        let (lo, hi) = h.bounds().unwrap();
         let x0 = hi.x + 4000.0;
         assert!(h.edit_model("Haus 2", |m| {
             let b = m.add_building(1);
@@ -744,20 +754,13 @@ mod tests {
             m.build_from_polygon(b, &pts).is_some() && m.set_terrain_offset_of(b, -300.0)
         }));
         h.edit_model("Gelände", |m| m.set_terrain_offset(400.0));
-        let patches = h.model().terrain_patches(crate::TERRAIN_MARGIN);
+        let patches = h.model().terrain_patches(gp::TERRAIN_MARGIN);
         assert_eq!(patches.len(), 2);
+        assert_eq!(h.model().terrain_plates().len(), 2);
         r.set_terrain(h.model().terrain_z() as f32);
-        r.set_terrain_boxes(&crate::terrain_boxes(&patches));
+        r.set_terrain_boxes(&gp::terrain_boxes(&patches));
         r.set_below_ground(Some(Some([2.0 * mm, mm])));
-        r.set_helpers(&crate::ground_line(
-            ViewKind::Front,
-            h.bounds(),
-            h.model().terrain_z(),
-            &patches,
-            1.0,
-            h.table(),
-            &[],
-        ));
+        r.set_helpers(&linien(&h, ViewKind::Front, None));
         let (px, _) = ansicht(
             &mut r,
             &mut h,
@@ -771,6 +774,168 @@ mod tests {
         r.set_helpers(&[]);
         r.set_below_ground(None);
         r.set_terrain(0.0);
+    }
+
+    /// Ist-Bilder Geländeplatte in 3D (Gelände G0, Jörn 12.10.): RH-1 auf
+    /// der grünen Platte, 50 cm dick und 3 m umlaufend, am 21.06. um 15:00
+    /// von Südwesten, nah an der Ecke und mit 0,80 m Dicke und 1,50 m
+    /// Außenoffset; dazu zwei Häuser auf verschiedener Höhe.
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_platte -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_platte() {
+        use crate::gelaende_platte as gp;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        assert_eq!(r.pattern_error(), None);
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let mut h = haus();
+        let sun = sonne(6, 21, 15 * 60);
+        let zeige = |r: &mut Renderer, h: &mut Scene, cam: &Camera, n: &str| {
+            h.set_theme(&theme);
+            let plates = h.model().terrain_plates();
+            let keys = h.table().terrain;
+            r.set_terrain(h.model().terrain_z() as f32);
+            r.set_ground_z(plates.iter().map(|p| p.bottom as f32).reduce(f32::min));
+            r.set_grass(keys[0]);
+            r.set_mesh(
+                gp::MESH_PLATE,
+                &gp::netz(&plates, ViewKind::Persp, None, keys),
+            );
+            let px = bild(r, h, sun, cam);
+            ab(&px, n);
+        };
+        let cam = blick(&h, vec3(-1.0, -1.3, 0.8), 32000.0);
+        zeige(&mut r, &mut h, &cam, "ist-platte-3d-suedwest.png");
+        let (lo, _) = h.bounds().unwrap();
+        let ecke = vec3(lo.x, lo.y, 0.0);
+        let cam = Camera::looking_at(ecke + vec3(-5500.0, -7000.0, 3200.0), ecke, 45.0);
+        zeige(&mut r, &mut h, &cam, "ist-platte-3d-ecke.png");
+        assert!(h.edit_model("Geländeplatte", |m| m.set_plate_settings(
+            sk_model::PlateSettings {
+                thick: 800.0,
+                margin: 1500.0
+            }
+        )));
+        zeige(&mut r, &mut h, &cam, "ist-platte-3d-ecke-80-150.png");
+        let (lo, hi) = h.bounds().unwrap();
+        let x0 = hi.x + 4000.0;
+        assert!(h.edit_model("Haus 2", |m| {
+            let b = m.add_building(1);
+            let pts = [
+                vec3(x0, lo.y, 0.0),
+                vec3(x0, lo.y + 8000.0, 0.0),
+                vec3(x0 + 9000.0, lo.y + 8000.0, 0.0),
+                vec3(x0 + 9000.0, lo.y, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).is_some() && m.set_terrain_offset_of(b, -600.0)
+        }));
+        let cam = blick(&h, vec3(-1.0, -1.6, 0.9), 42000.0);
+        zeige(&mut r, &mut h, &cam, "ist-platte-3d-zwei-haeuser.png");
+        r.set_mesh(gp::MESH_PLATE, &Default::default());
+        r.set_ground_z(None);
+        r.set_grass(0);
+    }
+
+    /// Ist-Bilder Gelände G1: RH-1 auf dem Höhenaufmaß „Am Lindenhof 7“
+    /// (ohne Lage: das Grundstück mittig unter dem Haus), in 3D von
+    /// Südwesten mit Zuschnitt alles, blass und Grundstück; Grundriss mit
+    /// Höhenlinien, Punkten und Grenze; Schnitt und Vorne mit der
+    /// Geländelinie.
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_aufmass -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_aufmass() {
+        use crate::gelaende_netz::{self as gn, Gelaende};
+        use crate::gelaende_platte as gp;
+        use sk_model::Show;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let csv =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
+        let (t, ..) = sk_model::Terrain::lesen(csv, "aufmass.csv", "2026-10-12", 32).unwrap();
+        let mut h = haus();
+        assert!(h.edit_model("Höhenaufmaß", |m| m.import_terrain(t)));
+        let sun = sonne(6, 21, 15 * 60);
+        for (show, n) in [
+            (Show::All, "alles"),
+            (Show::Fade, "blass"),
+            (Show::Parcel, "grundstueck"),
+        ] {
+            h.edit_model("Zuschnitt", |m| m.set_terrain_show(show));
+            h.set_theme(&theme);
+            let g = Gelaende::aus(h.model()).unwrap();
+            let keys = h.table().terrain;
+            r.set_ground_z(Some(g.unten as f32));
+            r.set_grass(keys[0]);
+            let netz = crate::scene::mesh_of(&gn::koerper(&g, keys));
+            r.set_mesh(gp::MESH_PLATE, &netz);
+            let cam = blick(&h, vec3(-1.0, -1.3, 0.8), 52_000.0);
+            let px = bild(&mut r, &mut h, sun, &cam);
+            ab(&px, &format!("ist-aufmass-3d-{n}.png"));
+        }
+        r.set_mesh(gp::MESH_PLATE, &Default::default());
+        // Grundriss, Schnitt und Vorne auf Papier
+        h.edit_model("Zuschnitt", |m| m.set_terrain_show(Show::Fade));
+        let g = Gelaende::aus(h.model()).unwrap();
+        let (lo, hi) = g.rahmen();
+        let (hlo, hhi) = h.bounds().unwrap();
+        let c = (hlo + hhi) * 0.5;
+        let plane = (vec3(c.x, c.y, 0.0), vec3(0.0, -1.0, 0.0));
+        // „unter Gelände“ aus dem Raster des Netzes (Geometrie zu #129)
+        r.set_terrain_grid(h.terrain_grid().as_deref());
+        for (v, n) in [
+            (ViewKind::Plan, "grundriss-blass"),
+            (ViewKind::Section, "schnitt"),
+            (ViewKind::Front, "vorne"),
+            (ViewKind::Right, "rechts-unter-gelaende"),
+        ] {
+            let unter = v == ViewKind::Right;
+            r.set_below_ground(unter.then_some(Some([6.0, 4.0])));
+            h.set_theme(&theme);
+            r.set_style(crate::style(&theme.env));
+            r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
+            let p = (v == ViewKind::Section).then_some(plane);
+            r.set_mesh(crate::MESH_MODEL, &h.mesh(v, p, &[]));
+            let keys = h.table().terrain;
+            let kappe = match p {
+                Some((p0, nn)) => {
+                    let f = sk_model::solid::SectionFrame::new(p0, nn);
+                    crate::scene::mesh_of(&gn::kappen(&g, &f, p0, keys[1]))
+                }
+                None => Default::default(),
+            };
+            r.set_mesh(gp::MESH_PLATE, &kappe);
+            let b = Some((vec3(lo.x, lo.y, lo.z), vec3(hi.x, hi.y, hhi.z)));
+            let cam = crate::fit_parallel(v, b, W as f64, H as f64);
+            let mm_px = cam.ortho.map_or(10.0, |half| 2.0 * half / H as f64);
+            let f = gn::fassade(&g, v, h.bounds());
+            r.set_helpers(&gn::linien(&g, v, p, f, h.table(), 1.0, mm_px));
+            let mut view = cam.view(W, H);
+            view.paper = Some(h.table().paper);
+            view.patterns = crate::draw_table::pattern_mode(v, theme.env.patterns_3d);
+            r.draw(W, H, 0, &view).unwrap();
+            ab(&r.read_pixels(W, H), &format!("ist-aufmass-{n}.png"));
+        }
+        r.set_helpers(&[]);
+        r.set_mesh(gp::MESH_PLATE, &Default::default());
+        r.set_ground_z(None);
+        r.set_grass(0);
+        r.set_below_ground(None);
+        r.set_terrain_grid(None);
     }
 
     /// Ist-Bilder E4: die fünf Beispiel-Erweiterungen vor RH-1 in 3D, im

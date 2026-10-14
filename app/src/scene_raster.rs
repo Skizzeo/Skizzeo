@@ -6,8 +6,8 @@
 
 use super::{Aabb, Scene};
 use crate::camera::Camera;
-use sk_math::Vec3;
-use sk_model::{RunId, WallChain};
+use sk_math::{vec3, Vec3};
+use sk_model::{ElementId, Model, RunId, WallChain};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
@@ -81,7 +81,8 @@ impl Dicht {
     }
 }
 
-/// Raster je Platz (Arena-Platz eines Wandzugs, Nummer eines Geschosses).
+/// Raster je Platz (Arena-Platz eines Wandzugs, Nummer eines Geschosses,
+/// Schenkel einer Öffnung).
 #[derive(Default)]
 pub struct Raster {
     zellen: Zellen,
@@ -95,7 +96,8 @@ pub struct Raster {
     diagonale: f64,
 }
 
-fn zelle(v: f64) -> i32 {
+/// Zelle, in der die Koordinate `v` liegt.
+pub(super) fn zelle(v: f64) -> i32 {
     (v / ZELLE).floor().clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
@@ -212,7 +214,8 @@ impl Raster {
         }
     }
 
-    fn in_zelle(&self, c: (i32, i32)) -> &[u32] {
+    /// Plätze in Zelle `c`, ohne die, die zu jeder Abfrage gehören.
+    pub(super) fn in_zelle(&self, c: (i32, i32)) -> &[u32] {
         match &self.dicht {
             Some(d) => d.zelle(c),
             None => self.zellen.get(&c).map_or(&[], Vec::as_slice),
@@ -267,6 +270,21 @@ impl Raster {
     /// Längste Diagonale eines eingetragenen Quaders.
     pub fn diagonale(&self) -> f64 {
         self.diagonale
+    }
+
+    /// Quader um alles Eingetragene; wächst nur, bis [`Raster::leeren`].
+    pub fn quader(&self) -> Option<Aabb> {
+        self.alles
+    }
+
+    /// Plätze, die zu jeder Abfrage gehören.
+    pub(super) fn immer(&self) -> &[u32] {
+        &self.immer
+    }
+
+    /// Zahl der Plätze, auch der freien.
+    pub(super) fn plaetze(&self) -> usize {
+        self.lage.len()
     }
 
     /// Spielraum in mm um den Blickstrahl `(o, d)`, der `px` Bildpunkten
@@ -421,7 +439,7 @@ impl Raster {
     }
 
     /// Alle eingetragenen Plätze, aufsteigend.
-    fn alle(&self) -> Vec<usize> {
+    pub(super) fn alle(&self) -> Vec<usize> {
         (0..self.lage.len())
             .filter(|&i| self.lage[i] != Lage::Frei)
             .collect()
@@ -499,6 +517,19 @@ fn zellen_der_strecke(a: (f64, f64), b: (f64, f64), f: &mut impl FnMut((i32, i32
     }
 }
 
+/// Bereich (flach) um den Pfad der Öffnung `id`, in dem die Maus ihre
+/// Griffe zeigen kann ([`crate::wall_edit::tuer_edit::griff_reichweite`]).
+fn griffbereich(m: &Model, id: ElementId) -> Option<Aabb> {
+    let o = m.opening(id)?;
+    let r = crate::wall_edit::tuer_edit::griff_reichweite(o.width());
+    let (mut lo, mut hi) = (vec3(f64::MAX, f64::MAX, 0.0), vec3(f64::MIN, f64::MIN, 0.0));
+    for p in &o.path {
+        (lo.x, lo.y) = (lo.x.min(p.x), lo.y.min(p.y));
+        (hi.x, hi.y) = (hi.x.max(p.x), hi.y.max(p.y));
+    }
+    (lo.x <= hi.x).then(|| (lo - vec3(r, r, 0.0), hi + vec3(r, r, 0.0)))
+}
+
 impl Scene {
     /// Berechnete Wandzüge mit dem Quader ihres Körpers, die das Rechteck
     /// (x, y) `lo`–`hi` berühren können (Vortest beim Zeigen, Review #82 1
@@ -513,6 +544,60 @@ impl Scene {
             .into_iter()
             .filter_map(|i| self.cache.get(i)?.as_ref())
             .map(|c| (c.id, &c.chain, c.bounds))
+    }
+
+    /// Trägt den Zug `rc` auf Platz `platz` mit Quader `q` ein und seine
+    /// Öffnungen mit dem Bereich ihrer Griffe ([`griffbereich`]).
+    pub(super) fn raster_setzen(&mut self, platz: usize, q: Option<Aabb>, rc: &super::RunCache) {
+        self.raster.setze(platz, q);
+        let bereich = rc
+            .loecher
+            .iter()
+            .filter_map(|(h, _)| griffbereich(&self.model, h.opening?))
+            .fold(None, |acc, b| super::union(acc, Some(b)));
+        match bereich {
+            Some(b) => self.griffraster.setze(platz, Some(b)),
+            None => self.griffraster.entferne(platz),
+        }
+    }
+
+    /// Nimmt den Zug auf Platz `platz` aus beiden Rastern.
+    pub(super) fn raster_entfernen(&mut self, platz: usize) {
+        self.raster.entferne(platz);
+        self.griffraster.entferne(platz);
+    }
+
+    pub(super) fn raster_leeren(&mut self) {
+        self.raster.leeren();
+        self.griffraster.leeren();
+    }
+
+    /// Öffnungen mit einem Loch in einem berechneten Wandzug, deren Griffe
+    /// die Maus im Punkt `p` des Grundrisses zeigen kann, mit Spielraum `r`
+    /// (mm, das Quadrat um `p`), je mit dem Zug: nach Bauteil, dann Zug
+    /// aufsteigend. Gefragt wird nur das Raster der Griffe, so kostet jede
+    /// Mausbewegung gleich viel, wie groß das Modell und wie lang sein
+    /// längster Zug auch ist (Review #149 B1).
+    pub fn oeffnungen_bei(&self, p: Vec3, r: f64) -> Vec<(ElementId, RunId)> {
+        let (lo, hi) = ((p.x - r, p.y - r), (p.x + r, p.y + r));
+        let trifft = |(a, b): Aabb| a.x <= hi.0 && b.x >= lo.0 && a.y <= hi.1 && b.y >= lo.1;
+        let mut out = Vec::new();
+        for platz in self.griffraster.im(lo, hi) {
+            let Some(c) = self.cache.get(platz).and_then(Option::as_ref) else {
+                continue;
+            };
+            for (h, _) in &c.loecher {
+                let Some(id) = h.opening else {
+                    continue;
+                };
+                if griffbereich(&self.model, id).is_some_and(trifft) {
+                    out.push((id, c.id));
+                }
+            }
+        }
+        out.sort_by_key(|(id, run)| (id.index(), run.index()));
+        out.dedup();
+        out
     }
 
     /// Plätze der Wandzüge, die der Strahl mit Spielraum `rand` (mm)
@@ -551,7 +636,7 @@ impl Scene {
 mod probe;
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use sk_math::{dist_to_segment, vec3};
     use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
@@ -706,11 +791,11 @@ mod tests {
         );
     }
 
-    const W: f64 = 1600.0;
-    const H: f64 = 900.0;
+    pub(in crate::scene) const W: f64 = 1600.0;
+    pub(in crate::scene) const H: f64 = 900.0;
 
     /// 7 × 7 Häuser 10 × 8 m im Abstand von 18 m, je mit einem Fenster.
-    fn siedlung() -> Scene {
+    pub(in crate::scene) fn siedlung() -> Scene {
         let mut m = Model::new();
         m.begin("Siedlung");
         for i in 0..49 {
@@ -768,7 +853,7 @@ mod tests {
             .min_by(f64::total_cmp)
     }
 
-    fn kameras() -> [Camera; 3] {
+    pub(in crate::scene) fn kameras() -> [Camera; 3] {
         let mitte = vec3(60_000.0, 60_000.0, 0.0);
         [
             Camera::parallel(mitte, 0.3, -89.9f64.to_radians(), 70_000.0),

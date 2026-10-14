@@ -175,9 +175,13 @@ impl AutoSave {
         self.covered = None;
     }
 
-    /// Geändert seit Öffnen, Speichern oder der letzten Sicherung.
+    /// Geändert seit Öffnen, Speichern oder der letzten Sicherung. In
+    /// einem offenen Schritt nicht: Das Modell steht dann mitten in einer
+    /// Änderung (Gelände-Zug im Geschossmanager: ±0,00 schon neu, die
+    /// übrigen Gründungen noch alt, Review #123 F2) und wird erst nach dem
+    /// Schritt gesichert.
     fn changed(&self, m: &Model, doc: &Document) -> bool {
-        doc.is_dirty(m) && self.covered != Some(m.revision())
+        !m.in_step() && doc.is_dirty(m) && self.covered != Some(m.revision())
     }
 
     /// Zur Zeit `now` (seit Programmstart): sichert, wenn geändert und seit
@@ -526,7 +530,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// Datum zu Tagen seit 1970-01-01.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;

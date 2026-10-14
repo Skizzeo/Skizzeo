@@ -77,6 +77,16 @@ pub fn fehlende_baustoffe(m: &Model, elemente: &[sk_model::ElementId]) -> Vec<Be
         .collect()
 }
 
+/// Schluss jedes Hinweises aus [`fehlende_folgen`].
+const FOLGE_FEHLT: &str = "“ kommt in der Definition nicht vor";
+
+/// Der Hinweis stammt aus [`fehlende_folgen`]: Die App erkennt ihn so unter
+/// den gespeicherten Hinweisen einer Erweiterung wieder und zeigt ihn nur
+/// mit Kosten (Review #120 H4).
+pub fn ist_folgen_hinweis(t: &str) -> bool {
+    t.ends_with(FOLGE_FEHLT) && t.contains("“; deren Folge „")
+}
+
 /// Hinweise beim Einlesen (Prüfung E8, Frage 2): Eine genutzte Bauleistung
 /// hat Folgen, deren Bauleistung die Definition nicht nennt. Folgen gelten
 /// für Erweiterungen nicht; ohne den Hinweis fehlten sie still.
@@ -98,7 +108,7 @@ pub fn fehlende_folgen(k: &Katalog, d: &sk_model::erweiterung::ExtDef) -> Vec<St
                 .leistung(f.folge)
                 .map_or_else(|| f.folge.to_ifc(), |x| x.kurz.clone());
             let t = format!(
-                "{} nutzt „{}“; deren Folge „{folge}“ kommt in der Definition nicht vor",
+                "{} nutzt „{}“; deren Folge „{folge}{FOLGE_FEHLT}",
                 d.name(),
                 l.kurz
             );

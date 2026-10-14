@@ -9,6 +9,7 @@
 pub mod attr;
 pub mod bemassung;
 pub mod catalog;
+pub mod decke_aussparung;
 pub mod din276;
 pub mod element;
 pub mod erweiterung;
@@ -66,10 +67,10 @@ pub use attr::{
     FillSpace, HatchLine, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 pub use catalog::{
-    compare, compare_materials, compare_surfaces, export_material, export_space_type,
-    export_surface, export_type, import_material, import_space_type, import_type, read_szk,
-    read_szk_with, save_preset, sync_materials, sync_materials_report, write_szk, Library, RawSvc,
-    TypeState,
+    compare, compare_materials, compare_materials_ohne, compare_surfaces, export_material,
+    export_space_type, export_surface, export_type, import_material, import_space_type,
+    import_type, read_szk, read_szk_with, save_preset, sync_materials, sync_materials_report,
+    write_szk, Library, RawSvc, TypeState,
 };
 pub use element::{
     Building, BuildingId, Category, CladdingValue, Coupling, Element, ElementId, ElementKind,
@@ -78,7 +79,9 @@ pub use element::{
 };
 pub use erweiterung::{ExtDef, ExtPart};
 pub use ext::{ExtRec, ExtStore};
-pub use floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, TerraceParams};
+pub use floor::{
+    FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, StripTeil, TerraceParams,
+};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use gefaelle::{Drainage, SlopeField};
 pub use guid::{Guid, GuidGen};
@@ -109,8 +112,13 @@ pub use model::{
     STRIP_PART, TERRACE_CROWN, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, UTM_N,
     WALKABLE_DEPTH,
 };
+pub use model::{
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
+    TerrainMesh, TerrainPoint, Trim,
+};
 pub use model::{EckeFehler, Fangziele, OpeningFault, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{FreieRaumnamen, Space, SPACE_SEQ};
+pub use model::{PlateInput, PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
 pub use model::{SpaceGroup, SpaceType, WallTiles, DEFAULT_SPACE_GUID};
 pub use model::{
     BATTEN, CLADDING_MAT_GUID, COUNTER, FOAMGLASS_MAT_GUID, MAX_BATTEN, MAX_CLADDING, MAX_DRIP,

@@ -192,11 +192,14 @@ pub enum Topic {
     Ava,
     Delete,
     Backups,
+    /// Ausbaustufen und was jede kann, „Ausbaustufe …“ im Dateimenü
+    /// (Bedienbarkeit 41.5).
+    Ausbaustufen,
 }
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 40] = [
+    pub const ALL: [Topic; 41] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -237,13 +240,20 @@ impl Topic {
         Topic::Ava,
         Topic::Delete,
         Topic::Backups,
+        Topic::Ausbaustufen,
     ];
 
     /// Gruppen der Liste „Alle Themen“ (Darstellung p9 §2, Liste).
     pub const GROUPS: [(&'static str, &'static [Topic]); 5] = [
         (
             "Grundlagen",
-            &[Topic::Start, Topic::Navigation, Topic::File, Topic::Delete],
+            &[
+                Topic::Start,
+                Topic::Navigation,
+                Topic::File,
+                Topic::Delete,
+                Topic::Ausbaustufen,
+            ],
         ),
         (
             "Zeichnen",
@@ -346,6 +356,7 @@ impl Topic {
             Topic::Ava => "ava",
             Topic::Delete => "loeschen",
             Topic::Backups => "sicherungen",
+            Topic::Ausbaustufen => "ausbaustufen",
         }
     }
 
@@ -368,6 +379,9 @@ impl Topic {
         }
     }
 }
+
+/// Erste Zeile im Thema „Ausbaustufen“, rechts die Stufe dieser Installation.
+pub const STUFE_HIER: &str = "Diese Installation";
 
 /// Offenes Fenster für die Themenwahl.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -422,7 +436,8 @@ pub struct HelpCtx {
     pub dialog: bool,
     /// Zielwahl „Bündig setzen“ läuft.
     pub flush_pick: bool,
-    /// Ziehen läuft.
+    /// Ziehen läuft, eine Eingabe ist offen, oder das Tun an der Wand hat
+    /// ein eigenes Thema (Teilen, Ecke, Bemaßung unter der Maus).
     pub dragging: bool,
     /// Werkzeug aktiv: `true` = Innenwand, `false` = Gebäude.
     pub tool: Option<bool>,
@@ -551,9 +566,36 @@ pub struct HelpCard {
     /// Bild und Inhaltsbild des letzten Malens: behalten den Speicher
     /// (Review 3w, wie 3k: frische Seiten kosten mehr als das Malen).
     bufs: Option<(Canvas, Canvas)>,
+    /// Freie Module: die Liste „Alle Themen“ zeigt nur ihre Themen.
+    pub frei: crate::freischaltung::Freischaltung,
 }
 
 impl HelpCard {
+    /// Titel des Themas; das Mengenfenster heißt nach den freien Blättern
+    /// (Review #120 H5).
+    fn titel(&self, t: Topic) -> &'static str {
+        match (t, self.frei.blaetter()) {
+            (Topic::Quantities, 1) => "Mengen",
+            (Topic::Quantities, 2) => "Mengen, Kosten",
+            _ => t.title(),
+        }
+    }
+
+    /// Zeilen des Themas ohne die gesperrter Module
+    /// ([`crate::freischaltung::hilfe_zeigt`]); der Knopf zum Mengenfenster
+    /// heißt wie im Paneel. „Ausbaustufen“ nennt zuerst die Stufe dieser
+    /// Installation.
+    fn zeilen(&self, t: Topic) -> Vec<(String, String)> {
+        let knopf = self.frei.knopf();
+        let stufe = (t == Topic::Ausbaustufen).then(|| (STUFE_HIER.into(), self.frei.name()));
+        stufe
+            .into_iter()
+            .chain(t.rows())
+            .filter(|(a, _)| crate::freischaltung::hilfe_zeigt(self.frei, t, a))
+            .map(|(a, b)| (a, b.replace(crate::cards::KNOPF, knopf)))
+            .collect()
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -576,6 +618,10 @@ impl HelpCard {
     pub fn open_with(&mut self, t: Topic) {
         self.set_open(true);
         self.picked = (t != self.doing).then_some(t);
+        // auch auf der schon offenen Karte das Thema von oben, nicht die
+        // Liste „Alle Themen“ (Review #156 B1)
+        self.list = false;
+        self.scroll = 0.0;
     }
 
     /// Taste: F1 öffnet und schließt, Esc schließt nur eine offene Karte.
@@ -771,7 +817,7 @@ impl HelpCard {
             for (name, topics) in Topic::GROUPS {
                 groups.push((name, y));
                 y += gh;
-                for tp in topics {
+                for tp in topics.iter().filter(|t| !self.frei.gesperrt(**t)) {
                     items.push((*tp, y, ih));
                     y += ih;
                 }
@@ -780,7 +826,7 @@ impl HelpCard {
             y
         } else {
             let mut h = 0.0;
-            for (a, b) in topic.rows() {
+            for (a, b) in self.zeilen(topic) {
                 let left = widgets::wrap(reg, &a, px, left_w - 4.0 * s);
                 let lines = rich_wrap(reg, bold, &b, px, right_w);
                 h += lines.len().max(left.len()).max(1) as f32 * line + gap;
@@ -842,7 +888,7 @@ impl HelpCard {
         let title = if self.list {
             "Alle Themen"
         } else {
-            topic.title()
+            self.titel(topic)
         };
         let title = widgets::ellipsize(bold, title, px_head, ox + close.x - tx - 4.0 * s);
         widgets::text(c, bold, &title, px_head, tx, hy, t.ui.text);
@@ -912,8 +958,12 @@ impl HelpCard {
                 }
                 let nw = if current { width(reg, now) } else { 0.0 };
                 let x = pad + (6.0 * s).round();
-                let label =
-                    widgets::ellipsize(reg, tp.title(), px, w - x - pad - nw - (12.0 * s).round());
+                let label = widgets::ellipsize(
+                    reg,
+                    self.titel(*tp),
+                    px,
+                    w - x - pad - nw - (12.0 * s).round(),
+                );
                 widgets::text(sub, reg, &label, px, x, base(y, *ih), t.ui.text);
                 if current {
                     widgets::text(
@@ -1025,7 +1075,7 @@ impl HelpCard {
             r
         };
         let (all, back) = if self.picked.is_some() || self.list {
-            let label = format!("‹ Zurück zu „{}“", self.doing.title());
+            let label = format!("‹ Zurück zu „{}“", self.titel(self.doing));
             let r = link(c, &label, self.hover == Some(Hit::Back), None);
             (None, Some(r))
         } else {
@@ -1360,5 +1410,88 @@ mod tests {
         assert_eq!(k.wait(0), None);
         k.follow(Topic::Drag, 100);
         assert_eq!(k.wait(200), Some(50));
+    }
+
+    /// Review #156 B1: Ist die Karte mit „Alle Themen“ offen und weit
+    /// gerollt, zeigt „Ausbaustufe …“ trotzdem das Thema, von oben.
+    #[test]
+    fn oeffnen_mit_thema_aus_der_liste() {
+        let mut k = HelpCard::default();
+        k.follow(Topic::Draw, 0);
+        k.set_open(true);
+        k.toggle_list();
+        k.scroll = 120.0;
+        assert!(k.list_open());
+        k.open_with(Topic::Ausbaustufen);
+        assert!(k.is_open() && !k.list_open());
+        assert_eq!(k.topic(), Topic::Ausbaustufen);
+        assert_eq!(k.scroll, 0.0);
+        // ebenso aus einem anderen Thema heraus
+        k.pick(Topic::Quantities);
+        k.scroll = 80.0;
+        k.open_with(Topic::Ausbaustufen);
+        assert_eq!((k.topic(), k.scroll), (Topic::Ausbaustufen, 0.0));
+    }
+
+    /// Review #120 H5: Das Mengenfenster heißt nach den freien Blättern,
+    /// und Zeilen gesperrter Module fehlen; der Knopf heißt wie im Paneel.
+    #[test]
+    fn hilfe_nach_stufe() {
+        use crate::freischaltung::Freischaltung;
+        let mut k = HelpCard::default();
+        let zeile = |k: &HelpCard, t: Topic, a: &str| k.zeilen(t).into_iter().find(|z| z.0 == a);
+        for (w, titel, mengen, preise) in [
+            ("basis", Topic::Quantities.title(), false, false),
+            ("pro", "Mengen", true, false),
+            ("ultimate", "Mengen, Kosten, AVA", true, true),
+        ] {
+            k.frei = Freischaltung::stufe(w).unwrap();
+            assert_eq!(k.titel(Topic::Quantities), titel, "{w}");
+            assert_eq!(k.titel(Topic::Draw), Topic::Draw.title(), "{w}");
+            let start = zeile(&k, Topic::Start, "Mengen");
+            assert_eq!(start.is_some(), mengen, "{w}");
+            if let Some((_, b)) = start {
+                assert!(b.contains(k.frei.knopf()), "{w}: {b}");
+            }
+            assert_eq!(
+                zeile(&k, Topic::Materials, "Bestellung").is_some(),
+                mengen,
+                "{w}"
+            );
+            assert_eq!(
+                zeile(&k, Topic::Materials, "Preise").is_some(),
+                preise,
+                "{w}"
+            );
+            assert!(zeile(&k, Topic::Materials, "Ansehen").is_some(), "{w}");
+            assert_eq!(
+                zeile(&k, Topic::Foundation, "Baugrund").is_some(),
+                mengen,
+                "{w}"
+            );
+            assert_eq!(zeile(&k, Topic::Terrace, "Mengen").is_some(), mengen, "{w}");
+            // Review #120 H3: Haken und Preise beim Einlesen nur mit Kosten,
+            // ohne sie kommen alle neuen Sätze in den Firmenkatalog
+            for a in ["Firmenkatalog", "Preise"] {
+                assert_eq!(zeile(&k, Topic::Einlesen, a).is_some(), preise, "{w}: {a}");
+            }
+            assert_eq!(
+                zeile(&k, Topic::Einlesen, "Neue Sätze").is_some(),
+                !preise,
+                "{w}"
+            );
+            for a in ["Einzelplatz oder Kennwort", "Eigener Baustoff"] {
+                let z = zeile(&k, Topic::Einlesen, a);
+                assert!(z.is_some_and(|z| !z.1.contains("angehakt")), "{w}: {a}");
+            }
+            // Bedienbarkeit 41.5: „Ausbaustufen“ nennt zuerst diese Stufe,
+            // dann jede Stufe, in jeder Stufe gleich
+            let stufen = k.zeilen(Topic::Ausbaustufen);
+            assert_eq!(stufen[0], (STUFE_HIER.into(), k.frei.name()), "{w}");
+            let namen: Vec<&str> = stufen[1..5].iter().map(|z| z.0.as_str()).collect();
+            assert_eq!(namen, ["Basis", "Pro", "Ultimate", "Geländemodul"], "{w}");
+            assert!(!k.frei.gesperrt(Topic::Ausbaustufen), "{w}");
+        }
+        assert_eq!(Freischaltung::ALLES.name(), "Ultimate mit Geländemodul");
     }
 }

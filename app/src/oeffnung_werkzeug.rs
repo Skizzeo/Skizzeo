@@ -257,6 +257,10 @@ pub struct Werkzeug {
     pub innen: crate::oeffnung_app::innentuer::Innentuer,
     /// Kanten im Grundriss statt Ecken auf der Fläche (Jörn 12.10. 09:26).
     pub grundriss: bool,
+    /// Nummer der Tinte der Vorschau beim Renderer, neu mit jeder anderen.
+    pub tinte_nr: u64,
+    /// Stand des Themas, in dessen Ziehfarbe die Tinte gefärbt ist.
+    pub tinte_rev: u64,
 }
 
 /// Was ein Klick mit [`Werkzeug::setzen`] ergibt.
@@ -278,6 +282,15 @@ pub enum Klick {
 pub struct Bild {
     pub linien: Vec<(Vec3, Vec3)>,
     pub umriss: Vec<(Vec3, Vec3)>,
+    /// Maßkette der Innentür zu den Wandflächen, gezeichnet wie die
+    /// Außenmaßketten, in der Ziehfarbe: Striche mit ihrer Stärke (mm auf
+    /// dem Papier) und ob rund (Kreise), dazu die Tinte (Zahlen, Punkte,
+    /// Pfeile).
+    pub kette: Vec<(Vec3, Vec3, f64, bool)>,
+    pub tinte: Vec<[Vec3; 3]>,
+    /// Pille der Innentür am Cursor: Abstand zur näheren Wandfläche oder
+    /// die getippte Zahl.
+    pub pille: Option<([Vec3; 2], String)>,
     /// Die Ecke unter der Maus und ob sie auf einer Linie gefangen ist.
     pub punkt: Option<(Vec3, bool)>,
 }
@@ -291,6 +304,8 @@ impl Werkzeug {
             vorschau: Bild::default(),
             innen: Default::default(),
             grundriss: false,
+            tinte_nr: 0,
+            tinte_rev: 0,
         }
     }
 
@@ -315,10 +330,15 @@ impl Werkzeug {
     /// Pille am Gummiband im Grundriss: die Breite live zwischen erster
     /// Kante und Maus.
     pub fn label(&self) -> Option<([Vec3; 2], String)> {
-        let (a, b) = (self.erste.as_ref()?, self.hover.as_ref()?);
         if !self.grundriss {
             return None;
         }
+        // Innentür am Cursor: Abstand zur näheren Wandfläche oder die
+        // getippte Zahl (G7, Review W49 B1)
+        if self.erste.is_none() && self.innen.hover.is_some() {
+            return self.vorschau.pille.clone();
+        }
+        let (a, b) = (self.erste.as_ref()?, self.hover.as_ref()?);
         let w = plan_breite(a, b).filter(|w| *w >= 1.0)?;
         Some(([a.p, b.p], crate::ui::live_length_text(w)))
     }
@@ -429,6 +449,13 @@ pub fn helpers(b: &Bild, scale: f32, theme: &Theme) -> Vec<Helper> {
         .iter()
         .map(|(a, c)| line(*a, *c, col.guide, 1.0, 5.0))
         .collect();
+    // Maßkette der Innentür: Stärke wie die Außenmaßketten
+    let px = theme.px_per_mm * scale;
+    out.extend(b.kette.iter().map(|&(a, c, mm, round)| Helper {
+        width: (mm as f32 * px).max(1.0),
+        round,
+        ..line(a, c, col.drag, 1.0, 0.0)
+    }));
     out.extend(
         b.umriss
             .iter()

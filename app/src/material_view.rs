@@ -12,14 +12,15 @@
 use crate::attr_pick::{self, Pick, Tiles};
 use crate::catalog::{Company, SaveResult};
 use crate::catalog_view::Frame;
+use crate::freischaltung::{Freischaltung, Modul};
 use crate::prefs::Win;
 use crate::scene::Scene;
 use crate::window_kit::{
     intersect, label, num_text as de, outline, parse_num, pixel_strips, prop_text, rounded,
 };
-use sk_model::matprop::{self, MatPropKind, PRICE, PRICE_DATE, PRICE_UNIT};
+use sk_model::matprop::{self, MatPropKind, MatPropModule, PRICE, PRICE_DATE, PRICE_UNIT};
 use sk_model::{
-    compare_materials, import_material, Guid, LayerSetId, Library, MatCategory, Material,
+    compare_materials_ohne, import_material, Guid, LayerSetId, Library, MatCategory, Material,
     MaterialDisplay, MaterialId, Model, PropValue, TypeCategory, TypeState, Use,
 };
 use sk_paint::{Canvas, Path, Rgba};
@@ -309,7 +310,35 @@ enum Field {
     NewValue(String),
 }
 
+/// Modul eines Kennwerts (Review #120 B2) aus seiner Spalte in
+/// [`matprop::MAT_PROPS`] (Review #120 H5): Richtpreis, Einheit, Stand und
+/// Preisquelle gehören zu Kosten, Verschnittzuschlag und „Öffnungen abziehen
+/// ab“ zu Mengen. Alle übrigen Kennwerte, eigene und das Fenster selbst
+/// gehören zu keinem.
+fn kennwert_modul(k: &str) -> Option<Modul> {
+    Some(prop_modul(matprop::mat_prop(k)?.module?))
+}
+
+/// Freischaltung zum Modul eines festen Kennwerts.
+pub(crate) fn prop_modul(m: MatPropModule) -> Modul {
+    match m {
+        MatPropModule::Quantities => Modul::Mengen,
+        MatPropModule::Costs => Modul::Kosten,
+    }
+}
+
 impl Field {
+    /// Modul des Felds ([`kennwert_modul`]); Suche, Name und eigene
+    /// Kennwerte gehören zu keinem.
+    fn modul(&self) -> Option<Modul> {
+        match self {
+            Field::Key(k) => kennwert_modul(k),
+            Field::Search | Field::Name | Field::Custom(_) | Field::NewKey | Field::NewValue(_) => {
+                None
+            }
+        }
+    }
+
     fn numeric(&self) -> bool {
         match self {
             Field::Key(k) => {
@@ -453,6 +482,9 @@ pub struct MaterialView {
     pub tab: Tab,
     /// Rolle Nutzer (KA-3b1): die Firma nur lesen.
     nutzer: bool,
+    /// Freie Module: Felder zu Kosten und Mengen nur, wenn frei
+    /// ([`Field::modul`]).
+    frei: Freischaltung,
     sel: Option<Guid>,
     csel: Option<Guid>,
     company: Option<(Library, String)>,
@@ -522,6 +554,7 @@ impl MaterialView {
             work,
             tab: Tab::Project,
             nutzer: false,
+            frei: Freischaltung::ALLES,
             sel: None,
             csel: None,
             company: None,
@@ -565,8 +598,37 @@ impl MaterialView {
     }
 
     /// Rolle Nutzer (KA-3b1): „In den Firmenkatalog …“ gesperrt.
-    pub fn set_nutzer(&mut self, nutzer: bool) {
+    /// Rolle Nutzer (KA-3b1) und freie Module.
+    pub fn set_rahmen(&mut self, nutzer: bool, frei: Freischaltung) {
         self.nutzer = nutzer;
+        self.set_frei(frei);
+    }
+
+    /// Freie Module: Felder gesperrter Module fehlen (Review #120 B2).
+    pub fn set_frei(&mut self, frei: Freischaltung) {
+        if self.frei != frei {
+            self.frei = frei;
+            self.full_frame = true;
+        }
+    }
+
+    /// Das Feld gehört zu einem Modul, das nicht frei ist.
+    fn gesperrt(&self, f: &Field) -> bool {
+        f.modul().is_some_and(|m| !self.frei.frei(m))
+    }
+
+    /// Der Kennwert gehört zu einem Modul, das nicht frei ist.
+    fn kennwert_gesperrt(&self, k: &str) -> bool {
+        kennwert_modul(k).is_some_and(|m| !self.frei.frei(m))
+    }
+
+    /// Module der Kennwerte, die nicht frei sind: Sie zählen im Abgleich
+    /// mit dem Firmenkatalog nicht (Review #120 H2).
+    fn gesperrte_kennwerte(&self) -> Vec<MatPropModule> {
+        [MatPropModule::Quantities, MatPropModule::Costs]
+            .into_iter()
+            .filter(|&m| !self.frei.frei(prop_modul(m)))
+            .collect()
     }
 
     /// Neuer Stand des Firmenkatalogs (nach Neuladen oder neuem Ort).
@@ -886,11 +948,25 @@ impl MaterialView {
         )
     }
 
-    /// Zeile von „Verwendet in“ (unter dem Hinweis zur Preiseinheit).
+    /// Hinweis zur Preiseinheit ([`price_hint`]), nur mit Kosten
+    /// (Review #120 H2).
+    fn preis_hinweis(&self, id: MaterialId) -> Option<String> {
+        if self.kennwert_gesperrt(PRICE) {
+            return None;
+        }
+        price_hint(&self.work, id)
+    }
+
+    /// Zeile von „Verwendet in“: unter dem Hinweis zur Preiseinheit, ohne
+    /// Kosten gleich unter der Rohdichte statt nach einer leeren Zeile
+    /// (Review #120 H2).
     fn uses_row(&self) -> usize {
+        if self.kennwert_gesperrt(PRICE) {
+            return 2;
+        }
         let hint = self
             .sel_id()
-            .and_then(|id| price_hint(&self.work, id))
+            .and_then(|id| self.preis_hinweis(id))
             .is_some();
         if hint {
             4
@@ -1020,7 +1096,7 @@ impl MaterialView {
             (f(matprop::MAKER), "Hersteller".into()),
             (f("Produkt"), "Produkt".into()),
             (f("Bemerkung"), "Bemerkung".into()),
-            (f("Preisquelle"), "Preisquelle".into()),
+            (f(matprop::PRICE_SOURCE), "Preisquelle".into()),
             (None, "BESTELLUNG".into()),
             (f(matprop::WASTE), "Verschnittzuschlag".into()),
             (f(matprop::OPENING_FROM), "Öffnungen abziehen ab".into()),
@@ -1042,7 +1118,21 @@ impl MaterialView {
                 "Oberfläche".into(),
             ),
         ];
-        [left, right]
+        [left, right].map(|c| self.ohne_gesperrte(c))
+    }
+
+    /// Zeilen ohne Felder gesperrter Module; ein Gruppenkopf ohne Felder
+    /// fällt mit weg.
+    fn ohne_gesperrte(&self, rows: Vec<(Option<Target>, String)>) -> Vec<(Option<Target>, String)> {
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|(tg, _)| !matches!(tg, Some(Target::Field(f)) if self.gesperrt(f)))
+            .collect();
+        let kopf = |i: usize| rows.get(i).is_none_or(|r| r.0.is_none());
+        (0..rows.len())
+            .filter(|&i| !(kopf(i) && kopf(i + 1)))
+            .map(|i| rows[i].clone())
+            .collect()
     }
 
     /// Lage der Zeilen von „Mehr“ in Fensterkoordinaten (mit Bildlauf):
@@ -1157,6 +1247,9 @@ impl MaterialView {
 
     /// Lage eines Felds in Fensterkoordinaten.
     fn field_rect(&self, t: &Theme, w: &Win, f: &Field) -> Option<Rect> {
+        if self.gesperrt(f) {
+            return None;
+        }
         let nw = t.size.mat_num_w;
         Some(match f {
             Field::Search => self.search_rect(t, w),
@@ -2509,7 +2602,8 @@ impl MaterialView {
         let px = t.size.font * s;
         let cap = regular.map_or(px * 0.7, |f| f.cap_height(px));
         let compare = if self.tab == Tab::Company {
-            self.lib().map(|l| compare_materials(&self.work, l))
+            self.lib()
+                .map(|l| compare_materials_ohne(&self.work, l, &self.gesperrte_kennwerte()))
         } else {
             None
         };
@@ -2814,7 +2908,7 @@ impl MaterialView {
             self.paint_field(c, t, fonts, w, &Field::Key(PRICE_DATE), r);
         }
         // Hinweis: Einheit passt nicht mehr zur Art (Regel 53)
-        if let Some(h) = price_hint(&self.work, id) {
+        if let Some(h) = self.preis_hinweis(id) {
             let r = self.basic_field(t, w, 3, 0.0, 0.0);
             let lx2 = lx;
             let mut p = Path::new();
@@ -3157,6 +3251,7 @@ impl MaterialView {
                 keys.push((k.clone(), k));
             }
         }
+        keys.retain(|(k, _)| !self.kennwert_gesperrt(k));
         // Name und Gewerk, wenn sie abweichen: Die Liste nennt den Baustoff
         // dann „abweichend“ (Review 3n/9)
         let trade_text = |x: Option<&Material>, from_lib: bool| -> String {
@@ -3359,5 +3454,101 @@ mod einheit_tests {
             Some(&PropValue::Number(2.5))
         );
         assert!(!input(&mut m, id, matprop::WASTE, "viel"));
+    }
+}
+
+#[cfg(test)]
+mod freischaltung_tests {
+    use super::*;
+
+    fn zeilen(v: &MaterialView) -> Vec<String> {
+        v.more_rows().concat().into_iter().map(|z| z.1).collect()
+    }
+
+    /// Review #120 B2: Richtpreis, Stand und Preisquelle gehören zu Kosten,
+    /// Verschnittzuschlag und „Öffnungen abziehen ab“ zu Mengen; ohne sie
+    /// fehlen die Felder, der leere Kopf „BESTELLUNG“ mit. Das Fenster und
+    /// die übrigen Kennwerte bleiben in jeder Stufe.
+    #[test]
+    fn felder_nach_modul() {
+        let s = Scene::new();
+        let mut v = MaterialView::open(&s);
+        let alle = zeilen(&v);
+        let kosten = ["Preisquelle"];
+        let mengen = ["BESTELLUNG", "Verschnittzuschlag", "Öffnungen abziehen ab"];
+        for z in kosten.iter().chain(&mengen) {
+            assert!(alle.iter().any(|a| a == z), "{z}");
+        }
+        for (w, fehlt) in [
+            ("basis", [&kosten[..], &mengen[..]].concat()),
+            ("pro", kosten.to_vec()),
+            ("ultimate", vec![]),
+        ] {
+            let f = Freischaltung::stufe(w).unwrap();
+            v.set_frei(f);
+            let da = zeilen(&v);
+            assert_eq!(da.len(), alle.len() - fehlt.len(), "{w}: {da:?}");
+            assert!(fehlt.iter().all(|z| !da.iter().any(|a| a == z)), "{w}");
+            for k in [PRICE, PRICE_DATE] {
+                assert_eq!(v.gesperrt(&Field::Key(k)), !f.frei(Modul::Kosten), "{w}");
+            }
+            for k in ["λ", "Rohdichte", matprop::MU] {
+                assert!(!v.gesperrt(&Field::Key(k)), "{w}");
+            }
+        }
+    }
+
+    /// Review #120 H5: Das Modul eines Kennworts steht als Spalte in
+    /// `MAT_PROPS`; eigene Kennwerte gehören zu keinem.
+    #[test]
+    fn modul_aus_matprop() {
+        for k in [PRICE, PRICE_UNIT, PRICE_DATE, matprop::PRICE_SOURCE] {
+            assert_eq!(kennwert_modul(k), Some(Modul::Kosten), "{k}");
+        }
+        for k in [matprop::WASTE, matprop::OPENING_FROM] {
+            assert_eq!(kennwert_modul(k), Some(Modul::Mengen), "{k}");
+        }
+        for k in [
+            matprop::MU,
+            matprop::EUROCLASS,
+            "Produkt",
+            "Druckfestigkeit",
+        ] {
+            assert_eq!(kennwert_modul(k), None, "{k}");
+        }
+    }
+
+    /// Review #120 H2: Ohne Kosten fehlen der Hinweis zur Preiseinheit und
+    /// die Zeile des Richtpreises; „Verwendet in“ rückt unter die Rohdichte.
+    #[test]
+    fn ohne_kosten_kein_preis_und_keine_leere_zeile() {
+        let s = Scene::new();
+        let mut v = MaterialView::open(&s);
+        let (id, mut x) = v
+            .work
+            .materials()
+            .iter()
+            .find(|(_, x)| x.category == MatCategory::Masonry)
+            .map(|(id, x)| (id, x.clone()))
+            .unwrap();
+        x.props.insert(PRICE.into(), PropValue::Number(80.0));
+        x.props
+            .insert(PRICE_UNIT.into(), PropValue::Text("m2".into()));
+        assert!(v.model_mut().set_material(id, x.clone()));
+        v.sel = Some(x.guid);
+        assert!(price_hint(&v.work, id).is_some());
+        for (w, hinweis, zeile) in [
+            ("basis", false, 2),
+            ("pro", false, 2),
+            ("ultimate", true, 4),
+        ] {
+            v.set_frei(Freischaltung::stufe(w).unwrap());
+            assert_eq!(v.preis_hinweis(id).is_some(), hinweis, "{w}");
+            assert_eq!(v.uses_row(), zeile, "{w}");
+        }
+        x.props.remove(PRICE_UNIT);
+        x.props.remove(PRICE);
+        assert!(v.model_mut().set_material(id, x));
+        assert_eq!(v.uses_row(), 3, "mit Kosten ohne Hinweis");
     }
 }

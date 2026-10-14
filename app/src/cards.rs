@@ -6,6 +6,7 @@
 //!
 //! Die Leiste rechnet nichts: Die Zahlen setzt das Fenster aus den Blättern.
 
+use crate::freischaltung::{Eingang, Modul};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, Fonts};
@@ -84,6 +85,8 @@ type Rect = (f32, f32, f32, f32);
 
 pub struct Karten {
     pub aktiv: Blatt,
+    /// Freie Blätter von links (Freischaltung): eine bis drei Karten.
+    n: usize,
     hover: Option<Blatt>,
     zahlen: [String; 3],
     /// Seit wann die geänderte Zahl einer Karte aufglimmt.
@@ -96,6 +99,7 @@ impl Karten {
     pub fn new(aktiv: Blatt) -> Karten {
         Karten {
             aktiv,
+            n: Blatt::ALLE.len(),
             hover: None,
             zahlen: Default::default(),
             glimm: [None; 3],
@@ -132,13 +136,46 @@ impl Karten {
             .then_some(blatt_top - (HEIGHT - PAD_TOP - 6.0) * s)
     }
 
-    pub fn hit(x0: f32, top: f32, s: f32, breit: f32, x: f64, y: f64) -> Option<Blatt> {
+    /// Die ersten `n` Blätter sind frei (Freischaltung, mindestens eins),
+    /// die übrigen stehen blass mit ihrer Stufe da; ein gesperrtes aktives
+    /// Blatt fällt auf das erste zurück.
+    pub fn set_frei(&mut self, n: usize) {
+        self.n = n.clamp(1, Blatt::ALLE.len());
+        if !self.ist_frei(self.aktiv) {
+            (self.aktiv, self.wechsel) = (Blatt::Mengen, None);
+        }
+    }
+
+    /// Gemerktes Blatt aus den Einstellungen; ein gesperrtes fällt auf das
+    /// erste zurück.
+    pub fn merken(&mut self, b: Blatt) {
+        self.aktiv = if self.ist_frei(b) { b } else { Blatt::Mengen };
+    }
+
+    fn ist_frei(&self, b: Blatt) -> bool {
+        b.index() < self.n
+    }
+
+    /// Die freien Blätter, nur sie nehmen Hover und Klick an.
+    fn blaetter(&self) -> impl Iterator<Item = Blatt> {
+        Blatt::ALLE.into_iter().take(self.n)
+    }
+
+    pub fn hit(&self, x0: f32, top: f32, s: f32, breit: f32, x: f64, y: f64) -> Option<Blatt> {
         let (x, y) = (x as f32, y as f32);
-        Blatt::ALLE
-            .into_iter()
+        self.blaetter()
             .zip(Self::rects(x0, top, s, breit))
             .find(|(_, (rx, ry, rw, rh))| x >= *rx && x < rx + rw && y >= *ry && y < ry + rh)
             .map(|(b, _)| b)
+    }
+
+    /// Liegt `(x, y)` auf einer Karte, auch einer blassen? Ein Klick dort
+    /// geht nicht an die Liste darunter (Review #156).
+    pub fn auf_karte(x0: f32, top: f32, s: f32, breit: f32, x: f64, y: f64) -> bool {
+        let (x, y) = (x as f32, y as f32);
+        Self::rects(x0, top, s, breit)
+            .iter()
+            .any(|(rx, ry, rw, rh)| x >= *rx && x < rx + rw && y >= *ry && y < ry + rh)
     }
 
     /// Karte unter der Maus; `true`, wenn sich das Bild ändert.
@@ -149,7 +186,7 @@ impl Karten {
     /// Blatt wählen; `true`, wenn es ein anderes ist. Mit `anim` gleitet
     /// der Inhalt.
     pub fn waehlen(&mut self, b: Blatt, now: Instant, anim: bool) -> bool {
-        if b == self.aktiv {
+        if b == self.aktiv || !self.ist_frei(b) {
             return false;
         }
         let vorher = std::mem::replace(&mut self.aktiv, b);
@@ -239,9 +276,13 @@ impl Karten {
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let line = s.max(1.0);
+        // Gesperrte Blätter (Bedienbarkeit 41.5): blasse Kachel ohne Hover,
+        // statt der Zahl die Stufe, ab der es sie gibt
+        let blass = mix(u.sheet_text_dim, u.sheet_tile, 0.45);
         for (b, (x, y, w, h)) in Blatt::ALLE.into_iter().zip(Self::rects(x0, top, s, breit)) {
+            let frei = self.ist_frei(b);
             let aktiv = b == self.aktiv;
-            let hover = self.hover == Some(b) && !aktiv;
+            let hover = frei && self.hover == Some(b) && !aktiv;
             let r = RADIUS * s;
             if aktiv {
                 // feiner Schatten
@@ -277,12 +318,14 @@ impl Karten {
             // Auf der weißen aktiven Karte steht die Zahl in voller Farbe
             let (text, dim) = if aktiv {
                 (u.sheet_text, u.sheet_text)
-            } else {
+            } else if frei {
                 (u.sheet_text_dim, u.sheet_text_dim)
+            } else {
+                (blass, blass)
             };
             // Schmale Karte: ohne Symbol, der Name rückt nach links
             let name_x = if w >= CARD_SYMBOL_W * s {
-                let icon = if aktiv { u.accent } else { u.sheet_text_dim };
+                let icon = if aktiv { u.accent } else { dim };
                 symbol(c, b, (x + 16.0 * s, y + 14.0 * s), s, icon);
                 42.0 * s
             } else {
@@ -300,7 +343,12 @@ impl Karten {
                 regular
             } {
                 let g = self.glimm_von(b, t, now);
-                let zahl = widgets::ellipsize(Some(f), self.zahl(b), 12.5 * s, w - 32.0 * s);
+                let zahl = if frei {
+                    self.zahl(b)
+                } else {
+                    b.modul().map_or("", Modul::ab)
+                };
+                let zahl = widgets::ellipsize(Some(f), zahl, 12.5 * s, w - 32.0 * s);
                 f.draw(
                     c,
                     &zahl,
@@ -410,15 +458,24 @@ mod tests {
         // Treffer: zweite Karte rechts neben der ersten
         let (x0, top, s, breit) = (24.0, 32.0, 1.0, 1200.0);
         let y = (top + PAD_TOP + 10.0) as f64;
-        assert_eq!(Karten::hit(x0, top, s, breit, 30.0, y), Some(Blatt::Mengen));
+        assert_eq!(k.hit(x0, top, s, breit, 30.0, y), Some(Blatt::Mengen));
+        let zweite = (x0 + CARD_W + CARD_GAP + 5.0) as f64;
+        assert_eq!(k.hit(x0, top, s, breit, zweite, y), Some(Blatt::Kosten));
         assert_eq!(
-            Karten::hit(x0, top, s, breit, (x0 + CARD_W + CARD_GAP + 5.0) as f64, y),
-            Some(Blatt::Kosten)
-        );
-        assert_eq!(
-            Karten::hit(x0, top, s, breit, (x0 + CARD_W + 4.0) as f64, y),
+            k.hit(x0, top, s, breit, (x0 + CARD_W + 4.0) as f64, y),
             None
         );
+        // Nur Mengen frei (Pro): eine Karte, Kosten fällt auf Mengen zurück
+        // und lässt sich nicht wählen
+        k.set_frei(1);
+        assert_eq!(k.aktiv, Blatt::Mengen);
+        assert_eq!(k.hit(x0, top, s, breit, zweite, y), None);
+        assert!(Karten::auf_karte(x0, top, s, breit, zweite, y));
+        assert!(!Karten::auf_karte(x0, top, s, breit, zweite, y + 200.0));
+        assert!(!k.waehlen(Blatt::Ava, now, false));
+        assert_eq!(k.blaetter().collect::<Vec<_>>(), [Blatt::Mengen]);
+        k.set_frei(3);
+        assert!(k.waehlen(Blatt::Ava, now, false));
         // Schmal (Notiz Kopf, ist-mengen-schmal, Hinweis L: 960 und 720 px
         // bei 150 %): die Karten teilen sich die Breite und bleiben im
         // Fenster, nicht unter 64 dip

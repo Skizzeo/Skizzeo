@@ -173,7 +173,9 @@ pub fn load(path: &Path) -> Result<szo::Loaded, Meldung> {
             &[&name],
         ));
     };
-    szo::read_with(&text, GuidGen::from_time(), &sk_cost::lesen::ABSCHNITTE_SZO).map_err(|e| {
+    szo::read_with(&text, GuidGen::from_time(), &sk_cost::lesen::ABSCHNITTE_SZO)
+        .inspect(|l| crate::gelaende_netz::vorab(&l.model))
+        .map_err(|e| {
         kaputt(&e.to_string());
         if e.line == 1 && e.message.contains("neuerer Skizzeo-Version") {
             Meldung::mit(
