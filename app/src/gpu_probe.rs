@@ -16,9 +16,9 @@ mod tests {
 
     const W: u32 = 1600;
     const H: u32 = 1000;
-    /// Ablage für ein Netz dazu (Würfel als Testkörper, Probestück); die
-    /// App lässt sie seit S9 leer.
-    const MESH_DAZU: usize = 5;
+    /// Ablage für ein Netz dazu (Würfel als Testkörper, Probestück), hinter
+    /// allen Ablagen der App.
+    const MESH_DAZU: usize = crate::ausbau_app::MESH_FREI;
 
     fn haus() -> Scene {
         let text = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
@@ -1096,5 +1096,37 @@ mod tests {
         };
         let (c, _, _) = asch::malen(&b, &fonts, &theme);
         std::fs::write(ziel.join("ist-entw-feld-vorne.png"), c.to_png()).unwrap();
+    }
+
+    /// Review #137 B4: Geländeplatte und Ausbau haben je eigene Ablagen. In
+    /// der Reihenfolge der App (erst der Ausbau, dann die Platte, im
+    /// nächsten Bild nur die Platte) bleiben beide zu sehen.
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run)"]
+    fn gpu_platte_und_ausbau() {
+        use crate::ausbau_app::MESH_AUSBAU;
+        use crate::gelaende_platte::MESH_PLATE;
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let platte = sv::quader_netz((vec3(0.0, 0.0, 0.0), vec3(2000.0, 2000.0, 100.0)));
+        let ausbau = sv::quader_netz((vec3(4000.0, 0.0, 0.0), vec3(6000.0, 2000.0, 100.0)));
+        r.set_mesh(MESH_AUSBAU, &ausbau);
+        r.set_mesh(MESH_PLATE, &platte);
+        r.set_mesh(MESH_PLATE, &platte);
+        let b = Some((vec3(-500.0, -500.0, 0.0), vec3(6500.0, 2500.0, 100.0)));
+        let cam = crate::fit_parallel(ViewKind::Plan, b, W as f64, H as f64);
+        let view = cam.view(W, H);
+        r.draw(W, H, 0, &view).unwrap();
+        let px = r.read_pixels(W, H);
+        // Bildpunkt über dem Punkt `p` des Grundrisses gegen den Hintergrund
+        let farbe = |x: f64, y: f64| {
+            let (u, v) = cam.project(vec3(x, y, 100.0), W as f64, H as f64).unwrap();
+            let i = 4 * (v as usize * W as usize + u as usize);
+            px[i..i + 3].to_vec()
+        };
+        let grund = farbe(3000.0, 1000.0);
+        assert_ne!(farbe(1000.0, 1000.0), grund, "Platte fehlt");
+        assert_ne!(farbe(5000.0, 1000.0), grund, "Ausbau fehlt");
     }
 }

@@ -3,12 +3,35 @@
 //! Ausbaus in eigenen Ablagen, nur die geänderten
 //! ([`Scene::ausbau_liefern`](crate::scene::Scene::ausbau_liefern)).
 
+use crate::gelaende_platte::MESH_PLATE;
 use crate::scene::Plane;
-use crate::{App, MESH_GHOST, MESH_MODEL};
+use crate::{App, MESH_GHOST, MESH_LIVE, MESH_MODEL, MESH_PREVIEW};
 use sk_render::MeshData;
 
-/// Erste Ablage der Teile des Ausbaus, hinter den Netzen aus `main.rs`.
-const MESH_AUSBAU: usize = MESH_GHOST + 1;
+/// Erste Ablage der Teile des Ausbaus, hinter den Netzen aus `main.rs` und
+/// der Geländeplatte (Review #137 B4).
+pub(crate) const MESH_AUSBAU: usize = MESH_PLATE + 1;
+/// Erste Ablage hinter den Teilen des Ausbaus (Netz der GPU-Probe).
+#[cfg(test)]
+pub(crate) const MESH_FREI: usize = MESH_AUSBAU + crate::scene::scene_ausbau::TEILE;
+
+// Jede Ablage hat ihren eigenen Platz: lückenlos der Reihe nach, keine
+// zweimal
+const _: () = {
+    let a = [
+        MESH_MODEL,
+        MESH_PREVIEW,
+        MESH_LIVE,
+        MESH_GHOST,
+        MESH_PLATE,
+        MESH_AUSBAU,
+    ];
+    let mut i = 0;
+    while i < a.len() {
+        assert!(a[i] == i);
+        i += 1;
+    }
+};
 
 impl App {
     /// Rechnet das Netz der Ansicht und lädt es hoch, dazu die geänderten
