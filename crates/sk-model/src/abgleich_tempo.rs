@@ -1,8 +1,9 @@
 //! Tempo des Abgleichs beim Schließen eines Schritts, der nur Geschoss-
 //! bänder oder den Geländeversatz eines Gebäudes ändert (Review L39).
 
-use crate::{BuildingId, Category, Model};
+use crate::{BuildingId, Category, Model, StoreyId};
 use sk_math::vec3;
+use std::collections::HashSet;
 use std::time::Instant;
 
 /// `n` Häuser 10 × 8 m mit zwei Geschossen im Raster zu 15 m, je Haus ein
@@ -101,9 +102,10 @@ fn band_und_gelaende_nur_im_gebaeude() {
                 assert!(m.set_storey_top(eg, top - 150.0));
             }
             // nur Züge dieses Gebäudes; beim Band die des EG und darüber
-            // (Review zu #148: Nachbarn des geänderten Bands, nicht alle)
+            // (Review zu #148: Nachbarn des geänderten Bands, nicht alle).
+            // Folgt nur die Gründung dem Gelände, keine (Review L42)
             let scope = m.sync_scope().expect("nur ein Gebäude");
-            assert!(!scope.is_empty(), "{i} {gelaende}");
+            assert_eq!(scope.is_empty(), gelaende, "{i}");
             for &x in &gb {
                 if x != b {
                     assert!(zuege(&m, x).iter().all(|r| !scope.contains(r)), "{i}");
@@ -124,6 +126,41 @@ fn band_und_gelaende_nur_im_gebaeude() {
             assert!(m.check().is_empty(), "{:?}", m.check());
         }
     }
+}
+
+/// Loslassen eines Gelände-Zugs mit Aufmaß (Review L42): Die übrigen
+/// Gründungen folgen nur in der Tiefe. Der Abgleich hat dabei keinen
+/// Bereich, und der über alles findet danach nichts.
+#[test]
+fn gelaende_zug_ohne_bereich() {
+    let (mut m, _) = haeuser_mit(6, true, 3);
+    let mut t = crate::Terrain::new(crate::Crs::Local);
+    for i in 0..10 {
+        for j in 0..5 {
+            let (e, n) = (1000.0 + 20.0 * i as f64, 2000.0 + 20.0 * j as f64);
+            t.points.push(crate::TerrainPoint {
+                nr: (i * 5 + j + 1).to_string(),
+                e,
+                n,
+                h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (n / 23.0).cos(),
+                code: String::new(),
+                off: false,
+            });
+        }
+    }
+    m.begin("Aufmaß");
+    assert!(m.import_terrain(t));
+    m.commit();
+    assert_eq!(ganz(&m), ((0, 0), (0, 0), true));
+    let zug = m.gelaende_zug(m.level_building().unwrap()).unwrap();
+    m.begin("Gelände ziehen");
+    assert!(m.gelaende_ziehen(&zug, 300.0));
+    let bewegt = m.gelaende_loslassen(zug);
+    assert_eq!(bewegt.len(), 5, "{bewegt:?}");
+    assert_eq!(m.sync_scope(), Some(Vec::new()));
+    assert!(m.commit().is_some());
+    assert_eq!(ganz(&m), ((0, 0), (0, 0), true));
+    assert!(m.check().is_empty(), "{:?}", m.check());
 }
 
 /// Budget (Review L39): Loslassen nach einem Geschosszug bei 1000 Häusern
@@ -149,18 +186,28 @@ fn budget_geschosszug() {
 fn budget_grossgebaeude() {
     let (mut m, gb) = haeuser_mit(200, false, 5);
     let eg = m.ground_of(Some(gb[0])).unwrap();
-    // Bestwert aus drei: Die Tests laufen nebeneinander
-    let ms = [100.0, -100.0, 100.0]
-        .map(|dz| {
-            let top = m.storey(eg).unwrap().top();
-            m.begin("Geschoss ziehen");
-            assert!(m.set_storey_top(eg, top + dz));
-            let t = Instant::now();
-            assert!(m.commit().is_some());
-            ms(t)
-        })
-        .into_iter()
-        .fold(f64::INFINITY, f64::min);
+    // Einmal aufwärmen, dann Bestwert aus mindestens sieben Zügen über
+    // mindestens 300 ms: Die Tests laufen nebeneinander, und ein kurzer
+    // Lastspitzen-Abschnitt soll nicht alle Proben treffen (Review zu
+    // #148, H3; die Grenze bleibt 8 ms)
+    let mut zug = |dz: f64| {
+        let top = m.storey(eg).unwrap().top();
+        m.begin("Geschoss ziehen");
+        assert!(m.set_storey_top(eg, top + dz));
+        let t = Instant::now();
+        assert!(m.commit().is_some());
+        ms(t)
+    };
+    zug(100.0);
+    let start = Instant::now();
+    let mut best = f64::INFINITY;
+    for k in 0..200 {
+        best = best.min(zug(if k % 2 == 0 { -100.0 } else { 100.0 }));
+        if k >= 6 && ms(start) >= 300.0 {
+            break;
+        }
+    }
+    let ms = best;
     let budget = if cfg!(debug_assertions) { 200.0 } else { 8.0 };
     assert!(ms < budget, "{ms:.1} ms");
 }
@@ -214,6 +261,43 @@ fn zufall_wie_ueber_alles() {
                 m.set_flat_roof(st, an)
             }
         };
+        // Die Bereichswahl selbst (Review zu #148, H2): nur Züge dieses
+        // Gebäudes (ein im Schritt entfernter Zug zählt nicht mit); ein Band oder die Gründung bringt höchstens sich und
+        // die Nachbarn, nicht das ganze Gebäude
+        let scope = m.sync_scope().expect("nur ein Gebäude");
+        let geschosse: HashSet<StoreyId> = scope
+            .iter()
+            .filter_map(|&r| m.run(r).map(|x| x.storey))
+            .collect();
+        assert!(
+            geschosse
+                .iter()
+                .all(|&s| m.storey(s).and_then(|s| s.building) == Some(b)),
+            "Schritt {k}, Art {was}: fremde Züge"
+        );
+        if was < 4 {
+            assert!(
+                geschosse.len() <= 3,
+                "Schritt {k}, Art {was}: {geschosse:?}"
+            );
+            // Ein Band, das sich ändert, bringt Züge mit. Gelände und UK
+            // Gründung ändern nur die Tiefe der Gründung und bringen keine
+            // (Review L42), die Höhe der Gründung ebenso; dass dabei nichts
+            // fehlt, zeigt der Abgleich über alles unten
+            let leer = m.txn.as_ref().is_some_and(|t| t.changes.is_empty());
+            let gruendung = m
+                .storey(st)
+                .is_some_and(|s| s.kind == crate::LevelKind::Foundation);
+            if was >= 2 {
+                assert!(scope.is_empty(), "Schritt {k}, Art {was}, {geaendert}");
+            } else if !gruendung {
+                assert_eq!(
+                    scope.is_empty(),
+                    leer,
+                    "Schritt {k}, Art {was}, {geaendert}"
+                );
+            }
+        }
         m.commit();
         assert_eq!(
             ganz(&m),

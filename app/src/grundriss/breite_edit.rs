@@ -26,7 +26,7 @@ use crate::ui::MeasureKind;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::hoehen::{DOOR_CATCH, DOOR_WIDTHS};
 use sk_model::oeffnung::{Opening, OpeningKind, OuterFace, MIN_OPENING};
-use sk_model::{Category, ElementId, ElementKind, Model, StoreyId};
+use sk_model::{Category, ElementId, ElementKind, Model, RunId, StoreyId};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -50,7 +50,7 @@ const SPUR_HOCH: f64 = 1500.0;
 
 /// Die Griffe erscheinen, wenn die Maus so nah am Pfad steht (mm), bei
 /// breiten Öffnungen bis zur halben Breite.
-const NAH: f64 = 500.0;
+pub(super) const NAH: f64 = 500.0;
 
 fn flat(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
@@ -68,17 +68,49 @@ pub(crate) fn flaeche_bei(
     st: StoreyId,
     p: Vec3,
 ) -> Option<(OuterFace, f64, bool)> {
+    flaeche_unter(m, k, st, p, m.runs().ids())
+}
+
+/// So weit neben ihrer Fläche nimmt [`flaeche_unter`] einen Punkt noch an
+/// (mm): quer unter 1 mm ([`OuterFace::on_line`]), längs 1 mm über die
+/// Ecken hinaus, mit Rundung.
+const AUF_FLAECHE: f64 = 2.0;
+
+/// [`flaeche_bei`] über das Raster der Szene (Review #140, Zugschritt):
+/// Die Fläche, auf der `p` liegt, ist der Wandfuß eines Segments
+/// ([`sk_model::WallChain::outer_foot`]), und der liegt im Quader des Zugs
+/// im Raster; also nur die Züge, deren Quader bis [`AUF_FLAECHE`] an `p`
+/// reicht. Wo die Bezugslinie aus dem Körper ragt, zählt sie dafür nicht.
+pub(crate) fn flaeche_in(scene: &Scene, st: StoreyId, p: Vec3) -> Option<(OuterFace, f64, bool)> {
+    let r = AUF_FLAECHE;
+    let zuege = scene.zuege_im((p.x - r, p.y - r), (p.x + r, p.y + r));
+    let k = |r| scene.koerper(r);
+    flaeche_unter(scene.model(), &k, st, p, zuege.map(|(id, ..)| id))
+}
+
+/// [`flaeche_bei`] unter den Zügen `zuege`, aufsteigend.
+fn flaeche_unter(
+    m: &Model,
+    k: Koerper,
+    st: StoreyId,
+    p: Vec3,
+    zuege: impl Iterator<Item = RunId>,
+) -> Option<(OuterFace, f64, bool)> {
     let p = flat(p);
-    for (id, run) in m.runs().iter() {
+    for id in zuege {
+        let Some(run) = m.run(id) else {
+            continue;
+        };
+        // Das Bauteil erst bei Zügen nahe `p` (Review #140, Zugschritt)
+        if run.storey != st || !nah(&run.points, p, DICKE) {
+            continue;
+        }
         let cat = run
             .segments
             .first()
             .and_then(|e| m.element(*e))
             .map(|e| e.category);
-        if run.storey != st
-            || !cat.is_some_and(Category::takes_openings)
-            || !nah(&run.points, p, DICKE)
-        {
+        if !cat.is_some_and(Category::takes_openings) {
             continue;
         }
         let Some(c) = k(id) else {
@@ -113,12 +145,27 @@ fn zeichenpunkt(f: &OuterFace, p: Vec3, dicke: f64, innen: bool) -> Vec3 {
 /// Grundriss); `r_min` (mm) hält sie auch weit herausgezoomt nah genug,
 /// dass die Maus das Kettensymbol daneben erreicht.
 pub fn sichtbar(scene: &Scene, p: Vec3, r_min: f64) -> Vec<Griff> {
+    // Das Raster der Griffe reicht so weit wie die Türgriffe, also weiter
+    // als [`NAH`] und die halbe Breite; `r_min` gibt die Abfrage dazu
+    let mut ids: Vec<ElementId> = scene
+        .oeffnungen_bei(p, r_min)
+        .into_iter()
+        .map(|k| k.0)
+        .collect();
+    ids.dedup();
+    griffe_von(scene, p, r_min, ids)
+}
+
+/// [`sichtbar`] unter den Öffnungen `ids`.
+fn griffe_von(scene: &Scene, p: Vec3, r_min: f64, ids: Vec<ElementId>) -> Vec<Griff> {
     let m = scene.model();
-    let k = |r| scene.koerper(r);
     let st = scene.active_storey();
     let p = flat(p);
     let mut out = Vec::new();
-    for (id, e) in m.elements().iter() {
+    for id in ids {
+        let Some(e) = m.element(id) else {
+            continue;
+        };
         let ElementKind::Opening(o) = &e.kind else {
             continue;
         };
@@ -135,7 +182,7 @@ pub fn sichtbar(scene: &Scene, p: Vec3, r_min: f64) -> Vec<Griff> {
             continue;
         }
         for e in [0, n - 1] {
-            if let Some((f, t, innen)) = flaeche_bei(m, &k, st, o.path[e]) {
+            if let Some((f, t, innen)) = flaeche_in(scene, st, o.path[e]) {
                 out.push((id, e, zeichenpunkt(&f, o.path[e], t, innen)));
             }
         }
@@ -173,7 +220,6 @@ pub fn partner(m: &Model, id: ElementId, k: usize) -> Vec<(ElementId, usize)> {
 /// allen Partnern gekoppelt ist.
 pub fn schloesser(scene: &Scene, griffe: &[Griff], z: f64) -> Vec<crate::link_view::Schloss> {
     let m = scene.model();
-    let koerper = |r| scene.koerper(r);
     griffe
         .iter()
         .filter_map(|&(id, k, p)| {
@@ -186,7 +232,7 @@ pub fn schloesser(scene: &Scene, griffe: &[Griff], z: f64) -> Vec<crate::link_vi
                 .iter()
                 .all(|&(pid, pk)| locks.iter().any(|l| l.partner == pid && l.end == pk));
             let st = m.element(id)?.storey;
-            let (f, ..) = flaeche_bei(m, &koerper, st, *m.opening(id)?.path.get(k)?)?;
+            let (f, ..) = flaeche_in(scene, st, *m.opening(id)?.path.get(k)?)?;
             Some(crate::link_view::Schloss {
                 id,
                 art: crate::link_view::Schlossart::Ende(k),
@@ -784,6 +830,56 @@ mod tests {
         assert_eq!(g.len(), 2);
         assert!(g.iter().all(|x| x.0 == fenster));
         assert!(sichtbar(&s, vec3(2500.0, 6000.0, 0.0), 0.0).is_empty());
+    }
+
+    /// Vorfilter je Wandzug (Review #140, Zugschritt): Rund um das Haus mit
+    /// Innentür und um ein zweigeschossiges mit Fenstern, eines 3,5 m
+    /// breit, stehen in jedem Geschoss, nah und weit herausgezoomt,
+    /// dieselben Griffe wie über alle Bauteile, und das Raster findet
+    /// dieselbe Wandfläche wie der Gang über alle Züge.
+    #[test]
+    fn vorfilter_wie_alle() {
+        let (s, _, _) = haus();
+        let (mut m, eg, og) = zwei_geschosse();
+        fenster(&mut m, eg, 1000.0, 4500.0);
+        fenster(&mut m, eg, 6500.0, 7500.0);
+        fenster(&mut m, og, 6000.0, 7000.0);
+        let geschosse = [m.run(eg).unwrap().storey, m.run(og).unwrap().storey];
+        let pruefen = |s: &Scene| {
+            let alle: Vec<ElementId> = s.model().elements().ids().collect();
+            let (mut gesehen, mut flaechen) = (0, 0);
+            for x in (-3000..=13000).step_by(250) {
+                for y in (-3000..=11000).step_by(250) {
+                    let p = vec3(x as f64, y as f64, 0.0);
+                    for r_min in [0.0, 1500.0, 30000.0] {
+                        let g = sichtbar(s, p, r_min);
+                        assert_eq!(g, griffe_von(s, p, r_min, alle.clone()), "{p:?} {r_min}");
+                        gesehen += g.len();
+                    }
+                    let st = s.active_storey();
+                    let k = |r| s.koerper(r);
+                    let f = flaeche_in(s, st, p);
+                    assert_eq!(f, flaeche_bei(s.model(), &k, st, p), "{p:?}");
+                    flaechen += usize::from(f.is_some());
+                }
+            }
+            assert!(gesehen > 0 && flaechen > 0);
+        };
+        pruefen(&s);
+        // Knapp vor der Außenfläche bei y = 0, in der Zellreihe darunter:
+        // Die Fläche nimmt den Punkt noch an, das Raster nur mit Spielraum
+        let st = s.active_storey();
+        let k = |r| s.koerper(r);
+        let p = vec3(7000.0, -0.9, 0.0);
+        let f = flaeche_in(&s, st, p);
+        assert!(f.is_some());
+        assert_eq!(f, flaeche_bei(s.model(), &k, st, p));
+        let mut zwei = Scene::with_model(m);
+        for st in geschosse {
+            zwei.set_active_storey(st);
+            assert_eq!(zwei.active_storey(), st);
+            pruefen(&zwei);
+        }
     }
 
     /// Ziehen am Ende der Innentür: rastet an der Normbreite, Esc stellt

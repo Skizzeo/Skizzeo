@@ -55,6 +55,9 @@ pub enum Command {
     ExportIfc,
     /// „IFC-Vorschau …“: die Datei so, wie andere sie lesen (ifc/plan.md §6).
     IfcVorschau,
+    /// „Ausbaustufe …“: Hilfethema mit der Stufe dieser Installation und dem,
+    /// was jede Stufe kann (Bedienbarkeit 41.5).
+    Ausbaustufe,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -179,7 +182,7 @@ pub struct FileMenu {
     /// Offene Vorschläge an die Firma, rechts an „Verwaltung …“
     /// (Bedienbarkeit 17.2); setzt die App beim Öffnen.
     pub vorschlaege: usize,
-    /// Freie Module: gesperrte Befehle fehlen im Menü.
+    /// Freie Module: gesperrte Befehle stehen grau im Menü.
     pub frei: Freischaltung,
 }
 
@@ -216,8 +219,8 @@ impl FileMenu {
         self.close();
     }
 
-    /// Zeilen des Hauptmenüs ohne gesperrte Befehle. `save`: „Speichern“
-    /// ist möglich.
+    /// Zeilen des Hauptmenüs, gesperrte Befehle grau mit ihrer Stufe.
+    /// `save`: „Speichern“ ist möglich.
     pub fn items(&self, save: bool, _recent: &Recent) -> Vec<MenuItem> {
         let mut v = vec![
             item("Neu", "Strg+N", Command::New, true),
@@ -253,6 +256,7 @@ impl FileMenu {
             ),
             separator(),
             item("Hilfe", "F1", Command::Help, true),
+            item("Ausbaustufe …", "", Command::Ausbaustufe, true),
             item(
                 "Bildzeit messen (10 s)",
                 "",
@@ -263,7 +267,13 @@ impl FileMenu {
             item("Schließen", "Strg+W", Command::Close, true),
             item("Beenden", "Alt+F4", Command::Quit, true),
         ];
-        v.retain(|i| !i.command.is_some_and(|c| self.frei.gesperrt(c)));
+        // Gesperrt: grau, rechts die Stufe, ab der es den Befehl gibt
+        for i in &mut v {
+            if let Some(m) = i.command.and_then(|c| self.frei.sperre(c)) {
+                i.enabled = false;
+                i.shortcut = m.ab().into();
+            }
+        }
         v
     }
 
