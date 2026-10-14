@@ -568,15 +568,13 @@ impl HelpCard {
     }
 
     /// Zeilen des Themas ohne die gesperrter Module
-    /// ([`crate::freischaltung::hilfe_zeile`]); der Knopf zum Mengenfenster
+    /// ([`crate::freischaltung::hilfe_zeigt`]); der Knopf zum Mengenfenster
     /// heißt wie im Paneel.
     fn zeilen(&self, t: Topic) -> Vec<(String, String)> {
         let knopf = self.frei.knopf();
         t.rows()
             .into_iter()
-            .filter(|(a, _)| {
-                crate::freischaltung::hilfe_zeile(t, a).is_none_or(|m| self.frei.frei(m))
-            })
+            .filter(|(a, _)| crate::freischaltung::hilfe_zeigt(self.frei, t, a))
             .map(|(a, b)| (a, b.replace(crate::cards::KNOPF, knopf)))
             .collect()
     }
@@ -1430,6 +1428,20 @@ mod tests {
                 "{w}"
             );
             assert_eq!(zeile(&k, Topic::Terrace, "Mengen").is_some(), mengen, "{w}");
+            // Review #120 H3: Haken und Preise beim Einlesen nur mit Kosten,
+            // ohne sie kommen alle neuen Sätze in den Firmenkatalog
+            for a in ["Firmenkatalog", "Preise"] {
+                assert_eq!(zeile(&k, Topic::Einlesen, a).is_some(), preise, "{w}: {a}");
+            }
+            assert_eq!(
+                zeile(&k, Topic::Einlesen, "Neue Sätze").is_some(),
+                !preise,
+                "{w}"
+            );
+            for a in ["Einzelplatz oder Kennwort", "Eigener Baustoff"] {
+                let z = zeile(&k, Topic::Einlesen, a);
+                assert!(z.is_some_and(|z| !z.1.contains("angehakt")), "{w}: {a}");
+            }
         }
     }
 }

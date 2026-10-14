@@ -558,6 +558,8 @@ pub struct Scene {
     cache: Vec<Option<RunCache>>,
     /// Quader der Wandzüge je Platz im Raster (Review L26).
     raster: raster::Raster,
+    /// Je Platz der Bereich, in dem die Öffnungen des Zugs Griffe zeigen.
+    griffraster: raster::Raster,
     /// Wandzüge, die neu berechnet werden müssen.
     dirty: Vec<RunId>,
     all_dirty: bool,
@@ -915,6 +917,7 @@ impl Scene {
             staende: HashMap::new(),
             cache: Vec::new(),
             raster: Default::default(),
+            griffraster: Default::default(),
             dirty: Vec::new(),
             all_dirty: true,
             mass_stand: HashMap::new(),
@@ -1533,7 +1536,7 @@ impl Scene {
                 .map(|c| c.as_ref().map_or(0, |c| c.builds))
                 .collect();
             self.cache.clear();
-            self.raster.leeren();
+            self.raster_leeren();
             let ids: Vec<RunId> = self.model.runs().ids().collect();
             for id in ids {
                 let b = builds.get(id.index() as usize).copied().unwrap_or(0);
@@ -1593,14 +1596,14 @@ impl Scene {
                 let q = rc
                     .bounds
                     .map(|b| union(Some(b), rc.foot_bounds).unwrap_or(b));
-                self.raster.setze(slot, q);
+                self.raster_setzen(slot, q, &rc);
                 self.cache[slot] = Some(rc);
             }
             // Gelöscht: Platz nur räumen, wenn kein neuerer Zug darin steht
             None => {
                 if self.cache[slot].as_ref().is_some_and(|c| c.id == id) {
                     self.cache[slot] = None;
-                    self.raster.entferne(slot);
+                    self.raster_entfernen(slot);
                 }
             }
         }

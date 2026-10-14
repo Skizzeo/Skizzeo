@@ -323,7 +323,8 @@ impl Eingang for Topic {
 /// fehlen, solange es gesperrt ist. Thema und Beschriftung wie in
 /// `hilfe.txt`; den Knopf zum Mengenfenster nennt die Hilfe mit den freien
 /// Blättern ([`Freischaltung::knopf`]). „Baugrund“ in der Gründung zeigt auf
-/// die Gruppe der Projektdaten, die ohne Mengen fehlt.
+/// die Gruppe der Projektdaten, die ohne Mengen fehlt. Beim Einlesen gibt es
+/// die Haken „Für den Firmenkatalog“ und die Preise nur mit Kosten.
 pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
     match (t, beschriftung) {
         (Topic::Start, "Mengen") => Some(Modul::Mengen),
@@ -331,8 +332,24 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
         (Topic::Materials, "Bestellung") => Some(Modul::Mengen),
         (Topic::Foundation, "Baugrund") => Some(Modul::Mengen),
         (Topic::Terrace, "Mengen") => Some(Modul::Mengen),
+        (Topic::Einlesen, "Firmenkatalog" | "Preise") => Some(Modul::Kosten),
         _ => None,
     }
+}
+
+/// Zeilen der Hilfe, die nur ohne ein Modul stimmen (Review #120 H3): Ohne
+/// Kosten kommen beim Einlesen alle neuen Sätze in den Firmenkatalog.
+fn hilfe_zeile_ohne(t: Topic, beschriftung: &str) -> Option<Modul> {
+    match (t, beschriftung) {
+        (Topic::Einlesen, "Neue Sätze") => Some(Modul::Kosten),
+        _ => None,
+    }
+}
+
+/// Die Zeile steht in der Hilfe ([`hilfe_zeile`], [`hilfe_zeile_ohne`]).
+pub(crate) fn hilfe_zeigt(f: Freischaltung, t: Topic, beschriftung: &str) -> bool {
+    hilfe_zeile(t, beschriftung).is_none_or(|m| f.frei(m))
+        && hilfe_zeile_ohne(t, beschriftung).is_none_or(|m| !f.frei(m))
 }
 
 impl Eingang for crate::delete::Action {
