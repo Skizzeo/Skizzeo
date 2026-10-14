@@ -388,6 +388,14 @@ Kachel wählen | **←** / **→**
 Alle Sicherungen | Dateimenü › „Sicherungen …“; ein Klick öffnet eine
 Scheitert es | Karte „Automatisches Sichern klappt gerade nicht.“ mit „Jetzt speichern“
 
+[thema] id=ausbaustufen titel="Ausbaustufen"
+Basis | Zeichnen, Bauteile, Grundriss, Schnitte, Ansichten, Bemaßung, IFC, Bauteilkatalog, Baustoffe und Firmenkatalog
+Pro | dazu das Mengenfenster: Mengen nach VOB/C und Bestellmengen
+Ultimate | dazu Kosten mit Material und Lohn, „Verwaltung …“ für Preise und Firmenwerte, AVA mit Leistungsverzeichnis
+Geländemodul | Zusatz zu jeder Stufe: echtes Gelände aus Höhenaufmaß und Lageplan; seine Erdmengen ab Pro
+Gesperrt | steht grau da, daneben die Stufe, ab der es das gibt: Knöpfe, Zeilen im Dateimenü und im Rechtsklick-Menü, Karten im Mengenfenster
+Öffnen | Dateimenü › „Ausbaustufe …“
+
 [knopf]
 Gebäude | Außenwand als Polygon zeichnen; beim Schließen entsteht das ganze Haus.
 Innenwand | Innenwand im aktiven Geschoss zeichnen.
