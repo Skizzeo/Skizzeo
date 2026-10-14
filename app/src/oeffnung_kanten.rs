@@ -273,12 +273,12 @@ fn geschosse(m: &Model, st: StoreyId) -> Vec<(StoreyId, f64)> {
         .collect()
 }
 
-/// Wandzug der Außenfläche, auf der die Öffnung `id` steht.
+/// Wandzug der Außenfläche, auf der die Öffnung `id` steht, über das
+/// Raster der Szene (Integration H-160a).
 pub fn zug(scene: &Scene, id: ElementId) -> Option<RunId> {
     let m = scene.model();
     let (o, st) = (m.opening(id)?, m.element(id)?.storey);
-    let koerper = |r| scene.koerper(r);
-    super::breite_edit::flaeche_bei(m, &koerper, st, *o.path.first()?).map(|f| f.0.run)
+    super::breite_edit::flaeche_in(scene, st, *o.path.first()?).map(|f| f.0.run)
 }
 
 /// Spielraum einer Kante der Öffnung `id` am Zug `run`: von OK der Decke

@@ -12,6 +12,7 @@ pub(crate) mod innentuer;
 pub(crate) mod werkzeug;
 
 use crate::meldung::Meldung;
+use crate::scene::Scene;
 use crate::ui::ViewKind;
 use crate::App;
 use sk_math::vec3;
@@ -80,7 +81,7 @@ impl App {
         let tol = (q - p).length();
         let st = self.scene.active_storey();
         let scene = &self.scene;
-        let hit = innentuer::treffer_aussen(scene.model(), &|r| scene.koerper(r), st, p, tol)
+        let hit = innentuer::treffer_aussen_in(scene, st, p, tol)
             .map(|(face, _, _, dicke)| plan_fang(&face, p, tol, z, dicke));
         let erste = self.tool.oeffnung.as_ref()?.erste.as_ref();
         match (hit, erste) {
@@ -105,7 +106,7 @@ impl App {
         if self.innentuer_an() {
             match *ev {
                 Event::MouseMove { x, y, .. } => self.tuer_suchen(x, y, vw, vh, sc),
-                Event::MouseLeave => self.tuer_bild(|t, _, _, _| t.weg()),
+                Event::MouseLeave => self.tuer_bild(|t, _, _| t.weg()),
                 _ => return,
             }
             if self.tuer_hover() {
@@ -198,7 +199,7 @@ impl App {
     pub(crate) fn oeffnung_taste(&mut self, key: Key, mods: Modifiers) -> bool {
         if self.innentuer_an() {
             let mut taste = innentuer::Taste::Frei;
-            self.tuer_bild(|t, _, _, _| taste = t.taste(key, mods));
+            self.tuer_bild(|t, _, _| taste = t.taste(key, mods));
             match taste {
                 innentuer::Taste::Frei => {}
                 innentuer::Taste::Geaendert => {
@@ -220,9 +221,9 @@ impl App {
         match key {
             Key::Escape => self.oeffnung_esc(),
             Key::Tab if self.innentuer_an() => {
-                self.tuer_bild(|t, m, k, st| {
+                self.tuer_bild(|t, s, st| {
                     t.tab();
-                    t.nochmal(m, k, st);
+                    t.nochmal_in(s, st);
                 });
                 self.tuer_anzeigen();
                 true
@@ -244,9 +245,9 @@ impl App {
         if !self.innentuer_an() || !self.tuer_hover() {
             return false;
         }
-        self.tuer_bild(|t, m, k, st| {
+        self.tuer_bild(|t, s, st| {
             t.rad(delta);
-            t.nochmal(m, k, st);
+            t.nochmal_in(s, st);
         });
         self.tuer_anzeigen();
         true
@@ -272,21 +273,13 @@ impl App {
     }
 
     /// Ändert die Innentür mit `f` und zeichnet ihre Vorschau neu.
-    fn tuer_bild(
-        &mut self,
-        f: impl FnOnce(
-            &mut innentuer::Innentuer,
-            &sk_model::Model,
-            innentuer::Koerper,
-            sk_model::StoreyId,
-        ),
-    ) {
+    fn tuer_bild(&mut self, f: impl FnOnce(&mut innentuer::Innentuer, &Scene, sk_model::StoreyId)) {
         let st = self.scene.active_storey();
         let scene = &self.scene;
         let Some(w) = self.tool.oeffnung.as_mut() else {
             return;
         };
-        f(&mut w.innen, scene.model(), &|r| scene.koerper(r), st);
+        f(&mut w.innen, scene, st);
         // Maßkette im Stil und in der Schrift der Außenmaßketten (G7)
         let stil = scene.model().massstil();
         let ui = self.ui.fonts.regular.as_ref();
@@ -330,8 +323,8 @@ impl App {
             _ => None,
         };
         let vorher = self.tuer_hover();
-        self.tuer_bild(|t, m, k, st| match hit {
-            Some((p, tol)) => t.suchen(m, k, st, p, tol, z),
+        self.tuer_bild(|t, s, st| match hit {
+            Some((p, tol)) => t.suchen_in(s, st, p, tol, z),
             None => t.weg(),
         });
         // Kommt die Tür an eine Innenwand, sagt die Statuszeile Breite und
@@ -363,7 +356,7 @@ impl App {
                 if self.scene.add_opening(o).is_some() {
                     self.upload_model();
                 }
-                self.tuer_bild(|t, m, k, st| t.nochmal(m, k, st));
+                self.tuer_bild(|t, s, st| t.nochmal_in(s, st));
             }
         }
         self.redraw = true;

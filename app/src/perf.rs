@@ -2090,13 +2090,7 @@ fn perf_innentuer() {
             std::hint::black_box(tuer_edit::sichtbar(&s, q + vec3(300.0, 200.0, 0.0)));
         });
         let fang = time(50, || {
-            std::hint::black_box(innentuer::treffer(
-                s.model(),
-                &|r| s.koerper(r),
-                st,
-                q,
-                30.0,
-            ));
+            std::hint::black_box(innentuer::treffer_in(&s, st, q, 30.0));
         });
         let (vorschau, wechsel) = vorschau_zeiten(&s, q);
         let run = s.model().door_leaf(id).unwrap().run;
@@ -2133,23 +2127,22 @@ fn perf_innentuer() {
 /// Kette gemerkt bleibt, und im Wechsel zwischen den beiden Seiten der
 /// Wand, wo sie jedes Mal neu über alle Anschlüsse geht. Zeiten in ms.
 fn vorschau_zeiten(s: &Scene, q: sk_math::Vec3) -> (f64, f64) {
-    use crate::oeffnung_app::innentuer::{treffer, Innentuer};
+    use crate::oeffnung_app::innentuer::{treffer_in, Innentuer};
     let st = s.active_storey();
-    let k = |r| s.koerper(r);
-    let (f, u, _, dicke) = treffer(s.model(), &k, st, q, 30.0).unwrap();
+    let (f, u, _, dicke) = treffer_in(s, st, q, 30.0).unwrap();
     let u0 = f.span.0 + 1000.0;
     let mut t = Innentuer::default();
     let mut i = 0;
     let laengs = time(50, || {
         i += 1;
         let p = f.at(u0 + (i % 50) as f64 * 20.0, 0.0) + f.n * 10.0;
-        t.suchen(s.model(), &k, st, p, 30.0, 1500.0);
+        t.suchen_in(s, st, p, 30.0, 1500.0);
         assert!(t.hover.is_some());
     });
     let wechsel = time(50, || {
         i += 1;
         let vor = if i % 2 == 0 { 10.0 } else { -dicke - 10.0 };
-        t.suchen(s.model(), &k, st, f.at(u, 0.0) + f.n * vor, 30.0, 1500.0);
+        t.suchen_in(s, st, f.at(u, 0.0) + f.n * vor, 30.0, 1500.0);
         assert!(t.hover.is_some());
     });
     (laengs, wechsel)
@@ -2218,6 +2211,77 @@ fn perf_innentuer_vorschau() {
         println!("{n:>6} {aufbau:>7.1}s {vorschau:>9.3} {wechsel:>8.3}");
     }
     println!("Zeiten in ms je Mausbewegung, Aufbau in s.");
+}
+
+/// Review #158 H1 und Integration H-160a: Fang der Wand unter der Maus
+/// (Innentür) und Fläche unter dem Ende einer Öffnung (Zug der Kanten,
+/// Greifen der Breite) bei 1000 und 4000 Häusern mit je zwei Innentüren,
+/// je über alle Züge des Modells („alt“, so auf main) und über das Raster
+/// der Szene, dazu [`zug`](crate::wall_edit::oeffnung_kanten::zug) und
+/// Greifen der Breite, die jetzt das Raster nehmen. Zeiten in ms je Aufruf.
+#[test]
+#[ignore]
+fn perf_fang_raster() {
+    use crate::oeffnung_app::innentuer::{treffer, treffer_in};
+    use crate::wall_edit::breite_edit::{flaeche_bei, flaeche_in, BreiteZug};
+    use crate::wall_edit::oeffnung_kanten::zug;
+    use sk_model::oeffnung::{Din, FaceSide, Swing};
+    println!();
+    println!(
+        "{:>6} {:>9} {:>8} {:>11} {:>8} {:>8} {:>8}",
+        "Häuser", "Fang alt", "Fang", "Fläche alt", "Fläche", "Zug", "Greifen"
+    );
+    for n in [1000, 4000] {
+        let mut s = town_in_einem_schritt(n);
+        let swing = Swing {
+            side: FaceSide::Right,
+            din: Din::Links,
+        };
+        innentueren(&mut s, swing);
+        let st = s.active_storey();
+        let (id, o) = s
+            .model()
+            .elements()
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                sk_model::ElementKind::Opening(o) => Some((id, o.clone())),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        let q = (o.path[0] + o.path[1]) * 0.5;
+        let k = |r| s.koerper(r);
+        assert_eq!(
+            treffer_in(&s, st, q, 30.0),
+            treffer(s.model(), &k, st, q, 30.0)
+        );
+        let p = o.path[0];
+        assert!(flaeche_in(&s, st, p).is_some());
+        assert_eq!(flaeche_in(&s, st, p), flaeche_bei(s.model(), &k, st, p));
+        let fang_alt = time(50, || {
+            std::hint::black_box(treffer(s.model(), &k, st, q, 30.0));
+        });
+        let fang = time(50, || {
+            std::hint::black_box(treffer_in(&s, st, q, 30.0));
+        });
+        let flaeche_alt = time(50, || {
+            std::hint::black_box(flaeche_bei(s.model(), &k, st, p));
+        });
+        let flaeche = time(50, || {
+            std::hint::black_box(flaeche_in(&s, st, p));
+        });
+        let zug_ms = time(50, || {
+            assert!(zug(&s, id).is_some());
+        });
+        let greifen = time(20, || {
+            assert!(BreiteZug::greifen(&mut s, id, 0, 0.0).is_some());
+            s.rollback();
+        });
+        println!(
+            "{n:>6} {fang_alt:>9.3} {fang:>8.3} {flaeche_alt:>11.3} {flaeche:>8.3} {zug_ms:>8.3} {greifen:>8.3}"
+        );
+    }
+    println!("Zeiten in ms je Aufruf.");
 }
 
 /// IFC-Export (I5, Review #115 B1) bei 1 bis 1000 Häusern (höchstens
