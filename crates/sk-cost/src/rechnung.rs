@@ -1524,8 +1524,10 @@ fn auto_ansaetze(
     let mut befunde = Vec::new();
     let mut stoffe: HashMap<Guid, (Cent, bool)> = HashMap::new();
     let mut gemeldet: Vec<Guid> = Vec::new();
-    // Erdmengen mit Höhenaufmaß rechnen in G1 mit dem Flächenmittel
+    // Erdmengen, die das Aufmaß nur angenähert liefert (Flächenmittel ohne
+    // Netz, Böschung am Gelände), und Gelände steiler als 1:10
     let mut erde_aus_mittel: Option<Ort> = None;
+    let mut steil: Option<(String, Ort)> = None;
     for a in &s.auto {
         let leistungen = k
             .leistungen
@@ -1561,6 +1563,9 @@ fn auto_ansaetze(
                 && erde_aus_mittel.is_none()
             {
                 erde_aus_mittel = Some(ort.clone());
+            }
+            if steil.is_none() && a.key.starts_with("earth.") {
+                steil = sk_model::qto_earth::steil_hinweis(&a.formula).map(|h| (h, ort.clone()));
             }
             let (stoff, pf) = *stoffe.entry(l.guid).or_insert_with(|| {
                 let mut bf = Vec::new();
@@ -1600,12 +1605,18 @@ fn auto_ansaetze(
     if let Some(ort) = erde_aus_mittel {
         befunde.push(Befund::hinweis(0, ERDE_AUS_MITTEL, ort));
     }
+    if let Some((h, ort)) = steil {
+        befunde.push(Befund::hinweis(0, h, ort));
+    }
     befunde
 }
 
-/// Hinweis, solange die Erdmengen mit Höhenaufmaß aus der mittleren
-/// Geländehöhe unter der Platte rechnen (plan-gelaendemodul.md §5 G1).
-pub const ERDE_AUS_MITTEL: &str = "Erdmengen vorläufig aus mittlerer Geländehöhe";
+/// Hinweis, wenn Erdmengen mit Höhenaufmaß angenähert sind (Marke
+/// [`sk_model::qto_earth::AUS_AUFMASS`]): die Böschung am Gelände, oder alle
+/// aus der mittleren Geländehöhe, wo das Netz die Baugrube nicht deckt
+/// (VOB-Prüfung G2, Auflage A3).
+pub const ERDE_AUS_MITTEL: &str =
+    "Erdmengen teils angenähert (Böschung am Gelände oder mittlere Geländehöhe)";
 
 /// „Ohne Bauleistung: Stahlbetonstütze ST-001 · Schalung Stütze (Einheit
 /// m² passt nicht zur Bauleistung in m)“ (Kosten, Prüfung E8 Frage 4).
