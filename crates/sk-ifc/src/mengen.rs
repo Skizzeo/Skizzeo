@@ -127,6 +127,62 @@ pub fn tuer(breite: f64, hoehe: f64) -> Option<Satz> {
         .satz("Qto_DoorBaseQuantities")
 }
 
+/// Maße eines Raums (I6), mm bzw. mm²: roh aus der Form, fertig aus dem
+/// Fertigumriss, Wand und Decke aus dem Raumbuch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Raum {
+    /// OK Rohdecke bis UK Rohdecke darüber.
+    pub hoehe: f64,
+    /// OK Fertigfußboden bis UK Fertigdecke.
+    pub lichte_hoehe: f64,
+    /// Fußbodenaufbau.
+    pub fussboden: f64,
+    pub brutto_umfang: f64,
+    pub netto_umfang: f64,
+    pub brutto_flaeche: f64,
+    pub netto_flaeche: f64,
+    pub wand: f64,
+    pub decke: f64,
+}
+
+/// `Qto_SpaceBaseQuantities` eines Raums (IFC4): `Height` im Rohbau,
+/// `FinishCeilingHeight` licht, `FinishFloorHeight` der Fußbodenaufbau;
+/// Brutto roh, Netto fertig; Rauminhalte als Fläche × Höhe.
+pub fn raum(r: Raum) -> Option<Satz> {
+    bau()
+        .mm("Height", r.hoehe)
+        .mm("FinishCeilingHeight", r.lichte_hoehe)
+        .mm("FinishFloorHeight", r.fussboden)
+        .mm("GrossPerimeter", r.brutto_umfang)
+        .mm("NetPerimeter", r.netto_umfang)
+        .m2("GrossFloorArea", r.brutto_flaeche)
+        .m2("NetFloorArea", r.netto_flaeche)
+        .m2("NetWallArea", r.wand)
+        .m2("NetCeilingArea", r.decke)
+        .m3("GrossVolume", r.brutto_flaeche * r.hoehe)
+        .m3("NetVolume", r.netto_flaeche * r.lichte_hoehe)
+        .satz("Qto_SpaceBaseQuantities")
+}
+
+/// Mengen einer Bekleidung des Raumbuchs (I6): Dicke und Fläche aus dem
+/// Raumbuch in `Qto_CoveringBaseQuantities`, Rauminhalt des Körpers in
+/// mm³; eine Sockelleiste (`leiste`) hat statt der Fläche ihre Länge in mm.
+pub fn bekleidung(leiste: bool, dicke: f64, menge: f64, volumen: f64) -> Vec<Satz> {
+    let norm = if leiste {
+        bau().mm("Width", dicke)
+    } else {
+        bau().mm("Width", dicke).m2("NetArea", menge)
+    };
+    let mut eigen = bau().m3("Volumen", volumen);
+    if leiste {
+        eigen = eigen.mm("Länge", menge);
+    }
+    norm.satz("Qto_CoveringBaseQuantities")
+        .into_iter()
+        .chain(eigen.satz(EIGEN))
+        .collect()
+}
+
 /// Mengensätze eines Bauteils der IFC-Klasse `klasse` aus seiner Zeile der
 /// Mengenliste.
 pub fn saetze(q: &ElementQto, klasse: &str) -> Vec<Satz> {
