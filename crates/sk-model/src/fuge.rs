@@ -326,10 +326,12 @@ impl WallChain {
             if !closed && i + 1 >= k {
                 break;
             }
+            // Länger als 1 mm wie in `clean_points`, sonst fiele das Stück
+            // dort weg und die Zuordnung verrutschte (H-160d)
             let v = out[(i + 1) % k] - out[i];
             let ok = match src {
-                Some(s) => v.length() >= 1.0 && v.dot(dirs[*s]) > 0.0,
-                None => v.length() >= 1.0,
+                Some(s) => v.length() > 1.0 && v.dot(dirs[*s]) > 0.0,
+                None => v.length() > 1.0,
             };
             if !ok {
                 return None;
