@@ -274,7 +274,7 @@ fn gekuerzter_name_als_hinweis() {
     v.fit_head(&t, &fonts);
     let list_top = v.top_dip() + v.head();
     let lines: Vec<(usize, f32, f32)> = v.layout(Some(&t));
-    let mut cut = None;
+    let mut cut = Vec::new();
     let mut whole = None;
     for (i, y, h) in lines {
         let l = &v.lines[i];
@@ -283,14 +283,25 @@ fn gekuerzter_name_als_hinweis() {
             (list_top + y + h * 0.5) as f64,
         );
         match v.tip_at(&t, &fonts, x, yy) {
-            Some(full) => cut = Some((full, l.cells[0].clone())),
+            Some(full) => cut.push((full, l.cells[0].clone())),
             None if l.kind == Kind::Row => whole = Some(l.cells[0].clone()),
             None => {}
         }
     }
-    let (full, name) = cut.expect("eine Zeile ist gekürzt");
-    assert_eq!(full, name);
-    assert!(full.starts_with("Dämmung (WDVS) 14 · Außenwände"), "{full}");
+    // Der Hinweis nennt den vollen Namen; gekürzt sind die langen Gruppen,
+    // darunter seit RB5 auch Estrich und Dämmung der Räume
+    for (full, name) in &cut {
+        assert_eq!(full, name);
+    }
+    let namen: Vec<&str> = cut.iter().map(|(f, _)| f.as_str()).collect();
+    assert!(
+        namen.contains(&"Dämmung (WDVS) 14 · Außenwände"),
+        "{namen:?}"
+    );
+    assert!(
+        namen.contains(&"Zementestrich CT-C25-F4 6,5 · Räume"),
+        "{namen:?}"
+    );
     assert!(whole.is_some());
 }
 
