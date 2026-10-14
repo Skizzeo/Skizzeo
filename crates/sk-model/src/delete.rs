@@ -400,7 +400,7 @@ impl Model {
                 self.defaults = d;
             }
         }
-        self.joins = self.detect_all();
+        self.joins.setzen(self.detect_all());
         self.touch();
         true
     }
@@ -493,7 +493,7 @@ impl Model {
                 out.push(format!("Wandzug {id:?}: ohne Segment"));
             }
         }
-        for j in &self.joins {
+        for j in self.joins.iter() {
             if !self.runs.contains(j.a_run) || !self.runs.contains(j.b_run) {
                 out.push(format!("Anschluss {:?}: Wandzug fehlt", j.a));
             }

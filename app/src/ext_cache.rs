@@ -80,7 +80,10 @@ impl ExtCache {
             .collect();
         let mut geschosse: HashMap<StoreyId, sk_model::erweiterung::Geschoss> = HashMap::new();
         let mut mats: HashMap<&str, Vec<(String, u16)>> = HashMap::new();
-        for (id, e) in m.elements().iter() {
+        for id in m.exemplare() {
+            let Some(e) = m.element(id) else {
+                continue;
+            };
             let ElementKind::Ext(p) = &e.kind else {
                 continue;
             };
