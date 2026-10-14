@@ -21,10 +21,11 @@
 //! Die Werte stehen so, wie sie gelesen wurden (m, Rechtswert ohne
 //! Zonenkennzahl); Speichern, Öffnen, Speichern bleibt bytegleich. Ohne
 //! Aufmaß keine Zeile. Eine Zeile, die nicht zählt (unlesbare Zahl, keine
-//! Nummer), gibt einen Hinweis und bleibt roh stehen (Regel 72, 114); das
-//! Öffnen hält sie nie auf.
+//! Nummer, eine zweite `[terrain]`- oder `[underlay]`-Zeile), gibt einen
+//! Hinweis und bleibt roh stehen (Regel 72, 114, 116); das Öffnen hält sie
+//! nie auf.
 
-use super::{err, Line, LoadError, Record};
+use super::{Line, LoadError, Record};
 use crate::model::{
     Crs, HeightRef, HeightSystem, LocalFrame, Show, Terrain, TerrainLine, TerrainPoint, Trim,
     Underlay,
@@ -169,7 +170,12 @@ pub(super) fn read<'r>(
     let mut t = Terrain::new(Crs::Local);
     match kopf {
         [] => hints.push("Höhenaufmaß ohne [terrain]-Zeile: gelesen als örtliches System".into()),
-        [r] => {
+        [r, mehr @ ..] => {
+            // doppelt: die erste gilt, jede weitere bleibt roh (Regel 72,
+            // 116)
+            for x in mehr {
+                weg(x, "doppelt, es gilt die erste", hints);
+            }
             t.src = r.opt("src").unwrap_or("").to_string();
             t.read = r.opt("read").unwrap_or("").to_string();
             // Werte, die nicht gelten: die Vorgabe gilt, die ganze Zeile
@@ -226,7 +232,6 @@ pub(super) fn read<'r>(
                 t.head_raw = Some(lines.get(r.line - 1).copied().unwrap_or("").to_string());
             }
         }
-        [_, r, ..] => return Err(err(r.line, "[terrain] doppelt")),
     }
     for r in punkte {
         let z = |k: &str| {
@@ -286,7 +291,10 @@ pub(super) fn read<'r>(
     }
     match unterlage {
         [] => {}
-        [r] => {
+        [r, mehr @ ..] => {
+            for x in mehr {
+                weg(x, "doppelt, es gilt die erste", hints);
+            }
             let m: Option<Vec<f64>> = r.opt("m").map(|m| {
                 m.split(',')
                     .filter_map(|v| v.parse::<f64>().ok().filter(|v| v.is_finite()))
@@ -305,7 +313,6 @@ pub(super) fn read<'r>(
                 _ => weg(r, "mit unlesbarer Einpassung oder Seite", hints),
             }
         }
-        [_, r, ..] => return Err(err(r.line, "[underlay] doppelt")),
     }
     roh.sort();
     t.raw = roh.into_iter().map(|r| r.1).collect();
@@ -453,6 +460,50 @@ mod tests {
         let kopf = text.lines().find(|z| z.starts_with("[terrain]")).unwrap();
         assert!(wieder.lines().any(|z| z == kopf), "{wieder}");
         assert_eq!(write(&load(&wieder).model), wieder);
+    }
+
+    /// Doppelte `[terrain]`- und `[underlay]`-Zeilen halten das Öffnen
+    /// nicht auf: die erste gilt, jede weitere bleibt roh mit Hinweis;
+    /// Speichern, Öffnen, Speichern bleibt bytegleich.
+    #[test]
+    fn doppelte_zeilen_bleiben_roh() {
+        let load = |t: &str| read(t, GuidGen::with_seed(99)).unwrap();
+        let mut m = house();
+        m.begin("Aufmaß");
+        m.set_terrain(Some(aufmass()));
+        m.commit();
+        let text = write(&m);
+        let kopf2 = "[terrain] src=\"zweites.csv\" crs=local hsys=DHHN2016";
+        let plan2 = "[underlay] src=\"zweiter plan.pdf\" page=2 m=1,0,0,1,0,0";
+        let mut doppelt = String::new();
+        for z in text.lines() {
+            doppelt.push_str(z);
+            doppelt.push('\n');
+            if z.starts_with("[terrain]") {
+                doppelt.push_str(kopf2);
+                doppelt.push('\n');
+            } else if z.starts_with("[underlay]") {
+                doppelt.push_str(plan2);
+                doppelt.push('\n');
+            }
+        }
+        let l = load(&doppelt);
+        assert_eq!(l.hints.len(), 2, "{:?}", l.hints);
+        assert!(l.hints[0].contains("[terrain] doppelt"), "{:?}", l.hints);
+        assert!(l.hints[1].contains("[underlay] doppelt"), "{:?}", l.hints);
+        assert!(l.hints.iter().all(|h| h.contains("die Zeile bleibt")));
+        let t = l.model.terrain().unwrap();
+        assert_eq!(t.src, "höhen aufmaß.csv");
+        assert_eq!(t.underlay, aufmass().underlay);
+        assert_eq!(t.raw, vec![kopf2.to_string(), plan2.to_string()]);
+        let wieder = write(&l.model);
+        assert_eq!(wieder.lines().count(), doppelt.lines().count());
+        for z in [kopf2, plan2] {
+            assert!(wieder.lines().any(|w| w == z), "{wieder}");
+        }
+        let l2 = load(&wieder);
+        assert_eq!(l2.hints.len(), 2, "{:?}", l2.hints);
+        assert_eq!(write(&l2.model), wieder, "bytegleich");
     }
 
     /// Eine Bruchkante mit unlesbarem „closed“ oder nur einem Punkt bleibt
