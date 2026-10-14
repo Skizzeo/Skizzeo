@@ -19,6 +19,14 @@ pub const PATCH_SLOPE: f64 = 1.5;
 pub const PATCH_SLOPE_RANGE: (f64, f64) = (0.5, 20.0);
 /// Größtes Gefälle einer Fläche in Prozent.
 pub const PATCH_FALL_MAX: f64 = 100.0;
+/// Größter Betrag einer Eckenlage im Modell (mm, 100 km).
+pub const PATCH_XY_MAX: f64 = 1e8;
+/// Größter Betrag einer Höhe über ±0,00 an jeder Ecke (mm).
+pub const PATCH_Z_MAX: f64 = 100_000.0;
+/// Bereich einer Höhe in m ü. NHN an jeder Ecke.
+pub const PATCH_NHN: (f64, f64) = (-500.0, 9_000.0);
+/// Größter Betrag der Richtung des Gefälles (Grad).
+pub const PATCH_DIR_MAX: f64 = 360.0;
 
 /// Höhe einer Geländefläche, so wie sie eingegeben wurde: in mm über ±0,00
 /// oder, mit [`TerrainPatch::abs`], in m ü. NHN.
@@ -65,22 +73,42 @@ impl TerrainPatch {
     }
 
     /// Lässt sich die Fläche bauen? Mindestens drei Ecken, Fläche größer
-    /// null, endliche Werte in ihren Bereichen.
+    /// null, Werte in ihren Bereichen ([`PATCH_XY_MAX`], [`PATCH_FALL_MAX`],
+    /// [`PATCH_DIR_MAX`]); die Höhe an jeder Ecke bis [`PATCH_Z_MAX`] über
+    /// oder unter ±0,00 bzw. in [`PATCH_NHN`] (Review #173 B2).
     pub fn valid(&self) -> bool {
         let n = self.outline.len();
         let ecken = n >= 3
-            && self.outline.iter().flatten().all(|v| v.is_finite())
+            && self
+                .outline
+                .iter()
+                .flatten()
+                .all(|v| v.abs() <= PATCH_XY_MAX)
             && flaeche(&self.outline).abs() > 1.0;
+        let z_ok = |z: f64| {
+            if self.abs {
+                (PATCH_NHN.0..=PATCH_NHN.1).contains(&z)
+            } else {
+                z.abs() <= PATCH_Z_MAX
+            }
+        };
         let hoehe = match &self.height {
-            PatchHeight::Flat(z) => z.is_finite(),
+            PatchHeight::Flat(z) => z_ok(*z),
             PatchHeight::Fall { z, dir, fall } => {
-                z.is_finite() && dir.is_finite() && fall.is_finite() && fall.abs() <= PATCH_FALL_MAX
+                z_ok(*z) && dir.abs() <= PATCH_DIR_MAX && fall.abs() <= PATCH_FALL_MAX
             }
             PatchHeight::Corners(c) => {
                 (1..=3).contains(&c.len())
-                    && c.iter().all(|(i, z)| *i < n && z.is_finite())
+                    && c.iter().all(|(i, z)| *i < n && z_ok(*z))
                     && (1..c.len()).all(|k| c[..k].iter().all(|e| e.0 != c[k].0))
             }
+        };
+        // auch an den übrigen Ecken, sonst trüge ein großes Gefälle weit
+        let hoehe = hoehe && ecken && {
+            let e = self.plane();
+            self.outline
+                .iter()
+                .all(|p| z_ok(e[0] + e[1] * p[0] + e[2] * p[1]))
         };
         let (lo, hi) = PATCH_SLOPE_RANGE;
         let boeschung = matches!(self.slopes.len(), 0 | 1) || self.slopes.len() == n;
@@ -389,6 +417,57 @@ mod tests {
         assert!(!p.valid());
         p.height = PatchHeight::Flat(f64::NAN);
         assert!(!p.valid());
+        // Wertebereiche (Review #173 B2): sonst inf oder Milliarden
+        for z in [1e300, -1e300, 1e12, PATCH_Z_MAX + 1.0] {
+            p.height = PatchHeight::Flat(z);
+            assert!(!p.valid(), "{z}");
+        }
+        p.height = PatchHeight::Flat(-PATCH_Z_MAX);
+        assert!(p.valid());
+        p.abs = true;
+        p.height = PatchHeight::Flat(24.35);
+        assert!(p.valid());
+        p.height = PatchHeight::Flat(24_350.0);
+        assert!(!p.valid());
+        p.abs = false;
+        p.height = PatchHeight::Fall {
+            z: 0.0,
+            dir: 1e9,
+            fall: 2.0,
+        };
+        assert!(!p.valid());
+        // 100 % über 100 m Ecke: am Ende 100 m tiefer, gerade noch
+        let lang = TerrainPatch {
+            height: PatchHeight::Fall {
+                z: 0.0,
+                dir: 0.0,
+                fall: 100.0,
+            },
+            ..TerrainPatch::flat(
+                vec![
+                    [0.0, 0.0],
+                    [100_000.0, 0.0],
+                    [100_000.0, 1_000.0],
+                    [0.0, 1_000.0],
+                ],
+                0.0,
+            )
+        };
+        assert!(lang.valid());
+        let zu_lang = TerrainPatch {
+            outline: vec![
+                [0.0, 0.0],
+                [100_001.0, 0.0],
+                [100_001.0, 1_000.0],
+                [0.0, 1_000.0],
+            ],
+            ..lang.clone()
+        };
+        assert!(!zu_lang.valid());
+        p.height = PatchHeight::Flat(0.0);
+        p.outline[1][0] = 2e8;
+        assert!(!p.valid());
+        p.outline = quadrat();
         let linie = TerrainPatch::flat(vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], 0.0);
         assert!(!linie.valid());
     }

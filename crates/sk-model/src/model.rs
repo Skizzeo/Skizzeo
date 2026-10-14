@@ -314,6 +314,8 @@ pub struct Model {
     halter: verzeichnis::Halter,
     /// Was aus dem Höhenaufmaß folgt, je Modellstand gemerkt.
     lagemerker: gelaende_aufmass::Lagemerker,
+    /// Was die Geländeflächen ergeben, zu den Werten, aus denen es folgt.
+    flaechenmerker: crate::qto_earth::FlaechenMerker,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -879,6 +881,7 @@ impl Model {
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
+            flaechenmerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -967,6 +970,7 @@ impl Model {
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
+            flaechenmerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -1166,6 +1170,11 @@ impl Model {
         if i < self.cuts.len() {
             self.active_cut = i;
         }
+    }
+
+    /// Der zuletzt gerechnete Stand der Geländeflächen (Review #173 B1).
+    pub(crate) fn flaechenmerker(&self) -> &crate::qto_earth::FlaechenMerker {
+        &self.flaechenmerker
     }
 
     /// Steigt bei jeder Änderung.

@@ -15,10 +15,13 @@
 use super::{eckzahl, zahl, Boden, ErdZone, DREIECKSPRISMEN, SCHLUESSEL};
 use super::{BACKFILL, CUT, DISPOSAL, EMBANK, EMBANK_SUPPLY, SURPLUS, TOPSOIL, TOPSOIL_SITE};
 use super::{KG, KG_ANDECKEN, KG_GELAENDE, SPREAD, SPREAD_SLOPE, TOPSOIL_REMOVE, TOPSOIL_SUPPLY};
+use crate::model::{SurveyFrame, TerrainMesh, TerrainPatch};
 use crate::qto::AutoMenge;
 use crate::Model;
-use sk_gelaende::planung::{Aufbau, Grube, Hinweis, Planung, Zonen};
+use sk_gelaende::planung::{Aufbau, Erdbau, Grube, Hinweis, Planung, Zerlegt, Zonen};
 use sk_math::Vec3;
+use std::cell::RefCell;
+use std::sync::Arc;
 
 /// Eine Gründung, wie die Geländeflächen sie sehen: die Vorlage ihrer
 /// Mengen (Träger Sohlplatte), Plattenumriss und Zone aus G2.
@@ -37,6 +40,22 @@ pub const BEFESTIGT: &str = "Aufbau der befestigten Fläche ab G4, Auftrag bis O
 /// Hinweis, wenn die Bilanz begrenzt (B4).
 pub const FAKTOR: &str = "Eigenboden fest → eingebaut Faktor {f} angenommen; ändert die \
                           Aufteilung Eigenboden/Lieferung";
+
+/// Hinweis, wenn eine Fläche über das Aufmaß hinausreicht (H-173c).
+pub const AUSSERHALB: &str = "Geländefläche reicht über das Aufmaß hinaus: dort ohne Mengen";
+/// Hinweis, wenn sich eine Fläche nicht bauen lässt (H-173c).
+pub const UNGUELTIG: &str = "Geländefläche lässt sich nicht bauen: ohne Mengen";
+/// Hinweise, wenn Flächen ganz ohne Menge bleiben (H-173c, VOB-Prüfung G3:
+/// nie still, sonst fehlt ein Vordersatz unbemerkt).
+pub const GANZ_AUSSERHALB: &str = "Geländefläche ohne Mengen: liegt außerhalb des Aufmaßes";
+pub const OHNE_AUFMASS: &str = "Geländefläche ohne Mengen: kein Höhenaufmaß";
+pub const OHNE_TRAEGER: &str = "Geländefläche ohne Mengen: keine Sohlplatte als Träger";
+/// Hinweis, wenn sich Flächen überlappen.
+const UEBERLAPPT: &str =
+    "Geländeflächen überlappen sich: Menge dort doppelt gezählt, Flächen prüfen";
+/// Kleinere Mengen (m³, m²) sind Rundungsreste und geben keine Zeile
+/// (H-173a), wie in der Oberbodenbilanz.
+const REST: f64 = 1e-9;
 
 fn hinweis_text(h: &Hinweis) -> &'static str {
     match h {
@@ -75,6 +94,59 @@ struct Summe {
     hinweise: Vec<&'static str>,
 }
 
+/// Was die Flächen ergeben, bevor die Bilanz es auf die Zeilen verteilt.
+#[derive(Default)]
+pub(crate) struct Teil {
+    s: Summe,
+    /// Weniger Verfüllung je Gründung (m³).
+    weniger: Vec<f64>,
+    /// Böschungskeil der Baugrube unter einer Fläche, je Gründung (C2).
+    keil: Vec<bool>,
+}
+
+/// Was eine Fläche für sich ergibt; `None` lässt sie sich nicht bauen.
+pub(crate) struct Einzel {
+    e: Option<Erdbau>,
+    befestigt: bool,
+    hinweise: Vec<&'static str>,
+    zerlegt: Zerlegt,
+}
+
+/// Der zuletzt gerechnete Stand: das Netz (dasselbe, nicht nur ein
+/// gleiches), die Werte, von denen jede Fläche abhängt (Lage und Höhe von
+/// ±0,00, Oberboden, Andeckung, Umriss und Zone jeder Gründung als Bits),
+/// jede Fläche mit ihrem Ergebnis und das Ganze.
+struct Gemerkt {
+    netz: Arc<TerrainMesh>,
+    werte: Vec<u64>,
+    einzeln: Vec<(TerrainPatch, Arc<Einzel>)>,
+    teil: Arc<Teil>,
+}
+
+/// Platz für den zuletzt gerechneten Stand im Modell (Review #173 B1): Ein
+/// Loslassen, das weder Flächen noch Gründungen noch Aufmaß ändert, etwa an
+/// einer Wand, rechnet nichts neu; ändert sich eine Fläche, rechnet nur
+/// sie neu.
+#[derive(Clone, Default)]
+pub(crate) struct Merker(RefCell<Option<Arc<Gemerkt>>>);
+
+impl std::fmt::Debug for Merker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Flächenmerker")
+    }
+}
+
+impl Merker {
+    /// Der gemerkte Stand, wenn er zu Netz und Werten passt.
+    fn zu(&self, netz: &Arc<TerrainMesh>, werte: &[u64]) -> Option<Arc<Gemerkt>> {
+        self.0
+            .borrow()
+            .as_ref()
+            .filter(|g| Arc::ptr_eq(&g.netz, netz) && g.werte == werte)
+            .cloned()
+    }
+}
+
 /// Mengen der Geländeflächen des Modells `m` an die Mengen `out` der
 /// Gründungen `gr` anfügen und deren Verfüllung und Abfuhr nach der Bilanz
 /// ändern. Ohne Flächen, Aufmaß oder Gründung nichts.
@@ -87,105 +159,64 @@ pub(crate) fn gelaende_mengen(
     if m.site_patches().is_empty() {
         return;
     }
-    // Träger: die Platte mit der kleinsten Nummer
+    // Träger: die Platte mit der kleinsten Nummer; ohne sie hängt der
+    // Hinweis an der ersten Zeile, die es gibt
     let Some(traeger) = gr
         .iter()
         .min_by_key(|g| (g.vorlage.number.len(), g.vorlage.number.clone()))
     else {
+        if let Some(r) = out.first_mut() {
+            anhaengen(r, OHNE_TRAEGER);
+        }
         return;
     };
     let (Some(t), Some(frame), Some(h0)) = (m.terrain(), m.survey_frame(), m.terrain_nhn()) else {
+        let el = traeger.vorlage.element;
+        if let Some(r) = out
+            .iter_mut()
+            .find(|r| r.element == el && r.key.starts_with("earth."))
+        {
+            anhaengen(r, OHNE_AUFMASS);
+        }
         return;
     };
     let mesh = t.mesh();
-    let im_netz = |p: &Vec3| {
-        let (e, n) = frame.to_survey(p.x, p.y);
-        [e - mesh.bezug.0, n - mesh.bezug.1]
-    };
-    let ring = |pts: &[Vec3]| pts.iter().map(im_netz).collect::<Vec<_>>();
     let o = boden.oberboden.max(0.0);
     let site = m.site_soil();
     // Andecken nur, wo Oberboden abgetragen wurde (B6)
     let d = if o > 0.0 { site.spread.max(0.0) } else { 0.0 };
-    let baufelder: Vec<Option<Vec<Vec3>>> = gr
-        .iter()
-        .map(|g| {
-            let x = g.zone.baufeld.max(0.0);
-            sk_math::flaeche::versatz(&g.outline, &vec![-x; g.outline.len()])
-        })
-        .collect();
-    let gruben: Vec<usize> = (0..gr.len())
-        .filter(|&i| gr[i].zone.sohle.len() >= 3)
-        .collect();
-    let zonen = Zonen {
-        haus: gr.iter().map(|g| ring(&g.outline)).collect(),
-        baufeld: baufelder.iter().flatten().map(|b| ring(b)).collect(),
-        gruben: gruben
-            .iter()
-            .map(|&i| Grube {
-                sohle: ring(&gr[i].zone.sohle),
-                platte: ring(&gr[i].outline),
-                b: h0 + gr[i].zone.b / 1000.0,
-            })
-            .collect(),
+    let mut werte: Vec<u64> = [frame.e0, frame.n0, frame.g, h0, o, d]
+        .map(f64::to_bits)
+        .to_vec();
+    for g in gr {
+        let z = &g.zone;
+        werte.extend([g.outline.len(), z.sohle.len()].map(|n| n as u64));
+        werte.extend([z.baufeld, z.b, if z.keil { 1.0 } else { 0.0 }].map(f64::to_bits));
+        for p in g.outline.iter().chain(&z.sohle) {
+            werte.extend([p.x, p.y, p.z].map(f64::to_bits));
+        }
+    }
+    let alt = m.flaechenmerker().zu(&mesh, &werte);
+    let teil = match alt.as_ref().filter(|g| {
+        g.einzeln.len() == m.site_patches().len()
+            && g.einzeln
+                .iter()
+                .zip(m.site_patches())
+                .all(|(e, p)| e.0 == *p)
+    }) {
+        Some(g) => g.teil.clone(),
+        None => {
+            let g = rechnen(m, gr, &frame, h0, &mesh, o, d, alt.as_deref());
+            let teil = g.teil.clone();
+            *m.flaechenmerker().0.borrow_mut() = Some(Arc::new(Gemerkt {
+                netz: mesh.clone(),
+                werte,
+                ..g
+            }));
+            teil
+        }
     };
-    let mut s = Summe::default();
-    let mut weniger = vec![0.0; gr.len()];
-    for p in m.site_patches() {
-        let Some(b) = p.baustein(&frame, h0, mesh.bezug) else {
-            continue;
-        };
-        let plan = Planung::neu(&b, &mesh.abfrage);
-        let a = Aufbau {
-            oberboden: o / 1000.0,
-            andecken: d / 1000.0,
-            befestigt: p.paved,
-        };
-        let e = plan.erdbau(&mesh.abfrage, &a, &zonen);
-        s.abtrag += e.abtrag;
-        s.auftrag += e.auftrag;
-        s.oberboden_fl += e.oberboden_flaeche();
-        s.im_baufeld += e.im_baufeld;
-        s.andecken += e.andecken;
-        s.andecken_steil += e.andecken_steil;
-        s.unter_sohle += e.unter_sohle;
-        s.befestigt |= p.paved;
-        for (k, v) in gruben.iter().zip(&e.je_grube) {
-            weniger[*k] += v;
-        }
-        for h in &plan.hinweise {
-            let t = hinweis_text(h);
-            if !s.hinweise.contains(&t) {
-                s.hinweise.push(t);
-            }
-        }
-    }
-    // C2: über dem Böschungskeil einer Baugrube ist schon ausgehoben; exakt
-    // erst mit G5, bis dahin ein Hinweis an Abtrag und Verfüllung
-    let keil: Vec<bool> = gr
-        .iter()
-        .zip(&baufelder)
-        .map(|(g, bf)| {
-            let Some(bf) = bf.as_ref().filter(|_| g.zone.keil) else {
-                return false;
-            };
-            let flach = |v: &[Vec3]| v.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>();
-            let (feld, sohle) = (flach(bf), flach(&g.zone.sohle));
-            m.site_patches().iter().any(|p| {
-                let im_feld = sk_gelaende::planung::ueberlappung(&p.outline, &feld);
-                let in_sohle = if sohle.len() >= 3 {
-                    sk_gelaende::planung::ueberlappung(&p.outline, &sohle)
-                } else {
-                    0.0
-                };
-                im_feld - in_sohle > 100.0
-            })
-        })
-        .collect();
-    if m.site_patches().len() > 1 && ueberlappen(m) {
-        s.hinweise
-            .push("Geländeflächen überlappen sich: Menge dort doppelt gezählt, Flächen prüfen");
-    }
+    let Teil { s, weniger, keil } = &*teil;
 
     let verfahren = format!(
         "; {DREIECKSPRISMEN}, {} Dreiecke, {}",
@@ -226,7 +257,7 @@ pub(crate) fn gelaende_mengen(
         let w = (weniger[i] * 1e9).min(verf);
         abfuhr[i] = wert(out, DISPOSAL) + w;
         ueberschuss += abfuhr[i];
-        if w <= 0.0 {
+        if w <= REST * 1e9 {
             continue;
         }
         let neu = verf - w;
@@ -255,7 +286,7 @@ pub(crate) fn gelaende_mengen(
         );
     }
 
-    for (g, _) in gr.iter().zip(&keil).filter(|(_, k)| **k) {
+    for (g, _) in gr.iter().zip(keil).filter(|(_, k)| **k) {
         let el = g.vorlage.element;
         if let Some(r) = out
             .iter_mut()
@@ -303,7 +334,7 @@ pub(crate) fn gelaende_mengen(
 
     // B1: Oberboden auf den Flächen außerhalb des Baufelds
     let ob_site = s.oberboden_fl * o / 1000.0;
-    if ob_site > 0.0 {
+    if ob_site > REST {
         neu.push(zeile(
             TOPSOIL_SITE,
             KG_GELAENDE,
@@ -316,7 +347,7 @@ pub(crate) fn gelaende_mengen(
             Vec::new(),
         ));
     }
-    if gel > 0.0 {
+    if gel > REST {
         let mut h = h_erdbau.clone();
         if keil.contains(&true) {
             h.push(KEIL.to_string());
@@ -336,7 +367,7 @@ pub(crate) fn gelaende_mengen(
         ));
     }
     let faktor = || FAKTOR.replace("{f}", &f_text);
-    if eigen1 + eigen2 > 0.0 {
+    if eigen1 + eigen2 > REST {
         let mut h = h_erdbau.clone();
         if begrenzt {
             h.push(faktor());
@@ -354,7 +385,7 @@ pub(crate) fn gelaende_mengen(
             h,
         ));
     }
-    if liefer > 0.0 {
+    if liefer > REST {
         let mut h = h_erdbau.clone();
         h.push(faktor());
         neu.push(zeile(
@@ -369,7 +400,7 @@ pub(crate) fn gelaende_mengen(
             h,
         ));
     }
-    if rest_gel > 0.0 {
+    if rest_gel > REST {
         neu.push(zeile(
             SURPLUS,
             KG_GELAENDE,
@@ -461,12 +492,187 @@ pub(crate) fn gelaende_mengen(
             ));
         }
     }
+    // Flächen ohne Mengen: der Hinweis an jeder Zeile der Flächen, auch
+    // wenn sonst keine Menge aus ihnen folgt (H-173c)
+    for h in [AUSSERHALB, GANZ_AUSSERHALB, UNGUELTIG] {
+        if !s.hinweise.contains(&h) {
+            continue;
+        }
+        for r in neu.iter_mut().filter(|r| !r.hinweis.contains(h)) {
+            anhaengen(r, h);
+        }
+    }
     // hinter den Mengen des Trägers
     let nach = out
         .iter()
         .rposition(|r| r.element == traeger.vorlage.element && r.key.starts_with("earth."))
         .map_or(out.len(), |k| k + 1);
     out.splice(nach..nach, neu);
+}
+
+/// Die Flächen des Modells `m` über dem Netz `mesh` gegen die Gründungen
+/// `gr`; Oberboden `o` und Andeckung `d` in mm, ±0,00 auf `h0` m ü. NHN.
+/// Was `alt` zu einer gleichen Fläche schon weiß, rechnet nicht neu.
+#[allow(clippy::too_many_arguments)]
+fn rechnen(
+    m: &Model,
+    gr: &[Gruendung],
+    frame: &SurveyFrame,
+    h0: f64,
+    mesh: &Arc<TerrainMesh>,
+    o: f64,
+    d: f64,
+    alt: Option<&Gemerkt>,
+) -> Gemerkt {
+    let im_netz = |x: f64, y: f64| {
+        let (e, n) = frame.to_survey(x, y);
+        [e - mesh.bezug.0, n - mesh.bezug.1]
+    };
+    let ring = |pts: &[Vec3]| pts.iter().map(|p| im_netz(p.x, p.y)).collect::<Vec<_>>();
+    let baufelder: Vec<Option<Vec<Vec3>>> = gr
+        .iter()
+        .map(|g| {
+            let x = g.zone.baufeld.max(0.0);
+            sk_math::flaeche::versatz(&g.outline, &vec![-x; g.outline.len()])
+        })
+        .collect();
+    let gruben: Vec<usize> = (0..gr.len())
+        .filter(|&i| gr[i].zone.sohle.len() >= 3)
+        .collect();
+    let zonen = Zonen {
+        haus: gr.iter().map(|g| ring(&g.outline)).collect(),
+        baufeld: baufelder.iter().flatten().map(|b| ring(b)).collect(),
+        gruben: gruben
+            .iter()
+            .map(|&i| Grube {
+                sohle: ring(&gr[i].zone.sohle),
+                platte: ring(&gr[i].outline),
+                b: h0 + gr[i].zone.b / 1000.0,
+            })
+            .collect(),
+    };
+    let einzeln_neu = |p: &TerrainPatch| {
+        let mut hinweise = Vec::new();
+        let mut dazu = |t: &'static str| {
+            if !hinweise.contains(&t) {
+                hinweise.push(t);
+            }
+        };
+        let e = match p.baustein(frame, h0, mesh.bezug) {
+            None => {
+                dazu(UNGUELTIG);
+                None
+            }
+            Some(b) => {
+                let innen = p
+                    .outline
+                    .iter()
+                    .filter(|q| {
+                        let [x, y] = im_netz(q[0], q[1]);
+                        mesh.abfrage.innen(x, y)
+                    })
+                    .count();
+                let plan = Planung::neu(&b, &mesh.abfrage);
+                let a = Aufbau {
+                    oberboden: o / 1000.0,
+                    andecken: d / 1000.0,
+                    befestigt: p.paved,
+                };
+                let e = plan.erdbau(&mesh.abfrage, &a, &zonen);
+                if innen == 0 && e.flaeche + e.im_baufeld <= REST {
+                    dazu(GANZ_AUSSERHALB);
+                } else if innen < p.outline.len() {
+                    dazu(AUSSERHALB);
+                }
+                for h in &plan.hinweise {
+                    dazu(hinweis_text(h));
+                }
+                Some(e)
+            }
+        };
+        Einzel {
+            e,
+            befestigt: p.paved,
+            hinweise,
+            zerlegt: Zerlegt::neu(&p.outline),
+        }
+    };
+    // gleiche Flächen aus dem alten Stand, je eine einmal
+    let mut frei: Vec<&(TerrainPatch, Arc<Einzel>)> =
+        alt.map(|g| g.einzeln.iter().collect()).unwrap_or_default();
+    let einzeln: Vec<(TerrainPatch, Arc<Einzel>)> = m
+        .site_patches()
+        .iter()
+        .map(|p| {
+            let e = match frei.iter().position(|x| x.0 == *p) {
+                Some(k) => frei.swap_remove(k).1.clone(),
+                None => Arc::new(einzeln_neu(p)),
+            };
+            (p.clone(), e)
+        })
+        .collect();
+
+    let mut s = Summe::default();
+    let mut weniger = vec![0.0; gr.len()];
+    let hinweis = |s: &mut Summe, t: &'static str| {
+        if !s.hinweise.contains(&t) {
+            s.hinweise.push(t);
+        }
+    };
+    for (_, x) in &einzeln {
+        for h in &x.hinweise {
+            hinweis(&mut s, h);
+        }
+        let Some(e) = &x.e else {
+            continue;
+        };
+        s.abtrag += e.abtrag;
+        s.auftrag += e.auftrag;
+        s.oberboden_fl += e.oberboden_flaeche();
+        s.im_baufeld += e.im_baufeld;
+        s.andecken += e.andecken;
+        s.andecken_steil += e.andecken_steil;
+        s.unter_sohle += e.unter_sohle;
+        s.befestigt |= x.befestigt;
+        for (k, v) in gruben.iter().zip(&e.je_grube) {
+            weniger[*k] += v;
+        }
+    }
+    // C2: über dem Böschungskeil einer Baugrube ist schon ausgehoben; exakt
+    // erst mit G5, bis dahin ein Hinweis an Abtrag und Verfüllung
+    let keil: Vec<bool> = gr
+        .iter()
+        .zip(&baufelder)
+        .map(|(g, bf)| {
+            let Some(bf) = bf.as_ref().filter(|_| g.zone.keil) else {
+                return false;
+            };
+            let flach = |v: &[Vec3]| v.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>();
+            let feld = Zerlegt::neu(&flach(bf));
+            let sohle = Zerlegt::neu(&flach(&g.zone.sohle));
+            einzeln.iter().any(|(_, x)| {
+                x.zerlegt.ueberlappung(&feld) - x.zerlegt.ueberlappung(&sohle) > 100.0
+            })
+        })
+        .collect();
+    let z: Vec<&Zerlegt> = einzeln.iter().map(|x| &x.1.zerlegt).collect();
+    if (0..z.len()).any(|i| (i + 1..z.len()).any(|j| z[i].ueberlappung(z[j]) > 100.0)) {
+        hinweis(&mut s, UEBERLAPPT);
+    }
+    Gemerkt {
+        netz: mesh.clone(),
+        werte: Vec::new(),
+        einzeln,
+        teil: Arc::new(Teil { s, weniger, keil }),
+    }
+}
+
+/// Hinweis `h` an die Zeile `r` anhängen, je Hinweis eine Zeile.
+fn anhaengen(r: &mut AutoMenge, h: &str) {
+    if !r.hinweis.is_empty() {
+        r.hinweis.push('\n');
+    }
+    r.hinweis.push_str(h);
 }
 
 /// Abfuhr der Gründung auf `wert` (mm³) setzen und den Ansatz ergänzen;
@@ -506,20 +712,10 @@ fn abfuhr_setzen(out: &mut Vec<AutoMenge>, vorlage: &AutoMenge, wert: f64, zusat
     }
 }
 
-/// Überlappen sich zwei Geländeflächen des Modells (im Grundriss, mehr
-/// als 1 cm²)?
-fn ueberlappen(m: &Model) -> bool {
-    let f = m.site_patches();
-    (0..f.len()).any(|i| {
-        (i + 1..f.len())
-            .any(|j| sk_gelaende::planung::ueberlappung(&f[i].outline, &f[j].outline) > 100.0)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use super::{BEFESTIGT, KEIL};
+    use super::{AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, KEIL, OHNE_AUFMASS};
     use crate::model::{SiteSoil, Terrain, TerrainPatch};
     use crate::qto::AutoMenge;
     use crate::Model;
@@ -751,5 +947,195 @@ mod tests {
         let v = mit(&m, &[flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0), q]);
         let c = v.iter().find(|r| r.key == CUT).unwrap();
         assert!(c.hinweis.contains("überlappen"), "{}", c.hinweis);
+    }
+
+    /// Gemerkt, bis sich Flächen, Gründungen oder das Aufmaß ändern; der
+    /// Faktor wirkt erst in der Bilanz und rechnet nichts neu (Review #173
+    /// B1).
+    #[test]
+    fn gemerkt_bis_sich_etwas_aendert() {
+        let teil = |m: &Model| {
+            m.flaechenmerker()
+                .0
+                .borrow()
+                .as_ref()
+                .map(|x| std::sync::Arc::as_ptr(&x.teil))
+        };
+        let mut m = haus();
+        m.begin("Fläche");
+        let i = m
+            .add_site_patch(flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0))
+            .unwrap();
+        m.commit();
+        let v = crate::qto::schedule(&m).auto;
+        let t = teil(&m);
+        assert!(t.is_some());
+        let w = crate::qto::schedule(&m).auto;
+        assert_eq!(teil(&m), t);
+        assert_eq!(wert(&v, CUT), wert(&w, CUT));
+        m.begin("Boden");
+        assert!(m.set_site_soil(SiteSoil {
+            spread: 200.0,
+            reuse: 0.9
+        }));
+        m.commit();
+        let _ = crate::qto::schedule(&m);
+        assert_eq!(teil(&m), t);
+        // andere Höhe der Fläche: neu
+        m.begin("Höhe");
+        assert!(m.set_site_patch(i, flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 200.0)));
+        m.commit();
+        let v = crate::qto::schedule(&m).auto;
+        assert_ne!(teil(&m), t);
+        assert!(nah(wert(&v, CUT), 20.0), "{}", wert(&v, CUT));
+        // eine zweite Fläche: die erste rechnet nicht neu
+        let einzeln = |m: &Model| -> Vec<*const super::Einzel> {
+            m.flaechenmerker()
+                .0
+                .borrow()
+                .as_ref()
+                .map_or(Vec::new(), |g| {
+                    g.einzeln
+                        .iter()
+                        .map(|x| std::sync::Arc::as_ptr(&x.1))
+                        .collect()
+                })
+        };
+        let erste = einzeln(&m);
+        m.begin("zweite");
+        assert!(m
+            .add_site_patch(flaeche(rechteck(-10e3, 30e3, 0.0, 38e3), 100.0))
+            .is_some());
+        m.commit();
+        let _ = crate::qto::schedule(&m);
+        let beide = einzeln(&m);
+        assert_eq!((beide.len(), beide[0]), (2, erste[0]));
+        // ±0,00 woanders: neu
+        let t = teil(&m);
+        m.begin("tiefer");
+        assert!(m.set_terrain_nhn(9.0));
+        m.commit();
+        let _ = crate::qto::schedule(&m);
+        assert_ne!(teil(&m), t);
+    }
+
+    /// Ganz unter dem Haus: keine Zeile aus Rundungsresten (H-173a).
+    #[test]
+    fn unter_dem_haus_nichts() {
+        let m = haus();
+        let v = mit(&m, &[flaeche(rechteck(8e3, 7e3, 16e3, 13e3), 100.0)]);
+        for k in [CUT, SURPLUS, EMBANK, EMBANK_SUPPLY, TOPSOIL_SITE] {
+            assert!(v.iter().all(|r| r.key != k), "{k}");
+        }
+    }
+
+    /// Über das Aufmaß hinaus: Hinweis an den Mengen (H-173c).
+    #[test]
+    fn ueber_das_aufmass_hinaus() {
+        let m = haus();
+        // das Aufmaß reicht im Modell bis x 42 m: teils darüber hinaus
+        let v = mit(&m, &[flaeche(rechteck(35e3, 30e3, 50e3, 38e3), 100.0)]);
+        let c = v.iter().find(|r| r.key == CUT).unwrap();
+        assert!(c.hinweis.contains(AUSSERHALB), "{}", c.hinweis);
+        // ganz außerhalb: ohne Abtrag, der Hinweis am Andecken
+        let v = mit(&m, &[flaeche(rechteck(50e3, 50e3, 70e3, 70e3), 100.0)]);
+        assert!(v.iter().all(|r| r.key != CUT));
+        let s = v.iter().find(|r| r.key == SPREAD).unwrap();
+        assert!(s.hinweis.contains(GANZ_AUSSERHALB), "{}", s.hinweis);
+        // ohne Höhenaufmaß: der Hinweis an den Mengen der Gründung
+        let mut ohne = Model::with_seed(7);
+        let b = ohne.add_building(1);
+        let pts = [
+            sk_math::vec3(7000.0, 6000.0, 0.0),
+            sk_math::vec3(7000.0, 14000.0, 0.0),
+            sk_math::vec3(17000.0, 14000.0, 0.0),
+            sk_math::vec3(17000.0, 6000.0, 0.0),
+        ];
+        ohne.build_from_polygon(b, &pts).unwrap();
+        let v = mit(&ohne, &[flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0)]);
+        assert!(
+            v.iter()
+                .any(|r| r.key.starts_with("earth.") && r.hinweis.contains(OHNE_AUFMASS)),
+            "{v:?}"
+        );
+        let v = mit(&m, &[flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0)]);
+        assert!(v.iter().all(|r| !r.hinweis.contains(AUSSERHALB)));
+    }
+
+    /// Messung (Review #173 B1): Netz mit rund 650.000 Dreiecken, Flächen
+    /// als Kreise mit 400 Kanten. Kalt, warm (nichts geändert, wie beim
+    /// Loslassen einer Wand) und nach Änderung einer Fläche.
+    /// `cargo test --release -p sk-model tempo_flaechen -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn tempo_flaechen() {
+        use std::fmt::Write;
+        use std::time::Instant;
+        let mut txt = String::new();
+        let k = 571;
+        for i in 0..k {
+            for j in 0..k {
+                let (x, y) = (i as f64 * 0.25, j as f64 * 0.25);
+                let z = 10.0 + 0.4 * (x / 9.0).sin() + 0.3 * (y / 7.0).cos();
+                let _ = writeln!(txt, "{} {x} {y} {z}", i * k + j);
+            }
+        }
+        let a = sk_gelaende::lesen::lesen(txt.as_bytes()).unwrap();
+        let mut m = Model::with_seed(7);
+        let b = m.add_building(1);
+        let pts = [
+            sk_math::vec3(7000.0, 6000.0, 0.0),
+            sk_math::vec3(7000.0, 14000.0, 0.0),
+            sk_math::vec3(17000.0, 14000.0, 0.0),
+            sk_math::vec3(17000.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "tempo.txt", "2026-10-14", 32)));
+        assert!(m.set_terrain_nhn(9.5));
+        m.commit();
+        let n_dr = m.terrain().unwrap().mesh().netz.dreiecke.len();
+        let kreis = |cx: f64, cy: f64, z: f64| {
+            let r: Vec<[f64; 2]> = (0..400)
+                .map(|i| {
+                    let w = i as f64 / 400.0 * std::f64::consts::TAU;
+                    [cx + 4000.0 * w.cos(), cy + 4000.0 * w.sin()]
+                })
+                .collect();
+            TerrainPatch::flat(r, z)
+        };
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+        let t = Instant::now();
+        let _ = crate::qto::schedule(&m);
+        eprintln!("{n_dr} Dreiecke, ohne Flächen {:.1} ms", ms(t));
+        for anzahl in [1usize, 10, 100] {
+            let mut m = m.clone();
+            m.begin("Flächen");
+            for f in 0..anzahl {
+                let (cx, cy) = (
+                    -10_000.0 + (f % 10) as f64 * 11_000.0,
+                    30_000.0 + (f / 10) as f64 * 9_000.0,
+                );
+                let z = if f % 2 == 0 { 600.0 } else { -200.0 };
+                assert!(m.add_site_patch(kreis(cx, cy, z)).is_some());
+            }
+            m.commit();
+            let t = Instant::now();
+            let _ = crate::qto::schedule(&m);
+            let kalt = ms(t);
+            let t = Instant::now();
+            let _ = crate::qto::schedule(&m);
+            let warm = ms(t);
+            m.begin("eine");
+            assert!(m.set_site_patch(0, kreis(-10_000.0, 30_000.0, 700.0)));
+            m.commit();
+            let t = Instant::now();
+            let _ = crate::qto::schedule(&m);
+            let eine = ms(t);
+            eprintln!(
+                "{anzahl} × 400 Kanten: kalt {kalt:.1} ms, warm {warm:.1} ms, \
+                 eine Fläche geändert {eine:.1} ms"
+            );
+        }
     }
 }

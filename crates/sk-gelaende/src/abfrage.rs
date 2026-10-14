@@ -36,6 +36,9 @@ const AUSSEN: u8 = 0;
 const INNEN: u8 = 1;
 const RAND: u8 = 2;
 
+/// Erste und letzte Zelle unter einem Polygon und die Dreiecke darin.
+type Unter = ((usize, usize), (usize, usize), Vec<u32>);
+
 impl Abfrage {
     pub fn neu(netz: &Netz) -> Abfrage {
         let punkte = netz.punkte.clone();
@@ -225,11 +228,11 @@ impl Abfrage {
         (self.nx as f64 * self.zelle).hypot(self.ny as f64 * self.zelle)
     }
 
-    /// Die Dreiecke in den Zellen unter dem Polygon `ring`, je einmal, mit
-    /// ihren Punkten.
-    pub(crate) fn dreiecke_unter(&self, ring: &[[f64; 2]]) -> Vec<[[f64; 3]; 3]> {
+    /// Die Zellen unter dem Polygon `ring` (erste und letzte) und die
+    /// Dreiecke darin, je einmal; `None` ohne Netz oder Polygon.
+    fn zellen_unter(&self, ring: &[[f64; 2]]) -> Option<Unter> {
         if ring.len() < 3 || self.dreiecke.is_empty() {
-            return Vec::new();
+            return None;
         }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for q in ring {
@@ -248,6 +251,15 @@ impl Abfrage {
         }
         ts.sort_unstable();
         ts.dedup();
+        Some(((cx0, cy0), (cx1, cy1), ts))
+    }
+
+    /// Die Dreiecke in den Zellen unter dem Polygon `ring`, je einmal, mit
+    /// ihren Punkten.
+    pub(crate) fn dreiecke_unter(&self, ring: &[[f64; 2]]) -> Vec<[[f64; 3]; 3]> {
+        let Some((_, _, ts)) = self.zellen_unter(ring) else {
+            return Vec::new();
+        };
         ts.into_iter()
             .map(|t| self.dreiecke[t as usize].map(|i| self.punkte[i as usize]))
             .collect()
@@ -263,26 +275,9 @@ impl Abfrage {
     /// [`Abfrage::erdmenge`] je Bezug, das Polygon einmal geschnitten.
     pub fn erdmengen(&self, ring: &[[f64; 2]], bezuege: &[Bezug]) -> Vec<Erdmenge> {
         let mut e = vec![Erdmenge::default(); bezuege.len()];
-        if ring.len() < 3 || self.dreiecke.is_empty() {
+        let Some(((cx0, cy0), (cx1, cy1), ts)) = self.zellen_unter(ring) else {
             return e;
-        }
-        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-        for q in ring {
-            x0 = x0.min(q[0]);
-            y0 = y0.min(q[1]);
-            x1 = x1.max(q[0]);
-            y1 = y1.max(q[1]);
-        }
-        let ((cx0, cy0), (cx1, cy1)) = (self.zelle_von(x0, y0), self.zelle_von(x1, y1));
-        let mut ts = Vec::new();
-        for cy in cy0..=cy1 {
-            let c = cy * self.nx;
-            ts.extend_from_slice(
-                &self.inhalt[self.start[c + cx0] as usize..self.start[c + cx1 + 1] as usize],
-            );
-        }
-        ts.sort_unstable();
-        ts.dedup();
+        };
         // bei vielen Ecken: Dreiecke ganz im Polygon nicht an jeder Kante
         // schneiden (H-169h)
         let lage = (ring.len() > VOLL_AB).then(|| self.lage(ring, (cx0, cy0), (cx1, cy1)));

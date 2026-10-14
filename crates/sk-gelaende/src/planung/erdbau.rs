@@ -177,16 +177,64 @@ pub fn ohren(ring: &[[f64; 2]]) -> Vec<[[f64; 2]; 3]> {
     out
 }
 
+/// Rechteck um die Punkte `p`: [x0, y0, x1, y1]; ohne Punkte leer.
+fn huelle(p: &[[f64; 2]]) -> [f64; 4] {
+    p.iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |r, q| {
+            [
+                r[0].min(q[0]),
+                r[1].min(q[1]),
+                r[2].max(q[0]),
+                r[3].max(q[1]),
+            ]
+        })
+}
+
+/// Treffen sich die Rechtecke `a` und `b` (Rand eingeschlossen)?
+fn treffen(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+}
+
+/// Ein einfaches Polygon, einmal in Dreiecke zerlegt, mit dem Rechteck um
+/// das Ganze und um jedes Dreieck: Paare, deren Rechtecke sich nicht
+/// treffen, schneidet [`Zerlegt::ueberlappung`] nicht (Review #173 B1).
+#[derive(Clone, Debug)]
+pub struct Zerlegt {
+    huelle: [f64; 4],
+    dreiecke: Vec<(Dreieck, [f64; 4])>,
+}
+
+impl Zerlegt {
+    pub fn neu(ring: &[[f64; 2]]) -> Zerlegt {
+        Zerlegt {
+            huelle: huelle(ring),
+            dreiecke: ohren(ring).into_iter().map(|d| (d, huelle(&d))).collect(),
+        }
+    }
+
+    /// Gemeinsame Fläche mit `b`.
+    pub fn ueberlappung(&self, b: &Zerlegt) -> f64 {
+        if !treffen(&self.huelle, &b.huelle) {
+            return 0.0;
+        }
+        let mut s = 0.0;
+        for (x, hx) in &self.dreiecke {
+            if !treffen(hx, &b.huelle) {
+                continue;
+            }
+            for (y, hy) in &b.dreiecke {
+                if treffen(hx, hy) {
+                    s += super::flaeche(&konvex_schnitt(x, y));
+                }
+            }
+        }
+        s
+    }
+}
+
 /// Gemeinsame Fläche zweier einfacher Polygone (je in Dreiecke zerlegt).
 pub fn ueberlappung(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
-    let tb = ohren(b);
-    ohren(a)
-        .iter()
-        .flat_map(|x| {
-            tb.iter()
-                .map(move |y| super::flaeche(&konvex_schnitt(x, y)))
-        })
-        .sum()
+    Zerlegt::neu(a).ueberlappung(&Zerlegt::neu(b))
 }
 
 impl Planung {
@@ -249,8 +297,14 @@ impl Planung {
         let mut im_feld = Summe::default();
         let mut im_ring = Summe::default();
         let mut je_grube = vec![0.0; gruben.len()];
-        for s in self.stuecke() {
-            let sum = |fenster: Option<[[f64; 2]; 3]>, b: f64| summe(u, a, &s, fenster, b);
+        let stuecke = self.stuecke();
+        for s in &stuecke {
+            let h = huelle(&s.ring);
+            // Fenster, die das Stück nicht treffen, zählen nichts
+            let sum = |fenster: Option<[[f64; 2]; 3]>, b: f64| match fenster {
+                Some(t) if !treffen(&h, &huelle(&t)) => Summe::default(),
+                _ => summe(u, a, s, fenster, b),
+            };
             alle.dazu(sum(None, f64::NAN), s.vz);
             for t in &haus {
                 im_haus.dazu(sum(Some(*t), f64::NAN), s.vz);
@@ -277,7 +331,7 @@ impl Planung {
         let (andecken, andecken_steil) = if a.befestigt {
             (0.0, 0.0)
         } else {
-            self.andecken(u, &haus)
+            andecken(u, &stuecke, &haus)
         };
         Erdbau {
             abtrag: (aussen.minus - im_ring.minus + im_ring.ab_grube).max(0.0),
@@ -291,29 +345,30 @@ impl Planung {
             unter_sohle: im_ring.unter_b.max(0.0),
         }
     }
+}
 
-    /// Schräge Fläche der Grünflächen außerhalb der Häuser, bis 1:4 und
-    /// steiler (je Stück nach dem Gefälle seiner Ebene).
-    fn andecken(&self, u: &Abfrage, haus: &[[[f64; 2]; 3]]) -> (f64, f64) {
-        let a = Aufbau {
-            oberboden: 0.0,
-            andecken: 0.0,
-            befestigt: true,
-        };
-        let (mut eben, mut steil) = (0.0, 0.0);
-        for s in self.stuecke() {
-            let mut x = summe(u, &a, &s, None, f64::NAN).schraeg;
-            for t in haus {
-                x -= summe(u, &a, &s, Some(*t), f64::NAN).schraeg;
-            }
-            if s.ebene[1].hypot(s.ebene[2]) > STEIL_ANDECKEN {
-                steil += s.vz * x;
-            } else {
-                eben += s.vz * x;
-            }
+/// Schräge Fläche der Grünflächen `stuecke` außerhalb der Häuser, bis 1:4
+/// und steiler (je Stück nach dem Gefälle seiner Ebene).
+fn andecken(u: &Abfrage, stuecke: &[Stueck], haus: &[[[f64; 2]; 3]]) -> (f64, f64) {
+    let a = Aufbau {
+        oberboden: 0.0,
+        andecken: 0.0,
+        befestigt: true,
+    };
+    let (mut eben, mut steil) = (0.0, 0.0);
+    for s in stuecke {
+        let h = huelle(&s.ring);
+        let mut x = summe(u, &a, s, None, f64::NAN).schraeg;
+        for t in haus.iter().filter(|t| treffen(&h, &huelle(*t))) {
+            x -= summe(u, &a, s, Some(*t), f64::NAN).schraeg;
         }
-        (eben.max(0.0), steil.max(0.0))
+        if s.ebene[1].hypot(s.ebene[2]) > STEIL_ANDECKEN {
+            steil += s.vz * x;
+        } else {
+            eben += s.vz * x;
+        }
     }
+    (eben.max(0.0), steil.max(0.0))
 }
 
 /// Das Stück `s` im Fenster (`None`: überall) je Dreieck des Urgeländes;

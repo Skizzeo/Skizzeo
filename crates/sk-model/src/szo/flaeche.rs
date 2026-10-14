@@ -14,7 +14,7 @@
 //! `[sitesoil]` nur mit Werten, die von der Vorgabe abweichen. Ohne Flächen
 //! keine Zeile; Speichern, Öffnen, Speichern bleibt bytegleich. Eine Zeile,
 //! die nicht gilt, gibt einen Hinweis und bleibt roh stehen (Regel 72,
-//! 114); das Öffnen hält sie nie auf.
+//! 114); nur ein doppeltes `[sitesoil]` hält das Öffnen auf.
 
 use super::{err, Line, LoadError, Record};
 use crate::model::{PatchHeight, Project, SiteSoil, TerrainPatch};
@@ -147,7 +147,11 @@ fn patch(r: &Record) -> Result<TerrainPatch, String> {
         paved,
     };
     if !f.valid() {
-        return Err("Fläche lässt sich nicht bauen (Umriss, Höhe oder Böschung)".into());
+        return Err(
+            "Fläche lässt sich nicht bauen (Umriss, Höhe oder Böschung fehlt oder liegt \
+             außerhalb ihres Bereichs)"
+                .into(),
+        );
     }
     Ok(f)
 }
