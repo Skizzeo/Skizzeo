@@ -744,6 +744,9 @@ pub(crate) struct RaumCache {
     /// OK Gelände aus dem Aufmaß ([`Scene::terrain_grid`]).
     raster: Raster,
     z: Zaehler,
+    /// Wandseite, die das Paneel des Raums bearbeitet (RB6); sonst alle.
+    /// Steht hier, damit `scene.rs` nicht wächst.
+    pub(crate) seite: Option<(ElementId, sk_model::model::WandSeite)>,
 }
 
 /// Estrich (`j` = 0) oder alles andere (1), aus den Körpern zusammengesetzt.

@@ -622,8 +622,6 @@ pub struct Scene {
     firmenkatalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
     /// Bezeichnungen mit Werten, je Wortlaut einmal ([`Scene::bezeichnung`]).
     bezeichnungen: Vec<&'static str>,
-    /// Wandseite, die das Paneel des Raums bearbeitet (RB6); sonst alle.
-    pub(crate) raum_seite: Option<(ElementId, sk_model::model::WandSeite)>,
     kostenspeicher: sk_cost::Kostenspeicher,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
@@ -960,7 +958,6 @@ impl Scene {
             lv: Vec::new(),
             firmenkatalog: None,
             bezeichnungen: Vec::new(),
-            raum_seite: None,
             kostenspeicher: sk_cost::Kostenspeicher::default(),
             type_preview: false,
             now: 0,
@@ -2038,12 +2035,9 @@ impl Scene {
     /// wenn sich etwas geändert hat.
     pub fn set_field(&mut self, id: ElementId, field: Field, mm: f64) -> bool {
         use sk_model::ElementKind::{GroundSlab, StripFooting};
-        if field == Field::RaumFliesen {
-            return self.raum_fliesenhoehe(id, mm);
-        }
         let m = &self.model;
         let Some(run) = m.run_of(id) else {
-            return false;
+            return field == Field::RaumFliesen && self.raum_fliesenhoehe(id, mm);
         };
         if field == Field::FloorThickness {
             return self.set_floor_thickness(run, mm);

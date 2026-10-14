@@ -6,6 +6,7 @@
 
 use super::{RunCache, Scene};
 use sk_math::{vec3, Vec3};
+use sk_model::model::WandSeite;
 use sk_model::{
     Change, Direction, ElementId, ElementKind, Guid, Model, RunId, Space, StoreyId, Txn, WallChain,
 };
@@ -318,6 +319,16 @@ impl Scene {
         let ok = f(&mut self.model);
         self.commit();
         ok
+    }
+
+    /// Wandseite, die das Paneel des Raums `.0` bearbeitet (RB6); `None`:
+    /// alle Wandseiten.
+    pub(crate) fn raum_seite(&self) -> Option<(ElementId, WandSeite)> {
+        self.ausbau.seite
+    }
+
+    pub(crate) fn raum_seite_setzen(&mut self, s: Option<(ElementId, WandSeite)>) {
+        self.ausbau.seite = s;
     }
 }
 

@@ -141,7 +141,7 @@ impl Raum {
     /// Die Wandseite, die das Paneel bearbeitet, solange es sie gibt.
     fn seite(&self, scene: &Scene) -> Option<WandSeite> {
         scene
-            .raum_seite
+            .raum_seite()
             .filter(|s| s.0 == self.id && self.seiten.iter().any(|x| x.0 == s.1))
             .map(|s| s.1)
     }
@@ -432,7 +432,7 @@ impl App {
         };
         match t {
             Tun::Seite(s) => {
-                self.scene.raum_seite = s.map(|s| (id, s));
+                self.scene.raum_seite_setzen(s.map(|s| (id, s)));
                 self.props_key = None;
             }
             Tun::Wahl(w) => {
@@ -567,7 +567,7 @@ mod tests {
         };
         let name = namen(&z)[2].clone();
         assert!(name.starts_with("Wand AW-"), "{name}");
-        s.raum_seite = Some((r, w));
+        s.raum_seite_setzen(Some((r, w)));
         let k = knoepfe(&s, r);
         assert_eq!(k[1].1[0], format!("{name} …"));
         assert_eq!(
@@ -606,7 +606,7 @@ mod tests {
         assert!(matches!(d, Zeile::Eintrag { detail, .. } if detail == "abweichend: Wandfliesen"));
 
         // Alle Wandseiten: das Feld nennt die Höhe des Raums
-        s.raum_seite = None;
+        s.raum_seite_setzen(None);
         let p = crate::selection::props(&s, r).unwrap();
         assert_eq!(p.sections[2].fields[0].value, TILES_DEFAULT);
         assert!(s.undo() && s.undo());
