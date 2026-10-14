@@ -1484,11 +1484,12 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 48] = [
+    const KNOWN: [&str; 49] = [
         "terrain",
         "tpoint",
         "tline",
         "tcode",
+        "underlay",
         "opening",
         "pen",
         "linetype",
@@ -2688,7 +2689,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let has_storey = |g: Guid| storeys.iter().any(|(_, s)| s.guid == g);
     let (bem, bem_sicht) = bemassung::read(&recs, &lines, &has_storey, &mut hints);
     let (plan_cut, plan_cut_raw) = hoehen::read_plan_cut(recs("plancut"), &lines, &mut hints)?;
-    let ausbau = ausbau::read(&recs, &layer_sets, &mut hints)?;
+    let ausbau = ausbau::read(&recs, &lines, &layer_sets, &mut hints)?;
     for recs in by.values() {
         for r in recs {
             r.unused(&mut hints);

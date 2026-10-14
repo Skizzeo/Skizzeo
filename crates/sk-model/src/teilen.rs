@@ -27,7 +27,8 @@ pub enum FugeError {
     Types,
     /// Der Stapel würde ungültig (Wandrest zu kurz, Umriss kreuzt sich).
     Invalid,
-    /// Die Wand ist die Stufe eines Teilrücksprungs (W-12, Review #69).
+    /// Die Wand ist die Stufe eines Teilrücksprungs oder steht auf einer
+    /// (W-12, Review #69, H-160d).
     Step,
 }
 
@@ -46,7 +47,7 @@ impl FugeError {
                 "Das geht hier nicht: Ein Wandstück würde zu kurz oder der Grundriss ungültig."
             }
             FugeError::Step => {
-                "Eine Stufe lässt sich nicht teilen; zieh sie, dann wird der Rücksprung breiter oder schmaler."
+                "Eine Stufe lässt sich nicht teilen, auch keine Wand, die auf ihr steht; zieh die Stufe, dann wird der Rücksprung breiter oder schmaler."
             }
         }
     }
@@ -101,15 +102,16 @@ impl Model {
     /// Teilungspunkten.
     fn split_points(&self, wall: ElementId, at: &[f64]) -> Result<(RunId, Vec<Vec3>), FugeError> {
         let (run, seg) = self.segment_of(wall).ok_or(FugeError::NoWall)?;
-        // Die Stufe steht ohne Kopplung neben der Fuge darunter
-        if self.step_joint(wall).is_some() {
+        // Die Stufe steht ohne Kopplung neben der Fuge darunter, auch unter
+        // einer Wand, die auf ihr steht (H-160d)
+        let bottom = self.stack_bottom(wall);
+        if self.step_joint(bottom).is_some() {
             return Err(FugeError::Step);
         }
         let (p0, dir) = self
             .base_chain(run)
             .and_then(|c| c.segment_frame(seg))
             .ok_or(FugeError::NoWall)?;
-        let bottom = self.stack_bottom(wall);
         let (brun, bseg) = self.segment_of(bottom).ok_or(FugeError::NoWall)?;
         let chain = self.base_chain(brun).ok_or(FugeError::NoWall)?;
         let (b0, bdir) = chain.segment_frame(bseg).ok_or(FugeError::NoWall)?;
@@ -835,6 +837,112 @@ mod tests {
         }
         assert_eq!(zahl(&m, og), 8);
         pruefen(&mut m);
+    }
+
+    /// H-160d: Auch eine Wand, die auf einer Stufe steht, teilt sich nicht;
+    /// sonst stünden darunter zwei Stufen nebeneinander ohne Stapelbezug.
+    #[test]
+    fn wand_auf_stufe_teilen_abgelehnt() {
+        let mut m = Model::with_seed(111);
+        let b = m.add_building(3);
+        let eg = m
+            .build_from_polygon(
+                b,
+                &[
+                    vec3(0.0, 0.0, 0.0),
+                    vec3(0.0, 8000.0, 0.0),
+                    vec3(10000.0, 8000.0, 0.0),
+                    vec3(10000.0, 0.0, 0.0),
+                ],
+            )
+            .unwrap();
+        let og = m.runs_above(eg)[0];
+        let dg = m.runs_above(og)[0];
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        let mitte = m.wall_at(og, 2).unwrap();
+        m.set_linked(mitte, false);
+        assert!(m.set_offset(mitte, -1500.0).is_some());
+        pruefen(&mut m);
+        let stufen: Vec<ElementId> = (0..zahl(&m, og))
+            .filter_map(|k| m.wall_at(og, k))
+            .filter(|w| m.step_joint(*w).is_some())
+            .collect();
+        assert_eq!(stufen.len(), 2);
+        let n = zahl(&m, dg);
+        for s in stufen {
+            let oben = (0..n)
+                .filter_map(|k| m.wall_at(dg, k))
+                .find(|w| m.wall_below(*w) == Some(s))
+                .expect("Wand auf der Stufe");
+            assert_eq!(m.can_split(oben, &[300.0]), Err(FugeError::Step));
+            assert_eq!(m.split_wall(oben, &[300.0]), Err(FugeError::Step));
+        }
+        assert_eq!(zahl(&m, dg), n);
+        pruefen(&mut m);
+    }
+
+    /// H-160d: Springen beide Nachbarn eines Stücks zurück, das schmaler
+    /// ist als die Wand dick, einer davon weniger weit als die Wanddicke,
+    /// kippte die Gehrung des Stücks (check() meldete es erst danach). Das
+    /// Versetzen wird abgelehnt, der Stapel bleibt gültig.
+    #[test]
+    fn schmale_zunge_abgelehnt() {
+        let (mut m, eg, og) = rechteck();
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 3200.0]).unwrap();
+        let links = m.wall_at(og, 1).unwrap();
+        let rechts = m.wall_at(og, 3).unwrap();
+        assert!(m.set_offset(links, -1500.0).is_some());
+        pruefen(&mut m);
+        assert_eq!(m.set_offset(rechts, -200.0), None);
+        assert_eq!(m.move_segment(rechts, -200.0), None);
+        assert_eq!(m.stack_offset(rechts), Some((0.0, true)));
+        pruefen(&mut m);
+        // Weit genug zurück kippt nichts
+        assert!(m.set_offset(rechts, -1500.0).is_some());
+        pruefen(&mut m);
+    }
+
+    /// Review zu #163: Die Prüfung aufs Kippen gilt auch für die Züge
+    /// darüber. Rückt das EG-Stück neben einem schmalen Stück um 200 mm
+    /// ein, ginge die gekoppelte OG-Wand mit, und die Zunge im OG kippte;
+    /// das EG selbst kippt dabei nicht.
+    #[test]
+    fn kippen_im_og_haelt_das_eg_an() {
+        let (mut m, eg, og) = rechteck();
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 3200.0]).unwrap();
+        let mut ohne = m.clone();
+        assert!(ziehen(&mut ohne, eg, 3, -200.0));
+        pruefen(&mut ohne);
+        let links = m.wall_at(og, 1).unwrap();
+        assert!(m.set_offset(links, -1500.0).is_some());
+        let vorher = m.run(eg).unwrap().points.clone();
+        assert!(!ziehen(&mut m, eg, 3, -200.0));
+        assert_eq!(m.run(eg).unwrap().points, vorher);
+        pruefen(&mut m);
+    }
+
+    /// H-160d: Eine Stufe von genau 1 mm zwischen zwei Teilstücken fiel beim
+    /// Bereinigen der Punkte weg, die Zuordnung verrutschte und das
+    /// Versetzen stürzte ab. Jetzt gilt dieselbe Grenze wie beim Bereinigen.
+    #[test]
+    fn stufe_ein_millimeter() {
+        for d in [-1499.0, -1501.0, -1499.5] {
+            let (mut m, eg, og) = rechteck();
+            let nord = m.wall_at(eg, 1).unwrap();
+            m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+            let links = m.wall_at(og, 1).unwrap();
+            let mitte = m.wall_at(og, 2).unwrap();
+            assert!(m.set_offset(mitte, -1500.0).is_some());
+            pruefen(&mut m);
+            let vorher = m.stack_offset(links);
+            if m.set_offset(links, d).is_none() {
+                assert_eq!(m.stack_offset(links), vorher, "{d}");
+            }
+            pruefen(&mut m);
+        }
     }
 
     /// Geometrie (Prüfung #69): Ein Eckstück schmaler als die Attika

@@ -3,6 +3,8 @@
 //! ([`crate::TypeCategory::word`]); die Sockelleiste trägt dazu ihre Höhe
 //! `h=` in mm. Ohne Sockelleiste bleibt die Datei bytegleich. Die
 //! Raumvorlagen (RB2) stehen in `[spacetype]`, in `.szo` und `.szk` gleich.
+//! Der Schalter „Ausbau innen“ je Ansicht (RB4) steht nur in der `.szo`
+//! ([`ansicht`]).
 
 use super::{Line, LoadError, Record};
 use crate::id::Arena;
@@ -27,8 +29,11 @@ pub(super) fn read_height(r: &Record) -> Result<Option<f64>, LoadError> {
     }
 }
 
+#[path = "ansicht_ausbau.rs"]
+mod ansicht;
+
 /// Abschnitte des Raumbuchs in der `.szo`.
-const SECTIONS: [&str; 1] = ["spacetype"];
+const SECTIONS: [&str; 2] = ["spacetype", "viewfinish"];
 
 /// Der Abschnitt `s`, wenn ihn `base` (die Liste in [`super::read_with`])
 /// oder das Raumbuch kennt.
@@ -39,22 +44,28 @@ pub(super) fn known(base: &[&'static str], s: &str) -> Option<&'static str> {
 /// Was das Raumbuch aus der `.szo` liest.
 pub(crate) struct Daten {
     pub(crate) space_types: Vec<SpaceType>,
+    /// Schalter je Ansicht mit „in der Datei“ und die Zeilen, die nicht
+    /// zählen (roh).
+    pub(crate) view_finish: ([(bool, bool); 3], Vec<String>),
 }
 
 /// Schreibt die Abschnitte des Raumbuchs (nach den Bauteiltypen).
 pub(super) fn write(out: &mut String, m: &Model) {
     write_space_types(out, m.space_types());
+    ansicht::write(m, out);
 }
 
-/// Liest die Abschnitte des Raumbuchs; `types` sind die Bauteiltypen der
-/// Datei.
+/// Liest die Abschnitte des Raumbuchs; `lines` sind die Zeilen der Datei,
+/// `types` ihre Bauteiltypen.
 pub(super) fn read<'a>(
     recs: &impl Fn(&str) -> &'a Vec<Record>,
+    lines: &[&str],
     types: &Arena<LayerSet>,
     hints: &mut Vec<String>,
 ) -> Result<Daten, LoadError> {
     Ok(Daten {
         space_types: read_space_types(recs("spacetype"), types, hints)?,
+        view_finish: ansicht::read(recs("viewfinish"), lines, hints),
     })
 }
 

@@ -6,7 +6,13 @@
 //! [tpoint] nr=245 e=… n=… h=… code=GP off=1
 //! [tline] kind=boundary pts=1,2,3,4
 //! [tcode] code=BO kind=break
+//! [tline] kind=boundary en=467108.21,5878741.64;467132.04,5878744.56;…
+//! [underlay] src="lageplan.pdf" page=1 m=0.176,0,0,0.176,0,0 flst=123/4
 //! ```
+//!
+//! Grenzen aus dem Lageplan (G1c) stehen als Landeswerte (`en`), der
+//! Lageplan selbst nur mit Pfad, Seite, Einpassung Blatt (pt) → Landeswert
+//! (m) und Flurstück.
 //!
 //! Die Werte stehen so, wie sie gelesen wurden (m, Rechtswert ohne
 //! Zonenkennzahl); Speichern, Öffnen, Speichern bleibt bytegleich. Ohne
@@ -15,12 +21,14 @@
 //! Öffnen hält sie nie auf.
 
 use super::{err, Line, LoadError, Record};
-use crate::model::{Crs, HeightRef, HeightSystem, LocalFrame, Show, Terrain, TerrainPoint, Trim};
+use crate::model::{
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, Terrain, TerrainPoint, Trim, Underlay,
+};
 use crate::Model;
 use sk_gelaende::codes::Bedeutung;
 
 /// Abschnitte des Aufmaßes.
-pub(super) const SECTIONS: [&str; 4] = ["terrain", "tpoint", "tline", "tcode"];
+pub(super) const SECTIONS: [&str; 5] = ["terrain", "tpoint", "tline", "tcode", "underlay"];
 
 /// Wort ohne Leerzeichen und Anführungszeichen, sonst Text in Anführungszeichen.
 fn wort(l: Line, k: &str, v: &str) -> Line {
@@ -65,10 +73,25 @@ pub(super) fn write(m: &Model, out: &mut String) {
         )
         .finish(out);
     }
+    for r in &t.parcels {
+        let en: Vec<String> = r.iter().map(|(e, n)| format!("{e},{n}")).collect();
+        Line::new("tline")
+            .word("kind", "boundary")
+            .word("en", &en.join(";"))
+            .finish(out);
+    }
     for (c, b) in &t.codes {
         wort(Line::new("tcode"), "code", c)
             .word("kind", b.schluessel())
             .finish(out);
+    }
+    if let Some(u) = &t.underlay {
+        let m: Vec<String> = u.fit.iter().map(|v| v.to_string()).collect();
+        let l = Line::new("underlay")
+            .text("src", &u.src)
+            .num("page", u.page)
+            .word("m", &m.join(","));
+        wort(l, "flst", &u.flst).finish(out);
     }
     for r in &t.raw {
         out.push_str(r);
@@ -108,8 +131,11 @@ pub(super) fn read<'r>(
     lines: &[&str],
     hints: &mut Vec<String>,
 ) -> Result<Option<Terrain>, LoadError> {
-    let [kopf, punkte, linien, codes] = SECTIONS.map(recs);
-    if kopf.is_empty() && punkte.is_empty() && linien.is_empty() && codes.is_empty() {
+    let [kopf, punkte, linien, codes, unterlage] = SECTIONS.map(recs);
+    if [kopf, punkte, linien, codes, unterlage]
+        .iter()
+        .all(|r| r.is_empty())
+    {
         return Ok(None);
     }
     let mut roh: Vec<(usize, String)> = Vec::new();
@@ -217,11 +243,12 @@ pub(super) fn read<'r>(
         });
     }
     for r in linien {
-        match (r.opt("kind"), r.opt("pts")) {
-            (Some("boundary"), Some(p)) if !p.is_empty() => {
+        match (r.opt("kind"), r.opt("pts"), r.opt("en").map(landeswerte)) {
+            (Some("boundary"), Some(p), None) if !p.is_empty() => {
                 t.boundaries
                     .push(p.split(',').map(|s| s.to_string()).collect());
             }
+            (Some("boundary"), None, Some(Some(en))) => t.parcels.push(en),
             _ => weg(r, "unbekannte Linie", hints),
         }
     }
@@ -234,9 +261,46 @@ pub(super) fn read<'r>(
             _ => weg(r, "unbekannter Code", hints),
         }
     }
+    match unterlage {
+        [] => {}
+        [r] => {
+            let m: Option<Vec<f64>> = r.opt("m").map(|m| {
+                m.split(',')
+                    .filter_map(|v| v.parse::<f64>().ok().filter(|v| v.is_finite()))
+                    .collect()
+            });
+            let page = r.opt("page").map_or(Some(1), |p| p.parse::<u32>().ok());
+            match (m.as_deref(), page) {
+                (Some(&[a, b, c, d, e, f]), Some(page)) => {
+                    t.underlay = Some(Underlay {
+                        src: r.opt("src").unwrap_or("").to_string(),
+                        page,
+                        fit: [a, b, c, d, e, f],
+                        flst: r.opt("flst").unwrap_or("").to_string(),
+                    })
+                }
+                _ => weg(r, "mit unlesbarer Einpassung oder Seite", hints),
+            }
+        }
+        [_, r, ..] => return Err(err(r.line, "[underlay] doppelt")),
+    }
     roh.sort();
     t.raw = roh.into_iter().map(|r| r.1).collect();
     Ok(Some(t))
+}
+
+/// Landeswerte `e,n;e,n;…`; `None`, wenn eine Zahl fehlt oder weniger als
+/// drei Ecken da sind.
+fn landeswerte(v: &str) -> Option<Vec<(f64, f64)>> {
+    let r: Option<Vec<(f64, f64)>> = v
+        .split(';')
+        .map(|p| {
+            let (e, n) = p.split_once(',')?;
+            let z = |s: &str| s.parse::<f64>().ok().filter(|x| x.is_finite());
+            Some((z(e)?, z(n)?))
+        })
+        .collect();
+    r.filter(|r| r.len() >= 3)
 }
 
 #[cfg(test)]
@@ -269,6 +333,24 @@ mod tests {
         }
         t.boundaries.push(vec!["1".into(), "2".into(), "3".into()]);
         t.codes.push(("XY".into(), Bedeutung::NichtImGelaende));
+        t.parcels.push(vec![
+            (467103.548, 5878774.715),
+            (467108.214, 5878741.637),
+            (467132.035, 5878744.562),
+        ]);
+        t.underlay = Some(crate::model::Underlay {
+            src: "C:\\Pläne\\lage plan.pdf".into(),
+            page: 1,
+            fit: [
+                0.17638888888888887,
+                0.0,
+                0.0,
+                0.17638888888888887,
+                467066.6,
+                5878675.6,
+            ],
+            flst: "123/4".into(),
+        });
         t
     }
 
@@ -300,7 +382,9 @@ mod tests {
                 "[tpoint] nr=3 e=467128.548 n=5878777.885 h=25.71 code=GR off=1",
                 "[tpoint] nr=\"A 7\" e=467120 n=5878760 h=25",
                 "[tline] kind=boundary pts=1,2,3",
+                "[tline] kind=boundary en=467103.548,5878774.715;467108.214,5878741.637;467132.035,5878744.562",
                 "[tcode] code=XY kind=off",
+                "[underlay] src=\"C:\\\\Pläne\\\\lage plan.pdf\" page=1 m=0.17638888888888887,0,0,0.17638888888888887,467066.6,5878675.6 flst=123/4",
             ]
         );
         let l = load(&text);

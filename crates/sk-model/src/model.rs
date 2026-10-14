@@ -225,6 +225,10 @@ pub struct Model {
     /// (S11), Ansichtszustand wie `view_shade`, dazu unlesbare Zeilen roh.
     view_below: [bool; 4],
     view_below_raw: Vec<String>,
+    /// Schalter „Ausbau innen“ je Ansicht (Raumbuch RB4), Ansichtszustand wie
+    /// `view_below`, dazu unlesbare Zeilen roh.
+    view_finish: [(bool, bool); 3],
+    view_finish_raw: Vec<String>,
     /// Eigene Schnitthöhe des Grundrisses ([`crate::hoehen`]), dazu eine
     /// unlesbare Zeile roh.
     pub(crate) plan_cut: Option<f64>,
@@ -339,6 +343,10 @@ pub use lock::{edit_blocked, Locked};
 #[path = "location.rs"]
 mod location;
 
+#[path = "ansicht_ausbau.rs"]
+mod ansicht_ausbau;
+pub use ansicht_ausbau::FINISH_VIEWS;
+
 #[path = "fallrohr_model.rs"]
 mod fallrohr_model;
 #[path = "flachdach.rs"]
@@ -381,6 +389,10 @@ pub use gelaende_aufmass::{
     Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
     TerrainMesh, TerrainPoint, Trim,
 };
+
+#[path = "gelaende_lageplan.rs"]
+mod gelaende_lageplan;
+pub use gelaende_lageplan::{affine_apply, Affine, SitePlan, Underlay, UnderlayKind};
 
 #[path = "geschossbaender.rs"]
 mod geschossbaender;
@@ -810,6 +822,8 @@ impl Model {
             view_below: [false; 4],
             view_below_raw: Vec::new(),
             view_hide: Default::default(),
+            view_finish: [(false, false); 3],
+            view_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -900,6 +914,8 @@ impl Model {
             view_below: [false; 4],
             view_below_raw: Vec::new(),
             view_hide: Default::default(),
+            view_finish: [(false, false); 3],
+            view_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -1969,15 +1985,26 @@ impl Model {
                 }
             }
         }
+        let mut vorher = Vec::with_capacity(walls.len());
         for w in walls {
             note!(self, Element, self.elements, w);
             if let Some(e) = self.elements.get_mut(w) {
+                vorher.push((w, e.layer_set));
                 e.layer_set = Some(id);
             }
         }
         match points {
             Some(p) => {
-                self.set_run_points(root, &p);
+                // Lehnt das Setzen die neue Linie ab (etwa weil eine Gehrung
+                // kippte, H-160d), bleibt der alte Typ
+                if self.set_run_points(root, &p).is_none() {
+                    for (w, t) in vorher {
+                        if let Some(e) = self.elements.get_mut(w) {
+                            e.layer_set = t;
+                        }
+                    }
+                    return false;
+                }
             }
             None => self.joins.setzen(self.detect_all()),
         }
