@@ -1,5 +1,6 @@
 //! Abweichungen des Raumbuchs im Paneel „Eigenschaften“ eines Raums (RB6,
-//! `raumbuch/plan.md` §4.4): je Fläche ein Knopf, der die Liste öffnet:
+//! `raumbuch/plan.md` §4.4): „Nutzung …“ wählt die Raumvorlage aus Projekt
+//! und Werk (Bedienbarkeit 40.5), je Fläche ein Knopf öffnet die Liste:
 //! „wie Raumvorlage“, „ohne …“ und die Ausbautypen der Art aus Projekt und
 //! Werk. Wand, Wandfliesen und Sockelleiste gelten für alle Wandseiten oder
 //! für die Wandseite, die der Knopf darüber wählt; die Fliesenhöhe ist ein
@@ -27,10 +28,11 @@ pub const SEITE: u8 = 3;
 pub const WAND: u8 = 4;
 pub const FLIESEN: u8 = 5;
 pub const SOCKEL: u8 = 6;
+pub const NUTZUNG: u8 = 7;
 
 /// Je Knopf: Beschriftung wie die Vorlage und abweichend, Name der Fläche
 /// und was „leer“ heißt.
-const KNOEPFE: [(&str, &str, &str, &str); 7] = [
+const KNOEPFE: [(&str, &str, &str, &str); 8] = [
     ("Boden …", "Boden: abweichend …", "Boden", "ohne Belag"),
     (
         "Estrich …",
@@ -53,6 +55,7 @@ const KNOEPFE: [(&str, &str, &str, &str); 7] = [
         "Sockelleiste",
         "keine Sockelleiste",
     ),
+    ("Nutzung …", "Nutzung …", "Nutzung", ""),
 ];
 
 /// Was ein Eintrag der Liste tut.
@@ -63,6 +66,8 @@ pub enum Tun {
     /// Wahl an der Stelle setzen (`None`: wie Raumvorlage bzw. wie alle
     /// Wandseiten).
     Wahl(Option<AusbauWahl>),
+    /// Raumvorlage wählen.
+    Nutzung(Guid),
 }
 
 /// Stelle des Knopfs `k` an der Wandseite `seite` (`None`: alle).
@@ -198,7 +203,7 @@ pub fn abschnitte(scene: &Scene, form: &RaumForm) -> Vec<Section> {
         title: "Raumbuch",
         fields: Vec::new(),
         hint: "Abweichungen von der Raumvorlage gelten nur in diesem Raum.",
-        buttons: vec![knopf(BODEN), knopf(ESTRICH), knopf(DECKE)],
+        buttons: vec![knopf(NUTZUNG), knopf(BODEN), knopf(ESTRICH), knopf(DECKE)],
     }];
     if r.seiten.is_empty() {
         return v;
@@ -282,6 +287,28 @@ pub fn liste(scene: &Scene, id: ElementId, k: u8) -> Option<Liste> {
         let tun = v.iter().filter_map(|x| x.1).collect();
         (v.into_iter().map(|x| x.0).collect(), tun)
     };
+    if k == NUTZUNG {
+        // Raumvorlagen des Projekts, dann die des Werks, die es noch nicht
+        // gibt; mit der Wahl kommen sie und ihre Ausbautypen ins Projekt
+        for (g, name) in m.space_type_choices() {
+            let detail = if m.space_type(g).is_some() {
+                String::new()
+            } else {
+                "kommt mit der Wahl ins Projekt".to_string()
+            };
+            eintrag(&mut v, name, detail, Tun::Nutzung(g));
+        }
+        let (zeilen, tun) = fertig(v);
+        let cur = raum
+            .nutzung
+            .and_then(|n| tun.iter().position(|t| *t == Tun::Nutzung(n)));
+        return Some((
+            format!("Nutzung von {nummer} {}", raum.name),
+            zeilen,
+            tun,
+            cur,
+        ));
+    }
     if k == SEITE {
         eintrag(
             &mut v,
@@ -408,6 +435,21 @@ impl Scene {
         self.raeume_aendern("Raumbuch ändern", |m| m.set_space_finish(id, a).is_ok())
     }
 
+    /// Nutzung des Raums `id`: die Raumvorlage `g`, mit ihren Ausbautypen
+    /// ins Projekt (wie ein Name, der sie nennt), als ein Rückgängig-Schritt;
+    /// `true`, wenn sich etwas geändert hat.
+    pub fn raum_nutzung(&mut self, id: ElementId, g: Guid) -> bool {
+        if self.model().space(id).is_none_or(|s| s.nutzung == Some(g)) {
+            return false;
+        }
+        self.raeume_aendern("Nutzung gewählt", |m| {
+            let Some(n) = m.ensure_space_type(g) else {
+                return false;
+            };
+            m.set_space(id, |s| s.nutzung = Some(n)) && ausbau::typen_anlegen(m, id)
+        })
+    }
+
     /// Feld „Höhe“ der Wandfliesen im Paneel des Raums.
     pub(crate) fn raum_fliesenhoehe(&mut self, id: ElementId, mm: f64) -> bool {
         self.raum_abweichung(id, FLIESEN, |a| a.hoehe = Some(mm))
@@ -435,10 +477,17 @@ impl App {
                 self.scene.raum_seite_setzen(s.map(|s| (id, s)));
                 self.props_key = None;
             }
-            Tun::Wahl(w) => {
+            Tun::Wahl(_) | Tun::Nutzung(_) => {
                 if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
                     self.show_locked(b, Some((id, crate::delete::Act::Field)));
-                } else if self.scene.raum_abweichung(id, k, |a| a.wahl = w) {
+                    return;
+                }
+                let neu = match t {
+                    Tun::Nutzung(g) => self.scene.raum_nutzung(id, g),
+                    Tun::Wahl(w) => self.scene.raum_abweichung(id, k, |a| a.wahl = w),
+                    Tun::Seite(_) => false,
+                };
+                if neu {
                     self.upload_model();
                 }
             }
@@ -499,7 +548,10 @@ mod tests {
         let k = knoepfe(&s, r);
         assert_eq!(
             k[0],
-            ("Raumbuch".into(), vec!["Boden …", "Estrich …", "Decke …"])
+            (
+                "Raumbuch".into(),
+                vec!["Nutzung …", "Boden …", "Estrich …", "Decke …"]
+            )
         );
         assert_eq!(
             k[1],
@@ -535,13 +587,13 @@ mod tests {
         let vorher = crate::selection::props(&s, r).unwrap().values;
         assert!(s.raum_abweichung(r, BODEN, |a| a.wahl = Some(AusbauWahl::Keiner)));
         assert!(!s.raum_abweichung(r, BODEN, |a| a.wahl = Some(AusbauWahl::Keiner)));
-        assert_eq!(knoepfe(&s, r)[0].1[0], "Boden: abweichend …");
+        assert_eq!(knoepfe(&s, r)[0].1[1], "Boden: abweichend …");
         assert_eq!(liste(&s, r, BODEN).unwrap().3, Some(1));
         let werte = crate::selection::props(&s, r).unwrap().values;
         assert!(werte.iter().all(|v| v.0 != "Boden"), "{werte:?}");
         assert!(s.undo());
         assert_eq!(crate::selection::props(&s, r).unwrap().values, vorher);
-        assert_eq!(knoepfe(&s, r)[0].1[0], "Boden …");
+        assert_eq!(knoepfe(&s, r)[0].1[1], "Boden …");
     }
 
     /// Kalkputz an allen Wandseiten, an einer Wandseite Fliesen 2,00 m: die
@@ -611,5 +663,43 @@ mod tests {
         assert_eq!(p.sections[2].fields[0].value, TILES_DEFAULT);
         assert!(s.undo() && s.undo());
         assert!(s.model().space(r).unwrap().ausbau.len() == 1);
+    }
+
+    /// „Nutzung …“ listet die Raumvorlagen; Bad gewählt bringt die Vorlage
+    /// und ihre Ausbautypen ins Projekt, Rückgängig nimmt alles zurück.
+    #[test]
+    fn nutzung_im_raum_waehlen() {
+        use sk_model::model::BATH_SPACE_GUID;
+        let (mut s, r) = haus();
+        let vorher = crate::selection::props(&s, r).unwrap().values;
+        let typen = s.model().space_types().len();
+        let (titel, z, tun, cur) = liste(&s, r, NUTZUNG).unwrap();
+        assert_eq!(titel, "Nutzung von R-001 Raum 1");
+        assert_eq!(z.len(), tun.len());
+        let bad = tun
+            .iter()
+            .position(|t| *t == Tun::Nutzung(BATH_SPACE_GUID))
+            .unwrap();
+        assert_eq!(namen(&z)[bad], "Bad");
+        assert!(s.model().space_type(BATH_SPACE_GUID).is_none());
+        let Zeile::Eintrag { detail, .. } = &z[bad] else {
+            panic!()
+        };
+        assert_eq!(detail, "kommt mit der Wahl ins Projekt");
+        assert_ne!(cur, Some(bad));
+
+        assert!(s.raum_nutzung(r, BATH_SPACE_GUID));
+        assert!(!s.raum_nutzung(r, BATH_SPACE_GUID), "schon Bad");
+        assert_eq!(s.model().space(r).unwrap().nutzung, Some(BATH_SPACE_GUID));
+        assert!(s.model().space_type(BATH_SPACE_GUID).is_some());
+        assert_eq!(liste(&s, r, NUTZUNG).unwrap().3, Some(bad));
+        assert_eq!(knoepfe(&s, r).len(), 3, "Fliesen im Bad");
+        let werte = crate::selection::props(&s, r).unwrap().values;
+        assert!(werte.iter().any(|v| v.1.contains("Bad")), "{werte:?}");
+
+        assert!(s.undo());
+        assert_eq!(crate::selection::props(&s, r).unwrap().values, vorher);
+        assert!(s.model().space_type(BATH_SPACE_GUID).is_none());
+        assert_eq!(s.model().space_types().len(), typen);
     }
 }

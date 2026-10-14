@@ -86,7 +86,7 @@ pub fn werte(
 /// Unter der Nutzung, wenn keine gewählt ist (Bedienbarkeit 40.5), und
 /// wie man sie wählt.
 pub const VORGABE: &str = "Nicht gewählt, angenommen";
-pub const VORGABE_WEG: &str = "Wahl über den Stempelnamen";
+pub const VORGABE_WEG: &str = "Wahl unter „Nutzung …“";
 
 /// Weg zu fehlenden Ausbautypen (Einstellungen #112 B1): Jede Änderung der
 /// Vorlage im Reiter „Räume“ des Katalogs legt alle ihre Typen an; fehlt
