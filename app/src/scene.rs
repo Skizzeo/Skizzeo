@@ -32,6 +32,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod gefaelle;
 #[path = "scene_raum.rs"]
 mod raum;
+#[path = "scene_ausbau.rs"]
+pub mod scene_ausbau;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
@@ -651,6 +653,8 @@ pub struct Scene {
     ghost: Option<(MeshKey, VisStamp, MeshData)>,
     /// Körper der Erweiterungsbauteile je Exemplar (E4).
     ext: crate::ext_cache::ExtCache,
+    /// Körper des Ausbaus je Raum (Raumbuch RB4).
+    ausbau: scene_ausbau::RaumCache,
 }
 
 /// Übergang der Sichtbarkeit (§2): ändert nur die Deckkraft des blassen
@@ -968,6 +972,7 @@ impl Scene {
             locked_hit: None,
             ghost: None,
             ext: Default::default(),
+            ausbau: Default::default(),
         };
         s.rebuild_dirty(false);
         s
@@ -1836,6 +1841,7 @@ impl Scene {
         let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
             Ok(Some(txn)) => {
+                self.ausbau.merken(&self.model, &txn.changes);
                 self.undo.push(raum::Schritt { txn, raeume });
                 self.serial += 1;
                 if self.undo.len() > HISTORY {
@@ -3200,6 +3206,7 @@ impl Scene {
             return false;
         };
         let touched = self.model.apply(&t.txn, dir);
+        self.ausbau.merken(&self.model, &t.txn.changes);
         self.staende_folgen(&t, dir);
         match dir {
             Direction::Undo => self.redo.push(t),
@@ -3240,7 +3247,7 @@ impl Scene {
 
     fn plain_mesh(&mut self, key: &MeshKey) -> MeshData {
         let runs = self.mesh_keys(key);
-        let [m, g] = self.mesh_split(key.0, key.1, &runs);
+        let [m, g] = self.mesh_ruhend(key.0, key.1, &runs);
         self.ghost = if self.filtering() {
             Some((key.clone(), self.vis_stamp(), g))
         } else {
@@ -3471,7 +3478,6 @@ impl Scene {
                     }
                 }
             }
-            self.ext_into(&mut m, view, section);
             return m;
         }
         // Gestapelte Züge: die Schale läuft ohne waagerechte Naht durch (G6,
@@ -3574,7 +3580,6 @@ impl Scene {
                 mesh_into(mk, &x, ground);
             }
         }
-        self.ext_into(&mut m, view, section);
         m
     }
 
@@ -3617,21 +3622,6 @@ impl Scene {
         }
     }
 
-    /// Was die Erweiterungen in einer Ansicht zeigen: Grundriss (Geschoss,
-    /// Schnitthöhe) oder Schnittebene; `None`: Schnitt ohne Ebene.
-    #[allow(clippy::type_complexity)]
-    fn ext_view(
-        &self,
-        view: ViewKind,
-        section: Option<Plane>,
-    ) -> Option<(Option<(StoreyId, f64)>, Option<Plane>)> {
-        match view {
-            ViewKind::Plan => Some((Some((self.active_storey(), self.plan_cut())), None)),
-            ViewKind::Section => section.map(|p| (None, Some(p))),
-            _ => Some((None, None)),
-        }
-    }
-
     /// Blasses Netz (Isolieren, Übergänge) zur Ansicht wie [`Scene::mesh`];
     /// leer, wenn nichts blass ist.
     pub fn ghost_mesh(
@@ -3652,7 +3642,7 @@ impl Scene {
             }
         }
         let runs = self.mesh_keys(&key);
-        let [_, g] = self.mesh_split(view, section, &runs);
+        let [_, g] = self.mesh_ruhend(view, section, &runs);
         g
     }
 

@@ -17,6 +17,10 @@
 //! die Fläche zum Raum. Eine Wandbekleidung ist ein Körper aus dem
 //! Baustoff ihrer dicksten Schicht. Fliesen an Laibungen haben noch keinen
 //! Körper. Keine zwei Körper überschneiden sich.
+//!
+//! Jeder Körper besteht aus senkrechten Prismen (Umriss im Grundriss mal
+//! Höhe); aus ihnen schneidet [`Koerper::geschnitten`] Grundriss und
+//! Schnitt mit Schnittflächen.
 
 use super::{Flaeche, Raum};
 use crate::ausbau::{self, laibung_behandelt, RaumAusbau};
@@ -24,7 +28,7 @@ use crate::oeffnungen::{OeffnungAmRaum, OpeningKind, Rohbau};
 use crate::ring;
 use sk_math::polygon::signed_area;
 use sk_math::{vec3, Vec3};
-use sk_model::{edge_kind, material_key, Edge, LayerSetId, Model, Solid, Tri};
+use sk_model::{edge_kind, material, material_key, Edge, LayerSetId, Model, Solid, Tri};
 
 /// Ein Körper des Ausbaus.
 #[derive(Clone, Debug)]
@@ -34,6 +38,120 @@ pub struct Koerper {
     pub typ: LayerSetId,
     pub schicht: usize,
     pub solid: Solid,
+    /// Die Prismen, aus denen er besteht.
+    pub prismen: Vec<Prisma>,
+    /// Baustoff der Schnittflächen.
+    pub schnitt: u16,
+}
+
+/// Senkrechtes Prisma: Umriss im Grundriss zwischen zwei Höhen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Prisma {
+    /// Umriss gegen den Uhrzeigersinn, dann die Löcher im Uhrzeigersinn.
+    pub ringe: Vec<Vec<Vec3>>,
+    /// Der Umriss mit den Löchern über Schlitze (zum Füllen).
+    deckel: Vec<Vec3>,
+    pub z: (f64, f64),
+}
+
+impl Koerper {
+    /// Schnitt mit der Ebene durch `p0` mit Normale `n`: der Teil hinter der
+    /// Ebene (Gegenseite von `n`) mit Schnittflächen im Baustoff
+    /// [`Koerper::schnitt`] und Schnittkonturen, wie die Körper der
+    /// Erweiterung. Grundriss: `n` nach oben, `p0` in Schnitthöhe; Schnitt:
+    /// `n` waagerecht. Eine schräge Ebene schneidet ohne Schnittflächen.
+    /// Liegt die Ebene auf einer Fläche oder Fuge eines Prismas, gehört die
+    /// Fläche zu dem Teil, aus dem sie nach vorn zeigt; das Prisma dahinter
+    /// bekommt dort keine Schnittfläche (Geometrie zu #137).
+    pub fn geschnitten(&self, p0: Vec3, n: Vec3) -> Solid {
+        let mut s = self.solid.clipped(p0, n);
+        let auf = |p: Vec3| (p - p0).dot(n).abs() < 1e-6;
+        s.triangles
+            .retain(|t| t.n.dot(n) > 0.0 || !t.p.iter().all(|&p| auf(p)));
+        let mut k = Solid {
+            mat: self.schnitt | material::CUT,
+            edge_kind: edge_kind::CUT,
+            ..Solid::default()
+        };
+        for p in &self.prismen {
+            let (z0, z1) = p.z;
+            if n.z.abs() > 1.0 - 1e-9 {
+                let z = p0.z;
+                if z <= z0 + 1e-9 || z >= z1 - 1e-9 {
+                    continue;
+                }
+                k.cap(&p.deckel, z, n.z > 0.0);
+                for (a, b) in p.ringe.iter().flat_map(|r| kanten(r)) {
+                    k.edge(hoch(a, z), hoch(b, z));
+                }
+            } else if n.z.abs() < 1e-9 {
+                for (a, b) in quer(&p.ringe, p0, n) {
+                    let mut q = [hoch(a, z0), hoch(b, z0), hoch(b, z1), hoch(a, z1)];
+                    if (q[1] - q[0]).cross(q[3] - q[0]).dot(n) < 0.0 {
+                        q.reverse();
+                    }
+                    k.quad(q[0], q[1], q[2], q[3], n);
+                    for i in 0..4 {
+                        k.edge(q[i], q[(i + 1) % 4]);
+                    }
+                }
+            }
+        }
+        // keine Fugen zwischen den Prismen eines Körpers
+        kontur(&mut k);
+        s.append(&k);
+        s
+    }
+}
+
+/// Strecken der senkrechten Ebene durch `p0` mit Normale `n` im Grundriss
+/// innerhalb der Ringe (Umriss und Löcher), ohne die auf einer Kante der
+/// Ringe: Dort liegt das Prisma nur hinter der Ebene und hat seine Fläche.
+fn quer(ringe: &[Vec<Vec3>], p0: Vec3, n: Vec3) -> Vec<(Vec3, Vec3)> {
+    let n = vec3(n.x, n.y, 0.0).normalized();
+    let r = vec3(-n.y, n.x, 0.0);
+    let o = hoch(p0, 0.0);
+    let seite = |q: Vec3| (hoch(q, 0.0) - o).dot(n);
+    let mut t: Vec<f64> = Vec::new();
+    for (a, b) in ringe.iter().flat_map(|r| kanten(r)) {
+        let (sa, sb) = (seite(a), seite(b));
+        // halboffen, damit eine Ecke auf der Geraden einmal zählt
+        if (sa < 0.0) != (sb < 0.0) {
+            let x = hoch(a + (b - a) * (sa / (sa - sb)), 0.0);
+            t.push((x - o).dot(r));
+        }
+    }
+    t.sort_by(f64::total_cmp);
+    let auf_kante = |u: f64| {
+        ringe.iter().flat_map(|ring| kanten(ring)).any(|(a, b)| {
+            let (ua, ub) = ((hoch(a, 0.0) - o).dot(r), (hoch(b, 0.0) - o).dot(r));
+            seite(a).abs() < 1e-9 && seite(b).abs() < 1e-9 && ua.min(ub) <= u && u <= ua.max(ub)
+        })
+    };
+    t.chunks_exact(2)
+        .filter(|c| c[1] - c[0] > 1e-9 && !auf_kante((c[0] + c[1]) / 2.0))
+        .map(|c| (o + r * c[0], o + r * c[1]))
+        .collect()
+}
+
+/// Ein Körper im Bau: Netz und Prismen.
+#[derive(Default)]
+struct Bau {
+    s: Solid,
+    prismen: Vec<Prisma>,
+}
+
+impl Bau {
+    fn koerper(self, flaeche: Flaeche, typ: LayerSetId, schicht: usize, schnitt: u16) -> Koerper {
+        Koerper {
+            flaeche,
+            typ,
+            schicht,
+            solid: self.s,
+            prismen: self.prismen,
+            schnitt,
+        }
+    }
 }
 
 /// Breite des Schlitzes an seinen Enden, über den ein Loch an den Umriss
@@ -119,7 +237,8 @@ fn hoch(p: Vec3, z: f64) -> Vec3 {
 
 /// Prisma über dem Umriss `aussen` mit Löchern zwischen `z0` und `z1`, nach
 /// außen gerichtet, mit Sichtkanten; Baustoffe oben, unten, Seiten.
-fn prisma(s: &mut Solid, aussen: &[Vec3], loecher: &[Vec<Vec3>], z: (f64, f64), m: [u16; 3]) {
+fn prisma(b: &mut Bau, aussen: &[Vec3], loecher: &[Vec<Vec3>], z: (f64, f64), m: [u16; 3]) {
+    let s = &mut b.s;
     let (z0, z1) = z;
     if aussen.len() < 3 || z1 - z0 <= 1e-9 {
         return;
@@ -156,11 +275,28 @@ fn prisma(s: &mut Solid, aussen: &[Vec3], loecher: &[Vec<Vec3>], z: (f64, f64), 
             }
         }
     }
+    b.prismen.push(Prisma {
+        ringe: std::iter::once(a).chain(loecher).collect(),
+        deckel,
+        z,
+    });
+}
+
+/// Geschlossener Raumkörper über dem Umriss mit Löchern zwischen `z.0` und
+/// `z.1`, ohne Baustoff (für den Austausch, [`crate::raumliste`]).
+pub(crate) fn raumkoerper(aussen: &[Vec3], loecher: &[Vec<Vec3>], z: (f64, f64)) -> Solid {
+    let mut b = Bau {
+        s: Solid::default(),
+        prismen: Vec::new(),
+    };
+    prisma(&mut b, aussen, loecher, z, [0; 3]);
+    b.s
 }
 
 /// Quader über dem ebenen, konvexen Viereck `p` zwischen `z0` und `z1`.
 /// Baustoffe: oben, unten, dann je Seite `p[i]`–`p[i+1]`.
-fn klotz(s: &mut Solid, p: [Vec3; 4], z: (f64, f64), m: [u16; 6]) {
+fn klotz(b: &mut Bau, p: [Vec3; 4], z: (f64, f64), m: [u16; 6]) {
+    let s = &mut b.s;
     let (z0, z1) = z;
     let a = signed_area(&p);
     if z1 - z0 <= 1e-9 || a.abs() <= 1e-6 {
@@ -199,6 +335,11 @@ fn klotz(s: &mut Solid, p: [Vec3; 4], z: (f64, f64), m: [u16; 6]) {
         s.edge(hoch(a, z1), hoch(b, z1));
         s.edge(hoch(a, z0), hoch(a, z1));
     }
+    b.prismen.push(Prisma {
+        ringe: vec![p.to_vec()],
+        deckel: p.to_vec(),
+        z,
+    });
 }
 
 /// Freie Rechtecke einer Wandseite (längs `0..l`, Höhe `z0..z1`) ohne die
@@ -257,7 +398,7 @@ fn bekleidung(model: &Model, typ: LayerSetId) -> Option<(usize, u16, u16)> {
 /// Halbflächen an der Stelle `m` einer Kante mit Richtung `u`: je Dreieck,
 /// das `m` berührt, die Richtung quer zur Kante, in die es von `m` aus
 /// reicht, und seine Normale.
-fn halbflaechen(tris: &[Tri], m: Vec3, u: Vec3) -> Vec<(Vec3, Vec3)> {
+fn halbflaechen(tris: &[&Tri], m: Vec3, u: Vec3) -> Vec<(Vec3, Vec3)> {
     const EPS: f64 = 1e-3;
     let mut out: Vec<(Vec3, Vec3)> = Vec::new();
     for t in tris {
@@ -293,7 +434,7 @@ fn halbflaechen(tris: &[Tri], m: Vec3, u: Vec3) -> Vec<(Vec3, Vec3)> {
 /// Deckungsgleiche gegenläufige Flächen (Fugen zwischen den Klötzen eines
 /// Körpers) heben sich auf; laufen danach genau zwei Flächen eben durch,
 /// knickt sie nicht.
-fn knickt(tris: &[Tri], m: Vec3, u: Vec3) -> bool {
+fn knickt(tris: &[&Tri], m: Vec3, u: Vec3) -> bool {
     let h = halbflaechen(tris, m, u);
     let gleich = |a: Vec3, b: Vec3| (a - b).length() < 1e-6;
     let rest: Vec<&(Vec3, Vec3)> = h
@@ -324,22 +465,26 @@ fn kontur(s: &mut Solid) {
     };
     let kaesten: Vec<([f64; 3], [f64; 3])> = s.triangles.iter().map(|t| kasten(&t.p)).collect();
     let mut neu: Vec<Edge> = Vec::new();
+    let mut teile = Vec::new();
+    let mut nah: Vec<&Tri> = Vec::new();
     for e in &s.edges {
         let l = (e.b - e.a).length();
         if l <= 1e-6 {
             continue;
         }
         let u = (e.b - e.a) * (1.0 / l);
-        // nur die Dreiecke in der Nähe der Kante
+        // nur die Dreiecke in der Nähe der Kante, in ihrer Reihenfolge
         let (lo, hi) = kasten(&[e.a, e.b]);
-        let nah: Vec<Tri> = s
-            .triangles
-            .iter()
-            .zip(&kaesten)
-            .filter(|(_, k)| (0..3).all(|i| k.0[i] <= hi[i] && k.1[i] >= lo[i]))
-            .map(|(t, _)| *t)
-            .collect();
-        let mut teile = vec![0.0, l];
+        nah.clear();
+        nah.extend(
+            s.triangles
+                .iter()
+                .zip(&kaesten)
+                .filter(|(_, k)| (0..3).all(|i| k.0[i] <= hi[i] && k.1[i] >= lo[i]))
+                .map(|(t, _)| t),
+        );
+        teile.clear();
+        teile.extend([0.0, l]);
         for p in nah.iter().flat_map(|t| t.p) {
             let t = (p - e.a).dot(u);
             if t > 1e-6 && t < l - 1e-6 && (e.a + u * t - p).length() < 1e-6 {
@@ -505,17 +650,12 @@ impl Raum<'_> {
             if d <= 0.0 {
                 continue;
             }
-            let mut s = Solid::default();
-            prisma(&mut s, aussen, &loecher, zs, [m; 3]);
+            let mut b = Bau::default();
+            prisma(&mut b, aussen, &loecher, zs, [m; 3]);
             for r in &extra {
-                klotz(&mut s, *r, zs, [m; 6]);
+                klotz(&mut b, *r, zs, [m; 6]);
             }
-            out.push(Koerper {
-                flaeche,
-                typ,
-                schicht,
-                solid: s,
-            });
+            out.push(b.koerper(flaeche, typ, schicht, m));
         }
     }
 
@@ -545,14 +685,9 @@ impl Raum<'_> {
             } else {
                 m
             };
-            let mut s = Solid::default();
-            prisma(&mut s, aussen, &loecher, zs, [m, unten, m]);
-            out.push(Koerper {
-                flaeche: Flaeche::Decke,
-                typ,
-                schicht: j,
-                solid: s,
-            });
+            let mut b = Bau::default();
+            prisma(&mut b, aussen, &loecher, zs, [m, unten, m]);
+            out.push(b.koerper(Flaeche::Decke, typ, j, m));
         }
     }
 
@@ -603,7 +738,7 @@ impl Raum<'_> {
                 (o.von, o.bis, uk, o.ok)
             })
             .collect();
-        let mut s = Solid::default();
+        let mut b = Bau::default();
         for (s0, s1, za, zb) in felder(self.roh[k], zs, &loecher) {
             let q = self.streifen(
                 k,
@@ -611,7 +746,7 @@ impl Raum<'_> {
                 (&lagen.null, &lagen.e_roh),
                 (&self.putz, &lagen.e_putz),
             );
-            klotz(&mut s, q, (za, zb), [m, m, m, m, raum, m]);
+            klotz(&mut b, q, (za, zb), [m, m, m, m, raum, m]);
         }
         // Laibungen bis zum Element: seitlich ab OK Fertigfußboden bzw.
         // Brüstung (an der offenen Ecke nicht) und oben; an der Ecköffnung
@@ -628,11 +763,11 @@ impl Raum<'_> {
             let t = (-o.tiefe, d);
             if !am_anfang {
                 let q = self.rechteck(k, (o.von, o.von + d), t);
-                klotz(&mut s, q, hoehe, [m, m, m, raum, m, m]);
+                klotz(&mut b, q, hoehe, [m, m, m, raum, m, m]);
             }
             if !am_ende {
                 let q = self.rechteck(k, (o.bis - d, o.bis), t);
-                klotz(&mut s, q, hoehe, [m, m, m, m, m, raum]);
+                klotz(&mut b, q, hoehe, [m, m, m, m, m, raum]);
             }
             if o.ok < zs.1 - 1e-6 {
                 let sa = if am_anfang {
@@ -650,15 +785,10 @@ impl Raum<'_> {
                     o.bis - d
                 };
                 let q = self.rechteck(k, (sa, sb), t);
-                klotz(&mut s, q, (o.ok - d, o.ok), [m, raum, m, m, m, m]);
+                klotz(&mut b, q, (o.ok - d, o.ok), [m, raum, m, m, m, m]);
             }
         }
-        out.push(Koerper {
-            flaeche: Flaeche::Wand(k),
-            typ,
-            schicht: j,
-            solid: s,
-        });
+        out.push(b.koerper(Flaeche::Wand(k), typ, j, m));
     }
 
     fn fliesen_koerper(&self, k: usize, lagen: &Lagen, out: &mut Vec<Koerper>) {
@@ -670,7 +800,7 @@ impl Raum<'_> {
         };
         let oben = self.form.z_decke - ausbau::dicke(self.model, self.aus.decke);
         let zs = (self.ffb, (self.ffb + h).min(oben));
-        let mut s = Solid::default();
+        let mut b = Bau::default();
         for (s0, s1, za, zb) in felder(self.roh[k], zs, &self.lichte(k)) {
             let q = self.streifen(
                 k,
@@ -678,18 +808,13 @@ impl Raum<'_> {
                 (&self.putz, &lagen.e_putz),
                 (&lagen.fliese, &lagen.e_fliese),
             );
-            klotz(&mut s, q, (za, zb), [m; 6]);
+            klotz(&mut b, q, (za, zb), [m; 6]);
         }
-        out.push(Koerper {
-            flaeche: Flaeche::Fliesen(k),
-            typ,
-            schicht: j,
-            solid: s,
-        });
+        out.push(b.koerper(Flaeche::Fliesen(k), typ, j, m));
     }
 
     fn sockel_koerper(&self, lagen: &Lagen, out: &mut Vec<Koerper>) {
-        let mut je_typ: Vec<(LayerSetId, Solid)> = Vec::new();
+        let mut je_typ: Vec<(LayerSetId, Bau, u16)> = Vec::new();
         for k in 0..self.kanten.len() {
             let Some(typ) = self.seite(k).sockel else {
                 continue;
@@ -706,7 +831,7 @@ impl Raum<'_> {
             let i = match je_typ.iter().position(|x| x.0 == typ) {
                 Some(i) => i,
                 None => {
-                    je_typ.push((typ, Solid::default()));
+                    je_typ.push((typ, Bau::default(), m));
                     je_typ.len() - 1
                 }
             };
@@ -720,13 +845,8 @@ impl Raum<'_> {
                 klotz(&mut je_typ[i].1, q, (za, zb), [m; 6]);
             }
         }
-        for (typ, solid) in je_typ {
-            out.push(Koerper {
-                flaeche: Flaeche::Sockel,
-                typ,
-                schicht: 0,
-                solid,
-            });
+        for (typ, b, m) in je_typ {
+            out.push(b.koerper(Flaeche::Sockel, typ, 0, m));
         }
     }
 }
@@ -765,6 +885,21 @@ impl Lagen {
             sockel,
         }
     }
+}
+
+/// Nur die Körper des Estrichs, wie in [`koerper`]: Was der Schnitt ohne
+/// den Schalter „Ausbau innen“ zeigt, rechnet ein Raum ohne die übrigen
+/// (Review #137 N2).
+pub fn estrich(model: &Model, form: &Rohbau, aus: &RaumAusbau) -> Vec<Koerper> {
+    let regeln = super::Regeln::default();
+    let r = Raum::new(model, form, aus, &regeln);
+    let mut out = Vec::new();
+    r.boden_koerper(&mut out);
+    out.retain(|k| k.flaeche == Flaeche::Estrich);
+    for k in &mut out {
+        kontur(&mut k.solid);
+    }
+    out
 }
 
 /// Die Körper des Ausbaus eines Raums: Estrich und Belag je Schicht, Decke,

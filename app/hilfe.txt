@@ -19,6 +19,7 @@ Schatten der Ansicht | in Vorne, Hinten, Links und Rechts das Zahnrad links nebe
 Unter Gelände | die Ansichten zeigen das Gebäude bis Oberkante Gelände (±0,00); im Zahnrad „Gestrichelt“ zeigt die Kanten darunter gestrichelt, „Ausblenden“ blendet sie aus (Standard)
 Geländeplatte | ebene grüne Platte um jedes Gebäude auf Oberkante Gelände aus dem Geschossmanager, in 3D mit Rasen, im Schnitt geschnitten, in den Ansichten als Band; wählbar nur im Baum unter „Gelände“, dort Dicke (Vorgabe 50 cm) und Außenoffset (1,50 bis 3,00 m); das Auge blendet sie aus
 Dachentwässerung | im Zahnrad jeder Ansicht blendet „Dachentwässerung ausblenden“ Regenfallrohre, Kästen und Notablauf nur in dieser Ansicht aus (alle Schnitte teilen eine Wahl), wie im Baum ausgeblendet; am Modell ändert sich nichts; „Auf alle Ansichten übertragen“ gilt für alle sieben
+Ausbau innen | im Zahnrad von Grundriss, Schnitt und 3D zeigt „An“ Putz, Wandbeläge, Bodenbelag und Sockelleisten der Räume, „Aus“ blendet sie aus; in 3D auch den Estrich, den der Schnitt immer zeigt; „Auf alle Ansichten übertragen“ gibt die Wahl an diese drei
 
 [thema] id=gebaeude titel="Gebäude erstellen"
 Höhen | Dicke OG-Decke, lichte Höhe OG, Dicke EG-Decke, lichte Höhe EG, Dicke Sohlplatte
