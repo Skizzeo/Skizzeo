@@ -39,6 +39,8 @@ mod schnitt;
 #[path = "scene_sicht.rs"]
 pub mod sicht;
 use schnitt::UnderMemo;
+#[path = "scene_boden.rs"]
+mod boden;
 #[path = "scene_kanten.rs"]
 pub mod kanten;
 #[path = "scene_lage.rs"]
@@ -53,6 +55,7 @@ pub mod raster;
 mod scene_bemassung;
 #[path = "scene_oeffnung.rs"]
 mod scene_oeffnung;
+use boden::{mesh_into, Boden};
 pub use massstand::{naechster_stand, neuer_stand};
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
@@ -630,6 +633,11 @@ pub struct Scene {
     blend_shown: bool,
     /// Zähler der Sichtbarkeitsänderungen (Paket 3); ändert die Revision nicht.
     vis_rev: u64,
+    /// OK Gelände aus dem Aufmaß als Raster, zu seinem Schlüssel.
+    gelaende_raster: Option<(
+        Option<boden::RasterKey>,
+        Option<Rc<sk_render::gelaende::TerrainGrid>>,
+    )>,
     /// Laufender Übergang beim Aus- und Einblenden oder Isolieren.
     vis_anim: Option<VisAnim>,
     /// Masken je Zug und Teil (Review 3a G2), gültig für Revision,
@@ -953,6 +961,7 @@ impl Scene {
             grow: None,
             blend_shown: false,
             vis_rev: 0,
+            gelaende_raster: None,
             vis_anim: None,
             vis_table: RefCell::default(),
             kanten: RefCell::default(),
@@ -2153,13 +2162,14 @@ impl Scene {
                 }),
             });
             if foundation {
-                // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)
-                let max = sk_model::MAX_TERRAIN_OFFSET;
-                let tz = m.terrain_z_of(m.building_of(id));
+                // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1); mit
+                // Aufmaß der tiefste Punkt am Plattenrand, ab dem die
+                // Einbindetiefe zählt (G1)
+                let tz = m.terrain_z_of_level(id);
                 l.terrain = Some(tz);
                 l.embedment = m.embedment_of(id);
-                l.fields
-                    .push(row(Field::Terrain, "OK Gelände", tz, (-max, max)));
+                let range = m.terrain_z_of_level_range(id);
+                l.fields.push(row(Field::Terrain, "OK Gelände", tz, range));
                 let (lo, hi) = m.foundation_bottom_range_of(id);
                 l.fields.push(row(
                     Field::LevelBottom,
@@ -2246,9 +2256,10 @@ impl Scene {
             Field::ClearHeight(id) => {
                 self.edit_model("lichte Höhe", |m| m.set_clear_height(id, mm))
             }
-            // Kote OK Gelände: der Versatz ist ihr Gegenwert
-            Field::Terrain => match self.active_building() {
-                Some(b) => self.edit_model("Gelände", |m| m.set_terrain_offset_of(b, -mm)),
+            // Kote OK Gelände an der Gründung: ohne Aufmaß der Gegenwert
+            // des Versatzes, mit Aufmaß wandert ±0,00 gegen das Gelände
+            Field::Terrain => match self.model.foundation_level_of(self.active_storey()) {
+                Some(gr) => self.edit_model("Gelände", |m| m.set_terrain_z_of_level(gr, mm)),
                 None => false,
             },
             _ => false,
@@ -3401,13 +3412,15 @@ impl Scene {
         let cut = self.plan_cut();
         let filter = self.filtering();
         let stamp = self.vis_stamp();
-        // OK Gelände je Zug: das seines Gebäudes (Entscheidung B)
+        // OK Gelände je Zug: aus dem Aufmaß, sonst das seines Gebäudes
+        // (Entscheidung B)
+        let raster = self.terrain_grid();
         let model = &self.model;
-        let ground = |r: RunId| {
-            let b = model.run(r).and_then(|x| model.building_of(x.storey));
-            model.terrain_z_of(b)
+        let ground = |r: RunId| Boden {
+            raster: raster.as_deref(),
+            eben: model.terrain_z_of(model.run(r).and_then(|x| model.building_of(x.storey))),
         };
-        let grounds: Vec<f64> = runs.iter().map(|r| ground(*r)).collect();
+        let grounds: Vec<Boden> = runs.iter().map(|r| ground(*r)).collect();
         let mut m = [MeshData::default(), MeshData::default()];
         if view == ViewKind::Plan {
             let active = self.active_storey();
@@ -3579,8 +3592,12 @@ impl Scene {
             return;
         };
         let filter = self.filtering();
+        let raster = self.terrain_grid();
         let model = &self.model;
-        let ground = |id: ElementId| model.terrain_z_of(model.building_of_element(id));
+        let ground = |id: ElementId| Boden {
+            raster: raster.as_deref(),
+            eben: model.terrain_z_of(model.building_of_element(id)),
+        };
         let vis = Vis {
             model: &self.model,
             anim: self.vis_anim.as_ref(),
@@ -3934,7 +3951,7 @@ impl Scene {
 /// wie sie aussehen (3D oder Zeichnung), steht in der Tabelle des Renderers.
 pub fn mesh_of(s: &Solid) -> MeshData {
     let mut m = MeshData::default();
-    mesh_into(&mut m, s, 0.0);
+    mesh_into(&mut m, s, Boden::eben(0.0));
     m
 }
 
@@ -3952,48 +3969,6 @@ fn same_solid(a: &Solid, b: &Solid) -> bool {
         && a.edges.iter().zip(&b.edges).all(|(s, t)| {
             (v(s.a), v(s.b), s.kind, s.elem, s.layer) == (v(t.a), v(t.b), t.kind, t.elem, t.layer)
         })
-}
-
-/// Hängt das Netz eines Körpers an `m` an.
-fn mesh_into(m: &mut MeshData, s: &Solid, ground: f64) {
-    m.faces.reserve(s.triangles.len() * 3);
-    for t in &s.triangles {
-        let n = t.n.to_f32();
-        let key = t.mat as f32;
-        for (v, uv) in t.p.iter().zip(t.uv) {
-            let p = v.to_f32();
-            m.faces.push([
-                p[0],
-                p[1],
-                p[2],
-                n[0],
-                n[1],
-                n[2],
-                key,
-                uv[0] as f32,
-                uv[1] as f32,
-            ]);
-        }
-    }
-    // Kanten, die das Gelände kreuzen, an OK Gelände `ground` teilen: In
-    // den Ansichten zeichnet der untere Teil dann gestrichelt in der Breite
-    // der feinen Linie (S11, Review 3cf a); die Breite gilt je Kante.
-    m.edges.reserve(s.edges.len());
-    for e in &s.edges {
-        let k = e.kind as f32;
-        let (a, b) = (e.a, e.b);
-        // Nur echt kreuzende: endet eine Kante auf dem Gelände, entstünde
-        // ein Stück der Länge 0 (Toleranz wie im Shader, Review 3cg)
-        if a.z.min(b.z) < ground - 0.5 && a.z.max(b.z) > ground + 0.5 {
-            let t = (a.z - ground) / (a.z - b.z);
-            let mut g = a + (b - a) * t;
-            g.z = ground;
-            m.edges.push(([a.to_f32(), g.to_f32()], k));
-            m.edges.push(([g.to_f32(), b.to_f32()], k));
-        } else {
-            m.edges.push(([a.to_f32(), b.to_f32()], k));
-        }
-    }
 }
 
 /// Der Stammsatz, den eine Operation des Preisblatts oder der Lohnkarte
@@ -4212,7 +4187,7 @@ mod tests {
         s.edge(vec3(0.0, 0.0, -1000.0), vec3(0.0, 0.0, 500.0));
         s.edge(vec3(1.0, 0.0, -400.0), vec3(1.0, 0.0, 500.0));
         let mut m = MeshData::default();
-        mesh_into(&mut m, &s, -400.0);
+        mesh_into(&mut m, &s, Boden::eben(-400.0));
         let zs: Vec<_> = m.edges.iter().map(|(e, _)| (e[0][2], e[1][2])).collect();
         assert_eq!(zs, [(-1000.0, -400.0), (-400.0, 500.0), (-400.0, 500.0)]);
     }

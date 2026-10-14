@@ -14,10 +14,11 @@ use super::*;
 use sk_gelaende::abfrage::Abfrage;
 use sk_gelaende::codes::{Bedeutung, Codetabelle};
 use sk_gelaende::lesen::Punkt;
+use sk_gelaende::linien::Hoehenlinie;
 use sk_gelaende::{netz, Netz, Rand};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -178,11 +179,51 @@ pub struct TerrainMesh {
     pub hinweise: Vec<String>,
     /// Ausreißer (Aufmaßpunkte), zum Abwählen angeboten.
     pub ausreisser: Vec<usize>,
+    /// Gerechnete Höhenlinien und Abstände je Stufe (Review #123 W45 H1):
+    /// Sie hängen nur am Netz, eine Wand- oder Lageänderung rechnet sie
+    /// nicht neu.
+    linien: Mutex<Vec<(u64, Arc<Vec<Hoehenlinie>>)>>,
+    stufen: Mutex<Vec<(u64, Option<f64>)>>,
 }
 
-/// Das Netz, einmal gerechnet; gilt bei jedem Vergleich als gleich.
+/// So viele Stufen merkt ein Netz; die älteste geht zuerst.
+const GEMERKTE_STUFEN: usize = 4;
+
+/// Wert zu `stufe` aus `liste`, sonst gerechnet und dazugelegt.
+fn gemerkt<T: Clone>(liste: &Mutex<Vec<(u64, T)>>, stufe: f64, rechnen: impl FnOnce() -> T) -> T {
+    let k = stufe.to_bits();
+    if let Some((_, v)) = liste
+        .lock()
+        .ok()
+        .and_then(|l| l.iter().find(|x| x.0 == k).cloned())
+    {
+        return v;
+    }
+    let v = rechnen();
+    if let Ok(mut l) = liste.lock() {
+        if l.len() >= GEMERKTE_STUFEN {
+            l.remove(0);
+        }
+        l.push((k, v.clone()));
+    }
+    v
+}
+
+impl TerrainMesh {
+    /// Höhenlinien im Abstand `stufe` (m, relativ zu `bezug`), je Stufe
+    /// einmal gerechnet.
+    pub fn hoehenlinien(&self, stufe: f64) -> Arc<Vec<Hoehenlinie>> {
+        gemerkt(&self.linien, stufe, || {
+            Arc::new(sk_gelaende::linien::hoehenlinien(&self.netz, stufe))
+        })
+    }
+}
+
+/// Das Netz, einmal gerechnet, mit dem Schlüssel der Punkte, Codes und
+/// des Rands, aus denen es entstand ([`Terrain::netz_schluessel`]); gilt
+/// bei jedem Vergleich als gleich.
 #[derive(Default)]
-struct Merker(OnceLock<Arc<TerrainMesh>>);
+struct Merker(OnceLock<(u64, Arc<TerrainMesh>)>);
 
 impl Clone for Merker {
     fn clone(&self) -> Merker {
@@ -335,8 +376,40 @@ impl Terrain {
     pub fn mesh(&self) -> Arc<TerrainMesh> {
         self.mesh
             .0
-            .get_or_init(|| Arc::new(self.vernetzen()))
+            .get_or_init(|| (self.netz_schluessel(), Arc::new(self.vernetzen())))
+            .1
             .clone()
+    }
+
+    /// Prüfsumme über alles, woraus das Netz entsteht (Rand, Codes,
+    /// Punkte mit Abwahl), wie [`Terrain::netz_gleich`] vergleicht.
+    fn netz_schluessel(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.trim as u8).hash(&mut h);
+        for (c, b) in &self.codes {
+            (c, *b as u8).hash(&mut h);
+        }
+        for p in &self.points {
+            (
+                &p.nr,
+                p.e.to_bits(),
+                p.n.to_bits(),
+                p.h.to_bits(),
+                &p.code,
+                p.off,
+            )
+                .hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// Das gemerkte Netz gehört zu diesen Punkten, Codes und diesem Rand.
+    fn netz_passt(&self) -> bool {
+        self.mesh
+            .0
+            .get()
+            .is_some_and(|(k, _)| *k == self.netz_schluessel())
     }
 
     fn vernetzen(&self) -> TerrainMesh {
@@ -393,6 +466,8 @@ impl Terrain {
             index,
             hinweise,
             ausreisser: pr.ausreisser,
+            linien: Mutex::default(),
+            stufen: Mutex::default(),
         }
     }
 
@@ -492,7 +567,8 @@ impl Model {
     /// Aufmaß schreiben, ohne die Gründungen nachzuführen. Das gemerkte
     /// Netz geht nur mit, wenn Punkte, Codes und Rand gleich bleiben: Eine
     /// Kopie mit abgewähltem Punkt brachte sonst das alte Netz mit (Review
-    /// #123 W45 B2).
+    /// #123 W45 B2). Ein Netz, das das neue Aufmaß schon aus genau seinen
+    /// Punkten gerechnet hat (beim Einlesen), bleibt (H5).
     fn put_survey(&mut self, t: Option<Terrain>) -> bool {
         if t.as_ref() == self.terrain() {
             return false;
@@ -500,6 +576,7 @@ impl Model {
         let t = t.map(|mut t| {
             t.mesh = match self.terrain() {
                 Some(alt) if alt.netz_gleich(&t) => alt.mesh.clone(),
+                _ if t.netz_passt() => std::mem::take(&mut t.mesh),
                 _ => Merker::default(),
             };
             // neue Werte im Kopf ersetzen die rohe `[terrain]`-Zeile
@@ -669,6 +746,20 @@ impl Model {
     }
 }
 
+/// Folgen der Höhenlage ([`Model::terrain_folgen`]), mm.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainFolgen {
+    /// OK Sohle über Gelände am Plattenrand, kleinster und größter Wert;
+    /// unter 0 steckt das Haus im Gelände.
+    pub sockel: (f64, f64),
+    /// Gelände am Plattenrand bis UK Gründung.
+    pub einbindung: (f64, f64),
+    /// Höhe von ±0,00 in m ü. NHN.
+    pub nhn: f64,
+    /// Die Gründung bindet überall mindestens frostfrei ein.
+    pub frostfrei: bool,
+}
+
 /// Ecken eines Umrisses gegen den Uhrzeigersinn um ihren Schwerpunkt.
 fn im_umlauf(p: &[(f64, f64)]) -> Vec<usize> {
     let n = p.len().max(1) as f64;
@@ -743,6 +834,30 @@ impl Terrain {
             );
         }
         t
+    }
+
+    /// Eine Punktliste lesen, wie „Höhen“ in der Werkzeugleiste sie
+    /// übernimmt (§5 G1): das Aufmaß, der Satz, was erkannt wurde, und die
+    /// Hinweise aus Lesen, Prüfen und Netz. Ohne Zonenkennzahl gilt
+    /// `zone`. `Err` mit einem Satz, wenn kein Gelände entsteht.
+    pub fn lesen(
+        roh: &[u8],
+        src: &str,
+        read: &str,
+        zone: u8,
+    ) -> Result<(Terrain, String, Vec<String>), String> {
+        let a = sk_gelaende::lesen::lesen(roh)?;
+        let t = Terrain::from_survey(&a, src, read, zone);
+        let m = t.mesh();
+        if m.netz.dreiecke.is_empty() {
+            return Err(
+                "Aus den Punkten entsteht kein Gelände: Es braucht drei Punkte, die nicht auf einer Linie liegen."
+                    .into(),
+            );
+        }
+        let mut hinweise = a.hinweise.clone();
+        hinweise.extend(m.hinweise.iter().cloned());
+        Ok((t, a.satz(), hinweise))
     }
 
     /// Grenzen als Landeswerte; Nummern ohne Punkt fehlen, bei doppelter
@@ -1043,6 +1158,99 @@ impl Model {
         a || b
     }
 
+    /// Zuschnitt setzen (im offenen Schritt, §4.5).
+    pub fn set_terrain_show(&mut self, show: Show) -> bool {
+        let Some(t) = self.terrain() else {
+            return false;
+        };
+        if t.show() == show {
+            return false;
+        }
+        let mut t = t.clone();
+        t.show = Some(show);
+        self.put_survey(Some(t))
+    }
+
+    /// Gelände um die Hausmitte so drehen, dass die längste Grenze
+    /// parallel zur nächstliegenden Hauswand liegt, um den kleinsten Winkel
+    /// (§4.8 „An Grenze ausrichten“; im offenen Schritt). `false` ohne
+    /// Grenze, Haus oder wenn sie schon parallel liegt.
+    pub fn align_terrain(&mut self) -> bool {
+        let grenze = self
+            .terrain_boundaries()
+            .iter()
+            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+            .map(|(a, b)| {
+                (
+                    (b[0] - a[0]).hypot(b[1] - a[1]),
+                    (b[1] - a[1]).atan2(b[0] - a[0]),
+                )
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        let umrisse = self.plate_outlines();
+        let Some((_, wg)) = grenze else {
+            return false;
+        };
+        let um = umrisse
+            .iter()
+            .flat_map(|(_, r)| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+            .filter(|(a, b)| (b.x - a.x).hypot(b.y - a.y) > 1.0)
+            .map(|(a, b)| gefaltet((b.y - a.y).atan2(b.x - a.x) - wg))
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()));
+        let (Some(um), Some(mitte)) = (um.filter(|u| u.abs() > 1e-9), self.house_center()) else {
+            return false;
+        };
+        self.rotate_terrain(mitte, um)
+    }
+
+    /// Mitte des Hauses im Grundriss (mm): Mitte des Rechtecks um alle
+    /// Plattenumrisse, um sie dreht „Drehen“ (§4.8). `None` ohne Haus.
+    pub fn house_center(&self) -> Option<[f64; 2]> {
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for (_, r) in self.plate_outlines() {
+            for p in r {
+                lo = [lo[0].min(p.x), lo[1].min(p.y)];
+                hi = [hi[0].max(p.x), hi[1].max(p.y)];
+            }
+        }
+        (lo[0] <= hi[0]).then(|| [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0])
+    }
+
+    /// Folgen der Höhenlage am bestimmenden Gebäude (§4.3): Sockel (OK
+    /// Sohle über Gelände) und Einbindung der Schürze (Gelände bis UK
+    /// Gründung) am Plattenrand, je kleinster und größter Wert in mm.
+    /// `None` ohne Aufmaß oder Haus. Umrisse nur der Züge dieses Gebäudes
+    /// (Review #129 B2: über alle Züge wuchs es mit dem Quadrat der Häuser).
+    pub fn terrain_folgen(&self) -> Option<TerrainFolgen> {
+        let t = self.terrain()?;
+        let f = self.survey_frame()?;
+        let h0 = self.terrain_nhn()?;
+        let b = self.level_building()?;
+        let mut hoehen: Vec<f64> = Vec::new();
+        let zuege = self
+            .runs
+            .iter()
+            .filter(|(_, r)| self.building_of(r.storey) == Some(b));
+        for ring in zuege.filter_map(|(id, _)| self.plate_outline(id)) {
+            let r: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
+            hoehen.extend(t.along(&r).into_iter().map(|h| (h - h0) * 1000.0));
+        }
+        let lo = hoehen.iter().copied().reduce(f64::min)?;
+        let hi = hoehen.iter().copied().reduce(f64::max)?;
+        let (gr, uk) = self
+            .storeys
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Foundation && s.building == Some(b))
+            .map(|(id, s)| (id, s.elevation))
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        Some(TerrainFolgen {
+            sockel: (-hi, -lo),
+            einbindung: (lo - uk, hi - uk),
+            nhn: h0,
+            frostfrei: self.frost_safe(gr),
+        })
+    }
+
     /// Dreiecke des Geländes im Modell (mm, z relativ zu ±0,00), gegen den
     /// Uhrzeigersinn; leer ohne Aufmaß, Lage oder Netz.
     pub fn terrain_triangles(&self) -> Vec<[Vec3; 3]> {
@@ -1086,9 +1294,18 @@ impl Model {
         }
         let wunsch = wunsch.clamp(MIN_STUFE, GROEBER[8]);
         let m = self.terrain()?.mesh();
-        std::iter::once(wunsch)
-            .chain(GROEBER.into_iter().filter(|&s| s > wunsch))
-            .find(|&s| strecken(&m.netz, s).is_some_and(|n| n > 0 && n <= MAX_STRECKEN))
+        gemerkt(&m.stufen, wunsch, || {
+            std::iter::once(wunsch)
+                .chain(GROEBER.into_iter().filter(|&s| s > wunsch))
+                .find(|&s| strecken(&m.netz, s).is_some_and(|n| n > 0 && n <= MAX_STRECKEN))
+        })
+    }
+
+    /// Stücke der Höhenlinien im Abstand `stufe` (m), vorab gezählt wie in
+    /// [`Model::terrain_contour_step`]: `Some(0)` bei ebenem Gelände, `None`
+    /// ohne Aufmaß oder bei zu vielen Höhen.
+    pub fn terrain_contour_pieces(&self, stufe: f64) -> Option<usize> {
+        sk_gelaende::linien::strecken(&self.terrain()?.mesh().netz, stufe)
     }
 
     /// Höhenlinien im Abstand `stufe` (m) im Modell: Höhe (m ü. NHN) und
@@ -1100,8 +1317,8 @@ impl Model {
             return Vec::new();
         };
         let m = t.mesh();
-        sk_gelaende::linien::hoehenlinien(&m.netz, stufe)
-            .into_iter()
+        m.hoehenlinien(stufe)
+            .iter()
             .map(|l| {
                 let p = l
                     .punkte
@@ -1381,6 +1598,45 @@ mod tests {
         assert_eq!(m.ground_bases()[0].terrain_nhn, None);
     }
 
+    /// OK Gelände an der Gründung setzen (Geschossmanager): ohne Aufmaß
+    /// der Gegenwert des Versatzes, mit Aufmaß wandert ±0,00 gegen das
+    /// Gelände, über den Versatz oder absolut über NHN; die Kote stimmt
+    /// danach, die Einbindetiefe bleibt (Geometrie zu #129).
+    #[test]
+    fn ok_gelaende_an_der_gruendung() {
+        let (mut m, b) = lindenhof_haus();
+        let gr = m.foundation_level().unwrap();
+        let setzen = |m: &mut Model, z: f64| {
+            m.begin("Gelände");
+            let ok = m.set_terrain_z_of_level(gr, z);
+            m.commit();
+            ok
+        };
+        assert_eq!(m.terrain_z_of_level_range(gr), (-3000.0, 3000.0));
+        assert!(setzen(&mut m, -300.0));
+        assert_eq!(m.terrain_offset_of(Some(b)), 300.0);
+        assert_eq!(m.terrain_z_of_level(gr), -300.0);
+        assert!(!setzen(&mut m, f64::NAN));
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(aufmass()));
+        m.commit();
+        for (href, dz) in [(HeightRef::High, -200.0), (HeightRef::Abs, 150.0)] {
+            if href == HeightRef::Abs {
+                m.begin("Höhe");
+                assert!(m.set_terrain_nhn(24.95));
+                m.commit();
+            }
+            let z0 = m.terrain_z_of_level(gr);
+            let (lo, hi) = m.terrain_z_of_level_range(gr);
+            assert!(lo < z0 && z0 < hi, "{lo} {z0} {hi}");
+            assert!(setzen(&mut m, z0 + dz));
+            let z1 = m.terrain_z_of_level(gr);
+            assert!((z1 - (z0 + dz)).abs() < 0.5, "{href:?}: {z0} + {dz} → {z1}");
+            assert_eq!(m.terrain().unwrap().href, href);
+            assert!((m.embedment_of(gr).unwrap() - 800.0).abs() < 1e-6);
+        }
+    }
+
     /// Ohne Lage liegt das Grundstück mittig unter dem Haus, die längste
     /// Grenze parallel zur längsten Wand, Nullpunkt auf vollen Metern.
     #[test]
@@ -1511,5 +1767,43 @@ mod tests {
         assert!((e - (467108.214 + 24.0 * 7f64.to_radians().cos())).abs() < 1e-9);
         let p = f.to_model(e, n);
         assert!((p[0] - 24000.0).abs() < 1e-6 && p[1].abs() < 1e-6);
+    }
+
+    /// Das Netz aus „Höhen“ bleibt beim Übernehmen (Review #123 W45 H5).
+    /// Höhenlinien und Abstand je Stufe hängen am Netz und überstehen eine
+    /// neue Lage, gezeichnet an der neuen Stelle (H1). Eine Abwahl rechnet
+    /// ein neues Netz (B2).
+    #[test]
+    fn netz_und_linien_gemerkt() {
+        let (mut m, _) = lindenhof_haus();
+        let (t, ..) = Terrain::lesen(CSV, "aufmass.csv", "2026-10-12", 32).unwrap();
+        let netz = t.mesh();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        assert!(Arc::ptr_eq(&netz, &m.terrain().unwrap().mesh()));
+        let s = m.terrain_contour_step(0.25).unwrap();
+        let linien = netz.hoehenlinien(s);
+        let vorher = m.terrain_contours(s);
+        assert!(!vorher.is_empty());
+        m.begin("Verschieben");
+        assert!(m.move_terrain([1000.0, 0.0]));
+        m.commit();
+        let netz2 = m.terrain().unwrap().mesh();
+        assert!(Arc::ptr_eq(&netz, &netz2));
+        assert!(Arc::ptr_eq(&linien, &netz2.hoehenlinien(s)));
+        assert_eq!(m.terrain_contour_step(0.25), Some(s));
+        let nachher = m.terrain_contours(s);
+        assert_eq!(vorher.len(), nachher.len());
+        let dx = nachher[0].1[0][0] - vorher[0].1[0][0];
+        assert!((dx - 1000.0).abs() < 1e-6, "{dx}");
+        let mut t = m.terrain().unwrap().clone();
+        t.points[netz.index[0]].off = true;
+        m.begin("Abwahl");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        let netz3 = m.terrain().unwrap().mesh();
+        assert!(!Arc::ptr_eq(&netz, &netz3));
+        assert_eq!(netz3.index.len() + 1, netz.index.len());
     }
 }

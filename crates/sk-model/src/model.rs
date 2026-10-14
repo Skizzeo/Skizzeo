@@ -378,8 +378,8 @@ mod gelaende_aufmass;
 #[path = "gelaende_aufmass_budget.rs"]
 mod gelaende_aufmass_budget;
 pub use gelaende_aufmass::{
-    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainMesh,
-    TerrainPoint, Trim,
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
+    TerrainMesh, TerrainPoint, Trim,
 };
 
 #[path = "geschossbaender.rs"]

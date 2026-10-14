@@ -257,6 +257,8 @@ impl Eingang for Id {
     fn modul(self) -> Option<Modul> {
         match self {
             Id::Quantity => Some(Modul::Mengen),
+            Id::Gelaende(k) => k.modul(),
+            Id::Field(crate::ui::Field::Gelaende(_)) => Some(Modul::Gelaende),
             // OK Gelände im Geschossmanager gehört zur Geländeplatte, die es
             // ohne Modul gibt
             Id::Building
