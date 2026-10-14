@@ -144,7 +144,7 @@ fn gefaelle(p: &[[f64; 3]; 3]) -> f64 {
 }
 
 /// Liegt das Rechteck um das Dreieck über dem um das Polygon?
-fn ueberlappt(p: &[[f64; 3]; 3], ring: &[[f64; 2]]) -> bool {
+pub(crate) fn ueberlappt(p: &[[f64; 3]; 3], ring: &[[f64; 2]]) -> bool {
     let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for q in ring {
         x0 = x0.min(q[0]);
@@ -188,7 +188,7 @@ pub fn mittel(netz: &Netz, ring: &[[f64; 2]]) -> Option<f64> {
 }
 
 /// Höhe der Ebene durch das Dreieck `p` an `c`.
-fn ebene(p: &[[f64; 3]; 3], c: [f64; 2]) -> f64 {
+pub(crate) fn ebene(p: &[[f64; 3]; 3], c: [f64; 2]) -> f64 {
     let d = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]);
     let l1 = ((p[1][0] - c[0]) * (p[2][1] - c[1]) - (p[1][1] - c[1]) * (p[2][0] - c[0])) / d;
     let l2 = ((p[2][0] - c[0]) * (p[0][1] - c[1]) - (p[2][1] - c[1]) * (p[0][0] - c[0])) / d;
@@ -197,7 +197,7 @@ fn ebene(p: &[[f64; 3]; 3], c: [f64; 2]) -> f64 {
 
 /// Polygon mit dem Dreieck `t` (gegen den Uhrzeigersinn) geschnitten
 /// (Sutherland-Hodgman, das Dreieck ist das konvexe Fenster).
-fn schneiden(ring: &[[f64; 2]], t: [[f64; 2]; 3]) -> Vec<[f64; 2]> {
+pub(crate) fn schneiden(ring: &[[f64; 2]], t: [[f64; 2]; 3]) -> Vec<[f64; 2]> {
     let mut v: Vec<[f64; 2]> = ring.to_vec();
     for k in 0..3 {
         let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -223,7 +223,7 @@ fn schneiden(ring: &[[f64; 2]], t: [[f64; 2]; 3]) -> Vec<[f64; 2]> {
 }
 
 /// Betrag der Fläche und Schwerpunkt eines Polygons.
-fn flaeche_schwerpunkt(v: &[[f64; 2]]) -> Option<(f64, [f64; 2])> {
+pub(crate) fn flaeche_schwerpunkt(v: &[[f64; 2]]) -> Option<(f64, [f64; 2])> {
     if v.len() < 3 {
         return None;
     }

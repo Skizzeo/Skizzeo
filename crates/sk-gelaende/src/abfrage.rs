@@ -208,8 +208,17 @@ impl Abfrage {
     /// [`Abfrage::erdmenge`] je Bezug, das Polygon einmal geschnitten.
     pub fn erdmengen(&self, ring: &[[f64; 2]], bezuege: &[Bezug]) -> Vec<Erdmenge> {
         let mut e = vec![Erdmenge::default(); bezuege.len()];
+        for p in self.dreiecke_unter(ring) {
+            erdmenge_dreieck(p, ring, bezuege, &mut e);
+        }
+        e
+    }
+
+    /// Die Dreiecke in den Zellen unter dem Polygon `ring`, je einmal, mit
+    /// ihren Punkten.
+    pub(crate) fn dreiecke_unter(&self, ring: &[[f64; 2]]) -> Vec<[[f64; 3]; 3]> {
         if ring.len() < 3 || self.dreiecke.is_empty() {
-            return e;
+            return Vec::new();
         }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for q in ring {
@@ -228,11 +237,9 @@ impl Abfrage {
         }
         ts.sort_unstable();
         ts.dedup();
-        for t in ts {
-            let p = self.dreiecke[t as usize].map(|i| self.punkte[i as usize]);
-            erdmenge_dreieck(p, ring, bezuege, &mut e);
-        }
-        e
+        ts.into_iter()
+            .map(|t| self.dreiecke[t as usize].map(|i| self.punkte[i as usize]))
+            .collect()
     }
 
     /// Profil von `a` nach `b`: (Abstand ab `a`, Höhe) an `a`, an jedem

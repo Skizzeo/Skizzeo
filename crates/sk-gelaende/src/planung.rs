@@ -13,6 +13,9 @@
 use crate::abfrage::Abfrage;
 use crate::volumen::{halbieren, Bezug};
 
+mod erdbau;
+pub use erdbau::{ohren, Aufbau, Erdbau, Grube, Zonen, STEIL_ANDECKEN};
+
 /// Ebene Teilfläche eines Bausteins.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Teil {
@@ -637,6 +640,34 @@ mod tests {
                 assert!((h1 - h2).abs() < 1e-5, "{q:?}: {h1} {h2}");
             }
         }
+    }
+
+    #[test]
+    fn erdbau_ohne_aufbau_wie_mengen() {
+        // ohne Oberboden und Andeckung ist N = U und Q = P: der Erdbau
+        // gleicht den Mengen, auch an Kehlen und Graten
+        let u = gelaende(|x, y| 10.0 + 0.08 * x - 0.05 * y + 0.3 * (x / 4.0).sin());
+        let l = [
+            [0.0, 0.0],
+            [12.0, 0.0],
+            [12.0, 5.0],
+            [5.0, 5.0],
+            [5.0, 11.0],
+            [0.0, 11.0],
+        ];
+        let p = Planung::neu(&baustein(&l, [10.4, 0.02, 0.0], 1.5), &u);
+        let m = p.mengen(&u);
+        let a = Aufbau {
+            oberboden: 0.0,
+            andecken: 0.0,
+            befestigt: false,
+        };
+        let e = p.erdbau(&u, &a, &Zonen::default());
+        assert!((e.auftrag - m.auftrag).abs() < 1e-9, "{e:?} {m:?}");
+        assert!((e.abtrag - m.abtrag).abs() < 1e-9, "{e:?} {m:?}");
+        let f = m.flaeche_auftrag + m.flaeche_abtrag;
+        assert!((e.flaeche - f).abs() < 1e-6, "{e:?} {m:?}");
+        assert!((e.andecken + e.andecken_steil - (m.boeschung + m.flaeche * (1.0f64 + 0.02 * 0.02).sqrt())).abs() < 1e-6);
     }
 
     #[test]
