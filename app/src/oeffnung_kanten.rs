@@ -15,7 +15,9 @@
 //! liegt. Das Schloss neben Ober- und Unterkante zeigt die Bindung; ein
 //! Klick löst sie (die Höhe bleibt) oder bindet die Kante an die Linie, auf
 //! der sie gerade steht. Eine getippte Zahl ist oben die Höhe der Öffnung,
-//! unten die Brüstung über OK Rohdecke; gleich nach dem Loslassen ersetzt
+//! unten die Brüstung ab OK Rohdecke oder ab OK Estrich, wie die Maßkette
+//! sie misst (Einstellung „BRH ab …“, Bedienbarkeit 42.1); gleich nach dem
+//! Loslassen ersetzt
 //! sie mit Enter den Schritt ([`HoeheNach`], Bedienbarkeit 40.7). Teil von
 //! [`crate::wall_edit`].
 
@@ -28,6 +30,7 @@ use crate::scene::kanten::VOR_WAND;
 use crate::scene::Scene;
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
+use sk_model::bemassung::BrhBezug;
 use sk_model::oeffnung::{FaceLine, HeightLine, HeightRef, Opening, MIN_OPENING};
 use sk_model::{ElementId, FloorSlab, LevelEdge, LevelKind, LevelRef, Model, RunId, StoreyId};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -38,9 +41,11 @@ use sk_ui::theme::Theme;
 pub const SCHRITT: &str = "Öffnungshöhe geändert";
 /// Feldname der Eingabe an der Oberkante: die Höhe der Öffnung.
 pub const LABEL: &str = "Höhe";
-/// Feldname an der Unterkante: die Brüstung über OK Rohdecke
-/// (Bedienbarkeit 40.7).
-pub const LABEL_UNTEN: &str = "Brüstung";
+/// Feldname an der Unterkante: die Brüstung mit ihrem Bezug, wie die
+/// Einstellung „BRH ab …“ der Maßkette ihn nennt (Bedienbarkeit 40.7,
+/// 42.1).
+pub const LABEL_UNTEN: &str = "Brüstung ab Rohdecke";
+pub const LABEL_UNTEN_ESTRICH: &str = "Brüstung ab Estrich";
 /// Raster der freien Höhe (mm).
 const RASTER: f64 = 10.0;
 /// Fangabstand an den Höhenlinien (Pixel, 96 dpi), wie beim Aufziehen.
@@ -586,6 +591,15 @@ pub fn schloesser(scene: &Scene, t: Treffer) -> Vec<Schloss> {
     out
 }
 
+/// Null der Brüstung im Geschoss `st`: OK Rohdecke oder OK Estrich, wie
+/// die Maßkette sie misst (`sk_plan::aussen`, Bedienbarkeit 42.1).
+fn brh_null(m: &Model, st: StoreyId, bezug: BrhBezug) -> Option<f64> {
+    match bezug {
+        BrhBezug::Rohdecke => m.level_z(LevelRef::bottom(st)),
+        BrhBezug::Estrich => m.screed_top(st),
+    }
+}
+
 /// Laufendes Ziehen an Ober- oder Unterkante einer Öffnung.
 pub struct HoeheZug {
     pub id: ElementId,
@@ -604,6 +618,8 @@ pub struct HoeheZug {
     drueber: bool,
     /// Geschoss der Öffnung.
     st: StoreyId,
+    /// Wovon die Brüstung misst, wie in der Maßkette.
+    brh: BrhBezug,
     /// Höhe der anderen Kante.
     gegen: f64,
     /// Fangabstand (mm).
@@ -653,6 +669,7 @@ impl HoeheZug {
         let grenzen = decke_grenzen(scene, run, t.id);
         let grund = decke_grund(scene, run, t.id, oben);
         let linien = linien(m, st, grenzen);
+        let brh = m.massstil().brh_bezug;
         scene.begin(SCHRITT);
         Some(HoeheZug {
             id: t.id,
@@ -665,6 +682,7 @@ impl HoeheZug {
             grund,
             drueber: false,
             st,
+            brh,
             gegen: if oben { z0 } else { z1 },
             tol,
             run,
@@ -677,10 +695,10 @@ impl HoeheZug {
 
     /// Feldname der Eingabe: oben die Höhe, unten die Brüstung.
     pub fn label(&self) -> &'static str {
-        if self.oben {
-            LABEL
-        } else {
-            LABEL_UNTEN
+        match (self.oben, self.brh) {
+            (true, _) => LABEL,
+            (false, BrhBezug::Rohdecke) => LABEL_UNTEN,
+            (false, BrhBezug::Estrich) => LABEL_UNTEN_ESTRICH,
         }
     }
 
@@ -779,14 +797,14 @@ impl HoeheZug {
     }
 
     /// Kante für die getippte Zahl `v`, frei: oben die Höhe der Öffnung,
-    /// unten die Brüstung über OK Rohdecke ihres Geschosses (Bedienbarkeit
-    /// 40.7). `Err` mit dem Grund, wenn sie nicht passt.
+    /// unten die Brüstung über ihrem Bezug ([`brh_null`], Bedienbarkeit
+    /// 40.7, 42.1). `Err` mit dem Grund, wenn sie nicht passt.
     fn ziel(&self, m: &Model, v: f64) -> Result<HeightRef, Meldung> {
         let passt = || Meldung::satz("So hoch passt die Öffnung nicht in die Wand");
         let z = if self.oben {
             self.gegen + v
         } else {
-            m.level_z(LevelRef::bottom(self.st)).ok_or_else(passt)? + v
+            brh_null(m, self.st, self.brh).ok_or_else(passt)? + v
         };
         if !self.hoch_genug(z) {
             return Err(Meldung::satz("Eine Öffnung ist mindestens 10 cm hoch"));
@@ -920,7 +938,7 @@ impl HoeheZug {
         let wert = if self.oben {
             z1 - z0
         } else {
-            z0 - m.level_z(LevelRef::bottom(self.st))?
+            z0 - brh_null(m, self.st, self.brh)?
         };
         let hoehe = crate::ui::live_length_text(wert);
         let r = if self.oben { o.top } else { o.bottom };
@@ -1713,10 +1731,63 @@ pub(super) mod tests {
         for ch in "0,9".chars() {
             taste(&mut z, &mut s, Key::Char(ch));
         }
-        assert_eq!(z.pill(&s), Some(("Brüstung 0,9 m".into(), true)));
+        assert_eq!(
+            z.pill(&s),
+            Some(("Brüstung ab Rohdecke 0,9 m".into(), true))
+        );
         assert!(taste(&mut z, &mut s, Key::Enter).fertig);
         assert!((band(&s, id).0 - (boden + 900.0)).abs() < 1e-6);
         assert_eq!(band(&s, id).1, z1);
+    }
+
+    /// Steht die Bemaßung auf „BRH ab Estrich“, misst die Pille ab OK
+    /// Estrich wie die Maßkette und sagt es (Bedienbarkeit 42.1): dieselbe
+    /// Zahl wie in der Kette, getippt sitzt das Fenster dort.
+    #[test]
+    fn bruestung_ab_estrich_wie_die_kette() {
+        let (mut s, cam, id, eg, _) = haus();
+        let st = s.model().run(eg).unwrap().storey;
+        let mut stil = s.model().massstil().clone();
+        stil.brh_bezug = BrhBezug::Estrich;
+        assert!(s.edit_attr(|m| m.set_massstil(stil)));
+        let estrich = s.model().screed_top(st).unwrap();
+        assert!(estrich > s.model().level_z(LevelRef::bottom(st)).unwrap());
+        let (z0, _) = band(&s, id);
+        let p = bei(&s, &cam, id, 7000.0, z0 + 5.0);
+        let t = treffer(&s, &cam, p, W, H, 1.0, None).unwrap();
+        assert_eq!(t.kante, Some(Kante::Unten));
+        let mut z = HoeheZug::greifen(&mut s, t, false, &cam, p, W, H, 1.0).unwrap();
+        assert_eq!(z.label(), LABEL_UNTEN_ESTRICH);
+        let kette = sk_plan::aussen::aussenmasse(s.model(), st)
+            .unwrap()
+            .seiten
+            .iter()
+            .flat_map(|seite| &seite.oeffnungen)
+            .find(|o| o.id == id)
+            .and_then(|o| o.brh)
+            .unwrap();
+        assert!((kette - (z0 - estrich)).abs() < 1e-6);
+        let (pille, _) = z.pill(&s).unwrap();
+        let zahl = crate::ui::live_length_text(kette);
+        assert!(
+            pille.starts_with(&format!("{LABEL_UNTEN_ESTRICH} {zahl}")),
+            "{pille}"
+        );
+        let mods = Default::default();
+        for ch in "0,85".chars() {
+            let e = Event::Key {
+                key: Key::Char(ch),
+                down: true,
+                mods,
+                repeat: false,
+            };
+            z.handle(&e, &mut s, &cam, W, H);
+        }
+        assert_eq!(
+            z.pill(&s),
+            Some(("Brüstung ab Estrich 0,85 m".into(), true))
+        );
+        assert!((band(&s, id).0 - (estrich + 850.0)).abs() < 1e-6);
     }
 
     /// Nach dem Loslassen ersetzt eine getippte Zahl mit Enter den Schritt
@@ -1777,13 +1848,19 @@ pub(super) mod tests {
         assert!(gezogen < z0 - 300.0, "{gezogen} {z0}");
         // Die Pille zeigt die Brüstung, die man tippen würde
         let (pille, tippt) = e.pill(&s).unwrap();
-        assert!(!tippt && pille.starts_with("Brüstung "), "{pille}");
+        assert!(
+            !tippt && pille.starts_with("Brüstung ab Rohdecke "),
+            "{pille}"
+        );
         // Tippen und Enter: ersetzt den Schritt
         for ch in "0,8".chars() {
             assert!(taste(&mut e, &mut s, Key::Char(ch)).consumed);
         }
         assert_eq!(e.input_label(), LABEL_UNTEN);
-        assert_eq!(e.pill(&s), Some(("Brüstung 0,8 m".into(), true)));
+        assert_eq!(
+            e.pill(&s),
+            Some(("Brüstung ab Rohdecke 0,8 m".into(), true))
+        );
         assert_eq!(band(&s, id).0, gezogen, "erst Enter ändert");
         let o = taste(&mut e, &mut s, Key::Enter);
         assert!(o.consumed && o.changed);
