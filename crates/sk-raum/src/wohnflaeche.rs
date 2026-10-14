@@ -25,7 +25,7 @@
 use crate::ausbau::{self, RaumAusbau};
 use crate::erkennung::{raeume as formen, Begrenzung, Kante, RaumForm};
 use crate::flaechen::PUTZ;
-use crate::oeffnungen::{hoehen_roh, OpeningKind, Rohbau};
+use crate::oeffnungen::{Geschosse, OpeningKind, Rohbau};
 use crate::Ketten;
 use sk_math::{vec3, Vec3};
 use sk_model::rechenweg::Art;
@@ -646,6 +646,8 @@ pub fn projekt_mit(
     raeume: impl Fn(StoreyId) -> Vec<RaumForm>,
 ) -> Wohnflaeche {
     let mut gebaeude: Vec<Gebaeude> = Vec::new();
+    // Höhen der Geschosse einmal für alle Räume (Review #137 B2)
+    let lagen = Geschosse::aus(model);
     let mut geschosse: Vec<(StoreyId, &sk_model::Storey)> = model
         .storeys()
         .iter()
@@ -660,12 +662,11 @@ pub fn projekt_mit(
         if formen.is_empty() {
             continue;
         }
-        let h = hoehen_roh(model, &formen[0]);
         let mut rs: Vec<WohnRaum> = formen
             .into_iter()
             .filter_map(|f| {
-                let roh = Rohbau::mit_hoehen(model, k, f, h);
-                let aus = RaumAusbau::fuer(model, &roh)?;
+                let roh = Rohbau::mit_geschossen(model, k, f, &lagen);
+                let aus = RaumAusbau::fuer_in(model, &roh, &lagen)?;
                 Some(raum(model, &roh, &aus))
             })
             .collect();
