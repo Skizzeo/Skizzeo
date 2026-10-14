@@ -265,12 +265,30 @@ fn lageplan(k: usize) -> sk_model::SitePlan {
 #[derive(Debug)]
 struct Lageplan {
     /// Je Bild im Grundriss, die Modellgrenzen ändern sich wie im Zug:
-    /// der Schlüssel der Unterlage und die übrigen Linien.
+    /// die Schlüssel der Unterlage und die übrigen Linien.
     bild: f64,
-    /// Einmal je neuer Unterlage: ihre Linien für den Renderer bauen.
+    /// Einmal je neuer Unterlage: alle Kacheln für den Renderer bauen
+    /// (Linien und Ecken).
     bauen: f64,
     /// Nach einem Schritt im UI-Faden: den Nachzug beginnen.
     nachzug: f64,
+    /// Nach einem Wandschritt über dem Plan im UI-Faden: die Kacheln mit
+    /// neuem Schlüssel bauen (Linien und Ecken), höchster Wert.
+    schritt: f64,
+    /// Kacheln je Plan und höchstens neu je Wandschritt.
+    kacheln: usize,
+    neu: usize,
+}
+
+/// Linien und Ecken der Kacheln `ix`, wie der UI-Faden sie für den
+/// Renderer baut; Zeit in ms.
+fn kacheln_bauen(g: &Gelaende, ix: &[usize], t: &DrawTable) -> f64 {
+    let t0 = Instant::now();
+    for &i in ix {
+        let l = gelaende_netz::unterlage_kachel(g, i, ViewKind::Plan, t, 1.0);
+        std::hint::black_box(sk_render::helper_ecken(&l));
+    }
+    ms(t0)
 }
 
 fn lageplan_messen(n: usize, k: usize) -> Lageplan {
@@ -282,36 +300,51 @@ fn lageplan_messen(n: usize, k: usize) -> Lageplan {
     m.begin("Lageplan");
     assert!(m.import_parcel(&plan, "lageplan.pdf", None));
     m.commit();
+    // ein Haus über dem Plan (Review #139 N1)
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for q in m.underlay_lines(&plan).iter().flat_map(|l| &l.0) {
+        lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+        hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+    }
+    let run = m
+        .runs()
+        .iter()
+        .find(|(_, r)| {
+            r.points
+                .iter()
+                .all(|p| (lo[0]..hi[0]).contains(&p.x) && (lo[1]..hi[1]).contains(&p.y))
+        })
+        .map(|(id, _)| id)
+        .expect("ein Haus über dem Plan");
     let mut s = Scene::with_model(m);
     let mut pl = Platte::default();
     pl.unterlage.merken(s.model(), Arc::new(plan));
     let m = s.model();
     let t = DrawTable::resolve(m, &Theme::dark());
     pl.im_bild(m);
-    let (key, g) = pl.unterlage_im_bild(m, true, &t, 1.0);
+    let (keys, g) = pl.unterlage_im_bild(m, true, &t, 1.0);
     let g = g.unwrap();
-    let (t0, linien) = (
-        Instant::now(),
-        gelaende_netz::unterlage_linien(&g, ViewKind::Plan, &t, 1.0),
-    );
-    let bauen = ms(t0);
+    let alle: Vec<usize> = (0..keys.len()).collect();
+    let bauen = kacheln_bauen(&g, &alle, &t);
+    let linien = gelaende_netz::unterlage_linien(&g, ViewKind::Plan, &t, 1.0);
     assert!(linien.len() >= k / 2, "{} Striche", linien.len());
-    // je Bild: derselbe Schlüssel, kein Hochladen; die Grenzen ändern
+    // je Bild: dieselben Schlüssel, kein Hochladen; die Grenzen ändern
     // sich wie beim Ziehen einer Wand
-    let (lo, hi) = s.bounds().unwrap();
+    let (b_lo, b_hi) = s.bounds().unwrap();
     let mut d = 0.0;
     let bild = bestwert(|| {
         d = if d == 0.0 { 100.0 } else { 0.0 };
-        let b = Some((lo, vec3(hi.x + d, hi.y, hi.z)));
-        assert_eq!(pl.unterlage_im_bild(m, true, &t, 1.0).0, key);
+        let b = Some((b_lo, vec3(b_hi.x + d, b_hi.y, b_hi.z)));
+        assert_eq!(pl.unterlage_im_bild(m, true, &t, 1.0).0, keys);
         std::hint::black_box(pl.linien_im_bild(m, (ViewKind::Plan, None), b, &t, (1.0, 10.0)));
     });
     // nach jedem Schritt: Modell kopieren und den Faden starten; die Linien
-    // der Unterlage sind gemerkt, der Faden bildet sie nicht neu ab
+    // der Unterlage sind gemerkt, der Faden bildet sie nicht neu ab. Danach
+    // baut der UI-Faden nur die Kacheln unter dem Haus neu.
     let sicht: Sicht = (ViewKind::Plan, None, [40, 41, 42], false);
-    let run = s.model().runs().ids().next().unwrap();
     let orig = s.chain(run).unwrap().clone();
-    let mut nachzug = f64::INFINITY;
+    let (mut nachzug, mut schritt, mut neu) = (f64::INFINITY, 0.0f64, 0);
+    let mut vorher = keys.clone();
     for i in 0..6 {
         let moved = orig
             .with_segment_moved(0, 300.0 * (1 + i % 2) as f64)
@@ -329,18 +362,30 @@ fn lageplan_messen(n: usize, k: usize) -> Lageplan {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(pl.unterlage.abbild(m).unwrap().gemerkt());
+        let (jetzt, g) = pl.unterlage_im_bild(m, true, &t, 1.0);
+        let g = g.unwrap();
+        let ix: Vec<usize> = (0..jetzt.len())
+            .filter(|&i| !vorher.contains(&jetzt[i]))
+            .collect();
+        neu = neu.max(ix.len());
+        schritt = schritt.max(kacheln_bauen(&g, &ix, &t));
+        vorher = jetzt;
     }
     Lageplan {
         bild,
         bauen,
         nachzug,
+        schritt,
+        kacheln: keys.len(),
+        neu,
     }
 }
 
 /// Lageplan unter dem Gelände (Review #139): Je Bild und je Mausbewegung
 /// wächst nichts mit der Zahl der Striche, der Nachzug nach einem Schritt
 /// beginnt in derselben Zeit; nur das einmalige Bauen der Linien für den
-/// Renderer wächst mit ihnen. Bei 1000 Häusern und 50.000 Strichen (im
+/// Renderer wächst mit ihnen, ein Wandschritt baut nur die Kacheln unter
+/// dem Haus neu. Bei 1000 Häusern und 50.000 Strichen (im
 /// Debug 64 Häuser und 5.000 Striche).
 #[test]
 fn lageplan_im_budget() {
@@ -364,4 +409,10 @@ fn lageplan_im_budget() {
     );
     assert!(gross.nachzug < 8.0 * f, "{gross:?}");
     assert!(gross.bauen > klein.bauen);
+    // ein Wandschritt über dem Plan baut nur die Kacheln unter dem Haus
+    // (Review #139 N1: vorher alle, 28 ms und 57 MB bei 50.000 Strichen)
+    assert!(gross.neu >= 1, "das Haus liegt über dem Plan: {gross:?}");
+    assert!(4 * gross.neu <= gross.kacheln, "{gross:?}");
+    assert!(4.0 * gross.schritt < gross.bauen, "{gross:?}");
+    assert!(gross.schritt < 4.0 * f, "{gross:?}");
 }

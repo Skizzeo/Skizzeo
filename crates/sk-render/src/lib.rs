@@ -467,9 +467,9 @@ pub struct Renderer {
     empty_vao: GLuint,
     meshes: Vec<GpuMesh>,
     helper_mesh: GpuBuffer,
-    /// Linien unter den Hilfslinien mit ihrem Schlüssel
+    /// Linien unter den Hilfslinien in Teilen mit ihrem Schlüssel
     /// ([`Renderer::set_unterlage`]), hochgeladen nur bei neuem Schlüssel.
-    unterlage: (Option<u64>, GpuBuffer),
+    unterlage: Vec<(u64, GpuBuffer)>,
     /// Tinte in Teilen mit ihrem Schlüssel ([`Renderer::set_ink_teile`]) und
     /// freie Puffer zum Wiederverwenden.
     ink_teile: Vec<(u64, GpuBuffer)>,
@@ -1760,7 +1760,7 @@ impl Renderer {
                 empty_vao: vao,
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
-                unterlage: (None, GpuBuffer::default()),
+                unterlage: Vec::new(),
                 ink_teile: Vec::new(),
                 ink_frei: Vec::new(),
                 overlays: Vec::new(),
@@ -2099,18 +2099,42 @@ impl Renderer {
     }
 
     /// Linien, die unter den Hilfslinien liegen und selten wechseln (etwa
-    /// der Lageplan unter dem Gelände, Review #139 B1): gezeichnet wie
-    /// Hilfslinien, aber hochgeladen nur, wenn sich `key` ändert; `linien`
-    /// rechnet nur dann. Jedes Bild zeichnet den Puffer, wie er steht.
-    pub fn set_unterlage(&mut self, key: u64, linien: impl FnOnce() -> Vec<Helper>) {
-        if self.unterlage.0 == Some(key) {
+    /// der Lageplan unter dem Gelände, Review #139 B1 und N1), in Teilen
+    /// mit je einem Schlüssel `keys`: gezeichnet wie Hilfslinien, gebaut
+    /// (`linien` mit der Nummer des Teils) und hochgeladen nur Teile mit
+    /// neuem Schlüssel. Teile, die fehlen, fallen weg; jedes Bild zeichnet
+    /// die Puffer, wie sie stehen.
+    pub fn set_unterlage(&mut self, keys: &[u64], mut linien: impl FnMut(usize) -> Vec<Helper>) {
+        if self.unterlage.len() == keys.len()
+            && self.unterlage.iter().zip(keys).all(|(a, k)| a.0 == *k)
+        {
             return;
         }
-        let v = helper_ecken(&linien());
-        unsafe {
-            fill(&self.gl, &mut self.unterlage.1, &v, &HELPER_ATTRS);
+        let mut alt: std::collections::HashMap<u64, GpuBuffer> =
+            std::mem::take(&mut self.unterlage).into_iter().collect();
+        for (i, key) in keys.iter().enumerate() {
+            if let Some(b) = alt.remove(key) {
+                self.unterlage.push((*key, b));
+                continue;
+            }
+            let mut b = alt
+                .keys()
+                .next()
+                .copied()
+                .and_then(|k| alt.remove(&k))
+                .unwrap_or_default();
+            let v = helper_ecken(&linien(i));
+            unsafe {
+                fill(&self.gl, &mut b, &v, &HELPER_ATTRS);
+            }
+            self.unterlage.push((*key, b));
         }
-        self.unterlage.0 = Some(key);
+        for b in alt.into_values() {
+            unsafe {
+                self.gl.glDeleteBuffers(1, &b.buf);
+                self.gl.glDeleteVertexArrays(1, &b.vao);
+            }
+        }
     }
 
     /// Tinte (gefüllte Dreiecke in Modellkoordinaten) für das nächste Bild,
@@ -3015,7 +3039,7 @@ impl Renderer {
             // nach dem Boden, sonst tönt er den Geist über leerem Boden (3l);
             // ohne Hilfslinien braucht niemand die Tiefe
             let tinte = self.ink_teile.iter().any(|(_, b)| b.count > 0);
-            let unterlage = self.unterlage.1.count > 0;
+            let unterlage = self.unterlage.iter().any(|(_, b)| b.count > 0);
             let marks = self.helper_mesh.count > 0 || unterlage || tinte;
             if ghost.is_some_and(|g| g.1 > 0.0) && marks {
                 gl.glClear(DEPTH_BUFFER_BIT);
@@ -3048,11 +3072,11 @@ impl Renderer {
                 let q = view.pull;
                 gl.glUniform4f(loc(gl, p, c"u_pull"), q[0], q[1], q[2], q[3]);
                 // die Unterlage zuerst, die Hilfslinien darüber
-                let puffer = [&self.unterlage.1, &self.helper_mesh];
                 for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
                     gl.glDepthFunc(func);
                     gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
-                    for b in puffer.iter().filter(|b| b.count > 0) {
+                    let unten = self.unterlage.iter().map(|(_, b)| b);
+                    for b in unten.chain([&self.helper_mesh]).filter(|b| b.count > 0) {
                         gl.glBindVertexArray(b.vao);
                         gl.glDrawArrays(TRIANGLES, 0, b.count);
                     }
@@ -3384,8 +3408,10 @@ unsafe fn upload_bond(gl: &Gl, tex: &mut GLuint, bond: &[u8]) {
 const HELPER_ATTRS: [(i32, usize); 7] =
     [(3, 0), (3, 12), (2, 24), (4, 32), (3, 48), (4, 60), (4, 76)];
 
-/// Je Hilfslinie sechs Ecken (zwei Dreiecke), wie der Shader sie nimmt.
-fn helper_ecken(helpers: &[Helper]) -> Vec<[f32; 23]> {
+/// Je Hilfslinie sechs Ecken (zwei Dreiecke), wie der Shader sie nimmt;
+/// so viel rechnet der Renderer vor dem Hochladen (öffentlich für
+/// Zeitmessungen).
+pub fn helper_ecken(helpers: &[Helper]) -> Vec<[f32; 23]> {
     let mut v: Vec<[f32; 23]> = Vec::with_capacity(helpers.len() * 6);
     for h in helpers {
         let [p0, p1] = h.pattern;

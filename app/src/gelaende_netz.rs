@@ -93,12 +93,24 @@ pub(crate) struct Gelaende {
     kern: Vec<(Vec<P2>, f64, f64)>,
     /// Unterkante des Rands: eine Geländedicke unter dem tiefsten Punkt.
     pub(crate) unten: f64,
-    /// Strecken des Lageplans im Grundriss (mm, auf dem Gelände, nicht im
-    /// Haus) und ob sie Grenzen sind.
-    unterlage: Vec<([Vec3; 2], bool)>,
-    /// Prüfsumme der Unterlage: Schlüssel ihres Puffers im Renderer, der
-    /// so nur neu hochlädt, wenn sich ihre Strecken ändern.
-    pub(crate) unterlage_key: u64,
+    /// Der Lageplan im Grundriss in Kacheln ([`Kachel`]).
+    pub(crate) unterlage: Vec<Kachel>,
+}
+
+/// Kacheln je Seite, in die der Lageplan geteilt wird (Review #139 N1):
+/// Ein Schritt an einem Haus ändert nur die Kacheln unter ihm, der
+/// Renderer baut und lädt nur sie neu. Mehr Kacheln hießen mehr
+/// Zeichenaufrufe je Bild.
+const KACHELN: usize = 8;
+
+/// Ein Stück des Lageplans: Strecken (mm, auf dem Gelände, nicht im Haus),
+/// ob sie Grenzen sind, und ihre Prüfsumme als Schlüssel ihres Puffers im
+/// Renderer. Welche Strecke in welche Kachel fällt, hängt nur am Plan und
+/// seiner Lage, nicht an den Häusern.
+#[derive(Clone, Debug)]
+pub(crate) struct Kachel {
+    pub(crate) key: u64,
+    striche: Vec<([Vec3; 2], bool)>,
 }
 
 impl Gelaende {
@@ -183,7 +195,6 @@ impl Gelaende {
             kern: Vec::new(),
             unten,
             unterlage: Vec::new(),
-            unterlage_key: 0,
         }
     }
 
@@ -258,34 +269,58 @@ impl Gelaende {
             .collect();
     }
 
-    /// Linien des Lageplans (Modell, mm) auf das Gelände legen.
+    /// Linien des Lageplans (Modell, mm) auf das Gelände legen, in
+    /// [`KACHELN`]² Kacheln über dem Bereich des Plans.
     pub(crate) fn mit_unterlage(mut self, l: &[(Vec<P2>, bool, UnderlayKind)]) -> Gelaende {
         // außerhalb des Netzes auf seiner mittleren Höhe
         let n = (self.dreiecke.len() * 3).max(1) as f64;
         let mittel = self.dreiecke.iter().flatten().map(|p| p.z).sum::<f64>() / n;
-        // im Haus liegt nichts: jede Strecke einzeln, am Haus geteilt
-        let mut u = Vec::new();
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for q in l.iter().flat_map(|x| &x.0) {
+            lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+            hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+        }
+        let k = KACHELN as f64;
+        let groesse = [(hi[0] - lo[0]) / k, (hi[1] - lo[1]) / k].map(|x| x.max(1.0));
+        let kachel = |p: P2| {
+            let i = |a: usize| (((p[a] - lo[a]) / groesse[a]).max(0.0) as usize).min(KACHELN - 1);
+            i(1) * KACHELN + i(0)
+        };
+        // im Haus liegt nichts: jede Strecke einzeln, am Haus geteilt; die
+        // Stücke bleiben in der Kachel ihrer Strecke
+        let mut u = vec![Vec::new(); KACHELN * KACHELN];
         for (p, zu, art) in l {
             let k = p.len();
             let strecken = if *zu && k > 2 { k } else { k.saturating_sub(1) };
             for i in 0..strecken {
                 let (a, b) = (p[i], p[(i + 1) % k]);
+                let ziel = &mut u[kachel(lerp2(a, b, 0.5))];
                 for (t0, t1, _) in self.teile(a, b) {
                     let q = [lerp2(a, b, t0), lerp2(a, b, t1)]
                         .map(|p| vec3(p[0], p[1], self.hoehe(p).unwrap_or(mittel)));
-                    u.push((q, *art == UnderlayKind::Boundary));
+                    ziel.push((q, *art == UnderlayKind::Boundary));
                 }
             }
         }
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        for ([a, b], grenze) in &u {
-            std::hash::Hash::hash(
-                &([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), grenze),
-                &mut h,
-            );
-        }
-        self.unterlage_key = std::hash::Hasher::finish(&h);
-        self.unterlage = u;
+        self.unterlage = u
+            .into_iter()
+            .enumerate()
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(i, striche)| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&i, &mut h);
+                for ([a, b], grenze) in &striche {
+                    std::hash::Hash::hash(
+                        &([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), grenze),
+                        &mut h,
+                    );
+                }
+                Kachel {
+                    key: std::hash::Hasher::finish(&h),
+                    striche,
+                }
+            })
+            .collect();
         self
     }
 
@@ -862,12 +897,24 @@ pub(crate) fn linien(
 }
 
 /// Der Lageplan im Grundriss, blass unter dem Gelände, Grenzen 0,25 mm.
-/// Er liegt in einem eigenen Puffer des Renderers, der nur bei neuer
-/// Fassung des Geländes, neuer Zeichentabelle oder neuem Maßstab neu
-/// hochgeladen wird (Review #139 B1: mit den übrigen Linien je Bild 30 ms
-/// bei 50.000 Strichen).
+/// Er liegt in eigenen Puffern des Renderers, je [`Kachel`] einer, die nur
+/// bei neuen Strecken der Kachel, neuer Zeichentabelle oder neuem Maßstab
+/// neu hochgeladen werden (Review #139 B1 und N1).
 pub(crate) fn unterlage_linien(
     g: &Gelaende,
+    view: ViewKind,
+    t: &DrawTable,
+    scale: f32,
+) -> Vec<Helper> {
+    (0..g.unterlage.len())
+        .flat_map(|i| unterlage_kachel(g, i, view, t, scale))
+        .collect()
+}
+
+/// Die Linien der Kachel `i` des Lageplans ([`unterlage_linien`]).
+pub(crate) fn unterlage_kachel(
+    g: &Gelaende,
+    i: usize,
     view: ViewKind,
     t: &DrawTable,
     scale: f32,
@@ -877,13 +924,15 @@ pub(crate) fn unterlage_linien(
     }
     let blass = t.background;
     let grenze = (t.ground.0 * 0.5, blass.1);
-    g.unterlage
-        .iter()
-        .map(|([a, b], ist_grenze)| {
-            let st = if *ist_grenze { grenze } else { blass };
-            strich(*a, *b, st, sk_render::SOLID, scale)
-        })
-        .collect()
+    g.unterlage.get(i).map_or(Vec::new(), |k| {
+        k.striche
+            .iter()
+            .map(|([a, b], ist_grenze)| {
+                let st = if *ist_grenze { grenze } else { blass };
+                strich(*a, *b, st, sk_render::SOLID, scale)
+            })
+            .collect()
+    })
 }
 
 /// Strich von `a` nach `b` mit Stift und Muster.

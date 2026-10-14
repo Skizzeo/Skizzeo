@@ -34,13 +34,21 @@ pub(crate) const TERRAIN_MARGIN: f64 = 1500.0;
 /// Gelände-Zug die übrigen Gebäude (Review #123 F1; Loslassen 8 ms).
 pub(crate) const NACHZUG: std::time::Duration = std::time::Duration::from_millis(6);
 
-/// Schlüssel des Lageplans im Renderer zu seinen Strecken
-/// ([`Gelaende::unterlage_key`]), Zeichentabelle, Farbschema und Maßstab;
-/// `None`: keiner gezeigt.
-pub(crate) fn unterlage_key(k: Option<(u64, u64, u64, u32)>) -> u64 {
+/// Schlüssel der Kacheln des Lageplans im Renderer zu ihren Strecken
+/// ([`crate::gelaende_netz::Kachel::key`]), Zeichentabelle, Farbschema
+/// und Maßstab (`stil`, [`stil_key`]).
+pub(crate) fn unterlage_keys(g: &Gelaende, stil: u64) -> Vec<u64> {
+    g.unterlage
+        .iter()
+        .map(|k| k.key.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ stil)
+        .collect()
+}
+
+/// Prüfsumme von Zeichentabelle, Farbschema und Maßstab.
+pub(crate) fn stil_key(t: &DrawTable, scale: f32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    k.hash(&mut h);
+    (t.rev, t.theme_rev, scale.to_bits()).hash(&mut h);
     h.finish()
 }
 
@@ -320,21 +328,25 @@ impl Platte {
         self.linien.as_ref().map_or(&[], |l| &l.helfer)
     }
 
-    /// Schlüssel des Lageplans im Renderer ([`unterlage_key`]) und das
-    /// Gelände, aus dem er kommt (`None`, wenn nichts zu zeigen ist). Je
-    /// Bild gleich teuer, wie viele Striche der Plan auch hat.
+    /// Schlüssel der Kacheln des Lageplans im Renderer
+    /// ([`unterlage_keys`]) und das Gelände, aus dem sie kommen (`None` und
+    /// keine, wenn nichts zu zeigen ist). Je Bild ein Vergleich je Kachel,
+    /// wie viele Striche der Plan auch hat.
     pub(crate) fn unterlage_im_bild(
         &mut self,
         m: &Model,
         zeigen: bool,
         t: &DrawTable,
         scale: f32,
-    ) -> (u64, Option<Arc<Gelaende>>) {
-        let g = zeigen
-            .then(|| self.gelaende_im_bild(m).map(|g| g.unterlage_key))
-            .flatten();
-        let key = unterlage_key(g.map(|k| (k, t.rev, t.theme_rev, scale.to_bits())));
-        (key, g.and(self.gelaende.clone()))
+    ) -> (Vec<u64>, Option<Arc<Gelaende>>) {
+        if !zeigen || self.gelaende_im_bild(m).is_none() {
+            return (Vec::new(), None);
+        }
+        let g = self.gelaende.clone();
+        let keys = g
+            .as_deref()
+            .map_or(Vec::new(), |g| unterlage_keys(g, stil_key(t, scale)));
+        (keys, g)
     }
 
     /// Ein Nachzug oder ein Netz zur Sicht rechnet (die Hauptschleife fragt
@@ -839,20 +851,21 @@ impl App {
         self.platte.linien_im_bild(m, sicht, b, t, (scale, mm_px))
     }
 
-    /// Der Lageplan unter dem Gelände im eigenen Puffer des Renderers
-    /// ([`gelaende_netz::unterlage_linien`]): je Bild nur der Vergleich des
-    /// Schlüssels, hochgeladen nur, wenn sich seine Strecken, die
-    /// Zeichentabelle oder der Maßstab ändern (Review #139 B1). Gezeigt im
-    /// Grundriss des Erdgeschosses, nicht ausgeblendet.
+    /// Der Lageplan unter dem Gelände in eigenen Puffern des Renderers
+    /// ([`gelaende_netz::unterlage_kachel`]): je Bild nur der Vergleich der
+    /// Schlüssel; gebaut und hochgeladen werden nur Kacheln, deren
+    /// Strecken sich ändern, alle bei neuer Zeichentabelle oder neuem
+    /// Maßstab (Review #139 B1 und N1). Gezeigt im Grundriss des
+    /// Erdgeschosses, nicht ausgeblendet.
     fn platte_unterlage(&mut self, scale: f32) {
         let zeigen = !self.scene.terrain_hidden()
             && self.ui.view == ViewKind::Plan
             && self.scene.ground_active();
         let (m, t) = (self.scene.model(), self.scene.table());
-        let (key, g) = self.platte.unterlage_im_bild(m, zeigen, t, scale);
-        self.renderer.set_unterlage(key, || {
-            g.map_or(Vec::new(), |g| {
-                gelaende_netz::unterlage_linien(&g, ViewKind::Plan, t, scale)
+        let (keys, g) = self.platte.unterlage_im_bild(m, zeigen, t, scale);
+        self.renderer.set_unterlage(&keys, |i| {
+            g.as_deref().map_or(Vec::new(), |g| {
+                gelaende_netz::unterlage_kachel(g, i, ViewKind::Plan, t, scale)
             })
         });
     }
