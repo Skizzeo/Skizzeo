@@ -2139,9 +2139,11 @@ impl Ui {
     }
 
     /// Gesperrte Knöpfe: „Gebäude“ im OG, beide Wandknöpfe im Fundament,
-    /// der Zähler im Dialog (fest 2).
-    fn is_disabled(&self, id: Id) -> bool {
+    /// der Zähler im Dialog (fest 2) und die Knöpfe gesperrter Module
+    /// (Bedienbarkeit 41.5).
+    pub(crate) fn is_disabled(&self, id: Id) -> bool {
         match id {
+            id if self.frei.gesperrt(id) => true,
             Id::Building => self.upper_active || self.foundation_active,
             Id::Interior | Id::Opening(_) => self.foundation_active,
             Id::DialogMinus | Id::DialogPlus => true,

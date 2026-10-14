@@ -1581,7 +1581,7 @@ impl App {
             Command::Backups => self.open_backups(),
             Command::OpenBackup(_) => self.confirm_then(c, surface),
             Command::Delete => self.delete_selection(),
-            Command::Help => self.show_help(true),
+            Command::Help | Command::Ausbaustufe => self.hilfe_befehl(c),
             Command::MeasureFrameTime => self.start_frame_measure(),
             Command::ExportIfc => self.export_ifc(surface),
             Command::IfcVorschau => self.open_ifc_vorschau(surface),

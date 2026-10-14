@@ -650,15 +650,16 @@ impl ContextMenu {
     ) -> ContextMenu {
         let Rahmen(s, frei) = r.into();
         let mut c = Self::build(m, target, selection, false);
-        c.items
-            .retain(|(_, a)| !a.is_some_and(|a| frei.gesperrt(a)));
-        // „Mengen …“ heißt nach den freien Blättern wie der Knopf
-        for (z, _) in c
-            .items
-            .iter_mut()
-            .filter(|(_, a)| *a == Some(Action::Quantity))
-        {
-            z.label = frei.knopf().into();
+        for (z, a) in &mut c.items {
+            // „Mengen …“ heißt nach den freien Blättern wie der Knopf
+            if *a == Some(Action::Quantity) {
+                z.label = frei.knopf().into();
+            }
+            // Gesperrt (Bedienbarkeit 41.5): grau, rechts die Stufe
+            if let Some(modul) = a.and_then(|a| frei.sperre(a)) {
+                z.enabled = false;
+                z.shortcut = modul.ab().into();
+            }
         }
         c.at(x, y, win, t, s)
     }
