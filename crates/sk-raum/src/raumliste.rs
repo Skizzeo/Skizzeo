@@ -49,6 +49,9 @@ pub struct RaumDaten {
     /// leer, wenn der Raum zerfällt.
     pub koerper: Solid,
     pub ausbau: Vec<AusbauDaten>,
+    /// Rohbaukanten in der fortlaufenden Zählung von `Rohbau::kanten`, auf
+    /// die `Flaeche::Wand` zeigt (stabile Kennung der Wandseiten im IFC).
+    pub kanten: Vec<Kante>,
 }
 
 /// Mengen für `Qto_SpaceBaseQuantities` (mm, mm², mm³): roh (Gross) und
@@ -100,6 +103,12 @@ pub struct SchichtDaten {
 /// Alle gespeicherten Räume der Geschosse mit ihrem Ausbau; Räume ohne
 /// Ausbau (kein Raumkatalog) fehlen.
 pub fn raumliste(model: &Model) -> Vec<RaumDaten> {
+    raumliste_mit_formen(model).0
+}
+
+/// Wie [`raumliste`], dazu die Ids aller gespeicherten Räume mit Form, also
+/// auch derer ohne Ausbau, die in der Liste fehlen.
+pub fn raumliste_mit_formen(model: &Model) -> (Vec<RaumDaten>, Vec<ElementId>) {
     let geschosse: Vec<StoreyId> = model
         .storeys()
         .iter()
@@ -109,12 +118,14 @@ pub fn raumliste(model: &Model) -> Vec<RaumDaten> {
     // Platten und Höhen der Geschosse einmal für alle Räume (Review #137)
     let platten = Platten::neu(model, model);
     let mut out = Vec::new();
+    let mut formen = Vec::new();
     for g in geschosse {
         for f in raeume(model, g) {
+            formen.extend(f.raum);
             out.extend(raum(model, &platten, f));
         }
     }
-    out
+    (out, formen)
 }
 
 /// Ein Raum, `None` ohne gespeicherten Raum oder ohne Ausbau.
@@ -144,6 +155,7 @@ fn raum(model: &Model, platten: &Platten, f: RaumForm) -> Option<RaumDaten> {
         gruppe,
         geschoss: roh.form.geschoss,
         ausbau: ausbauflaechen(model, platten, &roh, &aus),
+        kanten: roh.kanten().cloned().collect(),
         roh: umriss_roh,
         fertig,
         z_roh: (roh.z_boden, roh.z_decke),
@@ -463,8 +475,9 @@ pub(crate) mod tests {
     #[test]
     fn raeume_fuer_den_austausch() {
         let m = haus();
-        let l = raumliste(&m);
+        let (l, formen) = raumliste_mit_formen(&m);
         assert_eq!(l.len(), 2);
+        assert_eq!(formen, l.iter().map(|r| r.raum).collect::<Vec<_>>());
         let (eg, og) = (&l[0], &l[1]);
         assert!(eg.z_roh.0 < og.z_roh.0);
         for r in &l {
@@ -494,6 +507,14 @@ pub(crate) mod tests {
                 .find(|a| matches!(a.flaeche, Flaeche::Wand(_)))
                 .unwrap();
             assert!(wand.traeger.is_some());
+            // Wandflächen zeigen in die Rohbaukanten, und die Kante nennt
+            // die Wand, die die Fläche trägt
+            for a in &r.ausbau {
+                if let Flaeche::Wand(k) = a.flaeche {
+                    let Begrenzung::Wand { wand, .. } = r.kanten[k].quelle;
+                    assert_eq!(a.traeger, m.element(wand).map(|e| e.guid));
+                }
+            }
             assert!(wand
                 .schichten
                 .iter()
