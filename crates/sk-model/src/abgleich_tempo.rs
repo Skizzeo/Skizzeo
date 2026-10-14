@@ -1,6 +1,7 @@
 //! Tempo des Abgleichs beim Schließen eines Schritts, der nur Geschoss-
 //! bänder oder den Geländeversatz eines Gebäudes ändert (Review L39).
 
+use crate::txn::{Change, Key};
 use crate::{BuildingId, Category, ElementKind, Model, StoreyId};
 use sk_math::vec3;
 use std::collections::HashSet;
@@ -244,9 +245,10 @@ fn budget_4000_kleiner_bereich() {
 /// entfernt, Haus mit Decken angelegt, alles rückgängig und wiederholt.
 /// Danach ändert der Abgleich über alles nichts; im Debug prüft
 /// [`Model::an_decken_in`] zudem bei jedem Schließen, dass kein Bauteil
-/// fehlt.
+/// fehlt. Löschen und Rückgängig nehmen die Bauteile an einer Decke im
+/// selben Schritt mit; echte Waisen prüft [`bereich_findet_waisen`].
 #[test]
-fn bereich_findet_verwaiste() {
+fn bereich_bei_strukturschritten() {
     let (mut m, gb) = haeuser_mit(3, true, 3);
     let (b0, b1, b2) = (gb[0], gb[1], gb[2]);
     let flach = move |m: &mut Model, an: bool| {
@@ -313,6 +315,61 @@ fn bereich_findet_verwaiste() {
             assert!(m.check().is_empty(), "{was} {dir:?}: {:?}", m.check());
         }
     }
+}
+
+/// Echte Waisen (Geometrie zu #160): Fällt eine Decke weg, ohne dass ihre
+/// Bauteile mitgehen, stehen Flachdach, Blech und Regenfallrohre unter
+/// einem Schlüssel, der keine Decke mehr ist. Der Abgleich im Bereich
+/// findet sie nur über die Waisen des Verzeichnisses und räumt sie im
+/// selben Schritt ab; danach ändert der Abgleich über alles nichts.
+#[test]
+fn bereich_findet_waisen() {
+    let (mut m, gb) = haeuser_mit(3, true, 3);
+    m.begin("Flachdach");
+    let ebenen = m.levels_in(Some(gb[1]));
+    assert!(ebenen.into_iter().any(|st| m.set_flat_roof(st, true)));
+    m.commit().expect("Flachdach");
+    let an = |m: &Model, f: crate::ElementId| {
+        m.elements()
+            .iter()
+            .filter(|(_, e)| match e.kind {
+                ElementKind::Roof { floor, .. } | ElementKind::Coping { floor } => floor == f,
+                _ => false,
+            })
+            .count()
+    };
+    let decke = m
+        .elements()
+        .iter()
+        .find_map(|(_, e)| match e.kind {
+            ElementKind::Roof { floor, .. } => Some(floor),
+            _ => None,
+        })
+        .expect("Flachdach auf einer Decke");
+    assert!(an(&m, decke) > 0);
+    // Nur die Decke, an der Löschfunktion vorbei: Ihre Bauteile bleiben
+    // zunächst als Waisen stehen
+    m.begin("Decke weg");
+    note!(m, Element, m.elements, decke);
+    m.elements.remove(decke);
+    m.touch();
+    if let Some(v) = m.verz() {
+        assert!(v.ist_waise(decke), "Decke ist Waise");
+    }
+    m.commit().expect("Decke weg");
+    assert_eq!(an(&m, decke), 0, "Bauteile an der entfernten Decke");
+    let rohre_ohne_dach = m.elements().iter().any(|(_, e)| match e.kind {
+        ElementKind::Downpipe { roof, .. } => !matches!(
+            m.element(roof).map(|r| &r.kind),
+            Some(ElementKind::Roof { .. })
+        ),
+        _ => false,
+    });
+    assert!(!rohre_ohne_dach, "Regenfallrohr ohne Dachaufbau");
+    assert_eq!(ganz(&m), ((0, 0), (0, 0), true));
+    // Gemeldet wird nur die fehlende Decke selbst
+    let c = m.check();
+    assert!(c.iter().all(|x| x.contains("Decke")), "{c:?}");
 }
 
 /// Zufällige Schritte an Bändern, Gründung, Gelände und Flachdach in drei

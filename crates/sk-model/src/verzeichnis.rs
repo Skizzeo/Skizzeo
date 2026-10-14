@@ -931,6 +931,11 @@ impl Model {
 }
 
 impl Verzeichnis {
+    #[cfg(test)]
+    pub(crate) fn ist_waise(&self, f: ElementId) -> bool {
+        self.waisen.contains(&f)
+    }
+
     pub(crate) fn decken(&self, run: RunId) -> Vec<ElementId> {
         self.decken.get(&run).cloned().unwrap_or_default()
     }
