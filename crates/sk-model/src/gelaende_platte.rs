@@ -102,11 +102,15 @@ impl Model {
     /// Uhrzeigersinn (z = 0): die Außenfläche der Wände mit allen Schichten,
     /// auch bei Sockelrücksprung, sonst der Plattenumriss. Hier endet das
     /// Gelände am Haus (Loch der Platte, Plattenrand der Höhenlage).
+    /// Gründungen über das Verzeichnis ([`Model::lesend`]), nicht je Zug
+    /// über alle Bauteile (Review #129 B4: rund 1 s bei 4000 Häusern).
     pub fn plate_outlines(&self) -> Vec<(BuildingId, Vec<Vec3>)> {
-        self.runs
-            .iter()
-            .filter_map(|(id, r)| Some((self.building_of(r.storey)?, self.plate_outline(id)?)))
-            .collect()
+        self.lesend(|| {
+            self.runs
+                .iter()
+                .filter_map(|(id, r)| Some((self.building_of(r.storey)?, self.plate_outline(id)?)))
+                .collect()
+        })
     }
 
     /// Außenumriss über der Gründung des Wandzugs `run` (siehe

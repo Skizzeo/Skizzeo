@@ -68,7 +68,7 @@ pub struct DrawTable {
     pub mats: Vec<MatLook>,
     /// Schlüssel von Rasen und Erdreich der Geländeplatte (Gelände G0),
     /// hinter den Baustoffen.
-    pub terrain: [u16; 2],
+    pub terrain: [u16; 3],
     pub drawing_edges: [Stroke; edge_kind::COUNT],
     pub model_edges: [Stroke; edge_kind::COUNT],
     pub paper: [f32; 3],
@@ -286,7 +286,7 @@ impl DrawTable {
             mats[key] = mat_look(model, theme, &m.display(), &mut notes);
         }
         let d = a.display();
-        let terrain = [mats.len() as u16, mats.len() as u16 + 1];
+        let terrain = [0, 1, 2].map(|i| (mats.len() + i) as u16);
         let ink = stroke(&d.ground).1;
         mats.extend(crate::gelaende_platte::looks(
             theme,

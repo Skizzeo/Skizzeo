@@ -403,6 +403,17 @@ Winkelsprung | Beim Zeichnen springt die Richtung in 90°- oder 45°-Schritten z
 Erweiterungen | Eingelesene Bauteile wie Stütze oder Treppe setzen, nach Gruppe geordnet.
 Wandöffnung | Fenster oder Terrassentür in eine Außenwand aufziehen.
 Türöffnung | Haustür in eine Außenwand aufziehen, im Grundriss Innentür in eine Innenwand setzen.
+Gelände | Echtes Gelände aus Höhenaufmaß und Lageplan, Grundstück und Lage des Hauses darauf.
+Lageplan | Lageplan oder Liegenschaftskarte als PDF oder PNG einlesen; kommt mit der nächsten Stufe.
+Höhen | Punktliste des Vermessers einlesen (CSV, TXT); Spalten, Trennzeichen und Lage erkennt Skizzeo selbst.
+Gelände verschieben | Gelände unter dem Haus verschieben; das Haus bleibt, wo es gezeichnet ist.
+Gelände drehen | Gelände um die Mitte des Hauses drehen; ein positiver Winkel dreht gegen den Uhrzeigersinn.
+An Grenze ausrichten | Dreht das Gelände, bis die längste Grenze parallel zur nächsten Hauswand liegt.
+Höhenlage über Gelände | ±0,00 liegt um den Versatz über dem höchsten Geländepunkt am Plattenrand und wandert mit dem Gelände.
+Höhenlage absolut | ±0,00 liegt fest auf einer Höhe in m ü. NHN, wie im Bebauungsplan.
+Zuschnitt alles | Das ganze Aufmaß zeigen, auch über die Grenze hinaus.
+Umgebung blass | Das Gelände außerhalb der Grenze blass zeigen.
+Nur Grundstück | Das Gelände an der Grenze abschneiden; gerechnet wird weiter mit allen Punkten.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.
