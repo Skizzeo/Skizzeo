@@ -97,6 +97,7 @@ pub use library::{
 };
 pub use matprop::{MatProp, MatPropKind, MAT_PROPS};
 pub use model::FINISH_VIEWS;
+pub use model::{affine_apply, Affine, SitePlan, Underlay, UnderlayKind};
 pub use model::{
     building_index, edit_blocked, im_bereich, refusal_lines, refusal_text, Cut, Defaults, Deleted,
     ExtError, FlushError, Foot, FugeError, GroundBasis, Location, Locked, Model, NumberError,

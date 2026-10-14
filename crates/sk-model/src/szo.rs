@@ -1484,11 +1484,12 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 48] = [
+    const KNOWN: [&str; 49] = [
         "terrain",
         "tpoint",
         "tline",
         "tcode",
+        "underlay",
         "opening",
         "pen",
         "linetype",

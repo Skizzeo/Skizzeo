@@ -390,6 +390,10 @@ pub use gelaende_aufmass::{
     TerrainMesh, TerrainPoint, Trim,
 };
 
+#[path = "gelaende_lageplan.rs"]
+mod gelaende_lageplan;
+pub use gelaende_lageplan::{affine_apply, Affine, SitePlan, Underlay, UnderlayKind};
+
 #[path = "geschossbaender.rs"]
 mod geschossbaender;
 

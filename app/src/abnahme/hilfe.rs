@@ -192,7 +192,7 @@ const OHNE: Modifiers = Modifiers {
 /// Knöpfe mit Tooltip (§1.3); „Winkelsprung“ (vormals „90°-Sprung“, G2)
 /// steht im Paneel Werkzeuge (Koordinator 21:45), „Erweiterungen“ dort ab
 /// E6 (Schrittplan .szb).
-const KNOEPFE: [&str; 28] = [
+const KNOEPFE: [&str; 29] = [
     "Gebäude",
     "Innenwand",
     "Wandöffnung",
@@ -202,6 +202,7 @@ const KNOEPFE: [&str; 28] = [
     // Leiste „Gelände“ (plan-gelaendemodul.md §4.7)
     "Gelände",
     "Lageplan",
+    "Flurstück übernehmen",
     "Höhen",
     "Gelände verschieben",
     "Gelände drehen",
