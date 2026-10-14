@@ -96,6 +96,9 @@ pub(crate) struct Gelaende {
     /// Strecken des Lageplans im Grundriss (mm, auf dem Gelände, nicht im
     /// Haus) und ob sie Grenzen sind.
     unterlage: Vec<([Vec3; 2], bool)>,
+    /// Prüfsumme der Unterlage: Schlüssel ihres Puffers im Renderer, der
+    /// so nur neu hochlädt, wenn sich ihre Strecken ändern.
+    pub(crate) unterlage_key: u64,
 }
 
 impl Gelaende {
@@ -180,6 +183,7 @@ impl Gelaende {
             kern: Vec::new(),
             unten,
             unterlage: Vec::new(),
+            unterlage_key: 0,
         }
     }
 
@@ -255,24 +259,32 @@ impl Gelaende {
     }
 
     /// Linien des Lageplans (Modell, mm) auf das Gelände legen.
-    pub(crate) fn mit_unterlage(mut self, l: Vec<(Vec<P2>, bool, UnderlayKind)>) -> Gelaende {
+    pub(crate) fn mit_unterlage(mut self, l: &[(Vec<P2>, bool, UnderlayKind)]) -> Gelaende {
         // außerhalb des Netzes auf seiner mittleren Höhe
         let n = (self.dreiecke.len() * 3).max(1) as f64;
         let mittel = self.dreiecke.iter().flatten().map(|p| p.z).sum::<f64>() / n;
         // im Haus liegt nichts: jede Strecke einzeln, am Haus geteilt
         let mut u = Vec::new();
-        for (mut p, zu, art) in l {
-            if zu && p.len() > 2 {
-                p.push(p[0]);
-            }
-            for w in p.windows(2) {
-                for (t0, t1, _) in self.teile(w[0], w[1]) {
-                    let q = [lerp2(w[0], w[1], t0), lerp2(w[0], w[1], t1)]
+        for (p, zu, art) in l {
+            let k = p.len();
+            let strecken = if *zu && k > 2 { k } else { k.saturating_sub(1) };
+            for i in 0..strecken {
+                let (a, b) = (p[i], p[(i + 1) % k]);
+                for (t0, t1, _) in self.teile(a, b) {
+                    let q = [lerp2(a, b, t0), lerp2(a, b, t1)]
                         .map(|p| vec3(p[0], p[1], self.hoehe(p).unwrap_or(mittel)));
-                    u.push((q, art == UnderlayKind::Boundary));
+                    u.push((q, *art == UnderlayKind::Boundary));
                 }
             }
         }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for ([a, b], grenze) in &u {
+            std::hash::Hash::hash(
+                &([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), grenze),
+                &mut h,
+            );
+        }
+        self.unterlage_key = std::hash::Hasher::finish(&h);
         self.unterlage = u;
         self
     }
@@ -829,9 +841,10 @@ pub(crate) fn kappen(g: &Gelaende, f: &SectionFrame, p0: Vec3, soil: u16) -> Sol
     s
 }
 
-/// Linien in Grundriss, Schnitt und Ansicht samt den Punktmarken im
-/// Grundriss ([`grundlinien`] und [`marken`]). `mm_px`: Millimeter je
-/// Bildpunkt (Grundriss), `fassade`: Ebene der Geländelinie einer Ansicht.
+/// Linien in Grundriss, Schnitt und Ansicht samt Lageplan und Punktmarken
+/// im Grundriss ([`unterlage_linien`], [`grundlinien`] und [`marken`]).
+/// `mm_px`: Millimeter je Bildpunkt (Grundriss), `fassade`: Ebene der
+/// Geländelinie einer Ansicht.
 #[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))] // Prüfbilder
 pub(crate) fn linien(
     g: &Gelaende,
@@ -842,9 +855,35 @@ pub(crate) fn linien(
     scale: f32,
     mm_px: f64,
 ) -> Vec<Helper> {
-    let mut out = grundlinien(g, view, plane, fassade, t, scale);
+    let mut out = unterlage_linien(g, view, t, scale);
+    out.extend(grundlinien(g, view, plane, fassade, t, scale));
     out.extend(marken(g, view, t, scale, mm_px));
     out
+}
+
+/// Der Lageplan im Grundriss, blass unter dem Gelände, Grenzen 0,25 mm.
+/// Er liegt in einem eigenen Puffer des Renderers, der nur bei neuer
+/// Fassung des Geländes, neuer Zeichentabelle oder neuem Maßstab neu
+/// hochgeladen wird (Review #139 B1: mit den übrigen Linien je Bild 30 ms
+/// bei 50.000 Strichen).
+pub(crate) fn unterlage_linien(
+    g: &Gelaende,
+    view: ViewKind,
+    t: &DrawTable,
+    scale: f32,
+) -> Vec<Helper> {
+    if view != ViewKind::Plan {
+        return Vec::new();
+    }
+    let blass = t.background;
+    let grenze = (t.ground.0 * 0.5, blass.1);
+    g.unterlage
+        .iter()
+        .map(|([a, b], ist_grenze)| {
+            let st = if *ist_grenze { grenze } else { blass };
+            strich(*a, *b, st, sk_render::SOLID, scale)
+        })
+        .collect()
 }
 
 /// Strich von `a` nach `b` mit Stift und Muster.
@@ -903,12 +942,7 @@ pub(crate) fn grundlinien(
     let mut out = Vec::new();
     match (view, plane.or(fassade)) {
         (ViewKind::Plan, _) => {
-            // Lageplan blass darunter, Grenzen 0,25 mm
-            let grenze = (t.ground.0 * 0.5, blass.1);
-            for ([a, b], ist_grenze) in &g.unterlage {
-                let st = if *ist_grenze { grenze } else { blass };
-                out.push(line(*a, *b, st, solid));
-            }
+            // der Lageplan darunter steht in [`unterlage_linien`]
             for &(z, [a, b], innen, haupt) in &g.stuecke {
                 let Some(voll) = g.zeigen(innen) else {
                     continue;
@@ -1098,7 +1132,7 @@ mod tests {
         m.commit();
         let g = Gelaende::aus(&m)
             .unwrap()
-            .mit_unterlage(m.underlay_lines(&plan));
+            .mit_unterlage(&m.underlay_lines(&plan));
         assert_eq!(g.show, Show::Parcel);
         let z = m.terrain_z();
         assert!(g.dreiecke.iter().flatten().all(|p| p.z == z));

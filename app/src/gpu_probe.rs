@@ -974,7 +974,7 @@ mod tests {
             let m = h.model();
             let g = Gelaende::aus(m)
                 .unwrap()
-                .mit_unterlage(m.underlay_lines(&plan));
+                .mit_unterlage(&m.underlay_lines(&plan));
             let keys = h.table().terrain;
             r.set_ground_z(Some(g.unten as f32));
             r.set_grass(keys[0]);

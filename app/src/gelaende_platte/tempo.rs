@@ -236,3 +236,132 @@ fn aufmass_4000() {
         assert!(y < 2.0 * x + 0.5, "{was}: {x:.2} → {y:.2} ms");
     }
 }
+
+/// Ein Lageplan wie das Beispiel „Am Lindenhof 7“ mit `k` Strichen: zu
+/// den Linien des Blatts kurze Striche im Raster über ihrem Bereich.
+fn lageplan(k: usize) -> sk_model::SitePlan {
+    const PDF: &[u8] =
+        include_bytes!("../../../crates/sk-gelaende/tests/daten/lageplan-lindenhof-7.pdf");
+    let mut p = sk_model::SitePlan::read(PDF, 32).unwrap();
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for q in p.lines.iter().flat_map(|l| &l.0) {
+        lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+        hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+    }
+    let n = (k as f64).sqrt().ceil() as usize;
+    let (dx, dy) = ((hi[0] - lo[0]) / n as f64, (hi[1] - lo[1]) / n as f64);
+    let mut i = 0;
+    while p.lines.len() < k {
+        let a = [lo[0] + (i % n) as f64 * dx, lo[1] + (i / n) as f64 * dy];
+        let b = [a[0] + 0.7 * dx, a[1] + 0.3 * dy];
+        p.lines
+            .push((vec![a, b], false, sk_model::UnderlayKind::Other));
+        i += 1;
+    }
+    p
+}
+
+/// Zeiten in ms mit einem Lageplan.
+#[derive(Debug)]
+struct Lageplan {
+    /// Je Bild im Grundriss, die Modellgrenzen ändern sich wie im Zug:
+    /// der Schlüssel der Unterlage und die übrigen Linien.
+    bild: f64,
+    /// Einmal je neuer Unterlage: ihre Linien für den Renderer bauen.
+    bauen: f64,
+    /// Nach einem Schritt im UI-Faden: den Nachzug beginnen.
+    nachzug: f64,
+}
+
+fn lageplan_messen(n: usize, k: usize) -> Lageplan {
+    let mut m = viele(n);
+    m.begin("ohne Aufmaß");
+    assert!(m.set_terrain(None));
+    m.commit();
+    let plan = lageplan(k);
+    m.begin("Lageplan");
+    assert!(m.import_parcel(&plan, "lageplan.pdf", None));
+    m.commit();
+    let mut s = Scene::with_model(m);
+    let mut pl = Platte::default();
+    pl.unterlage.merken(s.model(), Arc::new(plan));
+    let m = s.model();
+    let t = DrawTable::resolve(m, &Theme::dark());
+    pl.im_bild(m);
+    let (key, g) = pl.unterlage_im_bild(m, true, &t, 1.0);
+    let g = g.unwrap();
+    let (t0, linien) = (
+        Instant::now(),
+        gelaende_netz::unterlage_linien(&g, ViewKind::Plan, &t, 1.0),
+    );
+    let bauen = ms(t0);
+    assert!(linien.len() >= k / 2, "{} Striche", linien.len());
+    // je Bild: derselbe Schlüssel, kein Hochladen; die Grenzen ändern
+    // sich wie beim Ziehen einer Wand
+    let (lo, hi) = s.bounds().unwrap();
+    let mut d = 0.0;
+    let bild = bestwert(|| {
+        d = if d == 0.0 { 100.0 } else { 0.0 };
+        let b = Some((lo, vec3(hi.x + d, hi.y, hi.z)));
+        assert_eq!(pl.unterlage_im_bild(m, true, &t, 1.0).0, key);
+        std::hint::black_box(pl.linien_im_bild(m, (ViewKind::Plan, None), b, &t, (1.0, 10.0)));
+    });
+    // nach jedem Schritt: Modell kopieren und den Faden starten; die Linien
+    // der Unterlage sind gemerkt, der Faden bildet sie nicht neu ab
+    let sicht: Sicht = (ViewKind::Plan, None, [40, 41, 42], false);
+    let run = s.model().runs().ids().next().unwrap();
+    let orig = s.chain(run).unwrap().clone();
+    let mut nachzug = f64::INFINITY;
+    for i in 0..6 {
+        let moved = orig
+            .with_segment_moved(0, 300.0 * (1 + i % 2) as f64)
+            .unwrap();
+        s.begin("Wand verschieben");
+        assert!(s.set_run_points(run, &moved.points));
+        s.commit();
+        let m = s.model();
+        let t0 = Instant::now();
+        pl.nachziehen(m, sicht);
+        nachzug = nachzug.min(ms(t0));
+        assert!(pl.rechnet());
+        while pl.rechnet() {
+            pl.nachziehen(m, sicht);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(pl.unterlage.abbild(m).unwrap().gemerkt());
+    }
+    Lageplan {
+        bild,
+        bauen,
+        nachzug,
+    }
+}
+
+/// Lageplan unter dem Gelände (Review #139): Je Bild und je Mausbewegung
+/// wächst nichts mit der Zahl der Striche, der Nachzug nach einem Schritt
+/// beginnt in derselben Zeit; nur das einmalige Bauen der Linien für den
+/// Renderer wächst mit ihnen. Bei 1000 Häusern und 50.000 Strichen (im
+/// Debug 64 Häuser und 5.000 Striche).
+#[test]
+fn lageplan_im_budget() {
+    let (n, k, f) = if cfg!(debug_assertions) {
+        (64, 5_000, 40.0)
+    } else {
+        (1000, 50_000, 1.0)
+    };
+    let klein = lageplan_messen(n, 300);
+    let gross = lageplan_messen(n, k);
+    eprintln!("{n} Häuser, Lageplan 300 Striche: {klein:?}\n{k} Striche: {gross:?}");
+    // vorher je Bild 30 ms bei 50.000 Strichen, je Nachzug 4,3 ms mehr
+    assert!(
+        gross.bild < 2.0 * klein.bild + 0.2 * f,
+        "{klein:?} {gross:?}"
+    );
+    assert!(gross.bild < 1.0 * f, "{gross:?}");
+    assert!(
+        gross.nachzug < 2.0 * klein.nachzug + 1.0 * f,
+        "{klein:?} {gross:?}"
+    );
+    assert!(gross.nachzug < 8.0 * f, "{gross:?}");
+    assert!(gross.bauen > klein.bauen);
+}

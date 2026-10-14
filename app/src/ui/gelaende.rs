@@ -177,8 +177,8 @@ impl Ui {
             rows.extend(l.hoehenlinien.clone().map(Row::Text));
         } else if l.meldung.is_empty() && l.fehler.is_none() {
             rows.extend([
-                Row::Hint("Lageplan: PDF 1:500, das"),
-                Row::Hint("Flurstück wird erkannt."),
+                Row::Hint("Lageplan: PDF, Maßstab"),
+                Row::Hint("und Flurstück erkannt."),
                 Row::Hint("Höhen: Punktliste oder"),
                 Row::Hint("DXF des Vermessers."),
             ]);

@@ -9,14 +9,22 @@ use crate::meldung::Meldung;
 use crate::selection::de;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, GelaendeLeiste};
 use crate::App;
-use sk_model::{Crs, HeightRef, Model, SitePlan, Terrain, UnderlayKind};
+use sk_model::{Crs, HeightRef, Model, SitePlan, Terrain};
 use sk_platform::Surface;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Arc};
 
-/// Größte Datei, die gelesen wird (Bytes); ein Aufmaß mit 100.000
+pub(crate) mod unterlage;
+pub(crate) use unterlage::Unterlage;
+
+/// Größtes Höhenaufmaß, das gelesen wird (Bytes); eins mit 100.000
 /// Punkten hat als Punktliste etwa 5 MB, als DXF mit Nummerntexten etwa
 /// 15 MB.
 const MAX_DATEI: u64 = 64 << 20;
+
+/// Größtes PDF, das als Lageplan gelesen wird (Bytes): so viel, wie der
+/// PDF-Leser höchstens hält (#128, Review #139 H5).
+const MAX_PDF: u64 = 256 << 20;
 
 /// Dateiarten im Dialog „Lageplan einlesen“.
 const FILTER_PDF: [(&str, &str); 2] = [
@@ -55,8 +63,13 @@ pub(crate) struct Zustand {
     pub(crate) hoehen_wanted: bool,
     /// „Lageplan“ geklickt: ebenso.
     pub(crate) lageplan_wanted: bool,
-    /// Gelesener Lageplan und seine Datei, bis „Flurstück übernehmen“.
-    plan: Option<(String, SitePlan)>,
+    /// Gelesener Lageplan und seine Datei, für „Flurstück übernehmen“;
+    /// bleibt nach dem Übernehmen, so dass es nach Rückgängig wieder geht.
+    plan: Option<(String, Arc<SitePlan>)>,
+    /// Ein Lageplan wird im eigenen Faden gelesen (Review #139 B2).
+    lesen: Option<(PathBuf, mpsc::Receiver<Result<SitePlan, Meldung>>)>,
+    /// Wie es um die Unterlage im Modell steht (gelesen, fehlt).
+    pub(crate) unterlage: unterlage::Stand,
     /// Modellstand der Leiste im Paneel; `neu` erzwingt einen Abgleich.
     stand: Option<u64>,
     neu: bool,
@@ -76,42 +89,13 @@ impl Zustand {
         self.meldung.clear();
         self.fehler = None;
         self.plan = None;
+        self.lesen = None;
         self.neu = true;
     }
-}
 
-/// Der Lageplan der Unterlage im Modell, einmal gelesen je Datei. Fehlt
-/// die Datei, bleibt die Grenze und die Unterlage fehlt.
-#[derive(Default)]
-pub(crate) struct Unterlage {
-    src: Option<String>,
-    plan: Option<SitePlan>,
-}
-
-impl Unterlage {
-    /// Der Lageplan zur Unterlage des Modells; gelesen, wenn sich die
-    /// Datei geändert hat.
-    fn plan(&mut self, m: &Model) -> Option<&SitePlan> {
-        let src = &m.terrain()?.underlay.as_ref()?.src;
-        if self.src.as_ref() != Some(src) {
-            let zone = m.location().utm.map_or(32, |u| u.zone);
-            self.plan = datei(Path::new(src))
-                .ok()
-                .and_then(|roh| SitePlan::read(&roh, zone).ok());
-            self.src = Some(src.clone());
-        }
-        self.plan.as_ref()
-    }
-
-    /// Linien der Unterlage im Modell (mm); leer ohne Lageplan.
-    pub(crate) fn linien(&mut self, m: &Model) -> Vec<(Vec<[f64; 2]>, bool, UnderlayKind)> {
-        self.plan(m).map_or(Vec::new(), |p| m.underlay_lines(p))
-    }
-
-    /// Eben gelesen: kein zweites Lesen derselben Datei.
-    fn merken(&mut self, src: &str, plan: &SitePlan) {
-        self.src = Some(src.to_string());
-        self.plan = Some(plan.clone());
+    /// Ein Lageplan wird gelesen.
+    pub(crate) fn liest(&self) -> bool {
+        self.lesen.is_some()
     }
 }
 
@@ -154,12 +138,34 @@ fn feld(
 
 /// Inhalt der Leiste zum Modell.
 pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
+    use unterlage::Stand;
+    // schon übernommen: kein Knopf, nach Rückgängig wieder (Review #139 H3)
+    let da = |src: &String| {
+        let u = m.terrain().and_then(|t| t.underlay.as_ref());
+        u.is_some_and(|u| u.src == *src)
+    };
     let mut l = GelaendeLeiste {
         meldung: z.meldung.clone(),
         fehler: z.fehler.clone(),
-        uebernehmen: z.plan.as_ref().is_some_and(|(_, p)| p.parcel.is_some()),
+        uebernehmen: z
+            .plan
+            .as_ref()
+            .is_some_and(|(src, p)| p.parcel.is_some() && !da(src)),
         ..Default::default()
     };
+    if z.lesen.is_some() {
+        l.meldung.push("Lageplan wird gelesen …".into());
+    }
+    match &z.unterlage {
+        Stand::Gut => {}
+        Stand::Liest => l.meldung.push("Unterlage: Lageplan wird gelesen …".into()),
+        Stand::Fehlt(n) => l.meldung.push(format!(
+            "Unterlage: „{n}“ nicht gefunden, weder am alten Ort noch beim Projekt; die Grenze bleibt."
+        )),
+        Stand::Kaputt(n) => l.meldung.push(format!(
+            "Unterlage: „{n}“ ist kein lesbarer Lageplan mehr; die Grenze bleibt."
+        )),
+    }
     let Some(t) = m.terrain() else {
         return l;
     };
@@ -249,6 +255,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
 enum Einpassen {
     /// Kein Lageplan allein oder schon im selben System.
     Nicht,
+    /// Neben einem Aufmaß mit Lageplan: das neue ersetzt beide.
+    Ohne,
     /// Eingepasst, mit der größten Abweichung (m).
     Mit(sk_model::Affine, f64),
     /// Passt nicht; der Satz sagt, was mit der Grenze geschieht.
@@ -300,17 +308,24 @@ fn heute() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// Datei lesen, höchstens [`MAX_DATEI`], vor dem Lesen geprüft.
-fn datei(p: &Path) -> std::io::Result<Vec<u8>> {
+/// Datei lesen, höchstens `max` Bytes, vor dem Lesen geprüft.
+fn datei(p: &Path, max: u64) -> std::io::Result<Vec<u8>> {
     let gross = || std::io::Error::new(std::io::ErrorKind::InvalidData, "zu groß");
-    if std::fs::metadata(p)?.len() > MAX_DATEI {
+    if std::fs::metadata(p)?.len() > max {
         return Err(gross());
     }
     let b = std::fs::read(p)?;
-    if b.len() as u64 > MAX_DATEI {
+    if b.len() as u64 > max {
         return Err(gross());
     }
     Ok(b)
+}
+
+/// PDF `p` als Lageplan lesen (im Faden von [`App::lageplan_einlesen`]).
+fn lageplan_lesen(p: &Path, zone: u8) -> Result<SitePlan, Meldung> {
+    let roh = datei(p, MAX_PDF)
+        .map_err(|e| Meldung::aus_io("Lageplan nicht eingelesen", "Einlesen", p, &e))?;
+    SitePlan::read(&roh, zone).map_err(|e| Meldung::mit("Lageplan nicht eingelesen: {}", &[&e]))
 }
 
 impl App {
@@ -422,11 +437,13 @@ impl App {
             .map_or(String::new(), |n| n.to_string_lossy().into_owned());
         let m = self.scene.model();
         let zone = m.location().utm.map_or(32, |u| u.zone);
-        let gelesen = datei(p)
+        let gelesen = datei(p, MAX_DATEI)
             .map_err(|e| Meldung::aus_io("Höhenaufmaß nicht eingelesen", "Einlesen", p, &e))
             .and_then(|roh| {
-                Terrain::lesen(&roh, &name, &heute(), zone).map_err(|e| Meldung::mit("{}", &[&e]))
+                Terrain::lesen(&roh, &name, &heute(), zone)
+                    .map_err(|e| Meldung::mit("Höhenaufmaß nicht eingelesen: {}", &[&e]))
             });
+        let mit_unterlage = m.terrain().is_some_and(|t| t.underlay.is_some());
         let z = &mut self.platte.leiste;
         z.neu = true;
         z.meldung.clear();
@@ -453,6 +470,16 @@ impl App {
                         self.platte.leiste.meldung.push(warum.into());
                         self.gelaende_schritt("Höhenaufmaß eingelesen", |m| m.import_terrain(t));
                     }
+                    Einpassen::Ohne => {
+                        self.gelaende_schritt("Höhenaufmaß eingelesen", |m| m.import_terrain(t));
+                        // nicht stillschweigend (Review #139 H4)
+                        let m = self.scene.model();
+                        if mit_unterlage && m.terrain().is_some_and(|t| t.underlay.is_none()) {
+                            self.platte.leiste.meldung.push(
+                                "Die Unterlage aus dem Lageplan entfällt mit dem neuen Aufmaß; „Lageplan“ und „Flurstück übernehmen“ legen sie neu an.".into(),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -465,7 +492,7 @@ impl App {
     /// Grenzpunkte mit gleicher Nummer eingepasst.
     fn lageplan_einpassen(&mut self, t: &Terrain) -> Einpassen {
         let m = self.scene.model();
-        let Some(alt) = m.terrain().filter(|a| a.points.is_empty()) else {
+        let Some(alt) = m.terrain() else {
             return Einpassen::Nicht;
         };
         if alt.underlay.is_none()
@@ -473,7 +500,16 @@ impl App {
         {
             return Einpassen::Nicht;
         }
-        let plan = self.platte.unterlage.plan(m);
+        if !alt.points.is_empty() {
+            return Einpassen::Ohne;
+        }
+        // Der Plan ist meist längst gelesen; sonst wird hier auf ihn
+        // gewartet, denn ohne ihn passt nichts ein
+        let u = &mut self.platte.unterlage;
+        let plan = u.plan(m).or_else(|| {
+            u.warten();
+            u.plan(m)
+        });
         match plan.and_then(|p| p.fit_to(&t.points)) {
             Some((fit, fehler)) => Einpassen::Mit(fit, fehler),
             None => Einpassen::Geht(
@@ -482,23 +518,55 @@ impl App {
         }
     }
 
-    /// PDF `p` als Lageplan lesen: Maßstab, Lage und Flurstück stehen in
+    /// PDF `p` als Lageplan lesen, im eigenen Faden (Review #139 B2: im
+    /// UI-Faden stand das Bild bis zu 250 ms). Ist er gelesen
+    /// ([`App::lageplan_abholen`]), stehen Maßstab, Lage und Flurstück in
     /// der Leiste, „Flurstück übernehmen“ macht es zur Grenze.
     pub(crate) fn lageplan_einlesen(&mut self, p: &Path) {
         let zone = self.scene.model().location().utm.map_or(32, |u| u.zone);
-        let gelesen = datei(p)
-            .map_err(|e| Meldung::aus_io("Lageplan nicht eingelesen", "Einlesen", p, &e))
-            .and_then(|roh| SitePlan::read(&roh, zone).map_err(|e| Meldung::mit("{}", &[&e])));
+        let pfad = p.to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            // fällt weg, wenn die Leiste inzwischen zu ist
+            let _ = tx.send(lageplan_lesen(&pfad, zone));
+        });
         let z = &mut self.platte.leiste;
         z.neu = true;
         z.meldung.clear();
         z.fehler = None;
         z.plan = None;
-        match gelesen {
+        z.lesen = Some((p.to_path_buf(), rx));
+        self.gelaende_sync();
+        self.redraw = true;
+    }
+
+    /// Einen fertig gelesenen Lageplan in die Leiste übernehmen; `true`,
+    /// wenn einer kam (dann folgt ein Bild).
+    pub(crate) fn lageplan_abholen(&mut self) -> bool {
+        let z = &mut self.platte.leiste;
+        let Some((_, rx)) = &z.lesen else {
+            return false;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => Err(Meldung::satz(
+                "Lageplan nicht eingelesen: Das Lesen brach ab.",
+            )),
+        };
+        let (p, _) = z.lesen.take().expect("Lesen");
+        self.lageplan_gelesen(&p, r);
+        true
+    }
+
+    fn lageplan_gelesen(&mut self, p: &Path, r: Result<SitePlan, Meldung>) {
+        let z = &mut self.platte.leiste;
+        z.neu = true;
+        match r {
             Err(e) => z.fehler = Some(e),
             Ok(plan) => {
                 z.meldung = lageplan_saetze(&plan);
-                z.plan = Some((p.to_string_lossy().into_owned(), plan));
+                z.plan = Some((p.to_string_lossy().into_owned(), Arc::new(plan)));
             }
         }
         self.gelaende_sync();
@@ -507,15 +575,20 @@ impl App {
 
     /// Das Flurstück des gelesenen Lageplans übernehmen (ein Schritt). Mit
     /// Aufmaß in einem anderen System wird über die Grenzpunkte mit
-    /// gleicher Nummer eingepasst.
+    /// gleicher Nummer eingepasst. Der Plan bleibt in der Leiste, so dass
+    /// es nach Rückgängig wieder geht; die Unterlage merkt ihn erst, wenn
+    /// das Übernehmen gelang (Review #139 H3).
     fn flurstueck_uebernehmen(&mut self) {
-        let Some((src, plan)) = self.platte.leiste.plan.take() else {
+        let Some((src, plan)) = self.platte.leiste.plan.clone() else {
             return;
         };
         let m = self.scene.model();
         let mut fit = None;
         let mut satz = None;
         let gleich = |t: &Terrain| matches!((plan.fit, t.crs), (Some((Crs::Utm(a), _)), Crs::Utm(b)) if a == b);
+        let z = &mut self.platte.leiste;
+        z.neu = true;
+        z.fehler = None;
         if let Some(t) = m.terrain().filter(|t| !t.points.is_empty() && !gleich(t)) {
             match plan.fit_to(&t.points) {
                 Some((f, fehler)) => {
@@ -526,33 +599,48 @@ impl App {
                     ));
                 }
                 None => {
-                    let z = &mut self.platte.leiste;
                     z.fehler = Some(Meldung::satz(
                         "Lageplan und Aufmaß liegen in verschiedenen Systemen und haben keine zwei Grenzpunkte mit gleicher Nummer.",
                     ));
-                    z.plan = Some((src, plan));
                     return;
                 }
             }
         }
         if plan.fit.is_none() && fit.is_none() {
-            let z = &mut self.platte.leiste;
             z.fehler = Some(Meldung::satz(
                 "Maßstab und Lage des Lageplans sind nicht erkannt; Einpassen über zwei Punkte folgt.",
             ));
-            z.plan = Some((src, plan));
             return;
         }
-        self.platte.unterlage.merken(&src, &plan);
         let ok = self.gelaende_schritt("Flurstück übernommen", |m| {
             m.import_parcel(&plan, &src, fit)
         });
         let z = &mut self.platte.leiste;
         z.meldung.clear();
         if ok {
+            self.platte
+                .unterlage
+                .merken(self.scene.model(), plan.clone());
             let nr = plan.parcel.as_ref().map_or("", |p| p.0.as_str());
             z.meldung.push(format!("Flurstück {nr} übernommen"));
             z.meldung.extend(satz);
+        } else {
+            z.fehler = Some(Meldung::satz(
+                "Flurstück nicht übernommen: Seine Grenze ergibt keine Fläche, oder Grenze und Unterlage sind schon dieselben.",
+            ));
+        }
+    }
+
+    /// Die Leiste sagt, ob die Unterlage gelesen wird oder fehlt; neu nur,
+    /// wenn sich das ändert.
+    pub(crate) fn unterlage_stand(&mut self) {
+        let s = self.platte.unterlage.stand(self.scene.model());
+        let z = &mut self.platte.leiste;
+        if z.unterlage != s {
+            z.unterlage = s;
+            z.neu = true;
+            self.gelaende_sync();
+            self.redraw = true;
         }
     }
 
@@ -784,6 +872,31 @@ mod tests {
     const PLAN: &[u8] =
         include_bytes!("../../crates/sk-gelaende/tests/daten/lageplan-lindenhof-7.pdf");
 
+    /// Fehler beim Lesen sagen, was nicht eingelesen wurde (H5).
+    #[test]
+    fn lageplan_fehler_mit_vorsatz() {
+        let d = std::env::temp_dir().join(format!("skizzeo-lageplan-h5-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("kein.pdf");
+        std::fs::write(&p, b"Hallo").unwrap();
+        let e = lageplan_lesen(&p, 32).unwrap_err();
+        assert!(
+            e.as_str().starts_with("Lageplan nicht eingelesen: "),
+            "{}",
+            e.as_str()
+        );
+        let e = lageplan_lesen(&d.join("fehlt.pdf"), 32).unwrap_err();
+        assert!(
+            e.as_str().starts_with("Lageplan nicht eingelesen"),
+            "{}",
+            e.as_str()
+        );
+        let p = d.join("lageplan.pdf");
+        std::fs::write(&p, PLAN).unwrap();
+        assert!(lageplan_lesen(&p, 32).unwrap().parcel.is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Der Beispiel-Lageplan: Maßstab und Flurstück in der Leiste, dann
     /// übernommen ein ebenes Grundstück ohne Höhenlage.
     #[test]
@@ -795,24 +908,45 @@ mod tests {
             // ergibt 822,87 m²
             ["Lageplan 1:500, Norden oben", "Flurstück 123/4, 822,90 m²"]
         );
-        let mut m = lindenhof();
+        let mut s = crate::scene::Scene::with_model(lindenhof());
         let z = Zustand {
-            plan: Some(("lageplan.pdf".into(), plan.clone())),
+            plan: Some(("lageplan.pdf".into(), Arc::new(plan.clone()))),
             ..Default::default()
         };
-        let l = leiste(&m, &z);
+        let l = leiste(s.model(), &z);
         assert!(l.uebernehmen && !l.aufmass);
-        m.begin("Lageplan");
-        assert!(m.import_parcel(&plan, "lageplan.pdf", None));
-        m.commit();
-        let l = leiste(&m, &Zustand::default());
+        assert!(s.edit_model("Lageplan", |m| m.import_parcel(&plan, "lageplan.pdf", None)));
+        let l = leiste(s.model(), &Zustand::default());
         assert!(l.aufmass && !l.hoehen && l.grenze && !l.uebernehmen);
         assert!(l.hoehenlage.is_empty() && l.steckt.is_none());
         assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,90 m²"));
-        // ohne Datei keine Unterlage, die Grenze bleibt
+        // übernommen: kein Knopf mehr, nach Rückgängig wieder (H3)
+        assert!(!leiste(s.model(), &z).uebernehmen);
+        assert!(s.undo());
+        assert!(leiste(s.model(), &z).uebernehmen);
+        assert!(s.redo());
+        // ohne Datei keine Unterlage, die Grenze bleibt, die Leiste sagt es
+        let m = s.model();
         let mut u = Unterlage::default();
-        assert!(u.linien(&m).is_empty());
-        u.merken("lageplan.pdf", &plan);
-        assert!(u.linien(&m).len() > 4);
+        assert!(u.linien(m).is_empty());
+        assert!(u.liest() && u.stand(m) == unterlage::Stand::Liest);
+        u.warten();
+        assert!(u.linien(m).is_empty() && !u.liest());
+        let fehlt = unterlage::Stand::Fehlt("lageplan.pdf".into());
+        assert_eq!(u.stand(m), fehlt);
+        let z = Zustand {
+            unterlage: fehlt,
+            ..Default::default()
+        };
+        let l = leiste(m, &z);
+        assert!(
+            l.meldung[0].contains("„lageplan.pdf“ nicht gefunden"),
+            "{:?}",
+            l.meldung
+        );
+        u.merken(m, Arc::new(plan));
+        assert!(u.linien(m).len() > 4);
+        // gemerkt: dieselben Linien ohne neues Abbilden (B3)
+        assert!(Arc::ptr_eq(&u.linien(m), &u.linien(m)));
     }
 }
