@@ -1,6 +1,7 @@
 //! Die Kostengruppen des Werksbestands (`bestand::KGS`) decken alle `kg=`
 //! der Werks-Leistungen in `werk.szk` ab (Gleichstand R8, Werksstand 16:
-//! KG 336 an der Laibung Innenputz).
+//! KG 336 an der Laibung Innenputz; Werksstand 18: KG 511 und 571 der
+//! Außenanlagen).
 
 use sk_szb::bestand::KGS;
 

@@ -15,7 +15,12 @@ use crate::foundation::Foundation;
 use crate::qto::AutoMenge;
 use sk_math::Vec3;
 
+mod flaechen;
 mod netz;
+pub(crate) use flaechen::{gelaende_mengen, Merker as FlaechenMerker};
+pub use flaechen::{
+    Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, KEIL, OHNE_AUFMASS, OHNE_TRAEGER, UNGUELTIG,
+};
 pub use netz::{steil_hinweis, ErdNetz, DREIECKSPRISMEN, STEIL, STEIL_AB};
 
 /// Bodenkennwerte des Projekts (mm, Grad); stehen am Projekt
@@ -95,9 +100,13 @@ pub const SENKRECHT_BIS: f64 = 1250.0;
 
 /// Kostengruppe der Erdarbeiten (DIN 276: 311 Herstellung der Baugrube).
 pub const KG: u16 = 311;
+/// Kostengruppen des Geländebaus (G3b, kosten/kg-gelaende-g3.md): 511
+/// Erdbau, 571 vegetationstechnische Bodenbearbeitung.
+pub const KG_GELAENDE: u16 = 511;
+pub const KG_ANDECKEN: u16 = 571;
 
 /// Schlüssel der Erdmengen (`[service] auto=`), Einheit und Bedeutung.
-pub const SCHLUESSEL: [(&str, &str, &str); 9] = [
+pub const SCHLUESSEL: [(&str, &str, &str); 18] = [
     (TOPSOIL, "m3", "Oberboden abtragen und seitlich lagern"),
     (
         EXCAVATION,
@@ -123,6 +132,43 @@ pub const SCHLUESSEL: [(&str, &str, &str); 9] = [
         "m2",
         "Böschungsfläche abdecken (nur über 1,25 m Tiefe)",
     ),
+    (
+        TOPSOIL_SITE,
+        "m3",
+        "Oberboden abtragen auf Geländeflächen außerhalb des Baufelds",
+    ),
+    (
+        CUT,
+        "m3",
+        "Gelände abtragen bis Planum (außerhalb der Baugrube)",
+    ),
+    (EMBANK, "m3", "Gelände auftragen mit Eigenboden bis Planum"),
+    (
+        EMBANK_SUPPLY,
+        "m3",
+        "Gelände auftragen mit Lieferboden bis Planum",
+    ),
+    (
+        SURPLUS,
+        "m3",
+        "überschüssigen Geländeabtrag laden und abfahren",
+    ),
+    (
+        TOPSOIL_SUPPLY,
+        "m3",
+        "Oberboden liefern (Fehlmenge der Andeckung)",
+    ),
+    (
+        TOPSOIL_REMOVE,
+        "m3",
+        "überschüssigen Oberboden laden und abfahren",
+    ),
+    (SPREAD, "m2", "Oberboden andecken, alle Flächen"),
+    (
+        SPREAD_SLOPE,
+        "m2",
+        "Zulage Andecken an Böschungen steiler als 1:4",
+    ),
 ];
 
 pub const TOPSOIL: &str = "earth.topsoil";
@@ -134,6 +180,31 @@ pub const FILL: &str = "earth.fill";
 pub const BACKFILL: &str = "earth.backfill";
 pub const DISPOSAL: &str = "earth.disposal";
 pub const SLOPE: &str = "earth.slope";
+pub const TOPSOIL_SITE: &str = "earth.topsoil_site";
+pub const CUT: &str = "earth.cut";
+pub const EMBANK: &str = "earth.embank";
+pub const EMBANK_SUPPLY: &str = "earth.embank_supply";
+pub const SURPLUS: &str = "earth.surplus";
+pub const TOPSOIL_SUPPLY: &str = "earth.topsoil_supply";
+pub const TOPSOIL_REMOVE: &str = "earth.topsoil_remove";
+pub const SPREAD: &str = "earth.spread";
+pub const SPREAD_SLOPE: &str = "earth.spread_slope";
+
+/// Was die Geländeflächen (G3b) von den Erdmengen einer Gründung brauchen:
+/// wie weit um die Platte der Oberboden schon abgetragen ist und wo bis zur
+/// Sohle ausgehoben wird.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ErdZone {
+    /// Abtrag um die Platte (mm): das Baufeld.
+    pub baufeld: f64,
+    /// Sohle der Baugrube (Platte samt Arbeitsraum) gegen den
+    /// Uhrzeigersinn; leer, wenn nichts ausgehoben wird.
+    pub sohle: Vec<Vec3>,
+    /// Höhe der Sohle (UK Platte, mm über ±0,00).
+    pub b: f64,
+    /// Die Böschung über dem Sohlrand ist mit dabei (dort angenähert).
+    pub keil: bool,
+}
 
 /// Höhen und Flächen einer Gründung (mm, mm²), wie die Erdmengen sie
 /// brauchen.
@@ -225,14 +296,20 @@ fn zahl(x: f64, teiler: f64) -> String {
 pub const AUS_AUFMASS: &str = "; Gelände aus Aufmaß";
 
 /// Erdmengen einer Gründung (Bauteil `element`, Nummer `number` der
-/// Sohlplatte). Mengen ≤ 0 entstehen nicht.
-pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static str, f64, String)) {
+/// Sohlplatte). Mengen ≤ 0 entstehen nicht. Dazu Baufeld und Baugrube für
+/// die Geländeflächen.
+pub fn erd_mengen(
+    b: &ErdBasis,
+    boden: &Boden,
+    mut menge: impl FnMut(&'static str, f64, String),
+) -> ErdZone {
     // G2: über das Netz, wenn es die Baugrube deckt
-    if b.netz
+    if let Some(z) = b
+        .netz
         .as_ref()
-        .is_some_and(|n| netz::mengen(b, n, boden, &mut menge))
+        .and_then(|n| netz::mengen(b, n, boden, &mut menge))
     {
-        return;
+        return z;
     }
     // Mit Aufmaß nennt jeder Ansatz, der an der Geländehöhe hängt, die
     // Ebene (plan-gelaendemodul.md §5 G1)
@@ -376,6 +453,19 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
             ),
         );
     }
+    let sohle = if grube <= 0.0 {
+        Vec::new()
+    } else if a > 0.0 {
+        sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()]).unwrap_or_default()
+    } else {
+        b.outline.clone()
+    };
+    ErdZone {
+        baufeld: x_ob,
+        sohle,
+        b: z_s,
+        keil: boeschung && h > 0.0,
+    }
 }
 
 /// Oberboden über das Baufeld, `x_ob` um die Platte (waagerechte Fläche ×
@@ -417,10 +507,15 @@ fn planum(innen: f64, g: f64, menge: &mut dyn FnMut(&'static str, f64, String)) 
     }
 }
 
-/// Erdmengen der Gründung als Automatikmengen am Bauteil der Sohlplatte.
-pub(crate) fn auto_mengen(vorlage: &AutoMenge, b: &ErdBasis, boden: &Boden) -> Vec<AutoMenge> {
+/// Erdmengen der Gründung als Automatikmengen am Bauteil der Sohlplatte,
+/// dazu Baufeld und Baugrube.
+pub(crate) fn auto_mengen(
+    vorlage: &AutoMenge,
+    b: &ErdBasis,
+    boden: &Boden,
+) -> (Vec<AutoMenge>, ErdZone) {
     let mut out = Vec::new();
-    erd_mengen(b, boden, |key, value, formula| {
+    let zone = erd_mengen(b, boden, |key, value, formula| {
         let unit = SCHLUESSEL.iter().find(|s| s.0 == key).map_or("m3", |s| s.1);
         out.push(AutoMenge {
             key,
@@ -431,7 +526,7 @@ pub(crate) fn auto_mengen(vorlage: &AutoMenge, b: &ErdBasis, boden: &Boden) -> V
             ..vorlage.clone()
         });
     });
-    out
+    (out, zone)
 }
 
 #[cfg(test)]

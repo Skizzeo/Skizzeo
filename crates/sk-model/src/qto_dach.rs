@@ -187,6 +187,7 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
                 value: 0.0,
                 kg: None,
                 formula: String::new(),
+                hinweis: String::new(),
             };
             // dieselbe Regel wie die Zuordnung des Blechs zum Flachdach
             let terrasse = !model.flat_roof_coping(r.element, floor);

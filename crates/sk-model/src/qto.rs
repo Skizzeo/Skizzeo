@@ -1635,6 +1635,9 @@ pub struct Schedule {
     /// am Attikablech): Mengen, die an keiner Schicht hängen. Bauleistungen
     /// mit `auto=` rechnen damit.
     pub auto: Vec<AutoMenge>,
+    /// Hinweise zu Mengen, die keine Zeile tragen kann, etwa zu einer
+    /// Geländefläche ohne Sohlplatte (VOB-Prüfung G3, D2).
+    pub hinweise: Vec<String>,
 }
 
 /// Eine Automatikmenge: eine Menge eines Gebäudes, die an keiner Schicht
@@ -1663,6 +1666,9 @@ pub struct AutoMenge {
     pub kg: Option<u16>,
     /// Rechenweg für den Mengenansatz, z. B. „99,00 m² × 0,30 m“.
     pub formula: String,
+    /// Hinweise zur Menge, getrennt vom Rechenweg (Review #164 H-164f,
+    /// VOB-Prüfung G3 B7), je Hinweis eine Zeile; leer ohne.
+    pub hinweis: String,
 }
 
 /// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
@@ -2086,7 +2092,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
         }
     }
     sched.formwork = formwork_rows(&sched);
-    sched.auto = auto_rows(model, &platten);
+    sched.auto = auto_rows(model, &platten, &mut sched.hinweise);
     roofs.sort_by_key(|(id, _)| model.element(*id).map(|e| e.number.clone()));
     for (id, r) in &roofs {
         let Some(e) = model.element(*id) else {
@@ -2102,6 +2108,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
             value: 0.0,
             kg: None,
             formula: String::new(),
+            hinweis: String::new(),
         };
         sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
         // Regenfallrohre an den Abläufen des Dachs (Jörn 11.10.)
@@ -2138,8 +2145,13 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
 
 /// Automatikmengen je Gründung: die eine Stelle, an der sie gesammelt
 /// werden (Erdarbeiten, Bauvorbereitung), in der Reihenfolge der Platten.
-fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
+fn auto_rows(
+    model: &Model,
+    platten: &[(RunId, ElementId)],
+    hinweise: &mut Vec<String>,
+) -> Vec<AutoMenge> {
     let mut out = Vec::new();
+    let mut gruende = Vec::new();
     let boden = model.project().soil;
     // Außenwände je Gebäude einmal, nicht je Platte
     let huellen = match platten {
@@ -2183,9 +2195,16 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
             value: 0.0,
             kg: None,
             formula: String::new(),
+            hinweis: String::new(),
         };
         let basis = crate::qto_earth::ErdBasis::im_modell(model, &g);
-        out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
+        let (erde, zone) = crate::qto_earth::auto_mengen(&vorlage, &basis, &boden);
+        out.extend(erde);
+        gruende.push(crate::qto_earth::Gruendung {
+            vorlage: vorlage.clone(),
+            outline: g.outline.clone(),
+            zone,
+        });
         let b = model.run(run).and_then(|r| model.building_of(r.storey));
         // ohne Gebäude zählt jede Platte für sich
         let erste = b.is_none_or(|b| traeger.get(&b).is_some_and(|t| t.1 == slab));
@@ -2199,6 +2218,11 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
             erste,
         ));
     }
+    // Geländeflächen (G3b) mit der Bilanz über alle Gründungen, in fester
+    // Reihenfolge wie der Träger: nach Speichern und Öffnen verteilt sie
+    // sich gleich auf die Häuser (Review #173 B2)
+    gruende.sort_by_cached_key(|g| model.element(g.vorlage.element).map(rang));
+    crate::qto_earth::gelaende_mengen(model, &gruende, &boden, &mut out, hinweise);
     out
 }
 
@@ -2320,6 +2344,7 @@ impl Schedule {
             out.loose = self.loose.iter().filter(keep).cloned().collect();
         }
         out.formwork = formwork_rows(&out);
+        out.hinweise = self.hinweise.clone();
         out.auto = self
             .auto
             .iter()

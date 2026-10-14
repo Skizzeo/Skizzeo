@@ -341,8 +341,9 @@ pub const BAUSTOFFE: [WerkBaustoff; 10] = [
 ];
 
 /// Gewerke im Werksbestand (§10).
-pub const GEWERKE: [(u32, &str); 10] = [
+pub const GEWERKE: [(u32, &str); 11] = [
     (18300, "Erdarbeiten"),
+    (18320, "Landschaftsbauarbeiten"),
     (18330, "Mauerarbeiten"),
     (18331, "Betonarbeiten"),
     (18334, "Zimmer- und Holzbauarbeiten"),
@@ -355,8 +356,9 @@ pub const GEWERKE: [(u32, &str); 10] = [
 ];
 
 /// Kostengruppen, die der Werksbestand kennt.
-pub const KGS: [u32; 18] = [
-    311, 322, 325, 330, 331, 333, 335, 336, 340, 343, 350, 351, 354, 359, 360, 363, 391, 392,
+pub const KGS: [u32; 20] = [
+    311, 322, 325, 330, 331, 333, 335, 336, 340, 343, 350, 351, 354, 359, 360, 363, 391, 392, 511,
+    571,
 ];
 
 /// In Skizzeo belegte Präfixe (§5).
@@ -383,7 +385,7 @@ pub const ARTEN: [&str; 13] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 91] = [
+pub const LEISTUNGEN: [WerkLeistung; 100] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -931,6 +933,60 @@ pub const LEISTUNGEN: [WerkLeistung; 91] = [
         "m",
         "auto",
         "Putz Deckenstirn in Aussparung, Kantenschutz oben und unten",
+    ),
+    l(
+        "1S7bUW001008020000001S",
+        "m3",
+        "auto",
+        "Oberboden abtragen auf Geländeflächen, seitlich lagern",
+    ),
+    l(
+        "1S7bUW001008020000001T",
+        "m3",
+        "auto",
+        "Boden abtragen bis Planum, Homogenbereich B1, seitlich lagern",
+    ),
+    l(
+        "1S7bUW001008020000001U",
+        "m3",
+        "auto",
+        "Auftrag mit gelagertem Boden, lagenweise einbauen, verdichten",
+    ),
+    l(
+        "1S7bUW001008020000001V",
+        "m3",
+        "auto",
+        "Boden liefern, lagenweise einbauen, verdichten",
+    ),
+    l(
+        "1S7bUW001008020000001W",
+        "m3",
+        "auto",
+        "Überschuss laden, abfahren, entsorgen BM-0 (früher Z0)",
+    ),
+    l(
+        "1S7bUW001008020000001X",
+        "m3",
+        "auto",
+        "Oberboden laden, abfahren, verwerten",
+    ),
+    l(
+        "1S7bUW001008020000001Y",
+        "m3",
+        "auto",
+        "Oberboden liefern, Bodengruppe nach DIN 18915, abladen",
+    ),
+    l(
+        "1S7bUW001008020000001Z",
+        "m2",
+        "auto",
+        "Oberboden andecken, Dicke nach Vorgabe, Feinplanum",
+    ),
+    l(
+        "1S7bUW001008020000001a",
+        "m2",
+        "auto",
+        "Zulage Andecken an Böschung steiler als 1:4, schräg gemessen",
     ),
 ];
 

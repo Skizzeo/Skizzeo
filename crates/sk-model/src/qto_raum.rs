@@ -168,6 +168,7 @@ pub(crate) fn auto_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> {
                     value: v,
                     kg: l.kg,
                     formula: formel(&l.weg),
+                    hinweis: String::new(),
                 });
             }
         }

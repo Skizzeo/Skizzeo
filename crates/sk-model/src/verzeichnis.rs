@@ -1363,6 +1363,7 @@ mod tests {
                     value: 0.0,
                     kg: None,
                     formula: String::new(),
+                    hinweis: String::new(),
                 };
                 aussen += usize::from(h.contains_key(&b));
                 for erste in [true, false] {

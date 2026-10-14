@@ -74,6 +74,9 @@ pub struct Ansatz {
     pub formel: Option<String>,
     /// Automatikmenge: ihr Schlüssel (`earth.excavation`, `site.scaffold` …).
     pub auto: Option<&'static str>,
+    /// Automatikmenge: ihre Hinweise zur Menge (`AutoMenge::hinweis`), je
+    /// Hinweis eine Zeile; leer ohne. Das LV zeigt sie an der Position.
+    pub hinweis: String,
 }
 
 /// Was eine Position rechnet.
@@ -866,6 +869,7 @@ pub fn kosten_mit(
             grad: None,
             formel: None,
             auto: None,
+            hinweis: String::new(),
         };
         let gewerk_schicht = r.trade.and_then(|t| m.trade(t)).map(|t| t.guid);
         let mut legen = |key: PosKey,
@@ -1497,6 +1501,7 @@ fn ext_ansaetze(
                         .then(|| (menge as f64 / (q.volume / 1e6)).round() as u32),
                     formel: None,
                     auto: None,
+                    hinweis: String::new(),
                 },
                 t,
                 mat.map(|x| (x.guid, t)),
@@ -1528,7 +1533,28 @@ fn auto_ansaetze(
     // Netz, Böschung am Gelände), und Gelände steiler als 1:10
     let mut erde_aus_mittel: Option<Ort> = None;
     let mut steil: Option<(String, Ort)> = None;
+    // Hinweise, die keine Zeile tragen kann, für die Datei (VOB-Prüfung G3
+    // D2)
+    for h in &s.hinweise {
+        let b = Befund::hinweis(0, h.as_str(), Ort::Datei);
+        if !befunde.contains(&b) {
+            befunde.push(b);
+        }
+    }
     for a in &s.auto {
+        // Hinweise zur Menge (VOB-Prüfung G3 D1): auch ohne Menge und ohne
+        // Bauleistung, sonst bleibt eine Fläche ohne Mengen stumm
+        if !a.hinweis.is_empty() {
+            let ort = m
+                .element(a.element)
+                .map_or(Ort::Datei, |e| Ort::Bauteil(e.guid));
+            for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
+                let b = Befund::hinweis(0, h, ort.clone());
+                if !befunde.contains(&b) {
+                    befunde.push(b);
+                }
+            }
+        }
         let leistungen = k
             .leistungen
             .iter()
@@ -1596,6 +1622,7 @@ fn auto_ansaetze(
                     grad: None,
                     formel: Some(a.formula.clone()),
                     auto: Some(a.key),
+                    hinweis: a.hinweis.clone(),
                 },
                 Dez::NULL,
                 None,

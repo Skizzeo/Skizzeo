@@ -1,7 +1,7 @@
 SZK 1
-# Skizzeo-Werksbestand Stammdaten, Stand 17 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Skizzeo-Werksbestand Stammdaten, Stand 18 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=17 date=2026-10-13 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=18 date=2026-10-14 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -27,6 +27,9 @@ SZK 1
 [lot] guid=1S7bUW001008030000000H name="Flachdach" nr="03" parent=1S7bUW001008030000000C
 [lot] guid=1S7bUW001008030000000I name="Dachentwässerung außen" nr="04" parent=1S7bUW001008030000000C
 [lot] guid=1S7bUW001008030000000J name="Außenputz" nr="02" parent=1S7bUW0010080300000008
+[lot] guid=1S7bUW001008030000000K name="Außenanlagen" nr="6" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gelände- und Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Erdbau nach ATV DIN 18300, Oberbodenarbeiten und vegetationstechnische Bodenbearbeitung nach ATV DIN 18320 und DIN 18915. Abtrag und Auftrag des Geländes zwischen Urgelände ohne Oberboden und Planum der Geländeflächen, Abtrag im festen, Auftrag im eingebauten Zustand; Böschungen schräg gemessen. Eigenboden aus Abtrag und Baugrube geht vor Lieferboden."
+[lot] guid=1S7bUW001008030000000L name="Erdbau" nr="01" parent=1S7bUW001008030000000K
+[lot] guid=1S7bUW001008030000000M name="Vegetationstechnik" nr="02" parent=1S7bUW001008030000000K
 [article] guid=1S7bUW0010080100000001 name="Porenbeton-Planbauplatte PP2-0,35 d=11,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=115 grade="PP2-0,35" format="599×249" unit=m2 price=15.8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
 [article] guid=1S7bUW0010080100000002 name="Porenbeton-Planstein PP2-0,35 d=17,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=175 grade="PP2-0,35" format="599×249" unit=m2 price=22.16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
 [article] guid=1S7bUW0010080100000003 name="Porenbeton-Planstein PP2-0,35 d=24cm" mat=2wuC33GkTD9Qack6WJ4EsM t=240 grade="PP2-0,35" format="599×249" unit=m2 price=29.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
@@ -90,7 +93,7 @@ SZK 1
 [service] guid=1S7bUW001008020000000K short="Innenputz Gips maschinell d=15mm Q2" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=10 unit=m2 basis=area hours=0.25 cats=exterior,interior mat=3wpDPQ9rX51Re1tUzckf7X
 [service] guid=1S7bUW001008020000000L short="Untersichtdämmung MW 035 d=120mm A1 zwischen Lattung, über Kopf" trade=1S7Wf_00100800000004Uf title=1S7bUW001008030000000G pos=30 unit=m2 basis=area hours=0.2 cats=soffitinsulation mat=0isiJXaEH68fAGDc36vC$0
 [service] guid=1S7bUW001008020000000M short="Untersichtdämmung MW-Platte 035 d=120mm zwischen Lattung, über Kopf" trade=1S7Wf_00100800000004Uf title=1S7bUW001008030000000G pos=40 unit=m2 basis=area hours=0.2 cats=soffitinsulation mat=2dv8rsAYH3ovLj1KIg1$Mo
-[service] guid=1S7bUW001008020000000N short="Oberboden bis 30cm abtragen, seitlich lagern" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=10 unit=m3 basis=auto hours=0.12 equip=6 kg=311 auto=earth.topsoil
+[service] guid=1S7bUW001008020000000N short="Oberboden bis 30cm abtragen, seitlich lagern" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000B pos=10 unit=m3 basis=auto hours=0.12 equip=6 kg=311 auto=earth.topsoil
 [service] guid=1S7bUW001008020000000O short="Baugrube ausheben Homogenbereich B1, seitlich lagern" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=20 unit=m3 basis=auto hours=0.08 equip=8 kg=311 auto=earth.excavation
 [service] guid=1S7bUW001008020000000P short="Graben Frostschürze ausheben, Wände senkrecht, Sohle eben" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=30 unit=m3 basis=auto hours=0.3 equip=12 kg=311 auto=earth.trench
 [service] guid=1S7bUW001008020000000Q short="Planum herstellen, ±2cm, verdichten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=40 unit=m2 basis=auto hours=0.03 equip=1.2 kg=311 auto=earth.subgrade
@@ -159,6 +162,15 @@ SZK 1
 [service] guid=1S7bUW001008020000001P short="Zulage Laibung Verblendmauerwerk, Läufer und Binder verzahnt" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000005 pos=70 unit=m basis=auto hours=0.4 other=4 kg=335 auto=opening.reveal.facing
 [service] guid=1S7bUW001008020000001Q short="Laibung Innenputz Gips an Deckenaussparung, Kantenschutzprofil" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=30 unit=m basis=auto hours=0.25 other=2.5 kg=336 auto=opening.reveal.slab
 [service] guid=1S7bUW001008020000001R short="Putz Deckenstirn in Aussparung, Kantenschutz oben und unten" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=40 unit=m basis=auto hours=0.3 other=3 kg=336 auto=opening.slab_edge
+[service] guid=1S7bUW001008020000001S short="Oberboden abtragen auf Geländeflächen, seitlich lagern" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000L pos=10 unit=m3 basis=auto hours=0.12 equip=6 kg=511 auto=earth.topsoil_site
+[service] guid=1S7bUW001008020000001T short="Boden abtragen bis Planum, Homogenbereich B1, seitlich lagern" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000L pos=20 unit=m3 basis=auto hours=0.08 equip=8 kg=511 auto=earth.cut
+[service] guid=1S7bUW001008020000001U short="Auftrag mit gelagertem Boden, lagenweise einbauen, verdichten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000L pos=30 unit=m3 basis=auto hours=0.15 equip=3 kg=511 auto=earth.embank
+[service] guid=1S7bUW001008020000001V short="Boden liefern, lagenweise einbauen, verdichten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000L pos=40 unit=m3 basis=auto hours=0.15 equip=3 other=28 kg=511 auto=earth.embank_supply
+[service] guid=1S7bUW001008020000001W short="Überschuss laden, abfahren, entsorgen BM-0 (früher Z0)" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000L pos=50 unit=m3 basis=auto hours=0.03 equip=8 other=20 kg=511 auto=earth.surplus
+[service] guid=1S7bUW001008020000001X short="Oberboden laden, abfahren, verwerten" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000L pos=60 unit=m3 basis=auto hours=0.03 equip=8 other=10 kg=511 auto=earth.topsoil_remove
+[service] guid=1S7bUW001008020000001Y short="Oberboden liefern, Bodengruppe nach DIN 18915, abladen" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000M pos=10 unit=m3 basis=auto hours=0.02 equip=1 other=20 kg=571 auto=earth.topsoil_supply
+[service] guid=1S7bUW001008020000001Z short="Oberboden andecken, Dicke nach Vorgabe, Feinplanum" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000M pos=20 unit=m2 basis=auto hours=0.03 equip=1 kg=571 auto=earth.spread
+[service] guid=1S7bUW001008020000001a short="Zulage Andecken an Böschung steiler als 1:4, schräg gemessen" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000M pos=30 unit=m2 basis=auto hours=0.02 equip=0.5 kg=571 auto=earth.spread_slope
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -360,3 +372,12 @@ SZK 1
 [origin] key=1S7bUW001008020000001P rec=service kind=factory status=confirmed date=2026-10-12 source="Aufwandswert: Marktspanne 20–45 €/m Zulage; Formsteine und Schnitt 4 €/m" conf=rough
 [origin] key=1S7bUW001008020000001Q rec=service kind=factory status=confirmed date=2026-10-13 source="Aufwandswert: wie Laibung Innenputz (O30): Marktspanne 10–20 €/m; Profil und Putz 2,5 €/m" conf=rough
 [origin] key=1S7bUW001008020000001R rec=service kind=factory status=confirmed date=2026-10-13 source="Aufwandswert: Marktspanne 15–25 €/m; zwei Kantenprofile und Putz 3 €/m" conf=rough
+[origin] key=1S7bUW001008020000001S rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E10: 0,12 h/m³; Gerät geschätzt" conf=rough
+[origin] key=1S7bUW001008020000001T rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E20: Bagger 36 m³/h, Lohn mit Helfer" conf=rough
+[origin] key=1S7bUW001008020000001U rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E70: 8–15 €/m³" conf=rough
+[origin] key=1S7bUW001008020000001V rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: Recherche Erdarbeiten §5: Lieferboden eingebaut rund 40 €/m³" conf=rough
+[origin] key=1S7bUW001008020000001W rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E80: Kippgebühr 5–15 €/t, Lkw 10–30 €/t, 1,9 t/m³ fest" conf=rough
+[origin] key=1S7bUW001008020000001X rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E80 ohne Deponie: Verwertung Oberboden 5–15 €/m³ [E]" conf=rough
+[origin] key=1S7bUW001008020000001Y rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: Mutterboden frei Baustelle 15–30 €/m³ [E]" conf=rough
+[origin] key=1S7bUW001008020000001Z rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: Recherche Erdarbeiten §5: Andecken 6 €/m³; Feinplanum GaLaBau 2–4 €/m² [E]" conf=rough
+[origin] key=1S7bUW001008020000001a rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: geschätzt: Handarbeit am Hang 1–2 €/m² [E]" conf=rough

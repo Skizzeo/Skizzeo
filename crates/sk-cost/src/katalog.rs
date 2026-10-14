@@ -1034,7 +1034,7 @@ pub fn lesen<'a>(
             }
         }
         let kg = s.ganz("kg").map(|v| v as u16);
-        if let Some(v) = kg.filter(|v| !sk_model::trade::valid_kg(*v)) {
+        if let Some(v) = kg.filter(|v| !sk_model::trade::valid_kg_leistung(*v)) {
             bf.push(Befund::fehler(
                 79,
                 befund::r79(&kurz, "kg", &v.to_string()),
@@ -1413,18 +1413,18 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 91);
+        assert_eq!(k.leistungen.len(), 100);
         assert_eq!(k.artikel.len(), 41);
-        assert_eq!(k.lose.len(), 19);
+        assert_eq!(k.lose.len(), 22);
         assert_eq!(k.anteile.len(), 59);
         assert_eq!(k.folgen.len(), 9);
         assert_eq!(k.werte, Firmenwerte::werk());
-        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(17));
-        // Stand 17: 56 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(18));
+        // Stand 18: 65 Automatikpositionen (Erde mit Außenanlagen, Baustelle, Zulagen Attikaabdeckung,
         // Anschluss an der Attika, Untersicht, Fußpunkt, Flachdach, Gefälledämmung,
         // Dachentwässerung außen, Laibungen und Diagonalbewehrung an Öffnungen,
         // Laibung und Stirn an der Deckenaussparung)
-        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 56);
+        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 65);
         // jeder Schlüssel des Modells hat eine Leistung im Werk (Review
         // 9897697 Hinweis 2: sonst entsteht eine Menge, die niemand bepreist)
         for (key, _, _) in sk_model::qto::auto_schluessel() {
