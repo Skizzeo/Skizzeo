@@ -23,11 +23,11 @@ use crate::geometrie::{self, Netz};
 use crate::mengen;
 use crate::step::{e, lens, r, refs, s, typed, V};
 use sk_math::vec3;
-use sk_model::model::SCREED_SLAB_TYPE_GUID;
 use sk_model::{
     Category, ElementId, ElementKind, Guid, MaterialLayer, Model, StoreyId, TypeCategory,
 };
 use sk_raum::ausbau;
+use sk_raum::oeffnungen::Geschosse;
 use sk_raum::raumbuch::Flaeche;
 use sk_raum::raumliste::{raumliste, AusbauDaten, RaumDaten};
 use sk_raum::{Begrenzung, Kante};
@@ -186,6 +186,8 @@ impl Ctx<'_> {
         // Kennungen der Wandseiten und den Bericht
         let mut kanten: HashMap<ElementId, Vec<Kante>> = HashMap::new();
         let mut erkannt: HashSet<StoreyId> = HashSet::new();
+        // Lage der Geschosse einmal je Export (auf der Sohlplatte?)
+        let geschosse_lage = Geschosse::aus(m);
         let bauteile: HashMap<Guid, ElementId> =
             m.elements().iter().map(|(id, e)| (e.guid, id)).collect();
         // Träger → Bekleidungen (IfcRelCoversBldgElements), nach Träger geordnet
@@ -321,7 +323,7 @@ impl Ctx<'_> {
                 .filter(|a| matches!(a.flaeche, Flaeche::Boden | Flaeche::Estrich))
                 .find_map(|a| m.element(traeger(a)?))
                 .map_or_else(
-                    || ausbau::estrich_vorgabe(m, rd.geschoss) == SCREED_SLAB_TYPE_GUID,
+                    || geschosse_lage.auf_sohle(rd.geschoss),
                     |t| matches!(t.kind, ElementKind::GroundSlab(_)),
                 );
             let mut bekleidungen = Vec::new();
