@@ -1097,7 +1097,7 @@ impl App {
         if self.platte.unterlage.ordner(ordner) {
             self.platte.mit_plan = true;
         }
-        let gelesen = self.lageplan_abholen();
+        let gelesen = self.lageplan_abholen() | self.hoehen_abholen();
         let sicht = self.platte_sicht();
         let neu = self.platte.nachziehen(self.scene.model(), sicht);
         self.unterlage_stand();
