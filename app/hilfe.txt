@@ -356,7 +356,7 @@ Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zei
 
 [thema] id=kosten titel="Kosten"
 Preise | „Material“ oder „Material + Lohn“; die Summe zeigt netto, brutto mit MwSt. und den Lohnanteil. Referenzpreise: Stand 10/2026, unverbindlich, netto
-Bauteil gewählt | Kosten zeigen nur seine Positionen, am Fundament mit den Erdarbeiten; die Leiste oben nennt Bauteil, Zahl und Summe, „Alle Positionen“ zeigt wieder alles
+Bauteil gewählt | Kosten zeigen nur seine Positionen, am Fundament mit den Erdarbeiten seines Hauses (die der Geländeflächen gehören zum Grundstück und stehen unter Außenanlagen); die Leiste oben nennt Bauteil, Zahl und Summe, „Alle Positionen“ zeigt wieder alles
 Händlerpreis | „Händlerpreis für dieses Haus eintragen …“ oben führt durch Artikel, Preis und Quelle; gilt nur für dieses Haus
 Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf „… €/h“ in der Kachel Lohnanteil oder unter Datei › Verwaltung › Firmenwerte
 Verwaltung | alles Weitere unter Datei › Verwaltung; dort gilt es für alle neuen Häuser, im Projekt nur für dieses Haus

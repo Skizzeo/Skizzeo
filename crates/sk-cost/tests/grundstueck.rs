@@ -3,6 +3,7 @@
 //! sagt es; die Häuser zusammen mit den Positionen des Grundstücks ergeben
 //! das Projekt.
 
+use sk_cost::befund::Ort;
 use sk_cost::{lesen, Kostenblatt, Umfang};
 use sk_model::qto_earth::{GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL};
 use sk_model::{qto, szo, BuildingId, GuidGen, Model, TerrainPatch};
@@ -77,6 +78,11 @@ fn pruefen(name: &str, m: &Model) {
         .all(|a| a.building.is_some()));
 
     let projekt = lesen::kosten(m, &s, &k, &Umfang::projekt());
+    // ihre Hinweise stehen bei der Datei, nicht am Bauteil von Haus 1
+    // (VOB-Prüfung #184 F2)
+    for f in projekt.befunde.iter().filter(|f| f.satz.contains("Faktor")) {
+        assert_eq!(f.ort, Ort::Datei, "{name}: {f:?}");
+    }
     assert!(
         projekt.befunde.iter().all(|f| f.satz != GRUNDSTUECK),
         "{name}"

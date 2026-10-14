@@ -112,7 +112,11 @@ impl AvaView {
         };
         let b = s.kostenblatt(firma, &self.leiste.umfang);
         let hier = verknuepft(lv, &b, f).len();
-        let mut text = f.text(hier, &format!("LV {}", lv.kopf.los));
+        let mut zusatz = format!("LV {}", lv.kopf.los);
+        if f.ohne_grundstueck(&b) {
+            zusatz = format!("{zusatz} · {}", sk_model::qto_earth::GRUNDSTUECK);
+        }
+        let mut text = f.text(hier, &zusatz);
         let andere: Vec<String> = lose
             .iter()
             .filter(|l| Some(l.0) != self.los)

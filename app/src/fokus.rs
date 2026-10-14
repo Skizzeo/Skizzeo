@@ -9,7 +9,9 @@
 //! zur Auswahl gehören, die Bauteile einer Ansatzzeile und die Leiste.
 
 use sk_cost::rechnung::{Ansatz, OhneZeile};
+use sk_cost::Kostenblatt;
 use sk_model::element::ElementKind;
+use sk_model::qto_earth::GRUNDSTUECK_SCHLUESSEL;
 use sk_model::{ElementId, Model};
 use sk_paint::{Canvas, Path};
 use sk_ui::theme::Theme;
@@ -64,11 +66,24 @@ impl Fokus {
     pub fn trifft(&self, a: &Ansatz) -> bool {
         match a.auto {
             Some(k) if k.starts_with("site.") => false,
+            // Erdarbeiten des Grundstücks hängen an keinem Haus, auch wenn
+            // sie die Sohlplatte als Ort tragen (VOB-Prüfung #184 F1)
+            Some(k) if a.gebaeude.is_none() && GRUNDSTUECK_SCHLUESSEL.contains(&k) => false,
             Some(k) if k.starts_with("earth.") => {
                 self.auswahl.contains(&a.element) || self.platten.contains(&a.element)
             }
             _ => self.auswahl.contains(&a.element),
         }
+    }
+
+    /// Im Blatt `b` gibt es Erdarbeiten des Grundstücks an der Auswahl, die
+    /// [`Fokus::trifft`] nicht zeigt; die Leiste sagt es dann.
+    pub fn ohne_grundstueck(&self, b: &Kostenblatt) -> bool {
+        b.positionen.iter().flat_map(|p| &p.ansatz).any(|a| {
+            a.gebaeude.is_none()
+                && a.auto.is_some_and(|k| GRUNDSTUECK_SCHLUESSEL.contains(&k))
+                && (self.auswahl.contains(&a.element) || self.platten.contains(&a.element))
+        })
     }
 
     /// Zeile ohne Bauleistung eines gewählten Bauteils.
@@ -243,5 +258,13 @@ mod tests {
         assert!(p.trifft(&ansatz(None)));
         assert!(p.trifft(&ansatz(Some("earth.excavation"))));
         assert!(!p.trifft(&ansatz(Some("site.scaffold"))));
+        // Erdarbeiten des Grundstücks nicht, auch nicht an der Platte
+        // (VOB-Prüfung #184 F1); mit Haus an der Platte wie bisher
+        assert!(!p.trifft(&ansatz(Some("earth.cut"))));
+        let b = m.buildings().iter().next().map(|(b, _)| b);
+        assert!(p.trifft(&Ansatz {
+            gebaeude: b,
+            ..ansatz(Some("earth.cut"))
+        }));
     }
 }
