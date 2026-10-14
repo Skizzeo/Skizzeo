@@ -24,7 +24,7 @@ use crate::mengen;
 use crate::step::{e, lens, r, refs, s, typed, V};
 use sk_math::vec3;
 use sk_model::{
-    Category, ElementId, ElementKind, Guid, MaterialLayer, Model, StoreyId, TypeCategory,
+    Category, ElementId, ElementKind, Guid, LevelKind, MaterialLayer, Model, StoreyId, TypeCategory,
 };
 use sk_raum::ausbau;
 use sk_raum::oeffnungen::Geschosse;
@@ -83,6 +83,14 @@ fn bekleidungszweck(m: &Model, kanten: &[Kante], f: Flaeche) -> String {
         .count();
     let g = m.element(*wand).map_or(Guid(0), |e| e.guid);
     format!("covering.{art}.{}.{seite:?}.{folge}", g.to_ifc())
+}
+
+/// Kennung der Bekleidung `a` im Raum mit der Guid `raum`: Zweck der Fläche
+/// und der Ausbautyp, denn eine Fläche kann mehrere Ausbautypen tragen
+/// (Review #138 H-138c).
+fn bekleidungskennung(m: &Model, raum: Guid, kanten: &[Kante], a: &AusbauDaten) -> Guid {
+    let zweck = bekleidungszweck(m, kanten, a.flaeche);
+    abgeleitet(raum, &format!("{zweck}.{}", a.typ_guid.to_ifc()))
 }
 
 /// `PredefinedType` des `IfcCovering` und seines Typs nach der Art des
@@ -203,7 +211,12 @@ impl Ctx<'_> {
                 continue;
             };
             let Some(rd) = liste.remove(&id) else {
-                let grund = if formen.contains(&id) {
+                // Die Raumliste kennt nur Geschosse: ein Raum auf einer
+                // anderen Ebene (Gründung, Dach) hat keine Form im Export
+                let geschoss = m
+                    .storey(el.storey)
+                    .is_some_and(|s| s.kind == LevelKind::Storey);
+                let grund = if formen.contains(&id) || !geschoss {
                     Grund::OhneForm
                 } else {
                     Grund::RaumOhneFlaeche
@@ -340,13 +353,7 @@ impl Ctx<'_> {
                     }
                 }
                 let art = bekleidungsart(ls.category);
-                // Mit dem Typ: eine Fläche kann mehrere Ausbautypen tragen
-                let zweck = format!(
-                    "{}.{}",
-                    bekleidungszweck(m, &rd.kanten, a.flaeche),
-                    a.typ_guid.to_ifc()
-                );
-                let g = abgeleitet(el.guid, &zweck);
+                let g = bekleidungskennung(m, el.guid, &rd.kanten, a);
                 let (shape, pl) = self.form_und_lage(&netze, true, s_pl);
                 let name = format!("{} {}", el.number, flaechenname(a.flaeche));
                 let ci = self.w.add(
@@ -570,7 +577,28 @@ impl Ctx<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sk_model::LevelKind;
+
+    /// Zwei Ausbautypen an derselben Fläche (Review #138 H-138h): je Typ eine
+    /// eigene Kennung, je Typ immer dieselbe.
+    #[test]
+    fn zwei_ausbautypen_an_einer_flaeche() {
+        let m = Model::with_seed(9);
+        let raum = Guid(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
+        let typ = m.layer_sets().iter().next().unwrap().0;
+        let mit = |typ_guid: Guid| AusbauDaten {
+            flaeche: Flaeche::Sockel,
+            typ,
+            typ_guid,
+            schichten: Vec::new(),
+            traeger: None,
+        };
+        let (a, b) = (mit(Guid(1)), mit(Guid(2)));
+        let ka = bekleidungskennung(&m, raum, &[], &a);
+        assert_ne!(ka, bekleidungskennung(&m, raum, &[], &b));
+        assert_eq!(ka, bekleidungskennung(&m, raum, &[], &mit(Guid(1))));
+        // ein anderer Raum, eine andere Kennung
+        assert_ne!(ka, bekleidungskennung(&m, Guid(7), &[], &a));
+    }
 
     /// Die Kennung einer Wandseite hängt an Wand und Seite: Beginnt der
     /// Umriss an einer anderen Kante, behält jede Wandseite ihren Zweck.
