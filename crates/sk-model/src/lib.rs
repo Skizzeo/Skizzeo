@@ -67,10 +67,10 @@ pub use attr::{
     FillSpace, HatchLine, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 pub use catalog::{
-    compare, compare_materials, compare_surfaces, export_material, export_space_type,
-    export_surface, export_type, import_material, import_space_type, import_type, read_szk,
-    read_szk_with, save_preset, sync_materials, sync_materials_report, write_szk, Library, RawSvc,
-    TypeState,
+    compare, compare_materials, compare_materials_ohne, compare_surfaces, export_material,
+    export_space_type, export_surface, export_type, import_material, import_space_type,
+    import_type, read_szk, read_szk_with, save_preset, sync_materials, sync_materials_report,
+    write_szk, Library, RawSvc, TypeState,
 };
 pub use element::{
     Building, BuildingId, Category, CladdingValue, Coupling, Element, ElementId, ElementKind,
@@ -112,8 +112,8 @@ pub use model::{
     WALKABLE_DEPTH,
 };
 pub use model::{
-    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainMesh,
-    TerrainPoint, Trim,
+    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
+    TerrainMesh, TerrainPoint, Trim,
 };
 pub use model::{EckeFehler, Fangziele, OpeningFault, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{FreieRaumnamen, Space, SPACE_SEQ};

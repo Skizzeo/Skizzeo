@@ -5,15 +5,17 @@
 //! Band (Oberkante mit dem Stift „Gelände“, Unterkante und Enden fein). Sie
 //! ist kein Bauteil: kein Hover und keine Auswahl im Bild (sie läge sonst
 //! unter jeder Maßkette); gewählt wird sie nur im Objektbaum, dort stehen
-//! Dicke und Außenoffset.
+//! Dicke und Außenoffset. Mit Höhenaufmaß steht statt der Platte das echte
+//! Gelände da ([`crate::gelaende_netz`], G1).
 
 use crate::draw_table::{fallback_look, fill_kind, DrawTable, LineLook, MatLook, Stroke};
+use crate::gelaende_netz::{self, Gelaende};
 use crate::selection::de;
 use crate::ui::{kote_text, Field, FieldRow, Props, Section, ViewKind};
 use crate::App;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame};
-use sk_model::{edge_kind, material, Model, PlateInput, Solid, TerrainPlate};
+use sk_model::{edge_kind, material, LevelKind, Model, PlateInput, Solid, TerrainPlate};
 use sk_model::{PLATE_MARGIN, PLATE_THICK};
 use sk_render::{Helper, MeshData};
 use sk_ui::theme::Theme;
@@ -41,23 +43,32 @@ pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)>
 
 /// Was das Netz außer den Platten bestimmt: Ansicht, Schnittebene,
 /// Schlüssel von Rasen und Erdreich, ausgeblendet.
-pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 2], bool);
+pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool);
 
 /// Was im Renderer liegt: Fassung der Platten und die [`Sicht`], die
 /// Schnittebene als Bits.
-type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 2], bool);
+type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool);
 
 fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
     (fassung, s.0, s.1.map(bits), s.2, s.3)
 }
+
+/// Neue Platten, ihre Eingaben, das Gelände und ihr Netz zur Sicht beim
+/// Start.
+type Neues = (
+    Arc<PlateInput>,
+    Vec<TerrainPlate>,
+    Option<Gelaende>,
+    MeshData,
+);
 
 /// Was der Faden zurückgibt.
 enum Ergebnis {
     /// Die Eingaben sind dieselben wie die der stehenden Platten (etwa
     /// nach Esc oder einer Änderung, die die Platte nicht berührt).
     Gleich,
-    /// Neue Platten, ihre Eingaben und ihr Netz zur Sicht beim Start.
-    Neu(Arc<PlateInput>, Vec<TerrainPlate>, MeshData),
+    /// Neue Platten (in einer Kiste, das Gelände ist groß).
+    Neu(Box<Neues>),
 }
 
 /// Ein Nachzug im eigenen Faden: Modellstand und Sicht beim Start.
@@ -72,7 +83,8 @@ type Kisten = Vec<([f32; 4], f32)>;
 
 /// Wovon die Linien abhängen: Fassung der Platten, Ansicht, Schnittebene
 /// und Modellgrenzen (Bits), Maßstab (Bits), Stand der Zeichentabelle und
-/// des Farbschemas.
+/// des Farbschemas. Der Zoom (mm je Bildpunkt) zählt nur für die
+/// Punktmarken (Review #129 B3).
 type LinienKey = (
     u64,
     ViewKind,
@@ -82,6 +94,14 @@ type LinienKey = (
     u64,
     u64,
 );
+
+/// Linien zu ihrem Schlüssel; ab der Stelle `marken.0` die Punktmarken
+/// zum Zoom `marken.1` (mm je Bildpunkt als Bits).
+struct Linien {
+    key: LinienKey,
+    helfer: Vec<Helper>,
+    marken: (usize, Option<u64>),
+}
 
 /// Platten des Modells und was davon gezeigt wird.
 #[derive(Default)]
@@ -93,16 +113,26 @@ pub(crate) struct Platte {
     platten: Vec<TerrainPlate>,
     /// Eingaben zu `platten`, mit denen der Faden vergleicht.
     eingabe: Option<Arc<PlateInput>>,
+    /// Gelände aus dem Höhenaufmaß; statt der Platten, wenn da.
+    gelaende: Option<Arc<Gelaende>>,
     netz: Option<NetzKey>,
     /// Netz aus dem Faden zu seinem Schlüssel, bis es hochgeladen ist.
     fertig: Option<(NetzKey, MeshData)>,
     job: Option<Job>,
+    /// Mit Aufmaß: Netz zur Sicht im eigenen Faden (Körper, Schnitt), bis
+    /// es fertig ist (Review #129 B4).
+    netz_job: Option<(NetzKey, mpsc::Receiver<MeshData>)>,
+    /// Der Körper in 3D zu seinem Schlüssel, gemerkt für den Rückweg nach
+    /// einem Sichtwechsel.
+    koerper: Option<(NetzKey, Arc<MeshData>)>,
     /// Das Paneel „Eigenschaften“ zeigt die Platte (zum Stand der Platten).
     props: Option<u64>,
     /// Gelände-Rechtecke für „unter Gelände“ zum Modellstand.
     kisten: Option<(u64, Kisten)>,
-    /// Linien in Ansicht und Schnitt zu ihrem Schlüssel.
-    linien: Option<(LinienKey, Vec<Helper>)>,
+    /// Leiste „Gelände“ (G1).
+    pub(crate) leiste: crate::gelaende_app::Zustand,
+    /// Linien in Ansicht und Schnitt.
+    linien: Option<Linien>,
 }
 
 impl Platte {
@@ -112,19 +142,37 @@ impl Platte {
     /// und folgen beim Loslassen, statt je Mausbewegung alle Häuser neu zu
     /// rechnen.
     pub(crate) fn platten(&mut self, m: &Model, halten: bool) -> &[TerrainPlate] {
+        self.abgleich(m, halten);
+        &self.platten
+    }
+
+    /// Das echte Gelände zum Modell, wenn ein Aufmaß da ist; im Zug wie
+    /// [`Platte::platten`].
+    pub(crate) fn gelaende(&mut self, m: &Model, halten: bool) -> Option<&Gelaende> {
+        self.abgleich(m, halten);
+        self.gelaende.as_deref()
+    }
+
+    fn abgleich(&mut self, m: &Model, halten: bool) {
         let rev = m.revision();
         if self.stand != Some(rev) && !(halten && self.stand.is_some()) {
             // ein laufender Nachzug brächte einen älteren Stand
             self.job = None;
+            self.netz_job = None;
             self.stand = Some(rev);
             let e = m.terrain_plate_input();
-            if self.eingabe.as_deref() != Some(&e) {
-                self.fassung += 1;
+            let g = Gelaende::aus(m);
+            let neu = self.eingabe.as_deref() != Some(&e);
+            if neu {
                 self.platten = e.build();
                 self.eingabe = Some(Arc::new(e));
             }
+            // mit Aufmaß zählt jede Änderung (das Gelände spart die Häuser aus)
+            if neu || g.is_some() || self.gelaende.is_some() {
+                self.fassung += 1;
+            }
+            self.gelaende = g.map(Arc::new);
         }
-        &self.platten
     }
 
     /// Für das Bild: die Platten, wie sie stehen; gerechnet nur, wenn es
@@ -136,15 +184,21 @@ impl Platte {
         self.platten(m, true)
     }
 
+    /// Das Gelände für das Bild, wie [`Platte::im_bild`].
+    pub(crate) fn gelaende_im_bild(&mut self, m: &Model) -> Option<&Gelaende> {
+        self.gelaende(m, true)
+    }
+
     /// Je Durchlauf der Hauptschleife: einen fertigen Nachzug abholen,
     /// sonst nach einer Änderung einen beginnen, nicht in einem offenen
     /// Schritt. Der UI-Faden kopiert dafür nur das Modell; Eingaben,
-    /// Zerlegen und Netz rechnet ein eigener Faden, das Bild nimmt dann das
+    /// Zerlegen, Gelände und Netz rechnet ein eigener Faden, das Bild nimmt dann das
     /// fertige Netz (Review #119 W34 B6: synchron 20 ms bei 1000 Häusern,
     /// 53 ms bei 4000). `true`, wenn der Stand neu ist (dann folgt ein
     /// Bild).
     pub(crate) fn nachziehen(&mut self, m: &Model, sicht: Sicht) -> bool {
-        if self.abholen() {
+        let netz = self.netz_abholen();
+        if self.abholen() || netz {
             return true;
         }
         if self.job.is_some() || m.in_step() || self.stand == Some(m.revision()) {
@@ -152,18 +206,17 @@ impl Platte {
         }
         let kopie = m.clone();
         let alt = self.eingabe.clone();
+        let ohne = self.gelaende.is_none();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let e = kopie.terrain_plate_input();
-            let r = if alt.as_deref() == Some(&e) {
+            let g = Gelaende::aus(&kopie);
+            let r = if alt.as_deref() == Some(&e) && ohne && g.is_none() {
                 Ergebnis::Gleich
             } else {
                 let p = e.build();
-                let n = match sicht {
-                    (_, _, _, true) => MeshData::default(),
-                    (view, plane, keys, false) => netz(&p, view, plane, keys),
-                };
-                Ergebnis::Neu(Arc::new(e), p, n)
+                let n = netz_der_sicht(&p, g.as_ref(), sicht);
+                Ergebnis::Neu(Box::new((Arc::new(e), p, g, n)))
             };
             // fällt weg, wenn die Platte inzwischen neu begonnen hat
             let _ = tx.send(r);
@@ -176,17 +229,20 @@ impl Platte {
         false
     }
 
-    /// Linien der Platten in Ansicht und Schnitt ([`linien`]), gemerkt:
-    /// neu nur, wenn sich Platten, Ansicht, Ebene, Modellgrenzen, Maßstab
-    /// oder Zeichentabelle ändern, nicht je Bild (Review W34 B7: 0,35 ms
-    /// bei 1000, 1,46 ms bei 4000 Häusern).
+    /// Linien der Platten in Ansicht und Schnitt ([`linien`]), mit Aufmaß
+    /// die des Geländes ([`gelaende_netz::grundlinien`]), gemerkt: neu nur,
+    /// wenn sich Platten, Ansicht, Ebene, Modellgrenzen, Maßstab oder
+    /// Zeichentabelle ändern, nicht je Bild (Review W34 B7: 0,35 ms bei
+    /// 1000, 1,46 ms bei 4000 Häusern). Mit dem Zoom im Grundriss (`mm_px`)
+    /// folgen nur die Punktmarken ([`gelaende_netz::marken`]; Review #129
+    /// B3: sonst 233 ms je Zoomstufe bei 1000 Häusern).
     pub(crate) fn linien_im_bild(
         &mut self,
         m: &Model,
         (view, plane): (ViewKind, Option<(Vec3, Vec3)>),
         bounds: Option<(Vec3, Vec3)>,
         t: &DrawTable,
-        scale: f32,
+        (scale, mm_px): (f32, f64),
     ) -> &[Helper] {
         self.im_bild(m);
         let key = (
@@ -198,16 +254,95 @@ impl Platte {
             t.rev,
             t.theme_rev,
         );
-        if self.linien.as_ref().is_none_or(|(k, _)| *k != key) {
-            let l = linien(&self.platten, view, plane, bounds, t, scale);
-            self.linien = Some((key, l));
+        if self.linien.as_ref().is_none_or(|l| l.key != key) {
+            let helfer = match self.gelaende.as_deref() {
+                Some(g) => {
+                    let f = gelaende_netz::fassade(g, view, bounds);
+                    gelaende_netz::grundlinien(g, view, plane, f, t, scale)
+                }
+                None => linien(&self.platten, view, plane, bounds, t, scale),
+            };
+            let n = helfer.len();
+            self.linien = Some(Linien {
+                key,
+                helfer,
+                marken: (n, None),
+            });
         }
-        self.linien.as_ref().map_or(&[], |(_, l)| l)
+        // je Zoomstufe nur die Punktmarken neu
+        if let (Some(l), Some(g)) = (self.linien.as_mut(), self.gelaende.as_deref()) {
+            let px = Some(mm_px.to_bits());
+            if l.marken.1 != px {
+                l.helfer.truncate(l.marken.0);
+                l.helfer
+                    .extend(gelaende_netz::marken(g, view, t, scale, mm_px));
+                l.marken.1 = px;
+            }
+        }
+        self.linien.as_ref().map_or(&[], |l| &l.helfer)
     }
 
-    /// Ein Nachzug läuft (die Hauptschleife fragt dann je Bild nach).
+    /// Ein Nachzug oder ein Netz zur Sicht rechnet (die Hauptschleife fragt
+    /// dann je Bild nach).
     pub(crate) fn rechnet(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.netz_job.is_some()
+    }
+
+    /// Netz zum Schlüssel `key`: fertig aus einem Faden, der gemerkte
+    /// Körper, ohne Aufmaß das der Platten. Körper und Schnitt des Geländes
+    /// rechnet ein eigener Faden (Review #129 B4: synchron 1,1 s bei 1000
+    /// Häusern, 18 s bei 4000, bei jedem Sichtwechsel); bis er fertig ist
+    /// `None`, und das alte Netz bleibt stehen.
+    fn netz_zur_sicht(&mut self, key: NetzKey, sicht: Sicht) -> Option<Arc<MeshData>> {
+        // ein fertiger Körper bleibt gemerkt, auch wenn die Sicht inzwischen
+        // eine andere ist
+        if let Some((k, n)) = self.fertig.take() {
+            let n = Arc::new(n);
+            if k.1 == ViewKind::Persp {
+                self.koerper = Some((k, n.clone()));
+            }
+            if k == key {
+                return Some(n);
+            }
+        }
+        if let Some((k, n)) = &self.koerper {
+            if *k == key {
+                return Some(n.clone());
+            }
+        }
+        let (view, _, _, hidden) = sicht;
+        let g = match &self.gelaende {
+            Some(g) if !hidden && matches!(view, ViewKind::Persp | ViewKind::Section) => g.clone(),
+            g => {
+                let n = netz_der_sicht(&self.platten, g.as_deref(), sicht);
+                return Some(Arc::new(n));
+            }
+        };
+        if self.netz_job.is_none() {
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(netz_der_sicht(&[], Some(&g), sicht));
+            });
+            self.netz_job = Some((key, rx));
+        }
+        None
+    }
+
+    /// Ein fertiges Netz zur Sicht übernehmen; `true`, wenn eins kam (dann
+    /// folgt ein Bild). Bricht der Faden ab, steht ein leeres Netz da,
+    /// statt dass er je Bild neu beginnt.
+    fn netz_abholen(&mut self) -> bool {
+        let Some((key, rx)) = &self.netz_job else {
+            return false;
+        };
+        let n = match rx.try_recv() {
+            Ok(n) => n,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => MeshData::default(),
+        };
+        self.fertig = Some((*key, n));
+        self.netz_job = None;
+        true
     }
 
     /// Den Nachzug übernehmen, wenn der Faden fertig ist.
@@ -229,12 +364,15 @@ impl Platte {
     /// derselbe Stand je Bild neu begonnen wird.
     fn einsetzen(&mut self, job: Job, r: Result<Ergebnis, ()>) -> bool {
         self.stand = Some(job.rev);
-        let Ok(Ergebnis::Neu(e, p, n)) = r else {
+        let Ok(Ergebnis::Neu(neu)) = r else {
             return true;
         };
+        let (e, p, g, n) = *neu;
         self.fassung += 1;
         self.platten = p;
         self.eingabe = Some(e);
+        self.gelaende = g.map(Arc::new);
+        self.netz_job = None;
         self.fertig = Some((netz_key(self.fassung, &job.sicht), n));
         true
     }
@@ -250,16 +388,18 @@ impl Platte {
     }
 }
 
-/// Aussehen von Rasen und Erdreich (Schlüssel hinter den Baustoffen der
-/// Zeichentabelle): Rasen ohne Schnitt; Erdreich im Schnitt auf Papier mit
-/// der Schraffur „gewachsener Boden“ (45°, durchgezogen und gestrichelt im
-/// Wechsel) in der Farbe des Stifts „Gelände“.
-pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 2] {
+/// Aussehen von Rasen, Erdreich und blassem Rasen (Schlüssel hinter den
+/// Baustoffen der Zeichentabelle): Rasen ohne Schnitt; Erdreich im Schnitt
+/// auf Papier mit der Schraffur „gewachsener Boden“ (45°, durchgezogen und
+/// gestrichelt im Wechsel) in der Farbe des Stifts „Gelände“; blasser
+/// Rasen außerhalb der Grenze bei „Umgebung blass“ (G1).
+pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 3] {
     let rgb = |c: sk_paint::Rgba| {
         let [r, g, b, _] = c.to_f32();
         [r, g, b]
     };
     let (grass, soil) = (rgb(theme.env.terrain_grass), rgb(theme.env.terrain_soil));
+    let fade = rgb(theme.env.terrain_fade);
     let mm = theme.px_per_mm;
     let base = MatLook {
         cut: soil,
@@ -287,6 +427,7 @@ pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 
             line_count: 2,
             ..base
         },
+        MatLook { face: fade, ..base },
     ]
 }
 
@@ -337,7 +478,7 @@ fn at(q: Vec3, z: f64) -> Vec3 {
 /// Körper einer Platte in 3D bis hinunter auf `bot` (den Boden): Rasen
 /// oben, Erdreich unten und an den Seiten; Kanten am oberen und unteren
 /// Rand und senkrecht dort, wo der Rand die Richtung wechselt.
-fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 2]) -> Solid {
+fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3]) -> Solid {
     let top = p.top;
     let up = vec3(0.0, 0.0, 1.0);
     let mut s = Solid {
@@ -431,7 +572,7 @@ pub(crate) fn netz(
     plates: &[TerrainPlate],
     view: ViewKind,
     plane: Option<(Vec3, Vec3)>,
-    keys: [u16; 2],
+    keys: [u16; 3],
 ) -> MeshData {
     let mut s = Solid::default();
     match (view, plane) {
@@ -453,6 +594,22 @@ pub(crate) fn netz(
         _ => {}
     }
     crate::scene::mesh_of(&s)
+}
+
+/// Netz zur Sicht: mit Aufmaß das Gelände (Körper in 3D, Schnittflächen im
+/// Schnitt, sonst keins), ohne die Platten; ausgeblendet leer.
+fn netz_der_sicht(p: &[TerrainPlate], g: Option<&Gelaende>, s: Sicht) -> MeshData {
+    let (view, plane, keys, hidden) = s;
+    match (g, view, plane) {
+        _ if hidden => MeshData::default(),
+        (Some(g), ViewKind::Persp, _) => crate::scene::mesh_of(&gelaende_netz::koerper(g, keys)),
+        (Some(g), ViewKind::Section, Some((p0, n))) => {
+            let f = SectionFrame::new(p0, n);
+            crate::scene::mesh_of(&gelaende_netz::kappen(g, &f, p0, keys[1]))
+        }
+        (Some(_), ..) => MeshData::default(),
+        (None, ..) => netz(p, view, plane, keys),
+    }
 }
 
 /// Linien der Platten in Ansicht und Schnitt (ersetzen die Geländelinie):
@@ -575,7 +732,9 @@ impl App {
     /// Netz der Platte hochladen, wenn sich die Platten, Ansicht, Schnitt,
     /// Aussehen oder Sichtbarkeit geändert haben (aus `build_mesh`, je
     /// Bild); nach einem Nachzug das Netz aus dem Faden. Gerechnet wird
-    /// hier nur, wenn die Sicht sich ändert, und beim ersten Bild.
+    /// hier nur das Netz der Platten, wenn die Sicht sich ändert, und beim
+    /// ersten Bild; Körper und Schnitt des Geländes kommen aus einem Faden
+    /// ([`Platte::netz_zur_sicht`]).
     pub(crate) fn platte_hochladen(&mut self) {
         let sicht = self.platte_sicht();
         let m = self.scene.model();
@@ -584,33 +743,72 @@ impl App {
         if self.platte.netz == Some(key) {
             return;
         }
-        self.platte.netz = Some(key);
-        let (view, plane, keys, hidden) = sicht;
-        let netz = match self.platte.fertig.take() {
-            Some((k, n)) if k == key => n,
-            _ if hidden => MeshData::default(),
-            _ => netz(&self.platte.platten, view, plane, keys),
+        let Some(netz) = self.platte.netz_zur_sicht(key, sicht) else {
+            return;
         };
+        self.platte.netz = Some(key);
         self.renderer.set_mesh(MESH_PLATE, &netz);
-        self.renderer.set_grass(keys[0]);
+        self.renderer.set_grass(sicht.2[0]);
     }
 
-    /// Linien der Platte in Ansicht und Schnitt, gemerkt
-    /// ([`Platte::linien_im_bild`]); ausgeblendet keine.
-    pub(crate) fn platte_linien(&mut self, scale: f32) -> &[Helper] {
-        // nur Ansichten und Schnitt zeigen Linien der Platte
-        if self.scene.terrain_hidden() || matches!(self.ui.view, ViewKind::Plan | ViewKind::Persp) {
+    /// Linien der Platte in Ansicht und Schnitt, mit Aufmaß die des
+    /// Geländes, im Grundriss nur im Erdgeschoss; gemerkt
+    /// ([`Platte::linien_im_bild`]), ausgeblendet keine. `vh`: Höhe der
+    /// Ansicht in Bildpunkten.
+    pub(crate) fn platte_linien(&mut self, vh: f64, scale: f32) -> &[Helper] {
+        if self.scene.terrain_hidden() {
             return &[];
         }
-        let sicht = (self.ui.view, self.plane());
-        let (m, b, t) = (self.scene.model(), self.scene.bounds(), self.scene.table());
-        self.platte.linien_im_bild(m, sicht, b, t, scale)
+        let view = self.ui.view;
+        let m = self.scene.model();
+        let aufmass = self.platte.gelaende_im_bild(m).is_some();
+        // ohne Aufmaß zeigen nur Ansichten und Schnitt Linien der Platte
+        let keine = if aufmass {
+            view == ViewKind::Plan && !self.scene.ground_active()
+        } else {
+            matches!(view, ViewKind::Plan | ViewKind::Persp)
+        };
+        if keine {
+            return &[];
+        }
+        let mm_px = self.cam.ortho.map_or(10.0, |half| 2.0 * half / vh.max(1.0));
+        let sicht = (view, self.plane());
+        let (b, t) = (self.scene.bounds(), self.scene.table());
+        self.platte.linien_im_bild(m, sicht, b, t, (scale, mm_px))
     }
 
-    /// Gelände im Renderer: OK Gelände je Gebäude für „unter Gelände“ und
-    /// der Boden in 3D auf der Unterkante der Platte (die Platte steht auf
-    /// ihm); ausgeblendet auf OK Gelände.
+    /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
+    /// dort ausblendet (S11). Aus `main.rs`.
+    pub(crate) fn ansicht_huelle(&self, v: ViewKind) -> Option<(Vec3, Vec3)> {
+        let (lo, hi) = self.scene.bounds()?;
+        let m = self.scene.model();
+        let ganz = crate::ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
+        // Das tiefste Gelände: über keinem Gebäude wird etwas abgeschnitten;
+        // mit Aufmaß zählt je Gründung ihr tiefster Punkt am Plattenrand
+        let gruendungen = m
+            .storeys()
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Foundation);
+        let g = m
+            .terrain_patches(TERRAIN_MARGIN)
+            .iter()
+            .map(|p| p.1)
+            .chain(gruendungen.map(|(id, _)| m.terrain_z_of_level(id)))
+            .fold(m.terrain_z(), f64::min);
+        Some(if ganz || hi.z <= g {
+            (lo, hi)
+        } else {
+            (vec3(lo.x, lo.y, lo.z.max(g)), hi)
+        })
+    }
+
+    /// Gelände im Renderer: OK Gelände für „unter Gelände“, mit Aufmaß
+    /// aus seinem Raster, sonst je Gebäude, und der Boden in 3D auf der
+    /// Unterkante der Platte (die Platte steht auf ihm); ausgeblendet auf
+    /// OK Gelände.
     pub(crate) fn gelaende_renderer(&mut self) {
+        let raster = self.scene.terrain_grid();
+        self.renderer.set_terrain_grid(raster.as_deref());
         let m = self.scene.model();
         self.renderer.set_terrain(m.terrain_z() as f32);
         // die Rechtecke je Modellstand, nicht je Bild
@@ -624,6 +822,8 @@ impl App {
         }
         let unten = if self.scene.terrain_hidden() {
             None
+        } else if let Some(g) = self.platte.gelaende_im_bild(m) {
+            Some(g.unten as f32)
         } else {
             let p = self.platte.im_bild(m);
             p.iter().map(|p| p.bottom as f32).reduce(f32::min)
@@ -709,7 +909,12 @@ impl App {
 
     /// Feld der Platte im Paneel übernommen (ein Schritt); `false`, wenn
     /// das Feld nicht zur Platte gehört.
+    /// Felder der Leiste „Gelände“ gehen weiter an [`App::gelaende_feld`].
     pub(crate) fn platte_feld(&mut self, submit: Option<(Field, f64)>) -> bool {
+        if let Some((Field::Gelaende(g), v)) = submit {
+            self.gelaende_feld(g, v);
+            return true;
+        }
         let Some((f @ (Field::PlateThick | Field::PlateMargin), mm)) = submit else {
             return false;
         };
@@ -729,6 +934,9 @@ impl App {
 }
 
 #[cfg(test)]
+mod tempo;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -745,8 +953,8 @@ mod tests {
         m
     }
 
-    /// Sicht der Tests: 3D, Rasen und Erdreich 40 und 41.
-    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41], false);
+    /// Sicht der Tests: 3D, Rasen, Erdreich und blasser Rasen 40 bis 42.
+    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41, 42], false);
 
     /// Erste Wand des Modells um `d` verschieben, ein geschlossener Schritt.
     fn wand_schieben(s: &mut crate::scene::Scene, d: f64) {
@@ -802,6 +1010,7 @@ mod tests {
         let quelle = include_str!("gelaende_platte.rs");
         let app = &quelle[quelle.find("impl App {").unwrap()..quelle.find("mod tests {").unwrap()];
         assert!(!app.contains(concat!("platte.", "platten(")));
+        assert!(!app.contains(concat!("platte.", "gelaende(")));
     }
 
     /// Während eines Zugs bleiben die Platten stehen und folgen beim
@@ -877,7 +1086,7 @@ mod tests {
         assert_eq!(n.edges, soll.edges);
         // ausgeblendet: leeres Netz
         wand_schieben(&mut s, 500.0);
-        pl.nachziehen(s.model(), (ViewKind::Persp, None, [40, 41], true));
+        pl.nachziehen(s.model(), (ViewKind::Persp, None, [40, 41, 42], true));
         assert!(pl.warten());
         assert!(pl.fertig.take().unwrap().1.faces.is_empty());
         // Esc: neue Revision, dieselben Platten
@@ -918,6 +1127,98 @@ mod tests {
         assert!(!pl.rechnet());
     }
 
+    /// Mit Aufmaß rechnet der Faden auch das Gelände und sein Netz; jede
+    /// Änderung zählt, auch Esc, weil das Gelände die Häuser ausspart.
+    #[test]
+    fn gelaende_im_faden() {
+        const CSV: &[u8] =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
+        let mut m = Model::with_seed(7);
+        let b = m.add_building(1);
+        let pts = [
+            vec3(7000.0, 6000.0, 0.0),
+            vec3(7000.0, 14000.0, 0.0),
+            vec3(17000.0, 14000.0, 0.0),
+            vec3(17000.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let (t, ..) = sk_model::Terrain::lesen(CSV, "a.csv", "2026-10-12", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let mut s = crate::scene::Scene::with_model(m);
+        let mut pl = Platte::default();
+        pl.im_bild(s.model());
+        assert!(pl.gelaende.is_some());
+        let f0 = pl.fassung;
+        wand_schieben(&mut s, 1000.0);
+        pl.nachziehen(s.model(), SICHT);
+        assert!(pl.warten());
+        assert_eq!(pl.fassung, f0 + 1);
+        let (k, n) = pl.fertig.take().unwrap();
+        assert_eq!(k, netz_key(pl.fassung, &SICHT));
+        let g = Gelaende::aus(s.model());
+        assert!(!n.faces.is_empty());
+        assert_eq!(n.faces, netz_der_sicht(&[], g.as_ref(), SICHT).faces);
+        // Esc
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        s.begin("Wand verschieben");
+        let moved = orig.with_segment_moved(0, 2000.0).unwrap();
+        assert!(s.set_run_points(run, &moved.points));
+        s.rollback();
+        pl.nachziehen(s.model(), SICHT);
+        assert!(pl.warten());
+        assert_eq!(pl.fassung, f0 + 2);
+        assert!(pl.gelaende.is_some() && pl.fertig.is_some());
+        // die Linien des Geländes gemerkt (Review W34 B7); mit dem Zoom
+        // nur die Punktmarken neu, in doppelter Größe (#129 B3)
+        let t = DrawTable::resolve(s.model(), &Theme::dark());
+        let plan = (ViewKind::Plan, None);
+        let l = pl.linien_im_bild(s.model(), plan, None, &t, (1.0, 10.0));
+        let (a, n) = (l.as_ptr(), l.len());
+        assert!(n > 0);
+        let l = pl.linien_im_bild(s.model(), plan, None, &t, (1.0, 10.0));
+        assert_eq!((l.as_ptr(), l.len()), (a, n));
+        let vorher = l.to_vec();
+        let g = pl.gelaende.as_deref().unwrap();
+        let marken = gelaende_netz::marken(g, ViewKind::Plan, &t, 1.0, 10.0).len();
+        assert!(marken > 0 && marken < n);
+        let l = pl.linien_im_bild(s.model(), plan, None, &t, (1.0, 20.0));
+        assert_eq!(l.len(), n);
+        let k = n - marken;
+        let gleich =
+            |a: &Helper, b: &Helper| (a.a, a.b, a.color, a.width) == (b.a, b.b, b.color, b.width);
+        assert!(l[..k].iter().zip(&vorher[..k]).all(|(a, b)| gleich(a, b)));
+        let breit = |h: &Helper| h.b[0] - h.a[0];
+        assert!((breit(&l[k]) - 2.0 * breit(&vorher[k])).abs() < 1e-3);
+        // Körper und Schnitt kommen aus einem Faden; der Körper bleibt für
+        // den Rückweg gemerkt (#129 B4)
+        let persp: Sicht = (ViewKind::Persp, None, [1, 2, 3], false);
+        let key = netz_key(pl.fassung, &persp);
+        pl.fertig = None;
+        assert!(pl.netz_zur_sicht(key, persp).is_none());
+        assert!(pl.rechnet());
+        assert!(
+            pl.netz_zur_sicht(key, persp).is_none(),
+            "kein zweiter Faden"
+        );
+        let n = loop {
+            if pl.nachziehen(s.model(), persp) {
+                break pl.netz_zur_sicht(key, persp).expect("fertig");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(!pl.rechnet());
+        let g = Gelaende::aus(s.model());
+        assert_eq!(n.faces, netz_der_sicht(&[], g.as_ref(), persp).faces);
+        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false);
+        let leer = pl.netz_zur_sicht(netz_key(pl.fassung, &grund), grund);
+        assert!(leer.unwrap().faces.is_empty(), "Grundriss ohne Faden");
+        let wieder = pl.netz_zur_sicht(key, persp).expect("gemerkt");
+        assert!(Arc::ptr_eq(&n, &wieder) && !pl.rechnet());
+    }
+
     /// Die Linien in Ansicht und Schnitt entstehen je Schlüssel einmal,
     /// nicht je Bild (Review W34 B7); neu mit Maßstab, Ansicht, Ebene,
     /// Modellgrenzen, Zeichentabelle und neuen Platten.
@@ -927,42 +1228,53 @@ mod tests {
         let mut pl = Platte::default();
         let t = DrawTable::resolve(s.model(), &Theme::dark());
         let vorn = (ViewKind::Front, None);
-        let l = pl.linien_im_bild(s.model(), vorn, None, &t, 1.0);
+        let l = pl.linien_im_bild(s.model(), vorn, None, &t, (1.0, 10.0));
         let (a, w) = (l.as_ptr(), l[0].width);
         assert_eq!(l.len(), 4);
         assert_eq!(
-            pl.linien_im_bild(s.model(), vorn, None, &t, 1.0).as_ptr(),
+            pl.linien_im_bild(s.model(), vorn, None, &t, (1.0, 10.0))
+                .as_ptr(),
             a
         );
-        let l = pl.linien_im_bild(s.model(), vorn, None, &t, 2.0);
+        let l = pl.linien_im_bild(s.model(), vorn, None, &t, (2.0, 10.0));
         assert_eq!(l[0].width, 2.0 * w, "Maßstab");
-        let l = pl.linien_im_bild(s.model(), (ViewKind::Left, None), None, &t, 2.0);
+        let l = pl.linien_im_bild(s.model(), (ViewKind::Left, None), None, &t, (2.0, 10.0));
         assert!(l.iter().all(|h| h.a[0] == 0.0), "Seite");
         let plane = (vec3(5000.0, 4000.0, 0.0), vec3(0.0, -1.0, 0.0));
         let schnitt = (ViewKind::Section, Some(plane));
         assert_eq!(
-            pl.linien_im_bild(s.model(), schnitt, None, &t, 2.0).len(),
+            pl.linien_im_bild(s.model(), schnitt, None, &t, (2.0, 10.0))
+                .len(),
             8
         );
         let b = Some((vec3(0.0, -2000.0, 0.0), vec3(10000.0, 8000.0, 3000.0)));
-        let l = pl.linien_im_bild(s.model(), vorn, b, &t, 1.0);
+        let l = pl.linien_im_bild(s.model(), vorn, b, &t, (1.0, 10.0));
         assert!(l.iter().all(|h| h.a[1] == 3000.0), "Mitte der Grenzen");
         let mut t2 = t.clone();
         t2.theme_rev += 1;
-        let a = pl.linien_im_bild(s.model(), vorn, b, &t, 1.0).as_ptr();
-        assert_ne!(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0).as_ptr(), a);
+        let a = pl
+            .linien_im_bild(s.model(), vorn, b, &t, (1.0, 10.0))
+            .as_ptr();
+        assert_ne!(
+            pl.linien_im_bild(s.model(), vorn, b, &t2, (1.0, 10.0))
+                .as_ptr(),
+            a
+        );
         // neue Platten: das Band ändert sich um 1 m
         let breite = |l: &[Helper]| {
             let xs = l.iter().flat_map(|h| [h.a[0], h.b[0]]);
             let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |a, x| (a.0.min(x), a.1.max(x)));
             hi - lo
         };
-        let b0 = breite(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0));
+        let b0 = breite(pl.linien_im_bild(s.model(), vorn, b, &t2, (1.0, 10.0)));
         wand_schieben(&mut s, 1000.0);
-        assert_eq!(breite(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0)), b0);
+        assert_eq!(
+            breite(pl.linien_im_bild(s.model(), vorn, b, &t2, (1.0, 10.0))),
+            b0
+        );
         pl.nachziehen(s.model(), SICHT);
         assert!(pl.warten());
-        let b1 = breite(pl.linien_im_bild(s.model(), vorn, b, &t2, 1.0));
+        let b1 = breite(pl.linien_im_bild(s.model(), vorn, b, &t2, (1.0, 10.0)));
         assert!(((b1 - b0).abs() - 1000.0).abs() < 1e-3, "{b0} {b1}");
     }
 
@@ -1021,10 +1333,10 @@ mod tests {
             // die Linien je Bild (Review W34 B7): gemerkt
             let t = DrawTable::resolve(&m, &Theme::dark());
             let vorn = (ViewKind::Front, None);
-            pl.linien_im_bild(&m, vorn, None, &t, 1.0);
+            pl.linien_im_bild(&m, vorn, None, &t, (1.0, 10.0));
             let z = std::time::Instant::now();
             for _ in 0..100 {
-                std::hint::black_box(pl.linien_im_bild(&m, vorn, None, &t, 1.0).len());
+                std::hint::black_box(pl.linien_im_bild(&m, vorn, None, &t, (1.0, 10.0)).len());
             }
             let linien = z.elapsed().as_secs_f64() * 10.0;
             eprintln!(
@@ -1044,7 +1356,7 @@ mod tests {
     fn koerper_in_3d() {
         let m = haus();
         let p = m.terrain_plates();
-        let keys = [40, 41];
+        let keys = [40, 41, 42];
         let s = koerper(&p[0], p[0].bottom, keys);
         let flaeche = |k: u16| -> f64 {
             s.triangles
@@ -1080,7 +1392,7 @@ mod tests {
         for (a, b) in &iv {
             assert!((b - a - 3000.0).abs() < 1e-6, "{a} {b}");
         }
-        let n = netz(&p, ViewKind::Section, Some(plane), [40, 41]);
+        let n = netz(&p, ViewKind::Section, Some(plane), [40, 41, 42]);
         assert_eq!(n.faces.len(), 2 * 6);
         assert!(n
             .faces
@@ -1161,9 +1473,11 @@ mod tests {
         let m = haus();
         let theme = Theme::dark();
         let t = DrawTable::resolve(&m, &theme);
-        let [g, s] = t.terrain;
-        assert_eq!(s, g + 1);
-        assert_eq!(s as usize + 1, t.mats.len());
+        let [g, s, blass] = t.terrain;
+        assert_eq!((s, blass), (g + 1, g + 2));
+        assert_eq!(blass as usize + 1, t.mats.len());
+        let [r, gr, b, _] = theme.env.terrain_fade.to_f32();
+        assert_eq!(t.mats[blass as usize].face, [r, gr, b]);
         assert!(m
             .materials()
             .iter()

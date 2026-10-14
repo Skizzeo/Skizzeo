@@ -3429,6 +3429,7 @@ fn befehl(c: Option<Command>) -> Option<String> {
         Command::MeasureFrameTime => "Bildzeit messen".into(),
         Command::ExportIfc => "IFC exportieren".into(),
         Command::IfcVorschau => "IFC-Vorschau".into(),
+        Command::Ausbaustufe => "Ausbaustufe".into(),
     })
 }
 
@@ -3668,6 +3669,7 @@ fn a60_dateimenue_eintraege_und_ausgrauen() {
         ("Verwaltung …", "", true),
         ("—", "", false),
         ("Hilfe", "F1", true),
+        ("Ausbaustufe …", "", true),
         ("Bildzeit messen (10 s)", "", true),
         ("—", "", false),
         ("Schließen", "Strg+W", true),
@@ -4217,9 +4219,11 @@ fn a66_einstellungen_aufrufen() {
     // Paket 9 (Koordinator 20:04): „Hilfe“ und „Bildzeit messen (10 s)“
     // vor „Schließen“, als eigene Gruppe (Darstellung p9 §3.3, (au))
     assert_eq!(z[i + 7].0, "Hilfe");
-    assert_eq!(z[i + 8].0, "Bildzeit messen (10 s)");
-    assert_eq!(z[i + 9].0, "—", "eigene Gruppe");
-    assert_eq!(z[i + 10].0, "Schließen");
+    // Bedienbarkeit 41.5: „Ausbaustufe …“ unter „Hilfe“
+    assert_eq!(z[i + 8].0, "Ausbaustufe …");
+    assert_eq!(z[i + 9].0, "Bildzeit messen (10 s)");
+    assert_eq!(z[i + 10].0, "—", "eigene Gruppe");
+    assert_eq!(z[i + 11].0, "Schließen");
     let komma = Key::Other(0xBC);
     let mut k = Shortcuts::default();
     assert_eq!(

@@ -18,9 +18,9 @@ use crate::scene::Scene;
 use crate::window_kit::{
     intersect, label, num_text as de, outline, parse_num, pixel_strips, prop_text, rounded,
 };
-use sk_model::matprop::{self, MatPropKind, PRICE, PRICE_DATE, PRICE_UNIT};
+use sk_model::matprop::{self, MatPropKind, MatPropModule, PRICE, PRICE_DATE, PRICE_UNIT};
 use sk_model::{
-    compare_materials, import_material, Guid, LayerSetId, Library, MatCategory, Material,
+    compare_materials_ohne, import_material, Guid, LayerSetId, Library, MatCategory, Material,
     MaterialDisplay, MaterialId, Model, PropValue, TypeCategory, TypeState, Use,
 };
 use sk_paint::{Canvas, Path, Rgba};
@@ -310,15 +310,20 @@ enum Field {
     NewValue(String),
 }
 
-/// Modul eines Kennwerts (Review #120 B2): Richtpreis, Stand und
+/// Modul eines Kennwerts (Review #120 B2) aus seiner Spalte in
+/// [`matprop::MAT_PROPS`] (Review #120 H5): Richtpreis, Einheit, Stand und
 /// Preisquelle gehören zu Kosten, Verschnittzuschlag und „Öffnungen abziehen
-/// ab“ zu Mengen. Alle übrigen Kennwerte und das Fenster selbst gehören zu
-/// keinem.
+/// ab“ zu Mengen. Alle übrigen Kennwerte, eigene und das Fenster selbst
+/// gehören zu keinem.
 fn kennwert_modul(k: &str) -> Option<Modul> {
-    match k {
-        PRICE | PRICE_DATE | "Preisquelle" => Some(Modul::Kosten),
-        matprop::WASTE | matprop::OPENING_FROM => Some(Modul::Mengen),
-        _ => None,
+    Some(prop_modul(matprop::mat_prop(k)?.module?))
+}
+
+/// Freischaltung zum Modul eines festen Kennwerts.
+pub(crate) fn prop_modul(m: MatPropModule) -> Modul {
+    match m {
+        MatPropModule::Quantities => Modul::Mengen,
+        MatPropModule::Costs => Modul::Kosten,
     }
 }
 
@@ -615,6 +620,15 @@ impl MaterialView {
     /// Der Kennwert gehört zu einem Modul, das nicht frei ist.
     fn kennwert_gesperrt(&self, k: &str) -> bool {
         kennwert_modul(k).is_some_and(|m| !self.frei.frei(m))
+    }
+
+    /// Module der Kennwerte, die nicht frei sind: Sie zählen im Abgleich
+    /// mit dem Firmenkatalog nicht (Review #120 H2).
+    fn gesperrte_kennwerte(&self) -> Vec<MatPropModule> {
+        [MatPropModule::Quantities, MatPropModule::Costs]
+            .into_iter()
+            .filter(|&m| !self.frei.frei(prop_modul(m)))
+            .collect()
     }
 
     /// Neuer Stand des Firmenkatalogs (nach Neuladen oder neuem Ort).
@@ -934,17 +948,38 @@ impl MaterialView {
         )
     }
 
-    /// Zeile von „Verwendet in“ (unter dem Hinweis zur Preiseinheit).
+    /// Hinweis zur Preiseinheit ([`price_hint`]), nur mit Kosten
+    /// (Review #120 H2).
+    fn preis_hinweis(&self, id: MaterialId) -> Option<String> {
+        if self.kennwert_gesperrt(PRICE) {
+            return None;
+        }
+        price_hint(&self.work, id)
+    }
+
+    /// Zeile von „Verwendet in“: unter dem Hinweis zur Preiseinheit, ohne
+    /// Kosten gleich unter der Rohdichte statt nach einer leeren Zeile
+    /// (Review #120 H2).
     fn uses_row(&self) -> usize {
+        if self.kennwert_gesperrt(PRICE) {
+            return 2;
+        }
         let hint = self
             .sel_id()
-            .and_then(|id| price_hint(&self.work, id))
+            .and_then(|id| self.preis_hinweis(id))
             .is_some();
         if hint {
             4
         } else {
             3
         }
+    }
+
+    /// „Mehr“ steht unter „Verwendet in“ (dip): in Zeile 3 ohne Versatz, je
+    /// Zeile darüber oder darunter 32 dip anders, ohne Kosten also eine
+    /// Zeile höher statt mit einer Lücke (Review #155 H2).
+    fn mehr_versatz(&self) -> f32 {
+        (self.uses_row() as f32 - 3.0) * 32.0
     }
 
     fn more_link(&self, t: &Theme, w: &Win, fonts: &Fonts) -> Rect {
@@ -957,16 +992,15 @@ impl MaterialView {
             .or(fonts.regular.as_ref())
             .map_or(60.0 * s, |f| f.width(label, t.size.font_small * s))
             + MORE_ARROW * s;
-        let extra = if self.uses_row() == 4 { 32.0 } else { 0.0 };
-        let r = self.r(t, w, self.rx(t), HEAD + 196.0 + extra, 0.0, 22.0);
+        let y = HEAD + 196.0 + self.mehr_versatz();
+        let r = self.r(t, w, self.rx(t), y, 0.0, 22.0);
         Rect::new(r.x - 2.0 * s, r.y, tw + 4.0 * s, r.h)
     }
 
     /// Bereich von „Mehr“ (zwei Spalten, mit Bildlauf).
     fn more_body(&self, t: &Theme, w: &Win) -> Rect {
         let (ww, hh) = self.dip(t, w);
-        let extra = if self.uses_row() == 4 { 32.0 } else { 0.0 };
-        let y0 = HEAD + 220.0 + extra;
+        let y0 = HEAD + 220.0 + self.mehr_versatz();
         let x0 = self.rx(t);
         self.r(t, w, x0, y0, ww - x0 - 6.0, hh - FOOT - 4.0 - y0)
     }
@@ -1068,7 +1102,7 @@ impl MaterialView {
             (f(matprop::MAKER), "Hersteller".into()),
             (f("Produkt"), "Produkt".into()),
             (f("Bemerkung"), "Bemerkung".into()),
-            (f("Preisquelle"), "Preisquelle".into()),
+            (f(matprop::PRICE_SOURCE), "Preisquelle".into()),
             (None, "BESTELLUNG".into()),
             (f(matprop::WASTE), "Verschnittzuschlag".into()),
             (f(matprop::OPENING_FROM), "Öffnungen abziehen ab".into()),
@@ -2574,7 +2608,8 @@ impl MaterialView {
         let px = t.size.font * s;
         let cap = regular.map_or(px * 0.7, |f| f.cap_height(px));
         let compare = if self.tab == Tab::Company {
-            self.lib().map(|l| compare_materials(&self.work, l))
+            self.lib()
+                .map(|l| compare_materials_ohne(&self.work, l, &self.gesperrte_kennwerte()))
         } else {
             None
         };
@@ -2879,7 +2914,7 @@ impl MaterialView {
             self.paint_field(c, t, fonts, w, &Field::Key(PRICE_DATE), r);
         }
         // Hinweis: Einheit passt nicht mehr zur Art (Regel 53)
-        if let Some(h) = price_hint(&self.work, id) {
+        if let Some(h) = self.preis_hinweis(id) {
             let r = self.basic_field(t, w, 3, 0.0, 0.0);
             let lx2 = lx;
             let mut p = Path::new();
@@ -3467,5 +3502,63 @@ mod freischaltung_tests {
                 assert!(!v.gesperrt(&Field::Key(k)), "{w}");
             }
         }
+    }
+
+    /// Review #120 H5: Das Modul eines Kennworts steht als Spalte in
+    /// `MAT_PROPS`; eigene Kennwerte gehören zu keinem.
+    #[test]
+    fn modul_aus_matprop() {
+        for k in [PRICE, PRICE_UNIT, PRICE_DATE, matprop::PRICE_SOURCE] {
+            assert_eq!(kennwert_modul(k), Some(Modul::Kosten), "{k}");
+        }
+        for k in [matprop::WASTE, matprop::OPENING_FROM] {
+            assert_eq!(kennwert_modul(k), Some(Modul::Mengen), "{k}");
+        }
+        for k in [
+            matprop::MU,
+            matprop::EUROCLASS,
+            "Produkt",
+            "Druckfestigkeit",
+        ] {
+            assert_eq!(kennwert_modul(k), None, "{k}");
+        }
+    }
+
+    /// Review #120 H2: Ohne Kosten fehlen der Hinweis zur Preiseinheit und
+    /// die Zeile des Richtpreises; „Verwendet in“ rückt unter die Rohdichte.
+    #[test]
+    fn ohne_kosten_kein_preis_und_keine_leere_zeile() {
+        let s = Scene::new();
+        let mut v = MaterialView::open(&s);
+        let (id, mut x) = v
+            .work
+            .materials()
+            .iter()
+            .find(|(_, x)| x.category == MatCategory::Masonry)
+            .map(|(id, x)| (id, x.clone()))
+            .unwrap();
+        x.props.insert(PRICE.into(), PropValue::Number(80.0));
+        x.props
+            .insert(PRICE_UNIT.into(), PropValue::Text("m2".into()));
+        assert!(v.model_mut().set_material(id, x.clone()));
+        v.sel = Some(x.guid);
+        assert!(price_hint(&v.work, id).is_some());
+        for (w, hinweis, zeile) in [
+            ("basis", false, 2),
+            ("pro", false, 2),
+            ("ultimate", true, 4),
+        ] {
+            v.set_frei(Freischaltung::stufe(w).unwrap());
+            assert_eq!(v.preis_hinweis(id).is_some(), hinweis, "{w}");
+            assert_eq!(v.uses_row(), zeile, "{w}");
+            // „Mehr“ steht 35 dip unter dem Feld von „Verwendet in“
+            // (Zeile i bei HEAD + 65 + 32 i), ohne Lücke (Review #155 H2)
+            let feld = HEAD + 65.0 + zeile as f32 * 32.0;
+            assert_eq!(HEAD + 196.0 + v.mehr_versatz(), feld + 35.0, "{w}");
+        }
+        x.props.remove(PRICE_UNIT);
+        x.props.remove(PRICE);
+        assert!(v.model_mut().set_material(id, x));
+        assert_eq!(v.uses_row(), 3, "mit Kosten ohne Hinweis");
     }
 }

@@ -648,11 +648,15 @@ impl Maske {
     }
 
     /// Die Projektdaten aus den Feldern. Ein Bodenkennwert, der keine Zahl
-    /// im Bereich ist, lässt den alten stehen (die Maske meldet ihn).
+    /// im Bereich ist, lässt den alten stehen (die Maske meldet ihn); ein
+    /// versteckter ebenso (Review #120 H1).
     pub fn projekt(&self) -> Project {
         let w = |i: usize| self.felder[i].text.clone();
         let mut boden = self.basis.soil.werte();
         for (k, b) in boden.iter_mut().enumerate() {
+            if !self.gezeigt(BODEN + k) {
+                continue;
+            }
             if let Ok(v) = boden_wert(k, &self.felder[BODEN + k].text) {
                 *b = v;
             }
@@ -1557,11 +1561,26 @@ mod tests {
         m.fokus_auf(7);
         m.key(Key::Tab, Modifiers::default());
         assert_eq!(m.fokus(), UTM);
+        // 60 ° wäre gültig: versteckt zählt es trotzdem nicht (Review #120 H1)
+        m.felder[14] = TextEdit::new("60");
+        assert_eq!(m.meldung(), None);
+        assert_eq!(m.projekt().soil.boeschung, 45.0);
+        // 20 ° wäre ungültig: versteckt meldet es nichts und zählt nicht
+        // (Review #155)
         m.felder[14] = TextEdit::new("20");
         assert_eq!(m.meldung(), None);
         assert_eq!(m.projekt().soil.boeschung, 45.0);
-        let p = Maske::new(&ohne(), false, None).mit_frei(stufe("pro"));
+        let mut p = Maske::new(&ohne(), false, None).mit_frei(stufe("pro"));
         assert!((0..N).all(|i| p.gezeigt(i)));
+        p.felder[14] = TextEdit::new("60");
+        assert_eq!(p.meldung(), None);
+        assert_eq!(p.projekt().soil.boeschung, 60.0);
+        p.felder[14] = TextEdit::new("20");
+        assert!(
+            p.meldung().is_some_and(|t| t.contains("30 bis 90")),
+            "{:?}",
+            p.meldung()
+        );
     }
 
     fn tippen(m: &mut Maske, s: &str) {

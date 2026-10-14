@@ -13,6 +13,7 @@ use crate::id::{Arena, Id};
 use crate::library::{
     Bearing, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay, MaterialId, TypeCategory,
 };
+use crate::matprop::{mat_prop, MatPropModule};
 use crate::model::{free_code, same_type, Model, SpaceType, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
 use crate::proctex::{CompanyPreset, Pattern};
 use crate::szo::{self, check_header, err, keyword, register, sorted, Line, LoadError, Record};
@@ -1122,6 +1123,17 @@ fn export_display(m: &Model, lib: &mut Library, x: &Material) -> Option<Material
 /// Gleicher Baustoff in Projekt und Firmenkatalog (Paket 5 §1.3): alle
 /// Angaben samt Kennwerten, die Darstellung über die Guids.
 fn same_material(m: &Model, x: &Material, lib: &Library, y: &Material) -> bool {
+    same_material_ohne(m, x, lib, y, &[])
+}
+
+/// [`same_material`], aber Kennwerte der Module in `ohne` zählen nicht.
+fn same_material_ohne(
+    m: &Model,
+    x: &Material,
+    lib: &Library,
+    y: &Material,
+    ohne: &[MatPropModule],
+) -> bool {
     let a = m.attr();
     let mine = (
         a.fill(x.cut_fill).map(|f| f.guid),
@@ -1135,7 +1147,28 @@ fn same_material(m: &Model, x: &Material, lib: &Library, y: &Material) -> bool {
         lib.pens.get(y.cut_bg).map(|p| p.guid),
         lib.surfaces.get(y.surface).map(|s| s.guid),
     );
-    mine == theirs && with_display(x, y.display()) == *y
+    if mine != theirs {
+        return false;
+    }
+    let mut x = with_display(x, y.display());
+    if !ohne.is_empty() {
+        // Kennwerte der Module in `ohne` wie im Firmenkatalog, so zählen nur
+        // die übrigen; kopiert werden nur diese wenigen, nicht der ganze
+        // Baustoff (Review #155)
+        let zaehlt = |k: &str| {
+            !mat_prop(k)
+                .and_then(|p| p.module)
+                .is_some_and(|m| ohne.contains(&m))
+        };
+        x.props.retain(|k, _| zaehlt(k));
+        x.props.extend(
+            y.props
+                .iter()
+                .filter(|(k, _)| !zaehlt(k))
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+    }
+    x == *y
 }
 
 /// Abgleich der Oberflächen von Projekt und Firmenkatalog nach Guid,
@@ -1179,6 +1212,17 @@ pub fn export_surface(m: &Model, lib: &mut Library, id: crate::SurfaceId) -> boo
 /// (Paket 5 §1.3). Luft fehlt: sie wird weder übernommen noch
 /// zurückgespeichert.
 pub fn compare_materials(m: &Model, lib: &Library) -> Vec<(Guid, TypeState)> {
+    compare_materials_ohne(m, lib, &[])
+}
+
+/// [`compare_materials`], aber Kennwerte der Module in `ohne` zählen nicht:
+/// Ohne Kosten ist ein Baustoff, der nur im Richtpreis abweicht, gleich
+/// (Review #120 H2).
+pub fn compare_materials_ohne(
+    m: &Model,
+    lib: &Library,
+    ohne: &[MatPropModule],
+) -> Vec<(Guid, TypeState)> {
     let mut out = Vec::new();
     for (_, x) in m.materials().iter() {
         if x.category == MatCategory::Air {
@@ -1187,7 +1231,7 @@ pub fn compare_materials(m: &Model, lib: &Library) -> Vec<(Guid, TypeState)> {
         let state =
             match find(&lib.materials, x.guid, |y| y.guid).and_then(|id| lib.materials.get(id)) {
                 None => TypeState::OnlyProject,
-                Some(y) if same_material(m, x, lib, y) => TypeState::Same,
+                Some(y) if same_material_ohne(m, x, lib, y, ohne) => TypeState::Same,
                 Some(_) => TypeState::Differs,
             };
         out.push((x.guid, state));
@@ -1438,6 +1482,51 @@ mod tests {
     use super::*;
     use crate::library::{LayerFunction, MatCategory, MaterialLayer};
     use crate::txn::Direction;
+
+    /// Review #120 H2: Im Abgleich mit dem Firmenkatalog zählen die
+    /// Kennwerte gesperrter Module nicht, alle übrigen Angaben schon.
+    #[test]
+    fn abgleich_ohne_kennwerte_gesperrter_module() {
+        use crate::element::PropValue;
+        use crate::matprop::{PRICE, PRICE_UNIT, WASTE};
+        use MatPropModule::{Costs as K, Quantities as M};
+        let mut m = Model::new();
+        let id = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.category == MatCategory::Masonry)
+            .map(|(id, _)| id)
+            .unwrap();
+        let mut lib = Library::default();
+        assert!(export_material(&m, &mut lib, id));
+        let g = m.material(id).unwrap().guid;
+        let stand = |m: &Model, ohne: &[MatPropModule]| {
+            compare_materials_ohne(m, &lib, ohne)
+                .into_iter()
+                .find(|x| x.0 == g)
+                .map(|x| x.1)
+        };
+        assert_eq!(stand(&m, &[]), Some(TypeState::Same));
+        let mut x = m.material(id).unwrap().clone();
+        x.props.insert(PRICE.into(), PropValue::Number(123.0));
+        x.props
+            .insert(PRICE_UNIT.into(), PropValue::Text("m3".into()));
+        assert!(m.set_material(id, x.clone()));
+        assert_eq!(stand(&m, &[]), Some(TypeState::Differs));
+        assert_eq!(stand(&m, &[M]), Some(TypeState::Differs));
+        assert_eq!(stand(&m, &[K]), Some(TypeState::Same));
+        x.props.insert(WASTE.into(), PropValue::Number(12.0));
+        assert!(m.set_material(id, x.clone()));
+        assert_eq!(stand(&m, &[K]), Some(TypeState::Differs));
+        assert_eq!(stand(&m, &[K, M]), Some(TypeState::Same));
+        x.density += 1.0;
+        assert!(m.set_material(id, x));
+        assert_eq!(stand(&m, &[K, M]), Some(TypeState::Differs));
+        assert_eq!(
+            compare_materials(&m, &lib),
+            compare_materials_ohne(&m, &lib, &[])
+        );
+    }
 
     /// Review 3n/2, 3n/3, 3n/7: OK im Materialfenster tauscht Namen genau,
     /// setzt kein Gewerk nach Baustoffart und ein neues Gewerk geht mit

@@ -238,6 +238,67 @@ fn zuege_im_budget() {
     }
 }
 
+/// Zug an der Kote, wie ihn der Geschossmanager führt: über den Versatz
+/// des bestimmenden Gebäudes und bei absoluter Höhenlage über ±0,00 ü.
+/// NHN. Während des Zugs stehen die anderen Gebäude auf ihrer alten
+/// Gründung, nach dem Loslassen liegt alles wie nach
+/// `set_terrain_z_of_level` in einem Schritt (Review #123 B1 zum
+/// Gelände-Zug).
+#[test]
+fn zug_an_der_kote_wie_in_einem_schritt() {
+    let (mut m, t) = haeuser_am_hang(6);
+    m.begin("Aufmaß");
+    assert!(m.import_terrain(t));
+    m.commit();
+    let b = m.building_of(m.defaults().storey).unwrap();
+    assert_eq!(m.level_building(), Some(b));
+    let gr = m.foundation_level().unwrap();
+    for abs in [false, true] {
+        if abs {
+            let h = (m.terrain_nhn().unwrap() * 1000.0).round() / 1000.0;
+            m.begin("Höhe");
+            assert!(m.set_terrain_nhn(h + 0.2));
+            m.commit();
+        }
+        let z0 = m.terrain_z_of_level(gr);
+        let mut gleich = m.clone();
+        gleich.begin("Gelände");
+        assert!(gleich.set_terrain_z_of_level(gr, z0 - 350.0));
+        gleich.commit();
+        let uk: Vec<_> = m
+            .storeys()
+            .iter()
+            .map(|(id, s)| (id, s.elevation))
+            .collect();
+        m.begin("Gelände ziehen");
+        let zug = m.gelaende_zug(b).unwrap();
+        for z in [z0 - 500.0, z0 + 120.0, z0 - 350.0] {
+            assert!(m.gelaende_ziehen_auf(&zug, gr, z), "{abs} {z}");
+            for &(id, e) in &uk {
+                if m.building_of(id) != Some(b) {
+                    assert_eq!(m.storey(id).unwrap().elevation, e, "{abs} {id:?}");
+                }
+            }
+        }
+        let bewegt = m.gelaende_loslassen(zug);
+        assert!(!bewegt.is_empty() && !bewegt.contains(&b), "{abs}");
+        m.commit();
+        assert_eq!(m.terrain().unwrap().href == HeightRef::Abs, abs);
+        assert_eq!(m.location().nhn, gleich.location().nhn, "{abs}");
+        // der Versatz summiert die Schritte, auf Rundung genau
+        let o = (
+            m.terrain_offset_of(Some(b)),
+            gleich.terrain_offset_of(Some(b)),
+        );
+        assert!((o.0 - o.1).abs() < 1e-6, "{abs} {o:?}");
+        for (id, s) in m.storeys().iter() {
+            let soll = gleich.storey(id).unwrap();
+            assert!((s.elevation - soll.elevation).abs() < 1e-6, "{abs} {id:?}");
+            assert_eq!(s.embed, soll.embed, "{abs} {id:?}");
+        }
+    }
+}
+
 /// Grenzen über viele Punkte: Jede Nummer wird einmal nachgeschlagen, eine
 /// [tline] über 100.000 Punkte kostet nicht Punkte mal Grenzpunkte
 /// (Review W45 H4).

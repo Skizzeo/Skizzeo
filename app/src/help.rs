@@ -192,11 +192,14 @@ pub enum Topic {
     Ava,
     Delete,
     Backups,
+    /// Ausbaustufen und was jede kann, „Ausbaustufe …“ im Dateimenü
+    /// (Bedienbarkeit 41.5).
+    Ausbaustufen,
 }
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 40] = [
+    pub const ALL: [Topic; 41] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -237,13 +240,20 @@ impl Topic {
         Topic::Ava,
         Topic::Delete,
         Topic::Backups,
+        Topic::Ausbaustufen,
     ];
 
     /// Gruppen der Liste „Alle Themen“ (Darstellung p9 §2, Liste).
     pub const GROUPS: [(&'static str, &'static [Topic]); 5] = [
         (
             "Grundlagen",
-            &[Topic::Start, Topic::Navigation, Topic::File, Topic::Delete],
+            &[
+                Topic::Start,
+                Topic::Navigation,
+                Topic::File,
+                Topic::Delete,
+                Topic::Ausbaustufen,
+            ],
         ),
         (
             "Zeichnen",
@@ -346,6 +356,7 @@ impl Topic {
             Topic::Ava => "ava",
             Topic::Delete => "loeschen",
             Topic::Backups => "sicherungen",
+            Topic::Ausbaustufen => "ausbaustufen",
         }
     }
 
@@ -368,6 +379,9 @@ impl Topic {
         }
     }
 }
+
+/// Erste Zeile im Thema „Ausbaustufen“, rechts die Stufe dieser Installation.
+pub const STUFE_HIER: &str = "Diese Installation";
 
 /// Offenes Fenster für die Themenwahl.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -568,15 +582,16 @@ impl HelpCard {
     }
 
     /// Zeilen des Themas ohne die gesperrter Module
-    /// ([`crate::freischaltung::hilfe_zeile`]); der Knopf zum Mengenfenster
-    /// heißt wie im Paneel.
+    /// ([`crate::freischaltung::hilfe_zeigt`]); der Knopf zum Mengenfenster
+    /// heißt wie im Paneel. „Ausbaustufen“ nennt zuerst die Stufe dieser
+    /// Installation.
     fn zeilen(&self, t: Topic) -> Vec<(String, String)> {
         let knopf = self.frei.knopf();
-        t.rows()
+        let stufe = (t == Topic::Ausbaustufen).then(|| (STUFE_HIER.into(), self.frei.name()));
+        stufe
             .into_iter()
-            .filter(|(a, _)| {
-                crate::freischaltung::hilfe_zeile(t, a).is_none_or(|m| self.frei.frei(m))
-            })
+            .chain(t.rows())
+            .filter(|(a, _)| crate::freischaltung::hilfe_zeigt(self.frei, t, a))
             .map(|(a, b)| (a, b.replace(crate::cards::KNOPF, knopf)))
             .collect()
     }
@@ -603,6 +618,10 @@ impl HelpCard {
     pub fn open_with(&mut self, t: Topic) {
         self.set_open(true);
         self.picked = (t != self.doing).then_some(t);
+        // auch auf der schon offenen Karte das Thema von oben, nicht die
+        // Liste „Alle Themen“ (Review #156 B1)
+        self.list = false;
+        self.scroll = 0.0;
     }
 
     /// Taste: F1 öffnet und schließt, Esc schließt nur eine offene Karte.
@@ -1393,6 +1412,27 @@ mod tests {
         assert_eq!(k.wait(200), Some(50));
     }
 
+    /// Review #156 B1: Ist die Karte mit „Alle Themen“ offen und weit
+    /// gerollt, zeigt „Ausbaustufe …“ trotzdem das Thema, von oben.
+    #[test]
+    fn oeffnen_mit_thema_aus_der_liste() {
+        let mut k = HelpCard::default();
+        k.follow(Topic::Draw, 0);
+        k.set_open(true);
+        k.toggle_list();
+        k.scroll = 120.0;
+        assert!(k.list_open());
+        k.open_with(Topic::Ausbaustufen);
+        assert!(k.is_open() && !k.list_open());
+        assert_eq!(k.topic(), Topic::Ausbaustufen);
+        assert_eq!(k.scroll, 0.0);
+        // ebenso aus einem anderen Thema heraus
+        k.pick(Topic::Quantities);
+        k.scroll = 80.0;
+        k.open_with(Topic::Ausbaustufen);
+        assert_eq!((k.topic(), k.scroll), (Topic::Ausbaustufen, 0.0));
+    }
+
     /// Review #120 H5: Das Mengenfenster heißt nach den freien Blättern,
     /// und Zeilen gesperrter Module fehlen; der Knopf heißt wie im Paneel.
     #[test]
@@ -1430,6 +1470,28 @@ mod tests {
                 "{w}"
             );
             assert_eq!(zeile(&k, Topic::Terrace, "Mengen").is_some(), mengen, "{w}");
+            // Review #120 H3: Haken und Preise beim Einlesen nur mit Kosten,
+            // ohne sie kommen alle neuen Sätze in den Firmenkatalog
+            for a in ["Firmenkatalog", "Preise"] {
+                assert_eq!(zeile(&k, Topic::Einlesen, a).is_some(), preise, "{w}: {a}");
+            }
+            assert_eq!(
+                zeile(&k, Topic::Einlesen, "Neue Sätze").is_some(),
+                !preise,
+                "{w}"
+            );
+            for a in ["Einzelplatz oder Kennwort", "Eigener Baustoff"] {
+                let z = zeile(&k, Topic::Einlesen, a);
+                assert!(z.is_some_and(|z| !z.1.contains("angehakt")), "{w}: {a}");
+            }
+            // Bedienbarkeit 41.5: „Ausbaustufen“ nennt zuerst diese Stufe,
+            // dann jede Stufe, in jeder Stufe gleich
+            let stufen = k.zeilen(Topic::Ausbaustufen);
+            assert_eq!(stufen[0], (STUFE_HIER.into(), k.frei.name()), "{w}");
+            let namen: Vec<&str> = stufen[1..5].iter().map(|z| z.0.as_str()).collect();
+            assert_eq!(namen, ["Basis", "Pro", "Ultimate", "Geländemodul"], "{w}");
+            assert!(!k.frei.gesperrt(Topic::Ausbaustufen), "{w}");
         }
+        assert_eq!(Freischaltung::ALLES.name(), "Ultimate mit Geländemodul");
     }
 }
