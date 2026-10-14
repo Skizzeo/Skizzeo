@@ -57,6 +57,9 @@ pub struct Erdmenge {
     pub ueber: f64,
     /// ∫ (Bezug − Gelände)⁺ dA (m³): Gelände unter dem Bezug.
     pub unter: f64,
+    /// Größtes Gefälle des Geländes über dem Polygon (m/m, Dreiecke mit
+    /// Fläche darin): DIN 4124 erlaubt senkrechte Wände nur bis 1:10.
+    pub steil: f64,
 }
 
 /// Höhe der Bezugsfläche an `p`.
@@ -96,6 +99,7 @@ pub(crate) fn erdmenge_dreieck(
         return;
     };
     e.flaeche += a;
+    e.steil = e.steil.max(gefaelle(&p));
     let f = |q: [f64; 2]| ebene(&p, q) - bezug_an(bezug, q);
     for (vz, summe) in [(1.0, &mut e.ueber), (-1.0, &mut e.unter)] {
         let halb = halbieren(&teil, |q| vz * f(q));
@@ -103,6 +107,24 @@ pub(crate) fn erdmenge_dreieck(
             *summe += a * (vz * f(c)).max(0.0);
         }
     }
+}
+
+/// Gefälle der Ebene durch das Dreieck (m/m); senkrecht stehende
+/// Dreiecke zählen nicht.
+fn gefaelle(p: &[[f64; 3]; 3]) -> f64 {
+    let (u, v) = (
+        [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]],
+        [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]],
+    );
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    if n[2].abs() < 1e-12 {
+        return 0.0;
+    }
+    n[0].hypot(n[1]) / n[2].abs()
 }
 
 /// Liegt das Rechteck um das Dreieck über dem um das Polygon?
@@ -291,6 +313,8 @@ mod tests {
         assert!((e.flaeche - 100.0).abs() < 1e-9);
         // ∫ (−1 + 0,1 x + 0,2 y) = 100 · (−1 + 0,5 + 1) = 50
         assert!((e.ueber - e.unter - 50.0).abs() < 1e-9, "{e:?}");
+        // Gefälle √(0,1² + 0,2²)
+        assert!((e.steil - 0.05f64.sqrt()).abs() < 1e-9, "{e:?}");
         let (a, b) = fein([0.0, 0.0, 10.0, 10.0], |x, y| -1.0 + 0.1 * x + 0.2 * y);
         assert!(
             (e.ueber - a).abs() < 1e-3 && (e.unter - b).abs() < 1e-3,

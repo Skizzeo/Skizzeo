@@ -15,6 +15,9 @@ use crate::foundation::Foundation;
 use crate::qto::AutoMenge;
 use sk_math::Vec3;
 
+mod netz;
+pub use netz::{steil_hinweis, ErdNetz, DREIECKSPRISMEN, STEIL, STEIL_AB};
+
 /// Bodenkennwerte des Projekts (mm, Grad); stehen am Projekt
 /// ([`crate::Project::soil`]) und in der Datei nur, wenn sie von der
 /// Vorgabe abweichen.
@@ -151,8 +154,11 @@ pub struct ErdBasis {
     /// Ring der Frostschürze im Grundriss.
     pub footing_area: f64,
     /// Mit Höhenaufmaß: die mittlere Geländehöhe in m ü. NHN, die
-    /// `terrain_z` ist (G1 rechnet mit dieser Ebene, G2 mit dem Netz).
+    /// `terrain_z` ist; mit ihr rechnet, was das Netz nicht deckt.
     pub aufmass: Option<f64>,
+    /// Mit Höhenaufmaß das Netz (G2): Die Mengen kommen aus seinen
+    /// Dreiecken statt aus der Ebene in `terrain_z`.
+    pub netz: Option<ErdNetz>,
 }
 
 impl ErdBasis {
@@ -169,6 +175,16 @@ impl ErdBasis {
             slab_perimeter: g.slab_perimeter,
             footing_area: g.footing_area,
             aufmass: g.terrain_nhn.map(|h| h + g.terrain_z / 1000.0),
+            netz: None,
+        }
+    }
+
+    /// Wie [`ErdBasis::aus`], mit Aufmaß samt Netz aus dem Modell `m`.
+    pub fn im_modell(m: &crate::Model, g: &crate::GroundBasis) -> ErdBasis {
+        let netz = g.terrain_nhn.and_then(|_| ErdNetz::neu(m, g.run));
+        ErdBasis {
+            netz,
+            ..ErdBasis::aus(g)
         }
     }
 
@@ -186,6 +202,7 @@ impl ErdBasis {
             slab_perimeter: f.slab_perimeter(),
             footing_area: f.footing_area(),
             aufmass: None,
+            netz: None,
         }
     }
 }
@@ -194,24 +211,7 @@ impl ErdBasis {
 /// nach außen versetzt (Ecken auf Gehrung), hat die Fläche
 /// `A + U·x + T·x²`. Rechteck: 4.
 fn eckzahl(pts: &[Vec3]) -> f64 {
-    let n = pts.len();
-    let mut t = 0.0;
-    for i in 0..n {
-        let a = pts[(i + n - 1) % n];
-        let b = pts[i];
-        let c = pts[(i + 1) % n];
-        let (u, v) = ((b.x - a.x, b.y - a.y), (c.x - b.x, c.y - b.y));
-        let (lu, lv) = (u.0.hypot(u.1), v.0.hypot(v.1));
-        if lu <= 0.0 || lv <= 0.0 {
-            continue;
-        }
-        let kreuz = u.0 * v.1 - u.1 * v.0;
-        let punkt = u.0 * v.0 + u.1 * v.1;
-        // Außenwinkel, links herum positiv (gegen den Uhrzeigersinn)
-        let phi = kreuz.atan2(punkt);
-        t += (phi / 2.0).tan();
-    }
-    t
+    netz::ecken_tan(pts).iter().sum()
 }
 
 /// Zahl mit zwei Nachkommastellen und Komma, aus mm (`teiler` 1e3), mm²
@@ -227,6 +227,13 @@ pub const AUS_AUFMASS: &str = "; Gelände aus Aufmaß";
 /// Erdmengen einer Gründung (Bauteil `element`, Nummer `number` der
 /// Sohlplatte). Mengen ≤ 0 entstehen nicht.
 pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static str, f64, String)) {
+    // G2: über das Netz, wenn es die Baugrube deckt
+    if b.netz
+        .as_ref()
+        .is_some_and(|n| netz::mengen(b, n, boden, &mut menge))
+    {
+        return;
+    }
     // Mit Aufmaß nennt jeder Ansatz, der an der Geländehöhe hängt, die
     // Ebene (plan-gelaendemodul.md §5 G1)
     let gelaende = b.aufmass.map_or(String::new(), |h| {
@@ -262,25 +269,12 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
     let x_oben = a + k * h;
     // Oberboden über das Baufeld, mindestens über die ganze Baugrube
     let x_ob = boden.rand.max(x_oben);
-    let ob_flaeche = fl + u * x_ob + t * x_ob * x_ob;
     let grube = h * fl
         + u * (a * h + k * h * h / 2.0)
         + t * (a * a * h + a * k * h * h + k * k * h * h * h / 3.0);
     let breite = |x: f64| format!("{} m", zahl(x, 1e3));
 
-    if o > 0.0 {
-        menge(
-            TOPSOIL,
-            ob_flaeche * o,
-            format!(
-                "Platte {} m² + Abtrag um die Platte {}: {} m² × {}",
-                zahl(fl, 1e6),
-                breite(x_ob),
-                zahl(ob_flaeche, 1e6),
-                breite(o)
-            ),
-        );
-    }
+    oberboden(b, x_ob, o, &mut menge);
     let mut aushub = 0.0;
     if grube > 0.0 {
         let wie = if boeschung {
@@ -332,20 +326,7 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
         );
         aushub += graben;
     }
-    if innen > 0.0 {
-        menge(
-            SUBGRADE,
-            innen,
-            format!("innerhalb der Frostschürze {} m²", zahl(innen, 1e6)),
-        );
-    }
-    if g > 0.0 && innen > 0.0 {
-        menge(
-            GRAVEL,
-            innen * g,
-            format!("{} m² × {}", zahl(innen, 1e6), breite(g)),
-        );
-    }
+    planum(innen, g, &mut menge);
     let auf_h = (z_p - z_n).max(0.0);
     if auf_h > 0.0 && innen > 0.0 {
         menge(
@@ -397,6 +378,45 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
     }
 }
 
+/// Oberboden über das Baufeld, `x_ob` um die Platte (waagerechte Fläche ×
+/// Dicke `o`, auch am Hang: VOB-Prüfung G2 Frage 4).
+fn oberboden(b: &ErdBasis, x_ob: f64, o: f64, menge: &mut dyn FnMut(&'static str, f64, String)) {
+    let (fl, u, t) = (b.slab_area, b.slab_perimeter, eckzahl(&b.outline));
+    let ob_flaeche = fl + u * x_ob + t * x_ob * x_ob;
+    if o > 0.0 {
+        menge(
+            TOPSOIL,
+            ob_flaeche * o,
+            format!(
+                "Platte {} m² + Abtrag um die Platte {} m: {} m² × {} m",
+                zahl(fl, 1e6),
+                zahl(x_ob, 1e3),
+                zahl(ob_flaeche, 1e6),
+                zahl(o, 1e3)
+            ),
+        );
+    }
+}
+
+/// Planum und kapillarbrechende Schicht innerhalb der Schürze (`innen`
+/// mm², Schicht `g` mm).
+fn planum(innen: f64, g: f64, menge: &mut dyn FnMut(&'static str, f64, String)) {
+    if innen > 0.0 {
+        menge(
+            SUBGRADE,
+            innen,
+            format!("innerhalb der Frostschürze {} m²", zahl(innen, 1e6)),
+        );
+    }
+    if g > 0.0 && innen > 0.0 {
+        menge(
+            GRAVEL,
+            innen * g,
+            format!("{} m² × {} m", zahl(innen, 1e6), zahl(g, 1e3)),
+        );
+    }
+}
+
 /// Erdmengen der Gründung als Automatikmengen am Bauteil der Sohlplatte.
 pub(crate) fn auto_mengen(vorlage: &AutoMenge, b: &ErdBasis, boden: &Boden) -> Vec<AutoMenge> {
     let mut out = Vec::new();
@@ -442,6 +462,7 @@ mod tests {
             slab_perimeter: 2.0 * (w + d),
             footing_area: ring,
             aufmass: None,
+            netz: None,
         }
     }
 

@@ -1483,7 +1483,7 @@ fn perf_automenge() {
                 let Some(g) = m.ground_basis(run) else {
                     continue;
                 };
-                erd_mengen(&ErdBasis::aus(&g), &boden, |_, v, f| {
+                erd_mengen(&ErdBasis::im_modell(m, &g), &boden, |_, v, f| {
                     std::hint::black_box((v, f));
                     zeilen += 1;
                 });
