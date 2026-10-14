@@ -6,6 +6,7 @@
 
 use crate::erkennung::{Kante, RaumForm};
 use sk_math::Vec3;
+use sk_model::Model;
 
 /// Innenputz der Vorgabe je Wandseite (mm).
 pub const PUTZ: f64 = 15.0;
@@ -44,6 +45,28 @@ pub fn grundflaeche(f: &RaumForm) -> f64 {
         Some((rand, loecher)) => flaeche(&rand) - loecher.iter().map(|l| flaeche(l)).sum::<f64>(),
         None => (f.flaeche - f.umfang * PUTZ).max(0.0),
     }
+}
+
+/// Grundfläche im Fertigmaß (mm²) wie im Raumbuch, eine Fläche für
+/// Stempel, Paneel, Mengenblatt und IFC (Bedienbarkeit 43.8, mit Grundriss
+/// abgestimmt): Bei einem Raum mit Ausbau der Fertigumriss nach den
+/// Ausbaudicken des Raumbuchs (Putz bzw. Bekleidung des Wandtyps plus
+/// Wandfliese, [`crate::ausbau::dicken_der_form`]), zerfällt er, 0 wie
+/// dort; sonst [`grundflaeche`]. Was außer der Form gelesen wird, nennt
+/// [`crate::ausbau::dicken_der_form`]: Nutzung des Raums, Raumvorlage,
+/// Typen von Wandbekleidung und Wandfliesen, Ausbau der Wandtypen; keine
+/// Platten, Öffnungen oder Höhen.
+pub fn grundflaeche_fertig(m: &Model, f: &RaumForm) -> f64 {
+    let Some(d) = crate::ausbau::dicken_der_form(m, f) else {
+        return grundflaeche(f);
+    };
+    let ringe: Vec<&[Kante]> = std::iter::once(f.umriss.as_slice())
+        .chain(f.loecher.iter().map(|l| l.as_slice()))
+        .collect();
+    let flaeche = sk_math::polygon::area;
+    crate::raumliste::fertigumriss(&ringe, &d).map_or(0.0, |(rand, loecher)| {
+        flaeche(&rand) - loecher.iter().map(|l| flaeche(l)).sum::<f64>()
+    })
 }
 
 #[cfg(test)]

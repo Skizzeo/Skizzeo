@@ -640,7 +640,7 @@ impl<'a> Raum<'a> {
             }
             let mut terme = vec![term(
                 format!(
-                    "Länge × Höhe {} × {}{}",
+                    "Rohbaumaß Länge × Höhe {} × {}{}",
                     m(self.roh[k]),
                     m(z1 - lo),
                     if lo > z0 { " über den Fliesen" } else { "" }

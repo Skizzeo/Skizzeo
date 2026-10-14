@@ -179,9 +179,13 @@ pub(crate) fn auto_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> {
 /// Mengenzeilen der Schichten eines Raums: Fläche und Abrechnungsfläche
 /// sind die Menge nach VOB/C, das Volumen Fläche × Dicke (ohne Dicke 0).
 /// `layer` ist die Stelle der Zeile im Raum (eindeutig je Raum), die
-/// Schicht im Ausbautyp steht in `finish`.
+/// Schicht im Ausbautyp steht in `finish`. In die Summe des Gewerks geht
+/// jede Fläche des Raums je Gewerk einmal (`bill_area` nur an ihrer ersten
+/// Schicht): Estrich, Trittschall- und Wärmedämmung unter einem Boden sind
+/// eine Fläche (Bedienbarkeit 43.11).
 pub fn layer_rows(model: &Model, row: &RowQto, storey: StoreyId, q: &RoomQto) -> Vec<LayerRow> {
     let mut out = Vec::new();
+    let mut gezaehlt: Vec<(&str, Option<TradeId>)> = Vec::new();
     for (i, l) in q.lines.iter().enumerate().filter(|(_, l)| l.is_layer()) {
         let Some(material) = l.material else { continue };
         let v = l.quantity();
@@ -189,6 +193,11 @@ pub fn layer_rows(model: &Model, row: &RowQto, storey: StoreyId, q: &RoomQto) ->
             continue;
         }
         let (length, area) = if l.is_length() { (v, 0.0) } else { (0.0, v) };
+        let erste = !gezaehlt.contains(&(l.name.as_str(), l.trade));
+        if erste {
+            gezaehlt.push((l.name.as_str(), l.trade));
+        }
+        let einmal = |x: f64| if erste { x } else { 0.0 };
         out.push(LayerRow {
             element: row.element,
             number: row.number.clone(),
@@ -207,8 +216,8 @@ pub fn layer_rows(model: &Model, row: &RowQto, storey: StoreyId, q: &RoomQto) ->
                 .is_some_and(|m| m.category == MatCategory::Insulation),
             whole: false,
             attika: false,
-            bill_area: area,
-            bill_length: length,
+            bill_area: einmal(area),
+            bill_length: einmal(length),
             once: false,
             face: area,
             pocket: 0.0,
