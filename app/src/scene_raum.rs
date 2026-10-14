@@ -665,5 +665,22 @@ mod tests {
         assert!(s.undo());
         wie_neu(&s);
         assert_eq!(listen(&s), n0, "Stempel und Rückgängig");
+        // Stempel im offenen Schritt ziehen, Bild für Bild, dann verwerfen
+        // und noch einmal bis zum Loslassen (Review H-175h)
+        for loslassen in [false, true] {
+            s.begin("Raumstempel verschoben");
+            for i in 1..=4 {
+                let d = vec3(150.0 * i as f64, 50.0 * i as f64, 0.0);
+                assert!(s.raum_stempel(id, r[0].0.mitte + d));
+                wie_neu(&s);
+            }
+            if loslassen {
+                s.commit();
+            } else {
+                s.rollback();
+            }
+            wie_neu(&s);
+        }
+        assert_eq!(listen(&s), n0, "Stempel im offenen Schritt");
     }
 }

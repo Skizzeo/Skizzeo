@@ -338,18 +338,42 @@ impl Letzte {
 
 /// Räume eines Geschosses, ältere zuerst, mit ihrem Anker.
 struct Raumliste {
-    /// Solange [`raumstand`] diesen Wert gibt, gilt die Liste.
-    stand: Option<u64>,
+    /// Stand der Räume im Modell ([`Model::raum_revision`]), zu dem die
+    /// Liste gilt, bis auf die Räume in `offen`.
+    stand: u64,
+    /// Räume, die ein offener Schritt geändert hatte, als die Liste zuletzt
+    /// nachgeführt wurde: Sie gelten so, wie sie da waren, und werden beim
+    /// nächsten Aufruf wieder neu eingereiht (Review H-175h).
+    offen: Vec<ElementId>,
     raeume: Vec<(ElementId, Vec3)>,
 }
 
 impl Raumliste {
     /// Reiht die Räume `ids` des Geschosses `g` neu ein: heraus, und wenn
     /// es sie auf `g` noch gibt, an ihrer Stelle wieder hinein. Ergebnis:
-    /// ihre Anker davor und danach. Kostet einen Gang über die Liste, nicht
-    /// einen je Raum (Review #175 B1).
-    fn flicken(&mut self, m: &Model, g: StoreyId, ids: &[ElementId]) -> Vec<Vec3> {
+    /// ihre Anker davor und danach. Bis 16 Räume kommen je einzeln an ihre
+    /// Stelle (je ein Verschieben des Rests der Liste), mehr in einem Gang
+    /// über die Liste (Review #175 B1, H-175g). `None` ohne Änderung an der
+    /// Liste, wenn `ids` mehr als 16 und mindestens halb so viele Kennungen
+    /// hat, wie Räume in der Liste stehen (auch Räume anderer Geschosse und
+    /// doppelte gezählt): dann ist neu sammeln nicht langsamer, und schon
+    /// das Nachschlagen aller Kennungen fällt weg (Review H-175f).
+    fn flicken(&mut self, m: &Model, g: StoreyId, ids: &[ElementId]) -> Option<Vec<Vec3>> {
+        if ids.len() > 16 && 2 * ids.len() >= self.raeume.len() {
+            return None;
+        }
         let ids: HashSet<ElementId> = ids.iter().copied().collect();
+        // Wie beim Sammeln: kurze Nummern zuerst, dann nach Nummer, bei
+        // gleicher in der Reihenfolge der Bauteile
+        let schluessel = |id: ElementId| {
+            let n = m.element(id).map_or("", |e| e.number.as_str());
+            (n.len(), n, id.index())
+        };
+        let mut neu: Vec<(_, ElementId, Vec3)> = ids
+            .iter()
+            .filter(|&&id| m.element(id).is_some_and(|e| e.storey == g))
+            .filter_map(|&id| Some((schluessel(id), id, m.space(id)?.anker)))
+            .collect();
         let mut punkte = Vec::new();
         self.raeume.retain(|&(id, a)| {
             let raus = ids.contains(&id);
@@ -358,22 +382,11 @@ impl Raumliste {
             }
             !raus
         });
-        // Wie beim Sammeln: kurze Nummern zuerst, dann nach Nummer, bei
-        // gleicher in der Reihenfolge der Bauteile
-        let schluessel = |id: ElementId| {
-            let n = m.element(id).map_or("", |e| e.number.as_str());
-            (n.len(), n, id.index())
-        };
-        let mut neu: Vec<(ElementId, Vec3)> = ids
-            .iter()
-            .filter(|&&id| m.element(id).is_some_and(|e| e.storey == g))
-            .filter_map(|&id| Some((id, m.space(id)?.anker)))
-            .collect();
-        neu.sort_by(|a, b| schluessel(a.0).cmp(&schluessel(b.0)));
-        punkte.extend(neu.iter().map(|&(_, a)| a));
+        // Jeder Schlüssel nur einmal, nicht je Vergleich (Review H-175f)
+        neu.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        punkte.extend(neu.iter().map(|&(_, _, a)| a));
         if neu.len() <= 16 {
-            for (id, a) in neu {
-                let k = schluessel(id);
+            for (k, id, a) in neu {
                 let pos = self.raeume.partition_point(|&(x, _)| schluessel(x) < k);
                 self.raeume.insert(pos, (id, a));
             }
@@ -383,14 +396,14 @@ impl Raumliste {
             let mut neu = neu.into_iter().peekable();
             for e in alt {
                 let k = schluessel(e.0);
-                while let Some(n) = neu.next_if(|n| schluessel(n.0) < k) {
-                    self.raeume.push(n);
+                while let Some((_, id, a)) = neu.next_if(|n| n.0 < k) {
+                    self.raeume.push((id, a));
                 }
                 self.raeume.push(e);
             }
-            self.raeume.extend(neu);
+            self.raeume.extend(neu.map(|(_, id, a)| (id, a)));
         }
-        punkte
+        Some(punkte)
     }
 }
 
@@ -411,16 +424,6 @@ struct Geschoss {
     raumliste: Option<Raumliste>,
     /// Nach dem Schlüssel der Gruppe.
     zuteilungen: NachSchluessel<Zuteilung>,
-}
-
-/// Solange dieser Wert gleich bleibt, ändern sich die Räume des Geschosses
-/// `g` nicht: der Stand der Räume im Modell ([`Model::raum_revision`]),
-/// der bei Schritten ohne Änderung an Räumen gleich bleibt (Review
-/// H-137b); welche Räume sich seither geändert haben, sagt
-/// [`Model::raeume_geaendert_seit`]. `None` in einem Schritt, der an den
-/// Räumen von `g` etwas ändert.
-fn raumstand(m: &Model, g: StoreyId) -> Option<u64> {
-    (!m.raum_geschosse_im_schritt().contains(&g)).then(|| m.raum_revision())
 }
 
 /// Fingerabdruck der Räume einer Gruppe (in ihrer Reihenfolge): was die
@@ -798,25 +801,44 @@ impl Erkennung {
     /// die, deren Anker in ihrem Kasten liegt; die Ankerregel
     /// ([`zuteilen`]) gibt je Gruppe dasselbe wie über das ganze Geschoss,
     /// weil jeder Anker in höchstens einer Fläche liegt. Solange sich die
-    /// Räume nicht ändern ([`raumstand`]), sieht sie nur neue Gruppen an;
-    /// haben Schritte einige Räume geändert, dazu die Gruppen, in deren
-    /// Kasten einer davon vorher oder nachher liegt.
+    /// Räume nicht ändern ([`Model::raum_revision`], bei Schritten nur an
+    /// Wänden gleich, Review H-137b), sieht sie nur neue Gruppen an; haben
+    /// Schritte oder der offene Schritt einige Räume geändert, dazu die
+    /// Gruppen, in deren Kasten einer davon vorher oder nachher liegt.
     fn zuteilung(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Lage {
         let lage = self.lage(m, k, g);
         let lauf = self.lauf;
-        let stand = raumstand(m, g);
+        let stand = m.raum_revision();
+        // Räume, die der offene Schritt auf diesem Geschoss ändert: Die
+        // Liste wird mit ihnen nachgeführt, im Schritt nicht je Bild neu
+        // gesammelt (Review H-175h)
+        let mut schritt = if m.raum_geschosse_im_schritt().contains(&g) {
+            m.raeume_im_schritt()
+        } else {
+            Vec::new()
+        };
         let gs = self.geschosse.entry(g).or_default();
-        let mut gilt = stand.is_some() && gs.raumliste.as_ref().is_some_and(|l| l.stand == stand);
+        let mut gilt = schritt.is_empty()
+            && gs
+                .raumliste
+                .as_ref()
+                .is_some_and(|l| l.stand == stand && l.offen.is_empty());
         // Kennt das Modell die Räume, die Schritte seit der Liste geändert
-        // haben, werden nur diese neu eingereiht; Gruppen, in deren Kasten
-        // einer davon lag oder jetzt liegt, sehen ihre Räume neu an (Review
+        // haben, werden nur diese neu eingereiht, dazu die des offenen
+        // Schritts von damals und von jetzt; Gruppen, in deren Kasten einer
+        // davon lag oder jetzt liegt, sehen ihre Räume neu an (Review
         // H-137b)
         let mut verschoben = Vec::new();
-        if let (false, Some(neu), Some(l)) = (gilt, stand, gs.raumliste.as_mut()) {
-            if let Some(ids) = l.stand.and_then(|alt| m.raeume_geaendert_seit(alt)) {
-                verschoben = l.flicken(m, g, &ids);
-                l.stand = Some(neu);
-                gilt = true;
+        if let (false, Some(l)) = (gilt, gs.raumliste.as_mut()) {
+            if let Some(mut ids) = m.raeume_geaendert_seit(l.stand) {
+                ids.extend_from_slice(&l.offen);
+                ids.extend_from_slice(&schritt);
+                if let Some(p) = l.flicken(m, g, &ids) {
+                    verschoben = p;
+                    l.stand = stand;
+                    l.offen = std::mem::take(&mut schritt);
+                    gilt = true;
+                }
             }
         }
         // Welche Gruppen ihre Räume neu ansehen: nach dem Neusammeln alle,
@@ -840,6 +862,7 @@ impl Erkennung {
             raeume.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
             gs.raumliste = Some(Raumliste {
                 stand,
+                offen: schritt,
                 raeume: raeume.iter().map(|&(_, id, a)| (id, a)).collect(),
             });
             je.iter_mut().for_each(|x| *x = Some(Vec::new()));
@@ -1572,16 +1595,90 @@ mod tests {
         assert_eq!(e.raumlisten(), n0 + 2, "beide Geschosse neu");
     }
 
+    /// Review H-175h: Im offenen Schritt Stempel ziehen, einen Raum anlegen
+    /// und wieder löschen; Bild für Bild wie ohne Speicher, ohne die Räume
+    /// neu zu sammeln, auch nach Verwerfen und Abschließen.
+    #[test]
+    fn raeume_im_offenen_schritt() {
+        use sk_model::LevelKind;
+        let mut m = Model::new();
+        let b = m.add_building(2);
+        let gs: Vec<StoreyId> = m
+            .levels_in(Some(b))
+            .into_iter()
+            .filter(|&g| m.storey(g).is_some_and(|s| s.kind == LevelKind::Storey))
+            .collect();
+        let (eg, og) = (gs[0], gs[1]);
+        let (aw, iw) = (m.defaults().exterior_wall, m.defaults().interior_wall);
+        for g in [eg, og] {
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            m.add_wall_run(&pts, true, RefSide::Left, g, aw, Category::ExteriorWall)
+                .unwrap();
+            let iwp = [vec3(3000.0, 500.0, 0.0), vec3(3000.0, 7500.0, 0.0)];
+            m.add_wall_run(&iwp, false, RefSide::Center, g, iw, Category::InteriorWall)
+                .unwrap();
+        }
+        crate::abgleichen(&mut m, &[eg, og]);
+        let mut e = Erkennung::default();
+        let wie_neu = |e: &mut Erkennung, m: &Model| {
+            for g in [eg, og] {
+                let r = e.raumformen(m, m, g);
+                let mut v: Vec<RaumForm> = r.flaechen().map(|f| f.form.clone()).collect();
+                let mut w = crate::raeume(m, g);
+                let x = |f: &RaumForm| (f.mitte.x, f.mitte.y);
+                v.sort_by(|a, b| x(a).partial_cmp(&x(b)).unwrap());
+                w.sort_by(|a, b| x(a).partial_cmp(&x(b)).unwrap());
+                assert_eq!(v, w);
+            }
+        };
+        wie_neu(&mut e, &m);
+        let n0 = e.raumlisten();
+        let id = m.spaces(eg)[0];
+        let anker = m.space(id).unwrap().anker;
+        for abschliessen in [false, true] {
+            m.begin("Stempel");
+            for i in 1..=3 {
+                let p = anker + vec3(100.0 * i as f64, 0.0, 0.0);
+                assert!(m.set_space(id, |s| s.stempel = Some(p)));
+                wie_neu(&mut e, &m);
+            }
+            // Neuer Raum mit kleinerer Nummer am selben Anker: gilt im
+            // Schritt, bis er wieder gelöscht ist
+            let x = m.add_space(eg, sk_model::Space::neu(anker, "Neu".into()));
+            m.set_number(x, "0").unwrap();
+            wie_neu(&mut e, &m);
+            assert!(e
+                .raumformen(&m, &m, eg)
+                .flaechen()
+                .any(|f| f.form.raum == Some(x)));
+            m.delete_elements(&[x]);
+            wie_neu(&mut e, &m);
+            if abschliessen {
+                m.commit();
+            } else {
+                m.rollback();
+            }
+            wie_neu(&mut e, &m);
+        }
+        assert_eq!(e.raumlisten(), n0, "nur eingereiht");
+    }
+
     /// Review #175 B1: Schritte, die viele Räume in vielen Häusern ändern,
     /// reihen sie in einem Gang ein und teilen über das Raster der Kästen
     /// zu, ohne neu zu sammeln, und geben dasselbe wie die Erkennung ohne
-    /// Speicher: Namen in allen Häusern, Stempel in zehn, neue Räume am
-    /// Anker eines älteren und neue Nummern für 24 Räume in einem Schritt,
-    /// auch über Rückgängig.
+    /// Speicher: Namen in jedem dritten Raum, Stempel in zehn Häusern, neue
+    /// Räume am Anker eines älteren und neue Nummern für 40 Räume in einem
+    /// Schritt, auch über Rückgängig. Ein Schritt an allen Räumen sammelt
+    /// sie neu (Review H-175f).
     #[test]
     fn viele_raeume_geaendert() {
         use sk_model::{Change, Direction, Txn};
-        let (mut m, st) = stadt(12);
+        let (mut m, st) = stadt(40);
         crate::abgleichen(&mut m, &[st]);
         let mut e = Erkennung::default();
         let wie_neu = |e: &mut Erkennung, m: &Model| {
@@ -1596,10 +1693,10 @@ mod tests {
         wie_neu(&mut e, &m);
         let n0 = e.raumlisten();
         let raeume = m.spaces(st);
-        assert_eq!(raeume.len(), 24);
-        // Alle Namen
+        assert_eq!(raeume.len(), 80);
+        // Namen in jedem dritten Raum
         m.begin("Namen");
-        for (i, &id) in raeume.iter().enumerate() {
+        for (i, &id) in raeume.iter().enumerate().step_by(3) {
             assert!(m.set_space(id, |s| s.name = format!("Zimmer {i}")));
         }
         let namen = m.commit().unwrap();
@@ -1612,11 +1709,11 @@ mod tests {
         }
         m.commit();
         wie_neu(&mut e, &m);
-        // Je Haus ein neuer Raum am Anker eines älteren
+        // In jedem zweiten Haus ein neuer Raum am Anker eines älteren
         m.begin("Neu");
         let neue: Vec<ElementId> = raeume
             .iter()
-            .step_by(2)
+            .step_by(4)
             .map(|&id| {
                 let a = m.space(id).unwrap().anker;
                 m.add_space(st, sk_model::Space::neu(a, "Neu".into()))
@@ -1624,8 +1721,8 @@ mod tests {
             .collect();
         m.commit();
         wie_neu(&mut e, &m);
-        // Kleinere Nummern für die neuen, dazu die alten umbenannt: 24
-        // Räume in einem Schritt
+        // Kleinere Nummern für die neuen, dazu alte umbenannt: 40 Räume in
+        // einem Schritt
         let mut changes = Vec::new();
         for (i, &id) in neue.iter().enumerate() {
             let alt = m.element(id).unwrap().clone();
@@ -1637,7 +1734,7 @@ mod tests {
                 new: Some(neu),
             });
         }
-        for &id in raeume.iter().skip(1).step_by(2) {
+        for &id in raeume.iter().skip(1).step_by(4) {
             let alt = m.element(id).unwrap().clone();
             let mut neu = alt.clone();
             neu.number = format!("{}x", neu.number);
@@ -1647,7 +1744,7 @@ mod tests {
                 new: Some(neu),
             });
         }
-        assert_eq!(changes.len(), 24);
+        assert_eq!(changes.len(), 40);
         let nummern = Txn {
             label: "Nummern",
             changes,
@@ -1659,6 +1756,14 @@ mod tests {
         m.apply(&namen, Direction::Undo);
         wie_neu(&mut e, &m);
         assert_eq!(e.raumlisten(), n0, "nur eingereiht");
+        // Alle Räume in einem Schritt: neu gesammelt
+        m.begin("Alle");
+        for &id in &raeume {
+            assert!(m.set_space(id, |s| s.name = "Alle".into()));
+        }
+        m.commit();
+        wie_neu(&mut e, &m);
+        assert_eq!(e.raumlisten(), n0 + 1, "alle neu gesammelt");
     }
 
     #[test]
