@@ -12,7 +12,7 @@ use sk_render::MeshData;
 /// der Geländeplatte (Review #137 B4).
 pub(crate) const MESH_AUSBAU: usize = MESH_PLATE + 1;
 /// Erste Ablage hinter den Teilen des Ausbaus (Netz der GPU-Probe).
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) const MESH_FREI: usize = MESH_AUSBAU + crate::scene::scene_ausbau::TEILE;
 
 // Jede Ablage hat ihren eigenen Platz: lückenlos der Reihe nach, keine
