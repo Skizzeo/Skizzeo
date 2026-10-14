@@ -2379,13 +2379,21 @@ fn perf_innentuer_vorschau() {
 #[ignore]
 fn perf_fang_raster() {
     use crate::oeffnung_app::innentuer::{treffer, treffer_in};
-    use crate::wall_edit::breite_edit::{flaeche_bei, flaeche_in, BreiteZug};
+    use crate::wall_edit::breite_edit::{flaeche_bei, flaeche_in, spuren, spuren_in, BreiteZug};
     use crate::wall_edit::oeffnung_kanten::zug;
     use sk_model::oeffnung::{Din, FaceSide, Swing};
     println!();
     println!(
-        "{:>6} {:>9} {:>8} {:>11} {:>8} {:>8} {:>8}",
-        "Häuser", "Fang alt", "Fang", "Fläche alt", "Fläche", "Zug", "Greifen"
+        "{:>6} {:>9} {:>8} {:>11} {:>8} {:>8} {:>10} {:>7} {:>8}",
+        "Häuser",
+        "Fang alt",
+        "Fang",
+        "Fläche alt",
+        "Fläche",
+        "Zug",
+        "Spuren alt",
+        "Spuren",
+        "Greifen"
     );
     for n in [1000, 4000] {
         let mut s = town_in_einem_schritt(n);
@@ -2429,12 +2437,24 @@ fn perf_fang_raster() {
         let zug_ms = time(50, || {
             assert!(zug(&s, id).is_some());
         });
+        let (f, _, _) = flaeche_in(&s, st, p).unwrap();
+        let ohne = s.model().locked_ends(id, 0);
+        assert_eq!(
+            spuren_in(&s, st, &f, &ohne),
+            spuren(s.model(), st, &f, &ohne)
+        );
+        let spuren_alt = time(50, || {
+            std::hint::black_box(spuren(s.model(), st, &f, &ohne));
+        });
+        let spuren_ms = time(50, || {
+            std::hint::black_box(spuren_in(&s, st, &f, &ohne));
+        });
         let greifen = time(20, || {
             assert!(BreiteZug::greifen(&mut s, id, 0, 0.0).is_some());
             s.rollback();
         });
         println!(
-            "{n:>6} {fang_alt:>9.3} {fang:>8.3} {flaeche_alt:>11.3} {flaeche:>8.3} {zug_ms:>8.3} {greifen:>8.3}"
+            "{n:>6} {fang_alt:>9.3} {fang:>8.3} {flaeche_alt:>11.3} {flaeche:>8.3} {zug_ms:>8.3} {spuren_alt:>10.3} {spuren_ms:>7.3} {greifen:>8.3}"
         );
     }
     println!("Zeiten in ms je Aufruf.");

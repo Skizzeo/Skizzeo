@@ -305,30 +305,83 @@ fn nachbargeschosse(m: &Model, st: StoreyId) -> Vec<StoreyId> {
 
 /// Seitenfluchten der Öffnungen im Geschoss über und unter `st` als Lage
 /// längs der Fläche `f`: die Enden ihrer Pfade, die nahe vor oder hinter
-/// der Fläche liegen, ohne die Enden `ohne` (die gekoppelt mitgehen).
+/// der Fläche liegen, ohne die Enden `ohne` (die gekoppelt mitgehen). Über
+/// alle Bauteile des Modells; im Programm gilt [`spuren_in`].
+#[cfg(test)]
 pub fn spuren(m: &Model, st: StoreyId, f: &OuterFace, ohne: &[(ElementId, usize)]) -> Vec<f64> {
     let nachbarn = nachbargeschosse(m, st);
-    let (lo, hi) = (f.u.0.min(f.u.1), f.u.0.max(f.u.1));
     let mut out = Vec::new();
     for (id, e) in m.elements().iter() {
-        let ElementKind::Opening(o) = &e.kind else {
-            continue;
-        };
-        if !nachbarn.contains(&e.storey) {
-            continue;
-        }
-        let n = o.path.len();
-        let enden = [0, n.saturating_sub(1)]
-            .into_iter()
-            .filter(|k| !ohne.contains(&(id, *k)));
-        for q in enden.map(|k| flat(o.path[k])) {
-            let u = f.u_of(q);
-            if (q - f.a).dot(f.n).abs() <= SPUR_QUER && u > lo && u < hi {
-                out.push(u);
+        if let ElementKind::Opening(o) = &e.kind {
+            if nachbarn.contains(&e.storey) {
+                spuren_von(&mut out, f, id, o, ohne);
             }
         }
     }
     out
+}
+
+/// [`spuren`] über das Raster der Griffe der Szene (Review H-162a): nur
+/// die Öffnungen, deren Griffbereich an das Rechteck um die Fläche samt
+/// [`SPUR_QUER`] davor und dahinter reicht. So kostet das Greifen gleich
+/// viel, wie groß das Modell auch ist.
+pub fn spuren_in(
+    scene: &Scene,
+    st: StoreyId,
+    f: &OuterFace,
+    ohne: &[(ElementId, usize)],
+) -> Vec<f64> {
+    let m = scene.model();
+    let nachbarn = nachbargeschosse(m, st);
+    if nachbarn.is_empty() {
+        return Vec::new();
+    }
+    let ecken: Vec<Vec3> = [f.u.0, f.u.1]
+        .into_iter()
+        .flat_map(|u| {
+            let p = flat(f.at(u, 0.0));
+            [p + f.n * SPUR_QUER, p - f.n * SPUR_QUER]
+        })
+        .collect();
+    let lo = ecken
+        .iter()
+        .fold((f64::MAX, f64::MAX), |a, p| (a.0.min(p.x), a.1.min(p.y)));
+    let hi = ecken
+        .iter()
+        .fold((f64::MIN, f64::MIN), |a, p| (a.0.max(p.x), a.1.max(p.y)));
+    let mut out = Vec::new();
+    for id in scene.oeffnungen_im(lo, hi) {
+        let Some(e) = m.element(id) else {
+            continue;
+        };
+        if let ElementKind::Opening(o) = &e.kind {
+            if nachbarn.contains(&e.storey) {
+                spuren_von(&mut out, f, id, o, ohne);
+            }
+        }
+    }
+    out
+}
+
+/// Trägt die Seitenfluchten der Öffnung `id` längs `f` in `out` ein.
+fn spuren_von(
+    out: &mut Vec<f64>,
+    f: &OuterFace,
+    id: ElementId,
+    o: &Opening,
+    ohne: &[(ElementId, usize)],
+) {
+    let (lo, hi) = (f.u.0.min(f.u.1), f.u.0.max(f.u.1));
+    let n = o.path.len();
+    let enden = [0, n.saturating_sub(1)]
+        .into_iter()
+        .filter(|k| !ohne.contains(&(id, *k)));
+    for q in enden.map(|k| flat(o.path[k])) {
+        let u = f.u_of(q);
+        if (q - f.a).dot(f.n).abs() <= SPUR_QUER && u > lo && u < hi {
+            out.push(u);
+        }
+    }
 }
 
 /// Ein gekoppeltes Ende in einem anderen Geschoss (Breitenschloss).
@@ -357,7 +410,7 @@ pub struct BreiteZug {
     /// Lage des Nachbarpunkts im Pfad und Seite des Endes dazu.
     u_nb: f64,
     vorz: f64,
-    /// Seitenfluchten darüber und darunter ([`spuren`]).
+    /// Seitenfluchten darüber und darunter ([`spuren_in`]).
     spuren: Vec<f64>,
     /// Gekoppelte Enden in anderen Geschossen.
     mit: Vec<Mit>,
@@ -406,7 +459,7 @@ impl BreiteZug {
                 })
             })
             .collect();
-        let spuren = spuren(m, st, &face, &gekoppelt);
+        let spuren = spuren_in(scene, st, &face, &gekoppelt);
         scene.begin(SCHRITT);
         Some(BreiteZug {
             id,
@@ -1136,6 +1189,55 @@ mod tests {
         assert!(s.undo());
         let x_oben = s.model().opening(oben).unwrap().path[ko].x;
         assert!((rechts(&s) - 7000.0).abs() < 1e-6 && (x_oben - 7000.0).abs() < 1e-6);
+    }
+
+    /// Review H-162a: Die Seitenfluchten über das Raster der Griffe sind
+    /// dieselben wie über alle Bauteile, für jedes Ende jeder Öffnung in
+    /// zwei Häusern zu zwei Geschossen, mit Fenstern auf allen Seiten, auch
+    /// knapp an den Ecken.
+    #[test]
+    fn spuren_ueber_raster() {
+        let (mut m, eg, og) = zwei_geschosse();
+        let b2 = m.add_building(2);
+        let pts = [
+            vec3(30000.0, 0.0, 0.0),
+            vec3(30000.0, 8000.0, 0.0),
+            vec3(40000.0, 8000.0, 0.0),
+            vec3(40000.0, 0.0, 0.0),
+        ];
+        let eg2 = m.build_from_polygon(b2, &pts).unwrap();
+        let og2 = m.runs_above(eg2)[0];
+        for (run, x0) in [(eg, 0.0), (og, 0.0), (eg2, 30000.0), (og2, 30000.0)] {
+            for (von, bis) in [
+                (500.0, 1500.0),
+                (2000.0, 3000.0),
+                (6000.0, 7000.0),
+                (8200.0, 9400.0),
+            ] {
+                fenster(&mut m, run, x0 + von, x0 + bis);
+            }
+        }
+        fenster(&mut m, og, 3500.0, 4500.0);
+        fenster(&mut m, eg2, 37200.0, 38000.0);
+        let s = Scene::with_model(m);
+        let m = s.model();
+        let mut verglichen = 0;
+        let mut gefunden = 0;
+        for (id, e) in m.elements().iter() {
+            let ElementKind::Opening(o) = &e.kind else {
+                continue;
+            };
+            for k in [0, o.path.len() - 1] {
+                let (f, _, _) = flaeche_in(&s, e.storey, o.path[k]).unwrap();
+                let ohne = m.locked_ends(id, k);
+                let alle = spuren(m, e.storey, &f, &ohne);
+                assert_eq!(spuren_in(&s, e.storey, &f, &ohne), alle, "{id:?} {k}");
+                verglichen += 1;
+                gefunden += alle.len();
+            }
+        }
+        assert_eq!(verglichen, 2 * 18);
+        assert!(gefunden >= 30, "{gefunden}");
     }
 
     /// Review #109 B3: EG 6,0–7,0 m und OG 6,9–7,0 m bei 7 m gekoppelt.

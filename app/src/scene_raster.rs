@@ -647,7 +647,25 @@ impl Scene {
     /// Mausbewegung gleich viel, wie groß das Modell und wie lang sein
     /// längster Zug auch ist (Review #149 B1).
     pub fn oeffnungen_bei(&self, p: Vec3, r: f64) -> Vec<(ElementId, RunId)> {
-        let (lo, hi) = ((p.x - r, p.y - r), (p.x + r, p.y + r));
+        self.oeffnungen_mit_zug((p.x - r, p.y - r), (p.x + r, p.y + r))
+    }
+
+    /// Öffnungen mit einem Loch in einem berechneten Wandzug, deren
+    /// Griffbereich das Rechteck (x, y) `lo`–`hi` berührt, jede einmal und
+    /// nach Bauteil aufsteigend wie [`sk_model::Model::elements`] (Review
+    /// H-162a).
+    pub fn oeffnungen_im(&self, lo: (f64, f64), hi: (f64, f64)) -> Vec<ElementId> {
+        let mut out: Vec<ElementId> = self
+            .oeffnungen_mit_zug(lo, hi)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        out.dedup();
+        out
+    }
+
+    /// [`Scene::oeffnungen_bei`] für das Rechteck `lo`–`hi`.
+    fn oeffnungen_mit_zug(&self, lo: (f64, f64), hi: (f64, f64)) -> Vec<(ElementId, RunId)> {
         let trifft = |(a, b): Aabb| a.x <= hi.0 && b.x >= lo.0 && a.y <= hi.1 && b.y >= lo.1;
         let mut out = Vec::new();
         for platz in self.griffraster.im(lo, hi) {
