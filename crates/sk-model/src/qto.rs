@@ -2129,7 +2129,7 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
             kg: None,
             formula: String::new(),
         };
-        let basis = crate::qto_earth::ErdBasis::aus(&g);
+        let basis = crate::qto_earth::ErdBasis::im_modell(model, &g);
         out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
         let b = model.run(run).and_then(|r| model.building_of(r.storey));
         // ohne Gebäude zählt jede Platte für sich

@@ -20,6 +20,7 @@ use sk_model::{edge_kind, material, LevelKind, Model, PlateInput, Solid, Terrain
 use sk_model::{PLATE_MARGIN, PLATE_THICK};
 use sk_render::{Helper, MeshData};
 use sk_ui::theme::Theme;
+use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
 
 /// Platz der Platte im Renderer (neben Modell, Vorschau, Live und Geist).
@@ -98,6 +99,25 @@ struct Job {
     rx: mpsc::Receiver<Ergebnis>,
 }
 
+/// Ecken der Kacheln des Lageplans zu ihrem Schlüssel, wie der Renderer
+/// sie hochlädt ([`sk_render::helper_ecken`]).
+pub(crate) type Ecken = HashMap<u64, Vec<[f32; 23]>>;
+
+/// Höchstens so viel lädt ein Bild von der Unterlage hoch (Bytes, mindestens
+/// eine Kachel); der Rest folgt in den nächsten Bildern (Review #139 N3:
+/// alle Kacheln in einem Bild 22 ms unter llvmpipe).
+pub(crate) const HOCHLADEN_JE_BILD: usize = 4 << 20;
+
+/// Was der Renderer in diesem Bild mit der Unterlage tun soll
+/// ([`Platte::unterlage_im_bild`]): Kacheln in den Vorrat laden
+/// ([`sk_render::Renderer::unterlage_laden`]) und, wenn alle da sind, die
+/// gezeigten Kacheln tauschen ([`sk_render::Renderer::set_unterlage`]).
+#[derive(Debug, Default)]
+pub(crate) struct Hochladen {
+    pub(crate) laden: Vec<(u64, Vec<[f32; 23]>)>,
+    pub(crate) keys: Option<Vec<u64>>,
+}
+
 /// Gelände-Rechtecke (x0, y0, x1, y1) mit Höhe, wie der Renderer sie nimmt.
 type Kisten = Vec<([f32; 4], f32)>;
 
@@ -158,6 +178,16 @@ pub(crate) struct Platte {
     /// Der Lageplan kam nach dem letzten Nachzug: das Gelände zieht mit
     /// der Unterlage nach, auch beim selben Modellstand.
     mit_plan: bool,
+    /// Schlüssel der Kacheln, die der Renderer zeigt, und die im Vorrat;
+    /// die Ecken neuer Kacheln aus einem eigenen Faden, bis sie fertig sind
+    /// (Review #139 N2), dann je Bild ein Teil davon (N3).
+    im_renderer: Vec<u64>,
+    im_vorrat: std::collections::HashSet<u64>,
+    ecken_job: Option<mpsc::Receiver<Ecken>>,
+    wartend: Option<(Vec<u64>, Ecken)>,
+    /// Der Renderer hat, was `im_renderer` sagt; eine neue Platte (Neu,
+    /// Öffnen) weiß es nicht und leert ihn im ersten Bild (Review #139 N3).
+    renderer_bekannt: bool,
 }
 
 impl Platte {
@@ -328,25 +358,114 @@ impl Platte {
         self.linien.as_ref().map_or(&[], |l| &l.helfer)
     }
 
-    /// Schlüssel der Kacheln des Lageplans im Renderer
-    /// ([`unterlage_keys`]) und das Gelände, aus dem sie kommen (`None` und
-    /// keine, wenn nichts zu zeigen ist). Je Bild ein Vergleich je Kachel,
-    /// wie viele Striche der Plan auch hat.
+    /// Was der Renderer von der Unterlage hochladen soll, wenn sie zu
+    /// sehen ist (Review #139 B1, N1 und N2). Je Bild vergleicht der
+    /// UI-Faden nur die Schlüssel der Kacheln ([`unterlage_keys`]) mit
+    /// denen im Renderer, wie viele Striche der Plan auch hat. Fehlen
+    /// Kacheln, baut ein eigener Faden ihre Ecken; bis er fertig ist, bleibt
+    /// stehen, was der Renderer hat, danach lädt der UI-Faden nur hoch.
+    /// Nicht zu sehen (`zeigen`: Grundriss des Erdgeschosses, nicht
+    /// ausgeblendet) bleibt alles stehen, und der Rückweg kostet nichts.
     pub(crate) fn unterlage_im_bild(
         &mut self,
         m: &Model,
         zeigen: bool,
         t: &DrawTable,
         scale: f32,
-    ) -> (Vec<u64>, Option<Arc<Gelaende>>) {
-        if !zeigen || self.gelaende_im_bild(m).is_none() {
-            return (Vec::new(), None);
+    ) -> Option<Hochladen> {
+        if !zeigen {
+            return None;
         }
-        let g = self.gelaende.clone();
-        let keys = g
-            .as_deref()
-            .map_or(Vec::new(), |g| unterlage_keys(g, stil_key(t, scale)));
-        (keys, g)
+        let keys = match self.gelaende_im_bild(m) {
+            Some(g) => unterlage_keys(g, stil_key(t, scale)),
+            None => Vec::new(),
+        };
+        if keys == self.im_renderer && self.renderer_bekannt {
+            self.ecken_job = None;
+            self.wartend = None;
+            // übrige Kacheln im Vorrat fallen weg
+            return (!self.im_vorrat.is_empty()).then(|| self.tauschen(keys));
+        }
+        if self.wartend.as_ref().is_some_and(|w| w.0 != keys) {
+            self.wartend = None;
+        }
+        if self.wartend.is_none() {
+            if let Some(rx) = &self.ecken_job {
+                match rx.try_recv() {
+                    Ok(ecken) => {
+                        self.ecken_job = None;
+                        self.wartend = Some((keys.clone(), ecken));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => return None,
+                    Err(mpsc::TryRecvError::Disconnected) => self.ecken_job = None,
+                }
+            }
+        }
+        if let Some((ziel, mut rest)) = self.wartend.take() {
+            // je Bild höchstens HOCHLADEN_JE_BILD, mindestens eine Kachel
+            let mut folge: Vec<u64> = rest.keys().copied().collect();
+            folge.sort_unstable();
+            let (mut laden, mut bytes) = (Vec::new(), 0);
+            for k in folge {
+                if bytes >= HOCHLADEN_JE_BILD {
+                    break;
+                }
+                if let Some(e) = rest.remove(&k) {
+                    bytes += std::mem::size_of_val(&e[..]).max(1);
+                    laden.push((k, e));
+                }
+            }
+            self.im_vorrat.extend(laden.iter().map(|l| l.0));
+            if !rest.is_empty() {
+                self.wartend = Some((ziel, rest));
+                return Some(Hochladen { laden, keys: None });
+            }
+            let mut h = self.tauschen(keys);
+            h.laden = laden;
+            return Some(h);
+        }
+        let fehlt: Vec<(usize, u64)> = keys
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| !self.im_renderer.contains(k) && !self.im_vorrat.contains(k))
+            .map(|(i, k)| (i, *k))
+            .collect();
+        let g = self.gelaende.clone().filter(|_| !fehlt.is_empty());
+        let Some(g) = g else {
+            // alles da: nur tauschen (oder leeren)
+            return Some(self.tauschen(keys));
+        };
+        let stil = gelaende_netz::unterlage_stil(t, scale);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let ecken: Ecken = fehlt
+                .into_iter()
+                .map(|(i, k)| {
+                    let l = gelaende_netz::unterlage_kachel(&g, i, stil);
+                    (k, sk_render::helper_ecken(&l))
+                })
+                .collect();
+            // fällt weg, wenn inzwischen andere Kacheln gefragt sind
+            let _ = tx.send(ecken);
+        });
+        self.ecken_job = Some(rx);
+        None
+    }
+
+    /// Die Kacheln `keys` zeigen, aus den gezeigten und dem Vorrat; was
+    /// fehlt, fällt weg, der übrige Vorrat auch.
+    fn tauschen(&mut self, keys: Vec<u64>) -> Hochladen {
+        let keys: Vec<u64> = keys
+            .into_iter()
+            .filter(|k| self.im_renderer.contains(k) || self.im_vorrat.contains(k))
+            .collect();
+        self.im_renderer.clone_from(&keys);
+        self.im_vorrat.clear();
+        self.renderer_bekannt = true;
+        Hochladen {
+            laden: Vec::new(),
+            keys: Some(keys),
+        }
     }
 
     /// Ein Nachzug oder ein Netz zur Sicht rechnet (die Hauptschleife fragt
@@ -356,6 +475,7 @@ impl Platte {
             || self.netz_job.is_some()
             || self.unterlage.liest()
             || self.leiste.liest()
+            || self.ecken_job.is_some()
     }
 
     /// Netz zum Schlüssel `key`: fertig aus einem Faden, der gemerkte
@@ -852,22 +972,26 @@ impl App {
     }
 
     /// Der Lageplan unter dem Gelände in eigenen Puffern des Renderers
-    /// ([`gelaende_netz::unterlage_kachel`]): je Bild nur der Vergleich der
-    /// Schlüssel; gebaut und hochgeladen werden nur Kacheln, deren
-    /// Strecken sich ändern, alle bei neuer Zeichentabelle oder neuem
-    /// Maßstab (Review #139 B1 und N1). Gezeigt im Grundriss des
-    /// Erdgeschosses, nicht ausgeblendet.
+    /// ([`Platte::unterlage_im_bild`]): je Bild nur der Vergleich der
+    /// Schlüssel; neu sind nur Kacheln, deren Strecken sich ändern, alle
+    /// bei neuer Zeichentabelle oder neuem Maßstab, und ihre Ecken baut ein
+    /// eigener Faden (Review #139 B1, N1 und N2). Gezeigt im Grundriss des
+    /// Erdgeschosses, nicht ausgeblendet; sonst bleiben die Puffer stehen,
+    /// und der Rückweg kostet nichts.
     fn platte_unterlage(&mut self, scale: f32) {
         let zeigen = !self.scene.terrain_hidden()
             && self.ui.view == ViewKind::Plan
             && self.scene.ground_active();
+        self.renderer.set_unterlage_sichtbar(zeigen);
         let (m, t) = (self.scene.model(), self.scene.table());
-        let (keys, g) = self.platte.unterlage_im_bild(m, zeigen, t, scale);
-        self.renderer.set_unterlage(&keys, |i| {
-            g.as_deref().map_or(Vec::new(), |g| {
-                gelaende_netz::unterlage_kachel(g, i, ViewKind::Plan, t, scale)
-            })
-        });
+        if let Some(h) = self.platte.unterlage_im_bild(m, zeigen, t, scale) {
+            for (k, e) in &h.laden {
+                self.renderer.unterlage_laden(*k, e);
+            }
+            if let Some(keys) = &h.keys {
+                self.renderer.set_unterlage(keys);
+            }
+        }
     }
 
     /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
@@ -996,6 +1120,8 @@ impl App {
     pub(crate) fn baum_neu(&mut self) {
         self.tree.reset();
         self.platte = Platte::default();
+        // die Kacheln des alten Projekts (Review #139 N3)
+        self.renderer.set_unterlage(&[]);
         self.picking.plate = false;
     }
 

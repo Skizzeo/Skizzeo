@@ -470,6 +470,12 @@ pub struct Renderer {
     /// Linien unter den Hilfslinien in Teilen mit ihrem Schlüssel
     /// ([`Renderer::set_unterlage`]), hochgeladen nur bei neuem Schlüssel.
     unterlage: Vec<(u64, GpuBuffer)>,
+    /// Kacheln, hochgeladen, aber noch nicht gezeigt
+    /// ([`Renderer::unterlage_laden`]).
+    unterlage_vorrat: std::collections::HashMap<u64, GpuBuffer>,
+    /// Die Unterlage wird gezeichnet ([`Renderer::set_unterlage_sichtbar`]);
+    /// ausgeblendet bleiben ihre Puffer stehen.
+    unterlage_sichtbar: bool,
     /// Tinte in Teilen mit ihrem Schlüssel ([`Renderer::set_ink_teile`]) und
     /// freie Puffer zum Wiederverwenden.
     ink_teile: Vec<(u64, GpuBuffer)>,
@@ -1761,6 +1767,8 @@ impl Renderer {
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
                 unterlage: Vec::new(),
+                unterlage_vorrat: std::collections::HashMap::new(),
+                unterlage_sichtbar: false,
                 ink_teile: Vec::new(),
                 ink_frei: Vec::new(),
                 overlays: Vec::new(),
@@ -2099,42 +2107,50 @@ impl Renderer {
     }
 
     /// Linien, die unter den Hilfslinien liegen und selten wechseln (etwa
-    /// der Lageplan unter dem Gelände, Review #139 B1 und N1), in Teilen
-    /// mit je einem Schlüssel `keys`: gezeichnet wie Hilfslinien, gebaut
-    /// (`linien` mit der Nummer des Teils) und hochgeladen nur Teile mit
-    /// neuem Schlüssel. Teile, die fehlen, fallen weg; jedes Bild zeichnet
-    /// die Puffer, wie sie stehen.
-    pub fn set_unterlage(&mut self, keys: &[u64], mut linien: impl FnMut(usize) -> Vec<Helper>) {
-        if self.unterlage.len() == keys.len()
-            && self.unterlage.iter().zip(keys).all(|(a, k)| a.0 == *k)
-        {
-            return;
-        }
+    /// der Lageplan unter dem Gelände, Review #139 B1, N1 bis N3), in Teilen
+    /// mit je einem Schlüssel: gezeichnet wie Hilfslinien. Ein Teil kommt
+    /// fertig als Ecken ([`helper_ecken`], gebaut außerhalb des UI-Fadens)
+    /// in den Vorrat ([`Renderer::unterlage_laden`]), gern über mehrere
+    /// Bilder verteilt; `set_unterlage` zeigt dann die Teile `keys` aus den
+    /// gezeigten und dem Vorrat. Was fehlt, fällt weg, ebenso alle übrigen
+    /// Puffer; `&[]` leert alles.
+    pub fn set_unterlage(&mut self, keys: &[u64]) {
         let mut alt: std::collections::HashMap<u64, GpuBuffer> =
             std::mem::take(&mut self.unterlage).into_iter().collect();
-        for (i, key) in keys.iter().enumerate() {
-            if let Some(b) = alt.remove(key) {
+        for key in keys {
+            if let Some(b) = alt
+                .remove(key)
+                .or_else(|| self.unterlage_vorrat.remove(key))
+            {
                 self.unterlage.push((*key, b));
-                continue;
             }
-            let mut b = alt
-                .keys()
-                .next()
-                .copied()
-                .and_then(|k| alt.remove(&k))
-                .unwrap_or_default();
-            let v = helper_ecken(&linien(i));
-            unsafe {
-                fill(&self.gl, &mut b, &v, &HELPER_ATTRS);
-            }
-            self.unterlage.push((*key, b));
         }
-        for b in alt.into_values() {
+        let weg: Vec<GpuBuffer> = alt
+            .into_values()
+            .chain(self.unterlage_vorrat.drain().map(|(_, b)| b))
+            .collect();
+        for b in weg {
             unsafe {
                 self.gl.glDeleteBuffers(1, &b.buf);
                 self.gl.glDeleteVertexArrays(1, &b.vao);
             }
         }
+    }
+
+    /// Einen Teil der Unterlage hochladen, ohne ihn schon zu zeigen
+    /// ([`Renderer::set_unterlage`]).
+    pub fn unterlage_laden(&mut self, key: u64, ecken: &[[f32; 23]]) {
+        let mut b = self.unterlage_vorrat.remove(&key).unwrap_or_default();
+        unsafe {
+            fill(&self.gl, &mut b, ecken, &HELPER_ATTRS);
+        }
+        self.unterlage_vorrat.insert(key, b);
+    }
+
+    /// Die Unterlage zeigen oder nicht; ihre Puffer bleiben dabei stehen
+    /// (Review #139 N2: ein Sichtwechsel baut und lädt nichts neu).
+    pub fn set_unterlage_sichtbar(&mut self, an: bool) {
+        self.unterlage_sichtbar = an;
     }
 
     /// Tinte (gefüllte Dreiecke in Modellkoordinaten) für das nächste Bild,
@@ -3039,7 +3055,8 @@ impl Renderer {
             // nach dem Boden, sonst tönt er den Geist über leerem Boden (3l);
             // ohne Hilfslinien braucht niemand die Tiefe
             let tinte = self.ink_teile.iter().any(|(_, b)| b.count > 0);
-            let unterlage = self.unterlage.iter().any(|(_, b)| b.count > 0);
+            let unterlage =
+                self.unterlage_sichtbar && self.unterlage.iter().any(|(_, b)| b.count > 0);
             let marks = self.helper_mesh.count > 0 || unterlage || tinte;
             if ghost.is_some_and(|g| g.1 > 0.0) && marks {
                 gl.glClear(DEPTH_BUFFER_BIT);
@@ -3075,7 +3092,7 @@ impl Renderer {
                 for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
                     gl.glDepthFunc(func);
                     gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
-                    let unten = self.unterlage.iter().map(|(_, b)| b);
+                    let unten = self.unterlage.iter().filter(|_| unterlage).map(|(_, b)| b);
                     for b in unten.chain([&self.helper_mesh]).filter(|b| b.count > 0) {
                         gl.glBindVertexArray(b.vao);
                         gl.glDrawArrays(TRIANGLES, 0, b.count);

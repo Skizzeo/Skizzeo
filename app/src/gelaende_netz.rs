@@ -942,30 +942,41 @@ pub(crate) fn unterlage_linien(
     t: &DrawTable,
     scale: f32,
 ) -> Vec<Helper> {
-    (0..g.unterlage.len())
-        .flat_map(|i| unterlage_kachel(g, i, view, t, scale))
-        .collect()
-}
-
-/// Die Linien der Kachel `i` des Lageplans ([`unterlage_linien`]).
-pub(crate) fn unterlage_kachel(
-    g: &Gelaende,
-    i: usize,
-    view: ViewKind,
-    t: &DrawTable,
-    scale: f32,
-) -> Vec<Helper> {
     if view != ViewKind::Plan {
         return Vec::new();
     }
-    let blass = t.background;
-    let grenze = (t.ground.0 * 0.5, blass.1);
+    let stil = unterlage_stil(t, scale);
+    (0..g.unterlage.len())
+        .flat_map(|i| unterlage_kachel(g, i, stil))
+        .collect()
+}
+
+/// Stifte der Unterlage: blass, Grenzen 0,25 mm, und der Maßstab; klein
+/// genug, um mit dem Gelände in einen Faden zu gehen (Review #139 N2).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UnterlageStil {
+    blass: Stroke,
+    grenze: Stroke,
+    scale: f32,
+}
+
+/// [`UnterlageStil`] aus Zeichentabelle und Maßstab.
+pub(crate) fn unterlage_stil(t: &DrawTable, scale: f32) -> UnterlageStil {
+    UnterlageStil {
+        blass: t.background,
+        grenze: (t.ground.0 * 0.5, t.background.1),
+        scale,
+    }
+}
+
+/// Die Linien der Kachel `i` des Lageplans ([`unterlage_linien`]).
+pub(crate) fn unterlage_kachel(g: &Gelaende, i: usize, stil: UnterlageStil) -> Vec<Helper> {
     g.unterlage.get(i).map_or(Vec::new(), |k| {
         k.striche
             .iter()
             .map(|([a, b], ist_grenze)| {
-                let st = if *ist_grenze { grenze } else { blass };
-                strich(*a, *b, st, sk_render::SOLID, scale)
+                let st = if *ist_grenze { stil.grenze } else { stil.blass };
+                strich(*a, *b, st, sk_render::SOLID, stil.scale)
             })
             .collect()
     })

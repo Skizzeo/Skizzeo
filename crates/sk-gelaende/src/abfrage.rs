@@ -4,6 +4,7 @@
 //! Randpunkts (plan-gelaendemodul.md §5 G1 „Haus und Gelände“).
 
 use crate::netz::Netz;
+use crate::volumen::{erdmenge_dreieck, Bezug, Erdmenge};
 
 /// Höhenabfrage über einem fertigen Netz (x, y, z in m wie im Netz).
 #[derive(Clone, Debug)]
@@ -188,6 +189,38 @@ impl Abfrage {
             }
         }
         best
+    }
+
+    /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
+    /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
+    /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.
+    pub fn erdmenge(&self, ring: &[[f64; 2]], bezug: Bezug) -> Erdmenge {
+        let mut e = Erdmenge::default();
+        if ring.len() < 3 || self.dreiecke.is_empty() {
+            return e;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for q in ring {
+            x0 = x0.min(q[0]);
+            y0 = y0.min(q[1]);
+            x1 = x1.max(q[0]);
+            y1 = y1.max(q[1]);
+        }
+        let ((cx0, cy0), (cx1, cy1)) = (self.zelle_von(x0, y0), self.zelle_von(x1, y1));
+        let mut ts = Vec::new();
+        for cy in cy0..=cy1 {
+            let c = cy * self.nx;
+            ts.extend_from_slice(
+                &self.inhalt[self.start[c + cx0] as usize..self.start[c + cx1 + 1] as usize],
+            );
+        }
+        ts.sort_unstable();
+        ts.dedup();
+        for t in ts {
+            let p = self.dreiecke[t as usize].map(|i| self.punkte[i as usize]);
+            erdmenge_dreieck(p, ring, &bezug, &mut e);
+        }
+        e
     }
 
     /// Profil von `a` nach `b`: (Abstand ab `a`, Höhe) an `a`, an jedem
