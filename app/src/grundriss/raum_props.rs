@@ -120,7 +120,7 @@ mod tests {
         // Die Mengen der Flächen stehen in `mengen`, Nutzung und Höhen davor
         // (Review #120 B2)
         let flaechen = [
-            "Boden",
+            "Boden (VOB)",
             "Estrich",
             "Wand",
             "Wandfliesen",

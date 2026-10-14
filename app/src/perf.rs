@@ -1761,7 +1761,11 @@ fn perf_raumbuch_paneel() {
             .clone();
         let id = b.raum.unwrap();
         let p = crate::selection::props(&s, id).unwrap();
-        assert!(p.values.iter().any(|v| v.0 == "Boden"), "{:?}", p.values);
+        assert!(
+            p.values.iter().any(|v| v.0 == "Boden (VOB)"),
+            "{:?}",
+            p.values
+        );
         let paneel = time(50, || {
             std::hint::black_box(crate::selection::props(&s, id));
         });

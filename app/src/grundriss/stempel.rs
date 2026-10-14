@@ -832,7 +832,16 @@ impl Stempel {
                 }
                 false
             }
+            // Enter: Ist genau eine Vorlage übrig, gilt sie (Bedienbarkeit
+            // 40.5), wie mit Tab gewählt
             Key::Enter => {
+                if n.vorlage.is_none() && n.such.is_some() {
+                    let v = vorschlaege(s.model().space_type_choices(), n.such.as_deref());
+                    if let [(g, name)] = v.as_slice() {
+                        n.feld = TextEdit::new(name);
+                        n.vorlage = Some(*g);
+                    }
+                }
                 out.changed = self.ab(s);
                 return out;
             }
@@ -1362,9 +1371,21 @@ mod tests {
         benennen(&mut st, &mut s, "Speis", true);
         assert_eq!(s.model().space(id).unwrap().name, "Speis");
         assert_eq!(nutzung(&s), Some(vorlage("Küche")));
-        // Ein Name, der genau eine Vorlage nennt, wählt sie
+        // Bleibt beim Tippen genau eine Vorlage, nimmt Enter sie samt Namen
+        // (Bedienbarkeit 40.5)
         benennen(&mut st, &mut s, "bad", false);
-        assert_eq!(s.model().space(id).unwrap().name, "bad");
+        assert_eq!(s.model().space(id).unwrap().name, "Bad");
+        assert_eq!(nutzung(&s), Some(vorlage("Bad")));
+        benennen(&mut st, &mut s, "Kü", false);
+        assert_eq!(s.model().space(id).unwrap().name, "Küche");
+        assert_eq!(nutzung(&s), Some(vorlage("Küche")));
+        // Ein Name, der eine Vorlage als Wort nennt, wählt sie
+        benennen(&mut st, &mut s, "Bad OG", false);
+        assert_eq!(s.model().space(id).unwrap().name, "Bad OG");
+        assert_eq!(nutzung(&s), Some(vorlage("Bad")));
+        // Mehrere Vorschläge: Enter lässt den Namen
+        benennen(&mut st, &mut s, "Zimmer", false);
+        assert_eq!(s.model().space(id).unwrap().name, "Zimmer");
         assert_eq!(nutzung(&s), Some(vorlage("Bad")));
     }
 
