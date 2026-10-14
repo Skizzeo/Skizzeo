@@ -13,6 +13,14 @@ fn zahlen_deutsch() {
     assert_eq!(cm(175.0), "17,5 cm");
     assert_eq!(csv_num(17.6), "17,6000");
     assert_eq!(csv_num(-1.31593), "-1,3159");
+    // Kaufmännisch: die Hälfte vom Nullpunkt weg, auch knapp darunter
+    // abgelegt; große Zahlen behalten die letzte Stelle (H-170a)
+    assert_eq!(de(4.5675, 3), "4,568");
+    assert_eq!(de(23.815, 2), "23,82");
+    assert_eq!(de(-23.815, 2), "−23,82");
+    assert_eq!(csv_num(236000.12341), "236000,1234");
+    assert_eq!(csv_num(236000.12345), "236000,1235");
+    assert_eq!(de(236000.12341, 4), "236.000,1234");
 }
 
 #[test]
@@ -274,7 +282,7 @@ fn gekuerzter_name_als_hinweis() {
     v.fit_head(&t, &fonts);
     let list_top = v.top_dip() + v.head();
     let lines: Vec<(usize, f32, f32)> = v.layout(Some(&t));
-    let mut cut = None;
+    let mut cut = Vec::new();
     let mut whole = None;
     for (i, y, h) in lines {
         let l = &v.lines[i];
@@ -283,14 +291,25 @@ fn gekuerzter_name_als_hinweis() {
             (list_top + y + h * 0.5) as f64,
         );
         match v.tip_at(&t, &fonts, x, yy) {
-            Some(full) => cut = Some((full, l.cells[0].clone())),
+            Some(full) => cut.push((full, l.cells[0].clone())),
             None if l.kind == Kind::Row => whole = Some(l.cells[0].clone()),
             None => {}
         }
     }
-    let (full, name) = cut.expect("eine Zeile ist gekürzt");
-    assert_eq!(full, name);
-    assert!(full.starts_with("Dämmung (WDVS) 14 · Außenwände"), "{full}");
+    // Der Hinweis nennt den vollen Namen; gekürzt sind die langen Gruppen,
+    // darunter seit RB5 auch Estrich und Dämmung der Räume
+    for (full, name) in &cut {
+        assert_eq!(full, name);
+    }
+    let namen: Vec<&str> = cut.iter().map(|(f, _)| f.as_str()).collect();
+    assert!(
+        namen.contains(&"Dämmung (WDVS) 14 · Außenwände"),
+        "{namen:?}"
+    );
+    assert!(
+        namen.contains(&"Zementestrich CT-C25-F4 6,5 · Räume"),
+        "{namen:?}"
+    );
     assert!(whole.is_some());
 }
 
@@ -501,6 +520,178 @@ fn bestell_csv_summe_nach_baustoff() {
     assert!(
         vob.iter().zip(&best).any(|(a, b)| *b > a * 1.04),
         "{vob:?} {best:?}"
+    );
+}
+
+/// Haus 10 × 8 m mit zwei Geschossen, je Geschoss ein Raum mit den
+/// Ausbautypen des Projekts (RB5).
+fn haus_mit_raeumen() -> Scene {
+    use sk_math::vec3;
+    let mut m = Model::with_seed(9);
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    m.build_from_polygon(b, &pts).unwrap();
+    let geschosse: Vec<sk_model::StoreyId> = m
+        .levels_in(Some(b))
+        .into_iter()
+        .filter(|g| m.storey(*g).unwrap().kind == sk_model::LevelKind::Storey)
+        .collect();
+    m.begin("Räume");
+    assert!(sk_raum::abgleichen(&mut m, &geschosse) > 0);
+    m.commit();
+    for g in geschosse {
+        let id = m.spaces(g)[0];
+        m.begin("Ausbau");
+        assert!(sk_raum::ausbau::typen_anlegen(&mut m, id));
+        m.commit();
+    }
+    Scene::with_model(m)
+}
+
+/// Jede Zeile der Liste hat einen eigenen Schlüssel (Auf- und Zuklappen).
+fn eindeutig(v: &ListView) {
+    let mut keys: Vec<String> = v
+        .lines
+        .iter()
+        .filter(|l| l.key != Key::None)
+        .map(|l| format!("{:?}", l.key))
+        .collect();
+    let n = keys.len();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), n, "Schlüssel doppelt");
+}
+
+/// RB5 (raumbuch/plan.md §6.2): Nach Geschoss steht je Raum eine Gruppe
+/// mit lichter Höhe und Bodenfläche, darunter Boden, Estrich, Wandseiten,
+/// Decke und Längen mit Rechenweg; nach Gewerk die Schichten als
+/// „… · Räume“, je Raum eine Zeile, deren Rechenweg die Flächen nennt;
+/// beides auch in der Tabelle.
+#[test]
+fn raeume_in_der_mengenliste() {
+    let mut s = haus_mit_raeumen();
+    let sched = s.schedule_in(&sk_model::qto::Umfang::projekt());
+    assert!(
+        sched
+            .auto
+            .iter()
+            .any(|a| a.key == "room.skirting" && a.value > 0.0),
+        "Sockelleiste als Automatikmenge"
+    );
+    let mut v = ListView::grouped(&mut s, Grouping::Storey);
+    v.alles_aufklappen();
+    v.sync(&mut s, false);
+    let texte = v.line_texts();
+    let raeume: Vec<&String> = texte.iter().filter(|t| t.contains("lichte Höhe")).collect();
+    assert_eq!(raeume.len(), 2, "{texte:#?}");
+    assert!(raeume.iter().all(|t| t.contains(" m²")), "{raeume:?}");
+    for name in ["Boden", "Estrich", "Wand AW-", "Decke", "Sockelleiste"] {
+        assert!(
+            texte.iter().any(|t| t.trim_start().starts_with(name)),
+            "{name}: {texte:#?}"
+        );
+    }
+    // Rechenweg der Wandseite (Rohbaumaß, Putz bis auf die Rohdecke) und
+    // der Sockelleiste (je Wand)
+    let i = texte
+        .iter()
+        .position(|t| t.trim_start().starts_with("Wand AW-001 West · Gipsputz"))
+        .unwrap();
+    let k = v.lines[i].key;
+    assert!(v.lines[i].weg);
+    let terme: Vec<&String> = (0..v.lines.len())
+        .filter(|&j| v.lines[j].parent == k)
+        .map(|j| &texte[j])
+        .collect();
+    assert_eq!(terme.len(), 1, "{terme:?}");
+    assert!(terme[0].contains("Länge × Höhe 7,370 × 2,635"), "{terme:?}");
+    assert!(texte[i].contains("19,42 m²") && texte[i].contains("0,291 m³"));
+    let i = texte
+        .iter()
+        .position(|t| t.trim_start().starts_with("Sockelleiste"))
+        .unwrap();
+    let k = v.lines[i].key;
+    let terme = (0..v.lines.len())
+        .filter(|&j| v.lines[j].parent == k)
+        .count();
+    assert_eq!(terme, 5, "vier Wände und die Summe");
+    // jede Zeile mit eigenem Schlüssel
+    eindeutig(&v);
+
+    // nach Gewerk: „… · Räume“, Rechenweg mit den Namen der Flächen
+    assert!(v.set_grouping(Grouping::Trade));
+    v.sync(&mut s, false);
+    v.alles_aufklappen();
+    v.sync(&mut s, false);
+    let texte = v.line_texts();
+    assert!(texte.iter().any(|t| t.contains(" · Räume")), "{texte:#?}");
+    eindeutig(&v);
+    let g = texte
+        .iter()
+        .position(|t| {
+            t.starts_with("  Gipsputz 1,5 · Räume | R-001 … 002 | 2 | 176,44 m² | 2,647 m³")
+        })
+        .unwrap_or_else(|| panic!("{texte:#?}"));
+    let i = g + 1;
+    assert!(
+        texte[i].starts_with("    R-001 Raum 1 · EG · Außenwände |  |  | 88,22 m²"),
+        "{}",
+        texte[i]
+    );
+    // Anstrich ohne Dicke und ohne m³
+    let a = texte
+        .iter()
+        .find(|t| t.starts_with("  Dispersionsanstrich · Räume"))
+        .unwrap_or_else(|| panic!("{texte:#?}"));
+    assert!(!a.contains("m³"), "{a}");
+    // je Kostengruppe eine Zeile: Wände (336) und Decke (354) getrennt
+    assert!(
+        texte
+            .iter()
+            .any(|t| t.starts_with("    R-001 Raum 1 · EG · Decke |  |  | 69,06 m² | ")),
+        "{texte:#?}"
+    );
+    let k = v.lines[i].key;
+    let terme: Vec<&String> = (0..v.lines.len())
+        .filter(|&j| v.lines[j].parent == k)
+        .map(|j| &texte[j])
+        .collect();
+    assert!(
+        terme.iter().any(|t| t.contains("Wand AW-")),
+        "Name der Fläche im Rechenweg: {texte:#?}"
+    );
+
+    // Tabelle
+    let m = s.model().clone();
+    // Kosten bis RB7 gleich: Raumzeilen und Raummengen ohne Leistung
+    let k = sk_cost::lesen::katalog(&m, None);
+    let u = sk_cost::Umfang::projekt();
+    let ohne = sk_cost::lesen::kosten(&m, &sk_model::qto::schedule(&m), &k, &u);
+    assert_eq!(sk_cost::lesen::kosten(&m, &sched, &k, &u), ohne);
+    let csv = String::from_utf8(csv_grouped(&m, &sched, Grouping::Storey)).unwrap();
+    assert!(
+        csv.contains(";Raum ") && csv.contains("Sockelleiste"),
+        "{csv}"
+    );
+    assert!(
+        csv.contains(";345;") || csv.contains(";336;"),
+        "Kostengruppe Wand: {csv}"
+    );
+    let csv = String::from_utf8(csv_grouped(&m, &sched, Grouping::Trade)).unwrap();
+    assert!(
+        csv.contains(" · Räume") && csv.contains("(Wand AW-"),
+        "{csv}"
+    );
+    assert!(
+        csv.contains(
+            ";354;Dispersionsanstrich · Räume · Decke;R-001;Erdgeschoss;;69,0569;;(Decke)"
+        ),
+        "{csv}"
     );
 }
 

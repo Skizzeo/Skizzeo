@@ -984,7 +984,7 @@ impl Scene {
         let rev = self.model.revision();
         let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
         if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
-            self.schedule = Some((rev, Rc::new(sk_model::qto::schedule(&self.model))));
+            self.schedule = Some((rev, Rc::new(self.mengenliste())));
             self.schedule_runs += 1;
         }
         &self.schedule.as_ref().expect("gerade berechnet").1

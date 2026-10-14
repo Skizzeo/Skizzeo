@@ -99,14 +99,14 @@ pub(super) fn weg_zeilen(
         return;
     };
     let e = r.element;
-    let layer = r.layer.min(255) as u8;
+    let layer = r.layer.min(u16::MAX as usize) as u16;
     let key = |i: usize| {
         Key::Term(
             e.index(),
             e.generation(),
             layer,
             spalte(b) as u8,
-            i.min(255) as u8,
+            i.min(u16::MAX as usize) as u16,
         )
     };
     term_zeilen(&w, row, key, lines);

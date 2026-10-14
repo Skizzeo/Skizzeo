@@ -10,6 +10,7 @@ pub mod abgleich;
 pub mod ausbau;
 pub mod erkennung;
 pub mod flaechen;
+pub mod mengen;
 pub mod oeffnungen;
 pub mod raumbuch;
 pub mod raumliste;

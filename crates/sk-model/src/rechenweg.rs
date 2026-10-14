@@ -210,6 +210,8 @@ pub fn weg(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Option<Rechen
             },
             ziel,
         )],
+        // Raumzeile (RB5): Fläche bzw. Länge mit den Termen des Raumbuchs
+        _ if !r.terms.is_empty() && b != Bezug::Volumen => r.terms.clone(),
         _ => match frost(model, r, b).or_else(|| decke(model, r, b)) {
             Some(t) => t,
             None => sonst(r, b),

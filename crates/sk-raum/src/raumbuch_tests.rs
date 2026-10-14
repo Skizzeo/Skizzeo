@@ -862,3 +862,13 @@ fn ausbau_nach_der_nutzung_des_raums() {
 
 #[path = "koerper_tests.rs"]
 mod koerper;
+
+/// Kaufmännisch: die Hälfte vom Nullpunkt weg, auch knapp darunter
+/// abgelegt; große Zahlen behalten die letzte Stelle (Review #170 H-170a).
+#[test]
+fn kaufmaennisch_auch_bei_grossen_zahlen() {
+    assert_eq!(m(4567.5), "4,568");
+    assert_eq!(m(-4567.5), "-4,568");
+    assert_eq!(kaufm(123_456_789.4), 123_456_789.0);
+    assert_eq!(qm(2_155_500.0), "2,156 m²");
+}
