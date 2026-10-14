@@ -173,7 +173,16 @@ SZO 4
 [spacetype] guid=3bIRb62BUylWXxAOWLry2z name="Arbeitszimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [spacetype] guid=3jxEtgf1$vuKf7$1opxuYG name="Gästezimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [project] guid=2YaOeyxqn6WPcq0HPeUvj0 name="Projekt" storey=2raHMuYTD64hQ6K56DbC_u wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY topsoil=250 slope=60
+[projectinfo] key=project kind="Neubau Einfamilienhaus" projno="R7/26" site="Haus Rundlauf" place="Musterweg 1\n27777 Ganderkesee" client="Max Mustermann" clientaddr="Phantasiestraße 7\n12345 Irgendwo" author="Test und Abnahme" authoraddr="Denkmalsweg 18b\n27777 Ganderkesee"
 [soil] key=project topsoil=250 slope=60
+[terrainplate] key=project thick=900 margin=2000
+[terrain] src="höhen aufmaß.csv" read=2026-10-12 crs=utm32 hsys=DHHN2016 href=abs
+[tpoint] nr=1 e=472580.214 n=5878890.637 h=28.337 code=GR
+[tpoint] nr=2 e=472604.035 n=5878893.562 h=28.624 code=GR
+[tpoint] nr=3 e=472600.548 n=5878926.885 h=29.71 code=GR off=1
+[tpoint] nr="A 7" e=472592 n=5878909 h=29
+[tline] kind=boundary pts=1,2,3
+[tcode] code=XY kind=off
 [location] lat=53.0589 lon=8.591 north=12.5 x=-3500 y=21000 utm_e=472589.291 utm_n=5878900.895 utm_zone=32 nhn=28.35
 [building] guid=1tBffObw134uGxOa1UQhBN name="Gebäude 2" number="GB-02" terrain=-1000
 [building] guid=3KSRR0Gnz9rBLKj19nZ4YO name="Gebäude 1" number="GB-01" terrain=400
@@ -247,6 +256,11 @@ SZO 4
 [extpart] guid=3y1kS67MD3zfAPmF4yotzT key=werk.stabgelaender number="GL-002" x=2500 y=5000 rot=90 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [space] guid=1JxRjJ2eb3A99QwGHJp0Ji number="R-002" at=5000,4000 name="Raum \"Süd\"" seq=0 storey=2raHMuYTD64hQ6K56DbC_u
 [space] guid=1dIrSPIIL5SulaBsBPBA7K number="R-001" at=20000,4000 name="Wohnen" stamp=19000,3000 use=3L0qftDQBqEiFKla5DswQ4 factor=0.5 seq=0 storey=0w$UUoIID0CgN5lvvTdnI6
+[cut] name=B pos=5000.5 flip=1 active=1
+[sun] date=2026-06-21 time=12:00 on=1
+[viewshade] view=front on=0 fill=area light=front-left
+[viewshade] view=back on=1 fill=hatch light=front-right
+[viewbelow] view=back dashed=1
 [viewhide] view=plan cat=downpipe
 [viewhide] view=front cat=downpipe
 [bemassung] key=project linie=0.35 symbol=punkt schrift="Arial" rundung=5 bezug=rohbau kette_sprung=0 hoehe=0 brh_bezug=estrich
