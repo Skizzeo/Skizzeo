@@ -3003,8 +3003,7 @@ impl Scene {
         let Some((run, pts)) = moved else {
             return false;
         };
-        self.set_run_points(run, &pts);
-        true
+        self.set_run_points(run, &pts)
     }
 
     /// Versatz eingetippt (Paneel): nur dieses Segment, die Kette bleibt, wie

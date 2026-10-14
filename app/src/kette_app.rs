@@ -181,7 +181,7 @@ impl App {
     /// abgebrochen ist.
     fn split_start(&mut self, wall: ElementId) {
         let m = self.scene.model();
-        let step = m.step_joint(wall).is_some();
+        let step = m.step_joint(m.stack_bottom(wall)).is_some();
         if let Some(b) = sk_model::edit_blocked(m, &m.stack_column(wall)) {
             self.show_locked(b, Some((wall, delete::Act::Field)));
             return;
