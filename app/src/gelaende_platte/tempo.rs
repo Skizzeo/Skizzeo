@@ -570,6 +570,7 @@ fn lageplan_im_budget() {
         // (Review #139 N2: vorher 28 ms und 57 MB je Wechsel)
         assert!(x.rueckweg < 1.0 * f, "{x:?}");
         assert!(x.lage < 8.0 * f, "{x:?}");
+        assert!(x.lage_hoch >= x.hoch, "verschoben sind alle Kacheln neu: {x:?}");
     }
     assert!(
         gross.rueckweg < 2.0 * klein.rueckweg + 0.2 * f,
