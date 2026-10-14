@@ -104,29 +104,51 @@ pub(crate) struct Teil {
     keil: Vec<bool>,
 }
 
-/// Was eine Fläche für sich ergibt; `None` lässt sie sich nicht bauen.
-pub(crate) struct Einzel {
-    e: Option<Erdbau>,
-    befestigt: bool,
-    hinweise: Vec<&'static str>,
+/// Was eine Fläche ohne die Gründungen ergibt; es hängt nur von ihr, von
+/// Lage und Höhe von ±0,00 und vom Netz ab: das Planungsgelände mit dem
+/// Rechteck darum (`None`: lässt sich nicht bauen), die Ecken im Aufmaß
+/// und die Zerlegung im Modell.
+pub(crate) struct Plan {
+    planung: Option<(Planung, [f64; 4])>,
+    innen: usize,
     zerlegt: Zerlegt,
 }
 
+/// Was eine Fläche mit den Gründungen in ihrer Nähe ergibt, mit dem
+/// Schlüssel, von dem es abhängt: Oberboden, Andeckung und die Zonen
+/// dieser Gründungen als Bits.
+pub(crate) struct Einzel {
+    schluessel: Vec<u64>,
+    e: Option<Erdbau>,
+    hinweise: Vec<&'static str>,
+}
+
+/// Eine Fläche mit beiden Stufen.
+struct Gerechnet {
+    patch: TerrainPatch,
+    plan: Arc<Plan>,
+    einzel: Arc<Einzel>,
+}
+
 /// Der zuletzt gerechnete Stand: das Netz (dasselbe, nicht nur ein
-/// gleiches), die Werte, von denen jede Fläche abhängt (Lage und Höhe von
-/// ±0,00, Oberboden, Andeckung, Umriss und Zone jeder Gründung als Bits),
-/// jede Fläche mit ihrem Ergebnis und das Ganze.
+/// gleiches), Lage und Höhe von ±0,00 als Bits, die übrigen Werte (Oberboden,
+/// Andeckung, Umriss und Zone jeder Gründung), jede Fläche mit ihren
+/// Stufen, ob sich Flächen überlappen, und das Ganze.
 struct Gemerkt {
     netz: Arc<TerrainMesh>,
+    lage: [u64; 4],
     werte: Vec<u64>,
-    einzeln: Vec<(TerrainPatch, Arc<Einzel>)>,
+    flaechen: Vec<Gerechnet>,
+    ueberlappt: bool,
     teil: Arc<Teil>,
 }
 
 /// Platz für den zuletzt gerechneten Stand im Modell (Review #173 B1): Ein
-/// Loslassen, das weder Flächen noch Gründungen noch Aufmaß ändert, etwa an
-/// einer Wand, rechnet nichts neu; ändert sich eine Fläche, rechnet nur
-/// sie neu.
+/// Loslassen, das weder Flächen noch Gründungen noch Aufmaß ändert, rechnet
+/// nichts neu. Ändert sich eine Fläche, rechnet nur sie neu; ändert sich
+/// eine Gründung, nur der Erdbau der Flächen, deren Rechteck ihre Zonen
+/// treffen. Das Planungsgelände rechnet nur neu, wenn sich die Fläche,
+/// ±0,00 oder das Aufmaß ändert.
 #[derive(Clone, Default)]
 pub(crate) struct Merker(RefCell<Option<Arc<Gemerkt>>>);
 
@@ -137,14 +159,34 @@ impl std::fmt::Debug for Merker {
 }
 
 impl Merker {
-    /// Der gemerkte Stand, wenn er zu Netz und Werten passt.
-    fn zu(&self, netz: &Arc<TerrainMesh>, werte: &[u64]) -> Option<Arc<Gemerkt>> {
-        self.0
-            .borrow()
-            .as_ref()
-            .filter(|g| Arc::ptr_eq(&g.netz, netz) && g.werte == werte)
-            .cloned()
+    fn alt(&self) -> Option<Arc<Gemerkt>> {
+        self.0.borrow().clone()
     }
+
+    /// Ohne Flächen oder Aufmaß nichts festhalten (H-173h), auch nicht das
+    /// alte Netz.
+    fn leeren(&self) {
+        if self.0.borrow().is_some() {
+            self.0.borrow_mut().take();
+        }
+    }
+}
+
+/// Rechteck um ein Polygon (x0, y0, x1, y1).
+fn rechteck(ring: &[[f64; 2]]) -> [f64; 4] {
+    ring.iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |r, q| {
+            [
+                r[0].min(q[0]),
+                r[1].min(q[1]),
+                r[2].max(q[0]),
+                r[3].max(q[1]),
+            ]
+        })
+}
+
+fn treffen(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
 
 /// Mengen der Geländeflächen des Modells `m` an die Mengen `out` der
@@ -158,6 +200,7 @@ pub(crate) fn gelaende_mengen(
     projekt: &mut Vec<String>,
 ) {
     if m.site_patches().is_empty() {
+        m.flaechenmerker().leeren();
         return;
     }
     // Träger: die Platte mit der kleinsten Nummer; ohne sie hängt der
@@ -166,10 +209,12 @@ pub(crate) fn gelaende_mengen(
         .iter()
         .min_by_key(|g| (g.vorlage.number.len(), g.vorlage.number.clone()))
     else {
+        m.flaechenmerker().leeren();
         projekt.push(OHNE_TRAEGER.to_string());
         return;
     };
     let (Some(t), Some(frame), Some(h0)) = (m.terrain(), m.survey_frame(), m.terrain_nhn()) else {
+        m.flaechenmerker().leeren();
         // an jeder Erdmenge des Trägers, so steht er an jeder Position
         let el = traeger.vorlage.element;
         let mut da = false;
@@ -190,9 +235,8 @@ pub(crate) fn gelaende_mengen(
     let site = m.site_soil();
     // Andecken nur, wo Oberboden abgetragen wurde (B6)
     let d = if o > 0.0 { site.spread.max(0.0) } else { 0.0 };
-    let mut werte: Vec<u64> = [frame.e0, frame.n0, frame.g, h0, o, d]
-        .map(f64::to_bits)
-        .to_vec();
+    let lage = [frame.e0, frame.n0, frame.g, h0].map(f64::to_bits);
+    let mut werte: Vec<u64> = [o, d].map(f64::to_bits).to_vec();
     for g in gr {
         let z = &g.zone;
         werte.extend([g.outline.len(), z.sohle.len()].map(|n| n as u64));
@@ -201,23 +245,23 @@ pub(crate) fn gelaende_mengen(
             werte.extend([p.x, p.y, p.z].map(f64::to_bits));
         }
     }
-    let alt = m.flaechenmerker().zu(&mesh, &werte);
+    let alt = m.flaechenmerker().alt();
     let teil = match alt.as_ref().filter(|g| {
-        g.einzeln.len() == m.site_patches().len()
-            && g.einzeln
-                .iter()
-                .zip(m.site_patches())
-                .all(|(e, p)| e.0 == *p)
+        Arc::ptr_eq(&g.netz, &mesh)
+            && g.lage == lage
+            && g.werte == werte
+            && gleiche_flaechen(&g.flaechen, m.site_patches())
     }) {
         Some(g) => g.teil.clone(),
         None => {
-            let g = rechnen(m, gr, &frame, h0, &mesh, o, d, alt.as_deref());
+            let alt = alt.filter(|g| Arc::ptr_eq(&g.netz, &mesh) && g.lage == lage);
+            let ueberlappt = alt
+                .as_ref()
+                .filter(|g| gleiche_flaechen(&g.flaechen, m.site_patches()))
+                .map(|g| g.ueberlappt);
+            let g = rechnen(m, gr, &frame, h0, &mesh, o, d, alt.as_deref(), ueberlappt);
             let teil = g.teil.clone();
-            *m.flaechenmerker().0.borrow_mut() = Some(Arc::new(Gemerkt {
-                netz: mesh.clone(),
-                werte,
-                ..g
-            }));
+            *m.flaechenmerker().0.borrow_mut() = Some(Arc::new(Gemerkt { lage, werte, ..g }));
             teil
         }
     };
@@ -518,9 +562,25 @@ pub(crate) fn gelaende_mengen(
     out.splice(nach..nach, neu);
 }
 
+fn gleiche_flaechen(alt: &[Gerechnet], p: &[TerrainPatch]) -> bool {
+    alt.len() == p.len() && alt.iter().zip(p).all(|(a, p)| a.patch == *p)
+}
+
+/// Eine Gründung im Netz: ihre Zonen, das Rechteck darum und ihre Werte
+/// als Bits.
+struct Zone {
+    haus: Vec<[f64; 2]>,
+    baufeld: Option<Vec<[f64; 2]>>,
+    grube: Option<Grube>,
+    rechteck: [f64; 4],
+    bits: Vec<u64>,
+}
+
 /// Die Flächen des Modells `m` über dem Netz `mesh` gegen die Gründungen
 /// `gr`; Oberboden `o` und Andeckung `d` in mm, ±0,00 auf `h0` m ü. NHN.
-/// Was `alt` zu einer gleichen Fläche schon weiß, rechnet nicht neu.
+/// Was `alt` (bei gleichem Netz und gleicher Lage) zu einer gleichen
+/// Fläche schon weiß, rechnet nicht neu; `ueberlappt` ist schon bekannt,
+/// wenn die Flächen gleich blieben.
 #[allow(clippy::too_many_arguments)]
 fn rechnen(
     m: &Model,
@@ -531,6 +591,7 @@ fn rechnen(
     o: f64,
     d: f64,
     alt: Option<&Gemerkt>,
+    ueberlappt: Option<bool>,
 ) -> Gemerkt {
     let im_netz = |x: f64, y: f64| {
         let (e, n) = frame.to_survey(x, y);
@@ -544,81 +605,140 @@ fn rechnen(
             sk_math::flaeche::versatz(&g.outline, &vec![-x; g.outline.len()])
         })
         .collect();
-    let gruben: Vec<usize> = (0..gr.len())
-        .filter(|&i| gr[i].zone.sohle.len() >= 3)
+    let zonen: Vec<Zone> = gr
+        .iter()
+        .zip(&baufelder)
+        .map(|(g, bf)| {
+            let haus = ring(&g.outline);
+            let baufeld = bf.as_ref().map(|b| ring(b));
+            let grube = (g.zone.sohle.len() >= 3).then(|| Grube {
+                sohle: ring(&g.zone.sohle),
+                platte: haus.clone(),
+                b: h0 + g.zone.b / 1000.0,
+            });
+            let alle = || {
+                haus.iter()
+                    .chain(baufeld.iter().flatten())
+                    .chain(grube.iter().flat_map(|g| &g.sohle))
+            };
+            let rechteck = rechteck(&alle().copied().collect::<Vec<_>>());
+            let mut bits = vec![
+                haus.len() as u64,
+                baufeld.as_ref().map_or(u64::MAX, |b| b.len() as u64),
+                grube.as_ref().map_or(u64::MAX, |g| g.sohle.len() as u64),
+                grube.as_ref().map_or(0, |g| g.b.to_bits()),
+            ];
+            bits.extend(alle().flat_map(|p| p.map(f64::to_bits)));
+            Zone {
+                haus,
+                baufeld,
+                grube,
+                rechteck,
+                bits,
+            }
+        })
         .collect();
-    let zonen = Zonen {
-        haus: gr.iter().map(|g| ring(&g.outline)).collect(),
-        baufeld: baufelder.iter().flatten().map(|b| ring(b)).collect(),
-        gruben: gruben
+    let plan_neu = |p: &TerrainPatch| {
+        let innen = p
+            .outline
             .iter()
-            .map(|&i| Grube {
-                sohle: ring(&gr[i].zone.sohle),
-                platte: ring(&gr[i].outline),
-                b: h0 + gr[i].zone.b / 1000.0,
+            .filter(|q| {
+                let [x, y] = im_netz(q[0], q[1]);
+                mesh.abfrage.innen(x, y)
             })
-            .collect(),
+            .count();
+        let planung = p.baustein(frame, h0, mesh.bezug).map(|b| {
+            let plan = Planung::neu(&b, &mesh.abfrage);
+            let h = plan.huelle();
+            (plan, h)
+        });
+        Plan {
+            planung,
+            innen,
+            zerlegt: Zerlegt::neu(&p.outline),
+        }
     };
-    let einzeln_neu = |p: &TerrainPatch| {
+    let einzel_neu = |p: &TerrainPatch, plan: &Plan, nah: &[usize], schluessel: Vec<u64>| {
         let mut hinweise = Vec::new();
         let mut dazu = |t: &'static str| {
             if !hinweise.contains(&t) {
                 hinweise.push(t);
             }
         };
-        let e = match p.baustein(frame, h0, mesh.bezug) {
+        let e = match &plan.planung {
             None => {
                 dazu(UNGUELTIG);
                 None
             }
-            Some(b) => {
-                let innen = p
-                    .outline
-                    .iter()
-                    .filter(|q| {
-                        let [x, y] = im_netz(q[0], q[1]);
-                        mesh.abfrage.innen(x, y)
-                    })
-                    .count();
-                let plan = Planung::neu(&b, &mesh.abfrage);
+            Some((planung, _)) => {
+                let z = Zonen {
+                    haus: nah.iter().map(|&i| zonen[i].haus.clone()).collect(),
+                    baufeld: nah
+                        .iter()
+                        .filter_map(|&i| zonen[i].baufeld.clone())
+                        .collect(),
+                    gruben: nah.iter().filter_map(|&i| zonen[i].grube.clone()).collect(),
+                };
                 let a = Aufbau {
                     oberboden: o / 1000.0,
                     andecken: d / 1000.0,
                     befestigt: p.paved,
                 };
-                let e = plan.erdbau(&mesh.abfrage, &a, &zonen);
-                if innen == 0 && e.flaeche + e.im_baufeld <= REST {
+                let e = planung.erdbau(&mesh.abfrage, &a, &z);
+                if plan.innen == 0 && e.flaeche + e.im_baufeld <= REST {
                     dazu(GANZ_AUSSERHALB);
-                } else if innen < p.outline.len() {
+                } else if plan.innen < p.outline.len() {
                     dazu(AUSSERHALB);
                 }
-                for h in &plan.hinweise {
+                for h in &planung.hinweise {
                     dazu(hinweis_text(h));
                 }
                 Some(e)
             }
         };
         Einzel {
+            schluessel,
             e,
-            befestigt: p.paved,
             hinweise,
-            zerlegt: Zerlegt::neu(&p.outline),
         }
     };
-    // gleiche Flächen aus dem alten Stand, je eine einmal
-    let mut frei: Vec<&(TerrainPatch, Arc<Einzel>)> =
-        alt.map(|g| g.einzeln.iter().collect()).unwrap_or_default();
-    let einzeln: Vec<(TerrainPatch, Arc<Einzel>)> = m
-        .site_patches()
-        .iter()
-        .map(|p| {
-            let e = match frei.iter().position(|x| x.0 == *p) {
-                Some(k) => frei.swap_remove(k).1.clone(),
-                None => Arc::new(einzeln_neu(p)),
-            };
-            (p.clone(), e)
-        })
-        .collect();
+    // gleiche Flächen aus dem alten Stand, je eine einmal; der Erdbau nur
+    // gegen die Gründungen, deren Zonen das Rechteck der Fläche treffen:
+    // die übrigen ändern ihn nicht
+    let mut frei: Vec<&Gerechnet> = alt.map(|g| g.flaechen.iter().collect()).unwrap_or_default();
+    let mut flaechen = Vec::new();
+    let mut nahe = Vec::new();
+    for p in m.site_patches() {
+        let vorher = frei
+            .iter()
+            .position(|x| x.patch == *p)
+            .map(|k| frei.swap_remove(k));
+        let plan = match vorher {
+            Some(x) => x.plan.clone(),
+            None => Arc::new(plan_neu(p)),
+        };
+        let nah: Vec<usize> = match &plan.planung {
+            Some((_, h)) => (0..gr.len())
+                .filter(|&i| treffen(h, &zonen[i].rechteck))
+                .collect(),
+            None => Vec::new(),
+        };
+        let mut schluessel: Vec<u64> = [o, d].map(f64::to_bits).to_vec();
+        for &i in &nah {
+            schluessel.push(zonen[i].bits.len() as u64);
+            schluessel.extend(&zonen[i].bits);
+        }
+        let einzel = match vorher.filter(|x| x.einzel.schluessel == schluessel) {
+            Some(x) => x.einzel.clone(),
+            None => Arc::new(einzel_neu(p, &plan, &nah, schluessel)),
+        };
+        flaechen.push(Gerechnet {
+            patch: p.clone(),
+            plan,
+            einzel,
+        });
+        nahe.push(nah);
+    }
 
     let mut s = Summe::default();
     let mut weniger = vec![0.0; gr.len()];
@@ -627,11 +747,11 @@ fn rechnen(
             s.hinweise.push(t);
         }
     };
-    for (_, x) in &einzeln {
-        for h in &x.hinweise {
+    for (x, nah) in flaechen.iter().zip(&nahe) {
+        for h in &x.einzel.hinweise {
             hinweis(&mut s, h);
         }
-        let Some(e) = &x.e else {
+        let Some(e) = &x.einzel.e else {
             continue;
         };
         s.abtrag += e.abtrag;
@@ -641,8 +761,9 @@ fn rechnen(
         s.andecken += e.andecken;
         s.andecken_steil += e.andecken_steil;
         s.unter_sohle += e.unter_sohle;
-        s.befestigt |= x.befestigt;
-        for (k, v) in gruben.iter().zip(&e.je_grube) {
+        s.befestigt |= x.patch.paved;
+        let gruben = nah.iter().filter(|&&i| zonen[i].grube.is_some());
+        for (k, v) in gruben.zip(&e.je_grube) {
             weniger[*k] += v;
         }
     }
@@ -658,19 +779,25 @@ fn rechnen(
             let flach = |v: &[Vec3]| v.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>();
             let feld = Zerlegt::neu(&flach(bf));
             let sohle = Zerlegt::neu(&flach(&g.zone.sohle));
-            einzeln.iter().any(|(_, x)| {
-                x.zerlegt.ueberlappung(&feld) - x.zerlegt.ueberlappung(&sohle) > 100.0
+            flaechen.iter().any(|x| {
+                let z = &x.plan.zerlegt;
+                z.ueberlappung(&feld) - z.ueberlappung(&sohle) > 100.0
             })
         })
         .collect();
-    let z: Vec<&Zerlegt> = einzeln.iter().map(|x| &x.1.zerlegt).collect();
-    if (0..z.len()).any(|i| (i + 1..z.len()).any(|j| z[i].ueberlappung(z[j]) > 100.0)) {
+    let ueberlappt = ueberlappt.unwrap_or_else(|| {
+        let z: Vec<&Zerlegt> = flaechen.iter().map(|x| &x.plan.zerlegt).collect();
+        (0..z.len()).any(|i| (i + 1..z.len()).any(|j| z[i].ueberlappung(z[j]) > 100.0))
+    });
+    if ueberlappt {
         hinweis(&mut s, UEBERLAPPT);
     }
     Gemerkt {
         netz: mesh.clone(),
+        lage: [0; 4],
         werte: Vec::new(),
-        einzeln,
+        flaechen,
+        ueberlappt,
         teil: Arc::new(Teil { s, weniger, keil }),
     }
 }
@@ -1003,9 +1130,9 @@ mod tests {
                 .borrow()
                 .as_ref()
                 .map_or(Vec::new(), |g| {
-                    g.einzeln
+                    g.flaechen
                         .iter()
-                        .map(|x| std::sync::Arc::as_ptr(&x.1))
+                        .map(|x| std::sync::Arc::as_ptr(&x.einzel))
                         .collect()
                 })
         };
@@ -1025,6 +1152,99 @@ mod tests {
         m.commit();
         let _ = crate::qto::schedule(&m);
         assert_ne!(teil(&m), t);
+    }
+
+    /// Ein weiteres Haus rechnet nur den Erdbau der Flächen neu, deren
+    /// Rechteck seine Zonen treffen, und nie das Planungsgelände; das
+    /// Ergebnis gleicht dem ohne Merker (Review #173 B1).
+    #[test]
+    fn nur_flaechen_am_geaenderten_haus() {
+        let zeiger = |m: &Model| -> Vec<(*const super::Plan, *const super::Einzel)> {
+            m.flaechenmerker()
+                .0
+                .borrow()
+                .as_ref()
+                .map_or(Vec::new(), |g| {
+                    g.flaechen
+                        .iter()
+                        .map(|x| {
+                            (
+                                std::sync::Arc::as_ptr(&x.plan),
+                                std::sync::Arc::as_ptr(&x.einzel),
+                            )
+                        })
+                        .collect()
+                })
+        };
+        let wie_frisch = |m: &Model| {
+            let v = crate::qto::schedule(m).auto;
+            let frisch = m.clone();
+            frisch.flaechenmerker().leeren();
+            let w = crate::qto::schedule(&frisch).auto;
+            let z = |v: &[AutoMenge]| {
+                v.iter()
+                    .map(|r| (r.key, r.value.to_bits(), r.hinweis.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(z(&v), z(&w));
+            v
+        };
+        let neues_haus = |m: &mut Model, x0: f64, y0: f64| {
+            let b = m.add_building(1);
+            let pts = [
+                sk_math::vec3(x0, y0, 0.0),
+                sk_math::vec3(x0, y0 + 6000.0, 0.0),
+                sk_math::vec3(x0 + 7000.0, y0 + 6000.0, 0.0),
+                sk_math::vec3(x0 + 7000.0, y0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+        };
+        let mut m = haus();
+        m.begin("Flächen");
+        // am Haus im Arbeitsraum und fern davon
+        assert!(m
+            .add_site_patch(flaeche(rechteck(17e3, 6e3, 20e3, 14e3), -150.0))
+            .is_some());
+        assert!(m
+            .add_site_patch(flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0))
+            .is_some());
+        m.commit();
+        let _ = wie_frisch(&m);
+        let z0 = zeiger(&m);
+        assert_eq!(z0.len(), 2);
+        // fern von beiden Flächen: nichts neu bis auf das Ganze
+        neues_haus(&mut m, 30e3, -15e3);
+        let _ = wie_frisch(&m);
+        assert_eq!(zeiger(&m), z0);
+        // neben der zweiten Fläche: nur deren Erdbau neu
+        neues_haus(&mut m, 22e3, 32e3);
+        let v = wie_frisch(&m);
+        let z1 = zeiger(&m);
+        assert_eq!(z1[0], z0[0]);
+        assert_eq!(z1[1].0, z0[1].0);
+        assert_ne!(z1[1].1, z0[1].1);
+        assert_eq!(m.ground_bases().len(), 3);
+        assert!(wert(&v, CUT) > 0.0);
+    }
+
+    /// Ohne Flächen oder ohne Aufmaß hält der Merker nichts fest, auch
+    /// nicht das alte Netz (H-173h).
+    #[test]
+    fn leer_ohne_flaechen() {
+        let gemerkt = |m: &Model| m.flaechenmerker().0.borrow().is_some();
+        let mut m = haus();
+        m.begin("Fläche");
+        let i = m
+            .add_site_patch(flaeche(rechteck(30e3, 30e3, 40e3, 40e3), 100.0))
+            .unwrap();
+        m.commit();
+        let _ = crate::qto::schedule(&m);
+        assert!(gemerkt(&m));
+        m.begin("weg");
+        assert!(m.remove_site_patch(i));
+        m.commit();
+        let _ = crate::qto::schedule(&m);
+        assert!(!gemerkt(&m));
     }
 
     /// Ganz unter dem Haus: keine Zeile aus Rundungsresten (H-173a).
@@ -1140,9 +1360,25 @@ mod tests {
             let t = Instant::now();
             let _ = crate::qto::schedule(&m);
             let eine = ms(t);
+            let haus = |m: &mut Model, x0: f64, y0: f64| {
+                let b = m.add_building(1);
+                let pts = [
+                    sk_math::vec3(x0, y0, 0.0),
+                    sk_math::vec3(x0, y0 + 6000.0, 0.0),
+                    sk_math::vec3(x0 + 7000.0, y0 + 6000.0, 0.0),
+                    sk_math::vec3(x0 + 7000.0, y0, 0.0),
+                ];
+                m.build_from_polygon(b, &pts).unwrap();
+                let t = Instant::now();
+                let _ = crate::qto::schedule(m);
+                ms(t)
+            };
+            let fern = haus(&mut m, 30_000.0, 2_000.0);
+            let nah = haus(&mut m, -14_000.0, 17_000.0);
             eprintln!(
                 "{anzahl} × 400 Kanten: kalt {kalt:.1} ms, warm {warm:.1} ms, \
-                 eine Fläche geändert {eine:.1} ms"
+                 eine Fläche geändert {eine:.1} ms, Haus fern {fern:.1} ms, \
+                 Haus an einer Fläche {nah:.1} ms"
             );
         }
     }

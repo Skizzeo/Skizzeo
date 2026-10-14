@@ -239,6 +239,22 @@ pub fn ueberlappung(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
 
 impl Planung {
     /// Die Stücke mit Vorzeichen, wie [`Planung::mengen`] sie zählt.
+    /// Rechteck um den Baustein samt Böschungen im Netz (x0, y0, x1, y1):
+    /// Zonen außerhalb ändern [`Planung::erdbau`] nicht.
+    pub fn huelle(&self) -> [f64; 4] {
+        let ringe = self.teile.iter().map(|t| &t.ring);
+        let ringe = ringe.chain(self.auftrag.iter().chain(&self.abtrag).map(|b| &b.ring));
+        ringe.fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |r, q| {
+            let h = huelle(q);
+            [
+                r[0].min(h[0]),
+                r[1].min(h[1]),
+                r[2].max(h[2]),
+                r[3].max(h[3]),
+            ]
+        })
+    }
+
     fn stuecke(&self) -> Vec<Stueck> {
         let mut out: Vec<Stueck> = self
             .teile
