@@ -374,11 +374,10 @@ impl Model {
     ) -> (usize, usize) {
         // Fußpunkt der Verblendschale (W2): der Baustoff beim ersten Mal,
         // auch wenn der Schritt nur den Typ der Wand darüber ändert
-        if self.foamglass_material().is_none() && self.foot_wanted() {
+        if self.foamglass_material().is_none() && self.foot_wanted(scope) {
             self.ensure_foamglass_material();
         }
-        let want =
-            want.unwrap_or_else(|| self.abgleich_lesend(scope, || self.terrace_floors_in(scope)));
+        let want = want.unwrap_or_else(|| self.lesend(|| self.terrace_floors_in(scope)));
         if !want.is_empty() {
             self.ensure_terrace_type();
             if want.iter().any(|f| {
@@ -390,8 +389,9 @@ impl Model {
         }
         // (Bauteil, Decke, Terrasse?) aller betroffenen DT und AB
         let have: Vec<(ElementId, ElementId, bool)> = self
-            .elements
-            .iter()
+            .an_decken_in(scope)
+            .into_iter()
+            .filter_map(|id| Some((id, self.element(id)?)))
             .filter_map(|(id, e)| match e.kind {
                 ElementKind::RoofTerrace { floor } => Some((id, floor, true)),
                 ElementKind::Coping { floor } => Some((id, floor, false)),

@@ -11,7 +11,16 @@ impl Model {
     /// Züge, die über einen Anschluss mit `id` verbunden sind.
     pub fn joined_runs(&self, id: RunId) -> Vec<RunId> {
         let mut out = Vec::new();
-        for j in &self.joins {
+        let v = self.verz();
+        let joins: Box<dyn Iterator<Item = &Join>> = match &v {
+            Some(v) => Box::new(
+                v.anschluesse(id, &self.joins)
+                    .into_iter()
+                    .map(|k| &self.joins[k]),
+            ),
+            None => Box::new(self.joins.iter()),
+        };
+        for j in joins {
             let other = match (j.a_run == id, j.b_run == id) {
                 (true, false) => j.b_run,
                 (false, true) => j.a_run,
@@ -51,23 +60,46 @@ impl Model {
     fn rough_boxes(&self) -> Vec<(RunId, Vec3, Vec3)> {
         self.runs
             .iter()
-            .map(|(id, r)| {
-                let t: f64 = r
-                    .segments
-                    .first()
-                    .and_then(|e| self.element(*e))
-                    .and_then(|e| e.layer_set)
-                    .and_then(|s| self.layer_set(s))
-                    .map_or(0.0, |s| s.layers.iter().map(|l| l.thickness).sum());
-                let m = t * 9.0 + join::SNAP;
-                let mut lo = vec3(f64::INFINITY, f64::INFINITY, 0.0);
-                let mut hi = -lo;
-                for q in &r.points {
-                    lo = vec3(lo.x.min(q.x), lo.y.min(q.y), 0.0);
-                    hi = vec3(hi.x.max(q.x), hi.y.max(q.y), 0.0);
-                }
-                (id, lo - vec3(m, m, 0.0), hi + vec3(m, m, 0.0))
-            })
+            .map(|(id, r)| self.rough_box(id, r))
+            .collect()
+    }
+
+    /// [`Model::rough_boxes`] eines Zuges.
+    fn rough_box(&self, id: RunId, r: &WallRun) -> (RunId, Vec3, Vec3) {
+        let t: f64 = r
+            .segments
+            .first()
+            .and_then(|e| self.element(*e))
+            .and_then(|e| e.layer_set)
+            .and_then(|s| self.layer_set(s))
+            .map_or(0.0, |s| s.layers.iter().map(|l| l.thickness).sum());
+        let m = t * 9.0 + join::SNAP;
+        let mut lo = vec3(f64::INFINITY, f64::INFINITY, 0.0);
+        let mut hi = -lo;
+        for q in &r.points {
+            lo = vec3(lo.x.min(q.x), lo.y.min(q.y), 0.0);
+            hi = vec3(hi.x.max(q.x), hi.y.max(q.y), 0.0);
+        }
+        (id, lo - vec3(m, m, 0.0), hi + vec3(m, m, 0.0))
+    }
+
+    /// Grobe Rahmen der Züge, die das Rechteck `lo`–`hi` treffen, in der
+    /// Reihenfolge der Züge: aus dem Raster des Verzeichnisses, um den
+    /// größten Rand erweitert, den ein Aufbau geben kann.
+    fn rough_boxes_at(&self, lo: Vec3, hi: Vec3) -> Vec<(RunId, Vec3, Vec3)> {
+        let Some(v) = self.verz() else {
+            return self.rough_boxes();
+        };
+        let t = self
+            .layer_sets
+            .iter()
+            .map(|(_, s)| s.layers.iter().map(|l| l.thickness).sum::<f64>())
+            .fold(0.0, f64::max);
+        let m = vec3(t * 9.0 + join::SNAP, t * 9.0 + join::SNAP, 0.0);
+        v.alle_zuege_bei(lo - m, hi + m)
+            .into_iter()
+            .filter_map(|id| Some(self.rough_box(id, self.runs.get(id)?)))
+            .filter(|b| b.1.x <= hi.x && lo.x <= b.2.x && b.1.y <= hi.y && lo.y <= b.2.y)
             .collect()
     }
 
@@ -87,12 +119,20 @@ impl Model {
         &self,
         run: RunId,
         e: JoinEnd,
-        boxes: &[(RunId, Vec3, Vec3)],
+        boxes: Option<&[(RunId, Vec3, Vec3)]>,
         bases: &mut Bases,
     ) -> Option<Join> {
         let r = self.runs.get(run)?;
         let p = Model::end_point(r, e)?;
         let storey = r.storey;
+        let nah;
+        let boxes = match boxes {
+            Some(b) => b,
+            None => {
+                nah = self.rough_boxes_at(p, p);
+                &nah[..]
+            }
+        };
         // Anschlüsse nur innerhalb eines Geschosses (B12)
         let ids: Vec<RunId> = boxes
             .iter()
@@ -193,7 +233,7 @@ impl Model {
             .runs
             .ids()
             .flat_map(|r| JoinEnd::BOTH.map(|e| (r, e)))
-            .filter_map(|(r, e)| self.detect_end(r, e, &boxes, &mut bases))
+            .filter_map(|(r, e)| self.detect_end(r, e, Some(&boxes), &mut bases))
             .collect();
         sort_joins(&mut out);
         out
@@ -202,12 +242,28 @@ impl Model {
     /// Erkennt die Anschlüsse neu, die sich durch Änderungen an `runs` ändern
     /// können: freie Enden dieser Züge, Enden, die an ihnen hängen, und freie
     /// Enden anderer Züge in ihrer Nähe.
+    /// Züge in der Nähe und ihre Anschlüsse kommen aus dem Verzeichnis, nicht
+    /// aus einem Gang über alle (L40).
     pub(super) fn update_joins(&mut self, runs: &[RunId]) {
-        let boxes = self.rough_boxes();
-        let changed: Vec<&(RunId, Vec3, Vec3)> =
-            boxes.iter().filter(|b| runs.contains(&b.0)).collect();
+        let changed: Vec<(RunId, Vec3, Vec3)> = runs
+            .iter()
+            .filter_map(|&id| Some(self.rough_box(id, self.runs.get(id)?)))
+            .collect();
+        // Züge, deren Ende in einem geänderten Rahmen liegen kann
+        let mut nah: Vec<RunId> = runs.to_vec();
+        for c in &changed {
+            match self.verz() {
+                Some(v) => nah.extend(v.alle_zuege_bei(c.1, c.2)),
+                None => nah.extend(self.runs.ids()),
+            }
+        }
+        nah.sort_by_key(|r| r.index());
+        nah.dedup();
         let mut ends: Vec<(RunId, JoinEnd)> = Vec::new();
-        for (id, r) in self.runs.iter() {
+        for id in nah {
+            let Some(r) = self.runs.get(id) else {
+                continue;
+            };
             for e in JoinEnd::BOTH {
                 let Some(p) = Model::end_point(r, e) else {
                     continue;
@@ -217,9 +273,20 @@ impl Model {
                 }
             }
         }
-        for j in &self.joins {
-            if runs.contains(&j.a_run) || runs.contains(&j.b_run) {
-                ends.push((j.a_run, j.a_end));
+        for &r in runs {
+            let v = self.verz();
+            let joins: Box<dyn Iterator<Item = &Join>> = match &v {
+                Some(v) => Box::new(
+                    v.anschluesse(r, &self.joins)
+                        .into_iter()
+                        .map(|k| &self.joins[k]),
+                ),
+                None => Box::new(self.joins.iter()),
+            };
+            for j in joins {
+                if j.a_run == r || j.b_run == r {
+                    ends.push((j.a_run, j.a_end));
+                }
             }
         }
         ends.sort_by_key(|(r, e)| (r.index(), *e));
@@ -227,11 +294,9 @@ impl Model {
         let mut bases = Bases::default();
         let fresh: Vec<Join> = ends
             .iter()
-            .filter_map(|&(r, e)| self.detect_end(r, e, &boxes, &mut bases))
+            .filter_map(|&(r, e)| self.detect_end(r, e, None, &mut bases))
             .collect();
-        self.joins.retain(|j| !ends.contains(&(j.a_run, j.a_end)));
-        self.joins.extend(fresh);
-        sort_joins(&mut self.joins);
+        self.joins.ersetzen(&ends, fresh);
     }
 
     /// Führt die Züge mit, die an `root` hängen, und weiter die an diesen
@@ -244,12 +309,22 @@ impl Model {
         while k < moved.len() {
             let r = moved[k];
             k += 1;
-            let deps: Vec<Join> = self
-                .joins
-                .iter()
-                .filter(|j| j.b_run == r && j.a_run != root)
-                .cloned()
-                .collect();
+            // Über das Verzeichnis nur die Anschlüsse an `r`, nicht alle (L40)
+            let deps: Vec<Join> = match self.verz() {
+                Some(v) => v
+                    .anschluesse(r, &self.joins)
+                    .into_iter()
+                    .map(|k| &self.joins[k])
+                    .filter(|j| j.b_run == r && j.a_run != root)
+                    .cloned()
+                    .collect(),
+                None => self
+                    .joins
+                    .iter()
+                    .filter(|j| j.b_run == r && j.a_run != root)
+                    .cloned()
+                    .collect(),
+            };
             for j in deps {
                 let Some(p) = self.follow_target(&j) else {
                     continue;

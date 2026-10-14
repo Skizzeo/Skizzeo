@@ -45,7 +45,8 @@ use sk_raum::{Begrenzung, Ketten, Raumflaeche};
 use sk_render::gelaende::{TerrainGrid, KEIN};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use teile::{teil_von, Teile, TEILE};
+pub(crate) use teile::TEILE;
+use teile::{teil_von, Teile};
 
 #[path = "scene_ausbau_teile.rs"]
 mod teile;
@@ -1689,7 +1690,6 @@ mod tests {
         assert_eq!(neu(&mut s, &mut z), (8, 2, 2));
     }
 
-    /// Liegen die Anker der Räume `a` und `b` im selben Haus?
     /// Mit Aufmaß teilt der Ausbau seine Kanten am Gelände wie die Wände
     /// (#129), und ein neues Raster rechnet die Netze der Hausgruppen neu.
     #[test]
@@ -1734,6 +1734,7 @@ mod tests {
         assert!(am_gelaende > 0);
     }
 
+    /// Liegen die Anker der Räume `a` und `b` im selben Haus?
     fn same_haus(s: &Scene, a: ElementId, b: ElementId) -> bool {
         let x = |r| (s.model().space(r).unwrap().anker.x / 15000.0).floor();
         x(a) == x(b)

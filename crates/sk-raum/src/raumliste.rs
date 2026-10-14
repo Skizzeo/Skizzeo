@@ -8,7 +8,7 @@
 
 use crate::ausbau::{self, RaumAusbau};
 use crate::erkennung::{raeume, Begrenzung, Kante, RaumForm};
-use crate::oeffnungen::Rohbau;
+use crate::oeffnungen::{Geschosse, Rohbau};
 use crate::raumbuch::koerper::{koerper, raumkoerper};
 use crate::raumbuch::{rechnen, Flaeche, Regeln};
 use sk_math::Vec3;
@@ -100,22 +100,24 @@ pub fn raumliste(model: &Model) -> Vec<RaumDaten> {
         .filter(|(_, s)| s.kind == LevelKind::Storey)
         .map(|(id, _)| id)
         .collect();
+    // Höhen der Geschosse einmal für alle Räume (Review #137)
+    let lagen = Geschosse::aus(model);
     let mut out = Vec::new();
     for g in geschosse {
         for f in raeume(model, g) {
-            out.extend(raum(model, f));
+            out.extend(raum(model, f, &lagen));
         }
     }
     out
 }
 
 /// Ein Raum, `None` ohne gespeicherten Raum oder ohne Ausbau.
-fn raum(model: &Model, f: RaumForm) -> Option<RaumDaten> {
+fn raum(model: &Model, f: RaumForm, lagen: &Geschosse) -> Option<RaumDaten> {
     let id = f.raum?;
     let e = model.element(id)?;
     let s = model.space(id)?;
-    let roh = Rohbau::neu(model, f);
-    let aus = RaumAusbau::fuer(model, &roh)?;
+    let roh = Rohbau::mit_geschossen(model, model, f, lagen);
+    let aus = RaumAusbau::fuer_in(model, &roh, lagen)?;
     let nutzung = ausbau::nutzung(model, &roh.form);
     let gruppe = ausbau::vorlage(model, nutzung).map(|v| v.group);
     let ringe: Vec<&[Kante]> = roh.ringe().collect();

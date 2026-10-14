@@ -86,10 +86,11 @@ impl Model {
         scope: Option<&[RunId]>,
     ) -> Vec<(ElementId, ElementId)> {
         let mut floors: Vec<(String, f64, ElementId, RunId)> = self
-            .elements
-            .iter()
+            .decken_in(scope)
+            .into_iter()
+            .filter_map(|id| Some((id, self.element(id)?)))
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::Floor(f) if in_scope(scope, f.run) => {
+                ElementKind::Floor(f) => {
                     let r = self.run(f.run)?;
                     let st = self.storey(r.storey)?;
                     let b = st
@@ -173,8 +174,9 @@ impl Model {
     ) {
         let want = want.unwrap_or_else(|| self.edge_strip_pairs_in(scope));
         let have: Vec<(ElementId, (ElementId, ElementId))> = self
-            .elements
-            .iter()
+            .an_decken_in(scope)
+            .into_iter()
+            .filter_map(|id| Some((id, self.element(id)?)))
             .filter_map(|(id, e)| match e.kind {
                 ElementKind::EdgeStrip { wall, floor }
                     if self.floor_in_scope(floor, scope) || self.element(wall).is_none() =>
