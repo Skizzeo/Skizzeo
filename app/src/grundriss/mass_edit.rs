@@ -273,7 +273,50 @@ impl Masse {
             (self.ueber, self.druck, self.frei, self.rechteck) = (None, None, None, None);
             self.neu();
         }
+        // Gibt es, was unter der Maus lag, im neuen Stand nicht mehr
+        // (anderes Geschoss, Rückgängig), liegt dort nichts mehr (Review H4
+        // zu #147)
+        if let (Some(t), Some(neu)) = (self.ueber, &stand) {
+            let gleich = self.stand.as_ref().is_some_and(|a| Rc::ptr_eq(a, neu));
+            let da = gleich
+                || match t {
+                    Treffer::Zahl(m) => tr::enden(neu, m).is_some(),
+                    Treffer::Linie(k) => tr::finde(neu, k).is_some(),
+                };
+            if !da {
+                self.ueber = None;
+                self.neu();
+            }
+        }
         self.stand = stand;
+    }
+
+    /// Was unter der Maus `maus` liegt, ohne dass sie sich bewegt: nach
+    /// dem Start eines Werkzeugs, einem Wechsel von Kamera, Ansicht oder
+    /// Geschoss und nach Rückgängig. Ohne `enabled` liegt dort nichts;
+    /// läuft etwas ([`Self::aktiv`]), bleibt alles. `true`, wenn sich etwas
+    /// ändert (Review H4 zu #147).
+    pub fn refresh(
+        &mut self,
+        maus: Option<(f64, f64)>,
+        cam: &Camera,
+        (w, h): (f64, f64),
+        scale: f64,
+        enabled: bool,
+    ) -> bool {
+        if self.aktiv() {
+            return false;
+        }
+        let t = match (maus, &self.stand) {
+            (Some((x, y)), Some(s)) if enabled => tr::treffer(s, cam, w, h, scale, x, y),
+            _ => None,
+        };
+        if t == self.ueber {
+            return false;
+        }
+        self.ueber = t;
+        self.neu();
+        true
     }
 
     fn neu(&mut self) {
@@ -1125,6 +1168,83 @@ mod tests {
             },
         );
         assert!(!e.eigenes_thema());
+    }
+
+    /// Startet ein Werkzeug, während die Maus ruhig über einer Maßzahl
+    /// steht, gilt seine Hilfe statt „Bemaßung“, und Hand, Hinweis und
+    /// Hervorhebung gehen; ebenso nach Kamerawechsel und wenn die Ansicht
+    /// ein anderes Geschoss zeigt (Review H4 zu #147).
+    #[test]
+    fn werkzeug_ohne_mausbewegung_nimmt_die_bemassung() {
+        use crate::help::{topic, HelpCtx, Topic};
+        let (mut s, ..) = haus();
+        if stand(&s).is_none() {
+            return;
+        }
+        let c = kamera();
+        let mut e = WallEdit::default();
+        // Wie `App::help_ctx`, mit dem Werkzeug „Gebäude“ an oder aus
+        let thema = |e: &WallEdit, werkzeug: bool| {
+            let ctx = HelpCtx {
+                window: None,
+                dialog: false,
+                flush_pick: false,
+                dragging: e.is_dragging() || e.input().is_some() || e.eigenes_thema(),
+                tool: werkzeug.then_some(false),
+                opening: false,
+                isolating: false,
+                selection: None,
+                view: ViewKind::Plan,
+            };
+            match topic(&ctx) {
+                Topic::Drag if e.eigenes_thema() => e.thema(),
+                t => t,
+            }
+        };
+        let (p, _) = zahl(&s, &c, 270, Kettenart::Wand, 3);
+        let mods = Modifiers::default();
+        ev(
+            &mut e,
+            &mut s,
+            &c,
+            Event::MouseMove {
+                x: p.0,
+                y: p.1,
+                mods,
+            },
+        );
+        assert_eq!(thema(&e, false), Topic::Bemassung);
+        // Nichts bewegt: bleibt
+        e.refresh(&s, &c, W, H, 1.0, true);
+        assert_eq!(thema(&e, false), Topic::Bemassung);
+        assert!(e.masse.cursor().is_some());
+        // Werkzeugtaste: Die App schaltet das Werkzeug ein und frischt
+        // ohne Freigabe auf (`refresh_cursor`)
+        e.refresh(&s, &c, W, H, 1.0, false);
+        assert_eq!(thema(&e, true), Topic::Draw);
+        assert!(e.masse.cursor().is_none() && e.masse.tip().is_none());
+        assert_eq!(e.masse.hervor(), Hervor::default());
+        // Werkzeug aus, die Maus steht noch dort
+        e.refresh(&s, &c, W, H, 1.0, true);
+        assert_eq!(thema(&e, false), Topic::Bemassung);
+        // Kamera woanders hin
+        let weg = Camera::parallel(
+            vec3(90_000.0, 90_000.0, 0.0),
+            90f64.to_radians(),
+            -89.9f64.to_radians(),
+            9000.0,
+        );
+        e.refresh(&s, &weg, W, H, 1.0, true);
+        assert!(!e.eigenes_thema() && e.masse.cursor().is_none());
+        e.refresh(&s, &c, W, H, 1.0, true);
+        assert!(e.eigenes_thema());
+        // Dieselben Ketten neu gerechnet: bleibt; ein anderes Geschoss in
+        // der Ansicht: nichts mehr darunter
+        e.masse.setze(stand(&s), &mut s);
+        assert!(e.eigenes_thema());
+        e.masse.setze(Some(Rc::new(Stand::neu(Vec::new()))), &mut s);
+        assert!(!e.eigenes_thema());
+        assert_eq!(e.masse.hervor(), Hervor::default());
     }
 
     /// Bei „Tragende Schicht“ misst die Kette das Loch im Mauerwerk, 3 cm

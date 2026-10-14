@@ -13,6 +13,11 @@
 //! wird weiter mit allen Punkten. Bei „Umgebung blass“ liegt das ganze
 //! Netz blass da und das Grundstück knapp darüber in Rasen.
 //!
+//! Ohne Höhen (nur das Grundstück aus dem Lageplan, G1c) liegt das
+//! Gelände eben in Höhe OK Gelände, in Form des Grundstücks und mit dem
+//! Abstand der Platte als Umgebung. Der Lageplan liegt im Grundriss als
+//! blasse Unterlage darunter, die Grenzen 0,25 mm.
+//!
 //! Am Haus endet das Gelände wie die Platte (Außenumriss über der
 //! Gründung): kein Rasen, keine Höhenlinie und kein Messpunkt im Haus,
 //! im Schnitt endet die Geländelinie an der Außenwand. Darunter liegt
@@ -23,7 +28,9 @@ use crate::ui::ViewKind;
 use gitter::{ueberlappt, Gitter, Kasten};
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame, Tri, NO_LAYER};
-use sk_model::{edge_kind, material, BuildingId, FootingShape, LevelKind, Model, Show, Solid};
+use sk_model::{
+    edge_kind, material, BuildingId, FootingShape, LevelKind, Model, Show, Solid, UnderlayKind,
+};
 use sk_render::{DashPattern, Helper};
 use std::collections::HashMap;
 
@@ -86,12 +93,57 @@ pub(crate) struct Gelaende {
     kern: Vec<(Vec<P2>, f64, f64)>,
     /// Unterkante des Rands: eine Geländedicke unter dem tiefsten Punkt.
     pub(crate) unten: f64,
+    /// Der Lageplan im Grundriss in Kacheln ([`Kachel`]).
+    pub(crate) unterlage: Vec<Kachel>,
+}
+
+/// Höchstens so viele Strecken des Lageplans liegen in einer Kachel
+/// (Review #139 N1): Ein Schritt an einem Haus ändert nur die Kacheln mit
+/// Strecken, die es schneidet; der Renderer baut und lädt nur sie neu, wie
+/// dicht der Plan auch ist. Kleinere Kacheln hießen mehr Zeichenaufrufe
+/// je Bild.
+const KACHEL: usize = 1024;
+
+/// Teile der Strecken `ix` (Mitten `mitte`) im Rechteck `r` (x0, y0, x1,
+/// y1) in Kacheln mit höchstens [`KACHEL`] Strecken: Das Rechteck wird
+/// geviertelt, bis es passt (höchstens 12 Stufen).
+fn kacheln(mitte: &[P2], ix: Vec<usize>, r: [f64; 4], stufe: u32, out: &mut Vec<Vec<usize>>) {
+    if ix.len() <= KACHEL || stufe >= 12 {
+        if !ix.is_empty() {
+            out.push(ix);
+        }
+        return;
+    }
+    let (cx, cy) = ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+    let mut teil: [Vec<usize>; 4] = Default::default();
+    for i in ix {
+        let p = mitte[i];
+        teil[usize::from(p[0] >= cx) + 2 * usize::from(p[1] >= cy)].push(i);
+    }
+    let [a, b, c, d] = teil;
+    kacheln(mitte, a, [r[0], r[1], cx, cy], stufe + 1, out);
+    kacheln(mitte, b, [cx, r[1], r[2], cy], stufe + 1, out);
+    kacheln(mitte, c, [r[0], cy, cx, r[3]], stufe + 1, out);
+    kacheln(mitte, d, [cx, cy, r[2], r[3]], stufe + 1, out);
+}
+
+/// Ein Stück des Lageplans: Strecken (mm, auf dem Gelände, nicht im Haus),
+/// ob sie Grenzen sind, und ihre Prüfsumme als Schlüssel ihres Puffers im
+/// Renderer. Welche Strecke in welche Kachel fällt, hängt nur am Plan und
+/// seiner Lage (über ihre Mitte), nicht an den Häusern; schneidet ein
+/// Haus eine lange Strecke, ändert sich die Prüfsumme ihrer Kachel, wo
+/// diese auch liegt.
+#[derive(Clone, Debug)]
+pub(crate) struct Kachel {
+    pub(crate) key: u64,
+    striche: Vec<([Vec3; 2], bool)>,
 }
 
 impl Gelaende {
-    /// Das Gelände zum Modell; `None` ohne Aufmaß, Lage oder Netz.
-    /// Gründungen und Umrisse über das Verzeichnis ([`Model::lesend`]),
-    /// nicht je Zug über alle Bauteile (Review #129 B4).
+    /// Das Gelände zum Modell; `None` ohne Aufmaß, Lage oder Netz. Ohne
+    /// Höhen, aber mit Grundstück eben ([`Gelaende::eben`]). Gründungen und
+    /// Umrisse über das Verzeichnis ([`Model::lesend`]), nicht je Zug über
+    /// alle Bauteile (Review #129 B4).
     pub(crate) fn aus(m: &Model) -> Option<Gelaende> {
         m.lesend(|| Gelaende::rechnen(m))
     }
@@ -99,7 +151,7 @@ impl Gelaende {
     fn rechnen(m: &Model) -> Option<Gelaende> {
         let dreiecke = m.terrain_triangles();
         if dreiecke.is_empty() {
-            return None;
+            return Gelaende::eben(m);
         }
         let (t, f, h0) = (m.terrain()?, m.survey_frame()?, m.terrain_nhn()?);
         let tief = dreiecke
@@ -119,52 +171,8 @@ impl Gelaende {
             .into_iter()
             .map(|(z, p, _)| ((z - h0) * 1000.0, p, (z - z.round()).abs() < 1e-6))
             .collect();
-        // Unterkante der Gründung je Gebäude, einmal gesammelt
-        let mut uk: HashMap<BuildingId, f64> = HashMap::new();
-        for (_, s) in m.storeys().iter() {
-            if let (LevelKind::Foundation, Some(b)) = (s.kind, s.building) {
-                let x = uk.entry(b).or_insert(0.0);
-                *x = x.min(s.elevation);
-            }
-        }
-        let uk = |b: BuildingId| uk.get(&b).copied().unwrap_or(0.0);
-        let flach = |r: &[Vec3]| r.iter().map(|p| [p.x, p.y]).collect::<Vec<P2>>();
-        let haus: Vec<(Vec<P2>, f64)> = m
-            .plate_outlines()
-            .into_iter()
-            .map(|(b, r)| (flach(&r), uk(b)))
-            .collect();
-        let kern = m
-            .runs()
-            .iter()
-            .filter_map(|(id, r)| {
-                let b = m.building_of(r.storey)?;
-                let Some(Ok(f)) = m.foundation(id) else {
-                    return None;
-                };
-                let FootingShape::Ring(i) = &f.footing else {
-                    return None;
-                };
-                Some((flach(&i.pts), uk(b), uk(b) + f.params.footing_depth))
-            })
-            .collect();
-        let mut g = Gelaende {
-            netz: Gitter::neu(
-                dreiecke
-                    .iter()
-                    .map(|t| kasten(&t.map(|p| [p.x, p.y])))
-                    .collect(),
-            ),
-            dreiecke,
-            ringe,
-            show,
-            stuecke: Vec::new(),
-            marken: Vec::new(),
-            haeuser: Gitter::neu(haus.iter().map(|(r, _)| kasten(r)).collect()),
-            haus,
-            kern,
-            unten: tief - m.plate_settings().thick,
-        };
+        let mut g = Gelaende::roh(dreiecke, ringe, show, tief - m.plate_settings().thick);
+        g.am_haus(m);
         // Höhenlinien und Messpunkte einmal je Gelände an Grenze und Haus
         // teilen, nicht je Zoomstufe (B3)
         let mut stuecke = Vec::new();
@@ -191,6 +199,165 @@ impl Gelaende {
             })
             .collect();
         Some(g)
+    }
+
+    /// Gelände aus Dreiecken, Grenzen und Zuschnitt, noch ohne Häuser,
+    /// Höhenlinien und Messpunkte; die Dreiecke gleich im Raster.
+    fn roh(dreiecke: Vec<[Vec3; 3]>, ringe: Vec<Vec<P2>>, show: Show, unten: f64) -> Gelaende {
+        Gelaende {
+            netz: Gitter::neu(
+                dreiecke
+                    .iter()
+                    .map(|t| kasten(&t.map(|p| [p.x, p.y])))
+                    .collect(),
+            ),
+            dreiecke,
+            ringe,
+            show,
+            stuecke: Vec::new(),
+            marken: Vec::new(),
+            haus: Vec::new(),
+            haeuser: Gitter::neu(Vec::new()),
+            kern: Vec::new(),
+            unten,
+            unterlage: Vec::new(),
+        }
+    }
+
+    /// Ebenes Gelände in Höhe OK Gelände: das Rechteck um die Grenzen mit
+    /// dem Abstand der Platte, zugeschnitten wie das Netz. `None` ohne
+    /// Grenze oder Lage.
+    fn eben(m: &Model) -> Option<Gelaende> {
+        let t = m.terrain()?;
+        let ringe = m.terrain_boundaries();
+        if ringe.is_empty() {
+            return None;
+        }
+        let (z, s) = (m.terrain_z(), m.plate_settings());
+        let mut k = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for p in ringe.iter().flatten() {
+            k = [
+                k[0].min(p[0]),
+                k[1].min(p[1]),
+                k[2].max(p[0]),
+                k[3].max(p[1]),
+            ];
+        }
+        let [x0, y0, x1, y1] = [
+            k[0] - s.margin,
+            k[1] - s.margin,
+            k[2] + s.margin,
+            k[3] + s.margin,
+        ];
+        let e = [
+            vec3(x0, y0, z),
+            vec3(x1, y0, z),
+            vec3(x1, y1, z),
+            vec3(x0, y1, z),
+        ];
+        let d = vec![[e[0], e[1], e[2]], [e[0], e[2], e[3]]];
+        let mut g = Gelaende::roh(d, ringe, t.show(), z - s.thick);
+        g.am_haus(m);
+        Some(g)
+    }
+
+    /// Umrisse der Häuser, ihr Raster und die Innenseiten ihrer Schürzen.
+    fn am_haus(&mut self, m: &Model) {
+        // Unterkante der Gründung je Gebäude, einmal gesammelt
+        let mut uk: HashMap<BuildingId, f64> = HashMap::new();
+        for (_, s) in m.storeys().iter() {
+            if let (LevelKind::Foundation, Some(b)) = (s.kind, s.building) {
+                let x = uk.entry(b).or_insert(0.0);
+                *x = x.min(s.elevation);
+            }
+        }
+        let uk = |b: BuildingId| uk.get(&b).copied().unwrap_or(0.0);
+        let flach = |r: &[Vec3]| r.iter().map(|p| [p.x, p.y]).collect::<Vec<P2>>();
+        self.haus = m
+            .plate_outlines()
+            .into_iter()
+            .map(|(b, r)| (flach(&r), uk(b)))
+            .collect();
+        self.haeuser = Gitter::neu(self.haus.iter().map(|(r, _)| kasten(r)).collect());
+        self.kern = m
+            .runs()
+            .iter()
+            .filter_map(|(id, r)| {
+                let b = m.building_of(r.storey)?;
+                let Some(Ok(f)) = m.foundation(id) else {
+                    return None;
+                };
+                let FootingShape::Ring(i) = &f.footing else {
+                    return None;
+                };
+                Some((flach(&i.pts), uk(b), uk(b) + f.params.footing_depth))
+            })
+            .collect();
+    }
+
+    /// Linien des Lageplans (Modell, mm) auf das Gelände legen, in
+    /// Kacheln über dem Bereich des Plans ([`KACHEL`]).
+    pub(crate) fn mit_unterlage(mut self, l: &[(Vec<P2>, bool, UnderlayKind)]) -> Gelaende {
+        // außerhalb des Netzes auf seiner mittleren Höhe
+        let n = (self.dreiecke.len() * 3).max(1) as f64;
+        let mittel = self.dreiecke.iter().flatten().map(|p| p.z).sum::<f64>() / n;
+        let mut strecken = Vec::new();
+        for (p, zu, art) in l {
+            let k = p.len();
+            let m = if *zu && k > 2 { k } else { k.saturating_sub(1) };
+            for i in 0..m {
+                strecken.push((p[i], p[(i + 1) % k], *art == UnderlayKind::Boundary));
+            }
+        }
+        let mitte: Vec<P2> = strecken.iter().map(|s| lerp2(s.0, s.1, 0.5)).collect();
+        let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for q in &mitte {
+            r = [
+                r[0].min(q[0]),
+                r[1].min(q[1]),
+                r[2].max(q[0]),
+                r[3].max(q[1]),
+            ];
+        }
+        let mut ix = Vec::new();
+        kacheln(&mitte, (0..strecken.len()).collect(), r, 0, &mut ix);
+        // im Haus liegt nichts: jede Strecke einzeln, am Haus geteilt; die
+        // Stücke bleiben in der Kachel ihrer Strecke
+        let u: Vec<Vec<([Vec3; 2], bool)>> = ix
+            .iter()
+            .map(|k| {
+                let mut v = Vec::with_capacity(k.len());
+                for &i in k {
+                    let (a, b, grenze) = strecken[i];
+                    for (t0, t1, _) in self.teile(a, b) {
+                        let q = [lerp2(a, b, t0), lerp2(a, b, t1)]
+                            .map(|p| vec3(p[0], p[1], self.hoehe(p).unwrap_or(mittel)));
+                        v.push((q, grenze));
+                    }
+                }
+                v
+            })
+            .collect();
+        self.unterlage = u
+            .into_iter()
+            .enumerate()
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(i, striche)| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&i, &mut h);
+                for ([a, b], grenze) in &striche {
+                    std::hash::Hash::hash(
+                        &([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), grenze),
+                        &mut h,
+                    );
+                }
+                Kachel {
+                    key: std::hash::Hasher::finish(&h),
+                    striche,
+                }
+            })
+            .collect();
+        self
     }
 
     /// Quader um das Netz bis zur Unterkante des Rands.
@@ -745,9 +912,10 @@ pub(crate) fn kappen(g: &Gelaende, f: &SectionFrame, p0: Vec3, soil: u16) -> Sol
     s
 }
 
-/// Linien in Grundriss, Schnitt und Ansicht samt den Punktmarken im
-/// Grundriss ([`grundlinien`] und [`marken`]). `mm_px`: Millimeter je
-/// Bildpunkt (Grundriss), `fassade`: Ebene der Geländelinie einer Ansicht.
+/// Linien in Grundriss, Schnitt und Ansicht samt Lageplan und Punktmarken
+/// im Grundriss ([`unterlage_linien`], [`grundlinien`] und [`marken`]).
+/// `mm_px`: Millimeter je Bildpunkt (Grundriss), `fassade`: Ebene der
+/// Geländelinie einer Ansicht.
 #[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))] // Prüfbilder
 pub(crate) fn linien(
     g: &Gelaende,
@@ -758,9 +926,60 @@ pub(crate) fn linien(
     scale: f32,
     mm_px: f64,
 ) -> Vec<Helper> {
-    let mut out = grundlinien(g, view, plane, fassade, t, scale);
+    let mut out = unterlage_linien(g, view, t, scale);
+    out.extend(grundlinien(g, view, plane, fassade, t, scale));
     out.extend(marken(g, view, t, scale, mm_px));
     out
+}
+
+/// Der Lageplan im Grundriss, blass unter dem Gelände, Grenzen 0,25 mm.
+/// Er liegt in eigenen Puffern des Renderers, je [`Kachel`] einer, die nur
+/// bei neuen Strecken der Kachel, neuer Zeichentabelle oder neuem Maßstab
+/// neu hochgeladen werden (Review #139 B1 und N1).
+pub(crate) fn unterlage_linien(
+    g: &Gelaende,
+    view: ViewKind,
+    t: &DrawTable,
+    scale: f32,
+) -> Vec<Helper> {
+    if view != ViewKind::Plan {
+        return Vec::new();
+    }
+    let stil = unterlage_stil(t, scale);
+    (0..g.unterlage.len())
+        .flat_map(|i| unterlage_kachel(g, i, stil))
+        .collect()
+}
+
+/// Stifte der Unterlage: blass, Grenzen 0,25 mm, und der Maßstab; klein
+/// genug, um mit dem Gelände in einen Faden zu gehen (Review #139 N2).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UnterlageStil {
+    blass: Stroke,
+    grenze: Stroke,
+    scale: f32,
+}
+
+/// [`UnterlageStil`] aus Zeichentabelle und Maßstab.
+pub(crate) fn unterlage_stil(t: &DrawTable, scale: f32) -> UnterlageStil {
+    UnterlageStil {
+        blass: t.background,
+        grenze: (t.ground.0 * 0.5, t.background.1),
+        scale,
+    }
+}
+
+/// Die Linien der Kachel `i` des Lageplans ([`unterlage_linien`]).
+pub(crate) fn unterlage_kachel(g: &Gelaende, i: usize, stil: UnterlageStil) -> Vec<Helper> {
+    g.unterlage.get(i).map_or(Vec::new(), |k| {
+        k.striche
+            .iter()
+            .map(|([a, b], ist_grenze)| {
+                let st = if *ist_grenze { stil.grenze } else { stil.blass };
+                strich(*a, *b, st, sk_render::SOLID, stil.scale)
+            })
+            .collect()
+    })
 }
 
 /// Strich von `a` nach `b` mit Stift und Muster.
@@ -819,6 +1038,7 @@ pub(crate) fn grundlinien(
     let mut out = Vec::new();
     match (view, plane.or(fassade)) {
         (ViewKind::Plan, _) => {
+            // der Lageplan darunter steht in [`unterlage_linien`]
             for &(z, [a, b], innen, haupt) in &g.stuecke {
                 let Some(voll) = g.zeigen(innen) else {
                     continue;
@@ -986,6 +1206,59 @@ mod tests {
             .triangles
             .iter()
             .all(|t| t.p.iter().all(|p| p.z >= g.unten - 1e-6)));
+    }
+
+    /// Nur der Lageplan: eben in Höhe OK Gelände, zugeschnitten auf das
+    /// Grundstück ohne das Haus; die Unterlage blass im Grundriss.
+    #[test]
+    fn eben_aus_dem_lageplan() {
+        let mut m = Model::with_seed(7);
+        let b = m.add_building(1);
+        let pts = [
+            vec3(7000.0, 6000.0, 0.0),
+            vec3(7000.0, 14000.0, 0.0),
+            vec3(17000.0, 14000.0, 0.0),
+            vec3(17000.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let roh = include_bytes!("../../crates/sk-gelaende/tests/daten/lageplan-lindenhof-7.pdf");
+        let plan = sk_model::SitePlan::read(roh, 32).unwrap();
+        m.begin("Lageplan");
+        assert!(m.import_parcel(&plan, "lageplan.pdf", None));
+        m.commit();
+        let g = Gelaende::aus(&m)
+            .unwrap()
+            .mit_unterlage(&m.underlay_lines(&plan));
+        assert_eq!(g.show, Show::Parcel);
+        let z = m.terrain_z();
+        assert!(g.dreiecke.iter().flatten().all(|p| p.z == z));
+        assert_eq!(g.unten, z - m.plate_settings().thick);
+        let s = koerper(&g, [10, 11, 12]);
+        let rasen: Vec<[Vec3; 3]> = s
+            .triangles
+            .iter()
+            .filter(|t| t.mat == 10)
+            .map(|t| t.p)
+            .collect();
+        let q: Vec<Vec3> = g.haus[0].0.iter().map(|p| vec3(p[0], p[1], 0.0)).collect();
+        let haus = polygon::area(&q) / 1e6;
+        assert!(
+            (flaeche(&rasen) + haus - 822.87).abs() < 0.1,
+            "{}",
+            flaeche(&rasen)
+        );
+        let t = DrawTable::resolve(&m, &sk_ui::theme::Theme::dark());
+        let l = linien(&g, ViewKind::Plan, None, None, &t, 1.0, 10.0);
+        let blass: Vec<&Helper> = l.iter().filter(|h| h.color == t.background.1).collect();
+        assert!(blass.len() > 4, "{}", blass.len());
+        for h in blass {
+            let m = [
+                f64::from(h.a[0] + h.b[0]) / 2.0,
+                f64::from(h.a[1] + h.b[1]) / 2.0,
+            ];
+            assert!(!g.im_haus(m), "Unterlage im Haus: {h:?}");
+        }
+        assert!(l.iter().any(|h| h.pattern == t.section_dash), "Grenze");
     }
 
     /// Grundriss: Höhenlinien im Zuschnitt nur im Grundstück, außerhalb

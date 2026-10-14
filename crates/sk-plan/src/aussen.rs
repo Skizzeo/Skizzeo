@@ -8,7 +8,7 @@
 //! Wände bleiben in Stufe 1 unbemaßt.
 
 use sk_math::{vec3, Vec3};
-use sk_model::bemassung::{seite_grad, Aussenbezug, BrhBezug, Kettenart, Stil};
+use sk_model::bemassung::{seite_grad, Aussenbezug, Kettenart, Stil};
 use sk_model::{
     Category, ElementId, ElementKind, JoinEnd, JoinKind, LevelKind, Model, RunId, StoreyId,
     WallChain,
@@ -648,10 +648,7 @@ fn oeffnungen(
         return (kanten, masse);
     };
     let boden = storey.elevation;
-    let brh_null = match stil.brh_bezug {
-        BrhBezug::Rohdecke => boden,
-        BrhBezug::Estrich => m.screed_top(st).unwrap_or(boden),
-    };
+    let brh_null = m.brh_null(st, stil.brh_bezug).unwrap_or(boden);
     for o in alle {
         let (id, (z0, z1)) = (o.id, o.band);
         for w in o.pfad.windows(2) {

@@ -390,6 +390,10 @@ pub use gelaende_aufmass::{
     TerrainMesh, TerrainPoint, Trim,
 };
 
+#[path = "gelaende_lageplan.rs"]
+mod gelaende_lageplan;
+pub use gelaende_lageplan::{affine_apply, Affine, SitePlan, Underlay, UnderlayKind};
+
 #[path = "geschossbaender.rs"]
 mod geschossbaender;
 
@@ -1981,15 +1985,26 @@ impl Model {
                 }
             }
         }
+        let mut vorher = Vec::with_capacity(walls.len());
         for w in walls {
             note!(self, Element, self.elements, w);
             if let Some(e) = self.elements.get_mut(w) {
+                vorher.push((w, e.layer_set));
                 e.layer_set = Some(id);
             }
         }
         match points {
             Some(p) => {
-                self.set_run_points(root, &p);
+                // Lehnt das Setzen die neue Linie ab (etwa weil eine Gehrung
+                // kippte, H-160d), bleibt der alte Typ
+                if self.set_run_points(root, &p).is_none() {
+                    for (w, t) in vorher {
+                        if let Some(e) = self.elements.get_mut(w) {
+                            e.layer_set = t;
+                        }
+                    }
+                    return false;
+                }
             }
             None => self.joins.setzen(self.detect_all()),
         }

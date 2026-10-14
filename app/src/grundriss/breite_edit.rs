@@ -61,7 +61,10 @@ pub type Griff = (ElementId, usize, Vec3);
 
 /// Fläche einer öffnungsfähigen Wand des Geschosses `st`, auf der der Punkt
 /// `p` liegt, und die Wanddicke; `innen` bei einer Innenwand. Nur Züge nahe
-/// bei `p` bauen ihren Körper, und der kommt aus `k` (Review #109 B1).
+/// bei `p` bauen ihren Körper, und der kommt aus `k` (Review #109 B1). Sucht
+/// unter allen Zügen des Modells; die App nimmt [`flaeche_in`], die Tests
+/// beide zum Vergleich (Integration H-160a).
+#[cfg(test)]
 pub(crate) fn flaeche_bei(
     m: &Model,
     k: Koerper,
@@ -374,12 +377,12 @@ impl BreiteZug {
     /// Greift Ende `k` der Öffnung `id` und öffnet den Schritt.
     pub fn greifen(scene: &mut Scene, id: ElementId, k: usize, z: f64) -> Option<BreiteZug> {
         let m = scene.model();
-        let koerper = |r| scene.koerper(r);
-        // Fläche, Nachbarpunkt und Seite des Endes `k` der Öffnung `o`
+        // Fläche, Nachbarpunkt und Seite des Endes `k` der Öffnung `o`, die
+        // Fläche über das Raster der Szene (Integration H-160a)
         let ende = |o: &Opening, st, k: usize| {
             let p = *o.path.get(k)?;
             let nb = if k == 0 { 1 } else { k.checked_sub(1)? };
-            let (face, dicke, innen) = flaeche_bei(m, &koerper, st, p)?;
+            let (face, dicke, innen) = flaeche_in(scene, st, p)?;
             let u_nb = face.u_of(flat(*o.path.get(nb)?));
             let vorz = (face.u_of(flat(p)) - u_nb).signum();
             Some((face, dicke, innen, u_nb, vorz))

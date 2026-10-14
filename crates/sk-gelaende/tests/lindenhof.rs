@@ -1,6 +1,7 @@
 //! Abnahme G1 am Beispielgrundstück „Am Lindenhof 7“ (erfunden), Sollwerte
 //! aus `gelaende/beispiel/sollwerte-lindenhof-7.md`. Alle drei Punktlisten
-//! und beide DXF (G1b) ergeben dasselbe Gelände.
+//! und beide DXF (G1b) ergeben dasselbe Gelände. Dazu die Erdmengen von G2
+//! über dem Netz.
 
 use sk_gelaende::abfrage::Abfrage;
 use sk_gelaende::codes::Codetabelle;
@@ -8,7 +9,7 @@ use sk_gelaende::dxf::Linienart;
 use sk_gelaende::lesen::{lesen, Lage, Spalte, Trenner, Zeichensatz};
 use sk_gelaende::linien::{hoehenlinien, strecken};
 use sk_gelaende::pruefen::pruefen;
-use sk_gelaende::volumen::mittel;
+use sk_gelaende::volumen::{erdmenge, mittel};
 use sk_gelaende::{netz, Netz, Rand};
 
 const CSV: &[u8] = include_bytes!("daten/hoehenaufmass-lindenhof-7.csv");
@@ -186,4 +187,52 @@ fn gelaende_wie_soll() {
         // Koordinaten auf mm gerundet: ±0,01 m² auf 117 m Umfang
         assert!((f - 822.87).abs() < 0.01, "Fläche {f}");
     }
+}
+
+/// G2: Erdmengen unter RH-1 bei ±0,00 = 24,95 m ü. NHN, exakt über die
+/// Dreiecke (Sollwerte G2). Auffüllung und Abtrag stehen getrennt; eine
+/// Ersatzebene auf mittlerer Höhe gäbe keinen Abtrag.
+#[test]
+fn erdmengen_wie_soll() {
+    let (n, _) = gelaende(CSV);
+    let a = Abfrage::neu(&n);
+    let rechteck = |x0: f64, y0: f64, x1: f64, y1: f64| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    // Platte 10 × 8 m, innerhalb der Schürze (0,35 m) 9,30 × 7,30 m
+    let aussen = rechteck(7.0, 6.0, 17.0, 14.0);
+    let innen = rechteck(7.35, 6.35, 16.65, 13.65);
+    // N = Gelände − 0,30 m Oberboden: N gegen z heißt Gelände gegen z + 0,30
+    // Schürze 0,80 m unter dem tiefsten Punkt am Haus (24,523)
+    let (uk_platte, uk_schicht, uk_schuerze, oberboden) = (24.73, 24.58, 23.723, 0.30);
+    let e = |r: &[[f64; 2]], z: f64| a.erdmenge(r, [z + oberboden, 0.0, 0.0]);
+    let fill = e(&innen, uk_schicht).unter;
+    // min(UK Platte, N) − UK Schicht = (N − UK Schicht)⁺ − (N − UK Platte)⁺
+    let bett = e(&innen, uk_schicht).ueber - e(&innen, uk_platte).ueber;
+    // Ring: außen minus innen; N liegt überall über UK Schürze
+    let ring = |z: f64| {
+        let (o, i) = (e(&aussen, z), e(&innen, z));
+        (o.ueber - i.ueber, o.unter - i.unter, o.flaeche - i.flaeche)
+    };
+    let (s_ueber, s_unter, s_flaeche) = ring(uk_schuerze);
+    assert_eq!(s_unter, 0.0);
+    let trench = s_ueber - ring(uk_platte).0;
+    for (was, ist, soll) in [
+        ("Auffüllung", fill, 8.549),
+        ("Bett", bett, 0.044),
+        ("Graben", trench, 8.762),
+        ("Ring m²", s_flaeche, 12.11),
+        ("innen m²", e(&innen, 0.0).flaeche, 67.89),
+    ] {
+        assert!((ist - soll).abs() <= 0.001, "{was}: {ist:.4} statt {soll}");
+    }
+    // ohne Gitter dasselbe
+    let o = erdmenge(&n, &innen, [uk_schicht + oberboden, 0.0, 0.0]);
+    assert!((o.unter - fill).abs() < 1e-9 && (o.ueber - e(&innen, uk_schicht).ueber).abs() < 1e-9);
+    // Ersatzebene: Mittel innerhalb der Schürze 24,755, kein Abtrag
+    let m = mittel(&n, &innen).unwrap();
+    assert!((m - 24.755).abs() <= 0.0005, "Mittel {m:.4}");
+    let ersatz = 67.89 * (uk_schicht - (m - oberboden));
+    assert!(
+        (ersatz - 8.504).abs() <= 0.002 && bett > 0.04,
+        "{ersatz:.4}"
+    );
 }

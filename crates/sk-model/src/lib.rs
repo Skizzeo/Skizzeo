@@ -40,6 +40,7 @@ pub mod qto_earth;
 pub mod qto_fassade;
 pub mod qto_laibung;
 pub mod qto_oeffnung;
+pub mod qto_raum;
 pub mod qto_site;
 pub mod rechenweg;
 pub mod roof;
@@ -97,6 +98,7 @@ pub use library::{
 };
 pub use matprop::{MatProp, MatPropKind, MAT_PROPS};
 pub use model::FINISH_VIEWS;
+pub use model::{affine_apply, Affine, SitePlan, Underlay, UnderlayKind};
 pub use model::{
     building_index, edit_blocked, im_bereich, refusal_lines, refusal_text, Cut, Defaults, Deleted,
     ExtError, FlushError, Foot, FugeError, GroundBasis, Location, Locked, Model, NumberError,

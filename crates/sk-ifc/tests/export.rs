@@ -953,7 +953,7 @@ fn mengen_wie_mengenliste() {
                         Q::Strip(_) | Q::Coping(_) => (hol("Länge"), 0.0),
                         Q::Slab(_) | Q::Floor(_) | Q::Terrace(_) => (0.0, hol("GrossArea")),
                         Q::Soffit(_) | Q::Perimeter(_) => (0.0, hol("NetArea")),
-                        Q::Ext(_) => (0.0, 0.0),
+                        Q::Ext(_) | Q::Room(_) => (0.0, 0.0),
                     };
                     let pocket = hol("Deckenauflager") + hol("davon Auflager");
                     summe[0] += len;

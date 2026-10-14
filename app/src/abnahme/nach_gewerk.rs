@@ -114,6 +114,15 @@ fn summe_baustoffe(s: &mut Scene) -> f64 {
 /// 335, 351, beim Vorsprung dazu 354. Die Summe über alle Gewerke ist die
 /// Summe über alle Baustoffe. Eine Abweichung an der WDVS-Schicht
 /// (18330) verschiebt ihre Menge zu 18330, die Summe bleibt.
+///
+/// Seit Raumbuch RB3 bringt jeder Raum seinen Ausbau mit (je Geschoss ein
+/// Wohnzimmer, Fertigmaß 9,34 × 7,34 m, OK FFB 160 mm): Abdichtung 18336
+/// (5 mm, nur EG), Putz 18350 an Wand und Decke, Estrich samt Dämmung
+/// darunter 18353, Parkett 18356 (20 mm), Anstrich 18363 und Raufaser
+/// 18366 ohne Dicke, nur mit Fläche. Die Rohbauwerte von BIM bleiben
+/// gleich. Nach KG kommen 324 und 353 (Bodenaufbau EG 155 mm über der
+/// Abdichtung, OG 160 mm), 325 (Abdichtung), 336 (Putz innen an der
+/// Außenwand) und 354 (Deckenputz 10 mm auf der Rohbaufläche) dazu.
 #[test]
 fn a188_mengen_nach_gewerk_und_kg() {
     for (seed, d, soll) in [
@@ -123,7 +132,13 @@ fn a188_mengen_nach_gewerk_und_kg() {
             vec![
                 g("18331", 57.6407, None),
                 g("18330", 31.5225, None),
+                g("18336", 0.3428, Some(68.5556)),
                 g("18345", 28.3307, Some(205.56)),
+                g("18350", 4.0277, Some(314.5534)),
+                g("18353", 18.8528, Some(411.3336)),
+                g("18356", 2.7422, Some(137.1112)),
+                g("18363", 0.0, Some(314.5534)),
+                g("18366", 0.0, Some(176.4396)),
             ],
         ),
         (
@@ -132,11 +147,18 @@ fn a188_mengen_nach_gewerk_und_kg() {
             // Bekleidung unter der UD (W3) zwischen EG-Außenflucht und
             // Innenseite der WDVS-Dämmung, die 70 mm vor ihr herunterläuft
             // (Jörn 14:03): WDVS + 0,70 m², Bekleidung 1,5776 m² × 40 mm
+            // Räume je 0,30 m länger
             vec![
                 g("18331", 58.9237, None),
                 g("18330", 31.7992, None),
+                g("18336", 0.3428, Some(68.5556)),
                 g("18345", 29.0457, Some(211.093)),
                 g("18351", 0.0631, Some(1.5776)),
+                g("18350", 4.0796, Some(318.9454)),
+                g("18353", 19.2451, Some(419.7396)),
+                g("18356", 2.7983, Some(139.9132)),
+                g("18363", 0.0, Some(318.9454)),
+                g("18366", 0.0, Some(178.0206)),
             ],
         ),
     ] {
@@ -149,42 +171,38 @@ fn a188_mengen_nach_gewerk_und_kg() {
         );
     }
 
-    // Rücksprung −0,30: vor Paket 2a wie BIM; ab 2a entstehen DT und AB
+    // Rücksprung −0,30: ab Paket 2a entstehen DT und AB
     // (Regel 41, lichte Tiefe 0,16 m) mit Gewerk 18338, und das EG-WDVS
     // läuft als Attika bis +3,055 (A195). Werte gemessen mit
     // geometrie/d1-d3-dachterrasse-v2.patch auf 4d5c8a4. 18338 ohne das
     // Blech des AB (0,0019 m³, in m abgerechnet): Dämmung hart 0,1244 +
     // Belag 0,0933, dazu der Dämmstreifen 40 mm auf der Attika 0,0578
-    // (Jörn 10.10. 16:07).
+    // (Jörn 10.10. 16:07). Die Fassung vor 2a (18345 28,0909 / 203,847 m²
+    // ohne DT) ist mit 2a auf main entfallen; die Räume sind 0,30 m kürzer.
     let mut s = pruefhaus(1881, -300.0);
-    let mit_dt = s
+    assert!(s
         .model()
         .elements()
         .iter()
-        .any(|(_, e)| e.number.starts_with("DT-"));
+        .any(|(_, e)| e.number.starts_with("DT-")));
     let ist = nach_gewerk(&mut s);
-    if mit_dt {
-        let v: Vec<(String, f64)> = ist.iter().map(|x| (x.0.clone(), x.1)).collect();
-        assert_eq!(
-            v,
-            [
-                ("18331".to_string(), 56.9992),
-                ("18330".to_string(), 31.2458),
-                ("18338".to_string(), 0.2755),
-                ("18345".to_string(), 28.3799),
-            ]
-        );
-        assert_eq!(ist[3].2, Some(205.967), "WDVS-Fläche mit Attika");
-    } else {
-        assert_eq!(
-            ist,
-            [
-                g("18331", 56.9992, None),
-                g("18330", 31.2458, None),
-                g("18345", 28.0909, Some(203.847)),
-            ]
-        );
-    }
+    let v: Vec<(String, f64)> = ist.iter().map(|x| (x.0.clone(), x.1)).collect();
+    assert_eq!(
+        v,
+        [
+            ("18331".to_string(), 56.9992),
+            ("18330".to_string(), 31.2458),
+            ("18336".to_string(), 0.3428),
+            ("18338".to_string(), 0.2755),
+            ("18345".to_string(), 28.3799),
+            ("18350".to_string(), 3.9759),
+            ("18353".to_string(), 18.4605),
+            ("18356".to_string(), 2.6862),
+            ("18363".to_string(), 0.0),
+            ("18366".to_string(), 0.0),
+        ]
+    );
+    assert_eq!(ist[4].2, Some(205.967), "WDVS-Fläche mit Attika");
     let summe: f64 = ist.iter().map(|x| x.1).sum();
     assert!((summe - summe_baustoffe(&mut s)).abs() < 3e-4, "Rücksprung");
 
@@ -193,15 +211,21 @@ fn a188_mengen_nach_gewerk_und_kg() {
         nach_kg(&mut s),
         [
             (322, 24.6238),
+            (324, 10.6261),
+            (325, 0.3428),
             (331, 31.5225),
             (335, 28.3307),
-            (351, 33.0169)
+            (336, 2.6466),
+            (351, 33.0169),
+            (353, 10.9689),
+            (354, 1.3811)
         ]
     );
     let mut s = pruefhaus(1883, 300.0);
     let kg = nach_kg(&mut s);
-    // UD 0,3499 und Bekleidung darunter 0,0631 (W3, bis an die WDVS-Dämmung)
-    assert!(kg.contains(&(354, 0.413)), "{kg:?}");
+    // UD 0,3499 und Bekleidung darunter 0,0631 (W3, bis an die WDVS-Dämmung),
+    // dazu der Deckenputz der zwei Räume 1,4093
+    assert!(kg.contains(&(354, 1.8223)), "{kg:?}");
 
     // Abweichung an der Schicht: WDVS zu 18330
     let mut s = pruefhaus(1884, 0.0);
@@ -214,9 +238,15 @@ fn a188_mengen_nach_gewerk_und_kg() {
         v,
         [
             ("18331".to_string(), 57.6407),
-            ("18330".to_string(), 59.8532)
+            ("18330".to_string(), 59.8532),
+            ("18336".to_string(), 0.3428),
+            ("18350".to_string(), 4.0277),
+            ("18353".to_string(), 18.8528),
+            ("18356".to_string(), 2.7422),
+            ("18363".to_string(), 0.0),
+            ("18366".to_string(), 0.0),
         ]
     );
     assert!(s.undo());
-    assert_eq!(nach_gewerk(&mut s).len(), 3);
+    assert_eq!(nach_gewerk(&mut s).len(), 9);
 }

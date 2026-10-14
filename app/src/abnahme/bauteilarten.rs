@@ -405,6 +405,50 @@ GB-01;Erdgeschoss;354;Bekleidung 4 cm;UD-001;;;1,5776;0,0631;
 GB-01;Erdgeschoss;354;Grundlattung a = 80 cm;UD-001;22,1172;;;;
 GB-01;Erdgeschoss;354;Traglattung a = 40 cm;UD-001;24,0892;;;;
 GB-01;Erdgeschoss;354;Lüftungsprofil;UD-001;9,7200;;;;
+GB-01;Erdgeschoss;;Raum 1 · lichte Höhe 2,465 m;R-001;;1;33,5255;;
+GB-01;Erdgeschoss;324;Boden · Parkett Eiche 2 cm;R-001;;;33,5255;0,6705;bis Putz 7,340 × 4,568 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Estrich · Zementestrich CT-C25-F4 6,5 cm;R-001;;;33,5255;2,1792;bis Putz 7,340 × 4,568 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Estrich · Trittschalldämmung EPS-T 3 cm;R-001;;;33,5255;1,0058;bis Putz 7,340 × 4,568 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Estrich · Wärmedämmung EPS 035 DEO 4 cm;R-001;;;33,5255;1,3410;bis Putz 7,340 × 4,568 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;325;Estrich · Abdichtung Bitumenbahn, Sohlplatte 0,5 cm;R-001;;;33,5255;0,1676;bis Putz 7,340 × 4,568 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Sockelleiste · Sockelleiste Eiche 60 × 15;R-001;23,8150;;;;IW-001: 7,340 (7,34 m) AW-002: 4,568 (4,57 m) AW-001: 7,340 (7,34 m) AW-004: 4,568 (4,57 m) = 23,82 m
+GB-01;Erdgeschoss;324;Randdämmstreifen;R-001;23,8150;;;;Umfang bis Putz (23,82 m) = 23,82 m
+GB-01;Erdgeschoss;345;Wand IW-001 Ost · Dispersionsanstrich;R-001;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;345;Wand IW-001 Ost · Raufaser;R-001;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;345;Wand IW-001 Ost · Gipsputz 1,5 cm;R-001;;;19,4200;0,2913;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Dispersionsanstrich;R-001;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Raufaser;R-001;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Gipsputz 1,5 cm;R-001;;;12,1144;0,1817;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-001 West · Dispersionsanstrich;R-001;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;336;Wand AW-001 West · Raufaser;R-001;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;336;Wand AW-001 West · Gipsputz 1,5 cm;R-001;;;19,4200;0,2913;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Dispersionsanstrich;R-001;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Raufaser;R-001;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Gipsputz 1,5 cm;R-001;;;12,1144;0,1817;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;354;Decke · Dispersionsanstrich;R-001;;;33,8836;;Rohbaumaß 7,370 × 4,598 (33,88 m²) = 33,88 m²
+GB-01;Erdgeschoss;354;Decke · Gipsputz 1 cm;R-001;;;33,8836;0,3388;Rohbaumaß 7,370 × 4,598 (33,88 m²) = 33,88 m²
+GB-01;Erdgeschoss;;Raum 3 · lichte Höhe 2,465 m;R-003;;1;33,5255;;
+GB-01;Erdgeschoss;324;Boden · Parkett Eiche 2 cm;R-003;;;33,5255;0,6705;bis Putz 4,568 × 7,340 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Estrich · Zementestrich CT-C25-F4 6,5 cm;R-003;;;33,5255;2,1792;bis Putz 4,568 × 7,340 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Estrich · Trittschalldämmung EPS-T 3 cm;R-003;;;33,5255;1,0058;bis Putz 4,568 × 7,340 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Estrich · Wärmedämmung EPS 035 DEO 4 cm;R-003;;;33,5255;1,3410;bis Putz 4,568 × 7,340 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;325;Estrich · Abdichtung Bitumenbahn, Sohlplatte 0,5 cm;R-003;;;33,5255;0,1676;bis Putz 4,568 × 7,340 (33,53 m²) = 33,53 m²
+GB-01;Erdgeschoss;324;Sockelleiste · Sockelleiste Eiche 60 × 15;R-003;23,8150;;;;AW-004: 4,568 (4,57 m) AW-003: 7,340 (7,34 m) AW-002: 4,568 (4,57 m) IW-001: 7,340 (7,34 m) = 23,82 m
+GB-01;Erdgeschoss;324;Randdämmstreifen;R-003;23,8150;;;;Umfang bis Putz (23,82 m) = 23,82 m
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Dispersionsanstrich;R-003;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Raufaser;R-003;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Gipsputz 1,5 cm;R-003;;;12,1144;0,1817;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-003 Ost · Dispersionsanstrich;R-003;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;336;Wand AW-003 Ost · Raufaser;R-003;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;336;Wand AW-003 Ost · Gipsputz 1,5 cm;R-003;;;19,4200;0,2913;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Dispersionsanstrich;R-003;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Raufaser;R-003;;;12,1144;;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Gipsputz 1,5 cm;R-003;;;12,1144;0,1817;Länge × Höhe 4,598 × 2,635 (12,11 m²) = 12,11 m²
+GB-01;Erdgeschoss;345;Wand IW-001 West · Dispersionsanstrich;R-003;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;345;Wand IW-001 West · Raufaser;R-003;;;19,4200;;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;345;Wand IW-001 West · Gipsputz 1,5 cm;R-003;;;19,4200;0,2913;Länge × Höhe 7,370 × 2,635 (19,42 m²) = 19,42 m²
+GB-01;Erdgeschoss;354;Decke · Dispersionsanstrich;R-003;;;33,8836;;Rohbaumaß 4,598 × 7,370 (33,88 m²) = 33,88 m²
+GB-01;Erdgeschoss;354;Decke · Gipsputz 1 cm;R-003;;;33,8836;0,3388;Rohbaumaß 4,598 × 7,370 (33,88 m²) = 33,88 m²
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS (Summe);AW-005 … 008;36,6000;4;;31,0376;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-005, Höhe 2,855 m;AW-005;8,3000;1;;6,8934;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-006, Höhe 2,855 m;AW-006;10,0000;1;;8,9084;Versatz +0,30 m
@@ -415,10 +459,37 @@ GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Porenbeton;;;;;16
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Abzug Deckenauflager;;;;;-1,3390;in der Decke enthalten
 GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;77,9544;17,1500;
 GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;1,3390;in der Decke enthalten
+GB-01;Obergeschoss;;Raum 2 · lichte Höhe 2,465 m;R-002;;1;71,3576;;
+GB-01;Obergeschoss;353;Boden · Parkett Eiche 2 cm;R-002;;;71,3576;1,4272;bis Putz 7,640 × 9,340 (71,36 m²) = 71,36 m²
+GB-01;Obergeschoss;353;Estrich · Zementestrich CT-C25-F4 6,5 cm;R-002;;;71,3576;4,6382;bis Putz 7,640 × 9,340 (71,36 m²) = 71,36 m²
+GB-01;Obergeschoss;353;Estrich · Trittschalldämmung EPS-T 3 cm;R-002;;;71,3576;2,1407;bis Putz 7,640 × 9,340 (71,36 m²) = 71,36 m²
+GB-01;Obergeschoss;353;Estrich · Wärmedämmung EPS 035 DEO 4,5 cm;R-002;;;71,3576;3,2111;bis Putz 7,640 × 9,340 (71,36 m²) = 71,36 m²
+GB-01;Obergeschoss;353;Sockelleiste · Sockelleiste Eiche 60 × 15;R-002;33,9600;;;;AW-007: 7,640 (7,64 m) AW-006: 9,340 (9,34 m) AW-005: 7,640 (7,64 m) AW-008: 9,340 (9,34 m) = 33,96 m
+GB-01;Obergeschoss;353;Randdämmstreifen;R-002;33,9600;;;;Umfang bis Putz (33,96 m) = 33,96 m
+GB-01;Obergeschoss;336;Wand AW-007 Ost · Dispersionsanstrich;R-002;;;20,2105;;Länge × Höhe 7,670 × 2,635 (20,21 m²) = 20,21 m²
+GB-01;Obergeschoss;336;Wand AW-007 Ost · Raufaser;R-002;;;20,2105;;Länge × Höhe 7,670 × 2,635 (20,21 m²) = 20,21 m²
+GB-01;Obergeschoss;336;Wand AW-007 Ost · Gipsputz 1,5 cm;R-002;;;20,2105;0,3032;Länge × Höhe 7,670 × 2,635 (20,21 m²) = 20,21 m²
+GB-01;Obergeschoss;336;Wand AW-006 Nord · Dispersionsanstrich;R-002;;;24,6900;;Länge × Höhe 9,370 × 2,635 (24,69 m²) = 24,69 m²
+GB-01;Obergeschoss;336;Wand AW-006 Nord · Raufaser;R-002;;;24,6900;;Länge × Höhe 9,370 × 2,635 (24,69 m²) = 24,69 m²
+GB-01;Obergeschoss;336;Wand AW-006 Nord · Gipsputz 1,5 cm;R-002;;;24,6900;0,3703;Länge × Höhe 9,370 × 2,635 (24,69 m²) = 24,69 m²
+GB-01;Obergeschoss;336;Wand AW-005 West · Dispersionsanstrich;R-002;;;20,2105;;Länge × Höhe 7,670 × 2,635 (20,21 m²) = 20,21 m²
+GB-01;Obergeschoss;336;Wand AW-005 West · Raufaser;R-002;;;20,2105;;Länge × Höhe 7,670 × 2,635 (20,21 m²) = 20,21 m²
+GB-01;Obergeschoss;336;Wand AW-005 West · Gipsputz 1,5 cm;R-002;;;20,2105;0,3032;Länge × Höhe 7,670 × 2,635 (20,21 m²) = 20,21 m²
+GB-01;Obergeschoss;336;Wand AW-008 Süd · Dispersionsanstrich;R-002;;;24,6900;;Länge × Höhe 9,370 × 2,635 (24,69 m²) = 24,69 m²
+GB-01;Obergeschoss;336;Wand AW-008 Süd · Raufaser;R-002;;;24,6900;;Länge × Höhe 9,370 × 2,635 (24,69 m²) = 24,69 m²
+GB-01;Obergeschoss;336;Wand AW-008 Süd · Gipsputz 1,5 cm;R-002;;;24,6900;0,3703;Länge × Höhe 9,370 × 2,635 (24,69 m²) = 24,69 m²
+GB-01;Obergeschoss;354;Decke · Dispersionsanstrich;R-002;;;71,8679;;Rohbaumaß 7,670 × 9,370 (71,87 m²) = 71,87 m²
+GB-01;Obergeschoss;354;Decke · Gipsputz 1 cm;R-002;;;71,8679;0,7187;Rohbaumaß 7,670 × 9,370 (71,87 m²) = 71,87 m²
 GB-01;Summe nach Baustoff;;Stahlbeton;;;;;58,9237;
 GB-01;Summe nach Baustoff;;Bekleidung Faserzement;;;;;0,0631;
 GB-01;Summe nach Baustoff;;Porenbeton;;;;;35,1977;
 GB-01;Summe nach Baustoff;;Dämmung (WDVS);;;;211,0930;29,0457;
+GB-01;Summe nach Baustoff;;Trittschalldämmung EPS-T;;;;138,4085;4,1523;
+GB-01;Summe nach Baustoff;;Wärmedämmung EPS 035 DEO;;;;138,4085;5,8931;
+GB-01;Summe nach Baustoff;;Gipsputz;;;;;4,6354;
+GB-01;Summe nach Baustoff;;Abdichtung Bitumenbahn, Sohlplatte;;;;;0,3353;
+GB-01;Summe nach Baustoff;;Zementestrich CT-C25-F4;;;;;8,9966;
+GB-01;Summe nach Baustoff;;Parkett Eiche;;;;;2,7682;
 "#
 );
 /// Mengenliste von Musterhaus B als CSV (main 637f33c), Zeilenende hier LF.
@@ -442,13 +513,57 @@ GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton (Summe);IW-001;7,2700;1;;3,
 GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton IW-001, Höhe 2,855 m;IW-001;7,2700;1;;3,3524;
 GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Porenbeton;;;;;3,3524;
 GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Abzug Deckenstreifen;;;;;-0,2799;in der Decke enthalten
-GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;78,4875;17,2672;
+GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;78,4875;17,2673;
 GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;2,7736;in der Decke enthalten
 GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;3,0000;0,3600;
 GB-01;Erdgeschoss;354;Bekleidung 4 cm;UD-001;;;3,0000;0,1200;
 GB-01;Erdgeschoss;354;Grundlattung a = 80 cm;UD-001;24,3500;;;;
 GB-01;Erdgeschoss;354;Traglattung a = 40 cm;UD-001;28,1000;;;;
 GB-01;Erdgeschoss;354;Lüftungsprofil;UD-001;10,0000;;;;
+GB-01;Erdgeschoss;;Raum 1 · lichte Höhe 2,465 m;R-001;;1;32,7067;;
+GB-01;Erdgeschoss;324;Boden · Parkett Eiche 2 cm;R-001;;;32,7067;0,6541;bis Putz 7,240 × 4,518 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Estrich · Zementestrich CT-C25-F4 6,5 cm;R-001;;;32,7067;2,1259;bis Putz 7,240 × 4,518 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Estrich · Trittschalldämmung EPS-T 3 cm;R-001;;;32,7067;0,9812;bis Putz 7,240 × 4,518 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Estrich · Wärmedämmung EPS 035 DEO 4 cm;R-001;;;32,7067;1,3083;bis Putz 7,240 × 4,518 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;325;Estrich · Abdichtung Bitumenbahn, Sohlplatte 0,5 cm;R-001;;;32,7067;0,1635;bis Putz 7,240 × 4,518 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Sockelleiste · Sockelleiste Eiche 60 × 15;R-001;23,5150;;;;IW-001: 7,240 (7,24 m) AW-002: 4,518 (4,52 m) AW-001: 7,240 (7,24 m) AW-004: 4,518 (4,52 m) = 23,52 m
+GB-01;Erdgeschoss;324;Randdämmstreifen;R-001;23,5150;;;;Umfang bis Putz (23,52 m) = 23,52 m
+GB-01;Erdgeschoss;345;Wand IW-001 Ost · Dispersionsanstrich;R-001;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;345;Wand IW-001 Ost · Raufaser;R-001;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;345;Wand IW-001 Ost · Gipsputz 1,5 cm;R-001;;;19,1565;0,2873;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Dispersionsanstrich;R-001;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Raufaser;R-001;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Gipsputz 1,5 cm;R-001;;;11,9827;0,1797;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-001 West · Dispersionsanstrich;R-001;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;336;Wand AW-001 West · Raufaser;R-001;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;336;Wand AW-001 West · Gipsputz 1,5 cm;R-001;;;19,1565;0,2873;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Dispersionsanstrich;R-001;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Raufaser;R-001;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Gipsputz 1,5 cm;R-001;;;11,9827;0,1797;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;354;Decke · Dispersionsanstrich;R-001;;;33,0603;;Rohbaumaß 7,270 × 4,548 (33,06 m²) = 33,06 m²
+GB-01;Erdgeschoss;354;Decke · Gipsputz 1 cm;R-001;;;33,0603;0,3306;Rohbaumaß 7,270 × 4,548 (33,06 m²) = 33,06 m²
+GB-01;Erdgeschoss;;Raum 3 · lichte Höhe 2,465 m;R-003;;1;32,7067;;
+GB-01;Erdgeschoss;324;Boden · Parkett Eiche 2 cm;R-003;;;32,7067;0,6541;bis Putz 4,518 × 7,240 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Estrich · Zementestrich CT-C25-F4 6,5 cm;R-003;;;32,7067;2,1259;bis Putz 4,518 × 7,240 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Estrich · Trittschalldämmung EPS-T 3 cm;R-003;;;32,7067;0,9812;bis Putz 4,518 × 7,240 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Estrich · Wärmedämmung EPS 035 DEO 4 cm;R-003;;;32,7067;1,3083;bis Putz 4,518 × 7,240 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;325;Estrich · Abdichtung Bitumenbahn, Sohlplatte 0,5 cm;R-003;;;32,7067;0,1635;bis Putz 4,518 × 7,240 (32,71 m²) = 32,71 m²
+GB-01;Erdgeschoss;324;Sockelleiste · Sockelleiste Eiche 60 × 15;R-003;23,5150;;;;AW-004: 4,518 (4,52 m) AW-003: 7,240 (7,24 m) AW-002: 4,518 (4,52 m) IW-001: 7,240 (7,24 m) = 23,52 m
+GB-01;Erdgeschoss;324;Randdämmstreifen;R-003;23,5150;;;;Umfang bis Putz (23,52 m) = 23,52 m
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Dispersionsanstrich;R-003;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Raufaser;R-003;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-004 Süd · Gipsputz 1,5 cm;R-003;;;11,9827;0,1797;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-003 Ost · Dispersionsanstrich;R-003;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;336;Wand AW-003 Ost · Raufaser;R-003;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;336;Wand AW-003 Ost · Gipsputz 1,5 cm;R-003;;;19,1565;0,2873;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Dispersionsanstrich;R-003;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Raufaser;R-003;;;11,9827;;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;336;Wand AW-002 Nord · Gipsputz 1,5 cm;R-003;;;11,9827;0,1797;Länge × Höhe 4,548 × 2,635 (11,98 m²) = 11,98 m²
+GB-01;Erdgeschoss;345;Wand IW-001 West · Dispersionsanstrich;R-003;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;345;Wand IW-001 West · Raufaser;R-003;;;19,1565;;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;345;Wand IW-001 West · Gipsputz 1,5 cm;R-003;;;19,1565;0,2873;Länge × Höhe 7,270 × 2,635 (19,16 m²) = 19,16 m²
+GB-01;Erdgeschoss;354;Decke · Dispersionsanstrich;R-003;;;33,0603;;Rohbaumaß 4,548 × 7,270 (33,06 m²) = 33,06 m²
+GB-01;Erdgeschoss;354;Decke · Gipsputz 1 cm;R-003;;;33,0603;0,3306;Rohbaumaß 4,548 × 7,270 (33,06 m²) = 33,06 m²
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 (Summe);AW-005 … 008;36,6000;4;;33,7968;
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-005, Höhe 2,855 m;AW-005;8,3000;1;;7,6317;
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-006, Höhe 2,855 m;AW-006;10,0000;1;;9,2667;Versatz +0,30 m
@@ -460,12 +575,39 @@ GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-005;8,1750;1;;0,224
 GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-006;9,8750;1;;0,2716;
 GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-007;8,1750;1;;0,2248;
 GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-008;9,8750;1;;0,2716;
-GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;78,4875;17,2672;
+GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;78,4875;17,2673;
 GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;2,8217;in der Decke enthalten
+GB-01;Obergeschoss;;Raum 2 · lichte Höhe 2,465 m;R-002;;1;69,6696;;
+GB-01;Obergeschoss;353;Boden · Parkett Eiche 2 cm;R-002;;;69,6696;1,3934;bis Putz 7,540 × 9,240 (69,67 m²) = 69,67 m²
+GB-01;Obergeschoss;353;Estrich · Zementestrich CT-C25-F4 6,5 cm;R-002;;;69,6696;4,5285;bis Putz 7,540 × 9,240 (69,67 m²) = 69,67 m²
+GB-01;Obergeschoss;353;Estrich · Trittschalldämmung EPS-T 3 cm;R-002;;;69,6696;2,0901;bis Putz 7,540 × 9,240 (69,67 m²) = 69,67 m²
+GB-01;Obergeschoss;353;Estrich · Wärmedämmung EPS 035 DEO 4,5 cm;R-002;;;69,6696;3,1351;bis Putz 7,540 × 9,240 (69,67 m²) = 69,67 m²
+GB-01;Obergeschoss;353;Sockelleiste · Sockelleiste Eiche 60 × 15;R-002;33,5600;;;;AW-007: 7,540 (7,54 m) AW-006: 9,240 (9,24 m) AW-005: 7,540 (7,54 m) AW-008: 9,240 (9,24 m) = 33,56 m
+GB-01;Obergeschoss;353;Randdämmstreifen;R-002;33,5600;;;;Umfang bis Putz (33,56 m) = 33,56 m
+GB-01;Obergeschoss;336;Wand AW-007 Ost · Dispersionsanstrich;R-002;;;19,9470;;Länge × Höhe 7,570 × 2,635 (19,95 m²) = 19,95 m²
+GB-01;Obergeschoss;336;Wand AW-007 Ost · Raufaser;R-002;;;19,9470;;Länge × Höhe 7,570 × 2,635 (19,95 m²) = 19,95 m²
+GB-01;Obergeschoss;336;Wand AW-007 Ost · Gipsputz 1,5 cm;R-002;;;19,9470;0,2992;Länge × Höhe 7,570 × 2,635 (19,95 m²) = 19,95 m²
+GB-01;Obergeschoss;336;Wand AW-006 Nord · Dispersionsanstrich;R-002;;;24,4265;;Länge × Höhe 9,270 × 2,635 (24,43 m²) = 24,43 m²
+GB-01;Obergeschoss;336;Wand AW-006 Nord · Raufaser;R-002;;;24,4265;;Länge × Höhe 9,270 × 2,635 (24,43 m²) = 24,43 m²
+GB-01;Obergeschoss;336;Wand AW-006 Nord · Gipsputz 1,5 cm;R-002;;;24,4265;0,3664;Länge × Höhe 9,270 × 2,635 (24,43 m²) = 24,43 m²
+GB-01;Obergeschoss;336;Wand AW-005 West · Dispersionsanstrich;R-002;;;19,9470;;Länge × Höhe 7,570 × 2,635 (19,95 m²) = 19,95 m²
+GB-01;Obergeschoss;336;Wand AW-005 West · Raufaser;R-002;;;19,9470;;Länge × Höhe 7,570 × 2,635 (19,95 m²) = 19,95 m²
+GB-01;Obergeschoss;336;Wand AW-005 West · Gipsputz 1,5 cm;R-002;;;19,9470;0,2992;Länge × Höhe 7,570 × 2,635 (19,95 m²) = 19,95 m²
+GB-01;Obergeschoss;336;Wand AW-008 Süd · Dispersionsanstrich;R-002;;;24,4265;;Länge × Höhe 9,270 × 2,635 (24,43 m²) = 24,43 m²
+GB-01;Obergeschoss;336;Wand AW-008 Süd · Raufaser;R-002;;;24,4265;;Länge × Höhe 9,270 × 2,635 (24,43 m²) = 24,43 m²
+GB-01;Obergeschoss;336;Wand AW-008 Süd · Gipsputz 1,5 cm;R-002;;;24,4265;0,3664;Länge × Höhe 9,270 × 2,635 (24,43 m²) = 24,43 m²
+GB-01;Obergeschoss;354;Decke · Dispersionsanstrich;R-002;;;70,1739;;Rohbaumaß 7,570 × 9,270 (70,17 m²) = 70,17 m²
+GB-01;Obergeschoss;354;Decke · Gipsputz 1 cm;R-002;;;70,1739;0,7017;Rohbaumaß 7,570 × 9,270 (70,17 m²) = 70,17 m²
 GB-01;Summe nach Baustoff;;Stahlbeton;;;;;59,1583;
 GB-01;Summe nach Baustoff;;Bekleidung Faserzement;;;;;0,1200;
 GB-01;Summe nach Baustoff;;Porenbeton;;;;;70,3689;
 GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
+GB-01;Summe nach Baustoff;;Trittschalldämmung EPS-T;;;;135,0830;4,0525;
+GB-01;Summe nach Baustoff;;Wärmedämmung EPS 035 DEO;;;;135,0830;5,7517;
+GB-01;Summe nach Baustoff;;Gipsputz;;;;;4,5625;
+GB-01;Summe nach Baustoff;;Abdichtung Bitumenbahn, Sohlplatte;;;;;0,3271;
+GB-01;Summe nach Baustoff;;Zementestrich CT-C25-F4;;;;;8,7804;
+GB-01;Summe nach Baustoff;;Parkett Eiche;;;;;2,7017;
 "#
 );
 
@@ -473,7 +615,10 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
 /// Gruppenreihenfolge nach Bauablauf (FS, SP, AW, RD, IW, DE, UD),
 /// Gruppentitel, Kostengruppen, Mengen und Summen nach Baustoff. Seit
 /// W3 (10.10.) stehen unter der UD Bekleidung, Lattung und
-/// Lüftungsprofil.
+/// Lüftungsprofil. Seit Raumbuch RB5 stehen die Räume (G3, je mit dem
+/// Raumbuch ihrer Vorlage Wohnzimmer) mit ihren Zeilen je Geschoss nach
+/// den Bauteilen, ihre Baustoffe in der Summe; die vierte Stelle ist
+/// kaufmännisch gerundet (Decke 78,4875 × 0,22 = 17,26725 → 17,2673).
 #[test]
 fn a177_mengenliste_unveraendert() {
     for (seed, mono, soll) in [(176, false, CSV_A), (1760, true, CSV_B)] {

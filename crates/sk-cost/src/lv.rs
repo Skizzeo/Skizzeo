@@ -38,6 +38,14 @@ impl Positionsart {
     }
 }
 
+/// Vorbemerkung, wenn Erdmengen aus dem Geländemodell kommen
+/// (vob/pruefung-gelaende-g2.md Frage 1): Die Vordersätze sind ermittelt,
+/// abgerechnet wird nach Aufmaß.
+pub const VORBEMERKUNG_NETZ: &str = "Die Vordersätze der Erdarbeiten sind aus dem digitalen \
+    Geländemodell des Höhenaufmaßes ermittelt (Dreiecksprismen, REB-VB 22.013). Abgerechnet wird \
+    nach DIN 18300 Abschnitt 5 auf Grundlage einer gemeinsamen Geländeaufnahme vor Beginn der \
+    Arbeiten; ein DGM aus dieser Aufnahme ist als Ermittlungsverfahren vereinbart.";
+
 /// Kopf des LV (ka-4-fach §3.2). Umfang und Datum setzt die Ansicht (Uhr
 /// und Kopfzeile aus KA-1), ebenso den Dateinamen, wenn `bauvorhaben` leer
 /// ist ([`bauvorhaben_aus_datei`]).
@@ -454,6 +462,10 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
 
     // erste Position mit Erdmengen aus dem Höhenaufmaß (Hinweis unten)
     let mut erde_aus_mittel: Option<String> = None;
+    // Gelände steiler als 1:10 (Hinweis), Erdmengen aus dem Geländemodell
+    // (Vorbemerkung)
+    let mut steil: Option<(String, String)> = None;
+    let mut aus_netz = false;
     for (g, zeilen) in je_leistung {
         let l = k.leistung(g).expect("Leistung");
         let ps: Vec<&Position> = zeilen.iter().map(|i| &b.positionen[*i]).collect();
@@ -477,6 +489,18 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         };
         if erde_aus_mittel.is_none() && ansatz.iter().any(erde) {
             erde_aus_mittel = Some(oz_basis.clone());
+        }
+        for a in &ansatz {
+            let Some(f) = a.formel.as_deref() else {
+                continue;
+            };
+            if !a.auto.is_some_and(|x| x.starts_with("earth.")) {
+                continue;
+            }
+            aus_netz |= f.contains(sk_model::qto_earth::DREIECKSPRISMEN);
+            if steil.is_none() {
+                steil = sk_model::qto_earth::steil_hinweis(f).map(|h| (h, oz_basis.clone()));
+            }
         }
         if mehrere {
             // Zeilen aus Erweiterungen nennen das Bauteil statt der Dicke
@@ -658,6 +682,9 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             Ort::Position(oz),
         ));
     }
+    if let Some((h, oz)) = steil {
+        befunde.push(Befund::hinweis(0, h, Ort::Position(oz)));
+    }
 
     // Regel 86 im LV: Der Katalog meldet eine doppelte OZ nur und behält
     // beide Bauleistungen (auch eine ausgemusterte, die noch verwendet
@@ -838,7 +865,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         crate::katalog::Quelle::Firma { name, .. } => text(name),
         _ => None,
     };
-    let kopf = LvKopf {
+    let mut kopf = LvKopf {
         bauvorhaben: text(&pr.site),
         projektart: text(&pr.kind),
         bauort: text(&pr.place),
@@ -870,6 +897,15 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             format!("Los {} hat keine Vorbemerkungen.", kopf.los),
             Ort::Kopf,
         ));
+    }
+    // Erdmengen aus dem Geländemodell: das Verfahren am Ende der
+    // Vorbemerkungen des Loses (VOB-Prüfung G2 Frage 1, Regel 107)
+    if aus_netz {
+        let v = kopf.vorbemerkungen.get_or_insert_with(String::new);
+        if !v.is_empty() {
+            v.push_str("\n\n");
+        }
+        v.push_str(VORBEMERKUNG_NETZ);
     }
     for t in k
         .lose
