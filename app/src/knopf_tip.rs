@@ -26,6 +26,7 @@ impl App {
             Id::Projektdaten => "Projektdaten",
             Id::Nord => nord.as_str(),
             Id::View(v) => v.knopf(None),
+            Id::Gelaende(k) => crate::gelaende_app::knopf_name(k),
             _ => return None,
         };
         let reason = match id {

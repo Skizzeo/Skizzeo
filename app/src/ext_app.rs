@@ -262,6 +262,8 @@ impl App {
             self.ui.opening = o;
             self.overlay_dirty = true;
         }
+        // und die Leiste „Gelände“ (G1)
+        self.gelaende_sync();
     }
 
     /// Feld `i` des Werkzeugs: eigener Wert der nächsten Bauteile.

@@ -50,18 +50,20 @@ impl Scene {
         ok
     }
 
-    /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
-    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur seine Züge mit
-    /// Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an OK
-    /// Gelände. Ohne Aufmaß bleiben andere Gebäude (Entscheidung B). Mit
-    /// Aufmaß bestimmt ein Gebäude ±0,00 für alle; zieht man dessen
-    /// Gelände, stehen die anderen bis zum Loslassen auf ihrer alten
-    /// Gründung, dann folgen sie in einem Gang ([`Scene::commit`], Review
-    /// #123 B1 zum Gelände-Zug). Je Bild kostet das so viel wie das gezogene
-    /// Gebäude. Die Mengen rechnet das Loslassen nach (Review Gelände).
+    /// OK Gelände an der Gründung des aktiven Gebäudes beim Ziehen (Kote
+    /// `z`, Gelände Thema 1), geklemmt. Seine Gründung folgt; neu sind nur
+    /// seine Züge mit Sohlplatte, denn die Kanten teilt der Netzbau ohnehin
+    /// je Bild an OK Gelände. Ohne Aufmaß bleiben andere Gebäude
+    /// (Entscheidung B). Mit Aufmaß wandert ±0,00 aller Gebäude; die
+    /// anderen stehen bis zum Loslassen auf ihrer alten Gründung, dann
+    /// folgen sie in einem Gang ([`Scene::commit`], Review #123 B1 zum
+    /// Gelände-Zug). Je Bild kostet das so viel wie das gezogene Gebäude.
+    /// Die Mengen rechnet das Loslassen nach (Review Gelände).
     pub fn drag_terrain(&mut self, z: f64) {
-        let max = sk_model::MAX_TERRAIN_OFFSET;
-        let Some(b) = self.active_building().filter(|_| z.is_finite()) else {
+        let Some(gr) = self.model.foundation_level_of(self.active_storey()) else {
+            return;
+        };
+        let Some(b) = self.model.building_of(gr).filter(|_| z.is_finite()) else {
             return;
         };
         if self.gelaende_zug.is_none() {
@@ -70,10 +72,11 @@ impl Scene {
             };
             self.gelaende_zug = Some((zug, self.platten_zuege(&[b])));
         }
+        let (lo, hi) = self.model.terrain_z_of_level_range(gr);
         let Some((zug, runs)) = &self.gelaende_zug else {
             return;
         };
-        if !self.model.gelaende_ziehen(zug, (-z).clamp(-max, max)) {
+        if !self.model.gelaende_ziehen_auf(zug, gr, z.clamp(lo, hi)) {
             return;
         }
         for r in runs.clone() {
