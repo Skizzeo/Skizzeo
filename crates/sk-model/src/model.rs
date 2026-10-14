@@ -82,6 +82,17 @@ pub struct Project {
     /// `[terrainplate]`, deren Werte nicht galten: bleibt bytegleich, bis
     /// neue Werte sie ersetzen (Regel 72).
     pub terrain_plate_raw: Option<String>,
+    /// Geländeflächen (Gelände G3b); ändern sich nur über
+    /// [`Model::add_site_patch`] und die Geschwister.
+    pub site_patches: Vec<TerrainPatch>,
+    /// `[tpatch]`-Zeilen, die nicht galten: bleiben roh stehen (Regel 72).
+    pub site_patches_raw: Vec<String>,
+    /// Andeckung und Eigenboden-Faktor (Gelände G3b); ändern sich nur über
+    /// [`Model::set_site_soil`].
+    pub site_soil: SiteSoil,
+    /// `[sitesoil]`, deren Werte nicht galten: bleibt bytegleich, bis neue
+    /// Werte sie ersetzen (Regel 72).
+    pub site_soil_raw: Option<String>,
 }
 
 impl Project {
@@ -106,6 +117,10 @@ impl Project {
             terrain_plate: PlateSettings::default(),
             terrain: None,
             terrain_plate_raw: None,
+            site_patches: Vec::new(),
+            site_patches_raw: Vec::new(),
+            site_soil: SiteSoil::default(),
+            site_soil_raw: None,
         }
     }
 
@@ -301,6 +316,8 @@ pub struct Model {
     halter: verzeichnis::Halter,
     /// Was aus dem Höhenaufmaß folgt, je Modellstand gemerkt.
     lagemerker: gelaende_aufmass::Lagemerker,
+    /// Was die Geländeflächen ergeben, zu den Werten, aus denen es folgt.
+    flaechenmerker: crate::qto_earth::FlaechenMerker,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -390,6 +407,12 @@ mod gelaende_aufmass_budget;
 pub use gelaende_aufmass::{
     Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
     TerrainLine, TerrainMesh, TerrainPoint, Trim,
+};
+
+#[path = "gelaende_flaeche.rs"]
+mod gelaende_flaeche;
+pub use gelaende_flaeche::{
+    PatchHeight, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_SLOPE, PATCH_SLOPE_RANGE,
 };
 
 #[path = "gelaende_lageplan.rs"]
@@ -861,6 +884,7 @@ impl Model {
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
+            flaechenmerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -950,6 +974,7 @@ impl Model {
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
+            flaechenmerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -983,6 +1008,10 @@ impl Model {
             soil_legacy: self.project.soil_legacy,
             terrain_plate: self.project.terrain_plate,
             terrain_plate_raw: self.project.terrain_plate_raw.clone(),
+            site_patches: self.project.site_patches.clone(),
+            site_patches_raw: self.project.site_patches_raw.clone(),
+            site_soil: self.project.site_soil,
+            site_soil_raw: self.project.site_soil_raw.clone(),
             ..p
         };
         match self.txn.as_mut() {
@@ -1028,6 +1057,10 @@ impl Model {
             soil_legacy: self.project.soil_legacy,
             terrain_plate: self.project.terrain_plate,
             terrain_plate_raw: self.project.terrain_plate_raw.clone(),
+            site_patches: self.project.site_patches.clone(),
+            site_patches_raw: self.project.site_patches_raw.clone(),
+            site_soil: self.project.site_soil,
+            site_soil_raw: self.project.site_soil_raw.clone(),
             ..p
         };
         self.touch();
@@ -1141,6 +1174,11 @@ impl Model {
         if i < self.cuts.len() {
             self.active_cut = i;
         }
+    }
+
+    /// Der zuletzt gerechnete Stand der Geländeflächen (Review #173 B1).
+    pub(crate) fn flaechenmerker(&self) -> &crate::qto_earth::FlaechenMerker {
+        &self.flaechenmerker
     }
 
     /// Steigt bei jeder Änderung.

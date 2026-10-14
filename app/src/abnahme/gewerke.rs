@@ -168,7 +168,7 @@ fn pruefhaus_typ(seed: u64, code: &str) -> Scene {
 }
 
 /// Startbestand nach BIM paket-1a §2: (Reihe, ATV, Name).
-const START: [(u16, &str, &str); 35] = [
+const START: [(u16, &str, &str); 36] = [
     (1, "18459", "Abbruch- und Rückbauarbeiten"),
     (2, "18451", "Gerüstarbeiten"),
     (3, "18300", "Erdarbeiten"),
@@ -216,10 +216,11 @@ const START: [(u16, &str, &str); 35] = [
         "Förderanlagen, Aufzugsanlagen, Fahrtreppen und Fahrsteige",
     ),
     (35, "18386", "Gebäudeautomation"),
+    (36, "18320", "Landschaftsbauarbeiten"),
 ];
 
 /// A183 (paket-1a §2, Regel 48): Jedes Projekt hat den Startbestand von
-/// 35 Gewerken in der Reihenfolge des Bauablaufs, mit festen Guids (neue
+/// 36 Gewerken in der Reihenfolge des Bauablaufs, mit festen Guids (neue
 /// Projekte und Testprojekte gleich), Codes und Reihen eindeutig.
 #[test]
 fn a183_gewerke_startbestand() {
@@ -237,7 +238,7 @@ fn a183_gewerke_startbestand() {
     gb.sort();
     assert_eq!(ga, gb, "feste Guids");
     ga.dedup();
-    assert_eq!(ga.len(), 35);
+    assert_eq!(ga.len(), 36);
     assert!(a.check().is_empty(), "{:?}", a.check());
 }
 

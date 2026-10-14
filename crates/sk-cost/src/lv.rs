@@ -465,6 +465,8 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     // Gelände steiler als 1:10 (Hinweis), Erdmengen aus dem Geländemodell
     // (Vorbemerkung)
     let mut steil: Option<(String, String)> = None;
+    // Hinweise der Automatikmengen je Position (VOB-Prüfung G3 D1)
+    let mut mengen_hinweise: Vec<(String, String)> = Vec::new();
     let mut aus_netz = false;
     for (g, zeilen) in je_leistung {
         let l = k.leistung(g).expect("Leistung");
@@ -491,6 +493,12 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             erde_aus_mittel = Some(oz_basis.clone());
         }
         for a in &ansatz {
+            for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
+                let t = (h.to_string(), oz_basis.clone());
+                if !mengen_hinweise.contains(&t) {
+                    mengen_hinweise.push(t);
+                }
+            }
             let Some(f) = a.formel.as_deref() else {
                 continue;
             };
@@ -683,6 +691,9 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         ));
     }
     if let Some((h, oz)) = steil {
+        befunde.push(Befund::hinweis(0, h, Ort::Position(oz)));
+    }
+    for (h, oz) in mengen_hinweise {
         befunde.push(Befund::hinweis(0, h, Ort::Position(oz)));
     }
 

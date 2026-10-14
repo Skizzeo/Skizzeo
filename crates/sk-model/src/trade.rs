@@ -91,7 +91,7 @@ pub fn dedup_shorts(trades: &mut [Trade]) -> Vec<String> {
 }
 
 /// Startbestand: (Reihe, ATV, Name).
-pub const START: [(u16, &str, &str); 35] = [
+pub const START: [(u16, &str, &str); 36] = [
     (1, "18459", "Abbruch- und Rückbauarbeiten"),
     (2, "18451", "Gerüstarbeiten"),
     (3, "18300", "Erdarbeiten"),
@@ -139,10 +139,13 @@ pub const START: [(u16, &str, &str); 35] = [
         "Förderanlagen, Aufzugsanlagen, Fahrtreppen und Fahrsteige",
     ),
     (35, "18386", "Gebäudeautomation"),
+    // Oberbodenarbeiten seit VOB/C 2015 (VOB-Prüfung G3): additiv hinten,
+    // damit die Reihen der anderen bleiben
+    (36, "18320", "Landschaftsbauarbeiten"),
 ];
 
 /// Kurznamen der Startgewerke: (ATV, Kurzname), BIM Regel 67.
-pub const SHORT: [(&str, &str); 35] = [
+pub const SHORT: [(&str, &str); 36] = [
     ("18459", "Abbruch"),
     ("18451", "Gerüstbau"),
     ("18300", "Erdbau"),
@@ -178,6 +181,7 @@ pub const SHORT: [(&str, &str); 35] = [
     ("18384", "Blitzschutz"),
     ("18385", "Aufzug"),
     ("18386", "MSR-Technik"),
+    ("18320", "Landschaftsbau"),
 ];
 
 /// Feste Guid eines Startgewerks aus seiner ATV-Nummer.
@@ -194,7 +198,7 @@ pub fn start_id(code: &str) -> Option<TradeId> {
         .then(|| TradeId(start_guid(code)))
 }
 
-/// Die 35 Startgewerke in der Reihenfolge des Bauablaufs.
+/// Die 36 Startgewerke in der Reihenfolge des Bauablaufs.
 pub fn start_trades() -> Vec<Trade> {
     START
         .iter()
@@ -291,6 +295,11 @@ pub fn valid_kg(kg: u16) -> bool {
     (311..=399).contains(&kg)
 }
 
+/// KG einer Bauleistung: Bauwerk (300) oder Außenanlagen (500).
+pub fn valid_kg_leistung(kg: u16) -> bool {
+    valid_kg(kg) || (511..=599).contains(&kg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,7 +307,7 @@ mod tests {
     #[test]
     fn startbestand() {
         let t = start_trades();
-        assert_eq!(t.len(), 35);
+        assert_eq!(t.len(), 36);
         assert!(problems(&t).is_empty());
         assert!(t.windows(2).all(|w| w[0].order < w[1].order));
         assert_eq!(start_id("18330"), Some(t[5].id()));
@@ -317,7 +326,7 @@ mod tests {
             short: None,
         };
         let m = merge(vec![maurer.clone(), eigen.clone()]);
-        assert_eq!(m.len(), 36);
+        assert_eq!(m.len(), 37);
         assert_eq!(m[5], maurer);
         assert_eq!(m.last(), Some(&eigen));
     }

@@ -230,6 +230,7 @@ mod tests {
             grad: None,
             formel: auto.map(|_| "1,00 m²".to_string()),
             auto,
+            hinweis: String::new(),
         };
         assert!(f.trifft(&ansatz(Some("earth.excavation"))));
         assert!(!f.trifft(&ansatz(Some("site.scaffold"))));

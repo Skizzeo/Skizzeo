@@ -234,6 +234,7 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             value: 0.0,
             kg: Some(KG_DECKE),
             formula: String::new(),
+            hinweis: String::new(),
         };
         if !x.seiten.is_empty() {
             out.push(AutoMenge {
@@ -277,6 +278,7 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             value: 0.0,
             kg: None,
             formula: String::new(),
+            hinweis: String::new(),
         };
         let wert: f64 = x.teile.iter().sum();
         if wert > 0.0 {

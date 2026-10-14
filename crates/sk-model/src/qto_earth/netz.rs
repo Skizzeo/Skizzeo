@@ -9,7 +9,7 @@
 //! innen = innerhalb der Frostschürze, Ring = Schürze. Alles in mm.
 
 use super::{zahl, Boden, AUS_AUFMASS, BACKFILL, DISPOSAL, EXCAVATION, FILL, SENKRECHT_BIS, SLOPE};
-use super::{ErdBasis, TRENCH};
+use super::{ErdBasis, ErdZone, TRENCH};
 use crate::{Model, RunId, SurveyFrame, TerrainMesh};
 use sk_gelaende::volumen::Erdmenge;
 use sk_math::Vec3;
@@ -227,15 +227,16 @@ fn boeschung(n: &ErdNetz, sohle: &[Vec3], z_s: f64, o: f64, beta: f64) -> Boesch
     b
 }
 
-/// Erdmengen der Gründung über das Netz `n`. `false`, wenn das Netz die
-/// Baugrube nicht ganz deckt oder der Arbeitsraum sich nicht versetzen
-/// lässt; dann rechnet [`super::erd_mengen`] mit der mittleren Höhe.
+/// Erdmengen der Gründung über das Netz `n`, dazu Baufeld und Baugrube.
+/// `None`, wenn das Netz die Baugrube nicht ganz deckt oder der
+/// Arbeitsraum sich nicht versetzen lässt; dann rechnet
+/// [`super::erd_mengen`] mit der mittleren Höhe.
 pub(super) fn mengen(
     b: &ErdBasis,
     n: &ErdNetz,
     boden: &Boden,
     menge: &mut dyn FnMut(&'static str, f64, String),
-) -> bool {
+) -> Option<ErdZone> {
     let o = boden.oberboden.max(0.0);
     let a = boden.arbeitsraum.max(0.0);
     let g = boden.tragschicht.max(0.0);
@@ -245,17 +246,14 @@ pub(super) fn mengen(
     let z_p = z_b - g;
     let z_f = b.footing_bottom_z;
     let sohle = if a > 0.0 {
-        let Some(s) = sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()]) else {
-            return false;
-        };
-        s
+        sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()])?
     } else {
         b.outline.clone()
     };
     let sohle_fl = sk_math::polygon::area(&sohle);
     let grube = n.menge(&sohle, z_s + o);
     if sohle_fl <= 0.0 || grube.flaeche < sohle_fl * (1.0 - 1e-6) {
-        return false;
+        return None;
     }
     let [platte, platte_f] = n.mengen(&b.outline, &[z_s + o, z_f + o]).map(|e| e.ueber);
     let (innen_fl, i_p, i_s, i_f) = if n.innen.len() >= 3 {
@@ -394,7 +392,12 @@ pub(super) fn mengen(
             ),
         );
     }
-    true
+    Some(ErdZone {
+        baufeld: x_ob,
+        sohle: if grube.ueber > 0.0 { sohle } else { Vec::new() },
+        b: z_s,
+        keil: bo.keil > 0.0,
+    })
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
-//! Namen der Kostengruppen nach DIN 276:2018 für Gliederung, Kacheln, CSV
+//! Namen der Kostengruppen nach DIN 276:2018 (300 und die genutzten der
+//! Außenanlagen 500) für Gliederung, Kacheln, CSV
 //! (ka-2-fach §2.1) und IFC (I4): 2. Ebene kurz („320 Gründung“), 3. Ebene
 //! mit dem Wortlaut der Norm.
 
@@ -63,6 +64,22 @@ pub fn name(kg: u16) -> Option<&'static str> {
         396 => "Materialentsorgung",
         397 => "Zusätzliche Maßnahmen",
         398 => "Provisorische Baukonstruktionen",
+        // Außenanlagen (Gelände G3b)
+        510 => "Erdbau",
+        511 => "Herstellung",
+        512 => "Umschließung",
+        520 => "Gründung, Unterbau",
+        521 => "Baugrundverbesserung",
+        530 => "Oberbau, Deckschichten",
+        531 => "Wege",
+        533 => "Plätze, Höfe, Terrassen",
+        534 => "Stellplätze",
+        540 => "Baukonstruktionen",
+        543 => "Wandkonstruktionen",
+        544 => "Rampen, Treppen, Tribünen",
+        570 => "Vegetationsflächen",
+        571 => "Vegetationstechnische Bodenbearbeitung",
+        574 => "Rasen und Saat",
         k if k % 10 == 9 && (319..=399).contains(&k) => return Some(sonstiges(k)),
         _ => return None,
     })
@@ -93,5 +110,8 @@ mod tests {
         assert_eq!(name(391), Some("Baustelleneinrichtung"));
         assert_eq!(name(392), Some("Gerüste"));
         assert_eq!(name(399), Some("Sonstiges"));
+        assert_eq!(name(511), Some("Herstellung"));
+        assert_eq!(name(ebene2(571)), Some("Vegetationsflächen"));
+        assert_eq!(name(519), None);
     }
 }

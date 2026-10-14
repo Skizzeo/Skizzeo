@@ -36,6 +36,9 @@ const AUSSEN: u8 = 0;
 const INNEN: u8 = 1;
 const RAND: u8 = 2;
 
+/// Erste und letzte Zelle unter einem Polygon und die Dreiecke darin.
+type Unter = ((usize, usize), (usize, usize), Vec<u32>);
+
 impl Abfrage {
     pub fn neu(netz: &Netz) -> Abfrage {
         let punkte = netz.punkte.clone();
@@ -225,18 +228,11 @@ impl Abfrage {
         (self.nx as f64 * self.zelle).hypot(self.ny as f64 * self.zelle)
     }
 
-    /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
-    /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
-    /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.
-    pub fn erdmenge(&self, ring: &[[f64; 2]], bezug: Bezug) -> Erdmenge {
-        self.erdmengen(ring, &[bezug])[0]
-    }
-
-    /// [`Abfrage::erdmenge`] je Bezug, das Polygon einmal geschnitten.
-    pub fn erdmengen(&self, ring: &[[f64; 2]], bezuege: &[Bezug]) -> Vec<Erdmenge> {
-        let mut e = vec![Erdmenge::default(); bezuege.len()];
+    /// Die Zellen unter dem Polygon `ring` (erste und letzte) und die
+    /// Dreiecke darin, je einmal; `None` ohne Netz oder Polygon.
+    fn zellen_unter(&self, ring: &[[f64; 2]]) -> Option<Unter> {
         if ring.len() < 3 || self.dreiecke.is_empty() {
-            return e;
+            return None;
         }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for q in ring {
@@ -255,6 +251,33 @@ impl Abfrage {
         }
         ts.sort_unstable();
         ts.dedup();
+        Some(((cx0, cy0), (cx1, cy1), ts))
+    }
+
+    /// Die Dreiecke in den Zellen unter dem Polygon `ring`, je einmal, mit
+    /// ihren Punkten.
+    pub(crate) fn dreiecke_unter(&self, ring: &[[f64; 2]]) -> Vec<[[f64; 3]; 3]> {
+        let Some((_, _, ts)) = self.zellen_unter(ring) else {
+            return Vec::new();
+        };
+        ts.into_iter()
+            .map(|t| self.dreiecke[t as usize].map(|i| self.punkte[i as usize]))
+            .collect()
+    }
+
+    /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
+    /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
+    /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.
+    pub fn erdmenge(&self, ring: &[[f64; 2]], bezug: Bezug) -> Erdmenge {
+        self.erdmengen(ring, &[bezug])[0]
+    }
+
+    /// [`Abfrage::erdmenge`] je Bezug, das Polygon einmal geschnitten.
+    pub fn erdmengen(&self, ring: &[[f64; 2]], bezuege: &[Bezug]) -> Vec<Erdmenge> {
+        let mut e = vec![Erdmenge::default(); bezuege.len()];
+        let Some(((cx0, cy0), (cx1, cy1), ts)) = self.zellen_unter(ring) else {
+            return e;
+        };
         // bei vielen Ecken: Dreiecke ganz im Polygon nicht an jeder Kante
         // schneiden (H-169h)
         let lage = (ring.len() > VOLL_AB).then(|| self.lage(ring, (cx0, cy0), (cx1, cy1)));
