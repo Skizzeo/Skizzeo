@@ -350,7 +350,12 @@ impl Ctx<'_> {
                     }
                 }
                 let art = bekleidungsart(ls.category);
-                let zweck = bekleidungszweck(m, kanten.get(&id).map_or(&[], |k| k), a.flaeche);
+                // Mit dem Typ: eine Fläche kann mehrere Ausbautypen tragen
+                let zweck = format!(
+                    "{}.{}",
+                    bekleidungszweck(m, kanten.get(&id).map_or(&[], |k| k), a.flaeche),
+                    a.typ_guid.to_ifc()
+                );
                 let g = abgeleitet(el.guid, &zweck);
                 let (shape, pl) = self.form_und_lage(&netze, true, s_pl);
                 let name = format!("{} {}", el.number, flaechenname(a.flaeche));
