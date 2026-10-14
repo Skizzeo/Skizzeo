@@ -272,27 +272,57 @@ struct Lageplan {
     bauen: f64,
     /// Nach einem Schritt im UI-Faden: den Nachzug beginnen.
     nachzug: f64,
-    /// Nach einem Wandschritt über dem Plan im UI-Faden: die Kacheln mit
-    /// neuem Schlüssel bauen (Linien und Ecken), höchster Wert, und wie
-    /// viel davon hochgeladen wird (MB).
+    /// Nach einem Wandschritt über dem Plan im UI-Faden, bis die neuen
+    /// Kacheln hochgeladen sind: höchste Zeit je Bild, und wie viel
+    /// hochgeladen wird (MB); die Ecken baut ein eigener Faden.
     schritt: f64,
     hoch: f64,
+    /// EG-Grundriss → 3D → EG-Grundriss: Zeit im ersten Bild zurück; es
+    /// lädt nichts hoch (Review #139 N2).
+    rueckweg: f64,
+    /// Gelände verschieben: höchste Zeit je Bild im UI-Faden, bis alle
+    /// Kacheln neu hochgeladen sind (MB).
+    lage: f64,
+    lage_hoch: f64,
     /// Kacheln je Plan und höchstens neu je Wandschritt.
     kacheln: usize,
     neu: usize,
 }
 
-/// Linien und Ecken der Kacheln `ix`, wie der UI-Faden sie für den
-/// Renderer baut: Zeit in ms und Größe zum Hochladen in MB.
-fn kacheln_bauen(g: &Gelaende, ix: &[usize], t: &DrawTable) -> (f64, f64) {
-    let (t0, mut bytes) = (Instant::now(), 0);
+/// Linien und Ecken der Kacheln `ix`, wie der Faden sie für den Renderer
+/// baut: Zeit in ms.
+fn kacheln_bauen(g: &Gelaende, ix: &[usize], t: &DrawTable) -> f64 {
+    let (t0, stil) = (Instant::now(), gelaende_netz::unterlage_stil(t, 1.0));
     for &i in ix {
-        let l = gelaende_netz::unterlage_kachel(g, i, ViewKind::Plan, t, 1.0);
-        let e = sk_render::helper_ecken(&l);
-        bytes += std::mem::size_of_val(&e[..]);
-        std::hint::black_box(e);
+        let l = gelaende_netz::unterlage_kachel(g, i, stil);
+        std::hint::black_box(sk_render::helper_ecken(&l));
     }
-    (ms(t0), bytes as f64 / 1e6)
+    ms(t0)
+}
+
+/// Bilder im EG-Grundriss, bis der Renderer alle Kacheln hat, wie die App
+/// sie zeigt (`App::platte_unterlage`): höchste Zeit je Bild im
+/// UI-Faden (ms), hochgeladen (MB) und Zahl neuer Kacheln.
+fn bis_hochgeladen(pl: &mut Platte, m: &Model, t: &DrawTable) -> (f64, f64, usize) {
+    let (mut zeit, mut bytes, mut neu) = (0.0f64, 0, 0);
+    loop {
+        let t0 = Instant::now();
+        let h = pl.unterlage_im_bild(m, true, t, 1.0);
+        zeit = zeit.max(ms(t0));
+        match h {
+            Some(h) => {
+                neu += h.ecken.len();
+                bytes += h
+                    .ecken
+                    .values()
+                    .map(|e| std::mem::size_of_val(&e[..]))
+                    .sum::<usize>();
+            }
+            None if pl.ecken_job.is_none() => break,
+            None => std::thread::sleep(Duration::from_millis(1)),
+        }
+    }
+    (zeit, bytes as f64 / 1e6, neu)
 }
 
 /// Lageplan mit `k` Strichen; `dicht`: alle zusätzlichen Striche in 20 ×
@@ -394,10 +424,12 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     let m = s.model();
     let t = DrawTable::resolve(m, &Theme::dark());
     pl.im_bild(m);
-    let (keys, g) = pl.unterlage_im_bild(m, true, &t, 1.0);
-    let g = g.unwrap();
+    let n0 = bis_hochgeladen(&mut pl, m, &t).2;
+    let keys = pl.im_renderer.clone();
+    assert_eq!(n0, keys.len());
+    let g = pl.gelaende.clone().unwrap();
     let alle: Vec<usize> = (0..keys.len()).collect();
-    let bauen = kacheln_bauen(&g, &alle, &t).0;
+    let bauen = kacheln_bauen(&g, &alle, &t);
     let linien = gelaende_netz::unterlage_linien(&g, ViewKind::Plan, &t, 1.0);
     assert!(linien.len() >= k / 2, "{} Striche", linien.len());
     // je Bild: dieselben Schlüssel, kein Hochladen; die Grenzen ändern
@@ -407,12 +439,21 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     let bild = bestwert(|| {
         d = if d == 0.0 { 100.0 } else { 0.0 };
         let b = Some((b_lo, vec3(b_hi.x + d, b_hi.y, b_hi.z)));
-        assert_eq!(pl.unterlage_im_bild(m, true, &t, 1.0).0, keys);
+        assert!(pl.unterlage_im_bild(m, true, &t, 1.0).is_none());
+        assert_eq!(pl.im_renderer, keys);
         std::hint::black_box(pl.linien_im_bild(m, (ViewKind::Plan, None), b, &t, (1.0, 10.0)));
+    });
+    // EG-Grundriss → 3D → EG-Grundriss: ausgeblendet bleiben die Puffer
+    // stehen, zurück lädt nichts hoch (Review #139 N2)
+    let rueckweg = bestwert(|| {
+        assert!(pl.unterlage_im_bild(m, false, &t, 1.0).is_none());
+        assert!(pl.unterlage_im_bild(m, true, &t, 1.0).is_none());
+        assert!(pl.ecken_job.is_none());
     });
     // nach jedem Schritt: Modell kopieren und den Faden starten; die Linien
     // der Unterlage sind gemerkt, der Faden bildet sie nicht neu ab. Danach
-    // baut der UI-Faden nur die Kacheln, deren Strecken das Haus schneidet.
+    // sind nur die Kacheln neu, deren Strecken das Haus schneidet; ihre
+    // Ecken baut ein Faden, der UI-Faden lädt nur hoch.
     let sicht: Sicht = (ViewKind::Plan, None, [40, 41, 42], false);
     let orig = s.chain(run).unwrap().clone();
     let (mut nachzug, mut schritt, mut hoch, mut neu) = (f64::INFINITY, 0.0f64, 0.0f64, 0);
@@ -435,23 +476,37 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(pl.unterlage.abbild(m).unwrap().gemerkt());
-        let (jetzt, g) = pl.unterlage_im_bild(m, true, &t, 1.0);
-        let g = g.unwrap();
+        let (z, mb, n) = bis_hochgeladen(&mut pl, m, &t);
+        let jetzt = pl.im_renderer.clone();
+        let g = pl.gelaende.clone().unwrap();
         let ix: Vec<usize> = (0..jetzt.len())
             .filter(|&i| !vorher.contains(&jetzt[i]))
             .collect();
+        assert_eq!(ix.len(), n);
         // die Kachel mit dem langen Strich (sein freies Ende)
+        let stil = gelaende_netz::unterlage_stil(&t, 1.0);
         lang_neu |= ix.iter().any(|&i| {
-            gelaende_netz::unterlage_kachel(&g, i, ViewKind::Plan, &t, 1.0)
+            gelaende_netz::unterlage_kachel(&g, i, stil)
                 .iter()
                 .any(|h| (f64::from(h.b[0]) - ende[0]).hypot(f64::from(h.b[1]) - ende[1]) < 1.0)
         });
-        neu = neu.max(ix.len());
-        let (z, mb) = kacheln_bauen(&g, &ix, &t);
+        neu = neu.max(n);
         schritt = schritt.max(z);
         hoch = hoch.max(mb);
         vorher = jetzt;
     }
+    // Gelände verschieben: alle Schlüssel neu, die Ecken aller Kacheln
+    // baut der Faden (Review #139 N2)
+    assert!(s.edit_model("Gelände verschieben", |m| m.move_terrain([1000.0, 0.0])));
+    let m = s.model();
+    pl.nachziehen(m, sicht);
+    while pl.rechnet() {
+        pl.nachziehen(m, sicht);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (lage, lage_hoch, n) = bis_hochgeladen(&mut pl, m, &t);
+    assert_eq!(n, pl.im_renderer.len(), "alle Kacheln neu");
+    assert!(pl.im_renderer.iter().all(|k| !vorher.contains(k)));
     if dicht {
         assert!(lang_neu, "der lange Strich wird am Haus neu geschnitten");
     }
@@ -461,6 +516,9 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
         nachzug,
         schritt,
         hoch,
+        rueckweg,
+        lage,
+        lage_hoch,
         kacheln: keys.len(),
         neu,
     }
@@ -508,7 +566,15 @@ fn lageplan_im_budget() {
         assert!(x.neu >= 1, "das Haus liegt über dem Plan: {x:?}");
         assert!(x.schritt < 8.0 * f, "{x:?}");
         assert!(x.hoch < 8.0, "höchstens 8 MB hochladen: {x:?}");
+        // Sichtwechsel und Gelände verschieben: der UI-Faden baut nichts
+        // (Review #139 N2: vorher 28 ms und 57 MB je Wechsel)
+        assert!(x.rueckweg < 1.0 * f, "{x:?}");
+        assert!(x.lage < 8.0 * f, "{x:?}");
     }
+    assert!(
+        gross.rueckweg < 2.0 * klein.rueckweg + 0.2 * f,
+        "{klein:?} {gross:?}"
+    );
     assert!(gross.neu * 4 <= gross.kacheln, "{gross:?}");
     assert!(
         gross.schritt < 2.0 * klein.schritt + 1.0 * f,
