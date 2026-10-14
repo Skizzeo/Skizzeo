@@ -806,7 +806,7 @@ impl WallEdit {
             self.input = Some(i);
             out.changed = self.apply_typed(scene);
             if out.changed {
-                self.refresh(scene, cam, w, h, scale, enabled);
+                self.refresh_band(scene, cam, w, h, scale, enabled);
             }
             return Some(out);
         };
@@ -868,7 +868,7 @@ impl WallEdit {
             }
         }
         if out.changed {
-            self.refresh(scene, cam, w, h, scale, enabled);
+            self.refresh_band(scene, cam, w, h, scale, enabled);
         }
         Some(out)
     }
@@ -1087,8 +1087,34 @@ impl WallEdit {
         o.swing.map(|_| id)
     }
 
-    /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).
+    /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände),
+    /// dazu die Bemaßung unter der Maus: Startet ein Werkzeug ohne
+    /// Mausbewegung, bleibt sonst die Kette darunter samt Hand, Hervorhebung
+    /// und F1 „Bemaßung“ stehen (Review H4 zu #147). Wie beim Ereignis kommt
+    /// die Bemaßung vor dem Band.
     pub fn refresh(
+        &mut self,
+        scene: &Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        enabled: bool,
+    ) -> bool {
+        let ruht = enabled && !self.splitting() && !self.is_dragging();
+        let masse = self.masse.refresh(self.mouse, cam, (w, h), scale, ruht);
+        let mut changed = self.refresh_band(scene, cam, w, h, scale, enabled) || masse;
+        if self.masse.is_busy() {
+            changed |= self.hover.take().is_some() || self.griff;
+            self.griff = false;
+            (self.tuer_griff, self.breite_griff) = (None, None);
+        }
+        changed
+    }
+
+    /// Greifstelle am Band neu bestimmen; die Bemaßung hat das Ereignis
+    /// schon gesehen.
+    fn refresh_band(
         &mut self,
         scene: &Scene,
         cam: &Camera,
@@ -1283,6 +1309,11 @@ impl WallEdit {
             .flatten();
         let mut out = match masse {
             Some(o) => {
+                // Auch über der Bemaßung weiß das Band, wo die Maus steht
+                // ([`Self::refresh`])
+                if let Event::MouseMove { x, y, .. } = *e {
+                    self.mouse = Some((x, y));
+                }
                 if self.masse.is_busy() {
                     self.hover = None;
                     self.griff = false;
@@ -1341,7 +1372,7 @@ impl WallEdit {
                 if let Event::MouseUp { x, y, .. } = *e {
                     self.mouse = Some((x, y));
                 }
-                self.refresh(scene, cam, w, h, scale, enabled);
+                self.refresh_band(scene, cam, w, h, scale, enabled);
             }
             out.redraw = o.redraw;
             out.changed = o.changed;
@@ -1355,7 +1386,7 @@ impl WallEdit {
                 if let Event::MouseUp { x, y, .. } = *e {
                     self.mouse = Some((x, y));
                 }
-                self.refresh(scene, cam, w, h, scale, enabled);
+                self.refresh_band(scene, cam, w, h, scale, enabled);
             }
             out.redraw = o.redraw;
             out.changed = o.changed;
@@ -1369,7 +1400,7 @@ impl WallEdit {
                 if let Event::MouseUp { x, y, .. } = *e {
                     self.mouse = Some((x, y));
                 }
-                self.refresh(scene, cam, w, h, scale, enabled);
+                self.refresh_band(scene, cam, w, h, scale, enabled);
             }
             out.redraw = o.redraw;
             out.changed = o.changed;
@@ -1383,7 +1414,7 @@ impl WallEdit {
                 if let Event::MouseUp { x, y, .. } = *e {
                     self.mouse = Some((x, y));
                 }
-                self.refresh(scene, cam, w, h, scale, enabled);
+                self.refresh_band(scene, cam, w, h, scale, enabled);
             }
             out.redraw = o.redraw;
             out.changed = o.changed;
@@ -1397,10 +1428,10 @@ impl WallEdit {
                     out.changed = self.update_drag(scene, cam, w, h);
                     out.redraw = out.changed;
                     if out.changed {
-                        self.refresh(scene, cam, w, h, scale, enabled);
+                        self.refresh_band(scene, cam, w, h, scale, enabled);
                     }
                 } else {
-                    out.redraw = self.refresh(scene, cam, w, h, scale, enabled);
+                    out.redraw = self.refresh_band(scene, cam, w, h, scale, enabled);
                 }
             }
             Event::MouseLeave => {
@@ -1423,7 +1454,7 @@ impl WallEdit {
             } => {
                 out.redraw = self.end_post();
                 self.mouse = Some((x, y));
-                self.refresh(scene, cam, w, h, scale, enabled);
+                self.refresh_band(scene, cam, w, h, scale, enabled);
                 // Griff am Blatt einer Tür: Aufschlag und DIN
                 if let (Some(id), Some(z)) = (self.tuer_griff, self.plan_z) {
                     out.consumed = true;
@@ -1608,7 +1639,7 @@ impl WallEdit {
                     }
                     out.consumed = true;
                     out.redraw = true;
-                    self.refresh(scene, cam, w, h, scale, enabled);
+                    self.refresh_band(scene, cam, w, h, scale, enabled);
                 }
             }
             // Leertaste an der Tür bei der Maus, sonst an der gewählten
@@ -1640,7 +1671,7 @@ impl WallEdit {
                     if tuer_edit::umschlagen(scene, id, mods.shift) {
                         out.changed = true;
                         out.redraw = true;
-                        self.refresh(scene, cam, w, h, scale, enabled);
+                        self.refresh_band(scene, cam, w, h, scale, enabled);
                     }
                 }
             }
@@ -1663,7 +1694,7 @@ impl WallEdit {
                 out.consumed = true;
                 out.changed = true;
                 out.redraw = true;
-                self.refresh(scene, cam, w, h, scale, enabled);
+                self.refresh_band(scene, cam, w, h, scale, enabled);
             }
             _ => {}
         }

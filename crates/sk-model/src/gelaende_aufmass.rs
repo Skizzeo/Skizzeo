@@ -536,6 +536,18 @@ impl Terrain {
         })
     }
 
+    /// Abtrag und Auftrag über einem Polygon (Landeswerte) gegen eine
+    /// waagerechte Sohle in `h` m ü. Bezug des Aufmaßes, exakt über die
+    /// Dreiecke (G2, [`sk_gelaende::volumen::Erdmenge`]): `ueber` ist das
+    /// Gelände über der Sohle, `unter` darunter. Teile außerhalb des Netzes
+    /// zählen nicht; `flaeche` sagt, wie viel im Netz liegt.
+    pub fn erdmenge_over(&self, ring: &[(f64, f64)], h: f64) -> sk_gelaende::volumen::Erdmenge {
+        let m = self.mesh();
+        let (e0, n0) = m.bezug;
+        let r: Vec<[f64; 2]> = ring.iter().map(|p| [p.0 - e0, p.1 - n0]).collect();
+        m.abfrage.erdmenge(&r, [h, 0.0, 0.0])
+    }
+
     /// Mittlere Höhe der Punkte im Gelände.
     pub fn mean_height(&self) -> Option<f64> {
         let m = self.mesh();
@@ -742,6 +754,21 @@ impl Model {
         self.terrain()?;
         let lage = self.lage();
         Some((lage.tief.get(&gr)? - self.nhn_aus(&lage)?) * 1000.0)
+    }
+
+    /// Abtrag und Auftrag des Aufmaßes über dem Umriss `outline` (Modell,
+    /// mm) gegen eine waagerechte Sohle in `z` mm über ±0,00 (G2): Fläche in
+    /// m², Mengen in m³. `None` ohne Aufmaß mit Lage und Höhenbezug.
+    pub fn terrain_erdmenge(
+        &self,
+        outline: &[Vec3],
+        z: f64,
+    ) -> Option<sk_gelaende::volumen::Erdmenge> {
+        let t = self.terrain()?;
+        let f = self.survey_frame()?;
+        let h0 = self.terrain_nhn()?;
+        let q: Vec<(f64, f64)> = outline.iter().map(|p| f.to_survey(p.x, p.y)).collect();
+        Some(t.erdmenge_over(&q, h0 + z / 1000.0))
     }
 
     /// Mit Aufmaß: Flächenmittel des Geländes über einem Umriss im Modell
@@ -1555,12 +1582,14 @@ mod tests {
         assert!(!neu.index.contains(&netz.index[0]));
     }
 
-    /// Frostschürze ab dem tiefsten Gelände am Plattenrand, Erdmengen aus
-    /// dem Flächenmittel unter der Platte (sollwerte-lindenhof-7.md): bei
-    /// ±0,00 = 24,95 liegt UK Schürze auf 23,723, das Mittel auf 24,753.
+    /// Frostschürze ab dem tiefsten Gelände am Plattenrand, Erdmengen über
+    /// das Netz (sollwerte-lindenhof-7.md): bei ±0,00 = 24,95 liegt UK
+    /// Schürze auf 23,723, das Mittel auf 24,753.
     /// Ohne Aufmaß liegt die Gründung wieder wie vorher.
     #[test]
     fn lindenhof_schuerze_und_erdmengen() {
+        use crate::qto_earth::{AUS_AUFMASS, STEIL};
+        use crate::qto_earth::{BACKFILL, DISPOSAL, EXCAVATION, FILL, GRAVEL, SLOPE, SUBGRADE};
         use crate::qto_earth::{TOPSOIL, TRENCH};
         let (mut m, _) = lindenhof_haus();
         let gr = m.foundation_level().unwrap();
@@ -1597,13 +1626,60 @@ mod tests {
         let mittel = 24.95 + g.terrain_z / 1000.0;
         assert!((mittel - 24.753).abs() < 0.0005, "Mittel {mittel}");
         assert!((g.embedment - 800.0).abs() < 1e-6);
+        // G2 über das Netz: innerhalb der Schürze Auffüllung bis UK Schicht
+        // 24,58 unter N = Gelände − 0,30, also gegen 24,88 = −70 mm
+        let innen = [
+            (7350.0, 6350.0),
+            (16650.0, 6350.0),
+            (16650.0, 13650.0),
+            (7350.0, 13650.0),
+        ]
+        .map(|(x, y)| sk_math::vec3(x, y, 0.0));
+        let e = m.terrain_erdmenge(&innen, -70.0).unwrap();
+        assert!((e.flaeche - 67.89).abs() < 1e-6, "{e:?}");
+        assert!((e.unter - 8.549).abs() < 0.001 && e.ueber > 0.04, "{e:?}");
+        // im Leistungsverzeichnis über das Netz (§G2 der Sollwerte):
+        // Abtrag und Auftrag getrennt, der Ansatz nennt das Verfahren mit
+        // den Dreiecken des beschnittenen Netzes (konvexe Hülle: 203)
         let s = crate::qto::schedule(&m);
         let ansatz = |k: &str| s.auto.iter().find(|a| a.key == k).unwrap().formula.clone();
+        let summe = |k: &str| {
+            s.auto
+                .iter()
+                .filter(|a| a.key == k)
+                .map(|a| a.value)
+                .sum::<f64>()
+        };
+        for (k, soll, teiler) in [
+            (TOPSOIL, 42.9, 1e9),
+            (EXCAVATION, 0.044, 1e9),
+            (TRENCH, 8.762, 1e9),
+            (SUBGRADE, 67.89, 1e6),
+            (GRAVEL, 10.184, 1e9),
+            (FILL, 8.549, 1e9),
+            (DISPOSAL, 8.806, 1e9),
+        ] {
+            assert!(
+                (summe(k) / teiler - soll).abs() < 0.001,
+                "{k} {}",
+                summe(k) / teiler
+            );
+        }
+        assert_eq!(summe(BACKFILL) + summe(SLOPE), 0.0);
         assert!(
-            ansatz(TRENCH).ends_with("; Gelände aus Aufmaß, Mittel 24,75"),
+            ansatz(TRENCH).ends_with(
+                "; aus Geländemodell, Dreiecksprismen (REB-VB 22.013), 200 Dreiecke, \
+                 Aufmaß hoehenaufmass-lindenhof-7.csv, 2026-10-12"
+            ),
             "{}",
             ansatz(TRENCH)
         );
+        // exakt: keine Marke für den Hinweis (VOB-Prüfung A3); 2,8 %
+        // Gefälle: kein Hinweis nach DIN 4124 (A4)
+        assert!(s
+            .auto
+            .iter()
+            .all(|a| !a.formula.contains(AUS_AUFMASS) && !a.formula.contains(STEIL)));
         assert!(!ansatz(TOPSOIL).contains("Aufmaß"));
         // Verschieben: die Schürze folgt dem tiefsten Punkt
         m.begin("Verschieben");
@@ -1703,6 +1779,78 @@ mod tests {
         assert!(m.location().utm.is_none());
         let z = m.terrain_z_at(Some(b), 7000.0, 6000.0);
         assert!(z.is_finite() && z <= 0.0, "{z}");
+    }
+
+    /// G2 auf ebenem Gelände: Das Netz gibt dieselben Mengen wie die Ebene,
+    /// ohne und mit Böschung; nur die Böschung trägt die Marke für den
+    /// Hinweis (VOB-Prüfung G2, A3).
+    #[test]
+    fn erdmengen_netz_eben_wie_ebene() {
+        use crate::qto_earth::{erd_mengen, Boden, ErdBasis, AUS_AUFMASS, DREIECKSPRISMEN};
+        use crate::qto_earth::{BACKFILL, EXCAVATION, SLOPE};
+        let (mut m, _) = lindenhof_haus();
+        let a = sk_gelaende::lesen::lesen(b"1 0 0 10\n2 60 0 10\n3 60 60 10\n4 0 60 10\n").unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "eben.txt", "2026-10-14", 32)));
+        m.commit();
+        for (nhn, boeschung) in [(9.5, false), (8.5, true)] {
+            m.begin("Höhe");
+            assert!(m.set_terrain_nhn(nhn));
+            m.commit();
+            let g = m.ground_bases().remove(0);
+            let mengen = |b: &ErdBasis| {
+                let mut v: Vec<(&str, f64, String)> = Vec::new();
+                erd_mengen(b, &Boden::default(), |k, x, f| v.push((k, x, f)));
+                v
+            };
+            let summe = |v: &[(&str, f64, String)], k: &str| -> f64 {
+                v.iter().filter(|e| e.0 == k).map(|e| e.1).sum()
+            };
+            let mit = ErdBasis::im_modell(&m, &g);
+            assert!(mit.netz.is_some());
+            let (netz, ebene) = (mengen(&mit), mengen(&ErdBasis::aus(&g)));
+            assert_eq!(summe(&ebene, SLOPE) > 0.0, boeschung);
+            for (k, x, _) in &ebene {
+                let (a, b) = (summe(&netz, k), summe(&ebene, k));
+                assert!((a - b).abs() <= 1e-6 * b.abs().max(1e6), "{k} {x}: {a} {b}");
+            }
+            for (k, _, f) in &netz {
+                let boe = f.starts_with("Böschung");
+                assert_eq!(
+                    f.contains(AUS_AUFMASS),
+                    boeschung && (boe || *k == BACKFILL),
+                    "{k}: {f}"
+                );
+                if matches!(*k, EXCAVATION | BACKFILL) && !boe {
+                    assert!(f.contains(DREIECKSPRISMEN), "{k}: {f}");
+                }
+            }
+        }
+    }
+
+    /// Gelände steiler als 1:10 an der Baugrube: Hinweis nach DIN 4124 am
+    /// ersten Aushub (VOB-Prüfung G2, A4); die Mengen bleiben dieselben.
+    #[test]
+    fn steiles_gelaende_gibt_hinweis() {
+        use crate::qto_earth::{steil_hinweis, STEIL};
+        let (mut m, _) = lindenhof_haus();
+        let a = sk_gelaende::lesen::lesen(b"1 0 0 10\n2 60 0 22\n3 60 60 22\n4 0 60 10\n").unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "hang.txt", "2026-10-14", 32)));
+        m.commit();
+        let s = crate::qto::schedule(&m);
+        let mit: Vec<_> = s
+            .auto
+            .iter()
+            .filter(|a| a.formula.contains(STEIL))
+            .collect();
+        assert_eq!(mit.len(), 1, "{:?}", s.auto);
+        let h = steil_hinweis(&mit[0].formula).unwrap();
+        assert!(
+            h.starts_with("Gelände steigt an der Baugrube mit 20,0 % an: senkrechte Wand"),
+            "{h}"
+        );
+        assert_eq!(steil_hinweis("Ring 12,11 m²"), None);
     }
 
     /// Zu viele Stücke für Höhenlinien: vorab gezählt, ein gröberer

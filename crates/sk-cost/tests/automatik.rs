@@ -165,56 +165,88 @@ fn unbekannter_auto_schluessel_gibt_befund() {
     );
 }
 
-/// Mit Höhenaufmaß rechnen die Erdmengen in G1 aus der mittleren
-/// Geländehöhe unter der Platte: der Mengenansatz nennt sie, Kostenblatt
-/// und LV geben den Hinweis (plan-gelaendemodul.md §5 G1). Ohne Aufmaß
-/// bleibt alles wie bisher.
+/// Mit Höhenaufmaß rechnen die Erdmengen über das Netz (G2): Der
+/// Mengenansatz nennt das Verfahren, das LV setzt die Vorbemerkung dazu,
+/// einen Hinweis gibt es nicht (VOB-Prüfung G2, A2 und A3). Deckt das Netz
+/// die Baugrube nicht, rechnen sie wie in G1 aus der mittleren Geländehöhe,
+/// und Kostenblatt und LV geben den Hinweis. Ohne Aufmaß bleibt alles wie
+/// bisher.
 #[test]
 fn erdmengen_aus_dem_aufmass_geben_hinweis() {
     use sk_cost::befund::Ort;
-    use sk_cost::lv::{lv_aus, LvWahl};
+    use sk_cost::lv::{lv_aus, LvWahl, VORBEMERKUNG_NETZ};
     use sk_cost::rechnung::ERDE_AUS_MITTEL;
+    use sk_model::qto_earth::DREIECKSPRISMEN;
     let aushub = leistung(AUSHUB, "Aushub", 20, "unit=m3 basis=auto auto=earth.trench");
-    let mut z = vec![aushub.clone()];
-    z.extend(
-        [
-            "[terrain] src=\"aufmass.txt\" crs=local hsys=DHHN2016 local=1 e0=100 n0=100 rot=0",
-            "[tpoint] nr=1 e=0 n=0 h=10",
-            "[tpoint] nr=2 e=200 n=0 h=11",
-            "[tpoint] nr=3 e=200 n=200 h=12",
-            "[tpoint] nr=4 e=0 n=200 h=11",
-        ]
-        .map(String::from),
-    );
-    let m = haus(&z);
-    assert!(m.terrain().is_some());
-    let b = blatt(&m);
+    let mit_aufmass = |punkte: [&str; 4]| {
+        let mut z = vec![aushub.clone()];
+        z.push(
+            "[terrain] src=\"aufmass.txt\" read=\"2026-10-14\" crs=local hsys=DHHN2016 local=1 \
+             e0=100 n0=100 rot=0"
+                .to_string(),
+        );
+        z.extend(punkte.map(String::from));
+        haus(&z)
+    };
     let hinweis = |v: &[sk_cost::Befund]| v.iter().filter(|x| x.satz == ERDE_AUS_MITTEL).count();
-    assert_eq!(hinweis(&b.befunde), 1, "{:?}", b.befunde);
-    let a = Guid::from_ifc(AUSHUB).unwrap();
-    let q = b
-        .positionen
-        .iter()
-        .find(|p| p.quelle == Quelle::Leistung(a))
-        .expect("Graben als Position");
-    assert!(q.ansatz.iter().all(|x| x
-        .formel
-        .as_deref()
-        .is_some_and(|f| f.contains("; Gelände aus Aufmaß, Mittel "))));
-    let k = lesen::katalog(&m, None);
     let w = LvWahl {
         los: Guid::from_ifc("1S7bUW001008030000000A").unwrap(),
         untertitel: false,
         preise: false,
         heute: None,
     };
-    let lv = lv_aus(&m, &b, &k, &w);
+    let a = Guid::from_ifc(AUSHUB).unwrap();
+    let graben = |b: &Kostenblatt| {
+        b.positionen
+            .iter()
+            .find(|p| p.quelle == Quelle::Leistung(a))
+            .expect("Graben als Position")
+            .ansatz
+            .iter()
+            .map(|x| x.formel.clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+
+    // das Netz deckt die Baugrube
+    let m = mit_aufmass([
+        "[tpoint] nr=1 e=0 n=0 h=10",
+        "[tpoint] nr=2 e=200 n=0 h=11",
+        "[tpoint] nr=3 e=200 n=200 h=12",
+        "[tpoint] nr=4 e=0 n=200 h=11",
+    ]);
+    assert!(m.terrain().is_some());
+    let b = blatt(&m);
+    assert_eq!(hinweis(&b.befunde), 0, "{:?}", b.befunde);
+    let f = graben(&b);
+    assert!(
+        f.iter().all(|f| f.contains(DREIECKSPRISMEN)
+            && f.ends_with("2 Dreiecke, Aufmaß aufmass.txt, 2026-10-14")),
+        "{f:?}"
+    );
+    let lv = lv_aus(&m, &b, &lesen::katalog(&m, None), &w);
+    assert!(lv.befunde.iter().all(|x| x.satz != ERDE_AUS_MITTEL));
+    assert_eq!(lv.kopf.vorbemerkungen.as_deref(), Some(VORBEMERKUNG_NETZ));
+
+    // das Netz deckt nur einen Teil: mittlere Höhe mit Hinweis
+    let m = mit_aufmass([
+        "[tpoint] nr=1 e=100 n=100 h=10",
+        "[tpoint] nr=2 e=102 n=100 h=10",
+        "[tpoint] nr=3 e=102 n=102 h=10",
+        "[tpoint] nr=4 e=100 n=102 h=10",
+    ]);
+    let b = blatt(&m);
+    assert_eq!(hinweis(&b.befunde), 1, "{:?}", b.befunde);
+    assert!(graben(&b)
+        .iter()
+        .all(|f| f.contains("; Gelände aus Aufmaß, Mittel ")));
+    let lv = lv_aus(&m, &b, &lesen::katalog(&m, None), &w);
     let im_lv: Vec<_> = lv
         .befunde
         .iter()
         .filter(|x| x.satz == ERDE_AUS_MITTEL)
         .collect();
     assert_eq!(im_lv.len(), 1, "{:?}", lv.befunde);
+    assert_eq!(lv.kopf.vorbemerkungen, None);
     // Ort: die Position im LV (OZ ohne Los)
     let lv_pos = lv
         .titel

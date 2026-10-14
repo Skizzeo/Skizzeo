@@ -92,12 +92,70 @@ pub fn schenkel(m: &Model, o: &Opening) -> Option<Schenkel> {
     Some((legs.collect(), z0, z1))
 }
 
-/// Millimeter je Bildpunkt bei `p`.
+/// Millimeter je Bildpunkt bei `p`, senkrecht gemessen (Fang beim Ziehen
+/// der Höhe).
 fn mm_je_px(cam: &Camera, p: Vec3, w: f64, h: f64) -> Option<f64> {
     let a = cam.project(p, w, h)?;
     let b = cam.project(p + vec3(0.0, 0.0, 100.0), w, h)?;
     let n = (a.0 - b.0).hypot(a.1 - b.1);
     (n > 1e-6).then(|| 100.0 / n)
+}
+
+/// Millimeter je Bildpunkt quer zum Blick in der Tiefe von `p`: so weit
+/// liegt dort ein Punkt vom Blickstrahl, der im Bild einen Bildpunkt neben
+/// der Maus liegt, in jeder Richtung gleich. Von oben wird eine senkrechte
+/// Strecke beliebig kurz, ihr Maß taugt dafür nicht (Review B1 zu #151).
+fn mm_quer(cam: &Camera, p: Vec3, h: f64) -> f64 {
+    let s = match cam.ortho {
+        Some(half) => half,
+        None => (p - cam.eye).dot(cam.forward()).max(cam.near()) * (cam.fov_y * 0.5).tan(),
+    };
+    2.0 * s / h
+}
+
+/// Wie weit (mm) die Maus an einem Punkt neben dem Blickstrahl greift:
+/// [`GRIFF_PX`] Bildpunkte in seiner Tiefe.
+pub(crate) fn griff(cam: &Camera, h: f64, scale: f64) -> impl Fn(Vec3) -> f64 + '_ {
+    move |p| GRIFF_PX * scale * mm_quer(cam, p, h)
+}
+
+/// Abstand (Bildpunkte) der Maus `m` vom Bild der Strecke `a`–`b`, so weit
+/// sie vor der Nahebene liegt (Review H1 zu #151); `None`, wenn nichts
+/// davon.
+fn strecke_px(cam: &Camera, w: f64, h: f64, m: (f64, f64), a: Vec3, b: Vec3) -> Option<f64> {
+    let tiefe = |p: Vec3| (p - cam.eye).dot(cam.forward());
+    let n = cam.near() * 1.001;
+    let (ta, tb) = (tiefe(a), tiefe(b));
+    let (a, b) = match (ta > n, tb > n) {
+        (true, true) => (a, b),
+        (false, false) => return None,
+        (true, false) => (a, a + (b - a) * ((ta - n) / (ta - tb))),
+        (false, true) => (b + (a - b) * ((tb - n) / (tb - ta)), b),
+    };
+    let (a, b) = (cam.project(a, w, h)?, cam.project(b, w, h)?);
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let t =
+        (((m.0 - a.0) * dx + (m.1 - a.1) * dy) / (dx * dx + dy * dy).max(1e-12)).clamp(0.0, 1.0);
+    Some((m.0 - a.0 - t * dx).hypot(m.1 - a.1 - t * dy))
+}
+
+/// Abstand (Bildpunkte) der Maus `m` vom Bild der vier Seiten des Bands
+/// auf dem Schenkel: unten, oben, am Anfang, am Ende.
+fn seiten_px(
+    cam: &Camera,
+    w: f64,
+    h: f64,
+    m: (f64, f64),
+    s: &crate::scene::kanten::Schenkel,
+) -> [Option<f64>; 4] {
+    let at = |e: Vec3, z: f64| vec3(e.x, e.y, z);
+    let seite = |a, b| strecke_px(cam, w, h, m, a, b);
+    [
+        seite(at(s.a, s.z0), at(s.b, s.z0)),
+        seite(at(s.a, s.z1), at(s.b, s.z1)),
+        seite(at(s.a, s.z0), at(s.a, s.z1)),
+        seite(at(s.b, s.z0), at(s.b, s.z1)),
+    ]
 }
 
 /// Senkrechte Ebene durch den Schenkel `a`–`b`: Richtung und Normale.
@@ -124,8 +182,10 @@ pub fn treffer(
 ) -> Option<Treffer> {
     let (o, d) = cam.ray(x, y, w, h);
     let mut best: Option<(f64, Treffer)> = None;
-    // Nur die Schenkel in den Feldern, die der Strahl kreuzt (W43 B1)
-    let (_, wand) = scene.kanten_strahl(o, d, |s| {
+    // Nur die Schenkel in den Zellen, die der Strahl kreuzt, und so weit
+    // daneben, wie die Maus greift; die gehaltene Öffnung immer (W43 B1,
+    // Review H1 zu #147)
+    let (_, wand) = scene.kanten_strahl(o, d, griff(cam, h, scale), halten, |s| {
         if !scene.pickable(s.id) {
             return None;
         }
@@ -138,35 +198,55 @@ pub fn treffer(
         if t <= 0.0 || best.is_some_and(|b| b.0 <= t) {
             return None;
         }
+        // In der Öffnung trifft er; daneben zählt nur der Abstand im Bild,
+        // in der Ebene gemessen täuscht er: schräg von oben liegt der
+        // Schnitt unter dem Boden, von oben entartet das Maß (perf_kanten
+        // und Review B1 zu #151)
         let p = o + d * t;
-        let mm = mm_je_px(cam, p, w, h)?;
-        let tol = GRIFF_PX * scale * mm;
-        let rand = if halten == Some(s.id) {
-            HALTEN_PX * scale * mm
+        let (u, z) = ((p - s.a).dot(dir), p.z);
+        let innen = (0.0..=len).contains(&u) && (s.z0..=s.z1).contains(&z);
+        let px = if halten == Some(s.id) {
+            HALTEN_PX
         } else {
-            tol
-        };
-        let (u, z, z0, z1) = ((p - s.a).dot(dir), p.z, s.z0, s.z1);
-        if u < -rand || u > len + rand || z < z0 - rand || z > z1 + rand {
+            GRIFF_PX
+        } * scale;
+        // Liegt schon die Kugel um das Band weiter vom Strahl, als die Maus
+        // in ihrer größten Tiefe greift, liegt es im Bild weiter weg
+        let mitte = vec3(
+            (s.a.x + s.b.x) * 0.5,
+            (s.a.y + s.b.y) * 0.5,
+            (s.z0 + s.z1) * 0.5,
+        );
+        let r = 0.5 * len.hypot(s.z1 - s.z0);
+        let v = mitte - o;
+        let quer = (v - d * v.dot(d)).length();
+        if !innen && quer - r > px * mm_quer(cam, mitte + cam.forward() * r, h) {
+            debug_assert!(seiten_px(cam, w, h, (x, y), s)
+                .iter()
+                .flatten()
+                .all(|&a| a > px));
             return None;
         }
-        // Die nächste Kante innerhalb des Greifabstands
-        let in_u = u >= -tol && u <= len + tol;
-        let in_z = z >= z0 - tol && z <= z1 + tol;
-        let mut kanten = Vec::new();
-        if s.k == 0 && in_z {
-            kanten.push((u.abs(), Kante::Ende(0)));
+        let seiten = seiten_px(cam, w, h, (x, y), s);
+        let nah = seiten
+            .iter()
+            .flatten()
+            .fold(f64::INFINITY, |a, &b| a.min(b));
+        if !innen && nah > px {
+            return None;
         }
-        if s.k + 1 == s.n && in_z {
-            kanten.push(((u - len).abs(), Kante::Ende(s.n)));
+        // Die nächste Kante bis [`GRIFF_PX`] im Bild
+        let [unten, oben, anfang, ende] = seiten;
+        let mut kanten = vec![(unten, Kante::Unten), (oben, Kante::Oben)];
+        if s.k == 0 {
+            kanten.push((anfang, Kante::Ende(0)));
         }
-        if in_u {
-            kanten.push(((z - z0).abs(), Kante::Unten));
-            kanten.push(((z1 - z).abs(), Kante::Oben));
+        if s.k + 1 == s.n {
+            kanten.push((ende, Kante::Ende(s.n)));
         }
         let kante = kanten
             .into_iter()
-            .filter(|x| x.0 <= tol)
+            .filter_map(|(a, k)| Some((a.filter(|&a| a <= GRIFF_PX * scale)?, k)))
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|x| x.1);
         let tr = Treffer {
@@ -273,12 +353,12 @@ fn geschosse(m: &Model, st: StoreyId) -> Vec<(StoreyId, f64)> {
         .collect()
 }
 
-/// Wandzug der Außenfläche, auf der die Öffnung `id` steht.
+/// Wandzug der Außenfläche, auf der die Öffnung `id` steht, über das
+/// Raster der Szene (Integration H-160a).
 pub fn zug(scene: &Scene, id: ElementId) -> Option<RunId> {
     let m = scene.model();
     let (o, st) = (m.opening(id)?, m.element(id)?.storey);
-    let koerper = |r| scene.koerper(r);
-    super::breite_edit::flaeche_bei(m, &koerper, st, *o.path.first()?).map(|f| f.0.run)
+    super::breite_edit::flaeche_in(scene, st, *o.path.first()?).map(|f| f.0.run)
 }
 
 /// Spielraum einer Kante der Öffnung `id` am Zug `run`: von OK der Decke
@@ -1132,6 +1212,106 @@ pub(super) mod tests {
         let pick =
             crate::selection::pick_at(&mut s, &cam, crate::ui::ViewKind::Persp, None, x, y, W, H);
         assert_eq!(pick, Some(id));
+    }
+
+    /// Eine Strecke, die hinter die Nahebene reicht, zählt im Bild mit dem
+    /// Stück davor; ganz dahinter gar nicht (Review H1 zu #151: vorher
+    /// entfiel dann die Prüfung im Bild).
+    #[test]
+    fn strecke_hinter_der_nahebene() {
+        let cam = Camera::looking_at(vec3(0.0, 0.0, 1000.0), vec3(0.0, 10_000.0, 1000.0), 45.0);
+        let (a, b) = (vec3(2000.0, 3000.0, 1000.0), vec3(-2000.0, -3000.0, 1000.0));
+        assert!(cam.project(b, W, H).is_none());
+        let auf = cam.project(vec3(1000.0, 1500.0, 1000.0), W, H).unwrap();
+        assert!(strecke_px(&cam, W, H, auf, a, b).unwrap() < 0.01);
+        let neben = (auf.0, auf.1 - 50.0);
+        let d = strecke_px(&cam, W, H, neben, a, b).unwrap();
+        assert!((40.0..=50.0).contains(&d), "{d}");
+        let (c, e) = (vec3(0.0, -100.0, 1000.0), vec3(100.0, -200.0, 1000.0));
+        assert_eq!(strecke_px(&cam, W, H, auf, c, e), None);
+    }
+
+    /// Übersicht schräg von oben aus 470 m wie in `perf_kanten` bei 1000
+    /// Häusern: Am Boden vor der Hauswand liegt der Schnitt des Strahls mit
+    /// der Ebene des Fensters Meter unter dem Boden, nach dem senkrechten
+    /// Maß in der Ebene noch im Greifabstand, im Bild aber mehr als
+    /// [`GRIFF_PX`] daneben: kein Treffer. Näher am Fenster greift die Maus
+    /// (Review zu #151).
+    #[test]
+    fn im_bild_gemessen() {
+        let (s, _, id, ..) = haus();
+        let ziel = vec3(240_000.0, 240_000.0, 0.0);
+        let cam = Camera::looking_at(ziel + vec3(-0.5, -0.9, 0.9) * 480_000.0, ziel, 45.0);
+        let o = s.model().opening(id).unwrap();
+        let (z0, z1) = band(&s, id);
+        let x1 = o.path[0].x.max(o.path[1].x);
+        let maus = |g: Vec3| cam.project(g, W, H).unwrap();
+        let sch = crate::scene::kanten::Schenkel {
+            id,
+            k: 0,
+            n: 1,
+            a: flat(o.path[0]),
+            b: flat(o.path[1]),
+            z0,
+            z1,
+        };
+        let abstand = |m| {
+            seiten_px(&cam, W, H, m, &sch)
+                .into_iter()
+                .flatten()
+                .fold(f64::INFINITY, f64::min)
+        };
+        // 7 m rechts des Fensters und 2,5 m vor der Wand am Boden
+        let fern = maus(vec3(x1 + 7000.0, -2500.0, 0.0));
+        let (ro, rd) = cam.ray(fern.0, fern.1, W, H);
+        let p = ro + rd * ((o.path[0].y - ro.y) / rd.y);
+        let tol = GRIFF_PX * mm_je_px(&cam, p, W, H).unwrap();
+        assert!(
+            p.z < -3000.0 && p.x - x1 < tol && z0 - p.z < tol,
+            "{p:?} {tol}"
+        );
+        let a = abstand(fern);
+        assert!(a > GRIFF_PX, "{a} px");
+        assert!(treffer(&s, &cam, fern, W, H, 1.0, None).is_none());
+        // Gehalten greift sie weiter
+        assert!(a < HALTEN_PX, "{a} px");
+        assert_eq!(
+            treffer(&s, &cam, fern, W, H, 1.0, Some(id)).map(|t| t.id),
+            Some(id)
+        );
+        // Am Fuß der Wand unter dem Fenster
+        let nah = maus(vec3(x1 - 200.0, o.path[0].y, 0.0));
+        assert!(abstand(nah) < GRIFF_PX);
+        assert_eq!(
+            treffer(&s, &cam, nah, W, H, 1.0, None).map(|t| t.id),
+            Some(id)
+        );
+    }
+
+    /// Von weit weg greift die Maus weiter als der feste Rand des Rasters
+    /// um die Schenkel: Die gehaltene Öffnung bleibt 50 Bildpunkte neben
+    /// ihrer Kante getroffen, Meter außerhalb des Hauses (Review H1 zu #147).
+    #[test]
+    fn halten_von_weit_weg() {
+        let (s, _, id, ..) = haus();
+        let cam = Camera::looking_at(
+            vec3(7500.0, -96_000.0, 3500.0),
+            vec3(7500.0, 0.0, 1500.0),
+            45.0,
+        );
+        let (z0, z1) = band(&s, id);
+        let (x, y) = bei(&s, &cam, id, 7500.0, (z0 + z1) / 2.0);
+        let p = (x + 50.0, y);
+        // So weit rechts der Öffnung, in ihrer Fläche: neben dem Haus
+        let (o, d) = cam.ray(p.0, p.1, W, H);
+        let fy = s.model().opening(id).unwrap().path[0].y;
+        let neben = o.x + d.x * (fy - o.y) / d.y;
+        assert!(neben > 11_500.0, "{neben}");
+        assert!(treffer(&s, &cam, p, W, H, 1.0, None).is_none());
+        assert_eq!(
+            treffer(&s, &cam, p, W, H, 1.0, Some(id)).map(|t| t.id),
+            Some(id)
+        );
     }
 
     /// Oberkante über das Wandband greifen und bis an den Sturz des OG
