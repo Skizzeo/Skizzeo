@@ -1,9 +1,10 @@
 //! Raumbuch im Paneel „Eigenschaften“ eines Raums (RB3): Nutzung, OK
-//! Fertigfußboden, lichte Höhe und je Fläche die Menge ihrer sichtbaren
-//! Schicht (Belag, Anstrich, Fliese, Sockelleiste), darunter blass der
+//! Fertigfußboden, lichte Höhe und je Fläche ihre Menge, darunter blass der
 //! Ausbautyp (Einstellungen #112 B2: lange Namen werden gekürzt, statt über
-//! die Bezeichnung zu laufen). Die Zeilen je Wandseite und Schicht mit
-//! Rechenweg zeigt RB5 im Mengenblatt.
+//! die Bezeichnung zu laufen). Decken die Schichten eines Typs ungleich viel
+//! (Anstrich nur über den Fliesen, Putz ganz), steht darunter jede Schicht
+//! mit ihrer Menge (Bedienbarkeit 40.6). Die Zeilen je Wandseite und
+//! Schicht mit Rechenweg zeigt RB5 im Mengenblatt.
 
 use super::{de, de_m};
 use sk_model::Model;
@@ -17,7 +18,9 @@ type Gehoert = fn(Flaeche) -> bool;
 
 /// Flächen im Paneel und welche Zeilen des Raumbuchs zu ihnen gehören.
 const FLAECHEN: [(&str, Gehoert); 6] = [
-    ("Boden", |f| f == Flaeche::Boden),
+    // VOB-Menge, mit Türnischen, anders als die Grundfläche (Bedienbarkeit
+    // 39.4, 40.5)
+    ("Boden (VOB)", |f| f == Flaeche::Boden),
     ("Estrich", |f| f == Flaeche::Estrich),
     ("Wand", |f| matches!(f, Flaeche::Wand(_))),
     ("Wandfliesen", |f| matches!(f, Flaeche::Fliesen(_))),
@@ -45,7 +48,7 @@ pub fn werte(
         .is_some_and(|s| s.nutzung.is_some());
     v.push(("Nutzung", s.name.clone()));
     if !gewaehlt {
-        v.push(("", VORGABE.into()));
+        v.extend([("", VORGABE.into()), ("", VORGABE_WEG.into())]);
     }
     let roh = Rohbau::mit(m, k, form.clone());
     let Some(a) = RaumAusbau::fuer(m, &roh) else {
@@ -75,51 +78,98 @@ pub fn werte(
     (v, mengen)
 }
 
-/// Unter der Nutzung, wenn keine gewählt ist.
-pub const VORGABE: &str = "Vorgabe, nicht gewählt";
+/// Unter der Nutzung, wenn keine gewählt ist (Bedienbarkeit 40.5), und
+/// wie man sie wählt.
+pub const VORGABE: &str = "Nicht gewählt, angenommen";
+pub const VORGABE_WEG: &str = "Wahl über den Stempelnamen";
 
 /// Weg zu fehlenden Ausbautypen (Einstellungen #112 B1): Jede Änderung der
 /// Vorlage im Reiter „Räume“ des Katalogs legt alle ihre Typen an; fehlt
 /// der Estrich des Geschosses, wählt man dort einen.
 pub const FEHLT_WEG: &str = "Vorlage im Katalog ändern";
 
-/// Menge der Fläche als Wert und je Ausbautyp eine Zeile darunter, aus den
-/// Zeilen der obersten Schicht; mit einem Typ dessen Name, mit mehreren
-/// Menge und Name, damit das Kürzen nur den Namen trifft. `None` ohne
-/// Zeile.
+/// Je Schicht (Nummer im Ausbautyp) die Menge.
+type JeSchicht = Vec<(usize, f64)>;
+
+/// Menge der Fläche als Wert und je Ausbautyp eine Zeile darunter; mit
+/// einem Typ dessen Name, mit mehreren Menge und Name, damit das Kürzen nur
+/// den Namen trifft. Die Menge eines Typs ist die seiner größten Schicht,
+/// also der ganzen Fläche. Decken seine Schichten ungleich viel, folgt je
+/// Schicht von der Rohbauseite aus eine Zeile „16,55 m² Gipsputz 1,5 cm“,
+/// die Menge vorn, weil das Kürzen hinten trifft (Darstellung B1).
+/// `None` ohne Zeile.
 fn flaeche(m: &Model, zeilen: &[Zeile], gehoert: Gehoert) -> Option<(String, Vec<String>)> {
-    let mut je_typ: Vec<(sk_model::LayerSetId, Bezug, f64)> = Vec::new();
+    // Je Typ die Einheit und je Schicht die Summe
+    let mut je_typ: Vec<(sk_model::LayerSetId, Bezug, JeSchicht)> = Vec::new();
     for z in zeilen.iter().filter(|z| gehoert(z.flaeche)) {
-        let Some((id, 0)) = z.typ else {
+        let Some((id, j)) = z.typ else {
             continue;
         };
-        match je_typ.iter_mut().find(|x| x.0 == id) {
-            Some(x) => x.2 += z.menge(),
-            None => je_typ.push((id, z.bezug, z.menge())),
+        let i = match je_typ.iter().position(|x| x.0 == id && x.1 == z.bezug) {
+            Some(i) => i,
+            None => {
+                je_typ.push((id, z.bezug, Vec::new()));
+                je_typ.len() - 1
+            }
+        };
+        let schichten = &mut je_typ[i].2;
+        match schichten.iter_mut().find(|x| x.0 == j) {
+            Some(x) => x.1 += z.menge(),
+            None => schichten.push((j, z.menge())),
         }
     }
-    let je_typ: Vec<(&str, Bezug, f64)> = je_typ
+    let je_typ: Vec<(&sk_model::LayerSet, Bezug, JeSchicht)> = je_typ
         .into_iter()
-        .filter_map(|(id, bezug, menge)| Some((m.layer_set(id)?.name.as_str(), bezug, menge)))
+        .filter_map(|(id, bezug, mut schichten)| {
+            schichten.sort_by_key(|x| std::cmp::Reverse(x.0));
+            Some((m.layer_set(id)?, bezug, schichten))
+        })
         .collect();
+    let ganz = |schichten: &[(usize, f64)]| schichten.iter().map(|x| x.1).fold(0.0, f64::max);
     // Summe je Einheit; eine Fläche hat in der Regel nur eine
     let mut summen: Vec<(Bezug, f64)> = Vec::new();
-    for &(_, bezug, menge) in &je_typ {
-        match summen.iter_mut().find(|x| x.0 == bezug) {
-            Some(x) => x.1 += menge,
-            None => summen.push((bezug, menge)),
+    for (_, bezug, schichten) in &je_typ {
+        match summen.iter_mut().find(|x| x.0 == *bezug) {
+            Some(x) => x.1 += ganz(schichten),
+            None => summen.push((*bezug, ganz(schichten))),
         }
     }
     let wert: Vec<String> = summen.iter().map(|&(b, x)| menge(b, x)).collect();
-    let typen = match je_typ.as_slice() {
-        [] => return None,
-        [(name, ..)] => vec![name.to_string()],
-        v => v
-            .iter()
-            .map(|&(name, b, x)| format!("{} {name}", menge(b, x)))
-            .collect(),
-    };
+    let mehrere = je_typ.len() > 1;
+    let mut typen = Vec::new();
+    for (t, bezug, schichten) in &je_typ {
+        typen.push(if mehrere {
+            format!("{} {}", menge(*bezug, ganz(schichten)), t.name)
+        } else {
+            t.name.clone()
+        });
+        let texte: Vec<String> = schichten.iter().map(|&(_, x)| menge(*bezug, x)).collect();
+        if texte.iter().all(|x| *x == texte[0]) {
+            continue;
+        }
+        for (&(j, _), x) in schichten.iter().zip(texte) {
+            typen.push(format!("{x} {}", schicht(m, t, j)));
+        }
+    }
+    if typen.is_empty() {
+        return None;
+    }
     Some((wert.join(" + "), typen))
+}
+
+/// Schicht `j` des Typs `t`: Baustoff mit Dicke („Gipsputz 1,5 cm“), ohne
+/// Dicke (Anstrich, Tapete) nur der Baustoff.
+fn schicht(m: &Model, t: &sk_model::LayerSet, j: usize) -> String {
+    let Some(l) = t.layers.get(j) else {
+        return "–".into();
+    };
+    let name = m.material(l.material).map_or("–", |x| x.name.as_str());
+    if l.thickness <= 0.0 {
+        return name.to_string();
+    }
+    let cm = l.thickness / 10.0;
+    let dec = usize::from((cm - cm.round()).abs() > 1e-6);
+    format!("{name} {} cm", de(cm, dec))
 }
 
 /// „20,11 m²“, „12,40 m“, „1,300 m³“.
@@ -192,8 +242,8 @@ mod tests {
             .floor;
         let boden = s.model().type_by_guid(boden.unwrap()).unwrap();
         let name = s.model().layer_set(boden).unwrap().name.clone();
-        assert!(wert(&v, "Boden").is_some_and(|x| x.ends_with(" m²") && !x.contains(&name)));
-        assert_eq!(darunter(&v, "Boden"), Some(name));
+        assert!(wert(&v, "Boden (VOB)").is_some_and(|x| x.ends_with(" m²") && !x.contains(&name)));
+        assert_eq!(darunter(&v, "Boden (VOB)"), Some(name));
         // Typen der Vorlage lassen sich nicht löschen, der Estrich des
         // Geschosses schon: Hinweis mit dem Weg
         assert!(s.edit_model("weg", |m| m.remove_type(boden).is_err()));
@@ -215,7 +265,7 @@ mod tests {
         let decke = s.model().clear_height(eg);
         let lichte = wert(&v, "Lichte Höhe").unwrap();
         assert_eq!(lichte, format!("{} m", super::de_m(decke - 10.0 - 160.0)));
-        for k in ["Boden", "Estrich", "Wand", "Wandfliesen", "Decke"] {
+        for k in ["Boden (VOB)", "Estrich", "Wand", "Wandfliesen", "Decke"] {
             assert!(
                 wert(&v, k).is_some_and(|x| x.ends_with(" m²")),
                 "{k}: {v:?}"
@@ -224,6 +274,46 @@ mod tests {
         }
         assert_eq!(wert(&v, "Sockelleiste"), None, "Fliesen ab Boden");
         assert_eq!(wert(&v, "Ausbau"), None);
+    }
+
+    /// Bedienbarkeit 40.6: Im Bad deckt der Anstrich die Wand nur über den
+    /// Fliesen, der Putz ganz. Der Wert der Wand ist die ganze Fläche, unter
+    /// dem Typ steht jede Schicht mit ihrer Menge, der Putz zuerst. Am Boden
+    /// decken alle Schichten gleich viel: keine Zeilen je Schicht.
+    #[test]
+    fn menge_je_schicht() {
+        let (mut s, r) = haus(10000.0, 8000.0);
+        assert!(s.edit_model("Bad", |m| {
+            m.set_space(r, |x| x.nutzung = Some(BATH_SPACE_GUID))
+                && sk_raum::ausbau::typen_anlegen(m, r)
+        }));
+        let v = werte(&s, r);
+        let zahl = |t: &str| {
+            let t = t.split(' ').next().unwrap();
+            t.replace('.', "").replace(',', ".").parse::<f64>().unwrap()
+        };
+        let i = v.iter().position(|x| x.0 == "Wand").unwrap();
+        let wand = zahl(&v[i].1);
+        let schichten: Vec<&str> = v[i + 2..]
+            .iter()
+            .take_while(|x| x.0.is_empty() && x.1.contains(" m² "))
+            .map(|x| x.1.as_str())
+            .collect();
+        assert_eq!(schichten.len(), 2, "{v:?}");
+        let (putz, anstrich) = (zahl(schichten[0]), zahl(schichten[1]));
+        // Menge vorn: das Kürzen am Ende trifft nur den Namen (B1)
+        assert!(
+            schichten[0].ends_with(" cm"),
+            "Putz mit Dicke: {schichten:?}"
+        );
+        assert!(
+            !schichten[1].ends_with(" cm"),
+            "Anstrich ohne: {schichten:?}"
+        );
+        assert!(anstrich < putz, "{schichten:?}");
+        assert_eq!(wand, putz, "die ganze Wand");
+        let j = v.iter().position(|x| x.0 == "Boden (VOB)").unwrap();
+        assert!(!v[j + 2].1.contains(" m² "), "{v:?}");
     }
 
     /// Ein Raum, der beim Teilen entsteht, bekommt seine Typen im selben
