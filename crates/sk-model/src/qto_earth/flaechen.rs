@@ -371,7 +371,8 @@ pub(crate) fn gelaende_mengen(
         ));
     }
 
-    // Verfüllung und Abfuhr setzen: bei 0 fällt die Zeile weg, eine fehlende
+    // Verfüllung und Abfuhr setzen: ganz entnommen (bis auf Rundungsreste,
+    // H173-3) fällt die Zeile weg, eine fehlende
     // Abfuhr entsteht hinter den Erdmengen ihrer Gründung; Keil (C2) an der
     // Verfüllung, die bleibt
     let mut weg = vec![false; out.len()];
@@ -396,12 +397,12 @@ pub(crate) fn gelaende_mengen(
             continue;
         };
         match z.abf_ix {
-            Some(k) if abfuhr[i] > 0.0 => {
+            Some(k) if abfuhr[i] > REST * 1e9 => {
                 out[k].value = abfuhr[i];
                 out[k].formula.push_str(text);
             }
             Some(k) => weg[k] = true,
-            None if abfuhr[i] > 0.0 => {
+            None if abfuhr[i] > REST * 1e9 => {
                 let r = AutoMenge {
                     key: DISPOSAL,
                     unit: "m3",
@@ -1305,6 +1306,13 @@ mod tests {
             .filter(|r| r.key == DISPOSAL && r.formula.contains("Einbau im Gelände"))
             .collect();
         assert!(!einbau.is_empty(), "{vorher:?}");
+        // eine ganz entnommene Baugrube ohne Abfuhrzeile aus Rundungsresten
+        // (H173-3)
+        assert!(crate::qto::schedule(&m)
+            .auto
+            .iter()
+            .filter(|r| r.key == DISPOSAL)
+            .all(|r| r.value > super::REST * 1e9));
         let text = crate::szo::write(&m);
         let wieder = crate::szo::read(&text, crate::GuidGen::with_seed(3))
             .unwrap()
