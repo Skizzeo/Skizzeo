@@ -19,7 +19,6 @@ use crate::erkennung::{formen_aus, rohbau, Kante, RaumForm, Teil, TOL};
 use sk_math::Vec3;
 use sk_model::{ElementId, ElementKind, Model, RunId, Space, StoreyId, WallChain};
 use std::borrow::Cow;
-use std::cell::OnceCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -122,7 +121,6 @@ pub(crate) struct Fl {
     pub kennung: u64,
     /// Tiefster, dann linkester Punkt des Umrisses (Ordnung der Räume).
     rang: Vec3,
-    grund: OnceCell<f64>,
 }
 
 impl Fl {
@@ -148,7 +146,6 @@ impl Fl {
             loecher,
             kennung: h.finish(),
             rang,
-            grund: OnceCell::new(),
             form,
         }
     }
@@ -159,13 +156,6 @@ impl Fl {
         drin(&self.kasten, p)
             && enthaelt(&self.rand, p)
             && !self.loecher.iter().any(|l| enthaelt(l, p))
-    }
-
-    /// Grundfläche (mm², [`crate::flaechen::grundflaeche`]), einmal gerechnet.
-    pub fn grundflaeche(&self) -> f64 {
-        *self
-            .grund
-            .get_or_init(|| crate::flaechen::grundflaeche(&self.form))
     }
 
     /// Ordnung der Räume: nach dem tiefsten, dann linkesten Punkt.
@@ -241,7 +231,12 @@ impl Lage {
                         form.stempel = crate::abgleich::stempel_in(s, f);
                     }
                 }
-                (form, if grund { f.grundflaeche() } else { 0.0 })
+                let a = if grund {
+                    crate::flaechen::grundflaeche_fertig(m, &form)
+                } else {
+                    0.0
+                };
+                (form, a)
             })
             .collect()
     }
@@ -433,19 +428,45 @@ struct Zuteilung {
 struct Geschoss {
     letzte: Option<Letzte>,
     raumliste: Option<Raumliste>,
+    /// [`ausbau_kennung`] beim letzten Zuteilen.
+    ausbau: Option<u64>,
     /// Nach dem Schlüssel der Gruppe.
     zuteilungen: NachSchluessel<Zuteilung>,
 }
 
 /// Fingerabdruck der Räume einer Gruppe (in ihrer Reihenfolge): was die
-/// Ankerregel und die Stempellage lesen.
-fn raeume_kennung(schluessel: u64, raeume: &[(ElementId, &Space)]) -> u64 {
+/// Ankerregel, die Stempellage und die Grundfläche lesen (Nutzung, dazu
+/// `ausbau` aus [`ausbau_kennung`]).
+fn raeume_kennung(schluessel: u64, ausbau: u64, raeume: &[(ElementId, &Space)]) -> u64 {
     let mut h = DefaultHasher::new();
     schluessel.hash(&mut h);
+    ausbau.hash(&mut h);
     for (id, s) in raeume {
         id.hash(&mut h);
         [s.anker.x, s.anker.y].map(f64::to_bits).hash(&mut h);
         s.stempel.map(|p| [p.x, p.y].map(f64::to_bits)).hash(&mut h);
+        s.nutzung.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Fingerabdruck dessen, was die Grundfläche im Fertigmaß
+/// ([`crate::flaechen::grundflaeche_fertig`]) außer Form und Nutzung liest:
+/// die Raumvorlagen des Projekts und die Typen mit ihren Schichtdicken.
+/// Ändert er sich, sehen alle Gruppen ihre Räume neu an (Bedienbarkeit
+/// 43.8). Ein Gang über Vorlagen und Typen, nicht über die Bauteile.
+fn ausbau_kennung(m: &Model) -> u64 {
+    let mut h = DefaultHasher::new();
+    for v in m.space_types() {
+        v.guid.hash(&mut h);
+        [v.floor, v.screed, v.wall, v.ceiling, v.skirting].hash(&mut h);
+        v.tiles.map(|t| (t.set, t.height.to_bits())).hash(&mut h);
+    }
+    for (id, t) in m.layer_sets().iter() {
+        (id, t.guid).hash(&mut h);
+        for l in &t.layers {
+            l.thickness.to_bits().hash(&mut h);
+        }
     }
     h.finish()
 }
@@ -881,6 +902,7 @@ impl Erkennung {
         let lage = self.lage(m, k, g);
         let lauf = self.lauf;
         let stand = m.raum_revision();
+        let ausbau = ausbau_kennung(m);
         // Räume, die der offene Schritt auf diesem Geschoss ändert: Die
         // Liste wird mit ihnen nachgeführt, im Schritt nicht je Bild neu
         // gesammelt (Review H-175h)
@@ -938,6 +960,10 @@ impl Erkennung {
                 raeume: raeume.iter().map(|&(_, id, a)| (id, a)).collect(),
             });
             je.iter_mut().for_each(|x| *x = Some(Vec::new()));
+        } else if gs.ausbau != Some(ausbau) {
+            // Vorlagen oder Typen geändert: Die Grundfläche jeder Gruppe kann
+            // sich ändern (Bedienbarkeit 43.8)
+            je.iter_mut().for_each(|x| *x = Some(Vec::new()));
         } else {
             for (gr, x) in lage.gruppen.iter().zip(&mut je) {
                 if !gs.zuteilungen.contains_key(&gr.schluessel) {
@@ -956,6 +982,7 @@ impl Erkennung {
                 raster = Some(r);
             }
         }
+        gs.ausbau = Some(ausbau);
         // Räume der Gruppen dazu: bei wenigen je Gruppe aus der Liste, sonst
         // in einem Gang über die Liste und ein Raster der Kästen (Review
         // #175 B1). Kästen können sich überdecken (Haus im Winkel eines
@@ -995,7 +1022,7 @@ impl Erkennung {
                 }
                 continue;
             };
-            let kennung = raeume_kennung(gr.schluessel, &r);
+            let kennung = raeume_kennung(gr.schluessel, ausbau, &r);
             if let Some(e) = gs
                 .zuteilungen
                 .get_mut(&gr.schluessel)
@@ -1019,8 +1046,8 @@ impl Erkennung {
                         }
                     }
                     Raumflaeche {
+                        grundflaeche: crate::flaechen::grundflaeche_fertig(m, &form),
                         form,
-                        grundflaeche: f.grundflaeche(),
                         kasten: f.kasten,
                     }
                 })
@@ -1355,7 +1382,10 @@ mod tests {
             assert_eq!(v, crate::raeume(m, st));
             assert!(v.iter().all(|f| f.raum.is_some()));
             for f in r.flaechen() {
-                assert_eq!(f.grundflaeche, crate::flaechen::grundflaeche(&f.form));
+                assert_eq!(
+                    f.grundflaeche,
+                    crate::flaechen::grundflaeche_fertig(m, &f.form)
+                );
             }
             let l = e.lage(m, &k, st);
             assert_eq!(e.stand(m, &k, st).raeume(), l.stand(m).raeume());
@@ -1942,6 +1972,72 @@ mod tests {
         }
         assert!(alle[2].iter().any(|f| f.raum == Some(y)), "Anker gerückt");
         assert!(alle[6].iter().all(|f| f.raum != Some(z)));
+    }
+
+    /// Bedienbarkeit 43.8: Die Grundfläche am Stempel ist die des
+    /// Mengenblatts, auch nach einem Wechsel der Nutzung und nach einer
+    /// geänderten Raumvorlage, ohne die Räume neu zu sammeln.
+    #[test]
+    fn grundflaeche_wie_im_mengenblatt() {
+        use sk_model::model::{BATH_SPACE_GUID, DEFAULT_SPACE_GUID};
+        let mut m = crate::raumliste::tests::haus();
+        let mut e = Erkennung::default();
+        let gleich = |e: &mut Erkennung, m: &Model| {
+            for (g, _) in m.storeys().iter() {
+                let mengen = crate::mengen::raeume(m, g);
+                let r = e.raumformen(m, m, g);
+                for f in r.flaechen() {
+                    let Some(id) = f.form.raum else { continue };
+                    let q = &mengen.iter().find(|x| x.0 == id).unwrap().1;
+                    assert!((f.grundflaeche - q.area).abs() < 1e-6, "{id:?}");
+                }
+            }
+        };
+        gleich(&mut e, &m);
+        let n0 = e.raumlisten();
+        let g = m.storeys().iter().next().unwrap().0;
+        let id = m.spaces(g)[0];
+        let vorher = |e: &mut Erkennung, m: &Model| {
+            e.raumformen(m, m, g)
+                .flaechen()
+                .find(|f| f.form.raum == Some(id))
+                .unwrap()
+                .grundflaeche
+        };
+        let a0 = vorher(&mut e, &m);
+        // Nutzung Bad mit Fliesen: kleiner
+        m.begin("Bad");
+        assert!(m.ensure_space_type(BATH_SPACE_GUID).is_some());
+        assert!(m.set_space(id, |s| s.nutzung = Some(BATH_SPACE_GUID)));
+        assert!(crate::ausbau::typen_anlegen(&mut m, id));
+        m.commit();
+        gleich(&mut e, &m);
+        let a1 = vorher(&mut e, &m);
+        assert!(a1 < a0, "Fliese abgezogen: {a1} {a0}");
+        // Vorlage ohne Wandbekleidung: Die übrigen Räume werden größer, ohne
+        // dass sich an ihnen etwas ändert
+        let andere = |e: &mut Erkennung, m: &Model| -> f64 {
+            let gs: Vec<StoreyId> = m.storeys().iter().map(|(g, _)| g).collect();
+            gs.into_iter()
+                .flat_map(|g| {
+                    e.raumformen(m, m, g)
+                        .flaechen()
+                        .filter(|f| f.form.raum.is_some_and(|r| r != id))
+                        .map(|f| f.grundflaeche)
+                        .collect::<Vec<_>>()
+                })
+                .sum()
+        };
+        let b0 = andere(&mut e, &m);
+        m.begin("Ohne Wand");
+        let mut w = m.space_type(DEFAULT_SPACE_GUID).unwrap().clone();
+        w.wall = None;
+        assert!(m.put_space_type(w));
+        m.commit();
+        gleich(&mut e, &m);
+        let b1 = andere(&mut e, &m);
+        assert!(b1 > b0, "ohne Putz größer: {b1} {b0}");
+        assert_eq!(e.raumlisten(), n0, "nur eingereiht");
     }
 
     #[test]
