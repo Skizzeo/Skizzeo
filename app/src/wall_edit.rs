@@ -704,7 +704,8 @@ impl WallEdit {
         if let Some(z) = &self.hoehe {
             return z.label();
         }
-        if let Some(n) = &self.hoehe_nach {
+        // Nur mit offener Eingabe, wie [`WallEdit::input`] (Review H1 zu #154)
+        if let Some(n) = self.hoehe_nach.as_ref().filter(|n| n.input().is_some()) {
             return n.label();
         }
         match (&self.drag, &self.last) {

@@ -1150,25 +1150,25 @@ fn same_material_ohne(
     if mine != theirs {
         return false;
     }
-    let x = with_display(x, y.display());
-    if ohne.is_empty() {
-        return x == *y;
+    let mut x = with_display(x, y.display());
+    if !ohne.is_empty() {
+        // Kennwerte der Module in `ohne` wie im Firmenkatalog, so zählen nur
+        // die übrigen; kopiert werden nur diese wenigen, nicht der ganze
+        // Baustoff (Review #155)
+        let zaehlt = |k: &str| {
+            !mat_prop(k)
+                .and_then(|p| p.module)
+                .is_some_and(|m| ohne.contains(&m))
+        };
+        x.props.retain(|k, _| zaehlt(k));
+        x.props.extend(
+            y.props
+                .iter()
+                .filter(|(k, _)| !zaehlt(k))
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
     }
-    let zaehlt = |k: &str| {
-        !mat_prop(k)
-            .and_then(|p| p.module)
-            .is_some_and(|m| ohne.contains(&m))
-    };
-    let ohne_props = |z: &Material| Material {
-        props: z
-            .props
-            .iter()
-            .filter(|(k, _)| zaehlt(k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        ..z.clone()
-    };
-    ohne_props(&x) == ohne_props(y)
+    x == *y
 }
 
 /// Abgleich der Oberflächen von Projekt und Firmenkatalog nach Guid,

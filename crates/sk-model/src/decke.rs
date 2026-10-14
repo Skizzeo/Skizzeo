@@ -651,13 +651,13 @@ impl Model {
         scope: Option<&[RunId]>,
     ) -> (Vec<ElementId>, Vec<ElementId>) {
         let (mut u, mut t) = (Vec::<(String, ElementId)>::new(), Vec::new());
-        for (id, e) in self.elements.iter() {
+        for id in self.decken_in(scope) {
+            let Some(e) = self.element(id) else {
+                continue;
+            };
             let ElementKind::Floor(f) = e.kind else {
                 continue;
             };
-            if !in_scope(scope, f.run) {
-                continue;
-            }
             if let Some(Ok(s)) = self.floor(f.run) {
                 if !s.soffits.is_empty() {
                     u.push((e.number.clone(), id));
@@ -702,8 +702,7 @@ impl Model {
         scope: Option<&[RunId]>,
         want: Option<Vec<ElementId>>,
     ) {
-        let want =
-            want.unwrap_or_else(|| self.abgleich_lesend(scope, || self.soffit_floors_in(scope)));
+        let want = want.unwrap_or_else(|| self.lesend(|| self.soffit_floors_in(scope)));
         // Bekleidung (W3): der eingebaute Baustoff bei der ersten
         if self.material_by_guid(CLADDING_MAT_GUID).is_none()
             && want.iter().any(|f| {
@@ -715,8 +714,9 @@ impl Model {
             self.ensure_cladding_material();
         }
         let have: Vec<(ElementId, ElementId)> = self
-            .elements
-            .iter()
+            .an_decken_in(scope)
+            .into_iter()
+            .filter_map(|id| Some((id, self.element(id)?)))
             .filter_map(|(id, e)| match e.kind {
                 ElementKind::SoffitInsulation { floor } if self.floor_in_scope(floor, scope) => {
                     Some((id, floor))
