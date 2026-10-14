@@ -345,7 +345,8 @@ impl Model {
                 self.opening_band(op)
                     .is_some_and(|z| z.1 > b + 1.0 && z.0 < t - 1.0)
             };
-            if !band.is_none_or(reicht) || !nah(&op.path) {
+            // Der billige Vortest zuerst (Review H10 zu #143)
+            if !nah(&op.path) || !band.is_none_or(reicht) {
                 continue;
             }
             out.extend(

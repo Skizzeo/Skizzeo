@@ -253,11 +253,11 @@ pub struct Model {
     /// der Datei.
     trades: Vec<Trade>,
     buildings: Arena<Building>,
-    storeys: Arena<Storey>,
-    elements: Arena<Element>,
-    runs: Arena<WallRun>,
+    storeys: Erfasst<Storey>,
+    elements: Erfasst<Element>,
+    runs: Erfasst<WallRun>,
     /// Anschlüsse zwischen Wandzügen, aus den Punkten abgeleitet (B5a).
-    joins: Vec<Join>,
+    joins: JoinListe,
     defaults: Defaults,
     /// Zuletzt vergebene laufende Nummer je Kategorie (wird nie zurückgesetzt).
     numbers: [u32; Category::ALL.len()],
@@ -291,6 +291,8 @@ pub struct Model {
     mass_sicht: crate::bemassung::MassSicht,
     /// Verzeichnis für einen lesenden Gang ([`Model::lesend`]).
     merker: verzeichnis::Merker,
+    /// Das Verzeichnis zwischen den Gängen, nachgeführt beim nächsten.
+    halter: verzeichnis::Halter,
     /// Was aus dem Höhenaufmaß folgt, je Modellstand gemerkt.
     lagemerker: gelaende_aufmass::Lagemerker,
 }
@@ -324,6 +326,7 @@ mod delete;
 #[path = "verzeichnis.rs"]
 mod verzeichnis;
 pub use delete::{refusal_lines, refusal_text, Deleted, Refusal};
+use verzeichnis::{Erfasst, JoinListe};
 
 #[path = "lock.rs"]
 mod lock;
@@ -816,10 +819,10 @@ impl Model {
             layer_sets,
             trades: trade::start_trades(),
             buildings: Arena::new(),
-            storeys,
-            elements: Arena::new(),
-            runs: Arena::new(),
-            joins: Vec::new(),
+            storeys: Erfasst::new(storeys),
+            elements: Default::default(),
+            runs: Default::default(),
+            joins: Default::default(),
             defaults: Defaults {
                 storey,
                 exterior_wall,
@@ -839,6 +842,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             merker: Default::default(),
+            halter: Default::default(),
             lagemerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
@@ -905,10 +909,10 @@ impl Model {
             layer_sets,
             trades: trade::start_trades(),
             buildings,
-            storeys,
-            elements,
-            runs,
-            joins: Vec::new(),
+            storeys: Erfasst::new(storeys),
+            elements: Erfasst::new(elements),
+            runs: Erfasst::new(runs),
+            joins: Default::default(),
             defaults,
             numbers,
             building_number,
@@ -924,6 +928,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             merker: Default::default(),
+            halter: Default::default(),
             lagemerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
@@ -932,7 +937,7 @@ impl Model {
             bemassung: Default::default(),
             mass_sicht: Default::default(),
         };
-        m.joins = m.detect_all();
+        m.joins.setzen(m.detect_all());
         m
     }
 
@@ -1769,7 +1774,7 @@ impl Model {
             *t = s;
         }
         // Andere Dicken: Anschlüsse neu erkennen
-        self.joins = self.detect_all();
+        self.joins.setzen(self.detect_all());
         self.touch();
         true
     }
@@ -1974,7 +1979,7 @@ impl Model {
             Some(p) => {
                 self.set_run_points(root, &p);
             }
-            None => self.joins = self.detect_all(),
+            None => self.joins.setzen(self.detect_all()),
         }
         self.touch();
         true
@@ -2569,7 +2574,7 @@ impl Model {
             return Vec::new();
         };
         if let Some(v) = self.verz() {
-            return v.darueber(below);
+            return v.darueber(segs);
         }
         let mut out = Vec::new();
         for (_, e) in self.elements.iter() {
@@ -2653,18 +2658,15 @@ impl Model {
         fix: impl FnOnce(&mut Model),
     ) -> Option<Vec<RunId>> {
         let flat: Vec<Vec3> = points.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
-        // Punkte der geschlossenen Züge vorher: Deckenumriss alt gegen neu (U3)
-        let before: Vec<(RunId, Vec<Vec3>)> = self
-            .runs
-            .iter()
-            .filter(|(_, r)| r.closed)
-            .map(|(id, r)| (id, r.points.clone()))
-            .collect();
         if !self.stack_fits(id, &flat) {
             return None;
         }
+        // Punkte der Züge vorher: Deckenumriss alt gegen neu (U3). Nur die
+        // geänderten Züge werden kopiert, nicht alle (L40)
+        self.runs.aufzeichnen();
         let mut grab = self.opening_grab(id);
         if !self.set_points(id, &flat) {
+            self.runs.vorher_nehmen();
             self.keep_opening_grab(grab);
             return None;
         }
@@ -2709,9 +2711,13 @@ impl Model {
             }
         }
         // Innenwände, die unter eine mitbewegte Decke kommen oder sie verlassen
-        // (Deckenband)
+        // (Deckenband). Ein Zug ohne Stand davor blieb, wie er war
+        let before = self.runs.vorher_nehmen();
         for r in &moved {
-            let old = before.iter().find(|(id, _)| id == r).map(|(_, p)| &p[..]);
+            let old = match before.iter().find(|(id, _)| id == r) {
+                Some((_, x)) => x.as_ref().filter(|x| x.closed).map(|x| &x.points[..]),
+                None => self.run(*r).filter(|x| x.closed).map(|x| &x.points[..]),
+            };
             for i in self.runs_under_moved_floor(*r, old) {
                 if !out.contains(&i) {
                     out.push(i);
@@ -2842,7 +2848,11 @@ impl Model {
         // Im lesenden Gang nur die Anschlüsse dieses Zuges
         let v = self.verz();
         let anschluesse: Box<dyn Iterator<Item = &Join>> = match &v {
-            Some(v) => Box::new(v.anschluesse(id).iter().map(|&k| &self.joins[k])),
+            Some(v) => Box::new(
+                v.anschluesse(id, &self.joins)
+                    .into_iter()
+                    .map(|k| &self.joins[k]),
+            ),
             None => Box::new(self.joins.iter()),
         };
         for j in anschluesse {
@@ -3027,9 +3037,21 @@ impl Model {
             .or_else(|| core.checked_sub(1))
     }
 
-    /// Braucht irgendein Zug einen Fußpunkt aus Schaumglas (W2)?
-    fn foot_wanted(&self) -> bool {
-        self.runs.ids().any(|r| {
+    /// Braucht irgendein Zug in `scope` (`None`: alle) einen Fußpunkt aus
+    /// Schaumglas (W2)? Ein Zug außerhalb des Bereichs blieb im Schritt
+    /// gleich; brauchte er einen, legte ihn schon der Abgleich an, als er
+    /// zuletzt im Bereich lag (L40: sonst geht jedes Schließen über alle
+    /// Züge).
+    fn foot_wanted(&self, scope: Option<&[RunId]>) -> bool {
+        let alle: Vec<RunId>;
+        let zuege = match scope {
+            Some(s) => s,
+            None => {
+                alle = self.runs.ids().collect();
+                &alle
+            }
+        };
+        zuege.iter().any(|&r| {
             self.facing_layer(r).is_some()
                 && self
                     .base_chain(r)
@@ -3151,8 +3173,7 @@ impl Model {
             vec3(alo.x.min(blo.x), alo.y.min(blo.y), 0.0),
             vec3(ahi.x.max(bhi.x), ahi.y.max(bhi.y), 0.0),
         );
-        self.runs
-            .iter()
+        self.runs_near(r.storey, lo, hi)
             .filter(|(id, x)| {
                 *id != run && x.storey == r.storey && overlap(bounds2(&x.points), (lo, hi))
             })
@@ -3265,7 +3286,7 @@ impl Model {
             let scope = scope.as_deref();
             // Was die vier Abgleiche wollen, in einem lesenden Gang: Keiner
             // hängt an den Bauteilen, die ein anderer anlegt (Review zu #148)
-            let w = self.abgleich_lesend(scope, || self.abgleich_wunsch(scope));
+            let w = self.lesend(|| self.abgleich_wunsch(scope));
             self.sync_edge_strips_mit(scope, Some(w.streifen));
             self.sync_soffits_mit(scope, Some(w.untersicht));
             self.sync_terraces_mit(scope, Some(w.terrasse));
@@ -3554,7 +3575,7 @@ impl Model {
             self.attr.bump();
         }
         if touched.library {
-            self.joins = self.detect_all();
+            self.joins.setzen(self.detect_all());
         } else {
             let runs = touched.runs.clone();
             for r in &runs {
@@ -4125,7 +4146,7 @@ impl Model {
         }
         // Regel 48: Gewerke eindeutig
         out.extend(trade::problems(&self.trades));
-        for j in &self.joins {
+        for j in self.joins.iter() {
             if self.segment_of(j.a).map(|s| s.0) != Some(j.a_run)
                 || self.segment_of(j.b).map(|s| s.0) != Some(j.b_run)
             {
@@ -4494,24 +4515,17 @@ struct Base {
 /// je Ende einen ganzen Grundriss. Die Züge ändern sich während eines Laufs
 /// nicht.
 #[derive(Default)]
-struct Bases(Vec<Option<Base>>);
+struct Bases(std::collections::HashMap<RunId, Option<Base>>);
 
 impl Bases {
     fn fill(&mut self, m: &Model, id: RunId) {
-        let slot = id.index() as usize;
-        if self.0.len() <= slot {
-            self.0.resize_with(slot + 1, || None);
-        }
-        if self.0[slot].as_ref().is_none_or(|b| b.run != id) {
-            self.0[slot] = m.base(id);
-        }
+        // Je Zug ein Eintrag, nicht ein Platz je Arena-Platz: Beim Ziehen
+        // braucht es wenige Züge einer großen Siedlung (L40)
+        self.0.entry(id).or_insert_with(|| m.base(id));
     }
 
     fn get(&self, id: RunId) -> Option<&Base> {
-        self.0
-            .get(id.index() as usize)?
-            .as_ref()
-            .filter(|b| b.run == id)
+        self.0.get(&id)?.as_ref()
     }
 }
 
@@ -4654,11 +4668,6 @@ fn room_inside(c: &WallChain) -> bool {
     !c.closed || sk_math::polygon::inset(&c.face_corners(c.outer_offset()), c.thickness()).is_ok()
 }
 
-/// Züge im Bereich, ab denen sich das [`Model::lesend`]-Verzeichnis für den
-/// Abgleich lohnt: Darunter rechnet jede Decke ohne es schneller, als es zu
-/// bauen dauert (Review L39).
-const VERZ_AB: usize = 16;
-
 /// Was die Abgleiche beim Schließen eines Schritts wollen
 /// ([`Model::abgleich_wunsch`]).
 pub(super) struct Wunsch {
@@ -4678,16 +4687,6 @@ impl Model {
             untersicht,
             terrasse,
             flachdach: self.flat_roof_want_in(scope),
-        }
-    }
-
-    /// `f` im Abgleich über `scope`: bei vielen Zügen mit dem Verzeichnis
-    /// ([`Model::lesend`]), bei wenigen ohne.
-    pub(super) fn abgleich_lesend<R>(&self, scope: Option<&[RunId]>, f: impl FnOnce() -> R) -> R {
-        if scope.is_some_and(|s| s.len() < VERZ_AB) {
-            f()
-        } else {
-            self.lesend(f)
         }
     }
 }

@@ -45,6 +45,8 @@ pub mod kanten;
 mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
+#[path = "scene_neubau.rs"]
+mod neubau;
 #[path = "scene_raster.rs"]
 pub mod raster;
 #[path = "scene_bemassung.rs"]
@@ -578,6 +580,8 @@ pub struct Scene {
     /// Leerlauf folgen ([`Scene::nachziehen`]).
     nachzug: Vec<RunId>,
     bounds: Option<Aabb>,
+    /// Seiten aller Körper, gezählt ([`neubau::Grenzen`]).
+    grenzen: neubau::Grenzen,
     /// Aufgelöste Attributtabellen des Modells.
     table: DrawTable,
     /// Farbschema der App (Rückfallfarben und Bildpunkte je mm der Tabelle).
@@ -927,6 +931,7 @@ impl Scene {
             gelaende_zug: None,
             nachzug: Vec::new(),
             bounds: None,
+            grenzen: Default::default(),
             table,
             theme,
             active: None,
@@ -1518,124 +1523,6 @@ impl Scene {
     pub fn cancel_settings(&mut self, rev: u64) {
         self.rollback();
         self.model.restore_revision(rev);
-    }
-
-    /// Rechnet die markierten Wandzüge neu und entfernt gelöschte. `live`: nur
-    /// die Körper, die Mengen erst bei [`Scene::settle`].
-    fn rebuild_dirty(&mut self, live: bool) {
-        if self.table.rev != self.model.attr().rev() {
-            self.table = DrawTable::resolve(&self.model, &self.theme);
-        }
-        if self.all_dirty {
-            self.all_dirty = false;
-            self.dirty.clear();
-            self.nachzug.clear();
-            let builds: Vec<u32> = self
-                .cache
-                .iter()
-                .map(|c| c.as_ref().map_or(0, |c| c.builds))
-                .collect();
-            self.cache.clear();
-            self.raster_leeren();
-            let ids: Vec<RunId> = self.model.runs().ids().collect();
-            for id in ids {
-                let b = builds.get(id.index() as usize).copied().unwrap_or(0);
-                self.store(id, b, false);
-            }
-        } else {
-            let ids = std::mem::take(&mut self.dirty);
-            self.nachzug_ohne(&ids);
-            for id in ids {
-                let b = self.cached(id).map_or(0, |c| c.builds);
-                self.store(id, b, live);
-            }
-        }
-        self.ext.sync(&self.model);
-        self.bounds_neu();
-    }
-
-    fn bounds_neu(&mut self) {
-        self.bounds = self
-            .cache
-            .iter()
-            .flatten()
-            .fold(self.ext.bounds(), |acc, c| union(acc, c.bounds));
-    }
-
-    /// Berechnet einen Wandzug neu (oder entfernt ihn, wenn es ihn nicht mehr gibt).
-    fn store(&mut self, id: RunId, builds: u32, live: bool) {
-        let slot = id.index() as usize;
-        if self.cache.len() <= slot {
-            self.cache.resize_with(slot + 1, || None);
-        }
-        match self.model.chain_and_floor(id) {
-            Some((c, floor)) => {
-                let found = self.model.foundation(id).and_then(Result::ok);
-                let floor = floor.and_then(Result::ok);
-                let roof = self.model.flat_roof_on(id, &c);
-                let mut rc = RunCache::new(id, c, found, floor, roof, builds + 1);
-                rc.below = self.model.run_below(id);
-                if live {
-                    if !self.unsettled.contains(&id) {
-                        self.unsettled.push(id);
-                    }
-                } else {
-                    rc.qto = run_qto(&self.model, id);
-                    rc.found_qto = rc.found.as_ref().map(foundation_qto_of);
-                    rc.floor_qto = rc.floor.as_ref().map(floor_qto_of);
-                    self.unsettled.retain(|&u| u != id);
-                }
-                // Gleicher Körper (ein Nachbar wurde neu gerechnet, dieser Zug
-                // blieb): er behält seine Generation und damit die geteilten
-                // Körper (Review 3h Befund 2)
-                if let Some(old) = self.cache[slot].as_mut() {
-                    if old.id == id && old.same_body(&rc) {
-                        rc.splits = std::mem::take(&mut old.splits);
-                    }
-                }
-                let q = rc
-                    .bounds
-                    .map(|b| union(Some(b), rc.foot_bounds).unwrap_or(b));
-                self.raster_setzen(slot, q, &rc);
-                self.cache[slot] = Some(rc);
-            }
-            // Gelöscht: Platz nur räumen, wenn kein neuerer Zug darin steht
-            None => {
-                if self.cache[slot].as_ref().is_some_and(|c| c.id == id) {
-                    self.cache[slot] = None;
-                    self.raster_entfernen(slot);
-                }
-            }
-        }
-    }
-
-    fn mark(&mut self, id: RunId) {
-        self.mass_zug(id);
-        if !self.dirty.contains(&id) {
-            self.dirty.push(id);
-        }
-    }
-
-    fn mark_all(&mut self) {
-        self.all_dirty = true;
-        self.mass_alle = neuer_stand();
-        self.unsettled.clear();
-    }
-
-    /// Rechnet die Mengen nach, die beim Live-Ziehen ausgelassen wurden.
-    pub fn settle(&mut self) {
-        for id in std::mem::take(&mut self.unsettled) {
-            if self.model.run(id).is_some() {
-                let q = run_qto(&self.model, id);
-                if let Some(Some(c)) = self.cache.get_mut(id.index() as usize) {
-                    if c.id == id {
-                        c.qto = q;
-                        c.found_qto = c.found.as_ref().map(foundation_qto_of);
-                        c.floor_qto = c.floor.as_ref().map(floor_qto_of);
-                    }
-                }
-            }
-        }
     }
 
     /// Mengen einer Wand (fehlen, solange ihr Wandzug gezogen wird).

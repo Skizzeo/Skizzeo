@@ -113,7 +113,8 @@ impl Scene {
         while let Some(id) = self.nachzug.pop() {
             self.mass_zug(id);
             let b = self.cached(id).map_or(0, |c| c.builds);
-            self.store(id, b, false);
+            let rc = super::neubau::rechne(&self.model, id, b, false);
+            self.store(id, rc, false);
             if t0.elapsed() >= budget {
                 break;
             }

@@ -337,9 +337,11 @@ impl Model {
     /// eines Dachaufbaus im Bereich `scope` genau eins, auf dessen Ebene.
     /// Neue übernehmen die Eigenschaften eines Nachbarn am selben Dach.
     pub(super) fn sync_downpipes(&mut self, scope: Option<&[RunId]>) {
+        // Dächer und Rohre über das Verzeichnis, nur im Bereich (L40)
         let roofs: Vec<(ElementId, usize, StoreyId, u16)> = self
-            .elements
-            .iter()
+            .an_decken_in(scope)
+            .into_iter()
+            .filter_map(|id| Some((id, self.element(id)?)))
             .filter_map(|(id, e)| match &e.kind {
                 ElementKind::Roof { floor, .. } if self.floor_in_scope(*floor, scope) => {
                     Some((id, self.drain_count(*floor), e.storey, e.seq))
@@ -347,9 +349,11 @@ impl Model {
                 _ => None,
             })
             .collect();
+        let daecher: Vec<ElementId> = roofs.iter().map(|r| r.0).collect();
         let have: Vec<(ElementId, ElementId, u16, StoreyId, DownpipeSpec)> = self
-            .elements
-            .iter()
+            .fallrohre_in(scope, &daecher)
+            .into_iter()
+            .filter_map(|id| Some((id, self.element(id)?)))
             .filter_map(|(id, e)| match e.kind {
                 ElementKind::Downpipe { roof, drain, spec } => {
                     Some((id, roof, drain, e.storey, spec))

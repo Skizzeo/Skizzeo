@@ -224,15 +224,16 @@ impl Model {
 
     pub(super) fn roof_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
         let mut out: Vec<(String, ElementId)> = self
-            .elements
-            .iter()
-            .filter_map(|(id, e)| match e.kind {
-                ElementKind::Floor(f)
-                    if in_scope(scope, f.run) && self.parapet_above(f.run).is_some() =>
-                {
-                    Some((e.number.clone(), id))
+            .decken_in(scope)
+            .into_iter()
+            .filter_map(|id| {
+                let e = self.element(id)?;
+                match e.kind {
+                    ElementKind::Floor(f) if self.parapet_above(f.run).is_some() => {
+                        Some((e.number.clone(), id))
+                    }
+                    _ => None,
                 }
-                _ => None,
             })
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -694,8 +695,7 @@ impl Model {
         scope: Option<&[RunId]>,
         want: Option<Vec<(ElementId, StoreyId, u16)>>,
     ) -> (usize, usize) {
-        let want =
-            want.unwrap_or_else(|| self.abgleich_lesend(scope, || self.flat_roof_want_in(scope)));
+        let want = want.unwrap_or_else(|| self.lesend(|| self.flat_roof_want_in(scope)));
         if !want.is_empty() {
             self.ensure_roof_type();
             // Kronendämmung mit eigenem Baustoff (W9 an #60), auch beim
@@ -717,8 +717,9 @@ impl Model {
         // oder auf der Ebene Flachdach; die übrigen Bleche gehören der
         // Dachterrasse
         let have: Vec<(ElementId, ElementId, bool)> = self
-            .elements
-            .iter()
+            .an_decken_in(scope)
+            .into_iter()
+            .filter_map(|id| Some((id, self.element(id)?)))
             .filter_map(|(id, e)| match e.kind {
                 ElementKind::Roof { floor, .. } => Some((id, floor, true)),
                 ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
