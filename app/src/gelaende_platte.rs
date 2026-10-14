@@ -897,7 +897,7 @@ pub(crate) fn props(m: &Model, plates: &[TerrainPlate]) -> Props {
                 feld(Field::PlateThick, "Dicke", s.thick, PLATE_THICK),
                 feld(Field::PlateMargin, "Außenoffset", s.margin, PLATE_MARGIN),
             ],
-            hint: "Höhe aus dem Geschossmanager. Echtes Gelände mit dem Geländemodul.",
+            hint: "Höhe aus dem Geschossmanager. Echtes Gelände: Knopf „Gelände“.",
             buttons: Vec::new(),
         }],
         ..Default::default()
@@ -1097,7 +1097,7 @@ impl App {
         if self.platte.unterlage.ordner(ordner) {
             self.platte.mit_plan = true;
         }
-        let gelesen = self.lageplan_abholen();
+        let gelesen = self.lageplan_abholen() | self.hoehen_abholen();
         let sicht = self.platte_sicht();
         let neu = self.platte.nachziehen(self.scene.model(), sicht);
         self.unterlage_stand();

@@ -29,11 +29,11 @@ pub struct Pruefung {
     pub hinweise: Vec<String>,
 }
 
-/// Prüft die Punkte; doppelte Nummern werden umbenannt (der zweite
-/// bekommt „-2“).
-pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
-    let mut hinweise = Vec::new();
-    // doppelte Nummern
+/// Doppelte Nummern umbenennen, wie [`pruefen`] es tut (der zweite
+/// bekommt „-2“, oder die nächste freie Endung); gibt alt und neu je
+/// umbenanntem Punkt. Ohne die übrigen Prüfungen, für Linien, die ihre
+/// Punkte über die Nummer finden (DXF, G1b).
+pub fn eindeutig(punkte: &mut [Punkt]) -> Vec<(String, String)> {
     let mut umbenannt: Vec<(String, String)> = Vec::new();
     let mut gesehen = std::collections::HashSet::new();
     // alle Nummern der Datei, damit „-2“ keine spätere trifft; je
@@ -55,6 +55,15 @@ pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
         p.nr = neu.clone();
         umbenannt.push((alt, neu));
     }
+    umbenannt
+}
+
+/// Prüft die Punkte; doppelte Nummern werden umbenannt (der zweite
+/// bekommt „-2“).
+pub fn pruefen(punkte: &mut [Punkt], codes: &Codetabelle) -> Pruefung {
+    let mut hinweise = Vec::new();
+    // doppelte Nummern
+    let umbenannt = eindeutig(punkte);
     match umbenannt.as_slice() {
         [] => {}
         [(alt, neu)] => hinweise.push(format!(
