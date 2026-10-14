@@ -1749,7 +1749,7 @@ pub(super) mod tests {
         let st = s.model().run(eg).unwrap().storey;
         let mut stil = s.model().massstil().clone();
         stil.brh_bezug = BrhBezug::Estrich;
-        assert!(s.edit_attr(|m| m.set_massstil(stil)));
+        assert!(s.edit_model("Bemaßung", |m| m.set_massstil(stil)));
         let estrich = s.model().screed_top(st).unwrap();
         assert!(estrich > s.model().level_z(LevelRef::bottom(st)).unwrap());
         let (z0, _) = band(&s, id);
