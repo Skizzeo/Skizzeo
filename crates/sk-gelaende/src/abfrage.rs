@@ -195,7 +195,12 @@ impl Abfrage {
     /// ([`crate::volumen::erdmenge`]), nur über den Dreiecken in den Zellen
     /// unter dem Polygon: je Baugrube unabhängig von der Größe des Netzes.
     pub fn erdmenge(&self, ring: &[[f64; 2]], bezug: Bezug) -> Erdmenge {
-        let mut e = Erdmenge::default();
+        self.erdmengen(ring, &[bezug])[0]
+    }
+
+    /// [`Abfrage::erdmenge`] je Bezug, das Polygon einmal geschnitten.
+    pub fn erdmengen(&self, ring: &[[f64; 2]], bezuege: &[Bezug]) -> Vec<Erdmenge> {
+        let mut e = vec![Erdmenge::default(); bezuege.len()];
         if ring.len() < 3 || self.dreiecke.is_empty() {
             return e;
         }
@@ -218,7 +223,7 @@ impl Abfrage {
         ts.dedup();
         for t in ts {
             let p = self.dreiecke[t as usize].map(|i| self.punkte[i as usize]);
-            erdmenge_dreieck(p, ring, &bezug, &mut e);
+            erdmenge_dreieck(p, ring, bezuege, &mut e);
         }
         e
     }
@@ -352,5 +357,30 @@ mod tests {
                 "x {x}: {pr:?}"
             );
         }
+    }
+
+    #[test]
+    fn erdmengen_einmal_geschnitten() {
+        let n = schraeg();
+        let a = Abfrage::neu(&n);
+        let ring = [[1.0, 1.0], [9.0, 2.0], [8.0, 7.0], [2.0, 6.0]];
+        let bezuege = [[10.5, 0.0, 0.0], [10.2, 0.02, 0.0], [0.0, 0.0, 0.0]];
+        let alle = a.erdmengen(&ring, &bezuege);
+        for (b, e) in bezuege.iter().zip(&alle) {
+            assert_eq!(*e, a.erdmenge(&ring, *b));
+            let v = crate::volumen::erdmenge(&n, &ring, *b);
+            for (x, y) in [
+                (e.flaeche, v.flaeche),
+                (e.ueber, v.ueber),
+                (e.unter, v.unter),
+            ] {
+                assert!((x - y).abs() < 1e-9, "{e:?} {v:?}");
+            }
+        }
+        // gegen null: das Flächenmittel wie über alle Dreiecke
+        let m = (alle[2].ueber - alle[2].unter) / alle[2].flaeche;
+        let soll = crate::volumen::mittel(&n, &ring).unwrap();
+        assert!((m - soll).abs() < 1e-12, "{m} {soll}");
+        assert!(a.erdmengen(&ring, &[]).is_empty());
     }
 }

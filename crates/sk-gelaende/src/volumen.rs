@@ -71,22 +71,23 @@ fn bezug_an(b: &Bezug, p: [f64; 2]) -> f64 {
 /// Dreiecke (ohne Gitter; mit vielen Polygonen über einem großen Netz
 /// [`crate::abfrage::Abfrage::erdmenge`]).
 pub fn erdmenge(netz: &Netz, ring: &[[f64; 2]], bezug: Bezug) -> Erdmenge {
-    let mut e = Erdmenge::default();
+    let mut e = [Erdmenge::default()];
     for t in &netz.dreiecke {
-        erdmenge_dreieck(t.map(|i| netz.punkte[i as usize]), ring, &bezug, &mut e);
+        erdmenge_dreieck(t.map(|i| netz.punkte[i as usize]), ring, &[bezug], &mut e);
     }
-    e
+    e[0]
 }
 
-/// Den Teil des Polygons im Dreieck `p` zu `e` zählen: Im Dreieck ist das
-/// Gelände eine Ebene, Gelände minus Bezug also linear. Die Teilfläche wird
-/// an seiner Nulllinie geteilt; je Teil ist das Integral Fläche mal Wert im
-/// Schwerpunkt, exakt.
+/// Den Teil des Polygons im Dreieck `p` je Bezug zu `e` zählen: Im Dreieck
+/// ist das Gelände eine Ebene, Gelände minus Bezug also linear. Die
+/// Teilfläche wird an seiner Nulllinie geteilt; je Teil ist das Integral
+/// Fläche mal Wert im Schwerpunkt, exakt. Geschnitten wird einmal für alle
+/// Bezüge.
 pub(crate) fn erdmenge_dreieck(
     p: [[f64; 3]; 3],
     ring: &[[f64; 2]],
-    bezug: &Bezug,
-    e: &mut Erdmenge,
+    bezuege: &[Bezug],
+    mengen: &mut [Erdmenge],
 ) {
     if ring.len() < 3 || !ueberlappt(&p, ring) {
         return;
@@ -98,13 +99,16 @@ pub(crate) fn erdmenge_dreieck(
     let Some((a, _)) = flaeche_schwerpunkt(&teil) else {
         return;
     };
-    e.flaeche += a;
-    e.steil = e.steil.max(gefaelle(&p));
-    let f = |q: [f64; 2]| ebene(&p, q) - bezug_an(bezug, q);
-    for (vz, summe) in [(1.0, &mut e.ueber), (-1.0, &mut e.unter)] {
-        let halb = halbieren(&teil, |q| vz * f(q));
-        if let Some((a, c)) = flaeche_schwerpunkt(&halb) {
-            *summe += a * (vz * f(c)).max(0.0);
+    let steil = gefaelle(&p);
+    for (bezug, e) in bezuege.iter().zip(mengen.iter_mut()) {
+        e.flaeche += a;
+        e.steil = e.steil.max(steil);
+        let f = |q: [f64; 2]| ebene(&p, q) - bezug_an(bezug, q);
+        for (vz, summe) in [(1.0, &mut e.ueber), (-1.0, &mut e.unter)] {
+            let halb = halbieren(&teil, |q| vz * f(q));
+            if let Some((a, c)) = flaeche_schwerpunkt(&halb) {
+                *summe += a * (vz * f(c)).max(0.0);
+            }
         }
     }
 }
