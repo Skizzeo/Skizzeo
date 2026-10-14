@@ -926,10 +926,10 @@ impl HoeheZug {
         };
         let mut hoehe = crate::ui::live_length_text(wert);
         // Misst die Maßkette die BRH ab Estrich, steht ihre Zahl daneben
-        // (Bedienbarkeit 42.1)
+        // (Bedienbarkeit 42.1); unter OK Estrich (Tür) keine (Review H-167a)
         let bezug = m.massstil().brh_bezug;
         if !self.oben && bezug == BrhBezug::Estrich {
-            if let Some(null) = m.brh_null(self.st, bezug) {
+            if let Some(null) = m.brh_null(self.st, bezug).filter(|n| z0 > *n) {
                 hoehe = format!("{hoehe} · BRH {}", crate::ui::live_length_text(z0 - null));
             }
         }
@@ -1668,6 +1668,31 @@ pub(super) mod tests {
             pille.ends_with("OK Rohdecke OG · vom EG aus nach oben ziehen"),
             "{pille}"
         );
+    }
+
+    /// Steht die Unterkante auf OK Rohdecke (Tür), nennt die Pille bei „BRH
+    /// ab Estrich“ keine negative BRH (Review H-167a).
+    #[test]
+    fn keine_brh_unter_dem_estrich() {
+        let (mut m, id, eg, _) = haus_modell();
+        let st = m.run(eg).unwrap().storey;
+        let mut stil = m.massstil().clone();
+        stil.brh_bezug = BrhBezug::Estrich;
+        m.init_massstil(stil);
+        let mut o = m.opening(id).unwrap().clone();
+        o.bottom = HeightRef::Level(LevelRef::bottom(st));
+        m.begin("Tür");
+        assert!(m.set_opening(id, o));
+        m.commit();
+        let (mut s, cam) = (Scene::with_model(m), kamera());
+        let z0 = band(&s, id).0;
+        let p = bei(&s, &cam, id, 7000.0, z0 + 5.0);
+        let t = treffer(&s, &cam, p, W, H, 1.0, None).unwrap();
+        assert_eq!(t.kante, Some(Kante::Unten));
+        let z = HoeheZug::greifen(&mut s, t, false, &cam, p, W, H, 1.0).unwrap();
+        let pille = z.pill(&s).unwrap().0;
+        assert!(pille.starts_with("Brüstung (Rohbau) 0,00 m"), "{pille}");
+        assert!(!pille.contains("BRH"), "{pille}");
     }
 
     /// Frei gezogen steht die Unterkante im Raster über OK Rohdecke; Zahl +
