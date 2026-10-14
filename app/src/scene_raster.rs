@@ -110,6 +110,9 @@ impl Raster {
     /// die Zellen nicht weit verstreut liegen.
     pub fn aus(quader: impl IntoIterator<Item = Option<Aabb>>) -> Raster {
         let mut r = Raster::default();
+        // Den Rahmen gleich beim Eintragen, nicht beim ersten Lesen noch
+        // einmal über alle (Review H1 zu #151)
+        r.rahmen.set(Some((None, 0.0)));
         for (i, q) in quader.into_iter().enumerate() {
             r.quader.push(q);
             let lage = r.lage_von(q);
@@ -773,6 +776,7 @@ pub(super) mod tests {
     fn rahmen_traege() {
         let ort = |i: usize| ((i % 50) as f64 * 20_000.0, (i / 50) as f64 * 20_000.0);
         let mut r = Raster::aus((0..2000).map(|i| kasten(ort(i).0, ort(i).1, 5000.0)));
+        assert!(r.rahmen.get().is_some(), "schon beim Bau");
         let voll = r.quader();
         assert_eq!(voll.unwrap().1.x, 985_000.0);
         for i in 0..2000 {
