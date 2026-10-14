@@ -1,6 +1,6 @@
 //! Räume und Ausbau in der Datei (I6, ifc/plan.md §5,
 //! grundriss/schnittstelle-raum.md §5, raumbuch/plan.md §9) aus der
-//! Raumliste des Raumbuchs ([`sk_raum::raumliste::raumliste`]). Je
+//! Raumliste des Raumbuchs ([`sk_raum::raumliste::raumliste_mit_formen`]). Je
 //! gespeichertem Raum mit Fläche und Ausbau ein `IfcSpace`: Name die
 //! Raumnummer, LongName der Raumname, Form der Raumkörper über dem
 //! Fertigumriss von OK Fertigfußboden bis UK Fertigdecke, Mengen in
@@ -29,7 +29,7 @@ use sk_model::{
 use sk_raum::ausbau;
 use sk_raum::oeffnungen::Geschosse;
 use sk_raum::raumbuch::Flaeche;
-use sk_raum::raumliste::{raumliste, AusbauDaten, RaumDaten};
+use sk_raum::raumliste::{raumliste_mit_formen, AusbauDaten, RaumDaten};
 use sk_raum::{Begrenzung, Kante};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -180,12 +180,11 @@ impl Ctx<'_> {
         if ids.is_empty() {
             return;
         }
+        // Räume mit Fläche, mit und ohne Ausbau (für den Bericht)
+        let (liste, formen) = raumliste_mit_formen(m);
         let mut liste: HashMap<ElementId, RaumDaten> =
-            raumliste(m).into_iter().map(|r| (r.raum, r)).collect();
-        // Kanten der Räume mit Fläche (je Geschoss einmal erkannt): für die
-        // Kennungen der Wandseiten und den Bericht
-        let mut kanten: HashMap<ElementId, Vec<Kante>> = HashMap::new();
-        let mut erkannt: HashSet<StoreyId> = HashSet::new();
+            liste.into_iter().map(|r| (r.raum, r)).collect();
+        let formen: HashSet<ElementId> = formen.into_iter().collect();
         // Lage der Geschosse einmal je Export (auf der Sohlplatte?)
         let geschosse_lage = Geschosse::aus(m);
         let bauteile: HashMap<Guid, ElementId> =
@@ -203,17 +202,8 @@ impl Ctx<'_> {
                     .push((el.number.clone(), Grund::OhneGeschoss));
                 continue;
             };
-            if erkannt.insert(el.storey) {
-                for f in sk_raum::raeume(m, el.storey) {
-                    if let Some(r) = f.raum {
-                        let mut k = f.umriss;
-                        k.extend(f.loecher.into_iter().flatten());
-                        kanten.entry(r).or_insert(k);
-                    }
-                }
-            }
             let Some(rd) = liste.remove(&id) else {
-                let grund = if kanten.contains_key(&id) {
+                let grund = if formen.contains(&id) {
                     Grund::OhneForm
                 } else {
                     Grund::RaumOhneFlaeche
@@ -353,7 +343,7 @@ impl Ctx<'_> {
                 // Mit dem Typ: eine Fläche kann mehrere Ausbautypen tragen
                 let zweck = format!(
                     "{}.{}",
-                    bekleidungszweck(m, kanten.get(&id).map_or(&[], |k| k), a.flaeche),
+                    bekleidungszweck(m, &rd.kanten, a.flaeche),
                     a.typ_guid.to_ifc()
                 );
                 let g = abgeleitet(el.guid, &zweck);
