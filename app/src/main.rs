@@ -49,6 +49,8 @@ mod flush_pick;
 mod fokus;
 mod frame_time;
 mod freischaltung;
+mod gelaende_app;
+mod gelaende_netz;
 mod gelaende_platte;
 mod geschosse_app;
 mod geschossfenster;
@@ -110,7 +112,6 @@ mod zahnrad_app;
 use ansicht_linien::level_guide;
 use camera::{fit_perspective, Camera};
 use document::Document;
-use gelaende_platte::TERRAIN_MARGIN;
 use menu::Command;
 use nav::Navigation;
 use scene::Scene;
@@ -1494,25 +1495,6 @@ impl App {
             }
             _ => fit_parallel(v, self.ansicht_huelle(v), free_w, vh),
         }
-    }
-
-    /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
-    /// dort ausblendet (S11).
-    fn ansicht_huelle(&self, v: ViewKind) -> Option<(Vec3, Vec3)> {
-        let (lo, hi) = self.scene.bounds()?;
-        let m = self.scene.model();
-        let ganz = ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
-        // Das tiefste Gelände: über keinem Gebäude wird etwas abgeschnitten
-        let g = m
-            .terrain_patches(TERRAIN_MARGIN)
-            .iter()
-            .map(|p| p.1)
-            .fold(m.terrain_z(), f64::min);
-        Some(if ganz || hi.z <= g {
-            (lo, hi)
-        } else {
-            (vec3(lo.x, lo.y, lo.z.max(g)), hi)
-        })
     }
 
     /// Ersetzt das Modell (Neu, Öffnen). Verlauf, Auswahl und angefangene
@@ -3264,6 +3246,7 @@ impl App {
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
             Id::Opening(k) => self.oeffnung_klick(k),
+            Id::Gelaende(k) => self.gelaende_klick(k),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
             Id::ExtJa(i) => self.ext_prop_wert(i, None),
             ui::kette_button!() => self.kette_klick(id),
@@ -7863,9 +7846,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
 
-        if std::mem::take(&mut a.quantity_wanted) {
-            a.open_quantity(&surface);
-        }
+        a.offene_dialoge(&surface);
         // Automatisch sichern (F-13), nicht mitten im Ziehen
         if !a.edit.is_dragging() {
             let now = a.clock.elapsed();
@@ -8028,14 +8009,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let scale = a.title.scale;
             let mut helpers = Vec::new();
             let mut nord_bild = None;
-            match a.ui.view {
-                ViewKind::Plan => {
-                    helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme))
-                }
-                ViewKind::Persp => {}
-                // Geländeplatte statt Geländelinie (Gelände G0)
-                _ => helpers.extend(a.platte_linien(scale)),
+            if a.ui.view == ViewKind::Plan {
+                helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme));
             }
+            // Gelände statt Geländelinie (G0), Höhenlinien und Grenze (G1)
+            helpers.extend(a.platte_linien(vh, scale));
             let plane = a.plane();
             // Hover aus der Mengenliste: leuchtender Umriss mit weichem Schein
             if a.hover_from_list {
