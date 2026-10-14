@@ -490,11 +490,15 @@ impl ListView {
         });
         self.lines = lines;
         self.groups = groups;
+        // jedes Bauteil einmal, auch wenn es mehrere Zeilen hat (Raum mit
+        // seinen Flächen, Wand in mehreren Gewerken; Review #182 H-182f)
+        let mut schon = HashSet::new();
         self.order = self
             .lines
             .iter()
             .filter(|l| l.kind == Kind::Row)
             .flat_map(|l| l.elements.first().copied())
+            .filter(|e| schon.insert(*e))
             .collect();
         self.numbers = self
             .order

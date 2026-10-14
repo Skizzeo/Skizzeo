@@ -772,7 +772,20 @@ fn laengen_der_raeume_nach_gewerk() {
         "{}",
         zeilen[summe + 2]
     );
-    // Kosten unverändert: die Länge bleibt Automatikmenge am Raum
+    // Die Anzeige zeigt genau die Automatikmengen, die Kosten bepreisen
+    // (`auto=`): je Schlüssel dieselbe Summe
+    for (key, soll) in [("room.skirting", 66_720.0), ("room.edgestrip", 66_720.0)] {
+        let ist: f64 = sched
+            .auto
+            .iter()
+            .filter(|a| a.key == key)
+            .map(|a| a.value)
+            .sum();
+        assert!((ist - soll).abs() < 1e-6, "{key}: {ist}");
+    }
+    // Die Anzeige bepreist nichts: Werksstand 18 kennt keine Raumzeile,
+    // mit und ohne Räume gleiche Kosten (alt gegen neu prüft Kosten mit
+    // ihren Proben gegen main)
     let k = sk_cost::lesen::katalog(&m, None);
     let u = sk_cost::Umfang::projekt();
     let ohne = sk_cost::lesen::kosten(&m, &sk_model::qto::schedule(&m), &k, &u);

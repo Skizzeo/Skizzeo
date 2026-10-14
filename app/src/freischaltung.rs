@@ -373,6 +373,7 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
         (Topic::Materials, "Bestellung") => Some(Modul::Mengen),
         (Topic::Foundation, "Baugrund") => Some(Modul::Mengen),
         (Topic::Terrace, "Mengen") => Some(Modul::Mengen),
+        (Topic::Rooms, "Mengen") => Some(Modul::Mengen),
         (Topic::Einlesen, "Firmenkatalog" | "Preise") => Some(Modul::Kosten),
         _ => None,
     }

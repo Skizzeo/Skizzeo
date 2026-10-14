@@ -120,6 +120,14 @@ fn gewerk(model: &Model, typ: Option<(LayerSetId, usize)>) -> Option<TradeId> {
 /// Wandseiten (Schicht mit Dicke), Silikonfugen zu den Wandfliesen. Die
 /// Sockelleiste hat ihren Typ und dessen Gewerk (ab Werk das des Belags).
 fn gewerk_der_laenge(model: &Model, zeilen: &[Zeile], f: Flaeche) -> Option<TradeId> {
+    // nur für die drei Längen über die Zeilen, so bleibt der Raum linear
+    // in seinen Zeilen (Review #182 H-182f)
+    if !matches!(
+        f,
+        Flaeche::Randstreifen | Flaeche::Eckschienen | Flaeche::Silikon
+    ) {
+        return None;
+    }
     let an = |z: &Zeile| match f {
         Flaeche::Randstreifen => z.flaeche == Flaeche::Estrich,
         Flaeche::Eckschienen => matches!(z.flaeche, Flaeche::Wand(_)) && z.dicke > 0.0,
@@ -154,6 +162,7 @@ fn zeile(
     let kg = kostengruppe(model, unten, kanten, z.flaeche, schicht);
     RoomLine {
         name: name(model, kanten, z.flaeche),
+        flaeche: z.flaeche.kennung(),
         side,
         finish: z.typ,
         material,
@@ -527,6 +536,87 @@ mod tests {
                 assert_eq!(grundflaeche_fertig(&m, &f), grundflaeche(&f));
             }
         }
+    }
+
+    /// Review #182 B1: Eine Wandzunge teilt die Seite der Außenwand in zwei
+    /// Wandseiten gleichen Namens. In die Gewerksumme geht jede Fläche je
+    /// Gewerk einmal, beide Wandseiten also ganz; nur die Schichten unter
+    /// einer Fläche (Estrich samt Dämmung) zählen einmal.
+    #[test]
+    fn gewerksumme_mit_wandzunge() {
+        use sk_math::vec3;
+        let mut m = haus();
+        let eg = m
+            .levels_in(m.buildings().iter().next().map(|b| b.0))
+            .into_iter()
+            .find(|g| m.storey(*g).unwrap().kind == sk_model::LevelKind::Storey)
+            .unwrap();
+        let iw = m.defaults().interior_wall;
+        let aw = m.defaults().exterior_wall;
+        let t: f64 = m.wall_layers(aw).iter().map(|l| l.thickness).sum();
+        let p = [vec3(5000.0, t, 0.0), vec3(5000.0, 2000.0, 0.0)];
+        m.begin("Zunge");
+        m.add_wall_run(
+            &p,
+            false,
+            sk_model::RefSide::Center,
+            eg,
+            iw,
+            Category::InteriorWall,
+        )
+        .unwrap();
+        crate::abgleichen(&mut m, &[eg]);
+        m.commit();
+        let s = schedule_mit(&m, &raeume);
+        let st = s.buildings[0].storeys.iter().find(|x| x.id == eg).unwrap();
+        let r = st
+            .groups
+            .iter()
+            .find(|g| g.category == Category::Space)
+            .map(|g| &g.rows[0])
+            .unwrap();
+        let Some(ElementQto::Room(q)) = &r.q else {
+            panic!("Raum ohne Mengen");
+        };
+        // zwei Wandseiten gleichen Namens, verschiedene Flächen
+        let sued: Vec<&RoomLine> = q
+            .lines
+            .iter()
+            .filter(|l| l.name == "Wand AW-004 Süd" && l.finish.is_some_and(|f| f.1 == 1))
+            .collect();
+        assert_eq!(
+            sued.len(),
+            2,
+            "{:?}",
+            q.lines.iter().map(|l| &l.name).collect::<Vec<_>>()
+        );
+        assert_eq!(sued[0].name, sued[1].name);
+        assert_ne!(sued[0].flaeche, sued[1].flaeche);
+        // je Gewerk: Summe nach VOB = je Fläche einmal ihre Menge
+        let zeilen = sk_model::qto_raum::layer_rows(&m, r, eg, q);
+        let mut gewerke: Vec<_> = zeilen.iter().map(|z| z.trade).collect();
+        gewerke.dedup();
+        for t in gewerke {
+            let summe: f64 = zeilen
+                .iter()
+                .filter(|z| z.trade == t)
+                .map(|z| z.bill_area)
+                .sum();
+            let mut je: Vec<(u32, f64)> = Vec::new();
+            for z in zeilen.iter().filter(|z| z.trade == t) {
+                let f = q.lines[z.layer].flaeche;
+                if !je.iter().any(|x| x.0 == f) {
+                    je.push((f, z.area));
+                }
+            }
+            let soll: f64 = je.iter().map(|x| x.1).sum();
+            assert!((summe - soll).abs() < 1e-6, "{t:?}: {summe} {soll}");
+        }
+        // Putz: jede Wandseite zählt, auch die zweite mit gleichem Namen
+        let putz = |z: &&LayerRow| z.side == Some(Side::Wall) && z.thickness > 0.0;
+        let a: f64 = zeilen.iter().filter(putz).map(|z| z.area).sum();
+        let b: f64 = zeilen.iter().filter(putz).map(|z| z.bill_area).sum();
+        assert!(a > 0.0 && (a - b).abs() < 1e-6, "{a} {b}");
     }
 
     /// Gewerk einer Länge ohne Typ nach der Fläche, an der sie liegt

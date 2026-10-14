@@ -64,6 +64,11 @@ impl Side {
 pub struct RoomLine {
     /// „Boden“, „Wand AW-004 Nord“, „Laibungen AW-004“, „Sockelleiste“ …
     pub name: String,
+    /// Kennung der Fläche im Raum, gleich für die Schichten einer Fläche
+    /// (Boden, Estrich, eine Wandseite …); zwei Wandseiten an derselben
+    /// Wand in derselben Richtung haben denselben Namen, nicht dieselbe
+    /// Kennung (Review #182 B1).
+    pub flaeche: u32,
     pub side: Side,
     /// Ausbautyp und Stelle der Schicht darin.
     pub finish: Option<(LayerSetId, usize)>,
@@ -181,11 +186,11 @@ pub(crate) fn auto_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> {
 /// `layer` ist die Stelle der Zeile im Raum (eindeutig je Raum), die
 /// Schicht im Ausbautyp steht in `finish`. In die Summe des Gewerks geht
 /// jede Fläche des Raums je Gewerk einmal (`bill_area` nur an ihrer ersten
-/// Schicht): Estrich, Trittschall- und Wärmedämmung unter einem Boden sind
-/// eine Fläche (Bedienbarkeit 43.11).
+/// Schicht, nach [`RoomLine::flaeche`]): Estrich, Trittschall- und
+/// Wärmedämmung unter einem Boden sind eine Fläche (Bedienbarkeit 43.11).
 pub fn layer_rows(model: &Model, row: &RowQto, storey: StoreyId, q: &RoomQto) -> Vec<LayerRow> {
     let mut out = Vec::new();
-    let mut gezaehlt: Vec<(&str, Option<TradeId>)> = Vec::new();
+    let mut gezaehlt: Vec<(u32, Option<TradeId>)> = Vec::new();
     for (i, l) in q.lines.iter().enumerate().filter(|(_, l)| l.is_layer()) {
         let Some(material) = l.material else { continue };
         let v = l.quantity();
@@ -193,9 +198,9 @@ pub fn layer_rows(model: &Model, row: &RowQto, storey: StoreyId, q: &RoomQto) ->
             continue;
         }
         let (length, area) = if l.is_length() { (v, 0.0) } else { (0.0, v) };
-        let erste = !gezaehlt.contains(&(l.name.as_str(), l.trade));
+        let erste = !gezaehlt.contains(&(l.flaeche, l.trade));
         if erste {
-            gezaehlt.push((l.name.as_str(), l.trade));
+            gezaehlt.push((l.flaeche, l.trade));
         }
         let einmal = |x: f64| if erste { x } else { 0.0 };
         out.push(LayerRow {
