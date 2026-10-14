@@ -82,7 +82,7 @@ Benennen | nach dem Schritt, der einen Raum schließt, ist sein Namensfeld offen
 Kürzel im Feld | **Strg+A** wählt den Text, **Strg+Z** nimmt Getipptes zurück; **Strg+S** und die übrigen Kürzel übernehmen erst den Namen und wirken dann wie sonst
 Verschieben | Stempel ziehen, Loslassen ist ein Schritt, **Esc** bricht ab; ein verschobener Stempel bleibt dort, sonst steht er in der Raummitte und rückt aus dem Aufschlag einer Tür
 Paneel | Stempel oder Raum im Baum wählen: Name, Grundfläche (fertig) wie am Stempel, Fläche und Umfang im Rohbau, die Wände um den Raum; darunter das Raumbuch: Nutzung, OK Fertigfußboden, lichte Höhe und je Fläche der Ausbautyp mit der Menge jeder Schicht
-Nutzung | ein Name, der eine Raumvorlage nennt („Bad“, „Bad OG“, „Küche 2“), wählt sie samt Belägen und Fliesen; sonst bleibt die Nutzung, ohne Wahl gilt Wohnzimmer; **Enter** nimmt einen einzelnen Vorschlag der Liste
+Nutzung | ein Name, der eine Raumvorlage nennt („Bad“, „Bad OG“, „Küche 2“), wählt sie samt Belägen und Fliesen; sonst bleibt die Nutzung, ohne Wahl gilt Wohnzimmer; **Enter** ergänzt einen einzelnen Vorschlag der Liste, der mit dem Getippten beginnt („Kü“ wird Küche); sonst bleibt der Name, und der Vorschlag gilt als Nutzung („Flur“ mit Nutzung „Diele, Flur“)
 Ausbau zeigen | Zahnrad der Ansicht › „Ausbau innen“: Putz, Wandbeläge, Bodenbelag und Sockelleisten in Grundriss, Schnitt und 3D; ab Werk aus, den Estrich zeigt der Schnitt immer
 Entfernen | ein Raum lässt sich nicht löschen, er folgt den Wänden: eine Wand löschen oder so verschieben, dass er mit dem Nachbarraum eins wird; eine Tür oder ein Fenster trennt keine Räume
 

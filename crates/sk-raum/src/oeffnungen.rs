@@ -122,8 +122,9 @@ impl Geschosse {
     }
 
     /// Das Geschoss unter `g` in seinem Gebäude, nach Höhenlage geordnet wie
-    /// `Model::levels_in`, ohne Gang über alle Geschosse des Modells (Review
-    /// #138 H-138f), mit seiner Art.
+    /// `Model::levels_in` (gleich hohe in der Reihenfolge des Modells), ohne
+    /// Gang über alle Geschosse des Modells (Review #138 H-138f), mit seiner
+    /// Art.
     pub fn darunter(&self, g: StoreyId) -> Option<(StoreyId, LevelKind)> {
         let l = self.lagen.get(&g)?;
         let mut v: Vec<(StoreyId, f64)> = self
@@ -691,6 +692,35 @@ mod tests {
         let ok_eg = s.elevation + m.clear_height(st);
         assert_eq!(ok_eg, s.elevation + s.height - 300.0);
         assert!((x.weiter[0] - (ok_eg - x.uk)).abs() < 1e-6, "{x:?}");
+        let z0 = s.elevation;
+        // Gleich hohe Ebenen (Review H-176b): beide in der Reihenfolge des
+        // Modells, wie `levels_in`
+        for id in m.levels_in(m.building_of(st)) {
+            let alt = m.storey(id).unwrap().clone();
+            let neu = sk_model::Storey {
+                elevation: z0,
+                ..alt.clone()
+            };
+            let changes = vec![sk_model::Change::Storey {
+                id,
+                old: Some(alt),
+                new: Some(neu),
+            }];
+            let t = sk_model::Txn {
+                label: "Gleich hoch",
+                changes,
+            };
+            m.apply(&t, sk_model::Direction::Redo);
+        }
+        let g = Geschosse::aus(&m);
+        let ebenen = m.levels_in(m.building_of(st));
+        assert!(ebenen.len() > 2);
+        for (i, id) in ebenen.iter().enumerate() {
+            let unten = i
+                .checked_sub(1)
+                .map(|j| (ebenen[j], m.storey(ebenen[j]).unwrap().kind));
+            assert_eq!(g.darunter(*id), unten);
+        }
     }
 
     #[test]

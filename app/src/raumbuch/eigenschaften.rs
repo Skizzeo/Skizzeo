@@ -81,7 +81,7 @@ pub fn werte(
 /// Unter der Nutzung, wenn keine gewählt ist (Bedienbarkeit 40.5), und
 /// wie man sie wählt.
 pub const VORGABE: &str = "Nicht gewählt, angenommen";
-pub const VORGABE_WEG: &str = "Wahl über den Namen am Stempel";
+pub const VORGABE_WEG: &str = "Wahl über den Stempelnamen";
 
 /// Weg zu fehlenden Ausbautypen (Einstellungen #112 B1): Jede Änderung der
 /// Vorlage im Reiter „Räume“ des Katalogs legt alle ihre Typen an; fehlt
@@ -95,7 +95,8 @@ type JeSchicht = Vec<(usize, f64)>;
 /// einem Typ dessen Name, mit mehreren Menge und Name, damit das Kürzen nur
 /// den Namen trifft. Die Menge eines Typs ist die seiner größten Schicht,
 /// also der ganzen Fläche. Decken seine Schichten ungleich viel, folgt je
-/// Schicht von der Rohbauseite aus eine Zeile „Gipsputz 1,5 cm: 16,55 m²“.
+/// Schicht von der Rohbauseite aus eine Zeile „16,55 m² Gipsputz 1,5 cm“,
+/// die Menge vorn, weil das Kürzen hinten trifft (Darstellung B1).
 /// `None` ohne Zeile.
 fn flaeche(m: &Model, zeilen: &[Zeile], gehoert: Gehoert) -> Option<(String, Vec<String>)> {
     // Je Typ die Einheit und je Schicht die Summe
@@ -147,7 +148,7 @@ fn flaeche(m: &Model, zeilen: &[Zeile], gehoert: Gehoert) -> Option<(String, Vec
             continue;
         }
         for (&(j, _), x) in schichten.iter().zip(texte) {
-            typen.push(format!("{}: {x}", schicht(m, t, j)));
+            typen.push(format!("{x} {}", schicht(m, t, j)));
         }
     }
     if typen.is_empty() {
@@ -288,30 +289,31 @@ mod tests {
         }));
         let v = werte(&s, r);
         let zahl = |t: &str| {
-            let t = t.rsplit(' ').nth(1).unwrap();
+            let t = t.split(' ').next().unwrap();
             t.replace('.', "").replace(',', ".").parse::<f64>().unwrap()
         };
         let i = v.iter().position(|x| x.0 == "Wand").unwrap();
-        let wand = zahl(&format!("{} x", v[i].1.trim_end_matches(" m²")));
+        let wand = zahl(&v[i].1);
         let schichten: Vec<&str> = v[i + 2..]
             .iter()
-            .take_while(|x| x.0.is_empty() && x.1.contains(": "))
+            .take_while(|x| x.0.is_empty() && x.1.contains(" m² "))
             .map(|x| x.1.as_str())
             .collect();
         assert_eq!(schichten.len(), 2, "{v:?}");
         let (putz, anstrich) = (zahl(schichten[0]), zahl(schichten[1]));
+        // Menge vorn: das Kürzen am Ende trifft nur den Namen (B1)
         assert!(
-            schichten[0].contains(" cm: "),
+            schichten[0].ends_with(" cm"),
             "Putz mit Dicke: {schichten:?}"
         );
         assert!(
-            !schichten[1].contains(" cm: "),
+            !schichten[1].ends_with(" cm"),
             "Anstrich ohne: {schichten:?}"
         );
         assert!(anstrich < putz, "{schichten:?}");
         assert_eq!(wand, putz, "die ganze Wand");
         let j = v.iter().position(|x| x.0 == "Boden (VOB)").unwrap();
-        assert!(!v[j + 2].1.contains(": "), "{v:?}");
+        assert!(!v[j + 2].1.contains(" m² "), "{v:?}");
     }
 
     /// Ein Raum, der beim Teilen entsteht, bekommt seine Typen im selben
