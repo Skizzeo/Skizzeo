@@ -30,7 +30,7 @@
 //! Raum ohne gespeicherten Raum (Datei vor G3, vor dem ersten Wandschritt)
 //! zeigt keinen Ausbau.
 
-use super::{class_in, mesh_into, union, Aabb, Class, Plane, Scene, Vis};
+use super::{class_in, mesh_into, union, Aabb, Boden, Class, Plane, Scene, Vis};
 use crate::scene::MeshData;
 use crate::ui::ViewKind;
 use sk_math::vec3;
@@ -42,6 +42,7 @@ use sk_raum::oeffnungen::{Geschosse, Rohbau};
 use sk_raum::raumbuch::koerper::{estrich, koerper, Koerper};
 use sk_raum::raumbuch::Flaeche;
 use sk_raum::{Begrenzung, Ketten, Raumflaeche};
+use sk_render::gelaende::{TerrainGrid, KEIN};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use teile::{teil_von, Teile, TEILE};
@@ -283,9 +284,61 @@ struct Netz {
     spanne: Option<(f64, f64)>,
 }
 
+/// OK Gelände aus dem Aufmaß, solange es dasselbe ist: mit Nummer und
+/// Höhenbereich. Ohne Aufmaß gilt die Ebene des Gebäudes.
+#[derive(Default)]
+struct Raster {
+    gitter: Option<Rc<TerrainGrid>>,
+    nr: u64,
+    bereich: Option<(f64, f64)>,
+}
+
+impl Raster {
+    /// Übernimmt das Raster der Szene; ein anderes bekommt eine neue
+    /// Nummer.
+    fn setzen(&mut self, g: Option<Rc<TerrainGrid>>) {
+        let gleich = match (&self.gitter, &g) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        if gleich {
+            return;
+        }
+        let z = g.iter().flat_map(|g| &g.z).filter(|z| **z > KEIN * 0.5);
+        self.bereich = z.fold(None, |b: Option<(f64, f64)>, &z| {
+            let z = f64::from(z);
+            Some(b.map_or((z, z), |b| (b.0.min(z), b.1.max(z))))
+        });
+        self.gitter = g;
+        self.nr += 1;
+    }
+
+    /// OK Gelände über der Ebene `eben` eines Gebäudes.
+    fn grund(&self, eben: f64) -> Grund<'_> {
+        Grund {
+            boden: Boden {
+                raster: self.gitter.as_deref(),
+                eben,
+            },
+            kennung: (eben, self.nr),
+            bereich: self.bereich,
+        }
+    }
+}
+
+/// OK Gelände einer Hausgruppe ([`Raster::grund`]): Mit einer anderen
+/// Kennung gelten ihre Netze nicht mehr; im Höhenbereich des Rasters
+/// verschiebt ein Grundriss nicht.
+#[derive(Clone, Copy)]
+struct Grund<'a> {
+    boden: Boden<'a>,
+    kennung: (f64, u64),
+    bereich: Option<(f64, f64)>,
+}
+
 /// Was eine geänderte Hausgruppe vorher hatte: ihre Räume, Netze und OK
 /// Gelände dazu.
-type Vorher = (Vec<ElementId>, Vec<Netz>, Option<f64>);
+type Vorher = (Vec<ElementId>, Vec<Netz>, Option<(f64, u64)>);
 
 /// Modell, berechnete Wandzüge der Szene und Geschosse, aus denen ein Raum
 /// rechnet.
@@ -322,10 +375,10 @@ struct Gruppe {
     offen: bool,
     /// Alle Räume haben alle Körper.
     alle: bool,
-    /// Netze je Sicht und Schalter für OK Gelände `boden`, zuletzt
+    /// Netze je Sicht und Schalter für OK Gelände `boden` ([`Grund`]), zuletzt
     /// gefragte zuerst.
     netze: Vec<Netz>,
-    boden: Option<f64>,
+    boden: Option<(f64, u64)>,
 }
 
 impl Gruppe {
@@ -400,13 +453,13 @@ impl Gruppe {
         &mut self,
         q: &Quelle<impl Ketten>,
         (sicht, alles): (Sicht, bool),
-        boden: f64,
+        boden: Grund,
         z: &mut Zaehler,
     ) -> Option<&Netz> {
         let sicht = self.sicht(q, (sicht, alles), z)?;
-        if self.boden != Some(boden) {
+        if self.boden != Some(boden.kennung) {
             self.netze.clear();
-            self.boden = Some(boden);
+            self.boden = Some(boden.kennung);
         }
         let i = self
             .netze
@@ -447,9 +500,12 @@ impl Gruppe {
     }
 
     /// Rechnet das Netz der Sicht aus den Räumen.
-    fn bauen(&mut self, sicht: Sicht, alles: bool, boden: f64, z: &mut Zaehler) -> Netz {
+    fn bauen(&mut self, sicht: Sicht, alles: bool, grund: Grund, z: &mut Zaehler) -> Netz {
         let mut m = MeshData::default();
-        let mut stufen = vec![boden];
+        let boden = grund.boden;
+        // Im Höhenbereich des Rasters liegt das Gelände je Stelle anders
+        let mut stufen = vec![boden.eben];
+        stufen.extend(grund.bereich.iter().flat_map(|b| [b.0, b.1]));
         for r in self.items.iter_mut().filter_map(|x| x.raum.as_mut()) {
             if let Sicht::Plan(_) = sicht {
                 let p = r.koerper.iter().flat_map(|k| &k.prismen);
@@ -466,7 +522,8 @@ impl Gruppe {
         let spanne = match sicht {
             Sicht::Plan(h) => {
                 von_oben(&mut m);
-                spanne(&stufen, h)
+                let im_raster = grund.bereich.is_some_and(|b| b.0 <= h && h <= b.1);
+                spanne(&stufen, h).filter(|_| !im_raster)
             }
             _ => None,
         };
@@ -683,6 +740,8 @@ pub(crate) struct RaumCache {
     /// Schnitthöhe des letzten Grundrisses.
     plan: Option<f64>,
     teile: Teile,
+    /// OK Gelände aus dem Aufmaß ([`Scene::terrain_grid`]).
+    raster: Raster,
     z: Zaehler,
 }
 
@@ -879,13 +938,14 @@ impl RaumCache {
             g: &self.lagen,
         };
         let z = &mut self.z;
+        let raster = &self.raster;
         let geschosse = self.geschosse.iter_mut().enumerate();
         let geschosse = geschosse.filter(|(_, g)| plan.is_none_or(|p| g.id == p));
         if !s.filtering() {
             // Erst die Netze, dann die Teile, in die sie gehören
             let mut wo: [Vec<(usize, usize)>; TEILE] = Default::default();
             for (i, g) in geschosse {
-                let boden = model.terrain_z_of(model.building_of(g.id));
+                let boden = raster.grund(model.terrain_z_of(model.building_of(g.id)));
                 for (j, gr) in g.gruppen.iter_mut().enumerate() {
                     if gr.netz(&q, sicht, boden, z).is_some() {
                         wo[gr.teil()].push((i, j));
@@ -904,7 +964,11 @@ impl RaumCache {
             }
             return;
         }
-        let ground = |id: ElementId| model.terrain_z_of(model.building_of_element(id));
+        let ground = |id: ElementId| {
+            raster
+                .grund(model.terrain_z_of(model.building_of_element(id)))
+                .boden
+        };
         let vis = Vis {
             model,
             anim: s.vis_anim.as_ref(),
@@ -1138,7 +1202,9 @@ impl Scene {
             (None, None) => Sicht::Voll,
         };
         // Der Speicher liest die Szene (Erkennung, berechnete Züge)
+        let raster = self.terrain_grid();
         let mut c = std::mem::take(&mut self.ausbau);
+        c.raster.setzen(raster);
         c.sync(self);
         c.anhaengen(self, m, plan.map(|p| p.0), (sicht, alles));
         self.ausbau = c;
@@ -1624,6 +1690,50 @@ mod tests {
     }
 
     /// Liegen die Anker der Räume `a` und `b` im selben Haus?
+    /// Mit Aufmaß teilt der Ausbau seine Kanten am Gelände wie die Wände
+    /// (#129), und ein neues Raster rechnet die Netze der Hausgruppen neu.
+    #[test]
+    fn ausbau_mit_aufmass() {
+        let (mut s, _) = haus();
+        s.set_view_finish(2, true);
+        s.ausbau_getrennt();
+        let mut z = (0, 0, 0);
+        neu(&mut s, &mut z);
+        let csv =
+            include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
+        let (t, ..) = sk_model::Terrain::lesen(csv, "aufmass.csv", "2026-10-13", 32).unwrap();
+        assert!(s.edit_model("Höhenaufmaß", |m| m.import_terrain(t)));
+        // Gelände 1 m über ±0,00 in der Mitte des Hauses: Es schneidet die
+        // Wandseiten
+        let g = s.terrain_grid().expect("Raster");
+        let z0 = g.z(5000.0, 4000.0).unwrap();
+        let nhn = s.model().terrain_nhn().unwrap();
+        assert!(s.edit_model("Höhenlage", |m| m
+            .set_terrain_nhn(nhn - (1000.0 - z0) / 1000.0)));
+        let g = s.terrain_grid().unwrap();
+        assert!((g.z(5000.0, 4000.0).unwrap() - 1000.0).abs() < 1.0);
+        let n0 = s.ausbau_netze().0;
+        s.mesh(ViewKind::Persp, None, &[]);
+        assert!(s.ausbau_netze().0 > n0, "neues Raster, neue Netze");
+        let mut a = MeshData::default();
+        s.ausbau_liefern(|_, m| {
+            a.edges.extend_from_slice(&m.edges);
+        });
+        let m = s.model();
+        let eben = m.terrain_z_of(m.buildings().iter().next().map(|b| b.0));
+        let unten = |p: [f32; 3]| {
+            let (x, y) = (f64::from(p[0]), f64::from(p[1]));
+            f64::from(p[2]) - g.z(x, y).unwrap_or(eben)
+        };
+        let mut am_gelaende = 0;
+        for (e, _) in &a.edges {
+            let (da, db) = (unten(e[0]), unten(e[1]));
+            assert!(!(da.min(db) < -1.0 && da.max(db) > 1.0), "{e:?}");
+            am_gelaende += usize::from(da.abs() < 1.0 || db.abs() < 1.0);
+        }
+        assert!(am_gelaende > 0);
+    }
+
     fn same_haus(s: &Scene, a: ElementId, b: ElementId) -> bool {
         let x = |r| (s.model().space(r).unwrap().anker.x / 15000.0).floor();
         x(a) == x(b)

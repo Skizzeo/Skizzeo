@@ -2173,6 +2173,32 @@ fn perf_ausbau_innen() {
     println!("Zeiten in ms (Release); geprüft: Räume je Loslassen.");
 }
 
+/// Eine 300 m lange Mauer südlich der Häuser (Review #149 B1): Auch mit
+/// ihr läuft kein Vortest je Mausbewegung über das ganze Modell.
+fn mauer(s: &mut Scene) {
+    s.add_wall(&WallChain {
+        base: 0.0,
+        points: vec![
+            vec3(-20_000.0, -20_000.0, 0.0),
+            vec3(280_000.0, -20_000.0, 0.0),
+        ],
+        closed: false,
+        ref_side: RefSide::Left,
+        layers: Vec::new(),
+        height: 2750.0,
+        joints: Default::default(),
+    });
+}
+
+/// Häuser je Zeile der Messungen mit Griffen, „+M“ mit [`mauer`].
+const GRIFF_FAELLE: [(usize, bool); 5] = [
+    (1, false),
+    (10, false),
+    (100, false),
+    (1000, false),
+    (1000, true),
+];
+
 /// Review #99 B1/B2: Innentüren bei `n` Häusern (je zwei Innenwände mit
 /// einer Tür): Griffe je Mausbewegung, Fang des Innentür-Werkzeugs, Ziehen
 /// am Griff (Aufschlag wechselt je Bewegung, dazu der neue Griff) und
@@ -2188,7 +2214,7 @@ fn perf_innentuer() {
         "{:>6} {:>8} {:>8} {:>8} {:>9}",
         "Häuser", "Griffe", "Fang", "Ziehen", "Loslassen"
     );
-    for n in [1, 10, 100, 1000] {
+    for (n, lang) in GRIFF_FAELLE {
         let mut s = town_with_interior(n);
         let st = s.active_storey();
         let rechts = Swing {
@@ -2196,6 +2222,10 @@ fn perf_innentuer() {
             din: Din::Links,
         };
         innentueren(&mut s, rechts);
+        if lang {
+            mauer(&mut s);
+        }
+        let n = format!("{n}{}", if lang { "+M" } else { "" });
         let (id, o) = s
             .model()
             .elements()
@@ -2337,13 +2367,17 @@ fn perf_breite() {
         "{:>6} {:>8} {:>8} {:>8} {:>8} {:>9}",
         "Häuser", "Griffe", "Kette", "Greifen", "Ziehen", "Loslassen"
     );
-    for n in [1, 10, 100, 1000] {
+    for (n, lang) in GRIFF_FAELLE {
         let mut s = town_with_interior(n);
         let swing = Swing {
             side: FaceSide::Right,
             din: Din::Links,
         };
         innentueren(&mut s, swing);
+        if lang {
+            mauer(&mut s);
+        }
+        let n = format!("{n}{}", if lang { "+M" } else { "" });
         let (id, o) = s
             .model()
             .elements()

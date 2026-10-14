@@ -50,18 +50,20 @@ impl Scene {
         ok
     }
 
-    /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
-    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur seine Züge mit
-    /// Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an OK
-    /// Gelände. Ohne Aufmaß bleiben andere Gebäude (Entscheidung B). Mit
-    /// Aufmaß bestimmt ein Gebäude ±0,00 für alle; zieht man dessen
-    /// Gelände, stehen die anderen bis zum Loslassen auf ihrer alten
-    /// Gründung, dann folgen sie in einem Gang ([`Scene::commit`], Review
-    /// #123 B1 zum Gelände-Zug). Je Bild kostet das so viel wie das gezogene
-    /// Gebäude. Die Mengen rechnet das Loslassen nach (Review Gelände).
+    /// OK Gelände an der Gründung des aktiven Gebäudes beim Ziehen (Kote
+    /// `z`, Gelände Thema 1), geklemmt. Seine Gründung folgt; neu sind nur
+    /// seine Züge mit Sohlplatte, denn die Kanten teilt der Netzbau ohnehin
+    /// je Bild an OK Gelände. Ohne Aufmaß bleiben andere Gebäude
+    /// (Entscheidung B). Mit Aufmaß wandert ±0,00 aller Gebäude; die
+    /// anderen stehen bis zum Loslassen auf ihrer alten Gründung, dann
+    /// folgen sie in einem Gang ([`Scene::commit`], Review #123 B1 zum
+    /// Gelände-Zug). Je Bild kostet das so viel wie das gezogene Gebäude.
+    /// Die Mengen rechnet das Loslassen nach (Review Gelände).
     pub fn drag_terrain(&mut self, z: f64) {
-        let max = sk_model::MAX_TERRAIN_OFFSET;
-        let Some(b) = self.active_building().filter(|_| z.is_finite()) else {
+        let Some(gr) = self.model.foundation_level_of(self.active_storey()) else {
+            return;
+        };
+        let Some(b) = self.model.building_of(gr).filter(|_| z.is_finite()) else {
             return;
         };
         if self.gelaende_zug.is_none() {
@@ -70,10 +72,11 @@ impl Scene {
             };
             self.gelaende_zug = Some((zug, self.platten_zuege(&[b])));
         }
+        let (lo, hi) = self.model.terrain_z_of_level_range(gr);
         let Some((zug, runs)) = &self.gelaende_zug else {
             return;
         };
-        if !self.model.gelaende_ziehen(zug, (-z).clamp(-max, max)) {
+        if !self.model.gelaende_ziehen_auf(zug, gr, z.clamp(lo, hi)) {
             return;
         }
         for r in runs.clone() {
@@ -362,60 +365,86 @@ mod tests {
         Scene::with_model(m)
     }
 
-    /// Loslassen eines Gelände-Zugs (Review #123 F1: mit Aufmaß 195 ms bei
-    /// 1000 Häusern, ohne 41,5): Mit Aufmaß folgen die übrigen Gründungen
-    /// im Modell, ihre Körper erst im Leerlauf, je Durchlauf im Budget. So
-    /// kostet das Loslassen mit Aufmaß kaum mehr als ohne, und am Ende steht
-    /// dasselbe Bild wie nach einem Neuaufbau.
-    #[test]
-    fn loslassen_ohne_aufschlag() {
+    /// Gelände-Züge an `n` Häusern ([`viele_haeuser`]) wie in Review zu
+    /// #153 gemessen: einmal aufwärmen, dann Bestwert des Loslassens aus
+    /// mindestens sieben Zügen über mindestens 300 ms, denn die Tests laufen
+    /// nebeneinander. Dazu die Zeit des Nachziehens im Leerlauf und seine
+    /// Durchläufe nach dem ersten. Mit Aufmaß steht danach dasselbe Bild wie
+    /// nach einem Neuaufbau.
+    fn loslassen(n: usize, aufmass: bool) -> (f64, f64, usize) {
         use crate::ui::ViewKind;
-        let n = if cfg!(debug_assertions) { 64 } else { 1000 };
         let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
-        let mut zeiten = Vec::new();
-        for aufmass in [false, true] {
-            let mut s = viele_haeuser(n, aufmass);
-            let (mut los, mut nach, mut runden) = (Vec::new(), 0.0, 0);
-            for z in [-300.0, -650.0, -450.0, -800.0, -350.0] {
-                s.begin("Gelände ziehen");
-                s.drag_terrain(z + 40.0);
-                s.drag_terrain(z);
-                let t0 = Instant::now();
-                s.commit();
-                los.push(ms(t0));
-                assert_eq!(s.zieht_nach(), aufmass);
-                loop {
-                    let t0 = Instant::now();
-                    let r = s.nachziehen(Duration::from_millis(6));
-                    nach += ms(t0);
-                    if r != Some(false) {
-                        break;
-                    }
-                    runden += 1;
-                }
+        let mut s = viele_haeuser(n, aufmass);
+        let (mut best, mut nach, mut runden) = (f64::INFINITY, 0.0, 0);
+        let start = Instant::now();
+        for (k, z) in [-300.0, -650.0, -450.0, -800.0, -350.0]
+            .into_iter()
+            .cycle()
+            .take(200)
+            .enumerate()
+        {
+            s.begin("Gelände ziehen");
+            s.drag_terrain(z + 40.0);
+            s.drag_terrain(z);
+            let t0 = Instant::now();
+            s.commit();
+            if k > 0 {
+                best = best.min(ms(t0));
             }
-            los.sort_by(f64::total_cmp);
-            zeiten.push(los[2]);
-            eprintln!(
-                "{n} Häuser {} Aufmaß: Loslassen {:.1} ms (Median), \
-                 Nachziehen {nach:.1} ms in {runden} weiteren Durchläufen",
-                if aufmass { "mit" } else { "ohne" },
-                los[2]
-            );
-            if aufmass {
-                let mut neu = Scene::with_model(s.model().clone());
-                let bild = |s: &mut Scene| s.mesh(ViewKind::Front, None, &[]).faces.len();
-                assert_eq!(bild(&mut s), bild(&mut neu));
-                assert_eq!(s.bounds(), neu.bounds());
+            assert_eq!(s.zieht_nach(), aufmass);
+            loop {
+                let t0 = Instant::now();
+                let r = s.nachziehen(Duration::from_millis(6));
+                nach += ms(t0);
+                if r != Some(false) {
+                    break;
+                }
+                runden += 1;
+            }
+            if k >= 7 && ms(start) >= 300.0 {
+                break;
             }
         }
-        let grenze = if cfg!(debug_assertions) { 400.0 } else { 10.0 };
-        assert!(
-            zeiten[1] <= 1.3 * zeiten[0] + grenze,
-            "Loslassen mit Aufmaß {:.1} ms, ohne {:.1} ms",
-            zeiten[1],
-            zeiten[0]
+        if aufmass {
+            let mut neu = Scene::with_model(s.model().clone());
+            let bild = |s: &mut Scene| s.mesh(ViewKind::Front, None, &[]).faces.len();
+            assert_eq!(bild(&mut s), bild(&mut neu));
+            assert_eq!(s.bounds(), neu.bounds());
+        }
+        eprintln!(
+            "{n} Häuser {} Aufmaß: Loslassen {best:.1} ms (Bestwert), \
+             Nachziehen {nach:.1} ms in {runden} weiteren Durchläufen",
+            if aufmass { "mit" } else { "ohne" },
         );
+        (best, nach, runden)
+    }
+
+    /// Loslassen eines Gelände-Zugs (Review #123 F1: mit Aufmaß 195 ms bei
+    /// 1000 Häusern, ohne 41,5): Mit Aufmaß folgen die übrigen Gründungen
+    /// im Modell, ihre Körper erst im Leerlauf, je Durchlauf im Budget. Das
+    /// Loslassen bleibt bei 1000 Häusern mit und ohne Aufmaß unter 8 ms
+    /// (Review L42; vorher mit Aufmaß 8,8 bis 9,8 ms, weil jede Gründung
+    /// ihr Geschoss und das EG in den Abgleich brachte).
+    #[test]
+    fn loslassen_ohne_aufschlag() {
+        let n = if cfg!(debug_assertions) { 64 } else { 1000 };
+        let grenze = if cfg!(debug_assertions) { 400.0 } else { 8.0 };
+        for aufmass in [false, true] {
+            let (los, ..) = loslassen(n, aufmass);
+            assert!(los < grenze, "{n} Häuser, Aufmaß {aufmass}: {los:.1} ms");
+        }
+    }
+
+    /// Messprogramm (Review L42): dasselbe bei 4000 Häusern, nur im Release
+    /// sinnvoll: `cargo test -p skizzeo --release loslassen_4000 --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore = "Messprogramm, 4000 Häuser"]
+    fn loslassen_4000() {
+        for aufmass in [false, true] {
+            let (los, ..) = loslassen(4000, aufmass);
+            assert!(los < 8.0, "4000 Häuser, Aufmaß {aufmass}: {los:.1} ms");
+        }
     }
 
     /// Die automatische Sicherung wartet, solange ein Gelände-Zug offen
