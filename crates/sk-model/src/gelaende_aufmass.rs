@@ -527,6 +527,18 @@ impl Terrain {
         })
     }
 
+    /// Abtrag und Auftrag über einem Polygon (Landeswerte) gegen eine
+    /// waagerechte Sohle in `h` m ü. Bezug des Aufmaßes, exakt über die
+    /// Dreiecke (G2, [`sk_gelaende::volumen::Erdmenge`]): `ueber` ist das
+    /// Gelände über der Sohle, `unter` darunter. Teile außerhalb des Netzes
+    /// zählen nicht; `flaeche` sagt, wie viel im Netz liegt.
+    pub fn erdmenge_over(&self, ring: &[(f64, f64)], h: f64) -> sk_gelaende::volumen::Erdmenge {
+        let m = self.mesh();
+        let (e0, n0) = m.bezug;
+        let r: Vec<[f64; 2]> = ring.iter().map(|p| [p.0 - e0, p.1 - n0]).collect();
+        m.abfrage.erdmenge(&r, [h, 0.0, 0.0])
+    }
+
     /// Mittlere Höhe der Punkte im Gelände.
     pub fn mean_height(&self) -> Option<f64> {
         let m = self.mesh();
@@ -737,6 +749,21 @@ impl Model {
 
     /// Mit Aufmaß: Flächenmittel des Geländes über einem Umriss im Modell
     /// (mm, relativ zu ±0,00) und die Höhe von ±0,00 (m ü. NHN).
+    /// Abtrag und Auftrag des Aufmaßes über dem Umriss `outline` (Modell,
+    /// mm) gegen eine waagerechte Sohle in `z` mm über ±0,00 (G2): Fläche in
+    /// m², Mengen in m³. `None` ohne Aufmaß mit Lage und Höhenbezug.
+    pub fn terrain_erdmenge(
+        &self,
+        outline: &[Vec3],
+        z: f64,
+    ) -> Option<sk_gelaende::volumen::Erdmenge> {
+        let t = self.terrain()?;
+        let f = self.survey_frame()?;
+        let h0 = self.terrain_nhn()?;
+        let q: Vec<(f64, f64)> = outline.iter().map(|p| f.to_survey(p.x, p.y)).collect();
+        Some(t.erdmenge_over(&q, h0 + z / 1000.0))
+    }
+
     pub(super) fn terrain_mean_survey(&self, outline: &[Vec3]) -> Option<(f64, f64)> {
         let t = self.terrain()?;
         let f = self.survey_frame()?;
@@ -1577,6 +1604,18 @@ mod tests {
         let mittel = 24.95 + g.terrain_z / 1000.0;
         assert!((mittel - 24.753).abs() < 0.0005, "Mittel {mittel}");
         assert!((g.embedment - 800.0).abs() < 1e-6);
+        // G2 über das Netz: innerhalb der Schürze Auffüllung bis UK Schicht
+        // 24,58 unter N = Gelände − 0,30, also gegen 24,88 = −70 mm
+        let innen = [
+            (7350.0, 6350.0),
+            (16650.0, 6350.0),
+            (16650.0, 13650.0),
+            (7350.0, 13650.0),
+        ]
+        .map(|(x, y)| sk_math::vec3(x, y, 0.0));
+        let e = m.terrain_erdmenge(&innen, -70.0).unwrap();
+        assert!((e.flaeche - 67.89).abs() < 1e-6, "{e:?}");
+        assert!((e.unter - 8.549).abs() < 0.001 && e.ueber > 0.04, "{e:?}");
         let s = crate::qto::schedule(&m);
         let ansatz = |k: &str| s.auto.iter().find(|a| a.key == k).unwrap().formula.clone();
         assert!(
