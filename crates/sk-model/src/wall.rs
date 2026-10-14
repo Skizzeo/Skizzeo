@@ -804,7 +804,7 @@ impl WallChain {
         }
         for k in 0..m {
             let v = out[(k + 1) % n] - out[k];
-            if v.length() < 1.0 || v.dot(dirs[k]) <= 0.0 {
+            if v.length() <= 1.0 || v.dot(dirs[k]) <= 0.0 {
                 return None;
             }
         }

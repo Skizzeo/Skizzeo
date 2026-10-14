@@ -45,6 +45,7 @@ fn hinweis_text(h: &Hinweis) -> &'static str {
             "Böschung erreicht das Gelände im Aufmaß nicht: Menge bis zum Rand des Aufmaßes"
         }
         Hinweis::SpitzeEcke(_) => "spitze Ecke, Böschung läuft lang aus",
+        Hinweis::Ungueltig(_) => "Kante oder Neigung ungültig: dort keine Böschung",
     }
 }
 

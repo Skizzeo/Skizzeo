@@ -16,6 +16,8 @@ pub enum GelaendeKnopf {
     Leiste,
     /// Lageplan einlesen (G1c).
     Lageplan,
+    /// Das Flurstück des eingelesenen Lageplans übernehmen.
+    Uebernehmen,
     /// Höhenaufmaß einlesen.
     Hoehen,
     /// Gelände unter dem Haus verschieben bzw. drehen: zeigt die Felder
@@ -37,6 +39,7 @@ impl GelaendeKnopf {
         match self {
             GelaendeKnopf::Leiste => None,
             GelaendeKnopf::Lageplan
+            | GelaendeKnopf::Uebernehmen
             | GelaendeKnopf::Hoehen
             | GelaendeKnopf::Verschieben
             | GelaendeKnopf::Drehen
@@ -67,8 +70,12 @@ pub enum GelaendeFeld {
 /// Was die Leiste zeigt; die App füllt es aus dem Modell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GelaendeLeiste {
-    /// Ein Höhenaufmaß ist eingelesen.
+    /// Ein Gelände ist da (Höhenaufmaß oder Grundstück aus dem Lageplan).
     pub aufmass: bool,
+    /// Es hat Höhen: Höhenlage und ihre Folgen.
+    pub hoehen: bool,
+    /// Ein Lageplan ist gelesen und sein Flurstück kann übernommen werden.
+    pub uebernehmen: bool,
     /// Es gibt eine Grenze: „An Grenze ausrichten“ und Zuschnitt.
     pub grenze: bool,
     /// Höhenlage absolut (sonst über Gelände).
@@ -122,6 +129,12 @@ impl Ui {
             }
         };
         rows.push(paar((K::Lageplan, "Lageplan"), (K::Hoehen, "Höhen")));
+        if l.uebernehmen {
+            rows.push(Row::Button(
+                Id::Gelaende(K::Uebernehmen),
+                "Flurstück übernehmen",
+            ));
+        }
         if l.aufmass {
             rows.push(paar((K::Verschieben, "Verschieben"), (K::Drehen, "Drehen")));
             match l.tippen {
@@ -138,15 +151,17 @@ impl Ui {
                     "An Grenze ausrichten",
                 ));
             }
-            rows.extend([
-                Row::Separator,
-                Row::Label("Höhenlage"),
-                paar((K::Ueber, "über Gelände"), (K::Absolut, "absolut")),
-            ]);
-            feld(&mut rows, GelaendeFeld::Versatz);
-            feld(&mut rows, GelaendeFeld::Nhn);
-            rows.extend(l.hoehenlage.iter().map(|z| Row::Text(z.clone())));
-            rows.extend(l.steckt.clone().map(Row::Error));
+            if l.hoehen {
+                rows.extend([
+                    Row::Separator,
+                    Row::Label("Höhenlage"),
+                    paar((K::Ueber, "über Gelände"), (K::Absolut, "absolut")),
+                ]);
+                feld(&mut rows, GelaendeFeld::Versatz);
+                feld(&mut rows, GelaendeFeld::Nhn);
+                rows.extend(l.hoehenlage.iter().map(|z| Row::Text(z.clone())));
+                rows.extend(l.steckt.clone().map(Row::Error));
+            }
             if l.grenze {
                 rows.extend([
                     Row::Separator,
@@ -162,6 +177,8 @@ impl Ui {
             rows.extend(l.hoehenlinien.clone().map(Row::Text));
         } else if l.meldung.is_empty() && l.fehler.is_none() {
             rows.extend([
+                Row::Hint("Lageplan: PDF, Maßstab"),
+                Row::Hint("und Flurstück erkannt."),
                 Row::Hint("Höhen: Punktliste des"),
                 Row::Hint("Vermessers einlesen."),
             ]);
@@ -194,13 +211,11 @@ impl Ui {
             GelaendeKnopf::Ueber => !l.absolut,
             GelaendeKnopf::Absolut => l.absolut,
             GelaendeKnopf::Zuschnitt(s) => l.zuschnitt == Some(s),
-            GelaendeKnopf::Lageplan | GelaendeKnopf::Hoehen | GelaendeKnopf::Ausrichten => false,
+            GelaendeKnopf::Lageplan
+            | GelaendeKnopf::Uebernehmen
+            | GelaendeKnopf::Hoehen
+            | GelaendeKnopf::Ausrichten => false,
         }
-    }
-
-    /// Gesperrt: „Lageplan“, bis das Einlesen von PDF und PNG da ist (G1c).
-    pub(super) fn gelaende_blass(&self, k: GelaendeKnopf) -> bool {
-        k == GelaendeKnopf::Lageplan
     }
 }
 
@@ -211,6 +226,7 @@ mod tests {
     fn leiste() -> GelaendeLeiste {
         GelaendeLeiste {
             aufmass: true,
+            hoehen: true,
             grenze: true,
             zuschnitt: Some(Show::All),
             ..Default::default()
@@ -256,7 +272,21 @@ mod tests {
         );
         assert!(ui.is_on(Id::Gelaende(K::Ueber)) && !ui.is_on(Id::Gelaende(K::Absolut)));
         assert!(ui.is_on(Id::Gelaende(K::Zuschnitt(Show::All))));
-        assert!(ui.is_disabled(Id::Gelaende(K::Lageplan)));
+        assert!(!ui.is_disabled(Id::Gelaende(K::Lageplan)));
+        // Ein gelesener Lageplan bietet sein Flurstück an; ohne Höhen keine
+        // Höhenlage
+        ui.gelaende = Some(GelaendeLeiste {
+            uebernehmen: true,
+            hoehen: false,
+            ..leiste()
+        });
+        let k = knoepfe(&ui);
+        assert_eq!(
+            k[..4],
+            [K::Leiste, K::Lageplan, K::Hoehen, K::Uebernehmen].map(Id::Gelaende)
+        );
+        assert!(!k.contains(&Id::Gelaende(K::Ueber)));
+        ui.gelaende = Some(leiste());
         ui.frei = Freischaltung::mit(&[Modul::Mengen]);
         assert_eq!(knoepfe(&ui), [Id::Gelaende(K::Leiste)]);
         assert!(ui

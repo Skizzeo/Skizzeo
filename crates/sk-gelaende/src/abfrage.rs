@@ -21,6 +21,8 @@ pub struct Abfrage {
     /// Dreiecke je Zelle, Zeile für Zeile.
     start: Vec<u32>,
     inhalt: Vec<u32>,
+    /// Tiefste und höchste Höhe, einmal beim Bau bestimmt.
+    bereich: Option<(f64, f64)>,
 }
 
 /// Toleranz für „auf der Kante“ in baryzentrischen Anteilen.
@@ -74,7 +76,12 @@ impl Abfrage {
             ny,
             start: vec![0; nx * ny + 1],
             inhalt: Vec::new(),
+            bereich: None,
         };
+        let mut z = a.punkte.iter().map(|p| p[2]);
+        a.bereich = z
+            .next()
+            .map(|z0| z.fold((z0, z0), |(lo, hi), z| (lo.min(z), hi.max(z))));
         // zweimal durch: zählen, dann füllen
         let zellen = |a: &Abfrage, t: &[u32; 3]| {
             let p = t.map(|i| a.punkte[i as usize]);
@@ -193,9 +200,21 @@ impl Abfrage {
 
     /// Tiefste und höchste Höhe des Netzes; `None` ohne Punkte.
     pub fn hoehenbereich(&self) -> Option<(f64, f64)> {
-        let mut it = self.punkte.iter().map(|p| p[2]);
-        let z = it.next()?;
-        Some(it.fold((z, z), |(lo, hi), z| (lo.min(z), hi.max(z))))
+        self.bereich
+    }
+
+    /// Kantenlänge einer Zelle des Suchgitters (m), etwa der mittlere
+    /// Punktabstand.
+    pub fn zelle(&self) -> f64 {
+        self.zelle
+    }
+
+    /// Diagonale des Rechtecks um das Netz (m); 0 ohne Netz.
+    pub fn diagonale(&self) -> f64 {
+        if self.dreiecke.is_empty() {
+            return 0.0;
+        }
+        (self.nx as f64 * self.zelle).hypot(self.ny as f64 * self.zelle)
     }
 
     /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`
@@ -248,13 +267,48 @@ impl Abfrage {
     pub fn profil(&self, a: [f64; 2], b: [f64; 2]) -> Vec<[f64; 2]> {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let laenge = dx.hypot(dy);
+        self.anteile_auf(a, b)
+            .into_iter()
+            .filter_map(|s| {
+                let (x, y) = (a[0] + s * dx, a[1] + s * dy);
+                Some([s * laenge, self.hoehe(x, y)?])
+            })
+            .collect()
+    }
+
+    /// Wie [`Abfrage::profil`], aber nur im Netz: endet mit dem letzten
+    /// Punkt im Netz; `true`, wenn die Strecke das Netz dort verlässt oder
+    /// außerhalb beginnt. Ohne die Randhöhen von außerhalb, darum auch
+    /// ohne die Suche über den Rand (Review #169 B2, B6).
+    pub fn profil_innen(&self, a: [f64; 2], b: [f64; 2]) -> (Vec<[f64; 2]>, bool) {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let laenge = dx.hypot(dy);
+        let mut out = Vec::new();
+        for s in self.anteile_auf(a, b) {
+            let (x, y) = (a[0] + s * dx, a[1] + s * dy);
+            let Some(t) = self.dreieck(x, y) else {
+                return (out, true);
+            };
+            let l = self.anteile(t, x, y);
+            let z = self.dreiecke[t].map(|i| self.punkte[i as usize][2]);
+            out.push([s * laenge, l[0] * z[0] + l[1] * z[1] + l[2] * z[2]]);
+        }
+        (out, false)
+    }
+
+    /// Anteile auf a → b an a, an jedem Schnitt mit einer Netzkante und an
+    /// b, aufsteigend. Je Zelle nahe der Strecke ihre Dreiecke; eine Kante,
+    /// die in zwei Zellen liegt, gibt denselben Anteil zweimal, das Sortieren
+    /// legt sie zusammen.
+    fn anteile_auf(&self, a: [f64; 2], b: [f64; 2]) -> Vec<f64> {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let laenge = dx.hypot(dy);
         let mut t: Vec<f64> = vec![0.0, 1.0];
-        if !self.dreiecke.is_empty() && laenge > 0.0 {
+        if !self.dreiecke.is_empty() && laenge > 0.0 && laenge.is_finite() {
             let (lo, hi) = (
                 self.zelle_von(a[0].min(b[0]), a[1].min(b[1])),
                 self.zelle_von(a[0].max(b[0]), a[1].max(b[1])),
             );
-            let mut gesehen = std::collections::HashSet::new();
             for cy in lo.1..=hi.1 {
                 for cx in lo.0..=hi.0 {
                     // nur Zellen nahe der Strecke
@@ -270,9 +324,6 @@ impl Abfrage {
                         let tr = self.dreiecke[ti as usize];
                         for k in 0..3 {
                             let (u, v) = (tr[k].min(tr[(k + 1) % 3]), tr[k].max(tr[(k + 1) % 3]));
-                            if !gesehen.insert((u, v)) {
-                                continue;
-                            }
                             let (p, q) = (self.punkte[u as usize], self.punkte[v as usize]);
                             if let Some(s) = schnitt(a, b, [p[0], p[1]], [q[0], q[1]]) {
                                 t.push(s);
@@ -284,12 +335,7 @@ impl Abfrage {
         }
         t.sort_by(f64::total_cmp);
         t.dedup_by(|x, y| (*x - *y) * laenge < 1e-6);
-        t.into_iter()
-            .filter_map(|s| {
-                let (x, y) = (a[0] + s * dx, a[1] + s * dy);
-                Some([s * laenge, self.hoehe(x, y)?])
-            })
-            .collect()
+        t
     }
 }
 

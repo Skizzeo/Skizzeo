@@ -63,6 +63,10 @@ pub enum Hinweis {
     /// Innenwinkel unter 60° am Anfang der Kante: Gehrung an spitzer Ecke
     /// (VOB-Prüfung G3, Frage 4).
     SpitzeEcke(usize),
+    /// Die Kante hat keine endlichen Werte oder eine Neigung, die keine
+    /// ist (0, negativ, nicht endlich); dort keine Böschung (Review #169
+    /// B3, H-169b).
+    Ungueltig(usize),
 }
 
 /// Unter diesem Innenwinkel ist eine Ecke spitz (VOB-Prüfung G3).
@@ -95,6 +99,10 @@ pub struct Planmenge {
 /// Abstand der Proben entlang einer Kante für die Reichweite (m).
 const PROBE: f64 = 1.0;
 
+/// Höchstens so viele Proben je Kante (Review #169 B3): eine sehr lange
+/// Kante wird gröber geprobt.
+const MAX_PROBEN: usize = 2000;
+
 /// Längste Grat- oder Kehllinie als Vielfaches der Reichweite: an sehr
 /// spitzen Ecken liefe sie sonst fast entlang der Kante ins Unendliche.
 const STRAHL_MAX: f64 = 10.0;
@@ -106,7 +114,13 @@ impl Planung {
             teile: b.teile.clone(),
             ..Planung::default()
         };
-        let (rand, nummer) = gegen_uhrzeiger(&b.rand);
+        let (rand, nummer, umgekehrt) = gegen_uhrzeiger(&b.rand);
+        // Kanten ohne Länge unterbrechen sonst die Gehrung (Review #169 B4)
+        let (rand, nummer): (Vec<Kante>, Vec<usize>) = rand
+            .into_iter()
+            .zip(nummer)
+            .filter(|(k, _)| !endlich(k) || (k.b[0] - k.a[0]).hypot(k.b[1] - k.a[1]) > 1e-9)
+            .unzip();
         let n = rand.len();
         if n < 3 {
             return p;
@@ -114,29 +128,40 @@ impl Planung {
         let Some((h_lo, h_hi)) = u.hoehenbereich() else {
             return p;
         };
-        let (z_lo, z_hi) = rand.iter().fold((h_lo, h_hi), |(lo, hi), k| {
-            (lo.min(k.a[2]).min(k.b[2]), hi.max(k.a[2]).max(k.b[2]))
-        });
-        let spanne = z_hi - z_lo + 0.1;
         let geo: Vec<Option<Geo>> = rand.iter().map(Geo::neu).collect();
         for (i, k) in rand.iter().enumerate() {
-            if let (Some(_), Some(g)) = (k.neigung, geo[i]) {
+            let neigung_falsch = k.neigung.is_some_and(|n| !(n.is_finite() && n > 0.0));
+            if !endlich(k) || neigung_falsch {
+                p.hinweise.push(Hinweis::Ungueltig(nummer[i]));
+            } else if let (Some(_), Some(g)) = (k.neigung, geo[i]) {
                 if g.steigung(k).is_none() {
                     p.hinweise.push(Hinweis::ZuSteil(nummer[i]));
                 }
             }
         }
+        let (z_lo, z_hi) = rand
+            .iter()
+            .filter(|k| endlich(k))
+            .fold((h_lo, h_hi), |(lo, hi), k| {
+                (lo.min(k.a[2]).min(k.b[2]), hi.max(k.a[2]).max(k.b[2]))
+            });
+        let spanne = z_hi - z_lo + 0.1;
         for i in 0..n {
             let j = (i + n - 1) % n;
             let (Some(v), Some(w)) = (geo[j], geo[i]) else {
                 continue;
             };
-            let boeschung = rand[j].neigung.is_some() && rand[i].neigung.is_some();
+            // nur zwischen zwei Böschungen (H-169c)
+            let boeschung = v.steigung(&rand[j]).is_some() && w.steigung(&rand[i]).is_some();
             let kreuz = v.t[0] * w.t[1] - v.t[1] * w.t[0];
             let skalar = v.t[0] * w.t[0] + v.t[1] * w.t[1];
             let innen = std::f64::consts::PI - kreuz.atan2(skalar);
             if boeschung && innen < SPITZ - 1e-9 {
-                p.hinweise.push(Hinweis::SpitzeEcke(nummer[i]));
+                // die Ecke ist der Anfang von Kante i im Umlauf gegen den
+                // Uhrzeigersinn, übergeben im Uhrzeigersinn der Anfang der
+                // Kante davor (Review #169 B5)
+                let kante = if umgekehrt { nummer[j] } else { nummer[i] };
+                p.hinweise.push(Hinweis::SpitzeEcke(kante));
             }
         }
         for vz in [-1.0, 1.0] {
@@ -169,7 +194,7 @@ impl Planung {
                     grad[1],
                 ];
                 let alpha = (grad[0] * g.o[0] + grad[1] * g.o[1]) * vz;
-                let r_max = spanne / alpha.max(1e-9) + 1.0;
+                let r_max = (spanne / alpha.max(1e-9) + 1.0).min(u.diagonale() + 1.0);
                 let (r, offen) = reichweite(u, k, &g, &ebene, vz, r_max);
                 if offen {
                     p.hinweise.push(Hinweis::OffenesEnde(nummer[i]));
@@ -198,12 +223,12 @@ impl Planung {
     }
 
     /// Höhe des Planungsgeländes an (x, y); `None`, wo das Urgelände keine
-    /// Höhe hat.
+    /// Höhe hat (H-169d).
     pub fn hoehe(&self, u: &Abfrage, x: f64, y: f64) -> Option<f64> {
+        let z = u.hoehe(x, y)?;
         if let Some(t) = self.teile.iter().rev().find(|t| innen(&t.ring, x, y)) {
             return Some(an(&t.ebene, x, y));
         }
-        let z = u.hoehe(x, y)?;
         let mut lo = f64::NEG_INFINITY;
         let mut hi = f64::INFINITY;
         for b in self.auftrag.iter().filter(|b| innen(&b.ring, x, y)) {
@@ -216,9 +241,12 @@ impl Planung {
     }
 
     /// Abtrag und Auftrag gegen das Urgelände, exakt je Dreieck. Die
-    /// Bereiche zählen nur außerhalb der Teilflächen; wo sich zwei Bereiche
+    /// Bereiche zählen nur außerhalb der Teilflächen; wo sich Bereiche
     /// derselben Art decken (Einbuchtung), zählt nur die sichtbare Böschung
-    /// (beim Auftrag die höhere, beim Abtrag die tiefere Ebene).
+    /// (beim Auftrag die höhere, beim Abtrag die tiefere Ebene), gleich
+    /// viele Bereiche übereinander wie zwei ([`Planung::sichtbar`]). Die
+    /// Teilflächen eines Bausteins decken sich nicht; das ist dem Aufrufer
+    /// überlassen (H-169f).
     pub fn mengen(&self, u: &Abfrage) -> Planmenge {
         let mut m = Planmenge::default();
         for t in &self.teile {
@@ -230,29 +258,8 @@ impl Planung {
             m.flaeche_auftrag += e.flaeche_unter;
         }
         for (bereiche, auftrag) in [(&self.auftrag, true), (&self.abtrag, false)] {
-            for b in bereiche {
-                self.zaehlen(u, &mut m, &b.ring, b, auftrag, 1.0);
-            }
-            for (i, bi) in bereiche.iter().enumerate() {
-                for bj in &bereiche[i + 1..] {
-                    let s = konvex_schnitt(&bi.ring, &bj.ring);
-                    if flaeche(&s) < 1e-9 {
-                        continue;
-                    }
-                    let d = |q: [f64; 2]| an(&bi.ebene, q[0], q[1]) - an(&bj.ebene, q[0], q[1]);
-                    let gleich = (0..3).all(|k| (bi.ebene[k] - bj.ebene[k]).abs() < 1e-12);
-                    // wo i tiefer liegt, ist i beim Auftrag verdeckt, beim
-                    // Abtrag j
-                    let i_tiefer = halbieren(&s, |q| -d(q));
-                    let j_tiefer = if gleich { Vec::new() } else { halbieren(&s, d) };
-                    let (zu_i, zu_j) = if auftrag {
-                        (&i_tiefer, &j_tiefer)
-                    } else {
-                        (&j_tiefer, &i_tiefer)
-                    };
-                    self.zaehlen(u, &mut m, zu_i, bi, auftrag, -1.0);
-                    self.zaehlen(u, &mut m, zu_j, bj, auftrag, -1.0);
-                }
+            for (ring, b) in sichtbar(bereiche, auftrag) {
+                self.zaehlen(u, &mut m, &ring, b, auftrag, 1.0);
             }
         }
         m
@@ -312,7 +319,7 @@ impl Geo {
     fn neu(k: &Kante) -> Option<Geo> {
         let (dx, dy) = (k.b[0] - k.a[0], k.b[1] - k.a[1]);
         let l = dx.hypot(dy);
-        (l > 1e-9).then(|| Geo {
+        (l > 1e-9 && endlich(k)).then(|| Geo {
             t: [dx / l, dy / l],
             o: [dy / l, -dx / l],
             l,
@@ -332,12 +339,21 @@ impl Geo {
     }
 }
 
+/// Sind alle Werte der Kante endlich (Review #169 B3)?
+fn endlich(k: &Kante) -> bool {
+    k.a.iter().chain(&k.b).all(|v| v.is_finite())
+}
+
 /// Der Rand gegen den Uhrzeigersinn und je Kante ihre Nummer im übergebenen
-/// Rand.
-fn gegen_uhrzeiger(rand: &[Kante]) -> (Vec<Kante>, Vec<usize>) {
-    let a2: f64 = rand.iter().map(|k| k.a[0] * k.b[1] - k.b[0] * k.a[1]).sum();
+/// Rand; `true`, wenn er dafür umgedreht wurde.
+fn gegen_uhrzeiger(rand: &[Kante]) -> (Vec<Kante>, Vec<usize>, bool) {
+    let a2: f64 = rand
+        .iter()
+        .filter(|k| endlich(k))
+        .map(|k| k.a[0] * k.b[1] - k.b[0] * k.a[1])
+        .sum();
     if a2 >= 0.0 {
-        return (rand.to_vec(), (0..rand.len()).collect());
+        return (rand.to_vec(), (0..rand.len()).collect(), false);
     }
     let n = rand.len();
     let umgekehrt = (0..n)
@@ -348,7 +364,7 @@ fn gegen_uhrzeiger(rand: &[Kante]) -> (Vec<Kante>, Vec<usize>) {
             neigung: rand[i].neigung,
         })
         .collect();
-    (umgekehrt, (0..n).rev().collect())
+    (umgekehrt, (0..n).rev().collect(), true)
 }
 
 /// Grat- oder Kehllinie an der Ecke zwischen Kante `v` (davor) und `w`
@@ -382,10 +398,15 @@ fn strahl_an(
 
 /// Wie weit die Böschung der Kante `k` quer nach außen reicht, bis sie das
 /// Urgelände trifft (m), höchstens `r_max`; geprobt an den Enden und
-/// höchstens alle [`PROBE`] m, je Probe exakt über das Profil. `true`, wenn
-/// eine Probe das Urgelände nicht trifft.
+/// höchstens alle [`PROBE`] m (höchstens [`MAX_PROBEN`]), je Probe exakt
+/// über das Profil. Gesucht wird stückweise nach außen bis zum ersten
+/// Treffer, so hängt die Zeit an der Reichweite, nicht am Netz (Review #169
+/// B2). Getroffen wird nur im Netz: Verlässt eine Probe es vorher, endet
+/// sie am Rand und die Kante hat ein offenes Ende (B6). `true`, wenn eine
+/// Probe das Urgelände nicht trifft.
 fn reichweite(u: &Abfrage, k: &Kante, g: &Geo, ebene: &Bezug, vz: f64, r_max: f64) -> (f64, bool) {
-    let schritte = (g.l / PROBE).ceil().max(1.0) as usize;
+    let schritte = ((g.l / PROBE).ceil() as usize).clamp(1, MAX_PROBEN);
+    let stueck = (8.0 * u.zelle()).max(PROBE);
     let (mut r, mut offen) = (0.0f64, false);
     for j in 0..=schritte {
         let f = j as f64 / schritte as f64;
@@ -393,32 +414,49 @@ fn reichweite(u: &Abfrage, k: &Kante, g: &Geo, ebene: &Bezug, vz: f64, r_max: f6
             k.a[0] + f * (k.b[0] - k.a[0]),
             k.a[1] + f * (k.b[1] - k.a[1]),
         ];
-        let q = [p[0] + g.o[0] * r_max, p[1] + g.o[1] * r_max];
+        let x = |w: f64| [p[0] + g.o[0] * w, p[1] + g.o[1] * w];
         // Abstand der Böschung über (Auftrag) bzw. unter (Abtrag) dem Gelände
         let d = |w: f64, z: f64| {
-            let x = [p[0] + g.o[0] * w, p[1] + g.o[1] * w];
-            -vz * (an(ebene, x[0], x[1]) - z)
+            let q = x(w);
+            -vz * (an(ebene, q[0], q[1]) - z)
         };
-        let profil = u.profil(p, q);
         let mut vorher: Option<(f64, f64)> = None;
-        let mut gefunden = None;
-        for w in &profil {
-            let h = d(w[0], w[1]);
-            if h <= 0.0 {
-                gefunden = Some(match vorher {
-                    Some((w0, h0)) if h0 > 0.0 => w0 + (w[0] - w0) * h0 / (h0 - h),
-                    _ => w[0],
-                });
-                break;
+        let mut w0 = 0.0;
+        let ende = loop {
+            let w1 = (w0 + stueck).min(r_max);
+            let (profil, raus) = u.profil_innen(x(w0), x(w1));
+            // erster Punkt mit h ≤ 0: zwischen ihm und dem davor schneidet
+            // die Böschung das Gelände
+            let mut treffer = None;
+            for q in &profil {
+                let w = w0 + q[0];
+                let h = d(w, q[1]);
+                if h <= 0.0 {
+                    treffer = Some(match vorher {
+                        Some((v0, h0)) if h0 > 0.0 && v0 < w => v0 + (w - v0) * h0 / (h0 - h),
+                        _ => w,
+                    });
+                    break;
+                }
+                vorher = Some((w, h));
             }
-            vorher = Some((w[0], h));
-        }
-        match gefunden {
-            Some(w) => r = r.max(w),
-            None => {
-                offen |= !profil.is_empty();
-                r = r.max(if profil.is_empty() { 0.0 } else { r_max });
+            if treffer.is_some() {
+                break treffer;
             }
+            if raus {
+                offen = true;
+                r = r.max(vorher.map_or(0.0, |v| v.0));
+                break None;
+            }
+            if w1 >= r_max {
+                offen |= vorher.is_some();
+                r = r.max(if vorher.is_some() { r_max } else { 0.0 });
+                break None;
+            }
+            w0 = w1;
+        };
+        if let Some(w) = ende {
+            r = r.max(w);
         }
     }
     (r, offen)
@@ -453,6 +491,110 @@ fn bereich(k: &Kante, g: &Geo, ra: [f64; 2], rb: [f64; 2], r: f64) -> (Vec<[f64;
     let pa = [a[0] + la * ra[0], a[1] + la * ra[1]];
     let pb = [b[0] + lb * rb[0], b[1] + lb * rb[1]];
     (vec![a, b, pb, pa], false)
+}
+
+/// Die sichtbaren Teile der Bereiche einer Art als konvexe Stücke, je mit
+/// ihrem Bereich (Review #169 B1): Wo sich Bereiche decken, zeigt sich beim
+/// Auftrag die höhere, beim Abtrag die tiefere Ebene, bei gleicher Ebene
+/// der erste Bereich. Je Bereich wird abgezogen, was die anderen verdecken,
+/// gleich wie viele sich an einer Stelle decken.
+pub(crate) fn sichtbar(bereiche: &[Bereich], auftrag: bool) -> Vec<(Vec<[f64; 2]>, &Bereich)> {
+    let rahmen: Vec<[f64; 4]> = bereiche.iter().map(|b| rahmen(&b.ring)).collect();
+    let mut out = Vec::new();
+    for (i, bi) in bereiche.iter().enumerate() {
+        let mut stuecke = vec![bi.ring.clone()];
+        for (j, bj) in bereiche.iter().enumerate() {
+            // Rechteck-Vortest (H-169e)
+            let (ri, rj) = (rahmen[i], rahmen[j]);
+            if i == j || ri[0] > rj[2] || rj[0] > ri[2] || ri[1] > rj[3] || rj[1] > ri[3] {
+                continue;
+            }
+            let gleich = (0..3).all(|k| (bi.ebene[k] - bj.ebene[k]).abs() < 1e-12);
+            let mut neu = Vec::new();
+            for st in stuecke {
+                let s = konvex_schnitt(&st, &bj.ring);
+                if flaeche(&s) < 1e-12 {
+                    neu.push(st);
+                    continue;
+                }
+                neu.extend(ohne_konvex(&st, &bj.ring));
+                // im Schnitt bleibt, wo i oben (Auftrag) bzw. unten liegt
+                let teil = if gleich {
+                    if i < j {
+                        s
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    halbieren(&s, |q| {
+                        let d = an(&bi.ebene, q[0], q[1]) - an(&bj.ebene, q[0], q[1]);
+                        if auftrag {
+                            d
+                        } else {
+                            -d
+                        }
+                    })
+                };
+                if flaeche(&teil) > 1e-12 {
+                    neu.push(teil);
+                }
+            }
+            stuecke = neu;
+        }
+        out.extend(stuecke.into_iter().map(|r| (r, bi)));
+    }
+    out
+}
+
+/// Rechteck um ein Polygon: x0, y0, x1, y1.
+fn rahmen(ring: &[[f64; 2]]) -> [f64; 4] {
+    ring.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |r, p| {
+            [
+                r[0].min(p[0]),
+                r[1].min(p[1]),
+                r[2].max(p[0]),
+                r[3].max(p[1]),
+            ]
+        },
+    )
+}
+
+/// Das konvexe `subjekt` ohne das konvexe `fenster`: konvexe Stücke, je
+/// außerhalb einer Kante des Fensters und innerhalb der Kanten davor.
+fn ohne_konvex(subjekt: &[[f64; 2]], fenster: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+    let n = fenster.len();
+    if n < 3 {
+        return vec![subjekt.to_vec()];
+    }
+    let a2: f64 = (0..n)
+        .map(|i| fenster[i][0] * fenster[(i + 1) % n][1] - fenster[(i + 1) % n][0] * fenster[i][1])
+        .sum();
+    let mut rest = subjekt.to_vec();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (a, b) = if a2 >= 0.0 {
+            (fenster[i], fenster[(i + 1) % n])
+        } else {
+            (fenster[(i + 1) % n], fenster[i])
+        };
+        let links = |p: [f64; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+        let aussen = halbieren(&rest, |p| -links(p));
+        if flaeche(&aussen) > 1e-12 {
+            out.push(aussen);
+        }
+        rest = halbieren(&rest, links);
+        if rest.len() < 3 {
+            break;
+        }
+    }
+    out
 }
 
 /// Das Polygon `subjekt` (beliebig) im konvexen `fenster` (Sutherland-
@@ -754,5 +896,144 @@ mod tests {
         let p = Planung::neu(&b, &u);
         assert!(p.auftrag.is_empty() && p.hinweise.is_empty());
         assert!((p.mengen(&u).auftrag - 100.0).abs() < 1e-6);
+    }
+
+    /// Kamm mit fünf Zähnen, 2 m Auftrag: in den Lücken decken sich drei
+    /// Böschungen (Review #169 B1).
+    #[test]
+    fn kamm_dreifach_ueberdeckt() {
+        let u = gelaende(|_, _| 10.0);
+        // die Zähne laufen nach oben, der Rand gegen den Uhrzeigersinn
+        let mut kamm = vec![[0.0, 0.0], [18.0, 0.0]];
+        for z in (0..5).rev() {
+            let x = 4.0 * z as f64;
+            kamm.extend([[x + 2.0, 10.0], [x, 10.0]]);
+            if z > 0 {
+                kamm.extend([[x, 3.0], [x - 2.0, 3.0]]);
+            }
+        }
+        let p = Planung::neu(&baustein(&kamm, [12.0, 0.0, 0.0], 1.5), &u);
+        let m = p.mengen(&u);
+        let (auf, ab) = probe(&p, &u, 0.04);
+        assert!(
+            ab == 0.0 && (auf - m.auftrag).abs() < 0.005 * auf,
+            "{auf} {m:?}"
+        );
+        // höchstens ein Quader 18 × 10 × 2 plus Rand
+        assert!(m.auftrag < 360.0 + 60.0 * 2.0 * 3.0, "{m:?}");
+    }
+
+    /// Ein doppelter Eckpunkt ändert nichts (B4); im Uhrzeigersinn nennt
+    /// die spitze Ecke dieselbe Kante (B5).
+    #[test]
+    fn doppelpunkt_und_uhrzeigersinn() {
+        let u = gelaende(|_, _| 10.0);
+        let doppelt = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+        ];
+        let p = Planung::neu(&baustein(&doppelt, [11.0, 0.0, 0.0], 1.5), &u);
+        assert!(
+            (p.mengen(&u).auftrag - 133.0).abs() < 1e-6,
+            "{:?}",
+            p.mengen(&u)
+        );
+        let keil = [[0.0, 4.0], [10.0, 0.0], [0.0, 0.0]];
+        let p = Planung::neu(&baustein(&keil, [11.0, 0.0, 0.0], 1.5), &u);
+        // die Ecke (10, 0) ist der Anfang von Kante 1
+        assert_eq!(p.hinweise, vec![Hinweis::SpitzeEcke(1)]);
+    }
+
+    /// Am Rand des Netzes endet die Böschung dort, mit Hinweis (B6).
+    #[test]
+    fn offenes_ende_am_netzrand() {
+        let u = gelaende(|_, _| 10.0);
+        let q = [[34.0, 0.0], [39.0, 0.0], [39.0, 10.0], [34.0, 10.0]];
+        let p = Planung::neu(&baustein(&q, [13.0, 0.0, 0.0], 1.5), &u);
+        assert!(
+            p.hinweise.contains(&Hinweis::OffenesEnde(1)),
+            "{:?}",
+            p.hinweise
+        );
+        let osten = p.auftrag.iter().find(|b| b.kante == 1).unwrap();
+        assert!(osten.ring.iter().all(|q| q[0] <= 40.0 + 1e-6), "{osten:?}");
+        // auf den anderen Seiten trifft sie das Gelände
+        assert!(!p.hinweise.contains(&Hinweis::OffenesEnde(3)));
+    }
+
+    /// Nicht endliche Werte und Neigungen, die keine sind: Hinweis statt
+    /// Hängen (B3, H-169b); am leeren Netz keine Höhe (H-169d).
+    #[test]
+    fn ungueltige_kanten() {
+        let u = gelaende(|_, _| 10.0);
+        for weit in [1e7, 1e9, f64::INFINITY, f64::NAN] {
+            let mut b = baustein(&QUADRAT, [11.0, 0.0, 0.0], 1.5);
+            b.rand[1].b[0] = weit;
+            b.rand[2].a[0] = weit;
+            let t = std::time::Instant::now();
+            let p = Planung::neu(&b, &u);
+            let _ = p.mengen(&u);
+            assert!(t.elapsed().as_secs_f64() < 2.0, "{weit}: {:?}", t.elapsed());
+            if !weit.is_finite() {
+                assert!(
+                    p.hinweise.contains(&Hinweis::Ungueltig(1)),
+                    "{:?}",
+                    p.hinweise
+                );
+            }
+        }
+        for n in [0.0, -1.5, f64::NAN, f64::INFINITY] {
+            let mut b = baustein(&QUADRAT, [11.0, 0.0, 0.0], 1.5);
+            b.rand[2].neigung = Some(n);
+            let p = Planung::neu(&b, &u);
+            assert!(
+                p.hinweise.contains(&Hinweis::Ungueltig(2)),
+                "{n}: {:?}",
+                p.hinweise
+            );
+            assert!(p.auftrag.iter().all(|b| b.kante != 2));
+        }
+        let leer = Abfrage::neu(&netz(&[], &[], Rand::Huelle));
+        let p = Planung::neu(&baustein(&QUADRAT, [11.0, 0.0, 0.0], 1.5), &leer);
+        assert_eq!(p.hoehe(&leer, 5.0, 5.0), None);
+    }
+
+    /// Eine ferne Spitze im Netz macht die Reichweite nicht langsamer, und
+    /// die Zeit hängt nicht an der Größe des Netzes (B2). Messung, kein
+    /// Prüfstein: `cargo test --release -- --ignored reichweite_tempo`.
+    #[test]
+    #[ignore]
+    fn reichweite_tempo() {
+        for (n, spitze) in [(200usize, false), (200, true), (800, false), (800, true)] {
+            let mut p = Vec::new();
+            for i in 0..=n {
+                for j in 0..=n {
+                    let (x, y) = (i as f64 * 0.25 - 50.0, j as f64 * 0.25 - 50.0);
+                    let z = if spitze && i == n && j == n {
+                        500.0
+                    } else {
+                        10.0
+                    };
+                    p.push([x, y, z]);
+                }
+            }
+            let u = Abfrage::neu(&netz(&p, &[], Rand::Huelle));
+            let mut ring = Vec::new();
+            for k in 0..400 {
+                let w = k as f64 / 400.0 * std::f64::consts::TAU;
+                ring.push([10.0 * w.cos(), 10.0 * w.sin()]);
+            }
+            let t = std::time::Instant::now();
+            let pl = Planung::neu(&baustein(&ring, [11.0, 0.0, 0.0], 1.5), &u);
+            println!(
+                "{} Dreiecke, Spitze {spitze}: {:.1} ms, {} Bereiche",
+                2 * n * n,
+                t.elapsed().as_secs_f64() * 1e3,
+                pl.auftrag.len()
+            );
+        }
     }
 }

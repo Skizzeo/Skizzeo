@@ -188,7 +188,7 @@ impl WallChain {
             };
             if same_dir(dirs[j], dirs[i]) {
                 // Fuge: Stufe quer zur Flucht
-                if d.abs() < 1.0 {
+                if d.abs() <= 1.0 {
                     return None;
                 }
                 let p = if before {
@@ -206,12 +206,12 @@ impl WallChain {
             } else {
                 pts[(j + 1) % n] - x
             };
-            if rest.length() >= 1.0 && rest.dot(dirs[j]) > 0.0 {
+            if rest.length() > 1.0 && rest.dot(dirs[j]) > 0.0 {
                 return Some(Side { points: vec![x] });
             }
             // Der Nachbar verschwindet: nur an der Flucht einer Wand dahinter
             let (f, far) = fl?;
-            if (d - f).abs() < 1.0 {
+            if (d - f).abs() <= 1.0 {
                 return Some(Side { points: Vec::new() });
             }
             // Darüber hinaus: Stufe auf der anderen Seite
@@ -236,7 +236,7 @@ impl WallChain {
         if (closed && k < 3) || k < 2 {
             return None;
         }
-        if (0..segs).any(|s| (out[(s + 1) % k] - out[s]).length() < 1.0) {
+        if (0..segs).any(|s| (out[(s + 1) % k] - out[s]).length() <= 1.0) {
             return None;
         }
         if closed && !polygon::is_simple(&out) {
@@ -326,10 +326,12 @@ impl WallChain {
             if !closed && i + 1 >= k {
                 break;
             }
+            // Länger als 1 mm wie in `clean_points`, sonst fiele das Stück
+            // dort weg und die Zuordnung verrutschte (H-160d)
             let v = out[(i + 1) % k] - out[i];
             let ok = match src {
-                Some(s) => v.length() >= 1.0 && v.dot(dirs[*s]) > 0.0,
-                None => v.length() >= 1.0,
+                Some(s) => v.length() > 1.0 && v.dot(dirs[*s]) > 0.0,
+                None => v.length() > 1.0,
             };
             if !ok {
                 return None;
@@ -409,6 +411,73 @@ mod tests {
             vec3(10000.0, 8000.0, 0.0),
             vec3(10000.0, 0.0, 0.0),
         ])
+    }
+
+    /// Review zu #163: Eine Stufe von genau 1 mm fiele in `clean_points`
+    /// weg (dort gilt ≤ 1 mm als derselbe Punkt); dann stünde das Stück
+    /// schief. Ab mehr als 1 mm bleibt sie als eigenes Segment.
+    #[test]
+    fn stufe_genau_ein_millimeter() {
+        let c = zug(vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(3000.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ]);
+        for d in [1.0, -1.0] {
+            assert!(c.with_segment_moved_snap(1, d, 0.0).is_none(), "{d}");
+        }
+        let s = c.with_segment_moved_snap(1, 1.5, 0.0).unwrap();
+        assert_eq!(s.clean_points().len(), s.points.len());
+        assert_eq!(s.points.len(), 6);
+    }
+
+    /// Review H-163c: Nachbar und Flucht genau 1 mm. Das linke Stück der
+    /// Nordwand rückt bis 1 mm vor die Flucht des rechten: Der Nachbar
+    /// behielte 1 mm (fiele in `clean_points` weg), also fällt er weg und
+    /// das Stück liegt in der Flucht. Bei 1,5 mm bleibt er als Stufe.
+    #[test]
+    fn nachbar_und_flucht_genau_ein_millimeter() {
+        let c = l_form();
+        let s = c.with_segment_moved_snap(1, 1999.0, 0.0).unwrap();
+        assert_eq!(s.points.len(), 5, "{:?}", s.points);
+        let s = c.with_segment_moved_snap(1, 1998.5, 0.0).unwrap();
+        assert_eq!(s.points.len(), 6, "{:?}", s.points);
+        assert_eq!(s.clean_points().len(), 6);
+    }
+
+    /// Review H-163c: `with_segment_offsets` lässt kein Segment von genau
+    /// 1 mm stehen (die Stufe der L-Form schrumpft auf 1 mm), wohl aber
+    /// eines von 1,5 mm.
+    #[test]
+    fn versatz_laesst_kein_segment_von_einem_millimeter() {
+        let c = l_form();
+        let mut o = vec![0.0; c.segment_count()];
+        o[1] = -1999.0;
+        assert!(c.with_segment_offsets(&o).is_none());
+        o[1] = -1998.5;
+        let s = c.with_segment_offsets(&o).unwrap();
+        assert_eq!(s.clean_points().len(), s.points.len());
+    }
+
+    /// Review H-163c: Die Nordwand eines Trapezes (Schrägen 3 : 4, oben
+    /// 1501 mm) schrumpft beim Zurückziehen um 1,5 mm je mm. Genau 1 mm
+    /// bleibt nicht stehen, 1,75 mm schon; beim Ziehen wie beim Versatz.
+    #[test]
+    fn segment_genau_ein_millimeter() {
+        let c = zug(vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(3000.0, 4000.0, 0.0),
+            vec3(4501.0, 4000.0, 0.0),
+            vec3(7501.0, 0.0, 0.0),
+        ]);
+        assert!(c.moved(1, -1000.0, 0.0, false).is_none());
+        assert!(c.with_segment_offsets(&[0.0, 1000.0, 0.0, 0.0]).is_none());
+        let s = c.moved(1, -999.5, 0.0, false).unwrap();
+        assert!(near(s.points[2] - s.points[1], vec3(1.75, 0.0, 0.0)));
+        let s = c.with_segment_offsets(&[0.0, 999.5, 0.0, 0.0]).unwrap();
+        assert!(near(s.points[2] - s.points[1], vec3(1.75, 0.0, 0.0)));
     }
 
     /// L: Nordwand links bei y = 8000, rechts bei y = 6000, Stufe bei x = 4000.

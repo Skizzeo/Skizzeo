@@ -578,6 +578,8 @@ impl Model {
     /// Übernimmt, was das Raumbuch aus der `.szo` gelesen hat.
     pub(crate) fn load_ausbau(&mut self, d: crate::szo::ausbau::Daten) {
         self.space_types = d.space_types;
+        let (an, roh) = d.view_finish;
+        self.load_view_finish(an, roh);
     }
 
     /// Merkt die Vorlagen vor ihrer ersten Änderung im offenen Schritt (als

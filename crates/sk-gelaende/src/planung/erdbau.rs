@@ -202,7 +202,7 @@ impl Planung {
                 vz: 1.0,
             })
             .collect();
-        let mut zaehlen = |ring: Vec<[f64; 2]>, b: &Bereich, seite: f64, vz: f64| {
+        let mut zaehlen = |ring: Vec<[f64; 2]>, b: &Bereich, seite: f64| {
             if ring.len() < 3 {
                 return;
             }
@@ -213,7 +213,7 @@ impl Planung {
                         ring: s,
                         ebene: b.ebene,
                         maske: Some(seite),
-                        vz: -vz,
+                        vz: -1.0,
                     });
                 }
             }
@@ -221,32 +221,14 @@ impl Planung {
                 ring,
                 ebene: b.ebene,
                 maske: Some(seite),
-                vz,
+                vz: 1.0,
             });
         };
+        // je Stelle nur die sichtbare Böschung, gleich wie viele sich decken
         for (bereiche, auftrag) in [(&self.auftrag, true), (&self.abtrag, false)] {
             let seite = if auftrag { 1.0 } else { -1.0 };
-            for b in bereiche {
-                zaehlen(b.ring.clone(), b, seite, 1.0);
-            }
-            for (i, bi) in bereiche.iter().enumerate() {
-                for bj in &bereiche[i + 1..] {
-                    let s = konvex_schnitt(&bi.ring, &bj.ring);
-                    if super::flaeche(&s) < 1e-9 {
-                        continue;
-                    }
-                    let d = |q: [f64; 2]| an(&bi.ebene, q[0], q[1]) - an(&bj.ebene, q[0], q[1]);
-                    let gleich = (0..3).all(|k| (bi.ebene[k] - bj.ebene[k]).abs() < 1e-12);
-                    let i_tiefer = halbieren(&s, |q| -d(q));
-                    let j_tiefer = if gleich { Vec::new() } else { halbieren(&s, d) };
-                    let (zu_i, zu_j) = if auftrag {
-                        (i_tiefer, j_tiefer)
-                    } else {
-                        (j_tiefer, i_tiefer)
-                    };
-                    zaehlen(zu_i, bi, seite, -1.0);
-                    zaehlen(zu_j, bj, seite, -1.0);
-                }
+            for (ring, b) in super::sichtbar(bereiche, auftrag) {
+                zaehlen(ring, b, seite);
             }
         }
         out

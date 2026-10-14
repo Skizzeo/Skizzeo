@@ -12,7 +12,7 @@ use crate::delete::{self, HintCard, Link};
 use crate::ui::Id;
 use crate::wall_edit::{breite_edit, ecke_edit, oeffnung_kanten, EditOutcome};
 use crate::{link_view, meldung, relink_lines, teilen_edit, App, NOTICE_TIME};
-use sk_model::{ElementId, FugeError};
+use sk_model::{ElementId, FugeError, LayerSetId, RunId};
 use sk_platform::MouseButton;
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,10 @@ const JOINED: [&str; 2] = [
 ];
 /// So lange steht die Rückfrage (unter der Maus länger).
 const ASK_TIME: Duration = Duration::from_secs(12);
+
+/// Statuszeile, wenn ein Typwechsel abgelehnt wird (Review H-163d).
+const TYP_ABGELEHNT: &str =
+    "Typ nicht gewechselt: Mit dieser Dicke passt der Zug nicht mehr (Ecke oder Geschoss darüber).";
 /// Nach dem Teilen am gewählten Teilstück.
 const SPLIT: [&str; 2] = [
     "Wand geteilt.",
@@ -181,7 +185,7 @@ impl App {
     /// abgebrochen ist.
     fn split_start(&mut self, wall: ElementId) {
         let m = self.scene.model();
-        let step = m.step_joint(wall).is_some();
+        let step = m.step_joint(m.stack_bottom(wall)).is_some();
         if let Some(b) = sk_model::edit_blocked(m, &m.stack_column(wall)) {
             self.show_locked(b, Some((wall, delete::Act::Field)));
             return;
@@ -356,6 +360,17 @@ impl App {
     /// Statuszeile mit dem Grund, als Fehler.
     fn fuge_refused(&mut self, e: FugeError) {
         self.fehler(e.message());
+    }
+
+    /// Typ der Züge `runs` aus der Liste in den Eigenschaften übernehmen:
+    /// ein Schritt; lehnt ein Zug ab, bleibt alles, wie es war, und die
+    /// Statuszeile sagt es (Review H-163d).
+    pub(crate) fn typ_uebernehmen(&mut self, runs: &[RunId], id: LayerSetId) {
+        let ok = self.scene.preview_run_type(runs, id);
+        self.close_type_menu(ok);
+        if !ok {
+            self.fehler(TYP_ABGELEHNT);
+        }
     }
 
     /// Statuszeile mit einem Satz, als Fehler.

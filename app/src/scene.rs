@@ -32,6 +32,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod gefaelle;
 #[path = "scene_raum.rs"]
 mod raum;
+#[path = "scene_ausbau.rs"]
+pub mod scene_ausbau;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
 #[path = "scene_schnitt.rs"]
@@ -651,6 +653,8 @@ pub struct Scene {
     ghost: Option<(MeshKey, VisStamp, MeshData)>,
     /// Körper der Erweiterungsbauteile je Exemplar (E4).
     ext: crate::ext_cache::ExtCache,
+    /// Körper des Ausbaus je Raum (Raumbuch RB4).
+    ausbau: scene_ausbau::RaumCache,
 }
 
 /// Übergang der Sichtbarkeit (§2): ändert nur die Deckkraft des blassen
@@ -968,6 +972,7 @@ impl Scene {
             locked_hit: None,
             ghost: None,
             ext: Default::default(),
+            ausbau: Default::default(),
         };
         s.rebuild_dirty(false);
         s
@@ -1836,6 +1841,7 @@ impl Scene {
         let raeume = self.raeume_abgleichen();
         match self.model.try_commit() {
             Ok(Some(txn)) => {
+                self.ausbau.merken(&self.model, &txn.changes);
                 self.undo.push(raum::Schritt { txn, raeume });
                 self.serial += 1;
                 if self.undo.len() > HISTORY {
@@ -1965,7 +1971,8 @@ impl Scene {
     /// Typwechsel als Vorschau (K3: Typ in den Eigenschaften überfahren):
     /// ein offener Schritt „Typ gewechselt“, neu gerechnet werden nur die
     /// Züge, die er berührt, ohne Mengen. Eine vorige Vorschau wird vorher
-    /// verworfen. `false`, wenn ein Zug den Typ nicht annimmt.
+    /// verworfen. `false`, wenn ein Zug den Typ nicht annimmt; dann ist
+    /// nichts geändert und keine Vorschau offen.
     pub fn preview_run_type(&mut self, runs: &[RunId], id: LayerSetId) -> bool {
         self.grown(true, |s| s.preview_run_type_now(runs, id))
     }
@@ -1984,6 +1991,12 @@ impl Scene {
         let mut ok = true;
         for &r in runs {
             ok &= self.model.set_run_type(r, id);
+        }
+        if !ok {
+            // Lehnt ein Zug ab, wechselt keiner (Review H-163d)
+            self.type_preview = false;
+            self.rollback();
+            return false;
         }
         marks.extend(self.model.step_touched());
         for r in marks {
@@ -3003,8 +3016,7 @@ impl Scene {
         let Some((run, pts)) = moved else {
             return false;
         };
-        self.set_run_points(run, &pts);
-        true
+        self.set_run_points(run, &pts)
     }
 
     /// Versatz eingetippt (Paneel): nur dieses Segment, die Kette bleibt, wie
@@ -3201,6 +3213,7 @@ impl Scene {
             return false;
         };
         let touched = self.model.apply(&t.txn, dir);
+        self.ausbau.merken(&self.model, &t.txn.changes);
         self.staende_folgen(&t, dir);
         match dir {
             Direction::Undo => self.redo.push(t),
@@ -3241,7 +3254,7 @@ impl Scene {
 
     fn plain_mesh(&mut self, key: &MeshKey) -> MeshData {
         let runs = self.mesh_keys(key);
-        let [m, g] = self.mesh_split(key.0, key.1, &runs);
+        let [m, g] = self.mesh_ruhend(key.0, key.1, &runs);
         self.ghost = if self.filtering() {
             Some((key.clone(), self.vis_stamp(), g))
         } else {
@@ -3472,7 +3485,6 @@ impl Scene {
                     }
                 }
             }
-            self.ext_into(&mut m, view, section);
             return m;
         }
         // Gestapelte Züge: die Schale läuft ohne waagerechte Naht durch (G6,
@@ -3575,7 +3587,6 @@ impl Scene {
                 mesh_into(mk, &x, ground);
             }
         }
-        self.ext_into(&mut m, view, section);
         m
     }
 
@@ -3618,21 +3629,6 @@ impl Scene {
         }
     }
 
-    /// Was die Erweiterungen in einer Ansicht zeigen: Grundriss (Geschoss,
-    /// Schnitthöhe) oder Schnittebene; `None`: Schnitt ohne Ebene.
-    #[allow(clippy::type_complexity)]
-    fn ext_view(
-        &self,
-        view: ViewKind,
-        section: Option<Plane>,
-    ) -> Option<(Option<(StoreyId, f64)>, Option<Plane>)> {
-        match view {
-            ViewKind::Plan => Some((Some((self.active_storey(), self.plan_cut())), None)),
-            ViewKind::Section => section.map(|p| (None, Some(p))),
-            _ => Some((None, None)),
-        }
-    }
-
     /// Blasses Netz (Isolieren, Übergänge) zur Ansicht wie [`Scene::mesh`];
     /// leer, wenn nichts blass ist.
     pub fn ghost_mesh(
@@ -3653,7 +3649,7 @@ impl Scene {
             }
         }
         let runs = self.mesh_keys(&key);
-        let [_, g] = self.mesh_split(view, section, &runs);
+        let [_, g] = self.mesh_ruhend(view, section, &runs);
         g
     }
 
@@ -3989,6 +3985,44 @@ fn ziel(op: &sk_cost::Op) -> Option<sk_cost::SatzId> {
 
 #[cfg(test)]
 mod tests {
+    /// Review H-163d: Lehnt bei Mehrfachwahl ein Zug den dickeren Typ ab
+    /// (die Gehrung am kurzen Schenkel kippte), wechselt keiner. Es bleibt
+    /// keine Vorschau offen und kein Schritt im Verlauf.
+    #[test]
+    fn typwechsel_abgelehnt_aendert_keinen_zug() {
+        use sk_math::vec3;
+        use sk_model::{Category, RefSide};
+        let mut m = sk_model::Model::with_seed(5);
+        let (eg, alt) = (m.defaults().storey, m.defaults().exterior_wall);
+        let mut t = m.layer_set(alt).unwrap().clone();
+        t.layers[0].thickness = 200.0;
+        t.layers[1].thickness = 240.0;
+        t.guid = m.new_guid();
+        t.code = "AW-44".into();
+        let neu = m.add_layer_set(t).unwrap();
+        let mut zug = |y: f64, l: f64| {
+            let p = [
+                vec3(0.0, y, 0.0),
+                vec3(6000.0, y, 0.0),
+                vec3(6000.0, y + l, 0.0),
+            ];
+            m.add_wall_run(&p, false, RefSide::Center, eg, alt, Category::ExteriorWall)
+                .unwrap()
+        };
+        let (lang, kurz) = (zug(10000.0, 4000.0), zug(0.0, -250.0));
+        let mut s = Scene::with_model(m);
+        let vorher = sk_model::szo::write(s.model());
+        assert!(!s.preview_run_type(&[lang, kurz], neu));
+        assert!(!s.previewing_type());
+        s.end_run_type(true);
+        assert_eq!(sk_model::szo::write(s.model()), vorher);
+        assert!(!s.undo());
+        // allein nimmt der lange Zug den Typ an
+        assert!(s.preview_run_type(&[lang], neu));
+        s.end_run_type(true);
+        assert_ne!(sk_model::szo::write(s.model()), vorher);
+    }
+
     /// Paket PD Abnahme 1–3: Anfangswerte bei „Neu“ ohne Schritt, eine
     /// Änderung ist ein Schritt „Projektdaten geändert“, Strg+Z stellt die
     /// vorige Nummer her, Unverändertes gibt keinen Schritt.

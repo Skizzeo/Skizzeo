@@ -3,7 +3,7 @@
 //! die Wahl am Zahnrad ist Ansichtszustand ohne Schritt.
 
 use super::*;
-use crate::bemassung::{Bemassung, Kettenart, MassSicht, Stil, ANSICHTEN};
+use crate::bemassung::{Bemassung, BrhBezug, Kettenart, MassSicht, Stil, ANSICHTEN};
 use crate::hoehen::FLOOR_BUILDUP;
 
 /// Belag über dem Estrich (mm), bis das Raumbuch den Aufbau je Geschoss
@@ -144,6 +144,16 @@ impl Model {
     pub fn screed_top(&self, st: StoreyId) -> Option<f64> {
         self.storey(st)
             .map(|s| s.elevation + FLOOR_BUILDUP - FLOOR_COVER)
+    }
+
+    /// Höhe, ab der die Brüstung des Geschosses gemessen wird (absolut,
+    /// mm): OK Rohdecke oder OK Estrich nach `bezug`. Eine Stelle für
+    /// Maßkette und Pille an der Öffnungskante (Bedienbarkeit 42.1).
+    pub fn brh_null(&self, st: StoreyId, bezug: BrhBezug) -> Option<f64> {
+        match bezug {
+            BrhBezug::Rohdecke => self.storey(st).map(|s| s.elevation),
+            BrhBezug::Estrich => self.screed_top(st),
+        }
     }
 }
 

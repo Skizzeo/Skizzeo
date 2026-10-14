@@ -1,4 +1,5 @@
 use super::*;
+use sk_model::bemassung::BrhBezug;
 use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
 use sk_model::RefSide;
 

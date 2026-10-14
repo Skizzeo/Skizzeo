@@ -199,7 +199,15 @@ impl Model {
         let Some(mut lower) = self.base_chain(id) else {
             return true;
         };
+        // Keine Gehrung kippt neu (die Regel aus check(), dort an der Kette
+        // mit Endschnitten, hier am Grundkörper; für geschlossene Züge
+        // dasselbe); ein Zug, der schon kippt, darf weiter bewegt werden
+        // (H-160d)
+        let kippte_schon = !lower.koerper_kippt().is_empty();
         lower.points = points.to_vec();
+        if !kippte_schon && !lower.koerper_kippt().is_empty() {
+            return false;
+        }
         let Some(r) = self.run(id) else {
             return true;
         };
