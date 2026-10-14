@@ -2050,7 +2050,9 @@ const GRIFF_FAELLE: [(usize, bool); 5] = [
 /// Review #99 B1/B2: Innentüren bei `n` Häusern (je zwei Innenwände mit
 /// einer Tür): Griffe je Mausbewegung, Fang des Innentür-Werkzeugs, Ziehen
 /// am Griff (Aufschlag wechselt je Bewegung, dazu der neue Griff) und
-/// Loslassen (Schritt schließen und neu rechnen).
+/// Loslassen (Schritt schließen und neu rechnen). Dazu die Vorschau des
+/// Werkzeugs ([`vorschau_zeiten`]); bis 4000 Häuser in
+/// [`perf_innentuer_vorschau`].
 #[test]
 #[ignore]
 fn perf_innentuer() {
@@ -2059,8 +2061,8 @@ fn perf_innentuer() {
     use sk_model::oeffnung::{Din, FaceSide, Swing};
     println!();
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>9}",
-        "Häuser", "Griffe", "Fang", "Ziehen", "Loslassen"
+        "{:>6} {:>8} {:>8} {:>8} {:>9} {:>9} {:>8}",
+        "Häuser", "Griffe", "Fang", "Ziehen", "Loslassen", "Vorschau", "Wechsel"
     );
     for (n, lang) in GRIFF_FAELLE {
         let mut s = town_with_interior(n);
@@ -2096,6 +2098,7 @@ fn perf_innentuer() {
                 30.0,
             ));
         });
+        let (vorschau, wechsel) = vorschau_zeiten(&s, q);
         let run = s.model().door_leaf(id).unwrap().run;
         let links = Swing {
             side: FaceSide::Left,
@@ -2118,9 +2121,103 @@ fn perf_innentuer() {
             los += t.elapsed().as_secs_f64() * 1000.0 / 5.0;
         }
         assert!(s.model().check().is_empty());
-        println!("{n:>6} {griffe:>8.3} {fang:>8.3} {ziehen:>8.3} {los:>9.3}");
+        println!(
+            "{n:>6} {griffe:>8.3} {fang:>8.3} {ziehen:>8.3} {los:>9.3} {vorschau:>9.3} {wechsel:>8.3}"
+        );
     }
     println!("Zeiten in ms je Mausbewegung bzw. je Loslassen.");
+}
+
+/// Vorschau des Innentür-Werkzeugs samt Kette je Mausbewegung an der
+/// Innenwand unter `q` (Review #158 B1): längs der Wand, wo die Seite der
+/// Kette gemerkt bleibt, und im Wechsel zwischen den beiden Seiten der
+/// Wand, wo sie jedes Mal neu über alle Anschlüsse geht. Zeiten in ms.
+fn vorschau_zeiten(s: &Scene, q: sk_math::Vec3) -> (f64, f64) {
+    use crate::oeffnung_app::innentuer::{treffer, Innentuer};
+    let st = s.active_storey();
+    let k = |r| s.koerper(r);
+    let (f, u, _, dicke) = treffer(s.model(), &k, st, q, 30.0).unwrap();
+    let u0 = f.span.0 + 1000.0;
+    let mut t = Innentuer::default();
+    let mut i = 0;
+    let laengs = time(50, || {
+        i += 1;
+        let p = f.at(u0 + (i % 50) as f64 * 20.0, 0.0) + f.n * 10.0;
+        t.suchen(s.model(), &k, st, p, 30.0, 1500.0);
+        assert!(t.hover.is_some());
+    });
+    let wechsel = time(50, || {
+        i += 1;
+        let vor = if i % 2 == 0 { 10.0 } else { -dicke - 10.0 };
+        t.suchen(s.model(), &k, st, f.at(u, 0.0) + f.n * vor, 30.0, 1500.0);
+        assert!(t.hover.is_some());
+    });
+    (laengs, wechsel)
+}
+
+/// Wie [`town_with_interior`], doch alle Wände in einem Schritt im Modell:
+/// Wand für Wand dauert der Aufbau bei 4000 Häusern zu lange.
+fn town_in_einem_schritt(n: usize) -> Scene {
+    use sk_model::Category;
+    let mut s = Scene::new();
+    let st = s.active_storey();
+    let side = (n as f64).sqrt().ceil() as usize;
+    assert!(s.edit_model("Häuser", |m| {
+        let (aussen, innen) = (m.defaults().exterior_wall, m.defaults().interior_wall);
+        (0..n).all(|i| {
+            let (ox, oy) = ((i % side) as f64 * 15000.0, (i / side) as f64 * 15000.0);
+            let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+            let umriss = [
+                p(0.0, 0.0),
+                p(0.0, 8000.0),
+                p(10000.0, 8000.0),
+                p(10000.0, 0.0),
+            ];
+            let ok = m
+                .add_wall_run(
+                    &umriss,
+                    true,
+                    RefSide::Left,
+                    st,
+                    aussen,
+                    Category::ExteriorWall,
+                )
+                .is_some();
+            ok && [3500.0, 6500.0].into_iter().all(|x| {
+                m.add_wall_run(
+                    &[p(x, 315.0), p(x, 7685.0)],
+                    false,
+                    RefSide::Center,
+                    st,
+                    innen,
+                    Category::InteriorWall,
+                )
+                .is_some()
+            })
+        })
+    }));
+    s
+}
+
+/// Review #158 B1: Vorschau des Innentür-Werkzeugs je Mausbewegung bei
+/// 1000 und 4000 Häusern ([`vorschau_zeiten`]), an der ersten Innenwand.
+#[test]
+#[ignore]
+fn perf_innentuer_vorschau() {
+    println!();
+    println!(
+        "{:>6} {:>8} {:>9} {:>8}",
+        "Häuser", "Aufbau", "Vorschau", "Wechsel"
+    );
+    for n in [1000, 4000] {
+        let t0 = Instant::now();
+        let s = town_in_einem_schritt(n);
+        let aufbau = t0.elapsed().as_secs_f64();
+        assert_eq!(s.model().joins().len(), 4 * n);
+        let (vorschau, wechsel) = vorschau_zeiten(&s, vec3(3500.0, 2000.0, 0.0));
+        println!("{n:>6} {aufbau:>7.1}s {vorschau:>9.3} {wechsel:>8.3}");
+    }
+    println!("Zeiten in ms je Mausbewegung, Aufbau in s.");
 }
 
 /// IFC-Export (I5, Review #115 B1) bei 1 bis 1000 Häusern (höchstens
