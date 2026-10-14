@@ -7,7 +7,7 @@
 //! auf der Grafikkarte noch dazukommen.
 //!
 //! Aufruf: `cargo test --release -p skizzeo perf -- --ignored --nocapture`
-//! Budgets prüfen `perf_gelaende_ziehen` und `perf_automenge` sowie die Proben
+//! Budgets prüfen `perf_gelaende_ziehen`, `perf_automenge` und `perf_l40_budget` sowie die Proben
 //! `probe_3ch`, `probe_3cl` (app) und `probe_3cm` (sk-cost).
 
 use crate::camera::Camera;
@@ -2410,6 +2410,93 @@ fn perf_mengen_haeuser() {
     }
 }
 
+/// [`town_with_interior`] mit 15 Fenstern je Haus, 4 + 4 + 4 + 3 auf den
+/// vier Seiten.
+fn siedlung_mit_fenstern(n: usize) -> Scene {
+    let mut s = town_with_interior(n);
+    fenster_setzen(&mut s);
+    s
+}
+
+/// Wie [`siedlung_mit_fenstern`], die Wände aber in einem Schritt: Jeder
+/// Schritt gleicht die Räume des Geschosses ab, Haus für Haus würde der
+/// Aufbau mit 4000 Häusern quadratisch.
+fn siedlung_in_einem_schritt(n: usize) -> Scene {
+    use sk_model::{Category, TypeCategory};
+    let mut s = Scene::new();
+    let aktiv = s.active_storey();
+    let side = (n as f64).sqrt().ceil() as usize;
+    assert!(s.edit_model("Siedlung", |m| {
+        let st = m.ground_storey(aktiv).unwrap_or(aktiv);
+        let aw = m.default_type(TypeCategory::ExteriorWall);
+        let iw = m.default_type(TypeCategory::InteriorWall);
+        for i in 0..n {
+            let (ox, oy) = ((i % side) as f64 * 15000.0, (i / side) as f64 * 15000.0);
+            let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+            let pts = [
+                p(0.0, 0.0),
+                p(0.0, 8000.0),
+                p(10000.0, 8000.0),
+                p(10000.0, 0.0),
+            ];
+            let aussen = m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall);
+            assert!(aussen.is_some());
+            for x in [3500.0, 6500.0] {
+                let pts = [p(x, 315.0), p(x, 7685.0)];
+                let innen =
+                    m.add_wall_run(&pts, false, RefSide::Center, st, iw, Category::InteriorWall);
+                assert!(innen.is_some());
+            }
+        }
+        true
+    }));
+    fenster_setzen(&mut s);
+    s
+}
+
+/// 15 Fenster je Außenwandzug, 4 + 4 + 4 + 3 auf den vier Seiten.
+fn fenster_setzen(s: &mut Scene) {
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    let st = s.active_storey();
+    assert!(s.edit_model("Fenster", |m| {
+        let aussen: Vec<_> = m
+            .runs()
+            .iter()
+            .filter(|(_, run)| {
+                run.segments
+                    .first()
+                    .and_then(|e| m.element(*e))
+                    .is_some_and(|e| e.category.is_outer_wall())
+            })
+            .map(|(r, _)| r)
+            .collect();
+        // Erst alle Flächen in einem lesenden Gang, dann die Fenster
+        let flaechen: Vec<_> = m.lesend(|| {
+            let seiten = [(0, 4), (1, 4), (2, 4), (3, 3)];
+            aussen
+                .iter()
+                .flat_map(|&r| seiten.map(|(k, viele)| (m.outer_face(r, k).unwrap(), viele)))
+                .collect()
+        });
+        for (f, viele) in flaechen {
+            for i in 0..viele {
+                let u = f.u.0 + 800.0 + 1900.0 * i as f64;
+                m.add_opening(Opening {
+                    kind: OpeningKind::Window,
+                    path: vec![f.at(u, 0.0), f.at(u + 900.0, 0.0)],
+                    bottom: HeightRef::Line(st, HeightLine::Sill),
+                    top: HeightRef::Line(st, HeightLine::Lintel),
+                    reveal: None,
+                    install: Default::default(),
+                    swing: None,
+                    lock: Default::default(),
+                });
+            }
+        }
+        true
+    }));
+}
+
 /// Öffnung von außen (Paket O7, Review W43): 15 Fenster je Haus. Raster
 /// (erste Mausbewegung nach einer Änderung), Übersicht über die ganze
 /// Siedlung mit der Maus im Freien und auf einer fernen Öffnung, Orbit mit
@@ -2421,7 +2508,7 @@ fn perf_mengen_haeuser() {
 fn perf_kanten() {
     use crate::link_view::{chips, Want};
     use crate::wall_edit::oeffnung_kanten::{treffer, HoeheZug, Kante};
-    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    use sk_model::oeffnung::Opening;
     use sk_platform::MouseButton;
     println!();
     println!(
@@ -2441,41 +2528,7 @@ fn perf_kanten() {
     );
     let mut je_bild = Vec::new();
     for n in [1, 10, 100, 1000] {
-        let mut s = town_with_interior(n);
-        let st = s.active_storey();
-        assert!(s.edit_model("Fenster", |m| {
-            let aussen: Vec<_> = m
-                .runs()
-                .iter()
-                .filter(|(_, run)| {
-                    run.segments
-                        .first()
-                        .and_then(|e| m.element(*e))
-                        .is_some_and(|e| e.category.is_outer_wall())
-                })
-                .map(|(r, _)| r)
-                .collect();
-            for r in aussen {
-                // 4 + 4 + 4 + 3 Fenster auf den vier Seiten
-                for (k, viele) in [(0, 4), (1, 4), (2, 4), (3, 3)] {
-                    let f = m.outer_face(r, k).unwrap();
-                    for i in 0..viele {
-                        let u = f.u.0 + 800.0 + 1900.0 * i as f64;
-                        m.add_opening(Opening {
-                            kind: OpeningKind::Window,
-                            path: vec![f.at(u, 0.0), f.at(u + 900.0, 0.0)],
-                            bottom: HeightRef::Line(st, HeightLine::Sill),
-                            top: HeightRef::Line(st, HeightLine::Lintel),
-                            reveal: None,
-                            install: Default::default(),
-                            swing: None,
-                            lock: Default::default(),
-                        });
-                    }
-                }
-            }
-            true
-        }));
+        let mut s = siedlung_mit_fenstern(n);
         let m = s.model();
         let oeffnungen: Vec<_> = m
             .elements()
@@ -2648,5 +2701,157 @@ fn perf_kanten() {
         "Refresh und Schlösser {:.3} → {:.3} ms",
         a.2,
         b.2
+    );
+}
+
+/// Median der Zeiten `v` (ms).
+fn mitte(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[v.len() / 2]
+}
+
+/// Griff an der Oberkante der letzten Öffnung, gerade davor: Greifen
+/// gleich nach einem Loslassen, Ziehen je Mausbewegung und Loslassen,
+/// je der Median in ms.
+fn kante_messen(s: &mut Scene) -> (f64, f64, f64) {
+    use crate::wall_edit::oeffnung_kanten::{treffer, HoeheZug};
+    use sk_platform::MouseButton;
+    let m = s.model();
+    let (id, o) = m
+        .elements()
+        .iter()
+        .filter_map(|(id, e)| match &e.kind {
+            sk_model::ElementKind::Opening(o) => Some((id, o.clone())),
+            _ => None,
+        })
+        .last()
+        .unwrap();
+    let (z0, z1) = m.opening_band(&o).unwrap();
+    let q = (o.path[0] + o.path[1]) * 0.5;
+    let mitte_o = vec3(q.x, q.y, (z0 + z1) / 2.0);
+    let d = (o.path[1] - o.path[0]).normalized();
+    let nrm = [vec3(-d.y, d.x, 0.0), vec3(d.y, -d.x, 0.0)]
+        .into_iter()
+        .find(|&v| {
+            let c = Camera::looking_at(mitte_o + v * 2500.0, mitte_o, 45.0);
+            let p = c.project(mitte_o, W, H).unwrap();
+            treffer(s, &c, p, W, H, 1.0, None).is_some_and(|t| t.id == id)
+        })
+        .expect("Fenster von außen zu sehen");
+    let cam = Camera::looking_at(mitte_o + nrm * 2500.0, mitte_o, 45.0);
+    let px = |z: f64| cam.project(vec3(q.x, q.y, z), W, H).unwrap();
+    let t = treffer(s, &cam, px(z1 - 5.0), W, H, 1.0, None).unwrap();
+    let mods = Modifiers::default();
+    let bei = |z: f64| {
+        let (x, y) = px(z);
+        Event::MouseMove { x, y, mods }
+    };
+    let (x, y) = px(z1);
+    let up = Event::MouseUp {
+        button: MouseButton::Left,
+        x,
+        y,
+        mods,
+    };
+    let (mut greifen, mut ziehen, mut los) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..7 {
+        let t0 = Instant::now();
+        let mut z = HoeheZug::greifen(s, t, true, &cam, px(z1), W, H, 1.0).unwrap();
+        greifen.push(t0.elapsed().as_secs_f64() * 1000.0);
+        for k in 0..10 {
+            let e = bei(z1 + 150.0 + 10.0 * i as f64 + 50.0 * (k % 2) as f64);
+            let t0 = Instant::now();
+            assert!(z.handle(&e, s, &cam, W, H).changed);
+            ziehen.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t0 = Instant::now();
+        z.handle(&up, s, &cam, W, H);
+        los.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    // Das erste Greifen folgt keinem Loslassen
+    greifen.remove(0);
+    (mitte(greifen), mitte(ziehen), mitte(los))
+}
+
+/// Wandzug: das erste Segment der Außenwand des letzten Hauses um 1 bzw.
+/// 2 mm verschoben und neu gerechnet, je Mausbewegung, und Loslassen, je
+/// der Median in ms.
+fn wand_messen(s: &mut Scene) -> (f64, f64) {
+    let run = s
+        .model()
+        .runs()
+        .iter()
+        .filter(|(_, r)| r.closed)
+        .last()
+        .unwrap()
+        .0;
+    let orig = s.chain(run).unwrap().clone();
+    let (mut ziehen, mut los) = (Vec::new(), Vec::new());
+    for i in 0..7 {
+        s.begin("Wand verschieben");
+        for k in 0..10 {
+            let d = if (i + k) % 2 == 0 { 1.0 } else { 2.0 };
+            let moved = orig.with_segment_moved(0, d).unwrap();
+            let t0 = Instant::now();
+            s.set_run_points(run, &moved.points);
+            ziehen.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t0 = Instant::now();
+        s.commit();
+        los.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    s.begin("Wand zurück");
+    s.set_run_points(run, &orig.points);
+    s.commit();
+    (mitte(ziehen), mitte(los))
+}
+
+/// Budget L40/L31 (Review): Ziehen einer Öffnungskante und einer Wand
+/// wächst von 1000 auf 4000 Häuser höchstens um die Hälfte, Loslassen und
+/// Greifen gleich nach dem Loslassen bleiben unter 8 ms. Das Modell hält
+/// sein Verzeichnis zwischen den Gängen und führt es nach, statt bei jeder
+/// Mausbewegung das ganze Modell abzusuchen.
+#[test]
+#[ignore]
+fn perf_l40_budget() {
+    println!();
+    println!(
+        "{:>6} | {:>8} {:>8} {:>8} | {:>8} {:>8}",
+        "Häuser", "Greifen", "Ziehen", "Los", "Wand", "Los"
+    );
+    let mut je = Vec::new();
+    for n in [1000, 4000] {
+        let t = Instant::now();
+        let mut s = siedlung_in_einem_schritt(n);
+        println!("Aufbau {n}: {:.1} s", t.elapsed().as_secs_f64());
+        let (greifen, ziehen, los) = kante_messen(&mut s);
+        let (wand, wand_los) = wand_messen(&mut s);
+        println!("{n:>6} | {greifen:>8.3} {ziehen:>8.3} {los:>8.3} | {wand:>8.3} {wand_los:>8.3}");
+        let c = s.model().check();
+        assert!(c.is_empty(), "{n} Häuser: {:?}", &c[..c.len().min(3)]);
+        for (was, ms) in [
+            ("Greifen", greifen),
+            ("Loslassen", los),
+            ("Wand loslassen", wand_los),
+        ] {
+            assert!(ms <= 8.0, "{n} Häuser: {was} {ms:.3} ms");
+        }
+        je.push((ziehen, wand));
+    }
+    println!("Mediane in ms; Greifen gleich nach einem Loslassen.");
+    // Was je Mausbewegung anfällt, hängt nicht an der Zahl der Häuser; 0,3 ms
+    // Spielraum für das Rauschen der Uhr
+    let (a, b) = (je[0], je[1]);
+    assert!(
+        b.0 <= 1.5 * a.0 + 0.3,
+        "Kante ziehen {:.3} → {:.3} ms",
+        a.0,
+        b.0
+    );
+    assert!(
+        b.1 <= 1.5 * a.1 + 0.3,
+        "Wand ziehen {:.3} → {:.3} ms",
+        a.1,
+        b.1
     );
 }

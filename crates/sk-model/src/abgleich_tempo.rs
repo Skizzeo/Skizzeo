@@ -1,7 +1,8 @@
 //! Tempo des Abgleichs beim Schließen eines Schritts, der nur Geschoss-
 //! bänder oder den Geländeversatz eines Gebäudes ändert (Review L39).
 
-use crate::{BuildingId, Category, Model, StoreyId};
+use crate::txn::{Change, Key};
+use crate::{BuildingId, Category, ElementKind, Model, StoreyId};
 use sk_math::vec3;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -210,6 +211,165 @@ fn budget_grossgebaeude() {
     let ms = best;
     let budget = if cfg!(debug_assertions) { 200.0 } else { 8.0 };
     assert!(ms < budget, "{ms:.1} ms");
+}
+
+/// Budget (Review H1 zu #148, L40): 4000 Gebäude, ein Geschosszug in einem
+/// davon, Loslassen. Ein kleiner Bereich rechnete vorher ohne Verzeichnis
+/// (unter 16 Zügen), 8,7 ms je Commit; das gehaltene Verzeichnis kostet nur
+/// die Änderung. Der Aufbau dauert, daher auf Abruf im Release.
+#[test]
+#[ignore = "Messung im Release"]
+fn budget_4000_kleiner_bereich() {
+    let (mut m, gb) = haeuser(4000, true);
+    let eg = m.ground_of(Some(gb[2000])).unwrap();
+    let mut zug = |dz: f64| {
+        let top = m.storey(eg).unwrap().top();
+        m.begin("Geschoss ziehen");
+        assert!(m.set_storey_top(eg, top + dz));
+        let t = Instant::now();
+        assert!(m.commit().is_some());
+        ms(t)
+    };
+    zug(100.0);
+    let mut best = f64::INFINITY;
+    for k in 0..7 {
+        best = best.min(zug(if k % 2 == 0 { -100.0 } else { 100.0 }));
+    }
+    println!("4000 Gebäude, kleiner Bereich: {best:.2} ms");
+    let budget = if cfg!(debug_assertions) { 200.0 } else { 8.0 };
+    assert!(best < budget, "{best:.1} ms");
+}
+
+/// Bauteile an einer Decke, deren Wirt im Schritt wegfällt, findet auch der
+/// Abgleich im Bereich (Geometrie zu L40): Flachdach an und aus, Gebäude
+/// entfernt, Haus mit Decken angelegt, alles rückgängig und wiederholt.
+/// Danach ändert der Abgleich über alles nichts; im Debug prüft
+/// [`Model::an_decken_in`] zudem bei jedem Schließen, dass kein Bauteil
+/// fehlt. Löschen und Rückgängig nehmen die Bauteile an einer Decke im
+/// selben Schritt mit; echte Waisen prüft [`bereich_findet_waisen`].
+#[test]
+fn bereich_bei_strukturschritten() {
+    let (mut m, gb) = haeuser_mit(3, true, 3);
+    let (b0, b1, b2) = (gb[0], gb[1], gb[2]);
+    let flach = move |m: &mut Model, an: bool| {
+        let ebenen = m.levels_in(Some(b1));
+        ebenen.into_iter().any(|st| m.set_flat_roof(st, an))
+    };
+    type Schritt = Box<dyn Fn(&mut Model) -> bool>;
+    let schritte: Vec<(&str, Schritt)> = vec![
+        (
+            "Flachdach an",
+            Box::new(move |m: &mut Model| flach(m, true)),
+        ),
+        (
+            "Flachdach aus",
+            Box::new(move |m: &mut Model| flach(m, false)),
+        ),
+        (
+            "Gebäude entfernen",
+            Box::new(move |m: &mut Model| m.remove_building(b2)),
+        ),
+        (
+            "Haus anlegen",
+            Box::new(move |m: &mut Model| {
+                let p = |x: f64, y: f64| vec3(x, 30000.0 + y, 0.0);
+                let ecken = [
+                    p(0.0, 0.0),
+                    p(0.0, 8000.0),
+                    p(10000.0, 8000.0),
+                    p(10000.0, 0.0),
+                ];
+                m.build_from_polygon(b0, &ecken).is_some()
+            }),
+        ),
+    ];
+    // Regenfallrohre hängen am Flachdach: Fällt es weg, findet der
+    // Abgleich im Bereich auch sie
+    let rohre = |m: &Model| {
+        m.elements()
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::Downpipe { .. }))
+            .count()
+    };
+    let mut verlauf = Vec::new();
+    let mut zahl = vec![rohre(&m)];
+    for (was, f) in &schritte {
+        m.begin("Probe");
+        assert!(f(&mut m), "{was}");
+        verlauf.push((*was, m.commit().expect(was)));
+        assert_eq!(ganz(&m), ((0, 0), (0, 0), true), "{was}");
+        zahl.push(rohre(&m));
+    }
+    assert!(
+        zahl[1] > zahl[0] && zahl[2] == zahl[0],
+        "Regenfallrohre {zahl:?}"
+    );
+    for dir in [crate::Direction::Undo, crate::Direction::Redo] {
+        let mut alle: Vec<_> = verlauf.iter().collect();
+        if dir == crate::Direction::Undo {
+            alle.reverse();
+        }
+        for (was, t) in alle {
+            m.apply(t, dir);
+            assert_eq!(ganz(&m), ((0, 0), (0, 0), true), "{was} {dir:?}");
+            assert!(m.check().is_empty(), "{was} {dir:?}: {:?}", m.check());
+        }
+    }
+}
+
+/// Echte Waisen (Geometrie zu #160): Fällt eine Decke weg, ohne dass ihre
+/// Bauteile mitgehen, stehen Flachdach, Blech und Regenfallrohre unter
+/// einem Schlüssel, der keine Decke mehr ist. Der Abgleich im Bereich
+/// findet sie nur über die Waisen des Verzeichnisses und räumt sie im
+/// selben Schritt ab; danach ändert der Abgleich über alles nichts.
+#[test]
+fn bereich_findet_waisen() {
+    let (mut m, gb) = haeuser_mit(3, true, 3);
+    m.begin("Flachdach");
+    let ebenen = m.levels_in(Some(gb[1]));
+    assert!(ebenen.into_iter().any(|st| m.set_flat_roof(st, true)));
+    m.commit().expect("Flachdach");
+    let an = |m: &Model, f: crate::ElementId| {
+        m.elements()
+            .iter()
+            .filter(|(_, e)| match e.kind {
+                ElementKind::Roof { floor, .. } | ElementKind::Coping { floor } => floor == f,
+                _ => false,
+            })
+            .count()
+    };
+    let decke = m
+        .elements()
+        .iter()
+        .find_map(|(_, e)| match e.kind {
+            ElementKind::Roof { floor, .. } => Some(floor),
+            _ => None,
+        })
+        .expect("Flachdach auf einer Decke");
+    assert!(an(&m, decke) > 0);
+    // Nur die Decke, an der Löschfunktion vorbei: Ihre Bauteile bleiben
+    // zunächst als Waisen stehen
+    m.begin("Decke weg");
+    note!(m, Element, m.elements, decke);
+    m.elements.remove(decke);
+    m.touch();
+    if let Some(v) = m.verz() {
+        assert!(v.ist_waise(decke), "Decke ist Waise");
+    }
+    m.commit().expect("Decke weg");
+    assert_eq!(an(&m, decke), 0, "Bauteile an der entfernten Decke");
+    let rohre_ohne_dach = m.elements().iter().any(|(_, e)| match e.kind {
+        ElementKind::Downpipe { roof, .. } => !matches!(
+            m.element(roof).map(|r| &r.kind),
+            Some(ElementKind::Roof { .. })
+        ),
+        _ => false,
+    });
+    assert!(!rohre_ohne_dach, "Regenfallrohr ohne Dachaufbau");
+    assert_eq!(ganz(&m), ((0, 0), (0, 0), true));
+    // Gemeldet wird nur die fehlende Decke selbst
+    let c = m.check();
+    assert!(c.iter().all(|x| x.contains("Decke")), "{c:?}");
 }
 
 /// Zufällige Schritte an Bändern, Gründung, Gelände und Flachdach in drei
