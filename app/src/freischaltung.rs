@@ -550,7 +550,7 @@ mod tests {
                 Freischaltung::mit(&[Modul::Mengen, Modul::Kosten])
             ]
             .map(Freischaltung::blaetter),
-            [0, 1, 3, 2]
+            [0, 2, 4, 3]
         );
         assert_eq!(p.knopf(), "Mengen");
         assert_eq!(p.knopf_zeilen(), ("Mengen", ""));
@@ -649,10 +649,10 @@ mod tests {
         assert!(alle_befehle.contains(&Command::Verwaltung));
         for (w, mengen, kosten, karten) in [
             ("basis", false, false, 1),
-            ("pro", true, false, 1),
-            ("ultimate", true, true, 3),
+            ("pro", true, false, 2),
+            ("ultimate", true, true, 4),
             ("basis+gelaende", false, false, 1),
-            ("ultimate+gelaende", true, true, 3),
+            ("ultimate+gelaende", true, true, 4),
         ] {
             let f = stufe(w);
             // Paneele: dieselben Knöpfe, „Mengen“ ohne Mengen grau
