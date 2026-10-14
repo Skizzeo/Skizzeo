@@ -14,7 +14,7 @@ use crate::abfrage::Abfrage;
 use crate::volumen::{halbieren, Bezug};
 
 mod erdbau;
-pub use erdbau::{ohren, Aufbau, Erdbau, Grube, Zonen, STEIL_ANDECKEN};
+pub use erdbau::{ohren, ueberlappung, Aufbau, Erdbau, Grube, Zonen, STEIL_ANDECKEN};
 
 /// Ebene Teilfläche eines Bausteins.
 #[derive(Clone, Debug, PartialEq)]
@@ -667,7 +667,12 @@ mod tests {
         assert!((e.abtrag - m.abtrag).abs() < 1e-9, "{e:?} {m:?}");
         let f = m.flaeche_auftrag + m.flaeche_abtrag;
         assert!((e.flaeche - f).abs() < 1e-6, "{e:?} {m:?}");
-        assert!((e.andecken + e.andecken_steil - (m.boeschung + m.flaeche * (1.0f64 + 0.02 * 0.02).sqrt())).abs() < 1e-6);
+        assert!(
+            (e.andecken + e.andecken_steil
+                - (m.boeschung + m.flaeche * (1.0f64 + 0.02 * 0.02).sqrt()))
+            .abs()
+                < 1e-6
+        );
     }
 
     #[test]

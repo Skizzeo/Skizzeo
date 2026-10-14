@@ -1027,7 +1027,7 @@ fn a227_kurzname_datei() {
         .filter_map(kurz)
         .map(|k| k.to_lowercase())
         .collect();
-    assert_eq!(alle.len(), 35, "jedes Startgewerk hat einen Kurznamen");
+    assert_eq!(alle.len(), 36, "jedes Startgewerk hat einen Kurznamen");
     for k in &alle {
         assert!(
             k.chars().count() <= 14 && !k.chars().any(|c| c.is_ascii_digit()),

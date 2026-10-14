@@ -14,6 +14,9 @@ use super::{an, konvex_schnitt, Bereich, Planung};
 use crate::abfrage::Abfrage;
 use crate::volumen::{ebene, flaeche_schwerpunkt, halbieren, schneiden, ueberlappt, Bezug};
 
+/// Dreieck im Grundriss.
+type Dreieck = [[f64; 2]; 3];
+
 /// Wie unter einem Baustein gezählt wird (m).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Aufbau {
@@ -50,9 +53,9 @@ pub struct Zonen {
 pub const STEIL_ANDECKEN: f64 = 0.25;
 
 /// Erdbau eines Bausteins (m³, m²), außerhalb der Häuser.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Erdbau {
-    /// ∫ (N − Q)⁺, in der Baugrube nur unter ihrer Sohle ∫ (B − Q)⁺ (B3).
+    /// ∫ (N − Q)⁺, in der Baugrube ab dem Aushub ∫ (min(N, B) − Q)⁺ (B3).
     pub abtrag: f64,
     /// ∫ (Q − N)⁺, auch über der Baugrube (B3).
     pub auftrag: f64,
@@ -64,9 +67,11 @@ pub struct Erdbau {
     pub andecken: f64,
     pub andecken_steil: f64,
     /// In der Baugrube: um so viel mindert sich die Verfüllung 311,
-    /// ∫ (N − max(Q, B))⁺.
+    /// ∫ (N − max(Q, B))⁺, gesamt und je Baugrube der Zonen.
     pub weniger_verfuellen: f64,
-    /// In der Baugrube unter UK Platte: ∫ (B − Q)⁺ (in `abtrag`), Hinweis.
+    pub je_grube: Vec<f64>,
+    /// In der Baugrube unter UK Platte, wo ausgehoben ist: ∫ (B − Q)⁺ (in
+    /// `abtrag`), Hinweis.
     pub unter_sohle: f64,
 }
 
@@ -95,8 +100,11 @@ struct Summe {
     /// ∫ (Q − N)⁺ und ∫ (N − Q)⁺.
     plus: f64,
     minus: f64,
-    /// ∫ (B − Q)⁺ und ∫ (N − max(Q, B))⁺ gegen die Höhe B des Fensters.
+    /// Gegen die Höhe B des Fensters: ∫ (B − Q)⁺, wo N über B liegt (unter
+    /// der Sohle), ∫ (min(N, B) − Q)⁺ (Abtrag nach dem Aushub) und
+    /// ∫ (N − max(Q, B))⁺ (weniger Verfüllung).
     unter_b: f64,
+    ab_grube: f64,
     ueber_b: f64,
 }
 
@@ -107,6 +115,7 @@ impl Summe {
         self.plus += vz * o.plus;
         self.minus += vz * o.minus;
         self.unter_b += vz * o.unter_b;
+        self.ab_grube += vz * o.ab_grube;
         self.ueber_b += vz * o.ueber_b;
     }
 }
@@ -147,7 +156,9 @@ pub fn ohren(ring: &[[f64; 2]]) -> Vec<[[f64; 2]; 3]> {
                     j == i
                         || j == (i + n - 1) % n
                         || j == (i + 1) % n
-                        || !(kreuz(a, b, p) >= 0.0 && kreuz(b, c, p) >= 0.0 && kreuz(c, a, p) >= 0.0)
+                        || !(kreuz(a, b, p) >= 0.0
+                            && kreuz(b, c, p) >= 0.0
+                            && kreuz(c, a, p) >= 0.0)
                 })
         });
         // ohne Ohr (entartet): der Rest als Fächer
@@ -164,6 +175,18 @@ pub fn ohren(ring: &[[f64; 2]]) -> Vec<[[f64; 2]; 3]> {
         out.push([v[0], v[1], v[2]]);
     }
     out
+}
+
+/// Gemeinsame Fläche zweier einfacher Polygone (je in Dreiecke zerlegt).
+pub fn ueberlappung(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
+    let tb = ohren(b);
+    ohren(a)
+        .iter()
+        .flat_map(|x| {
+            tb.iter()
+                .map(move |y| super::flaeche(&konvex_schnitt(x, y)))
+        })
+        .sum()
 }
 
 impl Planung {
@@ -234,7 +257,7 @@ impl Planung {
     pub fn erdbau(&self, u: &Abfrage, a: &Aufbau, z: &Zonen) -> Erdbau {
         let haus: Vec<[[f64; 2]; 3]> = z.haus.iter().flat_map(|r| ohren(r)).collect();
         let baufeld: Vec<[[f64; 2]; 3]> = z.baufeld.iter().flat_map(|r| ohren(r)).collect();
-        let gruben: Vec<(Vec<[[f64; 2]; 3]>, Vec<[[f64; 2]; 3]>, f64)> = z
+        let gruben: Vec<(Vec<Dreieck>, Vec<Dreieck>, f64)> = z
             .gruben
             .iter()
             .map(|g| (ohren(&g.sohle), ohren(&g.platte), g.b))
@@ -243,6 +266,7 @@ impl Planung {
         let mut im_haus = Summe::default();
         let mut im_feld = Summe::default();
         let mut im_ring = Summe::default();
+        let mut je_grube = vec![0.0; gruben.len()];
         for s in self.stuecke() {
             let sum = |fenster: Option<[[f64; 2]; 3]>, b: f64| summe(u, a, &s, fenster, b);
             alle.dazu(sum(None, f64::NAN), s.vz);
@@ -252,13 +276,16 @@ impl Planung {
             for t in &baufeld {
                 im_feld.dazu(sum(Some(*t), f64::NAN), s.vz);
             }
-            for (sohle, platte, b) in &gruben {
+            for ((sohle, platte, b), je) in gruben.iter().zip(&mut je_grube) {
+                let mut g = Summe::default();
                 for t in sohle {
-                    im_ring.dazu(sum(Some(*t), *b), s.vz);
+                    g.dazu(sum(Some(*t), *b), 1.0);
                 }
                 for t in platte {
-                    im_ring.dazu(sum(Some(*t), *b), -s.vz);
+                    g.dazu(sum(Some(*t), *b), -1.0);
                 }
+                *je += s.vz * g.ueber_b;
+                im_ring.dazu(g, s.vz);
             }
         }
         let mut aussen = alle;
@@ -271,13 +298,14 @@ impl Planung {
             self.andecken(u, &haus)
         };
         Erdbau {
-            abtrag: (aussen.minus - im_ring.minus + im_ring.unter_b).max(0.0),
+            abtrag: (aussen.minus - im_ring.minus + im_ring.ab_grube).max(0.0),
             auftrag: aussen.plus.max(0.0),
             flaeche: aussen.flaeche.max(0.0),
             im_baufeld: feld.flaeche.max(0.0),
             andecken,
             andecken_steil,
             weniger_verfuellen: im_ring.ueber_b.max(0.0),
+            je_grube: je_grube.into_iter().map(|v| v.max(0.0)).collect(),
             unter_sohle: im_ring.unter_b.max(0.0),
         }
     }
@@ -325,7 +353,10 @@ fn summe(u: &Abfrage, a: &Aufbau, s: &Stueck, fenster: Option<[[f64; 2]; 3]>, b:
         if !ueberlappt(&p, &ring) {
             continue;
         }
-        let mut teil = schneiden(&ring, [[p[0][0], p[0][1]], [p[1][0], p[1][1]], [p[2][0], p[2][1]]]);
+        let mut teil = schneiden(
+            &ring,
+            [[p[0][0], p[0][1]], [p[1][0], p[1][1]], [p[2][0], p[2][1]]],
+        );
         if let Some(seite) = s.maske {
             teil = halbieren(&teil, |q| seite * (an(&s.ebene, q[0], q[1]) - ebene(&p, q)));
         }
@@ -340,10 +371,15 @@ fn summe(u: &Abfrage, a: &Aufbau, s: &Stueck, fenster: Option<[[f64; 2]; 3]>, b:
         out.plus += plus;
         out.minus += minus;
         if b.is_finite() {
-            out.unter_b += plus_minus(&teil, |x| b - q(x)).0;
+            // Wo N über B liegt, ist bis B ausgehoben, sonst nichts: der
+            // Abtrag zählt ab min(N, B), je Teil linear
+            let ueber_b = halbieren(&teil, |x| n(x) - b);
+            let unter_b = halbieren(&teil, |x| b - n(x));
+            let unter = plus_minus(&ueber_b, |x| b - q(x)).0;
+            out.unter_b += unter;
+            out.ab_grube += unter + plus_minus(&unter_b, |x| n(x) - q(x)).0;
             // N − max(Q, B), wo N über B liegt: geteilt, wo Q über bzw.
             // unter B liegt, je linear
-            let ueber_b = halbieren(&teil, |x| n(x) - b);
             let q_oben = halbieren(&ueber_b, |x| q(x) - b);
             let q_unten = halbieren(&ueber_b, |x| b - q(x));
             out.ueber_b += plus_minus(&q_oben, |x| n(x) - q(x)).0;
@@ -423,7 +459,10 @@ mod tests {
             ..GRUEN
         };
         let e = quadrat(&u, 11.0).erdbau(&u, &b, &Zonen::default());
-        assert!((e.auftrag - (130.0 + 33.0 + 69.0 * 0.3)).abs() < 1e-6, "{e:?}");
+        assert!(
+            (e.auftrag - (130.0 + 33.0 + 69.0 * 0.3)).abs() < 1e-6,
+            "{e:?}"
+        );
         assert_eq!((e.andecken, e.andecken_steil), (0.0, 0.0));
     }
 
@@ -464,22 +503,79 @@ mod tests {
         let ring = 100.0 - 36.0;
         // Abtrag 1 m: Q = 8,80 über B, bis N schon ausgehoben
         let e = quadrat(&u, 9.0).erdbau(&u, &GRUEN, &z(8.0));
-        let frei = quadrat(&u, 9.0).erdbau(&u, &GRUEN, &Zonen { gruben: Vec::new(), ..z(8.0) });
+        let frei = quadrat(&u, 9.0).erdbau(
+            &u,
+            &GRUEN,
+            &Zonen {
+                gruben: Vec::new(),
+                ..z(8.0)
+            },
+        );
         assert!((e.weniger_verfuellen - ring * 0.9).abs() < 1e-6, "{e:?}");
-        assert!((frei.abtrag - e.abtrag - ring * 0.9).abs() < 1e-6, "{e:?} {frei:?}");
+        assert_eq!(e.je_grube, [e.weniger_verfuellen]);
+        assert!(
+            (frei.abtrag - e.abtrag - ring * 0.9).abs() < 1e-6,
+            "{e:?} {frei:?}"
+        );
         assert_eq!(e.unter_sohle, 0.0);
         // Q = 7,30 unter B = 8,00: Verfüllung bis N fällt ganz weg, 0,70 m
         // Abtrag unter der Sohle
         let e = quadrat(&u, 7.5).erdbau(&u, &GRUEN, &z(8.0));
         assert!((e.weniger_verfuellen - ring * 1.7).abs() < 1e-6, "{e:?}");
         assert!((e.unter_sohle - ring * 0.7).abs() < 1e-6, "{e:?}");
-        let frei = quadrat(&u, 7.5).erdbau(&u, &GRUEN, &Zonen { gruben: Vec::new(), ..z(8.0) });
-        assert!((frei.abtrag - e.abtrag - ring * 1.7).abs() < 1e-6, "{e:?} {frei:?}");
+        let frei = quadrat(&u, 7.5).erdbau(
+            &u,
+            &GRUEN,
+            &Zonen {
+                gruben: Vec::new(),
+                ..z(8.0)
+            },
+        );
+        assert!(
+            (frei.abtrag - e.abtrag - ring * 1.7).abs() < 1e-6,
+            "{e:?} {frei:?}"
+        );
+        // B = 9,80 über N: dort ist nichts ausgehoben, alles zählt wie ohne
+        // Baugrube
+        let e = quadrat(&u, 7.5).erdbau(&u, &GRUEN, &z(9.8));
+        let frei = quadrat(&u, 7.5).erdbau(
+            &u,
+            &GRUEN,
+            &Zonen {
+                gruben: Vec::new(),
+                ..z(9.8)
+            },
+        );
+        assert!((e.abtrag - frei.abtrag).abs() < 1e-6, "{e:?} {frei:?}");
+        assert_eq!((e.weniger_verfuellen, e.unter_sohle), (0.0, 0.0));
+    }
+
+    #[test]
+    fn ueberlappung_l_und_quadrat() {
+        let l = [
+            [0.0, 0.0],
+            [6.0, 0.0],
+            [6.0, 2.0],
+            [2.0, 2.0],
+            [2.0, 5.0],
+            [0.0, 5.0],
+        ];
+        // 1 … 3 × 1 … 3: in der L-Form liegen 1 × 1 + 1 × 2 + 1 × 1
+        let q = rechteck(1.0, 1.0, 3.0, 3.0);
+        assert!((ueberlappung(&l, &q) - 3.0).abs() < 1e-12);
+        assert_eq!(ueberlappung(&l, &rechteck(3.0, 3.0, 5.0, 5.0)), 0.0);
     }
 
     #[test]
     fn ohren_l_form() {
-        let l = [[0.0, 0.0], [6.0, 0.0], [6.0, 2.0], [2.0, 2.0], [2.0, 5.0], [0.0, 5.0]];
+        let l = [
+            [0.0, 0.0],
+            [6.0, 0.0],
+            [6.0, 2.0],
+            [2.0, 2.0],
+            [2.0, 5.0],
+            [0.0, 5.0],
+        ];
         let t = ohren(&l);
         assert_eq!(t.len(), 4);
         let a: f64 = t.iter().map(|t| super::super::flaeche(t)).sum();

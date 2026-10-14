@@ -1646,6 +1646,9 @@ pub struct AutoMenge {
     pub kg: Option<u16>,
     /// Rechenweg für den Mengenansatz, z. B. „99,00 m² × 0,30 m“.
     pub formula: String,
+    /// Hinweise zur Menge, getrennt vom Rechenweg (Review #164 H-164f,
+    /// VOB-Prüfung G3 B7), je Hinweis eine Zeile; leer ohne.
+    pub hinweis: String,
 }
 
 /// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
@@ -2050,6 +2053,7 @@ pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
             value: 0.0,
             kg: None,
             formula: String::new(),
+            hinweis: String::new(),
         };
         sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
         // Regenfallrohre an den Abläufen des Dachs (Jörn 11.10.)
@@ -2085,6 +2089,7 @@ pub(crate) fn schedule_im_gang(model: &Model) -> Schedule {
 /// werden (Erdarbeiten, Bauvorbereitung), in der Reihenfolge der Platten.
 fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
     let mut out = Vec::new();
+    let mut gruende = Vec::new();
     let boden = model.project().soil;
     // Außenwände je Gebäude einmal, nicht je Platte
     let huellen = match platten {
@@ -2128,9 +2133,16 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
             value: 0.0,
             kg: None,
             formula: String::new(),
+            hinweis: String::new(),
         };
         let basis = crate::qto_earth::ErdBasis::im_modell(model, &g);
-        out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
+        let (erde, zone) = crate::qto_earth::auto_mengen(&vorlage, &basis, &boden);
+        out.extend(erde);
+        gruende.push(crate::qto_earth::Gruendung {
+            vorlage: vorlage.clone(),
+            outline: g.outline.clone(),
+            zone,
+        });
         let b = model.run(run).and_then(|r| model.building_of(r.storey));
         // ohne Gebäude zählt jede Platte für sich
         let erste = b.is_none_or(|b| traeger.get(&b).is_some_and(|t| t.1 == slab));
@@ -2144,6 +2156,8 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
             erste,
         ));
     }
+    // Geländeflächen (G3b) mit der Bilanz über alle Gründungen
+    crate::qto_earth::gelaende_mengen(model, &gruende, &boden, &mut out);
     out
 }
 
