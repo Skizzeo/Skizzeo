@@ -117,6 +117,12 @@ impl Scene {
         self.erkennung.borrow().zugeteilt()
     }
 
+    /// Wie oft die Räume eines Geschosses neu gesammelt wurden (Tests).
+    #[cfg(test)]
+    pub fn raum_listen(&self) -> u64 {
+        self.erkennung.borrow().raumlisten()
+    }
+
     /// Räume des Geschosses wie [`sk_raum::raeume`], je mit Grundfläche
     /// (mm²), über alle Hausgruppen zugeteilt (Tests; die App liest
     /// [`Scene::raumgruppen`]).
@@ -540,5 +546,49 @@ mod tests {
             assert_eq!(s.raum_zuteilungen(), z0 + k, "je Bewegung das eine Haus");
         }
         s.commit();
+    }
+
+    /// Review H-137b: Nach dem Loslassen einer Wand, deren Räume ihr mit
+    /// dem Anker folgen, nach dem Verschieben eines Raumstempels und nach
+    /// Rückgängig sammelt die Zuteilung die Räume des Geschosses nicht neu
+    /// über alle Bauteile, sie reiht nur die geänderten neu ein. Das
+    /// Ergebnis ist jedes Mal das der frischen Erkennung.
+    #[test]
+    fn loslassen_ohne_neue_raumliste() {
+        let (mut s, st, innen) = stadt(3);
+        let listen = |s: &Scene| s.raum_listen();
+        let wie_neu = |s: &Scene| {
+            let mitte = |f: &(sk_raum::RaumForm, f64)| (f.0.mitte.x, f.0.mitte.y);
+            let mut v: Vec<_> = s
+                .raumgruppen(st)
+                .flaechen()
+                .map(|f| (f.form.clone(), f.grundflaeche))
+                .collect();
+            let mut w = s.raumformen(st);
+            v.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            w.sort_by(|a, b| mitte(a).partial_cmp(&mitte(b)).unwrap());
+            assert_eq!(v, w);
+        };
+        wie_neu(&s);
+        let n0 = listen(&s);
+        for k in 1..=3 {
+            s.begin("Wand verschieben");
+            wand_auf(&mut s, innen[1], 15000.0 + 3000.0 + 100.0 * k as f64);
+            s.commit();
+            wie_neu(&s);
+        }
+        assert_eq!(listen(&s), n0, "Wandschritte");
+        // Stempel eines Raums verschieben: ein Schritt an Räumen
+        let r = s.raumformen(st);
+        let id = r[0].0.raum.unwrap();
+        s.begin("Raumstempel verschoben");
+        assert!(s.raum_stempel(id, r[0].0.mitte + vec3(200.0, 0.0, 0.0)));
+        s.commit();
+        wie_neu(&s);
+        assert!(s.undo());
+        wie_neu(&s);
+        assert!(s.undo());
+        wie_neu(&s);
+        assert_eq!(listen(&s), n0, "Stempel und Rückgängig");
     }
 }
