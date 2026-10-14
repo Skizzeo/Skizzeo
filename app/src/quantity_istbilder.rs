@@ -277,8 +277,7 @@ fn istbilder_ka1_ka2() {
     let k = q.kosten.as_mut().unwrap();
     let (x, y) = k
         .waehlen_mitte(&b.t, &b.fonts, "Dämmung hart")
-        .or_else(|| k.waehlen_mitte(&b.t, &b.fonts, ""))
-        .expect("graue Zeile mit Wahl");
+        .expect("graue Zeile Dämmung hart mit Wahl");
     k.mouse_move(&b.t, &b.fonts, &mut b.p, x, y);
     k.mouse_down(&b.t, &b.fonts, &mut b.p, (x, y), mods);
     q.sync(&mut s, &b.p, false);
