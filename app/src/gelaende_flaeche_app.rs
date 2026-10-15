@@ -34,6 +34,10 @@ pub const LABEL_BODEN: &str = "Geländebau";
 pub const KREUZT: &str = "Die Kanten der Fläche kreuzen sich; bitte anders schließen.";
 /// Alle Ecken auf einer Linie (H-189d).
 pub const OHNE_INHALT: &str = "Die Ecken liegen auf einer Linie; die Fläche hat keinen Inhalt.";
+/// Die Fläche ließ sich auf der Geländehöhe in ihrer Mitte nicht anlegen
+/// (H-189d).
+pub const ZU_HOCH: &str =
+    "Das Gelände liegt dort mehr als 100 m über oder unter ±0,00; die Fläche entsteht nicht.";
 /// Ecken weiter als 100 km vom Ursprung (H-189d).
 pub const ZU_WEIT: &str = "Die Fläche liegt zu weit außerhalb; bitte näher am Haus zeichnen.";
 /// Hinweise im Paneel; befestigt mit dem Satz aus den Mengen
@@ -490,6 +494,9 @@ impl App {
             self.upload_model();
             self.quantity.dirty = true;
         }
+        if neu.is_none() {
+            self.status(crate::meldung::Meldung::satz(ZU_HOCH), crate::NOTICE_TIME);
+        }
         if let Some(i) = neu {
             self.flaeche_waehlen(Some(i));
             // Mengen zählen dort doppelt (Bedienbarkeit 43.1)
@@ -510,6 +517,24 @@ impl App {
             || self.edit.is_dragging()
             || self.drains.is_dragging()
             || self.platte.leiste.werkzeug.zeichnet()
+    }
+
+    /// Rückgängig und Wiederherstellen (Knopf, Menü, Kürzel) beim Zeichnen:
+    /// Rückgängig nimmt die letzte Ecke, Wiederherstellen tut nichts.
+    /// `true`, wenn Ecken gesetzt sind; dann bleibt das Modell (H-189h).
+    pub(crate) fn flaeche_zurueck(&mut self, redo: bool) -> bool {
+        if !self.platte.leiste.werkzeug.zeichnet() {
+            return false;
+        }
+        if !redo {
+            let strg = Modifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+            };
+            self.flaeche_taste(Key::Char('Z'), strg);
+        }
+        true
     }
 
     /// Entf: die gewählte Fläche löschen, beim Zeichnen nichts; `false`,
