@@ -443,3 +443,122 @@ fn ansatz_rundet_kaufmaennisch() {
     assert_eq!(m(2.5), "0,003");
     assert_eq!(m(0.4), "0,000");
 }
+
+/// Haus 10 × 8 m mit einem Raum und seinen Ausbautypen; dazu die
+/// Definitionen der Werksstütze und der Werkstreppe.
+fn haus_mit_raum() -> (Model, StoreyId, sk_model::ExtDef, sk_model::ExtDef) {
+    let mut m = Model::with_seed(5);
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let st = m.ground_of(Some(b)).unwrap();
+    let aw = m.type_by_guid(sk_model::EXTERIOR_TYPE_GUID).unwrap();
+    m.begin("Haus");
+    m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall)
+        .unwrap();
+    assert!(crate::abgleichen(&mut m, &[st]) > 0);
+    let r = crate::raeume(&m, st)[0].raum.unwrap();
+    assert!(crate::ausbau::typen_anlegen(&mut m, r));
+    let lies = |t: &str| sk_model::ExtDef::lesen(t).unwrap();
+    let stuetze = lies(include_str!("../../sk-szb/beispiele/werk.stuetze.szb"));
+    let treppe = lies(include_str!("../../sk-szb/beispiele/werk.treppe.szb"));
+    m.put_ext_def(stuetze.clone()).unwrap();
+    m.put_ext_def(treppe.clone()).unwrap();
+    assert!(m.commit().is_some());
+    (m, st, stuetze, treppe)
+}
+
+/// Stütze 40/40 (0,16 m², raumhoch) und Treppe mit 16 Steigungen
+/// (4,20 × 1,00 m) werden abgezogen (§ 3 Abs. 3 Nr. 1 und 2), die Stütze
+/// 24/24 (0,0576 m²) bleibt mit Hinweis (Review #195 B1).
+#[test]
+fn stuetzen_und_treppen_nach_woflv() {
+    let (mut m, st, stuetze, treppe) = haus_mit_raum();
+    let vorher = projekt(&m).raeume().next().unwrap().grund;
+    m.begin("Einbauten");
+    let mut gross = sk_model::ExtPart::new(&stuetze, [7000.0, 5000.0]);
+    gross.werte = vec![("b".into(), 400.0), ("d".into(), 400.0)];
+    m.add_ext(st, gross).unwrap();
+    m.add_ext(st, sk_model::ExtPart::new(&stuetze, [8000.0, 2000.0]))
+        .unwrap();
+    m.add_ext(st, sk_model::ExtPart::new(&treppe, [1000.0, 3000.0]))
+        .unwrap();
+    assert!(m.commit().is_some());
+    let w = projekt(&m);
+    let r = w.raeume().next().unwrap();
+    let abzug = texte(r, Art::Abzug);
+    assert_eq!(abzug.len(), 2, "{abzug:?}");
+    assert!(
+        abzug[0].ends_with("0,400 × 0,400 (§ 3 Abs. 3 Nr. 1)"),
+        "{abzug:?}"
+    );
+    assert!(
+        abzug[1].ends_with("4,200 × 1,000 (§ 3 Abs. 3 Nr. 2)"),
+        "{abzug:?}"
+    );
+    let hinweise = texte(r, Art::Hinweis);
+    assert!(
+        hinweise
+            .iter()
+            .any(|h| h.ends_with("0,058 m² bleibt in der Fläche (bis 0,1 m², § 3 Abs. 3 Nr. 1)")),
+        "{hinweise:?}"
+    );
+    assert_eq!(r.grund, vorher - 16 - 420);
+}
+
+/// Innenwand 17,5 cm bei x = 4,001 m: Die Teilflächen rechnen auf den
+/// Millimeter, die Grundfläche wie am Stempel genau; eine Zeile
+/// „Rundungsausgleich“ schließt die Lücke, so dass die Ansätze aufgehen
+/// (Review #195 B3).
+#[test]
+fn grundflaeche_wie_am_stempel() {
+    let mut m = Model::with_seed(5);
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let st = m.ground_of(Some(b)).unwrap();
+    let aw = m.type_by_guid(sk_model::EXTERIOR_TYPE_GUID).unwrap();
+    let iw = m.type_by_guid(sk_model::INTERIOR_TYPE_GUID).unwrap();
+    let t = m.wall_layers(aw).iter().map(|l| l.thickness).sum::<f64>();
+    m.begin("Haus");
+    m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall)
+        .unwrap();
+    m.add_wall_run(
+        &[vec3(4001.0, t, 0.0), vec3(4001.0, 8000.0 - t, 0.0)],
+        false,
+        RefSide::Center,
+        st,
+        iw,
+        Category::InteriorWall,
+    )
+    .unwrap();
+    assert!(crate::abgleichen(&mut m, &[st]) > 0);
+    let formen = crate::raeume(&m, st);
+    for f in &formen {
+        assert!(crate::ausbau::typen_anlegen(&mut m, f.raum.unwrap()));
+    }
+    assert!(m.commit().is_some());
+    let w = projekt(&m);
+    let mut ausgleich = 0;
+    for r in w.raeume() {
+        let f = formen.iter().find(|f| f.raum == r.raum).unwrap();
+        let stempel = crate::flaechen::grundflaeche_fertig(&m, f);
+        assert_eq!(r.grund, hundertstel(stempel), "{}", r.nummer);
+        let summe: f64 = r.teile.iter().map(|t| t.wert).sum();
+        assert!((summe - stempel).abs() < 1e-6, "{summe} {stempel}");
+        ausgleich += r
+            .teile
+            .iter()
+            .filter(|t| t.text.starts_with("Rundungsausgleich"))
+            .count();
+    }
+    assert!(ausgleich > 0, "halbe Millimeter an der Innenwand");
+}

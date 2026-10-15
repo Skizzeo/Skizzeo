@@ -198,17 +198,28 @@ pub(super) fn zeilen(w: &Wohnflaeche, u: &Umfang, offen: &HashSet<Key>) -> Vec<L
 }
 
 impl ListView {
-    /// Blatt Wohnfläche (statt der Mengenermittlung).
+    /// Blatt Wohnfläche (statt der Mengenermittlung), gerechnet.
+    #[cfg(test)]
     pub fn wohnflaeche(s: &mut Scene) -> ListView {
-        let mut v = ListView::leer(Grouping::Storey);
-        v.wohn = Some(Stand::default());
+        let mut v = ListView::wohnflaeche_leer();
         v.sync(s, false);
         v
     }
 
-    /// Die zuletzt gerechnete Wohnfläche (leer, solange nicht gerechnet).
+    /// Blatt Wohnfläche, noch nicht gerechnet: Das Mengenfenster rechnet
+    /// es erst, wenn seine Karte gewählt ist (Review #195 H-195f).
+    pub fn wohnflaeche_leer() -> ListView {
+        let mut v = ListView::leer(Grouping::Storey);
+        v.wohn = Some(Stand::default());
+        v
+    }
+
+    /// Die zuletzt gerechnete Wohnfläche; keine, solange nicht gerechnet.
     pub fn wohn_rechnung(&self) -> Option<Rc<Wohnflaeche>> {
-        self.wohn.as_ref().map(|w| w.rechnung.clone())
+        self.wohn
+            .as_ref()
+            .filter(|w| w.fuer.is_some())
+            .map(|w| w.rechnung.clone())
     }
 
     /// Wie [`ListView::sync`] für die Wohnfläche: Gerechnet wird einmal je

@@ -12,7 +12,9 @@
 //!   0,13 m tief sind (§ 3 Abs. 3 Nr. 4): von der fertigen Wandoberfläche bis
 //!   zum Fenster, zwischen den geputzten Laibungen.
 //! - Pfeiler, Schornsteine und Vormauerungen im Raum über 0,1 m² werden
-//!   abgezogen (§ 3 Abs. 3 Nr. 1), kleinere nicht.
+//!   abgezogen (§ 3 Abs. 3 Nr. 1), kleinere nicht; Stützen über 0,1 m² und
+//!   höher als 1,50 m und Treppen mit über drei Steigungen ebenso
+//!   ([`einbau`], § 3 Abs. 3 Nr. 1 und 2).
 //! - Faktor nach § 4: lichte Höhe ab 2 m voll, ab 1 m zur Hälfte, darunter
 //!   nicht, mal die Anrechnung der Raumvorlage (100, 50, 25 oder 0 %); ein
 //!   Faktor am Raum geht beiden vor.
@@ -20,16 +22,24 @@
 //!   Raumwerten.
 //!
 //! Die Maße der Teilflächen stehen auf den Millimeter, ihre Flächen rechnen
-//! mit genau diesen Maßen: Was das Blatt zeigt, rechnet sich nach.
+//! mit genau diesen Maßen: Was das Blatt zeigt, rechnet sich nach. Die
+//! Grundfläche selbst kommt aus der genauen Fläche des Fertigumrisses, wie
+//! am Stempel; weicht die Summe der Teilflächen davon ab, gleicht eine
+//! Zeile „Rundungsausgleich“ das aus (Review #195 B3).
 
 use crate::ausbau::{self, RaumAusbau};
-use crate::erkennung::{raeume as formen, Begrenzung, Kante, RaumForm};
+use crate::erkennung::{Begrenzung, Kante, RaumForm};
 use crate::flaechen::PUTZ;
 use crate::oeffnungen::{Geschosse, OpeningKind, Rohbau};
 use crate::Ketten;
 use sk_math::{vec3, Vec3};
 use sk_model::rechenweg::Art;
 use sk_model::{BuildingId, ElementId, LevelKind, Model, StoreyId};
+use std::collections::HashMap;
+
+#[path = "wohnflaeche_einbau.rs"]
+pub mod einbau;
+pub use einbau::Einbau;
 
 /// Bis zu dieser Tiefe (mm) zählt eine bodentiefe Fensternische nicht.
 pub const NISCHE: f64 = 130.0;
@@ -467,13 +477,22 @@ fn faktor(model: &Model, form: &RaumForm, lichte_hoehe: f64) -> Faktor {
     }
 }
 
-/// Wohnfläche eines Raums. `aus`: sein Ausbau ([`RaumAusbau::fuer`]); fehlen
-/// dem Projekt die Ausbautypen seiner Vorlage, gilt an jeder Wandseite ohne
-/// Bekleidung im Wandtyp der Innenputz der Vorgabe ([`PUTZ`]).
+/// Wohnfläche eines Raums ohne Stützen und Treppen; siehe [`raum_mit`].
 pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
+    raum_mit(model, roh, aus, &[])
+}
+
+/// Wohnfläche eines Raums. `aus`: sein Ausbau ([`RaumAusbau::fuer`]); hat er
+/// keinen Typ im Projekt ([`RaumAusbau::mit_typen`], wie die Grundfläche am
+/// Stempel), gilt an jeder Wandseite ohne Bekleidung im Wandtyp der
+/// Innenputz der Vorgabe ([`PUTZ`]). `einbauten`: Stützen und Treppen seines
+/// Geschosses ([`einbau::sammeln`]).
+pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &[Einbau]) -> WohnRaum {
     let form = &roh.form;
     let mut hinweise: Vec<String> = Vec::new();
-    let vorgabe = !ausbau::fehlende_typen(model, form).is_empty();
+    // Wie grundflaeche_fertig (Review #195 H-195d), ohne Gang über alle
+    // Geschosse (B2)
+    let vorgabe = !aus.mit_typen();
     let kanten: Vec<&Kante> = roh.kanten().collect();
     let (dicken, laibungen, (ffb, fd)) = if vorgabe {
         hinweise.push(format!(
@@ -502,9 +521,11 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
         )
     };
 
-    // Grundfläche an der fertigen Oberfläche
+    // Grundfläche an der fertigen Oberfläche; `genau` ohne die Rundung der
+    // Maße (B3)
     let mut roh_teile: Vec<(Roh, Art)> = Vec::new();
     let mut umriss: Vec<Vec<Vec3>> = Vec::new();
+    let mut genau = 0.0;
     let mut erste = 0;
     for (i, ring) in roh.ringe().enumerate() {
         let p: Vec<Vec3> = ring.iter().map(|k| k.a).collect();
@@ -519,6 +540,7 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
             continue;
         };
         if i == 0 {
+            genau += sk_math::polygon::area(&fertig);
             roh_teile.extend(zerlegen(&fertig).into_iter().map(|t| (t, Art::Basis)));
         } else {
             let name = nummer(model, wand(&ring[0]), "Pfeiler");
@@ -529,6 +551,7 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
                     qm3(a)
                 ));
             } else {
+                genau -= a;
                 for (text, wert, u) in zerlegen(&fertig) {
                     roh_teile.push(((format!("{name} {text}"), -wert, u), Art::Abzug));
                 }
@@ -568,6 +591,7 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
                 if b <= 0.0 {
                     continue;
                 }
+                genau += (bis - von) * (o.tiefe + dk);
                 let (u, n) = richtung(k.a, k.b);
                 let a = vec3(k.a.x, k.a.y, 0.0);
                 let at = |s: f64, q: f64| a + u * s + n * q;
@@ -589,6 +613,65 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
         }
     }
 
+    // Stützen und Treppen im Raum (B1)
+    if let Some(rand) = umriss.first().filter(|_| !einbauten.is_empty()) {
+        let dreiecke = einbau::dreiecke(rand);
+        for e in einbauten {
+            let f = einbau::im_raum(e, &dreiecke);
+            if f < 1.0 {
+                continue;
+            }
+            let name = nummer(model, e.id, if e.treppe { "Treppe" } else { "Stütze" });
+            let hoch = e.z.1.min(fd) - e.z.0.max(ffb);
+            let (abzug, grund) = if e.treppe {
+                match e.steigungen {
+                    Some(n) if n <= einbau::STEIGUNGEN => (
+                        false,
+                        format!("{name} mit {n} Steigungen bleibt in der Fläche (bis drei, § 3 Abs. 3 Nr. 2)"),
+                    ),
+                    _ => (true, String::new()),
+                }
+            } else if (f / 1e3).round() <= PFEILER / 1e3 {
+                (
+                    false,
+                    format!(
+                        "{name} {} bleibt in der Fläche (bis 0,1 m², § 3 Abs. 3 Nr. 1)",
+                        qm3(f)
+                    ),
+                )
+            } else if hoch <= einbau::STUETZE_HOCH + EPS {
+                (
+                    false,
+                    format!(
+                        "{name} {} m hoch bleibt in der Fläche (bis 1,50 m, § 3 Abs. 3 Nr. 1)",
+                        m(hoch.max(0.0))
+                    ),
+                )
+            } else {
+                (true, String::new())
+            };
+            if !abzug {
+                hinweise.push(grund);
+                continue;
+            }
+            genau -= f;
+            let regel = if e.treppe {
+                "§ 3 Abs. 3 Nr. 2"
+            } else {
+                "§ 3 Abs. 3 Nr. 1"
+            };
+            let (text, wert) = match einbau::rechteck(e, f) {
+                Some((a, b)) => {
+                    let (a, b) = (a.round(), b.round());
+                    (format!("{name} {} × {} ({regel})", m(a), m(b)), a * b)
+                }
+                None => (format!("{name} im Raum ({regel})"), (f / 1e3).round() * 1e3),
+            };
+            let u = e.stuecke.first().cloned().unwrap_or_default();
+            roh_teile.push(((text, -wert, u), Art::Abzug));
+        }
+    }
+
     let mut teile: Vec<Teil> = roh_teile
         .into_iter()
         .enumerate()
@@ -607,7 +690,31 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
         art: Art::Hinweis,
         umriss: Vec::new(),
     }));
-    let grund = hundertstel(teile.iter().map(|t| t.wert).sum());
+    // Rundungsausgleich: Die Teilflächen rechnen mit Maßen auf den
+    // Millimeter, die Grundfläche mit der genauen Fläche (B3)
+    let summe: f64 = teile.iter().map(|t| t.wert).sum();
+    let ausgleich = genau - summe;
+    if ausgleich.abs() >= 0.5 && !teile.is_empty() {
+        let pos = teile
+            .iter()
+            .position(|t| t.art == Art::Hinweis)
+            .unwrap_or(teile.len());
+        teile.insert(
+            pos,
+            Teil {
+                nr: None,
+                text: "Rundungsausgleich der Maße auf den Millimeter".into(),
+                wert: ausgleich,
+                art: if ausgleich > 0.0 {
+                    Art::Zuschlag
+                } else {
+                    Art::Abzug
+                },
+                umriss: Vec::new(),
+            },
+        );
+    }
+    let grund = hundertstel(genau);
     let faktor = faktor(model, form, (fd - ffb).max(0.0));
     let wohn = anrechnen(grund, faktor.prozent);
     let (nr, name) = form
@@ -641,9 +748,17 @@ fn richtung(a: Vec3, b: Vec3) -> (Vec3, Vec3) {
 
 // --- Projekt ----------------------------------------------------------------
 
-/// Wohnflächenberechnung des Projekts, Räume aus dem Modell.
+/// Wohnflächenberechnung des Projekts, Räume aus dem Modell: eine
+/// Erkennung für alle Geschosse, so wächst die Arbeit mit dem Modell, nicht
+/// mit Geschossen mal Zügen (Review #195 B2).
 pub fn projekt(model: &Model) -> Wohnflaeche {
-    projekt_mit(model, model, |st| formen(model, st))
+    let geschosse: Vec<StoreyId> = model.storeys().iter().map(|(id, _)| id).collect();
+    let mut je: HashMap<StoreyId, Vec<RaumForm>> = geschosse
+        .iter()
+        .copied()
+        .zip(crate::Erkennung::raeume_alle(model, &geschosse))
+        .collect();
+    projekt_mit(model, model, |st| je.remove(&st).unwrap_or_default())
 }
 
 /// Wie [`projekt`], die Wandzüge aus `k` und die Räume je Geschoss aus
@@ -652,11 +767,14 @@ pub fn projekt(model: &Model) -> Wohnflaeche {
 pub fn projekt_mit(
     model: &Model,
     k: &(impl Ketten + ?Sized),
-    raeume: impl Fn(StoreyId) -> Vec<RaumForm>,
+    mut raeume: impl FnMut(StoreyId) -> Vec<RaumForm>,
 ) -> Wohnflaeche {
     let mut gebaeude: Vec<Gebaeude> = Vec::new();
-    // Höhen der Geschosse einmal für alle Räume (Review #137 B2)
+    let mut gebaeude_nr: HashMap<Option<BuildingId>, usize> = HashMap::new();
+    // Höhen der Geschosse, Stützen und Treppen einmal für alle Räume
+    // (Review #137 B2, #195 B1, B2)
     let lagen = Geschosse::aus(model);
+    let einbauten = einbau::sammeln(model);
     let mut geschosse: Vec<(StoreyId, &sk_model::Storey)> = model
         .storeys()
         .iter()
@@ -676,7 +794,8 @@ pub fn projekt_mit(
             .filter_map(|f| {
                 let roh = Rohbau::mit_geschossen(model, k, f, &lagen);
                 let aus = RaumAusbau::fuer_in(model, &roh, &lagen)?;
-                Some(raum(model, &roh, &aus))
+                let ein = einbauten.get(&id).map_or(&[][..], Vec::as_slice);
+                Some(raum_mit(model, &roh, &aus, ein))
             })
             .collect();
         rs.sort_by(|a, b| a.nummer.cmp(&b.nummer));
@@ -685,16 +804,19 @@ pub fn projekt_mit(
             name: s.name.clone(),
             raeume: rs,
         };
-        match gebaeude.iter_mut().find(|x| x.id == s.building) {
-            Some(x) => x.geschosse.push(g),
-            None => gebaeude.push(Gebaeude {
-                id: s.building,
-                name: s
-                    .building
-                    .and_then(|b| model.building(b))
-                    .map_or_else(|| "Gebäude".into(), |b| b.name.clone()),
-                geschosse: vec![g],
-            }),
+        match gebaeude_nr.get(&s.building) {
+            Some(&i) => gebaeude[i].geschosse.push(g),
+            None => {
+                gebaeude_nr.insert(s.building, gebaeude.len());
+                gebaeude.push(Gebaeude {
+                    id: s.building,
+                    name: s
+                        .building
+                        .and_then(|b| model.building(b))
+                        .map_or_else(|| "Gebäude".into(), |b| b.name.clone()),
+                    geschosse: vec![g],
+                });
+            }
         }
     }
     Wohnflaeche { gebaeude }

@@ -381,9 +381,9 @@ impl QuantityWindow {
         self.sync_mit(s, p, None, animate);
     }
 
-    /// An Modell, Firmenkatalog und gemeinsamen Zustand angleichen. Beide
-    /// Blätter laufen mit, denn beide Karten zeigen ihre Zahl; den Umfang
-    /// gibt das gezeigte Blatt vor.
+    /// An Modell, Firmenkatalog und gemeinsamen Zustand angleichen. Mengen
+    /// und Kosten laufen mit, denn ihre Karten zeigen ihre Zahl; Wohnfläche
+    /// und AVA rechnen nur gezeigt. Den Umfang gibt das gezeigte Blatt vor.
     pub fn sync_mit(
         &mut self,
         s: &mut Scene,
@@ -395,7 +395,7 @@ impl QuantityWindow {
         let aktiv = self.karten.aktiv;
         let list = self.list.get_or_insert_with(|| ListView::grouped(s, g));
         list.set_modus(self.modus);
-        let wohn = self.wohn.get_or_insert_with(|| ListView::wohnflaeche(s));
+        let wohn = self.wohn.get_or_insert_with(ListView::wohnflaeche_leer);
         let kosten = self.kosten.get_or_insert_with(KostenView::new);
         let ava = self.ava.get_or_insert_with(AvaView::new);
         ava.blatt_wahl = self.blatt_wahl;
@@ -428,10 +428,11 @@ impl QuantityWindow {
         if list.sync(s, animate && aktiv == Blatt::Mengen) && aktiv == Blatt::Mengen {
             self.dirty = true;
         }
-        // Die Wohnfläche rechnet je Modellstand, wie die Mengen: Ihre Karte
-        // zeigt die Summe
+        // Die Wohnfläche rechnet je Modellstand, nur solange ihr Blatt
+        // gezeigt wird; die Karte behält ihre letzte Zahl wie die AVA
+        // (Review #195 H-195f)
         let auf_wohn = aktiv == Blatt::Wohnflaeche;
-        if wohn.sync(s, animate && auf_wohn) && auf_wohn {
+        if auf_wohn && wohn.sync(s, animate) {
             self.dirty = true;
         }
         if wohn.follow(s, p) && auf_wohn {
@@ -477,9 +478,10 @@ impl QuantityWindow {
         let netto = kosten.blatt().map_or_else(String::new, |b| {
             format!("{} netto", kosten_view::euro_ganz(b.netto))
         });
-        let wohn_zahl = wohn.wohn_rechnung().map_or_else(String::new, |w| {
-            crate::schedule_view::wohn_karte(&w, &wohn.leiste.umfang)
-        });
+        let wohn_zahl = wohn.wohn_rechnung().map_or_else(
+            || WOHN_VORHER.into(),
+            |w| crate::schedule_view::wohn_karte(&w, &wohn.leiste.umfang),
+        );
         let a = self.karten.set_zahl(Blatt::Mengen, mengen, now);
         let w = self.karten.set_zahl(Blatt::Wohnflaeche, wohn_zahl, now);
         let b = self.karten.set_zahl(Blatt::Kosten, netto, now);
@@ -1271,6 +1273,9 @@ impl QuantityWindow {
 
 /// Zweite Zeile der Karte AVA, bevor das LV einmal gerechnet ist.
 const AVA_VORHER: &str = "Leistungsverzeichnis je Los";
+
+/// Zweite Zeile der Karte Wohnfläche, bevor sie einmal gerechnet ist.
+const WOHN_VORHER: &str = "nach WoFlV je Raum";
 
 /// Lebende Zahl der Karte Mengen: „14 Bauteile · 3 Geschosse“ im Umfang
 /// (Geschosse mit Bauteilen, das Gründungsband zählt mit).
