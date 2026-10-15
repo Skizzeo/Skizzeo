@@ -36,7 +36,12 @@ fn paare(v: &[[f64; 2]]) -> String {
 
 pub(super) fn write(m: &Model, out: &mut String) {
     let p = m.project();
-    for f in &p.site_patches {
+    let mut roh = p.site_patches_raw.iter().peekable();
+    for (i, f) in p.site_patches.iter().enumerate() {
+        while let Some((_, r)) = roh.next_if(|(k, _)| *k <= i) {
+            out.push_str(r);
+            out.push('\n');
+        }
         let mut l = Line::new("tpatch").word("pts", &paare(&f.outline));
         match &f.height {
             PatchHeight::Flat(z) => l = l.num("z", z),
@@ -60,7 +65,7 @@ pub(super) fn write(m: &Model, out: &mut String) {
         }
         l.finish(out);
     }
-    for r in &p.site_patches_raw {
+    for (_, r) in roh {
         out.push_str(r);
         out.push('\n');
     }
@@ -173,7 +178,9 @@ pub(super) fn read_project<'r>(
                     "Zeile {}: [tpatch] {warum}, die Zeile bleibt unverändert stehen",
                     r.line
                 ));
-                project.site_patches_raw.push(roh(r));
+                project
+                    .site_patches_raw
+                    .push((project.site_patches.len(), roh(r)));
             }
         }
     }

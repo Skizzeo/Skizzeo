@@ -85,8 +85,10 @@ pub struct Project {
     /// Geländeflächen (Gelände G3b); ändern sich nur über
     /// [`Model::add_site_patch`] und die Geschwister.
     pub site_patches: Vec<TerrainPatch>,
-    /// `[tpatch]`-Zeilen, die nicht galten: bleiben roh stehen (Regel 72).
-    pub site_patches_raw: Vec<String>,
+    /// `[tpatch]`-Zeilen, die nicht galten: bleiben roh stehen (Regel 72),
+    /// je mit der Zahl der gültigen Flächen davor. So bleibt die
+    /// Reihenfolge der Datei und mit ihr die Zuordnung fremder Schlüssel.
+    pub site_patches_raw: Vec<(usize, String)>,
     /// Andeckung und Eigenboden-Faktor (Gelände G3b); ändern sich nur über
     /// [`Model::set_site_soil`].
     pub site_soil: SiteSoil,
