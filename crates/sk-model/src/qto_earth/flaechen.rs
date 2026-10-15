@@ -7,9 +7,10 @@
 //!
 //! Die Massenbilanz verteilt den Eigenboden in fester Reihenfolge (B4):
 //! Verfüllung aus der Baugrube (schon in G2), Geländeauftrag aus dem
-//! Geländeabtrag, Rest aus dem Überschuss der Baugrube, Rest Lieferung;
-//! was bleibt, fährt ab (Baugrube 311, Gelände 511). Der Faktor fest →
-//! eingebaut wirkt nur in der Bilanz. Oberboden hat eine eigene Bilanz.
+//! Geländeabtrag, Rest aus dem Überschuss der Baugruben (anteilig zum
+//! Überschuss jeder Baugrube, E2), Rest Lieferung; was bleibt, fährt ab
+//! (Baugrube 311, Gelände 511). Der Faktor fest → eingebaut wirkt nur in
+//! der Bilanz. Oberboden hat eine eigene Bilanz.
 //! Ohne Geländeflächen bleibt alles wie in G2, Zeile für Zeile.
 //!
 //! Die Zeilen der Flächen gehören zum Grundstück, nicht zu einem Haus
@@ -376,17 +377,17 @@ pub(crate) fn gelaende_mengen(
     let rest_gel = gel - eigen1 / f;
     let eigen2 = (auf - eigen1).min(ueberschuss / 1e9 * f).max(0.0);
     let liefer = (auf - eigen1 - eigen2).max(0.0);
-    // aus der Baugrube entnommen, in der Reihenfolge der Gründungen
-    let mut entnehmen = eigen2 / f * 1e9;
+    // aus den Baugruben entnommen, anteilig zu ihrem Überschuss (E2:
+    // neutral gegenüber den Häusern, nicht nach Plattennummer)
+    let entnehmen = eigen2 / f * 1e9;
     for i in 0..gr.len() {
-        if entnehmen <= 0.0 {
+        if entnehmen <= 0.0 || ueberschuss <= 0.0 {
             break;
         }
-        let x = entnehmen.min(abfuhr[i]);
+        let x = (entnehmen * abfuhr[i] / ueberschuss).min(abfuhr[i]);
         if x <= 0.0 {
             continue;
         }
-        entnehmen -= x;
         abfuhr[i] -= x;
         zusatz[i]
             .get_or_insert_with(String::new)
@@ -1033,6 +1034,53 @@ mod tests {
         assert!(nah(wert(&v, DISPOSAL), d - eigen / 0.9));
         let e = v.iter().find(|r| r.key == EMBANK_SUPPLY).unwrap();
         assert!(e.hinweis.contains("Faktor 0,90"), "{}", e.hinweis);
+    }
+
+    /// Zwei Häuser geben Boden in das Gelände anteilig zu ihrem Überschuss,
+    /// nicht das mit der kleineren Nummer alles (VOB-Prüfung G3, E2).
+    #[test]
+    fn einbau_anteilig_zum_ueberschuss() {
+        let mut m = haus();
+        m.begin("Haus 2");
+        let b = m.add_building(1);
+        let pts = [
+            sk_math::vec3(30000.0, 6000.0, 0.0),
+            sk_math::vec3(30000.0, 14000.0, 0.0),
+            sk_math::vec3(40000.0, 14000.0, 0.0),
+            sk_math::vec3(40000.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        m.commit();
+        let je_haus = |v: &[AutoMenge]| -> Vec<f64> {
+            let mut d: Vec<(String, f64)> = v
+                .iter()
+                .filter(|r| r.key == DISPOSAL)
+                .map(|r| (r.number.clone(), r.value / 1e9))
+                .collect();
+            d.sort_by(|a, b| a.0.cmp(&b.0));
+            d.into_iter().map(|x| x.1).collect()
+        };
+        let ohne = je_haus(&crate::qto::schedule(&m).auto);
+        assert_eq!(ohne.len(), 2);
+        let summe = ohne[0] + ohne[1];
+        // 0,50 m Auftrag auf 25 m², weniger als eine Baugrube abgibt
+        let v = mit(&m, &[flaeche(rechteck(30e3, 30e3, 35e3, 35e3), 900.0)]);
+        let auf = wert(&v, EMBANK);
+        assert!(nah(auf, 12.5), "{auf}");
+        assert!(auf < ohne[0]);
+        let mit_flaeche = je_haus(&v);
+        for (a, b) in ohne.iter().zip(&mit_flaeche) {
+            let anteil = auf * a / summe;
+            assert!(nah(a - b, anteil), "{ohne:?} {mit_flaeche:?}");
+            let teil = format!("− Einbau im Gelände {}", super::m3(anteil));
+            assert_eq!(
+                v.iter()
+                    .filter(|r| r.key == DISPOSAL && r.formula.contains(&teil))
+                    .count(),
+                1,
+                "{teil}"
+            );
+        }
     }
 
     /// Fläche am Haus im Arbeitsraum (B3): dort ist bis UK Platte
