@@ -354,6 +354,26 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Kann ein Klick die Platte wählen? Nur in 3D, wo sie gezeichnet ist: im
+/// Grundriss ist sie unsichtbar, ein Klick neben das Haus wählt dort ab
+/// (Review #212 B1). Die Platte gehört zur Grundausstattung, also auch
+/// ohne das Geländemodul; mit Höhenaufmaß steht dort das echte Gelände
+/// statt der Platte, ausgeblendet ist sie nicht zu treffen.
+fn platte_waehlbar(view: ViewKind, ausgeblendet: bool, m: &Model) -> bool {
+    view == ViewKind::Persp && !ausgeblendet && ruhen(m)
+}
+
+/// Trifft der Sehstrahl eine der Platten? `strahl(z)` ist sein
+/// Schnittpunkt mit der Ebene in Höhe `z` (OK Platte).
+fn platte_getroffen(
+    platten: &[sk_model::TerrainPlate],
+    strahl: impl Fn(f64) -> Option<sk_math::Vec3>,
+) -> bool {
+    platten
+        .iter()
+        .any(|p| strahl(p.top).is_some_and(|q| platte_bei(p, [q.x, q.y])))
+}
+
 /// Liegt `p` (mm, Draufsicht) auf der Platte `t`, in einem ihrer Trapeze?
 fn platte_bei(t: &sk_model::TerrainPlate, p: [f64; 2]) -> bool {
     t.pieces.iter().any(|q| innen(&q.map(|e| [e.x, e.y]), p))
@@ -755,8 +775,8 @@ impl App {
     }
 
     /// Klick ins Leere im Grundriss: die Fläche darunter wählen, daneben
-    /// eine gewählte abwählen (H-189f); trifft er keine Fläche, aber die
-    /// grüne Geländeplatte, wählt er die Platte ([`App::platte_klick`]).
+    /// eine gewählte abwählen (H-189f); in 3D wählt ein Klick auf die
+    /// grüne Geländeplatte die Platte ([`App::platte_klick`]).
     /// `true`, wenn der Klick einer Fläche oder der Platte galt.
     pub(crate) fn flaeche_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
         let frei = self.ui.frei.frei(crate::freischaltung::Modul::Gelaende);
@@ -774,25 +794,17 @@ impl App {
         true
     }
 
-    /// Klick ins Leere auf die grüne Geländeplatte im Grundriss oder in 3D
-    /// wählt sie wie ihre Zeile im Baum (Bedienbarkeit Durchgang 41: „nur
-    /// im Baum wählbar“). Die Platte gehört zur Grundausstattung, also
-    /// auch ohne das Geländemodul; mit Höhenaufmaß steht dort das echte
-    /// Gelände statt der Platte, ausgeblendet ist sie nicht zu treffen.
-    /// `true`, wenn der Klick die Platte traf.
+    /// Klick ins Leere auf die grüne Geländeplatte in 3D wählt sie wie
+    /// ihre Zeile im Baum (Bedienbarkeit Durchgang 41: „nur im Baum
+    /// wählbar“); wann das geht, sagt [`platte_waehlbar`]. `true`, wenn der
+    /// Klick die Platte traf.
     fn platte_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
         let m = self.scene.model();
-        if !matches!(self.ui.view, ViewKind::Plan | ViewKind::Persp)
-            || self.scene.terrain_hidden()
-            || !ruhen(m)
-        {
+        if !platte_waehlbar(self.ui.view, self.scene.terrain_hidden(), m) {
             return false;
         }
         let cam = &self.cam;
-        let traf = self.platte.im_bild(m).iter().any(|p| {
-            cam.plane_point(x, y, vw, vh, p.top)
-                .is_some_and(|q| platte_bei(p, [q.x, q.y]))
-        });
+        let traf = platte_getroffen(self.platte.im_bild(m), |z| cam.plane_point(x, y, vw, vh, z));
         if traf && !self.picking.plate {
             self.platte_waehlen();
         }
@@ -1196,6 +1208,64 @@ mod tests {
         assert!(!platte_bei(&t, [5000.0, 5000.0]), "Loch fürs Haus");
         assert!(!platte_bei(&t, [11000.0, 5000.0]), "daneben");
         assert!(!platte_bei(&t, [5000.0, -100.0]), "daneben");
+    }
+
+    /// Review #212 B1, H-212a: Die Platte wählt nur ein Klick in 3D; im
+    /// Grundriss ist sie unsichtbar, dort wählt ein Klick neben das Haus ab
+    /// (`flaeche_klick` gibt `false`, die App wählt nichts). Ausgeblendet
+    /// oder mit Höhenaufmaß nicht; das Modul fragt [`platte_waehlbar`]
+    /// nicht ab, die Platte gibt es in jeder Ausbaustufe.
+    #[test]
+    fn platte_nur_in_3d() {
+        let mut m = Model::with_seed(1);
+        for v in [
+            ViewKind::Plan,
+            ViewKind::Section,
+            ViewKind::Front,
+            ViewKind::Back,
+            ViewKind::Left,
+            ViewKind::Right,
+        ] {
+            assert!(!platte_waehlbar(v, false, &m), "{v:?}");
+        }
+        assert!(platte_waehlbar(ViewKind::Persp, false, &m));
+        assert!(!platte_waehlbar(ViewKind::Persp, true, &m), "ausgeblendet");
+        let mut text = String::new();
+        for i in 0..3 {
+            for j in 0..3 {
+                text.push_str(&format!("{} {} {} 10.0\n", i * 3 + j + 1, j * 5, i * 5));
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-15", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        assert!(!platte_waehlbar(ViewKind::Persp, false, &m), "mit Aufmaß");
+        // der Strahl auf OK Platte: im Ring getroffen, im Haus und daneben
+        // nicht
+        let t = sk_model::TerrainPlate {
+            buildings: Vec::new(),
+            top: -200.0,
+            bottom: -700.0,
+            pieces: vec![[
+                punkt(0.0, 0.0),
+                punkt(10000.0, 0.0),
+                punkt(10000.0, 2000.0),
+                punkt(0.0, 2000.0),
+            ]],
+            edges: Vec::new(),
+        };
+        let bei = |x: f64, y: f64| move |z: f64| Some(vec3(x, y, z));
+        assert!(platte_getroffen(
+            std::slice::from_ref(&t),
+            bei(5000.0, 1000.0)
+        ));
+        assert!(!platte_getroffen(
+            std::slice::from_ref(&t),
+            bei(5000.0, 3000.0)
+        ));
+        assert!(!platte_getroffen(std::slice::from_ref(&t), |_| None));
+        assert!(!platte_getroffen(&[], bei(5000.0, 1000.0)));
     }
 
     /// Paneel: Höhe und Böschung als Felder, solange sie für die ganze
