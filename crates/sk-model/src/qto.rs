@@ -2686,15 +2686,29 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             }
         }
     }
-    let name = |m: MaterialId| model.material(m).map_or(String::new(), |x| x.name.clone());
-    out.sort_by(|a, b| {
-        (group_rank(a.category), name(a.material))
-            .cmp(&(group_rank(b.category), name(b.material)))
+    // Namen einmal je Baustoff, sortiert wird eine Folge von Stellen: Der
+    // Vergleich legte je Aufruf zwei Namen an und die Sortierung schob
+    // ganze Zeilen (Review #197 B3); dieselbe stabile Reihenfolge
+    let mut namen: HashMap<MaterialId, &str> = HashMap::new();
+    for r in &out {
+        namen
+            .entry(r.material)
+            .or_insert_with(|| model.material(r.material).map_or("", |x| x.name.as_str()));
+    }
+    let mut folge: Vec<usize> = (0..out.len()).collect();
+    folge.sort_by(|&i, &j| {
+        let (a, b) = (&out[i], &out[j]);
+        (group_rank(a.category), namen[&a.material])
+            .cmp(&(group_rank(b.category), namen[&b.material]))
             .then(a.thickness.total_cmp(&b.thickness))
             .then(a.number.cmp(&b.number))
             .then(a.layer.cmp(&b.layer))
     });
-    out
+    let mut zeilen: Vec<Option<LayerRow>> = out.into_iter().map(Some).collect();
+    folge
+        .into_iter()
+        .map(|i| zeilen[i].take().expect("jede Stelle einmal"))
+        .collect()
 }
 
 /// Summen nach Gewerk in der Reihenfolge des Bauablaufs; Zeilen ohne Gewerk
