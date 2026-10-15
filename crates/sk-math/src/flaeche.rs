@@ -1572,9 +1572,6 @@ mod tests {
         assert!((p - vec3(2000.0, 1500.0, 0.0)).length() > 400.0);
     }
 
-    /// Viertelkreis 2,50 m um die Ecke unten links frei halten (Aufschlag
-    /// einer Tür): Die Stelle rückt auf der Diagonale nach oben rechts, bis
-    /// Bogen und Wände gleich weit weg sind.
     /// Ein Rechteck gibt seinen Schwerpunkt mit derselben Arbeit wie am
     /// Ursprung, auch fern davon, wo die Rundung am Schwerpunkt und in den
     /// Zellen verschieden ausfällt; vorher suchte es dort oft zweimal weiter
@@ -1603,6 +1600,9 @@ mod tests {
         }
     }
 
+    /// Viertelkreis 2,50 m um die Ecke unten links frei halten (Aufschlag
+    /// einer Tür): Die Stelle rückt auf der Diagonale nach oben rechts, bis
+    /// Bogen und Wände gleich weit weg sind.
     #[test]
     fn innenpunkt_mit_haelt_abstand() {
         let b = bereich(rechteck(0.0, 0.0, 4000.0, 4000.0), vec![]);
