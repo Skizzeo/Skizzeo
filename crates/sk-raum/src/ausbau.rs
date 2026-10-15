@@ -5,10 +5,11 @@
 //! Kante in Fußbodenhöhe, Putzdicke je Laibung, OK Fertigfußboden und UK
 //! Fertigdecke.
 
-use crate::erkennung::{Kante, RaumForm};
+use crate::erkennung::{Begrenzung, Kante, RaumForm, Seite};
 use crate::oeffnungen::{Geschosse, OpeningKind, Rohbau};
 use sk_model::model::{
-    DEFAULT_SPACE_GUID, SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID, SPACE_TEMPLATES,
+    AusbauAbweichung, AusbauStelle, AusbauWahl, WandSeite, DEFAULT_SPACE_GUID,
+    SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID, SPACE_TEMPLATES, TILES_DEFAULT,
 };
 use sk_model::{ElementId, Guid, LayerFunction, LayerSetId, LevelKind, Model, SpaceType, StoreyId};
 use std::borrow::Cow;
@@ -67,6 +68,21 @@ fn estrich_auf(sohle: bool) -> Guid {
     } else {
         SCREED_FLOOR_TYPE_GUID
     }
+}
+
+/// Wandseite einer Kante für die Abweichungen (RB6): Guid der Wand und Seite
+/// zur Zeichenrichtung; an der Stirn eines Wandendes keine.
+pub fn wand_seite(model: &Model, k: &Kante) -> Option<WandSeite> {
+    let Begrenzung::Wand { wand, seite, .. } = &k.quelle;
+    let links = match seite {
+        Seite::Links => true,
+        Seite::Rechts => false,
+        Seite::Anfang | Seite::Ende => return None,
+    };
+    Some(WandSeite {
+        wand: model.element(*wand)?.guid,
+        links,
+    })
 }
 
 /// Raumvorlage zur Guid: die des Projekts, sonst die des Werks.
@@ -164,11 +180,14 @@ impl RaumAusbau {
             || self.seiten.iter().any(SeitenAusbau::mit_typ)
     }
 
-    /// Ausbau nach der Raumvorlage `s`, jede Wandseite wie die Vorlage. Wo
-    /// der Wandtyp selbst Putz zum Raum hat, setzt das Raumbuch nur Anstrich
-    /// oder Tapete dazu, wo er auch die Beschichtung hat, nichts (§5.6); wo
-    /// Wandfliesen ab Boden liegen, keine Sockelleiste (§5.7). Typen, die das
-    /// Projekt nicht führt, bleiben leer.
+    /// Ausbau nach der Raumvorlage `s` mit den Abweichungen des Raums (RB6,
+    /// [`sk_model::model::Space::ausbau`]): an einer Wandseite gilt ihre
+    /// eigene Abweichung, sonst die für alle Wandseiten, sonst die Vorlage,
+    /// für Typ und Fliesenhöhe je für sich. Wo der Wandtyp
+    /// selbst Putz zum Raum hat, setzt das Raumbuch nur Anstrich oder Tapete
+    /// dazu, wo er auch die Beschichtung hat, nichts (§5.6); wo Wandfliesen
+    /// ab Boden liegen, keine Sockelleiste (§5.7). Typen, die das Projekt
+    /// nicht führt, bleiben leer.
     pub fn nach_vorlage(model: &Model, form: &Rohbau, s: &SpaceType) -> RaumAusbau {
         RaumAusbau::nach(model, form, s, || {
             estrich_vorgabe(model, form.form.geschoss)
@@ -184,39 +203,77 @@ impl RaumAusbau {
         vorgabe: impl FnOnce() -> Guid,
     ) -> RaumAusbau {
         let typ = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g));
+        let abw = abweichungen(model, &form.form);
         let estrich = s.screed.or_else(|| Some(vorgabe()));
         RaumAusbau {
-            boden: typ(s.floor),
-            estrich: typ(estrich),
-            decke: typ(s.ceiling),
-            seiten: seiten(model, s, form.kanten()),
+            boden: typ(wahl([bei(abw, AusbauStelle::Boden), None], s.floor)),
+            estrich: typ(wahl([bei(abw, AusbauStelle::Estrich), None], estrich)),
+            decke: typ(wahl([bei(abw, AusbauStelle::Decke), None], s.ceiling)),
+            seiten: seiten(model, s, abw, form.kanten()),
             aufbau: AUFBAU,
         }
     }
 }
 
-/// Ausbau der Wandseiten an den Kanten `kanten` nach der Vorlage `s`.
+/// Abweichungen des gespeicherten Raums der Form `f` (RB6), leer ohne Raum.
+fn abweichungen<'a>(model: &'a Model, f: &RaumForm) -> &'a [AusbauAbweichung] {
+    f.raum
+        .and_then(|id| model.space(id))
+        .map_or(&[], |r| r.ausbau.as_slice())
+}
+
+/// Abweichung an der Stelle `st`.
+fn bei(abw: &[AusbauAbweichung], st: AusbauStelle) -> Option<&AusbauAbweichung> {
+    abw.iter().find(|a| a.stelle == st)
+}
+
+/// Typ an einer Stelle: die erste Abweichung mit Typ (Wandseite, dann alle
+/// Wandseiten) gibt ihn oder keinen, sonst die Vorlage.
+fn wahl(kette: [Option<&AusbauAbweichung>; 2], vorlage: Option<Guid>) -> Option<Guid> {
+    match kette.into_iter().flatten().find_map(|a| a.wahl) {
+        Some(AusbauWahl::Keiner) => None,
+        Some(AusbauWahl::Typ(g)) => Some(g),
+        None => vorlage,
+    }
+}
+
+/// Ausbau der Wandseiten an den Kanten `kanten` nach der Vorlage `s` mit
+/// den Abweichungen `abw` des Raums.
 fn seiten<'a>(
     model: &Model,
     s: &SpaceType,
+    abw: &[AusbauAbweichung],
     kanten: impl Iterator<Item = &'a Kante>,
 ) -> Vec<SeitenAusbau> {
     let typ = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g));
-    let fliesen = s
-        .tiles
-        .and_then(|t| Some((model.type_by_guid(t.set)?, t.height)));
-    let seite = |k: &Kante| SeitenAusbau {
-        wand: if k.ausbau_typ.iter().any(|l| l.0 <= 0.0) {
-            None
-        } else {
-            typ(s.wall)
-        },
-        fliesen,
-        sockel: if fliesen.is_some() {
-            None
-        } else {
-            typ(s.skirting)
-        },
+    let seite = |k: &Kante| {
+        let ws = wand_seite(model, k);
+        let an = |st: fn(Option<WandSeite>) -> AusbauStelle| {
+            [ws.and_then(|w| bei(abw, st(Some(w)))), bei(abw, st(None))]
+        };
+        let f = an(AusbauStelle::Fliesen);
+        let fliesen = wahl(f, s.tiles.map(|t| t.set)).and_then(|g| {
+            let h = f
+                .into_iter()
+                .flatten()
+                .find_map(|a| a.hoehe)
+                .or(s.tiles.map(|t| t.height))
+                .unwrap_or(TILES_DEFAULT);
+            Some((model.type_by_guid(g)?, h))
+        });
+        SeitenAusbau {
+            wand: if k.ausbau_typ.iter().any(|l| l.0 <= 0.0) {
+                None
+            } else {
+                typ(wahl(an(AusbauStelle::Wand), s.wall))
+            },
+            fliesen,
+            sockel: if fliesen.is_some() {
+                None
+            } else {
+                typ(wahl(an(AusbauStelle::Sockel), s.skirting))
+            },
+        }
     };
     kanten.map(seite).collect()
 }
@@ -285,10 +342,11 @@ fn dicken_an<'a>(
 /// [`dicken`] nur aus der Form `f`, ohne Rohbau (Öffnungen, Höhen) und
 /// ohne Platten, für die Grundfläche des Grundrisses
 /// ([`crate::flaechen::grundflaeche_fertig`]). Liest außer der Form die
-/// Nutzung des gespeicherten Raums, ihre Raumvorlage (die des Projekts,
-/// sonst die des Werks; ohne Nutzung Wohnzimmer), deren Wandbekleidung
-/// und Wandfliesen aus den Typen des Projekts und an den Kanten den Ausbau
-/// der Wandtypen (`Kante::ausbau_typ`); ob der Raum Ausbau hat, dazu die
+/// Nutzung und die Abweichungen (RB6) des gespeicherten Raums, ihre
+/// Raumvorlage (die des Projekts, sonst die des Werks; ohne Nutzung
+/// Wohnzimmer), deren Wandbekleidung und Wandfliesen aus den Typen des
+/// Projekts und an den Kanten den Ausbau der Wandtypen
+/// (`Kante::ausbau_typ`); ob der Raum Ausbau hat, dazu die
 /// Typen von Boden, Decke und Estrich (ohne Estrich in der Vorlage der des
 /// Geschosses, nur wenn sonst keiner da ist). `None` bei einem Raum ohne
 /// Ausbau ([`RaumAusbau::mit_typen`]), wie ihn das Mengenblatt weglässt.
@@ -296,13 +354,17 @@ pub fn dicken_der_form(model: &Model, f: &RaumForm) -> Option<Vec<f64>> {
     let s = vorlage(model, nutzung(model, f)).or_else(|| vorlage(model, DEFAULT_SPACE_GUID))?;
     let im_projekt = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g)).is_some();
     let kanten = || std::iter::once(&f.umriss).chain(&f.loecher).flatten();
-    let seiten = seiten(model, &s, kanten());
-    let mit_typen = im_projekt(s.floor)
-        || im_projekt(s.ceiling)
+    let abw = abweichungen(model, f);
+    let seiten = seiten(model, &s, abw, kanten());
+    let mit_typen = im_projekt(wahl([bei(abw, AusbauStelle::Boden), None], s.floor))
+        || im_projekt(wahl([bei(abw, AusbauStelle::Decke), None], s.ceiling))
         || seiten.iter().any(SeitenAusbau::mit_typ)
-        || im_projekt(Some(
-            s.screed
-                .unwrap_or_else(|| estrich_vorgabe(model, f.geschoss)),
+        || im_projekt(wahl(
+            [bei(abw, AusbauStelle::Estrich), None],
+            Some(
+                s.screed
+                    .unwrap_or_else(|| estrich_vorgabe(model, f.geschoss)),
+            ),
         ));
     mit_typen.then(|| dicken_an(model, kanten(), &seiten))
 }
@@ -335,3 +397,7 @@ pub fn hoehen(model: &Model, form: &Rohbau, a: &RaumAusbau) -> (f64, f64) {
     let ok = form.z_boden + estrich.iter().sum::<f64>() + belag;
     (ok, form.z_decke - dicke(model, a.decke))
 }
+
+#[cfg(test)]
+#[path = "ausbau_tests.rs"]
+mod tests;

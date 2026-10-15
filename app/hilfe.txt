@@ -83,7 +83,8 @@ Kürzel im Feld | **Strg+A** wählt den Text, **Strg+Z** nimmt Getipptes zurück
 Verschieben | Stempel ziehen, Loslassen ist ein Schritt, **Esc** bricht ab; ein verschobener Stempel bleibt dort, sonst steht er in der Raummitte und rückt aus dem Aufschlag einer Tür
 Paneel | Stempel oder Raum im Baum wählen: Name, Grundfläche (fertig) wie am Stempel, Fläche und Umfang im Rohbau, die Wände um den Raum; darunter das Raumbuch: Nutzung, OK Fertigfußboden, lichte Höhe und je Fläche der Ausbautyp mit der Menge jeder Schicht
 Mengen | im Mengenblatt nach Geschoss steht der Raum mit jeder Fläche und Wandseite und ihrem Rechenweg, nach Gewerk stehen seine Schichten unter „… · Räume“
-Nutzung | ein Name, der eine Raumvorlage nennt („Bad“, „Bad OG“, „Küche 2“), wählt sie samt Belägen und Fliesen; sonst bleibt die Nutzung, ohne Wahl gilt Wohnzimmer; **Enter** ergänzt einen einzelnen Vorschlag der Liste, der mit dem Getippten beginnt („Kü“ wird Küche); sonst bleibt der Name, und der Vorschlag gilt als Nutzung („Flur“ mit Nutzung „Diele, Flur“)
+Nutzung | im Paneel listet „Nutzung …“ die Raumvorlagen aus Projekt und Werk, die Wahl bringt die Vorlage und ihre Ausbautypen ins Projekt; beim Benennen wählt ein Name, der eine Raumvorlage nennt („Bad“, „Bad OG“, „Küche 2“), wählt sie samt Belägen und Fliesen; sonst bleibt die Nutzung, ohne Wahl gilt Wohnzimmer; **Enter** ergänzt einen einzelnen Vorschlag der Liste, der mit dem Getippten beginnt („Kü“ wird Küche); sonst bleibt der Name, und der Vorschlag gilt als Nutzung („Flur“ mit Nutzung „Diele, Flur“)
+Abweichungen | im Paneel unter „Raumbuch“ Boden, Estrich und Decke, unter „Wandseiten“ Wand, Wandfliesen und Sockelleiste je Raum anders wählen: „wie Raumvorlage“, „ohne …“ oder ein Ausbautyp; erst die Wandseite wählen, sie geht vor „Alle Wandseiten“; „Höhe“ unter „Wandfliesen“ setzt die Fliesenhöhe, gerechnet höchstens bis zur lichten Höhe; „wie Raumvorlage“ bzw. „wie alle Wandseiten“ nimmt Typ und Höhe zurück; jede Wahl ist ein Rückgängig-Schritt
 Ausbau zeigen | Zahnrad der Ansicht › „Ausbau innen“: Putz, Wandbeläge, Bodenbelag und Sockelleisten in Grundriss, Schnitt und 3D; ab Werk aus, den Estrich zeigt der Schnitt immer
 Entfernen | ein Raum lässt sich nicht löschen, er folgt den Wänden: eine Wand löschen oder so verschieben, dass er mit dem Nachbarraum eins wird; eine Tür oder ein Fenster trennt keine Räume
 
@@ -406,7 +407,7 @@ Platte | ohne Aufmaß liegt unter dem Haus eine ebene grüne Geländeplatte; im 
 Modul | echtes Gelände aus Lageplan und Höhenaufmaß gibt es mit dem Geländemodul (Dateimenü › „Ausbaustufe …“)
 Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen. Geht sie zu, liest Skizzeo fertig und behält den Lageplan
 Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss
-Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien. Deckt es eine Baugrube nicht, steht das rot unter der Höhenlage. „Aufmaß entfernen“ führt zurück zur Platte
+Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien. Deckt es die Baugrube eines Hauses nicht, steht das rot unter der Höhenlage. „Aufmaß entfernen“ führt zurück zur Platte; Geländeflächen ruhen dann, Lage, Nordrichtung und Höhe von ±0,00 bleiben
 Lage | das Gelände bewegt sich, das Haus bleibt: „Verschieben“ und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“
 Höhenlage | „über Gelände“: ±0,00 um den Versatz über dem höchsten Geländepunkt am Plattenrand; „absolut“: ±0,00 fest in m ü. NHN
 Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken, die erste Ecke oder **Enter** schließt, **Rücktaste** oder **Strg+Z** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, das Paneel ändert Höhe, Böschung und „befestigt“, für alle Flächen „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten); **Entf** löscht sie
@@ -436,7 +437,7 @@ Fläche zeichnen | Terrasse, Garten oder Hof als Geländefläche: Ecken im Grund
 Fläche befestigt | Die gewählte Geländefläche ist befestigt (Pflaster, Platten) oder nicht (Rasen, Beet).
 Fläche löschen | Die gewählte Geländefläche entfernen; das Gelände ist dort wieder wie aufgemessen.
 Alle Hinweise | Zeigt alle Hinweise des letzten Einlesens; ein zweiter Klick wieder nur die ersten drei.
-Aufmaß entfernen | Höhenaufmaß, Lageplan und Grundstück entfernen; das Haus steht wieder auf der ebenen Platte. Strg+Z holt alles zurück.
+Aufmaß entfernen | Höhenaufmaß, Lageplan und Grundstück entfernen; das Haus steht wieder auf der ebenen Platte, Geländeflächen ruhen, Lage, Nordrichtung und Höhe von ±0,00 bleiben. Strg+Z holt alles zurück.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.

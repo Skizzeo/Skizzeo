@@ -52,6 +52,15 @@ const SPUR_HOCH: f64 = 1500.0;
 /// breiten Öffnungen bis zur halben Breite.
 pub(super) const NAH: f64 = 500.0;
 
+/// Weiter als bis hier (mm) reicht der Spielraum `r_min` von [`sichtbar`]
+/// nicht: Steht das Kettensymbol mehr als 5 m neben der Öffnung, ist eine
+/// Tür nur noch etwa zehn Bildpunkte breit und ihr Ende nicht mehr zu
+/// fassen. Dann zeigt der Grundriss keine Breitengriffe, statt alle
+/// Öffnungen im weiten Umkreis abzufragen und ihre Griffe zu zeichnen
+/// (Review #149 H2: herausgezoomt über einer Siedlung 1824 Griffe, 40 ms je
+/// Mausbewegung).
+pub(super) const WEIT: f64 = 5000.0;
+
 fn flat(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
 }
@@ -146,8 +155,12 @@ fn zeichenpunkt(f: &OuterFace, p: Vec3, dicke: f64, innen: bool) -> Vec3 {
 
 /// Griffe der Öffnungen des aktiven Geschosses bei der Maus (Punkt `p` im
 /// Grundriss); `r_min` (mm) hält sie auch weit herausgezoomt nah genug,
-/// dass die Maus das Kettensymbol daneben erreicht.
+/// dass die Maus das Kettensymbol daneben erreicht, bis [`WEIT`]; darüber
+/// keine.
 pub fn sichtbar(scene: &Scene, p: Vec3, r_min: f64) -> Vec<Griff> {
+    if r_min > WEIT {
+        return Vec::new();
+    }
     // Das Raster der Griffe reicht so weit wie die Türgriffe, also weiter
     // als [`NAH`] und die halbe Breite; `r_min` gibt die Abfrage dazu
     let mut ids: Vec<ElementId> = scene
@@ -875,6 +888,18 @@ mod tests {
         assert_eq!(lage(950.0, 0.0, 1.0, true), 950.0);
     }
 
+    /// Review #149 H2: Bis [`WEIT`] reicht `r_min` die Griffe der Tür
+    /// weiter, darüber (weit herausgezoomt) gibt es keine Breitengriffe.
+    #[test]
+    fn weit_herausgezoomt_keine_griffe() {
+        let (s, tuer, _) = haus();
+        let p = vec3(5100.0, 3000.0 + 2000.0, 0.0);
+        assert!(sichtbar(&s, p, 0.0).is_empty(), "2 m neben der Tür");
+        let g = sichtbar(&s, p, WEIT);
+        assert_eq!(g.iter().filter(|x| x.0 == tuer).count(), 2);
+        assert!(sichtbar(&s, p, WEIT + 1.0).is_empty());
+    }
+
     /// Griffe erscheinen nur bei der Maus: an der Innentür in der
     /// Wandmitte, am Fenster auf der Außenfläche.
     #[test]
@@ -911,7 +936,7 @@ mod tests {
             for x in (-3000..=13000).step_by(250) {
                 for y in (-3000..=11000).step_by(250) {
                     let p = vec3(x as f64, y as f64, 0.0);
-                    for r_min in [0.0, 1500.0, 30000.0] {
+                    for r_min in [0.0, 1500.0, WEIT] {
                         let g = sichtbar(s, p, r_min);
                         assert_eq!(g, griffe_von(s, p, r_min, alle.clone()), "{p:?} {r_min}");
                         gesehen += g.len();

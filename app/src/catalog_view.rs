@@ -2171,7 +2171,9 @@ impl Catalog {
     fn can_delete(&self) -> bool {
         self.draft_new
             || self.sel.is_some_and(|id| {
-                !self.work.is_default_type(id) && self.work.type_users(id).is_empty()
+                !self.work.is_default_type(id)
+                    && self.work.type_users(id).is_empty()
+                    && !self.in_raeumen(id)
             })
     }
 
@@ -2313,8 +2315,17 @@ impl Catalog {
     fn category_locked(&self) -> bool {
         !self.draft_new
             && self.sel.is_some_and(|id| {
-                self.work.is_default_type(id) || !self.work.type_users(id).is_empty()
+                self.work.is_default_type(id)
+                    || !self.work.type_users(id).is_empty()
+                    || self.in_raeumen(id)
             })
+    }
+
+    /// Nennt eine Raumvorlage oder eine Abweichung eines Raums den Typ?
+    /// Dann weder löschen noch die Art umstellen, wie im Modell (Review
+    /// #190 B2).
+    fn in_raeumen(&self, id: LayerSetId) -> bool {
+        self.work.type_in_space_type(id) || self.work.type_in_space_finish(id)
     }
 
     fn choose(&mut self, i: usize, cx: &Ctx) {
@@ -2865,12 +2876,14 @@ impl Catalog {
                 let n = self.work.type_users(id).len();
                 Some(if n > 0 {
                     format!("Verbaut in {n} Wänden, Löschen erst ohne Verwendung")
+                } else if self.in_raeumen(id) {
+                    "In Raumvorlage oder Raum gewählt, Löschen erst ohne Verwendung".into()
                 } else {
                     "Standardtyp, erst einen anderen zum Standard machen".into()
                 })
             }
             Target::Combo(ComboId::Category) if self.category_locked() => {
-                Some("Art gesperrt: Typ ist verbaut oder Standard".into())
+                Some("Art gesperrt: Typ ist verbaut, in Räumen gewählt oder Standard".into())
             }
             Target::Btn(Btn::Action) if self.tab == Tab::Project && self.company.is_none() => {
                 Some("Ohne Einstellungen gibt es keinen Firmenkatalog".into())

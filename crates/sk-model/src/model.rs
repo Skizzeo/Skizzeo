@@ -85,14 +85,19 @@ pub struct Project {
     /// Geländeflächen (Gelände G3b); ändern sich nur über
     /// [`Model::add_site_patch`] und die Geschwister.
     pub site_patches: Vec<TerrainPatch>,
-    /// `[tpatch]`-Zeilen, die nicht galten: bleiben roh stehen (Regel 72).
-    pub site_patches_raw: Vec<String>,
+    /// `[tpatch]`-Zeilen, die nicht galten: bleiben roh stehen (Regel 72),
+    /// je mit der Zahl der gültigen Flächen davor. So bleibt die
+    /// Reihenfolge der Datei und mit ihr die Zuordnung fremder Schlüssel.
+    pub site_patches_raw: Vec<(usize, String)>,
     /// Andeckung und Eigenboden-Faktor (Gelände G3b); ändern sich nur über
     /// [`Model::set_site_soil`].
     pub site_soil: SiteSoil,
     /// `[sitesoil]`, deren Werte nicht galten: bleibt bytegleich, bis neue
     /// Werte sie ersetzen (Regel 72).
     pub site_soil_raw: Option<String>,
+    /// Jedes weitere `[sitesoil]` nach dem ersten: gilt nicht, bleibt roh
+    /// hinter ihm stehen (Regel 72, 116, wie `[terrain]` in #178).
+    pub site_soil_doppelt: Vec<String>,
 }
 
 impl Project {
@@ -121,6 +126,7 @@ impl Project {
             site_patches_raw: Vec::new(),
             site_soil: SiteSoil::default(),
             site_soil_raw: None,
+            site_soil_doppelt: Vec::new(),
         }
     }
 
@@ -244,6 +250,8 @@ pub struct Model {
     /// `view_below`, dazu unlesbare Zeilen roh.
     view_finish: [(bool, bool); 3],
     view_finish_raw: Vec<String>,
+    /// Zeilen `[spacefinish]`, die nicht zählen (RB6, roh).
+    space_finish_raw: Vec<raum_ausbau::RohZeile>,
     /// Eigene Schnitthöhe des Grundrisses ([`crate::hoehen`]), dazu eine
     /// unlesbare Zeile roh.
     pub(crate) plan_cut: Option<f64>,
@@ -479,6 +487,10 @@ pub use ecke::{EckeFehler, ZugPunkte};
 mod raum;
 pub(crate) use raum::RawSpace;
 pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
+#[path = "raum_ausbau.rs"]
+mod raum_ausbau;
+pub(crate) use raum_ausbau::RohZeile;
+pub use raum_ausbau::{ausbau_befund, AusbauAbweichung, AusbauStelle, AusbauWahl, WandSeite};
 
 impl Default for Model {
     fn default() -> Model {
@@ -852,6 +864,7 @@ impl Model {
             view_hide: Default::default(),
             view_finish: [(false, false); 3],
             view_finish_raw: Vec::new(),
+            space_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -947,6 +960,7 @@ impl Model {
             view_hide: Default::default(),
             view_finish: [(false, false); 3],
             view_finish_raw: Vec::new(),
+            space_finish_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
             opening_raw: Vec::new(),
@@ -1017,6 +1031,7 @@ impl Model {
             site_patches_raw: self.project.site_patches_raw.clone(),
             site_soil: self.project.site_soil,
             site_soil_raw: self.project.site_soil_raw.clone(),
+            site_soil_doppelt: self.project.site_soil_doppelt.clone(),
             ..p
         };
         match self.txn.as_mut() {
@@ -1066,6 +1081,7 @@ impl Model {
             site_patches_raw: self.project.site_patches_raw.clone(),
             site_soil: self.project.site_soil,
             site_soil_raw: self.project.site_soil_raw.clone(),
+            site_soil_doppelt: self.project.site_soil_doppelt.clone(),
             ..p
         };
         self.touch();
@@ -1823,7 +1839,8 @@ impl Model {
         let category_locked = s.category != old.category
             && (self.is_default_type(id)
                 || !self.type_users(id).is_empty()
-                || self.type_in_space_type(id));
+                || self.type_in_space_type(id)
+                || self.type_in_space_finish(id));
         if s.guid != old.guid
             || code_taken
             || category_locked
@@ -1942,7 +1959,10 @@ impl Model {
         if users > 0 {
             return Err(users);
         }
-        if self.is_default_type(id) || !self.layer_sets.contains(id) || self.type_in_space_type(id)
+        if self.is_default_type(id)
+            || !self.layer_sets.contains(id)
+            || self.type_in_space_type(id)
+            || self.type_in_space_finish(id)
         {
             return Err(0);
         }
@@ -2853,7 +2873,13 @@ impl Model {
                     }
                     segments.push(e);
                 }
-                (None, Some(t)) => segments.push(self.new_wall(id, k, t)),
+                (None, Some(t)) => {
+                    let neu = self.new_wall(id, k, t);
+                    if let Some(g) = self.elements.get(neu).map(|e| e.guid) {
+                        self.ausbau_wand_geteilt(t.guid, g);
+                    }
+                    segments.push(neu);
+                }
                 (None, None) => return false,
             }
         }

@@ -1097,7 +1097,7 @@ impl App {
         if self.platte.unterlage.ordner(ordner) {
             self.platte.mit_plan = true;
         }
-        let gelesen = self.lageplan_abholen() | self.hoehen_abholen();
+        let gelesen = self.lageplan_abholen() | self.hoehen_abholen() | self.baugruben_pruefen();
         let sicht = self.platte_sicht();
         let neu = self.platte.nachziehen(self.scene.model(), sicht);
         self.unterlage_stand();
@@ -1111,6 +1111,7 @@ impl App {
         self.quantity_busy
             || !self.bond_wait.is_empty()
             || self.platte.rechnet()
+            || self.baugruben_rechnen()
             || self.scene.zieht_nach()
     }
 

@@ -17,6 +17,7 @@
 use crate::abgleich::{stempel_in, zuteilen, Stand, StandGruppe};
 use crate::erkennung::{formen_aus, rohbau, Kante, RaumForm, Teil, TOL};
 use sk_math::Vec3;
+use sk_model::model::AusbauWahl;
 use sk_model::{ElementId, ElementKind, Model, RunId, Space, StoreyId, WallChain};
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
@@ -428,6 +429,10 @@ struct Zuteilung {
     lauf: u64,
 }
 
+/// So viele verschobene Anker merkt sich ein Geschoss bis zum nächsten
+/// Zuteilen; mehr, und alle Gruppen sehen ihre Räume neu an.
+const VERSCHOBEN_MAX: usize = 256;
+
 /// Was die Erkennung je Geschoss behält.
 #[derive(Default)]
 struct Geschoss {
@@ -435,6 +440,13 @@ struct Geschoss {
     raumliste: Option<Raumliste>,
     /// [`ausbau_kennung`] beim letzten Zuteilen.
     ausbau: Option<u64>,
+    /// Seit dem letzten Zuteilen neu gesammelt: alle Gruppen sehen ihre
+    /// Räume neu an.
+    alle: bool,
+    /// Anker der seit dem letzten Zuteilen neu eingereihten Räume, davor und
+    /// danach: Gruppen, in deren Kasten einer liegt, sehen ihre Räume neu an.
+    /// Höchstens [`VERSCHOBEN_MAX`], darüber `alle`.
+    verschoben: Vec<Vec3>,
     /// Nach dem Schlüssel der Gruppe.
     zuteilungen: NachSchluessel<Zuteilung>,
 }
@@ -451,17 +463,35 @@ fn raeume_kennung(schluessel: u64, ausbau: u64, raeume: &[(ElementId, &Space)]) 
         [s.anker.x, s.anker.y].map(f64::to_bits).hash(&mut h);
         s.stempel.map(|p| [p.x, p.y].map(f64::to_bits)).hash(&mut h);
         s.nutzung.hash(&mut h);
+        // Abweichungen des Raumbuchs (RB6), je Stelle eine und geordnet
+        s.ausbau.len().hash(&mut h);
+        for a in &s.ausbau {
+            a.stelle.hash(&mut h);
+            a.wahl
+                .map(|w| match w {
+                    AusbauWahl::Keiner => None,
+                    AusbauWahl::Typ(g) => Some(g),
+                })
+                .hash(&mut h);
+            a.hoehe.map(f64::to_bits).hash(&mut h);
+        }
     }
     h.finish()
 }
 
 /// Fingerabdruck dessen, was die Grundfläche im Fertigmaß
 /// ([`crate::flaechen::grundflaeche_fertig`]) außer Form und Nutzung liest:
-/// die Raumvorlagen des Projekts und die Typen mit ihren Schichtdicken.
-/// Ändert er sich, sehen alle Gruppen ihre Räume neu an (Bedienbarkeit
-/// 43.8). Ein Gang über Vorlagen und Typen, nicht über die Bauteile.
-fn ausbau_kennung(m: &Model) -> u64 {
+/// die Raumvorlagen des Projekts, die Typen mit ihren Schichtdicken und der
+/// Estrich der Vorgabe des Geschosses `g` (auf der Sohle oder nicht,
+/// [`crate::ausbau::estrich_vorgabe`], Review H-188a). Ändert er sich, sehen
+/// alle Gruppen des Geschosses ihre Räume neu an (Bedienbarkeit 43.8). Ein
+/// Gang über Vorlagen, Typen und Geschosse, nicht über die Bauteile; nur das
+/// eigene Geschoss, sonst wüchse jedes Bild mit dem Quadrat der Geschosse
+/// (Review #193 B1). Höhen gehen nur über den Estrich ein, Ziehen eines
+/// Geschosses ändert ihn nicht.
+fn ausbau_kennung(m: &Model, g: StoreyId) -> u64 {
     let mut h = DefaultHasher::new();
+    crate::ausbau::estrich_vorgabe(m, g).hash(&mut h);
     for v in m.space_types() {
         v.guid.hash(&mut h);
         [v.floor, v.screed, v.wall, v.ceiling, v.skirting].hash(&mut h);
@@ -894,6 +924,85 @@ impl Erkennung {
         st
     }
 
+    /// Räume des Geschosses `g` mit ihrem Anker, ältere zuerst wie
+    /// [`crate::abgleich::raeume_im`], aus der nachgeführten Liste: auch im
+    /// offenen Schritt nur die geänderten Räume neu eingereiht, nicht über
+    /// alle Bauteile (Review H-181c, für [`crate::abgleichen_lage_mit`]).
+    pub fn raumliste(&mut self, m: &Model, g: StoreyId) -> &[(ElementId, Vec3)] {
+        self.liste_nachfuehren(m, g, true);
+        self.geschosse
+            .get(&g)
+            .and_then(|gs| gs.raumliste.as_ref())
+            .map_or(&[][..], |l| &l.raeume[..])
+    }
+
+    /// Führt die Liste der Räume von `g` auf den Stand des Modells. Solange
+    /// sich die Räume nicht ändern ([`Model::raum_revision`], bei Schritten
+    /// nur an Wänden gleich, Review H-137b), bleibt sie. Kennt das Modell
+    /// die Räume, die Schritte seit der Liste geändert haben, werden nur
+    /// diese neu eingereiht, dazu die des offenen Schritts von damals und
+    /// von jetzt (Review H-175h); ihre Anker davor und danach sammelt
+    /// `verschoben` für das nächste Zuteilen. Sonst wird neu gesammelt
+    /// (dann `alle`), ohne `sammeln` fällt die Liste nur weg.
+    fn liste_nachfuehren(&mut self, m: &Model, g: StoreyId, sammeln: bool) {
+        let stand = m.raum_revision();
+        // Räume, die der offene Schritt auf diesem Geschoss ändert
+        let mut schritt = if m.raum_geschosse_im_schritt().contains(&g) {
+            m.raeume_im_schritt()
+        } else {
+            Vec::new()
+        };
+        let gs = self.geschosse.entry(g).or_default();
+        let gilt = schritt.is_empty()
+            && gs
+                .raumliste
+                .as_ref()
+                .is_some_and(|l| l.stand == stand && l.offen.is_empty());
+        if gilt {
+            return;
+        }
+        if let Some(l) = gs.raumliste.as_mut() {
+            if let Some(mut ids) = m.raeume_geaendert_seit(l.stand) {
+                ids.extend_from_slice(&l.offen);
+                ids.extend_from_slice(&schritt);
+                if let Some(p) = l.flicken(m, g, &ids) {
+                    gs.verschoben.extend(p);
+                    // Ohne Zuteilen dazwischen (Abgleich in einem anderen als
+                    // dem gezeigten Geschoss) wächst sie nicht ohne Grenze:
+                    // dann sehen alle Gruppen neu an (Review H-193b)
+                    if gs.verschoben.len() > VERSCHOBEN_MAX {
+                        gs.verschoben.clear();
+                        gs.alle = true;
+                    }
+                    l.stand = stand;
+                    l.offen = schritt;
+                    return;
+                }
+            }
+        }
+        gs.raumliste = None;
+        if !sammeln {
+            return;
+        }
+        self.raumlisten += 1;
+        let mut raeume: Vec<(&str, ElementId, Vec3)> = Vec::new();
+        for (id, e) in m.elements().iter() {
+            if let ElementKind::Space(s) = &e.kind {
+                if e.storey == g {
+                    raeume.push((e.number.as_str(), id, s.anker));
+                }
+            }
+        }
+        raeume.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
+        gs.raumliste = Some(Raumliste {
+            stand,
+            offen: std::mem::take(&mut schritt),
+            raeume: raeume.iter().map(|&(_, id, a)| (id, a)).collect(),
+        });
+        gs.alle = true;
+        gs.verschoben.clear();
+    }
+
     /// Lage des Geschosses; je Hausgruppe stehen danach die geltenden Räume
     /// ihrer Flächen samt Formen im Speicher. Die Räume einer Gruppe sind
     /// die, deren Anker in ihrem Kasten liegt; die Ankerregel
@@ -906,68 +1015,19 @@ impl Erkennung {
     fn zuteilung(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Lage {
         let lage = self.lage(m, k, g);
         let lauf = self.lauf;
-        let stand = m.raum_revision();
-        let ausbau = ausbau_kennung(m);
-        // Räume, die der offene Schritt auf diesem Geschoss ändert: Die
-        // Liste wird mit ihnen nachgeführt, im Schritt nicht je Bild neu
-        // gesammelt (Review H-175h)
-        let mut schritt = if m.raum_geschosse_im_schritt().contains(&g) {
-            m.raeume_im_schritt()
-        } else {
-            Vec::new()
-        };
+        let ausbau = ausbau_kennung(m, g);
+        // Ohne Gruppe gibt es nichts zuzuteilen: dann wird nicht gesammelt
+        self.liste_nachfuehren(m, g, !lage.gruppen.is_empty());
         let gs = self.geschosse.entry(g).or_default();
-        let mut gilt = schritt.is_empty()
-            && gs
-                .raumliste
-                .as_ref()
-                .is_some_and(|l| l.stand == stand && l.offen.is_empty());
-        // Kennt das Modell die Räume, die Schritte seit der Liste geändert
-        // haben, werden nur diese neu eingereiht, dazu die des offenen
-        // Schritts von damals und von jetzt; Gruppen, in deren Kasten einer
-        // davon lag oder jetzt liegt, sehen ihre Räume neu an (Review
-        // H-137b)
-        let mut verschoben = Vec::new();
-        if let (false, Some(l)) = (gilt, gs.raumliste.as_mut()) {
-            if let Some(mut ids) = m.raeume_geaendert_seit(l.stand) {
-                ids.extend_from_slice(&l.offen);
-                ids.extend_from_slice(&schritt);
-                if let Some(p) = l.flicken(m, g, &ids) {
-                    verschoben = p;
-                    l.stand = stand;
-                    l.offen = std::mem::take(&mut schritt);
-                    gilt = true;
-                }
-            }
-        }
+        let verschoben = std::mem::take(&mut gs.verschoben);
         // Welche Gruppen ihre Räume neu ansehen: nach dem Neusammeln alle,
         // sonst die neuen und die mit einem geänderten Raum im Kasten
         let kaesten: Vec<Kasten> = lage.gruppen.iter().map(|gr| gr.kasten).collect();
         let mut raster = None;
         let mut je: Vec<Option<Vec<(ElementId, &Space)>>> = vec![None; lage.gruppen.len()];
-        if !gilt && lage.gruppen.is_empty() {
-            // Ohne Gruppe gibt es nichts zuzuteilen
-            gs.raumliste = None;
-        } else if !gilt {
-            self.raumlisten += 1;
-            let mut raeume: Vec<(&str, ElementId, Vec3)> = Vec::new();
-            for (id, e) in m.elements().iter() {
-                if let ElementKind::Space(s) = &e.kind {
-                    if e.storey == g {
-                        raeume.push((e.number.as_str(), id, s.anker));
-                    }
-                }
-            }
-            raeume.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
-            gs.raumliste = Some(Raumliste {
-                stand,
-                offen: schritt,
-                raeume: raeume.iter().map(|&(_, id, a)| (id, a)).collect(),
-            });
-            je.iter_mut().for_each(|x| *x = Some(Vec::new()));
-        } else if gs.ausbau != Some(ausbau) {
-            // Vorlagen oder Typen geändert: Die Grundfläche jeder Gruppe kann
-            // sich ändern (Bedienbarkeit 43.8)
+        if std::mem::take(&mut gs.alle) || gs.ausbau != Some(ausbau) {
+            // Neu gesammelt, oder Vorlagen oder Typen geändert: Die Grundfläche
+            // jeder Gruppe kann sich ändern (Bedienbarkeit 43.8)
             je.iter_mut().for_each(|x| *x = Some(Vec::new()));
         } else {
             for (gr, x) in lage.gruppen.iter().zip(&mut je) {
@@ -1269,6 +1329,112 @@ mod tests {
     use super::*;
     use sk_math::vec3;
     use sk_model::{Category, RefSide};
+
+    /// Review H-193b: Schritte, die nur Räume im OG ändern, während das EG
+    /// gezeigt wird (Abgleich mit der Raumliste, kein Zuteilen im OG),
+    /// merken sich höchstens [`VERSCHOBEN_MAX`] Anker; darüber sehen alle
+    /// Gruppen neu an, und das Ergebnis gleicht einer frischen Erkennung.
+    #[test]
+    fn verschoben_hat_eine_grenze() {
+        let mut m = crate::raumliste::tests::haus_roh();
+        let og = m
+            .storeys()
+            .iter()
+            .filter(|(_, s)| s.kind == sk_model::LevelKind::Storey)
+            .max_by(|x, y| x.1.elevation.total_cmp(&y.1.elevation))
+            .unwrap()
+            .0;
+        let id = m.spaces(og)[0];
+        let mut e = Erkennung::default();
+        e.raumformen(&m, &m, og);
+        for i in 0..300 {
+            m.begin("Name");
+            m.set_space(id, |s| s.name = format!("Raum {i}"));
+            m.commit();
+            e.raumliste(&m, og);
+            assert!(e.geschosse[&og].verschoben.len() <= VERSCHOBEN_MAX, "{i}");
+        }
+        assert!(e.geschosse[&og].alle, "über der Grenze sehen alle neu an");
+        let namen = |e: &mut Erkennung| -> Vec<_> {
+            e.raumformen(&m, &m, og)
+                .flaechen()
+                .map(|f| (f.form.raum, f.grundflaeche))
+                .collect()
+        };
+        assert_eq!(namen(&mut e), namen(&mut Erkennung::default()));
+        assert_eq!(e.raumlisten(), 1, "nur einmal gesammelt");
+    }
+
+    /// Review #193 B1 und H-188a: Ob ein Geschoss auf der Sohle steht,
+    /// entscheidet über den Estrich der Vorgabe und damit, ob ein Raum
+    /// Ausbau hat, wenn das Projekt nur den Estrich auf der Sohle führt und
+    /// die Vorlage sonst keinen Typ. Das Geschoss rückt wie bei Wiederholen
+    /// oder im Geschossfenster als Schritt von der Gründung weg und wieder
+    /// darauf; der Stempel folgt wie eine frische Rechnung, ohne die Räume
+    /// neu zu sammeln.
+    #[test]
+    fn grundflaeche_folgt_dem_estrich_der_vorgabe() {
+        use sk_model::model::{SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID};
+        use sk_model::txn::{Change, Direction, Txn};
+        use sk_model::LevelKind;
+        let mut m = crate::raumliste::tests::haus_roh();
+        m.begin("Typ");
+        let mut v = m
+            .ensure_space_type(sk_model::model::DEFAULT_SPACE_GUID)
+            .and_then(|_| m.space_type(sk_model::model::DEFAULT_SPACE_GUID).cloned())
+            .unwrap();
+        (v.floor, v.ceiling, v.wall, v.tiles, v.skirting, v.screed) =
+            (None, None, None, None, None, None);
+        m.put_space_type(v);
+        assert!(m.ensure_finish_type(SCREED_SLAB_TYPE_GUID).is_some());
+        m.commit();
+        let ls: Vec<(StoreyId, sk_model::Storey)> =
+            m.storeys().iter().map(|(g, s)| (g, s.clone())).collect();
+        let (eg, s) = ls
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Storey)
+            .min_by(|x, y| x.1.elevation.total_cmp(&y.1.elevation))
+            .cloned()
+            .unwrap();
+        let versetzen = |m: &mut Model, dz: f64| {
+            let old = m.storey(eg).cloned();
+            let mut n = s.clone();
+            n.elevation += dz;
+            let changes = vec![Change::Storey {
+                id: eg,
+                old,
+                new: Some(n),
+            }];
+            m.apply(
+                &Txn {
+                    label: "Geschoss",
+                    changes,
+                },
+                Direction::Redo,
+            );
+        };
+        let mut e = Erkennung::default();
+        for (dz, estrich) in [
+            (0.0, SCREED_SLAB_TYPE_GUID),
+            (500.0, SCREED_FLOOR_TYPE_GUID),
+            (0.0, SCREED_SLAB_TYPE_GUID),
+        ] {
+            versetzen(&mut m, dz);
+            assert_eq!(crate::ausbau::estrich_vorgabe(&m, eg), estrich);
+            let formen = e.raumformen(&m, &m, eg);
+            let f: Vec<&Raumflaeche> = formen.flaechen().collect();
+            assert!(!f.is_empty());
+            for f in f {
+                let frisch = crate::flaechen::grundflaeche_fertig(&m, &f.form);
+                assert!(
+                    (f.grundflaeche - frisch).abs() < 1e-6,
+                    "{dz}: {} {frisch}",
+                    f.grundflaeche
+                );
+            }
+        }
+        assert_eq!(e.raumlisten(), 1, "nur einmal gesammelt");
+    }
 
     /// `n` Häuser 10 × 8 m nebeneinander, je eine Innenwand bei x = 3 m.
     fn stadt(n: usize) -> (Model, StoreyId) {
@@ -2103,6 +2269,69 @@ mod tests {
         gleich(&mut e, &m);
         let b1 = andere(&mut e, &m);
         assert!(b1 > b0, "ohne Putz größer: {b1} {b0}");
+        assert_eq!(e.raumlisten(), n0, "nur eingereiht");
+    }
+
+    /// Die Grundfläche am Stempel folgt den Abweichungen des Raums (RB6)
+    /// und der Dicke ihres Typs wie das Mengenblatt, ohne die Räume neu zu
+    /// sammeln, auch wenn sich an Vorlagen und Typen nichts ändert;
+    /// Rückgängig stellt sie wieder her.
+    #[test]
+    fn grundflaeche_folgt_den_abweichungen() {
+        use sk_model::model::{AusbauAbweichung, AusbauStelle, WALL_TILES_TYPE_GUID};
+        use sk_model::txn::Direction;
+        let mut m = crate::raumliste::tests::haus();
+        let mut e = Erkennung::default();
+        let g = m.storeys().iter().next().unwrap().0;
+        let id = m.spaces(g)[0];
+        let flaeche = |e: &mut Erkennung, m: &Model| {
+            let q = crate::mengen::raeume(m, g)
+                .into_iter()
+                .find(|x| x.0 == id)
+                .unwrap()
+                .1;
+            let f = e
+                .raumformen(m, m, g)
+                .flaechen()
+                .find(|f| f.form.raum == Some(id))
+                .unwrap()
+                .grundflaeche;
+            assert!((f - q.area).abs() < 1e-6, "{f} {}", q.area);
+            f
+        };
+        let a0 = flaeche(&mut e, &m);
+        let n0 = e.raumlisten();
+        // Wandfliesen an allen Wandseiten: kleiner
+        m.begin("Fliesen");
+        let fliesen = AusbauAbweichung {
+            stelle: AusbauStelle::Fliesen(None),
+            wahl: Some(AusbauWahl::Typ(WALL_TILES_TYPE_GUID)),
+            hoehe: None,
+        };
+        m.set_space_finish(id, fliesen).unwrap();
+        m.commit();
+        let a1 = flaeche(&mut e, &m);
+        assert!(a1 < a0, "Fliese abgezogen: {a1} {a0}");
+        // Ohne und wieder mit der Abweichung, der Typ bleibt im Projekt:
+        // Nur der Raum ändert sich
+        for (wahl, soll) in [(None, a0), (fliesen.wahl, a1)] {
+            m.begin("Abweichung");
+            m.set_space_finish(id, AusbauAbweichung { wahl, ..fliesen })
+                .unwrap();
+            m.commit();
+            assert!((flaeche(&mut e, &m) - soll).abs() < 1e-6);
+        }
+        // Der Fliesentyp wird dicker: noch kleiner
+        let t = m.type_by_guid(WALL_TILES_TYPE_GUID).unwrap();
+        let mut set = m.layer_set(t).unwrap().clone();
+        set.layers[0].thickness += 10.0;
+        m.begin("Dicker");
+        assert!(m.set_layer_set(t, set));
+        let tx2 = m.commit().unwrap();
+        let a2 = flaeche(&mut e, &m);
+        assert!(a2 < a1, "dickere Fliese: {a2} {a1}");
+        m.apply(&tx2, Direction::Undo);
+        assert!((flaeche(&mut e, &m) - a1).abs() < 1e-6);
         assert_eq!(e.raumlisten(), n0, "nur eingereiht");
     }
 

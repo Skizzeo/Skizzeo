@@ -264,7 +264,7 @@ fn innen(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
 
 /// Nummer der Fläche an `p` (mm); bei Überlappung die zuletzt gesetzte,
 /// wie sie auch gilt. Ohne Höhenaufmaß ruhen die Flächen: nicht zu sehen,
-/// nicht gerechnet, also auch nicht wählbar (Review #196 H-196).
+/// nicht gerechnet, also auch nicht wählbar (Review #196 H-196a).
 pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
     if m.terrain().is_none_or(|t| t.points.is_empty()) {
         return None;
