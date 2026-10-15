@@ -198,7 +198,12 @@ impl Scene {
         for g in wand {
             let lage = self.raumlage(g);
             let alt = self.staende.remove(&g);
-            let a = sk_raum::abgleichen_lage(&mut self.model, &lage, alt);
+            // Räume aus der Liste der Erkennung, nicht über alle Bauteile
+            // (Review H-181c)
+            let mut e = self.erkennung.borrow_mut();
+            let liste = e.raumliste(&self.model, g);
+            let a = sk_raum::abgleichen_lage_mit(&mut self.model, &lage, alt, Some(liste));
+            drop(e);
             for &(id, _) in &a.neu {
                 sk_raum::ausbau::typen_anlegen(&mut self.model, id);
             }

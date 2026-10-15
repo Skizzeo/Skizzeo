@@ -435,6 +435,12 @@ struct Geschoss {
     raumliste: Option<Raumliste>,
     /// [`ausbau_kennung`] beim letzten Zuteilen.
     ausbau: Option<u64>,
+    /// Seit dem letzten Zuteilen neu gesammelt: alle Gruppen sehen ihre
+    /// Räume neu an.
+    alle: bool,
+    /// Anker der seit dem letzten Zuteilen neu eingereihten Räume, davor und
+    /// danach: Gruppen, in deren Kasten einer liegt, sehen ihre Räume neu an.
+    verschoben: Vec<Vec3>,
     /// Nach dem Schlüssel der Gruppe.
     zuteilungen: NachSchluessel<Zuteilung>,
 }
@@ -894,6 +900,78 @@ impl Erkennung {
         st
     }
 
+    /// Räume des Geschosses `g` mit ihrem Anker, ältere zuerst wie
+    /// [`crate::abgleich::raeume_im`], aus der nachgeführten Liste: auch im
+    /// offenen Schritt nur die geänderten Räume neu eingereiht, nicht über
+    /// alle Bauteile (Review H-181c, für [`crate::abgleichen_lage_mit`]).
+    pub fn raumliste(&mut self, m: &Model, g: StoreyId) -> &[(ElementId, Vec3)] {
+        self.liste_nachfuehren(m, g, true);
+        self.geschosse
+            .get(&g)
+            .and_then(|gs| gs.raumliste.as_ref())
+            .map_or(&[][..], |l| &l.raeume[..])
+    }
+
+    /// Führt die Liste der Räume von `g` auf den Stand des Modells. Solange
+    /// sich die Räume nicht ändern ([`Model::raum_revision`], bei Schritten
+    /// nur an Wänden gleich, Review H-137b), bleibt sie. Kennt das Modell
+    /// die Räume, die Schritte seit der Liste geändert haben, werden nur
+    /// diese neu eingereiht, dazu die des offenen Schritts von damals und
+    /// von jetzt (Review H-175h); ihre Anker davor und danach sammelt
+    /// `verschoben` für das nächste Zuteilen. Sonst wird neu gesammelt
+    /// (dann `alle`), ohne `sammeln` fällt die Liste nur weg.
+    fn liste_nachfuehren(&mut self, m: &Model, g: StoreyId, sammeln: bool) {
+        let stand = m.raum_revision();
+        // Räume, die der offene Schritt auf diesem Geschoss ändert
+        let mut schritt = if m.raum_geschosse_im_schritt().contains(&g) {
+            m.raeume_im_schritt()
+        } else {
+            Vec::new()
+        };
+        let gs = self.geschosse.entry(g).or_default();
+        let gilt = schritt.is_empty()
+            && gs
+                .raumliste
+                .as_ref()
+                .is_some_and(|l| l.stand == stand && l.offen.is_empty());
+        if gilt {
+            return;
+        }
+        if let Some(l) = gs.raumliste.as_mut() {
+            if let Some(mut ids) = m.raeume_geaendert_seit(l.stand) {
+                ids.extend_from_slice(&l.offen);
+                ids.extend_from_slice(&schritt);
+                if let Some(p) = l.flicken(m, g, &ids) {
+                    gs.verschoben.extend(p);
+                    l.stand = stand;
+                    l.offen = schritt;
+                    return;
+                }
+            }
+        }
+        gs.raumliste = None;
+        if !sammeln {
+            return;
+        }
+        self.raumlisten += 1;
+        let mut raeume: Vec<(&str, ElementId, Vec3)> = Vec::new();
+        for (id, e) in m.elements().iter() {
+            if let ElementKind::Space(s) = &e.kind {
+                if e.storey == g {
+                    raeume.push((e.number.as_str(), id, s.anker));
+                }
+            }
+        }
+        raeume.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
+        gs.raumliste = Some(Raumliste {
+            stand,
+            offen: std::mem::take(&mut schritt),
+            raeume: raeume.iter().map(|&(_, id, a)| (id, a)).collect(),
+        });
+        gs.alle = true;
+        gs.verschoben.clear();
+    }
+
     /// Lage des Geschosses; je Hausgruppe stehen danach die geltenden Räume
     /// ihrer Flächen samt Formen im Speicher. Die Räume einer Gruppe sind
     /// die, deren Anker in ihrem Kasten liegt; die Ankerregel
@@ -906,68 +984,19 @@ impl Erkennung {
     fn zuteilung(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Lage {
         let lage = self.lage(m, k, g);
         let lauf = self.lauf;
-        let stand = m.raum_revision();
         let ausbau = ausbau_kennung(m);
-        // Räume, die der offene Schritt auf diesem Geschoss ändert: Die
-        // Liste wird mit ihnen nachgeführt, im Schritt nicht je Bild neu
-        // gesammelt (Review H-175h)
-        let mut schritt = if m.raum_geschosse_im_schritt().contains(&g) {
-            m.raeume_im_schritt()
-        } else {
-            Vec::new()
-        };
+        // Ohne Gruppe gibt es nichts zuzuteilen: dann wird nicht gesammelt
+        self.liste_nachfuehren(m, g, !lage.gruppen.is_empty());
         let gs = self.geschosse.entry(g).or_default();
-        let mut gilt = schritt.is_empty()
-            && gs
-                .raumliste
-                .as_ref()
-                .is_some_and(|l| l.stand == stand && l.offen.is_empty());
-        // Kennt das Modell die Räume, die Schritte seit der Liste geändert
-        // haben, werden nur diese neu eingereiht, dazu die des offenen
-        // Schritts von damals und von jetzt; Gruppen, in deren Kasten einer
-        // davon lag oder jetzt liegt, sehen ihre Räume neu an (Review
-        // H-137b)
-        let mut verschoben = Vec::new();
-        if let (false, Some(l)) = (gilt, gs.raumliste.as_mut()) {
-            if let Some(mut ids) = m.raeume_geaendert_seit(l.stand) {
-                ids.extend_from_slice(&l.offen);
-                ids.extend_from_slice(&schritt);
-                if let Some(p) = l.flicken(m, g, &ids) {
-                    verschoben = p;
-                    l.stand = stand;
-                    l.offen = std::mem::take(&mut schritt);
-                    gilt = true;
-                }
-            }
-        }
+        let verschoben = std::mem::take(&mut gs.verschoben);
         // Welche Gruppen ihre Räume neu ansehen: nach dem Neusammeln alle,
         // sonst die neuen und die mit einem geänderten Raum im Kasten
         let kaesten: Vec<Kasten> = lage.gruppen.iter().map(|gr| gr.kasten).collect();
         let mut raster = None;
         let mut je: Vec<Option<Vec<(ElementId, &Space)>>> = vec![None; lage.gruppen.len()];
-        if !gilt && lage.gruppen.is_empty() {
-            // Ohne Gruppe gibt es nichts zuzuteilen
-            gs.raumliste = None;
-        } else if !gilt {
-            self.raumlisten += 1;
-            let mut raeume: Vec<(&str, ElementId, Vec3)> = Vec::new();
-            for (id, e) in m.elements().iter() {
-                if let ElementKind::Space(s) = &e.kind {
-                    if e.storey == g {
-                        raeume.push((e.number.as_str(), id, s.anker));
-                    }
-                }
-            }
-            raeume.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
-            gs.raumliste = Some(Raumliste {
-                stand,
-                offen: schritt,
-                raeume: raeume.iter().map(|&(_, id, a)| (id, a)).collect(),
-            });
-            je.iter_mut().for_each(|x| *x = Some(Vec::new()));
-        } else if gs.ausbau != Some(ausbau) {
-            // Vorlagen oder Typen geändert: Die Grundfläche jeder Gruppe kann
-            // sich ändern (Bedienbarkeit 43.8)
+        if std::mem::take(&mut gs.alle) || gs.ausbau != Some(ausbau) {
+            // Neu gesammelt, oder Vorlagen oder Typen geändert: Die Grundfläche
+            // jeder Gruppe kann sich ändern (Bedienbarkeit 43.8)
             je.iter_mut().for_each(|x| *x = Some(Vec::new()));
         } else {
             for (gr, x) in lage.gruppen.iter().zip(&mut je) {
