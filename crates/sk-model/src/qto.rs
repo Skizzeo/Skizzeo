@@ -1638,6 +1638,33 @@ pub struct Schedule {
     /// Hinweise zu Mengen, die keine Zeile tragen kann, etwa zu einer
     /// Geländefläche ohne Sohlplatte (VOB-Prüfung G3, D2).
     pub hinweise: Vec<String>,
+    /// [`Schedule::layer_rows_ref`]: die Schichtzeilen, einmal je Liste.
+    zeilen: Zeilenspeicher,
+}
+
+/// Schichtzeilen einer Mengenliste, beim ersten Lesen gerechnet (Review
+/// #197 H-197l: jede Taste im Preisblatt sortierte sie sonst neu). Eine
+/// Kopie der Liste fängt leer an, damit eine geänderte Kopie nie alte
+/// Zeilen liest; beim Vergleich zählt der Speicher nicht.
+#[derive(Default)]
+struct Zeilenspeicher(std::sync::OnceLock<Vec<(Option<BuildingId>, LayerRow)>>);
+
+impl Clone for Zeilenspeicher {
+    fn clone(&self) -> Self {
+        Zeilenspeicher::default()
+    }
+}
+
+impl PartialEq for Zeilenspeicher {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Zeilenspeicher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Zeilenspeicher")
+    }
 }
 
 /// Eine Automatikmenge: eine Menge eines Gebäudes, die an keiner Schicht
@@ -2310,6 +2337,12 @@ impl Schedule {
             }
         }
         out
+    }
+
+    /// Wie [`Schedule::layer_rows`], aber je Liste einmal gerechnet; nur
+    /// mit dem Modell rufen, aus dem die Liste stammt.
+    pub fn layer_rows_ref(&self, model: &Model) -> &[(Option<BuildingId>, LayerRow)] {
+        self.zeilen.0.get_or_init(|| self.layer_rows(model))
     }
 
     /// Alle Mengenzeilen nach Schicht (Paket 1b), auch ohne Gewerk und

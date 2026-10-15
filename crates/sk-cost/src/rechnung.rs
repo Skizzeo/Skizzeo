@@ -868,8 +868,8 @@ pub fn kosten_mit(
     let mut einmal: std::collections::HashSet<(ElementId, Guid)> = Default::default();
     let mut ep_fest: HashMap<Guid, (Cent, Cent, Cent, Option<Cent>)> = HashMap::new();
 
-    let rows = s.layer_rows(m);
-    for (gebaeude, r) in &rows {
+    let rows = s.layer_rows_ref(m);
+    for (gebaeude, r) in rows {
         let Some(e) = m.element(r.element) else {
             continue;
         };
