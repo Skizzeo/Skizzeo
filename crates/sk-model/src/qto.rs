@@ -2162,9 +2162,16 @@ fn auto_rows(
     // Träger der Mengen je Gebäude: die Platte mit der kleinsten Nummer
     // (Guid bei gleicher Nummer), unabhängig von der Speicherreihenfolge
     let rang = |e: &Element| (e.number.len(), e.number.clone(), e.guid);
+    // mit Geländeflächen die Gründungen nach Nummer: so stehen die Zeilen
+    // je Position nach Speichern und Öffnen in gleicher Reihenfolge, auch
+    // mit dem Einbau im Rechenweg (H-185a); ohne Flächen wie bisher
+    let mut platten = platten.to_vec();
+    if !model.site_patches().is_empty() {
+        platten.sort_by_cached_key(|&(_, s)| model.element(s).map(rang));
+    }
     let mut traeger: HashMap<BuildingId, ((usize, String, crate::Guid), ElementId)> =
         HashMap::new();
-    for &(run, slab) in platten {
+    for &(run, slab) in &platten {
         let (Some(_), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
         };
@@ -2180,7 +2187,7 @@ fn auto_rows(
             }
         }
     }
-    for &(run, slab) in platten {
+    for &(run, slab) in &platten {
         let (Some(g), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
         };
