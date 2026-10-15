@@ -1298,6 +1298,10 @@ const EXT_NAME_MAX: usize = 60;
 #[derive(Default)]
 struct ExtRechnungen {
     geschosse: HashMap<StoreyId, crate::erweiterung::Geschoss>,
+    /// Dickste Decke an der OK je Geschoss, beim ersten Exemplar in einem
+    /// Gang über die Bauteile gesammelt (wie `Model::ext_geschoss`, das je
+    /// Aufruf alle Bauteile absucht; Review #195 H-195g).
+    decken: Option<HashMap<StoreyId, f64>>,
     #[allow(clippy::type_complexity)]
     stelle: HashMap<(String, Option<String>, Vec<(String, u64)>, [u64; 2]), usize>,
     ergebnisse: Vec<crate::erweiterung::Ergebnis>,
@@ -1313,10 +1317,23 @@ impl ExtRechnungen {
         p: &crate::erweiterung::ExtPart,
     ) -> Option<&crate::erweiterung::Ergebnis> {
         let d = model.ext_def(&p.key)?;
+        let decken = self.decken.get_or_insert_with(|| {
+            let mut d: HashMap<StoreyId, f64> = HashMap::new();
+            for (_, e) in model.elements().iter() {
+                if let ElementKind::Floor(f) = &e.kind {
+                    let x = d.entry(f.top.storey).or_insert(f.thickness);
+                    *x = x.max(f.thickness);
+                }
+            }
+            d
+        });
         let g = *self
             .geschosse
             .entry(st)
-            .or_insert_with(|| model.ext_geschoss(st));
+            .or_insert_with(|| crate::erweiterung::Geschoss {
+                gh: model.storey(st).map_or(0.0, |s| s.height),
+                decke: decken.get(&st).copied().unwrap_or(crate::FLOOR_THICKNESS),
+            });
         let k = (
             p.key.clone(),
             p.typ.clone(),
@@ -1727,6 +1744,33 @@ pub fn schedule_storey(model: &Model, e: &Element) -> StoreyId {
     }
 }
 
+/// Gründungsband je Geschoss für [`schedule_storey`], in einem Gang über
+/// die Geschosse aller Gebäude statt je Bauteil (Review #195 H-195g).
+fn gruendungen(model: &Model) -> HashMap<StoreyId, StoreyId> {
+    let mut out = HashMap::new();
+    for ebenen in model.levels_by_building().into_values() {
+        let gruendung = ebenen.iter().copied().find(|g| {
+            model
+                .storey(*g)
+                .is_some_and(|s| s.kind == crate::LevelKind::Foundation)
+        });
+        if let Some(f) = gruendung {
+            out.extend(ebenen.into_iter().map(|g| (g, f)));
+        }
+    }
+    out
+}
+
+/// [`schedule_storey`] mit den vorab gesammelten [`gruendungen`].
+fn schedule_storey_in(gruendung: &HashMap<StoreyId, StoreyId>, e: &Element) -> StoreyId {
+    match e.category {
+        Category::GroundSlab | Category::StripFooting => {
+            gruendung.get(&e.storey).copied().unwrap_or(e.storey)
+        }
+        _ => e.storey,
+    }
+}
+
 /// Reihenfolge der Gruppen nach Bauablauf ([`crate::kinds`]).
 fn group_rank(c: Category) -> u8 {
     crate::kinds::spec(c).qto_rank
@@ -1791,6 +1835,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
     let mut rechnungen = ExtRechnungen::default();
     // Räume je Geschoss, einmal gerechnet
     let mut raum_qto: HashMap<StoreyId, HashMap<ElementId, RoomQto>> = HashMap::new();
+    let gruendung = gruendungen(model);
     for (id, e) in model.elements().iter() {
         if let ElementKind::Space(_) = &e.kind {
             let q = raum_qto
@@ -1994,7 +2039,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
             // Mengen als Automatikmengen am Bauteil (`downpipe.*`)
             ElementKind::Downpipe { .. } => (None, None),
         };
-        let storey = schedule_storey(model, e);
+        let storey = schedule_storey_in(&gruendung, e);
         let set = match e.kind {
             ElementKind::Wall(_) => e.layer_set,
             _ => None,
@@ -2033,9 +2078,15 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
             ext_name(b.3),
         ))
     });
+    // Schlüssel je Geschoss in dieser Reihenfolge, ohne Gang über alle
+    // Schlüssel je Geschoss (Review #195 H-195g)
+    let mut je_geschoss: HashMap<StoreyId, Vec<Key>> = HashMap::new();
+    for k in &keys {
+        je_geschoss.entry(k.0).or_default().push(*k);
+    }
     let storey_qto = |sid: StoreyId, groups: &mut HashMap<Key, (Category, Vec<RowQto>)>| {
         let mut out = Vec::new();
-        for k in keys.iter().filter(|k| k.0 == sid) {
+        for k in je_geschoss.get(&sid).map_or(&[][..], Vec::as_slice) {
             let (category, mut rows) = groups.remove(k).unwrap_or((Category::Space, Vec::new()));
             rows.sort_by(|a, b| a.number.cmp(&b.number));
             let total = totals(&rows);
@@ -2061,9 +2112,11 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
     // Gebäude nach Nummer (GB-01, GB-02 …), nicht nach Lage im Speicher
     let mut buildings: Vec<_> = model.buildings().iter().collect();
     buildings.sort_by(|a, b| a.1.number.cmp(&b.1.number));
+    let mut ebenen = model.levels_by_building();
     for (bid, _) in buildings {
-        let storeys: Vec<StoreyQto> = model
-            .levels_in(Some(bid))
+        let storeys: Vec<StoreyQto> = ebenen
+            .remove(&Some(bid))
+            .unwrap_or_default()
             .into_iter()
             .map(|sid| storey_qto(sid, &mut groups))
             .filter(|s| !s.groups.is_empty())
@@ -2092,8 +2145,21 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
         }
     }
     sched.formwork = formwork_rows(&sched);
-    sched.auto = auto_rows(model, &platten, &mut sched.hinweise);
+    sched.auto = auto_rows(model, &gruendung, &platten, &mut sched.hinweise);
     roofs.sort_by_key(|(id, _)| model.element(*id).map(|e| e.number.clone()));
+    // Regenfallrohre je Dach in einem Gang, wie `Model::downpipes_of`
+    // (Review #195 H-195g)
+    let mut fallrohre: HashMap<ElementId, Vec<(u16, ElementId)>> = HashMap::new();
+    if !roofs.is_empty() {
+        for (id, e) in model.elements().iter() {
+            if let ElementKind::Downpipe { roof, drain, .. } = e.kind {
+                fallrohre.entry(roof).or_default().push((drain, id));
+            }
+        }
+        for v in fallrohre.values_mut() {
+            v.sort_by_key(|x| x.0);
+        }
+    }
     for (id, r) in &roofs {
         let Some(e) = model.element(*id) else {
             continue;
@@ -2112,7 +2178,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
         };
         sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
         // Regenfallrohre an den Abläufen des Dachs (Jörn 11.10.)
-        for d in model.downpipes_of(*id) {
+        for &(_, d) in fallrohre.get(id).map_or(&[][..], Vec::as_slice) {
             let Some(e) = model.element(d) else { continue };
             let ElementKind::Downpipe { drain, .. } = e.kind else {
                 continue;
@@ -2147,6 +2213,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
 /// werden (Erdarbeiten, Bauvorbereitung), in der Reihenfolge der Platten.
 fn auto_rows(
     model: &Model,
+    gruendung: &HashMap<StoreyId, StoreyId>,
     platten: &[(RunId, ElementId)],
     hinweise: &mut Vec<String>,
 ) -> Vec<AutoMenge> {
@@ -2191,7 +2258,7 @@ fn auto_rows(
         let (Some(g), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
         };
-        let storey = schedule_storey(model, e);
+        let storey = schedule_storey_in(gruendung, e);
         let vorlage = AutoMenge {
             element: slab,
             number: e.number.clone(),
@@ -3178,5 +3245,38 @@ mod tests {
             .find(|(_, x)| x.name == "Porenbeton")
             .unwrap();
         m.attr().fill(g.cut_fill).unwrap().guid.to_ifc()
+    }
+
+    /// Gründung und Geschosse je Gebäude aus einem Gang wie je Bauteil
+    /// und je Gebäude (Review #195 H-195g): drei Gebäude, Vorlage leer.
+    #[test]
+    fn gruendung_je_gebaeude_wie_je_bauteil() {
+        let mut m = Model::with_seed(3);
+        for (i, n) in [2, 1, 3].into_iter().enumerate() {
+            let b = m.add_building(n);
+            let o = i as f64 * 20000.0;
+            let pts = [
+                vec3(o, 0.0, 0.0),
+                vec3(o, 8000.0, 0.0),
+                vec3(o + 10000.0, 8000.0, 0.0),
+                vec3(o + 10000.0, 0.0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+        }
+        let je = m.levels_by_building();
+        for (b, _) in m.buildings().iter() {
+            assert_eq!(je.get(&Some(b)), Some(&m.levels_in(Some(b))));
+        }
+        assert_eq!(
+            je.get(&None).cloned().unwrap_or_default(),
+            m.levels_in(None)
+        );
+        let g = gruendungen(&m);
+        let mut platten = 0;
+        for (_, e) in m.elements().iter() {
+            assert_eq!(schedule_storey_in(&g, e), schedule_storey(&m, e));
+            platten += usize::from(e.category == Category::GroundSlab);
+        }
+        assert_eq!(platten, 3);
     }
 }
