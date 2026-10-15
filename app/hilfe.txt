@@ -401,6 +401,18 @@ Geländemodul | Zusatz zu jeder Stufe: echtes Gelände aus Höhenaufmaß und Lag
 Gesperrt | steht grau da, daneben die Stufe, ab der es das gibt: Knöpfe, Zeilen im Dateimenü und im Rechtsklick-Menü, Karten im Mengenfenster
 Öffnen | Dateimenü › „Ausbaustufe …“
 
+[thema] id=gelaende titel="Gelände"
+Platte | ohne Aufmaß liegt unter dem Haus eine ebene grüne Geländeplatte; im Baum wählen, dann Dicke und Außenoffset im Paneel
+Modul | echtes Gelände aus Lageplan und Höhenaufmaß gibt es mit dem Geländemodul (Dateimenü › „Ausbaustufe …“)
+Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen
+Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss
+Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien
+Lage | das Gelände bewegt sich, das Haus bleibt: „Verschieben“ und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“
+Höhenlage | „über Gelände“: ±0,00 um den Versatz über dem höchsten Geländepunkt am Plattenrand; „absolut“: ±0,00 fest in m ü. NHN
+Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken, die erste Ecke oder **Enter** schließt, **Rücktaste** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, das Paneel ändert Höhe, Böschung und „befestigt“, **Entf** löscht sie
+Erdmengen | im Mengenfenster nach VOB/C: Baugrube, Verfüllung und Oberboden am Gelände; Abtrag und Auftrag der Geländeflächen beim Grundstück, dazu „Oberboden andecken“ und „Faktor fest zu eingebaut“ im Paneel einer Fläche
+Zuschnitt | „alles“, „blass“ oder „Grenze“ zeigt das Gelände über die Grenze hinaus, blass oder abgeschnitten; gerechnet wird immer mit allen Punkten
+
 [knopf]
 Gebäude | Außenwand als Polygon zeichnen; beim Schließen entsteht das ganze Haus.
 Innenwand | Innenwand im aktiven Geschoss zeichnen.

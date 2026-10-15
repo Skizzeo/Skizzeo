@@ -195,11 +195,14 @@ pub enum Topic {
     /// Ausbaustufen und was jede kann, „Ausbaustufe …“ im Dateimenü
     /// (Bedienbarkeit 41.5).
     Ausbaustufen,
+    /// Gelände: Platte, Lageplan, Höhen, Lage, Höhenlage, Geländeflächen,
+    /// Erdmengen (Bedienbarkeit 43.2, 42.4).
+    Gelaende,
 }
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 41] = [
+    pub const ALL: [Topic; 42] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -241,6 +244,7 @@ impl Topic {
         Topic::Delete,
         Topic::Backups,
         Topic::Ausbaustufen,
+        Topic::Gelaende,
     ];
 
     /// Gruppen der Liste „Alle Themen“ (Darstellung p9 §2, Liste).
@@ -269,6 +273,7 @@ impl Topic {
                 Topic::Split,
                 Topic::Upper,
                 Topic::Flush,
+                Topic::Gelaende,
             ],
         ),
         (
@@ -357,6 +362,7 @@ impl Topic {
             Topic::Delete => "loeschen",
             Topic::Backups => "sicherungen",
             Topic::Ausbaustufen => "ausbaustufen",
+            Topic::Gelaende => "gelaende",
         }
     }
 
@@ -444,6 +450,9 @@ pub struct HelpCtx {
     /// Werkzeug „Fenster“ oder „Tür“ aktiv.
     pub opening: bool,
     pub isolating: bool,
+    /// Leiste „Gelände“ offen, Werkzeug „Fläche zeichnen“, Geländefläche
+    /// oder Geländeplatte gewählt (Bedienbarkeit 43.2).
+    pub gelaende: bool,
     pub selection: Option<SelKind>,
     pub view: ViewKind,
 }
@@ -480,6 +489,9 @@ pub fn topic(c: &HelpCtx) -> Topic {
     }
     if let Some(inner) = c.tool {
         return if inner { Topic::InnerWall } else { Topic::Draw };
+    }
+    if c.gelaende {
+        return Topic::Gelaende;
     }
     if c.isolating {
         return Topic::Tree;
@@ -1173,6 +1185,7 @@ mod tests {
             tool: None,
             opening: false,
             isolating: false,
+            gelaende: false,
             selection: None,
             view: ViewKind::Plan,
         };
@@ -1206,6 +1219,7 @@ mod tests {
             tool: None,
             opening: true,
             isolating: false,
+            gelaende: false,
             selection: None,
             view: ViewKind::Plan,
         };
@@ -1222,6 +1236,58 @@ mod tests {
         assert!(s.rows.len() <= 10);
     }
 
+    /// Bedienbarkeit 43.2: Bei offener Leiste „Gelände“ oder gewählter
+    /// Geländefläche zeigt F1 „Gelände“; ohne Modul nur Platte und Weg zum
+    /// Modul, mit Modul der Ablauf ohne den Weg dorthin.
+    #[test]
+    fn thema_gelaende() {
+        use crate::freischaltung::{Freischaltung, Modul};
+        let mut c = HelpCtx {
+            window: None,
+            dialog: false,
+            flush_pick: false,
+            dragging: false,
+            tool: None,
+            opening: false,
+            isolating: true,
+            gelaende: true,
+            selection: Some(SelKind::Wall),
+            view: ViewKind::Plan,
+        };
+        assert_eq!(topic(&c), Topic::Gelaende);
+        c.tool = Some(false);
+        assert_eq!(topic(&c), Topic::Draw);
+        assert!(Topic::GROUPS
+            .iter()
+            .any(|(_, t)| t.contains(&Topic::Gelaende)));
+        let s = help().section("gelaende").expect("Thema Gelände");
+        assert!(s.rows.len() <= 10);
+        let zeilen = |f: Freischaltung| -> Vec<String> {
+            let k = HelpCard {
+                frei: f,
+                ..HelpCard::default()
+            };
+            k.zeilen(Topic::Gelaende).into_iter().map(|z| z.0).collect()
+        };
+        assert_eq!(zeilen(Freischaltung::mit(&[])), ["Platte", "Modul"]);
+        let alle = zeilen(Freischaltung::mit(&[Modul::Gelaende, Modul::Mengen]));
+        for a in [
+            "Platte",
+            "Lageplan",
+            "Höhen",
+            "Lage",
+            "Höhenlage",
+            "Geländeflächen",
+            "Erdmengen",
+        ] {
+            assert!(alle.iter().any(|x| x == a), "{a}");
+        }
+        assert!(!alle.iter().any(|x| x == "Modul"));
+        assert!(!zeilen(Freischaltung::mit(&[Modul::Gelaende]))
+            .iter()
+            .any(|x| x == "Erdmengen"));
+    }
+
     /// Bedienbarkeit 39.5: Mit gewähltem Raum zeigt F1 „Räume“; das Thema
     /// nennt Entstehen, Benennen, Verschieben, Paneel und Entfernen.
     #[test]
@@ -1234,6 +1300,7 @@ mod tests {
             tool: None,
             opening: false,
             isolating: false,
+            gelaende: false,
             selection: Some(SelKind::Space),
             view: ViewKind::Plan,
         };

@@ -1193,6 +1193,7 @@ mod tests {
                 tool: werkzeug.then_some(false),
                 opening: false,
                 isolating: false,
+                gelaende: false,
                 selection: None,
                 view: ViewKind::Plan,
             };

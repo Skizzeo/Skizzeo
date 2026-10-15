@@ -60,6 +60,7 @@ mod geschossfenster;
 mod gpu_probe;
 mod grundriss_schnitt;
 mod help;
+mod hilfe_app;
 mod hints;
 mod ifc_vorschau;
 mod ifc_vorschau_app;
@@ -4459,48 +4460,6 @@ impl App {
     }
 
     // --- Hilfe (Paket 9) -------------------------------------------------
-
-    /// Lage der App für die Themenwahl (§1.2).
-    fn help_ctx(&self) -> help::HelpCtx {
-        use help::Window;
-        let window = if self.card.is_some() {
-            Some(Window::Backups)
-        } else if let Some(p) = &self.prefs {
-            Some(if p.pattern_open() {
-                Window::Patterns
-            } else {
-                Window::Settings(p.tab_index())
-            })
-        } else if self.catalog.is_some() {
-            Some(Window::Catalog)
-        } else if self.materials.is_some() {
-            Some(Window::Materials)
-        } else if self.verwaltung.is_some() {
-            Some(Window::Verwaltung)
-        } else {
-            None
-        };
-        let selection = self
-            .sel
-            .id
-            .and_then(|id| help::sel_kind(self.scene.model(), id));
-        help::HelpCtx {
-            window,
-            dialog: self.ui.dialog,
-            flush_pick: self.pick.is_some(),
-            dragging: self.edit.is_dragging()
-                || self.edit.input().is_some()
-                || self.edit.eigenes_thema(),
-            tool: self
-                .tool
-                .enabled
-                .then_some(self.tool.category == Category::InteriorWall),
-            opening: self.tool.oeffnung.is_some(),
-            isolating: self.scene.isolating().is_some(),
-            selection,
-            view: self.ui.view,
-        }
-    }
 
     /// Etwas Inneres nimmt Esc vor der Karte (Nachtrag H9-1): Ziehen,
     /// Eingabe, Rückfragen, Menüs, Klapplisten in Fenstern.
