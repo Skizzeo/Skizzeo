@@ -11,6 +11,7 @@ use sk_model::{
     Change, Direction, ElementId, ElementKind, Guid, Model, RunId, Space, StoreyId, Txn, WallChain,
 };
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 /// Ein Schritt im Verlauf mit dem Wechsel des Raumstands je Geschoss,
 /// dessen Wände er ändert ([`Scene::staende_folgen`]).
@@ -115,16 +116,41 @@ impl Scene {
     /// Mengenliste mit den Räumen und ihrem Raumbuch (RB5): Räume aus der
     /// Erkennung der Szene, Züge und Platten aus ihren berechneten Ketten,
     /// die Platten erst beim ersten Raum (Review #112 H8).
+    /// Die Räume aller Geschosse mit Räumen werden beim ersten Abruf in
+    /// einem Gang zugeteilt, sonst ginge jedes Geschoss über alle Züge und
+    /// Räume des Modells (Review H-193e).
     pub(super) fn mengenliste(&self) -> sk_model::qto::Schedule {
         let k = self.ketten();
         let platten = std::cell::OnceCell::new();
+        let gruppen = std::cell::OnceCell::new();
         let raeume = |m: &sk_model::Model, g: StoreyId| {
-            let formen = self.raumgruppen(g);
+            let gruppen: &HashMap<StoreyId, sk_raum::Raumformen> =
+                gruppen.get_or_init(|| self.raumgruppen_mit_raeumen());
+            let Some(formen) = gruppen.get(&g) else {
+                return Vec::new();
+            };
             let formen = formen.flaechen().map(|f| f.form.clone());
             let p = platten.get_or_init(|| sk_raum::raumliste::Platten::neu(m, &k));
             sk_raum::mengen::raeume_mit(m, &k, p, formen)
         };
         sk_model::qto::schedule_mit(&self.model, &raeume)
+    }
+
+    /// [`Scene::raumgruppen`] für jedes Geschoss mit Räumen, in einem Gang
+    /// der Erkennung.
+    fn raumgruppen_mit_raeumen(&self) -> HashMap<StoreyId, sk_raum::Raumformen> {
+        let mut geschosse = Vec::new();
+        let mut gesehen = HashSet::new();
+        for (_, e) in self.model.elements().iter() {
+            if matches!(e.kind, ElementKind::Space(_)) && gesehen.insert(e.storey) {
+                geschosse.push(e.storey);
+            }
+        }
+        let formen =
+            self.erkennung
+                .borrow_mut()
+                .raumformen_je(&self.model, &self.ketten(), &geschosse);
+        geschosse.into_iter().zip(formen).collect()
     }
 
     /// Wie oft einer Hausgruppe die Räume neu zugeteilt wurden (Tests).
@@ -167,13 +193,16 @@ impl Scene {
             .map(|(id, _)| id)
             .filter(|g| !self.staende.contains_key(g))
             .collect();
-        for g in fehlen {
-            let st = self
-                .erkennung
-                .borrow_mut()
-                .stand(&self.model, &self.ketten(), g);
-            self.staende.insert(g, st);
+        if fehlen.is_empty() {
+            return;
         }
+        // In einem Gang der Erkennung, sonst ginge nach dem Öffnen jedes
+        // Geschoss über alle Züge und Räume des Modells (Review H-193e)
+        let st = self
+            .erkennung
+            .borrow_mut()
+            .staende(&self.model, &self.ketten(), &fehlen);
+        self.staende.extend(fehlen.into_iter().zip(st));
     }
 
     /// Beim Abschluss eines Schritts: Räume der Geschosse, deren Wände er
