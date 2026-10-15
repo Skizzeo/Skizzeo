@@ -79,8 +79,9 @@ fn pruefen(name: &str, m: &Model) {
 
     let projekt = lesen::kosten(m, &s, &k, &Umfang::projekt());
     // ihre Hinweise stehen bei der Datei, nicht am Bauteil von Haus 1
-    // (VOB-Prüfung #184 F2)
-    for f in projekt.befunde.iter().filter(|f| f.satz.contains("Faktor")) {
+    // (VOB-Prüfung #184 F2); Wortlaut aus qto_earth::FAKTOR (#192)
+    let faktor = |f: &&sk_cost::befund::Befund| f.satz.contains("Eigenboden fest zu eingebaut");
+    for f in projekt.befunde.iter().filter(faktor) {
         assert_eq!(f.ort, Ort::Datei, "{name}: {f:?}");
     }
     assert!(
