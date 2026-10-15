@@ -19,7 +19,8 @@ mod flaechen;
 mod netz;
 pub(crate) use flaechen::{gelaende_mengen, Merker as FlaechenMerker};
 pub use flaechen::{
-    Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, KEIL, OHNE_AUFMASS, OHNE_TRAEGER, UNGUELTIG,
+    Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL, KEIL,
+    OHNE_AUFMASS, OHNE_TRAEGER, UNGUELTIG,
 };
 pub use netz::{steil_hinweis, ErdNetz, DREIECKSPRISMEN, STEIL, STEIL_AB};
 
