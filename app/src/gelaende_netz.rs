@@ -1618,6 +1618,16 @@ mod tests {
         if let Some(f) = crate::wall_edit::mass_treffer::tests::schrift() {
             let s = sk_plan::schrift::Schrift::new(f);
             assert!(!zahlen_tinte(&g, &s, 250.0, &t).is_empty());
+            // blasse Zahlen (außerhalb des Grundstücks bei „Umgebung
+            // blass“) stehen im Stift der blassen Höhenlinien, nicht in
+            // der Papierfarbe (Review #216 H-216a)
+            let mut b = Gelaende::aus(&m).unwrap();
+            b.zahlen.iter_mut().for_each(|z| z.4 = false);
+            let tinte = zahlen_tinte(&b, &s, 250.0, &t);
+            assert!(!tinte.is_empty());
+            let abstand: f32 = (0..3).map(|i| (t.background.1[i] - t.paper[i]).abs()).sum();
+            assert!(abstand > 0.3, "{:?} {:?}", t.background, t.paper);
+            assert!(tinte.iter().all(|i| i.color == t.background.1));
         }
         // Schnitt quer durch das Haus: Schnittfläche bis zur Unterkante
         let (p0, n) = (vec3(12000.0, 10000.0, 0.0), vec3(0.0, 1.0, 0.0));
