@@ -382,7 +382,8 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
         (Topic::Gelaende, "Erdmengen") => Some(Modul::Kosten),
         (
             Topic::Gelaende,
-            "Ablauf" | "Lageplan" | "Höhen" | "Lage" | "Höhenlage" | "Geländeflächen" | "Zuschnitt",
+            "Ablauf" | "Lageplan" | "Höhen" | "Lage" | "Höhenlage" | "Geländeflächen"
+            | "Umgebung zeigen",
         ) => Some(Modul::Gelaende),
         _ => None,
     }
