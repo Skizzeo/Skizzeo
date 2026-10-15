@@ -20,6 +20,11 @@ use sk_raum::oeffnungen::Rohbau;
 use sk_raum::{Kante, RaumForm};
 use std::sync::Mutex;
 
+/// Hinweis im Paneel bei Abweichungen an Wandseiten, die den Raum nicht
+/// mehr begrenzen (Review #190 H-190d).
+pub const VERWAIST: &str = "Abweichungen von der Raumvorlage gelten nur in diesem Raum. \
+    Abweichungen an Wandseiten, die den Raum nicht mehr begrenzen, wirken nicht.";
+
 /// Knöpfe im Paneel, Wert in [`Id::Raumbuch`].
 pub const BODEN: u8 = 0;
 pub const ESTRICH: u8 = 1;
@@ -155,6 +160,17 @@ impl Raum {
             .map(|s| s.1)
     }
 
+    /// Gilt eine Abweichung an einer Wandseite, die den Raum nicht mehr
+    /// begrenzt (Wand gelöscht, verschoben oder gekippt)?
+    fn verwaist(&self, m: &Model) -> bool {
+        m.space(self.id).is_some_and(|s| {
+            s.ausbau
+                .iter()
+                .filter_map(|a| a.stelle.seite())
+                .any(|w| self.name(w).is_none())
+        })
+    }
+
     fn name(&self, w: WandSeite) -> Option<&str> {
         self.seiten.iter().find(|s| s.0 == w).map(|s| s.1.as_str())
     }
@@ -209,7 +225,11 @@ pub(super) fn abschnitte_aus(
     let mut v = vec![Section {
         title: "Raumbuch",
         fields: Vec::new(),
-        hint: "Abweichungen von der Raumvorlage gelten nur in diesem Raum.",
+        hint: if r.verwaist(m) {
+            VERWAIST
+        } else {
+            "Abweichungen von der Raumvorlage gelten nur in diesem Raum."
+        },
         buttons: vec![knopf(NUTZUNG), knopf(BODEN), knopf(ESTRICH), knopf(DECKE)],
     }];
     if r.seiten.is_empty() {
@@ -575,6 +595,30 @@ mod tests {
         assert!(s.model().space(r).unwrap().ausbau.is_empty());
         assert_eq!(s.undo_label(), vorher);
         assert!(!s.model().in_step());
+    }
+
+    /// Eine Abweichung an einer Wandseite, die den Raum nicht begrenzt
+    /// (hier eine Wand im OG), nennt das Paneel (Review #190 H-190d).
+    #[test]
+    fn verwaiste_wandseite_mit_hinweis() {
+        let (mut s, r) = haus();
+        let hinweis = |s: &Scene| crate::selection::props(s, r).unwrap().sections[0].hint;
+        assert_ne!(hinweis(&s), VERWAIST);
+        let m = s.model();
+        let og = m.levels_in(m.buildings().iter().next().map(|b| b.0))[2];
+        let wand = m
+            .elements()
+            .iter()
+            .find(|(_, e)| e.storey == og && matches!(e.kind, sk_model::ElementKind::Wall(_)))
+            .map(|(_, e)| e.guid)
+            .unwrap();
+        let a = AusbauAbweichung {
+            stelle: AusbauStelle::Sockel(Some(WandSeite { wand, links: true })),
+            wahl: Some(AusbauWahl::Keiner),
+            hoehe: None,
+        };
+        assert!(s.raeume_aendern("Raumbuch ändern", |m| m.set_space_finish(r, a).is_ok()));
+        assert_eq!(hinweis(&s), VERWAIST);
     }
 
     /// Ohne Abweichung: Knöpfe je Fläche, Liste mit Vorlage, „ohne“ und
