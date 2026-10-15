@@ -27,6 +27,21 @@ impl Model {
         v.into_iter().map(|(id, _)| id).collect()
     }
 
+    /// Geschosse aller Gebäude (`None`: die Vorlage), je wie
+    /// [`Model::levels_in`], in einem Gang über die Geschosse.
+    pub fn levels_by_building(&self) -> HashMap<Option<BuildingId>, Vec<StoreyId>> {
+        let mut je: HashMap<Option<BuildingId>, Vec<(StoreyId, f64)>> = HashMap::new();
+        for (id, s) in self.storeys.iter() {
+            je.entry(s.building).or_default().push((id, s.elevation));
+        }
+        je.into_iter()
+            .map(|(b, mut v)| {
+                v.sort_by(|a, b| a.1.total_cmp(&b.1));
+                (b, v.into_iter().map(|(id, _)| id).collect())
+            })
+            .collect()
+    }
+
     /// Geschosse des Gebäudes, zu dem `id` gehört, von unten nach oben.
     pub fn group_levels(&self, id: StoreyId) -> Vec<StoreyId> {
         match self.storey(id) {
