@@ -25,6 +25,11 @@ use std::sync::Mutex;
 pub const VERWAIST: &str = "Abweichungen von der Raumvorlage gelten nur in diesem Raum. \
     Abweichungen an Wandseiten, die den Raum nicht mehr begrenzen, wirken nicht.";
 
+/// Hinweis unter der Fliesenhöhe, wenn sie über der lichten Höhe liegt:
+/// Gerechnet wird bis zur Decke (Bedienbarkeit, C zu #190).
+pub const FLIESEN_GEKAPPT: &str = "Ab OK Fertigfußboden, an der gewählten Wandseite. \
+    Über der lichten Höhe enden die Fliesen an der Decke.";
+
 /// Knöpfe im Paneel, Wert in [`Id::Raumbuch`].
 pub const BODEN: u8 = 0;
 pub const ESTRICH: u8 = 1;
@@ -249,6 +254,7 @@ pub(super) fn abschnitte_aus(
     });
     if let Some(h) = r.fliesenhoehe(m, seite) {
         let (min, max) = TILES_HEIGHT;
+        let (ffb, ufd) = ausbau::hoehen(m, &r.roh, &r.aus);
         v.push(Section {
             title: "Wandfliesen",
             fields: vec![FieldRow {
@@ -260,7 +266,11 @@ pub(super) fn abschnitte_aus(
                 zero: false,
                 einheit: None,
             }],
-            hint: "Ab OK Fertigfußboden, an der gewählten Wandseite.",
+            hint: if h > ufd - ffb + 0.5 {
+                FLIESEN_GEKAPPT
+            } else {
+                "Ab OK Fertigfußboden, an der gewählten Wandseite."
+            },
             buttons: Vec::new(),
         });
     }
@@ -731,6 +741,11 @@ mod tests {
             .space_finish(r, AusbauStelle::Fliesen(Some(w)))
             .unwrap();
         assert_eq!((a.wahl, a.hoehe), (fliesen, Some(2000.0)));
+        let hinweis = |s: &Scene| crate::selection::props(s, r).unwrap().sections[2].hint;
+        assert_ne!(hinweis(&s), FLIESEN_GEKAPPT);
+        assert!(s.set_field(r, Field::RaumFliesen, 4000.0));
+        assert_eq!(hinweis(&s), FLIESEN_GEKAPPT, "über der lichten Höhe");
+        assert!(s.undo());
         assert!(s
             .model()
             .space_finish(r, AusbauStelle::Fliesen(None))
