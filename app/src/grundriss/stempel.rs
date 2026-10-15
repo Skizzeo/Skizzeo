@@ -42,7 +42,7 @@ use sk_model::{ElementId, Guid, StoreyId};
 use sk_paint::{font::Font, Canvas, Path, Rgba};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_raum::wohnflaeche as wf;
-use sk_raum::{Raumflaeche, Raumformen};
+use sk_raum::{RaumForm, Raumflaeche, Raumformen};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, FieldState, Fonts, Rect};
@@ -113,11 +113,16 @@ struct Formen {
 }
 
 /// Grundflächen des Blatts für die Stempel (Review #195 B): ein Umfeld je
-/// Modellstand, die Fläche je Raum bei Bedarf.
+/// Modellstand, die Fläche je Raum bei Bedarf. Im offenen Schritt (Ziehen)
+/// gelten Umfeld und Flächen weiter, solange die Form des Raums gleich ist:
+/// Stützen, Treppen und Geschosse ändern sich beim Wandziehen nicht, und
+/// das Blatt Wohnfläche rechnet im offenen Schritt ebenfalls nicht neu
+/// (Grundriss zu Review #195 B). So kostet ein Bild beim Ziehen keinen
+/// Gang über das Modell.
 #[derive(Default)]
 struct Woflv {
     umfeld: Option<wf::Umfeld>,
-    grund: HashMap<ElementId, Option<i64>>,
+    grund: HashMap<ElementId, (RaumForm, Option<i64>)>,
 }
 
 impl Woflv {
@@ -130,13 +135,15 @@ impl Woflv {
         r: &Raumflaeche,
     ) -> Option<i64> {
         let id = r.form.raum?;
-        if let Some(g) = self.grund.get(&id) {
-            return *g;
+        if let Some((form, g)) = self.grund.get(&id) {
+            if *form == r.form {
+                return *g;
+            }
         }
         let m = s.model();
         let umfeld = self.umfeld.get_or_insert_with(|| wf::Umfeld::aus(m));
         let g = umfeld.raum(m, k, r.form.clone()).map(|w| w.grund);
-        self.grund.insert(id, g);
+        self.grund.insert(id, (r.form.clone(), g));
         g
     }
 }
@@ -289,11 +296,15 @@ impl Stempel {
             .as_ref()
             .is_none_or(|f| f.rev != rev || f.raeume.geschoss != g)
         {
+            let woflv = match self.formen.take() {
+                Some(f) if m.in_step() && f.raeume.geschoss == g => f.woflv,
+                _ => Woflv::default(),
+            };
             self.formen = Some(Formen {
                 rev,
                 raeume: s.raumgruppen(g),
                 tueren: Default::default(),
-                woflv: Woflv::default(),
+                woflv,
             });
         }
     }
@@ -1708,6 +1719,23 @@ mod tests {
             (16..=19).contains(&abzug),
             "die Stütze, sonst nichts: {abzug}"
         );
+        // Innenwand im offenen Schritt ziehen: Die Stempel folgen mit dem
+        // Umfeld vom Greifen und zeigen danach, was das Blatt rechnet
+        let iw = s.model().runs().ids().nth(1).unwrap();
+        s.begin("Wand verschieben");
+        let pts = [vec3(3500.0, 300.0, 0.0), vec3(3500.0, 7700.0, 0.0)];
+        assert!(s.set_run_points(iw, &pts));
+        auslegen(&mut st, &s, &kamera(&s));
+        let im_schritt: Vec<String> = st.bilder.iter().map(|b| b.flaeche.clone()).collect();
+        assert!(st.formen.as_ref().unwrap().woflv.umfeld.is_some());
+        s.commit();
+        auslegen(&mut st, &s, &kamera(&s));
+        let blatt = crate::schedule_view::wohn_rechnen(&s);
+        for (b, vorher) in st.bilder.iter().zip(&im_schritt) {
+            let w = blatt.raeume().find(|w| w.raum == b.raum).expect("im Blatt");
+            assert_eq!(b.flaeche, sk_raum::wohnflaeche::qm(w.grund), "{}", b.name);
+            assert_eq!(&b.flaeche, vorher, "{}", b.name);
+        }
     }
 
     /// Ein Schritt mit Wänden legt die Räume an; der größte neue wartet auf
