@@ -11,6 +11,20 @@ use sk_model::Show;
 
 /// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
 /// 42.5).
+/// Beschriftungen der Zahlenfelder in der Leiste; links neben dem Feld ist
+/// nur Platz für etwa 14 Zeichen (Bedienbarkeit, später zu Durchgang 42:
+/// „Versatz“ sagte nicht, wovon; „nach oben“ las sich als Anheben, deshalb
+/// steht [`IM_GRUNDRISS`] darüber).
+pub const RECHTS: &str = "nach rechts";
+pub const OBEN: &str = "nach oben";
+pub const UEBER: &str = "über Gelände";
+pub const IM_GRUNDRISS: &str = "Im Grundriss verschieben:";
+pub const NHN: &str = "±0,00 ü. NHN";
+
+/// Ohne Modul: wo man es freischaltet (Bedienbarkeit, später zu
+/// Durchgang 42: „Geländemodul freischalten“ stand ohne Weg da).
+const FREISCHALTEN: &str = "Datei › Ausbaustufe …";
+
 pub const DECKT_NICHT: &str = "Aufmaß deckt die Baugrube nicht, Erdmengen mit mittlerer Höhe. \
     Gelände zurückschieben oder ein größeres Aufmaß einlesen.";
 
@@ -166,6 +180,8 @@ impl Ui {
                 Row::Hint("und Lageplan, Grundstück"),
                 Row::Hint("und Lage des Hauses."),
                 Row::Text("Geländemodul freischalten".into()),
+                // der Weg dorthin (Bedienbarkeit, später zu Durchgang 42)
+                Row::Hint(FREISCHALTEN),
             ]);
             return rows;
         }
@@ -190,6 +206,7 @@ impl Ui {
             rows.push(paar((K::Verschieben, "Schieben"), (K::Drehen, "Drehen")));
             match l.tippen {
                 Some(K::Verschieben) => {
+                    rows.push(Row::Hint(IM_GRUNDRISS));
                     feld(&mut rows, GelaendeFeld::Rechts);
                     feld(&mut rows, GelaendeFeld::Oben);
                 }
@@ -246,11 +263,13 @@ impl Ui {
             if l.grenze {
                 rows.extend([
                     Row::Separator,
-                    Row::Label("Zuschnitt"),
+                    // „Zuschnitt: alles | blass | Grenze“ las sich schwer
+                    // (Bedienbarkeit, später zu Durchgang 42)
+                    Row::Label("Umgebung zeigen"),
                     Row::Segments([
-                        (Id::Gelaende(K::Zuschnitt(Show::All)), "alles"),
+                        (Id::Gelaende(K::Zuschnitt(Show::All)), "ganz"),
                         (Id::Gelaende(K::Zuschnitt(Show::Fade)), "blass"),
-                        (Id::Gelaende(K::Zuschnitt(Show::Parcel)), "Grenze"),
+                        (Id::Gelaende(K::Zuschnitt(Show::Parcel)), "nicht"),
                     ]),
                 ]);
             }
@@ -474,6 +493,7 @@ mod tests {
                 "Einbindung 0,80 bis 1,24 m, frostfrei".into(),
             ],
             grundstueck: Some("Grundstück 822,86 m²".into()),
+            tippen: Some(GelaendeKnopf::Verschieben),
             ..leiste()
         });
         // ohne die Schriften nicht still bestanden (Review #202 H-202a)
@@ -487,10 +507,20 @@ mod tests {
         }
         let breite = ui.width(Panel::Tools) - 2.0 * ui.size.panel_pad;
         for r in ui.rows(Panel::Tools) {
-            if let Row::Text(z) = r {
-                let w = regular.width(&z, ui.size.font_small);
-                assert!(w <= breite, "„{z}“ {w:.1} in {breite:.1}");
-            }
+            let z = match r {
+                Row::Text(z) => z,
+                Row::Hint(z) => z.to_string(),
+                _ => continue,
+            };
+            let w = regular.width(&z, ui.size.font_small);
+            assert!(w <= breite, "„{z}“ {w:.1} in {breite:.1}");
+        }
+        assert!(regular.width(FREISCHALTEN, ui.size.font_small) <= breite);
+        // Feldbeschriftungen links neben dem Feld, mit Luft davor
+        let platz = breite - (EXT_FIELD_W + 4.0) * ui.scale;
+        for z in [RECHTS, OBEN, UEBER, NHN, "Winkel"] {
+            let w = regular.width(z, ui.size.font_small);
+            assert!(w <= platz, "„{z}“ {w:.1} in {platz:.1}");
         }
     }
 
