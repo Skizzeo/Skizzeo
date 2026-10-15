@@ -27,7 +27,7 @@ const ABSCHNITTE: [(&str, &str); 17] = [
 
 /// Felder (§3.19 „Felder“); gleiches Wort in jedem Abschnitt außer den
 /// Ausnahmen in [`AUSNAHMEN`].
-const FELDER: [(&str, &str); 77] = [
+const FELDER: [(&str, &str); 78] = [
     ("guid", "Eintragsnummer"),
     ("key", "Eintragsnummer"),
     ("name", "Name"),
@@ -62,6 +62,7 @@ const FELDER: [(&str, &str); 77] = [
     ("tmax", "Dicke bis"),
     ("fn", "Schichtfunktion"),
     ("auto", "Automatikmenge"),
+    ("side", "Seite"),
     ("service", "Bauleistung"),
     ("nr", "Nummer"),
     ("art", "Artikel"),

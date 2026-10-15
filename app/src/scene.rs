@@ -623,6 +623,9 @@ pub struct Scene {
     /// Bezeichnungen mit Werten, je Wortlaut einmal ([`Scene::bezeichnung`]).
     bezeichnungen: Vec<&'static str>,
     kostenspeicher: sk_cost::Kostenspeicher,
+    /// Eigener Speicher der Vorschau (Taste im Preisblatt): Ändert sie nur
+    /// Preise, bleibt die Zuordnung (Review #197 B3).
+    kostenspeicher_live: sk_cost::Kostenspeicher,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
     /// Uhr der Übergänge (ms seit Start), von der App vor jedem Ereignis gestellt.
@@ -959,6 +962,7 @@ impl Scene {
             firmenkatalog: None,
             bezeichnungen: Vec::new(),
             kostenspeicher: sk_cost::Kostenspeicher::default(),
+            kostenspeicher_live: sk_cost::Kostenspeicher::default(),
             type_preview: false,
             now: 0,
             shown_key: None,
@@ -1140,7 +1144,12 @@ impl Scene {
             let gleich = umfaenge[..i].iter().position(|x| x == u);
             b.push(match gleich {
                 Some(j) => b[j].clone(),
-                None => Rc::new(sk_cost::lesen::kosten(&self.model, &sched, &k, u)),
+                None => {
+                    let sp = std::mem::take(&mut self.kostenspeicher_live);
+                    let (blatt, sp) = sk_cost::lesen::kosten_mit(sp, &self.model, &sched, &k, u);
+                    self.kostenspeicher_live = sp;
+                    Rc::new(blatt)
+                }
             });
         }
         Ok((k, b))
