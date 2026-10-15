@@ -24,7 +24,7 @@ use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
-pub use fang::{Fang, Ziele};
+use fang::{Fang, Ziele};
 
 /// Raster der Ecken (mm).
 const STEP: f64 = 10.0;
@@ -113,7 +113,10 @@ impl Werkzeug {
         h: f64,
         scale: f64,
     ) -> Option<[f64; 2]> {
-        let g = cam.ground_point(x, y, w, h)?;
+        let Some(g) = cam.ground_point(x, y, w, h) else {
+            self.fang = None;
+            return None;
+        };
         let tol = cam
             .ground_point(x + fang::FANG_PX * scale, y, w, h)
             .map_or(0.0, |n| (n.x - g.x).hypot(n.y - g.y));
@@ -198,6 +201,7 @@ impl Werkzeug {
         }
         out.commit = Some(std::mem::take(&mut self.ecken));
         self.maus = None;
+        self.fang = None;
     }
 
     /// Ereignis der Ansicht (Koordinaten ohne Titelleiste).
@@ -244,8 +248,11 @@ impl Werkzeug {
                 ..
             } => out.consumed = true,
             Event::MouseLeave => {
+                // beide leeren, auch wenn ein Fang die Antwort schon gibt
+                // (Review #198 B1)
                 let fang = self.fang.take().is_some();
-                out.redraw = fang || (self.maus.take().is_some() && !self.ecken.is_empty());
+                let maus = self.maus.take().is_some();
+                out.redraw = fang || (maus && !self.ecken.is_empty());
             }
             _ => {}
         }
@@ -1087,11 +1094,25 @@ mod tests {
         let l = w.linien(0.0, 1.0, &Theme::dark());
         assert!(l.iter().any(|h| h.width == 12.0));
         klick(&mut w, &cam, punkt(7000.4, 4880.0));
-        assert_eq!(w.ecken()[1], [7000.0, 5000.0]);
+        // auf der Kante, ungerundet (H-198c)
+        let k = w.ecken()[1];
+        assert!(k[1] == 5000.0 && (k[0] - 7000.4).abs() < 0.1, "{k:?}");
         assert_eq!(w.fang.map(|f| f.1), Some(Fang::Kante));
         klick(&mut w, &cam, punkt(12004.0, 12996.0));
         assert_eq!(w.ecken()[2], [12000.0, 13000.0]);
         assert_eq!(w.fang, None);
+        // gerastet aus der Ansicht: Gummiband und Marke gehen beide weg
+        // (Review #198 B1)
+        let (x, y) = cam.project(punkt(9050.0, 8050.0), 800.0, 800.0).unwrap();
+        let ev = Event::MouseMove {
+            x,
+            y,
+            mods: Modifiers::default(),
+        };
+        w.handle(&ev, &cam, 800.0, 800.0, 1.0);
+        assert!(w.fang.is_some() && w.maus.is_some());
+        assert!(w.handle(&Event::MouseLeave, &cam, 800.0, 800.0, 1.0).redraw);
+        assert!(w.fang.is_none() && w.maus.is_none());
         // neuer Stand: neu gerechnet; aus: verworfen
         w.ziele_fuer(2, Ziele::default);
         assert!(w.ziele.ecken.is_empty());

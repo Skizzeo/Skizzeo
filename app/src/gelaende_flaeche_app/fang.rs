@@ -1,9 +1,12 @@
 //! Fang beim Zeichnen einer Geländefläche (Review #189 H-189a): Ecken und
 //! Kanten der Außenkante des Hauses (Wandzüge mit Gründung), der anderen
 //! Geländeflächen und der Grundstücksgrenzen. Eine Ecke geht vor einer
-//! Kante; ohne Ziel in der Nähe rastet der Punkt auf 1 cm.
+//! Kante; ohne Ziel in der Nähe rastet der Punkt auf 1 cm. Der Punkt auf
+//! einer Kante wird nicht gerundet: an einer schrägen Kante läge er sonst
+//! bis 0,7 mm in der Nachbarfläche (Review #198 H-198c).
 
 use crate::scene::Scene;
+use std::borrow::Cow;
 
 /// So nah (Bildpunkte) rastet ein Punkt an einem Ziel.
 pub const FANG_PX: f64 = 10.0;
@@ -34,7 +37,7 @@ impl Ziele {
     }
 
     /// Nächstes Ziel zu `p` innerhalb `tol` (mm): erst Ecken, dann Kanten
-    /// (Lotfußpunkt auf 1 mm).
+    /// (Lotfußpunkt, ungerundet).
     pub fn fangen(&self, p: [f64; 2], tol: f64) -> Option<([f64; 2], Fang)> {
         let d = |q: [f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]);
         let ecke = self
@@ -55,7 +58,7 @@ impl Ziele {
                     return None;
                 }
                 let t = (((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1]) / l2).clamp(0.0, 1.0);
-                let q = [a[0] + e[0] * t, a[1] + e[1] * t].map(|v| v.round() + 0.0);
+                let q = [a[0] + e[0] * t, a[1] + e[1] * t];
                 Some((d(q), q))
             })
             .filter(|x| x.0 <= tol)
@@ -65,8 +68,15 @@ impl Ziele {
 }
 
 /// Ziele der Szene: Außenkante jedes geschlossenen Wandzugs mit Gründung,
-/// alle Geländeflächen, die Grundstücksgrenzen im Modell.
+/// alle Geländeflächen, die Grundstücksgrenzen im Modell. Die Züge aus der
+/// Szene, sonst aus dem Modell, wie [`Scene::fangziele`] (H-198d); alles
+/// in einem Gang über das Verzeichnis (H-198a).
 pub fn ziele(scene: &Scene) -> Ziele {
+    let m = scene.model();
+    m.lesend(|| sammeln(scene))
+}
+
+fn sammeln(scene: &Scene) -> Ziele {
     let m = scene.model();
     let mut z = Ziele::default();
     for p in m.site_patches() {
@@ -79,7 +89,12 @@ pub fn ziele(scene: &Scene) -> Ziele {
         if m.foundation_of(id).is_none() {
             continue;
         }
-        let Some(c) = scene.chain(id).filter(|c| c.closed) else {
+        let Some(c) = scene
+            .chain(id)
+            .map(Cow::Borrowed)
+            .or_else(|| m.chain(id).map(Cow::Owned))
+            .filter(|c| c.closed)
+        else {
             continue;
         };
         let r: Vec<[f64; 2]> = c
@@ -105,11 +120,16 @@ mod tests {
             z.fangen([4060.0, 20.0], 100.0),
             Some(([4000.0, 0.0], Fang::Ecke))
         );
-        // an der Kante: der Lotfußpunkt auf 1 mm
-        assert_eq!(
-            z.fangen([2000.4, 55.0], 100.0),
-            Some(([2000.0, 0.0], Fang::Kante))
-        );
+        // an der Kante: der Lotfußpunkt, ungerundet
+        let (q, f) = z.fangen([2000.4, 55.0], 100.0).unwrap();
+        assert_eq!(f, Fang::Kante);
+        assert!((q[0] - 2000.4).abs() < 1e-9 && q[1] == 0.0, "{q:?}");
+        // schräge Kante: der Punkt liegt auf ihr, nicht daneben (H-198c)
+        let mut s = Ziele::default();
+        s.ring(&[[0.0, 0.0], [3000.0, 1000.0], [0.0, 2000.0]]);
+        let (q, f) = s.fangen([1501.0, 497.0], 100.0).unwrap();
+        assert_eq!(f, Fang::Kante);
+        assert!((q[0] / 3.0 - q[1]).abs() < 1e-9, "{q:?}");
         // zu weit weg: nichts
         assert_eq!(z.fangen([2000.0, 500.0], 100.0), None);
         assert_eq!(Ziele::default().fangen([0.0, 0.0], 100.0), None);
