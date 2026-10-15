@@ -409,9 +409,8 @@ Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 
 Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien
 Lage | das Gelände bewegt sich, das Haus bleibt: „Verschieben“ und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“
 Höhenlage | „über Gelände“: ±0,00 um den Versatz über dem höchsten Geländepunkt am Plattenrand; „absolut“: ±0,00 fest in m ü. NHN
-Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken, die erste Ecke oder **Enter** schließt, **Rücktaste** oder **Strg+Z** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, das Paneel ändert Höhe, Böschung und „befestigt“, **Entf** löscht sie
-Erdmengen | im Mengenfenster unter „Kosten“ nach VOB/C: Baugrube, Verfüllung und Oberboden am Gelände
-Flächenmengen | Abtrag und Auftrag der Geländeflächen stehen beim Grundstück; „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten) im Paneel einer Fläche
+Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken, die erste Ecke oder **Enter** schließt, **Rücktaste** oder **Strg+Z** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, das Paneel ändert Höhe, Böschung und „befestigt“, für alle Flächen „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten); **Entf** löscht sie
+Erdmengen | im Mengenfenster unter „Kosten“ nach VOB/C: Baugrube, Verfüllung und Oberboden am Gelände, Abtrag und Auftrag beim Grundstück
 Zuschnitt | „alles“, „blass“ oder „Grenze“ zeigt das Gelände über die Grenze hinaus, blass oder abgeschnitten; gerechnet wird immer mit allen Punkten
 
 [knopf]

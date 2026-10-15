@@ -1296,18 +1296,16 @@ mod tests {
             "Höhenlage",
             "Geländeflächen",
             "Erdmengen",
-            "Flächenmengen",
         ] {
             assert!(alle.iter().any(|x| x == a), "{a}");
         }
         assert!(!alle.iter().any(|x| x == "Modul"));
-        // Erdmengen stehen unter „Kosten“, die der Flächen brauchen auch
-        // das Gelände (Bedienbarkeit #192 B, Review H-192a)
+        // Erdmengen stehen unter „Kosten“ und nennen das Gelände nicht
+        // (Bedienbarkeit #192 B, Review H-192a)
         let pro = zeilen(Freischaltung::mit(&[Modul::Gelaende, Modul::Mengen]));
-        assert!(!pro.iter().any(|x| x == "Erdmengen" || x == "Flächenmengen"));
+        assert!(!pro.iter().any(|x| x == "Erdmengen"));
         let kosten = zeilen(Freischaltung::mit(&[Modul::Mengen, Modul::Kosten]));
         assert!(kosten.iter().any(|x| x == "Erdmengen"));
-        assert!(!kosten.iter().any(|x| x == "Flächenmengen"));
     }
 
     /// Bedienbarkeit 39.5: Mit gewähltem Raum zeigt F1 „Räume“; das Thema

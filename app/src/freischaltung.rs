@@ -376,7 +376,7 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
         (Topic::Terrace, "Mengen") => Some(Modul::Mengen),
         (Topic::Rooms, "Mengen") => Some(Modul::Mengen),
         (Topic::Einlesen, "Firmenkatalog" | "Preise") => Some(Modul::Kosten),
-        (Topic::Gelaende, "Erdmengen" | "Flächenmengen") => Some(Modul::Kosten),
+        (Topic::Gelaende, "Erdmengen") => Some(Modul::Kosten),
         (
             Topic::Gelaende,
             "Ablauf" | "Lageplan" | "Höhen" | "Lage" | "Höhenlage" | "Geländeflächen" | "Zuschnitt",
@@ -395,21 +395,9 @@ fn hilfe_zeile_ohne(t: Topic, beschriftung: &str) -> Option<Modul> {
     }
 }
 
-/// Zeilen der Hilfe, die zu [`hilfe_zeile`] noch ein zweites Modul brauchen
-/// (Review #192 H-192a): Die Mengen der Geländeflächen gibt es nur mit
-/// Kosten und Gelände.
-fn hilfe_zeile_auch(t: Topic, beschriftung: &str) -> Option<Modul> {
-    match (t, beschriftung) {
-        (Topic::Gelaende, "Flächenmengen") => Some(Modul::Gelaende),
-        _ => None,
-    }
-}
-
-/// Die Zeile steht in der Hilfe ([`hilfe_zeile`], [`hilfe_zeile_auch`],
-/// [`hilfe_zeile_ohne`]).
+/// Die Zeile steht in der Hilfe ([`hilfe_zeile`], [`hilfe_zeile_ohne`]).
 pub(crate) fn hilfe_zeigt(f: Freischaltung, t: Topic, beschriftung: &str) -> bool {
     hilfe_zeile(t, beschriftung).is_none_or(|m| f.frei(m))
-        && hilfe_zeile_auch(t, beschriftung).is_none_or(|m| f.frei(m))
         && hilfe_zeile_ohne(t, beschriftung).is_none_or(|m| !f.frei(m))
 }
 
