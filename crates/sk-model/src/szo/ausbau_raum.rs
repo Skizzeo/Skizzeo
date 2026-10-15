@@ -7,7 +7,8 @@
 //! Eine Zeile, die nicht zählt (unlesbar, Raum oder Typ fehlt, Typ anderer
 //! Art, doppelt), gibt einen Hinweis und bleibt roh stehen (Regel 72):
 //! vor der gültigen Zeile derselben Kennung, wenn sie in der Datei davor
-//! stand, sonst am Ende.
+//! stand; gibt es keine derselben Kennung, vor der gültigen Zeile, die in
+//! der Datei auf sie folgte (Review #190 H-190e); sonst am Ende.
 
 use super::{Line, Record};
 use crate::catalog::spacefinish_kennung;
@@ -109,10 +110,10 @@ pub(super) fn read(
     let typen: HashMap<Guid, &LayerSet> = types.iter().map(|(_, t)| (t.guid, t)).collect();
     let mut out: Vec<(Guid, AusbauAbweichung)> = Vec::new();
     let mut gesehen: HashSet<(Guid, AusbauStelle)> = HashSet::new();
-    // Kennung der gültigen Zeilen; rohe mit ihrer Kennung und ob die
-    // gültige schon davor stand
+    // Kennung der gültigen Zeilen; rohe mit ihrer Kennung, ob die gültige
+    // schon davor stand, und der Nummer der gültigen Zeile danach
     let mut gueltig: HashMap<String, (Guid, AusbauStelle)> = HashMap::new();
-    let mut roh: Vec<(String, String, bool)> = Vec::new();
+    let mut roh: Vec<(String, String, bool, usize)> = Vec::new();
     for r in recs {
         match zeile(r, &typen, &raeume, &waende) {
             Ok((raum, a)) if gesehen.insert((raum, a.stelle)) => {
@@ -123,7 +124,7 @@ pub(super) fn read(
                 r.skip();
                 let k = spacefinish_kennung(r);
                 let danach = gueltig.contains_key(&k);
-                roh.push((lines[r.line - 1].to_string(), k, danach));
+                roh.push((lines[r.line - 1].to_string(), k, danach, out.len()));
                 let grund = fehler.err().unwrap_or_else(|| "doppelt".into());
                 hints.push(format!(
                     "Zeile {}: [spacefinish] {grund}; der Raum nimmt dort die Vorlage, die Zeile bleibt",
@@ -134,11 +135,11 @@ pub(super) fn read(
     }
     let roh = roh
         .into_iter()
-        .map(|(z, k, danach)| {
-            let an = if danach {
-                None
-            } else {
-                gueltig.get(&k).copied()
+        .map(|(z, k, danach, folgt)| {
+            let an = match gueltig.get(&k) {
+                _ if danach => None,
+                Some(an) => Some(*an),
+                None => out.get(folgt).map(|(raum, a)| (*raum, a.stelle)),
             };
             (z, an)
         })

@@ -619,6 +619,28 @@ mod tests {
         );
     }
 
+    /// Eine rohe Zeile ohne gültige derselben Kennung bleibt vor der
+    /// gültigen, die in der Datei auf sie folgt: Der erste Rundlauf ist
+    /// bytegleich (Review #190 H-190e).
+    #[test]
+    fn rohe_zeile_bleibt_an_ihrer_stelle() {
+        let (mut m, r, _) = haus();
+        m.set_space_finish(r, ab(Boden, Some(Keiner), None))
+            .unwrap();
+        m.set_space_finish(r, ab(Decke, Some(Keiner), None))
+            .unwrap();
+        let text = szo::write(&m);
+        let decke = text
+            .lines()
+            .find(|l| l.starts_with("[spacefinish]") && l.contains("at=ceiling"))
+            .unwrap()
+            .to_string();
+        let roh = decke.replace("at=ceiling", "at=xyz");
+        let datei = text.replace(&decke, &format!("{roh}\n{decke}"));
+        let l = szo::read(&datei, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(szo::write(&l.model), datei);
+    }
+
     /// `side=` ohne `wall=` bleibt als rohe Zeile wörtlich stehen, mit
     /// fremdem Schlüssel, und gilt nicht als Abweichung der ganzen Wand
     /// (Review #190 H-190g).
