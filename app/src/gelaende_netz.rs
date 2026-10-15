@@ -1828,7 +1828,7 @@ mod tests {
         assert!((hoehenzahlen(&[ab], 50.0, frei)[0].1 - FRAC_PI_2).abs() < 1e-9);
         assert!((lesbar([0.0, 0.0], [-1.0, -1.0]) - std::f64::consts::FRAC_PI_4).abs() < 1e-9);
         // im Haus oder außerhalb des Zuschnitts keine, blass bleibt blass
-        assert!(hoehenzahlen(&[kurz.clone()], 50.0, |_| None).is_empty());
+        assert!(hoehenzahlen(std::slice::from_ref(&kurz), 50.0, |_| None).is_empty());
         let lang = gerade(1_000.0, [0.0, 0.0], [100_000.0, 0.0], true);
         let ab_30 = |q: P2| (q[0] >= 30_000.0).then_some(true);
         let x: Vec<f64> = hoehenzahlen(&[lang], 50.0, ab_30)
