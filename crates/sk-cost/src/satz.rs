@@ -161,7 +161,13 @@ pub const KATEGORIEN: &[&str] = &[
     "parapet",
     "roof",
     "downpipe",
+    // Raum (RB7): Schichten der Ausbautypen im Raumbuch
+    "space",
 ];
+/// Seite einer Raumzeile für `side=` (`sk_model::qto_raum::Side`): Boden,
+/// Wand, Decke. Vor und hinter dem Kern einer Wand folgen, wenn eine Regel
+/// sie braucht (raumbuch/plan.md §6.2).
+pub const SEITEN: &[&str] = &["floor", "wall", "ceiling"];
 pub const FUNKTIONEN: &[&str] = &["loadbearing", "insulation", "finish", "membrane"];
 pub const REC: &[&str] = &["article", "service", "svcpart", "svcfollow", "rate", "lot"];
 
@@ -365,7 +371,13 @@ pub const SERVICE: Abschnitt = Abschnitt {
             "auto",
             Art::Schluessel,
             false,
-            "Automatikmenge des Gebäudes (earth.…, site.…), nur mit basis=auto",
+            "Automatikmenge des Gebäudes (earth.…, site.…, room.…), nur mit basis=auto; mit mat= nur die Menge dieses Baustoffs",
+        ),
+        f(
+            "side",
+            Art::Wort(SEITEN),
+            false,
+            "Regel: Seite der Raumzeile (floor, wall, ceiling)",
         ),
         f("retired", Art::Flag, false, "ausgemustert"),
     ],
@@ -1035,15 +1047,18 @@ mod tests {
     /// Die Bauteilarten einer Regel sind die `szo`-Wörter aus `kinds.rs`,
     /// mit Schichten, also ohne Öffnungen und Räume (das Flachdach hat
     /// seit dem Dach-Strang einen Aufbau).
+    /// Die Seiten der Regel sind Wörter von `qto_raum::Side` (RB7).
+    #[test]
+    fn seiten_wie_qto_raum() {
+        for w in SEITEN {
+            assert!(sk_model::qto::Side::from_key(w).is_some(), "{w}");
+        }
+    }
+
     #[test]
     fn kategorien_wie_kinds() {
         use sk_model::element::Category;
-        let ohne = [
-            Category::Window,
-            Category::Door,
-            Category::Opening,
-            Category::Space,
-        ];
+        let ohne = [Category::Window, Category::Door, Category::Opening];
         let mut soll: Vec<&str> = Category::ALL
             .iter()
             .filter(|c| !ohne.contains(c))

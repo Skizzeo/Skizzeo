@@ -595,8 +595,8 @@ impl HelpCard {
     /// (Review #120 H5).
     fn titel(&self, t: Topic) -> &'static str {
         match (t, self.frei.blaetter()) {
-            (Topic::Quantities, 1) => "Mengen",
-            (Topic::Quantities, 2) => "Mengen, Kosten",
+            (Topic::Quantities, 1 | 2) => "Mengen",
+            (Topic::Quantities, 3) => "Mengen, Kosten",
             _ => t.title(),
         }
     }
@@ -1395,6 +1395,9 @@ mod tests {
         let m = h.section("mengen").unwrap();
         assert_eq!(m.title, "Mengen, Kosten, AVA");
         assert!(zeile(m, "Gebäude").unwrap().contains("ganze Projekt"));
+        assert!(zeile(m, "Karten")
+            .unwrap()
+            .contains("„Wohnfläche“ rechnet nach WoFlV"));
         assert_eq!(zeile(m, "Preise"), None);
         // Bedienbarkeit 38.5: Umschalter und Rechenweg
         let sicht = zeile(m, "Sicht").expect("Zeile Sicht");

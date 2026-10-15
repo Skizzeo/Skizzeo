@@ -3576,6 +3576,189 @@ fn perf_stempel_ziehen() {
     println!("Zeiten in ms je Bild (Release).");
 }
 
+/// Wohnfläche (G8) im Mengenfenster: Rechnung aus der Szene nach der
+/// Mengenliste (Erkennung und Ketten schon gerechnet) und nach dem
+/// Verschieben einer Innenwand. Bis 1000 Häuser (höchstens
+/// `SKIZZEO_PERF_BIS`).
+#[test]
+#[ignore]
+fn perf_wohnflaeche() {
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>9}",
+        "Häuser", "Räume", "Szene", "Loslassen"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    for n in [1, 10, 100, 1000].into_iter().filter(|&n| n <= bis) {
+        let mut s = town_with_interior(n);
+        s.schedule();
+        let t = Instant::now();
+        let w = crate::schedule_view::wohn_rechnen(&s);
+        let szene = t.elapsed().as_secs_f64() * 1000.0;
+        let raeume = w.raeume().count();
+        let st = s.active_storey();
+        let (iw, _) = s
+            .model()
+            .runs()
+            .iter()
+            .find(|(_, r)| r.storey == st && !r.closed)
+            .unwrap();
+        let pts: Vec<sk_math::Vec3> = s
+            .model()
+            .run(iw)
+            .unwrap()
+            .points
+            .iter()
+            .map(|p| *p + vec3(-200.0, 0.0, 0.0))
+            .collect();
+        s.begin("Wand verschieben");
+        s.set_run_points(iw, &pts);
+        s.commit();
+        s.schedule();
+        let t = Instant::now();
+        std::hint::black_box(crate::schedule_view::wohn_rechnen(&s));
+        let los = t.elapsed().as_secs_f64() * 1000.0;
+        println!("{n:>6} {raeume:>6} {szene:>9.1} {los:>9.1}");
+    }
+    println!("Zeiten in ms, je ein Lauf.");
+}
+
+/// Wohnfläche bei je einem Gebäude je Haus (Review #195 B2): Die Zeit je
+/// Haus für die Rechnung (`wohnflaeche::projekt_mit` mit den erkannten
+/// Räumen) darf bei 1000 Häusern (4000 mit `SKIZZEO_PERF_BIS=4000`)
+/// höchstens doppelt so groß sein wie bei 100. Bestes von drei Läufen.
+/// Gezeigt werden die Raumerkennung des ganzen Modells (`raeume_alle`) und
+/// die Rechnung aus der Erkennung der Szene; deren Gang je Geschoss über
+/// alle Züge ist H-195g (Mengenfenster).
+#[test]
+#[ignore]
+fn perf_wohnflaeche_gebaeude() {
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>10} {:>10} {:>9}",
+        "Häuser", "Räume", "Rechnung", "je Haus", "Erkennung", "Szene"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let bestes = |f: &dyn Fn() -> usize| {
+        let mut ms = f64::INFINITY;
+        let mut n = 0;
+        for _ in 0..3 {
+            let t = Instant::now();
+            n = f();
+            ms = ms.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        (ms, n)
+    };
+    let mut je_haus: Vec<(usize, f64)> = Vec::new();
+    for n in [10, 100, 1000, 4000].into_iter().filter(|&n| n <= bis) {
+        let mut s = Scene::with_model(haeuser_je_gebaeude(n));
+        s.schedule();
+        let m = s.model();
+        let geschosse: Vec<_> = m.storeys().iter().map(|(id, _)| id).collect();
+        let mut formen = Vec::new();
+        let (erkennung, _) = bestes(&|| sk_raum::Erkennung::raeume_alle(m, &geschosse).len());
+        formen.extend(
+            geschosse
+                .iter()
+                .copied()
+                .zip(sk_raum::Erkennung::raeume_alle(m, &geschosse)),
+        );
+        let je: std::collections::HashMap<_, _> = formen.into_iter().collect();
+        let (ms, raeume) = bestes(&|| {
+            sk_raum::wohnflaeche::projekt_mit(m, m, |g| je.get(&g).cloned().unwrap_or_default())
+                .raeume()
+                .count()
+        });
+        let (szene, im_bild) = bestes(&|| crate::schedule_view::wohn_rechnen(&s).raeume().count());
+        assert_eq!(raeume, 4 * n, "drei Räume im EG, einer im OG");
+        assert_eq!(im_bild, raeume);
+        assert_eq!(sk_raum::wohnflaeche::projekt(m).raeume().count(), raeume);
+        let h = ms / n as f64;
+        println!("{n:>6} {raeume:>6} {ms:>9.1} {h:>10.4} {erkennung:>10.1} {szene:>9.1}");
+        je_haus.push((n, h));
+    }
+    println!("Zeiten in ms (Release).");
+    let bezug = je_haus.iter().find(|x| x.0 == 100).map(|x| x.1);
+    for &(n, h) in je_haus.iter().filter(|x| x.0 > 100) {
+        let b = bezug.unwrap();
+        assert!(
+            h <= 2.0 * b,
+            "{n} Häuser: {h:.4} ms je Haus, bei 100 {b:.4}"
+        );
+    }
+}
+
+/// Wohnfläche mit je einer Stütze 40/40 je Haus, alle Häuser auf einem
+/// Geschoss (Review #195 B4): `wohn_rechnen` aus der Szene, bestes von drei.
+/// Die Zeit je Haus darf bei 2000 Häusern (4000 mit `SKIZZEO_PERF_BIS=4000`)
+/// höchstens doppelt so groß sein wie bei 1000. Jede Stütze wird
+/// abgezogen.
+#[test]
+#[ignore]
+fn perf_wohnflaeche_stuetzen() {
+    use sk_model::erweiterung::{ExtDef, ExtPart};
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>10}",
+        "Häuser", "Räume", "Rechnung", "je Haus"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    let mut je_haus: Vec<(usize, f64)> = Vec::new();
+    for n in [1000, 2000, 4000].into_iter().filter(|&n| n <= bis) {
+        let mut s = town_with_interior(n);
+        let eg = s.active_storey();
+        let side = (n as f64).sqrt().ceil() as usize;
+        assert!(s.edit_model("Stützen", |m| {
+            let d = ExtDef::lesen(STUETZE).unwrap();
+            m.put_ext_def(d.clone()).unwrap();
+            for i in 0..n {
+                let (ox, oy) = ((i % side) as f64 * 15000.0, (i / side) as f64 * 15000.0);
+                let mut p = ExtPart::new(&d, [ox + 1750.0, oy + 4000.0]);
+                p.werte = vec![("b".into(), 400.0), ("d".into(), 400.0)];
+                m.add_ext(eg, p).unwrap();
+            }
+            true
+        }));
+        s.schedule();
+        let mut ms = f64::INFINITY;
+        let mut w = None;
+        for _ in 0..3 {
+            let t = Instant::now();
+            w = Some(crate::schedule_view::wohn_rechnen(&s));
+            ms = ms.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let w = w.unwrap();
+        let raeume = w.raeume().count();
+        let abzuege = w
+            .raeume()
+            .flat_map(|r| &r.teile)
+            .filter(|t| t.text.contains("§ 3 Abs. 3 Nr. 1") && t.wert < 0.0)
+            .count();
+        assert_eq!(abzuege, n, "je Haus eine Stütze abgezogen");
+        let h = ms / n as f64;
+        println!("{n:>6} {raeume:>6} {ms:>9.1} {h:>10.4}");
+        je_haus.push((n, h));
+    }
+    println!("Zeiten in ms (Release).");
+    if let Some(&(_, b)) = je_haus.first() {
+        for &(n, h) in &je_haus[1..] {
+            assert!(
+                h <= 2.0 * b,
+                "{n} Häuser: {h:.4} ms je Haus, bei 1000 {b:.4}"
+            );
+        }
+    }
+}
+
 /// Review H-193e: das erste `begin` nach dem Öffnen (Stand der Räume aller
 /// Geschosse) und die erste Mengenliste, bei 100 bis 3000 Häusern zu je
 /// einem Gebäude (höchstens `SKIZZEO_PERF_BIS`), je das Bessere aus zwei
