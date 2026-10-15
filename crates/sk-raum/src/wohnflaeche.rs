@@ -147,12 +147,21 @@ impl Wohnflaeche {
 
 /// „4,970“ aus mm.
 pub fn m(x: f64) -> String {
-    format!("{:.3}", x / 1e3).replace('.', ",")
+    drei_stellen(x)
 }
 
 /// „19,731 m²“ aus mm².
 pub fn qm3(x: f64) -> String {
-    format!("{:.3} m²", x / 1e6).replace('.', ",")
+    format!("{} m²", drei_stellen(x / 1e3))
+}
+
+/// Tausendstel `t` mit drei Nachkommastellen, kaufmännisch gerundet (ein
+/// Gleichstand von der Null weg wie im Aufmaß, nicht zur geraden Ziffer).
+fn drei_stellen(t: f64) -> String {
+    let n = t.round();
+    let s = if n < 0.0 { "-" } else { "" };
+    let n = n.abs() as u64;
+    format!("{s}{},{:03}", n / 1000, n % 1000)
 }
 
 /// „19,73 m²“ aus 0,01 m².

@@ -431,3 +431,15 @@ fn projekt_nach_gebaeude_geschoss_und_raum() {
     assert_eq!(w.grund(), w.wohn());
     assert_eq!(w.raeume().count(), 2);
 }
+
+/// Ansätze runden kaufmännisch wie im Aufmaß: 9,250 × 4,250 = 39,3125
+/// zeigt 39,313, nicht die gerade Ziffer (Test an #195).
+#[test]
+fn ansatz_rundet_kaufmaennisch() {
+    assert_eq!(qm3(9250.0 * 4250.0), "39,313 m²");
+    assert_eq!(qm3(-9250.0 * 4250.0), "-39,313 m²");
+    assert_eq!(qm3(19_731_000.0), "19,731 m²");
+    assert_eq!(m(4970.0), "4,970");
+    assert_eq!(m(2.5), "0,003");
+    assert_eq!(m(0.4), "0,000");
+}
