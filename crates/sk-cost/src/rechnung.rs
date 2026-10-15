@@ -17,7 +17,7 @@ use sk_model::library::Material;
 use sk_model::library::{LayerSetId, MaterialId};
 use sk_model::qto::{FormworkQto, Schedule, Side, Umfang};
 use sk_model::{BuildingId, ElementId, Guid, MaterialLayer, Model, StoreyId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Kleinste Einheit je Einheit (mm, mm², mm³, g): so viele je Einheit.
 pub(crate) fn skala(e: Einheit) -> i128 {
@@ -120,18 +120,30 @@ pub struct Position {
     /// Baustoff und Dicke der Schicht, an der die Bauleistung rechnet
     /// (Artikel der Schicht, geschätzt nach Dicke); Preisblatt, KA-2c.
     pub schicht: Option<(Guid, Dez)>,
+    /// Dicken der Zeilen über 0, aufsteigend, jede einmal. Mehr als eine,
+    /// wenn Zeilen verschiedener Dicke denselben Stoff-EP haben (etwa ohne
+    /// Preis); das LV teilt dann nicht je Dicke (Review #213 H-213g).
+    pub dicken: Vec<Dez>,
 }
 
 impl Position {
     /// Teilmengen auf 3 Stellen je Schlüssel (Regel 96, etwa je Geschoss oder
     /// Kostengruppe), in der Reihenfolge des ersten Vorkommens im Ansatz.
-    pub fn teile<K: PartialEq + Copy>(&self, schluessel: impl Fn(&Ansatz) -> K) -> Vec<(K, Dez)> {
+    /// Linear in den Ansätzen (H-195g): die Stelle je Schlüssel im Index.
+    pub fn teile<K: Eq + std::hash::Hash + Copy>(
+        &self,
+        schluessel: impl Fn(&Ansatz) -> K,
+    ) -> Vec<(K, Dez)> {
         let mut t: Vec<(K, i128)> = Vec::new();
+        let mut stelle: HashMap<K, usize> = HashMap::new();
         for a in &self.ansatz {
             let k = schluessel(a);
-            match t.iter_mut().find(|(x, _)| *x == k) {
-                Some((_, v)) => *v += a.menge,
-                None => t.push((k, a.menge)),
+            match stelle.get(&k) {
+                Some(&i) => t[i].1 += a.menge,
+                None => {
+                    stelle.insert(k, t.len());
+                    t.push((k, a.menge));
+                }
             }
         }
         t.into_iter()
@@ -144,6 +156,24 @@ impl Position {
     /// `stoff_gp`.
     pub fn gp_von(&self, menge: Dez, nur_material: bool) -> Cent {
         gp(menge, if nur_material { self.stoff } else { self.ep })
+    }
+}
+
+/// Beträge je Schlüssel summieren, in der Folge des ersten Vorkommens;
+/// linear über einen Index (H-195g).
+fn summieren<K: Eq + std::hash::Hash + Copy>(
+    v: &mut Vec<(K, Cent)>,
+    teile: impl IntoIterator<Item = (K, Cent)>,
+) {
+    let mut stelle: HashMap<K, usize> = v.iter().enumerate().map(|(i, (k, _))| (*k, i)).collect();
+    for (k, c) in teile {
+        match stelle.get(&k) {
+            Some(&i) => v[i].1 += c,
+            None => {
+                stelle.insert(k, v.len());
+                v.push((k, c));
+            }
+        }
     }
 }
 
@@ -842,8 +872,8 @@ pub fn kosten_mit(
     let mut einmal: std::collections::HashSet<(ElementId, Guid)> = Default::default();
     let mut ep_fest: HashMap<Guid, (Cent, Cent, Cent, Option<Cent>)> = HashMap::new();
 
-    let rows = s.layer_rows(m);
-    for (gebaeude, r) in &rows {
+    let rows = s.layer_rows_ref(m);
+    for (gebaeude, r) in rows.iter() {
         let Some(e) = m.element(r.element) else {
             continue;
         };
@@ -1134,13 +1164,15 @@ pub fn kosten_mit(
     }
     for p in sammel {
         let menge_klein: i128 = p.ansatz.iter().map(|a| a.menge).sum();
+        let mut dicken: Vec<Dez> = p.dicken.iter().copied().filter(|d| d.0 > 0).collect();
+        dicken.sort();
         let menge = drei(menge_klein, p.einheit);
         let (kurz, oz, lohn, geraet, sonst, nu) = match &p.quelle {
             Quelle::Leistung(g) | Quelle::Geschaetzt(g) => {
                 let l = k.leistung(*g).expect("Leistung");
                 let (lo, ge, so, nu) = *ep_fest.entry(*g).or_insert_with(|| feste_ep(k, l));
                 let mut kurz = l.kurz.clone();
-                let d = p.dicken.iter().copied().filter(|d| d.0 > 0).max();
+                let d = dicken.last().copied();
                 match (&p.quelle, d) {
                     (Quelle::Geschaetzt(_), Some(d)) => {
                         kurz += &format!(" · geschätzt für d={}", cm_kurz(d));
@@ -1209,6 +1241,7 @@ pub fn kosten_mit(
             gewerk: p.gewerk,
             ansatz: p.ansatz,
             schicht: p.schicht,
+            dicken,
         });
     }
     // Reihenfolge: Los, Titel, pos; geschätzt hinter genau; Richtpreis zuletzt
@@ -1279,15 +1312,14 @@ pub fn kosten_mit(
         .filter(|p| !matches!(p.quelle, Quelle::Leistung(_)))
         .collect();
     let mut nach_gewerk: Vec<(Option<Guid>, Cent)> = Vec::new();
-    for p in &positionen {
-        match nach_gewerk.iter_mut().find(|(g, _)| *g == p.gewerk) {
-            Some((_, c)) => *c += p.gp,
-            None => nach_gewerk.push((p.gewerk, p.gp)),
-        }
-    }
+    summieren(
+        &mut nach_gewerk,
+        positionen.iter().map(|p| (p.gewerk, p.gp)),
+    );
     // Teilungen (Regel 96): Teilmenge auf 3 Stellen × EP, Ausgleich am Ende
-    let geschoss_folge: Vec<StoreyId> = {
-        let mut v: Vec<StoreyId> = Vec::new();
+    // Stelle jedes Geschosses in der Folge des ersten Vorkommens (H-195g)
+    let geschoss_folge: HashMap<StoreyId, usize> = {
+        let mut v: HashMap<StoreyId, usize> = HashMap::new();
         let auto = s.auto.iter().map(|a| a.storey);
         for st in rows
             .iter()
@@ -1295,14 +1327,15 @@ pub fn kosten_mit(
             .chain(ext.geschosse)
             .chain(auto)
         {
-            if !v.contains(&st) {
-                v.push(st);
-            }
+            let n = v.len();
+            v.entry(st).or_insert(n);
         }
         v
     };
     let mut nach_geschoss: Vec<(StoreyId, Cent)> = Vec::new();
     let mut nach_kg: Vec<(Option<u16>, Cent)> = Vec::new();
+    let mut geschoss_teile = Vec::with_capacity(positionen.len());
+    let mut kg_teile = Vec::with_capacity(positionen.len());
     for p in &positionen {
         let je_geschoss: Vec<(StoreyId, Cent)> = p
             .teile(|a| a.geschoss)
@@ -1317,25 +1350,17 @@ pub fn kosten_mit(
         // Schranke je Position und Teilung: Teile × (0,0005 × EP + 0,005) €
         befunde.extend(summenprobe("Geschosse", &p.kurz, &je_geschoss, p.ep, p.gp));
         befunde.extend(summenprobe("Kostengruppen", &p.kurz, &je_kg, p.ep, p.gp));
-        for (st, c) in je_geschoss {
-            match nach_geschoss.iter_mut().find(|(s, _)| *s == st) {
-                Some((_, v)) => *v += c,
-                None => nach_geschoss.push((st, c)),
-            }
-        }
-        for (kg, c) in je_kg {
-            match nach_kg.iter_mut().find(|(x, _)| *x == kg) {
-                Some((_, v)) => *v += c,
-                None => nach_kg.push((kg, c)),
-            }
-        }
+        geschoss_teile.push(je_geschoss);
+        kg_teile.push(je_kg);
     }
+    summieren(&mut nach_geschoss, geschoss_teile.into_iter().flatten());
+    summieren(&mut nach_kg, kg_teile.into_iter().flatten());
     // Geschosse von unten nach oben
     let hoehe = |s: &StoreyId| {
         m.storey(*s)
             .map_or(0, |x| (x.elevation * 1000.0).round() as i64)
     };
-    nach_geschoss.sort_by_key(|(s, _)| (hoehe(s), geschoss_folge.iter().position(|x| x == s)));
+    nach_geschoss.sort_by_cached_key(|(s, _)| (hoehe(s), geschoss_folge.get(s).copied()));
     nach_kg.sort_by_key(|(k, _)| k.unwrap_or(u16::MAX));
     let ausgleich_geschoss = netto - nach_geschoss.iter().map(|x| x.1).sum::<Cent>();
     let ausgleich_kg = netto - nach_kg.iter().map(|x| x.1).sum::<Cent>();
@@ -1585,6 +1610,9 @@ fn auto_ansaetze(
     index: &mut HashMap<PosKey, usize>,
 ) -> Vec<Befund> {
     let mut befunde = Vec::new();
+    // schon gemeldet; je Raum mit eigenem Sockelbaustoff ein Hinweis, die
+    // Suche in `befunde` wäre quadratisch (Review #197 H-197h)
+    let mut gesehen: HashSet<Befund> = HashSet::new();
     let mut stoffe: HashMap<Guid, (Cent, bool)> = HashMap::new();
     let mut gemeldet: Vec<Guid> = Vec::new();
     // Erdmengen, die das Aufmaß nur angenähert liefert (Flächenmittel ohne
@@ -1595,7 +1623,7 @@ fn auto_ansaetze(
     // D2)
     for h in &s.hinweise {
         let b = Befund::hinweis(0, h.as_str(), Ort::Datei);
-        if !befunde.contains(&b) {
+        if gesehen.insert(b.clone()) {
             befunde.push(b);
         }
     }
@@ -1613,7 +1641,7 @@ fn auto_ansaetze(
             };
             for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
                 let b = Befund::hinweis(0, h, ort.clone());
-                if !befunde.contains(&b) {
+                if gesehen.insert(b.clone()) {
                     befunde.push(b);
                 }
             }
@@ -1652,7 +1680,7 @@ fn auto_ansaetze(
                     ),
                     ort,
                 );
-                if !befunde.contains(&b) {
+                if gesehen.insert(b.clone()) {
                     befunde.push(b);
                 }
             }
@@ -1671,11 +1699,13 @@ fn auto_ansaetze(
                 if !gemeldet.contains(&l.guid) {
                     gemeldet.push(l.guid);
                     let z = Einheit::aus(a.unit).map_or(a.unit, Einheit::zeichen);
-                    befunde.push(Befund::warnung(
+                    let b = Befund::warnung(
                         80,
                         crate::befund::r80(&l.kurz, l.einheit.zeichen(), &format!("in {z}")),
                         ort,
-                    ));
+                    );
+                    gesehen.insert(b.clone());
+                    befunde.push(b);
                 }
                 continue;
             }
@@ -1697,7 +1727,7 @@ fn auto_ansaetze(
                 let mut bf = Vec::new();
                 let x = stoff_ep(k, l, None, false, &ort, &mut bf);
                 for b in bf {
-                    if !befunde.contains(&b) {
+                    if gesehen.insert(b.clone()) {
                         befunde.push(b);
                     }
                 }

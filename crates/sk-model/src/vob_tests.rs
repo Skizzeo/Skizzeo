@@ -292,6 +292,35 @@ fn viele_oeffnungen() {
     assert!(tiefen.windows(2).all(|w| w[0] == w[1]), "{tiefen:?}");
 }
 
+/// Review #197 H-197g: Eine Außenwand ohne Kernschicht hat trotzdem ihre
+/// Innenlaibung; das Raumbuch setzt dort keine Eckschiene.
+#[test]
+fn innenlaibung_ohne_kernschicht() {
+    use crate::qto_laibung::INNER;
+    let (mut m, eg) = haus();
+    let set = m
+        .element(m.run(eg).unwrap().segments[0])
+        .unwrap()
+        .layer_set
+        .unwrap();
+    let mut s = m.layer_set(set).unwrap().clone();
+    for l in &mut s.layers {
+        l.core = false;
+    }
+    m.begin("ohne Kern");
+    assert!(m.set_layer_set(set, s));
+    m.commit();
+    let id = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    let q = crate::qto::run_qto(&m, eg);
+    let innen = q[0].layers.last().unwrap().holes.first().unwrap();
+    let wert = schedule(&m)
+        .auto
+        .iter()
+        .find(|a| a.element == id && a.key == INNER)
+        .map(|a| a.value);
+    assert_eq!(wert, Some(2.0 * innen.height + innen.width));
+}
+
 /// Review W24 B1: Zwei Lagen aus demselben Baustoff (Dämmung 2 × halbe
 /// Dicke) haben je ihr eigenes Loch. Das Fenster 1,25 × 1,51 m bleibt in
 /// beiden übermessen, die WDVS-Laibung zählt einmal.

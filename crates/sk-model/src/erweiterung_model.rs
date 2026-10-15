@@ -344,7 +344,7 @@ impl Model {
         Some(match sk_szb::Bestand::werk().baustoff(key) {
             Some(_) => t,
             // je nach Zeile „Baustoffe anlegen“ oder „Aktualisieren“ (E8c-b)
-            None => format!("{t}; anlegen unter Datei › Erweiterungen …"),
+            None => format!("{t}; anlegen unter Dateimenü › Erweiterungen …"),
         })
     }
 

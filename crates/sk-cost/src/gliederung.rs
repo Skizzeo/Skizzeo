@@ -351,6 +351,8 @@ impl Kostenblatt {
     /// Summe der Geschossteile aller Positionen in den Geschossen
     /// `geschosse` im Modus (Chip-Summen im Reiter Kosten, auch abgewählt).
     pub fn summe_geschosse(&self, geschosse: &[StoreyId], nur_material: bool) -> Cent {
+        let geschosse: std::collections::HashSet<StoreyId> = geschosse.iter().copied().collect();
+        let geschosse = &geschosse;
         (0..self.positionen.len())
             .flat_map(|i| {
                 self.positionen[i]
