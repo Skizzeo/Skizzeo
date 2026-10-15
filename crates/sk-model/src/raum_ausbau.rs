@@ -10,7 +10,7 @@
 //! `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Seite eines Wandsegments: links bzw. rechts der Zeichenrichtung.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -264,6 +264,28 @@ impl Model {
                 s.ausbau.extend(dazu);
                 ordnen(&mut s.ausbau);
             });
+        }
+    }
+
+    /// Weggefallene Wandsegmente (Löschen, Zugpunkte, Wandzug): Die
+    /// Abweichungen ihrer Wandseiten gehen im selben Schritt aus den Räumen,
+    /// kein toter Verweis (BIM Regel 24); Rückgängig bringt beides zurück.
+    pub(super) fn ausbau_wand_weg(&mut self, weg: &[Guid]) {
+        if weg.is_empty() {
+            return;
+        }
+        let weg: HashSet<Guid> = weg.iter().copied().collect();
+        let trifft = |a: &AusbauAbweichung| a.stelle.seite().is_some_and(|w| weg.contains(&w.wand));
+        let raeume: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                ElementKind::Space(s) if s.ausbau.iter().any(trifft) => Some(id),
+                _ => None,
+            })
+            .collect();
+        for id in raeume {
+            self.set_space(id, |s| s.ausbau.retain(|a| !trifft(a)));
         }
     }
 
@@ -659,5 +681,112 @@ mod tests {
         );
         m.apply(&tx, Direction::Undo);
         assert_eq!(m.space(r).unwrap().ausbau, vorher);
+    }
+
+    /// Wandseiten des Raums, deren Wand es nicht gibt (BIM Regel 24).
+    fn tote(m: &Model, r: ElementId) -> Vec<WandSeite> {
+        m.space(r)
+            .unwrap()
+            .ausbau
+            .iter()
+            .filter_map(|a| a.stelle.seite())
+            .filter(|w| {
+                !m.elements()
+                    .iter()
+                    .any(|(_, e)| e.guid == w.wand && matches!(e.kind, ElementKind::Wall(_)))
+            })
+            .collect()
+    }
+
+    /// Freier Wandzug neben dem Haus mit drei Segmenten (Umrisswände
+    /// lassen sich nicht löschen); die Abweichungen prüfen ihre Wand nicht
+    /// gegen den Raum.
+    fn frei(m: &mut Model, nord: ElementId) -> RunId {
+        let set = m.element(nord).unwrap().layer_set.unwrap();
+        let (seite, st) = {
+            let r = m.run(m.segment_of(nord).unwrap().0).unwrap();
+            (r.ref_side, r.storey)
+        };
+        let pts = [
+            vec3(14000.0, 0.0, 0.0),
+            vec3(14000.0, 6000.0, 0.0),
+            vec3(18000.0, 6000.0, 0.0),
+            vec3(18000.0, 0.0, 0.0),
+        ];
+        m.begin("Wand");
+        let run = m
+            .add_wall_run(&pts, false, seite, st, set, Category::ExteriorWall)
+            .unwrap();
+        m.commit();
+        run
+    }
+
+    /// Gelöschte Wand: Ihre Wandseiten-Abweichungen gehen im selben Schritt
+    /// aus dem Raum, die für alle Wandseiten bleibt; Rückgängig bringt Wand
+    /// und Abweichungen zurück (BIM Regel 24).
+    #[test]
+    fn wand_loeschen() {
+        let (mut m, r, nord) = haus();
+        let run = frei(&mut m, nord);
+        let wand = m.wall_at(run, 1).unwrap();
+        let w = rechts(&m, wand);
+        let fliesen = ab(
+            Fliesen(Some(w)),
+            Some(Typ(WALL_TILES_TYPE_GUID)),
+            Some(2000.0),
+        );
+        m.set_space_finish(r, fliesen).unwrap();
+        let links = WandSeite { links: true, ..w };
+        m.set_space_finish(r, ab(Sockel(Some(links)), Some(Keiner), None))
+            .unwrap();
+        let alle = ab(Wand(None), Some(Keiner), None);
+        m.set_space_finish(r, alle).unwrap();
+        let nordseite = ab(Sockel(Some(rechts(&m, nord))), Some(Keiner), None);
+        m.set_space_finish(r, nordseite).unwrap();
+        let vorher = m.space(r).unwrap().ausbau.clone();
+        m.begin("Löschen");
+        let d = m.delete_elements(&[wand]);
+        assert_eq!(d.removed, vec![wand], "{:?}", d.refused);
+        let tx = m.commit().unwrap();
+        let mut bleibt = vec![alle, nordseite];
+        ordnen(&mut bleibt);
+        assert_eq!(m.space(r).unwrap().ausbau, bleibt);
+        m.apply(&tx, Direction::Undo);
+        assert_eq!(m.space(r).unwrap().ausbau, vorher);
+        assert!(tote(&m, r).is_empty());
+        m.apply(&tx, Direction::Redo);
+        assert_eq!(m.space(r).unwrap().ausbau, bleibt);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Zugpunkte mit weniger Segmenten: Was an einer weggefallenen Wand
+    /// hing, geht mit ihr; keine Abweichung zeigt auf eine fehlende Wand,
+    /// Rückgängig bringt alle zurück (BIM Regel 24).
+    #[test]
+    fn zug_mit_weniger_segmenten() {
+        let (mut m, r, nord) = haus();
+        let run = frei(&mut m, nord);
+        let waende = m.run(run).unwrap().segments.clone();
+        assert_eq!(waende.len(), 3);
+        for &e in &waende {
+            m.set_space_finish(r, ab(Sockel(Some(rechts(&m, e))), Some(Keiner), None))
+                .unwrap();
+        }
+        let vorher = m.space(r).unwrap().ausbau.clone();
+        m.begin("Zug");
+        let pts = [
+            vec3(14000.0, 0.0, 0.0),
+            vec3(14000.0, 6000.0, 0.0),
+            vec3(18000.0, 6000.0, 0.0),
+        ];
+        assert!(m.set_run_points(run, &pts).is_some());
+        let tx = m.commit().unwrap();
+        assert_eq!(m.run(run).unwrap().segments.len(), 2);
+        assert!(waende.iter().any(|&e| m.element(e).is_none()));
+        assert!(tote(&m, r).is_empty(), "{:?}", tote(&m, r));
+        assert_eq!(m.space(r).unwrap().ausbau.len(), 2);
+        m.apply(&tx, Direction::Undo);
+        assert_eq!(m.space(r).unwrap().ausbau, vorher);
+        assert!(tote(&m, r).is_empty());
     }
 }

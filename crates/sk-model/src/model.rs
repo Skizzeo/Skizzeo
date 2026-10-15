@@ -2901,12 +2901,14 @@ impl Model {
                 (None, None) => return false,
             }
         }
+        let mut weg = Vec::new();
         for (e, keep) in old.into_iter().zip(kept) {
             if !keep {
                 note!(self, Element, self.elements, e);
-                self.elements.remove(e);
+                weg.extend(self.elements.remove(e).map(|x| x.guid));
             }
         }
+        self.ausbau_wand_weg(&weg);
         let Some(run) = self.runs.get_mut(id) else {
             return false;
         };
@@ -2930,10 +2932,12 @@ impl Model {
         let Some(run) = self.runs.remove(id) else {
             return false;
         };
+        let mut weg = Vec::new();
         for e in run.segments {
             note!(self, Element, self.elements, e);
-            self.elements.remove(e);
+            weg.extend(self.elements.remove(e).map(|x| x.guid));
         }
+        self.ausbau_wand_weg(&weg);
         self.sync_parts(id);
         self.update_joins(&[id]);
         self.touch();

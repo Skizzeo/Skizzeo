@@ -101,6 +101,11 @@ pub(super) fn read(
         .filter(|(_, e)| matches!(e.kind, ElementKind::Space(_)))
         .map(|(_, e)| e.guid)
         .collect();
+    let waende: HashSet<Guid> = els
+        .iter()
+        .filter(|(_, e)| matches!(e.kind, ElementKind::Wall(_)))
+        .map(|(_, e)| e.guid)
+        .collect();
     let typen: HashMap<Guid, &LayerSet> = types.iter().map(|(_, t)| (t.guid, t)).collect();
     let mut out: Vec<(Guid, AusbauAbweichung)> = Vec::new();
     let mut gesehen: HashSet<(Guid, AusbauStelle)> = HashSet::new();
@@ -109,7 +114,7 @@ pub(super) fn read(
     let mut gueltig: HashMap<String, (Guid, AusbauStelle)> = HashMap::new();
     let mut roh: Vec<(String, String, bool)> = Vec::new();
     for r in recs {
-        match zeile(r, &typen, &raeume) {
+        match zeile(r, &typen, &raeume, &waende) {
             Ok((raum, a)) if gesehen.insert((raum, a.stelle)) => {
                 gueltig.insert(spacefinish_kennung(r), (raum, a.stelle));
                 out.push((raum, a));
@@ -145,6 +150,7 @@ fn zeile(
     r: &Record,
     types: &HashMap<Guid, &LayerSet>,
     raeume: &HashSet<Guid>,
+    waende: &HashSet<Guid>,
 ) -> Result<(Guid, AusbauAbweichung), String> {
     let unlesbar = |_| "unlesbar".to_string();
     let raum = r.guid("space").map_err(unlesbar)?;
@@ -162,6 +168,9 @@ fn zeile(
             },
         }),
     };
+    if seite.is_some_and(|w| !waende.contains(&w.wand)) {
+        return Err("Wand fehlt".into());
+    }
     let stelle = match (r.get("at").map_err(unlesbar)?, seite) {
         ("floor", None) => AusbauStelle::Boden,
         ("screed", None) => AusbauStelle::Estrich,
