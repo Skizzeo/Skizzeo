@@ -1000,7 +1000,7 @@ pub fn luecken(k: &Katalog, haus: &Model, sched: &sk_model::qto::Schedule) -> Ve
             return false;
         }
         matches!(
-            zuordnen(k, kat, s, mat).grund,
+            zuordnen(k, kat, None, s, mat).grund,
             Grund::Geschaetzt { .. } | Grund::Richtpreis | Grund::Ohne
         )
     };
@@ -1163,12 +1163,22 @@ pub fn passt_auf(l: &Leistung, baustoff: Option<&str>) -> String {
         .filter(|x| !x.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    let arten = l
+    let mut arten = l
         .kategorien
         .iter()
         .map(|w| kategorie_name(w))
         .collect::<Vec<_>>()
         .join(", ");
+    // Seite der Raumzeile (`side=`, RB7; Review #197 H-197d)
+    if let Some(seite) = l.seite.as_deref() {
+        let wort = match seite {
+            "floor" => "Boden",
+            "wall" => "Wand",
+            "ceiling" => "Decke",
+            x => x,
+        };
+        arten = format!("{arten} ({wort})");
+    }
     if l.kategorien.is_empty() {
         return "nur als Folgeposition".into();
     }
@@ -1191,19 +1201,14 @@ pub fn passt_auf(l: &Leistung, baustoff: Option<&str>) -> String {
 /// `g` bekommen (paket-ka3a §3 „Verwendet in“): Guid des Typs und Name,
 /// mit „(Standard)“ am Standardtyp; nach Namen.
 pub fn verwendet_in(lib: &Library, k: &Katalog, g: Guid) -> Vec<(Guid, String)> {
-    use sk_model::element::Category;
-    use sk_model::library::TypeCategory;
     let mut out = Vec::new();
     for (id, t) in lib.types.iter() {
-        let Some(kat) = Category::ALL
-            .into_iter()
-            .find(|c| TypeCategory::of(*c) == Some(t.category))
-        else {
+        let Some((kat, seite)) = crate::zuordnung::art_des_typs(t.category) else {
             continue;
         };
         let nutzt = t.layers.iter().any(|l| {
             let mat = lib.materials.get(l.material);
-            crate::zuordnung::zuordnen(k, kat, l, mat).leistung == Some(g)
+            crate::zuordnung::zuordnen(k, kat, seite, l, mat).leistung == Some(g)
         });
         if nutzt {
             let std = lib.default_exterior == Some(id) || lib.default_interior == Some(id);
@@ -1808,6 +1813,17 @@ mod tests {
             .find(|l| l.kategorien.is_empty())
             .unwrap();
         assert_eq!(passt_auf(ohne, None), "nur als Folgeposition");
+        // Raumzeile mit Seite (Review #197 H-197d)
+        let decke = k
+            .leistungen
+            .iter()
+            .find(|l| l.kurz.starts_with("Deckenputz Gipsputz"))
+            .unwrap();
+        assert!(
+            passt_auf(decke, None).contains("(Decke)"),
+            "{}",
+            passt_auf(decke, None)
+        );
         // Ungültig: Kurztext über 70 Zeichen sperrt
         let mut d = crate::preis::bauleistung(l);
         d.kurz = "x".repeat(71);

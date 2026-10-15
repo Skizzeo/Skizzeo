@@ -668,11 +668,11 @@ fn raeume_in_der_mengenliste() {
 
     // Tabelle
     let m = s.model().clone();
-    // Kosten bis RB7 gleich: Raumzeilen und Raummengen ohne Leistung
+    // Seit Werksstand 19 (RB7) bepreisen die Kosten die Raumzeilen
     let k = sk_cost::lesen::katalog(&m, None);
     let u = sk_cost::Umfang::projekt();
     let ohne = sk_cost::lesen::kosten(&m, &sk_model::qto::schedule(&m), &k, &u);
-    assert_eq!(sk_cost::lesen::kosten(&m, &sched, &k, &u), ohne);
+    assert!(sk_cost::lesen::kosten(&m, &sched, &k, &u).netto.0 > ohne.netto.0);
     let csv = String::from_utf8(csv_grouped(&m, &sched, Grouping::Storey)).unwrap();
     assert!(
         csv.contains(";Raum ") && csv.contains("Sockelleiste"),
@@ -699,7 +699,7 @@ fn raeume_in_der_mengenliste() {
 /// ihrer Fläche, die Sockelleiste mit ihrem Typ beim Parkett, der
 /// Randdämmstreifen beim Estrich, je Raum eine Zeile mit Rechenweg. Sie
 /// zählen nicht in die Summe des Gewerks, jede steht einmal, und die
-/// Kosten bleiben gleich (Automatikmenge am Raum).
+/// Kosten bepreisen sie als Automatikmenge am Raum (Werksstand 19).
 #[test]
 fn laengen_der_raeume_nach_gewerk() {
     let mut s = haus_mit_raeumen();
@@ -783,13 +783,19 @@ fn laengen_der_raeume_nach_gewerk() {
             .sum();
         assert!((ist - soll).abs() < 1e-6, "{key}: {ist}");
     }
-    // Die Anzeige bepreist nichts: Werksstand 18 kennt keine Raumzeile,
-    // mit und ohne Räume gleiche Kosten (alt gegen neu prüft Kosten mit
-    // ihren Proben gegen main)
+    // Seit Werksstand 19 (RB7) bepreisen die Kosten diese Längen: die
+    // Sockelleiste Eiche (PA20) und der Randdämmstreifen (ES40) je Raum
     let k = sk_cost::lesen::katalog(&m, None);
     let u = sk_cost::Umfang::projekt();
-    let ohne = sk_cost::lesen::kosten(&m, &sk_model::qto::schedule(&m), &k, &u);
-    assert_eq!(sk_cost::lesen::kosten(&m, &sched, &k, &u), ohne);
+    let b = sk_cost::lesen::kosten(&m, &sched, &k, &u);
+    for kurz in ["Sockelleiste Eiche", "Randdämmstreifen"] {
+        assert!(
+            b.positionen
+                .iter()
+                .any(|p| p.kurz.contains(kurz) && p.gp.0 > 0),
+            "{kurz}"
+        );
+    }
 }
 
 /// Bedienbarkeit 38.2: Nach Geschoss zeigt die Wandzeile die Menge ihrer
