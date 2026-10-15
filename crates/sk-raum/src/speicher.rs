@@ -463,11 +463,17 @@ fn raeume_kennung(schluessel: u64, ausbau: u64, raeume: &[(ElementId, &Space)]) 
 
 /// Fingerabdruck dessen, was die Grundfläche im Fertigmaß
 /// ([`crate::flaechen::grundflaeche_fertig`]) außer Form und Nutzung liest:
-/// die Raumvorlagen des Projekts und die Typen mit ihren Schichtdicken.
-/// Ändert er sich, sehen alle Gruppen ihre Räume neu an (Bedienbarkeit
-/// 43.8). Ein Gang über Vorlagen und Typen, nicht über die Bauteile.
+/// die Raumvorlagen des Projekts, die Typen mit ihren Schichtdicken und je
+/// Geschoss der Estrich der Vorgabe (auf der Sohle oder nicht,
+/// [`crate::ausbau::estrich_vorgabe`], Review H-188a). Ändert er sich, sehen
+/// alle Gruppen ihre Räume neu an (Bedienbarkeit 43.8). Ein Gang über
+/// Vorlagen, Typen und Geschosse, nicht über die Bauteile; Höhen gehen nur
+/// über den Estrich ein, Ziehen eines Geschosses ändert ihn nicht.
 fn ausbau_kennung(m: &Model) -> u64 {
     let mut h = DefaultHasher::new();
+    for (id, _) in m.storeys().iter() {
+        (id, crate::ausbau::estrich_vorgabe(m, id)).hash(&mut h);
+    }
     for v in m.space_types() {
         v.guid.hash(&mut h);
         [v.floor, v.screed, v.wall, v.ceiling, v.skirting].hash(&mut h);
