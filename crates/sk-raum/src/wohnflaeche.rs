@@ -483,7 +483,7 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
                 }
             })
             .collect();
-        let ffb = roh.z_boden + ausbau::aufbau(model, form.geschoss);
+        let ffb = roh.z_boden + ausbau::AUFBAU;
         (d, l, (ffb, roh.z_decke))
     } else {
         (
