@@ -8,6 +8,10 @@
 //! Fläche, Rücktaste oder Strg+Z nimmt die letzte Ecke zurück, Esc verwirft. Die neue
 //! Fläche liegt eben auf der Höhe des Geländes in ihrer Mitte, mit der
 //! Böschung nach Vorgabe; Höhe und Böschung stellt man danach im Paneel.
+//! Beim Zeichnen rastet der Punkt an Ecken und Kanten von Haus, Flächen
+//! und Grenzen ([`fang`], H-189a).
+
+mod fang;
 
 use crate::camera::Camera;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, Id, Props, Section, ViewKind};
@@ -19,6 +23,8 @@ use sk_model::{
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
+
+use fang::{Fang, Ziele};
 
 /// Raster der Ecken (mm).
 const STEP: f64 = 10.0;
@@ -67,12 +73,11 @@ pub struct Werkzeug {
     ecken: Vec<[f64; 2]>,
     /// Bodenpunkt unter der Maus (Gummiband).
     maus: Option<[f64; 2]>,
-}
-
-/// Bodenpunkt unter dem Bildpunkt, auf [`STEP`] gerundet.
-fn boden(cam: &Camera, x: f64, y: f64, w: f64, h: f64) -> Option<[f64; 2]> {
-    let r = |v: f64| (v / STEP).round() * STEP + 0.0;
-    cam.ground_point(x, y, w, h).map(|g| [r(g.x), r(g.y)])
+    /// Fangziele und der Modellstand, zu dem sie gehören.
+    ziele: Ziele,
+    stand: Option<u64>,
+    /// Woran der Punkt unter der Maus gerastet ist.
+    fang: Option<([f64; 2], Fang)>,
 }
 
 impl Werkzeug {
@@ -81,6 +86,43 @@ impl Werkzeug {
         self.aktiv = on;
         self.ecken.clear();
         self.maus = None;
+        self.fang = None;
+        if !on {
+            self.ziele = Ziele::default();
+            self.stand = None;
+        }
+    }
+
+    /// Fangziele zum Modellstand `rev`; `f` rechnet sie nur, wenn sich der
+    /// Stand geändert hat.
+    pub fn ziele_fuer(&mut self, rev: u64, f: impl FnOnce() -> Ziele) {
+        if self.aktiv && self.stand != Some(rev) {
+            self.ziele = f();
+            self.stand = Some(rev);
+        }
+    }
+
+    /// Bodenpunkt unter dem Bildpunkt: an einem Fangziel bis [`fang::FANG_PX`]
+    /// Bildpunkte, sonst auf [`STEP`] gerundet.
+    fn boden(
+        &mut self,
+        cam: &Camera,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        scale: f64,
+    ) -> Option<[f64; 2]> {
+        let Some(g) = cam.ground_point(x, y, w, h) else {
+            self.fang = None;
+            return None;
+        };
+        let tol = cam
+            .ground_point(x + fang::FANG_PX * scale, y, w, h)
+            .map_or(0.0, |n| (n.x - g.x).hypot(n.y - g.y));
+        self.fang = self.ziele.fangen([g.x, g.y], tol);
+        let r = |v: f64| (v / STEP).round() * STEP + 0.0;
+        Some(self.fang.map_or([r(g.x), r(g.y)], |f| f.0))
     }
 
     pub fn ecken(&self) -> &[[f64; 2]] {
@@ -159,6 +201,7 @@ impl Werkzeug {
         }
         out.commit = Some(std::mem::take(&mut self.ecken));
         self.maus = None;
+        self.fang = None;
     }
 
     /// Ereignis der Ansicht (Koordinaten ohne Titelleiste).
@@ -169,10 +212,11 @@ impl Werkzeug {
         }
         match *e {
             Event::MouseMove { x, y, .. } => {
-                let p = boden(cam, x, y, w, h);
-                if p != self.maus {
+                let vor = self.fang;
+                let p = self.boden(cam, x, y, w, h, scale);
+                if p != self.maus || vor != self.fang {
+                    out.redraw = !self.ecken.is_empty() || vor != self.fang;
                     self.maus = p;
-                    out.redraw = !self.ecken.is_empty();
                 }
                 out.consumed = true;
             }
@@ -183,7 +227,7 @@ impl Werkzeug {
                 ..
             } => {
                 out.consumed = true;
-                let Some(p) = boden(cam, x, y, w, h) else {
+                let Some(p) = self.boden(cam, x, y, w, h, scale) else {
                     return out;
                 };
                 // Klick auf die erste Ecke (am Bildschirm) oder noch einmal
@@ -204,7 +248,11 @@ impl Werkzeug {
                 ..
             } => out.consumed = true,
             Event::MouseLeave => {
-                out.redraw = self.maus.take().is_some() && !self.ecken.is_empty();
+                // beide leeren, auch wenn ein Fang die Antwort schon gibt
+                // (Review #198 B1)
+                let fang = self.fang.take().is_some();
+                let maus = self.maus.take().is_some();
+                out.redraw = fang || (maus && !self.ecken.is_empty());
             }
             _ => {}
         }
@@ -240,6 +288,12 @@ impl Werkzeug {
         if let Some(&a) = self.ecken.first() {
             let mut m = linie(a, a, col.track, 0.0);
             m.width = 8.0 * scale;
+            out.push(m);
+        }
+        // Fang: ein Quadrat an der Ecke, ein kleineres an der Kante
+        if let Some((q, f)) = self.fang {
+            let mut m = linie(q, q, col.guide, 0.0);
+            m.width = if f == Fang::Ecke { 12.0 } else { 7.0 } * scale;
             out.push(m);
         }
         out
@@ -289,6 +343,43 @@ fn auf_einer_linie(ring: &[[f64; 2]]) -> bool {
     ring.iter()
         .map(d)
         .all(|u| (u[0] * f[1] - u[1] * f[0]).abs() <= l)
+}
+
+/// Punkt für die Höhe einer neuen Fläche: ihr Schwerpunkt; liegt er bei
+/// einem konkaven Umriss draußen, die Mitte des breitesten Stücks der
+/// Waagerechten durch ihn, das innen liegt (H-189e).
+fn mitte(ring: &[[f64; 2]]) -> [f64; 2] {
+    let n = ring.len();
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        let (p, q) = (ring[i], ring[(i + 1) % n]);
+        let k = p[0] * q[1] - q[0] * p[1];
+        a += k;
+        cx += (p[0] + q[0]) * k;
+        cy += (p[1] + q[1]) * k;
+    }
+    if a.abs() < 1e-9 {
+        let m = n.max(1) as f64;
+        return ring
+            .iter()
+            .fold([0.0, 0.0], |s, p| [s[0] + p[0] / m, s[1] + p[1] / m]);
+    }
+    let c = [cx / (3.0 * a), cy / (3.0 * a)];
+    if innen(ring, c) {
+        return c;
+    }
+    // Schnitte der Waagerechten mit den Kanten, paarweise innen
+    let mut xs: Vec<f64> = (0..n)
+        .filter_map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % n]);
+            ((p[1] > c[1]) != (q[1] > c[1]))
+                .then(|| p[0] + (c[1] - p[1]) / (q[1] - p[1]) * (q[0] - p[0]))
+        })
+        .collect();
+    xs.sort_by(f64::total_cmp);
+    xs.chunks_exact(2)
+        .max_by(|u, v| (u[1] - u[0]).total_cmp(&(v[1] - v[0])))
+        .map_or(c, |u| [(u[0] + u[1]) / 2.0, c[1]])
 }
 
 /// Fläche eines Umrisses (mm²).
@@ -437,12 +528,21 @@ impl App {
             return false;
         }
         let vor = self.platte.leiste.werkzeug.ecken().len();
-        let out = self
-            .platte
-            .leiste
-            .werkzeug
-            .handle(ev, &self.cam, vw, vh, sc);
+        let rev = self.scene.model().revision();
+        let scene = &self.scene;
+        let w = &mut self.platte.leiste.werkzeug;
+        w.ziele_fuer(rev, || fang::ziele(scene));
+        let out = w.handle(ev, &self.cam, vw, vh, sc);
         self.flaeche_ausgang(out, vor)
+    }
+
+    /// Mausbewegung an Nordpfeil und Werkzeug „Fläche zeichnen“; `true`,
+    /// wenn das Werkzeug sie im Grundriss nimmt: Band, Griffe, Schnittlinie
+    /// und Bauteile zeigen dann keinen Hover (H-189c).
+    pub(crate) fn nord_hover(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
+        self.nord_handle(ev, vw, vh, sc)
+            && self.platte.leiste.werkzeug.aktiv
+            && self.ui.view == ViewKind::Plan
     }
 
     /// Tasten beim Zeichnen, nur im Grundriss (H-189g).
@@ -488,10 +588,7 @@ impl App {
     /// Mitte, auf 1 cm; gewählt.
     fn flaeche_anlegen(&mut self, ring: Vec<[f64; 2]>) {
         let m = self.scene.model();
-        let n = ring.len() as f64;
-        let c = ring
-            .iter()
-            .fold([0.0, 0.0], |s, p| [s[0] + p[0] / n, s[1] + p[1] / n]);
+        let c = mitte(&ring);
         let z = (m.terrain_z_at(m.level_building(), c[0], c[1]) / 10.0).round() * 10.0 + 0.0;
         let p = TerrainPatch::flat(ring.clone(), z);
         let mut neu = None;
@@ -587,20 +684,19 @@ impl App {
         self.redraw = true;
     }
 
-    /// Klick ins Leere im Grundriss: die Fläche darunter wählen. `true`,
-    /// wenn dort eine ist.
+    /// Klick ins Leere im Grundriss: die Fläche darunter wählen, daneben
+    /// eine gewählte abwählen (H-189f). `true`, wenn der Klick einer Fläche
+    /// galt.
     pub(crate) fn flaeche_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
         let frei = self.ui.frei.frei(crate::freischaltung::Modul::Gelaende);
-        if !frei || self.ui.view != ViewKind::Plan || self.scene.terrain_hidden() {
+        let g = self.cam.ground_point(x, y, vw, vh);
+        let i = g
+            .filter(|_| frei && self.ui.view == ViewKind::Plan && !self.scene.terrain_hidden())
+            .and_then(|g| flaeche_bei(self.scene.model(), [g.x, g.y]));
+        if i.is_none() && self.picking.flaeche.is_none() {
             return false;
         }
-        let Some(g) = self.cam.ground_point(x, y, vw, vh) else {
-            return false;
-        };
-        let Some(i) = flaeche_bei(self.scene.model(), [g.x, g.y]) else {
-            return false;
-        };
-        self.flaeche_waehlen(Some(i));
+        self.flaeche_waehlen(i);
         true
     }
 
@@ -969,5 +1065,92 @@ mod tests {
             .values
             .contains(&("Böschung", "je Kante, aus der Datei".to_string())));
         assert!(props(&m, 1).is_none());
+    }
+
+    /// Fang (H-189a): an der Ecke genau die Ecke, an der Kante der
+    /// Lotfußpunkt, sonst das Raster; die Hilfslinien zeigen den Fang.
+    #[test]
+    fn fang_an_ecken_und_kanten() {
+        let (cam, _, _) = kamera();
+        let r = [[5000.0, 5000.0], [9003.0, 5000.0], [9003.0, 8001.0]];
+        let ziele = || Ziele {
+            ecken: r.to_vec(),
+            kanten: vec![[r[0], r[1]], [r[1], r[2]], [r[2], r[0]]],
+        };
+        let mut w = Werkzeug::default();
+        // aus: keine Ziele
+        w.ziele_fuer(1, ziele);
+        assert!(w.ziele.ecken.is_empty());
+        w.set_aktiv(true);
+        w.ziele_fuer(1, ziele);
+        assert_eq!(w.ziele.ecken.len(), 3);
+        // gleicher Stand: nicht neu gerechnet
+        w.ziele_fuer(1, Ziele::default);
+        assert_eq!(w.ziele.ecken.len(), 3);
+        // 25 mm je Bildpunkt: 10 Bildpunkte sind 250 mm
+        klick(&mut w, &cam, punkt(9100.0, 8100.0));
+        assert_eq!(w.ecken(), &[[9003.0, 8001.0]]);
+        assert_eq!(w.fang.map(|f| f.1), Some(Fang::Ecke));
+        let l = w.linien(0.0, 1.0, &Theme::dark());
+        assert!(l.iter().any(|h| h.width == 12.0));
+        klick(&mut w, &cam, punkt(7000.4, 4880.0));
+        // auf der Kante, ungerundet (H-198c)
+        let k = w.ecken()[1];
+        assert!(k[1] == 5000.0 && (k[0] - 7000.4).abs() < 0.1, "{k:?}");
+        assert_eq!(w.fang.map(|f| f.1), Some(Fang::Kante));
+        klick(&mut w, &cam, punkt(12004.0, 12996.0));
+        assert_eq!(w.ecken()[2], [12000.0, 13000.0]);
+        assert_eq!(w.fang, None);
+        // gerastet aus der Ansicht: Gummiband und Marke gehen beide weg
+        // (Review #198 B1)
+        let (x, y) = cam.project(punkt(9050.0, 8050.0), 800.0, 800.0).unwrap();
+        let ev = Event::MouseMove {
+            x,
+            y,
+            mods: Modifiers::default(),
+        };
+        w.handle(&ev, &cam, 800.0, 800.0, 1.0);
+        assert!(w.fang.is_some() && w.maus.is_some());
+        assert!(w.handle(&Event::MouseLeave, &cam, 800.0, 800.0, 1.0).redraw);
+        assert!(w.fang.is_none() && w.maus.is_none());
+        // neuer Stand: neu gerechnet; aus: verworfen
+        w.ziele_fuer(2, Ziele::default);
+        assert!(w.ziele.ecken.is_empty());
+        w.set_aktiv(false);
+        assert_eq!(w.stand, None);
+    }
+
+    /// Höhe am Schwerpunkt (H-189e); liegt er bei einem U außerhalb, die
+    /// Mitte eines Schenkels.
+    #[test]
+    fn mitte_im_umriss() {
+        let q = [[0.0, 0.0], [4000.0, 0.0], [4000.0, 2000.0], [0.0, 2000.0]];
+        assert_eq!(mitte(&q), [2000.0, 1000.0]);
+        // Dreieck: der Schwerpunkt
+        let d = [[0.0, 0.0], [3000.0, 0.0], [0.0, 3000.0]];
+        assert_eq!(mitte(&d), [1000.0, 1000.0]);
+        let u = [
+            [0.0, 0.0],
+            [3000.0, 0.0],
+            [3000.0, 3000.0],
+            [2000.0, 3000.0],
+            [2000.0, 1000.0],
+            [1000.0, 1000.0],
+            [1000.0, 3000.0],
+            [0.0, 3000.0],
+        ];
+        let c = mitte(&u);
+        assert!(innen(&u, c), "{c:?}");
+        assert!((c[1] - 9500.0 / 7.0).abs() < 1e-6);
+        // L: Mittel der Ecken läge draußen, der Schwerpunkt innen
+        let l = [
+            [0.0, 0.0],
+            [6000.0, 0.0],
+            [6000.0, 500.0],
+            [500.0, 500.0],
+            [500.0, 6000.0],
+            [0.0, 6000.0],
+        ];
+        assert!(innen(&l, mitte(&l)), "{:?}", mitte(&l));
     }
 }
