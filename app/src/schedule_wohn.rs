@@ -260,7 +260,8 @@ impl ListView {
 
 /// Fläche aus 0,01 m² für die Tabelle: „19,73“.
 fn csv_qm(h: i64) -> String {
-    format!("{},{:02}", h / 100, (h % 100).abs())
+    let v = if h < 0 { "-" } else { "" };
+    format!("{v}{},{:02}", h.abs() / 100, h.abs() % 100)
 }
 
 /// „Als Tabelle speichern“ auf dem Blatt Wohnfläche: UTF-8 mit BOM,
@@ -373,4 +374,16 @@ pub fn csv(w: &Wohnflaeche, u: &Umfang, kopf: &str) -> Vec<u8> {
         ]);
     }
     out.into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    /// Negative Flächen behalten ihr Vorzeichen (Review #195 H-195h).
+    #[test]
+    fn csv_qm_mit_vorzeichen() {
+        assert_eq!(super::csv_qm(1973), "19,73");
+        assert_eq!(super::csv_qm(0), "0,00");
+        assert_eq!(super::csv_qm(-5), "-0,05");
+        assert_eq!(super::csv_qm(-1973), "-19,73");
+    }
 }

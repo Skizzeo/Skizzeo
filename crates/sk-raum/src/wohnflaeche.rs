@@ -532,7 +532,6 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
     // Abgezogene Pfeiler und Einbauten: Was ein weiterer Einbau mit ihnen
     // deckt, ist schon ab (Review #195 H-195j). Paarweise: Wo drei
     // Abgezogene übereinander liegen, ginge ihr gemeinsamer Teil doppelt ab.
-
     let mut abgezogen: Vec<Vec<[Vec3; 3]>> = Vec::new();
     let mut erste = 0;
     for (i, ring) in roh.ringe().enumerate() {
