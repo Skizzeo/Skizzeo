@@ -61,6 +61,7 @@ pub fn props(
         layer_set: nummern.join(", "),
         set_umbruch: true,
         mengen,
+        sections: super::raumbuch::abschnitte(scene, f),
         ..Default::default()
     })
 }

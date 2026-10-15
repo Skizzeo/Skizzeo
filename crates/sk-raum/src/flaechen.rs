@@ -5,7 +5,6 @@
 //! gilt der Innenputz der Vorgabe (Jörn 11.10. 16:55).
 
 use crate::erkennung::{Kante, RaumForm};
-use sk_math::Vec3;
 use sk_model::Model;
 
 /// Innenputz der Vorgabe je Wandseite (mm).
@@ -21,10 +20,13 @@ pub fn ausbau(k: &Kante) -> f64 {
 }
 
 /// Fertigumriss: Rand und Löcher, je Kante um ihren Ausbau versetzt;
-/// `None`, wenn der Raum dabei zerfällt (schmaler als der Putz).
-pub fn fertigumriss(f: &RaumForm) -> Option<(Vec<Vec3>, Vec<Vec<Vec3>>)> {
+/// `None`, wenn der Raum dabei zerfällt (schmaler als der Putz). Nur noch
+/// Vergleichsmaß der Tests; Stempel, Paneel, Mengenblatt und IFC rechnen
+/// mit [`grundflaeche_fertig`].
+#[cfg(test)]
+pub(crate) fn fertigumriss(f: &RaumForm) -> Option<(Vec<sk_math::Vec3>, Vec<Vec<sk_math::Vec3>>)> {
     let ring = |k: &[Kante]| {
-        let p: Vec<Vec3> = k.iter().map(|k| k.a).collect();
+        let p: Vec<sk_math::Vec3> = k.iter().map(|k| k.a).collect();
         let d: Vec<f64> = k.iter().map(ausbau).collect();
         sk_math::flaeche::versatz(&p, &d)
     };
@@ -37,9 +39,11 @@ pub fn fertigumriss(f: &RaumForm) -> Option<(Vec<Vec3>, Vec<Vec<Vec3>>)> {
     Some((rand, loecher))
 }
 
-/// Grundfläche (mm²): Fertigumriss ohne Löcher; zerfällt er, die
-/// Rohbaufläche abzüglich Umfang mal Putz, nicht unter null.
-pub fn grundflaeche(f: &RaumForm) -> f64 {
+/// Grundfläche (mm²) mit dem Ausbau des Grundrisses ([`ausbau`]) an jeder
+/// Kante: Fertigumriss ohne Löcher; zerfällt er, die Rohbaufläche abzüglich
+/// Umfang mal Putz, nicht unter null. Nur noch Vergleichsmaß der Tests.
+#[cfg(test)]
+pub(crate) fn grundflaeche(f: &RaumForm) -> f64 {
     let flaeche = sk_math::polygon::area;
     match fertigumriss(f) {
         Some((rand, loecher)) => flaeche(&rand) - loecher.iter().map(|l| flaeche(l)).sum::<f64>(),

@@ -447,6 +447,34 @@ fn perf_katalogfenster() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Ein Ausbautyp, den nur die Abweichung eines Raums nennt: weder löschen
+/// noch die Art umstellen, der Hinweis sagt warum (Review #190 B2).
+#[test]
+fn typ_einer_abweichung_gesperrt() {
+    use sk_model::model::{AusbauAbweichung, AusbauStelle, AusbauWahl, WET_FLOOR_TYPE_GUID};
+    let mut s = szene();
+    assert!(s.edit_model("Raum", |m| {
+        let st = m.storeys().iter().next().unwrap().0;
+        let r = m.add_space(
+            st,
+            sk_model::Space::neu(vec3(2500.0, 2000.0, 0.0), "Bad".into()),
+        );
+        let a = AusbauAbweichung {
+            stelle: AusbauStelle::Boden,
+            wahl: Some(AusbauWahl::Typ(WET_FLOOR_TYPE_GUID)),
+            hoehe: None,
+        };
+        m.set_space_finish(r, a).is_ok()
+    }));
+    let mut c = Catalog::open(&s, None);
+    c.show_guid(WET_FLOOR_TYPE_GUID);
+    assert!(c.sel.is_some());
+    assert!(!c.can_delete() && c.category_locked());
+    c.hover = Some(Target::Btn(Btn::Delete));
+    let tip = c.tip().unwrap();
+    assert!(tip.starts_with("In Raumvorlage oder Raum gewählt"), "{tip}");
+}
+
 /// Dicke eines verbauten Typs ändern: Rückfrage mit den Wänden, „Ändern“
 /// wirkt auf alle, ein Rückgängig-Schritt; Name und Kurzzeichen folgen.
 #[test]

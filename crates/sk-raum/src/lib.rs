@@ -17,6 +17,8 @@ pub mod raumliste;
 mod ring;
 pub mod speicher;
 
-pub use abgleich::{abgleichen, abgleichen_lage, ruhende, Abgleich, Stand, Wechsel};
+pub use abgleich::{
+    abgleichen, abgleichen_lage, abgleichen_lage_mit, ruhende, Abgleich, Stand, Wechsel,
+};
 pub use erkennung::{raeume, Begrenzung, Ecke, Kante, RaumForm, Seite};
 pub use speicher::{Erkennung, Ketten, Lage, Raumflaeche, Raumformen};
