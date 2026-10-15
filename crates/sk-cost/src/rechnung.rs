@@ -1545,9 +1545,14 @@ fn auto_ansaetze(
         // Hinweise zur Menge (VOB-Prüfung G3 D1): auch ohne Menge und ohne
         // Bauleistung, sonst bleibt eine Fläche ohne Mengen stumm
         if !a.hinweis.is_empty() {
-            let ort = m
-                .element(a.element)
-                .map_or(Ort::Datei, |e| Ort::Bauteil(e.guid));
+            // Erdarbeiten des Grundstücks: kein Haus, also die Datei
+            // (VOB-Prüfung #184 F2)
+            let grundstueck = a.building.is_none()
+                && sk_model::qto_earth::GRUNDSTUECK_SCHLUESSEL.contains(&a.key);
+            let ort = match m.element(a.element) {
+                Some(e) if !grundstueck => Ort::Bauteil(e.guid),
+                _ => Ort::Datei,
+            };
             for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
                 let b = Befund::hinweis(0, h, ort.clone());
                 if !befunde.contains(&b) {

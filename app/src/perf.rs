@@ -3496,7 +3496,10 @@ fn perf_raum_loslassen() {
 /// ebenso vielen Häusern, bei 4000 Häusern. Erster Abruf der Räume danach,
 /// geflickt und neu gesammelt (dieselbe Art Schritt, die Räume vorher
 /// vergessen), je das Beste aus drei Schritten in ms. Geflickt darf nicht
-/// länger brauchen als neu gesammelt, oder höchstens 8 ms.
+/// länger brauchen als neu gesammelt (bis 10 % Messrauschen), oder
+/// höchstens 8 ms. Bei k = alle sammelt auch das Flicken neu (Review
+/// H-175f): Geprüft wird dort, dass es neu sammelt, die Zeiten sind
+/// dieselbe Arbeit.
 #[test]
 #[ignore]
 fn perf_raum_viele() {
@@ -3523,17 +3526,52 @@ fn perf_raum_viele() {
         t.elapsed().as_secs_f64() * 1000.0
     };
     std::hint::black_box(s.raumgruppen(st));
-    for k in [500, 1500] {
+    for k in [500, 1500, formen.len()] {
         let (mut geflickt, mut neu) = (f64::MAX, f64::MAX);
+        let l0 = s.raum_listen();
         for _ in 0..3 {
             geflickt = geflickt.min(schritt(&mut s, k, false));
             neu = neu.min(schritt(&mut s, k, true));
         }
         println!("{n:>6} {k:>6} {geflickt:>9.3} {neu:>9.3}");
+        let alle = k == formen.len();
+        let neu_gesammelt = s.raum_listen() - l0 - 3;
+        assert_eq!(neu_gesammelt, if alle { 3 } else { 0 }, "k = {k}");
         assert!(
-            geflickt <= neu || geflickt <= 8.0,
+            alle || geflickt <= 1.1 * neu || geflickt <= 8.0,
             "k = {k}: {geflickt:.3} > {neu:.3}"
         );
     }
     println!("Zeiten in ms (Release), je das Beste aus drei Schritten.");
+}
+
+/// Review H-175h: Den Stempel eines Raums im offenen Schritt ziehen, bei
+/// 1000 und 4000 Häusern: je Bild Stempel setzen und die Räume des
+/// Geschosses abrufen, Mittel aus neun Bildern in ms; dazu, wie oft die
+/// Räume des Geschosses dabei neu gesammelt wurden (soll 0 sein).
+#[test]
+#[ignore]
+fn perf_stempel_ziehen() {
+    println!();
+    println!("{:>6} {:>8} {:>7}", "Häuser", "Bild", "Listen");
+    for n in [1000, 4000] {
+        let mut s = town_in_einem_schritt(n);
+        let st = s.active_storey();
+        let formen = s.raumformen(st);
+        let (f, _) = &formen[formen.len() / 2];
+        std::hint::black_box(s.raumgruppen(st));
+        let l0 = s.raum_listen();
+        s.begin("Raumstempel verschoben");
+        let t = Instant::now();
+        for i in 1..=9 {
+            assert!(s.raum_stempel(f.raum.unwrap(), f.mitte + vec3(20.0 * i as f64, 0.0, 0.0)));
+            std::hint::black_box(s.raumgruppen(st));
+        }
+        let bild = t.elapsed().as_secs_f64() * 1000.0 / 9.0;
+        let listen = s.raum_listen() - l0;
+        s.commit();
+        println!("{n:>6} {bild:>8.3} {listen:>7}");
+        assert_eq!(listen, 0, "{n} Häuser");
+    }
+    println!("Zeiten in ms je Bild (Release).");
 }

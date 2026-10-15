@@ -62,7 +62,7 @@ impl KostenView {
 
     /// „Verknüpft mit FU-001 · 6 Positionen · 3.456,78 €“: Positionen der
     /// Zeilen und die Summe ihrer Anteile.
-    pub(super) fn fokus_leiste_text(&self) -> String {
+    pub(super) fn fokus_leiste_text(&self, b: &sk_cost::Kostenblatt) -> String {
         let Some(f) = &self.fokus else {
             return String::new();
         };
@@ -79,7 +79,13 @@ impl KostenView {
             .filter(|z| z.art == Art::Gruppe && z.ebene == 0)
             .filter_map(|z| z.betrag)
             .fold(None, |acc, c| Some(acc.unwrap_or(Cent(0)) + c));
-        let zusatz = summe.map_or_else(String::new, |c| format!("{} €", euro(c)));
+        let mut zusatz = summe.map_or_else(String::new, |c| format!("{} €", euro(c)));
+        if f.ohne_grundstueck(b) {
+            if !zusatz.is_empty() {
+                zusatz.push_str(" · ");
+            }
+            zusatz.push_str(sk_model::qto_earth::GRUNDSTUECK);
+        }
         f.text(n, &zusatz)
     }
 

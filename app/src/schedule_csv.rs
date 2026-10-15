@@ -142,8 +142,13 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
         let gb = m.building(b.id).map_or(String::new(), |x| x.number.clone());
         // Gewerke der Schichten und der Erweiterungen (E8a) nach Bauablauf
         let ext_t = ext::gewerke(m, b);
+        let laengen = raum::laengen(m, b);
         let mut ids: Vec<sk_model::trade::TradeId> = b.by_trade.iter().map(|t| t.trade).collect();
-        for t in ext_t.iter().flatten() {
+        for t in ext_t
+            .iter()
+            .flatten()
+            .chain(laengen.iter().map(|x| &x.trade))
+        {
             if !ids.contains(t) {
                 ids.push(*t);
             }
@@ -152,7 +157,9 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
         for id in ids {
             let Some(tr) = m.trade(id) else { continue };
             let trade = format!("{} {}", tr.code, tr.name);
+            let ls: Vec<_> = laengen.iter().filter(|x| x.trade == id).collect();
             let Some(t) = b.by_trade.iter().find(|t| t.trade == id) else {
+                raum::csv_laengen(m, (&gb, &trade), &ls, &mut row);
                 ext::csv_gewerk(m, b, &gb, &trade, Some(id), &mut row);
                 continue;
             };
@@ -292,6 +299,7 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                     ""
                 },
             ]);
+            raum::csv_laengen(m, (&gb, &trade), &ls, &mut row);
             ext::csv_gewerk(m, b, &gb, &trade, Some(id), &mut row);
         }
         if ext_t.contains(&None) {

@@ -11,6 +11,11 @@
 //! was bleibt, fährt ab (Baugrube 311, Gelände 511). Der Faktor fest →
 //! eingebaut wirkt nur in der Bilanz. Oberboden hat eine eigene Bilanz.
 //! Ohne Geländeflächen bleibt alles wie in G2, Zeile für Zeile.
+//!
+//! Die Zeilen der Flächen gehören zum Grundstück, nicht zu einem Haus
+//! (VOB-Prüfung G3, E1): ohne Gebäude, nur im Umfang Projekt. Bauteil,
+//! Nummer und Geschoss sind die des Trägers, damit Hinweise und Sortierung
+//! einen Ort haben. Verfüllung und Abfuhr bleiben an ihrem Haus.
 
 use super::{eckzahl, zahl, Boden, ErdZone, DREIECKSPRISMEN, SCHLUESSEL};
 use super::{BACKFILL, CUT, DISPOSAL, EMBANK, EMBANK_SUPPLY, SURPLUS, TOPSOIL, TOPSOIL_SITE};
@@ -37,8 +42,27 @@ pub struct Gruendung {
 /// Hinweis, solange der Böschungskeil der Baugrube nicht exakt zählt
 /// (VOB-Prüfung G3, C2; exakt mit G5).
 pub const KEIL: &str = "Baugrube mit Böschung: Geländeabtrag über dem Böschungskeil angenähert";
-/// Hinweis an befestigten Flächen bis G4 (B2).
-pub const BEFESTIGT: &str = "Aufbau der befestigten Fläche ab G4, Auftrag bis OK Fläche";
+/// Hinweis an befestigten Flächen, solange ihr Aufbau nicht zählt (B2).
+pub const BEFESTIGT: &str =
+    "Aufbau der befestigten Fläche wird noch nicht gerechnet, Auftrag bis OK Fläche";
+/// Hinweis bei gewähltem Haus, wenn es Zeilen des Grundstücks gibt
+/// (VOB-Prüfung G3, E1).
+pub const GRUNDSTUECK: &str =
+    "Erdarbeiten des Grundstücks: nicht in diesem Haus, siehe Außenanlagen";
+/// Schlüssel der Zeilen, die zum Grundstück gehören und nicht zu einem Haus
+/// (VOB-Prüfung G3, E1: Außenanlagen, KG 500). Verfüllung und Abfuhr der
+/// Baugrube bleiben am Haus.
+pub const GRUNDSTUECK_SCHLUESSEL: [&str; 9] = [
+    TOPSOIL_SITE,
+    CUT,
+    EMBANK,
+    EMBANK_SUPPLY,
+    SURPLUS,
+    TOPSOIL_REMOVE,
+    TOPSOIL_SUPPLY,
+    SPREAD,
+    SPREAD_SLOPE,
+];
 /// Hinweis, wenn die Bilanz begrenzt (B4).
 pub const FAKTOR: &str = "Eigenboden fest → eingebaut Faktor {f} angenommen; ändert die \
                           Aufteilung Eigenboden/Lieferung";
@@ -216,8 +240,8 @@ pub(crate) fn gelaende_mengen(
         m.flaechenmerker().leeren();
         return;
     }
-    // Träger: die Platte mit der kleinsten Nummer; ohne sie hängt der
-    // Hinweis an der ersten Zeile, die es gibt
+    // Träger: die Platte mit der kleinsten Nummer, als Ort der Zeilen des
+    // Grundstücks; ohne sie steht der Hinweis beim Projekt
     let Some(traeger) = gr
         .iter()
         .min_by_key(|g| (g.vorlage.number.len(), g.vorlage.number.clone()))
@@ -296,6 +320,8 @@ pub(crate) fn gelaende_mengen(
             kg: Some(kg),
             formula,
             hinweis: hinweis.join("\n"),
+            // Grundstück, kein Haus (E1)
+            building: None,
             ..traeger.vorlage.clone()
         }
     };
@@ -338,10 +364,7 @@ pub(crate) fn gelaende_mengen(
         }
         verfuellen[i] = Some((
             z.verf - w,
-            format!(
-                "; − Geländeabtrag im Arbeitsraum {} (VOB-Prüfung G3 B3)",
-                m3(w / 1e9)
-            ),
+            format!("; − Geländeabtrag im Arbeitsraum {}", m3(w / 1e9)),
         ));
         zusatz[i] = Some(format!("; + weniger Verfüllung {}", m3(w / 1e9)));
     }
@@ -365,10 +388,9 @@ pub(crate) fn gelaende_mengen(
         }
         entnehmen -= x;
         abfuhr[i] -= x;
-        zusatz[i].get_or_insert_with(String::new).push_str(&format!(
-            "; − Einbau im Gelände {} (VOB-Prüfung G3 B4)",
-            m3(x / 1e9)
-        ));
+        zusatz[i]
+            .get_or_insert_with(String::new)
+            .push_str(&format!("; − Einbau im Gelände {}", m3(x / 1e9)));
     }
 
     // Verfüllung und Abfuhr setzen: ganz entnommen (bis auf Rundungsreste,

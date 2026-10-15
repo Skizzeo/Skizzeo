@@ -490,11 +490,15 @@ impl ListView {
         });
         self.lines = lines;
         self.groups = groups;
+        // jedes Bauteil einmal, auch wenn es mehrere Zeilen hat (Raum mit
+        // seinen Flächen, Wand in mehreren Gewerken; Review #182 H-182f)
+        let mut schon = HashSet::new();
         self.order = self
             .lines
             .iter()
             .filter(|l| l.kind == Kind::Row)
             .flat_map(|l| l.elements.first().copied())
+            .filter(|e| schon.insert(*e))
             .collect();
         self.numbers = self
             .order
@@ -620,12 +624,17 @@ impl ListView {
         self.scroll = self.scroll.clamp(0.0, max);
     }
 
-    /// Klappt Geschoss und Gruppe des Bauteils auf und rollt es ins Bild.
+    /// Klappt Geschoss und Gruppe des Bauteils auf und rollt es ins Bild;
+    /// einen Raum mit der Zeile seiner Gruppe, ohne sie aufzuklappen (43.9).
     fn reveal(&mut self, id: ElementId) {
+        let raum = |l: &Line| {
+            l.kind == Kind::Group
+                && matches!(l.key, Key::Group(_, c, _) if c == Category::Space as u8)
+        };
         let Some(i) = self
             .lines
             .iter()
-            .position(|l| l.kind == Kind::Row && l.elements.first() == Some(&id))
+            .position(|l| (l.kind == Kind::Row || raum(l)) && l.elements.first() == Some(&id))
         else {
             return;
         };
@@ -2410,8 +2419,13 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
     let bi = b.id.index();
     // Gewerke der Schichten und der Erweiterungen (E8a) nach Bauablauf
     let ext_t = ext::gewerke(m, b);
+    let laengen = raum::laengen(m, b);
     let mut ids: Vec<sk_model::trade::TradeId> = b.by_trade.iter().map(|t| t.trade).collect();
-    for t in ext_t.iter().flatten() {
+    for t in ext_t
+        .iter()
+        .flatten()
+        .chain(laengen.iter().map(|x| &x.trade))
+    {
         if !ids.contains(t) {
             ids.push(*t);
         }
@@ -2440,6 +2454,8 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
         }
         lines.push(head);
         trade_rows(m, b, order, tkey, t, sicht, lines);
+        let ls: Vec<_> = laengen.iter().filter(|x| x.trade == id).collect();
+        raum::gewerk_laengen(m, &ls, tkey, sicht.1, lines);
         ext::gewerk_zeilen(m, b, Some(id), tkey, lines);
     }
     if ext_t.contains(&None) {
