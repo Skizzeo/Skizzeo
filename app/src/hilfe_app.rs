@@ -41,10 +41,13 @@ impl App {
                 .then_some(self.tool.category == Category::InteriorWall),
             opening: self.tool.oeffnung.is_some(),
             isolating: self.scene.isolating().is_some(),
-            gelaende: self.platte.leiste.offen
-                || self.platte.leiste.werkzeug.aktiv
-                || self.picking.plate
-                || self.picking.flaeche.is_some(),
+            gelaende: crate::help::gelaende_gilt(
+                self.platte.leiste.offen,
+                self.platte.leiste.werkzeug.aktiv
+                    || self.picking.plate
+                    || self.picking.flaeche.is_some(),
+                selection.is_some(),
+            ),
             selection,
             view: self.ui.view,
         }

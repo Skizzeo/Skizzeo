@@ -38,8 +38,8 @@ impl Modul {
     }
 
     /// Die einzige Stelle der Abhängigkeiten: Kosten braucht Mengen, AVA
-    /// braucht Kosten. Gelände braucht nichts; seine Erdmengen erscheinen,
-    /// sobald auch Mengen frei ist.
+    /// braucht Kosten. Gelände braucht nichts; seine Erdmengen erscheinen
+    /// unter „Kosten“, sobald auch Kosten frei ist.
     fn braucht(self) -> Option<Modul> {
         match self {
             Modul::Kosten => Some(Modul::Mengen),
@@ -376,7 +376,7 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
         (Topic::Terrace, "Mengen") => Some(Modul::Mengen),
         (Topic::Rooms, "Mengen") => Some(Modul::Mengen),
         (Topic::Einlesen, "Firmenkatalog" | "Preise") => Some(Modul::Kosten),
-        (Topic::Gelaende, "Erdmengen") => Some(Modul::Mengen),
+        (Topic::Gelaende, "Erdmengen" | "Flächenmengen") => Some(Modul::Kosten),
         (
             Topic::Gelaende,
             "Ablauf" | "Lageplan" | "Höhen" | "Lage" | "Höhenlage" | "Geländeflächen" | "Zuschnitt",
@@ -395,9 +395,21 @@ fn hilfe_zeile_ohne(t: Topic, beschriftung: &str) -> Option<Modul> {
     }
 }
 
-/// Die Zeile steht in der Hilfe ([`hilfe_zeile`], [`hilfe_zeile_ohne`]).
+/// Zeilen der Hilfe, die zu [`hilfe_zeile`] noch ein zweites Modul brauchen
+/// (Review #192 H-192a): Die Mengen der Geländeflächen gibt es nur mit
+/// Kosten und Gelände.
+fn hilfe_zeile_auch(t: Topic, beschriftung: &str) -> Option<Modul> {
+    match (t, beschriftung) {
+        (Topic::Gelaende, "Flächenmengen") => Some(Modul::Gelaende),
+        _ => None,
+    }
+}
+
+/// Die Zeile steht in der Hilfe ([`hilfe_zeile`], [`hilfe_zeile_auch`],
+/// [`hilfe_zeile_ohne`]).
 pub(crate) fn hilfe_zeigt(f: Freischaltung, t: Topic, beschriftung: &str) -> bool {
     hilfe_zeile(t, beschriftung).is_none_or(|m| f.frei(m))
+        && hilfe_zeile_auch(t, beschriftung).is_none_or(|m| f.frei(m))
         && hilfe_zeile_ohne(t, beschriftung).is_none_or(|m| !f.frei(m))
 }
 

@@ -397,7 +397,7 @@ Scheitert es | Karte „Automatisches Sichern klappt gerade nicht.“ mit „Jet
 Basis | Zeichnen, Bauteile, Grundriss, Schnitte, Ansichten, Bemaßung, IFC, Bauteilkatalog, Baustoffe und Firmenkatalog
 Pro | dazu das Mengenfenster: Mengen nach VOB/C und Bestellmengen
 Ultimate | dazu Kosten mit Material und Lohn, „Verwaltung …“ für Preise und Firmenwerte, AVA mit Leistungsverzeichnis
-Geländemodul | Zusatz zu jeder Stufe: echtes Gelände aus Höhenaufmaß und Lageplan; seine Erdmengen ab Pro
+Geländemodul | Zusatz zu jeder Stufe: echtes Gelände aus Höhenaufmaß und Lageplan; seine Erdmengen mit Ultimate unter „Kosten“
 Gesperrt | steht grau da, daneben die Stufe, ab der es das gibt: Knöpfe, Zeilen im Dateimenü und im Rechtsklick-Menü, Karten im Mengenfenster
 Öffnen | Dateimenü › „Ausbaustufe …“
 
@@ -410,7 +410,8 @@ Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DX
 Lage | das Gelände bewegt sich, das Haus bleibt: „Verschieben“ und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“
 Höhenlage | „über Gelände“: ±0,00 um den Versatz über dem höchsten Geländepunkt am Plattenrand; „absolut“: ±0,00 fest in m ü. NHN
 Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken, die erste Ecke oder **Enter** schließt, **Rücktaste** oder **Strg+Z** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, das Paneel ändert Höhe, Böschung und „befestigt“, **Entf** löscht sie
-Erdmengen | im Mengenfenster nach VOB/C: Baugrube, Verfüllung und Oberboden am Gelände; Abtrag und Auftrag der Geländeflächen beim Grundstück, dazu „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten) im Paneel einer Fläche
+Erdmengen | im Mengenfenster unter „Kosten“ nach VOB/C: Baugrube, Verfüllung und Oberboden am Gelände
+Flächenmengen | Abtrag und Auftrag der Geländeflächen stehen beim Grundstück; „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten) im Paneel einer Fläche
 Zuschnitt | „alles“, „blass“ oder „Grenze“ zeigt das Gelände über die Grenze hinaus, blass oder abgeschnitten; gerechnet wird immer mit allen Punkten
 
 [knopf]

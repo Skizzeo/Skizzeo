@@ -450,11 +450,19 @@ pub struct HelpCtx {
     /// Werkzeug „Fenster“ oder „Tür“ aktiv.
     pub opening: bool,
     pub isolating: bool,
-    /// Leiste „Gelände“ offen, Werkzeug „Fläche zeichnen“, Geländefläche
-    /// oder Geländeplatte gewählt (Bedienbarkeit 43.2).
+    /// Werkzeug „Fläche zeichnen“, Geländefläche oder Geländeplatte gewählt,
+    /// oder Leiste „Gelände“ offen ohne gewähltes Bauteil (Bedienbarkeit
+    /// 43.2, [`gelaende_gilt`]).
     pub gelaende: bool,
     pub selection: Option<SelKind>,
     pub view: ViewKind,
+}
+
+/// F1 zeigt „Gelände“ (Review #192 H-192b): beim Werkzeug und bei gewählter
+/// Fläche oder Platte immer, bei offener Leiste nur, solange kein Bauteil
+/// gewählt ist; sonst gilt das Thema des Bauteils.
+pub fn gelaende_gilt(leiste_offen: bool, eigenes: bool, bauteil: bool) -> bool {
+    eigenes || (leiste_offen && !bauteil)
 }
 
 /// Thema nach §1.2: die erste zutreffende Zeile gilt.
@@ -1257,6 +1265,11 @@ mod tests {
         assert_eq!(topic(&c), Topic::Gelaende);
         c.tool = Some(false);
         assert_eq!(topic(&c), Topic::Draw);
+        // Leiste offen und Wand gewählt: „Wand“, Fläche gewählt: „Gelände“
+        assert!(!gelaende_gilt(true, false, true));
+        assert!(gelaende_gilt(true, false, false));
+        assert!(gelaende_gilt(false, true, true));
+        assert!(!gelaende_gilt(false, false, false));
         assert!(Topic::GROUPS
             .iter()
             .any(|(_, t)| t.contains(&Topic::Gelaende)));
@@ -1270,7 +1283,11 @@ mod tests {
             k.zeilen(Topic::Gelaende).into_iter().map(|z| z.0).collect()
         };
         assert_eq!(zeilen(Freischaltung::mit(&[])), ["Platte", "Modul"]);
-        let alle = zeilen(Freischaltung::mit(&[Modul::Gelaende, Modul::Mengen]));
+        let alle = zeilen(Freischaltung::mit(&[
+            Modul::Gelaende,
+            Modul::Mengen,
+            Modul::Kosten,
+        ]));
         for a in [
             "Platte",
             "Lageplan",
@@ -1279,13 +1296,18 @@ mod tests {
             "Höhenlage",
             "Geländeflächen",
             "Erdmengen",
+            "Flächenmengen",
         ] {
             assert!(alle.iter().any(|x| x == a), "{a}");
         }
         assert!(!alle.iter().any(|x| x == "Modul"));
-        assert!(!zeilen(Freischaltung::mit(&[Modul::Gelaende]))
-            .iter()
-            .any(|x| x == "Erdmengen"));
+        // Erdmengen stehen unter „Kosten“, die der Flächen brauchen auch
+        // das Gelände (Bedienbarkeit #192 B, Review H-192a)
+        let pro = zeilen(Freischaltung::mit(&[Modul::Gelaende, Modul::Mengen]));
+        assert!(!pro.iter().any(|x| x == "Erdmengen" || x == "Flächenmengen"));
+        let kosten = zeilen(Freischaltung::mit(&[Modul::Mengen, Modul::Kosten]));
+        assert!(kosten.iter().any(|x| x == "Erdmengen"));
+        assert!(!kosten.iter().any(|x| x == "Flächenmengen"));
     }
 
     /// Bedienbarkeit 39.5: Mit gewähltem Raum zeigt F1 „Räume“; das Thema
