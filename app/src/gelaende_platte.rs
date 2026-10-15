@@ -3,9 +3,10 @@
 //! mit Rasen oben und Erdreich an den Seiten, der auf dem Boden steht; im
 //! Schnitt ihre Schnittfläche mit Erdreich-Schraffur; in den Ansichten ihr
 //! Band (Oberkante mit dem Stift „Gelände“, Unterkante und Enden fein). Sie
-//! ist kein Bauteil: kein Hover und keine Auswahl im Bild (sie läge sonst
-//! unter jeder Maßkette); gewählt wird sie nur im Objektbaum, dort stehen
-//! Dicke und Abstand ums Haus. Mit Höhenaufmaß steht statt der Platte das echte
+//! ist kein Bauteil: kein Hover und im Grundriss keine Auswahl (sie läge
+//! sonst unter jeder Maßkette); gewählt wird sie im Objektbaum oder mit
+//! einem Klick in 3D (Review #212 B1), im Paneel stehen dann Dicke und
+//! Abstand ums Haus. Mit Höhenaufmaß steht statt der Platte das echte
 //! Gelände da ([`crate::gelaende_netz`], G1).
 
 use crate::draw_table::{fallback_look, fill_kind, DrawTable, LineLook, MatLook, Stroke};
