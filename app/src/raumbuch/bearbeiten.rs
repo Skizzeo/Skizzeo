@@ -111,6 +111,10 @@ impl Raum {
         let m = scene.model();
         let roh = Rohbau::mit(m, &scene.ketten(), form);
         let aus = RaumAusbau::fuer(m, &roh)?;
+        Some(Raum::aus(m, id, roh, aus))
+    }
+
+    fn aus(m: &Model, id: ElementId, roh: Rohbau, aus: RaumAusbau) -> Raum {
         let kanten: Vec<&Kante> = roh.kanten().collect();
         let mut seiten: Vec<(WandSeite, String)> = Vec::new();
         for (k, kante) in kanten.iter().enumerate() {
@@ -122,12 +126,12 @@ impl Raum {
                 seiten.push((w, format!("Wand {name}")));
             }
         }
-        Some(Raum {
+        Raum {
             id,
             roh,
             aus,
             seiten,
-        })
+        }
     }
 
     /// Aus dem Speicher der Räume wie das Paneel (Review #87), nicht aus
@@ -185,13 +189,16 @@ impl Raum {
     }
 }
 
-/// Abschnitte des Raumbuchs im Paneel des Raums mit der Form `form`; leer
-/// für einen ruhenden Raum.
-pub fn abschnitte(scene: &Scene, form: &RaumForm) -> Vec<Section> {
+/// Abschnitte des Raumbuchs im Paneel des Raums `id` mit Rohbau und
+/// Ausbau.
+pub(super) fn abschnitte_aus(
+    scene: &Scene,
+    id: ElementId,
+    roh: Rohbau,
+    aus: RaumAusbau,
+) -> Vec<Section> {
     let m = scene.model();
-    let Some(r) = form.raum.and_then(|id| Raum::neu(scene, id, form.clone())) else {
-        return Vec::new();
-    };
+    let r = Raum::aus(m, id, roh, aus);
     let seite = r.seite(scene);
     let knopf = |k: u8| {
         let t = KNOEPFE[k as usize];
