@@ -185,6 +185,11 @@ SZO 4
 [tpoint] nr="A 7" e=472592 n=5878909 h=29
 [tline] kind=boundary pts=1,2,3
 [tcode] code=XY kind=off
+[underlay] src="Lageplan Flurstück 123-4.pdf" page=1 m=0.17638888888888887,0,0,0.17638888888888887,472570.5,5878880.25 flst=123/4
+[tpatch] pts=-4000,-3000;0,-3000;0,0;-4000,0 z=-150
+[tpatch] pts=-4000,-8000;0,-8000;0,-4000;-4000,-4000 z=-300.5 fall=2 dir=90 n=1.5,0,1.5,2 paved=1
+[tpatch] pts=12000,0;16000,0;14000,3000 ecken=0:28.35;2:28.1 href=abs n=2
+[sitesoil] key=project spread=300 reuse=0.8
 [location] lat=53.0589 lon=8.591 north=12.5 x=-3500 y=21000 utm_e=472589.291 utm_n=5878900.895 utm_zone=32 nhn=28.35
 [building] guid=1tBffObw134uGxOa1UQhBN name="Gebäude 2" number="GB-02" terrain=-1000
 [building] guid=3KSRR0Gnz9rBLKj19nZ4YO name="Gebäude 1" number="GB-01" terrain=400

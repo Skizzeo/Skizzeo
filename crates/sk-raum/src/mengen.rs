@@ -529,11 +529,18 @@ mod tests {
         assert!(m.put_space_type(w));
         m.commit();
         gleich(&m, false, 0.0);
-        // Ohne Ausbau im Projekt: wie bisher
+        // Ohne Ausbau im Projekt: wie bisher mit dem Putz der Vorgabe, und
+        // die Raumliste des IFC-Exports ebenso (Review #182 H1)
         let m = crate::raumliste::tests::haus_roh();
+        let liste = crate::raumliste::raumliste(&m);
+        assert_eq!(liste.len(), 2);
         for (g, _) in m.storeys().iter() {
             for f in formen(&m, g) {
-                assert_eq!(grundflaeche_fertig(&m, &f), grundflaeche(&f));
+                let ist = grundflaeche_fertig(&m, &f);
+                assert!((ist - grundflaeche(&f)).abs() < 1e-6, "{ist}");
+                let r = liste.iter().find(|r| Some(r.raum) == f.raum).unwrap();
+                assert!((r.mengen.flaeche_fertig - ist).abs() < 1e-6);
+                assert!(r.mengen.flaeche_fertig < r.mengen.flaeche_roh - 1e5);
             }
         }
     }

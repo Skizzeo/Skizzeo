@@ -49,19 +49,18 @@ pub fn grundflaeche(f: &RaumForm) -> f64 {
 
 /// Grundfläche im Fertigmaß (mm²) wie im Raumbuch, eine Fläche für
 /// Stempel, Paneel, Mengenblatt und IFC (Bedienbarkeit 43.8, mit Grundriss
-/// abgestimmt): Bei einem Raum mit Ausbau der Fertigumriss nach den
-/// Ausbaudicken des Raumbuchs (Putz bzw. Bekleidung des Wandtyps plus
-/// Wandfliese, [`crate::ausbau::dicken_der_form`]), zerfällt er, 0 wie
-/// dort; sonst [`grundflaeche`]. Was außer der Form gelesen wird, nennt
-/// [`crate::ausbau::dicken_der_form`]: Nutzung des Raums, Raumvorlage,
-/// Typen des Ausbaus, Ausbau der Wandtypen; keine Platten, Öffnungen oder
-/// Höhen. Abweichung: Für Räume ohne Ausbau rechnet die Raumliste des
-/// IFC-Exports (`raumliste::raum`) das Fertigmaß bisher ohne Putz, hier gilt
-/// der Putz der Vorgabe (Review #182 H1, mit IFC zu klären).
+/// abgestimmt): der Fertigumriss nach den Ausbaudicken des Raumbuchs (Putz
+/// bzw. Bekleidung des Wandtyps plus Wandfliese,
+/// [`crate::ausbau::dicken_der_form`]), bei einem Raum ohne Ausbau nach dem
+/// Ausbau des Grundrisses ([`ausbau`]), wie die Raumliste des IFC-Exports
+/// (Review #182 H1); zerfällt er, 0 wie dort. Was außer der Form gelesen
+/// wird, nennt [`crate::ausbau::dicken_der_form`]: Nutzung des Raums,
+/// Raumvorlage, Typen des Ausbaus, Ausbau der Wandtypen; keine Platten,
+/// Öffnungen oder Höhen.
 pub fn grundflaeche_fertig(m: &Model, f: &RaumForm) -> f64 {
-    let Some(d) = crate::ausbau::dicken_der_form(m, f) else {
-        return grundflaeche(f);
-    };
+    let ringe_der_form = || std::iter::once(&f.umriss).chain(&f.loecher).flatten();
+    let d = crate::ausbau::dicken_der_form(m, f)
+        .unwrap_or_else(|| ringe_der_form().map(ausbau).collect());
     let ringe: Vec<&[Kante]> = std::iter::once(f.umriss.as_slice())
         .chain(f.loecher.iter().map(|l| l.as_slice()))
         .collect();
