@@ -3694,6 +3694,78 @@ fn perf_wohnflaeche_gebaeude() {
     }
 }
 
+/// Räume aller Geschosse bei je einem Gebäude je Haus (Integration nach
+/// #209: `Erkennung::gruppe` ×4,1 von 1000 auf 3000 Häuser): erster Abruf
+/// von `Scene::raumgruppen_mit_raeumen`, Abruf nach einem Schritt an einer
+/// Innenwand (Loslassen) und die Mengenliste nach einem solchen Schritt, je
+/// in ms. Die Zeit des ersten Abrufs je Haus darf bis `SKIZZEO_PERF_BIS`
+/// (Standard 1000, bis 8000) höchstens doppelt so groß sein wie bei 100.
+#[test]
+#[ignore]
+fn perf_raumgruppen_gebaeude() {
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    println!();
+    println!(
+        "{:>6} {:>9} {:>9} {:>9} {:>9}",
+        "Häuser", "erst", "je Haus", "Schritt", "Mengen"
+    );
+    let mut je_haus = Vec::new();
+    for n in [100, 1000, 3000, 8000].into_iter().filter(|&n| n <= bis) {
+        let mut s = Scene::with_model(haeuser_je_gebaeude(n));
+        let t = Instant::now();
+        let formen = s.raumgruppen_mit_raeumen();
+        let erst = t.elapsed().as_secs_f64() * 1000.0;
+        let flaechen: usize = formen.values().map(|f| f.flaechen().count()).sum();
+        assert_eq!(flaechen, 4 * n, "drei Räume im EG, einer im OG");
+        drop(formen);
+        s.schedule();
+        let innen = |s: &Scene| {
+            s.model()
+                .runs()
+                .iter()
+                .find(|(_, r)| {
+                    s.model()
+                        .element(r.segments[0])
+                        .is_some_and(|e| e.category == sk_model::Category::InteriorWall)
+                })
+                .map(|(id, _)| id)
+                .unwrap()
+        };
+        let run = innen(&s);
+        let orig = s.model().run(run).unwrap().points.clone();
+        let (mut schritt, mut mengen) = (0.0, 0.0);
+        for i in 0..8 {
+            let dx = if i % 2 == 0 { 50.0 } else { 0.0 };
+            let pts: Vec<_> = orig.iter().map(|p| *p + vec3(dx, 0.0, 0.0)).collect();
+            s.begin("Wand verschieben");
+            assert!(s.set_run_points(run, &pts));
+            s.commit();
+            let t = Instant::now();
+            if i % 2 == 0 {
+                std::hint::black_box(s.raumgruppen_mit_raeumen());
+                schritt += t.elapsed().as_secs_f64() * 1000.0 / 4.0;
+            } else {
+                s.schedule();
+                mengen += t.elapsed().as_secs_f64() * 1000.0 / 4.0;
+            }
+        }
+        let h = erst / n as f64;
+        println!("{n:>6} {erst:>9.1} {h:>9.4} {schritt:>9.2} {mengen:>9.1}");
+        je_haus.push((n, h));
+    }
+    println!("Zeiten in ms (Release); Schritt und Mengen je Schritt, Mittel aus vier.");
+    let bezug = je_haus[0].1;
+    for &(n, h) in &je_haus[1..] {
+        assert!(
+            h <= 2.0 * bezug,
+            "{n} Häuser: {h:.4} ms je Haus, bei 100 {bezug:.4}"
+        );
+    }
+}
+
 /// Wohnfläche mit je einer Stütze 40/40 je Haus, alle Häuser auf einem
 /// Geschoss (Review #195 B4): `wohn_rechnen` aus der Szene, bestes von drei.
 /// Die Zeit je Haus darf bei 2000 Häusern (4000 mit `SKIZZEO_PERF_BIS=4000`)
