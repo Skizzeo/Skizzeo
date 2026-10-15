@@ -58,6 +58,10 @@ pub(crate) struct Zustand {
     tippen: Option<GelaendeKnopf>,
     /// Ergebnis des letzten Einlesens.
     meldung: Vec<String>,
+    /// Hinweise über die ersten [`HINWEISE`] hinaus; `alle` zeigt sie
+    /// (Bedienbarkeit 43.5).
+    weitere: Vec<String>,
+    alle: bool,
     fehler: Option<Meldung>,
     /// „Höhen“ geklickt: der Dateidialog öffnet nach dem Ereignis.
     pub(crate) hoehen_wanted: bool,
@@ -94,13 +98,28 @@ impl Zustand {
     fn zu(&mut self) {
         self.offen = false;
         self.tippen = None;
-        self.meldung.clear();
+        self.leeren();
         self.fehler = None;
         self.plan = None;
         self.lesen = None;
         self.hoehen = None;
         self.werkzeug.set_aktiv(false);
         self.neu = true;
+    }
+
+    /// Meldungen und Hinweise leeren.
+    fn leeren(&mut self) {
+        self.meldung.clear();
+        self.weitere.clear();
+        self.alle = false;
+    }
+
+    /// Bis zu [`HINWEISE`] Hinweise in die Meldung, den Rest hinter den
+    /// Knopf „Alle Hinweise“.
+    fn hinweise(&mut self, hinweise: &[String]) {
+        let n = hinweise.len().min(HINWEISE);
+        self.meldung.extend(hinweise[..n].iter().cloned());
+        self.weitere = hinweise[n..].to_vec();
     }
 
     /// Ein Lageplan oder ein Höhenaufmaß wird gelesen.
@@ -128,6 +147,7 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Flaeche => "Fläche zeichnen",
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
+        GelaendeKnopf::Hinweise => "Alle Hinweise",
     }
 }
 
@@ -159,6 +179,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     };
     let mut l = GelaendeLeiste {
         meldung: z.meldung.clone(),
+        weitere: z.weitere.len(),
+        alle: z.alle,
         fehler: z.fehler.clone(),
         uebernehmen: z
             .plan
@@ -166,6 +188,9 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
             .is_some_and(|(src, p)| p.parcel.is_some() && !da(src)),
         ..Default::default()
     };
+    if z.alle {
+        l.meldung.extend(z.weitere.iter().cloned());
+    }
     if z.lesen.is_some() {
         l.meldung.push("Lageplan wird gelesen …".into());
     }
@@ -281,16 +306,8 @@ enum Einpassen {
     Geht(&'static str),
 }
 
-/// Bis zu [`HINWEISE`] Hinweise, der Rest als Anzahl.
-fn hinweise_anhaengen(meldung: &mut Vec<String>, hinweise: &[String]) {
-    meldung.extend(hinweise.iter().take(HINWEISE).cloned());
-    if hinweise.len() > HINWEISE {
-        let n = hinweise.len() - HINWEISE;
-        meldung.push(format!("und {n} weitere Hinweise"));
-    }
-}
-
-/// Was die Leiste nach dem Lesen eines Lageplans sagt.
+/// Was die Leiste nach dem Lesen eines Lageplans sagt (ohne seine
+/// Hinweise, die [`Zustand::hinweise`] anhängt).
 fn lageplan_saetze(p: &SitePlan) -> Vec<String> {
     let mut v = Vec::new();
     let mst = |s: f64| format!("1:{}", s.round());
@@ -311,7 +328,6 @@ fn lageplan_saetze(p: &SitePlan) -> Vec<String> {
         )),
         (None, None) => v.push("Keine Flurstücksnummer im Kopf gefunden".into()),
     }
-    hinweise_anhaengen(&mut v, &p.hints);
     v
 }
 
@@ -392,6 +408,7 @@ impl App {
             K::Lageplan => z.lageplan_wanted = true,
             K::Uebernehmen => self.flurstueck_uebernehmen(),
             K::Hoehen => z.hoehen_wanted = true,
+            K::Hinweise => z.alle = !z.alle,
             K::Verschieben | K::Drehen => z.tippen = (z.tippen != Some(k)).then_some(k),
             K::Ausrichten => {
                 self.gelaende_schritt("Gelände an Grenze ausrichten", |m| m.align_terrain());
@@ -495,7 +512,7 @@ impl App {
         });
         let z = &mut self.platte.leiste;
         z.neu = true;
-        z.meldung.clear();
+        z.leeren();
         z.fehler = None;
         z.hoehen = Some((p.to_path_buf(), zone, rx));
         self.gelaende_sync();
@@ -541,7 +558,7 @@ impl App {
             Err(e) => z.fehler = Some(e),
             Ok((t, satz, hinweise)) => {
                 z.meldung.push(satz);
-                hinweise_anhaengen(&mut z.meldung, &hinweise);
+                z.hinweise(&hinweise);
                 let eigene = t.parcels.clone();
                 match self.lageplan_einpassen(&t) {
                     Einpassen::Nicht => {
@@ -625,7 +642,7 @@ impl App {
         });
         let z = &mut self.platte.leiste;
         z.neu = true;
-        z.meldung.clear();
+        z.leeren();
         z.fehler = None;
         z.plan = None;
         z.lesen = Some((p.to_path_buf(), rx));
@@ -659,6 +676,7 @@ impl App {
             Err(e) => z.fehler = Some(e),
             Ok(plan) => {
                 z.meldung = lageplan_saetze(&plan);
+                z.hinweise(&plan.hints);
                 z.plan = Some((p.to_string_lossy().into_owned(), Arc::new(plan)));
             }
         }
@@ -701,7 +719,7 @@ impl App {
         }
         if plan.fit.is_none() && fit.is_none() {
             z.fehler = Some(Meldung::satz(
-                "Maßstab und Lage des Lageplans sind nicht erkannt; Einpassen über zwei Punkte folgt.",
+                "Maßstab und Lage des Lageplans sind nicht erkannt. Beim Vermessungsamt einen Auszug als Vektor-PDF anfordern, Maßstab 1:500 oder 1:1000.",
             ));
             return;
         }
@@ -709,7 +727,7 @@ impl App {
             m.import_parcel(&plan, &src, fit)
         });
         let z = &mut self.platte.leiste;
-        z.meldung.clear();
+        z.leeren();
         if ok {
             self.platte
                 .unterlage
@@ -1037,6 +1055,7 @@ mod tests {
             K::Flaeche,
             K::Befestigt,
             K::Loeschen,
+            K::Hinweise,
         ] {
             let z = crate::help::tooltip_lines(knopf_name(k));
             assert_eq!(z.len(), 3, "{k:?}");
@@ -1069,6 +1088,27 @@ mod tests {
         std::fs::write(&p, PLAN).unwrap();
         assert!(lageplan_lesen(&p, 32).unwrap().parcel.is_some());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Bedienbarkeit 43.5: Drei Hinweise stehen da, die übrigen hinter
+    /// „Alle Hinweise“; ein zweiter Klick nimmt sie wieder weg, ein neues
+    /// Einlesen leert beides.
+    #[test]
+    fn alle_hinweise() {
+        let h: Vec<String> = (1..=5).map(|i| format!("Hinweis {i}")).collect();
+        let mut z = Zustand::default();
+        z.hinweise(&h);
+        let m = Model::with_seed(7);
+        let l = leiste(&m, &z);
+        assert_eq!(l.meldung, h[..3]);
+        assert_eq!((l.weitere, l.alle), (2, false));
+        z.alle = true;
+        assert_eq!(leiste(&m, &z).meldung, h);
+        z.leeren();
+        let l = leiste(&m, &z);
+        assert!(l.meldung.is_empty() && l.weitere == 0 && !l.alle);
+        z.hinweise(&h[..2]);
+        assert_eq!(leiste(&m, &z).weitere, 0);
     }
 
     /// Der Beispiel-Lageplan: Maßstab und Flurstück in der Leiste, dann

@@ -8,7 +8,7 @@ use sk_model::{qto, szo, GuidGen, Model, TerrainPatch};
 
 /// Wortlaut aus `sk_model::qto_earth` (dort privat).
 const OHNE_AUFMASS: &str = "kein Höhenaufmaß";
-const FAKTOR_TEXT: &str = "Eigenboden fest → eingebaut Faktor";
+const FAKTOR_TEXT: &str = "Eigenboden fest zu eingebaut";
 
 const RH1: &str = include_str!("../referenz/rh1-standardhaus.szo");
 

@@ -92,6 +92,14 @@ impl Werkzeug {
         self.aktiv && !self.ecken.is_empty()
     }
 
+    /// Der Umriss ließ sich nicht anlegen (Gelände zu hoch): die Ecken
+    /// bleiben stehen wie bei jedem anderen Fehler (Review #189 H-189d).
+    pub fn ecken_zurueck(&mut self, ring: Vec<[f64; 2]>) {
+        if self.aktiv {
+            self.ecken = ring;
+        }
+    }
+
     /// Esc: erst die gesetzten Ecken, dann das Werkzeug. `true`, wenn
     /// etwas geschlossen wurde.
     pub fn escape(&mut self) -> bool {
@@ -485,7 +493,7 @@ impl App {
             .iter()
             .fold([0.0, 0.0], |s, p| [s[0] + p[0] / n, s[1] + p[1] / n]);
         let z = (m.terrain_z_at(m.level_building(), c[0], c[1]) / 10.0).round() * 10.0 + 0.0;
-        let p = TerrainPatch::flat(ring, z);
+        let p = TerrainPatch::flat(ring.clone(), z);
         let mut neu = None;
         if self.scene.edit_model(LABEL_NEU, |m| {
             neu = m.add_site_patch(p);
@@ -495,6 +503,7 @@ impl App {
             self.quantity.dirty = true;
         }
         if neu.is_none() {
+            self.platte.leiste.werkzeug.ecken_zurueck(ring);
             self.status(crate::meldung::Meldung::satz(ZU_HOCH), crate::NOTICE_TIME);
         }
         if let Some(i) = neu {
@@ -800,6 +809,13 @@ mod tests {
             assert_eq!(q[1] % STEP, 0.0);
         }
         assert!(w.ecken().is_empty() && w.aktiv);
+        // ließ sich die Fläche nicht anlegen, stehen die Ecken wieder da
+        // (H-189d); bei beendetem Werkzeug nicht
+        w.ecken_zurueck(ring.clone());
+        assert_eq!(w.ecken(), &ring[..]);
+        w.set_aktiv(false);
+        w.ecken_zurueck(ring);
+        assert!(w.ecken().is_empty());
     }
 
     /// Rücktaste nimmt die letzte Ecke, Enter schließt, Esc verwirft erst

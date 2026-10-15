@@ -644,7 +644,7 @@ pub fn auswerten(seite: Seite, erzeuger_text: &str) -> Lageplan {
     let nummer = nummer_im_kopf(&seite.texte);
     let mut hinweise = Vec::new();
     if seite.pfade.is_empty() && seite.texte.is_empty() && !seite.bilder.is_empty() {
-        hinweise.push("Die Seite ist nur ein Bild (eingescannter Plan). Bitte als PNG einlesen und über zwei Punkte einpassen.".to_string());
+        hinweise.push("Die Seite ist nur ein Bild (eingescannter Plan); Grenzen und Maßstab lassen sich daraus nicht lesen. Beim Vermessungsamt einen Auszug als Vektor-PDF anfordern, oder die Grenzen mit der DXF des Vermessers über „Höhen“ einlesen.".to_string());
     }
     let mut plan = Lageplan {
         seite,
@@ -662,7 +662,7 @@ pub fn auswerten(seite: Seite, erzeuger_text: &str) -> Lageplan {
         plan.flurstueck = flurstueck(&plan, &n);
         if plan.flurstueck.is_none() {
             plan.hinweise.push(format!(
-                "Das Flurstück {n} aus dem Kopf ist in der Karte nicht als geschlossene Fläche zu finden; bitte die Nummer anklicken oder die Grenze nachfahren."
+                "Das Flurstück {n} aus dem Kopf ist in der Karte nicht als geschlossene Fläche zu finden. Die Grenze kommt dann aus der DXF des Vermessers über „Höhen“, oder aus einem neuen Auszug als Vektor-PDF."
             ));
         }
     }
