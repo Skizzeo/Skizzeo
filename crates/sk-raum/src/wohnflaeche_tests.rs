@@ -690,3 +690,45 @@ fn grundflaeche_wie_am_stempel() {
     }
     assert!(ausgleich > 0, "halbe Millimeter an der Innenwand");
 }
+
+/// Eine Stütze 80/80 um den Pfeiler 40/40 aus dem Wandring: Was beide
+/// decken, zieht nur der Pfeiler ab, die Stütze den Rest; zusammen
+/// 0,83 × 0,83 m mit Putz (Review #195 H-195j).
+#[test]
+fn stuetze_um_pfeiler_nur_einmal() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4000.0, 4000.0),
+            (4000.0, 4400.0),
+            (4400.0, 4400.0),
+            (4400.0, 4000.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    let (a, b) = (3800.0, 4600.0);
+    let stuetze = Einbau {
+        id: h.w[2],
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(a, a, 0.0),
+            vec3(b, a, 0.0),
+            vec3(b, b, 0.0),
+            vec3(a, b, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+    };
+    let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(vec![stuetze]));
+    let abzug: f64 = r
+        .teile
+        .iter()
+        .filter(|t| t.art == Art::Abzug)
+        .map(|t| t.wert)
+        .sum();
+    assert!((abzug + 830.0 * 830.0).abs() < 1.0, "{abzug}");
+    // 79,4609 − 0,6889
+    assert_eq!(r.grund, 7877);
+}

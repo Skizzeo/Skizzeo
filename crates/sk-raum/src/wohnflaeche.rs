@@ -526,6 +526,9 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
     let mut roh_teile: Vec<(Roh, Art)> = Vec::new();
     let mut umriss: Vec<Vec<Vec3>> = Vec::new();
     let mut genau = 0.0;
+    // Abgezogene Pfeiler: Was eine Stütze mit ihnen deckt, ist schon ab
+    // (Review #195 H-195j)
+    let mut abgezogen: Vec<Vec<[Vec3; 3]>> = Vec::new();
     let mut erste = 0;
     for (i, ring) in roh.ringe().enumerate() {
         let p: Vec<Vec3> = ring.iter().map(|k| k.a).collect();
@@ -552,6 +555,7 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
                 ));
             } else {
                 genau -= a;
+                abgezogen.push(einbau::dreiecke(&fertig));
                 for (text, wert, u) in zerlegen(&fertig) {
                     roh_teile.push(((format!("{name} {text}"), -wert, u), Art::Abzug));
                 }
@@ -637,7 +641,8 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
                 .then(|| format!(" einschl. Putz {} mm", putz.round()))
                 .unwrap_or_default();
             let e = geputzt.as_ref().unwrap_or(e);
-            let f = einbau::im_raum(e, &dreiecke);
+            let f = einbau::im_raum(e, &dreiecke)
+                - abgezogen.iter().map(|l| einbau::im_raum(e, l)).sum::<f64>();
             if f < 1.0 {
                 continue;
             }
