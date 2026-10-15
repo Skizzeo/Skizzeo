@@ -394,6 +394,60 @@ fn oz_im_los(k: &Katalog, l: &Leistung, uu: Option<u32>) -> String {
     }
 }
 
+/// Höchster Positionsindex einer Teilposition je Dicke (eine Stelle).
+const INDEX_MAX: u32 = 9;
+
+/// Bauleistung, ihre Zeilen im Kostenblatt und, als Teilposition je Dicke,
+/// Index und Dicke.
+type LvTeil = (Guid, Vec<usize>, Option<(u32, Dez)>);
+
+/// Kostenzeilen je Bauleistung. Zeilen derselben Bauleistung an Räumen,
+/// die sich nur in der Dicke ihrer Schicht unterscheiden (K12, gleicher
+/// Baustoff, jede Dicke einmal), werden Teilpositionen je Dicke mit Index
+/// 1, 2 … nach der Dicke (R1-B3, DIN 18353 Abschnitt 0.5: Dämmschichten
+/// getrennt nach Dicke). Im Raum folgt die Dicke aus dem Raumbuch (die
+/// Dämmung gleicht den Fußbodenaufbau aus), eine Bauleistung je Dicke kann
+/// niemand anlegen. An Bauteilen ist die Dicke die des Typs; zwei Dicken
+/// heißen dort eine zu weite Regel und bleiben Regel 101, ebenso mehr
+/// Dicken, als der Index fasst. Eine Dicke allein bleibt ohne Index.
+fn je_dicke_teilen(
+    m: &Model,
+    positionen: &[Position],
+    je_leistung: Vec<(Guid, Vec<usize>)>,
+) -> Vec<LvTeil> {
+    let mut out = Vec::new();
+    for (g, zeilen) in je_leistung {
+        let schichten: Option<Vec<(Guid, Dez)>> = zeilen
+            .iter()
+            .map(|i| positionen[*i].schicht.filter(|s| s.1 > Dez::NULL))
+            .collect();
+        let raum = zeilen.iter().flat_map(|i| &positionen[*i].ansatz).all(|a| {
+            m.element(a.element)
+                .is_some_and(|e| matches!(e.kind, sk_model::ElementKind::Space(_)))
+        });
+        let teilbar = raum
+            && zeilen.len() > 1
+            && zeilen.len() <= INDEX_MAX as usize
+            && schichten.as_ref().is_some_and(|s| {
+                let mut d: Vec<Dez> = s.iter().map(|x| x.1).collect();
+                d.sort();
+                d.dedup();
+                d.len() == s.len() && s.iter().all(|x| x.0 == s[0].0)
+            });
+        match (teilbar, schichten) {
+            (true, Some(s)) => {
+                let mut je: Vec<(Dez, usize)> = s.iter().map(|x| x.1).zip(zeilen).collect();
+                je.sort();
+                for (n, (d, i)) in je.into_iter().enumerate() {
+                    out.push((g, vec![i], Some((n as u32 + 1, d))));
+                }
+            }
+            _ => out.push((g, zeilen, None)),
+        }
+    }
+    out
+}
+
 /// OZ mit Los davor für Befundsätze („1.01.0020“, paket-ka4 §3).
 fn oz_mit_los(los_nr: &str, oz: &str) -> String {
     format!("{los_nr}.{oz}")
@@ -478,11 +532,18 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     let mut mengen_hinweise: Vec<(String, String)> = Vec::new();
     let mut hinweis_gesehen: HashSet<(String, String)> = HashSet::new();
     let mut aus_netz = false;
-    for (g, zeilen) in je_leistung {
+    for (g, zeilen, je_dicke) in je_dicke_teilen(m, &b.positionen, je_leistung) {
         let l = k.leistung(g).expect("Leistung");
         let ps: Vec<&Position> = zeilen.iter().map(|i| &b.positionen[*i]).collect();
         let p0 = ps[0];
         let mehrere = ps.len() > 1;
+        // Teilposition je Dicke (R1-B3): eigener Index an der OZ, Dicke im
+        // Kurztext
+        let index = je_dicke.map_or(String::new(), |(i, _)| format!(".{i}"));
+        let kurz = match je_dicke {
+            Some((_, d)) => format!("{}, d = {} mm", l.kurz, mm(d)),
+            None => l.kurz.clone(),
+        };
         let preis_fehlt = ps.iter().any(|p| p.preis_fehlt);
         let ansatz: Vec<&Ansatz> = ps.iter().flat_map(|p| p.ansatz.iter()).collect();
         let roh: i128 = ansatz.iter().map(|a| a.menge).sum();
@@ -492,7 +553,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         let Some(ti) = titel.iter().position(|t| t.guid == l.titel) else {
             continue;
         };
-        let oz_basis = k.oz(l);
+        let oz_basis = k.oz(l) + &index;
         let erde = |a: &&Ansatz| {
             a.auto.is_some_and(|x| x.starts_with("earth."))
                 && a.formel
@@ -550,10 +611,19 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                 "je Dicke und Erweiterung"
             };
             d.extend(bauteile);
+            // mehr Dicken, als der Index fasst: melden, nicht kürzen
+            let zu_viele = if dicken.len() > INDEX_MAX as usize {
+                format!(
+                    " {} Dicken sind mehr, als der Positionsindex fasst (1 bis {INDEX_MAX});",
+                    dicken.len()
+                )
+            } else {
+                String::new()
+            };
             befunde.push(Befund::fehler(
                 101,
                 format!(
-                    "{} {} hat verschiedene Stoffpreise {je} ({}); bitte die Bauleistung je Dicke anlegen.",
+                    "{} {} hat verschiedene Stoffpreise {je} ({});{zu_viele} bitte die Bauleistung je Dicke anlegen.",
                     oz_mit_los(&los_nr, &oz_basis),
                     l.kurz,
                     d.join(" und ")
@@ -608,7 +678,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                    ansatz: Vec<Ansatzzeile>,
                    uu: Option<u32>| LvPosition {
             oz,
-            kurztext: l.kurz.clone(),
+            kurztext: kurz.clone(),
             menge,
             einheit: l.einheit,
             ep,
@@ -652,7 +722,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                     });
                 }
                 let ma = mengenansatz(k, &v, l.einheit, Some(uu));
-                let oz = oz_im_los(k, l, Some(uu));
+                let oz = oz_im_los(k, l, Some(uu)) + &index;
                 titel[ti]
                     .positionen
                     .push(neu(oz, menge, ep.map(|e| gp(menge, e)), ma, Some(uu)));
