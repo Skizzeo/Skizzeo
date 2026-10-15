@@ -2546,7 +2546,7 @@ impl App {
 
     /// Rückgängig bzw. Wiederherstellen (Knopf und Kürzel).
     fn history(&mut self, redo: bool) {
-        if self.im_zug() {
+        if self.flaeche_zurueck(redo) || self.im_zug() {
             return;
         }
         // Ein Lösch-Schritt blendet ein bzw. wieder aus (V?-9)

@@ -465,13 +465,36 @@ impl Model {
     /// Überlappt der Umriss der Fläche `i` den einer anderen um mehr als
     /// 1 cm²? Die Mengen zählen dort doppelt
     /// ([`crate::qto_earth::UEBERLAPPT`]); die App meldet es beim Schließen.
+    /// Erst die Rechtecke um die Umrisse, die Fläche `i` einmal zerlegt,
+    /// eine andere nur bei treffendem Rechteck (Review #189 B2).
     pub fn site_patch_overlaps(&self, i: usize) -> bool {
+        use sk_gelaende::planung::Zerlegt;
         let f = &self.project.site_patches;
         let Some(a) = f.get(i) else {
             return false;
         };
-        let u = |b: &TerrainPatch| sk_gelaende::planung::ueberlappung(&a.outline, &b.outline);
-        f.iter().enumerate().any(|(j, b)| j != i && u(b) > 100.0)
+        let huelle = |r: &[[f64; 2]]| {
+            r.iter()
+                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |h, p| {
+                    [
+                        h[0].min(p[0]),
+                        h[1].min(p[1]),
+                        h[2].max(p[0]),
+                        h[3].max(p[1]),
+                    ]
+                })
+        };
+        let ha = huelle(&a.outline);
+        let mut za = None;
+        f.iter().enumerate().any(|(j, b)| {
+            let hb = huelle(&b.outline);
+            let trifft = ha[0] < hb[2] && hb[0] < ha[2] && ha[1] < hb[3] && hb[1] < ha[3];
+            if j == i || !trifft {
+                return false;
+            }
+            let za = za.get_or_insert_with(|| Zerlegt::neu(&a.outline));
+            za.ueberlappung(&Zerlegt::neu(&b.outline)) > 100.0
+        })
     }
 
     /// Neue Geländefläche (im offenen Schritt); ihre Nummer, `None`, wenn
