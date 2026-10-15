@@ -2,8 +2,9 @@
 //! Kanten der Außenkante des Hauses (Wandzüge mit Gründung), der anderen
 //! Geländeflächen und der Grundstücksgrenzen. Eine Ecke geht vor einer
 //! Kante; ohne Ziel in der Nähe rastet der Punkt auf 1 cm. Der Punkt auf
-//! einer Kante wird nicht gerundet: an einer schrägen Kante läge er sonst
-//! bis 0,7 mm in der Nachbarfläche (Review #198 H-198c).
+//! einer Kante wird nur auf 1 µm gerundet: auf 1 cm läge er an einer
+//! schrägen Kante bis 0,7 mm in der Nachbarfläche (Review #198 H-198c),
+//! ungerundet stünde er mit 17 Stellen in der Datei (H-198f).
 
 use crate::scene::Scene;
 use std::borrow::Cow;
@@ -37,7 +38,7 @@ impl Ziele {
     }
 
     /// Nächstes Ziel zu `p` innerhalb `tol` (mm): erst Ecken, dann Kanten
-    /// (Lotfußpunkt, ungerundet).
+    /// (Lotfußpunkt, auf 1 µm).
     pub fn fangen(&self, p: [f64; 2], tol: f64) -> Option<([f64; 2], Fang)> {
         let d = |q: [f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]);
         let ecke = self
@@ -58,7 +59,8 @@ impl Ziele {
                     return None;
                 }
                 let t = (((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1]) / l2).clamp(0.0, 1.0);
-                let q = [a[0] + e[0] * t, a[1] + e[1] * t];
+                let um = |x: f64| (x * 1000.0).round() / 1000.0 + 0.0;
+                let q = [um(a[0] + e[0] * t), um(a[1] + e[1] * t)];
                 Some((d(q), q))
             })
             .filter(|x| x.0 <= tol)
@@ -120,16 +122,21 @@ mod tests {
             z.fangen([4060.0, 20.0], 100.0),
             Some(([4000.0, 0.0], Fang::Ecke))
         );
-        // an der Kante: der Lotfußpunkt, ungerundet
+        // an der Kante: der Lotfußpunkt, auf 1 µm
         let (q, f) = z.fangen([2000.4, 55.0], 100.0).unwrap();
         assert_eq!(f, Fang::Kante);
-        assert!((q[0] - 2000.4).abs() < 1e-9 && q[1] == 0.0, "{q:?}");
-        // schräge Kante: der Punkt liegt auf ihr, nicht daneben (H-198c)
+        assert_eq!(q, [2000.4, 0.0]);
+        // schräge Kante: der Punkt liegt auf ihr, nicht daneben (H-198c),
+        // und hat höchstens drei Nachkommastellen (H-198f)
         let mut s = Ziele::default();
         s.ring(&[[0.0, 0.0], [3000.0, 1000.0], [0.0, 2000.0]]);
         let (q, f) = s.fangen([1501.0, 497.0], 100.0).unwrap();
         assert_eq!(f, Fang::Kante);
-        assert!((q[0] / 3.0 - q[1]).abs() < 1e-9, "{q:?}");
+        assert!((q[0] / 3.0 - q[1]).abs() < 1e-3, "{q:?}");
+        for x in q {
+            let t = x.to_string();
+            assert!(t.split('.').nth(1).is_none_or(|n| n.len() <= 3), "{t}");
+        }
         // zu weit weg: nichts
         assert_eq!(z.fangen([2000.0, 500.0], 100.0), None);
         assert_eq!(Ziele::default().fangen([0.0, 0.0], 100.0), None);

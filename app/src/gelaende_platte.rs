@@ -1167,6 +1167,10 @@ impl App {
 mod tempo;
 
 #[cfg(test)]
+#[path = "gelaende_istbilder.rs"]
+mod istbilder;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

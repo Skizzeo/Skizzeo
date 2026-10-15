@@ -157,6 +157,7 @@ impl Ui {
     pub(super) fn gelaende_rows(&self, l: &GelaendeLeiste) -> Vec<Row> {
         use GelaendeKnopf as K;
         let mut rows = vec![Row::Button(Id::Gelaende(K::Leiste), "Gelände")];
+        let breite = self.width(Panel::Tools) - 2.0 * self.size.panel_pad;
         if !self.frei.frei(Modul::Gelaende) {
             // Was das Modul kann (§4.7, auf Jörns Wunsch statt ausgeblendet)
             rows.extend([
@@ -184,7 +185,8 @@ impl Ui {
             ));
         }
         if l.aufmass {
-            rows.push(paar((K::Verschieben, "Verschieben"), (K::Drehen, "Drehen")));
+            // „Verschieben“ passte nicht in den Knopf (Ist-Bild 42.7)
+            rows.push(paar((K::Verschieben, "Schieben"), (K::Drehen, "Drehen")));
             match l.tippen {
                 Some(K::Verschieben) => {
                     feld(&mut rows, GelaendeFeld::Rechts);
@@ -203,11 +205,19 @@ impl Ui {
                 rows.extend([
                     Row::Separator,
                     Row::Label("Höhenlage"),
-                    paar((K::Ueber, "über Gelände"), (K::Absolut, "absolut")),
+                    // „über Gelände“ passte nicht in den Knopf (Ist-Bild
+                    // 42.7); der Tooltip sagt es
+                    paar((K::Ueber, "relativ"), (K::Absolut, "absolut")),
                 ]);
                 feld(&mut rows, GelaendeFeld::Versatz);
                 feld(&mut rows, GelaendeFeld::Nhn);
-                rows.extend(l.hoehenlage.iter().map(|z| Row::Text(z.clone())));
+                // umgebrochen: „Einbindung …, frostfrei“ lief über den Rand
+                // (Ist-Bild 42.7)
+                for z in &l.hoehenlage {
+                    let f = self.fonts.regular.as_ref();
+                    let z = widgets::wrap(f, z, self.size.font_small, breite);
+                    rows.extend(z.into_iter().map(Row::Text));
+                }
                 rows.extend(l.steckt.clone().map(Row::Error));
                 if l.deckt_nicht {
                     rows.extend(self.rot(DECKT_NICHT));
@@ -257,7 +267,6 @@ impl Ui {
         if !l.meldung.is_empty() || l.fehler.is_some() {
             rows.push(Row::Separator);
         }
-        let breite = self.width(Panel::Tools) - 2.0 * self.size.panel_pad;
         let f = self.fonts.regular.as_ref();
         for m in &l.meldung {
             let z = widgets::wrap(f, m, self.size.font_small, breite);
@@ -436,6 +445,53 @@ mod tests {
         ui.gelaende = None;
         assert_eq!(knoepfe(&ui), [Id::Gelaende(K::Leiste)]);
         assert!(!ui.is_on(Id::Gelaende(K::Leiste)));
+    }
+
+    /// Mit Liberation Sans (gleich breit wie Arial): Jede Beschriftung
+    /// passt in ihren Knopf, jede Zeile ins Paneel (Ist-Bild 42.7: „über
+    /// Gelände“ und „Einbindung …, frostfrei“ liefen über den Rand).
+    #[test]
+    fn alles_passt_ins_paneel() {
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let lade = |n: &str| {
+            std::fs::read(lib.join(n))
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+        };
+        let (Some(regular), Some(bold)) = (
+            lade("LiberationSans-Regular.ttf"),
+            lade("LiberationSans-Bold.ttf"),
+        ) else {
+            return;
+        };
+        let t = Theme::dark();
+        let mut ui = Ui::new(1.0, &t);
+        ui.fonts = widgets::Fonts {
+            regular: lade("LiberationSans-Regular.ttf"),
+            bold: lade("LiberationSans-Bold.ttf"),
+            italic: None,
+        };
+        ui.gelaende = Some(GelaendeLeiste {
+            uebernehmen: true,
+            hoehenlage: vec![
+                "±0,00 = 25,20 m ü. NHN".into(),
+                "Sockel 0,0 bis 44,2 cm".into(),
+                "Einbindung 0,80 bis 1,24 m, frostfrei".into(),
+            ],
+            grundstueck: Some("Grundstück 822,86 m²".into()),
+            ..leiste()
+        });
+        for (_, r, label) in ui.buttons(Panel::Tools) {
+            let w = bold.width(label, ui.size.font);
+            assert!(w <= r.w - 2.0, "„{label}“ {w:.1} in {:.1}", r.w);
+        }
+        let breite = ui.width(Panel::Tools) - 2.0 * ui.size.panel_pad;
+        for r in ui.rows(Panel::Tools) {
+            if let Row::Text(z) = r {
+                let w = regular.width(&z, ui.size.font_small);
+                assert!(w <= breite, "„{z}“ {w:.1} in {breite:.1}");
+            }
+        }
     }
 
     /// Ohne Aufmaß: Einlesen und ein kurzer Hinweis; eine Meldung wird auf
