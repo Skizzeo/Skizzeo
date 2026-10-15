@@ -510,6 +510,131 @@ fn stuetzen_und_treppen_nach_woflv() {
     assert_eq!(r.grund, vorher - 16 - 420);
 }
 
+/// Stütze 50/50 nur 1,40 m hoch und Treppe mit drei Steigungen bleiben in
+/// der Fläche, je mit Hinweis (§ 3 Abs. 3 Nr. 1 und 2; Review #195
+/// H-195k). Höhe und Steigungen sind an den Einbauten gesetzt, weil die
+/// Beispiele der Werkbank sie nicht so klein zulassen.
+#[test]
+fn niedrige_stuetze_und_kurze_treppe_bleiben() {
+    let (mut m, st, stuetze, treppe) = haus_mit_raum();
+    m.begin("Einbauten");
+    let mut s = sk_model::ExtPart::new(&stuetze, [7000.0, 5000.0]);
+    s.werte = vec![("b".into(), 500.0), ("d".into(), 500.0)];
+    m.add_ext(st, s).unwrap();
+    m.add_ext(st, sk_model::ExtPart::new(&treppe, [1000.0, 3000.0]))
+        .unwrap();
+    assert!(m.commit().is_some());
+    let mut liste = einbau::sammeln(&m).remove(&st).unwrap().liste().to_vec();
+    assert_eq!(liste.len(), 2);
+    for e in &mut liste {
+        if e.treppe {
+            e.steigungen = Some(3.0);
+        } else {
+            e.z.1 = e.z.0 + 1400.0;
+        }
+    }
+    let f = crate::raeume(&m, st).remove(0);
+    let roh = Rohbau::neu(&m, f);
+    let aus = RaumAusbau::fuer(&m, &roh).unwrap();
+    let ohne = raum(&m, &roh, &aus);
+    let r = raum_mit(&m, &roh, &aus, &Einbauten::neu(liste));
+    assert!(texte(&r, Art::Abzug)
+        .iter()
+        .all(|t| !t.contains("§ 3 Abs. 3 Nr. 2")));
+    let hinweise = texte(&r, Art::Hinweis);
+    assert!(
+        hinweise
+            .iter()
+            .any(|h| h.contains("m hoch bleibt in der Fläche (bis 1,50 m, § 3 Abs. 3 Nr. 1)")),
+        "{hinweise:?}"
+    );
+    assert!(
+        hinweise
+            .iter()
+            .any(|h| h
+                .ends_with("mit 3 Steigungen bleibt in der Fläche (bis drei, § 3 Abs. 3 Nr. 2)")),
+        "{hinweise:?}"
+    );
+    assert_eq!(r.grund, ohne.grund);
+}
+
+/// Das Geschoss der Rechnung entsteht in `sammeln` in einem Gang; Höhen
+/// wie über `Model::ext_lage` mit `Model::ext_geschoss` (Review #195 B4).
+#[test]
+fn sammeln_wie_ext_lage() {
+    let (mut m, st, stuetze, treppe) = haus_mit_raum();
+    m.begin("Einbauten");
+    m.add_ext(st, sk_model::ExtPart::new(&stuetze, [7000.0, 5000.0]))
+        .unwrap();
+    m.add_ext(st, sk_model::ExtPart::new(&treppe, [1000.0, 3000.0]))
+        .unwrap();
+    assert!(m.commit().is_some());
+    let alle = einbau::sammeln(&m);
+    let liste = alle[&st].liste();
+    assert_eq!(liste.len(), 2);
+    for e in liste {
+        let (lage, erg) = m.ext_lage(e.id).unwrap();
+        let z: Vec<f64> = erg
+            .koerper
+            .iter()
+            .flat_map(|k| {
+                k.umriss.iter().flat_map(move |q| {
+                    [k.von, k.bis].map(|w| lage.welt(k.punkt(q[0], q[1], w, 0.0)).z)
+                })
+            })
+            .collect();
+        let lo = z.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = z.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(e.z, (lo, hi));
+    }
+    assert_eq!(liste[1].steigungen, Some(16.0));
+}
+
+/// Das Raster findet nur Einbauten unter dem Rechteck des Raums, in der
+/// Reihenfolge des Modells, auch über Feldgrenzen (Review #195 B4).
+#[test]
+fn einbauten_im_raster() {
+    let (m, ..) = haus_mit_raum();
+    let id = m.elements().iter().next().unwrap().0;
+    let quadrat = |x: f64, y: f64, a: f64| Einbau {
+        id,
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(x, y, 0.0),
+            vec3(x + a, y, 0.0),
+            vec3(x + a, y + a, 0.0),
+            vec3(x, y + a, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+    };
+    let e = Einbauten::neu(vec![
+        quadrat(4900.0, 100.0, 300.0),
+        quadrat(-7000.0, -7000.0, 400.0),
+        quadrat(1000.0, 1000.0, 12000.0),
+        quadrat(30000.0, 30000.0, 400.0),
+    ]);
+    let x0 = |v: Vec<&Einbau>| v.iter().map(|e| e.stuecke[0][0].x).collect::<Vec<_>>();
+    assert_eq!(x0(e.bei([0.0, 0.0, 5000.0, 5000.0])), vec![4900.0, 1000.0]);
+    assert_eq!(
+        x0(e.bei([-8000.0, -8000.0, -6000.0, -6000.0])),
+        vec![-7000.0]
+    );
+    assert_eq!(
+        x0(e.bei([12000.0, 12000.0, 12500.0, 12500.0])),
+        vec![1000.0]
+    );
+    assert_eq!(
+        x0(e.bei([20000.0, 0.0, 25000.0, 1000.0])),
+        Vec::<f64>::new()
+    );
+    assert_eq!(
+        x0(e.bei([-1e6, -1e6, 1e6, 1e6])),
+        vec![4900.0, -7000.0, 1000.0, 30000.0]
+    );
+    assert!(Einbauten::default().bei([0.0, 0.0, 1.0, 1.0]).is_empty());
+}
+
 /// Innenwand 17,5 cm bei x = 4,001 m: Die Teilflächen rechnen auf den
 /// Millimeter, die Grundfläche wie am Stempel genau; eine Zeile
 /// „Rundungsausgleich“ schließt die Lücke, so dass die Ansätze aufgehen

@@ -39,7 +39,7 @@ use std::collections::HashMap;
 
 #[path = "wohnflaeche_einbau.rs"]
 pub mod einbau;
-pub use einbau::Einbau;
+pub use einbau::{Einbau, Einbauten};
 
 /// Bis zu dieser Tiefe (mm) zählt eine bodentiefe Fensternische nicht.
 pub const NISCHE: f64 = 130.0;
@@ -479,7 +479,7 @@ fn faktor(model: &Model, form: &RaumForm, lichte_hoehe: f64) -> Faktor {
 
 /// Wohnfläche eines Raums ohne Stützen und Treppen; siehe [`raum_mit`].
 pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
-    raum_mit(model, roh, aus, &[])
+    raum_mit(model, roh, aus, &Einbauten::default())
 }
 
 /// Wohnfläche eines Raums. `aus`: sein Ausbau ([`RaumAusbau::fuer`]); hat er
@@ -487,7 +487,7 @@ pub fn raum(model: &Model, roh: &Rohbau, aus: &RaumAusbau) -> WohnRaum {
 /// Stempel), gilt an jeder Wandseite ohne Bekleidung im Wandtyp der
 /// Innenputz der Vorgabe ([`PUTZ`]). `einbauten`: Stützen und Treppen seines
 /// Geschosses ([`einbau::sammeln`]).
-pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &[Einbau]) -> WohnRaum {
+pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einbauten) -> WohnRaum {
     let form = &roh.form;
     let mut hinweise: Vec<String> = Vec::new();
     // Wie grundflaeche_fertig (Review #195 H-195d), ohne Gang über alle
@@ -616,7 +616,7 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &[Einb
     // Stützen und Treppen im Raum (B1)
     if let Some(rand) = umriss.first().filter(|_| !einbauten.is_empty()) {
         let dreiecke = einbau::dreiecke(rand);
-        for e in einbauten {
+        for e in einbauten.bei(einbau::rahmen(rand)) {
             let f = einbau::im_raum(e, &dreiecke);
             if f < 1.0 {
                 continue;
@@ -775,6 +775,7 @@ pub fn projekt_mit(
     // (Review #137 B2, #195 B1, B2)
     let lagen = Geschosse::aus(model);
     let einbauten = einbau::sammeln(model);
+    let leer = Einbauten::default();
     let mut geschosse: Vec<(StoreyId, &sk_model::Storey)> = model
         .storeys()
         .iter()
@@ -794,7 +795,7 @@ pub fn projekt_mit(
             .filter_map(|f| {
                 let roh = Rohbau::mit_geschossen(model, k, f, &lagen);
                 let aus = RaumAusbau::fuer_in(model, &roh, &lagen)?;
-                let ein = einbauten.get(&id).map_or(&[][..], Vec::as_slice);
+                let ein = einbauten.get(&id).unwrap_or(&leer);
                 Some(raum_mit(model, &roh, &aus, ein))
             })
             .collect();

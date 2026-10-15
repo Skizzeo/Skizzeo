@@ -3693,3 +3693,68 @@ fn perf_wohnflaeche_gebaeude() {
         );
     }
 }
+
+/// Wohnfläche mit je einer Stütze 40/40 je Haus, alle Häuser auf einem
+/// Geschoss (Review #195 B4): `wohn_rechnen` aus der Szene, bestes von drei.
+/// Die Zeit je Haus darf bei 2000 Häusern (4000 mit `SKIZZEO_PERF_BIS=4000`)
+/// höchstens doppelt so groß sein wie bei 1000. Jede Stütze wird
+/// abgezogen.
+#[test]
+#[ignore]
+fn perf_wohnflaeche_stuetzen() {
+    use sk_model::erweiterung::{ExtDef, ExtPart};
+    println!();
+    println!(
+        "{:>6} {:>6} {:>9} {:>10}",
+        "Häuser", "Räume", "Rechnung", "je Haus"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    let mut je_haus: Vec<(usize, f64)> = Vec::new();
+    for n in [1000, 2000, 4000].into_iter().filter(|&n| n <= bis) {
+        let mut s = town_with_interior(n);
+        let eg = s.active_storey();
+        let side = (n as f64).sqrt().ceil() as usize;
+        assert!(s.edit_model("Stützen", |m| {
+            let d = ExtDef::lesen(STUETZE).unwrap();
+            m.put_ext_def(d.clone()).unwrap();
+            for i in 0..n {
+                let (ox, oy) = ((i % side) as f64 * 15000.0, (i / side) as f64 * 15000.0);
+                let mut p = ExtPart::new(&d, [ox + 1750.0, oy + 4000.0]);
+                p.werte = vec![("b".into(), 400.0), ("d".into(), 400.0)];
+                m.add_ext(eg, p).unwrap();
+            }
+            true
+        }));
+        s.schedule();
+        let mut ms = f64::INFINITY;
+        let mut w = None;
+        for _ in 0..3 {
+            let t = Instant::now();
+            w = Some(crate::schedule_view::wohn_rechnen(&s));
+            ms = ms.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let w = w.unwrap();
+        let raeume = w.raeume().count();
+        let abzuege = w
+            .raeume()
+            .flat_map(|r| &r.teile)
+            .filter(|t| t.text.contains("§ 3 Abs. 3 Nr. 1") && t.wert < 0.0)
+            .count();
+        assert_eq!(abzuege, n, "je Haus eine Stütze abgezogen");
+        let h = ms / n as f64;
+        println!("{n:>6} {raeume:>6} {ms:>9.1} {h:>10.4}");
+        je_haus.push((n, h));
+    }
+    println!("Zeiten in ms (Release).");
+    if let Some(&(_, b)) = je_haus.first() {
+        for &(n, h) in &je_haus[1..] {
+            assert!(
+                h <= 2.0 * b,
+                "{n} Häuser: {h:.4} ms je Haus, bei 1000 {b:.4}"
+            );
+        }
+    }
+}

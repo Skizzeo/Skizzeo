@@ -8,13 +8,21 @@
 //!   1,50 m werden abgezogen (§ 3 Abs. 3 Nr. 1), sonst ein Hinweis.
 //! - Treppen mit über drei Steigungen samt Podest werden abgezogen (§ 3
 //!   Abs. 3 Nr. 2), sonst ein Hinweis.
+//!
+//! Je Geschoss liegen die Einbauten in einem Raster ([`Einbauten`]), ein
+//! Raum schneidet nur die Einbauten der Felder unter seinem Rechteck
+//! (Review #195 B4).
 
 use sk_math::{polygon, vec3, Vec3};
-use sk_model::{ElementId, ElementKind, Model, StoreyId};
+use sk_model::erweiterung::{self, Geschoss};
+use sk_model::erweiterung_koerper::Lage;
+use sk_model::{ElementId, ElementKind, Model, StoreyId, FLOOR_THICKNESS};
 use std::collections::HashMap;
 
 /// Ab dieser Höhe (mm) zählt eine Stütze als Abzug (§ 3 Abs. 3 Nr. 1).
 pub const STUETZE_HOCH: f64 = 1500.0;
+/// Kantenlänge eines Rasterfelds (mm).
+const FELD: f64 = 5000.0;
 /// Ab so vielen Steigungen (mehr als drei) zählt eine Treppe als Abzug (§ 3
 /// Abs. 3 Nr. 2).
 pub const STEIGUNGEN: f64 = 3.0;
@@ -33,13 +41,111 @@ pub struct Einbau {
     pub steigungen: Option<f64>,
 }
 
-/// Stützen und Treppen je Geschoss, in einem Gang über die Bauteile.
-pub fn sammeln(model: &Model) -> HashMap<StoreyId, Vec<Einbau>> {
-    let mut out: HashMap<StoreyId, Vec<Einbau>> = HashMap::new();
-    for (id, e) in model.elements().iter() {
-        let ElementKind::Ext(p) = &e.kind else {
-            continue;
+impl Einbau {
+    /// Rechteck des Grundrisses: (x₀, y₀, x₁, y₁).
+    pub fn rahmen(&self) -> [f64; 4] {
+        rahmen(self.stuecke.iter().flatten())
+    }
+}
+
+/// Rechteck um die Punkte: (x₀, y₀, x₁, y₁).
+pub fn rahmen<'a>(p: impl IntoIterator<Item = &'a Vec3>) -> [f64; 4] {
+    p.into_iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |r, p| [r[0].min(p.x), r[1].min(p.y), r[2].max(p.x), r[3].max(p.y)],
+    )
+}
+
+/// Stützen und Treppen eines Geschosses mit ihrem Raster.
+#[derive(Clone, Debug, Default)]
+pub struct Einbauten {
+    liste: Vec<Einbau>,
+    /// Feld → Stellen in `liste`, aufsteigend.
+    raster: HashMap<(i64, i64), Vec<usize>>,
+}
+
+/// Felder des Rechtecks `r` (beide Ecken eingeschlossen).
+fn felder(r: [f64; 4]) -> ((i64, i64), (i64, i64)) {
+    let f = |x: f64| (x / FELD).floor() as i64;
+    ((f(r[0]), f(r[1])), (f(r[2]), f(r[3])))
+}
+
+impl Einbauten {
+    pub fn neu(liste: Vec<Einbau>) -> Einbauten {
+        let mut raster: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        for (i, e) in liste.iter().enumerate() {
+            let ((x0, y0), (x1, y1)) = felder(e.rahmen());
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    raster.entry((x, y)).or_default().push(i);
+                }
+            }
+        }
+        Einbauten { liste, raster }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.liste.is_empty()
+    }
+
+    pub fn liste(&self) -> &[Einbau] {
+        &self.liste
+    }
+
+    /// Einbauten, deren Rechteck das Rechteck `r` berühren kann, in der
+    /// Reihenfolge des Modells.
+    pub fn bei(&self, r: [f64; 4]) -> Vec<&Einbau> {
+        if self.liste.is_empty() || r[0] > r[2] || r[1] > r[3] {
+            return Vec::new();
+        }
+        let ((x0, y0), (x1, y1)) = felder(r);
+        // Mehr Felder als Einbauten: einmal über die Liste
+        let n = (x1 - x0 + 1).saturating_mul(y1 - y0 + 1);
+        let mut idx: Vec<usize> = if n > self.liste.len() as i64 {
+            (0..self.liste.len()).collect()
+        } else {
+            let mut v = Vec::new();
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    v.extend(self.raster.get(&(x, y)).into_iter().flatten());
+                }
+            }
+            v.sort_unstable();
+            v.dedup();
+            v
         };
+        idx.retain(|&i| {
+            let e = self.liste[i].rahmen();
+            e[0] <= r[2] && r[0] <= e[2] && e[1] <= r[3] && r[1] <= e[3]
+        });
+        idx.into_iter().map(|i| &self.liste[i]).collect()
+    }
+}
+
+/// Stützen und Treppen je Geschoss, in einem Gang über die Bauteile. Das
+/// Geschoss der Rechnung (Höhe, dickste Decke an seiner OK) entsteht im
+/// selben Gang wie [`Model::ext_geschoss`], nicht je Bauteil über alle
+/// (Review #195 B4).
+pub fn sammeln(model: &Model) -> HashMap<StoreyId, Einbauten> {
+    let mut decke: HashMap<StoreyId, f64> = HashMap::new();
+    let mut kandidaten = Vec::new();
+    for (id, e) in model.elements().iter() {
+        match &e.kind {
+            ElementKind::Floor(f) => {
+                let d = decke.entry(f.top.storey).or_insert(f.thickness);
+                *d = d.max(f.thickness);
+            }
+            ElementKind::Ext(p) => kandidaten.push((id, e.storey, p)),
+            _ => {}
+        }
+    }
+    let mut out: HashMap<StoreyId, Vec<Einbau>> = HashMap::new();
+    for (id, storey, p) in kandidaten {
         let Some(d) = model.ext_def(&p.key) else {
             continue;
         };
@@ -48,8 +154,18 @@ pub fn sammeln(model: &Model) -> HashMap<StoreyId, Vec<Einbau>> {
             Some("stair") => true,
             _ => continue,
         };
-        let Some((lage, erg)) = model.ext_lage(id) else {
+        let Some(s) = model.storey(storey) else {
             continue;
+        };
+        let g = Geschoss {
+            gh: s.height,
+            decke: decke.get(&storey).copied().unwrap_or(FLOOR_THICKNESS),
+        };
+        let erg = erweiterung::rechnen(d, p, &g);
+        let lage = Lage {
+            at: p.at,
+            rot: p.rot,
+            z: s.elevation + erg.z0,
         };
         let mut stuecke = Vec::new();
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -90,13 +206,9 @@ pub fn sammeln(model: &Model) -> HashMap<StoreyId, Vec<Einbau>> {
             continue;
         }
         let steigungen = treppe
-            .then(|| {
-                d.werte(p, &model.ext_geschoss(e.storey))
-                    .get("stufen")
-                    .copied()
-            })
+            .then(|| d.werte(p, &g).get("stufen").copied())
             .flatten();
-        out.entry(e.storey).or_default().push(Einbau {
+        out.entry(storey).or_default().push(Einbau {
             id,
             treppe,
             stuecke,
@@ -104,7 +216,9 @@ pub fn sammeln(model: &Model) -> HashMap<StoreyId, Vec<Einbau>> {
             steigungen,
         });
     }
-    out
+    out.into_iter()
+        .map(|(g, v)| (g, Einbauten::neu(v)))
+        .collect()
 }
 
 /// Ist der Ring (gegen den Uhrzeigersinn) konvex?
