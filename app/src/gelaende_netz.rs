@@ -22,6 +22,13 @@
 //! Gründung): kein Rasen, keine Höhenlinie und kein Messpunkt im Haus,
 //! im Schnitt endet die Geländelinie an der Außenwand. Darunter liegt
 //! Erdreich ab der Unterkante der Gründung.
+//!
+//! Mit Geländeflächen (G3c) steht überall das Planungsgelände
+//! ([`Model::planned_terrain`]): in 3D und im Schnitt die Flächen mit ihren
+//! Böschungen, die Höhenlinien auch dort aus dem Planungsgelände. Im
+//! Grundriss dazu der Umriss jeder Fläche und die Böschungsschraffen vom
+//! Kopf zum Fuß (lang, kurz), in Schnitt und Ansicht das Urgelände, wo es
+//! sich ändert, gestrichelt unter oder über der Geländelinie.
 
 use crate::draw_table::{DrawTable, Stroke};
 use crate::ui::ViewKind;
@@ -95,6 +102,20 @@ pub(crate) struct Gelaende {
     pub(crate) unten: f64,
     /// Der Lageplan im Grundriss in Kacheln ([`Kachel`]).
     pub(crate) unterlage: Vec<Kachel>,
+    /// Dreiecke des Urgeländes, an deren Stelle das Planungsgelände steht
+    /// (G3c); leer ohne Geländeflächen. Mit Raster für den Schnitt.
+    ur: Vec<[Vec3; 3]>,
+    ur_netz: Gitter,
+    /// Böschungsschraffen (lang: `true`) und Umrisse der Geländeflächen.
+    schraffen: Vec<([Vec3; 2], bool)>,
+    umrisse: Vec<Vec<Vec3>>,
+    /// Senkrechte Wände, wo die Höhe springt (Review #183 b, B2).
+    waende: Vec<[Vec3; 3]>,
+    /// Außenrand des Netzes aus dem Modell, das ihn je Netz und Plan einmal
+    /// bestimmt (Review #183 B1): Die Stücke des Planungsgeländes teilen
+    /// die Kanten, an denen sie an ungeteilte Dreiecke stoßen, das sind
+    /// keine Ränder. `None` (ebenes Gelände): der Rand der Dreiecke.
+    rand: Option<Vec<(Vec3, Vec3)>>,
 }
 
 /// Höchstens so viele Strecken des Lageplans liegen in einer Kachel
@@ -149,11 +170,40 @@ impl Gelaende {
     }
 
     fn rechnen(m: &Model) -> Option<Gelaende> {
-        let dreiecke = m.terrain_triangles();
+        let mut dreiecke = m.terrain_triangles();
         if dreiecke.is_empty() {
             return Gelaende::eben(m);
         }
         let (t, f, h0) = (m.terrain()?, m.survey_frame()?, m.terrain_nhn()?);
+        // mit Geländeflächen das Planungsgelände statt des Urgeländes
+        let plan = m.planned_terrain().unwrap_or_default();
+        let mut weg = vec![false; dreiecke.len()];
+        for &i in &plan.replaced {
+            if let Some(w) = weg.get_mut(i as usize) {
+                *w = true;
+            }
+        }
+        let ur: Vec<[Vec3; 3]> = dreiecke
+            .iter()
+            .zip(&weg)
+            .filter_map(|(d, w)| w.then_some(*d))
+            .collect();
+        let rand: Vec<(Vec3, Vec3)> = if ur.is_empty() {
+            m.terrain_border()
+        } else {
+            plan.border.clone()
+        }
+        .into_iter()
+        .map(|[a, b]| (a, b))
+        .collect();
+        if !ur.is_empty() {
+            let mut k = 0;
+            dreiecke.retain(|_| {
+                k += 1;
+                !weg[k - 1]
+            });
+        }
+        dreiecke.extend(plan.triangles.iter().copied());
         let tief = dreiecke
             .iter()
             .flatten()
@@ -165,26 +215,47 @@ impl Gelaende {
         } else {
             t.show()
         };
-        let linien: Vec<(f64, Vec<P2>, bool)> = m
-            .terrain_contour_step(STUFE)
+        let stufe = m.terrain_contour_step(STUFE);
+        let linien: Vec<(f64, Vec<P2>, bool)> = stufe
             .map_or(Vec::new(), |s| m.terrain_contours(s))
             .into_iter()
             .map(|(z, p, _)| ((z - h0) * 1000.0, p, (z - z.round()).abs() < 1e-6))
             .collect();
         let mut g = Gelaende::roh(dreiecke, ringe, show, tief - m.plate_settings().thick);
         g.am_haus(m);
+        // Höhenlinien des Urgeländes nur, wo es bleibt; im Planungsgelände
+        // je Dreieck
+        let unter_plan = Gitter::neu(ur.iter().map(|t| kasten(&t.map(|p| [p.x, p.y]))).collect());
+        let im_plan = |p: P2| {
+            let mut nah = Vec::new();
+            unter_plan.bei(&[p[0], p[1], p[0], p[1]], &mut nah);
+            nah.iter()
+                .any(|&i| baryzentrisch(&ur[i as usize], p).is_some())
+        };
+        let mut linien: Vec<(f64, [P2; 2], bool)> = linien
+            .iter()
+            .flat_map(|(z, p, haupt)| p.windows(2).map(move |w| (*z, [w[0], w[1]], *haupt)))
+            .filter(|(_, w, _)| ur.is_empty() || !im_plan(lerp2(w[0], w[1], 0.5)))
+            .collect();
+        if let Some(s) = stufe {
+            linien.extend(hoehenstuecke(&plan.triangles, h0, s));
+        }
         // Höhenlinien und Messpunkte einmal je Gelände an Grenze und Haus
         // teilen, nicht je Zoomstufe (B3)
         let mut stuecke = Vec::new();
-        for (z, p, haupt) in &linien {
-            for w in p.windows(2) {
-                for (t0, t1, innen) in g.teile(w[0], w[1]) {
-                    let ab = [lerp2(w[0], w[1], t0), lerp2(w[0], w[1], t1)];
-                    stuecke.push((*z, ab, innen, *haupt));
-                }
+        for (z, w, haupt) in &linien {
+            for (t0, t1, innen) in g.teile(w[0], w[1]) {
+                let ab = [lerp2(w[0], w[1], t0), lerp2(w[0], w[1], t1)];
+                stuecke.push((*z, ab, innen, *haupt));
             }
         }
         g.stuecke = stuecke;
+        g.ur_netz = unter_plan;
+        g.ur = ur;
+        g.schraffen = plan.hatch.clone();
+        g.umrisse = plan.outlines.clone();
+        g.waende = plan.walls.clone();
+        g.rand = Some(rand);
         g.marken = t
             .points
             .iter()
@@ -221,6 +292,12 @@ impl Gelaende {
             kern: Vec::new(),
             unten,
             unterlage: Vec::new(),
+            ur: Vec::new(),
+            ur_netz: Gitter::neu(Vec::new()),
+            schraffen: Vec::new(),
+            umrisse: Vec::new(),
+            waende: Vec::new(),
+            rand: None,
         }
     }
 
@@ -491,9 +568,31 @@ impl Gelaende {
     /// `n`: Strecken (Lauflänge, Höhe) je Dreieck, an der Grenze geteilt,
     /// mit Sichtbarkeit wie [`Gelaende::zeigen`].
     fn profil(&self, f: &SectionFrame, p0: Vec3) -> Vec<([f64; 2], [f64; 2], bool)> {
+        let mut p = self.profil_von(&self.dreiecke, Some(&self.netz), f, p0);
+        p.extend(self.profil_von(&self.waende, None, f, p0));
+        p
+    }
+
+    /// [`Gelaende::profil`] der Dreiecke `d`; mit ihrem Raster `gitter`
+    /// nur die an der Linie (Review #183 B1).
+    fn profil_von(
+        &self,
+        d: &[[Vec3; 3]],
+        gitter: Option<&Gitter>,
+        f: &SectionFrame,
+        p0: Vec3,
+    ) -> Vec<([f64; 2], [f64; 2], bool)> {
         let n = f.n;
         let mut out = Vec::new();
-        for t in &self.dreiecke {
+        let mut nah = Vec::new();
+        let auswahl: Box<dyn Iterator<Item = &[Vec3; 3]>> = match gitter {
+            Some(g) => {
+                g.entlang([p0.x, p0.y], [n.x, n.y], &mut nah);
+                Box::new(nah.iter().map(|&i| &d[i as usize]))
+            }
+            None => Box::new(d.iter()),
+        };
+        for t in auswahl {
             let d = t.map(|p| (p - p0).dot(n));
             let mut q: Vec<Vec3> = Vec::new();
             for i in 0..3 {
@@ -522,6 +621,37 @@ impl Gelaende {
 
 fn lerp2(a: P2, b: P2, t: f64) -> P2 {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+/// Höhenlinien im Abstand `stufe` (m) über den Dreiecken `d` (mm, z zu
+/// ±0,00 auf `h0` m ü. NHN), je Dreieck ein Stück: Höhe (mm), Anfang und
+/// Ende, Hauptlinie (volle Meter). Eine Ecke genau auf der Höhe zählt
+/// oben, so hat jedes Dreieck je Höhe kein oder ein Stück.
+fn hoehenstuecke(d: &[[Vec3; 3]], h0: f64, stufe: f64) -> Vec<(f64, [P2; 2], bool)> {
+    let mut out = Vec::new();
+    if !(stufe.is_finite() && stufe > 0.0) {
+        return out;
+    }
+    for t in d {
+        let h = t.map(|p| h0 + p.z / 1000.0);
+        let (lo, hi) = (h[0].min(h[1]).min(h[2]), h[0].max(h[1]).max(h[2]));
+        let (k0, k1) = ((lo / stufe).ceil() as i64, (hi / stufe).floor() as i64);
+        for k in k0..=k1 {
+            let l = k as f64 * stufe;
+            let mut q = Vec::with_capacity(2);
+            for i in 0..3 {
+                let (a, b) = (i, (i + 1) % 3);
+                if (h[a] >= l) != (h[b] >= l) {
+                    let s = (l - h[a]) / (h[b] - h[a]);
+                    q.push(lerp2([t[a].x, t[a].y], [t[b].x, t[b].y], s));
+                }
+            }
+            if let [a, b] = q[..] {
+                out.push(((l - h0) * 1000.0, [a, b], (l - l.round()).abs() < 1e-6));
+            }
+        }
+    }
+    out
 }
 
 /// Parameter auf `a`→`b`, wo sie den Ring `r` kreuzt.
@@ -773,8 +903,14 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
             dreieck(&mut s, t.map(|p| heben(p, HEBEN)), normale(&t));
         }
     }
-    // Boden und Rand in Erdreich
+    // Boden, Rand und Wände in Erdreich
     s.mat = keys[1];
+    for t in &g.waende {
+        let m = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
+        if g.zeigen(g.innen([m.x, m.y])).is_some() {
+            dreieck(&mut s, *t, normale(t));
+        }
+    }
     let unten = g.unten;
     let down = vec3(0.0, 0.0, -1.0);
     for t in &ganz {
@@ -788,7 +924,8 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
             }
         }
         Show::All | Show::Fade => {
-            for (a, b) in randkanten(&g.dreiecke) {
+            let rand = g.rand.clone().unwrap_or_else(|| randkanten(&g.dreiecke));
+            for (a, b) in rand {
                 seite(&mut s, a, b, unten);
             }
         }
@@ -801,6 +938,12 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
             for [a, b, c] in polygon::triangulate(&p) {
                 dreieck(&mut s, [p[a], p[b], p[c]], vec3(0.0, 0.0, 1.0));
             }
+        }
+    }
+    // Umriss jeder Geländefläche als Kante
+    for r in &g.umrisse {
+        for i in 0..r.len() {
+            s.edge(r[i], r[(i + 1) % r.len()]);
         }
     }
     // Volle Meter als feine Kanten auf dem Rasen
@@ -1047,6 +1190,16 @@ pub(crate) fn grundlinien(
                 let st = if voll { stift } else { blass };
                 out.push(line(vec3(a[0], a[1], z), vec3(b[0], b[1], z), st, solid));
             }
+            // Geländeflächen: Umriss, Böschungsschraffen vom Kopf zum Fuß
+            let kante = t.drawing_edges[edge_kind::VIEW as usize];
+            for r in &g.umrisse {
+                for i in 0..r.len() {
+                    out.push(line(r[i], r[(i + 1) % r.len()], kante, solid));
+                }
+            }
+            for &([a, b], _) in &g.schraffen {
+                out.push(line(a, b, fine, solid));
+            }
             // Grenze strichpunktiert, kräftig
             for r in &g.ringe {
                 for i in 0..r.len() {
@@ -1070,6 +1223,11 @@ pub(crate) fn grundlinien(
                     lo = lo.min(a[0]).min(b[0]);
                     hi = hi.max(a[0]).max(b[0]);
                 }
+            }
+            // das Urgelände, wo das Planungsgelände es ändert, gestrichelt
+            for (a, b, voll) in g.profil_von(&g.ur, Some(&g.ur_netz), &f, p0) {
+                let st = if voll { fine } else { blass };
+                out.push(line(f.pt(a[0], a[1]), f.pt(b[0], b[1]), st, t.element_dash));
             }
             // Unterkante und Enden fein, wie bei der Platte
             if lo < hi {
@@ -1355,6 +1513,175 @@ mod tests {
             (flaeche(&rasen) + haus - 822.87).abs() < 0.05,
             "{} + {haus}",
             flaeche(&rasen)
+        );
+    }
+
+    /// Eine Geländefläche 0,60 m über dem Gelände vor dem Haus (G3c): Das
+    /// Planungsgelände steht statt des Urgeländes, ohne Höhenlinie in der
+    /// ebenen Fläche, mit Umriss und Schraffen im Grundriss und dem
+    /// Urgelände gestrichelt im Schnitt; der Rasen deckt dieselbe Fläche.
+    #[test]
+    fn gelaendeflaeche_im_bild() {
+        let mut m = lindenhof();
+        let t = DrawTable::resolve(&m, &sk_ui::theme::Theme::dark());
+        m.begin("Zuschnitt");
+        assert!(m.set_terrain_show(Show::All));
+        m.commit();
+        let ohne = Gelaende::aus(&m).unwrap();
+        let ohne_plan = linien(&ohne, ViewKind::Plan, None, None, &t, 1.0, 10.0);
+        let z = m.terrain_z_at(None, 12_000.0, 2_500.0) + 600.0;
+        let r = vec![
+            [9_000.0, 1_000.0],
+            [15_000.0, 1_000.0],
+            [15_000.0, 4_000.0],
+            [9_000.0, 4_000.0],
+        ];
+        m.begin("Fläche");
+        assert!(m
+            .add_site_patch(sk_model::TerrainPatch::flat(r, z))
+            .is_some());
+        m.commit();
+        let g = Gelaende::aus(&m).unwrap();
+        assert!(!g.ur.is_empty());
+        assert_eq!(g.umrisse.len(), 1);
+        assert!(!g.schraffen.is_empty());
+        assert!((g.hoehe([12_000.0, 2_500.0]).unwrap() - z).abs() < 1e-6);
+        // keine Höhenlinie des Urgeländes in der ebenen Fläche
+        for &(_, [a, b], _, _) in &g.stuecke {
+            let c = lerp2(a, b, 0.5);
+            let innen = c[0] > 9_001.0 && c[0] < 14_999.0 && c[1] > 1_001.0 && c[1] < 3_999.0;
+            assert!(!innen, "Höhenlinie in der Fläche: {a:?} {b:?}");
+        }
+        let plan = linien(&g, ViewKind::Plan, None, None, &t, 1.0, 10.0);
+        let kante = t.drawing_edges[edge_kind::VIEW as usize];
+        let umriss = plan
+            .iter()
+            .filter(|h| h.color == kante.1 && (h.width - kante.0).abs() < 1e-6)
+            .count();
+        assert!(umriss >= 4, "{umriss}");
+        assert!(plan.len() > ohne_plan.len());
+        // Schnitt längs durch die Fläche: Urgelände gestrichelt
+        let (p0, n) = (vec3(12_000.0, 2_500.0, 0.0), vec3(0.0, 1.0, 0.0));
+        let l = linien(&g, ViewKind::Section, Some((p0, n)), None, &t, 1.0, 10.0);
+        assert!(l.iter().any(|h| h.pattern == t.element_dash));
+        let l = linien(&ohne, ViewKind::Section, Some((p0, n)), None, &t, 1.0, 10.0);
+        assert!(!l.iter().any(|h| h.pattern == t.element_dash));
+        // 3D: Rasen auf derselben Fläche, auf der Fläche in ihrer Höhe
+        let rasen = |g: &Gelaende| -> Vec<[Vec3; 3]> {
+            koerper(g, [10, 11, 12])
+                .triangles
+                .iter()
+                .filter(|t| t.mat == 10)
+                .map(|t| t.p)
+                .collect()
+        };
+        let mit = rasen(&g);
+        assert!((flaeche(&mit) - flaeche(&rasen(&ohne))).abs() < 0.01);
+        assert!(mit
+            .iter()
+            .flatten()
+            .any(|p| (p.z - z).abs() < 1e-6 && (p.x - 12_000.0).abs() < 3_000.0));
+        // der Rand bleibt der Rand des Netzes: die geteilten Kanten am
+        // ersetzten Bereich sind keiner (sonst Seiten und Kanten mitten im
+        // Gelände)
+        let lang = |r: &[(Vec3, Vec3)]| -> f64 {
+            r.iter()
+                .map(|(a, b)| ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt())
+                .sum()
+        };
+        let soll = lang(&randkanten(&ohne.dreiecke));
+        assert!((lang(g.rand.as_ref().unwrap()) - soll).abs() < 1.0);
+        assert!(lang(&randkanten(&g.dreiecke)) > soll + 1_000.0);
+        // mit Böschung keine Stufe: Wände nur an den Füßen, die die
+        // Planung im Meter tastet (Review #183 H-183g, wenige cm)
+        for t in &g.waende {
+            let z = t.map(|p| p.z);
+            let hoch = z.iter().copied().fold(f64::MIN, f64::max)
+                - z.iter().copied().fold(f64::MAX, f64::min);
+            assert!(hoch < 50.0, "{t:?}");
+        }
+        // senkrecht: Wand 0,60 m hoch, im Schnitt ein senkrechtes Stück
+        m.begin("senkrecht");
+        let mut p = m.site_patches()[0].clone();
+        p.slopes = vec![0.0];
+        assert!(m.set_site_patch(0, p));
+        m.commit();
+        let g = Gelaende::aus(&m).unwrap();
+        assert!(!g.waende.is_empty());
+        let erde = koerper(&g, [10, 11, 12]);
+        assert!(erde
+            .triangles
+            .iter()
+            .any(|t| t.mat == 11 && t.n.z.abs() < 1e-9 && (t.p[0].x - 12_000.0).abs() < 3_100.0));
+        let senkrecht = g
+            .profil(&SectionFrame::new(p0, n), p0)
+            .iter()
+            .filter(|(a, b, _)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() > 1.0)
+            .count();
+        assert!(senkrecht >= 2, "{senkrecht}");
+    }
+
+    /// Tempo (Review #183 B1): Bild und Schnitt bei 100 Flächen mit je 400
+    /// Kanten auf 650.000 Dreiecken (`--ignored --nocapture`, Release).
+    #[test]
+    #[ignore]
+    fn tempo_planungsgelaende() {
+        use std::fmt::Write;
+        use std::time::Instant;
+        let mut txt = String::new();
+        let k = 571;
+        for i in 0..k {
+            for j in 0..k {
+                let (x, y) = (i as f64 * 0.25, j as f64 * 0.25);
+                let z = 10.0 + 0.4 * (x / 9.0).sin() + 0.3 * (y / 7.0).cos();
+                let _ = writeln!(txt, "{} {x} {y} {z}", i * k + j);
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(txt.as_bytes(), "t.txt", "2026-10-15", 32).unwrap();
+        let mut m = Model::with_seed(7);
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        assert!(m.set_terrain_nhn(9.5));
+        m.commit();
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+        m.begin("Flächen");
+        for f in 0..100 {
+            let (cx, cy) = (
+                -10_000.0 + (f % 10) as f64 * 11_000.0,
+                30_000.0 + (f / 10) as f64 * 9_000.0,
+            );
+            let r: Vec<[f64; 2]> = (0..400)
+                .map(|i| {
+                    let w = i as f64 / 400.0 * std::f64::consts::TAU;
+                    [cx + 4000.0 * w.cos(), cy + 4000.0 * w.sin()]
+                })
+                .collect();
+            let z = if f % 2 == 0 { 600.0 } else { -200.0 };
+            assert!(m
+                .add_site_patch(sk_model::TerrainPatch::flat(r, z))
+                .is_some());
+        }
+        m.commit();
+        let t0 = Instant::now();
+        let g = Gelaende::aus(&m).unwrap();
+        let kalt = ms(t0);
+        let t0 = Instant::now();
+        let _ = Gelaende::aus(&m).unwrap();
+        let warm = ms(t0);
+        let (p0, n) = (vec3(0.0, 34_000.0, 0.0), vec3(0.0, 1.0, 0.0));
+        let f = SectionFrame::new(p0, n);
+        let mut schnitt = f64::MAX;
+        let mut stuecke = 0;
+        for _ in 0..5 {
+            let t0 = Instant::now();
+            stuecke = g.profil(&f, p0).len();
+            schnitt = schnitt.min(ms(t0));
+        }
+        eprintln!(
+            "{} Dreiecke, {} Wände: Bild kalt {kalt:.0} ms, warm {warm:.0} ms, \
+             Schnitt {schnitt:.1} ms ({stuecke} Stücke)",
+            g.dreiecke.len(),
+            g.waende.len()
         );
     }
 }

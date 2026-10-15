@@ -14,7 +14,9 @@ use crate::abfrage::Abfrage;
 use crate::volumen::{halbieren, Bezug};
 
 mod erdbau;
+mod oberflaeche;
 pub use erdbau::{ohren, ueberlappung, Aufbau, Erdbau, Grube, Zerlegt, Zonen, STEIL_ANDECKEN};
+pub use oberflaeche::{oberflaeche, schraffen, Herkunft, Oberflaeche};
 
 /// Ebene Teilfläche eines Bausteins.
 #[derive(Clone, Debug, PartialEq)]

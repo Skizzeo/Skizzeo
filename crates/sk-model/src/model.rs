@@ -318,6 +318,8 @@ pub struct Model {
     lagemerker: gelaende_aufmass::Lagemerker,
     /// Was die Geländeflächen ergeben, zu den Werten, aus denen es folgt.
     flaechenmerker: crate::qto_earth::FlaechenMerker,
+    /// Das Planungsgelände für die Darstellung, über Kopien geteilt.
+    planmerker: gelaende_flaeche::PlanMerker,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -412,7 +414,8 @@ pub use gelaende_aufmass::{
 #[path = "gelaende_flaeche.rs"]
 mod gelaende_flaeche;
 pub use gelaende_flaeche::{
-    PatchHeight, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_SLOPE, PATCH_SLOPE_RANGE,
+    PatchHeight, PlannedTerrain, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_HATCH, PATCH_SLOPE,
+    PATCH_SLOPE_RANGE,
 };
 
 #[path = "gelaende_lageplan.rs"]
@@ -885,6 +888,7 @@ impl Model {
             halter: Default::default(),
             lagemerker: Default::default(),
             flaechenmerker: Default::default(),
+            planmerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -975,6 +979,7 @@ impl Model {
             halter: Default::default(),
             lagemerker: Default::default(),
             flaechenmerker: Default::default(),
+            planmerker: Default::default(),
             ext_defs: Vec::new(),
             ext_numbers: BTreeMap::new(),
             ext_raw: Vec::new(),
@@ -1179,6 +1184,10 @@ impl Model {
     /// Der zuletzt gerechnete Stand der Geländeflächen (Review #173 B1).
     pub(crate) fn flaechenmerker(&self) -> &crate::qto_earth::FlaechenMerker {
         &self.flaechenmerker
+    }
+
+    pub(crate) fn planmerker(&self) -> &gelaende_flaeche::PlanMerker {
+        &self.planmerker
     }
 
     /// Steigt bei jeder Änderung.

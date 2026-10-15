@@ -299,8 +299,12 @@ struct Lageplan {
     nachzug: f64,
     /// Nach einem Wandschritt über dem Plan im UI-Faden, bis die neuen
     /// Kacheln hochgeladen sind: höchste Zeit je Bild, und wie viel je Bild
-    /// hochgeladen wird (MB); die Ecken baut ein eigener Faden.
+    /// hochgeladen wird (MB); die Ecken baut ein eigener Faden. `schritt`
+    /// ist der zweithöchste der sechs Schritte, `schritt_max` der höchste:
+    /// Ein Schritt darf im parallelen Gesamtlauf einmal verdrängt werden,
+    /// ohne dass das Bild mehr Arbeit hätte (Review #188 H-188c).
     schritt: f64,
+    schritt_max: f64,
     hoch: f64,
     /// Dasselbe als Median der Schritte: ein einzelner Ausreißer im
     /// parallelen Gesamtlauf kippt den Vergleich der Plangrößen nicht.
@@ -490,7 +494,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     // Ecken baut ein Faden, der UI-Faden lädt nur hoch.
     let sicht: Sicht = (ViewKind::Plan, None, [40, 41, 42], false);
     let orig = s.chain(run).unwrap().clone();
-    let (mut nachzug, mut schritt, mut hoch, mut neu) = (f64::INFINITY, 0.0f64, 0.0f64, 0);
+    let (mut nachzug, mut hoch, mut neu) = (f64::INFINITY, 0.0f64, 0);
     let mut vorher = keys.clone();
     let mut lang_neu = false;
     let mut je_schritt = Vec::new();
@@ -526,7 +530,6 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
                 .any(|h| (f64::from(h.b[0]) - ende[0]).hypot(f64::from(h.b[1]) - ende[1]) < 1.0)
         });
         neu = neu.max(n);
-        schritt = schritt.max(z);
         je_schritt.push(z);
         hoch = hoch.max(mb);
         vorher = jetzt;
@@ -545,6 +548,8 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     assert!(pl.im_renderer.iter().all(|k| !vorher.contains(k)));
     je_schritt.sort_by(f64::total_cmp);
     let schritt_mitte = je_schritt[je_schritt.len() / 2];
+    let schritt = je_schritt[je_schritt.len() - 2];
+    let schritt_max = je_schritt[je_schritt.len() - 1];
     if dicht {
         assert!(lang_neu, "der lange Strich wird am Haus neu geschnitten");
     }
@@ -553,6 +558,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
         bauen,
         nachzug,
         schritt,
+        schritt_max,
         hoch,
         schritt_mitte,
         rueckweg,
@@ -626,6 +632,9 @@ fn lageplan_im_budget() {
     for x in [&klein, &gross, &dicht] {
         assert!(x.neu >= 1, "das Haus liegt über dem Plan: {x:?}");
         assert!(x.schritt < 8.0 * f, "{x:?}");
+        // ein einzelner Ausreißer, aber kein Bild, das viermal so lange
+        // arbeitet
+        assert!(x.schritt_max < 32.0 * f, "{x:?}");
         assert!(x.hoch < 8.0, "höchstens 8 MB hochladen: {x:?}");
         // Sichtwechsel und Gelände verschieben: der UI-Faden baut nichts
         // (Review #139 N2: vorher 28 ms und 57 MB je Wechsel)
