@@ -9,11 +9,11 @@
 use super::*;
 use sk_model::Show;
 
-/// Knöpfe der Leiste.
 /// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
 /// 42.5).
 pub const DECKT_NICHT: &str = "Aufmaß deckt die Baugrube nicht, Erdmengen mit mittlerer Höhe";
 
+/// Knöpfe der Leiste.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GelaendeKnopf {
     /// „Gelände“ im Paneel „Werkzeuge“: öffnet und schließt die Leiste.

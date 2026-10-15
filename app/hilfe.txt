@@ -404,7 +404,7 @@ Gesperrt | steht grau da, daneben die Stufe, ab der es das gibt: Knöpfe, Zeilen
 [thema] id=gelaende titel="Gelände"
 Platte | ohne Aufmaß liegt unter dem Haus eine ebene grüne Geländeplatte; im Baum wählen, dann Dicke und Außenoffset im Paneel
 Modul | echtes Gelände aus Lageplan und Höhenaufmaß gibt es mit dem Geländemodul (Dateimenü › „Ausbaustufe …“)
-Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen
+Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen. Geht sie zu, liest Skizzeo fertig und behält den Lageplan
 Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss
 Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien. Deckt es eine Baugrube nicht, steht das rot unter der Höhenlage. „Aufmaß entfernen“ führt zurück zur Platte
 Lage | das Gelände bewegt sich, das Haus bleibt: „Verschieben“ und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“

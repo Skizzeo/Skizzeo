@@ -94,15 +94,13 @@ impl Zustand {
         !self.neu && (self.stand == Some(m.revision()) || (self.stand.is_some() && m.in_step()))
     }
 
-    /// Leiste zu: Eingaben und Meldungen fallen weg.
+    /// Leiste zu: die Eingabe und das Werkzeug „Fläche zeichnen“ fallen
+    /// weg. Ein gelesener Lageplan, eine Datei, die gerade gelesen wird,
+    /// und die Meldungen bleiben, bis ein neuer Plan kommt; ein Aufmaß
+    /// wird zu Ende gelesen und übernommen (Bedienbarkeit 43.4).
     fn zu(&mut self) {
         self.offen = false;
         self.tippen = None;
-        self.leeren();
-        self.fehler = None;
-        self.plan = None;
-        self.lesen = None;
-        self.hoehen = None;
         self.werkzeug.set_aktiv(false);
         self.neu = true;
     }
@@ -127,6 +125,11 @@ impl Zustand {
         self.lesen.is_some() || self.hoehen.is_some()
     }
 }
+
+/// Statuszeile, wenn ein Lageplan oder ein Aufmaß bei geschlossener Leiste
+/// fertig gelesen ist (43.4).
+pub const GELESEN_PLAN: &str = "Lageplan gelesen; mehr unter „Gelände“";
+pub const GELESEN_HOEHEN: &str = "Höhenaufmaß eingelesen; mehr unter „Gelände“";
 
 /// Meldung nach „Aufmaß entfernen“.
 const ENTFERNT: &str =
@@ -548,6 +551,11 @@ impl App {
     /// Zonenkennzahl), wird neu gelesen. Sonst hängt das Gelesene nicht am
     /// Modell.
     pub(crate) fn hoehen_abholen(&mut self) -> bool {
+        // Bei geschlossener Leiste kann gerade eine Wand gezogen werden;
+        // das Aufmaß wartet bis danach (43.4)
+        if self.im_zug() {
+            return false;
+        }
         let Some((_, zone, rx)) = &self.platte.leiste.hoehen else {
             return false;
         };
@@ -572,6 +580,7 @@ impl App {
     /// Das gelesene Aufmaß als Schritt übernehmen. Was erkannt wurde, steht
     /// in der Leiste, ebenso ein Fehler.
     fn hoehen_gelesen(&mut self, gelesen: Ergebnis) {
+        self.gelesen_bei_zu(gelesen.as_ref().map(|_| GELESEN_HOEHEN));
         let m = self.scene.model();
         let mit_unterlage = m.terrain().is_some_and(|t| t.underlay.is_some());
         let z = &mut self.platte.leiste;
@@ -692,6 +701,7 @@ impl App {
     }
 
     fn lageplan_gelesen(&mut self, p: &Path, r: Result<SitePlan, Meldung>) {
+        self.gelesen_bei_zu(r.as_ref().map(|_| GELESEN_PLAN));
         let z = &mut self.platte.leiste;
         z.neu = true;
         match r {
@@ -704,6 +714,19 @@ impl App {
         }
         self.gelaende_sync();
         self.redraw = true;
+    }
+
+    /// Kam das Ergebnis bei geschlossener Leiste, sagt es die Statuszeile;
+    /// der Rest steht in der Leiste, wenn sie wieder aufgeht (43.4).
+    fn gelesen_bei_zu(&mut self, r: Result<&'static str, &Meldung>) {
+        if self.platte.leiste.offen {
+            return;
+        }
+        let m = match r {
+            Ok(satz) => Meldung::satz(satz),
+            Err(e) => e.clone(),
+        };
+        self.status(m, crate::NOTICE_TIME);
     }
 
     /// Das Flurstück des gelesenen Lageplans übernehmen (ein Schritt). Mit
@@ -847,6 +870,28 @@ mod tests {
             Some("Höhenlinien alle 1 m, bei 0,25 m wären es zu viele")
         );
         assert!(crate::gelaende_netz::Gelaende::aus(&m).is_some());
+    }
+
+    /// Leiste zu: eine Datei, die gerade gelesen wird, und die Meldungen
+    /// bleiben; Eingabe und Werkzeug fallen weg (Bedienbarkeit 43.4).
+    #[test]
+    fn zu_behaelt_das_gelesene() {
+        let mut z = Zustand {
+            offen: true,
+            ..Default::default()
+        };
+        let (_tx, rx) = mpsc::channel();
+        z.lesen = Some((PathBuf::from("lageplan.pdf"), rx));
+        let (_tx2, rx2) = mpsc::channel();
+        z.hoehen = Some((PathBuf::from("punkte.txt"), 32, rx2));
+        z.meldung.push("Maßstab 1:500 erkannt".into());
+        z.fehler = Some(Meldung::satz("Fehler"));
+        z.werkzeug.set_aktiv(true);
+        z.zu();
+        assert!(!z.offen && z.neu && !z.werkzeug.aktiv && z.tippen.is_none());
+        assert!(z.liest() && z.lesen.is_some() && z.hoehen.is_some());
+        assert_eq!(z.meldung, ["Maßstab 1:500 erkannt"]);
+        assert!(z.fehler.is_some());
     }
 
     /// Im offenen Schritt bleibt die Leiste stehen und folgt beim
