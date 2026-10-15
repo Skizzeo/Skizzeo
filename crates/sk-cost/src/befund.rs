@@ -5,7 +5,7 @@ use crate::wort;
 use sk_model::Guid;
 
 /// Wie schwer ein Befund wiegt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Schwere {
     /// Zur Kenntnis (Marke, Herkunft).
     Hinweis,
@@ -16,7 +16,7 @@ pub enum Schwere {
 }
 
 /// Wo der Befund sitzt.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ort {
     /// Die Datei als Ganzes.
     Datei,
@@ -35,7 +35,7 @@ pub enum Ort {
     Kopf,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Befund {
     /// Regelnummer nach BIM (71–107).
     pub regel: u16,

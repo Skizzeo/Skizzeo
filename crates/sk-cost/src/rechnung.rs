@@ -17,7 +17,7 @@ use sk_model::library::Material;
 use sk_model::library::{LayerSetId, MaterialId};
 use sk_model::qto::{FormworkQto, Schedule, Side, Umfang};
 use sk_model::{BuildingId, ElementId, Guid, MaterialLayer, Model, StoreyId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Kleinste Einheit je Einheit (mm, mm², mm³, g): so viele je Einheit.
 pub(crate) fn skala(e: Einheit) -> i128 {
@@ -1603,6 +1603,9 @@ fn auto_ansaetze(
     index: &mut HashMap<PosKey, usize>,
 ) -> Vec<Befund> {
     let mut befunde = Vec::new();
+    // schon gemeldet; je Raum mit eigenem Sockelbaustoff ein Hinweis, die
+    // Suche in `befunde` wäre quadratisch (Review #197 H-197h)
+    let mut gesehen: HashSet<Befund> = HashSet::new();
     let mut stoffe: HashMap<Guid, (Cent, bool)> = HashMap::new();
     let mut gemeldet: Vec<Guid> = Vec::new();
     // Erdmengen, die das Aufmaß nur angenähert liefert (Flächenmittel ohne
@@ -1613,7 +1616,7 @@ fn auto_ansaetze(
     // D2)
     for h in &s.hinweise {
         let b = Befund::hinweis(0, h.as_str(), Ort::Datei);
-        if !befunde.contains(&b) {
+        if gesehen.insert(b.clone()) {
             befunde.push(b);
         }
     }
@@ -1631,7 +1634,7 @@ fn auto_ansaetze(
             };
             for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
                 let b = Befund::hinweis(0, h, ort.clone());
-                if !befunde.contains(&b) {
+                if gesehen.insert(b.clone()) {
                     befunde.push(b);
                 }
             }
@@ -1670,7 +1673,7 @@ fn auto_ansaetze(
                     ),
                     ort,
                 );
-                if !befunde.contains(&b) {
+                if gesehen.insert(b.clone()) {
                     befunde.push(b);
                 }
             }
@@ -1689,11 +1692,13 @@ fn auto_ansaetze(
                 if !gemeldet.contains(&l.guid) {
                     gemeldet.push(l.guid);
                     let z = Einheit::aus(a.unit).map_or(a.unit, Einheit::zeichen);
-                    befunde.push(Befund::warnung(
+                    let b = Befund::warnung(
                         80,
                         crate::befund::r80(&l.kurz, l.einheit.zeichen(), &format!("in {z}")),
                         ort,
-                    ));
+                    );
+                    gesehen.insert(b.clone());
+                    befunde.push(b);
                 }
                 continue;
             }
@@ -1715,7 +1720,7 @@ fn auto_ansaetze(
                 let mut bf = Vec::new();
                 let x = stoff_ep(k, l, None, false, &ort, &mut bf);
                 for b in bf {
-                    if !befunde.contains(&b) {
+                    if gesehen.insert(b.clone()) {
                         befunde.push(b);
                     }
                 }
