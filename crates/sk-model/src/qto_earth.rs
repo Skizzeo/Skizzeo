@@ -20,7 +20,7 @@ mod netz;
 pub(crate) use flaechen::{gelaende_mengen, planungen, Merker as FlaechenMerker};
 pub use flaechen::{
     Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL, KEIL,
-    OHNE_AUFMASS, OHNE_TRAEGER, UNGUELTIG,
+    OHNE_AUFMASS, OHNE_TRAEGER, UEBERLAPPT, UNGUELTIG,
 };
 pub use netz::{steil_hinweis, ErdNetz, DREIECKSPRISMEN, STEIL, STEIL_AB};
 

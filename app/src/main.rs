@@ -1342,9 +1342,7 @@ impl App {
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
         }
-        if !self.tool_allowed() {
-            self.nord.set_aktiv(false);
-        }
+        self.sicht_werkzeuge();
         let sicht = self.zahnrad_reset();
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
@@ -2547,7 +2545,7 @@ impl App {
 
     /// Rückgängig bzw. Wiederherstellen (Knopf und Kürzel).
     fn history(&mut self, redo: bool) {
-        if self.tool.is_active() || self.edit.is_dragging() || self.drains.is_dragging() {
+        if self.im_zug() {
             return;
         }
         // Ein Lösch-Schritt blendet ein bzw. wieder aus (V?-9)
@@ -2572,6 +2570,7 @@ impl App {
         }
         if changed {
             self.oeffnung_neu();
+            self.flaeche_waehlen(None); // ihre Nummer kann eine andere sein (H-189b)
             self.hint = None;
             self.hint_dirty = true;
             self.upload_model();
@@ -4405,8 +4404,8 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.flaeche_escape() {
                     // Esc beim Zeichnen einer Geländefläche
-                } else if down && self.flaeche_taste(key) {
-                    // Rücktaste und Enter beim Zeichnen einer Geländefläche
+                } else if down && self.flaeche_taste(key, mods) {
+                    // Tasten beim Zeichnen einer Geländefläche
                 } else if down && self.oeffnung_taste(key, mods) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
@@ -4852,11 +4851,9 @@ impl App {
     /// leuchtet einmal, der Hinweis am Bauteil sagt, was blieb und warum.
     fn delete_selection(&mut self) {
         // Gewählte Geländefläche (G3d): Entf löscht sie
-        if self.picking.flaeche.is_some() && self.picking.selected.is_empty() {
-            self.flaeche_knopf(ui::GelaendeKnopf::Loeschen);
-            return;
+        if !self.flaeche_entf() {
+            self.erase(false);
         }
-        self.erase(false);
     }
 
     /// Löschen aus dem Hauptfenster oder (`list`) aus dem Mengenfenster
@@ -4864,7 +4861,7 @@ impl App {
     /// aus und leuchtet mit, ohne zweiten Hinweis.
     fn erase(&mut self, list: bool) {
         let ids = self.picking.selected.clone();
-        if self.tool.is_active() || self.edit.is_dragging() || self.drains.is_dragging() {
+        if self.im_zug() {
             return;
         }
         if list && !self.quantity.part_selected(&self.picking) {

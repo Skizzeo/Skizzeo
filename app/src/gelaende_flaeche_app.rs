@@ -5,7 +5,7 @@
 //!
 //! Das Werkzeug setzt Ecken mit Klicks im Grundriss (es schaltet dorthin); ein Klick auf die
 //! erste Ecke, ein zweiter Klick auf die letzte oder Enter schließt die
-//! Fläche, Rücktaste nimmt die letzte Ecke zurück, Esc verwirft. Die neue
+//! Fläche, Rücktaste oder Strg+Z nimmt die letzte Ecke zurück, Esc verwirft. Die neue
 //! Fläche liegt eben auf der Höhe des Geländes in ihrer Mitte, mit der
 //! Böschung nach Vorgabe; Höhe und Böschung stellt man danach im Paneel.
 
@@ -13,8 +13,10 @@ use crate::camera::Camera;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, Id, Props, Section, ViewKind};
 use crate::App;
 use sk_math::vec3;
-use sk_model::{Model, PatchHeight, SiteSoil, TerrainPatch, PATCH_SLOPE, PATCH_SLOPE_RANGE};
-use sk_platform::{Event, Key, MouseButton};
+use sk_model::{
+    Model, PatchHeight, SiteSoil, TerrainPatch, PATCH_SLOPE, PATCH_SLOPE_RANGE, PATCH_XY_MAX,
+};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
@@ -30,6 +32,17 @@ pub const LABEL_BODEN: &str = "Geländebau";
 /// Was die Statuszeile sagt, wenn sich die gezeichnete Fläche nicht bauen
 /// lässt (Kanten kreuzen sich, keine Fläche).
 pub const KREUZT: &str = "Die Kanten der Fläche kreuzen sich; bitte anders schließen.";
+/// Alle Ecken auf einer Linie (H-189d).
+pub const OHNE_INHALT: &str = "Die Ecken liegen auf einer Linie; die Fläche hat keinen Inhalt.";
+/// Ecken weiter als 100 km vom Ursprung (H-189d).
+pub const ZU_WEIT: &str = "Die Fläche liegt zu weit außerhalb; bitte näher am Haus zeichnen.";
+/// Hinweise im Paneel; befestigt mit dem Satz aus den Mengen
+/// ([`sk_model::qto_earth::BEFESTIGT`], Bedienbarkeit 43.1).
+const HINWEIS: &str = "Höhe über ±0,00. Böschung 0: senkrechter Rand.";
+const HINWEIS_BEFESTIGT: &str = "Höhe über ±0,00. Böschung 0: senkrechter Rand. Aufbau der \
+    befestigten Fläche wird noch nicht gerechnet, Auftrag bis OK Fläche.";
+const HINWEIS_BODEN: &str = "Gilt für alle Geländeflächen. Eigenboden fest zu eingebaut unter 1: \
+    Boden setzt sich beim Verdichten; ändert nur Eigenboden und Lieferung.";
 
 /// Ergebnis eines Ereignisses.
 #[derive(Default)]
@@ -70,6 +83,11 @@ impl Werkzeug {
         &self.ecken
     }
 
+    /// Ecken gesetzt: Rückgängig, Wiederherstellen und Entf warten.
+    pub fn zeichnet(&self) -> bool {
+        self.aktiv && !self.ecken.is_empty()
+    }
+
     /// Esc: erst die gesetzten Ecken, dann das Werkzeug. `true`, wenn
     /// etwas geschlossen wurde.
     pub fn escape(&mut self) -> bool {
@@ -84,24 +102,28 @@ impl Werkzeug {
         false
     }
 
-    /// Rücktaste nimmt die letzte Ecke zurück, Enter schließt ab drei
-    /// Ecken. `true`, wenn verbraucht.
-    pub fn key(&mut self, key: Key, out: &mut Ausgang) -> bool {
-        if !self.aktiv || self.ecken.is_empty() {
+    /// Rücktaste und Strg+Z nehmen die letzte Ecke zurück, Enter schließt
+    /// ab drei Ecken; Strg+Y, Strg+Umschalt+Z und Entf tun beim Zeichnen
+    /// nichts, statt aufs Modell zu wirken (Review #189 B1). `true`, wenn
+    /// verbraucht.
+    pub fn key(&mut self, key: Key, mods: Modifiers, out: &mut Ausgang) -> bool {
+        if !self.zeichnet() {
             return false;
         }
         match key {
-            Key::Backspace => {
-                self.ecken.pop();
-                out.redraw = true;
-                true
-            }
+            Key::Backspace => {}
+            Key::Char('Z') if mods.ctrl && !mods.shift => {}
             Key::Enter => {
                 self.schliessen(out);
-                true
+                return true;
             }
-            _ => false,
+            Key::Char('Y' | 'Z') if mods.ctrl => return true,
+            Key::Delete => return true,
+            _ => return false,
         }
+        self.ecken.pop();
+        out.redraw = true;
+        true
     }
 
     /// Umriss fertig, wenn er drei Ecken hat und sich bauen lässt; sonst
@@ -113,7 +135,14 @@ impl Werkzeug {
         }
         let p = TerrainPatch::flat(self.ecken.clone(), 0.0);
         if !p.valid() {
-            out.fehler = Some(KREUZT);
+            let weit = self.ecken.iter().flatten().any(|v| v.abs() > PATCH_XY_MAX);
+            out.fehler = Some(if auf_einer_linie(&self.ecken) {
+                OHNE_INHALT
+            } else if weit {
+                ZU_WEIT
+            } else {
+                KREUZT
+            });
             return;
         }
         out.commit = Some(std::mem::take(&mut self.ecken));
@@ -232,6 +261,24 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Liegen alle Ecken (mm) höchstens 1 mm neben der Geraden durch die erste
+/// und die von ihr fernste Ecke?
+fn auf_einer_linie(ring: &[[f64; 2]]) -> bool {
+    let a = ring[0];
+    let d = |p: &[f64; 2]| [p[0] - a[0], p[1] - a[1]];
+    let fern = ring
+        .iter()
+        .map(d)
+        .max_by(|u, v| u[0].hypot(u[1]).total_cmp(&v[0].hypot(v[1])));
+    let Some(f) = fern.filter(|f| f[0].hypot(f[1]) > 1.0) else {
+        return true;
+    };
+    let l = f[0].hypot(f[1]);
+    ring.iter()
+        .map(d)
+        .all(|u| (u[0] * f[1] - u[1] * f[0]).abs() <= l)
+}
+
 /// Fläche eines Umrisses (mm²).
 fn inhalt(ring: &[[f64; 2]]) -> f64 {
     let n = ring.len();
@@ -321,7 +368,7 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
             Section {
                 title: "Geländefläche",
                 fields,
-                hint: "Höhe über ±0,00. Böschung 0: senkrechter Rand.",
+                hint: if p.paved { HINWEIS_BEFESTIGT } else { HINWEIS },
                 buttons: vec![
                     (Id::Gelaende(GelaendeKnopf::Befestigt), befestigt),
                     (Id::Gelaende(GelaendeKnopf::Loeschen), "Fläche löschen"),
@@ -330,13 +377,13 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
             Section {
                 title: "Grundstück",
                 fields: vec![
-                    feld(GelaendeFeld::Andecken, "Oberboden andecken", s.spread, {
+                    feld(GelaendeFeld::Andecken, SiteSoil::FELDER[0].1, s.spread, {
                         let f = SiteSoil::FELDER[0];
                         (f.2, f.3)
                     }),
                     FieldRow {
                         field: Field::Gelaende(GelaendeFeld::Faktor),
-                        label: "Faktor fest zu eingebaut",
+                        label: SiteSoil::FELDER[1].1,
                         value: s.reuse,
                         min: SiteSoil::FELDER[1].2,
                         max: SiteSoil::FELDER[1].3,
@@ -344,7 +391,7 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
                         einheit: Some(""),
                     },
                 ],
-                hint: "Gilt für alle Geländeflächen.",
+                hint: HINWEIS_BODEN,
                 buttons: Vec::new(),
             },
         ],
@@ -386,11 +433,11 @@ impl App {
         self.flaeche_ausgang(out, vor)
     }
 
-    /// Rücktaste und Enter beim Zeichnen.
-    pub(crate) fn flaeche_taste(&mut self, key: Key) -> bool {
+    /// Tasten beim Zeichnen, nur im Grundriss (H-189g).
+    pub(crate) fn flaeche_taste(&mut self, key: Key, mods: Modifiers) -> bool {
         let mut out = Ausgang::default();
         let vor = self.platte.leiste.werkzeug.ecken().len();
-        if !self.platte.leiste.werkzeug.key(key, &mut out) {
+        if self.ui.view != ViewKind::Plan || !self.platte.leiste.werkzeug.key(key, mods, &mut out) {
             return false;
         }
         self.flaeche_ausgang(out, vor);
@@ -445,9 +492,50 @@ impl App {
         }
         if let Some(i) = neu {
             self.flaeche_waehlen(Some(i));
+            // Mengen zählen dort doppelt (Bedienbarkeit 43.1)
+            if self.scene.model().site_patch_overlaps(i) {
+                let m = crate::meldung::Meldung::satz(sk_model::qto_earth::UEBERLAPPT);
+                self.status(m, crate::NOTICE_TIME);
+            }
         }
         self.platte.leiste.neu = true;
         self.gelaende_sync();
+    }
+
+    /// Ein Werkzeug in Eingabe, etwas gezogen oder Ecken einer Fläche
+    /// gesetzt: Rückgängig, Wiederherstellen und Löschen warten (Review
+    /// #189 B1).
+    pub(crate) fn im_zug(&self) -> bool {
+        self.tool.is_active()
+            || self.edit.is_dragging()
+            || self.drains.is_dragging()
+            || self.platte.leiste.werkzeug.zeichnet()
+    }
+
+    /// Entf: die gewählte Fläche löschen, beim Zeichnen nichts; `false`,
+    /// wenn Entf den Bauteilen gilt.
+    pub(crate) fn flaeche_entf(&mut self) -> bool {
+        if self.im_zug() {
+            return true;
+        }
+        if self.picking.flaeche.is_none() || !self.picking.selected.is_empty() {
+            return false;
+        }
+        self.flaeche_knopf(GelaendeKnopf::Loeschen);
+        true
+    }
+
+    /// Nach einem Wechsel der Sicht: Nordpfeil nur, wo er geht, das
+    /// Werkzeug „Fläche zeichnen“ nur im Grundriss (H-189g).
+    pub(crate) fn sicht_werkzeuge(&mut self) {
+        if !self.tool_allowed() {
+            self.nord.set_aktiv(false);
+        }
+        if self.ui.view != ViewKind::Plan && self.platte.leiste.werkzeug.aktiv {
+            self.platte.leiste.werkzeug.set_aktiv(false);
+            self.platte.leiste.neu = true;
+            self.gelaende_sync();
+        }
     }
 
     /// Fläche `i` wählen (oder keine); Bauteile und Platte sind dann nicht
@@ -628,8 +716,13 @@ impl App {
 mod tests {
     use super::*;
     use sk_math::Vec3;
-    use sk_platform::Modifiers;
     use std::f64::consts::FRAC_PI_2;
+
+    const OHNE: Modifiers = Modifiers {
+        shift: false,
+        ctrl: false,
+        alt: false,
+    };
 
     fn punkt(x: f64, y: f64) -> Vec3 {
         vec3(x, y, 0.0)
@@ -700,9 +793,9 @@ mod tests {
             klick(&mut w, &cam, punkt(p.0, p.1));
         }
         let mut o = Ausgang::default();
-        assert!(w.key(Key::Backspace, &mut o));
+        assert!(w.key(Key::Backspace, OHNE, &mut o));
         assert_eq!(w.ecken().len(), 3);
-        assert!(w.key(Key::Enter, &mut o));
+        assert!(w.key(Key::Enter, OHNE, &mut o));
         assert_eq!(o.commit.map(|r| r.len()), Some(3));
         klick(&mut w, &cam, punkt(0.0, 0.0));
         assert!(w.escape());
@@ -723,10 +816,51 @@ mod tests {
             klick(&mut w, &cam, punkt(p.0, p.1));
         }
         let mut o = Ausgang::default();
-        w.key(Key::Enter, &mut o);
+        w.key(Key::Enter, OHNE, &mut o);
         assert!(o.commit.is_none());
         assert_eq!(o.fehler, Some(KREUZT));
         assert_eq!(w.ecken().len(), 4);
+        // drei Ecken auf einer Linie: kein Inhalt statt „kreuzen“ (H-189d)
+        w.escape();
+        for p in [(0.0, 0.0), (3000.0, 0.0), (6000.0, 0.0)] {
+            klick(&mut w, &cam, punkt(p.0, p.1));
+        }
+        let mut o = Ausgang::default();
+        w.key(Key::Enter, OHNE, &mut o);
+        assert_eq!(o.fehler, Some(OHNE_INHALT));
+    }
+
+    /// Beim Zeichnen nimmt Strg+Z die letzte Ecke; Strg+Y, Strg+Umschalt+Z
+    /// und Entf verbraucht das Werkzeug, damit sie nicht aufs Modell wirken
+    /// (Review #189 B1). Ohne Ecken gehören die Tasten wieder der App.
+    #[test]
+    fn rueckgaengig_beim_zeichnen() {
+        let (cam, _, _) = kamera();
+        let mut w = Werkzeug::default();
+        w.set_aktiv(true);
+        let mut o = Ausgang::default();
+        let strg = Modifiers { ctrl: true, ..OHNE };
+        let umschalt = Modifiers {
+            shift: true,
+            ..strg
+        };
+        assert!(!w.zeichnet() && !w.key(Key::Char('Z'), strg, &mut o));
+        for p in [(0.0, 0.0), (5000.0, 0.0), (5000.0, 5000.0)] {
+            klick(&mut w, &cam, punkt(p.0, p.1));
+        }
+        assert!(w.zeichnet());
+        for (k, m) in [('Y', strg), ('Z', umschalt)] {
+            assert!(w.key(Key::Char(k), m, &mut o));
+        }
+        assert!(w.key(Key::Delete, OHNE, &mut o));
+        assert!(!w.key(Key::Char('Z'), OHNE, &mut o), "Z ohne Strg");
+        assert_eq!(w.ecken().len(), 3);
+        assert!(w.key(Key::Char('Z'), strg, &mut o));
+        assert_eq!(w.ecken().len(), 2);
+        assert!(o.commit.is_none());
+        w.key(Key::Char('Z'), strg, &mut o);
+        w.key(Key::Char('Z'), strg, &mut o);
+        assert!(!w.zeichnet() && !w.key(Key::Delete, OHNE, &mut o));
     }
 
     /// Klick in eine Fläche trifft die zuletzt gesetzte, außerhalb keine.
@@ -759,6 +893,20 @@ mod tests {
         assert_eq!(f[0].value, -600.0);
         assert_eq!(f[1].value, PATCH_SLOPE);
         assert_eq!(p.sections[1].fields[0].value, 200.0);
+        // ein Name wie im Modell, Hinweise zu Faktor und befestigt (43.1 B)
+        assert_eq!(
+            p.sections[1].fields[1].label,
+            "Eigenboden fest zu eingebaut"
+        );
+        assert!(p.sections[1].hint.contains("unter 1: Boden setzt sich"));
+        assert_eq!(p.sections[0].hint, HINWEIS);
+        assert!(HINWEIS_BEFESTIGT.contains(sk_model::qto_earth::BEFESTIGT));
+        let mut b = m.site_patches()[0].clone();
+        b.paved = true;
+        m.begin("befestigt");
+        assert!(m.set_site_patch(0, b));
+        m.commit();
+        assert_eq!(props(&m, 0).unwrap().sections[0].hint, HINWEIS_BEFESTIGT);
         let q = &m.site_patches()[0];
         let h = mit_feld(q, GelaendeFeld::Hoehe, 300.0).unwrap();
         assert_eq!(h.height, PatchHeight::Flat(300.0));
