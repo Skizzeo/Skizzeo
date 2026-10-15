@@ -1703,7 +1703,11 @@ mod tests {
             let fertig = sk_raum::wohnflaeche::hundertstel(f.grundflaeche);
             abzug += fertig - w.grund;
         }
-        assert_eq!(abzug, 16, "die Stütze, sonst nichts");
+        // 0,16 m² roh, mit Putz ringsum etwas mehr (Review #195 H-195i)
+        assert!(
+            (16..=19).contains(&abzug),
+            "die Stütze, sonst nichts: {abzug}"
+        );
     }
 
     /// Ein Schritt mit Wänden legt die Räume an; der größte neue wartet auf
