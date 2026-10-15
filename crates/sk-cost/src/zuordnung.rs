@@ -5,7 +5,8 @@
 use crate::geld::Dez;
 use crate::katalog::{Artikel, Einheit, Katalog, Leistung};
 use sk_model::element::Category;
-use sk_model::library::{MatCategory, Material};
+use sk_model::library::{MatCategory, Material, TypeCategory};
+use sk_model::qto::Side;
 use sk_model::{Guid, MaterialLayer};
 
 /// Warum eine Schicht ihre Bauleistung hat (Regel 81, Stufen 1–5).
@@ -84,6 +85,37 @@ fn passt(l: &Leistung, kat: &str, mat: Guid, t: Dez, fun: &str) -> bool {
         && l.funktion.as_deref().is_none_or(|f| f == fun)
 }
 
+/// Passt die Seite der Regel (`side=`, RB7) auf die der Zeile?
+fn seite_passt(l: &Leistung, seite: Option<&str>) -> bool {
+    l.seite.as_deref().is_none_or(|s| Some(s) == seite)
+}
+
+/// Seite der Zeilen eines Ausbautyps (RB7): Belag und Estrich am Boden,
+/// Wandbekleidung und Wandfliesen an der Wand, Deckenbekleidung an der
+/// Decke; die Sockelleiste ist eine Länge (`room.skirting`), kein Typ der
+/// Regel 81.
+pub fn seite_des_typs(t: TypeCategory) -> Option<Side> {
+    match t {
+        TypeCategory::FloorFinish | TypeCategory::Screed => Some(Side::Floor),
+        TypeCategory::WallFinish | TypeCategory::WallTiles => Some(Side::Wall),
+        TypeCategory::CeilingFinish => Some(Side::Ceiling),
+        _ => None,
+    }
+}
+
+/// Bauteilart und Seite, unter denen die Schichten eines Typs der Art `t`
+/// zugeordnet werden: Ausbautypen als Raum mit ihrer Seite (RB7), sonst die
+/// Bauteilart des Typs ohne Seite; `None` ohne Regel 81 (Sockelleiste).
+pub fn art_des_typs(t: TypeCategory) -> Option<(Category, Option<Side>)> {
+    if t.is_finish() {
+        return seite_des_typs(t).map(|s| (Category::Space, Some(s)));
+    }
+    Category::ALL
+        .into_iter()
+        .find(|c| TypeCategory::of(*c) == Some(t))
+        .map(|c| (c, None))
+}
+
 /// Rangfolge der Stufe 2: mehr Regelfelder, engere Dickenspanne, kleinere
 /// Guid.
 fn rang(a: &Leistung, b: &Leistung) -> std::cmp::Ordering {
@@ -116,10 +148,12 @@ fn abstand(l: &Leistung, t: Dez) -> Option<i64> {
 }
 
 /// Bauleistung einer Schicht nach Regel 81. `material` ist der Baustoff der
-/// Schicht (für Guid, Art und Richtpreis).
+/// Schicht (für Guid, Art und Richtpreis), `seite` die Seite der Raumzeile
+/// (RB7); ohne Seite passt keine Regel mit `side=`.
 pub fn zuordnen(
     k: &Katalog,
     kat: Category,
+    seite: Option<Side>,
     schicht: &MaterialLayer,
     material: Option<&Material>,
 ) -> Zuordnung {
@@ -142,11 +176,12 @@ pub fn zuordnen(
     let kw = kategorie_wort(kat);
     let t = dicke(schicht.thickness);
     let fun = sk_model::szo::layer_function(schicht.function);
+    let seite = seite.map(Side::key);
     // Stufe 2: Regel, die spezifischste gewinnt
     let mut treffer: Vec<&Leistung> = k
         .leistungen
         .iter()
-        .filter(|l| passt(l, kw, mat.guid, t, fun))
+        .filter(|l| passt(l, kw, mat.guid, t, fun) && seite_passt(l, seite))
         .collect();
     if !treffer.is_empty() {
         treffer.sort_by(|a, b| rang(a, b));
@@ -173,6 +208,7 @@ pub fn zuordnen(
                 && l.kategorien.iter().any(|c| c == kw)
                 && l.mat == Some(mat.guid)
                 && l.funktion.as_deref().is_none_or(|f| f == fun)
+                && seite_passt(l, seite)
         })
         .filter_map(|l| abstand(l, t).map(|d| (d, l)))
         .collect();
@@ -255,21 +291,21 @@ mod tests {
         let k = werk(&m);
         let pb = |t| schicht(&m, "Porenbeton", t, LayerFunction::Structure);
         let (l, x) = pb(175.0);
-        let z = zuordnen(&k, Category::ExteriorWall, &l, Some(&x));
+        let z = zuordnen(&k, Category::ExteriorWall, None, &l, Some(&x));
         assert_eq!(z.grund, Grund::Regel);
         assert!(kurz(&k, &z).starts_with("AW Porenbeton-Planstein PP2-0,35 d=17,5cm"));
         // 20 cm: M10 (Abstand 20) vor M20 (Abstand 30)
         let (l, x) = pb(200.0);
-        let z = zuordnen(&k, Category::ExteriorWall, &l, Some(&x));
+        let z = zuordnen(&k, Category::ExteriorWall, None, &l, Some(&x));
         assert!(matches!(z.grund, Grund::Geschaetzt { .. }), "{z:?}");
         assert!(kurz(&k, &z).contains("d=17,5cm"));
         // 45 cm nach M30, 50 cm außerhalb jedes Bands
         let (l, x) = pb(450.0);
-        let z = zuordnen(&k, Category::ExteriorWall, &l, Some(&x));
+        let z = zuordnen(&k, Category::ExteriorWall, None, &l, Some(&x));
         assert!(kurz(&k, &z).contains("d=36,5cm"), "{z:?}");
         let (l, x) = pb(500.0);
         assert_eq!(
-            zuordnen(&k, Category::ExteriorWall, &l, Some(&x)).grund,
+            zuordnen(&k, Category::ExteriorWall, None, &l, Some(&x)).grund,
             Grund::Ohne
         );
         // Mit Richtpreis: nur Material
@@ -279,7 +315,7 @@ mod tests {
             sk_model::element::PropValue::Number(400.0),
         );
         assert_eq!(
-            zuordnen(&k, Category::ExteriorWall, &l, Some(&x2)).grund,
+            zuordnen(&k, Category::ExteriorWall, None, &l, Some(&x2)).grund,
             Grund::Richtpreis
         );
         assert_eq!(richtpreis(&x2), Some((Dez::ganz(400), Einheit::M3)));
@@ -296,7 +332,7 @@ mod tests {
             });
         if let Some((l, x)) = luft {
             assert_eq!(
-                zuordnen(&k, Category::ExteriorWall, &l, Some(&x)).grund,
+                zuordnen(&k, Category::ExteriorWall, None, &l, Some(&x)).grund,
                 Grund::Ohne
             );
         }

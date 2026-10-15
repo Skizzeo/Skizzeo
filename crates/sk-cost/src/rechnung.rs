@@ -13,8 +13,9 @@ use crate::geld::{runden, Cent, Dez};
 use crate::katalog::{fnv, Bezug, Einheit, Katalog, Leistung, FNV_START};
 use crate::zuordnung::{self, dicke, Grund, Zuordnung};
 use sk_model::element::Category;
+use sk_model::library::LayerSetId;
 use sk_model::library::Material;
-use sk_model::qto::{FormworkQto, Schedule, Umfang};
+use sk_model::qto::{FormworkQto, Schedule, Side, Umfang};
 use sk_model::{BuildingId, ElementId, Guid, MaterialLayer, Model, StoreyId};
 use std::collections::HashMap;
 
@@ -283,6 +284,8 @@ impl Kostenspeicher {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Schluessel {
     kat: Category,
+    /// Seite der Raumzeile (RB7), sonst `None`.
+    seite: Option<Side>,
     typ: Option<Guid>,
     schichten: u64,
 }
@@ -535,11 +538,13 @@ pub(crate) fn stoff_teile(
     (teile, fehlt || leer)
 }
 
-/// Ordnet alle Schichten eines Typs zu und rechnet die Stoff-EP.
+/// Ordnet alle Schichten eines Typs zu und rechnet die Stoff-EP; `seite`
+/// ist die Seite der Raumzeile (RB7).
 fn schichten_rechnen(
     m: &Model,
     k: &Katalog,
     kat: Category,
+    seite: Option<Side>,
     typ: Option<Guid>,
     typname: &str,
     layers: &[MaterialLayer],
@@ -549,7 +554,7 @@ fn schichten_rechnen(
         .enumerate()
         .map(|(i, s)| {
             let mat = m.material(s.material);
-            let z = zuordnung::zuordnen(k, kat, s, mat);
+            let z = zuordnung::zuordnen(k, kat, seite, s, mat);
             let t = dicke(s.thickness);
             let ort = match typ {
                 Some(typ) => Ort::Schicht { typ, schicht: i },
@@ -637,16 +642,16 @@ pub(crate) fn abdeckung(m: &Model, k: &Katalog) -> Vec<Befund> {
     use sk_model::library::{MatCategory, TypeCategory};
     let werk = Model::new();
     let mut out = Vec::new();
+    // Werks-Ausbautypen zählen mit, sobald das Projekt sie führt (RB7)
+    let ab_werk = |g: Guid| {
+        werk.layer_sets().iter().any(|(_, w)| w.guid == g)
+            || sk_model::model::FINISH_TYPES.iter().any(|f| f.guid == g)
+    };
     for (_, t) in m.layer_sets().iter() {
-        if t.category == TypeCategory::RoofTerrace
-            || !werk.layer_sets().iter().any(|(_, w)| w.guid == t.guid)
-        {
+        if t.category == TypeCategory::RoofTerrace || !ab_werk(t.guid) {
             continue;
         }
-        let Some(kat) = Category::ALL
-            .into_iter()
-            .find(|c| TypeCategory::of(*c) == Some(t.category))
-        else {
+        let Some((kat, seite)) = zuordnung::art_des_typs(t.category) else {
             continue;
         };
         for (i, s) in t.layers.iter().enumerate() {
@@ -658,7 +663,7 @@ pub(crate) fn abdeckung(m: &Model, k: &Katalog) -> Vec<Befund> {
                 typ: t.guid,
                 schicht: i,
             };
-            let z = zuordnung::zuordnen(k, kat, s, mat);
+            let z = zuordnung::zuordnen(k, kat, seite, s, mat);
             let kopf = format!(
                 "Werksschicht {} {} in {}",
                 baustoff_name(m, s),
@@ -806,7 +811,9 @@ pub fn kosten_mit(
     let mut neu = 0u64;
     let schalung: HashMap<ElementId, &FormworkQto> =
         s.formwork.iter().map(|(e, f)| (*e, f)).collect();
-    let mut je_element: HashMap<ElementId, Schluessel> = HashMap::new();
+    // Schlüssel je Bauteil, bei Raumzeilen je Raum, Ausbautyp und Seite
+    let mut je_element: HashMap<(ElementId, Option<LayerSetId>, Option<Side>), Schluessel> =
+        HashMap::new();
     let mut sammel: Vec<Sammel> = Vec::new();
     let mut index: HashMap<PosKey, usize> = HashMap::new();
     let mut ohne: Vec<OhneZeile> = Vec::new();
@@ -821,29 +828,40 @@ pub fn kosten_mit(
         let Some(e) = m.element(r.element) else {
             continue;
         };
+        // Raumzeile (RB7): Schichten aus dem Ausbautyp, Seite aus der Zeile;
+        // ein Raum hat keine `element_layers`
+        let ausbau = r.finish.map(|(t, j)| (m.layer_set(t), j));
+        let (typ_id, seite, stelle) = match ausbau {
+            Some((None, _)) => continue,
+            Some((Some(_), j)) => (r.finish.map(|f| f.0), r.side, j),
+            None => (e.layer_set, None, r.layer),
+        };
+        let typ_satz = typ_id.and_then(|t| m.layer_set(t));
         let typname = || {
-            e.layer_set.and_then(|t| m.layer_set(t)).map_or_else(
+            typ_satz.map_or_else(
                 || sk_model::kinds::spec(r.category).name.to_string(),
                 |t| t.name.clone(),
             )
         };
-        let key = *je_element.entry(r.element).or_insert_with(|| {
-            let layers = m.element_layers(r.element);
-            Schluessel {
-                kat: r.category,
-                typ: e.layer_set.and_then(|t| m.layer_set(t)).map(|t| t.guid),
-                schichten: fingerabdruck(m, &typname(), &layers),
-            }
+        let schichten = || match ausbau {
+            Some((Some(t), _)) => t.layers.clone(),
+            _ => m.element_layers(r.element),
+        };
+        let fach = (r.element, ausbau.and(typ_id), seite);
+        let key = *je_element.entry(fach).or_insert_with(|| Schluessel {
+            kat: r.category,
+            seite,
+            typ: typ_satz.map(|t| t.guid),
+            schichten: fingerabdruck(m, &typname(), &schichten()),
         });
         let werte = typen.entry(key).or_insert_with(|| match alt.remove(&key) {
             Some(w) => w,
             None => {
                 neu += 1;
-                let layers = m.element_layers(r.element);
-                schichten_rechnen(m, k, r.category, key.typ, &typname(), &layers)
+                schichten_rechnen(m, k, r.category, seite, key.typ, &typname(), &schichten())
             }
         });
-        let Some(w) = werte.get(r.layer) else {
+        let Some(w) = werte.get(stelle) else {
             continue;
         };
         if gebaeude.is_none() && !lose_gemeldet.contains(&r.element) {
@@ -898,7 +916,8 @@ pub fn kosten_mit(
             Some(match b {
                 Bezug::Flaeche => ganz(r.face),
                 Bezug::Volumen => ganz(r.volume),
-                Bezug::Laenge if folge => ganz(r.bill_length),
+                // Raumzeile: je Schicht ihre Länge, nie bill_* (Prüfung #182)
+                Bezug::Laenge if folge && r.finish.is_none() => ganz(r.bill_length),
                 Bezug::Laenge => ganz(r.length),
                 Bezug::Umfang => ganz(schalung.get(&r.element)?.edge),
                 Bezug::Schalung => ganz(schalung.get(&r.element)?.soffit),
@@ -1560,10 +1579,19 @@ fn auto_ansaetze(
                 }
             }
         }
-        let leistungen = k
+        // Mit `mat=` gilt eine Automatik-Leistung nur für die Menge dieses
+        // Baustoffs (Sockelleiste je Sockeltyp, RB7); passt eine solche,
+        // treten die ohne `mat=` zurück, sonst würde dieselbe Länge zweimal
+        // bepreist
+        let baustoff = a.material.and_then(|x| m.material(x)).map(|x| x.guid);
+        let alle: Vec<&Leistung> = k
             .leistungen
             .iter()
-            .filter(|l| !l.retired && l.auto.as_deref() == Some(a.key));
+            .filter(|l| !l.retired && l.auto.as_deref() == Some(a.key))
+            .filter(|l| l.mat.is_none_or(|g| Some(g) == baustoff))
+            .collect();
+        let genau = alle.iter().any(|l| l.mat.is_some());
+        let leistungen = alle.into_iter().filter(|l| !genau || l.mat.is_some());
         for l in leistungen {
             let ort = m
                 .element(a.element)

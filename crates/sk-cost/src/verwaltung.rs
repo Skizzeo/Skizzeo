@@ -1000,7 +1000,7 @@ pub fn luecken(k: &Katalog, haus: &Model, sched: &sk_model::qto::Schedule) -> Ve
             return false;
         }
         matches!(
-            zuordnen(k, kat, s, mat).grund,
+            zuordnen(k, kat, None, s, mat).grund,
             Grund::Geschaetzt { .. } | Grund::Richtpreis | Grund::Ohne
         )
     };
@@ -1191,19 +1191,14 @@ pub fn passt_auf(l: &Leistung, baustoff: Option<&str>) -> String {
 /// `g` bekommen (paket-ka3a §3 „Verwendet in“): Guid des Typs und Name,
 /// mit „(Standard)“ am Standardtyp; nach Namen.
 pub fn verwendet_in(lib: &Library, k: &Katalog, g: Guid) -> Vec<(Guid, String)> {
-    use sk_model::element::Category;
-    use sk_model::library::TypeCategory;
     let mut out = Vec::new();
     for (id, t) in lib.types.iter() {
-        let Some(kat) = Category::ALL
-            .into_iter()
-            .find(|c| TypeCategory::of(*c) == Some(t.category))
-        else {
+        let Some((kat, seite)) = crate::zuordnung::art_des_typs(t.category) else {
             continue;
         };
         let nutzt = t.layers.iter().any(|l| {
             let mat = lib.materials.get(l.material);
-            crate::zuordnung::zuordnen(k, kat, l, mat).leistung == Some(g)
+            crate::zuordnung::zuordnen(k, kat, seite, l, mat).leistung == Some(g)
         });
         if nutzt {
             let std = lib.default_exterior == Some(id) || lib.default_interior == Some(id);

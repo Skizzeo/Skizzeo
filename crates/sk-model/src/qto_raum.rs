@@ -58,6 +58,32 @@ impl Side {
     }
 }
 
+/// Schlüssel der Raumlängen (`[service] auto=`) mit Einheit und Bedeutung;
+/// sk-raum setzt sie an die Längen (`raumbuch.rs`), Kosten bepreist sie in
+/// Werksstand 19 (RB7).
+pub const SCHLUESSEL: [(&str, &str, &str); 4] = [
+    (
+        "room.skirting",
+        "m",
+        "Sockelleiste je Raum und Sockeltyp, Öffnungen am Boden abgezogen (DIN 18352, 18356)",
+    ),
+    (
+        "room.cornerbead",
+        "m",
+        "Eckschutzschienen an vorspringenden Ecken geputzter Wände je Raum (DIN 18350)",
+    ),
+    (
+        "room.edgestrip",
+        "m",
+        "Randdämmstreifen am Umfang des Estrichs je Raum (DIN 18353)",
+    ),
+    (
+        "room.joint.silicone",
+        "m",
+        "Silikonfuge Boden/Wand und in Innenecken gefliester Wände je Raum (DIN 18352)",
+    ),
+];
+
 /// Eine Zeile des Raumbuchs: eine Schicht an einer Fläche, eine Länge mit
 /// Schlüssel oder ein Hinweis.
 #[derive(Clone, Debug, PartialEq)]
@@ -174,6 +200,7 @@ pub(crate) fn auto_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> {
                     kg: l.kg,
                     formula: formel(&l.weg),
                     hinweis: String::new(),
+                    material: l.material,
                 });
             }
         }

@@ -1669,6 +1669,10 @@ pub struct AutoMenge {
     /// Hinweise zur Menge, getrennt vom Rechenweg (Review #164 H-164f,
     /// VOB-Prüfung G3 B7), je Hinweis eine Zeile; leer ohne.
     pub hinweis: String,
+    /// Raumlänge mit eigenem Typ (Sockelleiste): Baustoff des Typs, für
+    /// `mat=` der Automatik-Leistung (RB7, je Sockeltyp eine Leistung);
+    /// sonst `None`.
+    pub material: Option<MaterialId>,
 }
 
 /// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
@@ -1682,6 +1686,7 @@ pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'
         .chain(crate::fallrohr::SCHLUESSEL)
         .chain(crate::qto_fassade::SCHLUESSEL)
         .chain(crate::qto_laibung::SCHLUESSEL)
+        .chain(crate::qto_raum::SCHLUESSEL)
 }
 
 /// Gründung, aus deren Geometrie die Automatikmengen ihrer Sohlplatte folgen
@@ -2109,6 +2114,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
             kg: None,
             formula: String::new(),
             hinweis: String::new(),
+            material: None,
         };
         sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
         // Regenfallrohre an den Abläufen des Dachs (Jörn 11.10.)
@@ -2203,6 +2209,7 @@ fn auto_rows(
             kg: None,
             formula: String::new(),
             hinweis: String::new(),
+            material: None,
         };
         let basis = crate::qto_earth::ErdBasis::im_modell(model, &g);
         let (erde, zone) = crate::qto_earth::auto_mengen(&vorlage, &basis, &boden);
