@@ -482,7 +482,7 @@ pub use fang::{Fangziele, Wandende, Wandflaeche};
 
 #[path = "ecke.rs"]
 mod ecke;
-pub use ecke::{EckeFehler, ZugPunkte};
+pub use ecke::{EckeFehler, Vereint, ZugPunkte};
 #[path = "raum.rs"]
 mod raum;
 pub(crate) use raum::RawSpace;

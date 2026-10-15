@@ -7,8 +7,9 @@
 //!   gewählten Wand bleibt der längere Teil.
 //! - Verlängern: Klick auf die Zielwand; die gewählte Wand läuft mit dem
 //!   näheren Ende bis an deren zugewandte Fläche (in einer Flucht bis an ihr
-//!   Ende). Danach bleibt die Zielwand: jeder weitere Klick verlängert eine
-//!   Wand bis dorthin, Esc beendet.
+//!   Ende; bei gleichem Typ werden beide eine Wand, G5c). Danach bleibt die
+//!   Zielwand: jeder weitere Klick verlängert eine Wand bis dorthin, Esc
+//!   beendet.
 //!
 //! Über der Wand unter der Maus zeigt sich das Ergebnis als Vorschau; die
 //! Pille nennt die Wand oder den Grund, warum es nicht geht. Die Rechnung
@@ -18,7 +19,7 @@
 use crate::camera::Camera;
 use crate::scene::Scene;
 use sk_math::Vec3;
-use sk_model::{EckeFehler, ElementId, ZugPunkte};
+use sk_model::{EckeFehler, ElementId, Vereint, ZugPunkte};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -94,8 +95,11 @@ pub struct EckeWahl {
     /// Wand und Punkt unter der Maus.
     hover: Option<(ElementId, Vec3)>,
     /// Ergebnis über der Wand unter der Maus.
-    vorschau: Option<Result<Vec<ZugPunkte>, EckeFehler>>,
+    vorschau: Option<Result<Rechnung, EckeFehler>>,
 }
+
+/// Neue Punkte je Zug; werden beim Verlängern zwei Wände eine, wie.
+type Rechnung = (Vec<ZugPunkte>, Option<Vereint>);
 
 impl EckeWahl {
     /// Beginnt an der Wand `wand`; `Err`, wenn sie kein freies Ende hat
@@ -192,16 +196,28 @@ impl EckeWahl {
         best.map(|(_, id)| (id, g))
     }
 
+    /// Verlängern: die Wand, die wandert, und die Zielwand, mit der Wand
+    /// `b` unter der Maus.
+    fn paar(&self, b: ElementId) -> (ElementId, ElementId) {
+        match self.ziel {
+            None => (self.wand, b),
+            Some(ziel) => (b, ziel),
+        }
+    }
+
     /// Ergebnis für die Wand `b` unter der Maus am Punkt `bei`.
-    fn rechne(&self, scene: &Scene, b: ElementId, bei: Vec3) -> Result<Vec<ZugPunkte>, EckeFehler> {
+    fn rechne(&self, scene: &Scene, b: ElementId, bei: Vec3) -> Result<Rechnung, EckeFehler> {
         let m = scene.model();
-        match (self.art, self.ziel) {
-            (Art::Ecke, _) => {
-                let mitte = mitte(scene, self.wand).ok_or(EckeFehler::KeineWand)?;
-                m.ecke_punkte(self.wand, mitte, b, bei).map(Vec::from)
-            }
-            (Art::Verlaengern, None) => m.verlaengern_punkte(self.wand, b).map(|z| vec![z]),
-            (Art::Verlaengern, Some(ziel)) => m.verlaengern_punkte(b, ziel).map(|z| vec![z]),
+        if self.art == Art::Ecke {
+            let mitte = mitte(scene, self.wand).ok_or(EckeFehler::KeineWand)?;
+            return m
+                .ecke_punkte(self.wand, mitte, b, bei)
+                .map(|z| (Vec::from(z), None));
+        }
+        let (x, y) = self.paar(b);
+        match m.vereinen_punkte(x, y) {
+            Some(v) => Ok((vec![v.zug.clone()], Some(v))),
+            None => m.verlaengern_punkte(x, y).map(|z| (vec![z], None)),
         }
     }
 
@@ -223,7 +239,7 @@ impl EckeWahl {
         let Some((b, bei)) = self.hover else {
             return;
         };
-        let zuege = match self.rechne(scene, b, bei) {
+        let (zuege, vereint) = match self.rechne(scene, b, bei) {
             Ok(z) => z,
             Err(e) => {
                 out.refused = Some(e);
@@ -237,12 +253,18 @@ impl EckeWahl {
             _ => self.wand,
         };
         let m = scene.model();
+        let weg = vereint.as_ref().and_then(|v| m.run(v.weg));
         let spalte: Vec<ElementId> = geaendert(scene, &zuege)
             .into_iter()
+            .chain(weg.into_iter().flat_map(|r| r.segments.iter().copied()))
             .flat_map(|w| m.stack_column(w))
             .collect();
         if let Some(id) = sk_model::edit_blocked(m, &spalte) {
             out.locked = Some((id, wand));
+            return;
+        }
+        if let Some(v) = vereint {
+            self.vereinen(scene, b, &v, out);
             return;
         }
         scene.begin(match art {
@@ -267,6 +289,27 @@ impl EckeWahl {
             }
             (Art::Verlaengern, Some(_)) => {}
         }
+        self.hover = None;
+        self.vorschau = None;
+    }
+
+    /// Verlängern in einer Flucht mit gleichem Typ: Beide Wände werden eine,
+    /// als ein Schritt. Die vereinte Wand wird gewählt und ist danach die
+    /// Zielwand für weitere Wände.
+    fn vereinen(&mut self, scene: &mut Scene, b: ElementId, v: &Vereint, out: &mut Outcome) {
+        let (x, y) = self.paar(b);
+        if !scene.edit_model("Wände vereint", |m| m.verlaengern(x, y).is_ok()) {
+            out.refused = Some(EckeFehler::Ungueltig);
+            return;
+        }
+        let Some(neu) = scene.model().wall_at(v.zug.0, v.seg) else {
+            return;
+        };
+        out.schritt = Some(neu);
+        if self.ziel.is_none() {
+            out.karte = Some(karte_weiter(&Self::nummer(scene, neu)));
+        }
+        self.ziel = Some(neu);
         self.hover = None;
         self.vorschau = None;
     }
@@ -330,6 +373,10 @@ impl EckeWahl {
         let text = match (self.vorschau.as_ref()?, self.art, self.ziel) {
             (Err(e), _, _) => e.message().to_string(),
             (Ok(_), Art::Ecke, _) => format!("Ecke mit {nr}"),
+            (Ok((_, Some(_))), Art::Verlaengern, None) => format!("mit {nr} vereint"),
+            (Ok((_, Some(_))), Art::Verlaengern, Some(z)) => {
+                format!("{nr} mit {} vereint", Self::nummer(scene, z))
+            }
             (Ok(_), Art::Verlaengern, None) => format!("bis {nr}"),
             (Ok(_), Art::Verlaengern, Some(z)) => {
                 format!("{nr} bis {}", Self::nummer(scene, z))
@@ -358,7 +405,7 @@ impl EckeWahl {
             out.push(line(z.0, z.1, col.shadow_band, 6.0));
             out.push(line(z.0, z.1, col.drag_hot, 4.0));
         }
-        if let Some(Ok(zuege)) = &self.vorschau {
+        if let Some(Ok((zuege, _))) = &self.vorschau {
             for (_, pts) in zuege {
                 for p in pts.windows(2) {
                     out.push(line(p[0], p[1], col.shadow_band, 5.0));
@@ -632,6 +679,44 @@ mod tests {
         };
         let out = ereignis(&mut t, &mut s, &c, esc);
         assert!(out.fertig && !out.cancelled);
+    }
+
+    /// Verlängern in einer Flucht mit gleichem Typ: Die Pille sagt
+    /// „vereint“, der Klick macht beide Wände zu einer in einem Schritt; die
+    /// vereinte Wand ist danach die Zielwand für weitere (G5c).
+    #[test]
+    fn verlaengern_vereint_in_einer_flucht() {
+        let c = cam();
+        let (mut m, [_, b, d, _]) = modell();
+        let iw = m.defaults().interior_wall;
+        let st = m.defaults().storey;
+        let r = m
+            .add_wall_run(
+                &[vec3(7000.0, 5000.0, 0.0), vec3(9000.0, 5000.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let f = m.wall_at(r, 0).unwrap();
+        let mut s = Scene::with_model(m);
+        let nr = s.model().element(b).unwrap().number.clone();
+        let mut t = EckeWahl::start(&s, f, Art::Verlaengern).unwrap();
+        zeige(&mut t, &mut s, &c, vec3(4000.0, 5010.0, 0.0));
+        assert_eq!(t.pill(&s), Some((format!("mit {nr} vereint"), false)));
+        let out = klick(&mut t, &mut s, &c, vec3(4000.0, 5010.0, 0.0));
+        assert_eq!(out.schritt, Some(b), "{out:?}");
+        assert_eq!(out.karte.unwrap()[0], format!("Weitere Wände bis {nr}"));
+        assert!(s.model().segment_of(f).is_none(), "f geht in b auf");
+        assert!((enden(&s, b).1 - vec3(9000.0, 5000.0, 0.0)).length() < 1e-6);
+        assert_eq!(s.undo_label(), Some("Wände vereint"));
+        // Weitere Wand bis zur vereinten
+        let out = klick(&mut t, &mut s, &c, vec3(5000.0, 2000.0, 0.0));
+        assert_eq!(out.schritt, Some(d), "{out:?}");
+        let ti = dicke_innen(&s);
+        assert!((enden(&s, d).1.y - (5000.0 - ti / 2.0)).abs() < 1e-6);
     }
 
     /// Geteilte Wand: Stück 0 startet; Verlängern läuft am freien Ende des
