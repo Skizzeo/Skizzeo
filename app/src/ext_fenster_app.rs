@@ -14,7 +14,7 @@ use sk_platform::{Event, MouseButton, Surface};
 const FILTER: [(&str, &str); 2] = [("Bauteil (*.szb)", "*.szb"), ("Alle Dateien (*.*)", "*.*")];
 
 impl App {
-    /// Fenster „Erweiterungen“ öffnen (Datei › Erweiterungen …).
+    /// Fenster „Erweiterungen“ öffnen (Dateimenü › Erweiterungen …).
     pub(crate) fn ext_fenster_auf(&mut self) {
         if self.ext_fenster.is_some() {
             return;

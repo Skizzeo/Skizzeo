@@ -617,7 +617,7 @@ struct App {
     shortcuts: menu::Shortcuts,
     save_dlg: Option<menu::SaveDialog>,
     after_save: Option<Command>,
-    /// Maske „Projektdaten“ (Paket PD-2): bei Datei › Neu und am Knopf.
+    /// Maske „Projektdaten“ (Paket PD-2): bei Dateimenü › Neu und am Knopf.
     projektdaten: Option<projektdaten::Maske>,
     /// Liste „Zuletzt geöffnet“; ohne Einstellungsdatei bleibt sie leer.
     recent: menu::Recent,
@@ -3754,7 +3754,7 @@ impl App {
         true
     }
 
-    /// Maske „Projektdaten“ öffnen (Paket PD-2): bei Datei › Neu mit der
+    /// Maske „Projektdaten“ öffnen (Paket PD-2): bei Dateimenü › Neu mit der
     /// Planung vom letzten Projekt, sonst mit den aktuellen Werten.
     fn open_projektdaten(&mut self, neu: bool) {
         if self.modal() {

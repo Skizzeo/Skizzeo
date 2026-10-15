@@ -779,7 +779,7 @@ mod tests {
     /// Ist-Bilder Geländeplatte in 3D (Gelände G0, Jörn 12.10.): RH-1 auf
     /// der grünen Platte, 50 cm dick und 3 m umlaufend, am 21.06. um 15:00
     /// von Südwesten, nah an der Ecke und mit 0,80 m Dicke und 1,50 m
-    /// Außenoffset; dazu zwei Häuser auf verschiedener Höhe.
+    /// Abstand ums Haus; dazu zwei Häuser auf verschiedener Höhe.
     /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_platte -- --ignored`
     #[test]
     #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]

@@ -1654,7 +1654,7 @@ mod tests {
     }
 
     /// Ansicht von vorn: ein Band über die ganze Platte (16 m), von OK
-    /// Gelände bis zur Unterkante; Dicke und Außenoffset folgen den
+    /// Gelände bis zur Unterkante; Dicke und Abstand ums Haus folgen den
     /// Einstellungen.
     #[test]
     fn band_in_der_ansicht() {
@@ -1681,7 +1681,7 @@ mod tests {
         assert!(ys.contains(&-1500.0) && ys.contains(&9500.0));
     }
 
-    /// Dicke und Außenoffset sind ein Schritt: Rückgängig stellt die
+    /// Dicke und Abstand ums Haus sind ein Schritt: Rückgängig stellt die
     /// Vorgabe wieder her, Wiederholen den neuen Wert; das Paneel zeigt
     /// die Werte und die Höhe aus dem Geschossmanager.
     #[test]

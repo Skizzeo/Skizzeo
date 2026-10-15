@@ -215,7 +215,7 @@ pub const IM_ENTWURF: &str =
 
 /// Ein Platz, an dem das Verwaltungskennwort nicht eingegeben ist, ändert
 /// den Firmenkatalog nicht, auch nicht den Entwurf (KA-3b1).
-pub const NUR_MIT_KENNWORT: &str = "Den Firmenkatalog ändert nur, wer das Verwaltungskennwort eingegeben hat (Datei › Verwaltung). Für dieses Haus geht es mit „Nur dieses Haus“.";
+pub const NUR_MIT_KENNWORT: &str = "Den Firmenkatalog ändert nur, wer das Verwaltungskennwort eingegeben hat (Dateimenü › Verwaltung). Für dieses Haus geht es mit „Nur dieses Haus“.";
 
 /// Zwei Administratoren am selben Entwurf (paket-ka3b §3).
 pub const ENTWURF_GEAENDERT: &str =

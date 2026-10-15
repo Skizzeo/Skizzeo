@@ -1839,7 +1839,7 @@ pub fn ausfuehren(
     ausfuehren_folge(m, firma, rolle, herkunft, std::slice::from_ref(&op))
 }
 
-/// Datei › Neu (Regel 92, E3): Mit freigegebenem Firmenkatalog bekommt das
+/// Dateimenü › Neu (Regel 92, E3): Mit freigegebenem Firmenkatalog bekommt das
 /// neue Projekt die Kopie seiner nicht ausgemusterten Sätze und
 /// `[costproject] catalog/stand`; ohne bleibt es ohne Kostenzeile. Für ein
 /// frisches Modell vor dem ersten Schritt (kein Rückgängig).
@@ -2506,7 +2506,7 @@ mod tests {
         assert!(neu.contains(" price=24 "), "{neu}");
     }
 
-    /// Abnahme 10: Datei › Neu ohne Firmenkatalog schreibt nichts; mit
+    /// Abnahme 10: Dateimenü › Neu ohne Firmenkatalog schreibt nichts; mit
     /// Firmenkatalog die Kopie der nicht ausgemusterten Sätze und
     /// `[costproject] catalog/stand`.
     #[test]
