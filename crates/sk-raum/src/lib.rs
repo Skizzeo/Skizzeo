@@ -3,6 +3,7 @@
 //! Schnittstelle: `grundriss/plan.md`, `grundriss/schnittstelle-raum.md` im
 //! Projektordner. Dazu das Raumbuch (RB3, `raumbuch/plan.md`): Öffnungen und
 //! Höhen je Raum, Ausbau nach der Raumvorlage, Mengen nach VOB/C und Körper.
+//! Daraus die Wohnfläche nach WoFlV (G8, [`wohnflaeche`]).
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +17,7 @@ pub mod raumbuch;
 pub mod raumliste;
 mod ring;
 pub mod speicher;
+pub mod wohnflaeche;
 
 pub use abgleich::{
     abgleichen, abgleichen_lage, abgleichen_lage_mit, ruhende, Abgleich, Stand, Wechsel,

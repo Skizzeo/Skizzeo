@@ -18,10 +18,12 @@ pub fn quantity_caption(doc: &Document, rev: u64) -> String {
 }
 
 /// Titel nach dem gezeigten Blatt (KA-2a): „Kosten – haus.szo“; das
-/// Mengenblatt behält „Mengenermittlung – …“.
+/// Mengenblatt behält „Mengenermittlung – …“, die Wohnfläche heißt
+/// „Wohnflächenberechnung – …“.
 pub fn blatt_caption(b: Blatt, doc: &Document, rev: u64) -> String {
     match b {
         Blatt::Mengen => quantity_caption(doc, rev),
+        Blatt::Wohnflaeche => format!("Wohnflächenberechnung – {}", doc.caption_at(rev)),
         Blatt::Kosten | Blatt::Ava => format!("{} – {}", b.name(), doc.caption_at(rev)),
     }
 }

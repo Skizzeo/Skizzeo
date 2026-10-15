@@ -66,6 +66,19 @@ impl App {
         schedule_view::csv_mit_kopf(self.scene.model(), &sched, sicht, &kopf)
     }
 
+    /// Tabelle der Wohnflächenberechnung im Umfang des Blatts, wie sie
+    /// gezeigt wird (G8).
+    pub(crate) fn wohn_csv(&mut self) -> Vec<u8> {
+        let Some(l) = self.quantity.wohn.as_mut() else {
+            return Vec::new();
+        };
+        l.sync(&mut self.scene, false);
+        let u = l.leiste.umfang.clone();
+        let w = l.wohn_rechnung().unwrap_or_default();
+        let kopf = umfang_view::umfang_text(self.scene.model(), &u, sk_platform::local_date_time());
+        schedule_view::wohn_csv(&w, &u, &kopf)
+    }
+
     /// „Als Tabelle speichern“: Windows-Dialog, .csv für Excel.
     pub(crate) fn save_csv(&mut self, surface: &Surface) {
         let stem = self.datei_stamm();
@@ -76,10 +89,12 @@ impl App {
             .ava
             .as_ref()
             .filter(|_| blatt == cards::Blatt::Ava);
+        let wohn = blatt == cards::Blatt::Wohnflaeche;
         let suggested = match ava.and_then(|a| a.los_name()) {
             // „haus LV Rohbau.csv“ (paket-ka4 §4)
             Some(los) => format!("{stem} LV {los}.csv"),
             None if kosten => format!("{stem} Kosten.csv"),
+            None if wohn => format!("{stem} Wohnflächenberechnung.csv"),
             // Bestellliste schon am Namen erkennbar (Bedienbarkeit 38.3)
             None if self.quantity.modus == sk_model::rechenweg::Modus::Bestellung => {
                 format!("{stem} Mengenermittlung Bestellung.csv")
@@ -107,6 +122,7 @@ impl App {
                 let (y, mo, d, h, mi) = sk_platform::local_date_time();
                 k.csv(&stem, &format!("{d:02}.{mo:02}.{y}, {h:02}:{mi:02}"))
             }
+            None if wohn => self.wohn_csv(),
             None => self.quantity_csv(),
         };
         if let Err(e) = document::tabelle_schreiben(&path, &bytes) {

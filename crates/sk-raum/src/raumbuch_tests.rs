@@ -196,6 +196,35 @@ fn wohnzimmer(h: &Haus) -> Rohbau {
     form(h.eg, k, Vec::new(), o)
 }
 
+/// Das Wohnzimmer an einer Innenwand: Eckschienen an den Laibungskanten
+/// von Fenster (2 × 1,51 + 1,51) und Fenstertür (2 × 2,385 + 2,01), die
+/// Innentür ohne (Review #197 B2).
+#[test]
+fn eckschienen_an_laibungen_der_innenwand() {
+    let mut h = haus();
+    let set = h.m.type_by_guid(sk_model::INTERIOR_TYPE_GUID).unwrap();
+    let pts = [vec3(0.0, 4000.0, 0.0), vec3(5000.0, 4000.0, 0.0)];
+    let run =
+        h.m.add_wall_run(
+            &pts,
+            false,
+            RefSide::Left,
+            h.eg,
+            set,
+            Category::InteriorWall,
+        )
+        .unwrap();
+    let iw = h.m.run(run).unwrap().segments[0];
+    let mut f = wohnzimmer(&h);
+    for k in &mut f.form.umriss {
+        let Begrenzung::Wand { wand, .. } = &mut k.quelle;
+        *wand = iw;
+    }
+    let a = RaumAusbau::nach_vorlage(&h.m, &f, &vorlage(LIVING_SPACE_GUID));
+    let z = rechnen(&h.m, &f, &a, &Regeln::default());
+    gleich(menge(&h.m, &z, Flaeche::Eckschienen, None), 4530.0 + 6780.0);
+}
+
 #[test]
 fn wohnzimmer_nach_handrechnung() {
     let h = haus();
@@ -259,8 +288,13 @@ fn wohnzimmer_nach_handrechnung() {
         m(Flaeche::Sockel, Some((OAK_SKIRTING_TYPE_GUID, 0))),
         15_870.0,
     );
-    // Eckschienen nur an den Laibungskanten
-    gleich(m(Flaeche::Eckschienen, None), 4530.0 + 6780.0);
+    // Eckschienen: keine; die Laibungskanten der Außenwand rechnet
+    // opening.reveal.inner (Review #197 B2), Innenwand siehe
+    // eckschienen_an_laibungen_der_innenwand
+    assert!(
+        !z.iter().any(|x| x.flaeche == Flaeche::Eckschienen),
+        "Außenwand"
+    );
     gleich(m(Flaeche::Randstreifen, None), 17_880.0);
     assert!(!z.iter().any(|x| matches!(
         x.flaeche,
@@ -350,7 +384,10 @@ fn bad_nach_handrechnung() {
     gleich(m(Flaeche::Wand(1), Some(anstrich)), 2000.0 * 1275.0);
     gleich(m(Flaeche::Wand(2), Some(anstrich)), 2400.0 * 1275.0);
     assert!(!z.iter().any(|x| x.flaeche == Flaeche::Sockel));
-    gleich(m(Flaeche::Eckschienen, None), 3920.0);
+    assert!(
+        !z.iter().any(|x| x.flaeche == Flaeche::Eckschienen),
+        "Außenwand"
+    );
     gleich(m(Flaeche::Randstreifen, None), 8680.0);
     // Silikon: Boden/Wand 8,68 − Tür 0,885, vier Innenecken je 1,20
     gleich(m(Flaeche::Silikon, None), 8680.0 - 885.0 + 4.0 * 1200.0);
@@ -475,8 +512,9 @@ fn diele_mit_pfeiler_nach_handrechnung() {
         m(Flaeche::Sockel, Some((TILE_SKIRTING_TYPE_GUID, 0))),
         15_880.0 + 1320.0 - 1250.0,
     );
-    // Eckschienen: Ecke des L und vier Pfeilerecken, Laibungskanten Haustür
-    gleich(m(Flaeche::Eckschienen, None), 5.0 * 2635.0 + 6020.0);
+    // Eckschienen: Ecke des L und vier Pfeilerecken; die Laibung der
+    // Haustür in der Außenwand rechnet opening.reveal.inner
+    gleich(m(Flaeche::Eckschienen, None), 5.0 * 2635.0);
     gleich(m(Flaeche::Randstreifen, None), 15_880.0 + 1320.0);
 }
 
@@ -530,7 +568,10 @@ fn ecktuer() {
     let rf = Some((WOODCHIP_WALL_TYPE_GUID, 2));
     gleich(m(Flaeche::Laibung(0), rf), 2385.0 + 1000.0);
     gleich(m(Flaeche::Laibung(1), rf), 2385.0 + 1000.0);
-    gleich(m(Flaeche::Eckschienen, None), 2.0 * (2385.0 + 1000.0));
+    assert!(
+        !z.iter().any(|x| x.flaeche == Flaeche::Eckschienen),
+        "Außenwand"
+    );
     // Eine Aussparung von 4,77 m², jedes Stück an seiner Wand abgezogen
     let putz = Some((WOODCHIP_WALL_TYPE_GUID, 0));
     gleich(m(Flaeche::Wand(0), putz), 4000.0 * 2635.0 - 1000.0 * 2385.0);
@@ -672,7 +713,10 @@ fn geschossuebergreifend_eine_aussparung() {
     gleich(m(Flaeche::Wand(0), putz), 4000.0 * 2635.0 - 1000.0 * 1135.0);
     // Laibungen und Kanten nur im Geschoss, oben keine
     gleich(m(Flaeche::Laibung(0), anstrich), 2.0 * 1135.0);
-    gleich(m(Flaeche::Eckschienen, None), 2.0 * 1135.0);
+    assert!(
+        !z.iter().any(|x| x.flaeche == Flaeche::Eckschienen),
+        "Außenwand"
+    );
     // Ohne das Stück darüber wäre es übermessen
     let z = zeilen(&galerie(&h, 1500.0, 4335.0, [0.0, 0.0]));
     gleich(menge(&h.m, &z, Flaeche::Wand(0), putz), 4000.0 * 2635.0);
@@ -683,7 +727,10 @@ fn geschossuebergreifend_eine_aussparung() {
     let m = |fl, typ| menge(&h.m, &z, fl, typ);
     gleich(m(Flaeche::Wand(0), putz), 4000.0 * 2635.0 - 1000.0 * 1400.0);
     gleich(m(Flaeche::Laibung(0), anstrich), 2.0 * 1400.0 + 1000.0);
-    gleich(m(Flaeche::Eckschienen, None), 2.0 * 1400.0 + 1000.0);
+    assert!(
+        !z.iter().any(|x| x.flaeche == Flaeche::Eckschienen),
+        "Außenwand"
+    );
     gleich(
         m(Flaeche::Boden, Some((PARQUET_TYPE_GUID, 0))),
         3970.0 * 2970.0 + 1000.0 * 15.0,

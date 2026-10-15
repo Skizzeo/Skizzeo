@@ -169,6 +169,7 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
                 kg: None,
                 formula: String::new(),
                 hinweis: String::new(),
+                material: None,
             };
             out.extend(mengen(&vorlage, werte));
         }
