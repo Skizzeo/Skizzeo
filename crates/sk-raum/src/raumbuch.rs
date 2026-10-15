@@ -41,7 +41,7 @@ use crate::erkennung::{Begrenzung, Kante};
 use crate::oeffnungen::{OeffnungAmRaum, OpeningKind, Rohbau};
 use crate::ring::{self, Versatz};
 use sk_math::{vec3, Vec3};
-use sk_model::{LayerFunction, LayerSetId, Model};
+use sk_model::{Category, LayerFunction, LayerSetId, Model};
 
 /// Bezug, Rolle und Term einer Menge wie in der Mengenliste (VOB, PR #77).
 pub use sk_model::rechenweg::{Art, Bezug, Term};
@@ -284,6 +284,17 @@ impl<'a> Raum<'a> {
                 .element(*wand)
                 .map_or_else(|| "Wand".into(), |e| e.number.clone()),
             None => "Wand".into(),
+        }
+    }
+
+    /// Liegt die Kante `k` an einer Außenwand?
+    fn in_aussenwand(&self, k: usize) -> bool {
+        match self.kanten.get(k).map(|k| &k.quelle) {
+            Some(Begrenzung::Wand { wand, .. }) => self
+                .model
+                .element(*wand)
+                .is_some_and(|e| e.category == Category::ExteriorWall),
+            None => false,
         }
     }
 
@@ -840,7 +851,11 @@ impl<'a> Raum<'a> {
             }
         }
         for o in &self.form.oeffnungen {
-            if !laibung_behandelt(o.art) || self.putz[o.kante] <= 0.0 {
+            // Die Laibung in der Außenwand bepreist opening.reveal.inner
+            // samt Kantenschutz; hier nur Öffnungen in Innenwänden (Review
+            // #197 B2)
+            if !laibung_behandelt(o.art) || self.putz[o.kante] <= 0.0 || self.in_aussenwand(o.kante)
+            {
                 continue;
             }
             // im Geschoss des Raums; oben nur, wo der Sturz in ihm liegt

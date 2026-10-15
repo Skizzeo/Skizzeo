@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 41] = [
+pub const ARTIKEL: [WerkArtikel; 66] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -238,7 +238,6 @@ pub const ARTIKEL: [WerkArtikel; 41] = [
         "m2",
         "Faserzementtafel 8mm inkl. Fugenband und Edelstahlschrauben",
     ),
-    // Stand 11: Stoff von Dachablauf und Notüberlauf (B18)
     a(
         "1S7bUW001008010000000V",
         "st",
@@ -253,7 +252,7 @@ pub const ARTIKEL: [WerkArtikel; 41] = [
         "1S7bUW001008010000000X",
         "m3",
         "EPS-Dachdämmplatte 035 DAA dh, Streifen Attikakrone",
-    ), // Stand 15: Dachentwässerung außen (Regenfallrohr)
+    ),
     a(
         "1S7bUW001008010000000Y",
         "st",
@@ -293,6 +292,123 @@ pub const ARTIKEL: [WerkArtikel; 41] = [
         "1S7bUW001008010000000f",
         "st",
         "Kontrollablauf DN 50 mit Klebeflansch und Insektenschutz",
+    ),
+    a(
+        "1S7bUW001008010000000g",
+        "m3",
+        "Gipsputz maschinell, Werktrockenmörtel, innen",
+    ),
+    a(
+        "1S7bUW001008010000000h",
+        "m3",
+        "Kalkzementputz maschinell CS II, Werktrockenmörtel",
+    ),
+    a(
+        "1S7bUW001008010000000i",
+        "m",
+        "Eckschutzschiene verzinkt für Innenputz 10–15mm",
+    ),
+    a(
+        "1S7bUW001008010000000j",
+        "m3",
+        "Zementestrich CT-C25-F4, Mischgut frei Baustelle",
+    ),
+    a(
+        "1S7bUW001008010000000k",
+        "m2",
+        "PE-Folie 0,2mm als Trennlage unter Estrich",
+    ),
+    a(
+        "1S7bUW001008010000000l",
+        "m3",
+        "Trittschalldämmplatte EPS-T DES sg",
+    ),
+    a(
+        "1S7bUW001008010000000m",
+        "m3",
+        "Wärmedämmplatte EPS 035 DEO dm, unter Estrich",
+    ),
+    a(
+        "1S7bUW001008010000000n",
+        "m",
+        "Randdämmstreifen PE-Schaum 8×100mm mit Folienlasche",
+    ),
+    a(
+        "1S7bUW001008010000000o",
+        "m2",
+        "Bitumen-Schweißbahn G 200 S4, Abdichtung Bodenplatte",
+    ),
+    a(
+        "1S7bUW001008010000000p",
+        "m2",
+        "Feinsteinzeug 60×60 R10, Mittelklasse",
+    ),
+    a(
+        "1S7bUW001008010000000q",
+        "kg",
+        "Flexkleber C2 TE S1 für Dünnbett",
+    ),
+    a("1S7bUW001008010000000r", "kg", "Fugenmörtel CG2 WA"),
+    a(
+        "1S7bUW001008010000000s",
+        "m2",
+        "Wandfliese Steingut 30×60 weiß glasiert",
+    ),
+    a(
+        "1S7bUW001008010000000t",
+        "m2",
+        "Dichtschlämme flexibel 2-lagig mit Dichtband, DIN 18534",
+    ),
+    a(
+        "1S7bUW001008010000000u",
+        "m",
+        "Sanitärsilikon mit Hinterfüllprofil",
+    ),
+    a(
+        "1S7bUW001008010000000v",
+        "m",
+        "Fliesensockel aus Feinsteinzeug geschnitten, h=60mm, mit Kleber",
+    ),
+    a(
+        "1S7bUW001008010000000w",
+        "m2",
+        "Massivparkett Eiche Stab 20mm, Sortierung Natur",
+    ),
+    a(
+        "1S7bUW001008010000000x",
+        "kg",
+        "Parkettklebstoff SMP elastisch",
+    ),
+    a(
+        "1S7bUW001008010000000y",
+        "m2",
+        "Parkettversiegelung, Grundierung und 2 Deckschichten",
+    ),
+    a(
+        "1S7bUW001008010000000z",
+        "m",
+        "Sockelleiste Eiche massiv 60×15 lackiert, Clips",
+    ),
+    a(
+        "1S7bUW001008010000000_",
+        "m2",
+        "Innendispersion Klasse 2 mit Tiefgrund, für 2 Anstriche",
+    ),
+    a(
+        "1S7bUW001008010000000$",
+        "m2",
+        "Raufasertapete mittlere Körnung",
+    ),
+    a("1S7bUW0010080100000010", "m2", "Tapetenkleister"),
+    a(
+        "1S7bUW0010080100000011",
+        "m",
+        "Übergangsprofil Aluminium eloxiert, Höhenausgleich bis 15mm",
+    ),
+    a(
+        "1S7bUW0010080100000012",
+        "m",
+        "Abschluss- und Übergangsprofil Edelstahl für Fliesen 10–12mm",
     ),
 ];
 
@@ -341,17 +457,23 @@ pub const BAUSTOFFE: [WerkBaustoff; 10] = [
 ];
 
 /// Gewerke im Werksbestand (§10).
-pub const GEWERKE: [(u32, &str); 11] = [
+pub const GEWERKE: [(u32, &str); 17] = [
     (18300, "Erdarbeiten"),
     (18320, "Landschaftsbauarbeiten"),
     (18330, "Mauerarbeiten"),
     (18331, "Betonarbeiten"),
     (18334, "Zimmer- und Holzbauarbeiten"),
+    (18336, "Abdichtungsarbeiten"),
     (18338, "Dachdeckungs- und Dachabdichtungsarbeiten"),
     (18339, "Klempnerarbeiten"),
     (18345, "Wärmedämm-Verbundsysteme"),
     (18350, "Putz- und Stuckarbeiten"),
     (18351, "Vorgehängte hinterlüftete Fassaden"),
+    (18352, "Fliesen- und Plattenarbeiten"),
+    (18353, "Estricharbeiten"),
+    (18356, "Parkett- und Holzpflasterarbeiten"),
+    (18363, "Maler- und Lackierarbeiten"),
+    (18366, "Tapezierarbeiten"),
     (18451, "Gerüstarbeiten"),
 ];
 
@@ -385,7 +507,7 @@ pub const ARTEN: [&str; 13] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 100] = [
+pub const LEISTUNGEN: [WerkLeistung; 121] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -806,7 +928,6 @@ pub const LEISTUNGEN: [WerkLeistung; 100] = [
         "auto",
         "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
     ),
-    // Stand 10: Gefälledämmung (G5)
     l(
         "1S7bUW0010080200000017",
         "m3",
@@ -825,7 +946,6 @@ pub const LEISTUNGEN: [WerkLeistung; 100] = [
         "auto",
         "Zulage Gefälledämmung Grat, Zuschnitt auf Gehrung",
     ),
-    // Stand 10: Dämmung auf der Attika der Dachterrasse (AD1)
     l(
         "1S7bUW001008020000001A",
         "m2",
@@ -837,7 +957,7 @@ pub const LEISTUNGEN: [WerkLeistung; 100] = [
         "m2",
         "area",
         "Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech",
-    ), // Stand 15: Dachentwässerung außen (Regenfallrohr)
+    ),
     l(
         "1S7bUW001008020000001C",
         "st",
@@ -987,6 +1107,132 @@ pub const LEISTUNGEN: [WerkLeistung; 100] = [
         "m2",
         "auto",
         "Zulage Andecken an Böschung steiler als 1:4, schräg gemessen",
+    ),
+    l(
+        "1S7bUW001008020000001b",
+        "m2",
+        "area",
+        "Abdichtung Bodenplatte W1-E, Bitumen-Schweißbahn 1-lagig, Voranstrich",
+    ),
+    l(
+        "1S7bUW001008020000001c",
+        "m2",
+        "area",
+        "Innenputz Gipsputz maschinell 1-lagig Q2, Dicke nach Raumbuch",
+    ),
+    l(
+        "1S7bUW001008020000001d",
+        "m2",
+        "area",
+        "Deckenputz Gipsputz maschinell 1-lagig Q2, Dicke nach Raumbuch",
+    ),
+    l(
+        "1S7bUW001008020000001e",
+        "m2",
+        "area",
+        "Innenputz Kalkzementputz maschinell 1-lagig, Dicke nach Raumbuch",
+    ),
+    l(
+        "1S7bUW001008020000001f",
+        "m",
+        "auto",
+        "Eckschutzschiene verzinkt an vorspringenden Ecken, eingeputzt",
+    ),
+    l(
+        "1S7bUW001008020000001g",
+        "m2",
+        "area",
+        "Zementestrich CT-C25-F4 schwimmend, Dicke nach Raumbuch",
+    ),
+    l(
+        "1S7bUW001008020000001h",
+        "m2",
+        "area",
+        "Trittschalldämmung EPS-T unter Estrich, einlagig, dicht gestoßen",
+    ),
+    l(
+        "1S7bUW001008020000001i",
+        "m2",
+        "area",
+        "Wärmedämmung EPS 035 DEO unter Estrich, Dicke nach Raumbuch",
+    ),
+    l(
+        "1S7bUW001008020000001j",
+        "m",
+        "auto",
+        "Randdämmstreifen PE 8mm mit Folienlasche an aufgehenden Bauteilen",
+    ),
+    l(
+        "1S7bUW001008020000001k",
+        "m2",
+        "area",
+        "Bodenfliesen Feinsteinzeug 60×60 im Dünnbett, verfugt",
+    ),
+    l(
+        "1S7bUW001008020000001l",
+        "m2",
+        "area",
+        "Wandfliesen 30×60 im Dünnbett, verfugt",
+    ),
+    l(
+        "1S7bUW001008020000001m",
+        "m2",
+        "area",
+        "Verbundabdichtung DIN 18534 2-lagig, Dichtband in Ecken",
+    ),
+    l(
+        "1S7bUW001008020000001n",
+        "m",
+        "auto",
+        "Fliesensockel Feinsteinzeug h=60mm geschnitten, im Dünnbett verfugt",
+    ),
+    l(
+        "1S7bUW001008020000001o",
+        "m",
+        "auto",
+        "Silikonfuge Sanitär mit Hinterfüllprofil, Boden/Wand und Innenecken",
+    ),
+    l(
+        "1S7bUW001008020000001p",
+        "m",
+        "auto",
+        "Übergangsprofil Edelstahl an Fliesenbelag im Türdurchgang, eingefliest",
+    ),
+    l(
+        "1S7bUW001008020000001q",
+        "m2",
+        "area",
+        "Massivparkett Eiche 20mm verklebt, geschliffen, versiegelt",
+    ),
+    l(
+        "1S7bUW001008020000001r",
+        "m",
+        "auto",
+        "Sockelleiste Eiche massiv 60×15 lackiert, verdeckt befestigt",
+    ),
+    l(
+        "1S7bUW001008020000001s",
+        "m",
+        "auto",
+        "Übergangsprofil Aluminium an Belagwechsel im Türdurchgang, geschraubt",
+    ),
+    l(
+        "1S7bUW001008020000001t",
+        "m2",
+        "area",
+        "Dispersionsanstrich Wand Klasse 2, Grundierung und 2 Anstriche",
+    ),
+    l(
+        "1S7bUW001008020000001u",
+        "m2",
+        "area",
+        "Dispersionsanstrich Decke Klasse 2, Grundierung und 2 Anstriche",
+    ),
+    l(
+        "1S7bUW001008020000001v",
+        "m2",
+        "area",
+        "Raufasertapete mittel kleben, auf Stoß, mit Kleister",
     ),
 ];
 

@@ -1,7 +1,7 @@
 SZK 1
-# Skizzeo-Werksbestand Stammdaten, Stand 18 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Skizzeo-Werksbestand Stammdaten, Stand 19 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=18 date=2026-10-14 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=19 date=2026-10-15 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -30,6 +30,16 @@ SZK 1
 [lot] guid=1S7bUW001008030000000K name="Außenanlagen" nr="6" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gelände- und Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Erdbau nach ATV DIN 18300, Oberbodenarbeiten und vegetationstechnische Bodenbearbeitung nach ATV DIN 18320 und DIN 18915. Abtrag und Auftrag des Geländes zwischen Urgelände ohne Oberboden und Planum der Geländeflächen, Abtrag im festen, Auftrag im eingebauten Zustand; Böschungen schräg gemessen. Eigenboden aus Abtrag und Baugrube geht vor Lieferboden."
 [lot] guid=1S7bUW001008030000000L name="Erdbau" nr="01" parent=1S7bUW001008030000000K
 [lot] guid=1S7bUW001008030000000M name="Vegetationstechnik" nr="02" parent=1S7bUW001008030000000K
+[lot] guid=1S7bUW001008030000000N name="Bauwerksabdichtung" nr="07" parent=1S7bUW0010080300000001
+[lot] guid=1S7bUW001008030000000O name="Estrich" nr="7" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Die Mengen stehen je Raum, Boden, Wandseite und Decke im Raumbuch; Übermessung und Abzüge nach der ATV des Gewerks. Estrich nach ATV DIN 18353 und DIN 18560-2 als schwimmender Estrich auf Dämmschicht, Dicke und Ausgleich nach Raumbuch; Randdämmstreifen an allen aufgehenden Bauteilen."
+[lot] guid=1S7bUW001008030000000P name="Estricharbeiten" nr="01" parent=1S7bUW001008030000000O
+[lot] guid=1S7bUW001008030000000Q name="Fliesen" nr="8" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Die Mengen stehen je Raum, Boden, Wandseite und Decke im Raumbuch; Übermessung und Abzüge nach der ATV des Gewerks. Fliesen- und Plattenarbeiten nach ATV DIN 18352 im Dünnbett; Verbundabdichtung nach DIN 18534 mit Dichtband in Ecken und an Anschlüssen."
+[lot] guid=1S7bUW001008030000000R name="Fliesen- und Plattenarbeiten" nr="01" parent=1S7bUW001008030000000Q
+[lot] guid=1S7bUW001008030000000S name="Bodenbeläge" nr="9" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Die Mengen stehen je Raum, Boden, Wandseite und Decke im Raumbuch; Übermessung und Abzüge nach der ATV des Gewerks. Parkettarbeiten nach ATV DIN 18356; Sockelleisten im Los ihres Belags."
+[lot] guid=1S7bUW001008030000000T name="Parkettarbeiten" nr="01" parent=1S7bUW001008030000000S
+[lot] guid=1S7bUW001008030000000U name="Maler und Tapezierer" nr="10" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Die Mengen stehen je Raum, Boden, Wandseite und Decke im Raumbuch; Übermessung und Abzüge nach der ATV des Gewerks. Maler- und Lackierarbeiten nach ATV DIN 18363, Tapezierarbeiten nach ATV DIN 18366; Untergründe tragfähig, Grundierung im Einheitspreis."
+[lot] guid=1S7bUW001008030000000V name="Maler- und Lackierarbeiten" nr="01" parent=1S7bUW001008030000000U
+[lot] guid=1S7bUW001008030000000W name="Tapezierarbeiten" nr="02" parent=1S7bUW001008030000000U
 [article] guid=1S7bUW0010080100000001 name="Porenbeton-Planbauplatte PP2-0,35 d=11,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=115 grade="PP2-0,35" format="599×249" unit=m2 price=15.8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
 [article] guid=1S7bUW0010080100000002 name="Porenbeton-Planstein PP2-0,35 d=17,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=175 grade="PP2-0,35" format="599×249" unit=m2 price=22.16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
 [article] guid=1S7bUW0010080100000003 name="Porenbeton-Planstein PP2-0,35 d=24cm" mat=2wuC33GkTD9Qack6WJ4EsM t=240 grade="PP2-0,35" format="599×249" unit=m2 price=29.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
@@ -71,6 +81,31 @@ SZK 1
 [article] guid=1S7bUW001008010000000d name="Auslaufbogen Titanzink DN 100" grade="DN 100" unit=st price=12 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000e name="Wasserspeier Titanzink, 300mm Auskragung, Tropfkante" format="300" unit=st price=90 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000f name="Kontrollablauf DN 50 mit Klebeflansch und Insektenschutz" grade="DN 50" unit=st price=45 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000g name="Gipsputz maschinell, Werktrockenmörtel, innen" mat=0YNCb9uH273FK7df93YfEK format="Sack 30 kg" unit=m3 price=300 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000h name="Kalkzementputz maschinell CS II, Werktrockenmörtel" mat=2DCoq9rC3q5vfSQr6jrkQX grade="CS II" format="Sack 30 kg" unit=m3 price=330 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000i name="Eckschutzschiene verzinkt für Innenputz 10–15mm" format="Länge 2,5 m" unit=m price=1.2 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000j name="Zementestrich CT-C25-F4, Mischgut frei Baustelle" mat=2ksPH9thB__Vx0YNbQhves grade="CT-C25-F4" unit=m3 price=140 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000k name="PE-Folie 0,2mm als Trennlage unter Estrich" grade="0,2 mm" format="Rolle 4×25 m" unit=m2 price=0.3 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000l name="Trittschalldämmplatte EPS-T DES sg" mat=1vsOcfVJSOwioZ9U0_BYR8 grade="DES sg" format="1000×500" unit=m3 price=120 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000m name="Wärmedämmplatte EPS 035 DEO dm, unter Estrich" mat=3CICRJXzgSF6ri6zk3HEBg grade="WLS 035" format="1000×500" unit=m3 price=95 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000n name="Randdämmstreifen PE-Schaum 8×100mm mit Folienlasche" format="Rolle 50 m" unit=m price=0.45 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000o name="Bitumen-Schweißbahn G 200 S4, Abdichtung Bodenplatte" mat=2ECNUYRQ7Bi__z_rUpl4Jn grade="G 200 S4" format="Rolle 5 m²" unit=m2 price=6 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000p name="Feinsteinzeug 60×60 R10, Mittelklasse" mat=1zGH6AuboodSmZLw_rWyGt grade="R10" format="600×600" unit=m2 price=32 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000q name="Flexkleber C2 TE S1 für Dünnbett" grade="C2 TE S1" format="Sack 25 kg" unit=kg price=0.8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000r name="Fugenmörtel CG2 WA" grade="CG2 WA" format="Sack 5 kg" unit=kg price=1.6 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000s name="Wandfliese Steingut 30×60 weiß glasiert" mat=0m4g5eNdhUpOaMqoKJbtjp format="300×600" unit=m2 price=22 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000t name="Dichtschlämme flexibel 2-lagig mit Dichtband, DIN 18534" mat=3YMfu8hafA7xZm7EY$yw9O grade="W1-I bis W2-I" format="Eimer 20 kg" unit=m2 price=9 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000u name="Sanitärsilikon mit Hinterfüllprofil" format="Kartusche 310 ml" unit=m price=0.6 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000v name="Fliesensockel aus Feinsteinzeug geschnitten, h=60mm, mit Kleber" format="60×600" unit=m price=3.5 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000w name="Massivparkett Eiche Stab 20mm, Sortierung Natur" mat=3Y19W9Z4tbI9RkP7PaNRiy grade="Natur" unit=m2 price=55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000x name="Parkettklebstoff SMP elastisch" format="Eimer 18 kg" unit=kg price=4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000y name="Parkettversiegelung, Grundierung und 2 Deckschichten" unit=m2 price=4.5 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000z name="Sockelleiste Eiche massiv 60×15 lackiert, Clips" format="Länge 2,4 m" unit=m price=6.5 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000_ name="Innendispersion Klasse 2 mit Tiefgrund, für 2 Anstriche" mat=0lj3cQqGWQ6dtTsi7U71v_ grade="Klasse 2" format="Eimer 12,5 l" unit=m2 price=1.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000$ name="Raufasertapete mittlere Körnung" mat=130mvbD3iKVDEasFK7hWhc format="Rolle 33,5 m²" unit=m2 price=0.55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW0010080100000010 name="Tapetenkleister" format="Paket 0,5 kg" unit=m2 price=0.2 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000011 name="Übergangsprofil Aluminium eloxiert, Höhenausgleich bis 15mm" format="Länge 0,9–2,7 m" unit=m price=9 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000012 name="Abschluss- und Übergangsprofil Edelstahl für Fliesen 10–12mm" format="Länge 2,5 m" unit=m price=8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [service] guid=1S7bUW0010080200000001 short="Bodenplatte Stb C25/30 XC2 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=10 unit=m3 basis=volume hours=0.6 cats=groundslab mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
 [service] guid=1S7bUW0010080200000002 short="Frostschürze Stb C25/30 b=30-45cm erdgeschalt" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=20 unit=m3 basis=volume hours=1 cats=stripfooting mat=32Ino7hAj08ufHFYBJxPyP
 [service] guid=1S7bUW0010080200000003 short="Stb-Decke Ortbeton C25/30 XC1 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=30 unit=m3 basis=volume hours=0.6 cats=floor mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
@@ -171,6 +206,27 @@ SZK 1
 [service] guid=1S7bUW001008020000001Y short="Oberboden liefern, Bodengruppe nach DIN 18915, abladen" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000M pos=10 unit=m3 basis=auto hours=0.02 equip=1 other=20 kg=571 auto=earth.topsoil_supply
 [service] guid=1S7bUW001008020000001Z short="Oberboden andecken, Dicke nach Vorgabe, Feinplanum" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000M pos=20 unit=m2 basis=auto hours=0.03 equip=1 kg=571 auto=earth.spread
 [service] guid=1S7bUW001008020000001a short="Zulage Andecken an Böschung steiler als 1:4, schräg gemessen" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000M pos=30 unit=m2 basis=auto hours=0.02 equip=0.5 kg=571 auto=earth.spread_slope
+[service] guid=1S7bUW001008020000001b short="Abdichtung Bodenplatte W1-E, Bitumen-Schweißbahn 1-lagig, Voranstrich" trade=1S7Wf_00100800000004UW title=1S7bUW001008030000000N pos=10 unit=m2 basis=area hours=0.15 cats=space mat=2ECNUYRQ7Bi__z_rUpl4Jn side=floor
+[service] guid=1S7bUW001008020000001c short="Innenputz Gipsputz maschinell 1-lagig Q2, Dicke nach Raumbuch" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=50 unit=m2 basis=area hours=0.25 cats=space mat=0YNCb9uH273FK7df93YfEK side=wall
+[service] guid=1S7bUW001008020000001d short="Deckenputz Gipsputz maschinell 1-lagig Q2, Dicke nach Raumbuch" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=60 unit=m2 basis=area hours=0.3 cats=space mat=0YNCb9uH273FK7df93YfEK side=ceiling
+[service] guid=1S7bUW001008020000001e short="Innenputz Kalkzementputz maschinell 1-lagig, Dicke nach Raumbuch" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=70 unit=m2 basis=area hours=0.28 cats=space mat=2DCoq9rC3q5vfSQr6jrkQX
+[service] guid=1S7bUW001008020000001f short="Eckschutzschiene verzinkt an vorspringenden Ecken, eingeputzt" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=80 unit=m basis=auto hours=0.05 auto=room.cornerbead
+[service] guid=1S7bUW001008020000001g short="Zementestrich CT-C25-F4 schwimmend, Dicke nach Raumbuch" trade=1S7Wf_00100800000004Un title=1S7bUW001008030000000P pos=10 unit=m2 basis=area hours=0.2 cats=space mat=2ksPH9thB__Vx0YNbQhves side=floor
+[service] guid=1S7bUW001008020000001h short="Trittschalldämmung EPS-T unter Estrich, einlagig, dicht gestoßen" trade=1S7Wf_00100800000004Un title=1S7bUW001008030000000P pos=20 unit=m2 basis=area hours=0.04 cats=space mat=1vsOcfVJSOwioZ9U0_BYR8 side=floor
+[service] guid=1S7bUW001008020000001i short="Wärmedämmung EPS 035 DEO unter Estrich, Dicke nach Raumbuch" trade=1S7Wf_00100800000004Un title=1S7bUW001008030000000P pos=30 unit=m2 basis=area hours=0.05 cats=space mat=3CICRJXzgSF6ri6zk3HEBg side=floor
+[service] guid=1S7bUW001008020000001j short="Randdämmstreifen PE 8mm mit Folienlasche an aufgehenden Bauteilen" trade=1S7Wf_00100800000004Un title=1S7bUW001008030000000P pos=40 unit=m basis=auto hours=0.02 auto=room.edgestrip
+[service] guid=1S7bUW001008020000001k short="Bodenfliesen Feinsteinzeug 60×60 im Dünnbett, verfugt" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=10 unit=m2 basis=area hours=0.85 cats=space mat=1zGH6AuboodSmZLw_rWyGt side=floor
+[service] guid=1S7bUW001008020000001l short="Wandfliesen 30×60 im Dünnbett, verfugt" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=20 unit=m2 basis=area hours=0.8 cats=space mat=0m4g5eNdhUpOaMqoKJbtjp side=wall
+[service] guid=1S7bUW001008020000001m short="Verbundabdichtung DIN 18534 2-lagig, Dichtband in Ecken" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=30 unit=m2 basis=area hours=0.25 cats=space mat=3YMfu8hafA7xZm7EY$yw9O
+[service] guid=1S7bUW001008020000001n short="Fliesensockel Feinsteinzeug h=60mm geschnitten, im Dünnbett verfugt" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=40 unit=m basis=auto hours=0.15 mat=1zGH6AuboodSmZLw_rWyGt auto=room.skirting
+[service] guid=1S7bUW001008020000001o short="Silikonfuge Sanitär mit Hinterfüllprofil, Boden/Wand und Innenecken" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=50 unit=m basis=auto hours=0.06 auto=room.joint.silicone
+[service] guid=1S7bUW001008020000001p short="Übergangsprofil Edelstahl an Fliesenbelag im Türdurchgang, eingefliest" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=60 unit=m basis=auto hours=0.2 mat=1zGH6AuboodSmZLw_rWyGt auto=room.transition
+[service] guid=1S7bUW001008020000001q short="Massivparkett Eiche 20mm verklebt, geschliffen, versiegelt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=10 unit=m2 basis=area hours=0.9 cats=space mat=3Y19W9Z4tbI9RkP7PaNRiy side=floor
+[service] guid=1S7bUW001008020000001r short="Sockelleiste Eiche massiv 60×15 lackiert, verdeckt befestigt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=20 unit=m basis=auto hours=0.12 mat=1ODK_ZVfPODJ_btFxWYPZ8 auto=room.skirting
+[service] guid=1S7bUW001008020000001s short="Übergangsprofil Aluminium an Belagwechsel im Türdurchgang, geschraubt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=30 unit=m basis=auto hours=0.2 auto=room.transition
+[service] guid=1S7bUW001008020000001t short="Dispersionsanstrich Wand Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=10 unit=m2 basis=area hours=0.12 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=wall
+[service] guid=1S7bUW001008020000001u short="Dispersionsanstrich Decke Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=20 unit=m2 basis=area hours=0.15 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=ceiling
+[service] guid=1S7bUW001008020000001v short="Raufasertapete mittel kleben, auf Stoß, mit Kleister" trade=1S7Wf_00100800000004U_ title=1S7bUW001008030000000W pos=10 unit=m2 basis=area hours=0.15 cats=space mat=130mvbD3iKVDEasFK7hWhc
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -230,6 +286,36 @@ SZK 1
 [svcpart] guid=1S7bUW001008040000000v service=1S7bUW001008020000001I nr=1 art=1S7bUW001008010000000d qty=1
 [svcpart] guid=1S7bUW001008040000000w service=1S7bUW001008020000001J nr=1 art=1S7bUW001008010000000e qty=1
 [svcpart] guid=1S7bUW001008040000000x service=1S7bUW001008020000001K nr=1 art=1S7bUW001008010000000f qty=1
+[svcpart] guid=1S7bUW001008040000000y service=1S7bUW001008020000001b nr=1 art=1S7bUW001008010000000o qty=1.15
+[svcpart] guid=1S7bUW001008040000000z service=1S7bUW001008020000001b nr=2 art=1S7bUW001008010000000P qty=0.3
+[svcpart] guid=1S7bUW001008040000000_ service=1S7bUW001008020000001c nr=1 layer=1 qty=1
+[svcpart] guid=1S7bUW001008040000000$ service=1S7bUW001008020000001d nr=1 layer=1 qty=1
+[svcpart] guid=1S7bUW0010080400000010 service=1S7bUW001008020000001e nr=1 layer=1 qty=1
+[svcpart] guid=1S7bUW0010080400000011 service=1S7bUW001008020000001f nr=1 art=1S7bUW001008010000000i qty=1.05
+[svcpart] guid=1S7bUW0010080400000012 service=1S7bUW001008020000001g nr=1 layer=1 qty=1
+[svcpart] guid=1S7bUW0010080400000013 service=1S7bUW001008020000001g nr=2 art=1S7bUW001008010000000k qty=1.1
+[svcpart] guid=1S7bUW0010080400000014 service=1S7bUW001008020000001h nr=1 layer=1 qty=1
+[svcpart] guid=1S7bUW0010080400000015 service=1S7bUW001008020000001i nr=1 layer=1 qty=1
+[svcpart] guid=1S7bUW0010080400000016 service=1S7bUW001008020000001j nr=1 art=1S7bUW001008010000000n qty=1.05
+[svcpart] guid=1S7bUW0010080400000017 service=1S7bUW001008020000001k nr=1 art=1S7bUW001008010000000p qty=1.08
+[svcpart] guid=1S7bUW0010080400000018 service=1S7bUW001008020000001k nr=2 art=1S7bUW001008010000000q qty=4.5
+[svcpart] guid=1S7bUW0010080400000019 service=1S7bUW001008020000001k nr=3 art=1S7bUW001008010000000r qty=0.4
+[svcpart] guid=1S7bUW001008040000001A service=1S7bUW001008020000001l nr=1 art=1S7bUW001008010000000s qty=1.08
+[svcpart] guid=1S7bUW001008040000001B service=1S7bUW001008020000001l nr=2 art=1S7bUW001008010000000q qty=3.5
+[svcpart] guid=1S7bUW001008040000001C service=1S7bUW001008020000001l nr=3 art=1S7bUW001008010000000r qty=0.3
+[svcpart] guid=1S7bUW001008040000001D service=1S7bUW001008020000001m nr=1 art=1S7bUW001008010000000t qty=1
+[svcpart] guid=1S7bUW001008040000001E service=1S7bUW001008020000001n nr=1 art=1S7bUW001008010000000v qty=1
+[svcpart] guid=1S7bUW001008040000001F service=1S7bUW001008020000001o nr=1 art=1S7bUW001008010000000u qty=1
+[svcpart] guid=1S7bUW001008040000001G service=1S7bUW001008020000001p nr=1 art=1S7bUW0010080100000012 qty=1.05
+[svcpart] guid=1S7bUW001008040000001H service=1S7bUW001008020000001q nr=1 art=1S7bUW001008010000000w qty=1.05
+[svcpart] guid=1S7bUW001008040000001I service=1S7bUW001008020000001q nr=2 art=1S7bUW001008010000000x qty=1.1
+[svcpart] guid=1S7bUW001008040000001J service=1S7bUW001008020000001q nr=3 art=1S7bUW001008010000000y qty=1
+[svcpart] guid=1S7bUW001008040000001K service=1S7bUW001008020000001r nr=1 art=1S7bUW001008010000000z qty=1.08
+[svcpart] guid=1S7bUW001008040000001L service=1S7bUW001008020000001s nr=1 art=1S7bUW0010080100000011 qty=1.05
+[svcpart] guid=1S7bUW001008040000001M service=1S7bUW001008020000001t nr=1 art=1S7bUW001008010000000_ qty=1
+[svcpart] guid=1S7bUW001008040000001N service=1S7bUW001008020000001u nr=1 art=1S7bUW001008010000000_ qty=1
+[svcpart] guid=1S7bUW001008040000001O service=1S7bUW001008020000001v nr=1 art=1S7bUW001008010000000$ qty=1.1
+[svcpart] guid=1S7bUW001008040000001P service=1S7bUW001008020000001v nr=2 art=1S7bUW0010080100000010 qty=1
 [svcfollow] guid=1S7bUW0010080500000001 service=1S7bUW0010080200000001 nr=1 follow=1S7bUW0010080200000005
 [svcfollow] guid=1S7bUW0010080500000002 service=1S7bUW0010080200000001 nr=2 follow=1S7bUW0010080200000006
 [svcfollow] guid=1S7bUW0010080500000003 service=1S7bUW0010080200000002 nr=1 follow=1S7bUW0010080200000006
@@ -291,6 +377,31 @@ SZK 1
 [origin] key=1S7bUW001008010000000d rec=article kind=factory status=confirmed date=2026-10-10 source="Konzept Regenfallrohr §5 Pos. 70: Bogen ≈ 9 € (Händler)" conf=rough
 [origin] key=1S7bUW001008010000000e rec=article kind=factory status=confirmed date=2026-10-10 source="Konzept Regenfallrohr §5 Pos. 80, geschätzt" conf=rough
 [origin] key=1S7bUW001008010000000f rec=article kind=factory status=confirmed date=2026-10-10 source="Konzept Regenfallrohr §5 Pos. 90, geschätzt" conf=rough
+[origin] key=1S7bUW001008010000000g rec=article kind=factory status=confirmed date=2026-10-15 source="Gipsputz 0,25–0,35 €/kg netto, rund 1 kg je m² und mm" conf=rough
+[origin] key=1S7bUW001008010000000h rec=article kind=factory status=confirmed date=2026-10-15 source="KZ-Putz 0,18–0,25 €/kg netto, rund 1,6 kg je m² und mm" conf=rough
+[origin] key=1S7bUW001008010000000i rec=article kind=factory status=confirmed date=2026-10-15 source="Baumarkt 2,5 m 2,50–4,00 € brutto" conf=rough
+[origin] key=1S7bUW001008010000000j rec=article kind=factory status=confirmed date=2026-10-15 source="Estrichmischgut 100–160 €/m³ netto, Werktrockenmörtel teurer" conf=rough
+[origin] key=1S7bUW001008010000000k rec=article kind=factory status=confirmed date=2026-10-15 source="Baufolie 0,2 mm 0,20–0,40 €/m² netto" conf=rough
+[origin] key=1S7bUW001008010000000l rec=article kind=factory status=confirmed date=2026-10-15 source="EPS-T 30-2 3–5 €/m² netto" conf=rough
+[origin] key=1S7bUW001008010000000m rec=article kind=factory status=confirmed date=2026-10-15 source="EPS 035 DEO 80–110 €/m³ netto" conf=rough
+[origin] key=1S7bUW001008010000000n rec=article kind=factory status=confirmed date=2026-10-15 source="Baumarkt 25 m 10–15 € brutto" conf=rough
+[origin] key=1S7bUW001008010000000o rec=article kind=factory status=confirmed date=2026-10-15 source="Schweißbahn 5–8 €/m² netto (Recherche B §4)" conf=rough
+[origin] key=1S7bUW001008010000000p rec=article kind=factory status=confirmed date=2026-10-15 source="Feinsteinzeug 60×60 20–45 €/m² netto Fachhandel" conf=rough
+[origin] key=1S7bUW001008010000000q rec=article kind=factory status=confirmed date=2026-10-15 source="Flexkleber 0,6–1,0 €/kg netto" conf=rough
+[origin] key=1S7bUW001008010000000r rec=article kind=factory status=confirmed date=2026-10-15 source="Fugenmörtel 1,2–2,0 €/kg netto" conf=rough
+[origin] key=1S7bUW001008010000000s rec=article kind=factory status=confirmed date=2026-10-15 source="Wandfliese 30×60 15–30 €/m² netto" conf=rough
+[origin] key=1S7bUW001008010000000t rec=article kind=factory status=confirmed date=2026-10-15 source="2,5–3 kg/m² zu 2,5–3,5 €/kg, Dichtband anteilig" conf=rough
+[origin] key=1S7bUW001008010000000u rec=article kind=factory status=confirmed date=2026-10-15 source="Kartusche 6–9 € für 12–15 m Fuge" conf=rough
+[origin] key=1S7bUW001008010000000v rec=article kind=factory status=confirmed date=2026-10-15 source="aus der Bodenfliese geschnitten, 3–6 €/m" conf=rough
+[origin] key=1S7bUW001008010000000w rec=article kind=factory status=confirmed date=2026-10-15 source="Eiche massiv 20 mm 40–80 €/m² netto" conf=rough
+[origin] key=1S7bUW001008010000000x rec=article kind=factory status=confirmed date=2026-10-15 source="SMP-Parkettkleber 3,5–5 €/kg netto, 1,0–1,2 kg/m²" conf=rough
+[origin] key=1S7bUW001008010000000y rec=article kind=factory status=confirmed date=2026-10-15 source="Parkettsiegel 3–6 €/m² netto" conf=rough
+[origin] key=1S7bUW001008010000000z rec=article kind=factory status=confirmed date=2026-10-15 source="Eiche massiv 60 mm 5–9 €/m netto; Art Holz rechnet je m³, darum ohne Baustoff" conf=rough
+[origin] key=1S7bUW001008010000000_ rec=article kind=factory status=confirmed date=2026-10-15 source="Dispersion 3–6 €/l, rund 0,3 l/m² für 2 Anstriche" conf=rough
+[origin] key=1S7bUW001008010000000$ rec=article kind=factory status=confirmed date=2026-10-15 source="Rolle 33,5 m² 15–22 € netto" conf=rough
+[origin] key=1S7bUW0010080100000010 rec=article kind=factory status=confirmed date=2026-10-15 source="Kleister 4–6 € je 25–30 m²" conf=rough
+[origin] key=1S7bUW0010080100000011 rec=article kind=factory status=confirmed date=2026-10-15 source="Übergangsprofil Alu 6–15 €/m netto (kosten/rb7-schluessel.md: room.transition)" conf=rough
+[origin] key=1S7bUW0010080100000012 rec=article kind=factory status=confirmed date=2026-10-15 source="Fliesenprofil Edelstahl 5–12 €/m netto" conf=rough
 [origin] key=1S7bUW0010080200000002 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt, Einbau in den Graben" conf=rough
 [origin] key=1S7bUW0010080200000004 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Baubetrieb 0,8–1,0 h/m², Systemschalung 0,4–0,6" conf=rough
 [origin] key=1S7bUW0010080200000005 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
@@ -372,12 +483,33 @@ SZK 1
 [origin] key=1S7bUW001008020000001P rec=service kind=factory status=confirmed date=2026-10-12 source="Aufwandswert: Marktspanne 20–45 €/m Zulage; Formsteine und Schnitt 4 €/m" conf=rough
 [origin] key=1S7bUW001008020000001Q rec=service kind=factory status=confirmed date=2026-10-13 source="Aufwandswert: wie Laibung Innenputz (O30): Marktspanne 10–20 €/m; Profil und Putz 2,5 €/m" conf=rough
 [origin] key=1S7bUW001008020000001R rec=service kind=factory status=confirmed date=2026-10-13 source="Aufwandswert: Marktspanne 15–25 €/m; zwei Kantenprofile und Putz 3 €/m" conf=rough
-[origin] key=1S7bUW001008020000001S rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E10: 0,12 h/m³; Gerät geschätzt" conf=rough
-[origin] key=1S7bUW001008020000001T rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E20: Bagger 36 m³/h, Lohn mit Helfer" conf=rough
-[origin] key=1S7bUW001008020000001U rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E70: 8–15 €/m³" conf=rough
-[origin] key=1S7bUW001008020000001V rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: Recherche Erdarbeiten §5: Lieferboden eingebaut rund 40 €/m³" conf=rough
-[origin] key=1S7bUW001008020000001W rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E80: Kippgebühr 5–15 €/t, Lkw 10–30 €/t, 1,9 t/m³ fest" conf=rough
-[origin] key=1S7bUW001008020000001X rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: wie E80 ohne Deponie: Verwertung Oberboden 5–15 €/m³ [E]" conf=rough
-[origin] key=1S7bUW001008020000001Y rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: Mutterboden frei Baustelle 15–30 €/m³ [E]" conf=rough
-[origin] key=1S7bUW001008020000001Z rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: Recherche Erdarbeiten §5: Andecken 6 €/m³; Feinplanum GaLaBau 2–4 €/m² [E]" conf=rough
-[origin] key=1S7bUW001008020000001a rec=service kind=factory status=confirmed date=2026-10-14 source="Aufwandswert: geschätzt: Handarbeit am Hang 1–2 €/m² [E]" conf=rough
+[origin] key=1S7bUW001008020000001S rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: wie E10: 0,12 h/m³; Gerät geschätzt" conf=rough
+[origin] key=1S7bUW001008020000001T rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: wie E20: Bagger 36 m³/h, Lohn mit Helfer" conf=rough
+[origin] key=1S7bUW001008020000001U rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: wie E70: 8–15 €/m³" conf=rough
+[origin] key=1S7bUW001008020000001V rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Recherche Erdarbeiten §5: Lieferboden eingebaut rund 40 €/m³" conf=rough
+[origin] key=1S7bUW001008020000001W rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: wie E80: Kippgebühr 5–15 €/t, Lkw 10–30 €/t, 1,9 t/m³ fest" conf=rough
+[origin] key=1S7bUW001008020000001X rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: wie E80 ohne Deponie: Verwertung Oberboden 5–15 €/m³ [E]" conf=rough
+[origin] key=1S7bUW001008020000001Y rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Mutterboden frei Baustelle 15–30 €/m³ [E]" conf=rough
+[origin] key=1S7bUW001008020000001Z rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Recherche Erdarbeiten §5: Andecken 6 €/m³; Feinplanum GaLaBau 2–4 €/m² [E]" conf=rough
+[origin] key=1S7bUW001008020000001a rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: geschätzt: Handarbeit am Hang 1–2 €/m² [E]" conf=rough
+[origin] key=1S7bUW001008020000001b rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: DIN 18533 W1-E: 0,10–0,20 h/m², gesamt 15–25 €/m²" conf=rough
+[origin] key=1S7bUW001008020000001c rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: wie P10: Lohnanteil Innenputz 70–80 %, gesamt 15–25 €/m²" conf=rough
+[origin] key=1S7bUW001008020000001d rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: über Kopf rund 20 % mehr Zeit als an der Wand, gesamt 18–28 €/m²" conf=rough
+[origin] key=1S7bUW001008020000001e rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Kalkzementputz innen 18–28 €/m², Untergrund für Fliesen" conf=rough
+[origin] key=1S7bUW001008020000001f rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Eckschiene setzen 0,04–0,06 h/m, gesamt 4–6 €/m" conf=rough
+[origin] key=1S7bUW001008020000001g rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Estrich 45–65 mm 20–35 €/m² mit Material; Einbau mit Pumpe 0,15–0,25 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001h rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Dämmlage verlegen 0,03–0,05 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001i rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Dämmlage verlegen 0,03–0,06 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001j rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Randstreifen setzen 0,01–0,03 h/m, gesamt 1,5–2,5 €/m" conf=rough
+[origin] key=1S7bUW001008020000001k rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Großformat verlegen 45–70 €/m² ohne Fliese; 0,7–1,0 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001l rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Wandfliesen verlegen 40–60 €/m² ohne Fliese; 0,7–0,9 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001m rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Verbundabdichtung 20–35 €/m² mit Dichtband; 0,2–0,3 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001n rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Fliesensockel 10–20 €/m; 0,12–0,18 h/m" conf=rough
+[origin] key=1S7bUW001008020000001o rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Silikonfuge 4–8 €/m; 0,05–0,08 h/m" conf=rough
+[origin] key=1S7bUW001008020000001p rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Profil zuschneiden und einfliesen 0,15–0,25 h/m" conf=rough
+[origin] key=1S7bUW001008020000001q rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Massivparkett mit Verlegen und Oberfläche 90–150 €/m²; Kleben 0,5, Schleifen und Siegeln 0,4 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001r rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Holzsockelleiste 10–20 €/m; 0,10–0,15 h/m" conf=rough
+[origin] key=1S7bUW001008020000001s rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Profil zuschneiden und schrauben 0,15–0,25 h/m" conf=rough
+[origin] key=1S7bUW001008020000001t rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Wandanstrich 6–12 €/m²; 0,10–0,14 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001u rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Deckenanstrich 8–14 €/m²; über Kopf 0,12–0,18 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001v rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Raufaser tapezieren 7–12 €/m²; 0,12–0,18 h/m²" conf=rough

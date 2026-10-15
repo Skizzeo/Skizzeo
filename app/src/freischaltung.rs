@@ -185,7 +185,9 @@ impl Freischaltung {
     }
 
     /// Freie Blätter des Mengenfensters, von links gezählt: Weil Kosten
-    /// Mengen und AVA Kosten braucht, sind es immer die ersten.
+    /// Mengen und AVA Kosten braucht, sind es immer die ersten. Die
+    /// Wohnfläche gehört zu Mengen, frei sind also null, zwei, drei oder
+    /// vier.
     pub fn blaetter(self) -> usize {
         Blatt::ALLE
             .iter()
@@ -197,8 +199,8 @@ impl Freischaltung {
     /// Blätter.
     pub fn knopf(self) -> &'static str {
         match self.blaetter() {
-            3 => crate::cards::KNOPF,
-            2 => "Mengen · Kosten",
+            4 => crate::cards::KNOPF,
+            3 => "Mengen · Kosten",
             _ => "Mengen",
         }
     }
@@ -207,9 +209,9 @@ impl Freischaltung {
     /// bleibt die zweite leer, ohne Mengen steht darunter „ab Pro“.
     pub fn knopf_zeilen(self) -> (&'static str, &'static str) {
         match self.blaetter() {
-            3 => crate::cards::KNOPF_ZEILEN,
-            2 => ("Mengen", "Kosten"),
-            1 => ("Mengen", ""),
+            4 => crate::cards::KNOPF_ZEILEN,
+            3 => ("Mengen", "Kosten"),
+            1 | 2 => ("Mengen", ""),
             _ => ("Mengen", Modul::Mengen.ab()),
         }
     }
@@ -307,7 +309,7 @@ impl Eingang for Id {
 impl Eingang for Blatt {
     fn modul(self) -> Option<Modul> {
         Some(match self {
-            Blatt::Mengen => Modul::Mengen,
+            Blatt::Mengen | Blatt::Wohnflaeche => Modul::Mengen,
             Blatt::Kosten => Modul::Kosten,
             Blatt::Ava => Modul::Ava,
         })
@@ -555,7 +557,7 @@ mod tests {
                 Freischaltung::mit(&[Modul::Mengen, Modul::Kosten])
             ]
             .map(Freischaltung::blaetter),
-            [0, 1, 3, 2]
+            [0, 2, 4, 3]
         );
         assert_eq!(p.knopf(), "Mengen");
         assert_eq!(p.knopf_zeilen(), ("Mengen", ""));
@@ -654,10 +656,10 @@ mod tests {
         assert!(alle_befehle.contains(&Command::Verwaltung));
         for (w, mengen, kosten, karten) in [
             ("basis", false, false, 1),
-            ("pro", true, false, 1),
-            ("ultimate", true, true, 3),
+            ("pro", true, false, 2),
+            ("ultimate", true, true, 4),
             ("basis+gelaende", false, false, 1),
-            ("ultimate+gelaende", true, true, 3),
+            ("ultimate+gelaende", true, true, 4),
         ] {
             let f = stufe(w);
             // Paneele: dieselben Knöpfe, „Mengen“ ohne Mengen grau
