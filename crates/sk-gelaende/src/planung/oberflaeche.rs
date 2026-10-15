@@ -93,9 +93,24 @@ pub fn oberflaeche(u: &Abfrage, planungen: &[&Planung]) -> Oberflaeche {
     }
     // je Dreieck des Urgeländes die Gebiete darüber, in ihrer Reihenfolge
     let mut je: HashMap<u32, Vec<usize>> = HashMap::new();
+    // für die Wände auch die Gebiete, die ein Dreieck nur am Rand berühren:
+    // Liegt eine Kante der Fläche auf einer Kante des Urgeländes, liegt das
+    // Gebiet draußen ganz im Dreieck daneben (Geometrie #183)
+    let mut rand_je: HashMap<u32, Vec<usize>> = HashMap::new();
     for (i, g) in gebiete.iter().enumerate() {
         for t in u.nummern_unter(g.ring) {
             je.entry(t).or_default().push(i);
+        }
+        let r = g.rahmen;
+        let e = 1e-6;
+        let kasten = [
+            [r[0] - e, r[1] - e],
+            [r[2] + e, r[1] - e],
+            [r[2] + e, r[3] + e],
+            [r[0] - e, r[3] + e],
+        ];
+        for t in u.nummern_unter(&kasten) {
+            rand_je.entry(t).or_default().push(i);
         }
     }
     let mut nummern: Vec<u32> = je.keys().copied().collect();
@@ -108,7 +123,15 @@ pub fn oberflaeche(u: &Abfrage, planungen: &[&Planung]) -> Oberflaeche {
             continue;
         }
         out.ersetzt.push(t);
-        let nah: Vec<&Gebiet> = je[&t].iter().map(|&i| &gebiete[i]).collect();
+        let rt = rahmen(&d.map(|q| [q[0], q[1]]));
+        let rt = [rt[0] - 1e-6, rt[1] - 1e-6, rt[2] + 1e-6, rt[3] + 1e-6];
+        let nah: Vec<&Gebiet> = rand_je
+            .get(&t)
+            .into_iter()
+            .flatten()
+            .map(|&i| &gebiete[i])
+            .filter(|g| treffen(&g.rahmen, &rt))
+            .collect();
         waende(&stuecke, &nah, &ebene_durch(&d), &mut out.waende);
         for (ring, h, e) in stuecke {
             let p: Vec<[f64; 3]> = ring
@@ -188,10 +211,17 @@ fn waende(
                     // zwischen zwei Flächen nur von der einen Seite
                     Some((j, (_, Herkunft::Flaeche(pj), _))) if (*pj, j) > (p, i) => continue,
                     Some((_, (_, _, ee))) => *ee,
-                    None => match ebene_bei(q, gebiete, ur) {
-                        (Herkunft::Flaeche(pj), _) if pj >= p => continue,
-                        (_, ee) => ee,
-                    },
+                    None => {
+                        // am Rand des Dreiecks: draußen nicht geteilt, also an
+                        // den Rändern der Gebiete und wo zwei Ebenen gleich
+                        // hoch sind teilen, je Abschnitt eine Ebene
+                        for (qa, qb, ee) in draussen(pa, pb, o, gebiete, ur, p) {
+                            let zi = [an(e, qa[0], qa[1]), an(e, qb[0], qb[1])];
+                            let zj = [an(&ee, qa[0], qa[1]), an(&ee, qb[0], qb[1])];
+                            wand(qa, qb, zi, zj, out);
+                        }
+                        continue;
+                    }
                 };
                 let zi = [an(e, pa[0], pa[1]), an(e, pb[0], pb[1])];
                 let zj = [an(&ee, pa[0], pa[1]), an(&ee, pb[0], pb[1])];
@@ -199,6 +229,76 @@ fn waende(
             }
         }
     }
+}
+
+/// Die Strecke `a`→`b` am Rand eines Dreiecks, draußen (Versatz `o`) nach
+/// den Gebieten `gebiete` und dem Urgelände `ur` in Abschnitte mit je einer
+/// Ebene geteilt: an jeder Kante einer Böschung, die sie kreuzt, und wo zwei
+/// der Ebenen gleich hoch sind. Abschnitte, an denen draußen eine Fläche
+/// `p` oder später gilt, entfallen (die Wand steht dort von der anderen
+/// Seite).
+fn draussen(
+    a: [f64; 2],
+    b: [f64; 2],
+    o: [f64; 2],
+    gebiete: &[&Gebiet],
+    ur: &Bezug,
+    p: usize,
+) -> Vec<([f64; 2], [f64; 2], Bezug)> {
+    let r = rahmen(&[a, b]);
+    let nah: Vec<&&Gebiet> = gebiete.iter().filter(|g| treffen(&g.rahmen, &r)).collect();
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let mut ts = vec![0.0, 1.0];
+    // Ränder der Flächen, die das Dreieck kreuzen, sind schon Ecken der
+    // Stücke; hier nur die der Böschungen
+    for g in nah
+        .iter()
+        .filter(|g| matches!(g.herkunft, Herkunft::Boeschung { .. }))
+    {
+        let n = g.ring.len();
+        for k in 0..n {
+            let (c, e) = (g.ring[k], g.ring[(k + 1) % n]);
+            let f = [e[0] - c[0], e[1] - c[1]];
+            let nenner = d[0] * f[1] - d[1] * f[0];
+            if nenner.abs() < 1e-18 {
+                continue;
+            }
+            let w = [c[0] - a[0], c[1] - a[1]];
+            let t = (w[0] * f[1] - w[1] * f[0]) / nenner;
+            let s = (w[0] * d[1] - w[1] * d[0]) / nenner;
+            if (-1e-12..=1.0 + 1e-12).contains(&s) && t > 0.0 && t < 1.0 {
+                ts.push(t);
+            }
+        }
+    }
+    let ebenen: Vec<Bezug> = std::iter::once(*ur)
+        .chain(
+            nah.iter()
+                .filter(|g| matches!(g.herkunft, Herkunft::Boeschung { .. }))
+                .map(|g| g.ebene),
+        )
+        .collect();
+    for i in 0..ebenen.len() {
+        for j in i + 1..ebenen.len() {
+            let f = |q: [f64; 2]| an(&ebenen[i], q[0], q[1]) - an(&ebenen[j], q[0], q[1]);
+            let (fa, fb) = (f(a), f(b));
+            if (fa > GLEICH && fb < -GLEICH) || (fa < -GLEICH && fb > GLEICH) {
+                ts.push(fa / (fa - fb));
+            }
+        }
+    }
+    ts.sort_by(f64::total_cmp);
+    ts.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
+    let pt = |t: f64| [a[0] + d[0] * t, a[1] + d[1] * t];
+    let mut out = Vec::new();
+    for w in ts.windows(2) {
+        let m = pt((w[0] + w[1]) / 2.0);
+        match ebene_bei([m[0] + o[0], m[1] + o[1]], gebiete, ur) {
+            (Herkunft::Flaeche(pj), _) if pj >= p => {}
+            (_, ee) => out.push((pt(w[0]), pt(w[1]), ee)),
+        }
+    }
+    out
 }
 
 /// Ebene des Planungsgeländes am Punkt `q` nach den Gebieten `gebiete`
@@ -802,6 +902,63 @@ mod tests {
         let o = oberflaeche(&u, &[&p]);
         let flaeche: f64 = o.waende.iter().map(|d| flaeche3(d).1).sum();
         assert!(flaeche < 1e-6, "{flaeche}");
+    }
+
+    /// Senkrechte Kante auf einer Kante des Urgeländes (y = 2 und y = 6 auf
+    /// dem Gitter): draußen die Böschung der Nachbarkante bis zu ihrem Fuß,
+    /// dann das Urgelände; die Wand folgt dem, auch wo das Gebiet das
+    /// Dreieck der Fläche nur am Rand berührt (Geometrie #183).
+    #[test]
+    fn wand_auf_kante_des_urgelaendes() {
+        let u = gelaende(|_, _| 10.0);
+        let ring = [
+            [0.0, 0.0],
+            [8.0, 0.0],
+            [8.0, 2.0],
+            [4.0, 2.0],
+            [4.0, 6.0],
+            [0.0, 6.0],
+        ];
+        // Kante 2 (y = 2) senkrecht, die Böschung von Kante 3 reicht über sie
+        let mut b = baustein(&ring, [11.0, 0.0, 0.0], 1.5);
+        b.rand[2].neigung = None;
+        let p = Planung::neu(&b, &u);
+        let o = oberflaeche(&u, &[&p]);
+        let hoch = |x: f64| {
+            // Unterkante der Wände über (x, 2): das Gelände draußen
+            let mut z = f64::MAX;
+            for d in o
+                .waende
+                .iter()
+                .filter(|d| d.iter().all(|q| (q[1] - 2.0).abs() < 1e-12))
+            {
+                for k in 0..3 {
+                    let (p0, p1) = (d[k], d[(k + 1) % 3]);
+                    if (p0[0] - x) * (p1[0] - x) < 0.0 {
+                        z = z.min(p0[2] + (p1[2] - p0[2]) * (x - p0[0]) / (p1[0] - p0[0]));
+                    }
+                }
+            }
+            z
+        };
+        // am Fuß der Böschung von Kante 3 (x = 5,5) und dahinter auf 10
+        assert!(
+            (hoch(4.5) - (11.0 - 0.5 / 1.5)).abs() < 1e-9,
+            "{}",
+            hoch(4.5)
+        );
+        for x in [5.8, 6.3] {
+            assert!((hoch(x) - 10.0).abs() < 1e-9, "{x}: {}", hoch(x));
+        }
+        // Kante 4 (y = 6) mit Böschung, Kante 3 senkrecht: an y = 6 keine Wand
+        let mut b = baustein(&ring, [10.0, 0.2, -0.1], 1.5);
+        b.rand[3].neigung = None;
+        let p = Planung::neu(&b, &u);
+        let o = oberflaeche(&u, &[&p]);
+        assert!(o
+            .waende
+            .iter()
+            .all(|d| !d.iter().all(|q| (q[1] - 6.0).abs() < 1e-12)));
     }
 
     #[test]
