@@ -13,6 +13,11 @@ pub struct Abfrage {
     dreiecke: Vec<[u32; 3]>,
     /// Randkanten (Inneres links von a → b).
     rand: Vec<[u32; 2]>,
+    /// Je Randkante ihr Dreieck.
+    rand_von: Vec<u32>,
+    /// Je Dreieck und Kante k (Ecke k → k + 1) das Dreieck jenseits,
+    /// [`KEIN`] am Rand.
+    nachbarn: Vec<[u32; 3]>,
     x0: f64,
     y0: f64,
     zelle: f64,
@@ -24,6 +29,9 @@ pub struct Abfrage {
     /// Tiefste und höchste Höhe, einmal beim Bau bestimmt.
     bereich: Option<(f64, f64)>,
 }
+
+/// Kein Nachbar (Rand des Netzes) in [`Abfrage::nachbar`].
+pub const KEIN: u32 = u32::MAX;
 
 /// Toleranz für „auf der Kante“ in baryzentrischen Anteilen.
 const AUF_KANTE: f64 = 1e-9;
@@ -43,19 +51,29 @@ impl Abfrage {
     pub fn neu(netz: &Netz) -> Abfrage {
         let punkte = netz.punkte.clone();
         let dreiecke = netz.dreiecke.clone();
-        // Randkanten: gerichtete Kanten ohne Gegenkante
-        let mut kanten: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
-        for t in &dreiecke {
+        // Nachbarn über die Gegenkante; Randkanten haben keine
+        let mut kanten: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::with_capacity(dreiecke.len() * 3);
+        for (i, t) in dreiecke.iter().enumerate() {
             for k in 0..3 {
-                kanten.insert((t[k], t[(k + 1) % 3]));
+                kanten.insert((t[k], t[(k + 1) % 3]), i as u32);
             }
         }
-        let mut rand: Vec<[u32; 2]> = kanten
-            .iter()
-            .filter(|(a, b)| !kanten.contains(&(*b, *a)))
-            .map(|&(a, b)| [a, b])
-            .collect();
+        let mut nachbarn = vec![[KEIN; 3]; dreiecke.len()];
+        let mut rand: Vec<([u32; 2], u32)> = Vec::new();
+        for (i, t) in dreiecke.iter().enumerate() {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                match kanten.get(&(b, a)) {
+                    Some(&j) => nachbarn[i][k] = j,
+                    None => rand.push(([a, b], i as u32)),
+                }
+            }
+        }
+        drop(kanten);
         rand.sort_unstable();
+        let rand_von = rand.iter().map(|r| r.1).collect();
+        let rand = rand.into_iter().map(|r| r.0).collect();
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for t in &dreiecke {
             for &i in t {
@@ -80,6 +98,8 @@ impl Abfrage {
             punkte,
             dreiecke,
             rand,
+            rand_von,
+            nachbarn,
             x0,
             y0,
             zelle,
@@ -274,6 +294,22 @@ impl Abfrage {
     /// Die Punkte des Dreiecks `t`.
     pub(crate) fn punkte_von(&self, t: u32) -> [[f64; 3]; 3] {
         self.dreiecke[t as usize].map(|i| self.punkte[i as usize])
+    }
+
+    /// Das Dreieck jenseits der Kante `k` (Ecke `k` → `k + 1`) von `t`;
+    /// `None` am Rand des Netzes.
+    pub fn nachbar(&self, t: u32, k: usize) -> Option<u32> {
+        let n = self.nachbarn[t as usize][k];
+        (n != KEIN).then_some(n)
+    }
+
+    /// Die Randkanten des Netzes, je mit ihrem Dreieck: Anfang und Ende
+    /// (Inneres links), einmal beim Bau bestimmt.
+    pub fn randkanten(&self) -> impl Iterator<Item = (u32, [[f64; 3]; 2])> + '_ {
+        self.rand
+            .iter()
+            .zip(&self.rand_von)
+            .map(|(&[a, b], &t)| (t, [self.punkte[a as usize], self.punkte[b as usize]]))
     }
 
     /// [`Erdmenge`] über dem Polygon `ring` gegen `bezug`

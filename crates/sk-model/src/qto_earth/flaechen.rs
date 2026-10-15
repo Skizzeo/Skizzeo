@@ -7,9 +7,10 @@
 //!
 //! Die Massenbilanz verteilt den Eigenboden in fester Reihenfolge (B4):
 //! Verfüllung aus der Baugrube (schon in G2), Geländeauftrag aus dem
-//! Geländeabtrag, Rest aus dem Überschuss der Baugrube, Rest Lieferung;
-//! was bleibt, fährt ab (Baugrube 311, Gelände 511). Der Faktor fest →
-//! eingebaut wirkt nur in der Bilanz. Oberboden hat eine eigene Bilanz.
+//! Geländeabtrag, Rest aus dem Überschuss der Baugruben (anteilig zum
+//! Überschuss jeder Baugrube, E2), Rest Lieferung; was bleibt, fährt ab
+//! (Baugrube 311, Gelände 511). Der Faktor fest → eingebaut wirkt nur in
+//! der Bilanz. Oberboden hat eine eigene Bilanz.
 //! Ohne Geländeflächen bleibt alles wie in G2, Zeile für Zeile.
 //!
 //! Die Zeilen der Flächen gehören zum Grundstück, nicht zu einem Haus
@@ -376,21 +377,32 @@ pub(crate) fn gelaende_mengen(
     let rest_gel = gel - eigen1 / f;
     let eigen2 = (auf - eigen1).min(ueberschuss / 1e9 * f).max(0.0);
     let liefer = (auf - eigen1 - eigen2).max(0.0);
-    // aus der Baugrube entnommen, in der Reihenfolge der Gründungen
-    let mut entnehmen = eigen2 / f * 1e9;
+    // aus den Baugruben entnommen, anteilig zu ihrem Überschuss (E2:
+    // neutral gegenüber den Häusern, nicht nach Plattennummer)
+    let entnehmen = eigen2 / f * 1e9;
     for i in 0..gr.len() {
-        if entnehmen <= 0.0 {
+        if entnehmen <= 0.0 || ueberschuss <= 0.0 {
             break;
         }
-        let x = entnehmen.min(abfuhr[i]);
+        let x = (entnehmen * abfuhr[i] / ueberschuss).min(abfuhr[i]);
         if x <= 0.0 {
             continue;
         }
-        entnehmen -= x;
+        // der Anteil nachprüfbar, wenn mehrere Baugruben abgeben
+        let anteil = if abfuhr[i] < ueberschuss * (1.0 - 1e-9) {
+            format!(
+                " ({} × {} / {})",
+                zahl(entnehmen, 1e9),
+                zahl(abfuhr[i], 1e9),
+                zahl(ueberschuss, 1e9)
+            )
+        } else {
+            String::new()
+        };
         abfuhr[i] -= x;
         zusatz[i]
             .get_or_insert_with(String::new)
-            .push_str(&format!("; − Einbau im Gelände {}", m3(x / 1e9)));
+            .push_str(&format!("; − Einbau im Gelände {}{anteil}", m3(x / 1e9)));
     }
 
     // Verfüllung und Abfuhr setzen: ganz entnommen (bis auf Rundungsreste,
@@ -1066,6 +1078,60 @@ mod tests {
         assert!(e.hinweis.contains("Faktor 0,90"), "{}", e.hinweis);
     }
 
+    /// Zwei Häuser geben Boden in das Gelände anteilig zu ihrem Überschuss,
+    /// nicht das mit der kleineren Nummer alles (VOB-Prüfung G3, E2).
+    #[test]
+    fn einbau_anteilig_zum_ueberschuss() {
+        let mut m = haus();
+        m.begin("Haus 2");
+        let b = m.add_building(1);
+        let pts = [
+            sk_math::vec3(30000.0, 6000.0, 0.0),
+            sk_math::vec3(30000.0, 14000.0, 0.0),
+            sk_math::vec3(40000.0, 14000.0, 0.0),
+            sk_math::vec3(40000.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        m.commit();
+        let je_haus = |v: &[AutoMenge]| -> Vec<f64> {
+            let mut d: Vec<(String, f64)> = v
+                .iter()
+                .filter(|r| r.key == DISPOSAL)
+                .map(|r| (r.number.clone(), r.value / 1e9))
+                .collect();
+            d.sort_by(|a, b| a.0.cmp(&b.0));
+            d.into_iter().map(|x| x.1).collect()
+        };
+        let ohne = je_haus(&crate::qto::schedule(&m).auto);
+        assert_eq!(ohne.len(), 2);
+        let summe = ohne[0] + ohne[1];
+        // 0,50 m Auftrag auf 25 m², weniger als eine Baugrube abgibt
+        let v = mit(&m, &[flaeche(rechteck(30e3, 30e3, 35e3, 35e3), 900.0)]);
+        let auf = wert(&v, EMBANK);
+        assert!(nah(auf, 12.5), "{auf}");
+        assert!(auf < ohne[0]);
+        let mit_flaeche = je_haus(&v);
+        for (a, b) in ohne.iter().zip(&mit_flaeche) {
+            let anteil = auf * a / summe;
+            assert!(nah(a - b, anteil), "{ohne:?} {mit_flaeche:?}");
+            // mit dem Anteil im Rechenweg (VOB #185)
+            let teil = format!(
+                "− Einbau im Gelände {} ({} × {} / {})",
+                super::m3(anteil),
+                super::zahl(auf, 1.0),
+                super::zahl(*a, 1.0),
+                super::zahl(summe, 1.0)
+            );
+            assert_eq!(
+                v.iter()
+                    .filter(|r| r.key == DISPOSAL && r.formula.contains(&teil))
+                    .count(),
+                1,
+                "{teil}"
+            );
+        }
+    }
+
     /// Fläche am Haus im Arbeitsraum (B3): dort ist bis UK Platte
     /// ausgehoben; der Abtrag mindert die Verfüllung, nur unter der Sohle
     /// zählt er.
@@ -1371,6 +1437,24 @@ mod tests {
             .unwrap()
             .model;
         assert_eq!(je_haus(&wieder), vorher);
+        // die Zeilen je Schlüssel in der Reihenfolge der Nummern, vor und
+        // nach dem Öffnen gleich (H-185a)
+        let folge = |m: &Model| -> Vec<(&'static str, String)> {
+            crate::qto::schedule(m)
+                .auto
+                .into_iter()
+                .filter(|r| r.key.starts_with("earth.") && r.building.is_some())
+                .map(|r| (r.key, r.number))
+                .collect()
+        };
+        let f = folge(&m);
+        for k in [DISPOSAL, BACKFILL] {
+            let n: Vec<&String> = f.iter().filter(|x| x.0 == k).map(|x| &x.1).collect();
+            // nach dem Rang des Trägers: Länge, dann Nummer (H-186a)
+            let rang = |s: &String| (s.len(), s.clone());
+            assert!(n.windows(2).all(|w| rang(w[0]) < rang(w[1])), "{k}: {n:?}");
+        }
+        assert_eq!(folge(&wieder), f);
     }
 
     /// Ohne Flächen oder ohne Aufmaß hält der Merker nichts fest, auch
@@ -1517,6 +1601,9 @@ mod tests {
             let t = Instant::now();
             let _ = crate::qto::schedule(&m);
             let eine = ms(t);
+            let t = Instant::now();
+            let _ = m.planned_terrain().unwrap();
+            let eine_bild = ms(t);
             let haus = |m: &mut Model, x0: f64, y0: f64| {
                 let b = m.add_building(1);
                 let pts = [
@@ -1531,11 +1618,15 @@ mod tests {
                 ms(t)
             };
             let fern = haus(&mut m, 30_000.0, 2_000.0);
+            let t = Instant::now();
+            let _ = m.planned_terrain().unwrap();
+            let fern_bild = ms(t);
             let nah = haus(&mut m, -14_000.0, 17_000.0);
             eprintln!(
                 "{anzahl} × 400 Kanten: kalt {kalt:.1} ms, warm {warm:.1} ms, \
                  eine Fläche geändert {eine:.1} ms, Haus fern {fern:.1} ms, \
-                 Haus an einer Fläche {nah:.1} ms"
+                 Haus an einer Fläche {nah:.1} ms; Bild nach geänderter Fläche \
+                 {eine_bild:.1} ms, nach Wandschritt {fern_bild:.1} ms"
             );
         }
     }

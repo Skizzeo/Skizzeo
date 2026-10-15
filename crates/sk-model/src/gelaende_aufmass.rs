@@ -1419,6 +1419,24 @@ impl Model {
         })
     }
 
+    /// Randkanten des Geländes im Modell (mm, z relativ zu ±0,00), im
+    /// Umlauf der [`Model::terrain_triangles`] (Inneres links); aus dem
+    /// Netz, das sie einmal bestimmt (Review #183 B1). Leer ohne Aufmaß,
+    /// Lage oder Netz.
+    pub fn terrain_border(&self) -> Vec<[Vec3; 2]> {
+        let (Some(t), Some(f), Some(h0)) =
+            (self.terrain(), self.survey_frame(), self.terrain_nhn())
+        else {
+            return Vec::new();
+        };
+        let m = t.mesh();
+        let p = |q: [f64; 3]| {
+            let [x, y] = f.to_model(q[0] + m.bezug.0, q[1] + m.bezug.1);
+            sk_math::vec3(x, y, (q[2] - h0) * 1000.0)
+        };
+        m.abfrage.randkanten().map(|(_, k)| k.map(p)).collect()
+    }
+
     /// Dreiecke des Geländes im Modell (mm, z relativ zu ±0,00), gegen den
     /// Uhrzeigersinn; leer ohne Aufmaß, Lage oder Netz.
     pub fn terrain_triangles(&self) -> Vec<[Vec3; 3]> {

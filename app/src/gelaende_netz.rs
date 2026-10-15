@@ -103,17 +103,18 @@ pub(crate) struct Gelaende {
     /// Der Lageplan im Grundriss in Kacheln ([`Kachel`]).
     pub(crate) unterlage: Vec<Kachel>,
     /// Dreiecke des Urgeländes, an deren Stelle das Planungsgelände steht
-    /// (G3c); leer ohne Geländeflächen.
+    /// (G3c); leer ohne Geländeflächen. Mit Raster für den Schnitt.
     ur: Vec<[Vec3; 3]>,
+    ur_netz: Gitter,
     /// Böschungsschraffen (lang: `true`) und Umrisse der Geländeflächen.
     schraffen: Vec<([Vec3; 2], bool)>,
     umrisse: Vec<Vec<Vec3>>,
-    /// Senkrechte Wände am Rand der Flächen ohne Böschung (Review #183 b).
+    /// Senkrechte Wände, wo die Höhe springt (Review #183 b, B2).
     waende: Vec<[Vec3; 3]>,
-    /// Außenrand des Netzes, mit Planungsgelände aus dem Urgelände
-    /// bestimmt: Die Stücke an seiner Stelle teilen die Kanten, an denen
-    /// sie an ungeteilte Dreiecke stoßen, das sind keine Ränder. `None`:
-    /// der Rand der Dreiecke.
+    /// Außenrand des Netzes aus dem Modell, das ihn je Netz und Plan einmal
+    /// bestimmt (Review #183 B1): Die Stücke des Planungsgeländes teilen
+    /// die Kanten, an denen sie an ungeteilte Dreiecke stoßen, das sind
+    /// keine Ränder. `None` (ebenes Gelände): der Rand der Dreiecke.
     rand: Option<Vec<(Vec3, Vec3)>>,
 }
 
@@ -187,7 +188,14 @@ impl Gelaende {
             .zip(&weg)
             .filter_map(|(d, w)| w.then_some(*d))
             .collect();
-        let rand = (!ur.is_empty()).then(|| rand_mit_plan(&dreiecke, &weg, &plan.triangles));
+        let rand: Vec<(Vec3, Vec3)> = if ur.is_empty() {
+            m.terrain_border()
+        } else {
+            plan.border.clone()
+        }
+        .into_iter()
+        .map(|[a, b]| (a, b))
+        .collect();
         if !ur.is_empty() {
             let mut k = 0;
             dreiecke.retain(|_| {
@@ -242,11 +250,12 @@ impl Gelaende {
             }
         }
         g.stuecke = stuecke;
+        g.ur_netz = unter_plan;
         g.ur = ur;
-        g.schraffen = plan.hatch;
-        g.umrisse = plan.outlines;
-        g.waende = plan.walls;
-        g.rand = rand;
+        g.schraffen = plan.hatch.clone();
+        g.umrisse = plan.outlines.clone();
+        g.waende = plan.walls.clone();
+        g.rand = Some(rand);
         g.marken = t
             .points
             .iter()
@@ -284,6 +293,7 @@ impl Gelaende {
             unten,
             unterlage: Vec::new(),
             ur: Vec::new(),
+            ur_netz: Gitter::neu(Vec::new()),
             schraffen: Vec::new(),
             umrisse: Vec::new(),
             waende: Vec::new(),
@@ -558,21 +568,31 @@ impl Gelaende {
     /// `n`: Strecken (Lauflänge, Höhe) je Dreieck, an der Grenze geteilt,
     /// mit Sichtbarkeit wie [`Gelaende::zeigen`].
     fn profil(&self, f: &SectionFrame, p0: Vec3) -> Vec<([f64; 2], [f64; 2], bool)> {
-        let mut p = self.profil_von(&self.dreiecke, f, p0);
-        p.extend(self.profil_von(&self.waende, f, p0));
+        let mut p = self.profil_von(&self.dreiecke, Some(&self.netz), f, p0);
+        p.extend(self.profil_von(&self.waende, None, f, p0));
         p
     }
 
-    /// [`Gelaende::profil`] der Dreiecke `d`.
+    /// [`Gelaende::profil`] der Dreiecke `d`; mit ihrem Raster `gitter`
+    /// nur die an der Linie (Review #183 B1).
     fn profil_von(
         &self,
         d: &[[Vec3; 3]],
+        gitter: Option<&Gitter>,
         f: &SectionFrame,
         p0: Vec3,
     ) -> Vec<([f64; 2], [f64; 2], bool)> {
         let n = f.n;
         let mut out = Vec::new();
-        for t in d {
+        let mut nah = Vec::new();
+        let auswahl: Box<dyn Iterator<Item = &[Vec3; 3]>> = match gitter {
+            Some(g) => {
+                g.entlang([p0.x, p0.y], [n.x, n.y], &mut nah);
+                Box::new(nah.iter().map(|&i| &d[i as usize]))
+            }
+            None => Box::new(d.iter()),
+        };
+        for t in auswahl {
             let d = t.map(|p| (p - p0).dot(n));
             let mut q: Vec<Vec3> = Vec::new();
             for i in 0..3 {
@@ -825,14 +845,6 @@ fn im_grundstueck(g: &Gelaende) -> Vec<[Vec3; 3]> {
 
 /// Kanten, die nur ein Dreieck hat (Rand des Netzes), in seinem Umlauf.
 fn randkanten(d: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
-    randkanten_mit_nummer(d)
-        .into_iter()
-        .map(|(_, a, b)| (a, b))
-        .collect()
-}
-
-/// [`randkanten`] mit der Nummer des Dreiecks.
-fn randkanten_mit_nummer(d: &[[Vec3; 3]]) -> Vec<(usize, Vec3, Vec3)> {
     use std::collections::HashMap;
     type Ecke = (u64, u64);
     let key = |p: Vec3| -> Ecke { (p.x.to_bits(), p.y.to_bits()) };
@@ -844,48 +856,12 @@ fn randkanten_mit_nummer(d: &[[Vec3; 3]]) -> Vec<(usize, Vec3, Vec3)> {
         }
     }
     let mut out = Vec::new();
-    for (j, t) in d.iter().enumerate() {
+    for t in d {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
             let (ka, kb) = (key(a), key(b));
             if n[&if ka < kb { (ka, kb) } else { (kb, ka) }] == 1 {
-                out.push((j, a, b));
-            }
-        }
-    }
-    out
-}
-
-/// Außenrand des Netzes mit Planungsgelände: die Randkanten der Dreiecke
-/// `alt` des Urgeländes; wo das Dreieck ersetzt ist (`weg`), die Kanten der
-/// Stücke `neu`, die auf ihr liegen, auf ihrer Höhe.
-fn rand_mit_plan(alt: &[[Vec3; 3]], weg: &[bool], neu: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
-    let mut out = Vec::new();
-    let mut geteilt = Vec::new();
-    for (i, a, b) in randkanten_mit_nummer(alt) {
-        if weg[i] {
-            geteilt.push((a, b));
-        } else {
-            out.push((a, b));
-        }
-    }
-    if geteilt.is_empty() {
-        return out;
-    }
-    // Kante q→r eines Stücks auf der Randkante a→b (gleiche Richtung, wie
-    // das ersetzte Dreieck sie umläuft)
-    let auf = |a: Vec3, b: Vec3, q: Vec3| {
-        let (d, w) = ([b.x - a.x, b.y - a.y], [q.x - a.x, q.y - a.y]);
-        let l2 = d[0] * d[0] + d[1] * d[1];
-        let t = (w[0] * d[0] + w[1] * d[1]) / l2;
-        let quer = (w[0] * d[1] - w[1] * d[0]) / l2.sqrt();
-        quer.abs() < 1e-3 && (-1e-9..=1.0 + 1e-9).contains(&t)
-    };
-    for t in neu {
-        for k in 0..3 {
-            let (q, r) = (t[k], t[(k + 1) % 3]);
-            if geteilt.iter().any(|&(a, b)| auf(a, b, q) && auf(a, b, r)) {
-                out.push((q, r));
+                out.push((a, b));
             }
         }
     }
@@ -1249,7 +1225,7 @@ pub(crate) fn grundlinien(
                 }
             }
             // das Urgelände, wo das Planungsgelände es ändert, gestrichelt
-            for (a, b, voll) in g.profil_von(&g.ur, &f, p0) {
+            for (a, b, voll) in g.profil_von(&g.ur, Some(&g.ur_netz), &f, p0) {
                 let st = if voll { fine } else { blass };
                 out.push(line(f.pt(a[0], a[1]), f.pt(b[0], b[1]), st, t.element_dash));
             }
@@ -1616,7 +1592,14 @@ mod tests {
         let soll = lang(&randkanten(&ohne.dreiecke));
         assert!((lang(g.rand.as_ref().unwrap()) - soll).abs() < 1.0);
         assert!(lang(&randkanten(&g.dreiecke)) > soll + 1_000.0);
-        assert!(g.waende.is_empty());
+        // mit Böschung keine Stufe: Wände nur an den Füßen, die die
+        // Planung im Meter tastet (Review #183 H-183g, wenige cm)
+        for t in &g.waende {
+            let z = t.map(|p| p.z);
+            let hoch = z.iter().copied().fold(f64::MIN, f64::max)
+                - z.iter().copied().fold(f64::MAX, f64::min);
+            assert!(hoch < 50.0, "{t:?}");
+        }
         // senkrecht: Wand 0,60 m hoch, im Schnitt ein senkrechtes Stück
         m.begin("senkrecht");
         let mut p = m.site_patches()[0].clone();
@@ -1636,5 +1619,69 @@ mod tests {
             .filter(|(a, b, _)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() > 1.0)
             .count();
         assert!(senkrecht >= 2, "{senkrecht}");
+    }
+
+    /// Tempo (Review #183 B1): Bild und Schnitt bei 100 Flächen mit je 400
+    /// Kanten auf 650.000 Dreiecken (`--ignored --nocapture`, Release).
+    #[test]
+    #[ignore]
+    fn tempo_planungsgelaende() {
+        use std::fmt::Write;
+        use std::time::Instant;
+        let mut txt = String::new();
+        let k = 571;
+        for i in 0..k {
+            for j in 0..k {
+                let (x, y) = (i as f64 * 0.25, j as f64 * 0.25);
+                let z = 10.0 + 0.4 * (x / 9.0).sin() + 0.3 * (y / 7.0).cos();
+                let _ = writeln!(txt, "{} {x} {y} {z}", i * k + j);
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(txt.as_bytes(), "t.txt", "2026-10-15", 32).unwrap();
+        let mut m = Model::with_seed(7);
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        assert!(m.set_terrain_nhn(9.5));
+        m.commit();
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+        m.begin("Flächen");
+        for f in 0..100 {
+            let (cx, cy) = (
+                -10_000.0 + (f % 10) as f64 * 11_000.0,
+                30_000.0 + (f / 10) as f64 * 9_000.0,
+            );
+            let r: Vec<[f64; 2]> = (0..400)
+                .map(|i| {
+                    let w = i as f64 / 400.0 * std::f64::consts::TAU;
+                    [cx + 4000.0 * w.cos(), cy + 4000.0 * w.sin()]
+                })
+                .collect();
+            let z = if f % 2 == 0 { 600.0 } else { -200.0 };
+            assert!(m
+                .add_site_patch(sk_model::TerrainPatch::flat(r, z))
+                .is_some());
+        }
+        m.commit();
+        let t0 = Instant::now();
+        let g = Gelaende::aus(&m).unwrap();
+        let kalt = ms(t0);
+        let t0 = Instant::now();
+        let _ = Gelaende::aus(&m).unwrap();
+        let warm = ms(t0);
+        let (p0, n) = (vec3(0.0, 34_000.0, 0.0), vec3(0.0, 1.0, 0.0));
+        let f = SectionFrame::new(p0, n);
+        let mut schnitt = f64::MAX;
+        let mut stuecke = 0;
+        for _ in 0..5 {
+            let t0 = Instant::now();
+            stuecke = g.profil(&f, p0).len();
+            schnitt = schnitt.min(ms(t0));
+        }
+        eprintln!(
+            "{} Dreiecke, {} Wände: Bild kalt {kalt:.0} ms, warm {warm:.0} ms, \
+             Schnitt {schnitt:.1} ms ({stuecke} Stücke)",
+            g.dreiecke.len(),
+            g.waende.len()
+        );
     }
 }

@@ -87,6 +87,20 @@ fn pruefen(name: &str, m: &Model) {
         projekt.befunde.iter().all(|f| f.satz != GRUNDSTUECK),
         "{name}"
     );
+    // ohne das Geschoss des Trägers bleiben sie im Projekt (H-184a)
+    let ohne = Umfang {
+        gebaeude: None,
+        ohne: vec![grund[0].storey],
+    };
+    let r = s.restrict(m, &ohne);
+    assert_eq!(
+        r.auto
+            .iter()
+            .filter(|a| GRUNDSTUECK_SCHLUESSEL.contains(&a.key))
+            .count(),
+        grund.len(),
+        "{name}"
+    );
     let mut haeuser = 0;
     for (b, _) in m.buildings().iter() {
         let bl = lesen::kosten(m, &s, &k, &Umfang::gebaeude(b));
