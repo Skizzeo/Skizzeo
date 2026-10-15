@@ -51,6 +51,29 @@ pub(crate) fn raeume_im(
     aeltere_zuerst(v)
 }
 
+/// Räume des Geschosses `g`, deren Anker `im_bereich` annimmt, ältere
+/// zuerst wie [`raeume_im`]. Mit `liste` (Räume mit Anker, ältere zuerst)
+/// nur die, deren Anker dort im Bereich liegt, dazu die aus `bewegt`, je
+/// mit dem Anker von jetzt geprüft (Review H-181c).
+fn raeume_aus<'a>(
+    m: &'a Model,
+    g: StoreyId,
+    liste: Option<&[(ElementId, Vec3)]>,
+    bewegt: &HashSet<ElementId>,
+    im_bereich: &impl Fn(Vec3) -> bool,
+) -> Vec<(ElementId, &'a Space)> {
+    let Some(l) = liste else {
+        return raeume_im(m, g, im_bereich);
+    };
+    l.iter()
+        .filter(|&&(id, a)| im_bereich(a) || bewegt.contains(&id))
+        .filter_map(|&(id, _)| {
+            let s = m.space(id)?;
+            (m.element(id)?.storey == g && im_bereich(s.anker)).then_some((id, s))
+        })
+        .collect()
+}
+
 /// Räume mit ihrer Nummer, in der Reihenfolge der Bauteile: ältere zuerst
 /// wie [`raeume_im`], bei gleicher Nummer in der Reihenfolge der Bauteile.
 pub(crate) fn aeltere_zuerst<'a>(
@@ -187,6 +210,19 @@ pub struct Abgleich {
 /// Gleicht das Geschoss der `lage` im offenen Schritt ab (siehe Modulkopf);
 /// `alt`: Stand vor dem Schritt, ohne ihn gilt nur die Ankerregel.
 pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abgleich {
+    abgleichen_lage_mit(m, lage, alt, None)
+}
+
+/// Wie [`abgleichen_lage`]; `liste`: die Räume des Geschosses mit ihrem
+/// Anker, ältere zuerst, auf dem Stand des Modells
+/// ([`crate::Erkennung::raumliste`]). Dann werden die Räume der geänderten
+/// Gruppen dort gesucht, nicht über alle Bauteile (Review H-181c).
+pub fn abgleichen_lage_mit(
+    m: &mut Model,
+    lage: &Lage,
+    alt: Option<Stand>,
+    liste: Option<&[(ElementId, Vec3)]>,
+) -> Abgleich {
     let g = lage.geschoss;
     let mit_stand = alt.is_some();
     let mut alt = alt.unwrap_or_default();
@@ -253,7 +289,11 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
             out.aenderungen += anker_auf_stempel(m, id, fl[i]);
         }
     }
-    let mut z = zuteilen(&fl, &raeume_im(m, g, im_bereich));
+    // Räume im Bereich der geänderten Gruppen. Aus der Liste: die mit dem
+    // Anker dort, dazu die eben auf ihren Stempel gerückten, je mit dem
+    // Anker von jetzt
+    let bewegt: HashSet<ElementId> = paare.iter().map(|&(id, _)| id).collect();
+    let mut z = zuteilen(&fl, &raeume_aus(m, g, liste, &bewegt, &im_bereich));
     // Ein ruhender, älterer Raum, dessen verschobener Stempel in einer
     // zugeordneten Fläche liegt, gibt die Stempellage ab und ruht weiter
     let mut nochmal = false;
@@ -267,7 +307,7 @@ pub fn abgleichen_lage(m: &mut Model, lage: &Lage, alt: Option<Stand>) -> Abglei
         }
     }
     if nochmal {
-        z = zuteilen(&fl, &raeume_im(m, g, im_bereich));
+        z = zuteilen(&fl, &raeume_aus(m, g, liste, &bewegt, &im_bereich));
     }
     // Anker auf den Stempel; jede Fläche ohne Raum bekommt einen, außer es
     // liegt der lesbare Anker einer rohen `[space]`-Zeile darin (Regel 72)
@@ -761,13 +801,28 @@ mod tests {
         name(m, f)
     }
 
-    /// Schritt mit Abgleich gegen den Stand davor (wie die Szene).
+    /// Schritt mit Abgleich gegen den Stand davor (wie die Szene). Derselbe
+    /// Abgleich mit der Raumliste einer Erkennung, die das Modell vor dem
+    /// Schritt kannte (wie die Szene, Review H-181c), gibt dieselben Räume.
     fn schritt(m: &mut Model, st: StoreyId, f: impl FnOnce(&mut Model)) -> Abgleich {
+        let mut e = crate::Erkennung::default();
+        e.raumformen(m, m, st);
         let vorher = crate::Erkennung::default().lage(m, m, st).stand(m);
         m.begin("Schritt");
         f(m);
         let lage = crate::Erkennung::default().lage(m, m, st);
-        let a = abgleichen_lage(m, &lage, Some(vorher));
+        let mut m2 = m.clone();
+        let a = abgleichen_lage(m, &lage, Some(vorher.clone()));
+        let liste = e.raumliste(&m2, st).to_vec();
+        let a2 = abgleichen_lage_mit(&mut m2, &lage, Some(vorher), Some(&liste));
+        assert_eq!((&a.neu, a.aenderungen), (&a2.neu, a2.aenderungen));
+        let raeume = |m: &Model| -> Vec<_> {
+            m.spaces(st)
+                .into_iter()
+                .map(|id| (id, m.space(id).cloned()))
+                .collect()
+        };
+        assert_eq!(raeume(m), raeume(&m2));
         m.commit();
         a
     }
