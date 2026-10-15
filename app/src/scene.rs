@@ -623,9 +623,11 @@ pub struct Scene {
     /// Bezeichnungen mit Werten, je Wortlaut einmal ([`Scene::bezeichnung`]).
     bezeichnungen: Vec<&'static str>,
     kostenspeicher: sk_cost::Kostenspeicher,
-    /// Eigener Speicher der Vorschau (Taste im Preisblatt): Ändert sie nur
-    /// Preise, bleibt die Zuordnung (Review #197 B3).
-    kostenspeicher_live: sk_cost::Kostenspeicher,
+    /// Eigene Speicher der Vorschau (Taste im Preisblatt), je Umfang einer:
+    /// Ändert sie nur Preise, bleibt die Zuordnung (Review #197 B3). Ein
+    /// gemeinsamer Speicher behielte nur die Typen des zuletzt gerechneten
+    /// Umfangs (Review #197 H-197n).
+    kostenspeicher_live: Vec<sk_cost::Kostenspeicher>,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
     /// Uhr der Übergänge (ms seit Start), von der App vor jedem Ereignis gestellt.
@@ -962,7 +964,7 @@ impl Scene {
             firmenkatalog: None,
             bezeichnungen: Vec::new(),
             kostenspeicher: sk_cost::Kostenspeicher::default(),
-            kostenspeicher_live: sk_cost::Kostenspeicher::default(),
+            kostenspeicher_live: Vec::new(),
             type_preview: false,
             now: 0,
             shown_key: None,
@@ -1140,19 +1142,31 @@ impl Scene {
         let k = Rc::new(k);
         // Gleiche Umfänge (Blatt und Chips ohne Abwahl) nur einmal rechnen
         let mut b: Vec<Rc<sk_cost::Kostenblatt>> = Vec::new();
+        self.kostenspeicher_live
+            .resize_with(umfaenge.len(), Default::default);
         for (i, u) in umfaenge.iter().enumerate() {
             let gleich = umfaenge[..i].iter().position(|x| x == u);
             b.push(match gleich {
                 Some(j) => b[j].clone(),
                 None => {
-                    let sp = std::mem::take(&mut self.kostenspeicher_live);
+                    let sp = std::mem::take(&mut self.kostenspeicher_live[i]);
                     let (blatt, sp) = sk_cost::lesen::kosten_mit(sp, &self.model, &sched, &k, u);
-                    self.kostenspeicher_live = sp;
+                    self.kostenspeicher_live[i] = sp;
                     Rc::new(blatt)
                 }
             });
         }
         Ok((k, b))
+    }
+
+    /// Je Umfang der Vorschau: wie viele Typen der letzte Aufruf neu
+    /// zugeordnet hat.
+    #[cfg(test)]
+    pub fn kosten_live_neu(&self) -> Vec<u64> {
+        self.kostenspeicher_live
+            .iter()
+            .map(|s| s.neu_zugeordnet())
+            .collect()
     }
 
     /// Liegt die Liste hinter dem Modell („wird aktualisiert“)?

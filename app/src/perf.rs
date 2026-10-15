@@ -1161,6 +1161,37 @@ fn perf_kosten() {
     );
 }
 
+/// Review #197 H-197n: Blatt (ein Gebäude) und Chips (Projekt) haben je
+/// ihren Speicher; die zweite Taste ordnet in keinem Umfang neu zu.
+#[test]
+fn preisblatt_taste_speicher_je_umfang() {
+    let mut s = reference_stacked(1, 2, 1);
+    let haus = sk_cost::Umfang::gebaeude(s.active_building().unwrap());
+    let alle = sk_cost::Umfang::projekt();
+    let kat = sk_cost::lesen::katalog(s.model(), None);
+    let artikel = kat
+        .artikel
+        .iter()
+        .find(|a| a.preis.is_some())
+        .expect("Artikel mit Preis")
+        .guid;
+    let taste = |s: &mut Scene, n: i64| {
+        let ops = [sk_cost::Op::PreisSetzen {
+            artikel,
+            preis: Some(sk_cost::Dez::ganz(20 + n)),
+            stand: "10/2026".into(),
+            quelle: "Preisblatt".into(),
+            eingabe: String::new(),
+        }];
+        s.kosten_live(None, &ops, &[&haus, &alle]).unwrap();
+    };
+    taste(&mut s, 1);
+    let erst = s.kosten_live_neu();
+    assert!(erst.iter().all(|n| *n > 0), "{erst:?}");
+    taste(&mut s, 2);
+    assert_eq!(s.kosten_live_neu(), vec![0, 0]);
+}
+
 /// KA-2c (paket-ka2 §3): eine Taste im Preisblatt am großen Prüfhaus,
 /// also `Katalog::mit` mit `PreisSetzen` und das Kostenblatt darauf
 /// (`Scene::kosten_live`), unter 3 ms (Release, Median aus drei Läufen).
