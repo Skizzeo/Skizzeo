@@ -210,8 +210,8 @@ pub(super) fn read_project<'r>(
             for x in mehr {
                 x.skip();
                 hints.push(format!(
-                    "Zeile {}: [sitesoil] doppelt, es gilt die erste, die Zeile bleibt unverändert \
-                     stehen",
+                    "Zeile {}: Bodenwerte des Grundstücks ([sitesoil]) doppelt, es gilt die \
+                     erste, die Zeile bleibt unverändert stehen",
                     x.line
                 ));
                 project.site_soil_doppelt.push(roh(x));
@@ -411,9 +411,8 @@ mod tests {
         );
         assert_eq!(back.hints.len(), 2, "{:?}", back.hints);
         assert!(
-            back.hints
-                .iter()
-                .all(|h| h.contains("[sitesoil] doppelt, es gilt die erste")),
+            back.hints.iter().all(|h| h
+                .contains("Bodenwerte des Grundstücks ([sitesoil]) doppelt, es gilt die erste")),
             "{:?}",
             back.hints
         );
