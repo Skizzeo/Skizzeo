@@ -1366,7 +1366,7 @@ mod tests {
         let ziffern = MAX_PUNKTE.to_string();
         let mut z = String::new();
         for (i, c) in ziffern.chars().enumerate() {
-            if i > 0 && (ziffern.len() - i) % 3 == 0 {
+            if i > 0 && (ziffern.len() - i).is_multiple_of(3) {
                 z.push('.');
             }
             z.push(c);
