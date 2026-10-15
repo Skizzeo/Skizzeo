@@ -252,6 +252,8 @@ impl Katalog {
     pub fn mit(&self, ops: &[Op]) -> Option<Katalog> {
         let mut k = self.clone();
         let mut h = fnv(k.stempel, b"mit");
+        // Preise und Umrechnungen ändern die Zuordnung nicht (B3)
+        let mut z = k.stempel_zuordnung;
         for op in ops {
             match op {
                 Op::PreisSetzen { artikel, preis, .. } => {
@@ -288,11 +290,13 @@ impl Katalog {
                     l.funktion = d.funktion;
                     h = fnv(h, bauleistung.to_ifc().as_bytes());
                     h = fnv(h, format!("{:?}", l).as_bytes());
+                    z = h;
                 }
                 _ => return None,
             }
         }
         k.stempel = h;
+        k.stempel_zuordnung = z;
         Some(k)
     }
 }
@@ -370,6 +374,14 @@ mod tests {
             lesen::kosten(&m, &sched, &schnell, &u).netto,
             lesen::kosten(&m, &sched, &plan.katalog, &u).netto
         );
+        // Review #197 B3: Nach einem Preis bleibt die Zuordnung im Speicher,
+        // das Blatt ist dasselbe wie frisch gerechnet
+        assert_eq!(schnell.stempel_zuordnung, k.stempel_zuordnung);
+        let (_, sp) = lesen::kosten_mit(crate::Kostenspeicher::default(), &m, &sched, &k, &u);
+        assert!(sp.neu_zugeordnet() > 0);
+        let (blatt, sp) = lesen::kosten_mit(sp, &m, &sched, &schnell, &u);
+        assert_eq!(sp.neu_zugeordnet(), 0, "nur Preise geändert");
+        assert_eq!(blatt, lesen::kosten(&m, &sched, &schnell, &u));
         let h = Dez::lesen("0.5", 4).unwrap();
         let ops2 = preis_ops(
             &k,

@@ -59,7 +59,7 @@ fn fall_1_rohbau_mit_preisen() {
     let lv = lesen::lv(&m, &s, &k, &u, &wahl(false, true));
     let o = ozs(&lv);
     let nrs: Vec<&str> = o.iter().map(|x| x.0.as_str()).collect();
-    assert_eq!(nrs, ["01", "02", "03", "04", "05", "06"]);
+    assert_eq!(nrs, ["01", "02", "03", "04", "05", "06", "07"]);
     let titel = |nr: &str| o.iter().find(|x| x.0 == nr).unwrap().1.clone();
     // Erdarbeiten aus der Gründung (Gelände = OK Platte: keine Baugrube
     // mit Arbeitsraum, keine Verfüllung)
@@ -72,7 +72,11 @@ fn fall_1_rohbau_mit_preisen() {
         ["03.0010", "03.0020", "03.0030", "03.0040", "03.0050", "03.0060"]
     );
     assert_eq!(titel("04"), ["04.0010"]);
-    assert!(titel("05").is_empty() && titel("06").is_empty(), "{o:?}");
+    // Stand 19: Titel 07 Bauwerksabdichtung bepreist nur Räume (RB7)
+    assert!(
+        titel("05").is_empty() && titel("06").is_empty() && titel("07").is_empty(),
+        "{o:?}"
+    );
     assert_eq!(lv.anzahl(), o.iter().map(|x| x.1.len()).sum::<usize>());
     // alle Gewerke des Loses: Baustelleneinrichtung, Gerüst, Erdbau, Oberboden, Beton, Mauer
     let gewerke = ["18330", "18331", "18300", "18320", "18451"].map(|c| Some(gewerk(&m, c)));

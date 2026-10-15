@@ -1300,7 +1300,9 @@ impl Verwaltung {
             );
             let s = b.kurz(&schicht, PX, false, (b.w * 0.45).max(120.0));
             b.text(0.0, y, s, PX, false, Farbe::Text);
-            let z = kat.map(|c| sk_cost::zuordnung::zuordnen(&self.jetzt, c, l, mat));
+            // Ausbautypen als Raum mit ihrer Seite (RB7)
+            let z = sk_cost::zuordnung::art_des_typs(t.category)
+                .map(|(c, seite)| sk_cost::zuordnung::zuordnen(&self.jetzt, c, seite, l, mat));
             let (text, farbe) = match z
                 .as_ref()
                 .and_then(|z| z.leistung.map(|g| (g, z.geschaetzt())))

@@ -5,6 +5,9 @@
 //! glimmt sie einmal in Akzent auf; sie zählt nicht hoch.
 //!
 //! Die Leiste rechnet nichts: Die Zahlen setzt das Fenster aus den Blättern.
+//!
+//! Die Wohnfläche steht als zweite Karte neben den Mengen (Jörn 13.10.
+//! 02:14: „als gesonderte Rubrik in Mengen-Auswertung“).
 
 use crate::freischaltung::{Eingang, Modul};
 use sk_paint::{Canvas, Path, Rgba};
@@ -17,6 +20,8 @@ use std::time::Instant;
 pub enum Blatt {
     #[default]
     Mengen,
+    /// Wohnflächenberechnung nach WoFlV (G8).
+    Wohnflaeche,
     Kosten,
     /// Leistungsverzeichnis (KA-4).
     Ava,
@@ -24,12 +29,13 @@ pub enum Blatt {
 
 impl Blatt {
     /// Die vorhandenen Blätter in der Reihenfolge der Karten.
-    pub const ALLE: [Blatt; 3] = [Blatt::Mengen, Blatt::Kosten, Blatt::Ava];
+    pub const ALLE: [Blatt; 4] = [Blatt::Mengen, Blatt::Wohnflaeche, Blatt::Kosten, Blatt::Ava];
 
     /// Name auf der Karte und im Fenstertitel.
     pub fn name(self) -> &'static str {
         match self {
             Blatt::Mengen => "Mengen",
+            Blatt::Wohnflaeche => "Wohnfläche",
             Blatt::Kosten => "Kosten",
             Blatt::Ava => "AVA",
         }
@@ -39,6 +45,7 @@ impl Blatt {
     pub fn key(self) -> &'static str {
         match self {
             Blatt::Mengen => "mengen",
+            Blatt::Wohnflaeche => "wohnflaeche",
             Blatt::Kosten => "kosten",
             Blatt::Ava => "ava",
         }
@@ -48,7 +55,7 @@ impl Blatt {
         Blatt::ALLE.into_iter().find(|b| b.key() == k)
     }
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self as usize
     }
 }
@@ -83,14 +90,17 @@ pub const KNOPF_PAD: f32 = 12.0;
 /// Rechteck in Fensterpixeln: x, y, Breite, Höhe.
 type Rect = (f32, f32, f32, f32);
 
+/// Anzahl der Karten.
+const N: usize = Blatt::ALLE.len();
+
 pub struct Karten {
     pub aktiv: Blatt,
     /// Freie Blätter von links (Freischaltung): eine bis drei Karten.
     n: usize,
     hover: Option<Blatt>,
-    zahlen: [String; 3],
+    zahlen: [String; N],
     /// Seit wann die geänderte Zahl einer Karte aufglimmt.
-    glimm: [Option<Instant>; 3],
+    glimm: [Option<Instant>; N],
     /// Laufender Wechsel: voriges Blatt und Beginn.
     wechsel: Option<(Blatt, Instant)>,
 }
@@ -102,29 +112,30 @@ impl Karten {
             n: Blatt::ALLE.len(),
             hover: None,
             zahlen: Default::default(),
-            glimm: [None; 3],
+            glimm: [None; N],
             wechsel: None,
         }
     }
 
     /// Breite einer Karte (dip): 236, im schmalen Fenster teilen sich die
-    /// drei Karten die Breite `breit` (px), aber nicht unter 64.
+    /// Karten die Breite `breit` (px), aber nicht unter 64.
     fn card_w(s: f32, breit: f32) -> f32 {
-        ((breit / s - 2.0 * CARD_GAP) / 3.0).clamp(CARD_MIN_W, CARD_W)
+        let n = N as f32;
+        ((breit / s - (n - 1.0) * CARD_GAP) / n).clamp(CARD_MIN_W, CARD_W)
     }
 
     /// Lage der Karten (px); `x0` linker Rand des Inhalts, `top` Unterkante
     /// der Titelleiste, `breit` verfügbare Breite.
-    fn rects(x0: f32, top: f32, s: f32, breit: f32) -> [Rect; 3] {
+    fn rects(x0: f32, top: f32, s: f32, breit: f32) -> [Rect; N] {
         let y = top + PAD_TOP * s;
         let cw = Self::card_w(s, breit);
-        let r = |i: usize| (x0 + i as f32 * (cw + CARD_GAP) * s, y, cw * s, CARD_H * s);
-        [r(0), r(1), r(2)]
+        std::array::from_fn(|i| (x0 + i as f32 * (cw + CARD_GAP) * s, y, cw * s, CARD_H * s))
     }
 
-    /// Rechtes Ende der dritten Karte (px).
+    /// Rechtes Ende der letzten Karte (px).
     pub fn ende(x0: f32, s: f32, breit: f32) -> f32 {
-        x0 + (3.0 * Self::card_w(s, breit) + 2.0 * CARD_GAP) * s
+        let n = N as f32;
+        x0 + (n * Self::card_w(s, breit) + (n - 1.0) * CARD_GAP) * s
     }
 
     /// „Als Tabelle speichern“ rechtsbündig in der Kartenzeile, wenn er mit
@@ -388,7 +399,8 @@ fn mix(a: Rgba, b: Rgba, k: f32) -> Rgba {
     Rgba::from_f32(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * k))
 }
 
-/// Gezeichnetes Symbol 16 dip, Strich 1 dip: Raster (Mengen), € (Kosten), Liste (AVA).
+/// Gezeichnetes Symbol 16 dip, Strich 1 dip: Raster (Mengen), Grundriss
+/// (Wohnfläche), € (Kosten), Liste (AVA).
 fn symbol(c: &mut Canvas, b: Blatt, (x, y): (f32, f32), s: f32, col: Rgba) {
     let w = s.max(1.0);
     let d = 16.0 * s;
@@ -404,6 +416,17 @@ fn symbol(c: &mut Canvas, b: Blatt, (x, y): (f32, f32), s: f32, col: Rgba) {
                 p.segment((x0 + k, y0 + k), (x0, y0 + k), w);
                 p.segment((x0, y0 + k), (x0, y0), w);
             }
+        }
+        Blatt::Wohnflaeche => {
+            // Grundriss: Umriss mit einer Innenwand, zwei Räume
+            let (x1, y1) = (x + d, y + d);
+            let (xm, ym) = (x + d * 0.55, y + d * 0.55);
+            p.segment((x, y), (x1, y), w);
+            p.segment((x1, y), (x1, y1), w);
+            p.segment((x1, y1), (x, y1), w);
+            p.segment((x, y1), (x, y), w);
+            p.segment((xm, y), (xm, ym), w);
+            p.segment((xm, ym), (x1, ym), w);
         }
         Blatt::Kosten => {
             // Bogen von 45° bis 315° um die Mitte, dazu zwei Querstriche;
@@ -447,34 +470,47 @@ mod tests {
         let mut k = Karten::new(Blatt::Mengen);
         // erstes Setzen glimmt nicht, eine Änderung schon, gleiche Zahl nicht
         assert!(k.set_zahl(Blatt::Kosten, "60.090 € netto".into(), now));
-        assert!(k.glimm[1].is_none());
+        assert!(k.glimm[Blatt::Kosten.index()].is_none());
         assert!(!k.set_zahl(Blatt::Kosten, "60.090 € netto".into(), now));
         assert!(k.set_zahl(Blatt::Kosten, "62.502 € netto".into(), now));
-        assert!(k.glimm[1].is_some() && k.glimm[0].is_none());
+        assert!(k.glimm[Blatt::Kosten.index()].is_some() && k.glimm[0].is_none());
         // Wechsel nach rechts, nochmals dasselbe Blatt ändert nichts
         assert!(k.waehlen(Blatt::Kosten, now, true));
         assert!(!k.waehlen(Blatt::Kosten, now, true));
         assert_eq!(Karten::richtung(Blatt::Mengen, Blatt::Kosten), 1.0);
-        // Treffer: zweite Karte rechts neben der ersten
+        // Treffer: Wohnfläche rechts neben Mengen, dann Kosten
+        assert_eq!(Blatt::from_key("wohnflaeche"), Some(Blatt::Wohnflaeche));
         let (x0, top, s, breit) = (24.0, 32.0, 1.0, 1200.0);
         let y = (top + PAD_TOP + 10.0) as f64;
         assert_eq!(k.hit(x0, top, s, breit, 30.0, y), Some(Blatt::Mengen));
         let zweite = (x0 + CARD_W + CARD_GAP + 5.0) as f64;
-        assert_eq!(k.hit(x0, top, s, breit, zweite, y), Some(Blatt::Kosten));
+        let dritte = (x0 + 2.0 * (CARD_W + CARD_GAP) + 5.0) as f64;
+        assert_eq!(
+            k.hit(x0, top, s, breit, zweite, y),
+            Some(Blatt::Wohnflaeche)
+        );
+        assert_eq!(k.hit(x0, top, s, breit, dritte, y), Some(Blatt::Kosten));
         assert_eq!(
             k.hit(x0, top, s, breit, (x0 + CARD_W + 4.0) as f64, y),
             None
         );
-        // Nur Mengen frei (Pro): eine Karte, Kosten fällt auf Mengen zurück
-        // und lässt sich nicht wählen
-        k.set_frei(1);
+        // Nur Mengen frei (Pro): Mengen und Wohnfläche, Kosten fällt auf
+        // Mengen zurück und lässt sich nicht wählen
+        k.set_frei(2);
         assert_eq!(k.aktiv, Blatt::Mengen);
-        assert_eq!(k.hit(x0, top, s, breit, zweite, y), None);
-        assert!(Karten::auf_karte(x0, top, s, breit, zweite, y));
-        assert!(!Karten::auf_karte(x0, top, s, breit, zweite, y + 200.0));
+        assert_eq!(
+            k.hit(x0, top, s, breit, zweite, y),
+            Some(Blatt::Wohnflaeche)
+        );
+        assert_eq!(k.hit(x0, top, s, breit, dritte, y), None);
+        assert!(Karten::auf_karte(x0, top, s, breit, dritte, y));
+        assert!(!Karten::auf_karte(x0, top, s, breit, dritte, y + 200.0));
         assert!(!k.waehlen(Blatt::Ava, now, false));
-        assert_eq!(k.blaetter().collect::<Vec<_>>(), [Blatt::Mengen]);
-        k.set_frei(3);
+        assert_eq!(
+            k.blaetter().collect::<Vec<_>>(),
+            [Blatt::Mengen, Blatt::Wohnflaeche]
+        );
+        k.set_frei(4);
         assert!(k.waehlen(Blatt::Ava, now, false));
         // Schmal (Notiz Kopf, ist-mengen-schmal, Hinweis L: 960 und 720 px
         // bei 150 %): die Karten teilen sich die Breite und bleiben im
@@ -488,9 +524,10 @@ mod tests {
             (244.0, 1.0),
         ] {
             let r = Karten::rects(x0, top, s, breit);
-            assert!(r[2].2 >= CARD_MIN_W * s - 0.01);
-            if breit / s >= 3.0 * CARD_MIN_W + 2.0 * CARD_GAP {
-                assert!(r[2].0 + r[2].2 <= x0 + breit + 0.01, "{breit} {s}");
+            let n = N as f32;
+            assert!(r[N - 1].2 >= CARD_MIN_W * s - 0.01);
+            if breit / s >= n * CARD_MIN_W + (n - 1.0) * CARD_GAP {
+                assert!(r[N - 1].0 + r[N - 1].2 <= x0 + breit + 0.01, "{breit} {s}");
             }
         }
     }

@@ -1669,6 +1669,10 @@ pub struct AutoMenge {
     /// Hinweise zur Menge, getrennt vom Rechenweg (Review #164 H-164f,
     /// VOB-Prüfung G3 B7), je Hinweis eine Zeile; leer ohne.
     pub hinweis: String,
+    /// Raumlänge mit eigenem Typ (Sockelleiste): Baustoff des Typs, für
+    /// `mat=` der Automatik-Leistung (RB7, je Sockeltyp eine Leistung);
+    /// sonst `None`.
+    pub material: Option<MaterialId>,
 }
 
 /// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
@@ -1682,6 +1686,7 @@ pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'
         .chain(crate::fallrohr::SCHLUESSEL)
         .chain(crate::qto_fassade::SCHLUESSEL)
         .chain(crate::qto_laibung::SCHLUESSEL)
+        .chain(crate::qto_raum::SCHLUESSEL)
 }
 
 /// Gründung, aus deren Geometrie die Automatikmengen ihrer Sohlplatte folgen
@@ -2109,6 +2114,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
             kg: None,
             formula: String::new(),
             hinweis: String::new(),
+            material: None,
         };
         sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
         // Regenfallrohre an den Abläufen des Dachs (Jörn 11.10.)
@@ -2203,6 +2209,7 @@ fn auto_rows(
             kg: None,
             formula: String::new(),
             hinweis: String::new(),
+            material: None,
         };
         let basis = crate::qto_earth::ErdBasis::im_modell(model, &g);
         let (erde, zone) = crate::qto_earth::auto_mengen(&vorlage, &basis, &boden);
@@ -2679,15 +2686,53 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             }
         }
     }
-    let name = |m: MaterialId| model.material(m).map_or(String::new(), |x| x.name.clone());
-    out.sort_by(|a, b| {
-        (group_rank(a.category), name(a.material))
-            .cmp(&(group_rank(b.category), name(b.material)))
-            .then(a.thickness.total_cmp(&b.thickness))
-            .then(a.number.cmp(&b.number))
-            .then(a.layer.cmp(&b.layer))
-    });
-    out
+    // Sortiert wird ein Schlüssel aus Zahlen je Zeile: Rang des Baustoffnamens
+    // und der Nummer einmal je Wert, Dicke als geordnete Bits, die Stelle
+    // zuletzt (dieselbe Reihenfolge wie die stabile Sortierung nach Gruppe,
+    // Name, Dicke, Nummer, Schicht). Der Vergleich legte je Aufruf zwei Namen
+    // an und schob ganze Zeilen (Review #197 B3)
+    fn raenge<'a>(werte: impl Iterator<Item = &'a str>) -> HashMap<&'a str, u32> {
+        let mut v: Vec<&str> = werte.collect();
+        v.sort_unstable();
+        v.dedup();
+        v.into_iter().zip(0..).collect()
+    }
+    let name = |m: MaterialId| model.material(m).map_or("", |x| x.name.as_str());
+    let mut je_stoff: HashMap<MaterialId, &str> = HashMap::new();
+    for r in &out {
+        je_stoff
+            .entry(r.material)
+            .or_insert_with(|| name(r.material));
+    }
+    let name_rang = raenge(je_stoff.values().copied());
+    let stoff_rang: HashMap<MaterialId, u32> =
+        je_stoff.iter().map(|(&m, n)| (m, name_rang[n])).collect();
+    let nummer_rang = raenge(out.iter().map(|r| r.number.as_str()));
+    // f64::total_cmp als Ganzzahl
+    let dicke = |t: f64| {
+        let b = t.to_bits() as i64;
+        b ^ (((b >> 63) as u64) >> 1) as i64
+    };
+    let mut folge: Vec<_> = out
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            (
+                group_rank(r.category),
+                stoff_rang[&r.material],
+                dicke(r.thickness),
+                nummer_rang[r.number.as_str()],
+                r.layer,
+                i,
+            )
+        })
+        .collect();
+    folge.sort_unstable();
+    let mut zeilen: Vec<Option<LayerRow>> = out.into_iter().map(Some).collect();
+    folge
+        .into_iter()
+        .map(|k| zeilen[k.5].take().expect("jede Stelle einmal"))
+        .collect()
 }
 
 /// Summen nach Gewerk in der Reihenfolge des Bauablaufs; Zeilen ohne Gewerk
