@@ -156,3 +156,41 @@ fn fliesenhoehe_je_seite() {
     assert!((nachher - q.area).abs() < 1e-6, "{nachher} {}", q.area);
     assert!(nachher < vorher - 1e5, "{nachher} {vorher}");
 }
+
+/// Wandfliesen höher als die lichte Höhe: Die Mengen rechnen sie bis UK
+/// Fertigdecke, darüber bleibt kein Anstrich (Bedienbarkeit zu #190).
+#[test]
+fn fliesen_bis_zur_decke() {
+    let mut m = haus();
+    let (eg, r) = erdgeschoss(&m);
+    m.begin("Fliesen");
+    let deckenhoch = ab(
+        AusbauStelle::Fliesen(None),
+        Some(AusbauWahl::Typ(WALL_TILES_TYPE_GUID)),
+        Some(2750.0),
+    );
+    m.set_space_finish(r, deckenhoch).unwrap();
+    m.commit();
+    let roh = rohbau(&m, eg, r);
+    let (ffb, ufd) = hoehen(&m, &roh, &RaumAusbau::fuer(&m, &roh).unwrap());
+    let licht = ufd - ffb;
+    assert!(licht < 2700.0, "{licht}");
+    let (_, q) = raeume(&m, eg).into_iter().find(|x| x.0 == r).unwrap();
+    let fliesen: Vec<_> = q
+        .lines
+        .iter()
+        .filter(|l| l.name.starts_with("Wandfliesen ") && !l.info)
+        .collect();
+    assert!(!fliesen.is_empty());
+    let hoehe = format!("{:.3}", licht / 1000.0).replace('.', ",");
+    for l in fliesen {
+        let t = &l.weg.terme[0].text;
+        assert!(t.ends_with(&format!("× {hoehe} (lichte Höhe)")), "{t}");
+    }
+    assert!(
+        !q.lines
+            .iter()
+            .any(|l| l.name.starts_with("Wand ") && !l.info && l.thickness <= 0.0),
+        "kein Anstrich über deckenhohen Fliesen"
+    );
+}

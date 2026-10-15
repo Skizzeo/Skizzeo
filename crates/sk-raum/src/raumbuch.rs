@@ -198,6 +198,8 @@ struct Raum<'a> {
     /// Je Ring nach innen versetzt bis zur Putzoberfläche.
     ringe_putz: Vec<Versatz>,
     ffb: f64,
+    /// UK Fertigdecke (absolut).
+    ufd: f64,
     estrich: Vec<f64>,
 }
 
@@ -230,6 +232,7 @@ impl<'a> Raum<'a> {
             .collect();
         let (belag, estrich) = ausbau::boden(model, aus);
         let ffb = form.z_boden + estrich.iter().sum::<f64>() + belag;
+        let ufd = form.z_decke - ausbau::dicke(model, aus.decke);
         Raum {
             model,
             form,
@@ -242,6 +245,7 @@ impl<'a> Raum<'a> {
             an_putz,
             ringe_putz,
             ffb,
+            ufd,
             estrich,
         }
     }
@@ -562,9 +566,25 @@ impl<'a> Raum<'a> {
 
     // --- Wand -----------------------------------------------------------------
 
-    /// Oberkante der Wandfliesen an Seite `k` (absolut).
+    /// Wandfliesen an Seite `k` mit ihrer Höhe ab OK Fertigfußboden,
+    /// höchstens bis UK Fertigdecke (lichte Höhe), und ob sie bis dorthin
+    /// reichen.
+    fn fliesen_an(&self, k: usize) -> Option<(LayerSetId, f64, bool)> {
+        let (id, h) = self.seite(k).fliesen?;
+        let licht = (self.ufd - self.ffb).max(0.0);
+        Some((id, h.min(licht), h >= licht - 0.5))
+    }
+
+    /// Oberkante der Wandfliesen an Seite `k` (absolut); deckenhoch die
+    /// Rohdecke, darüber bleibt keine Wand.
     fn fliesen_oben(&self, k: usize) -> Option<f64> {
-        self.seite(k).fliesen.map(|f| self.ffb + f.1)
+        self.fliesen_an(k).map(|(_, h, oben)| {
+            if oben {
+                self.form.z_decke
+            } else {
+                self.ffb + h
+            }
+        })
     }
 
     /// Öffnungen einer Zone `lo..hi` der Seite `k`, übermessen bis zur
@@ -694,7 +714,7 @@ impl<'a> Raum<'a> {
     }
 
     fn fliesen(&self, k: usize, out: &mut Vec<Zeile>) {
-        let Some((id, h)) = self.seite(k).fliesen else {
+        let Some((id, h, oben)) = self.fliesen_an(k) else {
             return;
         };
         let Some(t) = self.model.layer_set(id) else {
@@ -702,7 +722,12 @@ impl<'a> Raum<'a> {
         };
         let (lo, hi) = (self.ffb, self.ffb + h);
         let mut terme = vec![term(
-            format!("Länge × Höhe {} × {}", m(self.an_putz[k]), m(h)),
+            format!(
+                "Länge × Höhe {} × {}{}",
+                m(self.an_putz[k]),
+                m(h),
+                if oben { " (lichte Höhe)" } else { "" }
+            ),
             self.an_putz[k] * h,
             Art::Basis,
         )];
@@ -890,7 +915,7 @@ impl<'a> Raum<'a> {
     }
 
     fn silikon(&self, out: &mut Vec<Zeile>) {
-        let gefliest = |k: usize| self.seite(k).fliesen.map(|f| f.1);
+        let gefliest = |k: usize| self.fliesen_an(k).map(|f| f.1);
         let mut terme = Vec::new();
         self.fuge_unten(|k| gefliest(k).is_some(), &mut terme);
         for (e, p) in &self.ringe {

@@ -450,6 +450,17 @@ impl Scene {
         })
     }
 
+    /// Wahl `w` am Knopf `k`; „wie Raumvorlage“ bzw. „wie alle
+    /// Wandseiten“ (`None`) nimmt auch eine eigene Fliesenhöhe zurück.
+    pub(crate) fn raum_wahl(&mut self, id: ElementId, k: u8, w: Option<AusbauWahl>) -> bool {
+        self.raum_abweichung(id, k, |a| {
+            a.wahl = w;
+            if w.is_none() {
+                a.hoehe = None;
+            }
+        })
+    }
+
     /// Feld „Höhe“ der Wandfliesen im Paneel des Raums.
     pub(crate) fn raum_fliesenhoehe(&mut self, id: ElementId, mm: f64) -> bool {
         self.raum_abweichung(id, FLIESEN, |a| a.hoehe = Some(mm))
@@ -484,7 +495,7 @@ impl App {
                 }
                 let neu = match t {
                     Tun::Nutzung(g) => self.scene.raum_nutzung(id, g),
-                    Tun::Wahl(w) => self.scene.raum_abweichung(id, k, |a| a.wahl = w),
+                    Tun::Wahl(w) => self.scene.raum_wahl(id, k, w),
                     Tun::Seite(_) => false,
                 };
                 if neu {
@@ -663,6 +674,22 @@ mod tests {
         assert_eq!(p.sections[2].fields[0].value, TILES_DEFAULT);
         assert!(s.undo() && s.undo());
         assert!(s.model().space(r).unwrap().ausbau.len() == 1);
+
+        // Fliesen an allen Wandseiten, an einer nur eine eigene Höhe: „wie
+        // alle Wandseiten“ nimmt die Höhe zurück
+        assert!(s.raum_wahl(r, FLIESEN, fliesen));
+        s.raum_seite_setzen(Some((r, w)));
+        assert!(s.set_field(r, Field::RaumFliesen, 2000.0));
+        let an_der_seite = |s: &Scene| {
+            s.model()
+                .space_finish(r, AusbauStelle::Fliesen(Some(w)))
+                .copied()
+        };
+        assert_eq!(an_der_seite(&s).map(|a| a.wahl), Some(None));
+        assert!(s.raum_wahl(r, FLIESEN, None));
+        assert_eq!(an_der_seite(&s), None);
+        let p = crate::selection::props(&s, r).unwrap();
+        assert_eq!(p.sections[2].fields[0].value, TILES_DEFAULT);
     }
 
     /// „Nutzung …“ listet die Raumvorlagen; Bad gewählt bringt die Vorlage
