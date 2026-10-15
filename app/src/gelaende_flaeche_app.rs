@@ -34,10 +34,19 @@ const SCHLIESSEN_PX: f64 = 10.0;
 pub const LABEL_NEU: &str = "Geländefläche";
 pub const LABEL_AENDERN: &str = "Geländefläche ändern";
 pub const LABEL_LOESCHEN: &str = "Geländefläche löschen";
-pub const LABEL_BODEN: &str = "Geländebau";
+/// „Geländebau“ verstand niemand (Bedienbarkeit, später zu #189).
+pub const LABEL_BODEN: &str = "Erdarbeiten am Grundstück";
 /// Was die Statuszeile sagt, wenn sich die gezeichnete Fläche nicht bauen
 /// lässt (Kanten kreuzen sich, keine Fläche).
 pub const KREUZT: &str = "Die Kanten der Fläche kreuzen sich; bitte anders schließen.";
+/// Enter oder Klick auf die erste Ecke bei zwei Ecken (Bedienbarkeit,
+/// später zu #189: tat still nichts oder setzte die Ecke doppelt).
+pub const ZU_WENIG: &str = "Eine Fläche braucht mindestens drei Ecken.";
+/// Statuszeile, solange das Werkzeug an ist (Bedienbarkeit, später zu
+/// #189: die Zeile war leer, Esc nirgends genannt).
+pub const ZEICHNEN: &str =
+    "Fläche zeichnen: Ecken im Grundriss klicken; die erste Ecke oder Enter \
+    schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
 /// Alle Ecken auf einer Linie (H-189d).
 pub const OHNE_INHALT: &str = "Die Ecken liegen auf einer Linie; die Fläche hat keinen Inhalt.";
 /// Die Fläche ließ sich auf der Geländehöhe in ihrer Mitte nicht anlegen
@@ -185,6 +194,7 @@ impl Werkzeug {
     fn schliessen(&mut self, out: &mut Ausgang) {
         out.redraw = true;
         if self.ecken.len() < 3 {
+            out.fehler = Some(ZU_WENIG);
             return;
         }
         let p = TerrainPatch::flat(self.ecken.clone(), 0.0);
@@ -238,6 +248,11 @@ impl Werkzeug {
                 });
                 if self.ecken.len() >= 3 && (am_anfang || self.ecken.last() == Some(&p)) {
                     self.schliessen(&mut out);
+                } else if am_anfang {
+                    // nicht die erste Ecke noch einmal setzen
+                    if self.ecken.len() == 2 {
+                        out.fehler = Some(ZU_WENIG);
+                    }
                 } else if self.ecken.last() != Some(&p) {
                     self.ecken.push(p);
                     out.redraw = true;
@@ -571,6 +586,19 @@ impl App {
         true
     }
 
+    /// Das Werkzeug ist aus: seine Zeile geht aus der Statuszeile.
+    pub(crate) fn flaeche_zeile_ende(&mut self) {
+        if self.platte.leiste.werkzeug.aktiv
+            || !self.notice.as_ref().is_some_and(|n| n.text == ZEICHNEN)
+        {
+            return;
+        }
+        self.notice = None;
+        self.renderer
+            .set_overlay(crate::OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+        self.redraw = true;
+    }
+
     /// Esc beim Zeichnen.
     pub(crate) fn flaeche_escape(&mut self) -> bool {
         if !self.platte.leiste.werkzeug.escape() {
@@ -760,6 +788,11 @@ impl App {
                     self.tool.set_enabled(false);
                     self.nord.set_aktiv(false);
                     self.refresh_cursor();
+                    // steht, solange das Werkzeug an ist, wie beim Nordpfeil
+                    self.status(
+                        crate::meldung::Meldung::satz(ZEICHNEN),
+                        std::time::Duration::from_secs(3600),
+                    );
                 }
             }
             GelaendeKnopf::Befestigt => {
@@ -952,6 +985,32 @@ mod tests {
         assert!(w.escape());
         assert!(!w.aktiv);
         assert!(!w.escape());
+    }
+
+    /// Bei zwei Ecken setzt ein Klick auf die erste sie nicht noch einmal,
+    /// und Enter sagt, warum nichts geschieht (Bedienbarkeit, später zu
+    /// #189).
+    #[test]
+    fn zu_wenig_ecken() {
+        let (cam, _, _) = kamera();
+        let mut w = Werkzeug::default();
+        w.set_aktiv(true);
+        assert!(klick(&mut w, &cam, punkt(0.0, 0.0)).fehler.is_none());
+        // gleich daneben, noch eine Ecke: still
+        assert!(klick(&mut w, &cam, punkt(30.0, 0.0)).fehler.is_none());
+        assert_eq!(w.ecken().len(), 1);
+        klick(&mut w, &cam, punkt(5000.0, 0.0));
+        let o = klick(&mut w, &cam, punkt(20.0, 10.0));
+        assert_eq!(o.fehler, Some(ZU_WENIG));
+        assert!(o.commit.is_none());
+        assert_eq!(w.ecken().len(), 2);
+        let mut o = Ausgang::default();
+        assert!(w.key(Key::Enter, OHNE, &mut o));
+        assert_eq!(o.fehler, Some(ZU_WENIG));
+        assert_eq!(w.ecken().len(), 2);
+        klick(&mut w, &cam, punkt(5000.0, 5000.0));
+        let o = klick(&mut w, &cam, punkt(0.0, 0.0));
+        assert_eq!(o.commit.map(|r| r.len()), Some(3));
     }
 
     /// Ein Umriss mit sich kreuzenden Kanten wird keine Fläche; die Ecken

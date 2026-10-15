@@ -11,7 +11,8 @@ use sk_model::Show;
 
 /// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
 /// 42.5).
-pub const DECKT_NICHT: &str = "Aufmaß deckt die Baugrube nicht, Erdmengen mit mittlerer Höhe";
+pub const DECKT_NICHT: &str = "Aufmaß deckt die Baugrube nicht, Erdmengen mit mittlerer Höhe. \
+    Gelände zurückschieben oder ein größeres Aufmaß einlesen.";
 
 /// Knöpfe der Leiste.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,7 +256,7 @@ impl Ui {
             }
             rows.extend(l.grundstueck.clone().map(Row::Text));
             rows.extend(l.hoehenlinien.clone().map(Row::Text));
-            rows.push(Row::Button(Id::Gelaende(K::Entfernen), "Aufmaß entfernen"));
+            rows.push(Row::Button(Id::Gelaende(K::Entfernen), "Gelände entfernen"));
         } else if l.meldung.is_empty() && l.fehler.is_none() {
             rows.extend([
                 Row::Hint("Lageplan: PDF, Maßstab"),

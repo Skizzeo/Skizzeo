@@ -195,9 +195,11 @@ impl Zustand {
 pub const GELESEN_PLAN: &str = "Lageplan gelesen; mehr unter „Gelände“";
 pub const GELESEN_HOEHEN: &str = "Höhenaufmaß eingelesen; mehr unter „Gelände“";
 
-/// Meldung nach „Aufmaß entfernen“.
-const ENTFERNT: &str = "Aufmaß entfernt, das Haus steht wieder auf der Platte; \
-    Geländeflächen ruhen bis zum nächsten Aufmaß. Strg+Z holt es zurück.";
+/// Meldung nach „Gelände entfernen“; „ruhen“ las sich unklar (Bedienbarkeit,
+/// später zu #196).
+const ENTFERNT: &str = "Gelände entfernt, das Haus steht wieder auf der Platte; \
+    Geländeflächen bleiben gespeichert und gelten wieder mit dem nächsten Aufmaß. \
+    Strg+Z holt es zurück.";
 
 /// Name eines Knopfs im Tooltip (Zeile in `hilfe.txt`, `[knopf]`).
 pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
@@ -219,7 +221,7 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
         GelaendeKnopf::Hinweise => "Alle Hinweise",
-        GelaendeKnopf::Entfernen => "Aufmaß entfernen",
+        GelaendeKnopf::Entfernen => "Gelände entfernen",
     }
 }
 
@@ -509,7 +511,9 @@ impl App {
     /// Aufmaß samt Lageplan und Grundstück entfernen, ein eigener Schritt
     /// (Bedienbarkeit 42.6); die Leiste vergisst das letzte Einlesen.
     fn aufmass_entfernen(&mut self) {
-        if !self.gelaende_schritt("Aufmaß entfernen", |m| m.set_terrain(None)) {
+        // nimmt auch Lageplan und Grundstück: „Gelände entfernen“ (Bedienbarkeit,
+        // später zu #196)
+        if !self.gelaende_schritt("Gelände entfernen", |m| m.set_terrain(None)) {
             return;
         }
         let z = &mut self.platte.leiste;
@@ -892,6 +896,7 @@ impl App {
     /// Loslassen, wie das Paneel „Eigenschaften“ (Review #129 B2: sonst je
     /// Mausbewegung 8,2 ms bei 1000 Häusern, 1 s bei 4000).
     pub(crate) fn gelaende_sync(&mut self) {
+        self.flaeche_zeile_ende();
         let z = &mut self.platte.leiste;
         let zeichnet = self.tool.enabled || self.tool.oeffnung.is_some() || self.nord.aktiv;
         if z.offen && zeichnet {
