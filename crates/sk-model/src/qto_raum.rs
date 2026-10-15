@@ -70,7 +70,7 @@ pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
     (
         "room.cornerbead",
         "m",
-        "Eckschutzschienen an vorspringenden Ecken geputzter Wände je Raum (DIN 18350)",
+        "Eckschutzschienen an vorspringenden Ecken geputzter Wände und an Laibungen in Innenwänden je Raum; Laibungen der Außenwand mit opening.reveal.inner (DIN 18350)",
     ),
     (
         "room.edgestrip",
