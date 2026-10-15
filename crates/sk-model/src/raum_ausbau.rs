@@ -456,6 +456,43 @@ mod tests {
         assert_eq!(szo::write(&l2.model), wieder, "stabil");
     }
 
+    /// Fremde Schlüssel bleiben an ihrer Zeile, auch wenn eine rohe Zeile
+    /// derselben Stelle davor steht und die Räume in anderer Reihenfolge
+    /// stehen, als das Programm sie schreibt (Test an #190).
+    #[test]
+    fn fremder_schluessel_hinter_roher_zeile() {
+        let (mut m, r, _) = haus();
+        m.set_space_finish(r, ab(Boden, Some(Keiner), None))
+            .unwrap();
+        let text = szo::write(&m);
+        let gueltig = text
+            .lines()
+            .find(|l| l.starts_with("[spacefinish]"))
+            .unwrap()
+            .to_string();
+        let typ = |g: Guid| gueltig.replace("type=none", &format!("type={}", g.to_ifc()));
+        // Wandputz als Boden zählt nicht und bleibt roh, vor der gültigen
+        let roh = typ(LIME_WALL_TYPE_GUID);
+        let fremd = format!("{gueltig} zukunft=1");
+        let datei = text.replace(&gueltig, &format!("{roh}\n{fremd}"));
+        let l = szo::read(&datei, GuidGen::with_seed(5)).unwrap();
+        let wieder = szo::write(&l.model);
+        let zeilen = |t: &str| -> Vec<String> {
+            let mut v: Vec<String> = t
+                .lines()
+                .filter(|l| l.starts_with("[spacefinish]"))
+                .map(str::to_string)
+                .collect();
+            v.sort();
+            v
+        };
+        let mut soll = vec![roh.clone(), fremd.clone()];
+        soll.sort();
+        assert_eq!(zeilen(&wieder), soll);
+        let l2 = szo::read(&wieder, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(szo::write(&l2.model), wieder, "stabil");
+    }
+
     /// Geteilte Wand: Die Abweichungen ihrer Wandseiten gelten an beiden
     /// Stücken; Rückgängig nimmt das neue Stück samt Abweichung zurück.
     #[test]

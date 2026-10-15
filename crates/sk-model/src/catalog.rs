@@ -287,7 +287,7 @@ impl Library {
 /// Kennung eines Satzes zum Wiederfinden in der eigenen Ausgabe: Abschnitt
 /// und Guid, ohne Guid die Schlüsselfelder ([default]: Art, [typeprop]:
 /// Typ und Merkmal, [layer]: Typ, [matprop]/[prop]: Baustoff bzw.
-/// Bauteil und Merkmal, [spacefinish]: Raum und Stelle). Mehrere Sätze
+/// Bauteil und Merkmal, [spacefinish]: alle bekannten Felder). Mehrere Sätze
 /// mit derselben Kennung (Schichten eines Typs) zählen in
 /// Dateireihenfolge durch.
 pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
@@ -298,15 +298,24 @@ pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> Stri
         .or_else(|| r.opt("surface").map(|g| ("surface", g)));
     let base = match id {
         Some((k, g)) => format!("{} {k}={g}", r.section),
-        // Abweichungen je Raum (RB6): Raum und Stelle, die Datei nennt die
-        // Räume in anderer Reihenfolge, als das Programm sie schreibt
+        // Abweichungen je Raum (RB6): alle bekannten Felder, denn die
+        // Datei nennt die Räume in anderer Reihenfolge, als das Programm
+        // sie schreibt, und rohe Zeilen stehen hinten. Gleich sind so nur
+        // eine gültige Zeile und ihr späterer Doppelgänger oder rohe
+        // Zeilen untereinander, deren Folge bleibt.
         None if r.section == "spacefinish" => format!(
-            "{} space={} at={} wall={} side={}",
+            "{} space={} at={} wall={} side={} type={} h={}",
             r.section,
             r.opt("space").unwrap_or(""),
             r.opt("at").unwrap_or(""),
             r.opt("wall").unwrap_or(""),
-            r.opt("side").unwrap_or("")
+            r.opt("side").unwrap_or(""),
+            r.opt("type").unwrap_or(""),
+            r.opt("h")
+                .map_or(String::new(), |h| match h.parse::<f64>() {
+                    Ok(v) => v.to_string(),
+                    Err(_) => h.to_string(),
+                })
         ),
         None => format!(
             "{} set={} cat={} mat={} elem={} key={}",
