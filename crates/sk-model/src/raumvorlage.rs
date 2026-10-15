@@ -580,6 +580,8 @@ impl Model {
         self.space_types = d.space_types;
         let (an, roh) = d.view_finish;
         self.load_view_finish(an, roh);
+        let (v, roh) = d.space_finish;
+        self.load_space_finish(v, roh);
     }
 
     /// Merkt die Vorlagen vor ihrer ersten Änderung im offenen Schritt (als

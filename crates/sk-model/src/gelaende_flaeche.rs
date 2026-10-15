@@ -11,7 +11,12 @@
 //! und B5).
 
 use super::{Model, SurveyFrame};
-use sk_gelaende::planung::{Baustein, Kante, Teil};
+use sk_gelaende::planung::{oberflaeche, schraffen, Baustein, Herkunft, Kante, Teil};
+use sk_math::{vec3, Vec3};
+use std::sync::{Arc, Mutex};
+
+/// Abstand der Böschungsschraffen im Grundriss (mm).
+pub const PATCH_HATCH: f64 = 1000.0;
 
 /// Vorgabe der Böschung 1:n am Rand einer Geländefläche.
 pub const PATCH_SLOPE: f64 = 1.5;
@@ -303,11 +308,193 @@ impl SiteSoil {
     }
 }
 
+/// Das Planungsgelände für die Darstellung (G3c) im Modell (mm, z zu
+/// ±0,00): die Dreiecke des Urgeländes, die es ersetzt, und die Dreiecke an
+/// ihrer Stelle ([`sk_gelaende::planung::oberflaeche`]), dazu die
+/// Böschungsschraffen und die Umrisse der Flächen auf ihrer Höhe.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlannedTerrain {
+    /// Nummern in [`Model::terrain_triangles`], aufsteigend.
+    pub replaced: Vec<u32>,
+    /// Gegen den Uhrzeigersinn, wie das Urgelände.
+    pub triangles: Vec<[Vec3; 3]>,
+    /// Je Dreieck: auf einer befestigten Fläche.
+    pub paved: Vec<bool>,
+    /// Böschungsschraffen vom Kopf zum Fuß, je Stück; `true` lang.
+    pub hatch: Vec<([Vec3; 2], bool)>,
+    /// Umriss jeder Fläche, die sich bauen lässt, auf ihrer Höhe.
+    pub outlines: Vec<Vec<Vec3>>,
+    /// Senkrechte Wände, wo die Höhe springt (Kante ohne Böschung, zwei
+    /// Flächen, Böschung auf Böschung); die Normale zeigt zur tieferen
+    /// Seite.
+    pub walls: Vec<[Vec3; 3]>,
+    /// Außenrand des Netzes mit Planungsgelände, in seinem Umlauf (Inneres
+    /// links): die Randkanten des Urgeländes und, wo ihr Dreieck ersetzt
+    /// ist, die Kanten der Stücke darauf (Review #183 B1: einmal je Plan
+    /// gerechnet, nicht je Bild).
+    pub border: Vec<[Vec3; 2]>,
+}
+
+/// Das zuletzt gerechnete Planungsgelände mit Netz, Lage und Flächen, aus
+/// denen es folgt.
+struct Geplant {
+    netz: Arc<crate::model::TerrainMesh>,
+    lage: [u64; 4],
+    flaechen: Vec<TerrainPatch>,
+    plan: Arc<PlannedTerrain>,
+}
+
+/// Platz für das zuletzt gerechnete Planungsgelände, geteilt über die
+/// Kopien des Modells (Review #183 a): Das Gelände rechnet ein eigener
+/// Faden auf einer Kopie; ein Schritt, der Flächen, Aufmaß und ±0,00 lässt,
+/// rechnet es nicht neu, auch wenn die Mengen es nicht gemerkt haben.
+#[derive(Clone, Default)]
+pub(crate) struct PlanMerker(Arc<Mutex<Option<Arc<Geplant>>>>);
+
+impl std::fmt::Debug for PlanMerker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Planmerker")
+    }
+}
+
+impl PlanMerker {
+    fn alt(&self) -> Option<Arc<Geplant>> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+
+    fn setzen(&self, g: Option<Geplant>) {
+        if let Ok(mut x) = self.0.lock() {
+            *x = g.map(Arc::new);
+        }
+    }
+}
+
 impl Model {
+    /// Das Planungsgelände der Geländeflächen über dem Urgelände; `None`
+    /// ohne Fläche, Aufmaß, Lage oder Netz. Geteilt, nicht kopiert (Review
+    /// #183 H-183f).
+    pub fn planned_terrain(&self) -> Option<Arc<PlannedTerrain>> {
+        let merker = self.planmerker();
+        let (Some(t), Some(f), Some(h0)) =
+            (self.terrain(), self.survey_frame(), self.terrain_nhn())
+        else {
+            merker.setzen(None);
+            return None;
+        };
+        if self.site_patches().is_empty() {
+            merker.setzen(None);
+            return None;
+        }
+        let mesh = t.mesh();
+        let lage = [f.e0, f.n0, f.g, h0].map(f64::to_bits);
+        if let Some(g) = merker.alt().filter(|g| {
+            Arc::ptr_eq(&g.netz, &mesh) && g.lage == lage && g.flaechen == self.site_patches()
+        }) {
+            return Some(g.plan.clone());
+        }
+        let plan = Arc::new(self.planungsgelaende(&f, h0, &mesh));
+        merker.setzen(Some(Geplant {
+            netz: mesh,
+            lage,
+            flaechen: self.site_patches().to_vec(),
+            plan: plan.clone(),
+        }));
+        Some(plan)
+    }
+
+    fn planungsgelaende(
+        &self,
+        f: &SurveyFrame,
+        h0: f64,
+        mesh: &Arc<crate::model::TerrainMesh>,
+    ) -> PlannedTerrain {
+        let plaene = crate::qto_earth::planungen(self, f, h0, mesh);
+        let gilt: Vec<(usize, &sk_gelaende::planung::Planung)> = plaene
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
+            .collect();
+        let refs: Vec<_> = gilt.iter().map(|x| x.1).collect();
+        let o = oberflaeche(&mesh.abfrage, &refs);
+        let s = schraffen(&o, &refs, PATCH_HATCH / 1000.0);
+        let im_modell = |q: [f64; 3]| {
+            let [x, y] = f.to_model(q[0] + mesh.bezug.0, q[1] + mesh.bezug.1);
+            vec3(x, y, (q[2] - h0) * 1000.0)
+        };
+        let patches = self.site_patches();
+        PlannedTerrain {
+            replaced: o.ersetzt.clone(),
+            triangles: o.dreiecke.iter().map(|(d, _)| d.map(im_modell)).collect(),
+            paved: o
+                .dreiecke
+                .iter()
+                .map(|(_, h)| matches!(h, Herkunft::Flaeche(k) if patches[gilt[*k].0].paved))
+                .collect(),
+            hatch: s
+                .iter()
+                .map(|(q, lang)| (q.map(im_modell), *lang))
+                .collect(),
+            outlines: gilt
+                .iter()
+                .map(|&(i, _)| {
+                    let p = &patches[i];
+                    p.outline
+                        .iter()
+                        .map(|q| vec3(q[0], q[1], p.z_at(q[0], q[1], h0)))
+                        .collect()
+                })
+                .collect(),
+            walls: o.waende.iter().map(|d| d.map(im_modell)).collect(),
+            border: mesh
+                .abfrage
+                .randkanten()
+                .filter(|(t, _)| o.ersetzt.binary_search(t).is_err())
+                .map(|(_, k)| k)
+                .chain(o.rand.iter().copied())
+                .map(|k| k.map(im_modell))
+                .collect(),
+        }
+    }
+
     /// Die Geländeflächen in der Reihenfolge, in der sie gesetzt wurden
     /// (bei Überlappung gilt die spätere).
     pub fn site_patches(&self) -> &[TerrainPatch] {
         &self.project.site_patches
+    }
+
+    /// Überlappt der Umriss der Fläche `i` den einer anderen um mehr als
+    /// 1 cm²? Die Mengen zählen dort doppelt
+    /// ([`crate::qto_earth::UEBERLAPPT`]); die App meldet es beim Schließen.
+    /// Erst die Rechtecke um die Umrisse, die Fläche `i` einmal zerlegt,
+    /// eine andere nur bei treffendem Rechteck (Review #189 B2).
+    pub fn site_patch_overlaps(&self, i: usize) -> bool {
+        use sk_gelaende::planung::Zerlegt;
+        let f = &self.project.site_patches;
+        let Some(a) = f.get(i) else {
+            return false;
+        };
+        let huelle = |r: &[[f64; 2]]| {
+            r.iter()
+                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |h, p| {
+                    [
+                        h[0].min(p[0]),
+                        h[1].min(p[1]),
+                        h[2].max(p[0]),
+                        h[3].max(p[1]),
+                    ]
+                })
+        };
+        let ha = huelle(&a.outline);
+        let mut za = None;
+        f.iter().enumerate().any(|(j, b)| {
+            let hb = huelle(&b.outline);
+            let trifft = ha[0] < hb[2] && hb[0] < ha[2] && ha[1] < hb[3] && hb[1] < ha[3];
+            if j == i || !trifft {
+                return false;
+            }
+            let za = za.get_or_insert_with(|| Zerlegt::neu(&a.outline));
+            za.ueberlappung(&Zerlegt::neu(&b.outline)) > 100.0
+        })
     }
 
     /// Neue Geländefläche (im offenen Schritt); ihre Nummer, `None`, wenn
@@ -540,6 +727,98 @@ mod tests {
         }
     }
 
+    /// Auf ebenem Aufmaß (10,00 m ü. NHN, ±0,00 auf 9,50) eine Fläche 1 m
+    /// über dem Gelände: Das Planungsgelände ersetzt die Dreiecke darunter,
+    /// deckt sie genau, liegt zwischen Gelände und Fläche und hat
+    /// Schraffen auf der Böschung.
+    #[test]
+    fn planungsgelaende_im_modell() {
+        use crate::model::Terrain;
+        let mut m = Model::with_seed(7);
+        let a = sk_gelaende::lesen::lesen(b"1 0 0 10\n2 60 0 10\n3 60 60 10\n4 0 60 10\n").unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "eben.txt", "2026-10-14", 32)));
+        assert!(m.set_terrain_nhn(9.5));
+        m.commit();
+        assert_eq!(m.planned_terrain(), None, "ohne Fläche");
+        let r = vec![
+            [-5_000.0, -4_000.0],
+            [5_000.0, -4_000.0],
+            [5_000.0, 4_000.0],
+            [-5_000.0, 4_000.0],
+        ];
+        m.begin("Fläche");
+        let mut p = TerrainPatch::flat(r, 1500.0);
+        p.paved = true;
+        assert!(m.add_site_patch(p).is_some());
+        m.commit();
+        // in einer Kopie gerechnet, im Modell gemerkt (Review #183 a)
+        let kopie = m.clone();
+        assert!(m.planmerker().alt().is_none());
+        let g = kopie.planned_terrain().unwrap();
+        assert!(m.planmerker().alt().is_some());
+        assert_eq!(m.planned_terrain().as_ref(), Some(&g));
+        assert!(!g.replaced.is_empty());
+        assert!(g.walls.is_empty(), "mit Böschung keine Wand");
+        assert_eq!(g.triangles.len(), g.paved.len());
+        let flaeche = |d: &[Vec3; 3]| ((d[1] - d[0]).cross(d[2] - d[0])).z / 2.0;
+        let alt = m.terrain_triangles();
+        let weg: f64 = g.replaced.iter().map(|&i| flaeche(&alt[i as usize])).sum();
+        let neu: f64 = g.triangles.iter().map(flaeche).sum();
+        assert!((weg - neu).abs() < 1.0, "{weg} {neu}");
+        assert!(g.triangles.iter().all(|d| flaeche(d) > 0.0));
+        for (d, befestigt) in g.triangles.iter().zip(&g.paved) {
+            let z: Vec<f64> = d.iter().map(|q| q.z).collect();
+            assert!(
+                z.iter().all(|z| (500.0 - 1e-6..=1500.0 + 1e-6).contains(z)),
+                "{z:?}"
+            );
+            let auf = z.iter().all(|z| (z - 1500.0).abs() < 1e-6);
+            let mitte = (d[0] + d[1] + d[2]) * (1.0 / 3.0);
+            let innen =
+                (-5_000.0..=5_000.0).contains(&mitte.x) && (-4_000.0..=4_000.0).contains(&mitte.y);
+            assert_eq!(*befestigt, innen, "{d:?}");
+            assert!(!innen || auf);
+        }
+        // Böschung 1:1,5 bis 1,5 m vor der Kante
+        let x_max = g
+            .triangles
+            .iter()
+            .filter(|d| d.iter().any(|q| q.z > 500.0 + 1e-6))
+            .flatten()
+            .map(|q| q.x)
+            .fold(0.0, f64::max);
+        assert!((x_max - 6_500.0).abs() < 1e-6, "{x_max}");
+        assert!(!g.hatch.is_empty());
+        for ([a, b], _) in &g.hatch {
+            for q in [a, b] {
+                assert!((500.0 - 1e-6..=1500.0 + 1e-6).contains(&q.z), "{q:?}");
+            }
+        }
+        assert_eq!(g.outlines.len(), 1);
+        assert!(g.outlines[0].iter().all(|q| q.z == 1500.0));
+        // senkrecht: neu gerechnet, Wände 1,00 m hoch rings um 10 × 8 m
+        m.begin("senkrecht");
+        let mut p = m.site_patches()[0].clone();
+        p.slopes = vec![0.0];
+        assert!(m.set_site_patch(0, p));
+        m.commit();
+        let s = m.planned_terrain().unwrap();
+        assert_ne!(s, g);
+        let wand: f64 = s
+            .walls
+            .iter()
+            .map(|d| (d[1] - d[0]).cross(d[2] - d[0]).length() / 2.0)
+            .sum();
+        assert!((wand - 36_000.0 * 1_000.0).abs() < 1.0, "{wand}");
+        // ohne Flächen nichts gemerkt
+        m.begin("weg");
+        assert!(m.remove_site_patch(0));
+        m.commit();
+        assert_eq!(m.planned_terrain(), None);
+        assert!(m.planmerker().alt().is_none());
+    }
+
     #[test]
     fn im_schritt_und_zurueck() {
         use crate::txn::Direction;
@@ -576,5 +855,21 @@ mod tests {
         }));
         m.commit();
         assert_eq!(m.site_soil().spread, 150.0);
+    }
+
+    /// Überlappung der Umrisse (Bedienbarkeit 43.1): Kante an Kante zählt
+    /// nicht, 1 m × 8 m gemeinsam schon.
+    #[test]
+    fn ueberlappt() {
+        let mut m = Model::with_seed(3);
+        let schieben = |dx: f64| quadrat().iter().map(|p| [p[0] + dx, p[1]]).collect();
+        m.begin("Flächen");
+        m.add_site_patch(TerrainPatch::flat(quadrat(), 0.0));
+        m.add_site_patch(TerrainPatch::flat(schieben(10_000.0), 0.0));
+        assert!(!m.site_patch_overlaps(0) && !m.site_patch_overlaps(1));
+        m.add_site_patch(TerrainPatch::flat(schieben(-9_000.0), 0.0));
+        m.commit();
+        assert!(m.site_patch_overlaps(2) && m.site_patch_overlaps(0));
+        assert!(!m.site_patch_overlaps(1) && !m.site_patch_overlaps(3));
     }
 }

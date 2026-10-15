@@ -51,6 +51,7 @@ mod fokus;
 mod frame_time;
 mod freischaltung;
 mod gelaende_app;
+mod gelaende_flaeche_app;
 mod gelaende_netz;
 mod gelaende_platte;
 mod geschosse_app;
@@ -75,6 +76,7 @@ mod menu;
 mod musterprobe;
 mod nav;
 mod nordpfeil;
+mod nordpfeil_app;
 mod oeffnung_app;
 mod pattern_view;
 #[cfg(test)]
@@ -962,7 +964,7 @@ impl App {
         if self.sel.set(self.picking.primary()) {
             self.redraw = true;
         }
-        if self.platte_props() {
+        if self.platte_props() || self.flaeche_props() {
             return;
         }
         let key = self.sel.id.map(|id| (id, self.scene.model().revision()));
@@ -1124,32 +1126,6 @@ impl App {
         self.ui.view == ViewKind::Plan && !self.tool.is_active() && !self.nord.aktiv
     }
 
-    /// Stand des Nordpfeils im Modell (Sonnenstand S2).
-    fn nord_stand(&self, vh: f64, sc: f64) -> nordpfeil::Stand {
-        let m = self.scene.model();
-        nordpfeil::Stand {
-            nord: m.location().north,
-            fuss: nordpfeil::platz(&self.cam, vh, sc, m.north_foot(), self.scene.bounds()),
-            gesetzt: m.north_foot(),
-        }
-    }
-
-    /// Ereignis an den Nordpfeil (3D und Grundriss, ohne Wandeingabe und
-    /// ohne gegriffene Schnittlinie); `true`, wenn er es genommen hat.
-    fn nord_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
-        let en = self.tool_allowed() && !self.tool.enabled && !self.sect.is_busy();
-        let st = self.nord_stand(vh, sc);
-        self.nord.gebaeude = self.scene.bounds();
-        let out = self.nord.handle(ev, st, &self.cam, vw, vh, sc, en);
-        self.redraw |= out.redraw;
-        self.nord_commit(out.commit);
-        // Klick auf den Pfeil schaltet den Sonnenstand (§8 09:25)
-        if out.klick {
-            self.sonne_umschalten(true);
-        }
-        out.consumed
-    }
-
     /// Kachel oder Klick auf den Pfeil: Sonnenstand um; ohne Gebäude geht
     /// er nicht an, ein Hinweis sagt warum (S9). `zu_3d` wie bei
     /// [`App::sonne_schalten`].
@@ -1167,67 +1143,6 @@ impl App {
         match w {
             Ok(on) => self.sonne_schalten(on, zu_3d),
             Err(h) => self.status(meldung::Meldung::satz(h), NOTICE_TIME),
-        }
-    }
-
-    /// Nach dem ersten geschlossenen Umriss ohne Nordrichtung startet der
-    /// Nordpfeil einmal je Projekt von selbst (S9); Esc heißt „später“.
-    fn nord_fuehren(&mut self, umriss: bool, erster: bool) {
-        let haus = self.scene.bounds().is_some();
-        let nord = self.scene.model().location().north;
-        let erlaubt = self.tool_allowed();
-        if !self
-            .nord_fuehrung
-            .nach_wandzug(umriss, erster, haus, nord, erlaubt)
-        {
-            return;
-        }
-        self.tool.set_enabled(false);
-        self.nord.set_aktiv(true);
-        self.nord_zeile();
-        self.overlay_dirty = true;
-        self.redraw = true;
-    }
-
-    /// Zeile des geführten Nordpfeils in der Statuszeile; sie steht, solange
-    /// das Werkzeug an ist (§8 13:50), auch nach einem anderen Hinweis.
-    fn nord_zeile(&mut self) {
-        self.status(
-            meldung::Meldung::satz(nordpfeil::GEFUEHRT),
-            std::time::Duration::from_secs(3600),
-        );
-    }
-
-    /// Der geführte Nordpfeil ist zu Ende (gesetzt oder Esc): seine Zeile
-    /// geht aus der Statuszeile.
-    fn nord_gefuehrt_ende(&mut self) {
-        if self
-            .notice
-            .as_ref()
-            .is_some_and(|n| n.text == nordpfeil::GEFUEHRT)
-        {
-            self.notice = None;
-            self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
-            self.redraw = true;
-        }
-    }
-
-    /// Ein Schritt „Nordrichtung geändert“ bzw. „Nordpfeil verschoben“.
-    /// Nach dem ersten Aufziehen ist der Sonnenstand an (§8 09:25), ohne
-    /// Gebäude noch nicht (S9).
-    fn nord_commit(&mut self, c: Option<nordpfeil::Setzen>) {
-        if let Some((label, n, f)) = c {
-            let neu = self.scene.model().location().north.is_none();
-            if self.scene.nordpfeil_setzen(label, n, f) {
-                self.overlay_dirty = true;
-                // An, nicht um (Befund D); geführt aus dem Grundriss nach 3D
-                // wie bei der Kachel
-                if neu {
-                    let w = sonne_view::erstes_setzen(self.scene.bounds().is_some());
-                    self.sonne_wahl(w, self.nord_fuehrung.laeuft);
-                }
-            }
-            self.redraw = true;
         }
     }
 
@@ -1427,9 +1342,7 @@ impl App {
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
         }
-        if !self.tool_allowed() {
-            self.nord.set_aktiv(false);
-        }
+        self.sicht_werkzeuge();
         let sicht = self.zahnrad_reset();
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
@@ -2632,7 +2545,7 @@ impl App {
 
     /// Rückgängig bzw. Wiederherstellen (Knopf und Kürzel).
     fn history(&mut self, redo: bool) {
-        if self.tool.is_active() || self.edit.is_dragging() || self.drains.is_dragging() {
+        if self.flaeche_zurueck(redo) || self.im_zug() {
             return;
         }
         // Ein Lösch-Schritt blendet ein bzw. wieder aus (V?-9)
@@ -2657,6 +2570,7 @@ impl App {
         }
         if changed {
             self.oeffnung_neu();
+            self.flaeche_waehlen(None); // ihre Nummer kann eine andere sein (H-189b)
             self.hint = None;
             self.hint_dirty = true;
             self.upload_model();
@@ -3244,7 +3158,7 @@ impl App {
             }
             Id::PropsType if self.ext_gewaehlt_ist() => self.ext_klick(id),
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
-            Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
+            Id::Ext | Id::ExtTyp | Id::ExtListe(_) | Id::Raumbuch(_) => self.ext_klick(id),
             Id::Opening(k) => self.oeffnung_klick(k),
             Id::Gelaende(k) => self.gelaende_klick(k),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
@@ -4364,6 +4278,10 @@ impl App {
                     );
                     match change {
                         selection::PickChange::Keep => {}
+                        // Klick ins Leere im Grundriss wählt die Geländefläche
+                        // darunter (G3d)
+                        selection::PickChange::Replace(None)
+                            if self.flaeche_klick(x, y, vw, vh) => {}
                         selection::PickChange::Replace(id) => self.select(id),
                         selection::PickChange::Add(id) | selection::PickChange::Remove(id) => {
                             self.picking.click(id, true);
@@ -4484,6 +4402,10 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
+                } else if down && key == Key::Escape && self.flaeche_escape() {
+                    // Esc beim Zeichnen einer Geländefläche
+                } else if down && self.flaeche_taste(key, mods) {
+                    // Tasten beim Zeichnen einer Geländefläche
                 } else if down && self.oeffnung_taste(key, mods) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
@@ -4513,7 +4435,9 @@ impl App {
                 } else if down
                     && key == Key::Escape
                     && !self.tool.enabled
-                    && (self.sel.id.is_some() || self.picking.plate)
+                    && (self.sel.id.is_some()
+                        || self.picking.plate
+                        || self.picking.flaeche.is_some())
                 {
                     self.select(None);
                 } else {
@@ -4926,7 +4850,10 @@ impl App {
     /// löschbar sind, in einem Schritt. Gelöschtes blendet aus, Abgelehntes
     /// leuchtet einmal, der Hinweis am Bauteil sagt, was blieb und warum.
     fn delete_selection(&mut self) {
-        self.erase(false);
+        // Gewählte Geländefläche (G3d): Entf löscht sie
+        if !self.flaeche_entf() {
+            self.erase(false);
+        }
     }
 
     /// Löschen aus dem Hauptfenster oder (`list`) aus dem Mengenfenster
@@ -4934,7 +4861,7 @@ impl App {
     /// aus und leuchtet mit, ohne zweiten Hinweis.
     fn erase(&mut self, list: bool) {
         let ids = self.picking.selected.clone();
-        if self.tool.is_active() || self.edit.is_dragging() || self.drains.is_dragging() {
+        if self.im_zug() {
             return;
         }
         if list && !self.quantity.part_selected(&self.picking) {
@@ -8136,6 +8063,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
             helpers.extend(a.mass_zeichnen(scale));
+            helpers.extend(a.flaeche_linien(scale));
             if a.tool_allowed() {
                 let (width, ink) = a.scene.table().section_line;
                 let st = a.nord_stand(vh, scale as f64);

@@ -121,7 +121,8 @@ pub use model::{
 pub use model::{EckeFehler, Fangziele, OpeningFault, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{FreieRaumnamen, Space, SPACE_SEQ};
 pub use model::{
-    PatchHeight, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_SLOPE, PATCH_SLOPE_RANGE,
+    PatchHeight, PlannedTerrain, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_HATCH, PATCH_SLOPE,
+    PATCH_SLOPE_RANGE, PATCH_XY_MAX, PATCH_Z_MAX,
 };
 pub use model::{PlateInput, PlateSettings, TerrainPlate, PLATE_MARGIN, PLATE_THICK};
 pub use model::{SpaceGroup, SpaceType, WallTiles, DEFAULT_SPACE_GUID};

@@ -78,7 +78,7 @@ pub const GANZ_AUSSERHALB: &str = "Geländefläche ohne Mengen: liegt außerhalb
 pub const OHNE_AUFMASS: &str = "Geländefläche ohne Mengen: kein Höhenaufmaß";
 pub const OHNE_TRAEGER: &str = "Geländefläche ohne Mengen: keine Sohlplatte als Träger";
 /// Hinweis, wenn sich Flächen überlappen.
-const UEBERLAPPT: &str =
+pub const UEBERLAPPT: &str =
     "Geländeflächen überlappen sich: Menge dort doppelt gezählt, Flächen prüfen";
 /// Kleinere Mengen (m³, m²) sind Rundungsreste und geben keine Zeile
 /// (H-173a), wie in der Oberbodenbilanz.
@@ -654,6 +654,37 @@ pub(crate) fn gelaende_mengen(
         .rposition(|r| r.element == traeger.vorlage.element && r.key.starts_with("earth."))
         .map_or(out.len(), |k| k + 1);
     out.splice(nach..nach, neu);
+}
+
+/// Das Planungsgelände jeder Fläche des Modells `m` im Netz `mesh` (für die
+/// Darstellung, G3c), in der Reihenfolge der Flächen; `None`, wo sie sich
+/// nicht bauen lässt. Was der Merker der Mengen zu Netz, Lage und Fläche
+/// schon weiß, rechnet nicht neu.
+pub(crate) fn planungen(
+    m: &Model,
+    frame: &SurveyFrame,
+    h0: f64,
+    mesh: &Arc<TerrainMesh>,
+) -> Vec<Option<Planung>> {
+    let lage = [frame.e0, frame.n0, frame.g, h0].map(f64::to_bits);
+    let alt = m
+        .flaechenmerker()
+        .alt()
+        .filter(|g| Arc::ptr_eq(&g.netz, mesh) && g.lage == lage);
+    m.site_patches()
+        .iter()
+        .map(|p| {
+            let gemerkt = alt
+                .as_ref()
+                .and_then(|g| g.flaechen.iter().find(|x| x.patch == *p));
+            match gemerkt {
+                Some(x) => x.plan.planung.as_ref().map(|(pl, _)| pl.clone()),
+                None => p
+                    .baustein(frame, h0, mesh.bezug)
+                    .map(|b| Planung::neu(&b, &mesh.abfrage)),
+            }
+        })
+        .collect()
 }
 
 fn gleiche_flaechen(alt: &[Gerechnet], p: &[TerrainPatch]) -> bool {
@@ -1553,12 +1584,26 @@ mod tests {
             let t = Instant::now();
             let _ = crate::qto::schedule(&m);
             let warm = ms(t);
+            // Darstellung (G3c): das Planungsgelände mit den Plänen aus dem
+            // Merker
+            let t = Instant::now();
+            let pt = m.planned_terrain().unwrap();
+            let bild = ms(t);
+            eprintln!(
+                "{anzahl} × 400 Kanten: Planungsgelände {bild:.1} ms, {} Dreiecke ersetzt durch {}, {} Schraffen",
+                pt.replaced.len(),
+                pt.triangles.len(),
+                pt.hatch.len()
+            );
             m.begin("eine");
             assert!(m.set_site_patch(0, kreis(-10_000.0, 30_000.0, 700.0)));
             m.commit();
             let t = Instant::now();
             let _ = crate::qto::schedule(&m);
             let eine = ms(t);
+            let t = Instant::now();
+            let _ = m.planned_terrain().unwrap();
+            let eine_bild = ms(t);
             let haus = |m: &mut Model, x0: f64, y0: f64| {
                 let b = m.add_building(1);
                 let pts = [
@@ -1573,11 +1618,15 @@ mod tests {
                 ms(t)
             };
             let fern = haus(&mut m, 30_000.0, 2_000.0);
+            let t = Instant::now();
+            let _ = m.planned_terrain().unwrap();
+            let fern_bild = ms(t);
             let nah = haus(&mut m, -14_000.0, 17_000.0);
             eprintln!(
                 "{anzahl} × 400 Kanten: kalt {kalt:.1} ms, warm {warm:.1} ms, \
                  eine Fläche geändert {eine:.1} ms, Haus fern {fern:.1} ms, \
-                 Haus an einer Fläche {nah:.1} ms"
+                 Haus an einer Fläche {nah:.1} ms; Bild nach geänderter Fläche \
+                 {eine_bild:.1} ms, nach Wandschritt {fern_bild:.1} ms"
             );
         }
     }

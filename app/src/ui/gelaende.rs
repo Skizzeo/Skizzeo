@@ -31,6 +31,11 @@ pub enum GelaendeKnopf {
     Absolut,
     /// Zuschnitt: alles, Umgebung blass, nur Grundstück (§4.5).
     Zuschnitt(Show),
+    /// Werkzeug „Fläche zeichnen“ (G3d).
+    Flaeche,
+    /// Im Paneel der gewählten Geländefläche: befestigt ja/nein, löschen.
+    Befestigt,
+    Loeschen,
 }
 
 impl GelaendeKnopf {
@@ -46,7 +51,10 @@ impl GelaendeKnopf {
             | GelaendeKnopf::Ausrichten
             | GelaendeKnopf::Ueber
             | GelaendeKnopf::Absolut
-            | GelaendeKnopf::Zuschnitt(_) => Some(Modul::Gelaende),
+            | GelaendeKnopf::Zuschnitt(_)
+            | GelaendeKnopf::Flaeche
+            | GelaendeKnopf::Befestigt
+            | GelaendeKnopf::Loeschen => Some(Modul::Gelaende),
         }
     }
 }
@@ -65,6 +73,25 @@ pub enum GelaendeFeld {
     Oben,
     /// Drehen: um so viel Grad gegen den Uhrzeigersinn um die Hausmitte.
     Winkel,
+    /// Paneel der gewählten Geländefläche (G3d): Höhe über ±0,00 (mm) und
+    /// Böschung 1:n (0 senkrecht).
+    Hoehe,
+    Boeschung,
+    /// Erdarbeiten am Grundstück: Oberboden andecken (mm) und Faktor fest
+    /// zu eingebaut.
+    Andecken,
+    Faktor,
+}
+
+impl GelaendeFeld {
+    /// Felder im Paneel „Eigenschaften“ der gewählten Fläche, nicht in der
+    /// Leiste.
+    pub fn im_paneel(self) -> bool {
+        matches!(
+            self,
+            Self::Hoehe | Self::Boeschung | Self::Andecken | Self::Faktor
+        )
+    }
 }
 
 /// Was die Leiste zeigt; die App füllt es aus dem Modell.
@@ -83,6 +110,9 @@ pub struct GelaendeLeiste {
     pub zuschnitt: Option<Show>,
     /// Verschieben oder Drehen ist offen.
     pub tippen: Option<GelaendeKnopf>,
+    /// Das Werkzeug „Fläche zeichnen“ ist an; `ecken` sind gesetzt.
+    pub zeichnen: bool,
+    pub ecken: usize,
     /// Felder in der Reihenfolge der Leiste.
     pub felder: Vec<FieldRow>,
     /// Höhe von ±0,00 und die Folgen der Höhenlage, je eine Zeile.
@@ -161,6 +191,25 @@ impl Ui {
                 feld(&mut rows, GelaendeFeld::Nhn);
                 rows.extend(l.hoehenlage.iter().map(|z| Row::Text(z.clone())));
                 rows.extend(l.steckt.clone().map(Row::Error));
+                rows.extend([
+                    Row::Separator,
+                    Row::Label("Geländeflächen"),
+                    Row::Button(Id::Gelaende(K::Flaeche), "Fläche zeichnen"),
+                ]);
+                if l.zeichnen {
+                    rows.extend(match l.ecken {
+                        0 => [
+                            Row::Hint("Ecken im Grundriss klicken,"),
+                            Row::Hint("die erste Ecke schließt."),
+                        ],
+                        _ => [
+                            Row::Hint("Enter schließt, Rücktaste"),
+                            Row::Hint("nimmt die letzte Ecke."),
+                        ],
+                    });
+                } else {
+                    rows.push(Row::Hint("Klick wählt eine Fläche."));
+                }
             }
             if l.grenze {
                 rows.extend([
@@ -211,10 +260,13 @@ impl Ui {
             GelaendeKnopf::Ueber => !l.absolut,
             GelaendeKnopf::Absolut => l.absolut,
             GelaendeKnopf::Zuschnitt(s) => l.zuschnitt == Some(s),
+            GelaendeKnopf::Flaeche => l.zeichnen,
             GelaendeKnopf::Lageplan
             | GelaendeKnopf::Uebernehmen
             | GelaendeKnopf::Hoehen
-            | GelaendeKnopf::Ausrichten => false,
+            | GelaendeKnopf::Ausrichten
+            | GelaendeKnopf::Befestigt
+            | GelaendeKnopf::Loeschen => false,
         }
     }
 }
@@ -264,6 +316,7 @@ mod tests {
                 K::Ausrichten,
                 K::Ueber,
                 K::Absolut,
+                K::Flaeche,
                 K::Zuschnitt(Show::All),
                 K::Zuschnitt(Show::Fade),
                 K::Zuschnitt(Show::Parcel),
@@ -273,6 +326,31 @@ mod tests {
         assert!(ui.is_on(Id::Gelaende(K::Ueber)) && !ui.is_on(Id::Gelaende(K::Absolut)));
         assert!(ui.is_on(Id::Gelaende(K::Zuschnitt(Show::All))));
         assert!(!ui.is_disabled(Id::Gelaende(K::Lageplan)));
+        // Fläche zeichnen: hervorgehoben, die Hinweise folgen den Ecken
+        let hinweise = |ui: &Ui| -> Vec<String> {
+            ui.rows(Panel::Tools)
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Hint(t) => Some(t.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(!ui.is_on(Id::Gelaende(K::Flaeche)));
+        assert!(hinweise(&ui).contains(&"Klick wählt eine Fläche.".into()));
+        ui.gelaende = Some(GelaendeLeiste {
+            zeichnen: true,
+            ..leiste()
+        });
+        assert!(ui.is_on(Id::Gelaende(K::Flaeche)));
+        assert!(hinweise(&ui)[1].starts_with("die erste Ecke"));
+        ui.gelaende = Some(GelaendeLeiste {
+            zeichnen: true,
+            ecken: 2,
+            ..leiste()
+        });
+        assert!(hinweise(&ui)[0].starts_with("Enter schließt"));
+        ui.gelaende = Some(leiste());
         // Ein gelesener Lageplan bietet sein Flurstück an; ohne Höhen keine
         // Höhenlage
         ui.gelaende = Some(GelaendeLeiste {

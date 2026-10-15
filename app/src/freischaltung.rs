@@ -262,6 +262,7 @@ impl Eingang for Id {
             // OK Gelände im Geschossmanager gehört zur Geländeplatte, die es
             // ohne Modul gibt
             Id::Building
+            | Id::Raumbuch(_)
             | Id::Interior
             | Id::Ref(_)
             | Id::Sprung(_)

@@ -53,6 +53,10 @@ const HAEUSER: [(&str, &str); 5] = [
     // und die Darstellungsstellen `element` und `above`
     // seit RB4 die Schalter „Ausbau innen“ (`[viewfinish]`, Schnitt an,
     // Grundriss mit `on=0`)
+    // seit #139 die Planunterlage (`[underlay]` mit `src`, `page`, `m`,
+    // `flst`), seit #173 drei Geländeflächen (`[tpatch]` eben, mit Gefälle,
+    // Böschung je Kante und `paved`, über Ecken mit `href=abs`) und die
+    // Werte des Geländebaus (`[sitesoil]` mit abweichendem `spread`, `reuse`)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
