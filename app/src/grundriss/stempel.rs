@@ -1,7 +1,8 @@
 //! Raumstempel im Grundriss (Grundriss G4, plan.md §4.4): je Raum des
 //! aktiven Geschosses der Name und darunter die Grundfläche „12,34 m²“ an
-//! der fertigen Oberfläche ([`sk_raum::flaechen::grundflaeche`], ohne
-//! Faktor), wie gedruckt auf dem Papier des Grundrisses.
+//! der fertigen Oberfläche ([`sk_raum::flaechen::grundflaeche_fertig`],
+//! ohne Faktor, dieselbe wie im Paneel und im Mengenblatt), wie gedruckt
+//! auf dem Papier des Grundrisses.
 //!
 //! Platz: Der Stempel steht an seinem Punkt (verschoben, sonst die Mitte
 //! des größten Kreises im Raum), ganz im Raum, nicht unter einem Paneel und
