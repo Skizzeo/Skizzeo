@@ -407,10 +407,10 @@ Platte | ohne Aufmaß liegt unter dem Haus eine ebene grüne Geländeplatte; im 
 Modul | echtes Gelände aus Lageplan und Höhenaufmaß gibt es mit dem Geländemodul (Dateimenü › „Ausbaustufe …“)
 Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen. Geht sie zu, liest Skizzeo fertig und behält den Lageplan
 Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss
-Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien. Deckt es die Baugrube eines Hauses nicht, steht das rot unter der Höhenlage. „Aufmaß entfernen“ führt zurück zur Platte; Geländeflächen ruhen dann, Lage, Nordrichtung und Höhe von ±0,00 bleiben
+Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien. Deckt es die Baugrube eines Hauses nicht, steht das rot unter der Höhenlage. „Gelände entfernen“ führt zurück zur Platte; Geländeflächen bleiben gespeichert, Lage, Nordrichtung und Höhe von ±0,00 bleiben
 Lage | das Gelände bewegt sich, das Haus bleibt: „Schieben“ und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“
 Höhenlage | „relativ“: ±0,00 um den Versatz über dem höchsten Geländepunkt am Plattenrand; „absolut“: ±0,00 fest in m ü. NHN
-Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken (sie rasten an Ecken und Kanten von Haus, Flächen und Grenze), die erste Ecke oder **Enter** schließt, **Rücktaste** oder **Strg+Z** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, ein Klick daneben wählt sie ab, das Paneel ändert Höhe, Böschung und „befestigt“, für alle Flächen „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten); **Entf** löscht sie
+Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken (sie rasten an Ecken und Kanten von Haus, Flächen und Grenze, mit gehaltener **Strg**-Taste nur im 1-cm-Raster), die erste Ecke oder **Enter** schließt, **Rücktaste** oder **Strg+Z** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, ein Klick daneben wählt sie ab, das Paneel ändert Höhe, Böschung und „befestigt“, für alle Flächen „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten); **Entf** löscht sie
 Erdmengen | im Mengenfenster unter „Kosten“ nach VOB/C: Baugrube, Verfüllung und Oberboden am Gelände, Abtrag und Auftrag beim Grundstück
 Zuschnitt | „alles“, „blass“ oder „Grenze“ zeigt das Gelände über die Grenze hinaus, blass oder abgeschnitten; gerechnet wird immer mit allen Punkten
 
@@ -437,7 +437,7 @@ Fläche zeichnen | Terrasse, Garten oder Hof als Geländefläche: Ecken im Grund
 Fläche befestigt | Die gewählte Geländefläche ist befestigt (Pflaster, Platten) oder nicht (Rasen, Beet).
 Fläche löschen | Die gewählte Geländefläche entfernen; das Gelände ist dort wieder wie aufgemessen.
 Alle Hinweise | Zeigt alle Hinweise des letzten Einlesens; ein zweiter Klick wieder nur die ersten drei.
-Aufmaß entfernen | Höhenaufmaß, Lageplan und Grundstück entfernen; das Haus steht wieder auf der ebenen Platte, Geländeflächen ruhen, Lage, Nordrichtung und Höhe von ±0,00 bleiben. Strg+Z holt alles zurück.
+Gelände entfernen | Höhenaufmaß, Lageplan und Grundstück entfernen; das Haus steht wieder auf der ebenen Platte, Geländeflächen bleiben gespeichert und gelten wieder mit dem nächsten Aufmaß, Lage, Nordrichtung und Höhe von ±0,00 bleiben. Strg+Z holt alles zurück.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.

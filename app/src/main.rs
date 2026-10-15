@@ -3258,8 +3258,8 @@ impl App {
         // Geführter Nordpfeil (S9) zu Ende: gesetzt, Esc, andere Ansicht
         if self.nord_fuehrung.ende(self.nord.aktiv) {
             self.nord_gefuehrt_ende();
-        } else if self.nord_fuehrung.laeuft && self.notice.is_none() {
-            self.nord_zeile();
+        } else if self.notice.is_none() {
+            self.zeile_zurueck();
         }
         // Kachel des Nordpfeils (Sonnenstand S2), auch nach Strg+Z
         let nord = (

@@ -219,7 +219,7 @@ const KNOEPFE: [&str; 34] = [
     "Fläche befestigt",
     "Fläche löschen",
     "Alle Hinweise",
-    "Aufmaß entfernen",
+    "Gelände entfernen",
     "3D",
     "Grundriss",
     "Schnitt",
