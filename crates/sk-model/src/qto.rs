@@ -2686,28 +2686,52 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             }
         }
     }
-    // Namen einmal je Baustoff, sortiert wird eine Folge von Stellen: Der
-    // Vergleich legte je Aufruf zwei Namen an und die Sortierung schob
-    // ganze Zeilen (Review #197 B3); dieselbe stabile Reihenfolge
-    let mut namen: HashMap<MaterialId, &str> = HashMap::new();
-    for r in &out {
-        namen
-            .entry(r.material)
-            .or_insert_with(|| model.material(r.material).map_or("", |x| x.name.as_str()));
+    // Sortiert wird ein Schlüssel aus Zahlen je Zeile: Rang des Baustoffnamens
+    // und der Nummer einmal je Wert, Dicke als geordnete Bits, die Stelle
+    // zuletzt (dieselbe Reihenfolge wie die stabile Sortierung nach Gruppe,
+    // Name, Dicke, Nummer, Schicht). Der Vergleich legte je Aufruf zwei Namen
+    // an und schob ganze Zeilen (Review #197 B3)
+    fn raenge<'a>(werte: impl Iterator<Item = &'a str>) -> HashMap<&'a str, u32> {
+        let mut v: Vec<&str> = werte.collect();
+        v.sort_unstable();
+        v.dedup();
+        v.into_iter().zip(0..).collect()
     }
-    let mut folge: Vec<usize> = (0..out.len()).collect();
-    folge.sort_by(|&i, &j| {
-        let (a, b) = (&out[i], &out[j]);
-        (group_rank(a.category), namen[&a.material])
-            .cmp(&(group_rank(b.category), namen[&b.material]))
-            .then(a.thickness.total_cmp(&b.thickness))
-            .then(a.number.cmp(&b.number))
-            .then(a.layer.cmp(&b.layer))
-    });
+    let name = |m: MaterialId| model.material(m).map_or("", |x| x.name.as_str());
+    let mut je_stoff: HashMap<MaterialId, &str> = HashMap::new();
+    for r in &out {
+        je_stoff
+            .entry(r.material)
+            .or_insert_with(|| name(r.material));
+    }
+    let name_rang = raenge(je_stoff.values().copied());
+    let stoff_rang: HashMap<MaterialId, u32> =
+        je_stoff.iter().map(|(&m, n)| (m, name_rang[n])).collect();
+    let nummer_rang = raenge(out.iter().map(|r| r.number.as_str()));
+    // f64::total_cmp als Ganzzahl
+    let dicke = |t: f64| {
+        let b = t.to_bits() as i64;
+        b ^ (((b >> 63) as u64) >> 1) as i64
+    };
+    let mut folge: Vec<_> = out
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            (
+                group_rank(r.category),
+                stoff_rang[&r.material],
+                dicke(r.thickness),
+                nummer_rang[r.number.as_str()],
+                r.layer,
+                i,
+            )
+        })
+        .collect();
+    folge.sort_unstable();
     let mut zeilen: Vec<Option<LayerRow>> = out.into_iter().map(Some).collect();
     folge
         .into_iter()
-        .map(|i| zeilen[i].take().expect("jede Stelle einmal"))
+        .map(|k| zeilen[k.5].take().expect("jede Stelle einmal"))
         .collect()
 }
 
