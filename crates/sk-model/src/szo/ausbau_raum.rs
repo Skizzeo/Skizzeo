@@ -158,6 +158,10 @@ fn zeile(
         return Err("Raum fehlt".into());
     }
     let seite = match r.opt("wall") {
+        // Seite ohne Wand: als rohe Zeile wörtlich behalten, sonst ginge
+        // `side=` und mit der Kennung jeder fremde Schlüssel verloren
+        // (Review #190 H-190g)
+        None if r.opt("side").is_some() => return Err("unlesbar".into()),
         None => None,
         Some(_) => Some(WandSeite {
             wand: r.guid("wall").map_err(unlesbar)?,

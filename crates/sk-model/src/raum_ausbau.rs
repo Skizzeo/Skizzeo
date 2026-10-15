@@ -610,6 +610,31 @@ mod tests {
         );
     }
 
+    /// `side=` ohne `wall=` bleibt als rohe Zeile wörtlich stehen, mit
+    /// fremdem Schlüssel, und gilt nicht als Abweichung der ganzen Wand
+    /// (Review #190 H-190g).
+    #[test]
+    fn seite_ohne_wand_bleibt_roh() {
+        let (mut m, r, _) = haus();
+        m.set_space_finish(r, ab(Wand(None), Some(Keiner), None))
+            .unwrap();
+        let text = szo::write(&m);
+        let gueltig = text
+            .lines()
+            .find(|l| l.starts_with("[spacefinish]"))
+            .unwrap()
+            .to_string();
+        let seitlos = format!("{gueltig} side=l zukunft=1");
+        let l = szo::read(&text.replace(&gueltig, &seitlos), GuidGen::with_seed(5)).unwrap();
+        let raum = l.model.spaces(m.element(r).unwrap().storey)[0];
+        let sp = l.model.space(raum).unwrap();
+        assert!(sp.ausbau.is_empty(), "{:?}", sp.ausbau);
+        let wieder = szo::write(&l.model);
+        assert!(wieder.lines().any(|z| z == seitlos), "{wieder}");
+        let l2 = szo::read(&wieder, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(szo::write(&l2.model), wieder, "stabil");
+    }
+
     /// Ein Typ, den nur eine Abweichung nennt, lässt sich weder löschen
     /// noch in eine andere Art umstellen (Review #190 B2); ohne die
     /// Abweichung geht beides.
