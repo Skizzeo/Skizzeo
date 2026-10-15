@@ -396,6 +396,7 @@ impl Field {
                 Field::Offset | Field::DownpipeSpacing | Field::PlateMargin
             )
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
+            || self == Field::Gelaende(GelaendeFeld::Hoehe)
     }
 
     /// Zahl in Prozent, ohne Umrechnung (Gefälle).
@@ -417,7 +418,10 @@ impl Field {
     fn is_kote(self) -> bool {
         matches!(
             self,
-            Field::LevelBottom | Field::LevelTop(_) | Field::Terrain
+            Field::LevelBottom
+                | Field::LevelTop(_)
+                | Field::Terrain
+                | Field::Gelaende(GelaendeFeld::Hoehe)
         )
     }
 
@@ -506,7 +510,8 @@ impl FieldRow {
     /// bis Y“.
     pub fn ausserhalb(&self) -> Option<Meldung> {
         let e = self.einheit?;
-        if self.value >= self.min - 1e-9 && self.value <= self.max + 1e-9 {
+        let null = self.zero && self.value == 0.0;
+        if null || self.value >= self.min - 1e-9 && self.value <= self.max + 1e-9 {
             return None;
         }
         let z = |v: f64| format!("{} {e}", zahl_text(v)).trim_end().to_string();
@@ -533,6 +538,20 @@ impl FieldRow {
             return Err(Meldung::satz("keine Zahl"));
         }
         if self.einheit.is_some() {
+            // Felder der Geländefläche: nur im Bereich (Bedienbarkeit 43.1)
+            if matches!(self.field, Field::Gelaende(g) if g.im_paneel()) {
+                let r = FieldRow {
+                    value: n,
+                    ..self.clone()
+                };
+                if let Some(m) = r.ausserhalb() {
+                    return Err(if self.zero {
+                        Meldung::mit("0 oder {}", &[m.as_str()])
+                    } else {
+                        m
+                    });
+                }
+            }
             return Ok(n);
         }
         let mm = if self.field.in_percent() {
@@ -1555,8 +1574,10 @@ impl Ui {
         if let Field::ExtTool(_) = f {
             return self.ext_tool.as_ref()?.felder.iter().find(|r| r.field == f);
         }
-        if let Field::Gelaende(_) = f {
-            return self.gelaende.as_ref()?.felder.iter().find(|r| r.field == f);
+        if let Field::Gelaende(g) = f {
+            if !g.im_paneel() {
+                return self.gelaende.as_ref()?.felder.iter().find(|r| r.field == f);
+            }
         }
         if let Field::ExtProp(_) = f {
             return self.ext_zeilen().find_map(|z| match z {
@@ -1577,7 +1598,9 @@ impl Ui {
     fn field_panel(f: Field) -> Panel {
         if let Field::Draft(_) = f {
             Panel::Dialog
-        } else if let Field::ExtTool(_) | Field::Gelaende(_) = f {
+        } else if matches!(f, Field::ExtTool(_))
+            || matches!(f, Field::Gelaende(g) if !g.im_paneel())
+        {
             Panel::Tools
         } else if f.is_level() {
             Panel::Levels
@@ -4347,6 +4370,47 @@ mod tests {
         click(&mut ui, x, y);
         ui.set_props(Some(Props::default()));
         assert!(ui.edit.is_none());
+    }
+
+    /// Paneel einer Geländefläche (Bedienbarkeit 43.1 A und B): die Felder
+    /// lassen sich anklicken und tippen, Werte außerhalb melden ihren
+    /// Bereich; die Felder der Leiste bleiben in den Werkzeugen.
+    #[test]
+    fn felder_der_gelaendeflaeche() {
+        use sk_model::{Model, TerrainPatch};
+        let mut m = Model::with_seed(1);
+        m.begin("Fläche");
+        let ring = vec![[0.0, 0.0], [5000.0, 0.0], [5000.0, 4000.0], [0.0, 4000.0]];
+        m.add_site_patch(TerrainPatch::flat(ring, -600.0));
+        m.commit();
+        let mut ui = Ui::new(1.0, &Theme::dark());
+        ui.set_props(crate::gelaende_flaeche_app::props(&m, 0));
+        let g = Field::Gelaende;
+        assert_eq!(Ui::field_panel(g(GelaendeFeld::Faktor)), Panel::Props);
+        assert_eq!(Ui::field_panel(g(GelaendeFeld::Versatz)), Panel::Tools);
+        let mut tippe = |f: GelaendeFeld, t: &str| {
+            let (x, y) = feld_mitte(&ui, g(f));
+            click(&mut ui, x, y);
+            t.chars().for_each(|c| drop(taste(&mut ui, Key::Char(c))));
+            let out = taste(&mut ui, Key::Enter);
+            let fehler = ui.edit.take().and_then(|e| e.error).map(|e| e.to_string());
+            (out.submit, fehler)
+        };
+        let h = g(GelaendeFeld::Hoehe);
+        assert_eq!(tippe(GelaendeFeld::Hoehe, "0,3"), (Some((h, 300.0)), None));
+        let b = g(GelaendeFeld::Boeschung);
+        let zu_steil = Some("0 oder zulässig 0,5 bis 20".to_string());
+        assert_eq!(tippe(GelaendeFeld::Boeschung, "0,2"), (None, zu_steil));
+        assert_eq!(tippe(GelaendeFeld::Boeschung, "0"), (Some((b, 0.0)), None));
+        let f = g(GelaendeFeld::Faktor);
+        let fehler = Some("zulässig 0,8 bis 1,2".to_string());
+        assert_eq!(tippe(GelaendeFeld::Faktor, "1,5"), (None, fehler));
+        assert_eq!(tippe(GelaendeFeld::Faktor, "0,9"), (Some((f, 0.9)), None));
+        let a = g(GelaendeFeld::Andecken);
+        assert_eq!(
+            tippe(GelaendeFeld::Andecken, "15"),
+            (Some((a, 150.0)), None)
+        );
     }
 
     #[test]

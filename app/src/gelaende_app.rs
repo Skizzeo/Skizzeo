@@ -75,7 +75,12 @@ pub(crate) struct Zustand {
     pub(crate) unterlage: unterlage::Stand,
     /// Modellstand der Leiste im Paneel; `neu` erzwingt einen Abgleich.
     stand: Option<u64>,
-    neu: bool,
+    pub(crate) neu: bool,
+    /// Werkzeug „Fläche zeichnen“ (G3d).
+    pub(crate) werkzeug: crate::gelaende_flaeche_app::Werkzeug,
+    /// Gewählte Geländefläche und Modellstand, für die das Paneel
+    /// „Eigenschaften“ steht.
+    pub(crate) props: Option<(usize, u64)>,
 }
 
 impl Zustand {
@@ -94,6 +99,7 @@ impl Zustand {
         self.plan = None;
         self.lesen = None;
         self.hoehen = None;
+        self.werkzeug.set_aktiv(false);
         self.neu = true;
     }
 
@@ -119,6 +125,9 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Zuschnitt(Show::All) => "Zuschnitt alles",
         GelaendeKnopf::Zuschnitt(Show::Fade) => "Umgebung blass",
         GelaendeKnopf::Zuschnitt(Show::Parcel) => "Nur Grundstück",
+        GelaendeKnopf::Flaeche => "Fläche zeichnen",
+        GelaendeKnopf::Befestigt => "Fläche befestigt",
+        GelaendeKnopf::Loeschen => "Fläche löschen",
     }
 }
 
@@ -183,6 +192,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     l.absolut = t.href == HeightRef::Abs;
     l.zuschnitt = Some(t.show());
     l.tippen = z.tippen;
+    l.zeichnen = z.werkzeug.aktiv;
+    l.ecken = z.werkzeug.ecken().len();
     match z.tippen {
         Some(GelaendeKnopf::Verschieben) => {
             let r = (-WEG, WEG);
@@ -394,6 +405,7 @@ impl App {
             K::Zuschnitt(s) => {
                 self.gelaende_schritt("Zuschnitt", |m| m.set_terrain_show(s));
             }
+            K::Flaeche | K::Befestigt | K::Loeschen => self.flaeche_knopf(k),
         }
         self.gelaende_sync();
         self.redraw = true;
@@ -401,6 +413,9 @@ impl App {
 
     /// Feld der Leiste übernommen (ein Schritt).
     pub(crate) fn gelaende_feld(&mut self, f: GelaendeFeld, v: f64) {
+        if self.flaeche_feld(f, v) {
+            return;
+        }
         match f {
             GelaendeFeld::Versatz => {
                 if let Some(b) = self.scene.model().level_building() {
@@ -425,6 +440,10 @@ impl App {
                     self.gelaende_schritt("Gelände drehen", |m| m.rotate_terrain(c, um));
                 }
             }
+            GelaendeFeld::Hoehe
+            | GelaendeFeld::Boeschung
+            | GelaendeFeld::Andecken
+            | GelaendeFeld::Faktor => {}
         }
         self.platte.leiste.neu = true;
         self.gelaende_sync();
@@ -1015,6 +1034,9 @@ mod tests {
             K::Zuschnitt(Show::All),
             K::Zuschnitt(Show::Fade),
             K::Zuschnitt(Show::Parcel),
+            K::Flaeche,
+            K::Befestigt,
+            K::Loeschen,
         ] {
             let z = crate::help::tooltip_lines(knopf_name(k));
             assert_eq!(z.len(), 3, "{k:?}");

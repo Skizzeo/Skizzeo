@@ -17,6 +17,9 @@ pub struct Picking {
     /// Die Geländeplatte ist gewählt (nur über den Objektbaum, Gelände G0);
     /// dann sind keine Bauteile gewählt.
     pub plate: bool,
+    /// Gewählte Geländefläche (G3d, Nummer im Modell); dann sind keine
+    /// Bauteile gewählt.
+    pub flaeche: Option<usize>,
 }
 
 impl Picking {
@@ -24,6 +27,7 @@ impl Picking {
     /// oder nimmt weg.
     pub fn click(&mut self, id: ElementId, ctrl: bool) {
         self.plate = false;
+        self.flaeche = None;
         if !ctrl {
             self.selected = vec![id];
         } else if let Some(i) = self.selected.iter().position(|&e| e == id) {
@@ -36,9 +40,10 @@ impl Picking {
     /// Genau dieses Bauteil wählen (oder nichts). `true`, wenn sich etwas ändert.
     pub fn select_only(&mut self, id: Option<ElementId>) -> bool {
         let new: Vec<ElementId> = id.into_iter().collect();
-        let changed = new != self.selected || self.plate;
+        let changed = new != self.selected || self.plate || self.flaeche.is_some();
         self.selected = new;
         self.plate = false;
+        self.flaeche = None;
         changed
     }
 

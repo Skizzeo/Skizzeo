@@ -462,6 +462,41 @@ impl Model {
         &self.project.site_patches
     }
 
+    /// Überlappt der Umriss der Fläche `i` den einer anderen um mehr als
+    /// 1 cm²? Die Mengen zählen dort doppelt
+    /// ([`crate::qto_earth::UEBERLAPPT`]); die App meldet es beim Schließen.
+    /// Erst die Rechtecke um die Umrisse, die Fläche `i` einmal zerlegt,
+    /// eine andere nur bei treffendem Rechteck (Review #189 B2).
+    pub fn site_patch_overlaps(&self, i: usize) -> bool {
+        use sk_gelaende::planung::Zerlegt;
+        let f = &self.project.site_patches;
+        let Some(a) = f.get(i) else {
+            return false;
+        };
+        let huelle = |r: &[[f64; 2]]| {
+            r.iter()
+                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |h, p| {
+                    [
+                        h[0].min(p[0]),
+                        h[1].min(p[1]),
+                        h[2].max(p[0]),
+                        h[3].max(p[1]),
+                    ]
+                })
+        };
+        let ha = huelle(&a.outline);
+        let mut za = None;
+        f.iter().enumerate().any(|(j, b)| {
+            let hb = huelle(&b.outline);
+            let trifft = ha[0] < hb[2] && hb[0] < ha[2] && ha[1] < hb[3] && hb[1] < ha[3];
+            if j == i || !trifft {
+                return false;
+            }
+            let za = za.get_or_insert_with(|| Zerlegt::neu(&a.outline));
+            za.ueberlappung(&Zerlegt::neu(&b.outline)) > 100.0
+        })
+    }
+
     /// Neue Geländefläche (im offenen Schritt); ihre Nummer, `None`, wenn
     /// sie sich nicht bauen lässt.
     pub fn add_site_patch(&mut self, p: TerrainPatch) -> Option<usize> {
@@ -820,5 +855,21 @@ mod tests {
         }));
         m.commit();
         assert_eq!(m.site_soil().spread, 150.0);
+    }
+
+    /// Überlappung der Umrisse (Bedienbarkeit 43.1): Kante an Kante zählt
+    /// nicht, 1 m × 8 m gemeinsam schon.
+    #[test]
+    fn ueberlappt() {
+        let mut m = Model::with_seed(3);
+        let schieben = |dx: f64| quadrat().iter().map(|p| [p[0] + dx, p[1]]).collect();
+        m.begin("Flächen");
+        m.add_site_patch(TerrainPatch::flat(quadrat(), 0.0));
+        m.add_site_patch(TerrainPatch::flat(schieben(10_000.0), 0.0));
+        assert!(!m.site_patch_overlaps(0) && !m.site_patch_overlaps(1));
+        m.add_site_patch(TerrainPatch::flat(schieben(-9_000.0), 0.0));
+        m.commit();
+        assert!(m.site_patch_overlaps(2) && m.site_patch_overlaps(0));
+        assert!(!m.site_patch_overlaps(1) && !m.site_patch_overlaps(3));
     }
 }
