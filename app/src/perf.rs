@@ -1190,6 +1190,11 @@ fn preisblatt_taste_speicher_je_umfang() {
     assert!(erst.iter().all(|n| *n > 0), "{erst:?}");
     taste(&mut s, 2);
     assert_eq!(s.kosten_live_neu(), vec![0, 0]);
+    // Review #213 H-213d: Hover „übernehmen“ rechnet nur das Blatt; der
+    // Speicher der Chips bleibt
+    s.kosten_live(None, &[], &[&haus]).unwrap();
+    taste(&mut s, 3);
+    assert_eq!(s.kosten_live_neu(), vec![0, 0]);
 }
 
 /// KA-2c (paket-ka2 §3): eine Taste im Preisblatt am großen Prüfhaus,
@@ -1206,27 +1211,32 @@ fn perf_preisblatt_taste() {
         .find(|a| a.preis.is_some())
         .expect("Artikel mit Preis")
         .guid;
-    let umfang = sk_cost::Umfang::projekt();
-    let mut zeiten = Vec::new();
-    let mut n = 0;
-    for _ in 0..3 {
-        zeiten.push(time(10, || {
-            n += 1;
-            let ops = [sk_cost::Op::PreisSetzen {
-                artikel,
-                preis: Some(sk_cost::Dez::ganz(20 + n % 7)),
-                stand: "10/2026".into(),
-                quelle: "Preisblatt".into(),
-                eingabe: String::new(),
-            }];
-            std::hint::black_box(s.kosten_live(None, &ops, &[&umfang, &umfang]).unwrap());
-        }));
-    }
-    zeiten.sort_by(|a, b| a.total_cmp(b));
-    let t = zeiten[1];
-    println!("Preisblatt, eine Taste (Katalog::mit + Kosten): {t:.3} ms");
-    if cfg!(not(debug_assertions)) {
-        assert!(t < 3.0, "Taste im Preisblatt {t:.3} ms ≥ 3 ms");
+    let alle = sk_cost::Umfang::projekt();
+    let haus = sk_cost::Umfang::gebaeude(s.active_building().unwrap());
+    // Blatt im Projekt, und wie im Reiter Kosten: Blatt ein Gebäude, Chips
+    // alle (kosten_view.rs, Review #213 H-213b)
+    for (name, umfaenge) in [("Projekt", [&alle, &alle]), ("Haus + alle", [&haus, &alle])] {
+        let mut zeiten = Vec::new();
+        let mut n = 0;
+        for _ in 0..3 {
+            zeiten.push(time(10, || {
+                n += 1;
+                let ops = [sk_cost::Op::PreisSetzen {
+                    artikel,
+                    preis: Some(sk_cost::Dez::ganz(20 + n % 7)),
+                    stand: "10/2026".into(),
+                    quelle: "Preisblatt".into(),
+                    eingabe: String::new(),
+                }];
+                std::hint::black_box(s.kosten_live(None, &ops, &umfaenge).unwrap());
+            }));
+        }
+        zeiten.sort_by(|a, b| a.total_cmp(b));
+        let t = zeiten[1];
+        println!("Preisblatt, eine Taste (Katalog::mit + Kosten), {name}: {t:.3} ms");
+        if cfg!(not(debug_assertions)) {
+            assert!(t < 3.0, "Taste im Preisblatt ({name}) {t:.3} ms ≥ 3 ms");
+        }
     }
 }
 

@@ -532,6 +532,14 @@ type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
 /// Zählt die Szenen für [`Scene::kennung`].
 static SZENEN: AtomicU64 = AtomicU64::new(0);
 
+/// Ein Umfang der Vorschau: Kostenspeicher und Liste im Umfang mit der
+/// Berechnung der Liste, aus der sie stammt.
+#[derive(Default)]
+struct LiveUmfang {
+    speicher: sk_cost::Kostenspeicher,
+    liste: Option<(u64, Umfang, Rc<Schedule>)>,
+}
+
 pub struct Scene {
     model: Model,
     /// Kennung dieser Szene ([`Scene::kennung`]).
@@ -626,8 +634,10 @@ pub struct Scene {
     /// Eigene Speicher der Vorschau (Taste im Preisblatt), je Umfang einer:
     /// Ändert sie nur Preise, bleibt die Zuordnung (Review #197 B3). Ein
     /// gemeinsamer Speicher behielte nur die Typen des zuletzt gerechneten
-    /// Umfangs (Review #197 H-197n).
-    kostenspeicher_live: Vec<sk_cost::Kostenspeicher>,
+    /// Umfangs (Review #197 H-197n). Dazu die Liste im Umfang, gemerkt je
+    /// Berechnung der Liste: Sie hält ihre Schichtzeilen, die Taste rechnet
+    /// sie nicht neu (Review #213 H-213b).
+    kostenspeicher_live: Vec<LiveUmfang>,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
     /// Uhr der Übergänge (ms seit Start), von der App vor jedem Ereignis gestellt.
@@ -1153,16 +1163,33 @@ impl Scene {
         let k = Rc::new(k);
         // Gleiche Umfänge (Blatt und Chips ohne Abwahl) nur einmal rechnen
         let mut b: Vec<Rc<sk_cost::Kostenblatt>> = Vec::new();
-        self.kostenspeicher_live
-            .resize_with(umfaenge.len(), Default::default);
+        // Ein Aufruf mit weniger Umfängen (Hover „übernehmen“) lässt die
+        // Speicher der übrigen stehen (Review #213 H-213d)
+        if self.kostenspeicher_live.len() < umfaenge.len() {
+            self.kostenspeicher_live
+                .resize_with(umfaenge.len(), Default::default);
+        }
+        let runs = self.schedule_runs;
         for (i, u) in umfaenge.iter().enumerate() {
             let gleich = umfaenge[..i].iter().position(|x| x == u);
             b.push(match gleich {
                 Some(j) => b[j].clone(),
                 None => {
-                    let sp = std::mem::take(&mut self.kostenspeicher_live[i]);
-                    let (blatt, sp) = sk_cost::lesen::kosten_mit(sp, &self.model, &sched, &k, u);
-                    self.kostenspeicher_live[i] = sp;
+                    let e = &mut self.kostenspeicher_live[i];
+                    let liste = match &e.liste {
+                        _ if u.alles() => sched.clone(),
+                        Some((r, w, l)) if *r == runs && w == *u => l.clone(),
+                        _ => {
+                            let l = Rc::new(sched.restrict(&self.model, u));
+                            e.liste = Some((runs, (*u).clone(), l.clone()));
+                            l
+                        }
+                    };
+                    // die Liste ist schon im Umfang
+                    let sp = std::mem::take(&mut e.speicher);
+                    let (blatt, sp) =
+                        sk_cost::lesen::kosten_mit(sp, &self.model, &liste, &k, &Umfang::projekt());
+                    e.speicher = sp;
                     Rc::new(blatt)
                 }
             });
@@ -1176,7 +1203,7 @@ impl Scene {
     pub fn kosten_live_neu(&self) -> Vec<u64> {
         self.kostenspeicher_live
             .iter()
-            .map(|s| s.neu_zugeordnet())
+            .map(|s| s.speicher.neu_zugeordnet())
             .collect()
     }
 
