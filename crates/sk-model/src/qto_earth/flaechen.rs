@@ -1044,7 +1044,7 @@ mod tests {
         assert_eq!((spread.kg, spread.unit), (Some(KG_ANDECKEN), "m2"));
         // Überschuss: Hinweis zum Faktor
         let s = v.iter().find(|r| r.key == SURPLUS).unwrap();
-        assert!(s.hinweis.contains("Faktor 1,00"), "{}", s.hinweis);
+        assert!(s.hinweis.contains("eingebaut 1,00"), "{}", s.hinweis);
     }
 
     /// Auftrag fern vom Haus: zuerst aus dem Überschuss der Baugrube, der
@@ -1075,7 +1075,7 @@ mod tests {
         assert!(nah(wert(&v, EMBANK), eigen));
         assert!(nah(wert(&v, DISPOSAL), d - eigen / 0.9));
         let e = v.iter().find(|r| r.key == EMBANK_SUPPLY).unwrap();
-        assert!(e.hinweis.contains("Faktor 0,90"), "{}", e.hinweis);
+        assert!(e.hinweis.contains("eingebaut 0,90"), "{}", e.hinweis);
     }
 
     /// Zwei Häuser geben Boden in das Gelände anteilig zu ihrem Überschuss,
