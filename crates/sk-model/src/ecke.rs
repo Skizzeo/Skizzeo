@@ -252,16 +252,15 @@ impl Model {
         Ok(())
     }
 
-    /// Neue Punkte für [`Model::verlaengern`], ohne etwas zu ändern
-    /// (Vorschau); werden zwei Wände eine, die Punkte des Zuges, der bleibt.
+    /// Neue Punkte für [`Model::verlaengern`] mit stumpfem Stoß, ohne etwas
+    /// zu ändern (Vorschau). Ob zwei Wände stattdessen eine werden, sagt
+    /// [`Model::vereinen_punkte`]; diese Punkte allein ließen dann beide
+    /// Wände übereinander liegen.
     pub fn verlaengern_punkte(
         &self,
         a: ElementId,
         ziel: ElementId,
     ) -> Result<ZugPunkte, EckeFehler> {
-        if let Some(v) = self.vereinen_punkte(a, ziel) {
-            return Ok(v.zug);
-        }
         let (sa, sb) = (self.flucht(a)?, self.flucht(ziel)?);
         self.zwei_zuege(&sa, &sb)?;
         if let Some(tx) = sa.schnitt(sb.p0, sb.d) {
@@ -349,7 +348,10 @@ impl Model {
             return None;
         }
         let (ra, rb) = (self.run(sa.run)?, self.run(sb.run)?);
-        if (ra.base, ra.top) != (rb.base, rb.top) {
+        let lage = |x: &LevelRef, y: &LevelRef| {
+            (x.storey, x.edge) == (y.storey, y.edge) && (x.offset - y.offset).abs() <= DECKUNG
+        };
+        if !lage(&ra.base, &rb.base) || !lage(&ra.top, &rb.top) {
             return None;
         }
         for r in [sa.run, sb.run] {
@@ -370,6 +372,12 @@ impl Model {
         };
         let ((wa, xa, la), (wb, xb, lb)) = (stoss(ra, ea)?, stoss(rb, eb)?);
         if (xa.category, xa.layer_set) != (xb.category, xb.layer_set) {
+            return None;
+        }
+        // Der Körper eines Zuges folgt dem Typ seiner ersten Wand: Er muss
+        // auch an der Stoßstelle gelten (Review H-210f)
+        let erster = |r: &WallRun| self.element(*r.segments.first()?).map(|e| e.layer_set);
+        if erster(ra)? != xa.layer_set || erster(rb)? != xb.layer_set {
             return None;
         }
         // Die Bezugslinie von `b` liegt an beiden Enden gleich weit neben
@@ -913,7 +921,10 @@ mod tests {
         let nr_b = m.element(b).unwrap().number.clone();
         let n = innenwaende(&m);
         let v = m.vereinen_punkte(a, b).unwrap();
-        assert_eq!(m.verlaengern_punkte(a, b).unwrap(), v.zug, "Vorschau");
+        // Die Punkte des stumpfen Stoßes bleiben, was sie waren (H-210b)
+        let (_, stumpf) = m.verlaengern_punkte(a, b).unwrap();
+        assert!(nah(stumpf[1], vec3(4500.0, 3000.0, 0.0)), "{stumpf:?}");
+        assert!(v.zug.0 == m.segment_of(b).unwrap().0);
         m.verlaengern(a, b).unwrap();
         assert!(m.segment_of(a).is_none(), "a geht in b auf");
         assert_eq!(innenwaende(&m), n - 1);
@@ -1063,6 +1074,26 @@ mod tests {
         );
         let (g, h) = (m.wall_at(g, 1).unwrap(), m.wall_at(h, 0).unwrap());
         assert_eq!(m.vereinen_punkte(g, h), None);
+        // Stoßwand anderen Typs als die erste Wand ihres Zuges: Der Körper
+        // des Zuges gilt dort nicht, also stumpf (H-210f)
+        if let Some(e) = m.elements.get_mut(g) {
+            e.layer_set = Some(t);
+        }
+        let k = m
+            .add_wall_run(
+                &[vec3(2500.0, 6500.0, 0.0), vec3(2800.0, 6500.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                t,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        assert_eq!(m.vereinen_punkte(g, m.wall_at(k, 0).unwrap()), None);
+        m.remove_run(k);
+        if let Some(e) = m.elements.get_mut(g) {
+            e.layer_set = Some(iw);
+        }
         m.verlaengern(g, h).unwrap();
         assert!(m.segment_of(h).is_some());
         assert!(m.check().is_empty(), "{:?}", m.check());

@@ -63,7 +63,7 @@ pub fn karte(art: Art) -> Vec<String> {
         Art::Verlaengern => [
             "Verlängern",
             "Klick auf die Wand, bis zu der sie reichen soll.",
-            "Liegt sie quer darüber, wird gekürzt; Esc bricht ab.",
+            "Quer wird gekürzt, in einer Flucht wird gleicher Typ eine Wand; Esc bricht ab.",
         ],
     }
     .map(String::from)
