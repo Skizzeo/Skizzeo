@@ -475,7 +475,7 @@ pub struct Fenster {
     scroll: f32,
     /// Rückfrage statt Liste.
     pub frage: Option<Frage>,
-    /// Nur für die Rückfrage geöffnet (Datei › Bauteil einlesen …): „Nein“
+    /// Nur für die Rückfrage geöffnet (Dateimenü › Bauteil einlesen …): „Nein“
     /// schließt das Fenster.
     nur_frage: bool,
     /// Satz im Kopf nach einer Tat.
@@ -524,7 +524,7 @@ impl Fenster {
         }
     }
 
-    /// Nur für eine Rückfrage (Datei › Bauteil einlesen …).
+    /// Nur für eine Rückfrage (Dateimenü › Bauteil einlesen …).
     pub fn mit_frage(zeilen: Vec<Zeile>, f: Frage) -> Fenster {
         let mut w = Fenster::new(zeilen);
         w.frage = Some(f);

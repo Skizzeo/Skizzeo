@@ -104,7 +104,7 @@ const GILT_KARTE: &str = "gilt für dieses und alle neuen Häuser";
 /// Mit Kennwort, nicht eingegeben: Enter schreibt nur dieses Haus.
 const GILT_KARTE_HAUS: &str = "gilt nur für dieses Haus";
 /// Letzte Zeile der Karte über den Knöpfen (paket-ka3a §1).
-const WEITERE_KARTE: &str = "Alles Weitere unter Datei › Verwaltung";
+const WEITERE_KARTE: &str = "Alles Weitere unter Dateimenü › Verwaltung";
 const ZEILE: f32 = 16.0;
 
 /// „Kosten mit Referenzpreisen 10/2026“ aus der Preisquelle
