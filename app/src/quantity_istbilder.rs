@@ -72,10 +72,57 @@ impl Bilder {
     fn ablegen(&self, q: &mut QuantityWindow, name: &str) {
         let spaeter = Instant::now() + Duration::from_secs(5);
         q.tick(&self.t, spaeter);
+        uhr_fest(q);
         let c = q.paint(&self.t, &self.fonts, spaeter);
         let pfad = self.dir.join(name);
         std::fs::write(&pfad, c.to_png()).unwrap_or_else(|e| panic!("{pfad:?}: {e}"));
     }
+}
+
+/// Stand in den Kopfzeilen der Ist-Bilder, damit sie zwischen Läufen
+/// bytegleich bleiben (Test an #195).
+const STAND_FEST: &str = "Stand 08.10.2026, 11:34";
+
+/// Ersetzt „Stand TT.MM.JJJJ, hh:mm“ (Uhrzeit des Laufs) durch [`STAND_FEST`].
+fn stand_fest(t: &mut String) {
+    let muster = b"dd.dd.dddd, dd:dd";
+    let stelle = t.match_indices("Stand ").map(|(i, _)| i).find(|&i| {
+        let rest = &t.as_bytes()[i + 6..];
+        rest.len() >= muster.len()
+            && muster.iter().zip(rest).all(|(m, c)| match m {
+                b'd' => c.is_ascii_digit(),
+                _ => m == c,
+            })
+    });
+    if let Some(i) = stelle {
+        t.replace_range(i..i + 6 + muster.len(), STAND_FEST);
+    }
+}
+
+fn uhr_fest(q: &mut QuantityWindow) {
+    for v in [q.list.as_mut(), q.wohn.as_mut()].into_iter().flatten() {
+        stand_fest(v.kopf_mut());
+    }
+    if let Some(k) = q.kosten.as_mut() {
+        stand_fest(&mut k.subtitle);
+    }
+    if let Some(a) = q.ava.as_mut() {
+        stand_fest(&mut a.subtitle);
+    }
+}
+
+#[test]
+fn ist_bilder_ohne_uhrzeit_des_laufs() {
+    let mut t =
+        "Bauvorhaben Standardhaus · Gebäude 1 · EG · Stand 15.10.2026, 08:33 · Preise".to_string();
+    stand_fest(&mut t);
+    assert_eq!(
+        t,
+        "Bauvorhaben Standardhaus · Gebäude 1 · EG · Stand 08.10.2026, 11:34 · Preise"
+    );
+    let mut ohne = "Standardhaus · Stand der Kopie".to_string();
+    stand_fest(&mut ohne);
+    assert_eq!(ohne, "Standardhaus · Stand der Kopie");
 }
 
 #[test]

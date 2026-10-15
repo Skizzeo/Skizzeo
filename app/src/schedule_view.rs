@@ -2946,5 +2946,13 @@ pub use wohn::rechnen as wohn_rechnen;
 pub use wohn::{csv as wohn_csv, karte as wohn_karte};
 
 #[cfg(test)]
+impl ListView {
+    /// Kopfzeile, für Ist-Bilder ohne die Uhrzeit des Laufs.
+    pub(crate) fn kopf_mut(&mut self) -> &mut String {
+        &mut self.subtitle
+    }
+}
+
+#[cfg(test)]
 #[path = "schedule_view_tests.rs"]
 mod tests;
