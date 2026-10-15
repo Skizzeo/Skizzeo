@@ -62,9 +62,11 @@ impl Modul {
     /// Übersicht (Bedienbarkeit 41.5).
     pub fn grund(self) -> &'static str {
         match self {
-            Modul::Mengen => "Ab der Ausbaustufe Pro (Datei › Ausbaustufe …).",
-            Modul::Kosten | Modul::Ava => "In der Ausbaustufe Ultimate (Datei › Ausbaustufe …).",
-            Modul::Gelaende => "Mit dem Geländemodul (Datei › Ausbaustufe …).",
+            Modul::Mengen => "Ab der Ausbaustufe Pro (Dateimenü › Ausbaustufe …).",
+            Modul::Kosten | Modul::Ava => {
+                "In der Ausbaustufe Ultimate (Dateimenü › Ausbaustufe …)."
+            }
+            Modul::Gelaende => "Mit dem Geländemodul (Dateimenü › Ausbaustufe …).",
         }
     }
 }

@@ -1360,19 +1360,13 @@ fn nummern(punkte: &mut [Punkt], fehlt: &[usize], texte: &[([f64; 2], String)], 
 mod tests {
     use super::*;
 
-    /// Der Hinweis nennt die Grenze mit Tausenderpunkt.
+    /// Der Hinweis nennt die Grenze mit Tausenderpunkt (ohne eigene
+    /// Gruppierlogik, Review #208 H-208c).
     #[test]
     fn zu_viele_mit_tausenderpunkt() {
-        let ziffern = MAX_PUNKTE.to_string();
-        let mut z = String::new();
-        for (i, c) in ziffern.chars().enumerate() {
-            if i > 0 && (ziffern.len() - i).is_multiple_of(3) {
-                z.push('.');
-            }
-            z.push(c);
-        }
+        assert_eq!(MAX_PUNKTE, 2_000_000);
         assert!(
-            ZU_VIELE.starts_with(&format!("Mehr als {z} Punkte")),
+            ZU_VIELE.starts_with("Mehr als 2.000.000 Punkte"),
             "{ZU_VIELE}"
         );
     }
