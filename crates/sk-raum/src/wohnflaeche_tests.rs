@@ -474,7 +474,9 @@ fn haus_mit_raum() -> (Model, StoreyId, sk_model::ExtDef, sk_model::ExtDef) {
 
 /// Stütze 40/40 (0,16 m², raumhoch) und Treppe mit 16 Steigungen
 /// (4,20 × 1,00 m) werden abgezogen (§ 3 Abs. 3 Nr. 1 und 2), die Stütze
-/// 24/24 (0,0576 m²) bleibt mit Hinweis (Review #195 B1).
+/// 24/24 (0,0576 m²) bleibt mit Hinweis (Review #195 B1). Die Stütze zählt
+/// mit dem Putz des Raums ringsum, 0,43 × 0,43 m, wie ein Pfeiler aus einem
+/// Wandring (H-195i); die Treppe ohne.
 #[test]
 fn stuetzen_und_treppen_nach_woflv() {
     let (mut m, st, stuetze, treppe) = haus_mit_raum();
@@ -493,7 +495,7 @@ fn stuetzen_und_treppen_nach_woflv() {
     let abzug = texte(r, Art::Abzug);
     assert_eq!(abzug.len(), 2, "{abzug:?}");
     assert!(
-        abzug[0].ends_with("0,400 × 0,400 (§ 3 Abs. 3 Nr. 1)"),
+        abzug[0].ends_with("0,430 × 0,430 einschl. Putz 15 mm (§ 3 Abs. 3 Nr. 1)"),
         "{abzug:?}"
     );
     assert!(
@@ -504,10 +506,11 @@ fn stuetzen_und_treppen_nach_woflv() {
     assert!(
         hinweise
             .iter()
-            .any(|h| h.ends_with("0,058 m² bleibt in der Fläche (bis 0,1 m², § 3 Abs. 3 Nr. 1)")),
+            .any(|h| h.ends_with("0,073 m² bleibt in der Fläche (bis 0,1 m², § 3 Abs. 3 Nr. 1)")),
         "{hinweise:?}"
     );
-    assert_eq!(r.grund, vorher - 16 - 420);
+    // 0,1849 + 4,20 m², je Raum gerundet: auf 0,01 m² genau
+    assert!((vorher - 438 - r.grund).abs() <= 1, "{vorher} {}", r.grund);
 }
 
 /// Stütze 50/50 nur 1,40 m hoch und Treppe mit drei Steigungen bleiben in

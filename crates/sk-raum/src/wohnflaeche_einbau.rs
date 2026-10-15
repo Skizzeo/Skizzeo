@@ -321,6 +321,20 @@ pub fn dreiecke(umriss: &[Vec3]) -> Vec<[Vec3; 3]> {
         .collect()
 }
 
+/// Der Einbau mit `putz` (mm) ringsum, wie an der Vorderkante seiner
+/// Bekleidung (Review #195 H-195i); `None`, wenn er aus mehreren Stücken
+/// besteht (die Fugen bekämen sonst Putz) oder ein Stück zerfällt.
+pub fn geputzt(e: &Einbau, putz: f64) -> Option<Einbau> {
+    let [s] = e.stuecke.as_slice() else {
+        return None;
+    };
+    let p = sk_math::flaeche::versatz(s, &vec![-putz; s.len()])?;
+    Some(Einbau {
+        stuecke: vec![p],
+        ..e.clone()
+    })
+}
+
 /// Seitenlängen (mm), wenn der Einbau ein Rechteck ganz im Raum ist.
 pub fn rechteck(e: &Einbau, f: f64) -> Option<(f64, f64)> {
     let [s] = e.stuecke.as_slice() else {

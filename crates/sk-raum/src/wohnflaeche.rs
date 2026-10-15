@@ -613,10 +613,30 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
         }
     }
 
-    // Stützen und Treppen im Raum (B1)
+    // Stützen und Treppen im Raum (B1); eine Stütze mit dem Putz des Raums
+    // ringsum, wie ein Pfeiler aus einem Wandring an der Vorderkante seiner
+    // Bekleidung (§ 3 Abs. 1, Review #195 H-195i)
+    let putz = if vorgabe {
+        PUTZ
+    } else {
+        // Putz der Wandseiten (Raumbuch oder Wandtyp), der dickste
+        kanten
+            .iter()
+            .zip(&aus.seiten)
+            .map(|(k, s)| ausbau::putz(model, k, s))
+            .fold(0.0, f64::max)
+    };
     if let Some(rand) = umriss.first().filter(|_| !einbauten.is_empty()) {
         let dreiecke = einbau::dreiecke(rand);
         for e in einbauten.bei(einbau::rahmen(rand)) {
+            let geputzt = (!e.treppe && putz > 0.0)
+                .then(|| einbau::geputzt(e, putz))
+                .flatten();
+            let mit_putz = geputzt
+                .is_some()
+                .then(|| format!(" einschl. Putz {} mm", putz.round()))
+                .unwrap_or_default();
+            let e = geputzt.as_ref().unwrap_or(e);
             let f = einbau::im_raum(e, &dreiecke);
             if f < 1.0 {
                 continue;
@@ -663,9 +683,15 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
             let (text, wert) = match einbau::rechteck(e, f) {
                 Some((a, b)) => {
                     let (a, b) = (a.round(), b.round());
-                    (format!("{name} {} × {} ({regel})", m(a), m(b)), a * b)
+                    (
+                        format!("{name} {} × {}{mit_putz} ({regel})", m(a), m(b)),
+                        a * b,
+                    )
                 }
-                None => (format!("{name} im Raum ({regel})"), (f / 1e3).round() * 1e3),
+                None => (
+                    format!("{name} im Raum{mit_putz} ({regel})"),
+                    (f / 1e3).round() * 1e3,
+                ),
             };
             let u = e.stuecke.first().cloned().unwrap_or_default();
             roh_teile.push(((text, -wert, u), Art::Abzug));
