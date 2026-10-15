@@ -610,6 +610,7 @@ fn einbauten_im_raster() {
         ]],
         z: (0.0, 3000.0),
         steigungen: None,
+        loch: false,
     };
     let e = Einbauten::neu(vec![
         quadrat(4900.0, 100.0, 300.0),
@@ -720,6 +721,7 @@ fn stuetze_um_pfeiler_nur_einmal() {
         ]],
         z: (0.0, 3000.0),
         steigungen: None,
+        loch: false,
     };
     let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(vec![stuetze]));
     let abzug: f64 = r
@@ -731,4 +733,65 @@ fn stuetze_um_pfeiler_nur_einmal() {
     assert!((abzug + 830.0 * 830.0).abs() < 1.0, "{abzug}");
     // 79,4609 − 0,6889
     assert_eq!(r.grund, 7877);
+}
+
+/// Die Treppe im EG (16 Steigungen, 4,20 × 1,00 m) steht im OG als
+/// Treppenloch und geht dort ab; eine Treppe im OG genau darüber zieht
+/// denselben Grundriss nicht noch einmal ab (Review #195 H-195j).
+#[test]
+fn treppenloch_im_geschoss_darueber() {
+    let mut m = Model::with_seed(5);
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let eg = m.ground_of(Some(b)).unwrap();
+    let og = m.level_above(eg).unwrap();
+    let aw = m.type_by_guid(sk_model::EXTERIOR_TYPE_GUID).unwrap();
+    m.begin("Haus");
+    for st in [eg, og] {
+        m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall)
+            .unwrap();
+    }
+    assert!(crate::abgleichen(&mut m, &[eg, og]) > 0);
+    for st in [eg, og] {
+        let r = crate::raeume(&m, st)[0].raum.unwrap();
+        assert!(crate::ausbau::typen_anlegen(&mut m, r));
+    }
+    let treppe =
+        sk_model::ExtDef::lesen(include_str!("../../sk-szb/beispiele/werk.treppe.szb")).unwrap();
+    m.put_ext_def(treppe.clone()).unwrap();
+    assert!(m.commit().is_some());
+    let grund = |m: &Model, st: StoreyId| {
+        let w = projekt(m);
+        let r = w
+            .raeume()
+            .find(|r| crate::raeume(m, st).iter().any(|f| f.raum == r.raum))
+            .unwrap();
+        (r.grund, texte(r, Art::Abzug).join(" | "))
+    };
+    let (eg0, og0) = (grund(&m, eg).0, grund(&m, og).0);
+
+    m.begin("Treppe EG");
+    m.add_ext(eg, sk_model::ExtPart::new(&treppe, [1000.0, 3000.0]))
+        .unwrap();
+    assert!(m.commit().is_some());
+    let (eg1, abzug_eg) = grund(&m, eg);
+    let (og1, abzug_og) = grund(&m, og);
+    assert!(!abzug_eg.contains("Treppenloch"), "{abzug_eg}");
+    assert!(
+        abzug_og.starts_with("Treppenloch ") && abzug_og.ends_with("4,200 × 1,000 (Deckenöffnung)"),
+        "{abzug_og}"
+    );
+    assert_eq!((eg0 - eg1, og0 - og1), (420, 420));
+
+    m.begin("Treppe OG");
+    m.add_ext(og, sk_model::ExtPart::new(&treppe, [1000.0, 3000.0]))
+        .unwrap();
+    assert!(m.commit().is_some());
+    let (og2, abzug_og) = grund(&m, og);
+    assert_eq!(og2, og1, "{abzug_og}");
 }

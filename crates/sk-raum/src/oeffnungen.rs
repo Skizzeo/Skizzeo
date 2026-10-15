@@ -139,6 +139,21 @@ impl Geschosse {
         Some((d, self.lagen.get(&d)?.art))
     }
 
+    /// Das Geschoss über `g` in seinem Gebäude, geordnet wie
+    /// [`Geschosse::darunter`], mit seiner Höhenlage (mm).
+    pub fn darueber(&self, g: StoreyId) -> Option<(StoreyId, f64)> {
+        let l = self.lagen.get(&g)?;
+        let mut v: Vec<(StoreyId, f64)> = self
+            .gebaeude
+            .get(&l.gebaeude)?
+            .iter()
+            .filter_map(|s| Some((*s, self.lagen.get(s)?.z)))
+            .collect();
+        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let i = v.iter().position(|x| x.0 == g)?;
+        v.get(i + 1).copied()
+    }
+
     /// Lichte Höhe des Geschosses (mm) wie `Model::clear_height`, 0 ohne
     /// das Geschoss.
     pub fn licht(&self, g: StoreyId) -> f64 {
