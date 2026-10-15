@@ -10,7 +10,7 @@
 //! `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Seite eines Wandsegments: links bzw. rechts der Zeichenrichtung.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
