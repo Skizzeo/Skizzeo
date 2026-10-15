@@ -13,6 +13,11 @@ use sk_model::{Guid, Model};
 /// Haus mit zwei Geschossen und je einem Raum samt Ausbau aus der Vorlage
 /// (wie das Mengenblatt in `schedule_view_tests.rs`).
 fn haus() -> Scene {
+    haus_mit(None)
+}
+
+/// Wie [`haus`], der Raum im Erdgeschoss mit der Nutzung `nutzung`.
+fn haus_mit(nutzung: Option<Guid>) -> Scene {
     use sk_math::vec3;
     let mut m = Model::with_seed(9);
     let b = m.add_building(2);
@@ -31,9 +36,13 @@ fn haus() -> Scene {
     m.begin("Räume");
     assert!(sk_raum::abgleichen(&mut m, &geschosse) > 0);
     m.commit();
-    for g in geschosse {
+    for (i, g) in geschosse.into_iter().enumerate() {
         let id = m.spaces(g)[0];
         m.begin("Ausbau");
+        if let (0, Some(n)) = (i, nutzung) {
+            assert!(m.ensure_space_type(n).is_some());
+            assert!(m.set_space(id, |s| s.nutzung = Some(n)));
+        }
         assert!(sk_raum::ausbau::typen_anlegen(&mut m, id));
         m.commit();
     }
@@ -210,5 +219,84 @@ fn uebergang_je_belag() {
     assert_eq!(
         (fliese, sonst),
         (Dez(900 * Dez::SKALA / 1000), Dez(800 * Dez::SKALA / 1000))
+    );
+}
+
+/// Review #197 B1: Unter Feinsteinzeug gleicht die Dämmung des Estrichs den
+/// Fußbodenaufbau aus; bepreist wird die wirksame Dicke aus dem Raumbuch,
+/// nicht die Nenndicke des Typs (Kurztext, Schicht und Einheitspreis).
+#[test]
+fn bad_mit_wirksamer_dicke() {
+    use sk_model::model::BATH_SPACE_GUID;
+    let mut s = haus_mit(Some(BATH_SPACE_GUID));
+    let sched = s.schedule_in(&Umfang::projekt());
+    let m = s.model();
+    let k = sk_cost::lesen::katalog(m, None);
+    let b = sk_cost::lesen::kosten(m, &sched, &k, &Umfang::projekt());
+    let rows = sched.layer_rows(m);
+    let anders: Vec<_> = rows
+        .iter()
+        .filter_map(|(_, r)| {
+            let (t, j) = r.finish?;
+            let nenn = m.layer_set(t)?.layers.get(j)?.thickness;
+            ((nenn - r.thickness).abs() > 0.5).then_some((r, nenn))
+        })
+        .collect();
+    assert!(!anders.is_empty(), "Bad gleicht die Dämmung aus");
+    for (r, nenn) in anders {
+        let stoff = m.material(r.material).unwrap().guid;
+        let p: Vec<_> = b
+            .positionen
+            .iter()
+            .filter(|p| p.schicht.is_some_and(|(g, _)| g == stoff))
+            .filter(|p| p.ansatz.iter().any(|a| a.element == r.element))
+            .collect();
+        assert!(!p.is_empty(), "{}: keine Position", r.number);
+        for p in p {
+            assert_eq!(
+                p.schicht.unwrap().1,
+                sk_cost::zuordnung::dicke(r.thickness),
+                "{}: {} statt {} mm",
+                p.kurz,
+                p.schicht.unwrap().1 .0 as f64 / Dez::SKALA as f64,
+                r.thickness
+            );
+            assert!(
+                !p.kurz.contains(&format!("d={}", nenn.round())),
+                "{}",
+                p.kurz
+            );
+        }
+    }
+    assert!(b.befunde.is_empty(), "{:#?}", b.befunde);
+}
+
+/// Review #197 H-197c: Eine Sockelleiste aus einem Baustoff ohne eigene
+/// Bauleistung bleibt ohne Preis, aber nicht stumm.
+#[test]
+fn sockel_aus_eigenem_baustoff() {
+    let mut s = haus();
+    let mut sched = (*s.schedule_in(&Umfang::projekt())).clone();
+    let m = s.model();
+    let k = sk_cost::lesen::katalog(m, None);
+    let gips = m
+        .materials()
+        .iter()
+        .find(|(_, x)| x.name.contains("Gipsputz"))
+        .map(|(id, _)| id)
+        .expect("Gipsputz");
+    for a in sched.auto.iter_mut().filter(|a| a.key == "room.skirting") {
+        a.material = Some(gips);
+    }
+    let b = sk_cost::lesen::kosten(m, &sched, &k, &Umfang::projekt());
+    assert_eq!(menge(&b, leistung(&k, "Sockelleiste Eiche")).0, 0);
+    assert_eq!(menge(&b, leistung(&k, "Fliesensockel")).0, 0);
+    assert!(
+        b.befunde
+            .iter()
+            .any(|f| f.satz.contains("keine Bauleistung mit diesem Baustoff")
+                && f.satz.contains("room.skirting")),
+        "{:#?}",
+        b.befunde
     );
 }

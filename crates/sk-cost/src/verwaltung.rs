@@ -1163,12 +1163,22 @@ pub fn passt_auf(l: &Leistung, baustoff: Option<&str>) -> String {
         .filter(|x| !x.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    let arten = l
+    let mut arten = l
         .kategorien
         .iter()
         .map(|w| kategorie_name(w))
         .collect::<Vec<_>>()
         .join(", ");
+    // Seite der Raumzeile (`side=`, RB7; Review #197 H-197d)
+    if let Some(seite) = l.seite.as_deref() {
+        let wort = match seite {
+            "floor" => "Boden",
+            "wall" => "Wand",
+            "ceiling" => "Decke",
+            x => x,
+        };
+        arten = format!("{arten} ({wort})");
+    }
     if l.kategorien.is_empty() {
         return "nur als Folgeposition".into();
     }
@@ -1803,6 +1813,17 @@ mod tests {
             .find(|l| l.kategorien.is_empty())
             .unwrap();
         assert_eq!(passt_auf(ohne, None), "nur als Folgeposition");
+        // Raumzeile mit Seite (Review #197 H-197d)
+        let decke = k
+            .leistungen
+            .iter()
+            .find(|l| l.kurz.starts_with("Deckenputz Gipsputz"))
+            .unwrap();
+        assert!(
+            passt_auf(decke, None).contains("(Decke)"),
+            "{}",
+            passt_auf(decke, None)
+        );
         // Ungültig: Kurztext über 70 Zeichen sperrt
         let mut d = crate::preis::bauleistung(l);
         d.kurz = "x".repeat(71);

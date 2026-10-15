@@ -13,8 +13,8 @@ use crate::geld::{runden, Cent, Dez};
 use crate::katalog::{fnv, Bezug, Einheit, Katalog, Leistung, FNV_START};
 use crate::zuordnung::{self, dicke, Grund, Zuordnung};
 use sk_model::element::Category;
-use sk_model::library::LayerSetId;
 use sk_model::library::Material;
+use sk_model::library::{LayerSetId, MaterialId};
 use sk_model::qto::{FormworkQto, Schedule, Side, Umfang};
 use sk_model::{BuildingId, ElementId, Guid, MaterialLayer, Model, StoreyId};
 use std::collections::HashMap;
@@ -812,8 +812,14 @@ pub fn kosten_mit(
     let schalung: HashMap<ElementId, &FormworkQto> =
         s.formwork.iter().map(|(e, f)| (*e, f)).collect();
     // Schlüssel je Bauteil, bei Raumzeilen je Raum, Ausbautyp und Seite
-    let mut je_element: HashMap<(ElementId, Option<LayerSetId>, Option<Side>), Schluessel> =
-        HashMap::new();
+    // Raumzeilen dazu mit Stelle, wirksamer Dicke und Baustoff der Zeile
+    type Fach = (
+        ElementId,
+        Option<LayerSetId>,
+        Option<Side>,
+        Option<(usize, u64, MaterialId)>,
+    );
+    let mut je_element: HashMap<Fach, Schluessel> = HashMap::new();
     let mut sammel: Vec<Sammel> = Vec::new();
     let mut index: HashMap<PosKey, usize> = HashMap::new();
     let mut ohne: Vec<OhneZeile> = Vec::new();
@@ -843,11 +849,22 @@ pub fn kosten_mit(
                 |t| t.name.clone(),
             )
         };
+        // Raumzeile: die Schicht der Zeile mit ihrer wirksamen Dicke und
+        // ihrem Baustoff aus dem Raumbuch (Fußbodenaufbau, Abweichung je
+        // Raum), nicht mit der Nenndicke des Typs (Review #197 B1)
         let schichten = || match ausbau {
-            Some((Some(t), _)) => t.layers.clone(),
+            Some((Some(t), j)) => {
+                let mut l = t.layers.clone();
+                if let Some(x) = l.get_mut(j) {
+                    x.thickness = r.thickness;
+                    x.material = r.material;
+                }
+                l
+            }
             _ => m.element_layers(r.element),
         };
-        let fach = (r.element, ausbau.and(typ_id), seite);
+        let zeile = ausbau.map(|(_, j)| (j, r.thickness.to_bits(), r.material));
+        let fach = (r.element, ausbau.and(typ_id), seite, zeile);
         let key = *je_element.entry(fach).or_insert_with(|| Schluessel {
             kat: r.category,
             seite,
@@ -1590,6 +1607,34 @@ fn auto_ansaetze(
             .filter(|l| !l.retired && l.auto.as_deref() == Some(a.key))
             .filter(|l| l.mat.is_none_or(|g| Some(g) == baustoff))
             .collect();
+        // Nur Leistungen mit anderem `mat=`: Die Menge aus einem eigenen
+        // Baustoff bliebe stumm ohne Preis (Review #197 H-197c)
+        if alle.is_empty() && a.value > 0.0 {
+            let andere = k
+                .leistungen
+                .iter()
+                .any(|l| !l.retired && l.auto.as_deref() == Some(a.key) && l.mat.is_some());
+            let name = a
+                .material
+                .and_then(|x| m.material(x))
+                .map(|x| x.name.as_str());
+            if let (true, Some(name)) = (andere, name) {
+                let ort = m
+                    .element(a.element)
+                    .map_or(Ort::Datei, |e| Ort::Bauteil(e.guid));
+                let b = Befund::hinweis(
+                    0,
+                    format!(
+                        "{} aus {name}: keine Bauleistung mit diesem Baustoff (auto={}), die Menge bleibt ohne Preis.",
+                        a.number, a.key
+                    ),
+                    ort,
+                );
+                if !befunde.contains(&b) {
+                    befunde.push(b);
+                }
+            }
+        }
         let genau = alle.iter().any(|l| l.mat.is_some());
         let leistungen = alle.into_iter().filter(|l| !genau || l.mat.is_some());
         for l in leistungen {
