@@ -35,6 +35,10 @@ const Z_NULL_FERN: f64 = 10.0;
 /// Höchstens so viele Punkte, in der DXF wie in der Punktliste; mehr
 /// entstehen nur aus riesigen Dateien.
 pub const MAX_PUNKTE: usize = 2_000_000;
+
+/// Hinweis, wenn mehr als [`MAX_PUNKTE`] Punkte kommen, mit Tausenderpunkt
+/// (Bedienbarkeit, später zu Durchgang 43: „2000000“ las sich schwer).
+pub const ZU_VIELE: &str = "Mehr als 2.000.000 Punkte; Skizzeo liest nur die ersten.";
 /// Höchstens so viele Punkte aus Höhenlinien (500 km Linie bei 2 m).
 pub const MAX_HOEHENLINIENPUNKTE: usize = 250_000;
 
@@ -1172,9 +1176,7 @@ pub fn lesen(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         }
     }
     if zu_viele {
-        hinweise.push(format!(
-            "Mehr als {MAX_PUNKTE} Punkte; Skizzeo liest nur die ersten."
-        ));
+        hinweise.push(ZU_VIELE.to_string());
     }
     if zu_viele_hl {
         hinweise.push(format!(
@@ -1357,6 +1359,17 @@ fn nummern(punkte: &mut [Punkt], fehlt: &[usize], texte: &[([f64; 2], String)], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Der Hinweis nennt die Grenze mit Tausenderpunkt (ohne eigene
+    /// Gruppierlogik, Review #208 H-208c).
+    #[test]
+    fn zu_viele_mit_tausenderpunkt() {
+        assert_eq!(MAX_PUNKTE, 2_000_000);
+        assert!(
+            ZU_VIELE.starts_with("Mehr als 2.000.000 Punkte"),
+            "{ZU_VIELE}"
+        );
+    }
 
     fn dxf(paare: &[(i32, &str)]) -> Vec<u8> {
         let mut s = String::from("0\r\nSECTION\r\n2\r\nENTITIES\r\n");
