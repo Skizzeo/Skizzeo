@@ -2869,6 +2869,7 @@ impl Model {
         let matched = teilen::assign_walls(&lines_old, &lines_new, closed);
         let mut kept = vec![false; old.len()];
         let mut segments = Vec::with_capacity(count);
+        let mut geteilt = Vec::new();
         for (k, &m) in matched.iter().enumerate() {
             // Neues Stück: Vorlage ist die Wand, aus der es geteilt wurde,
             // sonst der Nachbar (Stufe), sonst die erste
@@ -2893,14 +2894,20 @@ impl Model {
                 }
                 (None, Some(t)) => {
                     let neu = self.new_wall(id, k, t);
+                    // Nur ein Teilstück übernimmt die Wandseiten, nicht der
+                    // Rückfall auf Nachbar oder erste Wand (Review #190 H-190c)
+                    let teil = teilen::split_of(&lines_old, &lines_new, k).map(|o| old[o]);
                     if let Some(g) = self.elements.get(neu).map(|e| e.guid) {
-                        self.ausbau_wand_geteilt(t.guid, g);
+                        if teil.and_then(|e| self.elements.get(e)).map(|e| e.guid) == Some(t.guid) {
+                            geteilt.push((t.guid, g));
+                        }
                     }
                     segments.push(neu);
                 }
                 (None, None) => return false,
             }
         }
+        self.ausbau_wand_geteilt(&geteilt);
         let mut weg = Vec::new();
         for (e, keep) in old.into_iter().zip(kept) {
             if !keep {

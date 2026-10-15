@@ -10,7 +10,7 @@
 //! `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Seite eines Wandsegments: links bzw. rechts der Zeichenrichtung.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -230,18 +230,25 @@ impl Model {
         }
     }
 
-    /// Geteilte Wand (`set_points`): Die Abweichungen der Wandseiten von
-    /// `alt` gelten auch für das neue Stück `neu` (schnittstelle-raum.md
-    /// §4, Grundriss 17:29).
-    pub(super) fn ausbau_wand_geteilt(&mut self, alt: Guid, neu: Guid) {
+    /// Geteilte Wände (`set_points`): Die Abweichungen der Wandseiten der
+    /// alten Wand gelten auch für ihr neues Stück, je Paar (alt, neu)
+    /// (schnittstelle-raum.md §4, Grundriss 17:29). Ein Gang über die
+    /// Bauteile für alle Stücke (Review #190 H-190c).
+    pub(super) fn ausbau_wand_geteilt(&mut self, teile: &[(Guid, Guid)]) {
+        if teile.is_empty() {
+            return;
+        }
+        let neu_zu = |alt: Guid| teile.iter().filter(move |t| t.0 == alt).map(|t| t.1);
         let raeume: Vec<ElementId> = self
             .elements
             .iter()
             .filter_map(|(id, e)| match &e.kind {
                 ElementKind::Space(s)
-                    if s.ausbau
-                        .iter()
-                        .any(|a| a.stelle.seite().is_some_and(|w| w.wand == alt)) =>
+                    if s.ausbau.iter().any(|a| {
+                        a.stelle
+                            .seite()
+                            .is_some_and(|w| teile.iter().any(|t| t.0 == w.wand))
+                    }) =>
                 {
                     Some(id)
                 }
@@ -253,11 +260,13 @@ impl Model {
                 let dazu: Vec<AusbauAbweichung> = s
                     .ausbau
                     .iter()
-                    .filter_map(|a| {
-                        let w = a.stelle.seite().filter(|w| w.wand == alt)?;
-                        Some(AusbauAbweichung {
-                            stelle: a.stelle.an(WandSeite { wand: neu, ..w }),
-                            ..*a
+                    .flat_map(|a| {
+                        let w = a.stelle.seite();
+                        w.into_iter().flat_map(move |w| {
+                            neu_zu(w.wand).map(move |neu| AusbauAbweichung {
+                                stelle: a.stelle.an(WandSeite { wand: neu, ..w }),
+                                ..*a
+                            })
                         })
                     })
                     .collect();
@@ -706,6 +715,38 @@ mod tests {
         );
         m.apply(&tx, Direction::Undo);
         assert_eq!(m.space(r).unwrap().ausbau, vorher);
+    }
+
+    /// Eine Stufe in der Nordwand: Nur ein Teilstück auf ihrer Linie
+    /// übernimmt die Wandseiten, nicht die neuen Wände, deren Vorlage der
+    /// Nachbar ist (Review #190 H-190c).
+    #[test]
+    fn stufe_uebernimmt_keine_wandseite() {
+        let (mut m, r, nord) = haus();
+        let w = rechts(&m, nord);
+        m.set_space_finish(r, ab(Sockel(Some(w)), Some(Keiner), None))
+            .unwrap();
+        let zug = m.segment_of(nord).unwrap().0;
+        m.begin("Stufe");
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(5000.0, 8000.0, 0.0),
+            vec3(5000.0, 9000.0, 0.0),
+            vec3(10000.0, 9000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        assert!(m.set_run_points(zug, &pts).is_some());
+        m.commit();
+        let waende: Vec<Guid> = m
+            .space(r)
+            .unwrap()
+            .ausbau
+            .iter()
+            .filter_map(|a| a.stelle.seite())
+            .map(|s| s.wand)
+            .collect();
+        assert_eq!(waende, vec![w.wand], "nur die Nordwand selbst");
     }
 
     /// Wandseiten des Raums, deren Wand es nicht gibt (BIM Regel 24).
