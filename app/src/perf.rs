@@ -3627,18 +3627,19 @@ fn perf_wohnflaeche() {
 }
 
 /// Wohnfläche bei je einem Gebäude je Haus (Review #195 B2): Die Zeit je
-/// Haus für `wohnflaeche::projekt` bei 1000 Häusern (4000 mit
-/// `SKIZZEO_PERF_BIS=4000`) darf höchstens doppelt so groß sein wie bei 100.
-/// Bestes von drei Läufen. Die Spalte „Szene“ rechnet aus der Erkennung der
-/// Szene; deren Gang je Geschoss über alle Züge ist H-195g (Mengenfenster)
-/// und hier nur gezeigt.
+/// Haus für die Rechnung (`wohnflaeche::projekt_mit` mit den erkannten
+/// Räumen) darf bei 1000 Häusern (4000 mit `SKIZZEO_PERF_BIS=4000`)
+/// höchstens doppelt so groß sein wie bei 100. Bestes von drei Läufen.
+/// Gezeigt werden die Raumerkennung des ganzen Modells (`raeume_alle`) und
+/// die Rechnung aus der Erkennung der Szene; deren Gang je Geschoss über
+/// alle Züge ist H-195g (Mengenfenster).
 #[test]
 #[ignore]
 fn perf_wohnflaeche_gebaeude() {
     println!();
     println!(
-        "{:>6} {:>6} {:>9} {:>10} {:>9}",
-        "Häuser", "Räume", "Rechnung", "je Haus", "Szene"
+        "{:>6} {:>6} {:>9} {:>10} {:>10} {:>9}",
+        "Häuser", "Räume", "Rechnung", "je Haus", "Erkennung", "Szene"
     );
     let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
         .ok()
@@ -3658,12 +3659,28 @@ fn perf_wohnflaeche_gebaeude() {
     for n in [10, 100, 1000, 4000].into_iter().filter(|&n| n <= bis) {
         let mut s = Scene::with_model(haeuser_je_gebaeude(n));
         s.schedule();
-        let (ms, raeume) = bestes(&|| sk_raum::wohnflaeche::projekt(s.model()).raeume().count());
+        let m = s.model();
+        let geschosse: Vec<_> = m.storeys().iter().map(|(id, _)| id).collect();
+        let mut formen = Vec::new();
+        let (erkennung, _) = bestes(&|| sk_raum::Erkennung::raeume_alle(m, &geschosse).len());
+        formen.extend(
+            geschosse
+                .iter()
+                .copied()
+                .zip(sk_raum::Erkennung::raeume_alle(m, &geschosse)),
+        );
+        let je: std::collections::HashMap<_, _> = formen.into_iter().collect();
+        let (ms, raeume) = bestes(&|| {
+            sk_raum::wohnflaeche::projekt_mit(m, m, |g| je.get(&g).cloned().unwrap_or_default())
+                .raeume()
+                .count()
+        });
         let (szene, im_bild) = bestes(&|| crate::schedule_view::wohn_rechnen(&s).raeume().count());
         assert_eq!(raeume, 4 * n, "drei Räume im EG, einer im OG");
         assert_eq!(im_bild, raeume);
+        assert_eq!(sk_raum::wohnflaeche::projekt(m).raeume().count(), raeume);
         let h = ms / n as f64;
-        println!("{n:>6} {raeume:>6} {ms:>9.1} {h:>10.4} {szene:>9.1}");
+        println!("{n:>6} {raeume:>6} {ms:>9.1} {h:>10.4} {erkennung:>10.1} {szene:>9.1}");
         je_haus.push((n, h));
     }
     println!("Zeiten in ms (Release).");
