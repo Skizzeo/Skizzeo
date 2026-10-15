@@ -201,8 +201,13 @@ fn kanten<'a>(
 ) {
     let d3 = u.punkte_von(t);
     let ecken = d3.map(|q| [q[0], q[1]]);
+    // Kanten unter LEER zählen nicht: Ihre Richtung ist Rundungsrauschen,
+    // und das Stück draußen fiele sonst weg (Geometrie #183)
     let drin = |q: [f64; 2], r: &[[f64; 2]]| {
-        (0..r.len()).all(|k| kreuz(r[k], r[(k + 1) % r.len()], q) >= 0.0)
+        (0..r.len()).all(|k| {
+            let (c, e) = (r[k], r[(k + 1) % r.len()]);
+            (e[0] - c[0]).powi(2) + (e[1] - c[1]).powi(2) < LEER || kreuz(c, e, q) >= 0.0
+        })
     };
     for (i, (r, _, e)) in stuecke.iter().enumerate() {
         let n = r.len();
@@ -1088,6 +1093,42 @@ mod tests {
             deckt(&u, &o);
             dicht(&u, &o);
         }
+    }
+
+    /// Senkrechte Kante an einer Ecke mit Böschung: Das Stück der Böschung
+    /// hat dort zwei Ecken im Abstand von Rundungsrauschen. Mit ihrer Kante
+    /// fand die Suche nach dem Stück draußen nichts, und die Wand fehlte
+    /// (bis 0,93 m hier, über 2 m bei Zufallsfällen) (Geometrie #183).
+    #[test]
+    fn wand_an_ecke_mit_rauschkante() {
+        let r = vec![
+            [0.3, 0.1],
+            [8.3, 0.7],
+            [8.1, 2.4],
+            [4.1, 2.2],
+            [3.9, 6.1],
+            [0.2, 5.9],
+        ];
+        let mut spruenge = 0;
+        for u in [
+            gelaende(|_, _| 10.0),
+            gelaende(|x, y| 10.0 + 0.05 * x - 0.03 * y + 0.4 * (x / 3.0).sin() * (y / 4.0).cos()),
+        ] {
+            for z in [11.0, 9.0] {
+                let mut b = baustein(&r, [z, 0.0, 0.0], 1.5);
+                for (k, kante) in b.rand.iter_mut().enumerate() {
+                    if k % 2 == 0 {
+                        kante.neigung = None;
+                    }
+                }
+                let p = Planung::neu(&b, &u);
+                let o = oberflaeche(&u, &[&p]);
+                deckt(&u, &o);
+                wie_hoehe(&u, &[&p], &o);
+                spruenge += dicht(&u, &o);
+            }
+        }
+        assert!(spruenge > 0, "der Fall hat Sprünge");
     }
 
     /// Über den Rand des Netzes: Die Kanten der Stücke dort und die
