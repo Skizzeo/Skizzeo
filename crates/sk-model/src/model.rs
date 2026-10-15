@@ -85,14 +85,19 @@ pub struct Project {
     /// Geländeflächen (Gelände G3b); ändern sich nur über
     /// [`Model::add_site_patch`] und die Geschwister.
     pub site_patches: Vec<TerrainPatch>,
-    /// `[tpatch]`-Zeilen, die nicht galten: bleiben roh stehen (Regel 72).
-    pub site_patches_raw: Vec<String>,
+    /// `[tpatch]`-Zeilen, die nicht galten: bleiben roh stehen (Regel 72),
+    /// je mit der Zahl der gültigen Flächen davor. So bleibt die
+    /// Reihenfolge der Datei und mit ihr die Zuordnung fremder Schlüssel.
+    pub site_patches_raw: Vec<(usize, String)>,
     /// Andeckung und Eigenboden-Faktor (Gelände G3b); ändern sich nur über
     /// [`Model::set_site_soil`].
     pub site_soil: SiteSoil,
     /// `[sitesoil]`, deren Werte nicht galten: bleibt bytegleich, bis neue
     /// Werte sie ersetzen (Regel 72).
     pub site_soil_raw: Option<String>,
+    /// Jedes weitere `[sitesoil]` nach dem ersten: gilt nicht, bleibt roh
+    /// hinter ihm stehen (Regel 72, 116, wie `[terrain]` in #178).
+    pub site_soil_doppelt: Vec<String>,
 }
 
 impl Project {
@@ -121,6 +126,7 @@ impl Project {
             site_patches_raw: Vec::new(),
             site_soil: SiteSoil::default(),
             site_soil_raw: None,
+            site_soil_doppelt: Vec::new(),
         }
     }
 
@@ -1025,6 +1031,7 @@ impl Model {
             site_patches_raw: self.project.site_patches_raw.clone(),
             site_soil: self.project.site_soil,
             site_soil_raw: self.project.site_soil_raw.clone(),
+            site_soil_doppelt: self.project.site_soil_doppelt.clone(),
             ..p
         };
         match self.txn.as_mut() {
@@ -1074,6 +1081,7 @@ impl Model {
             site_patches_raw: self.project.site_patches_raw.clone(),
             site_soil: self.project.site_soil,
             site_soil_raw: self.project.site_soil_raw.clone(),
+            site_soil_doppelt: self.project.site_soil_doppelt.clone(),
             ..p
         };
         self.touch();
