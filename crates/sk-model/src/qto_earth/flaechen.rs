@@ -394,7 +394,8 @@ pub(crate) fn gelaende_mengen(
         // mit Namen (Bedienbarkeit, später zu Durchgang 43)
         let anteil = if abfuhr[i] < ueberschuss * (1.0 - 1e-9) {
             format!(
-                " (Einbau {} × Überschuss dieser Baugrube {} / aller {})",
+                " (Einbau {} m³ × Überschuss dieser Baugrube {} m³ / Überschuss aller \
+                 Baugruben {} m³)",
                 zahl(entnehmen, 1e9),
                 zahl(abfuhr[i], 1e9),
                 zahl(ueberschuss, 1e9)
@@ -1119,7 +1120,8 @@ mod tests {
             assert!(nah(a - b, anteil), "{ohne:?} {mit_flaeche:?}");
             // mit dem Anteil im Rechenweg (VOB #185)
             let teil = format!(
-                "− Einbau im Gelände {} (Einbau {} × Überschuss dieser Baugrube {} / aller {})",
+                "− Einbau im Gelände {} (Einbau {} m³ × Überschuss dieser Baugrube {} m³ / Überschuss aller \
+                 Baugruben {} m³)",
                 super::m3(anteil),
                 super::zahl(auf, 1.0),
                 super::zahl(*a, 1.0),
