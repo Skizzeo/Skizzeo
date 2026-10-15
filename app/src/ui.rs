@@ -1249,7 +1249,8 @@ fn props_rows(
                 .iter()
                 .map(|&(id, label)| Row::Button(id, label)),
         );
-        rows.push(Row::Text(sec.hint.into()));
+        // Hinweise brechen um wie die Begrenzung (Test zu #190)
+        rows.extend(umbruch(sec.hint).into_iter().map(Row::Text));
     }
     if p.more {
         // Schichtliste erst auf Klick, an Ort und Stelle
