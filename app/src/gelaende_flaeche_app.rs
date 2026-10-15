@@ -44,9 +44,8 @@ pub const KREUZT: &str = "Die Kanten der Fläche kreuzen sich; bitte anders schl
 pub const ZU_WENIG: &str = "Eine Fläche braucht mindestens drei Ecken.";
 /// Statuszeile, solange das Werkzeug an ist (Bedienbarkeit, später zu
 /// #189: die Zeile war leer, Esc nirgends genannt).
-pub const ZEICHNEN: &str =
-    "Fläche zeichnen: Ecken im Grundriss klicken; die erste Ecke oder Enter \
-    schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
+pub const ZEICHNEN: &str = "Fläche zeichnen: Ecken im Grundriss klicken (mit Strg ohne Fang); die \
+    erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
 /// Alle Ecken auf einer Linie (H-189d).
 pub const OHNE_INHALT: &str = "Die Ecken liegen auf einer Linie; die Fläche hat keinen Inhalt.";
 /// Die Fläche ließ sich auf der Geländehöhe in ihrer Mitte nicht anlegen
@@ -112,7 +111,10 @@ impl Werkzeug {
     }
 
     /// Bodenpunkt unter dem Bildpunkt: an einem Fangziel bis [`fang::FANG_PX`]
-    /// Bildpunkte, sonst auf [`STEP`] gerundet.
+    /// Bildpunkte, sonst auf [`STEP`] gerundet. Mit gehaltener Strg-Taste
+    /// ohne Fang, nur im Raster (Bedienbarkeit, später zu #198: sonst half
+    /// nur Zoomen).
+    #[allow(clippy::too_many_arguments)]
     fn boden(
         &mut self,
         cam: &Camera,
@@ -121,6 +123,7 @@ impl Werkzeug {
         w: f64,
         h: f64,
         scale: f64,
+        mods: Modifiers,
     ) -> Option<[f64; 2]> {
         let Some(g) = cam.ground_point(x, y, w, h) else {
             self.fang = None;
@@ -129,7 +132,9 @@ impl Werkzeug {
         let tol = cam
             .ground_point(x + fang::FANG_PX * scale, y, w, h)
             .map_or(0.0, |n| (n.x - g.x).hypot(n.y - g.y));
-        self.fang = self.ziele.fangen([g.x, g.y], tol);
+        self.fang = (!mods.ctrl)
+            .then(|| self.ziele.fangen([g.x, g.y], tol))
+            .flatten();
         let r = |v: f64| (v / STEP).round() * STEP + 0.0;
         Some(self.fang.map_or([r(g.x), r(g.y)], |f| f.0))
     }
@@ -221,9 +226,9 @@ impl Werkzeug {
             return out;
         }
         match *e {
-            Event::MouseMove { x, y, .. } => {
+            Event::MouseMove { x, y, mods } => {
                 let vor = self.fang;
-                let p = self.boden(cam, x, y, w, h, scale);
+                let p = self.boden(cam, x, y, w, h, scale, mods);
                 if p != self.maus || vor != self.fang {
                     out.redraw = !self.ecken.is_empty() || vor != self.fang;
                     self.maus = p;
@@ -234,10 +239,10 @@ impl Werkzeug {
                 button: MouseButton::Left,
                 x,
                 y,
-                ..
+                mods,
             } => {
                 out.consumed = true;
-                let Some(p) = self.boden(cam, x, y, w, h, scale) else {
+                let Some(p) = self.boden(cam, x, y, w, h, scale, mods) else {
                     return out;
                 };
                 // Klick auf die erste Ecke (am Bildschirm) oder noch einmal
@@ -584,6 +589,20 @@ impl App {
         }
         self.flaeche_ausgang(out, vor);
         true
+    }
+
+    /// Statuszeile leer: die Anleitung des geführten Nordpfeils oder des
+    /// Flächenwerkzeugs kehrt zurück, auch nach einer Meldung wie „zu wenige
+    /// Ecken“ (Bedienbarkeit, später zu #204).
+    pub(crate) fn zeile_zurueck(&mut self) {
+        if self.nord_fuehrung.laeuft {
+            self.nord_zeile();
+        } else if self.platte.leiste.werkzeug.aktiv {
+            self.status(
+                crate::meldung::Meldung::satz(ZEICHNEN),
+                std::time::Duration::from_secs(3600),
+            );
+        }
     }
 
     /// Das Werkzeug ist aus: seine Zeile geht aus der Statuszeile.
@@ -1156,6 +1175,35 @@ mod tests {
             .values
             .contains(&("Böschung", "je Kante, aus der Datei".to_string())));
         assert!(props(&m, 1).is_none());
+    }
+
+    /// Mit gehaltener Strg-Taste kein Fang, nur das Raster (Bedienbarkeit,
+    /// später zu #198).
+    #[test]
+    fn strg_ohne_fang() {
+        let (cam, _, _) = kamera();
+        let r = [[5000.0, 5000.0], [9003.0, 5000.0], [9003.0, 8001.0]];
+        let mut w = Werkzeug::default();
+        w.set_aktiv(true);
+        w.ziele_fuer(1, || Ziele {
+            ecken: r.to_vec(),
+            kanten: vec![[r[0], r[1]], [r[1], r[2]], [r[2], r[0]]],
+        });
+        let strg = Modifiers { ctrl: true, ..OHNE };
+        let (x, y) = cam.project(punkt(9104.0, 8096.0), 800.0, 800.0).unwrap();
+        let ev = |mods| Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods,
+        };
+        w.handle(&ev(strg), &cam, 800.0, 800.0, 1.0);
+        assert_eq!(w.ecken(), &[[9100.0, 8100.0]]);
+        assert_eq!(w.fang, None);
+        // ohne Strg wieder an der Ecke
+        w.escape();
+        w.handle(&ev(OHNE), &cam, 800.0, 800.0, 1.0);
+        assert_eq!(w.ecken(), &[[9003.0, 8001.0]]);
     }
 
     /// Fang (H-189a): an der Ecke genau die Ecke, an der Kante der
