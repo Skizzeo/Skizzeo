@@ -65,7 +65,7 @@ pub const GRUNDSTUECK_SCHLUESSEL: [&str; 9] = [
     SPREAD_SLOPE,
 ];
 /// Hinweis, wenn die Bilanz begrenzt (B4).
-pub const FAKTOR: &str = "Eigenboden fest → eingebaut Faktor {f} angenommen; ändert die \
+pub const FAKTOR: &str = "Eigenboden fest zu eingebaut {f} angenommen; ändert die \
                           Aufteilung Eigenboden/Lieferung";
 
 /// Hinweis, wenn eine Fläche über das Aufmaß hinausreicht (H-173c).
