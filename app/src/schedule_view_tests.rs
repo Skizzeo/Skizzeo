@@ -668,11 +668,11 @@ fn raeume_in_der_mengenliste() {
 
     // Tabelle
     let m = s.model().clone();
-    // Kosten bis RB7 gleich: Raumzeilen und Raummengen ohne Leistung
+    // Seit Werksstand 19 (RB7) bepreisen die Kosten die Raumzeilen
     let k = sk_cost::lesen::katalog(&m, None);
     let u = sk_cost::Umfang::projekt();
     let ohne = sk_cost::lesen::kosten(&m, &sk_model::qto::schedule(&m), &k, &u);
-    assert_eq!(sk_cost::lesen::kosten(&m, &sched, &k, &u), ohne);
+    assert!(sk_cost::lesen::kosten(&m, &sched, &k, &u).netto.0 > ohne.netto.0);
     let csv = String::from_utf8(csv_grouped(&m, &sched, Grouping::Storey)).unwrap();
     assert!(
         csv.contains(";Raum ") && csv.contains("Sockelleiste"),
@@ -699,7 +699,7 @@ fn raeume_in_der_mengenliste() {
 /// ihrer Fläche, die Sockelleiste mit ihrem Typ beim Parkett, der
 /// Randdämmstreifen beim Estrich, je Raum eine Zeile mit Rechenweg. Sie
 /// zählen nicht in die Summe des Gewerks, jede steht einmal, und die
-/// Kosten bleiben gleich (Automatikmenge am Raum).
+/// Kosten bepreisen sie als Automatikmenge am Raum (Werksstand 19).
 #[test]
 fn laengen_der_raeume_nach_gewerk() {
     let mut s = haus_mit_raeumen();
@@ -783,13 +783,19 @@ fn laengen_der_raeume_nach_gewerk() {
             .sum();
         assert!((ist - soll).abs() < 1e-6, "{key}: {ist}");
     }
-    // Die Anzeige bepreist nichts: Werksstand 18 kennt keine Raumzeile,
-    // mit und ohne Räume gleiche Kosten (alt gegen neu prüft Kosten mit
-    // ihren Proben gegen main)
+    // Seit Werksstand 19 (RB7) bepreisen die Kosten diese Längen: die
+    // Sockelleiste Eiche (PA20) und der Randdämmstreifen (ES40) je Raum
     let k = sk_cost::lesen::katalog(&m, None);
     let u = sk_cost::Umfang::projekt();
-    let ohne = sk_cost::lesen::kosten(&m, &sk_model::qto::schedule(&m), &k, &u);
-    assert_eq!(sk_cost::lesen::kosten(&m, &sched, &k, &u), ohne);
+    let b = sk_cost::lesen::kosten(&m, &sched, &k, &u);
+    for kurz in ["Sockelleiste Eiche", "Randdämmstreifen"] {
+        assert!(
+            b.positionen
+                .iter()
+                .any(|p| p.kurz.contains(kurz) && p.gp.0 > 0),
+            "{kurz}"
+        );
+    }
 }
 
 /// Bedienbarkeit 38.2: Nach Geschoss zeigt die Wandzeile die Menge ihrer
@@ -862,4 +868,133 @@ fn wandzeilen_nach_vob() {
         }
     }
     assert_eq!(uebermessen, 1, "nur die Südwand mit dem kleinen Fenster");
+}
+
+/// G8 (Jörn 13.10. 02:14): Das Blatt Wohnfläche zeigt je Geschoss die
+/// Räume mit Faktor, Grund- und Wohnfläche wie die Rechnung aus dem Modell
+/// allein; aufgeklappt die Mengenansätze. Der Umfang wirkt wie in den
+/// Mengen, die Karte nennt die Summe, die Tabelle die Ansätze.
+#[test]
+fn wohnflaeche_als_blatt() {
+    let mut s = haus_mit_raeumen();
+    let mut v = ListView::wohnflaeche(&mut s);
+    let modell = sk_raum::wohnflaeche::projekt(s.model());
+    assert_eq!(*v.wohn_rechnung().unwrap(), modell, "Szene wie Modell");
+    let texte = v.line_texts();
+    assert_eq!(
+        texte,
+        [
+            "Erdgeschoss |  |  | 68,56 m² | 68,56 m²",
+            "  Raum 1 | R-001 | 100 % | 68,56 m² | 68,56 m²",
+            "Obergeschoss |  |  | 68,56 m² | 68,56 m²",
+            "  Raum 2 | R-002 | 100 % | 68,56 m² | 68,56 m²",
+            " |  |  |  | ",
+            "Wohnfläche · Gebäude 1 |  |  | 137,12 m² | 137,12 m²",
+        ],
+        "{texte:#?}"
+    );
+    eindeutig(&v);
+    // Aufgeklappt: Mengenansatz, Grundfläche, Anrechnung
+    let k = v.lines[1].key;
+    assert!(v.lines[1].weg);
+    v.open_groups.insert(k);
+    v.runs = None;
+    v.sync(&mut s, false);
+    let texte = v.line_texts();
+    let terme: Vec<&String> = (0..v.lines.len())
+        .filter(|&j| v.lines[j].parent == k)
+        .map(|j| &texte[j])
+        .collect();
+    assert_eq!(terme.len(), 3, "{terme:#?}");
+    assert_eq!(terme[0], "    (1) 9,340 × 7,340 |  |  | 68,556 m² | ");
+    assert_eq!(terme[1], "    = Grundfläche |  |  | 68,56 m² | ");
+    assert!(
+        terme[2].starts_with("    × 100 % · lichte Höhe ") && terme[2].ends_with(" | 68,56 m²"),
+        "{}",
+        terme[2]
+    );
+    eindeutig(&v);
+    // Umfang: nur das EG
+    let og = s
+        .model()
+        .storeys()
+        .iter()
+        .find(|(_, x)| x.name == "Obergeschoss")
+        .unwrap()
+        .0;
+    v.leiste.umfang.ohne = vec![og];
+    v.sync(&mut s, false);
+    let texte = v.line_texts();
+    assert!(
+        texte.iter().all(|t| !t.contains("Obergeschoss")),
+        "{texte:#?}"
+    );
+    assert_eq!(
+        texte.last().unwrap(),
+        "Wohnfläche · Gebäude 1 |  |  | 68,56 m² | 68,56 m²"
+    );
+    let w = v.wohn_rechnung().unwrap();
+    assert_eq!(wohn_karte(&w, &v.leiste.umfang), "68,56 m² · 1 Raum");
+    assert_eq!(
+        wohn_karte(&w, &sk_model::qto::Umfang::projekt()),
+        "137,12 m² · 2 Räume"
+    );
+    // Tabelle: BOM, Kopf, Raum, Ansatz, Summen
+    let csv =
+        String::from_utf8(wohn_csv(&w, &sk_model::qto::Umfang::projekt(), "Gebäude 1")).unwrap();
+    let zeilen: Vec<&str> = csv.trim_start_matches('\u{feff}').lines().collect();
+    assert!(
+        zeilen[0].starts_with("Wohnflächenberechnung · Gebäude 1"),
+        "{csv}"
+    );
+    assert!(
+        zeilen[1].starts_with("Gebäude;Geschoss;Raum;Nr.;Mengenansatz;"),
+        "{csv}"
+    );
+    assert!(
+        zeilen[2].starts_with("Gebäude 1;Erdgeschoss;Raum 1;R-001;;;68,56;100;68,56;lichte Höhe ")
+    );
+    assert_eq!(
+        zeilen[3],
+        "Gebäude 1;Erdgeschoss;Raum 1;R-001;(1) 9,340 × 7,340;68,5556;;;;"
+    );
+    assert!(csv.contains("Gebäude 1;Erdgeschoss;Summe Erdgeschoss;;;;68,56;;68,56;\r\n"));
+    assert!(csv.contains("Gebäude 1;;Summe Gebäude 1;;;;137,12;;137,12;\r\n"));
+    assert!(!csv.contains("Summe Projekt"), "ein Gebäude");
+}
+
+/// Das Blatt Wohnfläche hat keine Umschalter; dort stehen die Grundlagen,
+/// und ein Klick an ihre Stelle schaltet nichts.
+#[test]
+fn wohnflaeche_ohne_umschalter() {
+    let (t, fonts) = (Theme::dark(), Fonts::system());
+    let mut s = haus_mit_raeumen();
+    let mut p = Picking::default();
+    let mut m = ListView::grouped(&mut s, Grouping::Storey);
+    let mut v = ListView::wohnflaeche(&mut s);
+    (m.w, m.h, v.w, v.h) = (900, 700, 900, 700);
+    let (_, halves) = m.toggle_layout(&t, &fonts);
+    let (x, y) = mitte(halves[1].1);
+    assert_eq!(
+        m.hit(&t, &fonts, x, y),
+        Some(Hot::Grouping(Grouping::Trade))
+    );
+    assert_ne!(
+        v.hit(&t, &fonts, x, y),
+        Some(Hot::Grouping(Grouping::Trade))
+    );
+    assert_eq!(
+        v.mouse_down(&t, &fonts, &mut p, (x, y), Default::default()),
+        None
+    );
+    assert_eq!(v.grouping, Grouping::Storey);
+    // Klick auf den Raum wählt seinen Raum im Modell
+    let raum = v.lines[1].elements[0];
+    let list_top = (v.top_dip() + v.head()) * v.scale;
+    let (_, ly, lh) = v.layout(Some(&t))[1];
+    let y = (list_top + (ly + lh * 0.5) * v.scale) as f64;
+    let o = v.mouse_down(&t, &fonts, &mut p, (200.0, y), Default::default());
+    assert_eq!(o, Some(ListOut::Picking { selection: true }));
+    assert_eq!(p.selected, vec![raum]);
+    assert_eq!(s.model().element(raum).unwrap().category, Category::Space);
 }

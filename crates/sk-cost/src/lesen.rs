@@ -219,12 +219,11 @@ pub fn zuordnung(
 ) -> Option<crate::zuordnung::Zuordnung> {
     let (_, t) = m.layer_sets().iter().find(|(_, t)| t.guid == typ)?;
     let l = t.layers.get(schicht)?;
-    let kat = sk_model::element::Category::ALL
-        .into_iter()
-        .find(|c| sk_model::library::TypeCategory::of(*c) == Some(t.category))?;
+    let (kat, seite) = crate::zuordnung::art_des_typs(t.category)?;
     Some(crate::zuordnung::zuordnen(
         k,
         kat,
+        seite,
         l,
         m.material(l.material),
     ))
@@ -613,7 +612,7 @@ mod tests {
             lib.ext_put(a, &id, l.to_string(), None);
         }
         let mut k = katalog(&m, Some(&lib));
-        assert_eq!(preisquelle(&k), "Preise Firmenkatalog vom 14.10.2026");
+        assert_eq!(preisquelle(&k), "Preise Firmenkatalog vom 15.10.2026");
         k.kopf = None;
         assert_eq!(preisquelle(&k), "Preise Firmenkatalog");
         assert_eq!(

@@ -330,6 +330,8 @@ pub struct ListView {
     /// Maße des zuletzt gezeichneten Farbschemas: Lage und Rollgrenze ohne
     /// Schema rechnen damit (Review K3).
     sizes: Cell<Option<sk_ui::theme::Sizes>>,
+    /// Blatt Wohnfläche statt der Mengenermittlung, mit seiner Rechnung.
+    wohn: Option<wohn::Stand>,
 }
 
 impl ListView {
@@ -341,7 +343,14 @@ impl ListView {
 
     /// Liste mit Gliederung `g`.
     pub fn grouped(s: &mut Scene, g: Grouping) -> ListView {
-        let mut v = ListView {
+        let mut v = ListView::leer(g);
+        v.sync(s, false);
+        v
+    }
+
+    /// Leeres Blatt, noch ohne Zeilen.
+    fn leer(g: Grouping) -> ListView {
+        ListView {
             grouping: g,
             modus: Modus::Vob,
             leiste: umfang_view::Leiste::default(),
@@ -378,14 +387,16 @@ impl ListView {
             motion: None,
             hint_at: Vec::new(),
             sizes: Cell::new(None),
-        };
-        v.sync(s, false);
-        v
+            wohn: None,
+        }
     }
 
     /// An den Modellstand angleichen. `true`, wenn neu gezeichnet werden muss.
     /// `animate`: geänderte Werte leuchten auf.
     pub fn sync(&mut self, s: &mut Scene, animate: bool) -> bool {
+        if self.wohn.is_some() {
+            return self.sync_wohn(s, animate);
+        }
         if self.leiste.sync(s.model()) {
             self.umfang_shown = None;
         }
@@ -412,6 +423,15 @@ impl ListView {
             changed = true;
         }
         changed
+    }
+
+    /// Titel des Blatts.
+    fn titel(&self) -> &'static str {
+        if self.wohn.is_some() {
+            wohn::TITEL
+        } else {
+            "Mengenermittlung"
+        }
     }
 
     /// Unterzeile: Gebäude und Stand, dahinter „2 Bauteile ausgeblendet“,
@@ -473,6 +493,12 @@ impl ListView {
     fn rebuild(&mut self, m: &Model, sched: &Schedule, animate: bool) {
         let sicht = (self.modus, &self.open_groups);
         let (lines, groups) = build_lines(m, sched, self.grouping, sicht);
+        self.setzen(m, lines, groups, animate);
+    }
+
+    /// Neue Zeilen übernehmen: Nachrücken, Reihenfolge, Unterzeile und
+    /// Aufleuchten geänderter Werte.
+    fn setzen(&mut self, m: &Model, lines: Vec<Line>, groups: Vec<GroupRef>, animate: bool) {
         // Fallen sichtbare Zeilen weg, rücken die übrigen sichtbar nach
         let keys: HashSet<Key> = lines.iter().map(|l| l.key).collect();
         let old: Vec<Line> = self
@@ -1180,12 +1206,22 @@ impl ListView {
             return Some(Hot::Button);
         }
         let inset = TOGGLE_INSET * s;
-        for (g, (hx, hy, hw, hh)) in self.toggle_layout(t, fonts).1 {
+        let toggles = if self.wohn.is_none() {
+            self.toggle_layout(t, fonts).1.to_vec()
+        } else {
+            Vec::new()
+        };
+        let modi = if self.wohn.is_none() {
+            self.modus_layout(t, fonts).1.to_vec()
+        } else {
+            Vec::new()
+        };
+        for (g, (hx, hy, hw, hh)) in toggles {
             if x >= hx && x < hx + hw && y >= hy - inset && y < hy + hh + inset {
                 return Some(Hot::Grouping(g));
             }
         }
-        for (g, (hx, hy, hw, hh)) in self.modus_layout(t, fonts).1 {
+        for (g, (hx, hy, hw, hh)) in modi {
             if x >= hx && x < hx + hw && y >= hy - inset && y < hy + hh + inset {
                 return Some(Hot::Modus(g));
             }
@@ -1417,7 +1453,7 @@ impl ListView {
         let f = fonts.regular.as_ref()?;
         let b = fonts.bold.as_ref()?;
         let (x0, _) = self.content_x(t);
-        let x = x0 + b.width("Mengenermittlung", 19.0 * s) + 12.0 * s;
+        let x = x0 + b.width(self.titel(), 19.0 * s) + 12.0 * s;
         let pw = f.width("wird aktualisiert", 10.0 * s) + 40.0 * s;
         let (py, ph) = (self.top_dip() * s + 18.0 * s, 20.0 * s);
         let (x1, y1) = (x.floor() as i32 - 1, py.floor() as i32 - 1);
@@ -1468,7 +1504,7 @@ impl ListView {
             1.0
         };
         let (x0, _) = self.content_x(t);
-        let x = x0 + b.width("Mengenermittlung", 19.0 * s) + 12.0 * s - ox;
+        let x = x0 + b.width(self.titel(), 19.0 * s) + 12.0 * s - ox;
         let text = "wird aktualisiert";
         let pw = f.width(text, 10.0 * s) + 40.0 * s;
         let (py, ph) = (self.top_dip() * s + 18.0 * s - oy, 20.0 * s);
@@ -1675,14 +1711,7 @@ impl ListView {
         let bold = fonts.bold.as_ref().or(regular);
         c.fill_rect(0.0, top, self.w as f32, self.head() * s, u.sheet_bg);
         if let Some(f) = bold {
-            f.draw(
-                c,
-                "Mengenermittlung",
-                19.0 * s,
-                x0,
-                top + 34.0 * s,
-                u.sheet_text,
-            );
+            f.draw(c, self.titel(), 19.0 * s, x0, top + 34.0 * s, u.sheet_text);
         }
         if let Some(f) = regular {
             f.draw(
@@ -1713,22 +1742,36 @@ impl ListView {
                 u.sheet_text,
             );
         }
-        self.paint_toggle(c, t, fonts);
+        // Die Wohnfläche hat keine Umschalter, an ihrer Stelle die Grundlagen
+        if self.wohn.is_none() {
+            self.paint_toggle(c, t, fonts);
+        } else if let Some(f) = regular {
+            let px = 10.5 * s;
+            let y = (self.top_dip() + GLIEDERN_TOP) * s;
+            let base = y + (GLIEDERN_H * s + f.cap_height(px)) * 0.5;
+            let text = sk_ui::widgets::ellipsize(Some(f), wohn::GRUNDLAGEN, px, cw);
+            f.draw(c, &text, px, x0, base, u.sheet_text_dim);
+        }
         // Spaltenköpfe und Linie
         if let Some(f) = regular {
             let px = 10.0 * s;
             let base = top + (79.0 + CHIP_ROW + GLIEDERN_ROW) * s;
-            let first = match self.grouping {
-                Grouping::Storey => "Bauteil",
-                Grouping::Trade => "Leistung · Bauteil",
+            let kopf = match (&self.wohn, self.grouping) {
+                (Some(_), _) => wohn::KOPF,
+                (None, Grouping::Storey) => {
+                    ["Bauteil", "Nr.", "Länge · Stück", "Fläche", "Volumen"]
+                }
+                (None, Grouping::Trade) => [
+                    "Leistung · Bauteil",
+                    "Nr.",
+                    "Länge · Stück",
+                    "Fläche",
+                    "Volumen",
+                ],
             };
-            f.draw(c, first, px, x0, base, u.sheet_text_dim);
-            f.draw(c, "Nr.", px, x0 + cw * COL_NR, base, u.sheet_text_dim);
-            for (text, right) in [
-                ("Länge · Stück", COL_LEN),
-                ("Fläche", COL_AREA),
-                ("Volumen", 1.0),
-            ] {
+            f.draw(c, kopf[0], px, x0, base, u.sheet_text_dim);
+            f.draw(c, kopf[1], px, x0 + cw * COL_NR, base, u.sheet_text_dim);
+            for (text, right) in [(kopf[2], COL_LEN), (kopf[3], COL_AREA), (kopf[4], 1.0)] {
                 let tw = f.width(text, px);
                 f.draw(c, text, px, x0 + cw * right - tw, base, u.sheet_text_dim);
             }
@@ -2894,7 +2937,21 @@ use weg::*;
 
 #[path = "schedule_csv.rs"]
 mod tabelle;
+
+#[path = "schedule_wohn.rs"]
+mod wohn;
 pub use tabelle::*;
+#[cfg(test)]
+pub use wohn::rechnen as wohn_rechnen;
+pub use wohn::{csv as wohn_csv, karte as wohn_karte};
+
+#[cfg(test)]
+impl ListView {
+    /// Kopfzeile, für Ist-Bilder ohne die Uhrzeit des Laufs.
+    pub(crate) fn kopf_mut(&mut self) -> &mut String {
+        &mut self.subtitle
+    }
+}
 
 #[cfg(test)]
 #[path = "schedule_view_tests.rs"]

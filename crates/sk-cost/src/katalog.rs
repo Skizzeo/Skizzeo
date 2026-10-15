@@ -163,6 +163,8 @@ pub struct Leistung {
     pub tmin: Option<Dez>,
     pub tmax: Option<Dez>,
     pub funktion: Option<String>,
+    /// Regel: Seite der Raumzeile (`side=`, RB7): floor, wall, ceiling.
+    pub seite: Option<String>,
     /// Automatikmenge (`auto=`, nur mit Mengenbezug `auto`): Die Menge kommt
     /// aus der Gründung des Gebäudes, nicht aus einer Schicht.
     pub auto: Option<String>,
@@ -178,6 +180,7 @@ impl Leistung {
             + usize::from(self.tmin.is_some())
             + usize::from(self.tmax.is_some())
             + usize::from(self.funktion.is_some())
+            + usize::from(self.seite.is_some())
     }
 }
 
@@ -414,6 +417,11 @@ pub struct Katalog {
     /// FNV-1a über die gelesenen Satzzeilen (Bausteingrenze §5): ändert sich
     /// ein Satz, ordnet der Kostenspeicher alles neu zu.
     pub stempel: u64,
+    /// Stempel dessen, was die Zuordnung liest (Regel 81: Bauleistungen,
+    /// nicht Preise): Ändert ein Preis nur `stempel`, behält der
+    /// Kostenspeicher die Zuordnung und rechnet nur die Stoff-EP neu
+    /// (Review #197 B3).
+    pub stempel_zuordnung: u64,
 }
 
 /// FNV-1a, 64 Bit, eigene Umsetzung.
@@ -819,6 +827,7 @@ pub fn lesen<'a>(
         firma_stand: None,
         befunde: Vec::new(),
         erweiterung: erzeugt.saetze,
+        stempel_zuordnung: 0,
         stempel: {
             // R73-W: die Übersetzung gehört zum Stempel (Bausteingrenze §6)
             let mut paare: Vec<(Guid, Guid)> =
@@ -829,6 +838,7 @@ pub fn lesen<'a>(
             })
         },
     };
+    k.stempel_zuordnung = k.stempel;
     let skip = |bf: &mut Vec<Befund>, a: &Abschnitt, r: &Roh, grund: String| {
         let id = r.satz.kennung().unwrap_or_default();
         bf.push(Befund::fehler(
@@ -1060,6 +1070,7 @@ pub fn lesen<'a>(
             tmin,
             tmax,
             funktion: s.text("fn").map(str::to_string),
+            seite: s.text("side").map(str::to_string),
             auto,
             retired: s.flag("retired"),
             satz: r.satz,
@@ -1413,18 +1424,18 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 100);
-        assert_eq!(k.artikel.len(), 41);
-        assert_eq!(k.lose.len(), 22);
-        assert_eq!(k.anteile.len(), 59);
+        assert_eq!(k.leistungen.len(), 121);
+        assert_eq!(k.artikel.len(), 66);
+        assert_eq!(k.lose.len(), 32);
+        assert_eq!(k.anteile.len(), 89);
         assert_eq!(k.folgen.len(), 9);
         assert_eq!(k.werte, Firmenwerte::werk());
-        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(18));
-        // Stand 18: 65 Automatikpositionen (Erde mit Außenanlagen, Baustelle, Zulagen Attikaabdeckung,
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(19));
+        // Stand 19: 72 Automatikpositionen (Erde mit Außenanlagen, Baustelle, Zulagen Attikaabdeckung,
         // Anschluss an der Attika, Untersicht, Fußpunkt, Flachdach, Gefälledämmung,
         // Dachentwässerung außen, Laibungen und Diagonalbewehrung an Öffnungen,
-        // Laibung und Stirn an der Deckenaussparung)
-        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 65);
+        // Laibung und Stirn an der Deckenaussparung, Längen der Räume)
+        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 72);
         // jeder Schlüssel des Modells hat eine Leistung im Werk (Review
         // 9897697 Hinweis 2: sonst entsteht eine Menge, die niemand bepreist)
         for (key, _, _) in sk_model::qto::auto_schluessel() {

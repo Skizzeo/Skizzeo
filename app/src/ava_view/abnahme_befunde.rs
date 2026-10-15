@@ -93,7 +93,7 @@ fn abnahme_befunde_regeln_und_zaehlung() {
     // Seit Werksbestand Stand 9 (Los 4 Dach) haben Dachterrasse und
     // Attikablech Werksleistungen: keine Befunde der Rechnung, Katalog ohne
     // Befunde, je Los nur die zwei Kopf-Hinweise (Regel 0); seit Stand 18
-    // auch Los 6 Außenanlagen
+    // auch Los 6 Außenanlagen, seit Stand 19 die Lose 7 bis 10 des Ausbaus
     for (name, text, netto_soll) in [
         (haeuser()[0].0, haeuser()[0].1, 7_600_172),
         (haeuser()[1].0, haeuser()[1].1, 8_291_878),
@@ -107,10 +107,9 @@ fn abnahme_befunde_regeln_und_zaehlung() {
             .map(String::as_str)
             .collect();
         assert!(blatt.is_empty(), "{name}: Befunde der Rechnung {blatt:#?}");
-        let soll: Vec<String> = ["los1", "los2", "los3", "los4", "los5", "los6"]
-            .iter()
-            .map(|los| format!("{los} 0 H ×2"))
-            .collect();
+        // nach Text sortiert wie die Zählung: los1, los10, los2 …
+        let mut soll: Vec<String> = (1..=10).map(|i| format!("los{i} 0 H ×2")).collect();
+        soll.sort();
         assert_eq!(zaehlung(&ist), soll, "{name}: Regeln und Zählung\n{ist:#?}");
     }
 }

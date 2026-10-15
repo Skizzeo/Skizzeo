@@ -72,10 +72,57 @@ impl Bilder {
     fn ablegen(&self, q: &mut QuantityWindow, name: &str) {
         let spaeter = Instant::now() + Duration::from_secs(5);
         q.tick(&self.t, spaeter);
+        uhr_fest(q);
         let c = q.paint(&self.t, &self.fonts, spaeter);
         let pfad = self.dir.join(name);
         std::fs::write(&pfad, c.to_png()).unwrap_or_else(|e| panic!("{pfad:?}: {e}"));
     }
+}
+
+/// Stand in den Kopfzeilen der Ist-Bilder, damit sie zwischen Läufen
+/// bytegleich bleiben (Test an #195).
+const STAND_FEST: &str = "Stand 08.10.2026, 11:34";
+
+/// Ersetzt „Stand TT.MM.JJJJ, hh:mm“ (Uhrzeit des Laufs) durch [`STAND_FEST`].
+fn stand_fest(t: &mut String) {
+    let muster = b"dd.dd.dddd, dd:dd";
+    let stelle = t.match_indices("Stand ").map(|(i, _)| i).find(|&i| {
+        let rest = &t.as_bytes()[i + 6..];
+        rest.len() >= muster.len()
+            && muster.iter().zip(rest).all(|(m, c)| match m {
+                b'd' => c.is_ascii_digit(),
+                _ => m == c,
+            })
+    });
+    if let Some(i) = stelle {
+        t.replace_range(i..i + 6 + muster.len(), STAND_FEST);
+    }
+}
+
+fn uhr_fest(q: &mut QuantityWindow) {
+    for v in [q.list.as_mut(), q.wohn.as_mut()].into_iter().flatten() {
+        stand_fest(v.kopf_mut());
+    }
+    if let Some(k) = q.kosten.as_mut() {
+        stand_fest(&mut k.subtitle);
+    }
+    if let Some(a) = q.ava.as_mut() {
+        stand_fest(&mut a.subtitle);
+    }
+}
+
+#[test]
+fn ist_bilder_ohne_uhrzeit_des_laufs() {
+    let mut t =
+        "Bauvorhaben Standardhaus · Gebäude 1 · EG · Stand 15.10.2026, 08:33 · Preise".to_string();
+    stand_fest(&mut t);
+    assert_eq!(
+        t,
+        "Bauvorhaben Standardhaus · Gebäude 1 · EG · Stand 08.10.2026, 11:34 · Preise"
+    );
+    let mut ohne = "Standardhaus · Stand der Kopie".to_string();
+    stand_fest(&mut ohne);
+    assert_eq!(ohne, "Standardhaus · Stand der Kopie");
 }
 
 #[test]
@@ -728,4 +775,64 @@ fn istbilder_rechenweg() {
         q.sync(&mut s, &b.p, false);
         b.ablegen(&mut q, n);
     }
+}
+
+/// Haus in L-Form mit einer Innenwand: zwei Räume, einer davon ein L.
+fn haus_l() -> Scene {
+    use sk_math::vec3;
+    use sk_model::{RefSide, WallChain};
+    let mut s = Scene::new();
+    let wall = |points, closed, ref_side| WallChain {
+        base: 0.0,
+        points,
+        closed,
+        ref_side,
+        layers: Vec::new(),
+        height: 2750.0,
+        joints: Default::default(),
+    };
+    let aussen = vec![
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(6000.0, 8000.0, 0.0),
+        vec3(6000.0, 5000.0, 0.0),
+        vec3(10000.0, 5000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    s.add_wall(&wall(aussen, true, RefSide::Left));
+    let innen = vec![vec3(3500.0, 315.0, 0.0), vec3(3500.0, 7685.0, 0.0)];
+    s.add_wall_as(
+        &wall(innen, false, RefSide::Center),
+        sk_model::Category::InteriorWall,
+    );
+    s
+}
+
+/// Blatt Wohnfläche (G8) an einem Haus in L-Form: zugeklappt breit und
+/// schmal, aufgeklappt mit den Mengenansätzen.
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_wohnflaeche() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mut s = haus_l();
+    let mut q = b.fenster(&mut s, 1440, 760, Blatt::Wohnflaeche);
+    b.ablegen(&mut q, "ist-wohnflaeche.png");
+    let mut q = b.fenster(&mut s, 720, 760, Blatt::Wohnflaeche);
+    b.ablegen(&mut q, "ist-wohnflaeche-schmal.png");
+    let mut q = b.fenster(&mut s, 1240, 1400, Blatt::Wohnflaeche);
+    q.wohn.as_mut().unwrap().alles_aufklappen();
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-wohnflaeche-ansaetze.png");
 }

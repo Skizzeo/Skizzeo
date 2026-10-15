@@ -2883,6 +2883,8 @@ mod abnahme_ka4cd;
 #[cfg(test)]
 mod abnahme_lv_zeile;
 #[cfg(test)]
+mod abnahme_rb7;
+#[cfg(test)]
 mod bild;
 mod blatt;
 mod csv;
