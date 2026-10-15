@@ -85,6 +85,12 @@ pub(crate) struct Zustand {
     /// Gewählte Geländefläche und Modellstand, für die das Paneel
     /// „Eigenschaften“ steht.
     pub(crate) props: Option<(usize, u64)>,
+    /// Baugruben, die das Netz nicht deckt (rote Zeile), aus dem eigenen
+    /// Faden: Zahl, Modellstand dazu und der laufende Faden (Review #196
+    /// B1: im UI-Faden je Loslassen bis 179 ms).
+    ohne_netz: usize,
+    geprueft: Option<u64>,
+    pruefung: Option<(u64, mpsc::Receiver<usize>)>,
 }
 
 impl Zustand {
@@ -122,6 +128,50 @@ impl Zustand {
         self.weitere = hinweise[n..].to_vec();
     }
 
+    /// Baugruben ohne Netz bei offener Leiste mit Aufmaß im eigenen Faden
+    /// zählen, je Modellstand einmal, nicht im offenen Schritt (Review #196
+    /// B1); holt ein fertiges Ergebnis ab. `true`, wenn sich damit die rote
+    /// Zeile ändert.
+    pub(crate) fn baugruben(&mut self, m: &Model) -> bool {
+        if let Some((rev, rx)) = &self.pruefung {
+            let n = match rx.try_recv() {
+                Ok(n) => n,
+                Err(mpsc::TryRecvError::Empty) => return false,
+                // abgebrochen: bis zum nächsten Schritt ohne rote Zeile
+                Err(mpsc::TryRecvError::Disconnected) => 0,
+            };
+            self.geprueft = Some(*rev);
+            self.pruefung = None;
+            let anders = (n > 0) != (self.ohne_netz > 0);
+            self.ohne_netz = n;
+            return anders;
+        }
+        let rev = m.revision();
+        if !self.offen || m.in_step() || self.geprueft == Some(rev) {
+            return false;
+        }
+        if m.terrain().is_none_or(|t| t.points.is_empty()) {
+            // ohne Höhen keine rote Zeile, nichts zu rechnen
+            self.geprueft = Some(rev);
+            let anders = self.ohne_netz > 0;
+            self.ohne_netz = 0;
+            return anders;
+        }
+        let kopie = m.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            // fällt weg, wenn die Leiste inzwischen neu begonnen hat
+            let _ = tx.send(kopie.terrain_baugruben_ohne_netz());
+        });
+        self.pruefung = Some((rev, rx));
+        false
+    }
+
+    /// Prüft gerade ein Faden die Baugruben?
+    pub(crate) fn prueft(&self) -> bool {
+        self.pruefung.is_some()
+    }
+
     /// Ein Lageplan oder ein Höhenaufmaß wird gelesen.
     pub(crate) fn liest(&self) -> bool {
         self.lesen.is_some() || self.hoehen.is_some()
@@ -129,8 +179,8 @@ impl Zustand {
 }
 
 /// Meldung nach „Aufmaß entfernen“.
-const ENTFERNT: &str =
-    "Aufmaß entfernt, das Haus steht wieder auf der Platte; Strg+Z holt es zurück.";
+const ENTFERNT: &str = "Aufmaß entfernt, das Haus steht wieder auf der Platte; \
+    Geländeflächen ruhen bis zum nächsten Aufmaß. Strg+Z holt es zurück.";
 
 /// Name eines Knopfs im Tooltip (Zeile in `hilfe.txt`, `[knopf]`).
 pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
@@ -215,6 +265,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     let Some(t) = m.terrain() else {
         return l;
     };
+    // nach Strg+Z ist das Aufmaß wieder da (H-196c)
+    l.meldung.retain(|s| s != ENTFERNT);
     let ringe = t.boundary_rings();
     l.aufmass = true;
     l.hoehen = !t.points.is_empty();
@@ -223,7 +275,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     l.zuschnitt = Some(t.show());
     l.tippen = z.tippen;
     l.zeichnen = z.werkzeug.aktiv;
-    l.deckt_nicht = l.hoehen && m.terrain_baugruben_ohne_netz() > 0;
+    // aus dem Faden; bis er nach einem Schritt fertig ist, der Stand davor
+    l.deckt_nicht = l.hoehen && z.ohne_netz > 0;
     l.ecken = z.werkzeug.ecken().len();
     match z.tippen {
         Some(GelaendeKnopf::Verschieben) => {
@@ -447,7 +500,25 @@ impl App {
         z.tippen = None;
         z.werkzeug.set_aktiv(false);
         z.meldung.push(ENTFERNT.into());
+        // ohne Aufmaß ruhen die Flächen (H-196a)
+        self.flaeche_waehlen(None);
         self.quantity.dirty = true;
+    }
+
+    /// Baugruben ohne Netz im eigenen Faden zählen ([`Zustand::baugruben`]);
+    /// ändert sich die rote Zeile, folgt die Leiste und ein Bild (`true`).
+    pub(crate) fn baugruben_pruefen(&mut self) -> bool {
+        let anders = self.platte.leiste.baugruben(self.scene.model());
+        if anders {
+            self.platte.leiste.neu = true;
+            self.gelaende_sync();
+        }
+        anders
+    }
+
+    /// Prüft gerade ein Faden die Baugruben?
+    pub(crate) fn baugruben_rechnen(&self) -> bool {
+        self.platte.leiste.prueft()
     }
 
     /// Feld der Leiste übernommen (ein Schritt).
@@ -930,6 +1001,11 @@ mod tests {
         assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,86 m²"));
         assert_eq!(l.hoehenlinien, None, "Höhenlinien wie gewünscht");
         assert!(!l.deckt_nicht, "das Aufmaß deckt die Baugrube");
+        let mut offen = Zustand {
+            offen: true,
+            ..Default::default()
+        };
+        assert!(!pruefen(&mut offen, &m), "deckt");
         // Absolut: das Feld trägt die Höhe; 0,30 m tiefer steckt das Haus
         m.begin("absolut");
         assert!(m.set_terrain_href(HeightRef::Abs));
@@ -959,14 +1035,44 @@ mod tests {
         // (Bedienbarkeit 42.5)
         m.begin("Verschieben");
         assert!(m.move_terrain([200_000.0, 0.0]));
+        assert!(!offen.baugruben(&m), "nicht im offenen Schritt");
+        assert!(offen.pruefung.is_none());
         m.commit();
-        assert!(leiste(&m, &z).deckt_nicht);
+        assert!(!leiste(&m, &offen).deckt_nicht, "erst aus dem Faden");
+        assert!(pruefen(&mut offen, &m), "rote Zeile");
+        assert!(leiste(&m, &offen).deckt_nicht);
+        assert!(!offen.baugruben(&m), "derselbe Stand rechnet nicht neu");
+        assert!(offen.pruefung.is_none());
         // ohne Aufmaß keine Leiste mehr dafür (42.6)
+        let vorher = m.terrain().cloned();
         m.begin("Aufmaß entfernen");
         assert!(m.set_terrain(None));
         m.commit();
-        let l = leiste(&m, &z);
+        offen.meldung.push(ENTFERNT.into());
+        let l = leiste(&m, &offen);
         assert!(!l.aufmass && !l.deckt_nicht);
+        assert_eq!(l.meldung, [ENTFERNT]);
+        assert!(
+            offen.baugruben(&m) && offen.pruefung.is_none(),
+            "ohne Faden"
+        );
+        assert_eq!(offen.ohne_netz, 0);
+        // wie nach Strg+Z: das Aufmaß ist wieder da, die Meldung nicht (H-196c)
+        m.begin("zurück");
+        assert!(m.set_terrain(vorher));
+        m.commit();
+        assert!(leiste(&m, &offen).meldung.is_empty());
+    }
+
+    /// [`Zustand::baugruben`] bis der Faden fertig ist; `true`, wenn sich
+    /// die rote Zeile ändert.
+    fn pruefen(z: &mut Zustand, m: &Model) -> bool {
+        let mut anders = z.baugruben(m);
+        while z.pruefung.is_some() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            anders |= z.baugruben(m);
+        }
+        anders
     }
 
     /// 100.000 Punkte lesen und vernetzen im Faden; im UI-Faden bleibt nur

@@ -1419,18 +1419,18 @@ impl Model {
         })
     }
 
-    /// Zahl der Gründungen am bestimmenden Gebäude, deren Baugrube das Netz
-    /// nicht ganz deckt; ihre Erdmengen rechnen mit der mittleren Höhe
-    /// (Bedienbarkeit 42.5). Nur die Züge dieses Gebäudes wie
-    /// [`Model::terrain_folgen`]. Ohne Aufmaß oder Haus 0.
+    /// Zahl der Gründungen aller Gebäude, deren Baugrube das Netz nicht
+    /// ganz deckt; ihre Erdmengen rechnen mit der mittleren Höhe
+    /// (Bedienbarkeit 42.5, Review #196 H-196b). Je Gründung ein Schnitt mit
+    /// dem Netz: Die App fragt das im eigenen Faden (Review #196 B1). Ohne
+    /// Aufmaß 0.
     pub fn terrain_baugruben_ohne_netz(&self) -> usize {
-        let (Some(b), Some(_)) = (self.level_building(), self.terrain_nhn()) else {
+        if self.terrain_nhn().is_none() {
             return 0;
-        };
+        }
         let boden = self.project.soil;
         self.runs
             .iter()
-            .filter(|(_, r)| self.building_of(r.storey) == Some(b))
             .filter_map(|(id, _)| self.ground_basis(id))
             .filter(|g| crate::qto_earth::baugrube_ohne_netz(self, g, &boden))
             .count()
@@ -1996,10 +1996,19 @@ mod tests {
         assert!(m.import_terrain(Terrain::from_survey(&a, "hang.txt", "2026-10-14", 32)));
         m.commit();
         assert_eq!(baugruben_ohne_netz(&m), 0, "Aufmaß deckt");
+        // ein zweites Haus neben dem Aufmaß zählt mit (H-196b)
+        m.begin("Nachbar");
+        let n = m.add_building(1);
+        let p = |x: f64, y: f64| sk_math::vec3(x, y, 0.0);
+        let pts = [p(2e5, 0.0), p(2e5, 8e3), p(2.1e5, 8e3), p(2.1e5, 0.0)];
+        m.build_from_polygon(n, &pts).unwrap();
+        m.commit();
+        assert_ne!(m.level_building(), Some(n));
+        assert_eq!(baugruben_ohne_netz(&m), 1, "Nachbar außerhalb");
         m.begin("Verschieben");
         assert!(m.move_terrain([100_000.0, 0.0]));
         m.commit();
-        assert_eq!(baugruben_ohne_netz(&m), 1, "weit weg");
+        assert_eq!(baugruben_ohne_netz(&m), 2, "weit weg");
     }
 
     /// Gelände steiler als 1:10 an der Baugrube: Hinweis nach DIN 4124 am
