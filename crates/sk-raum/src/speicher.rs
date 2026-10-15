@@ -1367,56 +1367,72 @@ mod tests {
 
     /// Review #193 B1 und H-188a: Ob ein Geschoss auf der Sohle steht,
     /// entscheidet über den Estrich der Vorgabe und damit, ob ein Raum
-    /// Ausbau hat, wenn das Projekt nur den Estrich auf der Sohle führt. Der
-    /// Stempel folgt dem wie eine frische Erkennung, auch wenn sich sonst
-    /// nichts ändert.
+    /// Ausbau hat, wenn das Projekt nur den Estrich auf der Sohle führt und
+    /// die Vorlage sonst keinen Typ. Das Geschoss rückt wie bei Wiederholen
+    /// oder im Geschossfenster als Schritt von der Gründung weg und wieder
+    /// darauf; der Stempel folgt wie eine frische Rechnung, ohne die Räume
+    /// neu zu sammeln.
     #[test]
     fn grundflaeche_folgt_dem_estrich_der_vorgabe() {
         use sk_model::model::{SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID};
+        use sk_model::txn::{Change, Direction, Txn};
+        use sk_model::LevelKind;
         let mut m = crate::raumliste::tests::haus_roh();
         m.begin("Typ");
+        let mut v = m
+            .ensure_space_type(sk_model::model::DEFAULT_SPACE_GUID)
+            .and_then(|_| m.space_type(sk_model::model::DEFAULT_SPACE_GUID).cloned())
+            .unwrap();
+        (v.floor, v.ceiling, v.wall, v.tiles, v.skirting, v.screed) =
+            (None, None, None, None, None, None);
+        m.put_space_type(v);
         assert!(m.ensure_finish_type(SCREED_SLAB_TYPE_GUID).is_some());
         m.commit();
-        let text = sk_model::szo::write(&m);
-        let sohle = "kind=foundation elev=-800 h=800";
-        assert!(text.contains(sohle));
-        let lesen = |t: &str| {
-            sk_model::szo::read(t, sk_model::GuidGen::with_seed(1))
-                .unwrap()
-                .model
-        };
-        // b: die Gründung 10 cm tiefer, das EG steht nicht mehr auf ihr
-        let a = lesen(&text);
-        let b = lesen(&text.replace(sohle, "kind=foundation elev=-900 h=800"));
-        let eg = |m: &Model| {
-            m.storeys()
-                .iter()
-                .filter(|(_, s)| s.kind == sk_model::LevelKind::Storey)
-                .min_by(|x, y| x.1.elevation.total_cmp(&y.1.elevation))
-                .unwrap()
-                .0
-        };
-        let (ga, gb) = (eg(&a), eg(&b));
-        assert_eq!(
-            crate::ausbau::estrich_vorgabe(&a, ga),
-            SCREED_SLAB_TYPE_GUID
-        );
-        assert_eq!(
-            crate::ausbau::estrich_vorgabe(&b, gb),
-            SCREED_FLOOR_TYPE_GUID
-        );
-        let flaechen = |e: &mut Erkennung, m: &Model, g| -> Vec<f64> {
-            e.raumformen(m, m, g)
-                .flaechen()
-                .map(|f| f.grundflaeche)
-                .collect()
+        let ls: Vec<(StoreyId, sk_model::Storey)> =
+            m.storeys().iter().map(|(g, s)| (g, s.clone())).collect();
+        let (eg, s) = ls
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Storey)
+            .min_by(|x, y| x.1.elevation.total_cmp(&y.1.elevation))
+            .cloned()
+            .unwrap();
+        let versetzen = |m: &mut Model, dz: f64| {
+            let old = m.storey(eg).cloned();
+            let mut n = s.clone();
+            n.elevation += dz;
+            let changes = vec![Change::Storey {
+                id: eg,
+                old,
+                new: Some(n),
+            }];
+            m.apply(
+                &Txn {
+                    label: "Geschoss",
+                    changes,
+                },
+                Direction::Redo,
+            );
         };
         let mut e = Erkennung::default();
-        let vorher = flaechen(&mut e, &a, ga);
-        let nachher = flaechen(&mut e, &b, gb);
-        let frisch = flaechen(&mut Erkennung::default(), &b, gb);
-        assert_ne!(vorher, frisch, "ohne Ausbau ein anderes Fertigmaß");
-        assert_eq!(nachher, frisch);
+        for (dz, estrich) in [
+            (0.0, SCREED_SLAB_TYPE_GUID),
+            (500.0, SCREED_FLOOR_TYPE_GUID),
+            (0.0, SCREED_SLAB_TYPE_GUID),
+        ] {
+            versetzen(&mut m, dz);
+            assert_eq!(crate::ausbau::estrich_vorgabe(&m, eg), estrich);
+            let formen = e.raumformen(&m, &m, eg);
+            let f: Vec<&Raumflaeche> = formen.flaechen().collect();
+            assert!(!f.is_empty());
+            for f in f {
+                let frisch = crate::flaechen::grundflaeche_fertig(&m, &f.form);
+                assert!(
+                    (f.grundflaeche - frisch).abs() < 1e-6,
+                    "{dz}: {} {frisch}",
+                    f.grundflaeche
+                );
+            }
+        }
         assert_eq!(e.raumlisten(), 1, "nur einmal gesammelt");
     }
 
