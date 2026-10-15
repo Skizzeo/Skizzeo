@@ -363,6 +363,29 @@ mod tests {
         assert!(!text.contains("spread=5000"));
     }
 
+    /// Löschen einer Fläche vor einer rohen Zeile: die rohe bleibt vor der
+    /// Fläche, vor der sie stand (Review #194 H-194a).
+    #[test]
+    fn rohe_zeile_rueckt_beim_loeschen_mit() {
+        let mut text = write(&Model::with_seed(5));
+        text.push_str(concat!(
+            "[tpatch] pts=0,0;1000,0;1000,1000 z=10\n",
+            "[tpatch] pts=0,0;1000,0;1000,1000 z=x\n",
+            "[tpatch] pts=0,0;2000,0;2000,2000 z=20\n",
+        ));
+        let mut m = read(&text, GuidGen::with_seed(99)).unwrap().model;
+        m.begin("Fläche löschen");
+        assert!(m.remove_site_patch(0));
+        m.commit();
+        assert_eq!(
+            zeilen(&write(&m)),
+            [
+                "[tpatch] pts=0,0;1000,0;1000,1000 z=x",
+                "[tpatch] pts=0,0;2000,0;2000,2000 z=20",
+            ]
+        );
+    }
+
     /// Doppeltes `[sitesoil]` hält das Öffnen nicht auf: das erste gilt,
     /// jedes weitere gibt einen Hinweis und bleibt roh dahinter; die Datei
     /// bleibt bytegleich (BIM-Routine 15.10., wie `[terrain]` in #178).
