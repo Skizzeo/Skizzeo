@@ -462,6 +462,18 @@ impl Model {
         &self.project.site_patches
     }
 
+    /// Überlappt der Umriss der Fläche `i` den einer anderen um mehr als
+    /// 1 cm²? Die Mengen zählen dort doppelt
+    /// ([`crate::qto_earth::UEBERLAPPT`]); die App meldet es beim Schließen.
+    pub fn site_patch_overlaps(&self, i: usize) -> bool {
+        let f = &self.project.site_patches;
+        let Some(a) = f.get(i) else {
+            return false;
+        };
+        let u = |b: &TerrainPatch| sk_gelaende::planung::ueberlappung(&a.outline, &b.outline);
+        f.iter().enumerate().any(|(j, b)| j != i && u(b) > 100.0)
+    }
+
     /// Neue Geländefläche (im offenen Schritt); ihre Nummer, `None`, wenn
     /// sie sich nicht bauen lässt.
     pub fn add_site_patch(&mut self, p: TerrainPatch) -> Option<usize> {
@@ -820,5 +832,21 @@ mod tests {
         }));
         m.commit();
         assert_eq!(m.site_soil().spread, 150.0);
+    }
+
+    /// Überlappung der Umrisse (Bedienbarkeit 43.1): Kante an Kante zählt
+    /// nicht, 1 m × 8 m gemeinsam schon.
+    #[test]
+    fn ueberlappt() {
+        let mut m = Model::with_seed(3);
+        let schieben = |dx: f64| quadrat().iter().map(|p| [p[0] + dx, p[1]]).collect();
+        m.begin("Flächen");
+        m.add_site_patch(TerrainPatch::flat(quadrat(), 0.0));
+        m.add_site_patch(TerrainPatch::flat(schieben(10_000.0), 0.0));
+        assert!(!m.site_patch_overlaps(0) && !m.site_patch_overlaps(1));
+        m.add_site_patch(TerrainPatch::flat(schieben(-9_000.0), 0.0));
+        m.commit();
+        assert!(m.site_patch_overlaps(2) && m.site_patch_overlaps(0));
+        assert!(!m.site_patch_overlaps(1) && !m.site_patch_overlaps(3));
     }
 }

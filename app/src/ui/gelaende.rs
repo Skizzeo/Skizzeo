@@ -87,6 +87,17 @@ pub enum GelaendeFeld {
     Faktor,
 }
 
+impl GelaendeFeld {
+    /// Felder im Paneel „Eigenschaften“ der gewählten Fläche, nicht in der
+    /// Leiste.
+    pub fn im_paneel(self) -> bool {
+        matches!(
+            self,
+            Self::Hoehe | Self::Boeschung | Self::Andecken | Self::Faktor
+        )
+    }
+}
+
 /// Was die Leiste zeigt; die App füllt es aus dem Modell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GelaendeLeiste {

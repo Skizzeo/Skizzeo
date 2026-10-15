@@ -78,7 +78,7 @@ pub const GANZ_AUSSERHALB: &str = "Geländefläche ohne Mengen: liegt außerhalb
 pub const OHNE_AUFMASS: &str = "Geländefläche ohne Mengen: kein Höhenaufmaß";
 pub const OHNE_TRAEGER: &str = "Geländefläche ohne Mengen: keine Sohlplatte als Träger";
 /// Hinweis, wenn sich Flächen überlappen.
-const UEBERLAPPT: &str =
+pub const UEBERLAPPT: &str =
     "Geländeflächen überlappen sich: Menge dort doppelt gezählt, Flächen prüfen";
 /// Kleinere Mengen (m³, m²) sind Rundungsreste und geben keine Zeile
 /// (H-173a), wie in der Oberbodenbilanz.
