@@ -4039,7 +4039,7 @@ impl App {
                 } else {
                     ev
                 };
-                self.nord_handle(&nord_ev, vw, vh, sc);
+                let outside = self.nord_hover(&nord_ev, vw, vh, sc) || outside;
                 // Abläufe vor der Schnittlinie (Jörn 11.10.): sie liegen oft darauf
                 let blocked = outside || chip.is_some() || self.nord.is_busy();
                 let drain_ev = if blocked || self.sect.is_dragging() {
@@ -4280,7 +4280,7 @@ impl App {
                     match change {
                         selection::PickChange::Keep => {}
                         // Klick ins Leere im Grundriss wählt die Geländefläche
-                        // darunter (G3d)
+                        // darunter oder keine (G3d, H-189f)
                         selection::PickChange::Replace(None)
                             if self.flaeche_klick(x, y, vw, vh) => {}
                         selection::PickChange::Replace(id) => self.select(id),
