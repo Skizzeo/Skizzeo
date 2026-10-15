@@ -100,15 +100,13 @@ impl Zustand {
         !self.neu && (self.stand == Some(m.revision()) || (self.stand.is_some() && m.in_step()))
     }
 
-    /// Leiste zu: Eingaben und Meldungen fallen weg.
+    /// Leiste zu: die Eingabe und das Werkzeug „Fläche zeichnen“ fallen
+    /// weg. Ein gelesener Lageplan, eine Datei, die gerade gelesen wird,
+    /// und die Meldungen bleiben, bis ein neuer Plan kommt; ein Aufmaß
+    /// wird zu Ende gelesen und übernommen (Bedienbarkeit 43.4).
     fn zu(&mut self) {
         self.offen = false;
         self.tippen = None;
-        self.leeren();
-        self.fehler = None;
-        self.plan = None;
-        self.lesen = None;
-        self.hoehen = None;
         self.werkzeug.set_aktiv(false);
         self.neu = true;
     }
@@ -177,6 +175,11 @@ impl Zustand {
         self.lesen.is_some() || self.hoehen.is_some()
     }
 }
+
+/// Statuszeile, wenn ein Lageplan oder ein Aufmaß bei geschlossener Leiste
+/// fertig gelesen ist (43.4).
+pub const GELESEN_PLAN: &str = "Lageplan gelesen; mehr unter „Gelände“";
+pub const GELESEN_HOEHEN: &str = "Höhenaufmaß eingelesen; mehr unter „Gelände“";
 
 /// Meldung nach „Aufmaß entfernen“.
 const ENTFERNT: &str = "Aufmaß entfernt, das Haus steht wieder auf der Platte; \
@@ -613,12 +616,16 @@ impl App {
     }
 
     /// Ein fertig gelesenes Höhenaufmaß übernehmen; `true`, wenn eins kam
-    /// (dann folgt ein Bild). Ein Ergebnis, das nicht mehr gilt, fällt weg:
-    /// Leiste zu oder neues Einlesen verwerfen den Empfänger; hat das
-    /// Modell inzwischen eine andere UTM-Zone (die Vorgabe für Dateien ohne
-    /// Zonenkennzahl), wird neu gelesen. Sonst hängt das Gelesene nicht am
-    /// Modell.
+    /// (dann folgt ein Bild). Es wartet, solange ein Zug läuft (siehe
+    /// [`darf_abholen`]). Ein Ergebnis, das nicht mehr gilt, fällt weg: Ein
+    /// neues Einlesen verwirft den Empfänger, die Leiste zu nicht (sie
+    /// liest fertig); hat das Modell inzwischen eine andere UTM-Zone (die
+    /// Vorgabe für Dateien ohne Zonenkennzahl), wird neu gelesen. Sonst
+    /// hängt das Gelesene nicht am Modell.
     pub(crate) fn hoehen_abholen(&mut self) -> bool {
+        if !darf_abholen(self.im_zug(), self.scene.model()) {
+            return false;
+        }
         let Some((_, zone, rx)) = &self.platte.leiste.hoehen else {
             return false;
         };
@@ -643,6 +650,7 @@ impl App {
     /// Das gelesene Aufmaß als Schritt übernehmen. Was erkannt wurde, steht
     /// in der Leiste, ebenso ein Fehler.
     fn hoehen_gelesen(&mut self, gelesen: Ergebnis) {
+        self.gelesen_bei_zu(gelesen.as_ref().map(|_| GELESEN_HOEHEN));
         let m = self.scene.model();
         let mit_unterlage = m.terrain().is_some_and(|t| t.underlay.is_some());
         let z = &mut self.platte.leiste;
@@ -763,6 +771,7 @@ impl App {
     }
 
     fn lageplan_gelesen(&mut self, p: &Path, r: Result<SitePlan, Meldung>) {
+        self.gelesen_bei_zu(r.as_ref().map(|_| GELESEN_PLAN));
         let z = &mut self.platte.leiste;
         z.neu = true;
         match r {
@@ -775,6 +784,19 @@ impl App {
         }
         self.gelaende_sync();
         self.redraw = true;
+    }
+
+    /// Kam das Ergebnis bei geschlossener Leiste, sagt es die Statuszeile;
+    /// der Rest steht in der Leiste, wenn sie wieder aufgeht (43.4).
+    fn gelesen_bei_zu(&mut self, r: Result<&'static str, &Meldung>) {
+        if self.platte.leiste.offen {
+            return;
+        }
+        let m = match r {
+            Ok(satz) => Meldung::satz(satz),
+            Err(e) => e.clone(),
+        };
+        self.status(m, crate::NOTICE_TIME);
     }
 
     /// Das Flurstück des gelesenen Lageplans übernehmen (ein Schritt). Mit
@@ -873,6 +895,15 @@ impl App {
     }
 }
 
+/// Ob ein fertig gelesenes Aufmaß jetzt ins Modell darf: nicht während
+/// eines Zugs der Werkzeuge und nicht in einem offenen Schritt eines
+/// anderen Zugs (Wand, Raumstempel, …). Bei geschlossener Leiste wird
+/// weitergezeichnet, das Aufmaß käme sonst mitten in dessen Schritt und
+/// Rückgängig-Verlauf (43.4, Review #200 B1).
+fn darf_abholen(im_zug: bool, m: &Model) -> bool {
+    !im_zug && !m.in_step()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -918,6 +949,39 @@ mod tests {
             Some("Höhenlinien alle 1 m, bei 0,25 m wären es zu viele")
         );
         assert!(crate::gelaende_netz::Gelaende::aus(&m).is_some());
+    }
+
+    /// Leiste zu: eine Datei, die gerade gelesen wird, und die Meldungen
+    /// bleiben; Eingabe und Werkzeug fallen weg (Bedienbarkeit 43.4).
+    #[test]
+    fn abholen_wartet_auf_den_schritt() {
+        let mut m = lindenhof();
+        assert!(darf_abholen(false, &m));
+        assert!(!darf_abholen(true, &m), "im Zug");
+        m.begin("Raum stempeln");
+        assert!(!darf_abholen(false, &m), "offener Schritt");
+        m.commit();
+        assert!(darf_abholen(false, &m), "nach dem Schritt");
+    }
+
+    #[test]
+    fn zu_behaelt_das_gelesene() {
+        let mut z = Zustand {
+            offen: true,
+            ..Default::default()
+        };
+        let (_tx, rx) = mpsc::channel();
+        z.lesen = Some((PathBuf::from("lageplan.pdf"), rx));
+        let (_tx2, rx2) = mpsc::channel();
+        z.hoehen = Some((PathBuf::from("punkte.txt"), 32, rx2));
+        z.meldung.push("Maßstab 1:500 erkannt".into());
+        z.fehler = Some(Meldung::satz("Fehler"));
+        z.werkzeug.set_aktiv(true);
+        z.zu();
+        assert!(!z.offen && z.neu && !z.werkzeug.aktiv && z.tippen.is_none());
+        assert!(z.liest() && z.lesen.is_some() && z.hoehen.is_some());
+        assert_eq!(z.meldung, ["Maßstab 1:500 erkannt"]);
+        assert!(z.fehler.is_some());
     }
 
     /// Im offenen Schritt bleibt die Leiste stehen und folgt beim
