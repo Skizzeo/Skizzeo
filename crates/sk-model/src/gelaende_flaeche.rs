@@ -529,6 +529,12 @@ impl Model {
         }
         self.note_project();
         self.project.site_patches.remove(i);
+        // rohe Zeilen hinter der Fläche rücken mit (Review #194 H-194a)
+        for (k, _) in &mut self.project.site_patches_raw {
+            if *k > i {
+                *k -= 1;
+            }
+        }
         self.touch_height();
         true
     }

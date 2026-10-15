@@ -38,8 +38,8 @@ impl Modul {
     }
 
     /// Die einzige Stelle der Abhängigkeiten: Kosten braucht Mengen, AVA
-    /// braucht Kosten. Gelände braucht nichts; seine Erdmengen erscheinen,
-    /// sobald auch Mengen frei ist.
+    /// braucht Kosten. Gelände braucht nichts; seine Erdmengen erscheinen
+    /// unter „Kosten“, sobald auch Kosten frei ist.
     fn braucht(self) -> Option<Modul> {
         match self {
             Modul::Kosten => Some(Modul::Mengen),
@@ -358,7 +358,8 @@ impl Eingang for Topic {
             | Topic::Patterns
             | Topic::Delete
             | Topic::Backups
-            | Topic::Ausbaustufen => None,
+            | Topic::Ausbaustufen
+            | Topic::Gelaende => None,
         }
     }
 }
@@ -378,6 +379,11 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
         (Topic::Terrace, "Mengen") => Some(Modul::Mengen),
         (Topic::Rooms, "Mengen") => Some(Modul::Mengen),
         (Topic::Einlesen, "Firmenkatalog" | "Preise") => Some(Modul::Kosten),
+        (Topic::Gelaende, "Erdmengen") => Some(Modul::Kosten),
+        (
+            Topic::Gelaende,
+            "Ablauf" | "Lageplan" | "Höhen" | "Lage" | "Höhenlage" | "Geländeflächen" | "Zuschnitt",
+        ) => Some(Modul::Gelaende),
         _ => None,
     }
 }
@@ -387,6 +393,7 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
 fn hilfe_zeile_ohne(t: Topic, beschriftung: &str) -> Option<Modul> {
     match (t, beschriftung) {
         (Topic::Einlesen, "Neue Sätze") => Some(Modul::Kosten),
+        (Topic::Gelaende, "Modul") => Some(Modul::Gelaende),
         _ => None,
     }
 }
