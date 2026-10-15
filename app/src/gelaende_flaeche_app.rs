@@ -310,10 +310,13 @@ impl Werkzeug {
             m.width = 8.0 * scale;
             out.push(m);
         }
-        // Fang: ein Quadrat an der Ecke, ein kleineres an der Kante
+        // Fang: ein Quadrat an der Ecke, ein runder Punkt an der Kante;
+        // nur an der Größe war das kaum zu unterscheiden (Bedienbarkeit,
+        // später zu #198)
         if let Some((q, f)) = self.fang {
             let mut m = linie(q, q, col.guide, 0.0);
-            m.width = if f == Fang::Ecke { 12.0 } else { 7.0 } * scale;
+            m.width = if f == Fang::Ecke { 12.0 } else { 10.0 } * scale;
+            m.round = f == Fang::Kante;
             out.push(m);
         }
         out
@@ -1372,12 +1375,15 @@ mod tests {
         assert_eq!(w.ecken(), &[[9003.0, 8001.0]]);
         assert_eq!(w.fang.map(|f| f.1), Some(Fang::Ecke));
         let l = w.linien(0.0, 1.0, &Theme::dark());
-        assert!(l.iter().any(|h| h.width == 12.0));
+        assert!(l.iter().any(|h| h.width == 12.0 && !h.round), "Quadrat");
         klick(&mut w, &cam, punkt(7000.4, 4880.0));
         // auf der Kante, ungerundet (H-198c)
         let k = w.ecken()[1];
         assert!(k[1] == 5000.0 && (k[0] - 7000.4).abs() < 0.1, "{k:?}");
         assert_eq!(w.fang.map(|f| f.1), Some(Fang::Kante));
+        let l = w.linien(0.0, 1.0, &Theme::dark());
+        assert!(l.iter().any(|h| h.width == 10.0 && h.round), "Punkt");
+        assert!(!l.iter().any(|h| h.width == 12.0), "kein Quadrat");
         klick(&mut w, &cam, punkt(12004.0, 12996.0));
         assert_eq!(w.ecken()[2], [12000.0, 13000.0]);
         assert_eq!(w.fang, None);
