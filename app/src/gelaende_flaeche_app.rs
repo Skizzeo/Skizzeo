@@ -320,7 +320,7 @@ fn innen(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
 /// wie sie auch gilt. Ohne Höhenaufmaß ruhen die Flächen: nicht zu sehen,
 /// nicht gerechnet, also auch nicht wählbar (Review #196 H-196a).
 pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
-    if m.terrain().is_none_or(|t| t.points.is_empty()) {
+    if ruhen(m) {
         return None;
     }
     m.site_patches()
@@ -329,6 +329,17 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .rev()
         .find(|(_, f)| innen(&f.outline, p))
         .map(|(i, _)| i)
+}
+
+/// Ohne Höhenaufmaß ruhen die Flächen.
+fn ruhen(m: &Model) -> bool {
+    m.terrain().is_none_or(|t| t.points.is_empty())
+}
+
+/// Die gewählte Fläche `f`, solange es sie gibt und sie nicht ruht; nach
+/// Strg+Z des Einlesens blieb sie sonst gewählt (Review #196 H-196g).
+fn gewaehlte(m: &Model, f: Option<usize>) -> Option<usize> {
+    f.filter(|&i| !ruhen(m) && i < m.site_patches().len())
 }
 
 /// Liegen alle Ecken (mm) höchstens 1 mm neben der Geraden durch die erste
@@ -708,10 +719,7 @@ impl App {
     /// zeigt. Je Modellstand einmal gebaut.
     pub(crate) fn flaeche_props(&mut self) -> bool {
         let m = self.scene.model();
-        let i = self
-            .picking
-            .flaeche
-            .filter(|&i| self.sel.id.is_none() && i < m.site_patches().len());
+        let i = gewaehlte(m, self.picking.flaeche).filter(|_| self.sel.id.is_none());
         if i.is_none() && self.picking.flaeche.is_some() {
             self.picking.flaeche = None;
         }
@@ -1028,6 +1036,14 @@ mod tests {
         assert_eq!(flaeche_bei(&m, [1000.0, 1000.0]), Some(0));
         assert_eq!(flaeche_bei(&m, [5000.0, 1000.0]), Some(1));
         assert_eq!(flaeche_bei(&m, [9500.0, 1000.0]), None);
+        // Strg+Z des Einlesens: die gewählte Fläche ruht und ist nicht mehr
+        // gewählt (H-196g)
+        assert_eq!(gewaehlte(&m, Some(1)), Some(1));
+        assert_eq!(gewaehlte(&m, Some(2)), None);
+        m.begin("zurück");
+        assert!(m.set_terrain(None));
+        m.commit();
+        assert_eq!(gewaehlte(&m, Some(1)), None);
     }
 
     /// Paneel: Höhe und Böschung als Felder, solange sie für die ganze

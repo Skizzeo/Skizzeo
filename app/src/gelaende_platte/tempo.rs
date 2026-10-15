@@ -297,11 +297,16 @@ fn baugruben_im_faden() {
         !leiste(&m, &z).deckt_nicht,
         "das Aufmaß deckt alle Baugruben"
     );
+    // danach Sockel und Einbindung aus dem Faden (H-196h)
+    let d = bestwert(|| {
+        std::hint::black_box(leiste(&m, &z));
+    });
     eprintln!(
-        "{k} Züge, {} Punkte: Leiste {l:.2} ms, Start {start:.2} ms, Faden {faden:.1} ms",
+        "{k} Züge, {} Punkte: Leiste {l:.2} ms, danach {d:.2} ms, Start {start:.2} ms, Faden {faden:.1} ms",
         n * n
     );
     assert!(l < 4.0 * f, "Leiste {l:.2} ms");
+    assert!(d < 1.0 * f, "Leiste aus dem Faden {d:.2} ms");
     assert!(start < 4.0 * f, "Start {start:.2} ms");
 }
 
@@ -722,4 +727,55 @@ fn lageplan_im_budget() {
         gross.schritt_mitte < 2.0 * klein.schritt_mitte + 1.0 * f,
         "{klein:?} {gross:?}"
     );
+}
+
+/// Messprogramm (H-196h): 100 Züge auf 326.000 Punkten im Abstand von
+/// 30 cm; die Leiste vor dem ersten Ergebnis des Fadens (rechnet Sockel
+/// und Einbindung selbst) und danach. Nur im Release sinnvoll:
+/// `cargo test --release -p skizzeo folgen_im_faden_messen -- --ignored --nocapture`
+#[test]
+#[ignore = "Messprogramm"]
+fn folgen_im_faden_messen() {
+    let (k, n) = (100, 571);
+    let mut m = Model::with_seed(5);
+    let b = m.add_building(1);
+    for i in 0..k {
+        let (ox, oy) = ((i % 10) as f64 * 15_000.0, (i / 10) as f64 * 15_000.0);
+        let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+        let pts = [p(0.0, 0.0), p(0.0, 8000.0), p(1e4, 8000.0), p(1e4, 0.0)];
+        m.build_from_polygon(b, &pts).unwrap();
+    }
+    let mut t = Terrain::new(Crs::Local);
+    for i in 0..n {
+        for j in 0..n {
+            let (e, nn) = (1000.0 + 0.3 * i as f64, 2000.0 + 0.3 * j as f64);
+            t.points.push(TerrainPoint {
+                nr: (i * n + j + 1).to_string(),
+                e,
+                n: nn,
+                h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
+                code: String::new(),
+                off: false,
+            });
+        }
+    }
+    m.begin("Aufmaß");
+    assert!(m.import_terrain(t));
+    m.commit();
+    let mut z = Zustand::default();
+    z.offen = true;
+    let selbst = bestwert(|| {
+        std::hint::black_box(leiste(&m, &z));
+    });
+    let t0 = Instant::now();
+    z.baugruben(&m);
+    while z.prueft() {
+        std::thread::sleep(Duration::from_millis(1));
+        z.baugruben(&m);
+    }
+    let faden = ms(t0);
+    let danach = bestwert(|| {
+        std::hint::black_box(leiste(&m, &z));
+    });
+    eprintln!("{k} Züge, {} Punkte: Leiste selbst {selbst:.2} ms, aus dem Faden {danach:.2} ms, Faden {faden:.1} ms", n * n);
 }
