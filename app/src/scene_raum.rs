@@ -2,7 +2,8 @@
 //! Erkennung aus den berechneten Wandzügen mit Zwischenspeicher, Abgleich
 //! beim Abschluss eines Schritts, der Stand der Räume durch Rückgängig und
 //! Wiederholen, der zuletzt angelegte Raum für sein Namensfeld, Stempel
-//! ziehen, Raum anlegen und benennen.
+//! ziehen, Raum anlegen und benennen; dazu der Schritt, der beim
+//! Verlängern zwei Wände vereint (G5c, ändert Räume wie Wandzüge).
 
 use super::{RunCache, Scene};
 use sk_math::{vec3, Vec3};
@@ -360,6 +361,26 @@ impl Scene {
         ok
     }
 
+    /// Verlängern, das zwei Wände vereint (Grundriss G5c): ein Schritt
+    /// „Wände vereint“. Neu gerechnet werden die Züge, die der Schritt
+    /// berührt, und die Partner des wegfallenden Zuges `weg`, nicht das
+    /// ganze Modell (Review #210 B1). Lehnt das Modell ab, bleibt nichts.
+    pub fn waende_vereinen(&mut self, a: ElementId, ziel: ElementId, weg: RunId) -> bool {
+        let mut marks = self.model.joined_runs(weg);
+        marks.push(weg);
+        self.begin("Wände vereint");
+        if self.model.verlaengern(a, ziel).is_err() {
+            self.rollback();
+            return false;
+        }
+        marks.extend(self.model.step_touched());
+        for r in marks {
+            self.mark(r);
+        }
+        self.commit();
+        true
+    }
+
     /// Wandseite, die das Paneel des Raums `.0` bearbeitet (RB6); `None`:
     /// alle Wandseiten.
     pub(crate) fn raum_seite(&self) -> Option<(ElementId, WandSeite)> {
@@ -461,6 +482,59 @@ mod tests {
             innen.push(w.unwrap());
         }
         (s, st, innen)
+    }
+
+    /// Review #210 B1: Zwei Wände vereinen rechnet die berührten Züge neu,
+    /// das Haus daneben bleibt; ein Schritt „Wände vereint“.
+    #[test]
+    fn waende_vereinen_rechnet_nur_beruehrte_zuege() {
+        let (mut s, st, innen) = stadt(2);
+        let mut zwei = Vec::new();
+        s.edit_model("Wände", |m| {
+            let iw = m.defaults().interior_wall;
+            for x in [4000.0, 7000.0] {
+                let pts = [vec3(x, 4000.0, 0.0), vec3(x + 2000.0, 4000.0, 0.0)];
+                zwei.extend(m.add_wall_run(
+                    &pts,
+                    false,
+                    RefSide::Center,
+                    st,
+                    iw,
+                    Category::InteriorWall,
+                ));
+            }
+            true
+        });
+        let (a, b) = (zwei[0], zwei[1]);
+        let builds = |s: &Scene, r: RunId| s.cached(r).map_or(0, |c| c.builds);
+        let nachbar: Vec<(RunId, u32)> = s
+            .model()
+            .runs()
+            .ids()
+            .filter(|r| !zwei.contains(r) && *r != innen[0])
+            .map(|r| (r, builds(&s, r)))
+            .collect();
+        let vorher = builds(&s, a);
+        let (wa, wb) = (
+            s.model().wall_at(a, 0).unwrap(),
+            s.model().wall_at(b, 0).unwrap(),
+        );
+        assert!(s.waende_vereinen(wa, wb, b));
+        assert!(s.model().run(b).is_none());
+        assert_eq!(s.model().run(a).unwrap().points[1].x, 9000.0);
+        assert!(builds(&s, a) > vorher);
+        for (r, n) in nachbar {
+            if s.model().run(r).map(|x| x.closed) == Some(true)
+                && s.model().joined_runs(a).contains(&r)
+            {
+                continue;
+            }
+            assert_eq!(builds(&s, r), n, "{r:?} neu gerechnet");
+        }
+        assert_eq!(s.undo_label(), Some("Wände vereint"));
+        // Abgelehnt: kein Schritt
+        assert!(!s.waende_vereinen(wa, wa, a));
+        assert_eq!(s.undo_label(), Some("Wände vereint"));
     }
 
     fn name_bei(s: &Scene, st: StoreyId, p: Vec3) -> String {
