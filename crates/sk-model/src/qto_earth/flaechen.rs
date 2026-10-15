@@ -388,10 +388,21 @@ pub(crate) fn gelaende_mengen(
         if x <= 0.0 {
             continue;
         }
+        // der Anteil nachprüfbar, wenn mehrere Baugruben abgeben
+        let anteil = if abfuhr[i] < ueberschuss * (1.0 - 1e-9) {
+            format!(
+                " ({} × {} / {})",
+                zahl(entnehmen, 1e9),
+                zahl(abfuhr[i], 1e9),
+                zahl(ueberschuss, 1e9)
+            )
+        } else {
+            String::new()
+        };
         abfuhr[i] -= x;
         zusatz[i]
             .get_or_insert_with(String::new)
-            .push_str(&format!("; − Einbau im Gelände {}", m3(x / 1e9)));
+            .push_str(&format!("; − Einbau im Gelände {}{anteil}", m3(x / 1e9)));
     }
 
     // Verfüllung und Abfuhr setzen: ganz entnommen (bis auf Rundungsreste,
@@ -1072,7 +1083,14 @@ mod tests {
         for (a, b) in ohne.iter().zip(&mit_flaeche) {
             let anteil = auf * a / summe;
             assert!(nah(a - b, anteil), "{ohne:?} {mit_flaeche:?}");
-            let teil = format!("− Einbau im Gelände {}", super::m3(anteil));
+            // mit dem Anteil im Rechenweg (VOB #185)
+            let teil = format!(
+                "− Einbau im Gelände {} ({} × {} / {})",
+                super::m3(anteil),
+                super::zahl(auf, 1.0),
+                super::zahl(*a, 1.0),
+                super::zahl(summe, 1.0)
+            );
             assert_eq!(
                 v.iter()
                     .filter(|r| r.key == DISPOSAL && r.formula.contains(&teil))
@@ -1388,6 +1406,22 @@ mod tests {
             .unwrap()
             .model;
         assert_eq!(je_haus(&wieder), vorher);
+        // die Zeilen je Schlüssel in der Reihenfolge der Nummern, vor und
+        // nach dem Öffnen gleich (H-185a)
+        let folge = |m: &Model| -> Vec<(&'static str, String)> {
+            crate::qto::schedule(m)
+                .auto
+                .into_iter()
+                .filter(|r| r.key.starts_with("earth.") && r.building.is_some())
+                .map(|r| (r.key, r.number))
+                .collect()
+        };
+        let f = folge(&m);
+        for k in [DISPOSAL, BACKFILL] {
+            let n: Vec<&String> = f.iter().filter(|x| x.0 == k).map(|x| &x.1).collect();
+            assert!(n.windows(2).all(|w| w[0] < w[1]), "{k}: {n:?}");
+        }
+        assert_eq!(folge(&wieder), f);
     }
 
     /// Ohne Flächen oder ohne Aufmaß hält der Merker nichts fest, auch
