@@ -1056,7 +1056,19 @@ impl Erkennung {
                         kasten: f.kasten,
                     }
                 })
-                .collect();
+                .collect::<Rc<[Raumflaeche]>>();
+            // Dasselbe Ergebnis (etwa nach neuen Typen, die hier keine
+            // Fläche ändern): die alten Formen bleiben, wer sie am Zeiger
+            // erkennt, baut nicht neu
+            if let Some(e) = gs
+                .zuteilungen
+                .get_mut(&gr.schluessel)
+                .filter(|e| e.formen == formen && e.stand.iter().map(|x| x.1).eq(z.iter().copied()))
+            {
+                e.kennung = kennung;
+                e.lauf = lauf;
+                continue;
+            }
             let e = Zuteilung {
                 kennung,
                 stand: Rc::new(gr.formen.iter().cloned().zip(z).collect()),
