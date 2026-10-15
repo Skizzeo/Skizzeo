@@ -2,7 +2,7 @@
 //! geführte Eingabe nach dem ersten Umriss und der Schritt beim Setzen.
 //! Aus `main.rs` hierher, damit es unter seiner Grenze bleibt.
 
-use crate::{meldung, nordpfeil, sonne_view, App, NOTICE_TIME, OVERLAY_NOTICE};
+use crate::{meldung, nordpfeil, sonne_view, App, OVERLAY_NOTICE};
 use sk_platform::Event;
 
 impl App {
