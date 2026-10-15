@@ -10,6 +10,7 @@ use crate::katalog::{Einheit, Katalog, Leistung};
 use crate::rechnung::OhneHerkunft;
 use crate::rechnung::{drei, gp, skala, Ansatz, Kostenblatt, Position, Quelle};
 use sk_model::{ElementId, Guid, Model, StoreyId};
+use std::collections::{HashMap, HashSet};
 
 /// Was der Nutzer für das LV wählt: das Los, „Geschosse als Untertitel“
 /// (`[costproject] lvstorey=1`) und „Mit Preisen“ statt „Für Anfrage
@@ -303,6 +304,7 @@ fn mengenansatz(
 ) -> Vec<Ansatzzeile> {
     // je Geschoss, Folge-Quelle, Bewehrungsgrad (B16) und Rechenweg einer
     // Automatikmenge
+    type Schluessel<'a> = (StoreyId, Option<Guid>, Option<u32>, Option<&'a str>);
     type Gruppe<'a> = (
         StoreyId,
         Option<Guid>,
@@ -310,26 +312,31 @@ fn mengenansatz(
         Option<&'a str>,
         Vec<&'a Ansatz>,
     );
+    // Gruppen in der Reihenfolge ihres ersten Ansatzes; Stelle über den
+    // Schlüssel, Nummern und Bauteile über Mengen statt linear (Review
+    // #197 H-197i: eine Gruppe je Raum mit eigenem Rechenweg)
     let mut gruppen: Vec<Gruppe> = Vec::new();
+    let mut stelle: HashMap<Schluessel, usize> = HashMap::new();
     for a in ansatz {
         let f = a.formel.as_deref();
-        match gruppen
-            .iter_mut()
-            .find(|g| g.0 == a.geschoss && g.1 == a.aus && g.2 == a.grad && g.3 == f)
-        {
-            Some(g) => g.4.push(a),
-            None => gruppen.push((a.geschoss, a.aus, a.grad, f, vec![a])),
-        }
+        let j = *stelle
+            .entry((a.geschoss, a.aus, a.grad, f))
+            .or_insert_with(|| {
+                gruppen.push((a.geschoss, a.aus, a.grad, f, Vec::new()));
+                gruppen.len() - 1
+            });
+        gruppen[j].4.push(a);
     }
     let mut zeilen: Vec<(Ansatzzeile, i128)> = Vec::new();
     for (st, aus, grad, formel, v) in gruppen {
         let mut nummern: Vec<String> = Vec::new();
         let mut elemente: Vec<ElementId> = Vec::new();
+        let mut gesehen: (HashSet<&str>, HashSet<ElementId>) = Default::default();
         for a in &v {
-            if !nummern.contains(&a.nummer) {
+            if gesehen.0.insert(&a.nummer) {
                 nummern.push(a.nummer.clone());
             }
-            if !elemente.contains(&a.element) {
+            if gesehen.1.insert(a.element) {
                 elemente.push(a.element);
             }
         }
@@ -446,6 +453,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     // Kostenzeilen je Bauleistung dieses Loses (K12: mehrere Zeilen, eine
     // Position)
     let mut je_leistung: Vec<(Guid, Vec<usize>)> = Vec::new();
+    let mut stelle: HashMap<Guid, usize> = HashMap::new();
     for (i, p) in b.positionen.iter().enumerate() {
         let Quelle::Leistung(g) = p.quelle else {
             continue;
@@ -454,10 +462,11 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         if los_der_leistung(k, l) != Some(w.los) {
             continue;
         }
-        match je_leistung.iter_mut().find(|(x, _)| *x == g) {
-            Some((_, v)) => v.push(i),
-            None => je_leistung.push((g, vec![i])),
-        }
+        let j = *stelle.entry(g).or_insert_with(|| {
+            je_leistung.push((g, Vec::new()));
+            je_leistung.len() - 1
+        });
+        je_leistung[j].1.push(i);
     }
 
     // erste Position mit Erdmengen aus dem Höhenaufmaß (Hinweis unten)
@@ -467,6 +476,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     let mut steil: Option<(String, String)> = None;
     // Hinweise der Automatikmengen je Position (VOB-Prüfung G3 D1)
     let mut mengen_hinweise: Vec<(String, String)> = Vec::new();
+    let mut hinweis_gesehen: HashSet<(String, String)> = HashSet::new();
     let mut aus_netz = false;
     for (g, zeilen) in je_leistung {
         let l = k.leistung(g).expect("Leistung");
@@ -495,7 +505,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         for a in &ansatz {
             for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
                 let t = (h.to_string(), oz_basis.clone());
-                if !mengen_hinweise.contains(&t) {
+                if hinweis_gesehen.insert(t.clone()) {
                     mengen_hinweise.push(t);
                 }
             }

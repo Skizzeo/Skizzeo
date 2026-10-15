@@ -3805,3 +3805,50 @@ fn perf_oeffnen_gebaeude() {
         assert!(b <= 2.0 * f * b0, "begin {n}: {b:.2} ms");
     }
 }
+
+/// Review #197 H-197i: LV je Los bei `n` Häusern mit Innenwänden, aus dem
+/// fertigen Kostenblatt (`lv_aus`, rechnet nichts neu). Die Zeit soll
+/// linear in den Häusern wachsen.
+#[test]
+#[ignore]
+fn perf_lv_je_los() {
+    use sk_cost::lesen;
+    println!();
+    let mut je_haus = Vec::new();
+    for n in [100, 1000] {
+        let s = town_with_interior(n);
+        let kat = lesen::katalog(s.model(), None);
+        let sched = sk_model::qto::schedule(s.model());
+        let blatt = lesen::kosten(s.model(), &sched, &kat, &sk_cost::Umfang::projekt());
+        let mut summe = 0.0;
+        for los in kat.lose.iter().filter(|l| !l.retired && l.parent.is_none()) {
+            let w = sk_cost::lv::LvWahl {
+                los: los.guid,
+                untertitel: true,
+                preise: true,
+                heute: None,
+            };
+            let mut z = 0;
+            let t = time(3, || {
+                let lv = sk_cost::lv::lv_aus(s.model(), &blatt, &kat, &w);
+                z = lv.titel.iter().map(|t| t.positionen.len()).sum::<usize>();
+            });
+            summe += t;
+            if t > 1.0 {
+                println!(
+                    "{n:>6} Häuser  Los {:<4} {:<32} {z:>4} Pos. {t:>8.2} ms",
+                    los.nr, los.name
+                );
+            }
+        }
+        println!("{n:>6} Häuser  alle Lose {summe:>8.2} ms");
+        je_haus.push((n, summe / n as f64));
+    }
+    let (n0, t0) = je_haus[0];
+    for &(n, t) in &je_haus[1..] {
+        assert!(
+            t <= 3.0 * t0,
+            "LV bei {n} Häusern {t:.4} ms je Haus, bei {n0} {t0:.4}"
+        );
+    }
+}
