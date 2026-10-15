@@ -1123,6 +1123,7 @@ impl App {
         // die Kacheln des alten Projekts (Review #139 N3)
         self.renderer.set_unterlage(&[]);
         self.picking.plate = false;
+        self.picking.flaeche = None;
     }
 
     /// Zeile „Geländeplatte“ im Objektbaum: die Platte wählen, die
@@ -1130,6 +1131,7 @@ impl App {
     pub(crate) fn platte_waehlen(&mut self) {
         self.picking.selected.clear();
         self.picking.plate = true;
+        self.picking.flaeche = None;
         self.quantity.dirty = true;
         self.redraw = true;
     }

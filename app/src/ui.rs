@@ -396,6 +396,7 @@ impl Field {
                 Field::Offset | Field::DownpipeSpacing | Field::PlateMargin
             )
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
+            || self == Field::Gelaende(GelaendeFeld::Hoehe)
     }
 
     /// Zahl in Prozent, ohne Umrechnung (Gefälle).
@@ -417,7 +418,10 @@ impl Field {
     fn is_kote(self) -> bool {
         matches!(
             self,
-            Field::LevelBottom | Field::LevelTop(_) | Field::Terrain
+            Field::LevelBottom
+                | Field::LevelTop(_)
+                | Field::Terrain
+                | Field::Gelaende(GelaendeFeld::Hoehe)
         )
     }
 

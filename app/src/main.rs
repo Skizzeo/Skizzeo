@@ -51,6 +51,7 @@ mod fokus;
 mod frame_time;
 mod freischaltung;
 mod gelaende_app;
+mod gelaende_flaeche_app;
 mod gelaende_netz;
 mod gelaende_platte;
 mod geschosse_app;
@@ -962,7 +963,7 @@ impl App {
         if self.sel.set(self.picking.primary()) {
             self.redraw = true;
         }
-        if self.platte_props() {
+        if self.platte_props() || self.flaeche_props() {
             return;
         }
         let key = self.sel.id.map(|id| (id, self.scene.model().revision()));
@@ -1137,6 +1138,10 @@ impl App {
     /// Ereignis an den Nordpfeil (3D und Grundriss, ohne Wandeingabe und
     /// ohne gegriffene Schnittlinie); `true`, wenn er es genommen hat.
     fn nord_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
+        // Das Werkzeug „Fläche zeichnen“ (G3d) geht vor
+        if self.flaeche_handle(ev, vw, vh, sc) {
+            return true;
+        }
         let en = self.tool_allowed() && !self.tool.enabled && !self.sect.is_busy();
         let st = self.nord_stand(vh, sc);
         self.nord.gebaeude = self.scene.bounds();
@@ -4364,6 +4369,10 @@ impl App {
                     );
                     match change {
                         selection::PickChange::Keep => {}
+                        // Klick ins Leere im Grundriss wählt die Geländefläche
+                        // darunter (G3d)
+                        selection::PickChange::Replace(None)
+                            if self.flaeche_klick(x, y, vw, vh) => {}
                         selection::PickChange::Replace(id) => self.select(id),
                         selection::PickChange::Add(id) | selection::PickChange::Remove(id) => {
                             self.picking.click(id, true);
@@ -4484,6 +4493,10 @@ impl App {
                     self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
+                } else if down && key == Key::Escape && self.flaeche_escape() {
+                    // Esc beim Zeichnen einer Geländefläche
+                } else if down && self.flaeche_taste(key) {
+                    // Rücktaste und Enter beim Zeichnen einer Geländefläche
                 } else if down && self.oeffnung_taste(key, mods) {
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
@@ -4513,7 +4526,9 @@ impl App {
                 } else if down
                     && key == Key::Escape
                     && !self.tool.enabled
-                    && (self.sel.id.is_some() || self.picking.plate)
+                    && (self.sel.id.is_some()
+                        || self.picking.plate
+                        || self.picking.flaeche.is_some())
                 {
                     self.select(None);
                 } else {
@@ -4926,6 +4941,11 @@ impl App {
     /// löschbar sind, in einem Schritt. Gelöschtes blendet aus, Abgelehntes
     /// leuchtet einmal, der Hinweis am Bauteil sagt, was blieb und warum.
     fn delete_selection(&mut self) {
+        // Gewählte Geländefläche (G3d): Entf löscht sie
+        if self.picking.flaeche.is_some() && self.picking.selected.is_empty() {
+            self.flaeche_knopf(ui::GelaendeKnopf::Loeschen);
+            return;
+        }
         self.erase(false);
     }
 
@@ -8136,6 +8156,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
             helpers.extend(a.mass_zeichnen(scale));
+            helpers.extend(a.flaeche_linien(scale));
             if a.tool_allowed() {
                 let (width, ink) = a.scene.table().section_line;
                 let st = a.nord_stand(vh, scale as f64);
