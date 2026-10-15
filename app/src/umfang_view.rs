@@ -60,8 +60,14 @@ pub fn umfang_chips(m: &Model, g: Option<BuildingId>) -> Vec<Chip> {
         .map(|(id, s)| (id, s.elevation))
         .collect();
     st.sort_by(|a, b| a.1.total_cmp(&b.1));
+    chips_aus(m, st.into_iter().map(|(id, _)| id))
+}
+
+/// Chips der Geschosse `st` (von unten nach oben), gleiche Kurznamen in
+/// einem Chip.
+fn chips_aus(m: &Model, st: impl Iterator<Item = StoreyId>) -> Vec<Chip> {
     let mut out: Vec<Chip> = Vec::new();
-    for (id, _) in st {
+    for id in st {
         let name = kurzname(m, id);
         match out.iter_mut().find(|c| c.name == name) {
             Some(c) => c.geschosse.push(id),
@@ -82,9 +88,12 @@ pub fn feld(m: &Model) -> Vec<(Option<BuildingId>, String, String)> {
         return Vec::new();
     }
     let mut out = vec![(None, "Projekt".to_string(), String::new())];
+    // Geschosse je Gebäude in einem Gang, nicht je Gebäude über alle
+    // (Review #195 H-195g)
+    let mut je = m.levels_by_building();
     for g in gb {
         let name = m.building(g).map_or(String::new(), |b| b.name.clone());
-        let geschosse = umfang_chips(m, Some(g))
+        let geschosse = chips_aus(m, je.remove(&Some(g)).unwrap_or_default().into_iter())
             .iter()
             .map(|c| c.name.as_str())
             .collect::<Vec<_>>()

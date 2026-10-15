@@ -845,7 +845,7 @@ mod tests {
 
     /// Ist-Bilder Gelände G1: RH-1 auf dem Höhenaufmaß „Am Lindenhof 7“
     /// (ohne Lage: das Grundstück mittig unter dem Haus), in 3D von
-    /// Südwesten mit Zuschnitt alles, blass und Grundstück; Grundriss mit
+    /// Südwesten mit „Umgebung zeigen“ ganz, blass und nicht; Grundriss mit
     /// Höhenlinien, Punkten und Grenze; Schnitt und Vorne mit der
     /// Geländelinie.
     /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_aufmass -- --ignored`

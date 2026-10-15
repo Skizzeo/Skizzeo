@@ -216,9 +216,9 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Ausrichten => "An Grenze ausrichten",
         GelaendeKnopf::Ueber => "Höhenlage über Gelände",
         GelaendeKnopf::Absolut => "Höhenlage absolut",
-        GelaendeKnopf::Zuschnitt(Show::All) => "Zuschnitt alles",
+        GelaendeKnopf::Zuschnitt(Show::All) => "Umgebung ganz",
         GelaendeKnopf::Zuschnitt(Show::Fade) => "Umgebung blass",
-        GelaendeKnopf::Zuschnitt(Show::Parcel) => "Nur Grundstück",
+        GelaendeKnopf::Zuschnitt(Show::Parcel) => "Umgebung nicht",
         GelaendeKnopf::Flaeche => "Fläche zeichnen",
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
@@ -401,7 +401,11 @@ fn lageplan_saetze(p: &SitePlan) -> Vec<String> {
         _ => v.push("Maßstab und Lage nicht erkannt".into()),
     }
     match (&p.parcel, &p.number) {
-        (Some((nr, _, Some(a))), _) => v.push(format!("Flurstück {nr}, {} m²", de(*a, 2))),
+        // gemessen, nicht amtlich (Bedienbarkeit, später zu Durchgang 43)
+        (Some((nr, _, Some(a))), _) => v.push(format!(
+            "Flurstück {nr}, {} m² (aus der Zeichnung)",
+            de(*a, 2)
+        )),
         (Some((nr, _, None)), _) => v.push(format!("Flurstück {nr}")),
         (None, Some(nr)) => v.push(format!(
             "Flurstück {nr}: keine geschlossene Grenze um die Nummer gefunden"
@@ -1374,7 +1378,10 @@ mod tests {
             lageplan_saetze(&plan),
             // vom Blatt (Lage auf 0,01 pt, 1,8 mm bei 1:500); das Aufmaß
             // ergibt 822,87 m²
-            ["Lageplan 1:500, Norden oben", "Flurstück 123/4, 822,90 m²"]
+            [
+                "Lageplan 1:500, Norden oben",
+                "Flurstück 123/4, 822,90 m² (aus der Zeichnung)"
+            ]
         );
         let mut s = crate::scene::Scene::with_model(lindenhof());
         let z = Zustand {

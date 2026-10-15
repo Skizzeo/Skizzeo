@@ -9,8 +9,6 @@
 use super::*;
 use sk_model::Show;
 
-/// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
-/// 42.5).
 /// Beschriftungen der Zahlenfelder in der Leiste; links neben dem Feld ist
 /// nur Platz für etwa 14 Zeichen (Bedienbarkeit, später zu Durchgang 42:
 /// „Versatz“ sagte nicht, wovon; „nach oben“ las sich als Anheben, deshalb
@@ -23,8 +21,10 @@ pub const NHN: &str = "±0,00 ü. NHN";
 
 /// Ohne Modul: wo man es freischaltet (Bedienbarkeit, später zu
 /// Durchgang 42: „Geländemodul freischalten“ stand ohne Weg da).
-const FREISCHALTEN: &str = "Datei › Ausbaustufe …";
+const FREISCHALTEN: &str = "Dateimenü › Ausbaustufe …";
 
+/// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
+/// 42.5).
 pub const DECKT_NICHT: &str = "Aufmaß deckt die Baugrube nicht, Erdmengen mit mittlerer Höhe. \
     Gelände zurückschieben oder ein größeres Aufmaß einlesen.";
 
@@ -48,7 +48,7 @@ pub enum GelaendeKnopf {
     /// Höhenlage über Gelände bzw. absolut (§4.3).
     Ueber,
     Absolut,
-    /// Zuschnitt: alles, Umgebung blass, nur Grundstück (§4.5).
+    /// Umgebung zeigen: ganz, blass, nicht (§4.5).
     Zuschnitt(Show),
     /// Werkzeug „Fläche zeichnen“ (G3d).
     Flaeche,

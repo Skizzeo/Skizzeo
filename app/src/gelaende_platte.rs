@@ -895,9 +895,17 @@ pub(crate) fn props(m: &Model, plates: &[TerrainPlate]) -> Props {
             title: "Geländeplatte",
             fields: vec![
                 feld(Field::PlateThick, "Dicke", s.thick, PLATE_THICK),
-                feld(Field::PlateMargin, "Außenoffset", s.margin, PLATE_MARGIN),
+                // „Außenoffset“ sagte nicht, wovon (Bedienbarkeit, später zu
+                // Durchgang 41)
+                feld(
+                    Field::PlateMargin,
+                    "Abstand ums Haus",
+                    s.margin,
+                    PLATE_MARGIN,
+                ),
             ],
-            hint: "Höhe aus dem Geschossmanager. Echtes Gelände: Knopf „Gelände“.",
+            hint: "Höhe aus dem Geschossmanager; zählt in keiner Menge. Echtes Gelände: \
+                   Knopf „Gelände“.",
             buttons: Vec::new(),
         }],
         ..Default::default()

@@ -138,7 +138,7 @@ impl Scene {
 
     /// [`Scene::raumgruppen`] für jedes Geschoss mit Räumen, in einem Gang
     /// der Erkennung.
-    fn raumgruppen_mit_raeumen(&self) -> HashMap<StoreyId, sk_raum::Raumformen> {
+    pub(crate) fn raumgruppen_mit_raeumen(&self) -> HashMap<StoreyId, sk_raum::Raumformen> {
         let mut geschosse = Vec::new();
         let mut gesehen = HashSet::new();
         for (_, e) in self.model.elements().iter() {

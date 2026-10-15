@@ -17,7 +17,7 @@ Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten
 Bauteil ins Bild holen | Doppelklick auf eine Zeile im Baum oder im Mengenfenster
 Schatten der Ansicht | in Vorne, Hinten, Links und Rechts das Zahnrad links neben dem Paneel „Ansichten“: Schatten an oder aus, graue Fläche oder Schraffur, Licht vorne links, vorne rechts, vorne oben oder von der Sonne (braucht die Nordrichtung); „Auf alle Ansichten übertragen“ gibt Schatten und Gelände an alle vier weiter
 Unter Gelände | die Ansichten zeigen das Gebäude bis Oberkante Gelände (±0,00); im Zahnrad „Gestrichelt“ zeigt die Kanten darunter gestrichelt, „Ausblenden“ blendet sie aus (Standard)
-Geländeplatte | ebene grüne Platte um jedes Gebäude auf Oberkante Gelände aus dem Geschossmanager, in 3D mit Rasen, im Schnitt geschnitten, in den Ansichten als Band; wählbar nur im Baum unter „Gelände“, dort Dicke (Vorgabe 50 cm) und Außenoffset (1,50 bis 3,00 m); das Auge blendet sie aus
+Geländeplatte | ebene grüne Platte um jedes Gebäude auf Oberkante Gelände aus dem Geschossmanager, in 3D mit Rasen, im Schnitt geschnitten, in den Ansichten als Band; wählbar nur im Baum unter „Gelände“, dort Dicke (Vorgabe 50 cm) und Abstand ums Haus (1,50 bis 3,00 m); sie zählt in keiner Menge; das Auge blendet sie aus
 Dachentwässerung | im Zahnrad jeder Ansicht blendet „Dachentwässerung ausblenden“ Regenfallrohre, Kästen und Notablauf nur in dieser Ansicht aus (alle Schnitte teilen eine Wahl), wie im Baum ausgeblendet; am Modell ändert sich nichts; „Auf alle Ansichten übertragen“ gilt für alle sieben
 Ausbau innen | im Zahnrad von Grundriss, Schnitt und 3D zeigt „An“ Putz, Wandbeläge, Bodenbelag und Sockelleisten der Räume, „Aus“ blendet sie aus; in 3D auch den Estrich, den der Schnitt immer zeigt; „Auf alle Ansichten übertragen“ gibt die Wahl an diese drei
 
@@ -403,7 +403,7 @@ Gesperrt | steht grau da, daneben die Stufe, ab der es das gibt: Knöpfe, Zeilen
 Öffnen | Dateimenü › „Ausbaustufe …“
 
 [thema] id=gelaende titel="Gelände"
-Platte | ohne Aufmaß liegt unter dem Haus eine ebene grüne Geländeplatte; im Baum wählen, dann Dicke und Außenoffset im Paneel
+Platte | ohne Aufmaß liegt unter dem Haus eine ebene grüne Geländeplatte; im Baum wählen, dann Dicke und Abstand ums Haus im Paneel
 Modul | echtes Gelände aus Lageplan und Höhenaufmaß gibt es mit dem Geländemodul (Dateimenü › „Ausbaustufe …“)
 Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen. Geht sie zu, liest Skizzeo fertig und behält den Lageplan
 Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss
@@ -430,9 +430,9 @@ Gelände drehen | Gelände um die Mitte des Hauses drehen; ein positiver Winkel 
 An Grenze ausrichten | Dreht das Gelände, bis die längste Grenze parallel zur nächsten Hauswand liegt.
 Höhenlage über Gelände | ±0,00 liegt um „über Gelände“ über dem höchsten Geländepunkt am Plattenrand und wandert mit dem Gelände.
 Höhenlage absolut | ±0,00 liegt fest auf einer Höhe in m ü. NHN, wie im Bebauungsplan.
-Zuschnitt alles | Das ganze Aufmaß zeigen, auch über die Grenze hinaus.
+Umgebung ganz | Das ganze Aufmaß zeigen, auch über die Grenze hinaus.
 Umgebung blass | Das Gelände außerhalb der Grenze blass zeigen.
-Nur Grundstück | Das Gelände an der Grenze abschneiden; gerechnet wird weiter mit allen Punkten.
+Umgebung nicht | Das Gelände an der Grenze abschneiden; gerechnet wird weiter mit allen Punkten.
 Fläche zeichnen | Terrasse, Garten oder Hof als Geländefläche: Ecken im Grundriss klicken, die erste schließt.
 Fläche befestigt | Die gewählte Geländefläche ist befestigt (Pflaster, Platten) oder nicht (Rasen, Beet).
 Fläche löschen | Die gewählte Geländefläche entfernen; das Gelände ist dort wieder wie aufgemessen.

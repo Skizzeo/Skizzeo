@@ -125,13 +125,21 @@ pub struct Position {
 impl Position {
     /// Teilmengen auf 3 Stellen je Schlüssel (Regel 96, etwa je Geschoss oder
     /// Kostengruppe), in der Reihenfolge des ersten Vorkommens im Ansatz.
-    pub fn teile<K: PartialEq + Copy>(&self, schluessel: impl Fn(&Ansatz) -> K) -> Vec<(K, Dez)> {
+    /// Linear in den Ansätzen (H-195g): die Stelle je Schlüssel im Index.
+    pub fn teile<K: Eq + std::hash::Hash + Copy>(
+        &self,
+        schluessel: impl Fn(&Ansatz) -> K,
+    ) -> Vec<(K, Dez)> {
         let mut t: Vec<(K, i128)> = Vec::new();
+        let mut stelle: HashMap<K, usize> = HashMap::new();
         for a in &self.ansatz {
             let k = schluessel(a);
-            match t.iter_mut().find(|(x, _)| *x == k) {
-                Some((_, v)) => *v += a.menge,
-                None => t.push((k, a.menge)),
+            match stelle.get(&k) {
+                Some(&i) => t[i].1 += a.menge,
+                None => {
+                    stelle.insert(k, t.len());
+                    t.push((k, a.menge));
+                }
             }
         }
         t.into_iter()
@@ -144,6 +152,24 @@ impl Position {
     /// `stoff_gp`.
     pub fn gp_von(&self, menge: Dez, nur_material: bool) -> Cent {
         gp(menge, if nur_material { self.stoff } else { self.ep })
+    }
+}
+
+/// Beträge je Schlüssel summieren, in der Folge des ersten Vorkommens;
+/// linear über einen Index (H-195g).
+fn summieren<K: Eq + std::hash::Hash + Copy>(
+    v: &mut Vec<(K, Cent)>,
+    teile: impl IntoIterator<Item = (K, Cent)>,
+) {
+    let mut stelle: HashMap<K, usize> = v.iter().enumerate().map(|(i, (k, _))| (*k, i)).collect();
+    for (k, c) in teile {
+        match stelle.get(&k) {
+            Some(&i) => v[i].1 += c,
+            None => {
+                stelle.insert(k, v.len());
+                v.push((k, c));
+            }
+        }
     }
 }
 
@@ -1279,15 +1305,14 @@ pub fn kosten_mit(
         .filter(|p| !matches!(p.quelle, Quelle::Leistung(_)))
         .collect();
     let mut nach_gewerk: Vec<(Option<Guid>, Cent)> = Vec::new();
-    for p in &positionen {
-        match nach_gewerk.iter_mut().find(|(g, _)| *g == p.gewerk) {
-            Some((_, c)) => *c += p.gp,
-            None => nach_gewerk.push((p.gewerk, p.gp)),
-        }
-    }
+    summieren(
+        &mut nach_gewerk,
+        positionen.iter().map(|p| (p.gewerk, p.gp)),
+    );
     // Teilungen (Regel 96): Teilmenge auf 3 Stellen × EP, Ausgleich am Ende
-    let geschoss_folge: Vec<StoreyId> = {
-        let mut v: Vec<StoreyId> = Vec::new();
+    // Stelle jedes Geschosses in der Folge des ersten Vorkommens (H-195g)
+    let geschoss_folge: HashMap<StoreyId, usize> = {
+        let mut v: HashMap<StoreyId, usize> = HashMap::new();
         let auto = s.auto.iter().map(|a| a.storey);
         for st in rows
             .iter()
@@ -1295,14 +1320,15 @@ pub fn kosten_mit(
             .chain(ext.geschosse)
             .chain(auto)
         {
-            if !v.contains(&st) {
-                v.push(st);
-            }
+            let n = v.len();
+            v.entry(st).or_insert(n);
         }
         v
     };
     let mut nach_geschoss: Vec<(StoreyId, Cent)> = Vec::new();
     let mut nach_kg: Vec<(Option<u16>, Cent)> = Vec::new();
+    let mut geschoss_teile = Vec::with_capacity(positionen.len());
+    let mut kg_teile = Vec::with_capacity(positionen.len());
     for p in &positionen {
         let je_geschoss: Vec<(StoreyId, Cent)> = p
             .teile(|a| a.geschoss)
@@ -1317,25 +1343,17 @@ pub fn kosten_mit(
         // Schranke je Position und Teilung: Teile × (0,0005 × EP + 0,005) €
         befunde.extend(summenprobe("Geschosse", &p.kurz, &je_geschoss, p.ep, p.gp));
         befunde.extend(summenprobe("Kostengruppen", &p.kurz, &je_kg, p.ep, p.gp));
-        for (st, c) in je_geschoss {
-            match nach_geschoss.iter_mut().find(|(s, _)| *s == st) {
-                Some((_, v)) => *v += c,
-                None => nach_geschoss.push((st, c)),
-            }
-        }
-        for (kg, c) in je_kg {
-            match nach_kg.iter_mut().find(|(x, _)| *x == kg) {
-                Some((_, v)) => *v += c,
-                None => nach_kg.push((kg, c)),
-            }
-        }
+        geschoss_teile.push(je_geschoss);
+        kg_teile.push(je_kg);
     }
+    summieren(&mut nach_geschoss, geschoss_teile.into_iter().flatten());
+    summieren(&mut nach_kg, kg_teile.into_iter().flatten());
     // Geschosse von unten nach oben
     let hoehe = |s: &StoreyId| {
         m.storey(*s)
             .map_or(0, |x| (x.elevation * 1000.0).round() as i64)
     };
-    nach_geschoss.sort_by_key(|(s, _)| (hoehe(s), geschoss_folge.iter().position(|x| x == s)));
+    nach_geschoss.sort_by_cached_key(|(s, _)| (hoehe(s), geschoss_folge.get(s).copied()));
     nach_kg.sort_by_key(|(k, _)| k.unwrap_or(u16::MAX));
     let ausgleich_geschoss = netto - nach_geschoss.iter().map(|x| x.1).sum::<Cent>();
     let ausgleich_kg = netto - nach_kg.iter().map(|x| x.1).sum::<Cent>();
