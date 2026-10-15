@@ -558,7 +558,7 @@ impl KostenView {
             );
             self.inhalt_h = self.zeilen.iter().map(Self::row_h).sum::<f32>() + 8.0;
             self.gebaut = Some(key);
-            self.fokus_text = self.fokus_leiste_text();
+            self.fokus_text = self.fokus_leiste_text(&blatt);
             changed = true;
             self.blitz_suchen(&blatt);
         }

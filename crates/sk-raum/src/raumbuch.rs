@@ -96,6 +96,28 @@ pub enum Flaeche {
     Dichtband,
 }
 
+impl Flaeche {
+    /// Kennung im Raum, eindeutig je Fläche: die Flächen ohne Kante zuerst,
+    /// dann je Kante Wand, Laibung, Fliesen und Fliesenlaibung.
+    pub fn kennung(self) -> u32 {
+        let k = |k: usize, i: u32| 8 + 4 * k as u32 + i;
+        match self {
+            Flaeche::Boden => 0,
+            Flaeche::Estrich => 1,
+            Flaeche::Decke => 2,
+            Flaeche::Sockel => 3,
+            Flaeche::Eckschienen => 4,
+            Flaeche::Randstreifen => 5,
+            Flaeche::Silikon => 6,
+            Flaeche::Dichtband => 7,
+            Flaeche::Wand(n) => k(n, 0),
+            Flaeche::Laibung(n) => k(n, 1),
+            Flaeche::Fliesen(n) => k(n, 2),
+            Flaeche::FliesenLaibung(n) => k(n, 3),
+        }
+    }
+}
+
 /// Automatik-Schlüssel der Mengen in m (plan.md §6, mit Kosten abgestimmt).
 pub const SOCKEL: &str = "room.skirting";
 pub const ECKSCHIENE: &str = "room.cornerbead";
@@ -640,7 +662,7 @@ impl<'a> Raum<'a> {
             }
             let mut terme = vec![term(
                 format!(
-                    "Länge × Höhe {} × {}{}",
+                    "Rohbaumaß Länge × Höhe {} × {}{}",
                     m(self.roh[k]),
                     m(z1 - lo),
                     if lo > z0 { " über den Fliesen" } else { "" }

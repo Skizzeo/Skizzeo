@@ -695,6 +695,103 @@ fn raeume_in_der_mengenliste() {
     );
 }
 
+/// Bedienbarkeit 43.10: Nach Gewerk stehen die Längen der Räume im Gewerk
+/// ihrer Fläche, die Sockelleiste mit ihrem Typ beim Parkett, der
+/// Randdämmstreifen beim Estrich, je Raum eine Zeile mit Rechenweg. Sie
+/// zählen nicht in die Summe des Gewerks, jede steht einmal, und die
+/// Kosten bleiben gleich (Automatikmenge am Raum).
+#[test]
+fn laengen_der_raeume_nach_gewerk() {
+    let mut s = haus_mit_raeumen();
+    let sched = s.schedule_in(&sk_model::qto::Umfang::projekt());
+    let mut v = ListView::grouped(&mut s, Grouping::Trade);
+    v.alles_aufklappen();
+    v.sync(&mut s, false);
+    let texte = v.line_texts();
+    eindeutig(&v);
+    let gewerk_von = |i: usize| {
+        (0..i)
+            .rev()
+            .find(|&j| v.lines[j].kind == Kind::Storey)
+            .map(|j| texte[j].clone())
+            .unwrap()
+    };
+    for (titel, gewerk) in [
+        (
+            "  Sockelleiste Eiche 60 × 15 · Räume | R-001 … 002 | 66,72 m · 2 |",
+            "Parkett",
+        ),
+        (
+            "  Randdämmstreifen · Räume | R-001 … 002 | 66,72 m · 2 |",
+            "Estrich",
+        ),
+    ] {
+        let n: Vec<usize> = (0..texte.len())
+            .filter(|&i| texte[i].starts_with(titel))
+            .collect();
+        assert_eq!(n.len(), 1, "{titel}: {texte:#?}");
+        assert!(gewerk_von(n[0]).starts_with(gewerk), "{titel}");
+        assert!(
+            texte[n[0] + 1].starts_with("    R-001 Raum 1 · EG |  | 33,36 m"),
+            "{}",
+            texte[n[0] + 1]
+        );
+        assert!(v.lines[n[0] + 1].weg);
+    }
+    // Rechenweg der Sockelleiste aufgeklappt: je Wand und die Summe
+    let i = texte
+        .iter()
+        .position(|t| t.starts_with("  Sockelleiste Eiche"))
+        .unwrap()
+        + 1;
+    let k = v.lines[i].key;
+    let terme = (0..v.lines.len())
+        .filter(|&j| v.lines[j].parent == k)
+        .count();
+    assert_eq!(terme, 5, "vier Wände und die Summe");
+
+    // Tabelle: hinter der Summe des Gewerks, die sie nicht enthält
+    let m = s.model().clone();
+    let csv = String::from_utf8(csv_grouped(&m, &sched, Grouping::Trade)).unwrap();
+    let zeilen: Vec<&str> = csv.lines().collect();
+    let summe = zeilen
+        .iter()
+        .position(|l| l.contains(";Summe Estricharbeiten;"))
+        .unwrap();
+    assert!(zeilen[summe].contains(";;;;137,1112;"), "{}", zeilen[summe]);
+    assert!(
+        zeilen[summe + 1].contains(
+            ";Randdämmstreifen · Räume (Summe, 2 Stück);R-001 … 002;;66,7200;;;Automatikmenge"
+        ),
+        "{}",
+        zeilen[summe + 1]
+    );
+    assert!(
+        zeilen[summe + 2]
+            .contains(";324;Randdämmstreifen · Räume;R-001;Erdgeschoss;33,3600;;;Umfang bis Putz"),
+        "{}",
+        zeilen[summe + 2]
+    );
+    // Die Anzeige zeigt genau die Automatikmengen, die Kosten bepreisen
+    // (`auto=`): je Schlüssel dieselbe Summe
+    for (key, soll) in [("room.skirting", 66_720.0), ("room.edgestrip", 66_720.0)] {
+        let ist: f64 = sched
+            .auto
+            .iter()
+            .filter(|a| a.key == key)
+            .map(|a| a.value)
+            .sum();
+        assert!((ist - soll).abs() < 1e-6, "{key}: {ist}");
+    }
+    // Die Anzeige bepreist nichts: Werksstand 18 kennt keine Raumzeile,
+    // mit und ohne Räume gleiche Kosten (alt gegen neu prüft Kosten mit
+    // ihren Proben gegen main)
+    let k = sk_cost::lesen::katalog(&m, None);
+    let u = sk_cost::Umfang::projekt();
+    let ohne = sk_cost::lesen::kosten(&m, &sk_model::qto::schedule(&m), &k, &u);
+    assert_eq!(sk_cost::lesen::kosten(&m, &sched, &k, &u), ohne);
+}
+
 /// Bedienbarkeit 38.2: Nach Geschoss zeigt die Wandzeile die Menge ihrer
 /// Schichtzeilen in der Sicht, nach VOB/C mit den übermessenen Öffnungen,
 /// in der Bestellung mit Verschnitt; so ergeben die Zeilen die Summe nach

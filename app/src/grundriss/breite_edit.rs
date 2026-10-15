@@ -324,7 +324,11 @@ pub fn spuren(m: &Model, st: StoreyId, f: &OuterFace, ohne: &[(ElementId, usize)
 /// [`spuren`] über das Raster der Griffe der Szene (Review H-162a): nur
 /// die Öffnungen, deren Griffbereich an das Rechteck um die Fläche samt
 /// [`SPUR_QUER`] davor und dahinter reicht. So kostet das Greifen gleich
-/// viel, wie groß das Modell auch ist.
+/// viel, wie groß das Modell auch ist. Das Raster kennt nur Öffnungen mit
+/// einem Loch in einem berechneten Wandzug ([`Scene::oeffnungen_im`]):
+/// Dasselbe wie [`spuren`] gibt es also nur, solange die Szene die Züge
+/// aller Geschosse berechnet hält, wie es auch die Griffe bei der Maus
+/// voraussetzen (Review H-179a).
 pub fn spuren_in(
     scene: &Scene,
     st: StoreyId,

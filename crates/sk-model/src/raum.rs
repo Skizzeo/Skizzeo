@@ -156,7 +156,8 @@ impl Model {
     /// vorsichtshalber bei jeder Änderung ohne Schritt. Ein Schritt nur an
     /// Wänden lässt ihn stehen, auch beim Rückgängig. Im offenen Schritt
     /// bleibt er; welche Geschosse der Schritt an Räumen ändert, sagt
-    /// [`Model::raum_geschosse_im_schritt`]. Anders als [`Model::revision`]
+    /// [`Model::raum_geschosse_im_schritt`], welche Räume
+    /// [`Model::raeume_im_schritt`]. Anders als [`Model::revision`]
     /// geht er nie zurück. Er gehört zu diesem Modell und beginnt mit ihm
     /// bei 0, nach dem Laden also neu; wer ihn sich merkt, merkt sich das
     /// Modell mit (die Erkennung der Szene, Review H-175c).
@@ -231,6 +232,30 @@ impl Model {
             }
         }
         v
+    }
+
+    /// Die Räume, die der offene Schritt anlegt, ändert, löscht oder in ein
+    /// anderes Geschoss hängt (eine Kennung je Änderung); leer ohne offenen
+    /// Schritt. Damit führt `sk-raum` seine Liste der Räume auch im Schritt
+    /// nach, statt sie je Bild neu zu sammeln (Review H-175h).
+    pub fn raeume_im_schritt(&self) -> Vec<ElementId> {
+        let Some(open) = &self.txn else {
+            return Vec::new();
+        };
+        open.changes
+            .iter()
+            .filter_map(|c| match c {
+                Change::Element { id, old, .. }
+                    if old
+                        .iter()
+                        .chain(self.elements.get(*id))
+                        .any(|e| matches!(e.kind, ElementKind::Space(_))) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Kleinster freie Name „Raum n“ im Projekt (auch ruhende zählen).

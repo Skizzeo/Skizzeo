@@ -7,12 +7,12 @@
 //! ([`crate::raumbuch::koerper`]).
 
 use crate::ausbau::{self, RaumAusbau};
-use crate::erkennung::{raeume, Begrenzung, Kante, RaumForm};
+use crate::erkennung::{Begrenzung, Kante, RaumForm};
 use crate::mengen::kostengruppe;
 use crate::oeffnungen::{Geschosse, Rohbau};
 use crate::raumbuch::koerper::{koerper, raumkoerper};
 use crate::raumbuch::{rechnen, Flaeche, Regeln};
-use crate::Ketten;
+use crate::{Erkennung, Ketten};
 use sk_math::Vec3;
 use sk_model::{
     BuildingId, ElementId, ElementKind, Guid, LayerSetId, LevelKind, Model, RunId, Solid,
@@ -119,11 +119,13 @@ pub fn raumliste_mit_formen(model: &Model) -> (Vec<RaumDaten>, Vec<ElementId>) {
     let platten = Platten::neu(model, model);
     let mut out = Vec::new();
     let mut formen = Vec::new();
-    for g in geschosse {
-        for f in raeume(model, g) {
-            formen.extend(f.raum);
-            out.extend(raum(model, &platten, f));
-        }
+    // Alle Geschosse in einem Durchgang (Review #138 H-138f)
+    for f in Erkennung::raeume_alle(model, &geschosse)
+        .into_iter()
+        .flatten()
+    {
+        formen.extend(f.raum);
+        out.extend(raum(model, &platten, f));
     }
     (out, formen)
 }
@@ -206,7 +208,7 @@ pub(crate) fn fertigmass(
 
 /// Fertigumriss: jeder Ring je Kante um `dicken` (fortlaufend gezählt)
 /// nach innen versetzt; `None`, wenn ein Ring dabei zerfällt.
-fn fertigumriss(ringe: &[&[Kante]], dicken: &[f64]) -> Option<Umriss> {
+pub(crate) fn fertigumriss(ringe: &[&[Kante]], dicken: &[f64]) -> Option<Umriss> {
     let mut i = 0;
     let mut out = Vec::new();
     for r in ringe {
