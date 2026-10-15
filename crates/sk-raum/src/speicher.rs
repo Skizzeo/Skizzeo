@@ -17,6 +17,7 @@
 use crate::abgleich::{stempel_in, zuteilen, Stand, StandGruppe};
 use crate::erkennung::{formen_aus, rohbau, Kante, RaumForm, Teil, TOL};
 use sk_math::Vec3;
+use sk_model::model::AusbauWahl;
 use sk_model::{ElementId, ElementKind, Model, RunId, Space, StoreyId, WallChain};
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
@@ -451,6 +452,18 @@ fn raeume_kennung(schluessel: u64, ausbau: u64, raeume: &[(ElementId, &Space)]) 
         [s.anker.x, s.anker.y].map(f64::to_bits).hash(&mut h);
         s.stempel.map(|p| [p.x, p.y].map(f64::to_bits)).hash(&mut h);
         s.nutzung.hash(&mut h);
+        // Abweichungen des Raumbuchs (RB6), je Stelle eine und geordnet
+        s.ausbau.len().hash(&mut h);
+        for a in &s.ausbau {
+            a.stelle.hash(&mut h);
+            a.wahl
+                .map(|w| match w {
+                    AusbauWahl::Keiner => None,
+                    AusbauWahl::Typ(g) => Some(g),
+                })
+                .hash(&mut h);
+            a.hoehe.map(f64::to_bits).hash(&mut h);
+        }
     }
     h.finish()
 }
@@ -2103,6 +2116,69 @@ mod tests {
         gleich(&mut e, &m);
         let b1 = andere(&mut e, &m);
         assert!(b1 > b0, "ohne Putz größer: {b1} {b0}");
+        assert_eq!(e.raumlisten(), n0, "nur eingereiht");
+    }
+
+    /// Die Grundfläche am Stempel folgt den Abweichungen des Raums (RB6)
+    /// und der Dicke ihres Typs wie das Mengenblatt, ohne die Räume neu zu
+    /// sammeln, auch wenn sich an Vorlagen und Typen nichts ändert;
+    /// Rückgängig stellt sie wieder her.
+    #[test]
+    fn grundflaeche_folgt_den_abweichungen() {
+        use sk_model::model::{AusbauAbweichung, AusbauStelle, WALL_TILES_TYPE_GUID};
+        use sk_model::txn::Direction;
+        let mut m = crate::raumliste::tests::haus();
+        let mut e = Erkennung::default();
+        let g = m.storeys().iter().next().unwrap().0;
+        let id = m.spaces(g)[0];
+        let flaeche = |e: &mut Erkennung, m: &Model| {
+            let q = crate::mengen::raeume(m, g)
+                .into_iter()
+                .find(|x| x.0 == id)
+                .unwrap()
+                .1;
+            let f = e
+                .raumformen(m, m, g)
+                .flaechen()
+                .find(|f| f.form.raum == Some(id))
+                .unwrap()
+                .grundflaeche;
+            assert!((f - q.area).abs() < 1e-6, "{f} {}", q.area);
+            f
+        };
+        let a0 = flaeche(&mut e, &m);
+        let n0 = e.raumlisten();
+        // Wandfliesen an allen Wandseiten: kleiner
+        m.begin("Fliesen");
+        let fliesen = AusbauAbweichung {
+            stelle: AusbauStelle::Fliesen(None),
+            wahl: Some(AusbauWahl::Typ(WALL_TILES_TYPE_GUID)),
+            hoehe: None,
+        };
+        m.set_space_finish(id, fliesen).unwrap();
+        m.commit();
+        let a1 = flaeche(&mut e, &m);
+        assert!(a1 < a0, "Fliese abgezogen: {a1} {a0}");
+        // Ohne und wieder mit der Abweichung, der Typ bleibt im Projekt:
+        // Nur der Raum ändert sich
+        for (wahl, soll) in [(None, a0), (fliesen.wahl, a1)] {
+            m.begin("Abweichung");
+            m.set_space_finish(id, AusbauAbweichung { wahl, ..fliesen })
+                .unwrap();
+            m.commit();
+            assert!((flaeche(&mut e, &m) - soll).abs() < 1e-6);
+        }
+        // Der Fliesentyp wird dicker: noch kleiner
+        let t = m.type_by_guid(WALL_TILES_TYPE_GUID).unwrap();
+        let mut set = m.layer_set(t).unwrap().clone();
+        set.layers[0].thickness += 10.0;
+        m.begin("Dicker");
+        assert!(m.set_layer_set(t, set));
+        let tx2 = m.commit().unwrap();
+        let a2 = flaeche(&mut e, &m);
+        assert!(a2 < a1, "dickere Fliese: {a2} {a1}");
+        m.apply(&tx2, Direction::Undo);
+        assert!((flaeche(&mut e, &m) - a1).abs() < 1e-6);
         assert_eq!(e.raumlisten(), n0, "nur eingereiht");
     }
 

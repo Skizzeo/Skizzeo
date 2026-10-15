@@ -229,9 +229,10 @@ fn wand(kanten: &[&Kante], k: usize) -> Option<ElementId> {
     Some(wand)
 }
 
-/// „Wand AW-004 Nord“: Nummer der Wand und Himmelsrichtung, in die die
-/// Wandseite vom Raum aus liegt.
-fn seite(model: &Model, kanten: &[&Kante], k: usize) -> String {
+/// „AW-004 Nord“: Nummer der Wand und Himmelsrichtung, in die die
+/// Wandseite der Kante `k` vom Raum aus liegt (auch für das Paneel des
+/// Raums, RB6).
+pub fn seite(model: &Model, kanten: &[&Kante], k: usize) -> String {
     let nummer = wand(kanten, k)
         .and_then(|w| model.element(w))
         .map_or_else(|| "Wand".into(), |e| e.number.clone());

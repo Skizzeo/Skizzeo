@@ -209,6 +209,8 @@ pub enum Id {
     /// Knopf „Gelände“ und die Knöpfe seiner Leiste (plan-gelaendemodul.md
     /// §4.7).
     Gelaende(GelaendeKnopf),
+    /// Knopf des Raumbuchs im Paneel eines Raums (RB6): öffnet die Liste.
+    Raumbuch(u8),
 }
 
 /// Muster der Knöpfe der Eigenschaften, die `App::drain_button` ausführt:
@@ -311,6 +313,8 @@ pub enum Field {
     PlateMargin,
     /// Felder der Leiste „Gelände“ (G1).
     Gelaende(GelaendeFeld),
+    /// Höhe der Wandfliesen eines Raums (m, RB6).
+    RaumFliesen,
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
@@ -393,7 +397,7 @@ impl Field {
         self.is_level()
             || matches!(
                 self,
-                Field::Offset | Field::DownpipeSpacing | Field::PlateMargin
+                Field::Offset | Field::DownpipeSpacing | Field::PlateMargin | Field::RaumFliesen
             )
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
             || self == Field::Gelaende(GelaendeFeld::Hoehe)
@@ -1264,7 +1268,8 @@ fn props_rows(
                 .iter()
                 .map(|&(id, label)| Row::Button(id, label)),
         );
-        rows.push(Row::Text(sec.hint.into()));
+        // Hinweise brechen um wie die Begrenzung (Test zu #190)
+        rows.extend(umbruch(sec.hint).into_iter().map(Row::Text));
     }
     if p.more {
         // Schichtliste erst auf Klick, an Ort und Stelle
@@ -2157,7 +2162,8 @@ impl Ui {
             | Id::PropsAction(_)
             | Id::PropsMore
             | Id::PropsMaterial(_)
-            | Id::ExtListe(_) => false,
+            | Id::ExtListe(_)
+            | Id::Raumbuch(_) => false,
         }
     }
 
@@ -2186,7 +2192,8 @@ impl Ui {
             | Id::PropsDrains
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete
-            | Id::PropsAction(_) => self.props_locked(),
+            | Id::PropsAction(_)
+            | Id::Raumbuch(_) => self.props_locked(),
             Id::PropsSplit | Id::PropsMerge | Id::PropsEcke | Id::PropsVerlaengern => {
                 self.props_locked()
             }

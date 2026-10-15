@@ -2037,7 +2037,7 @@ impl Scene {
         use sk_model::ElementKind::{GroundSlab, StripFooting};
         let m = &self.model;
         let Some(run) = m.run_of(id) else {
-            return false;
+            return field == Field::RaumFliesen && self.raum_fliesenhoehe(id, mm);
         };
         if field == Field::FloorThickness {
             return self.set_floor_thickness(run, mm);

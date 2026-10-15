@@ -26,6 +26,9 @@ pub struct Space {
     pub nutzung: Option<Guid>,
     /// Abweichender Faktor für die Wohnfläche (0 … 1), selten.
     pub faktor: Option<f64>,
+    /// Abweichungen des Raumbuchs von der Raumvorlage (RB6,
+    /// `raum_ausbau.rs`), je Stelle eine, geordnet.
+    pub ausbau: Vec<AusbauAbweichung>,
 }
 
 impl Space {
@@ -36,6 +39,7 @@ impl Space {
             name,
             nutzung: None,
             faktor: None,
+            ausbau: Vec::new(),
         }
     }
 }

@@ -4,14 +4,19 @@
 //! die Bezeichnung zu laufen). Decken die Schichten eines Typs ungleich viel
 //! (Anstrich nur über den Fliesen, Putz ganz), steht darunter jede Schicht
 //! mit ihrer Menge (Bedienbarkeit 40.6). Die Zeilen je Wandseite und
-//! Schicht mit Rechenweg zeigt RB5 im Mengenblatt.
+//! Schicht mit Rechenweg zeigt RB5 im Mengenblatt, die Abweichungen setzt
+//! RB6 ([`bearbeiten`]).
 
 use super::{de, de_m};
+pub use bearbeiten::abschnitte;
 use sk_model::Model;
 use sk_raum::ausbau::{self, RaumAusbau};
 use sk_raum::oeffnungen::Rohbau;
 use sk_raum::raumbuch::{self, Bezug, Flaeche, Regeln, Zeile};
 use sk_raum::{Ketten, RaumForm};
+
+#[path = "bearbeiten.rs"]
+mod bearbeiten;
 
 /// Gehört eine Zeile des Raumbuchs zu einer Fläche im Paneel?
 type Gehoert = fn(Flaeche) -> bool;
@@ -81,7 +86,7 @@ pub fn werte(
 /// Unter der Nutzung, wenn keine gewählt ist (Bedienbarkeit 40.5), und
 /// wie man sie wählt.
 pub const VORGABE: &str = "Nicht gewählt, angenommen";
-pub const VORGABE_WEG: &str = "Wahl über den Stempelnamen";
+pub const VORGABE_WEG: &str = "Wahl unter „Nutzung …“";
 
 /// Weg zu fehlenden Ausbautypen (Einstellungen #112 B1): Jede Änderung der
 /// Vorlage im Reiter „Räume“ des Katalogs legt alle ihre Typen an; fehlt

@@ -3158,7 +3158,7 @@ impl App {
             }
             Id::PropsType if self.ext_gewaehlt_ist() => self.ext_klick(id),
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
-            Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
+            Id::Ext | Id::ExtTyp | Id::ExtListe(_) | Id::Raumbuch(_) => self.ext_klick(id),
             Id::Opening(k) => self.oeffnung_klick(k),
             Id::Gelaende(k) => self.gelaende_klick(k),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
