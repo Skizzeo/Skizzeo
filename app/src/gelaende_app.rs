@@ -128,6 +128,10 @@ impl Zustand {
     }
 }
 
+/// Meldung nach „Aufmaß entfernen“.
+const ENTFERNT: &str =
+    "Aufmaß entfernt, das Haus steht wieder auf der Platte; Strg+Z holt es zurück.";
+
 /// Name eines Knopfs im Tooltip (Zeile in `hilfe.txt`, `[knopf]`).
 pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
     use sk_model::Show;
@@ -148,6 +152,7 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
         GelaendeKnopf::Hinweise => "Alle Hinweise",
+        GelaendeKnopf::Entfernen => "Aufmaß entfernen",
     }
 }
 
@@ -218,6 +223,7 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     l.zuschnitt = Some(t.show());
     l.tippen = z.tippen;
     l.zeichnen = z.werkzeug.aktiv;
+    l.deckt_nicht = l.hoehen && m.terrain_baugruben_ohne_netz() > 0;
     l.ecken = z.werkzeug.ecken().len();
     match z.tippen {
         Some(GelaendeKnopf::Verschieben) => {
@@ -423,9 +429,25 @@ impl App {
                 self.gelaende_schritt("Zuschnitt", |m| m.set_terrain_show(s));
             }
             K::Flaeche | K::Befestigt | K::Loeschen => self.flaeche_knopf(k),
+            K::Entfernen => self.aufmass_entfernen(),
         }
         self.gelaende_sync();
         self.redraw = true;
+    }
+
+    /// Aufmaß samt Lageplan und Grundstück entfernen, ein eigener Schritt
+    /// (Bedienbarkeit 42.6); die Leiste vergisst das letzte Einlesen.
+    fn aufmass_entfernen(&mut self) {
+        if !self.gelaende_schritt("Aufmaß entfernen", |m| m.set_terrain(None)) {
+            return;
+        }
+        let z = &mut self.platte.leiste;
+        z.leeren();
+        z.fehler = None;
+        z.tippen = None;
+        z.werkzeug.set_aktiv(false);
+        z.meldung.push(ENTFERNT.into());
+        self.quantity.dirty = true;
     }
 
     /// Feld der Leiste übernommen (ein Schritt).
@@ -907,6 +929,7 @@ mod tests {
         // 822,865 m² (Abnahme: 822,87 ± 0,01)
         assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,86 m²"));
         assert_eq!(l.hoehenlinien, None, "Höhenlinien wie gewünscht");
+        assert!(!l.deckt_nicht, "das Aufmaß deckt die Baugrube");
         // Absolut: das Feld trägt die Höhe; 0,30 m tiefer steckt das Haus
         m.begin("absolut");
         assert!(m.set_terrain_href(HeightRef::Abs));
@@ -932,6 +955,18 @@ mod tests {
                 Field::Gelaende(GelaendeFeld::Nhn)
             ]
         );
+        // weit weg verschoben: die Erdmengen rechnen mit der mittleren Höhe
+        // (Bedienbarkeit 42.5)
+        m.begin("Verschieben");
+        assert!(m.move_terrain([200_000.0, 0.0]));
+        m.commit();
+        assert!(leiste(&m, &z).deckt_nicht);
+        // ohne Aufmaß keine Leiste mehr dafür (42.6)
+        m.begin("Aufmaß entfernen");
+        assert!(m.set_terrain(None));
+        m.commit();
+        let l = leiste(&m, &z);
+        assert!(!l.aufmass && !l.deckt_nicht);
     }
 
     /// 100.000 Punkte lesen und vernetzen im Faden; im UI-Faden bleibt nur
@@ -1056,6 +1091,7 @@ mod tests {
             K::Befestigt,
             K::Loeschen,
             K::Hinweise,
+            K::Entfernen,
         ] {
             let z = crate::help::tooltip_lines(knopf_name(k));
             assert_eq!(z.len(), 3, "{k:?}");

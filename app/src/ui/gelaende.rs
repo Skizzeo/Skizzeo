@@ -10,6 +10,10 @@ use super::*;
 use sk_model::Show;
 
 /// Knöpfe der Leiste.
+/// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
+/// 42.5).
+pub const DECKT_NICHT: &str = "Aufmaß deckt die Baugrube nicht, Erdmengen mit mittlerer Höhe";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GelaendeKnopf {
     /// „Gelände“ im Paneel „Werkzeuge“: öffnet und schließt die Leiste.
@@ -39,6 +43,9 @@ pub enum GelaendeKnopf {
     /// Alle Hinweise des letzten Einlesens zeigen bzw. wieder nur die
     /// ersten (Bedienbarkeit 43.5).
     Hinweise,
+    /// Aufmaß, Lageplan und Grundstück entfernen, zurück zur Platte
+    /// (Bedienbarkeit 42.6).
+    Entfernen,
 }
 
 impl GelaendeKnopf {
@@ -58,7 +65,8 @@ impl GelaendeKnopf {
             | GelaendeKnopf::Flaeche
             | GelaendeKnopf::Befestigt
             | GelaendeKnopf::Loeschen
-            | GelaendeKnopf::Hinweise => Some(Modul::Gelaende),
+            | GelaendeKnopf::Hinweise
+            | GelaendeKnopf::Entfernen => Some(Modul::Gelaende),
         }
     }
 }
@@ -123,6 +131,8 @@ pub struct GelaendeLeiste {
     pub hoehenlage: Vec<String>,
     /// Das Haus steckt im Gelände: rot unter den Folgen.
     pub steckt: Option<Meldung>,
+    /// Das Aufmaß deckt eine Baugrube nicht: rot darunter (42.5).
+    pub deckt_nicht: bool,
     /// „Grundstück 822,87 m²“.
     pub grundstueck: Option<String>,
     /// Höhenlinien gröber als gewünscht oder keine, weil es zu viele wären.
@@ -199,6 +209,9 @@ impl Ui {
                 feld(&mut rows, GelaendeFeld::Nhn);
                 rows.extend(l.hoehenlage.iter().map(|z| Row::Text(z.clone())));
                 rows.extend(l.steckt.clone().map(Row::Error));
+                if l.deckt_nicht {
+                    rows.extend(self.rot(DECKT_NICHT));
+                }
                 rows.extend([
                     Row::Separator,
                     Row::Label("Geländeflächen"),
@@ -232,6 +245,7 @@ impl Ui {
             }
             rows.extend(l.grundstueck.clone().map(Row::Text));
             rows.extend(l.hoehenlinien.clone().map(Row::Text));
+            rows.push(Row::Button(Id::Gelaende(K::Entfernen), "Aufmaß entfernen"));
         } else if l.meldung.is_empty() && l.fehler.is_none() {
             rows.extend([
                 Row::Hint("Lageplan: PDF, Maßstab"),
@@ -259,10 +273,19 @@ impl Ui {
             }
         }
         if let Some(e) = &l.fehler {
-            let z = widgets::wrap(f, e.as_str(), self.size.font_detail, breite);
-            rows.extend(z.iter().map(|t| Row::Error(Meldung::mit("{}", &[t]))));
+            rows.extend(self.rot(e.as_str()));
         }
         rows
+    }
+
+    /// Rote Zeilen, umgebrochen auf die Breite des Paneels.
+    fn rot(&self, satz: &str) -> Vec<Row> {
+        let breite = self.width(Panel::Tools) - 2.0 * self.size.panel_pad;
+        let f = self.fonts.regular.as_ref();
+        let z = widgets::wrap(f, satz, self.size.font_detail, breite);
+        z.iter()
+            .map(|t| Row::Error(Meldung::mit("{}", &[t])))
+            .collect()
     }
 
     /// Knopf der Leiste hervorgehoben: die offene Leiste, die offene
@@ -284,7 +307,8 @@ impl Ui {
             | GelaendeKnopf::Ausrichten
             | GelaendeKnopf::Befestigt
             | GelaendeKnopf::Loeschen
-            | GelaendeKnopf::Hinweise => false,
+            | GelaendeKnopf::Hinweise
+            | GelaendeKnopf::Entfernen => false,
         }
     }
 }
@@ -338,9 +362,28 @@ mod tests {
                 K::Zuschnitt(Show::All),
                 K::Zuschnitt(Show::Fade),
                 K::Zuschnitt(Show::Parcel),
+                K::Entfernen,
             ]
             .map(Id::Gelaende)
         );
+        // Deckt das Aufmaß die Baugrube nicht, steht es rot da (42.5)
+        let rot = |ui: &Ui| -> String {
+            ui.rows(Panel::Tools)
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Error(m) => Some(m.as_str().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(rot(&ui), "");
+        ui.gelaende = Some(GelaendeLeiste {
+            deckt_nicht: true,
+            ..leiste()
+        });
+        assert_eq!(rot(&ui), DECKT_NICHT);
+        ui.gelaende = Some(leiste());
         assert!(ui.is_on(Id::Gelaende(K::Ueber)) && !ui.is_on(Id::Gelaende(K::Absolut)));
         assert!(ui.is_on(Id::Gelaende(K::Zuschnitt(Show::All))));
         assert!(!ui.is_disabled(Id::Gelaende(K::Lageplan)));

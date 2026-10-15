@@ -227,6 +227,31 @@ fn boeschung(n: &ErdNetz, sohle: &[Vec3], z_s: f64, o: f64, beta: f64) -> Boesch
     b
 }
 
+/// Sohle der Baugrube (Platte um den Arbeitsraum versetzt), ihre Fläche
+/// und die Menge über ihr; `None`, wenn das Netz sie nicht ganz deckt oder
+/// der Arbeitsraum sich nicht versetzen lässt.
+fn baugrube(b: &ErdBasis, n: &ErdNetz, boden: &Boden) -> Option<(Vec<Vec3>, f64, Erdmenge)> {
+    let o = boden.oberboden.max(0.0);
+    let a = boden.arbeitsraum.max(0.0);
+    let sohle = if a > 0.0 {
+        sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()])?
+    } else {
+        b.outline.clone()
+    };
+    let sohle_fl = sk_math::polygon::area(&sohle);
+    let grube = n.menge(&sohle, b.slab_bottom_z + o);
+    if sohle_fl <= 0.0 || grube.flaeche < sohle_fl * (1.0 - 1e-6) {
+        return None;
+    }
+    Some((sohle, sohle_fl, grube))
+}
+
+/// Das Netz `n` deckt die Baugrube; sonst rechnen die Erdmengen mit der
+/// mittleren Höhe (Bedienbarkeit 42.5).
+pub(super) fn deckt(b: &ErdBasis, n: &ErdNetz, boden: &Boden) -> bool {
+    baugrube(b, n, boden).is_some()
+}
+
 /// Erdmengen der Gründung über das Netz `n`, dazu Baufeld und Baugrube.
 /// `None`, wenn das Netz die Baugrube nicht ganz deckt oder der
 /// Arbeitsraum sich nicht versetzen lässt; dann rechnet
@@ -245,16 +270,7 @@ pub(super) fn mengen(
     let z_b = b.insulation_bottom_z.min(z_s);
     let z_p = z_b - g;
     let z_f = b.footing_bottom_z;
-    let sohle = if a > 0.0 {
-        sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()])?
-    } else {
-        b.outline.clone()
-    };
-    let sohle_fl = sk_math::polygon::area(&sohle);
-    let grube = n.menge(&sohle, z_s + o);
-    if sohle_fl <= 0.0 || grube.flaeche < sohle_fl * (1.0 - 1e-6) {
-        return None;
-    }
+    let (sohle, sohle_fl, grube) = baugrube(b, n, boden)?;
     let [platte, platte_f] = n.mengen(&b.outline, &[z_s + o, z_f + o]).map(|e| e.ueber);
     let (innen_fl, i_p, i_s, i_f) = if n.innen.len() >= 3 {
         let [i_p, i_s, i_f] = n.mengen(&n.innen, &[z_p + o, z_s + o, z_f + o]);

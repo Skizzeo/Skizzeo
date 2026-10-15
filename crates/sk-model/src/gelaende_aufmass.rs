@@ -1419,6 +1419,23 @@ impl Model {
         })
     }
 
+    /// Zahl der Gründungen am bestimmenden Gebäude, deren Baugrube das Netz
+    /// nicht ganz deckt; ihre Erdmengen rechnen mit der mittleren Höhe
+    /// (Bedienbarkeit 42.5). Nur die Züge dieses Gebäudes wie
+    /// [`Model::terrain_folgen`]. Ohne Aufmaß oder Haus 0.
+    pub fn terrain_baugruben_ohne_netz(&self) -> usize {
+        let (Some(b), Some(_)) = (self.level_building(), self.terrain_nhn()) else {
+            return 0;
+        };
+        let boden = self.project.soil;
+        self.runs
+            .iter()
+            .filter(|(_, r)| self.building_of(r.storey) == Some(b))
+            .filter_map(|(id, _)| self.ground_basis(id))
+            .filter(|g| crate::qto_earth::baugrube_ohne_netz(self, g, &boden))
+            .count()
+    }
+
     /// Randkanten des Geländes im Modell (mm, z relativ zu ±0,00), im
     /// Umlauf der [`Model::terrain_triangles`] (Inneres links); aus dem
     /// Netz, das sie einmal bestimmt (Review #183 B1). Leer ohne Aufmaß,
@@ -1965,6 +1982,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Bedienbarkeit 42.5: Deckt das Aufmaß die Baugrube nicht (etwa nach
+    /// „Verschieben“), zählt die Gründung zu denen mit mittlerer Höhe.
+    #[test]
+    fn baugrube_ohne_netz() {
+        let baugruben_ohne_netz = |m: &Model| m.terrain_baugruben_ohne_netz();
+        let (mut m, _) = lindenhof_haus();
+        assert_eq!(baugruben_ohne_netz(&m), 0, "ohne Aufmaß");
+        let a = sk_gelaende::lesen::lesen(b"1 0 0 10\n2 60 0 12\n3 60 60 12\n4 0 60 10\n").unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(Terrain::from_survey(&a, "hang.txt", "2026-10-14", 32)));
+        m.commit();
+        assert_eq!(baugruben_ohne_netz(&m), 0, "Aufmaß deckt");
+        m.begin("Verschieben");
+        assert!(m.move_terrain([100_000.0, 0.0]));
+        m.commit();
+        assert_eq!(baugruben_ohne_netz(&m), 1, "weit weg");
     }
 
     /// Gelände steiler als 1:10 an der Baugrube: Hinweis nach DIN 4124 am
