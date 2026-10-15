@@ -242,6 +242,69 @@ fn aufmass_im_budget() {
     assert!(z.gelaende < 100.0 * f, "{z:?}");
 }
 
+/// Loslassen bei offener Leiste mit vielen Zügen am bestimmenden Gebäude
+/// und großem Aufmaß (Review #196 B1: im UI-Faden 20 ms bei 100.000
+/// Punkten und 25 Zügen, 179 ms bei 326.000 und 100): Die Baugruben zählt
+/// ein Faden; im UI-Faden bleiben die Leiste und der Start des Fadens.
+#[test]
+fn baugruben_im_faden() {
+    let (k, n, f) = if cfg!(debug_assertions) {
+        (9, 60, 40.0)
+    } else {
+        (25, 317, 1.0)
+    };
+    let mut m = Model::with_seed(5);
+    let b = m.add_building(1);
+    for i in 0..k {
+        let (ox, oy) = ((i % 5) as f64 * 15_000.0, (i / 5) as f64 * 15_000.0);
+        let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+        let pts = [p(0.0, 0.0), p(0.0, 8000.0), p(1e4, 8000.0), p(1e4, 0.0)];
+        m.build_from_polygon(b, &pts).unwrap();
+    }
+    let mut t = Terrain::new(Crs::Local);
+    for i in 0..n {
+        for j in 0..n {
+            let (e, nn) = (1000.0 + 2.0 * i as f64, 2000.0 + 2.0 * j as f64);
+            t.points.push(TerrainPoint {
+                nr: (i * n + j + 1).to_string(),
+                e,
+                n: nn,
+                h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
+                code: String::new(),
+                off: false,
+            });
+        }
+    }
+    m.begin("Aufmaß");
+    assert!(m.import_terrain(t));
+    m.commit();
+    assert_eq!(m.runs().iter().count(), k);
+    let mut z = Zustand::default();
+    z.offen = true;
+    let l = bestwert(|| {
+        std::hint::black_box(leiste(&m, &z));
+    });
+    let u = Uhr::an();
+    assert!(!z.baugruben(&m));
+    let start = u.ms();
+    let t0 = Instant::now();
+    while z.prueft() {
+        std::thread::sleep(Duration::from_millis(1));
+        z.baugruben(&m);
+    }
+    let faden = ms(t0);
+    assert!(
+        !leiste(&m, &z).deckt_nicht,
+        "das Aufmaß deckt alle Baugruben"
+    );
+    eprintln!(
+        "{k} Züge, {} Punkte: Leiste {l:.2} ms, Start {start:.2} ms, Faden {faden:.1} ms",
+        n * n
+    );
+    assert!(l < 4.0 * f, "Leiste {l:.2} ms");
+    assert!(start < 4.0 * f, "Start {start:.2} ms");
+}
+
 /// Messprogramm: dasselbe bei 1000 und 4000 Häusern; je Zoomstufe und
 /// Sichtwechsel höchstens wenig mehr bei 4000 als bei 1000, die Wand mit
 /// Aufmaß kaum mehr als ohne. Nur im Release sinnvoll: `cargo test

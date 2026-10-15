@@ -292,6 +292,17 @@ fn zahl(x: f64, teiler: f64) -> String {
     format!("{:.2}", x / teiler).replace('.', ",")
 }
 
+/// Das Netz des Höhenaufmaßes deckt die Baugrube der Gründung `g` nicht;
+/// ihre Erdmengen rechnen mit der mittleren Höhe (Bedienbarkeit 42.5).
+/// Ohne Aufmaß `false`.
+pub(crate) fn baugrube_ohne_netz(m: &crate::Model, g: &crate::GroundBasis, boden: &Boden) -> bool {
+    if g.terrain_nhn.is_none() {
+        return false;
+    }
+    let b = ErdBasis::im_modell(m, g);
+    b.netz.as_ref().is_none_or(|n| !netz::deckt(&b, n, boden))
+}
+
 /// Zusatz im Mengenansatz, wenn die Menge an der Geländehöhe aus dem
 /// Aufmaß hängt; Kostenblatt und LV geben ihren Hinweis genau dann.
 pub const AUS_AUFMASS: &str = "; Gelände aus Aufmaß";
