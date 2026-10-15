@@ -71,9 +71,14 @@ const KG_DECKE: u16 = KG_INNEN;
 
 /// Welche Laibung eine Wandschicht zeigt.
 fn art(model: &Model, layers: &[MaterialLayer], i: usize) -> Option<&'static str> {
-    let core = layers.iter().position(|l| l.core)?;
     let l = layers.get(i)?;
     let cat = model.material(l.material).map(|m| m.category)?;
+    // Ohne Kernschicht bleibt nur die Innenlaibung an der innersten Schicht;
+    // sonst hätte die Laibung weder opening.reveal.inner noch eine
+    // Eckschiene im Raumbuch (Review #197 H-197g)
+    let Some(core) = layers.iter().position(|l| l.core) else {
+        return (i + 1 == layers.len()).then_some(INNER);
+    };
     // Innenlaibung an der innersten Schicht, mit oder ohne Innenputz im
     // Wandtyp: Putz und Maler je Raum folgen aus dem Raumbuch
     if i >= core {

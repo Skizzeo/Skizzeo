@@ -17,7 +17,7 @@ use sk_model::library::Material;
 use sk_model::library::{LayerSetId, MaterialId};
 use sk_model::qto::{FormworkQto, Schedule, Side, Umfang};
 use sk_model::{BuildingId, ElementId, Guid, MaterialLayer, Model, StoreyId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Kleinste Einheit je Einheit (mm, mm², mm³, g): so viele je Einheit.
 pub(crate) fn skala(e: Einheit) -> i128 {
@@ -120,6 +120,10 @@ pub struct Position {
     /// Baustoff und Dicke der Schicht, an der die Bauleistung rechnet
     /// (Artikel der Schicht, geschätzt nach Dicke); Preisblatt, KA-2c.
     pub schicht: Option<(Guid, Dez)>,
+    /// Dicken der Zeilen über 0, aufsteigend, jede einmal. Mehr als eine,
+    /// wenn Zeilen verschiedener Dicke denselben Stoff-EP haben (etwa ohne
+    /// Preis); das LV teilt dann nicht je Dicke (Review #213 H-213g).
+    pub dicken: Vec<Dez>,
 }
 
 impl Position {
@@ -868,8 +872,8 @@ pub fn kosten_mit(
     let mut einmal: std::collections::HashSet<(ElementId, Guid)> = Default::default();
     let mut ep_fest: HashMap<Guid, (Cent, Cent, Cent, Option<Cent>)> = HashMap::new();
 
-    let rows = s.layer_rows(m);
-    for (gebaeude, r) in &rows {
+    let rows = s.layer_rows_ref(m);
+    for (gebaeude, r) in rows.iter() {
         let Some(e) = m.element(r.element) else {
             continue;
         };
@@ -1160,13 +1164,15 @@ pub fn kosten_mit(
     }
     for p in sammel {
         let menge_klein: i128 = p.ansatz.iter().map(|a| a.menge).sum();
+        let mut dicken: Vec<Dez> = p.dicken.iter().copied().filter(|d| d.0 > 0).collect();
+        dicken.sort();
         let menge = drei(menge_klein, p.einheit);
         let (kurz, oz, lohn, geraet, sonst, nu) = match &p.quelle {
             Quelle::Leistung(g) | Quelle::Geschaetzt(g) => {
                 let l = k.leistung(*g).expect("Leistung");
                 let (lo, ge, so, nu) = *ep_fest.entry(*g).or_insert_with(|| feste_ep(k, l));
                 let mut kurz = l.kurz.clone();
-                let d = p.dicken.iter().copied().filter(|d| d.0 > 0).max();
+                let d = dicken.last().copied();
                 match (&p.quelle, d) {
                     (Quelle::Geschaetzt(_), Some(d)) => {
                         kurz += &format!(" · geschätzt für d={}", cm_kurz(d));
@@ -1235,6 +1241,7 @@ pub fn kosten_mit(
             gewerk: p.gewerk,
             ansatz: p.ansatz,
             schicht: p.schicht,
+            dicken,
         });
     }
     // Reihenfolge: Los, Titel, pos; geschätzt hinter genau; Richtpreis zuletzt
@@ -1603,6 +1610,9 @@ fn auto_ansaetze(
     index: &mut HashMap<PosKey, usize>,
 ) -> Vec<Befund> {
     let mut befunde = Vec::new();
+    // schon gemeldet; je Raum mit eigenem Sockelbaustoff ein Hinweis, die
+    // Suche in `befunde` wäre quadratisch (Review #197 H-197h)
+    let mut gesehen: HashSet<Befund> = HashSet::new();
     let mut stoffe: HashMap<Guid, (Cent, bool)> = HashMap::new();
     let mut gemeldet: Vec<Guid> = Vec::new();
     // Erdmengen, die das Aufmaß nur angenähert liefert (Flächenmittel ohne
@@ -1613,7 +1623,7 @@ fn auto_ansaetze(
     // D2)
     for h in &s.hinweise {
         let b = Befund::hinweis(0, h.as_str(), Ort::Datei);
-        if !befunde.contains(&b) {
+        if gesehen.insert(b.clone()) {
             befunde.push(b);
         }
     }
@@ -1631,7 +1641,7 @@ fn auto_ansaetze(
             };
             for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
                 let b = Befund::hinweis(0, h, ort.clone());
-                if !befunde.contains(&b) {
+                if gesehen.insert(b.clone()) {
                     befunde.push(b);
                 }
             }
@@ -1670,7 +1680,7 @@ fn auto_ansaetze(
                     ),
                     ort,
                 );
-                if !befunde.contains(&b) {
+                if gesehen.insert(b.clone()) {
                     befunde.push(b);
                 }
             }
@@ -1689,11 +1699,13 @@ fn auto_ansaetze(
                 if !gemeldet.contains(&l.guid) {
                     gemeldet.push(l.guid);
                     let z = Einheit::aus(a.unit).map_or(a.unit, Einheit::zeichen);
-                    befunde.push(Befund::warnung(
+                    let b = Befund::warnung(
                         80,
                         crate::befund::r80(&l.kurz, l.einheit.zeichen(), &format!("in {z}")),
                         ort,
-                    ));
+                    );
+                    gesehen.insert(b.clone());
+                    befunde.push(b);
                 }
                 continue;
             }
@@ -1715,7 +1727,7 @@ fn auto_ansaetze(
                 let mut bf = Vec::new();
                 let x = stoff_ep(k, l, None, false, &ort, &mut bf);
                 for b in bf {
-                    if !befunde.contains(&b) {
+                    if gesehen.insert(b.clone()) {
                         befunde.push(b);
                     }
                 }
