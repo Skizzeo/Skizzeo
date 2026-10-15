@@ -1419,7 +1419,9 @@ mod tests {
         let f = folge(&m);
         for k in [DISPOSAL, BACKFILL] {
             let n: Vec<&String> = f.iter().filter(|x| x.0 == k).map(|x| &x.1).collect();
-            assert!(n.windows(2).all(|w| w[0] < w[1]), "{k}: {n:?}");
+            // nach dem Rang des Trägers: Länge, dann Nummer (H-186a)
+            let rang = |s: &String| (s.len(), s.clone());
+            assert!(n.windows(2).all(|w| rang(w[0]) < rang(w[1])), "{k}: {n:?}");
         }
         assert_eq!(folge(&wieder), f);
     }
