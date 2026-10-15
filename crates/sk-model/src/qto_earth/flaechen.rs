@@ -76,7 +76,9 @@ pub const UNGUELTIG: &str = "Geländefläche lässt sich nicht bauen: ohne Menge
 /// nie still, sonst fehlt ein Vordersatz unbemerkt).
 pub const GANZ_AUSSERHALB: &str = "Geländefläche ohne Mengen: liegt außerhalb des Aufmaßes";
 pub const OHNE_AUFMASS: &str = "Geländefläche ohne Mengen: kein Höhenaufmaß";
-pub const OHNE_TRAEGER: &str = "Geländefläche ohne Mengen: keine Sohlplatte als Träger";
+// „keine Sohlplatte als Träger“ las sich als Balken (Bedienbarkeit, später
+// zu Durchgang 43)
+pub const OHNE_TRAEGER: &str = "Geländefläche ohne Mengen: kein Haus mit Bodenplatte im Modell";
 /// Hinweis, wenn sich Flächen überlappen.
 pub const UEBERLAPPT: &str =
     "Geländeflächen überlappen sich: Menge dort doppelt gezählt, Flächen prüfen";
@@ -388,10 +390,11 @@ pub(crate) fn gelaende_mengen(
         if x <= 0.0 {
             continue;
         }
-        // der Anteil nachprüfbar, wenn mehrere Baugruben abgeben
+        // der Anteil nachprüfbar, wenn mehrere Baugruben abgeben; die Zahlen
+        // mit Namen (Bedienbarkeit, später zu Durchgang 43)
         let anteil = if abfuhr[i] < ueberschuss * (1.0 - 1e-9) {
             format!(
-                " ({} × {} / {})",
+                " (Einbau {} × Überschuss dieser Baugrube {} / aller {})",
                 zahl(entnehmen, 1e9),
                 zahl(abfuhr[i], 1e9),
                 zahl(ueberschuss, 1e9)
@@ -1116,7 +1119,7 @@ mod tests {
             assert!(nah(a - b, anteil), "{ohne:?} {mit_flaeche:?}");
             // mit dem Anteil im Rechenweg (VOB #185)
             let teil = format!(
-                "− Einbau im Gelände {} ({} × {} / {})",
+                "− Einbau im Gelände {} (Einbau {} × Überschuss dieser Baugrube {} / aller {})",
                 super::m3(anteil),
                 super::zahl(auf, 1.0),
                 super::zahl(*a, 1.0),
