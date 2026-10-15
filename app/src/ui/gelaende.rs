@@ -458,12 +458,6 @@ mod tests {
                 .ok()
                 .and_then(sk_paint::font::Font::parse)
         };
-        let (Some(regular), Some(bold)) = (
-            lade("LiberationSans-Regular.ttf"),
-            lade("LiberationSans-Bold.ttf"),
-        ) else {
-            return;
-        };
         let t = Theme::dark();
         let mut ui = Ui::new(1.0, &t);
         ui.fonts = widgets::Fonts {
@@ -481,6 +475,11 @@ mod tests {
             grundstueck: Some("Grundstück 822,86 m²".into()),
             ..leiste()
         });
+        // ohne die Schriften nicht still bestanden (Review #202 H-202a)
+        let (Some(regular), Some(bold)) = (&ui.fonts.regular, &ui.fonts.bold) else {
+            eprintln!("alles_passt_ins_paneel übersprungen: keine Liberation-Schriften in {lib:?}");
+            return;
+        };
         for (_, r, label) in ui.buttons(Panel::Tools) {
             let w = bold.width(label, ui.size.font);
             assert!(w <= r.w - 2.0, "„{label}“ {w:.1} in {:.1}", r.w);

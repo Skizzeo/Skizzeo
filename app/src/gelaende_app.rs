@@ -9,7 +9,7 @@ use crate::meldung::Meldung;
 use crate::selection::de;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, GelaendeLeiste};
 use crate::App;
-use sk_model::{Crs, HeightRef, Model, SitePlan, Terrain};
+use sk_model::{Crs, HeightRef, Model, SitePlan, Terrain, TerrainFolgen};
 use sk_platform::Surface;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
@@ -90,8 +90,15 @@ pub(crate) struct Zustand {
     /// B1: im UI-Faden je Loslassen bis 179 ms).
     ohne_netz: usize,
     geprueft: Option<u64>,
-    pruefung: Option<(u64, mpsc::Receiver<usize>)>,
+    pruefung: Option<(u64, mpsc::Receiver<Pruefung>)>,
+    /// Sockel und Einbindung aus demselben Faden (H-196h: bei dichtem
+    /// Aufmaß 8 ms je Leiste); `None`, solange er nichts geliefert hat,
+    /// dann rechnet die Leiste selbst.
+    folgen: Option<Option<TerrainFolgen>>,
 }
+
+/// Ergebnis des Fadens: Baugruben ohne Netz und die Folgen der Höhenlage.
+type Pruefung = (usize, Option<TerrainFolgen>);
 
 impl Zustand {
     /// Bleibt die Leiste, wie sie ist? Beim selben Modellstand, und im
@@ -128,38 +135,45 @@ impl Zustand {
 
     /// Baugruben ohne Netz bei offener Leiste mit Aufmaß im eigenen Faden
     /// zählen, je Modellstand einmal, nicht im offenen Schritt (Review #196
-    /// B1); holt ein fertiges Ergebnis ab. `true`, wenn sich damit die rote
-    /// Zeile ändert.
+    /// B1); holt ein fertiges Ergebnis ab, auch das erst nach dem Schritt,
+    /// sonst baute es die Leiste mitten im Zug neu (H-196f). Derselbe Faden
+    /// rechnet Sockel und Einbindung (H-196h). `true`, wenn die Leiste sich
+    /// damit ändern kann.
     pub(crate) fn baugruben(&mut self, m: &Model) -> bool {
+        if m.in_step() {
+            return false;
+        }
         if let Some((rev, rx)) = &self.pruefung {
-            let n = match rx.try_recv() {
-                Ok(n) => n,
+            let (n, folgen) = match rx.try_recv() {
+                Ok((n, f)) => (n, Some(f)),
                 Err(mpsc::TryRecvError::Empty) => return false,
                 // abgebrochen: bis zum nächsten Schritt ohne rote Zeile
-                Err(mpsc::TryRecvError::Disconnected) => 0,
+                Err(mpsc::TryRecvError::Disconnected) => (0, None),
             };
             self.geprueft = Some(*rev);
             self.pruefung = None;
-            let anders = (n > 0) != (self.ohne_netz > 0);
+            let anders = (n > 0) != (self.ohne_netz > 0) || folgen != self.folgen;
             self.ohne_netz = n;
+            self.folgen = folgen;
             return anders;
         }
         let rev = m.revision();
-        if !self.offen || m.in_step() || self.geprueft == Some(rev) {
+        if !self.offen || self.geprueft == Some(rev) {
             return false;
         }
         if m.terrain().is_none_or(|t| t.points.is_empty()) {
             // ohne Höhen keine rote Zeile, nichts zu rechnen
             self.geprueft = Some(rev);
-            let anders = self.ohne_netz > 0;
+            let anders = self.ohne_netz > 0 || self.folgen.is_some();
             self.ohne_netz = 0;
+            self.folgen = None;
             return anders;
         }
         let kopie = m.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             // fällt weg, wenn die Leiste inzwischen neu begonnen hat
-            let _ = tx.send(kopie.terrain_baugruben_ohne_netz());
+            let _ = tx.send((kopie.terrain_baugruben_ohne_netz(), kopie.terrain_folgen()));
         });
         self.pruefung = Some((rev, rx));
         false
@@ -311,7 +325,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
             l.hoehenlage.push(format!("±0,00 = {} m ü. NHN", de(h, 2)));
         }
     }
-    if let Some(f) = m.terrain_folgen() {
+    // aus dem Faden wie die rote Zeile; vor dem ersten Ergebnis hier
+    if let Some(f) = z.folgen.unwrap_or_else(|| m.terrain_folgen()) {
         let cm = |v: f64| de(v / 10.0, 1);
         l.hoehenlage.push(format!(
             "Sockel {} bis {} cm",
@@ -519,9 +534,10 @@ impl App {
         anders
     }
 
-    /// Prüft gerade ein Faden die Baugruben?
+    /// Prüft gerade ein Faden die Baugruben? Im offenen Schritt wartet sein
+    /// Ergebnis aufs Loslassen, die Hauptschleife muss nicht nachfragen.
     pub(crate) fn baugruben_rechnen(&self) -> bool {
-        self.platte.leiste.prueft()
+        self.platte.leiste.prueft() && !self.scene.model().in_step()
     }
 
     /// Feld der Leiste übernommen (ein Schritt).
@@ -1069,7 +1085,12 @@ mod tests {
             offen: true,
             ..Default::default()
         };
-        assert!(!pruefen(&mut offen, &m), "deckt");
+        pruefen(&mut offen, &m);
+        assert_eq!(offen.ohne_netz, 0, "deckt");
+        // Sockel und Einbindung aus dem Faden, wie sonst hier gerechnet
+        // (H-196h)
+        assert_eq!(offen.folgen, Some(m.terrain_folgen()));
+        assert_eq!(leiste(&m, &offen).hoehenlage, l.hoehenlage);
         // Absolut: das Feld trägt die Höhe; 0,30 m tiefer steckt das Haus
         m.begin("absolut");
         assert!(m.set_terrain_href(HeightRef::Abs));
@@ -1107,6 +1128,27 @@ mod tests {
         assert!(leiste(&m, &offen).deckt_nicht);
         assert!(!offen.baugruben(&m), "derselbe Stand rechnet nicht neu");
         assert!(offen.pruefung.is_none());
+        // zurück unters Haus: fertig wird der Faden mitten im nächsten Zug,
+        // abgeholt erst nach dem Loslassen (H-196f)
+        m.begin("zurück");
+        assert!(m.move_terrain([-200_000.0, 0.0]));
+        m.commit();
+        assert!(!offen.baugruben(&m) && offen.prueft());
+        m.begin("Zug");
+        let bis = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while std::time::Instant::now() < bis {
+            assert!(!offen.baugruben(&m), "nicht im offenen Schritt");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(offen.prueft() && offen.ohne_netz > 0);
+        m.commit();
+        assert!(offen.baugruben(&m), "nach dem Loslassen");
+        assert_eq!(offen.ohne_netz, 0);
+        m.begin("wieder weg");
+        assert!(m.move_terrain([200_000.0, 0.0]));
+        m.commit();
+        assert!(pruefen(&mut offen, &m));
+        assert!(leiste(&m, &offen).deckt_nicht);
         // ohne Aufmaß keine Leiste mehr dafür (42.6)
         let vorher = m.terrain().cloned();
         m.begin("Aufmaß entfernen");
