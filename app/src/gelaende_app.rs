@@ -7,7 +7,9 @@
 
 use crate::meldung::Meldung;
 use crate::selection::de;
-use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, GelaendeLeiste};
+use crate::ui::{
+    Field, FieldRow, GelaendeFeld, GelaendeKnopf, GelaendeLeiste, NHN, OBEN, RECHTS, UEBER,
+};
 use crate::App;
 use sk_model::{Crs, HeightRef, Model, SitePlan, Terrain, TerrainFolgen};
 use sk_platform::Surface;
@@ -301,9 +303,9 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
         Some(GelaendeKnopf::Verschieben) => {
             let r = (-WEG, WEG);
             l.felder
-                .push(feld(GelaendeFeld::Rechts, "nach rechts", 0.0, r, Some("m")));
+                .push(feld(GelaendeFeld::Rechts, RECHTS, 0.0, r, Some("m")));
             l.felder
-                .push(feld(GelaendeFeld::Oben, "nach oben", 0.0, r, Some("m")));
+                .push(feld(GelaendeFeld::Oben, OBEN, 0.0, r, Some("m")));
         }
         Some(GelaendeKnopf::Drehen) => {
             let r = (-WINKEL, WINKEL);
@@ -316,13 +318,12 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     if l.absolut {
         let h = nhn.map_or(0.0, |h| (h * 1000.0).round() / 1000.0);
         let r = sk_model::NHN;
-        l.felder
-            .push(feld(GelaendeFeld::Nhn, "±0,00 ü. NHN", h, r, Some("m")));
+        l.felder.push(feld(GelaendeFeld::Nhn, NHN, h, r, Some("m")));
     } else {
         let v = m.terrain_offset_of(m.level_building());
         let r = sk_model::MAX_TERRAIN_OFFSET;
         l.felder
-            .push(feld(GelaendeFeld::Versatz, "Versatz", v, (-r, r), None));
+            .push(feld(GelaendeFeld::Versatz, UEBER, v, (-r, r), None));
         if let Some(h) = nhn {
             l.hoehenlage.push(format!("±0,00 = {} m ü. NHN", de(h, 2)));
         }
@@ -499,7 +500,7 @@ impl App {
                 self.gelaende_schritt("Höhenlage absolut", |m| m.set_terrain_href(H::Abs));
             }
             K::Zuschnitt(s) => {
-                self.gelaende_schritt("Zuschnitt", |m| m.set_terrain_show(s));
+                self.gelaende_schritt("Umgebung zeigen", |m| m.set_terrain_show(s));
             }
             K::Flaeche | K::Befestigt | K::Loeschen => self.flaeche_knopf(k),
             K::Entfernen => self.aufmass_entfernen(),

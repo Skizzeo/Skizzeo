@@ -26,6 +26,7 @@ use hoehenlinien::check_word;
 use werkzeuge::tool_rows;
 
 pub use gelaende::{GelaendeFeld, GelaendeKnopf, GelaendeLeiste};
+pub(crate) use gelaende::{NHN, OBEN, RECHTS, UEBER};
 
 pub use fenster::TITEL as LEVELS_TITEL;
 
