@@ -309,7 +309,8 @@ impl Scene {
 
     /// Ändert Räume in einem Schritt (Raumbuch, RB6); anders als
     /// [`Scene::edit_model`] bleiben die Wandzüge, wie sie sind, und der
-    /// Ausbau rechnet nur die Räume neu, die sich ändern.
+    /// Ausbau rechnet nur die Räume neu, die sich ändern. Liefert `f`
+    /// `false`, bleibt nichts (Review #190 H-190f).
     pub(crate) fn raeume_aendern(
         &mut self,
         label: &'static str,
@@ -317,7 +318,11 @@ impl Scene {
     ) -> bool {
         self.begin(label);
         let ok = f(&mut self.model);
-        self.commit();
+        if ok {
+            self.commit();
+        } else {
+            self.rollback();
+        }
         ok
     }
 

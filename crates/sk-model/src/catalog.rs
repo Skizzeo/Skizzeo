@@ -287,7 +287,7 @@ impl Library {
 /// Kennung eines Satzes zum Wiederfinden in der eigenen Ausgabe: Abschnitt
 /// und Guid, ohne Guid die Schlüsselfelder ([default]: Art, [typeprop]:
 /// Typ und Merkmal, [layer]: Typ, [matprop]/[prop]: Baustoff bzw.
-/// Bauteil und Merkmal, [spacefinish]: alle bekannten Felder). Mehrere Sätze
+/// Bauteil und Merkmal, [spacefinish]: Raum und Stelle). Mehrere Sätze
 /// mit derselben Kennung (Schichten eines Typs) zählen in
 /// Dateireihenfolge durch.
 pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
@@ -298,25 +298,9 @@ pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> Stri
         .or_else(|| r.opt("surface").map(|g| ("surface", g)));
     let base = match id {
         Some((k, g)) => format!("{} {k}={g}", r.section),
-        // Abweichungen je Raum (RB6): alle bekannten Felder, denn die
-        // Datei nennt die Räume in anderer Reihenfolge, als das Programm
-        // sie schreibt, und rohe Zeilen stehen hinten. Gleich sind so nur
-        // eine gültige Zeile und ihr späterer Doppelgänger oder rohe
-        // Zeilen untereinander, deren Folge bleibt.
-        None if r.section == "spacefinish" => format!(
-            "{} space={} at={} wall={} side={} type={} h={}",
-            r.section,
-            r.opt("space").unwrap_or(""),
-            r.opt("at").unwrap_or(""),
-            r.opt("wall").unwrap_or(""),
-            r.opt("side").unwrap_or(""),
-            r.opt("type").unwrap_or(""),
-            r.opt("h")
-                .map_or(String::new(), |h| match h.parse::<f64>() {
-                    Ok(v) => v.to_string(),
-                    Err(_) => h.to_string(),
-                })
-        ),
+        // Abweichungen je Raum (RB6): Raum und Stelle, wie `set=` bei
+        // [layer] (Review #190 B1)
+        None if r.section == "spacefinish" => spacefinish_kennung(r),
         None => format!(
             "{} set={} cat={} mat={} elem={} key={}",
             r.section,
@@ -330,6 +314,19 @@ pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> Stri
     let n = count.entry(base.clone()).or_insert(0);
     *n += 1;
     format!("{base} #{n}")
+}
+
+/// Kennung einer Zeile `[spacefinish]`: Raum, Stelle, Wand und Seite, ohne
+/// Typ und Höhe, die das Programm ändert.
+pub(crate) fn spacefinish_kennung(r: &Record) -> String {
+    format!(
+        "{} space={} at={} wall={} side={}",
+        r.section,
+        r.opt("space").unwrap_or(""),
+        r.opt("at").unwrap_or(""),
+        r.opt("wall").unwrap_or(""),
+        r.opt("side").unwrap_or("")
+    )
 }
 
 /// Eigene Zeilen nach [`record_key`]: die Zeile und die wievielte gleiche

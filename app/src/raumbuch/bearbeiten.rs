@@ -550,6 +550,26 @@ mod tests {
             .collect()
     }
 
+    /// Scheitert eine Raumänderung nach einem Teil, bleibt nichts und kein
+    /// Schritt (Review #190 H-190f).
+    #[test]
+    fn gescheiterte_aenderung_bleibt_nicht() {
+        let (mut s, r) = haus();
+        let vorher = s.undo_label();
+        let a = AusbauAbweichung {
+            stelle: AusbauStelle::Boden,
+            wahl: Some(AusbauWahl::Keiner),
+            hoehe: None,
+        };
+        assert!(!s.raeume_aendern("Raumbuch ändern", |m| {
+            assert!(m.set_space_finish(r, a).is_ok());
+            false
+        }));
+        assert!(s.model().space(r).unwrap().ausbau.is_empty());
+        assert_eq!(s.undo_label(), vorher);
+        assert!(!s.model().in_step());
+    }
+
     /// Ohne Abweichung: Knöpfe je Fläche, Liste mit Vorlage, „ohne“ und
     /// den Typen; „ohne Belag“ macht den Boden abweichend, Rückgängig nimmt
     /// es zurück.

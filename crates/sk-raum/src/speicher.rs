@@ -453,6 +453,7 @@ fn raeume_kennung(schluessel: u64, ausbau: u64, raeume: &[(ElementId, &Space)]) 
         s.stempel.map(|p| [p.x, p.y].map(f64::to_bits)).hash(&mut h);
         s.nutzung.hash(&mut h);
         // Abweichungen des Raumbuchs (RB6), je Stelle eine und geordnet
+        s.ausbau.len().hash(&mut h);
         for a in &s.ausbau {
             a.stelle.hash(&mut h);
             a.wahl

@@ -10,6 +10,7 @@
 //! `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
+use std::collections::HashMap;
 
 /// Seite eines Wandsegments: links bzw. rechts der Zeichenrichtung.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -217,29 +218,58 @@ impl Model {
     }
 
     /// Zeilen `[spacefinish]`, die nicht zählen.
-    pub(crate) fn space_finish_raw(&self) -> &[String] {
+    pub(crate) fn space_finish_raw(&self) -> &[RohZeile] {
         &self.space_finish_raw
     }
 
-    /// Lädt die Abweichungen aus der Datei an ihre Räume (ohne Schritt).
-    pub(crate) fn load_space_finish(&mut self, v: Vec<(Guid, AusbauAbweichung)>, raw: Vec<String>) {
+    /// Verweist eine Abweichung eines Raums auf den Typ? Dann lässt er
+    /// sich weder löschen noch in eine andere Art umstellen (Review #190
+    /// B2), wie bei einer Raumvorlage.
+    pub fn type_in_space_finish(&self, id: LayerSetId) -> bool {
+        let Some(g) = self.layer_set(id).map(|t| t.guid) else {
+            return false;
+        };
+        self.elements.iter().any(|(_, e)| match &e.kind {
+            ElementKind::Space(s) => s.ausbau.iter().any(|a| a.wahl == Some(AusbauWahl::Typ(g))),
+            _ => false,
+        })
+    }
+
+    /// Lädt die Abweichungen aus der Datei an ihre Räume (ohne Schritt),
+    /// einmal über die Bauteile (Review #190 B3).
+    pub(crate) fn load_space_finish(
+        &mut self,
+        v: Vec<(Guid, AusbauAbweichung)>,
+        raw: Vec<RohZeile>,
+    ) {
         self.space_finish_raw = raw;
+        if v.is_empty() {
+            return;
+        }
+        let mut je: HashMap<Guid, Vec<AusbauAbweichung>> = HashMap::new();
         for (raum, a) in v {
-            let id = self
-                .elements
-                .iter()
-                .find(|(_, e)| e.guid == raum)
-                .map(|(id, _)| id);
-            if let Some(ElementKind::Space(s)) = id
-                .and_then(|id| self.elements.get_mut(id))
-                .map(|e| &mut e.kind)
-            {
-                s.ausbau.push(a);
+            je.entry(raum).or_default().push(a);
+        }
+        let ziele: Vec<(ElementId, Vec<AusbauAbweichung>)> = self
+            .elements
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::Space(_)))
+            .filter_map(|(id, e)| Some((id, je.remove(&e.guid)?)))
+            .collect();
+        for (id, v) in ziele {
+            if let Some(ElementKind::Space(s)) = self.elements.get_mut(id).map(|e| &mut e.kind) {
+                s.ausbau.extend(v);
                 ordnen(&mut s.ausbau);
             }
         }
     }
 }
+
+/// Eine Zeile `[spacefinish]`, die nicht zählt, und Raum und Stelle der
+/// gültigen Zeile mit derselben Kennung, vor der sie in der Datei stand:
+/// Dort schreibt sie das Programm wieder hin, so bleibt die Folge gleicher
+/// Kennungen für fremde Schlüssel ([`crate::catalog::record_key`]).
+pub(crate) type RohZeile = (String, Option<(Guid, AusbauStelle)>);
 
 #[cfg(test)]
 mod tests {
@@ -489,8 +519,49 @@ mod tests {
         let mut soll = vec![roh.clone(), fremd.clone()];
         soll.sort();
         assert_eq!(zeilen(&wieder), soll);
+        assert!(wieder.contains(&format!("{roh}\n{fremd}\n")), "Folge");
         let l2 = szo::read(&wieder, GuidGen::with_seed(5)).unwrap();
         assert_eq!(szo::write(&l2.model), wieder, "stabil");
+        // Ein anderer Typ ändert den Eintrag: Er steht ohne den fremden
+        // Schlüssel (F-17), die rohe Zeile bleibt davor
+        let mut m2 = l2.model;
+        let raum = m2.spaces(m.element(r).unwrap().storey)[0];
+        m2.begin("Typ");
+        m2.set_space_finish(raum, ab(Boden, Some(Typ(WET_FLOOR_TYPE_GUID)), None))
+            .unwrap();
+        m2.commit();
+        let neu = szo::write(&m2);
+        assert!(
+            neu.contains(&format!("{roh}\n{}\n", typ(WET_FLOOR_TYPE_GUID))),
+            "{:?}",
+            zeilen(&neu)
+        );
+    }
+
+    /// Ein Typ, den nur eine Abweichung nennt, lässt sich weder löschen
+    /// noch in eine andere Art umstellen (Review #190 B2); ohne die
+    /// Abweichung geht beides.
+    #[test]
+    fn typ_der_abweichung_bleibt() {
+        let (mut m, r, _) = haus();
+        m.begin("Abweichung");
+        m.set_space_finish(r, ab(Boden, Some(Typ(WET_FLOOR_TYPE_GUID)), None))
+            .unwrap();
+        m.commit();
+        let id = m.type_by_guid(WET_FLOOR_TYPE_GUID).unwrap();
+        assert!(m.type_users(id).is_empty() && !m.type_in_space_type(id));
+        assert!(m.type_in_space_finish(id));
+        m.begin("Löschen");
+        assert_eq!(m.remove_type(id), Err(0));
+        let mut t = m.layer_set(id).unwrap().clone();
+        t.category = TypeCategory::CeilingFinish;
+        assert!(!m.set_layer_set(id, t.clone()));
+        m.set_space_finish(r, ab(Boden, None, None)).unwrap();
+        assert!(!m.type_in_space_finish(id));
+        assert!(m.set_layer_set(id, t));
+        assert_eq!(m.remove_type(id), Ok(()));
+        assert!(m.commit().is_some());
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     /// Geteilte Wand: Die Abweichungen ihrer Wandseiten gelten an beiden

@@ -245,7 +245,7 @@ pub struct Model {
     view_finish: [(bool, bool); 3],
     view_finish_raw: Vec<String>,
     /// Zeilen `[spacefinish]`, die nicht zählen (RB6, roh).
-    space_finish_raw: Vec<String>,
+    space_finish_raw: Vec<raum_ausbau::RohZeile>,
     /// Eigene Schnitthöhe des Grundrisses ([`crate::hoehen`]), dazu eine
     /// unlesbare Zeile roh.
     pub(crate) plan_cut: Option<f64>,
@@ -480,6 +480,7 @@ pub(crate) use raum::RawSpace;
 pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
 #[path = "raum_ausbau.rs"]
 mod raum_ausbau;
+pub(crate) use raum_ausbau::RohZeile;
 pub use raum_ausbau::{ausbau_befund, AusbauAbweichung, AusbauStelle, AusbauWahl, WandSeite};
 
 impl Default for Model {
@@ -1821,7 +1822,8 @@ impl Model {
         let category_locked = s.category != old.category
             && (self.is_default_type(id)
                 || !self.type_users(id).is_empty()
-                || self.type_in_space_type(id));
+                || self.type_in_space_type(id)
+                || self.type_in_space_finish(id));
         if s.guid != old.guid
             || code_taken
             || category_locked
@@ -1940,7 +1942,10 @@ impl Model {
         if users > 0 {
             return Err(users);
         }
-        if self.is_default_type(id) || !self.layer_sets.contains(id) || self.type_in_space_type(id)
+        if self.is_default_type(id)
+            || !self.layer_sets.contains(id)
+            || self.type_in_space_type(id)
+            || self.type_in_space_finish(id)
         {
             return Err(0);
         }
