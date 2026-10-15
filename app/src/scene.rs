@@ -1060,7 +1060,8 @@ impl Scene {
         self.kostenspeicher = sp;
         let b = Rc::new(b);
         self.kostenblatt.insert(0, (key, b.clone()));
-        self.kostenblatt.truncate(2);
+        // Umfang der Ansicht, Projekt für das LV und ein weiterer
+        self.kostenblatt.truncate(3);
         b
     }
 
@@ -1089,7 +1090,17 @@ impl Scene {
                 return lv.clone();
             }
         }
-        let lv = Rc::new(sk_cost::lv::lv_aus(&self.model, &blatt, &kat, w));
+        // Indizes je Dicke aus dem Blatt des Projekts, in jedem Umfang
+        // dieselben (Review #213 B2); nach dem Blatt des Umfangs, damit der
+        // Kostenspeicher danach alle Typen des Projekts hält
+        let lv = if u.alles() {
+            sk_cost::lv::lv_aus(&self.model, &blatt, &kat, w)
+        } else {
+            let projekt = self.kostenblatt(firma, &Umfang::projekt());
+            let rang = sk_cost::lv::Dickenrang::aus(&self.model, &projekt);
+            sk_cost::lv::lv_im_umfang(&self.model, &blatt, &rang, &kat, w)
+        };
+        let lv = Rc::new(lv);
         // Ein anderes Blatt oder ein anderer Stand macht die alten ungültig
         self.lv.retain(|(k, _)| k.0 == key.0 && k.1 == key.1);
         self.lv.insert(0, (key, lv.clone()));
