@@ -3893,3 +3893,77 @@ fn perf_lv_je_los() {
         );
     }
 }
+
+/// Mengenliste und Mengenfenster bei je einem Gebäude je Haus (Review #195
+/// H-195g): `qto::schedule` (bestes von drei), die Mengenliste der Szene
+/// mit Räumen und das erste Öffnen des Mengenfensters, dazu die
+/// Wohnfläche aus der Szene. Je Haus darf keine der Zeiten bei 1000 Häusern
+/// (3000 mit `SKIZZEO_PERF_BIS=3000`) mehr als das Doppelte von 100 sein,
+/// das Fenster (ein Lauf) das Dreifache.
+#[test]
+#[ignore]
+fn perf_mengen_gebaeude() {
+    use crate::picking::Picking;
+    use crate::quantity::QuantityWindow;
+    println!();
+    println!(
+        "{:>6} {:>9} {:>9} {:>9} {:>9}",
+        "Häuser", "Mengen", "Szene", "Fenster", "Wohnfl."
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    // Für ein Profil nur eine Größe: `SKIZZEO_PERF_AB`
+    let ab: usize = std::env::var("SKIZZEO_PERF_AB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut je_haus: Vec<(usize, [f64; 4])> = Vec::new();
+    for n in [10, 100, 300, 1000, 3000]
+        .into_iter()
+        .filter(|&n| ab <= n && n <= bis)
+    {
+        let m = haeuser_je_gebaeude(n);
+        let mut mengen = f64::INFINITY;
+        for _ in 0..3 {
+            let t = Instant::now();
+            std::hint::black_box(sk_model::qto::schedule(&m));
+            mengen = mengen.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let mut s = Scene::with_model(m);
+        let t = Instant::now();
+        std::hint::black_box(s.schedule());
+        let szene = t.elapsed().as_secs_f64() * 1000.0;
+        let mut s = Scene::with_model(s.model().clone());
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 1000);
+        let t = Instant::now();
+        q.sync(&mut s, &Picking::default(), false);
+        let fenster = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let raeume = crate::schedule_view::wohn_rechnen(&s).raeume().count();
+        let wohn = t.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(raeume, 4 * n, "drei Räume im EG, einer im OG");
+        println!("{n:>6} {mengen:>9.1} {szene:>9.1} {fenster:>9.1} {wohn:>9.1}");
+        let h = |x: f64| x / n as f64;
+        je_haus.push((n, [h(mengen), h(szene), h(fenster), h(wohn)]));
+    }
+    println!("Zeiten in ms (Release).");
+    let Some(&(_, bezug)) = je_haus.iter().find(|x| x.0 == 100) else {
+        return;
+    };
+    let namen = ["Mengen", "Szene", "Fenster", "Wohnfläche"];
+    for &(n, h) in je_haus.iter().filter(|x| x.0 > 100) {
+        for i in 0..4 {
+            let grenze = if i == 2 { 3.0 } else { 2.0 };
+            assert!(
+                h[i] <= grenze * bezug[i],
+                "{}: {n} Häuser {:.4} ms je Haus, bei 100 {:.4}",
+                namen[i],
+                h[i],
+                bezug[i]
+            );
+        }
+    }
+}

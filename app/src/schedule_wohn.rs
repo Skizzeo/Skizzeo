@@ -35,11 +35,14 @@ pub(super) struct Stand {
 /// die Züge aus ihren berechneten Ketten, wie die Mengenliste.
 pub fn rechnen(s: &Scene) -> Wohnflaeche {
     let k = s.ketten();
+    // Räume aller Geschosse mit Räumen in einem Gang der Erkennung, nicht
+    // je Geschoss über alle Züge (Review #195 H-195g)
+    let mut gruppen = s.raumgruppen_mit_raeumen();
     wf::projekt_mit(s.model(), &k, |g| {
-        s.raumgruppen(g)
-            .flaechen()
-            .map(|f| f.form.clone())
-            .collect()
+        gruppen
+            .remove(&g)
+            .map(|r| r.flaechen().map(|f| f.form.clone()).collect())
+            .unwrap_or_default()
     })
 }
 

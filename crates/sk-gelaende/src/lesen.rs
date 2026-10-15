@@ -720,10 +720,7 @@ pub fn lesen_mit(roh: &[u8], v: &Vorgaben) -> Result<Aufmass, String> {
         ));
     }
     if zu_viele {
-        hinweise.push(format!(
-            "Mehr als {} Punkte; Skizzeo liest nur die ersten.",
-            dxf::MAX_PUNKTE
-        ));
+        hinweise.push(dxf::ZU_VIELE.to_string());
     }
     if ellipsoid {
         hinweise.push(
