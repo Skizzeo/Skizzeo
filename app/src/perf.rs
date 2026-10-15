@@ -3575,3 +3575,50 @@ fn perf_stempel_ziehen() {
     }
     println!("Zeiten in ms je Bild (Release).");
 }
+
+/// Review H-193e: das erste `begin` nach dem Öffnen (Stand der Räume aller
+/// Geschosse) und die erste Mengenliste, bei 100 bis 3000 Häusern zu je
+/// einem Gebäude (höchstens `SKIZZEO_PERF_BIS`), je das Bessere aus zwei
+/// frisch geöffneten Szenen. Das `begin` wächst höchstens linear mit der
+/// Zahl der Gebäude: je Haus höchstens doppelt so lang wie bei 100 Häusern.
+/// Die Mengenliste steht zum Vergleich da; ihre Räume (Erkennung und
+/// Raumbuch) brauchen bei 3000 Häusern etwa 0,3 s, der Rest liegt in
+/// `qto::schedule_mit`.
+#[test]
+#[ignore]
+fn perf_oeffnen_gebaeude() {
+    println!();
+    println!(
+        "{:>6} {:>9} {:>8} {:>10} {:>10}",
+        "Häuser", "Geschosse", "begin", "Mengen", "je Haus"
+    );
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3000);
+    let mut je_haus = Vec::new();
+    for n in [100, 300, 1000, 3000].into_iter().filter(|&n| n <= bis) {
+        let m = haeuser_je_gebaeude(n);
+        let geschosse = m.storeys().iter().count();
+        let (mut begin, mut mengen) = (f64::MAX, f64::MAX);
+        for _ in 0..2 {
+            let mut s = Scene::with_model(m.clone());
+            let t = Instant::now();
+            s.begin("Messung");
+            begin = begin.min(t.elapsed().as_secs_f64() * 1000.0);
+            s.commit();
+            let t = Instant::now();
+            std::hint::black_box(s.schedule());
+            mengen = mengen.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let j = (begin + mengen) / n as f64;
+        println!("{n:>6} {geschosse:>9} {begin:>8.2} {mengen:>10.2} {j:>10.4}");
+        je_haus.push((n, begin));
+    }
+    println!("Zeiten in ms (Release).");
+    let (n0, b0) = je_haus[0];
+    for &(n, b) in &je_haus[1..] {
+        let f = n as f64 / n0 as f64;
+        assert!(b <= 2.0 * f * b0, "begin {n}: {b:.2} ms");
+    }
+}

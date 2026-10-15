@@ -17,9 +17,10 @@
 use crate::abgleich::{stempel_in, zuteilen, Stand, StandGruppe};
 use crate::erkennung::{formen_aus, rohbau, Kante, RaumForm, Teil, TOL};
 use sk_math::Vec3;
-use sk_model::model::AusbauWahl;
-use sk_model::{ElementId, ElementKind, Model, RunId, Space, StoreyId, WallChain};
+use sk_model::model::{AusbauWahl, SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID};
+use sk_model::{ElementId, ElementKind, Guid, LevelKind, Model, RunId, Space, StoreyId, WallChain};
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -481,17 +482,24 @@ fn raeume_kennung(schluessel: u64, ausbau: u64, raeume: &[(ElementId, &Space)]) 
 
 /// Fingerabdruck dessen, was die Grundfläche im Fertigmaß
 /// ([`crate::flaechen::grundflaeche_fertig`]) außer Form und Nutzung liest:
-/// die Raumvorlagen des Projekts, die Typen mit ihren Schichtdicken und der
-/// Estrich der Vorgabe des Geschosses `g` (auf der Sohle oder nicht,
-/// [`crate::ausbau::estrich_vorgabe`], Review H-188a). Ändert er sich, sehen
-/// alle Gruppen des Geschosses ihre Räume neu an (Bedienbarkeit 43.8). Ein
-/// Gang über Vorlagen, Typen und Geschosse, nicht über die Bauteile; nur das
-/// eigene Geschoss, sonst wüchse jedes Bild mit dem Quadrat der Geschosse
-/// (Review #193 B1). Höhen gehen nur über den Estrich ein, Ziehen eines
-/// Geschosses ändert ihn nicht.
-fn ausbau_kennung(m: &Model, g: StoreyId) -> u64 {
+/// die Raumvorlagen des Projekts, die Typen mit ihren Schichtdicken
+/// ([`typen_kennung`]) und der Estrich der Vorgabe des Geschosses (auf der
+/// Sohle oder nicht, [`crate::ausbau::estrich_vorgabe`], Review H-188a).
+/// Ändert er sich, sehen alle Gruppen des Geschosses ihre Räume neu an
+/// (Bedienbarkeit 43.8). Nur das eigene Geschoss, sonst wüchse jedes Bild
+/// mit dem Quadrat der Geschosse (Review #193 B1). Höhen gehen nur über den
+/// Estrich ein, Ziehen eines Geschosses ändert ihn nicht.
+fn ausbau_kennung(typen: u64, estrich: Guid) -> u64 {
     let mut h = DefaultHasher::new();
-    crate::ausbau::estrich_vorgabe(m, g).hash(&mut h);
+    (typen, estrich).hash(&mut h);
+    h.finish()
+}
+
+/// Fingerabdruck der Raumvorlagen des Projekts und der Typen mit ihren
+/// Schichtdicken, für [`ausbau_kennung`]: ein Gang über Vorlagen und Typen,
+/// nicht über die Bauteile.
+fn typen_kennung(m: &Model) -> u64 {
+    let mut h = DefaultHasher::new();
     for v in m.space_types() {
         v.guid.hash(&mut h);
         [v.floor, v.screed, v.wall, v.ceiling, v.skirting].hash(&mut h);
@@ -504,6 +512,100 @@ fn ausbau_kennung(m: &Model, g: StoreyId) -> u64 {
         }
     }
     h.finish()
+}
+
+/// Züge, Räume und Estrich der Vorgabe je Geschoss, aus einem Gang über das
+/// Modell: für Abrufe über viele Geschosse (erstes `begin` nach dem Öffnen,
+/// Mengenliste). Sonst ginge jedes Geschoss über alle Züge, Räume und
+/// Geschosse des Modells, die Arbeit wüchse mit dem Quadrat der Gebäude
+/// (Review H-193e). Die Räume werden erst geordnet, wenn ein Geschoss seine
+/// Liste neu sammeln muss.
+struct Geordnet<'m> {
+    m: &'m Model,
+    zuege: HashMap<StoreyId, Vec<(RunId, Option<u64>)>>,
+    estrich: HashMap<StoreyId, Guid>,
+    typen: u64,
+    raeume: OnceCell<HashMap<StoreyId, Vec<Gesammelt<'m>>>>,
+}
+
+/// Ein Raum, wie ihn die Liste eines Geschosses sammelt: Nummer, Bauteil,
+/// Anker.
+type Gesammelt<'m> = (&'m str, ElementId, Vec3);
+
+impl<'m> Geordnet<'m> {
+    fn aus(m: &'m Model, k: &(impl Ketten + ?Sized)) -> Self {
+        let mut zuege: HashMap<StoreyId, Vec<(RunId, Option<u64>)>> = HashMap::new();
+        for (id, r) in m.runs().iter() {
+            zuege.entry(r.storey).or_default().push((id, k.fassung(id)));
+        }
+        Geordnet {
+            m,
+            zuege,
+            estrich: estrich_je_geschoss(m),
+            typen: typen_kennung(m),
+            raeume: OnceCell::new(),
+        }
+    }
+
+    /// Züge des Geschosses wie in [`Erkennung::lage`]: Modellreihenfolge,
+    /// je mit Fassung.
+    fn zuege(&self, g: StoreyId) -> &[(RunId, Option<u64>)] {
+        self.zuege.get(&g).map_or(&[][..], |v| &v[..])
+    }
+
+    /// Estrich der Vorgabe wie [`crate::ausbau::estrich_vorgabe`].
+    fn estrich(&self, g: StoreyId) -> Guid {
+        self.estrich
+            .get(&g)
+            .copied()
+            .unwrap_or(SCREED_FLOOR_TYPE_GUID)
+    }
+
+    /// Räume des Geschosses mit Nummer und Anker in Modellreihenfolge, wie
+    /// sie [`Erkennung::liste_nachfuehren`] sammelt.
+    fn raeume(&self, g: StoreyId) -> &[Gesammelt<'m>] {
+        let alle = self.raeume.get_or_init(|| {
+            let mut r: HashMap<StoreyId, Vec<_>> = HashMap::new();
+            for (id, e) in self.m.elements().iter() {
+                if let ElementKind::Space(s) = &e.kind {
+                    r.entry(e.storey)
+                        .or_default()
+                        .push((e.number.as_str(), id, s.anker));
+                }
+            }
+            r
+        });
+        alle.get(&g).map_or(&[][..], |v| &v[..])
+    }
+}
+
+/// Estrich der Vorgabe je Geschoss wie [`crate::ausbau::estrich_vorgabe`],
+/// mit den Oberkanten der Gründungen je Gebäude statt einem Gang über alle
+/// Geschosse für jedes.
+fn estrich_je_geschoss(m: &Model) -> HashMap<StoreyId, Guid> {
+    let mut sohlen: HashMap<_, Vec<f64>> = HashMap::new();
+    for (_, s) in m.storeys().iter() {
+        if s.kind == LevelKind::Foundation {
+            sohlen
+                .entry(s.building)
+                .or_default()
+                .push(s.elevation + s.height);
+        }
+    }
+    m.storeys()
+        .iter()
+        .map(|(id, s)| {
+            let auf_sohle = sohlen
+                .get(&s.building)
+                .is_some_and(|v| v.iter().any(|ok| (ok - s.elevation).abs() < 1.0));
+            let e = if auf_sohle {
+                SCREED_SLAB_TYPE_GUID
+            } else {
+                SCREED_FLOOR_TYPE_GUID
+            };
+            (id, e)
+        })
+        .collect()
 }
 
 /// Raumerkennung mit Zwischenspeicher (siehe Modulkopf). Ergebnis wie
@@ -899,6 +1001,29 @@ impl Erkennung {
     /// Speicher.
     pub fn raumformen(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Raumformen {
         let lage = self.zuteilung(m, k, g);
+        self.raumformen_aus(g, &lage)
+    }
+
+    /// [`Erkennung::raumformen`] für die Geschosse `geschosse`, in derselben
+    /// Reihenfolge. Züge und Räume des Modells werden dafür einmal nach
+    /// Geschoss geordnet (Review H-193e, Mengenliste).
+    pub fn raumformen_je(
+        &mut self,
+        m: &Model,
+        k: &(impl Ketten + ?Sized),
+        geschosse: &[StoreyId],
+    ) -> Vec<Raumformen> {
+        let o = Geordnet::aus(m, k);
+        geschosse
+            .iter()
+            .map(|&g| {
+                let lage = self.zuteilung_aus(m, k, g, &o);
+                self.raumformen_aus(g, &lage)
+            })
+            .collect()
+    }
+
+    fn raumformen_aus(&mut self, g: StoreyId, lage: &Lage) -> Raumformen {
         let z = &self.geschosse.entry(g).or_default().zuteilungen;
         Raumformen {
             geschoss: g,
@@ -914,6 +1039,29 @@ impl Erkennung {
     /// nächsten Schritt wie [`Lage::stand`].
     pub fn stand(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Stand {
         let lage = self.zuteilung(m, k, g);
+        self.stand_aus(g, &lage)
+    }
+
+    /// [`Erkennung::stand`] für die Geschosse `geschosse`, in derselben
+    /// Reihenfolge. Züge und Räume des Modells werden dafür einmal nach
+    /// Geschoss geordnet (Review H-193e, erstes `begin` nach dem Öffnen).
+    pub fn staende(
+        &mut self,
+        m: &Model,
+        k: &(impl Ketten + ?Sized),
+        geschosse: &[StoreyId],
+    ) -> Vec<Stand> {
+        let o = Geordnet::aus(m, k);
+        geschosse
+            .iter()
+            .map(|&g| {
+                let lage = self.zuteilung_aus(m, k, g, &o);
+                self.stand_aus(g, &lage)
+            })
+            .collect()
+    }
+
+    fn stand_aus(&mut self, g: StoreyId, lage: &Lage) -> Stand {
         let z = &self.geschosse.entry(g).or_default().zuteilungen;
         let mut st = Stand::default();
         for gr in &lage.gruppen {
@@ -929,7 +1077,7 @@ impl Erkennung {
     /// offenen Schritt nur die geänderten Räume neu eingereiht, nicht über
     /// alle Bauteile (Review H-181c, für [`crate::abgleichen_lage_mit`]).
     pub fn raumliste(&mut self, m: &Model, g: StoreyId) -> &[(ElementId, Vec3)] {
-        self.liste_nachfuehren(m, g, true);
+        self.liste_nachfuehren(m, g, true, None);
         self.geschosse
             .get(&g)
             .and_then(|gs| gs.raumliste.as_ref())
@@ -943,8 +1091,9 @@ impl Erkennung {
     /// diese neu eingereiht, dazu die des offenen Schritts von damals und
     /// von jetzt (Review H-175h); ihre Anker davor und danach sammelt
     /// `verschoben` für das nächste Zuteilen. Sonst wird neu gesammelt
-    /// (dann `alle`), ohne `sammeln` fällt die Liste nur weg.
-    fn liste_nachfuehren(&mut self, m: &Model, g: StoreyId, sammeln: bool) {
+    /// (dann `alle`), aus `o`, wenn gegeben; ohne `sammeln` fällt die Liste
+    /// nur weg.
+    fn liste_nachfuehren(&mut self, m: &Model, g: StoreyId, sammeln: bool, o: Option<&Geordnet>) {
         let stand = m.raum_revision();
         // Räume, die der offene Schritt auf diesem Geschoss ändert
         let mut schritt = if m.raum_geschosse_im_schritt().contains(&g) {
@@ -986,10 +1135,14 @@ impl Erkennung {
         }
         self.raumlisten += 1;
         let mut raeume: Vec<(&str, ElementId, Vec3)> = Vec::new();
-        for (id, e) in m.elements().iter() {
-            if let ElementKind::Space(s) = &e.kind {
-                if e.storey == g {
-                    raeume.push((e.number.as_str(), id, s.anker));
+        if let Some(o) = o {
+            raeume.extend_from_slice(o.raeume(g));
+        } else {
+            for (id, e) in m.elements().iter() {
+                if let ElementKind::Space(s) = &e.kind {
+                    if e.storey == g {
+                        raeume.push((e.number.as_str(), id, s.anker));
+                    }
                 }
             }
         }
@@ -1014,10 +1167,35 @@ impl Erkennung {
     /// Gruppen, in deren Kasten einer davon vorher oder nachher liegt.
     fn zuteilung(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Lage {
         let lage = self.lage(m, k, g);
+        let ausbau = ausbau_kennung(typen_kennung(m), crate::ausbau::estrich_vorgabe(m, g));
+        self.lage_zuteilen(m, g, lage, ausbau, None)
+    }
+
+    /// [`Erkennung::zuteilung`] mit Zügen, Räumen und Estrich aus `o`.
+    fn zuteilung_aus(
+        &mut self,
+        m: &Model,
+        k: &(impl Ketten + ?Sized),
+        g: StoreyId,
+        o: &Geordnet,
+    ) -> Lage {
+        let lage = self.lage_aus(m, k, g, o.zuege(g));
+        let ausbau = ausbau_kennung(o.typen, o.estrich(g));
+        self.lage_zuteilen(m, g, lage, ausbau, Some(o))
+    }
+
+    /// Teilt die Räume den Gruppen von `lage` zu wie [`Erkennung::zuteilung`].
+    fn lage_zuteilen(
+        &mut self,
+        m: &Model,
+        g: StoreyId,
+        lage: Lage,
+        ausbau: u64,
+        o: Option<&Geordnet>,
+    ) -> Lage {
         let lauf = self.lauf;
-        let ausbau = ausbau_kennung(m, g);
         // Ohne Gruppe gibt es nichts zuzuteilen: dann wird nicht gesammelt
-        self.liste_nachfuehren(m, g, !lage.gruppen.is_empty());
+        self.liste_nachfuehren(m, g, !lage.gruppen.is_empty(), o);
         let gs = self.geschosse.entry(g).or_default();
         let verschoben = std::mem::take(&mut gs.verschoben);
         // Welche Gruppen ihre Räume neu ansehen: nach dem Neusammeln alle,
@@ -2204,6 +2382,91 @@ mod tests {
         }
         assert!(alle[2].iter().any(|f| f.raum == Some(y)), "Anker gerückt");
         assert!(alle[6].iter().all(|f| f.raum != Some(z)));
+    }
+
+    /// Review H-193e: Stand und Räume vieler Geschosse in einem Gang wie je
+    /// Geschoss mit einer frischen Erkennung: Häuser je mit eigenem Gebäude
+    /// über zwei Geschosse auf der Gründung, ein Geschoss ohne Wände,
+    /// Geschosse in anderer Reihenfolge als im Modell und eines doppelt;
+    /// auch im offenen Schritt an Räumen und danach. Der Estrich der Vorgabe
+    /// je Geschoss ist der für jedes einzeln.
+    #[test]
+    fn staende_wie_je_geschoss() {
+        use sk_model::LevelKind;
+        let mut m = Model::new();
+        let (aw, iw) = (m.defaults().exterior_wall, m.defaults().interior_wall);
+        let t: f64 = m.wall_layers(aw).iter().map(|l| l.thickness).sum();
+        let mut gs = Vec::new();
+        for i in 0..3 {
+            let b = m.add_building(2);
+            let ox = i as f64 * 15000.0;
+            let p = |x: f64, y: f64| vec3(ox + x, y, 0.0);
+            for g in m.levels_in(Some(b)) {
+                if !m.storey(g).is_some_and(|s| s.kind == LevelKind::Storey) {
+                    continue;
+                }
+                gs.push(g);
+                let pts = [
+                    p(0.0, 0.0),
+                    p(0.0, 8000.0),
+                    p(10000.0, 8000.0),
+                    p(10000.0, 0.0),
+                ];
+                m.add_wall_run(&pts, true, RefSide::Left, g, aw, Category::ExteriorWall)
+                    .unwrap();
+                let iwp = [p(3000.0, t), p(3000.0, 8000.0 - t)];
+                m.add_wall_run(&iwp, false, RefSide::Center, g, iw, Category::InteriorWall)
+                    .unwrap();
+            }
+        }
+        let b = m.add_building(1);
+        let leer = m.levels_in(Some(b))[0];
+        crate::abgleichen(&mut m, &gs);
+        assert!(gs.iter().all(|g| m.spaces(*g).len() == 2));
+
+        let estrich = estrich_je_geschoss(&m);
+        for (g, _) in m.storeys().iter() {
+            assert_eq!(estrich[&g], crate::ausbau::estrich_vorgabe(&m, g), "{g:?}");
+        }
+        let arten: HashSet<Guid> = gs.iter().map(|g| estrich[g]).collect();
+        assert_eq!(arten.len(), 2, "EG auf der Sohle, OG auf der Decke");
+
+        let reihe = [leer, gs[5], gs[2], gs[0], gs[3], gs[1], gs[4], gs[0]];
+        let gleich = |m: &Model, e: &mut Erkennung| -> usize {
+            let staende = e.staende(m, m, &reihe);
+            let formen = e.raumformen_je(m, m, &reihe);
+            let flaechen = |f: &Raumformen| {
+                let mut v: Vec<String> = f.flaechen().map(|x| format!("{x:?}")).collect();
+                v.sort();
+                v
+            };
+            for ((g, st), fo) in reihe.iter().zip(&staende).zip(&formen) {
+                let mut frisch = Erkennung::default();
+                let z = frisch.stand(m, m, *g).zuordnung();
+                assert_eq!(st.zuordnung(), z, "{g:?}");
+                assert_eq!(fo.geschoss, *g);
+                assert_eq!(
+                    flaechen(fo),
+                    flaechen(&frisch.raumformen(m, m, *g)),
+                    "{g:?}"
+                );
+            }
+            staende.iter().map(Stand::raeume).sum()
+        };
+        let mut e = Erkennung::default();
+        assert_eq!(gleich(&m, &mut e), 7 * 2, "sechs Geschosse, eines doppelt");
+        // Im offenen Schritt: ein Anker rückt in die Nachbarfläche, ein
+        // neuer Raum kommt dazu
+        m.begin("Raum");
+        let raeume = m.spaces(gs[2]);
+        let a = m.space(raeume[1]).unwrap().anker;
+        assert!(m.set_space(raeume[0], |s| s.anker = a));
+        m.add_space(gs[4], sk_model::Space::neu(a, "Neu".into()));
+        gleich(&m, &mut e);
+        gleich(&m, &mut Erkennung::default());
+        m.commit();
+        gleich(&m, &mut e);
+        gleich(&m, &mut Erkennung::default());
     }
 
     /// Bedienbarkeit 43.8: Die Grundfläche am Stempel ist die des
