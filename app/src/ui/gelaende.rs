@@ -36,6 +36,9 @@ pub enum GelaendeKnopf {
     /// Im Paneel der gewählten Geländefläche: befestigt ja/nein, löschen.
     Befestigt,
     Loeschen,
+    /// Alle Hinweise des letzten Einlesens zeigen bzw. wieder nur die
+    /// ersten (Bedienbarkeit 43.5).
+    Hinweise,
 }
 
 impl GelaendeKnopf {
@@ -54,7 +57,8 @@ impl GelaendeKnopf {
             | GelaendeKnopf::Zuschnitt(_)
             | GelaendeKnopf::Flaeche
             | GelaendeKnopf::Befestigt
-            | GelaendeKnopf::Loeschen => Some(Modul::Gelaende),
+            | GelaendeKnopf::Loeschen
+            | GelaendeKnopf::Hinweise => Some(Modul::Gelaende),
         }
     }
 }
@@ -115,6 +119,10 @@ pub struct GelaendeLeiste {
     /// Ergebnis des letzten Einlesens (Satz, Hinweise) bzw. sein Fehler;
     /// umgebrochen auf die Breite des Paneels.
     pub meldung: Vec<String>,
+    /// Weitere Hinweise, die nicht in `meldung` stehen; mit `alle` stehen
+    /// sie dort und der Knopf nimmt sie wieder weg.
+    pub weitere: usize,
+    pub alle: bool,
     pub fehler: Option<Meldung>,
 }
 
@@ -230,6 +238,15 @@ impl Ui {
             let z = widgets::wrap(f, m, self.size.font_small, breite);
             rows.extend(z.into_iter().map(Row::Text));
         }
+        if l.weitere > 0 {
+            let k = Id::Gelaende(GelaendeKnopf::Hinweise);
+            if l.alle {
+                rows.push(Row::Button(k, "Weniger Hinweise"));
+            } else {
+                rows.push(Row::Text(format!("und {} weitere Hinweise", l.weitere)));
+                rows.push(Row::Button(k, "Alle Hinweise"));
+            }
+        }
         if let Some(e) = &l.fehler {
             let z = widgets::wrap(f, e.as_str(), self.size.font_detail, breite);
             rows.extend(z.iter().map(|t| Row::Error(Meldung::mit("{}", &[t]))));
@@ -255,7 +272,8 @@ impl Ui {
             | GelaendeKnopf::Hoehen
             | GelaendeKnopf::Ausrichten
             | GelaendeKnopf::Befestigt
-            | GelaendeKnopf::Loeschen => false,
+            | GelaendeKnopf::Loeschen
+            | GelaendeKnopf::Hinweise => false,
         }
     }
 }

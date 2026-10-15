@@ -435,6 +435,7 @@ Nur Grundstück | Das Gelände an der Grenze abschneiden; gerechnet wird weiter 
 Fläche zeichnen | Terrasse, Garten oder Hof als Geländefläche: Ecken im Grundriss klicken, die erste schließt.
 Fläche befestigt | Die gewählte Geländefläche ist befestigt (Pflaster, Platten) oder nicht (Rasen, Beet).
 Fläche löschen | Die gewählte Geländefläche entfernen; das Gelände ist dort wieder wie aufgemessen.
+Alle Hinweise | Zeigt alle Hinweise des letzten Einlesens; ein zweiter Klick wieder nur die ersten drei.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.
