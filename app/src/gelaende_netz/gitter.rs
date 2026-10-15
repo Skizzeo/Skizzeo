@@ -142,6 +142,74 @@ impl Gitter {
         }
         out.retain(|&i| ueberlappt(&self.kaesten[i as usize], k));
     }
+
+    /// Stellen der Rechtecke in den Feldern, die die Gerade durch `p0`
+    /// senkrecht zu `n` trifft, aufsteigend und ohne doppelte, nach `out`
+    /// (Review #183 B1: der Schnitt prüft nur die Dreiecke an seiner Linie).
+    /// Jedes Rechteck, das die Gerade schneidet, ist dabei.
+    pub(super) fn entlang(&self, p0: [f64; 2], n: [f64; 2], out: &mut Vec<u32>) {
+        out.clear();
+        if self.nx == 0 {
+            return;
+        }
+        let feld = |x: usize, y: usize, out: &mut Vec<u32>| {
+            let f = y * self.nx + x;
+            let (a, z) = (self.anfang[f] as usize, self.anfang[f + 1] as usize);
+            out.extend(&self.stellen[a..z]);
+        };
+        // Spalte für Spalte die Zeilen, über die die Gerade läuft; die
+        // äußeren Felder nehmen auch auf, was über den Rand reicht
+        let rand = |i: usize, n: usize, lo: f64| -> (f64, f64) {
+            let a = if i == 0 {
+                f64::NEG_INFINITY
+            } else {
+                lo + i as f64 * self.feld
+            };
+            let b = if i + 1 == n {
+                f64::INFINITY
+            } else {
+                lo + (i + 1) as f64 * self.feld
+            };
+            (a, b)
+        };
+        let zeile = |y: f64| -> usize {
+            let f = ((y - self.lo[1]) / self.feld).floor();
+            if f <= 0.0 {
+                0
+            } else {
+                (f as usize).min(self.ny - 1)
+            }
+        };
+        if n[1].abs() < 1e-12 * n[0].abs() {
+            // senkrechte Gerade x = p0.x: eine Spalte ganz
+            let f = ((p0[0] - self.lo[0]) / self.feld).floor();
+            let x = if f <= 0.0 {
+                0
+            } else {
+                (f as usize).min(self.nx - 1)
+            };
+            for y in 0..self.ny {
+                feld(x, y, out);
+            }
+        } else {
+            // y(x) = p0.y − (x − p0.x)·n.x / n.y
+            let y_bei = |x: f64| p0[1] - (x - p0[0]) * n[0] / n[1];
+            for x in 0..self.nx {
+                let (a, b) = rand(x, self.nx, self.lo[0]);
+                let (ya, yb) = if n[0] == 0.0 {
+                    (p0[1], p0[1])
+                } else {
+                    (y_bei(a), y_bei(b))
+                };
+                let (y0, y1) = (zeile(ya.min(yb)), zeile(ya.max(yb)));
+                for y in y0..=y1 {
+                    feld(x, y, out);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
 }
 
 #[cfg(test)]
@@ -182,5 +250,45 @@ mod tests {
         g.bei(&[k[2], k[3], k[2], k[3]], &mut out);
         assert!(out.contains(&3));
         assert!(Gitter::neu(Vec::new()).anfang.len() == 1);
+    }
+
+    /// Die Felder an einer Geraden enthalten jedes Rechteck, das sie
+    /// schneidet, in jeder Richtung, auch senkrecht und waagerecht.
+    #[test]
+    fn entlang_einer_geraden() {
+        let mut s = 11u64;
+        let mut zufall = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut kaesten = Vec::new();
+        for _ in 0..2000 {
+            let (x, y) = (zufall() * 1e5, zufall() * 6e4);
+            kaesten.push([x, y, x + zufall() * 3e3, y + zufall() * 3e3]);
+        }
+        let g = Gitter::neu(kaesten.clone());
+        let mut out = Vec::new();
+        let schneidet = |k: &Kasten, p0: [f64; 2], n: [f64; 2]| {
+            let w = [[k[0], k[1]], [k[2], k[1]], [k[2], k[3]], [k[0], k[3]]]
+                .map(|q| (q[0] - p0[0]) * n[0] + (q[1] - p0[1]) * n[1]);
+            w.iter().any(|&v| v <= 0.0) && w.iter().any(|&v| v >= 0.0)
+        };
+        let mut richtungen: Vec<[f64; 2]> = vec![[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-0.3, 1.0]];
+        for _ in 0..40 {
+            let a = zufall() * std::f64::consts::TAU;
+            richtungen.push([a.cos(), a.sin()]);
+        }
+        for n in richtungen {
+            let p0 = [zufall() * 1e5, zufall() * 6e4];
+            g.entlang(p0, n, &mut out);
+            for (i, k) in kaesten.iter().enumerate() {
+                if schneidet(k, p0, n) {
+                    assert!(out.binary_search(&(i as u32)).is_ok(), "{n:?} {i}");
+                }
+            }
+            assert!(out.len() < kaesten.len() / 2, "{n:?}: {}", out.len());
+        }
     }
 }

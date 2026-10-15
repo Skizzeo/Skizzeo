@@ -1495,6 +1495,9 @@ mod tests {
             let t = Instant::now();
             let _ = crate::qto::schedule(&m);
             let eine = ms(t);
+            let t = Instant::now();
+            let _ = m.planned_terrain().unwrap();
+            let eine_bild = ms(t);
             let haus = |m: &mut Model, x0: f64, y0: f64| {
                 let b = m.add_building(1);
                 let pts = [
@@ -1509,11 +1512,15 @@ mod tests {
                 ms(t)
             };
             let fern = haus(&mut m, 30_000.0, 2_000.0);
+            let t = Instant::now();
+            let _ = m.planned_terrain().unwrap();
+            let fern_bild = ms(t);
             let nah = haus(&mut m, -14_000.0, 17_000.0);
             eprintln!(
                 "{anzahl} × 400 Kanten: kalt {kalt:.1} ms, warm {warm:.1} ms, \
                  eine Fläche geändert {eine:.1} ms, Haus fern {fern:.1} ms, \
-                 Haus an einer Fläche {nah:.1} ms"
+                 Haus an einer Fläche {nah:.1} ms; Bild nach geänderter Fläche \
+                 {eine_bild:.1} ms, nach Wandschritt {fern_bild:.1} ms"
             );
         }
     }

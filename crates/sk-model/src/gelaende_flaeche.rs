@@ -324,9 +324,15 @@ pub struct PlannedTerrain {
     pub hatch: Vec<([Vec3; 2], bool)>,
     /// Umriss jeder Fläche, die sich bauen lässt, auf ihrer Höhe.
     pub outlines: Vec<Vec<Vec3>>,
-    /// Senkrechte Wände, wo die Höhe am Rand einer Fläche springt (Kante
-    /// ohne Böschung); die Normale zeigt zur tieferen Seite.
+    /// Senkrechte Wände, wo die Höhe springt (Kante ohne Böschung, zwei
+    /// Flächen, Böschung auf Böschung); die Normale zeigt zur tieferen
+    /// Seite.
     pub walls: Vec<[Vec3; 3]>,
+    /// Außenrand des Netzes mit Planungsgelände, in seinem Umlauf (Inneres
+    /// links): die Randkanten des Urgeländes und, wo ihr Dreieck ersetzt
+    /// ist, die Kanten der Stücke darauf (Review #183 B1: einmal je Plan
+    /// gerechnet, nicht je Bild).
+    pub border: Vec<[Vec3; 2]>,
 }
 
 /// Das zuletzt gerechnete Planungsgelände mit Netz, Lage und Flächen, aus
@@ -335,7 +341,7 @@ struct Geplant {
     netz: Arc<crate::model::TerrainMesh>,
     lage: [u64; 4],
     flaechen: Vec<TerrainPatch>,
-    plan: PlannedTerrain,
+    plan: Arc<PlannedTerrain>,
 }
 
 /// Platz für das zuletzt gerechnete Planungsgelände, geteilt über die
@@ -365,8 +371,9 @@ impl PlanMerker {
 
 impl Model {
     /// Das Planungsgelände der Geländeflächen über dem Urgelände; `None`
-    /// ohne Fläche, Aufmaß, Lage oder Netz.
-    pub fn planned_terrain(&self) -> Option<PlannedTerrain> {
+    /// ohne Fläche, Aufmaß, Lage oder Netz. Geteilt, nicht kopiert (Review
+    /// #183 H-183f).
+    pub fn planned_terrain(&self) -> Option<Arc<PlannedTerrain>> {
         let merker = self.planmerker();
         let (Some(t), Some(f), Some(h0)) =
             (self.terrain(), self.survey_frame(), self.terrain_nhn())
@@ -385,7 +392,7 @@ impl Model {
         }) {
             return Some(g.plan.clone());
         }
-        let plan = self.planungsgelaende(&f, h0, &mesh);
+        let plan = Arc::new(self.planungsgelaende(&f, h0, &mesh));
         merker.setzen(Some(Geplant {
             netz: mesh,
             lage,
@@ -438,6 +445,14 @@ impl Model {
                 })
                 .collect(),
             walls: o.waende.iter().map(|d| d.map(im_modell)).collect(),
+            border: mesh
+                .abfrage
+                .randkanten()
+                .filter(|(t, _)| o.ersetzt.binary_search(t).is_err())
+                .map(|(_, k)| k)
+                .chain(o.rand.iter().copied())
+                .map(|k| k.map(im_modell))
+                .collect(),
         }
     }
 
