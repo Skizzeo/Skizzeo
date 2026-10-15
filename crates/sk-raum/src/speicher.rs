@@ -429,6 +429,10 @@ struct Zuteilung {
     lauf: u64,
 }
 
+/// So viele verschobene Anker merkt sich ein Geschoss bis zum nächsten
+/// Zuteilen; mehr, und alle Gruppen sehen ihre Räume neu an.
+const VERSCHOBEN_MAX: usize = 256;
+
 /// Was die Erkennung je Geschoss behält.
 #[derive(Default)]
 struct Geschoss {
@@ -441,6 +445,7 @@ struct Geschoss {
     alle: bool,
     /// Anker der seit dem letzten Zuteilen neu eingereihten Räume, davor und
     /// danach: Gruppen, in deren Kasten einer liegt, sehen ihre Räume neu an.
+    /// Höchstens [`VERSCHOBEN_MAX`], darüber `alle`.
     verschoben: Vec<Vec3>,
     /// Nach dem Schlüssel der Gruppe.
     zuteilungen: NachSchluessel<Zuteilung>,
@@ -476,17 +481,17 @@ fn raeume_kennung(schluessel: u64, ausbau: u64, raeume: &[(ElementId, &Space)]) 
 
 /// Fingerabdruck dessen, was die Grundfläche im Fertigmaß
 /// ([`crate::flaechen::grundflaeche_fertig`]) außer Form und Nutzung liest:
-/// die Raumvorlagen des Projekts, die Typen mit ihren Schichtdicken und je
-/// Geschoss der Estrich der Vorgabe (auf der Sohle oder nicht,
+/// die Raumvorlagen des Projekts, die Typen mit ihren Schichtdicken und der
+/// Estrich der Vorgabe des Geschosses `g` (auf der Sohle oder nicht,
 /// [`crate::ausbau::estrich_vorgabe`], Review H-188a). Ändert er sich, sehen
-/// alle Gruppen ihre Räume neu an (Bedienbarkeit 43.8). Ein Gang über
-/// Vorlagen, Typen und Geschosse, nicht über die Bauteile; Höhen gehen nur
-/// über den Estrich ein, Ziehen eines Geschosses ändert ihn nicht.
-fn ausbau_kennung(m: &Model) -> u64 {
+/// alle Gruppen des Geschosses ihre Räume neu an (Bedienbarkeit 43.8). Ein
+/// Gang über Vorlagen, Typen und Geschosse, nicht über die Bauteile; nur das
+/// eigene Geschoss, sonst wüchse jedes Bild mit dem Quadrat der Geschosse
+/// (Review #193 B1). Höhen gehen nur über den Estrich ein, Ziehen eines
+/// Geschosses ändert ihn nicht.
+fn ausbau_kennung(m: &Model, g: StoreyId) -> u64 {
     let mut h = DefaultHasher::new();
-    for (id, _) in m.storeys().iter() {
-        (id, crate::ausbau::estrich_vorgabe(m, id)).hash(&mut h);
-    }
+    crate::ausbau::estrich_vorgabe(m, g).hash(&mut h);
     for v in m.space_types() {
         v.guid.hash(&mut h);
         [v.floor, v.screed, v.wall, v.ceiling, v.skirting].hash(&mut h);
@@ -962,6 +967,13 @@ impl Erkennung {
                 ids.extend_from_slice(&schritt);
                 if let Some(p) = l.flicken(m, g, &ids) {
                     gs.verschoben.extend(p);
+                    // Ohne Zuteilen dazwischen (Abgleich in einem anderen als
+                    // dem gezeigten Geschoss) wächst sie nicht ohne Grenze:
+                    // dann sehen alle Gruppen neu an (Review H-193b)
+                    if gs.verschoben.len() > VERSCHOBEN_MAX {
+                        gs.verschoben.clear();
+                        gs.alle = true;
+                    }
                     l.stand = stand;
                     l.offen = schritt;
                     return;
@@ -1003,7 +1015,7 @@ impl Erkennung {
     fn zuteilung(&mut self, m: &Model, k: &(impl Ketten + ?Sized), g: StoreyId) -> Lage {
         let lage = self.lage(m, k, g);
         let lauf = self.lauf;
-        let ausbau = ausbau_kennung(m);
+        let ausbau = ausbau_kennung(m, g);
         // Ohne Gruppe gibt es nichts zuzuteilen: dann wird nicht gesammelt
         self.liste_nachfuehren(m, g, !lage.gruppen.is_empty());
         let gs = self.geschosse.entry(g).or_default();
@@ -1317,6 +1329,96 @@ mod tests {
     use super::*;
     use sk_math::vec3;
     use sk_model::{Category, RefSide};
+
+    /// Review H-193b: Schritte, die nur Räume im OG ändern, während das EG
+    /// gezeigt wird (Abgleich mit der Raumliste, kein Zuteilen im OG),
+    /// merken sich höchstens [`VERSCHOBEN_MAX`] Anker; darüber sehen alle
+    /// Gruppen neu an, und das Ergebnis gleicht einer frischen Erkennung.
+    #[test]
+    fn verschoben_hat_eine_grenze() {
+        let mut m = crate::raumliste::tests::haus_roh();
+        let og = m
+            .storeys()
+            .iter()
+            .filter(|(_, s)| s.kind == sk_model::LevelKind::Storey)
+            .max_by(|x, y| x.1.elevation.total_cmp(&y.1.elevation))
+            .unwrap()
+            .0;
+        let id = m.spaces(og)[0];
+        let mut e = Erkennung::default();
+        e.raumformen(&m, &m, og);
+        for i in 0..300 {
+            m.begin("Name");
+            m.set_space(id, |s| s.name = format!("Raum {i}"));
+            m.commit();
+            e.raumliste(&m, og);
+            assert!(e.geschosse[&og].verschoben.len() <= VERSCHOBEN_MAX, "{i}");
+        }
+        assert!(e.geschosse[&og].alle, "über der Grenze sehen alle neu an");
+        let namen = |e: &mut Erkennung| -> Vec<_> {
+            e.raumformen(&m, &m, og)
+                .flaechen()
+                .map(|f| (f.form.raum, f.grundflaeche))
+                .collect()
+        };
+        assert_eq!(namen(&mut e), namen(&mut Erkennung::default()));
+        assert_eq!(e.raumlisten(), 1, "nur einmal gesammelt");
+    }
+
+    /// Review #193 B1 und H-188a: Ob ein Geschoss auf der Sohle steht,
+    /// entscheidet über den Estrich der Vorgabe und damit, ob ein Raum
+    /// Ausbau hat, wenn das Projekt nur den Estrich auf der Sohle führt. Der
+    /// Stempel folgt dem wie eine frische Erkennung, auch wenn sich sonst
+    /// nichts ändert.
+    #[test]
+    fn grundflaeche_folgt_dem_estrich_der_vorgabe() {
+        use sk_model::model::{SCREED_FLOOR_TYPE_GUID, SCREED_SLAB_TYPE_GUID};
+        let mut m = crate::raumliste::tests::haus_roh();
+        m.begin("Typ");
+        assert!(m.ensure_finish_type(SCREED_SLAB_TYPE_GUID).is_some());
+        m.commit();
+        let text = sk_model::szo::write(&m);
+        let sohle = "kind=foundation elev=-800 h=800";
+        assert!(text.contains(sohle));
+        let lesen = |t: &str| {
+            sk_model::szo::read(t, sk_model::GuidGen::with_seed(1))
+                .unwrap()
+                .model
+        };
+        // b: die Gründung 10 cm tiefer, das EG steht nicht mehr auf ihr
+        let a = lesen(&text);
+        let b = lesen(&text.replace(sohle, "kind=foundation elev=-900 h=800"));
+        let eg = |m: &Model| {
+            m.storeys()
+                .iter()
+                .filter(|(_, s)| s.kind == sk_model::LevelKind::Storey)
+                .min_by(|x, y| x.1.elevation.total_cmp(&y.1.elevation))
+                .unwrap()
+                .0
+        };
+        let (ga, gb) = (eg(&a), eg(&b));
+        assert_eq!(
+            crate::ausbau::estrich_vorgabe(&a, ga),
+            SCREED_SLAB_TYPE_GUID
+        );
+        assert_eq!(
+            crate::ausbau::estrich_vorgabe(&b, gb),
+            SCREED_FLOOR_TYPE_GUID
+        );
+        let flaechen = |e: &mut Erkennung, m: &Model, g| -> Vec<f64> {
+            e.raumformen(m, m, g)
+                .flaechen()
+                .map(|f| f.grundflaeche)
+                .collect()
+        };
+        let mut e = Erkennung::default();
+        let vorher = flaechen(&mut e, &a, ga);
+        let nachher = flaechen(&mut e, &b, gb);
+        let frisch = flaechen(&mut Erkennung::default(), &b, gb);
+        assert_ne!(vorher, frisch, "ohne Ausbau ein anderes Fertigmaß");
+        assert_eq!(nachher, frisch);
+        assert_eq!(e.raumlisten(), 1, "nur einmal gesammelt");
+    }
 
     /// `n` Häuser 10 × 8 m nebeneinander, je eine Innenwand bei x = 3 m.
     fn stadt(n: usize) -> (Model, StoreyId) {
