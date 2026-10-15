@@ -266,6 +266,9 @@ pub struct Kostenblatt {
 #[derive(Clone, Debug, Default)]
 pub struct Kostenspeicher {
     stempel: u64,
+    /// [`Katalog::stempel_zuordnung`]: Gleich, aber `stempel` anders (ein
+    /// Preis geändert), bleibt die Zuordnung der `typen` (Review #197 B3).
+    stempel_zuordnung: u64,
     typen: HashMap<Schluessel, Vec<SchichtWert>>,
     neu: u64,
 }
@@ -543,18 +546,22 @@ pub(crate) fn stoff_teile(
 fn schichten_rechnen(
     m: &Model,
     k: &Katalog,
-    kat: Category,
-    seite: Option<Side>,
-    typ: Option<Guid>,
+    key: &Schluessel,
     typname: &str,
     layers: &[MaterialLayer],
+    vorher: Option<&[SchichtWert]>,
 ) -> Vec<SchichtWert> {
     layers
         .iter()
         .enumerate()
         .map(|(i, s)| {
+            let (kat, seite, typ) = (key.kat, key.seite, key.typ);
             let mat = m.material(s.material);
-            let z = zuordnung::zuordnen(k, kat, seite, s, mat);
+            // Zuordnung aus dem Speicher, wenn sich nur Preise änderten
+            let z = match vorher.and_then(|v| v.get(i)) {
+                Some(w) => w.zuordnung.clone(),
+                None => zuordnung::zuordnen(k, kat, seite, s, mat),
+            };
             let t = dicke(s.thickness);
             let ort = match typ {
                 Some(typ) => Ort::Schicht { typ, schicht: i },
@@ -801,10 +808,14 @@ pub fn kosten_mit(
         eingeschraenkt = sched.restrict(m, u);
         &eingeschraenkt
     };
-    let alt = if sp.stempel == k.stempel {
-        sp.typen
+    // Gleicher Katalog: alles bleibt; nur Preise anders: die Zuordnung
+    // bleibt, Stoff-EP und Befunde rechnen neu (Review #197 B3)
+    let (alt, mut zuvor) = if sp.stempel == k.stempel {
+        (sp.typen, HashMap::new())
+    } else if sp.stempel_zuordnung == k.stempel_zuordnung {
+        (HashMap::new(), sp.typen)
     } else {
-        HashMap::new()
+        (HashMap::new(), HashMap::new())
     };
     let mut alt = alt;
     let mut typen: HashMap<Schluessel, Vec<SchichtWert>> = HashMap::new();
@@ -813,8 +824,10 @@ pub fn kosten_mit(
         s.formwork.iter().map(|(e, f)| (*e, f)).collect();
     // Schlüssel je Bauteil, bei Raumzeilen je Raum, Ausbautyp und Seite
     // Raumzeilen dazu mit Stelle, wirksamer Dicke und Baustoff der Zeile
+    // Raumzeilen ohne Bauteil, weil ihre Schichten nur am Typ und an der
+    // Zeile hängen (Review #197 B3: sonst ein Fingerabdruck je Raum)
     type Fach = (
-        ElementId,
+        Option<ElementId>,
         Option<LayerSetId>,
         Option<Side>,
         Option<(usize, u64, MaterialId)>,
@@ -864,7 +877,12 @@ pub fn kosten_mit(
             _ => m.element_layers(r.element),
         };
         let zeile = ausbau.map(|(_, j)| (j, r.thickness.to_bits(), r.material));
-        let fach = (r.element, ausbau.and(typ_id), seite, zeile);
+        let fach = (
+            ausbau.is_none().then_some(r.element),
+            ausbau.and(typ_id),
+            seite,
+            zeile,
+        );
         let key = *je_element.entry(fach).or_insert_with(|| Schluessel {
             kat: r.category,
             seite,
@@ -874,8 +892,11 @@ pub fn kosten_mit(
         let werte = typen.entry(key).or_insert_with(|| match alt.remove(&key) {
             Some(w) => w,
             None => {
-                neu += 1;
-                schichten_rechnen(m, k, r.category, seite, key.typ, &typname(), &schichten())
+                let vorher = zuvor.remove(&key);
+                if vorher.is_none() {
+                    neu += 1;
+                }
+                schichten_rechnen(m, k, &key, &typname(), &schichten(), vorher.as_deref())
             }
         });
         let Some(w) = werte.get(stelle) else {
@@ -1347,6 +1368,7 @@ pub fn kosten_mit(
         blatt,
         Kostenspeicher {
             stempel: k.stempel,
+            stempel_zuordnung: k.stempel_zuordnung,
             typen,
             neu,
         },

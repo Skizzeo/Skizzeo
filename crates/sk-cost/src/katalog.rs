@@ -417,6 +417,11 @@ pub struct Katalog {
     /// FNV-1a über die gelesenen Satzzeilen (Bausteingrenze §5): ändert sich
     /// ein Satz, ordnet der Kostenspeicher alles neu zu.
     pub stempel: u64,
+    /// Stempel dessen, was die Zuordnung liest (Regel 81: Bauleistungen,
+    /// nicht Preise): Ändert ein Preis nur `stempel`, behält der
+    /// Kostenspeicher die Zuordnung und rechnet nur die Stoff-EP neu
+    /// (Review #197 B3).
+    pub stempel_zuordnung: u64,
 }
 
 /// FNV-1a, 64 Bit, eigene Umsetzung.
@@ -822,6 +827,7 @@ pub fn lesen<'a>(
         firma_stand: None,
         befunde: Vec::new(),
         erweiterung: erzeugt.saetze,
+        stempel_zuordnung: 0,
         stempel: {
             // R73-W: die Übersetzung gehört zum Stempel (Bausteingrenze §6)
             let mut paare: Vec<(Guid, Guid)> =
@@ -832,6 +838,7 @@ pub fn lesen<'a>(
             })
         },
     };
+    k.stempel_zuordnung = k.stempel;
     let skip = |bf: &mut Vec<Befund>, a: &Abschnitt, r: &Roh, grund: String| {
         let id = r.satz.kennung().unwrap_or_default();
         bf.push(Befund::fehler(
