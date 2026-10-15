@@ -14,9 +14,10 @@
 //! `[sitesoil]` nur mit Werten, die von der Vorgabe abweichen. Ohne Flächen
 //! keine Zeile; Speichern, Öffnen, Speichern bleibt bytegleich. Eine Zeile,
 //! die nicht gilt, gibt einen Hinweis und bleibt roh stehen (Regel 72,
-//! 114); nur ein doppeltes `[sitesoil]` hält das Öffnen auf.
+//! 114); von doppelten `[sitesoil]` gilt das erste, jedes weitere bleibt
+//! roh dahinter (Regel 116).
 
-use super::{err, Line, LoadError, Record};
+use super::{Line, LoadError, Record};
 use crate::model::{PatchHeight, Project, SiteSoil, TerrainPatch};
 use crate::Model;
 
@@ -72,10 +73,18 @@ pub(super) fn write(m: &Model, out: &mut String) {
     let werte = p.site_soil.werte();
     let vorgabe = SiteSoil::default().werte();
     if werte == vorgabe {
-        if let Some(r) = &p.site_soil_raw {
-            out.push_str(r);
-            out.push('\n');
+        match &p.site_soil_raw {
+            Some(r) => {
+                out.push_str(r);
+                out.push('\n');
+            }
+            // ohne eigene Zeile gälte beim Öffnen die erste doppelte
+            None if !p.site_soil_doppelt.is_empty() => {
+                Line::new("sitesoil").word("key", "project").finish(out)
+            }
+            None => {}
         }
+        doppelt(m, out);
         return;
     }
     let mut l = Line::new("sitesoil").word("key", "project");
@@ -85,6 +94,15 @@ pub(super) fn write(m: &Model, out: &mut String) {
         }
     }
     l.finish(out);
+    doppelt(m, out);
+}
+
+/// Die doppelten `[sitesoil]` roh hinter dem geltenden.
+fn doppelt(m: &Model, out: &mut String) {
+    for r in &m.project().site_soil_doppelt {
+        out.push_str(r);
+        out.push('\n');
+    }
 }
 
 /// Zahl aus Text; endlich.
@@ -186,7 +204,18 @@ pub(super) fn read_project<'r>(
     }
     match recs("sitesoil") {
         [] => {}
-        [r] => {
+        [r, mehr @ ..] => {
+            // doppelt: das erste gilt, jedes weitere bleibt roh (Regel 72,
+            // 116, wie `[terrain]` in #178)
+            for x in mehr {
+                x.skip();
+                hints.push(format!(
+                    "Zeile {}: [sitesoil] doppelt, es gilt die erste, die Zeile bleibt unverändert \
+                     stehen",
+                    x.line
+                ));
+                project.site_soil_doppelt.push(roh(x));
+            }
             // Kennung `key=project`; gelesen, damit sie nicht als fremd gilt
             let _ = r.opt("key");
             let mut falsch = Vec::new();
@@ -215,7 +244,6 @@ pub(super) fn read_project<'r>(
                 }
             }
         }
-        [_, r, ..] => return Err(err(r.line, "[sitesoil] doppelt")),
     }
     Ok(())
 }
@@ -333,5 +361,63 @@ mod tests {
         let text = write(&m);
         assert!(text.contains("\n[sitesoil] key=project spread=300\n"));
         assert!(!text.contains("spread=5000"));
+    }
+
+    /// Doppeltes `[sitesoil]` hält das Öffnen nicht auf: das erste gilt,
+    /// jedes weitere gibt einen Hinweis und bleibt roh dahinter; die Datei
+    /// bleibt bytegleich (BIM-Routine 15.10., wie `[terrain]` in #178).
+    #[test]
+    fn doppeltes_sitesoil_bleibt_roh() {
+        let load = |t: &str| read(t, GuidGen::with_seed(99)).unwrap();
+        let mut text = write(&Model::with_seed(5));
+        // ans Ende gehängt; geschrieben stehen sie hinter `[project]`
+        text.push_str(concat!(
+            "[tpatch] pts=0,0;1000,0;1000,1000 z=10\n",
+            "[sitesoil] key=project spread=250\n",
+            "[sitesoil] key=project spread=300 reuse=0.9\n",
+            "[sitesoil] key=project reuse=x\n",
+        ));
+        let back = load(&text);
+        assert_eq!(back.model.site_patches().len(), 1);
+        assert_eq!(
+            back.model.site_soil(),
+            SiteSoil {
+                spread: 250.0,
+                ..SiteSoil::default()
+            }
+        );
+        assert_eq!(back.hints.len(), 2, "{:?}", back.hints);
+        assert!(
+            back.hints
+                .iter()
+                .all(|h| h.contains("[sitesoil] doppelt, es gilt die erste")),
+            "{:?}",
+            back.hints
+        );
+        let erst = write(&back.model);
+        assert_eq!(
+            zeilen(&erst),
+            [
+                "[tpatch] pts=0,0;1000,0;1000,1000 z=10",
+                "[sitesoil] key=project spread=250",
+                "[sitesoil] key=project spread=300 reuse=0.9",
+                "[sitesoil] key=project reuse=x",
+            ]
+        );
+        assert_eq!(write(&load(&erst).model), erst);
+        // Vorgaben eingestellt: eine leere Zeile bleibt vor den doppelten,
+        // sonst gälte beim Öffnen die erste von ihnen
+        let mut m = back.model;
+        m.begin("Boden");
+        assert!(m.set_site_soil(SiteSoil::default()));
+        m.commit();
+        let neu = write(&m);
+        assert!(neu.contains(concat!(
+            "\n[sitesoil] key=project\n",
+            "[sitesoil] key=project spread=300 reuse=0.9\n",
+        )));
+        let wieder = load(&neu);
+        assert_eq!(wieder.model.site_soil(), SiteSoil::default());
+        assert_eq!(write(&wieder.model), neu);
     }
 }
