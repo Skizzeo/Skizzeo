@@ -263,8 +263,12 @@ fn innen(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
 }
 
 /// Nummer der Fläche an `p` (mm); bei Überlappung die zuletzt gesetzte,
-/// wie sie auch gilt.
+/// wie sie auch gilt. Ohne Höhenaufmaß ruhen die Flächen: nicht zu sehen,
+/// nicht gerechnet, also auch nicht wählbar (Review #196 H-196).
 pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
+    if m.terrain().is_none_or(|t| t.points.is_empty()) {
+        return None;
+    }
     m.site_patches()
         .iter()
         .enumerate()
@@ -912,6 +916,18 @@ mod tests {
         let r = |x0: f64, x1: f64| vec![[x0, 0.0], [x1, 0.0], [x1, 4000.0], [x0, 4000.0]];
         m.add_site_patch(TerrainPatch::flat(r(0.0, 6000.0), 0.0));
         m.add_site_patch(TerrainPatch::flat(r(4000.0, 9000.0), 0.0));
+        m.commit();
+        // ohne Aufmaß ruhen sie
+        assert_eq!(flaeche_bei(&m, [1000.0, 1000.0]), None);
+        let mut text = String::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                text.push_str(&format!("{} {} {} 10.0\n", i * 5 + j + 1, j * 5, i * 5));
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-15", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
         m.commit();
         assert_eq!(flaeche_bei(&m, [1000.0, 1000.0]), Some(0));
         assert_eq!(flaeche_bei(&m, [5000.0, 1000.0]), Some(1));

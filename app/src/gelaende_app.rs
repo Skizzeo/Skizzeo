@@ -132,8 +132,8 @@ pub const GELESEN_PLAN: &str = "Lageplan gelesen; mehr unter „Gelände“";
 pub const GELESEN_HOEHEN: &str = "Höhenaufmaß eingelesen; mehr unter „Gelände“";
 
 /// Meldung nach „Aufmaß entfernen“.
-const ENTFERNT: &str =
-    "Aufmaß entfernt, das Haus steht wieder auf der Platte; Strg+Z holt es zurück.";
+const ENTFERNT: &str = "Aufmaß entfernt, das Haus steht wieder auf der Platte; \
+    Geländeflächen ruhen bis zum nächsten Aufmaß. Strg+Z holt es zurück.";
 
 /// Name eines Knopfs im Tooltip (Zeile in `hilfe.txt`, `[knopf]`).
 pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
@@ -450,6 +450,8 @@ impl App {
         z.tippen = None;
         z.werkzeug.set_aktiv(false);
         z.meldung.push(ENTFERNT.into());
+        // ohne Aufmaß ruhen die Flächen (H-196)
+        self.flaeche_waehlen(None);
         self.quantity.dirty = true;
     }
 
@@ -545,15 +547,14 @@ impl App {
     }
 
     /// Ein fertig gelesenes Höhenaufmaß übernehmen; `true`, wenn eins kam
-    /// (dann folgt ein Bild). Ein Ergebnis, das nicht mehr gilt, fällt weg:
-    /// Leiste zu oder neues Einlesen verwerfen den Empfänger; hat das
-    /// Modell inzwischen eine andere UTM-Zone (die Vorgabe für Dateien ohne
-    /// Zonenkennzahl), wird neu gelesen. Sonst hängt das Gelesene nicht am
-    /// Modell.
+    /// (dann folgt ein Bild). Es wartet, solange ein Zug läuft (siehe
+    /// [`darf_abholen`]). Ein Ergebnis, das nicht mehr gilt, fällt weg: Ein
+    /// neues Einlesen verwirft den Empfänger, die Leiste zu nicht (sie
+    /// liest fertig); hat das Modell inzwischen eine andere UTM-Zone (die
+    /// Vorgabe für Dateien ohne Zonenkennzahl), wird neu gelesen. Sonst
+    /// hängt das Gelesene nicht am Modell.
     pub(crate) fn hoehen_abholen(&mut self) -> bool {
-        // Bei geschlossener Leiste kann gerade eine Wand gezogen werden;
-        // das Aufmaß wartet bis danach (43.4)
-        if self.im_zug() {
+        if !darf_abholen(self.im_zug(), self.scene.model()) {
             return false;
         }
         let Some((_, zone, rx)) = &self.platte.leiste.hoehen else {
@@ -825,6 +826,15 @@ impl App {
     }
 }
 
+/// Ob ein fertig gelesenes Aufmaß jetzt ins Modell darf: nicht während
+/// eines Zugs der Werkzeuge und nicht in einem offenen Schritt eines
+/// anderen Zugs (Wand, Raumstempel, …). Bei geschlossener Leiste wird
+/// weitergezeichnet, das Aufmaß käme sonst mitten in dessen Schritt und
+/// Rückgängig-Verlauf (43.4, Review #200 B1).
+fn darf_abholen(im_zug: bool, m: &Model) -> bool {
+    !im_zug && !m.in_step()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -874,6 +884,17 @@ mod tests {
 
     /// Leiste zu: eine Datei, die gerade gelesen wird, und die Meldungen
     /// bleiben; Eingabe und Werkzeug fallen weg (Bedienbarkeit 43.4).
+    #[test]
+    fn abholen_wartet_auf_den_schritt() {
+        let mut m = lindenhof();
+        assert!(darf_abholen(false, &m));
+        assert!(!darf_abholen(true, &m), "im Zug");
+        m.begin("Raum stempeln");
+        assert!(!darf_abholen(false, &m), "offener Schritt");
+        m.commit();
+        assert!(darf_abholen(false, &m), "nach dem Schritt");
+    }
+
     #[test]
     fn zu_behaelt_das_gelesene() {
         let mut z = Zustand {
