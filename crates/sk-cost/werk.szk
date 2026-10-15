@@ -104,6 +104,8 @@ SZK 1
 [article] guid=1S7bUW001008010000000_ name="Innendispersion Klasse 2 mit Tiefgrund, für 2 Anstriche" mat=0lj3cQqGWQ6dtTsi7U71v_ grade="Klasse 2" format="Eimer 12,5 l" unit=m2 price=1.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW001008010000000$ name="Raufasertapete mittlere Körnung" mat=130mvbD3iKVDEasFK7hWhc format="Rolle 33,5 m²" unit=m2 price=0.55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW0010080100000010 name="Tapetenkleister" format="Paket 0,5 kg" unit=m2 price=0.2 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000011 name="Übergangsprofil Aluminium eloxiert, Höhenausgleich bis 15mm" format="Länge 0,9–2,7 m" unit=m price=9 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000012 name="Abschluss- und Übergangsprofil Edelstahl für Fliesen 10–12mm" format="Länge 2,5 m" unit=m price=8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [service] guid=1S7bUW0010080200000001 short="Bodenplatte Stb C25/30 XC2 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=10 unit=m3 basis=volume hours=0.6 cats=groundslab mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
 [service] guid=1S7bUW0010080200000002 short="Frostschürze Stb C25/30 b=30-45cm erdgeschalt" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=20 unit=m3 basis=volume hours=1 cats=stripfooting mat=32Ino7hAj08ufHFYBJxPyP
 [service] guid=1S7bUW0010080200000003 short="Stb-Decke Ortbeton C25/30 XC1 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=30 unit=m3 basis=volume hours=0.6 cats=floor mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
@@ -218,11 +220,13 @@ SZK 1
 [service] guid=1S7bUW001008020000001m short="Verbundabdichtung DIN 18534 2-lagig, Dichtband in Ecken" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=30 unit=m2 basis=area hours=0.25 cats=space mat=3YMfu8hafA7xZm7EY$yw9O
 [service] guid=1S7bUW001008020000001n short="Fliesensockel Feinsteinzeug h=60mm geschnitten, im Dünnbett verfugt" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=40 unit=m basis=auto hours=0.15 mat=1zGH6AuboodSmZLw_rWyGt auto=room.skirting
 [service] guid=1S7bUW001008020000001o short="Silikonfuge Sanitär mit Hinterfüllprofil, Boden/Wand und Innenecken" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=50 unit=m basis=auto hours=0.06 auto=room.joint.silicone
-[service] guid=1S7bUW001008020000001p short="Massivparkett Eiche 20mm verklebt, geschliffen, versiegelt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=10 unit=m2 basis=area hours=0.9 cats=space mat=3Y19W9Z4tbI9RkP7PaNRiy side=floor
-[service] guid=1S7bUW001008020000001q short="Sockelleiste Eiche massiv 60×15 lackiert, verdeckt befestigt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=20 unit=m basis=auto hours=0.12 mat=1ODK_ZVfPODJ_btFxWYPZ8 auto=room.skirting
-[service] guid=1S7bUW001008020000001r short="Dispersionsanstrich Wand Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=10 unit=m2 basis=area hours=0.12 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=wall
-[service] guid=1S7bUW001008020000001s short="Dispersionsanstrich Decke Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=20 unit=m2 basis=area hours=0.15 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=ceiling
-[service] guid=1S7bUW001008020000001t short="Raufasertapete mittel kleben, auf Stoß, mit Kleister" trade=1S7Wf_00100800000004U_ title=1S7bUW001008030000000W pos=10 unit=m2 basis=area hours=0.15 cats=space mat=130mvbD3iKVDEasFK7hWhc
+[service] guid=1S7bUW001008020000001p short="Übergangsprofil Edelstahl an Fliesenbelag im Türdurchgang, eingefliest" trade=1S7Wf_00100800000004Um title=1S7bUW001008030000000R pos=60 unit=m basis=auto hours=0.2 mat=1zGH6AuboodSmZLw_rWyGt auto=room.transition
+[service] guid=1S7bUW001008020000001q short="Massivparkett Eiche 20mm verklebt, geschliffen, versiegelt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=10 unit=m2 basis=area hours=0.9 cats=space mat=3Y19W9Z4tbI9RkP7PaNRiy side=floor
+[service] guid=1S7bUW001008020000001r short="Sockelleiste Eiche massiv 60×15 lackiert, verdeckt befestigt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=20 unit=m basis=auto hours=0.12 mat=1ODK_ZVfPODJ_btFxWYPZ8 auto=room.skirting
+[service] guid=1S7bUW001008020000001s short="Übergangsprofil Aluminium an Belagwechsel im Türdurchgang, geschraubt" trade=1S7Wf_00100800000004Uq title=1S7bUW001008030000000T pos=30 unit=m basis=auto hours=0.2 auto=room.transition
+[service] guid=1S7bUW001008020000001t short="Dispersionsanstrich Wand Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=10 unit=m2 basis=area hours=0.12 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=wall
+[service] guid=1S7bUW001008020000001u short="Dispersionsanstrich Decke Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=20 unit=m2 basis=area hours=0.15 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=ceiling
+[service] guid=1S7bUW001008020000001v short="Raufasertapete mittel kleben, auf Stoß, mit Kleister" trade=1S7Wf_00100800000004U_ title=1S7bUW001008030000000W pos=10 unit=m2 basis=area hours=0.15 cats=space mat=130mvbD3iKVDEasFK7hWhc
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -302,14 +306,16 @@ SZK 1
 [svcpart] guid=1S7bUW001008040000001D service=1S7bUW001008020000001m nr=1 art=1S7bUW001008010000000t qty=1
 [svcpart] guid=1S7bUW001008040000001E service=1S7bUW001008020000001n nr=1 art=1S7bUW001008010000000v qty=1
 [svcpart] guid=1S7bUW001008040000001F service=1S7bUW001008020000001o nr=1 art=1S7bUW001008010000000u qty=1
-[svcpart] guid=1S7bUW001008040000001G service=1S7bUW001008020000001p nr=1 art=1S7bUW001008010000000w qty=1.05
-[svcpart] guid=1S7bUW001008040000001H service=1S7bUW001008020000001p nr=2 art=1S7bUW001008010000000x qty=1.1
-[svcpart] guid=1S7bUW001008040000001I service=1S7bUW001008020000001p nr=3 art=1S7bUW001008010000000y qty=1
-[svcpart] guid=1S7bUW001008040000001J service=1S7bUW001008020000001q nr=1 art=1S7bUW001008010000000z qty=1.08
-[svcpart] guid=1S7bUW001008040000001K service=1S7bUW001008020000001r nr=1 art=1S7bUW001008010000000_ qty=1
-[svcpart] guid=1S7bUW001008040000001L service=1S7bUW001008020000001s nr=1 art=1S7bUW001008010000000_ qty=1
-[svcpart] guid=1S7bUW001008040000001M service=1S7bUW001008020000001t nr=1 art=1S7bUW001008010000000$ qty=1.1
-[svcpart] guid=1S7bUW001008040000001N service=1S7bUW001008020000001t nr=2 art=1S7bUW0010080100000010 qty=1
+[svcpart] guid=1S7bUW001008040000001G service=1S7bUW001008020000001p nr=1 art=1S7bUW0010080100000012 qty=1.05
+[svcpart] guid=1S7bUW001008040000001H service=1S7bUW001008020000001q nr=1 art=1S7bUW001008010000000w qty=1.05
+[svcpart] guid=1S7bUW001008040000001I service=1S7bUW001008020000001q nr=2 art=1S7bUW001008010000000x qty=1.1
+[svcpart] guid=1S7bUW001008040000001J service=1S7bUW001008020000001q nr=3 art=1S7bUW001008010000000y qty=1
+[svcpart] guid=1S7bUW001008040000001K service=1S7bUW001008020000001r nr=1 art=1S7bUW001008010000000z qty=1.08
+[svcpart] guid=1S7bUW001008040000001L service=1S7bUW001008020000001s nr=1 art=1S7bUW0010080100000011 qty=1.05
+[svcpart] guid=1S7bUW001008040000001M service=1S7bUW001008020000001t nr=1 art=1S7bUW001008010000000_ qty=1
+[svcpart] guid=1S7bUW001008040000001N service=1S7bUW001008020000001u nr=1 art=1S7bUW001008010000000_ qty=1
+[svcpart] guid=1S7bUW001008040000001O service=1S7bUW001008020000001v nr=1 art=1S7bUW001008010000000$ qty=1.1
+[svcpart] guid=1S7bUW001008040000001P service=1S7bUW001008020000001v nr=2 art=1S7bUW0010080100000010 qty=1
 [svcfollow] guid=1S7bUW0010080500000001 service=1S7bUW0010080200000001 nr=1 follow=1S7bUW0010080200000005
 [svcfollow] guid=1S7bUW0010080500000002 service=1S7bUW0010080200000001 nr=2 follow=1S7bUW0010080200000006
 [svcfollow] guid=1S7bUW0010080500000003 service=1S7bUW0010080200000002 nr=1 follow=1S7bUW0010080200000006
@@ -394,6 +400,8 @@ SZK 1
 [origin] key=1S7bUW001008010000000_ rec=article kind=factory status=confirmed date=2026-10-15 source="Dispersion 3–6 €/l, rund 0,3 l/m² für 2 Anstriche" conf=rough
 [origin] key=1S7bUW001008010000000$ rec=article kind=factory status=confirmed date=2026-10-15 source="Rolle 33,5 m² 15–22 € netto" conf=rough
 [origin] key=1S7bUW0010080100000010 rec=article kind=factory status=confirmed date=2026-10-15 source="Kleister 4–6 € je 25–30 m²" conf=rough
+[origin] key=1S7bUW0010080100000011 rec=article kind=factory status=confirmed date=2026-10-15 source="Übergangsprofil Alu 6–15 €/m netto (kosten/rb7-schluessel.md: room.transition)" conf=rough
+[origin] key=1S7bUW0010080100000012 rec=article kind=factory status=confirmed date=2026-10-15 source="Fliesenprofil Edelstahl 5–12 €/m netto" conf=rough
 [origin] key=1S7bUW0010080200000002 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt, Einbau in den Graben" conf=rough
 [origin] key=1S7bUW0010080200000004 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Baubetrieb 0,8–1,0 h/m², Systemschalung 0,4–0,6" conf=rough
 [origin] key=1S7bUW0010080200000005 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
@@ -498,8 +506,10 @@ SZK 1
 [origin] key=1S7bUW001008020000001m rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Verbundabdichtung 20–35 €/m² mit Dichtband; 0,2–0,3 h/m²" conf=rough
 [origin] key=1S7bUW001008020000001n rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Fliesensockel 10–20 €/m; 0,12–0,18 h/m" conf=rough
 [origin] key=1S7bUW001008020000001o rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Silikonfuge 4–8 €/m; 0,05–0,08 h/m" conf=rough
-[origin] key=1S7bUW001008020000001p rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Massivparkett mit Verlegen und Oberfläche 90–150 €/m²; Kleben 0,5, Schleifen und Siegeln 0,4 h/m²" conf=rough
-[origin] key=1S7bUW001008020000001q rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Holzsockelleiste 10–20 €/m; 0,10–0,15 h/m" conf=rough
-[origin] key=1S7bUW001008020000001r rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Wandanstrich 6–12 €/m²; 0,10–0,14 h/m²" conf=rough
-[origin] key=1S7bUW001008020000001s rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Deckenanstrich 8–14 €/m²; über Kopf 0,12–0,18 h/m²" conf=rough
-[origin] key=1S7bUW001008020000001t rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Raufaser tapezieren 7–12 €/m²; 0,12–0,18 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001p rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Profil zuschneiden und einfliesen 0,15–0,25 h/m" conf=rough
+[origin] key=1S7bUW001008020000001q rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Massivparkett mit Verlegen und Oberfläche 90–150 €/m²; Kleben 0,5, Schleifen und Siegeln 0,4 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001r rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Holzsockelleiste 10–20 €/m; 0,10–0,15 h/m" conf=rough
+[origin] key=1S7bUW001008020000001s rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Profil zuschneiden und schrauben 0,15–0,25 h/m" conf=rough
+[origin] key=1S7bUW001008020000001t rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Wandanstrich 6–12 €/m²; 0,10–0,14 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001u rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Deckenanstrich 8–14 €/m²; über Kopf 0,12–0,18 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001v rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Raufaser tapezieren 7–12 €/m²; 0,12–0,18 h/m²" conf=rough

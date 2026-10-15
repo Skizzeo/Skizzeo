@@ -61,7 +61,7 @@ impl Side {
 /// Schlüssel der Raumlängen (`[service] auto=`) mit Einheit und Bedeutung;
 /// sk-raum setzt sie an die Längen (`raumbuch.rs`), Kosten bepreist sie in
 /// Werksstand 19 (RB7).
-pub const SCHLUESSEL: [(&str, &str, &str); 4] = [
+pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
     (
         "room.skirting",
         "m",
@@ -81,6 +81,11 @@ pub const SCHLUESSEL: [(&str, &str, &str); 4] = [
         "room.joint.silicone",
         "m",
         "Silikonfuge Boden/Wand und in Innenecken gefliester Wände je Raum (DIN 18352)",
+    ),
+    (
+        "room.transition",
+        "m",
+        "Übergangsprofil an der Innentür bei Belagwechsel, Rohbaubreite (DIN 18356)",
     ),
 ];
 

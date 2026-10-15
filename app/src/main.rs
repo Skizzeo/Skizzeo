@@ -14,8 +14,6 @@ mod abnahme_paket10;
 #[cfg(test)]
 mod abnahme_pd;
 #[cfg(test)]
-mod abnahme_rb7;
-#[cfg(test)]
 mod abnahme_s1;
 #[cfg(test)]
 mod abnahme_s2;

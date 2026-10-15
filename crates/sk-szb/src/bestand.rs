@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 64] = [
+pub const ARTIKEL: [WerkArtikel; 66] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -238,7 +238,6 @@ pub const ARTIKEL: [WerkArtikel; 64] = [
         "m2",
         "Faserzementtafel 8mm inkl. Fugenband und Edelstahlschrauben",
     ),
-    // Stand 11: Stoff von Dachablauf und Notüberlauf (B18)
     a(
         "1S7bUW001008010000000V",
         "st",
@@ -253,7 +252,7 @@ pub const ARTIKEL: [WerkArtikel; 64] = [
         "1S7bUW001008010000000X",
         "m3",
         "EPS-Dachdämmplatte 035 DAA dh, Streifen Attikakrone",
-    ), // Stand 15: Dachentwässerung außen (Regenfallrohr)
+    ),
     a(
         "1S7bUW001008010000000Y",
         "st",
@@ -401,6 +400,16 @@ pub const ARTIKEL: [WerkArtikel; 64] = [
         "Raufasertapete mittlere Körnung",
     ),
     a("1S7bUW0010080100000010", "m2", "Tapetenkleister"),
+    a(
+        "1S7bUW0010080100000011",
+        "m",
+        "Übergangsprofil Aluminium eloxiert, Höhenausgleich bis 15mm",
+    ),
+    a(
+        "1S7bUW0010080100000012",
+        "m",
+        "Abschluss- und Übergangsprofil Edelstahl für Fliesen 10–12mm",
+    ),
 ];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
@@ -498,7 +507,7 @@ pub const ARTEN: [&str; 13] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 119] = [
+pub const LEISTUNGEN: [WerkLeistung; 121] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -919,7 +928,6 @@ pub const LEISTUNGEN: [WerkLeistung; 119] = [
         "auto",
         "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
     ),
-    // Stand 10: Gefälledämmung (G5)
     l(
         "1S7bUW0010080200000017",
         "m3",
@@ -938,7 +946,6 @@ pub const LEISTUNGEN: [WerkLeistung; 119] = [
         "auto",
         "Zulage Gefälledämmung Grat, Zuschnitt auf Gehrung",
     ),
-    // Stand 10: Dämmung auf der Attika der Dachterrasse (AD1)
     l(
         "1S7bUW001008020000001A",
         "m2",
@@ -950,7 +957,7 @@ pub const LEISTUNGEN: [WerkLeistung; 119] = [
         "m2",
         "area",
         "Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech",
-    ), // Stand 15: Dachentwässerung außen (Regenfallrohr)
+    ),
     l(
         "1S7bUW001008020000001C",
         "st",
@@ -1187,30 +1194,42 @@ pub const LEISTUNGEN: [WerkLeistung; 119] = [
     ),
     l(
         "1S7bUW001008020000001p",
+        "m",
+        "auto",
+        "Übergangsprofil Edelstahl an Fliesenbelag im Türdurchgang, eingefliest",
+    ),
+    l(
+        "1S7bUW001008020000001q",
         "m2",
         "area",
         "Massivparkett Eiche 20mm verklebt, geschliffen, versiegelt",
     ),
     l(
-        "1S7bUW001008020000001q",
+        "1S7bUW001008020000001r",
         "m",
         "auto",
         "Sockelleiste Eiche massiv 60×15 lackiert, verdeckt befestigt",
     ),
     l(
-        "1S7bUW001008020000001r",
+        "1S7bUW001008020000001s",
+        "m",
+        "auto",
+        "Übergangsprofil Aluminium an Belagwechsel im Türdurchgang, geschraubt",
+    ),
+    l(
+        "1S7bUW001008020000001t",
         "m2",
         "area",
         "Dispersionsanstrich Wand Klasse 2, Grundierung und 2 Anstriche",
     ),
     l(
-        "1S7bUW001008020000001s",
+        "1S7bUW001008020000001u",
         "m2",
         "area",
         "Dispersionsanstrich Decke Klasse 2, Grundierung und 2 Anstriche",
     ),
     l(
-        "1S7bUW001008020000001t",
+        "1S7bUW001008020000001v",
         "m2",
         "area",
         "Raufasertapete mittel kleben, auf Stoß, mit Kleister",

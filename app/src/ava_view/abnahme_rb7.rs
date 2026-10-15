@@ -165,3 +165,50 @@ fn raumbuch_in_den_kosten() {
     );
     assert!(menge(&mit, leistung(&k, "Randdämmstreifen PE")).0 > 0);
 }
+
+/// Übergangsprofil (`room.transition`) im Gewerk des Belags: am
+/// Feinsteinzeug die Leistung mit `mat=` (Los 8), an jedem anderen Belag die
+/// ohne (Los 9); dieselbe Länge nie zweimal.
+#[test]
+fn uebergang_je_belag() {
+    use sk_model::model::{PARQUET_GUID, PORCELAIN_GUID};
+    let mut s = haus();
+    let mut sched = (*s.schedule_in(&Umfang::projekt())).clone();
+    // beide Beläge im Projekt, auch wenn die Vorlage nur einen nutzt
+    let mut m = s.model().clone();
+    m.begin("Beläge");
+    for g in [PORCELAIN_GUID, PARQUET_GUID] {
+        assert!(m.ensure_finish_material(g).is_some());
+    }
+    m.commit();
+    let m = &m;
+    let k = sk_cost::lesen::katalog(m, None);
+    let vorlage = sched
+        .auto
+        .iter()
+        .find(|a| a.key == "room.skirting")
+        .expect("Sockel")
+        .clone();
+    sched.auto.retain(|a| !a.key.starts_with("room."));
+    for (g, mm) in [(PORCELAIN_GUID, 900.0), (PARQUET_GUID, 800.0)] {
+        let material = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.guid == g)
+            .map(|(id, _)| id);
+        assert!(material.is_some(), "{g:?} im Projekt");
+        sched.auto.push(sk_model::qto::AutoMenge {
+            key: "room.transition",
+            value: mm,
+            material,
+            ..vorlage.clone()
+        });
+    }
+    let b = sk_cost::lesen::kosten(m, &sched, &k, &Umfang::projekt());
+    let fliese = menge(&b, leistung(&k, "Übergangsprofil Edelstahl"));
+    let sonst = menge(&b, leistung(&k, "Übergangsprofil Aluminium"));
+    assert_eq!(
+        (fliese, sonst),
+        (Dez(900 * Dez::SKALA / 1000), Dez(800 * Dez::SKALA / 1000))
+    );
+}
