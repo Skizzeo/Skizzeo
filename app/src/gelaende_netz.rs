@@ -86,6 +86,11 @@ const ZAHL_ABSTAND: f64 = 40_000.0;
 /// Zuschnitts), rückt sie in diesen Schritten (mm) weiter.
 const ZAHL_SCHRITT: f64 = 2_000.0;
 
+/// Bis zu so vielen Messpunkten steht an jedem seine Kote; ein größeres
+/// Aufmaß (Laserscan, dichtes Raster) zeigt nur die Kreuze, sonst deckten
+/// die Zahlen das Bild zu und kosteten Speicher.
+const PUNKT_KOTEN: usize = 2_000;
+
 /// Gelände aus dem Aufmaß im Modell (mm, z zu ±0,00). Was nur vom Modell
 /// abhängt, steht hier einmal gerechnet: Höhenlinien und Messpunkte sind
 /// schon an Grenze und Haus geteilt, Häuser und Dreiecke stehen in je
@@ -125,6 +130,8 @@ pub(crate) struct Gelaende {
     /// Höhenzahlen an den Höhenlinien und in ebenen Geländeflächen
     /// (Bedienbarkeit, Ist-Bilder zu #202), einmal je Gelände.
     pub(crate) zahlen: Vec<Zahl>,
+    /// Koten der Messpunkte (bis [`PUNKT_KOTEN`]), rechts neben dem Kreuz.
+    pub(crate) koten: Vec<Zahl>,
     umrisse: Vec<Vec<Vec3>>,
     /// Senkrechte Wände, wo die Höhe springt (Review #183 b, B2).
     waende: Vec<[Vec3; 3]>,
@@ -292,6 +299,18 @@ impl Gelaende {
                 Some((vec3(q[0], q[1], (p.h - h0) * 1000.0), voll))
             })
             .collect();
+        // Koten der Messpunkte in m ü. NHN, zwei Nachkommastellen (Plan §8,
+        // Bedienbarkeit, später zu #216)
+        if g.marken.len() <= PUNKT_KOTEN {
+            g.koten = g
+                .marken
+                .iter()
+                .map(|&(p, voll)| {
+                    let text = crate::selection::de(p.z / 1000.0 + h0, 2);
+                    ([p.x, p.y], 0.0, p.z, text, voll)
+                })
+                .collect();
+        }
         Some(g)
     }
 
@@ -319,6 +338,7 @@ impl Gelaende {
             ur_netz: Gitter::neu(Vec::new()),
             schraffen: Vec::new(),
             zahlen: Vec::new(),
+            koten: Vec::new(),
             umrisse: Vec::new(),
             waende: Vec::new(),
             rand: None,
@@ -1252,8 +1272,9 @@ fn schwerpunkt(r: &[P2]) -> Option<P2> {
 
 /// Die Höhenzahlen als Tinte für den Renderer: Ziffernhöhe `h` (mm am
 /// Bau, wie die Maßzahlen), mittig über ihrem Punkt wie eine Maßzahl über
-/// der Maßlinie, leicht über dem Gelände; voll im Stift „Gelände“, sonst
-/// blass.
+/// der Maßlinie, die Koten der Messpunkte rechts neben ihrem Kreuz, auf
+/// halber Ziffernhöhe; leicht über dem Gelände; voll im Stift „Gelände“,
+/// sonst blass.
 pub(crate) fn zahlen_tinte(
     g: &Gelaende,
     schrift: &sk_plan::schrift::Schrift,
@@ -1262,14 +1283,20 @@ pub(crate) fn zahlen_tinte(
 ) -> Vec<sk_render::Ink> {
     let mut out = Vec::new();
     let mut d = Vec::new();
-    for (q, w, z, text, voll) in &g.zahlen {
+    let mitte = g.zahlen.iter().map(|z| (z, true));
+    for ((q, w, z, text, voll), mittig) in mitte.chain(g.koten.iter().map(|z| (z, false))) {
         d.clear();
         let b = schrift.zeile(text, h, 0.0, &mut d);
         let (c, s) = (w.cos(), w.sin());
         let color = if *voll { t.ground.1 } else { t.background.1 };
+        let (dx, dy) = if mittig {
+            (-b / 2.0, 0.3 * h)
+        } else {
+            (0.5 * h, -0.5 * h)
+        };
         out.extend(d.iter().map(|tri| sk_render::Ink {
             p: tri.map(|[x, y]| {
-                let (x, y) = (x - b / 2.0, y + 0.3 * h);
+                let (x, y) = (x + dx, y + dy);
                 [
                     (q[0] + c * x - s * y) as f32,
                     (q[1] + s * x + c * y) as f32,
@@ -1615,6 +1642,16 @@ mod tests {
         for (q, _, _, text, voll) in &g.zahlen {
             assert!(!g.im_haus(*q) && g.innen(*q) && *voll, "{q:?} {text}");
         }
+        // an jedem gezeigten Messpunkt seine Kote, zwei Nachkommastellen
+        let h0 = m.terrain_nhn().unwrap();
+        assert!(!g.marken.is_empty());
+        for &(p, _) in &g.marken {
+            let text = crate::selection::de(p.z / 1000.0 + h0, 2);
+            assert!(
+                g.koten.iter().any(|z| z.0 == [p.x, p.y] && z.3 == text),
+                "{p:?} {text}"
+            );
+        }
         if let Some(f) = crate::wall_edit::mass_treffer::tests::schrift() {
             let s = sk_plan::schrift::Schrift::new(f);
             assert!(!zahlen_tinte(&g, &s, 250.0, &t).is_empty());
@@ -1623,6 +1660,7 @@ mod tests {
             // der Papierfarbe (Review #216 H-216a)
             let mut b = Gelaende::aus(&m).unwrap();
             b.zahlen.iter_mut().for_each(|z| z.4 = false);
+            b.koten.iter_mut().for_each(|z| z.4 = false);
             let tinte = zahlen_tinte(&b, &s, 250.0, &t);
             assert!(!tinte.is_empty());
             let abstand: f32 = (0..3).map(|i| (t.background.1[i] - t.paper[i]).abs()).sum();
@@ -1812,6 +1850,38 @@ mod tests {
     /// Höhenzahlen (Ist-Bilder zu #202): je 40 m eine, die erste nach 20 m,
     /// eine kurze Linie in der Mitte; nur Hauptlinien, wenn es welche
     /// gibt; lesbar von unten oder rechts; nicht, wo `frei` nein sagt.
+    #[test]
+    fn koten_bis_punktgrenze() {
+        use std::fmt::Write;
+        let aufmass = |k: usize| {
+            let mut txt = String::new();
+            for i in 0..k {
+                for j in 0..k {
+                    let z = 10.0 + 0.01 * (i + j) as f64;
+                    let _ = writeln!(txt, "{} {} {} {z}", i * k + j + 1, 2 * i, 2 * j);
+                }
+            }
+            let (t, ..) =
+                sk_model::Terrain::lesen(txt.as_bytes(), "t.txt", "2026-10-16", 32).unwrap();
+            let mut m = Model::with_seed(3);
+            m.begin("Aufmaß");
+            assert!(m.import_terrain(t));
+            m.commit();
+            let g = Gelaende::aus(&m).unwrap();
+            let koten = g
+                .marken
+                .iter()
+                .filter(|(p, _)| g.koten.iter().any(|z| z.0 == [p.x, p.y]))
+                .count();
+            (g.marken.len(), koten)
+        };
+        // 44 × 44 = 1.936 Punkte: jeder mit Kote; 45 × 45 = 2.025: keine
+        let (n, k) = aufmass(44);
+        assert!(n <= PUNKT_KOTEN && k == n, "{n} {k}");
+        let (n, k) = aufmass(45);
+        assert!(n > PUNKT_KOTEN && k == 0, "{n} {k}");
+    }
+
     #[test]
     fn hoehenzahlen_an_linien() {
         let gerade = |z: f64, von: P2, bis: P2, haupt| (z, vec![von, bis], haupt);

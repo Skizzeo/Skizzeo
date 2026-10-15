@@ -1000,7 +1000,7 @@ impl App {
         let h = stil.am_bau(stil.schrift_mm);
         let t = self.scene.table();
         let g = self.platte.gelaende_im_bild(m);
-        if g.is_none_or(|g| g.zahlen.is_empty()) {
+        if g.is_none_or(|g| g.zahlen.is_empty() && g.koten.is_empty()) {
             return None;
         }
         let key = (self.platte.fassung, h.to_bits(), t.rev, t.theme_rev);
