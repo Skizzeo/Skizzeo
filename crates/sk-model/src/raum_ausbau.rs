@@ -183,8 +183,10 @@ impl Model {
     /// Vereinte Wände (Verlängern in einer Flucht, G5c): Die Abweichungen
     /// der Wandseiten von `alt` gelten nun an `neu`, mit getauschter Seite,
     /// wenn `alt` gegen `neu` lief (`spiegeln`). Hat ein Raum an der Stelle
-    /// von `neu` schon eine, bleibt diese. `alt == neu` mit `spiegeln`
-    /// tauscht nur die Seiten (Review #210 B4).
+    /// von `neu` schon eine, bleibt diese, die von `alt` fällt weg. Eine
+    /// Abweichung, die nur für die Wandseite von `alt` galt, gilt danach
+    /// für die ganze Seite der vereinten Wand (Review H-210k). `alt == neu`
+    /// mit `spiegeln` tauscht nur die Seiten (Review #210 B4).
     pub(super) fn ausbau_wand_vereint(&mut self, alt: Guid, neu: Guid, spiegeln: bool) {
         if alt == neu && !spiegeln {
             return;

@@ -380,14 +380,17 @@ impl Model {
         if erster(ra)? != xa.layer_set || erster(rb)? != xb.layer_set {
             return None;
         }
-        // Die Bezugslinie von `b` liegt an beiden Enden gleich weit neben
-        // der von `a`: in einer Flucht, nicht nur fast parallel (Review
-        // #210 B2)
-        let n = right_of(sa.d);
-        let quer = (sb.p0 - sa.p0).dot(n);
-        if ((sb.punkt(sb.len) - sa.p0).dot(n) - quer).abs() > DECKUNG {
+        // In einer Flucht, nicht nur fast parallel: Über die ganze Länge
+        // der vereinten Wand, von einem fernen Ende zum anderen, weichen
+        // die Linien beider Wände höchstens um DECKUNG voneinander ab.
+        // Das gilt für beide Linien, egal welche bleibt (Review #210 B2,
+        // B6)
+        let ganz = u0.max(u1).max(sa.len) - u0.min(u1).min(0.0);
+        if cross2(sa.d, sb.d).abs() * ganz > DECKUNG {
             return None;
         }
+        let n = right_of(sa.d);
+        let quer = (sb.p0 - sa.p0).dot(n);
         // Die Körper liegen deckungsgleich in der Flucht (die Bezugsseiten
         // dürfen verschieden sein); quer gemessen rechts von `a`
         let gegen = sa.d.dot(sb.d) < 0.0;
@@ -447,68 +450,76 @@ impl Model {
     }
 
     /// Setzt [`Vereint`]: Der eine Zug fällt weg, der andere bekommt die
-    /// neuen Punkte. Erst geprüft, dann geändert: Lehnt es ab, bleibt alles.
-    /// Öffnungen der wegfallenden Wand bleiben, wo sie sind, bei
-    /// gespiegelter Außenfläche auf der neuen; die Abweichungen des
-    /// Raumbuchs an ihren Wandseiten gehen auf die vereinte Wand über
-    /// (Review #210 B3, B4).
+    /// neuen Punkte. Alles, was ablehnen kann, wird vorher geprüft
+    /// (`stack_fits`, beide Wände da); danach ändert es nur noch, so bleibt
+    /// bei `Err` alles, wie es war (Review H-210j). Öffnungen der
+    /// wegfallenden Wand bleiben, wo sie sind, bei gespiegelter Außenfläche
+    /// auf der neuen; die Abweichungen des Raumbuchs an ihren Wandseiten
+    /// gehen auf die vereinte Wand über (Review #210 B3, B4, B7).
     fn vereinen(&mut self, v: &Vereint) -> Result<(), EckeFehler> {
         let (run, pts) = &v.zug;
         if !self.stack_fits(*run, pts) {
             return Err(EckeFehler::Ungueltig);
         }
-        let guid = |m: &Model, w: Option<ElementId>| m.element(w?).map(|e| e.guid);
-        let bleibt = self.wall_at(*run, v.seg);
-        let weg = self.wall_at(v.weg, 0);
-        let (g_bleibt, g_weg) = (guid(self, bleibt), guid(self, weg));
-        let kennung = v.kennung.and_then(|w| self.element(w)).cloned();
-        let tueren = self.oeffnungen_versetzt(v);
-        if !self.remove_run(v.weg) || self.set_run_points(*run, pts).is_none() {
-            return Err(EckeFehler::Ungueltig);
-        }
-        for (id, path) in tueren {
-            if let Some(ElementKind::Opening(o)) = self.elements.get(id).map(|e| &e.kind) {
-                let o = crate::oeffnung::Opening { path, ..o.clone() };
-                note!(self, Element, self.elements, id);
-                if let Some(e) = self.elements.get_mut(id) {
-                    e.kind = ElementKind::Opening(o);
-                }
-            }
-        }
         let w = self.wall_at(*run, v.seg).ok_or(EckeFehler::Ungueltig)?;
-        if let Some(k) = kennung {
-            // Die längere, wegfallende Wand gibt Nummer und Kennung weiter;
-            // ihre Merkmale gehen vor, die der bleibenden bleiben daneben
-            note!(self, Element, self.elements, w);
-            if let Some(e) = self.elements.get_mut(w) {
-                e.guid = k.guid;
-                e.number = k.number;
-                let mut props = std::mem::take(&mut e.props);
-                props.extend(k.props);
-                e.props = props;
-                e.seq = k.seq;
+        let weg = self
+            .wall_at(v.weg, 0)
+            .and_then(|x| self.element(x))
+            .cloned()
+            .ok_or(EckeFehler::Ungueltig)?;
+        let g_bleibt = self
+            .element(w)
+            .map(|e| e.guid)
+            .ok_or(EckeFehler::Ungueltig)?;
+        let tueren = self.oeffnungen_versetzt(v);
+        self.remove_run(v.weg);
+        // `stack_fits` hat die Punkte schon angenommen
+        self.set_run_points(*run, pts);
+        for (id, o) in tueren {
+            note!(self, Element, self.elements, id);
+            if let Some(e) = self.elements.get_mut(id) {
+                e.kind = ElementKind::Opening(o);
             }
+        }
+        // Merkmale beider Wände; bei gleichem Namen gilt die längere, die
+        // auch Nummer und Kennung behält (Regel 11)
+        let uebertrag = v.kennung.is_some();
+        note!(self, Element, self.elements, w);
+        if let Some(e) = self.elements.get_mut(w) {
+            let mut props = weg.props.clone();
+            if uebertrag {
+                let eigene = std::mem::take(&mut e.props);
+                props = eigene.into_iter().chain(props).collect();
+                e.guid = weg.guid;
+                e.number = weg.number.clone();
+                e.seq = weg.seq;
+            } else {
+                props.extend(std::mem::take(&mut e.props));
+            }
+            e.props = props;
         }
         // Raumbuch: Wandseiten links bzw. rechts der Zeichenrichtung; die
         // wegfallende Wand lief gegenläufig, ihre Seiten tauschen
-        let neu = self.element(w).map(|e| e.guid);
-        if let (Some(neu), Some(g_bleibt), Some(g_weg)) = (neu, g_bleibt, g_weg) {
-            if neu == g_weg {
-                if v.gegen {
-                    self.ausbau_wand_vereint(g_weg, neu, true);
-                }
-                self.ausbau_wand_vereint(g_bleibt, neu, false);
-            } else {
-                self.ausbau_wand_vereint(g_weg, neu, v.gegen);
+        if uebertrag {
+            if v.gegen {
+                self.ausbau_wand_vereint(weg.guid, weg.guid, true);
             }
+            self.ausbau_wand_vereint(g_bleibt, weg.guid, false);
+        } else {
+            self.ausbau_wand_vereint(weg.guid, g_bleibt, v.gegen);
         }
         self.touch();
         Ok(())
     }
 
     /// Öffnungen auf der Außenfläche der wegfallenden Wand, um
-    /// [`Vereint::versatz`] verschoben; leer, wenn sie bleiben, wo sie sind.
-    fn oeffnungen_versetzt(&self, v: &Vereint) -> Vec<(ElementId, Vec<Vec3>)> {
+    /// [`Vereint::versatz`] auf die Außenfläche der vereinten verschoben;
+    /// leer, wenn sie bleiben, wo sie sind. Der Einbau gilt von der
+    /// Außenfläche aus: Die äußere Einbautiefe wird zur Dicke abzüglich
+    /// Einbautiefe und Bautiefe, der Anschlag links und rechts tauscht
+    /// (Review #210 B7). Ecköffnungen gibt es an einer einzelnen Wand
+    /// mit freien Enden nicht.
+    fn oeffnungen_versetzt(&self, v: &Vereint) -> Vec<(ElementId, crate::oeffnung::Opening)> {
         if v.versatz.length() < 1e-9 {
             return Vec::new();
         }
@@ -521,7 +532,7 @@ impl Model {
             return Vec::new();
         }
         let d = (b - a) * (1.0 / len);
-        let (n, aussen) = (right_of(d), c.outer_offset());
+        let (n, aussen, dicke) = (right_of(d), c.outer_offset(), c.thickness());
         let auf = |p: Vec3| {
             let u = (flach(p) - a).dot(d);
             ((flach(p) - a).dot(n) - aussen).abs() < 1.0 && u > -1.0 && u < len + 1.0
@@ -532,7 +543,12 @@ impl Model {
                 ElementKind::Opening(o)
                     if e.storey == r.storey && o.path.iter().all(|p| auf(*p)) =>
                 {
-                    Some((id, o.path.iter().map(|p| *p + v.versatz).collect()))
+                    let mut o = o.clone();
+                    o.path = o.path.iter().map(|p| *p + v.versatz).collect();
+                    let element = o.install.element.unwrap_or(crate::oeffnung::ELEMENT_DEPTH);
+                    o.install.outer = o.install.outer.map(|x| (dicke - x - element).max(0.0));
+                    o.reveal = o.reveal.map(|[l, r, ob, u]| [r, l, ob, u]);
+                    Some((id, o))
                 }
                 _ => None,
             })
@@ -1312,6 +1328,96 @@ mod tests {
             [vec3(4500.0, 6500.0, 0.0), vec3(7000.0, 6500.0, 0.0)],
         );
         assert!(m.vereinen_punkte(e, f).is_some(), "gleiche Außenseite");
+    }
+
+    /// Zug mit kurzem, um 0,4 mm schrägem Schenkel in der Flucht: Die
+    /// wegfallende lange Wand läge am fernen Ende 8 mm neben seiner Linie,
+    /// also stumpf (Review #210 B6). Andere Kronenlage: stumpf.
+    #[test]
+    fn vereint_nur_auf_einer_linie() {
+        let (mut m, st, _) = haus();
+        let iw = m.defaults().interior_wall;
+        let a = innenwand(
+            &mut m,
+            st,
+            vec3(1000.0, 3000.0, 0.0),
+            vec3(4000.0, 3000.0, 0.0),
+        );
+        let r = m
+            .add_wall_run(
+                &[
+                    vec3(5000.0, 3000.0, 0.0),
+                    vec3(5200.0, 3000.4, 0.0),
+                    vec3(5200.0, 4000.0, 0.0),
+                ],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let b = m.wall_at(r, 0).unwrap();
+        assert_eq!(m.vereinen_punkte(a, b), None);
+        assert_eq!(m.vereinen_punkte(b, a), None);
+        // Gerade Linie: wird eine Wand
+        let c = innenwand(
+            &mut m,
+            st,
+            vec3(1000.0, 5000.0, 0.0),
+            vec3(3000.0, 5000.0, 0.0),
+        );
+        let d = innenwand(
+            &mut m,
+            st,
+            vec3(4000.0, 5000.0, 0.0),
+            vec3(6000.0, 5000.0, 0.0),
+        );
+        assert!(m.vereinen_punkte(c, d).is_some());
+        let (rd, _) = m.segment_of(d).unwrap();
+        m.runs.get_mut(rd).unwrap().top.offset += 100.0;
+        assert_eq!(m.vereinen_punkte(c, d), None, "andere Krone");
+    }
+
+    /// Gespiegelte Außenfläche: Einbautiefe und Anschlag der versetzten
+    /// Tür gelten von der neuen Außenfläche aus; eine Tür in der bleibenden
+    /// Wand bleibt, wie sie ist (Review #210 B7, H-210o).
+    #[test]
+    fn versetzte_tuer_behaelt_ihren_einbau() {
+        let (mut m, st, _) = haus();
+        let iw = m.defaults().interior_wall;
+        let ti = m
+            .layer_set(iw)
+            .map(|s| s.layers.iter().map(|l| l.thickness).sum::<f64>())
+            .unwrap();
+        let a = innenwand(
+            &mut m,
+            st,
+            vec3(1000.0, 3000.0, 0.0),
+            vec3(4000.0, 3000.0, 0.0),
+        );
+        let b = innenwand(
+            &mut m,
+            st,
+            vec3(7000.0, 3000.0, 0.0),
+            vec3(5000.0, 3000.0, 0.0),
+        );
+        let mut t = tuer(&m, st, b, 500.0);
+        t.install = crate::oeffnung::Install {
+            outer: Some(30.0),
+            element: Some(60.0),
+        };
+        t.reveal = Some([10.0, 20.0, 0.0, 0.0]);
+        let id = m.add_opening(t.clone()).unwrap();
+        let nachbar = tuer(&m, st, a, 500.0);
+        let na = m.add_opening(nachbar.clone()).unwrap();
+        m.verlaengern(a, b).unwrap();
+        let o = m.opening(id).unwrap();
+        assert_eq!(o.install.outer, Some(ti - 30.0 - 60.0));
+        assert_eq!(o.install.element, Some(60.0));
+        assert_eq!(o.reveal, Some([20.0, 10.0, 0.0, 0.0]));
+        assert_eq!(m.opening(na).unwrap(), &nachbar);
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     /// Raumbuch: Die Abweichung an der wegfallenden Wand gilt danach an
