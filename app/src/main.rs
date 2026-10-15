@@ -4279,8 +4279,8 @@ impl App {
                     );
                     match change {
                         selection::PickChange::Keep => {}
-                        // Klick ins Leere im Grundriss wählt die Geländefläche
-                        // darunter oder keine (G3d, H-189f)
+                        // Klick ins Leere wählt die Geländefläche oder die
+                        // Geländeplatte darunter oder keine (G3d, H-189f)
                         selection::PickChange::Replace(None)
                             if self.flaeche_klick(x, y, vw, vh) => {}
                         selection::PickChange::Replace(id) => self.select(id),

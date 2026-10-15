@@ -351,6 +351,11 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Liegt `p` (mm, Draufsicht) auf der Platte `t`, in einem ihrer Trapeze?
+fn platte_bei(t: &sk_model::TerrainPlate, p: [f64; 2]) -> bool {
+    t.pieces.iter().any(|q| innen(&q.map(|e| [e.x, e.y]), p))
+}
+
 /// Ohne Höhenaufmaß ruhen die Flächen.
 fn ruhen(m: &Model) -> bool {
     m.terrain().is_none_or(|t| t.points.is_empty())
@@ -747,19 +752,48 @@ impl App {
     }
 
     /// Klick ins Leere im Grundriss: die Fläche darunter wählen, daneben
-    /// eine gewählte abwählen (H-189f). `true`, wenn der Klick einer Fläche
-    /// galt.
+    /// eine gewählte abwählen (H-189f); trifft er keine Fläche, aber die
+    /// grüne Geländeplatte, wählt er die Platte ([`App::platte_klick`]).
+    /// `true`, wenn der Klick einer Fläche oder der Platte galt.
     pub(crate) fn flaeche_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
         let frei = self.ui.frei.frei(crate::freischaltung::Modul::Gelaende);
         let g = self.cam.ground_point(x, y, vw, vh);
         let i = g
             .filter(|_| frei && self.ui.view == ViewKind::Plan && !self.scene.terrain_hidden())
             .and_then(|g| flaeche_bei(self.scene.model(), [g.x, g.y]));
+        if i.is_none() && self.platte_klick(x, y, vw, vh) {
+            return true;
+        }
         if i.is_none() && self.picking.flaeche.is_none() {
             return false;
         }
         self.flaeche_waehlen(i);
         true
+    }
+
+    /// Klick ins Leere auf die grüne Geländeplatte im Grundriss oder in 3D
+    /// wählt sie wie ihre Zeile im Baum (Bedienbarkeit Durchgang 41: „nur
+    /// im Baum wählbar“). Die Platte gehört zur Grundausstattung, also
+    /// auch ohne das Geländemodul; mit Höhenaufmaß steht dort das echte
+    /// Gelände statt der Platte, ausgeblendet ist sie nicht zu treffen.
+    /// `true`, wenn der Klick die Platte traf.
+    fn platte_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
+        let m = self.scene.model();
+        if !matches!(self.ui.view, ViewKind::Plan | ViewKind::Persp)
+            || self.scene.terrain_hidden()
+            || !ruhen(m)
+        {
+            return false;
+        }
+        let cam = &self.cam;
+        let traf = self.platte.im_bild(m).iter().any(|p| {
+            cam.plane_point(x, y, vw, vh, p.top)
+                .is_some_and(|q| platte_bei(p, [q.x, q.y]))
+        });
+        if traf && !self.picking.plate {
+            self.platte_waehlen();
+        }
+        traf
     }
 
     /// Paneel „Eigenschaften“ der gewählten Fläche; `true`, wenn es sie
@@ -1122,6 +1156,43 @@ mod tests {
         assert!(m.set_terrain(None));
         m.commit();
         assert_eq!(gewaehlte(&m, Some(1)), None);
+    }
+
+    /// Klick auf die Platte trifft eines ihrer Trapeze, auch das mit zwei
+    /// zusammenfallenden Ecken; das Loch fürs Haus und daneben nicht
+    /// (Bedienbarkeit Durchgang 41).
+    #[test]
+    fn platte_treffen() {
+        let q = |a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]| {
+            [a, b, c, d].map(|e| punkt(e[0], e[1]))
+        };
+        // Ring 0..10 m um ein Haus 3..7 m, unten ein Rechteck, rechts ein
+        // Dreieck (zwei Ecken gleich)
+        let t = sk_model::TerrainPlate {
+            buildings: Vec::new(),
+            top: 0.0,
+            bottom: -500.0,
+            pieces: vec![
+                q(
+                    [0.0, 0.0],
+                    [10000.0, 0.0],
+                    [7000.0, 3000.0],
+                    [3000.0, 3000.0],
+                ),
+                q(
+                    [7000.0, 3000.0],
+                    [10000.0, 0.0],
+                    [10000.0, 10000.0],
+                    [10000.0, 10000.0],
+                ),
+            ],
+            edges: Vec::new(),
+        };
+        assert!(platte_bei(&t, [5000.0, 1000.0]));
+        assert!(platte_bei(&t, [9500.0, 5000.0]));
+        assert!(!platte_bei(&t, [5000.0, 5000.0]), "Loch fürs Haus");
+        assert!(!platte_bei(&t, [11000.0, 5000.0]), "daneben");
+        assert!(!platte_bei(&t, [5000.0, -100.0]), "daneben");
     }
 
     /// Paneel: Höhe und Böschung als Felder, solange sie für die ganze
