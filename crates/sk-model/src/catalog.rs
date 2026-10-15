@@ -287,8 +287,9 @@ impl Library {
 /// Kennung eines Satzes zum Wiederfinden in der eigenen Ausgabe: Abschnitt
 /// und Guid, ohne Guid die Schlüsselfelder ([default]: Art, [typeprop]:
 /// Typ und Merkmal, [layer]: Typ, [matprop]/[prop]: Baustoff bzw.
-/// Bauteil und Merkmal). Mehrere Sätze mit derselben Kennung
-/// (Schichten eines Typs) zählen in Dateireihenfolge durch.
+/// Bauteil und Merkmal, [spacefinish]: Raum und Stelle). Mehrere Sätze
+/// mit derselben Kennung (Schichten eines Typs) zählen in
+/// Dateireihenfolge durch.
 pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
     // Muster (Paket 6) gehören über `surface=` zu ihrer Oberfläche
     let id = r
@@ -297,6 +298,16 @@ pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> Stri
         .or_else(|| r.opt("surface").map(|g| ("surface", g)));
     let base = match id {
         Some((k, g)) => format!("{} {k}={g}", r.section),
+        // Abweichungen je Raum (RB6): Raum und Stelle, die Datei nennt die
+        // Räume in anderer Reihenfolge, als das Programm sie schreibt
+        None if r.section == "spacefinish" => format!(
+            "{} space={} at={} wall={} side={}",
+            r.section,
+            r.opt("space").unwrap_or(""),
+            r.opt("at").unwrap_or(""),
+            r.opt("wall").unwrap_or(""),
+            r.opt("side").unwrap_or("")
+        ),
         None => format!(
             "{} set={} cat={} mat={} elem={} key={}",
             r.section,
