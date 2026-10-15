@@ -82,6 +82,8 @@ struct Lage {
     /// "gebaeude" oder "innenwand"
     werkzeug: Option<&'static str>,
     isolieren: bool,
+    /// Leiste „Gelände“ offen oder Geländefläche gewählt.
+    gelaende: bool,
     /// "wand", "og-wand", "gruendung", "decke", "dachterrasse"
     auswahl: Option<&'static str>,
     ansicht: Option<ViewKind>,
@@ -112,6 +114,7 @@ fn thema(l: &Lage) -> &'static str {
         tool: l.werkzeug.map(|w| w == "innenwand"),
         opening: matches!(l.werkzeug, Some("fenster" | "tuer")),
         isolating: l.isolieren,
+        gelaende: l.gelaende,
         selection: l.auswahl.map(|a| match a {
             "wand" => SelKind::Wall,
             "og-wand" => SelKind::UpperWall,
@@ -192,7 +195,7 @@ const OHNE: Modifiers = Modifiers {
 /// Knöpfe mit Tooltip (§1.3); „Winkelsprung“ (vormals „90°-Sprung“, G2)
 /// steht im Paneel Werkzeuge (Koordinator 21:45), „Erweiterungen“ dort ab
 /// E6 (Schrittplan .szb).
-const KNOEPFE: [&str; 32] = [
+const KNOEPFE: [&str; 33] = [
     "Gebäude",
     "Innenwand",
     "Wandöffnung",
@@ -215,6 +218,7 @@ const KNOEPFE: [&str; 32] = [
     "Fläche zeichnen",
     "Fläche befestigt",
     "Fläche löschen",
+    "Alle Hinweise",
     "3D",
     "Grundriss",
     "Schnitt",
@@ -500,6 +504,37 @@ fn a290_themenwahl() {
         }),
         "baum"
     );
+    // Gelände (Bedienbarkeit 43.2): vor Isolieren und Auswahl, nach
+    // Werkzeug und Fenster
+    for (l, id) in [
+        (
+            Lage {
+                gelaende: true,
+                isolieren: true,
+                auswahl: Some("wand"),
+                ..Lage::default()
+            },
+            "gelaende",
+        ),
+        (
+            Lage {
+                gelaende: true,
+                werkzeug: Some("gebaeude"),
+                ..Lage::default()
+            },
+            "zeichnen",
+        ),
+        (
+            Lage {
+                gelaende: true,
+                fenster: Some("katalog"),
+                ..Lage::default()
+            },
+            "katalog",
+        ),
+    ] {
+        assert_eq!(f(l), id);
+    }
     for (a, id) in [
         ("wand", "wand"),
         ("og-wand", "og"),
