@@ -2361,7 +2361,11 @@ impl Schedule {
             .auto
             .iter()
             .filter(|a| {
-                !u.ohne.contains(&a.storey)
+                // Erdarbeiten des Grundstücks hängen an keinem Geschoss,
+                // auch wenn sie das des Trägers tragen (Review #184 H-184a)
+                let grundstueck = a.building.is_none()
+                    && crate::qto_earth::GRUNDSTUECK_SCHLUESSEL.contains(&a.key);
+                (grundstueck || !u.ohne.contains(&a.storey))
                     && match u.gebaeude {
                         Some(g) => a.building == Some(g),
                         None => true,
