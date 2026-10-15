@@ -22,7 +22,8 @@ use crate::raumliste::{fertigmass, traeger, Platten};
 use crate::Ketten;
 use sk_model::qto::{RoomLine, RoomQto, Side};
 use sk_model::rechenweg::Rechenweg;
-use sk_model::{Category, ElementId, LayerFunction, MaterialLayer, Model, StoreyId};
+use sk_model::trade::TradeId;
+use sk_model::{Category, ElementId, LayerFunction, LayerSetId, MaterialLayer, Model, StoreyId};
 
 /// Kostengruppen nach DIN 276:2018.
 const KG_SOHLE: u16 = 324;
@@ -66,15 +67,26 @@ pub fn raeume_mit(
 fn raum(model: &Model, platten: &Platten, roh: Rohbau) -> Option<(ElementId, RoomQto)> {
     let id = roh.form.raum?;
     let aus = RaumAusbau::fuer_in(model, &roh, &platten.geschosse)?;
+    // Ohne Ausbautypen im Projekt fehlt der Raum, auch wenn der Putz der
+    // Wandtypen Eckschienen ergäbe (wie die Grundfläche, Review #182 B1)
+    if !aus.mit_typen() {
+        return None;
+    }
     let (_, m, _) = fertigmass(model, &roh, &aus);
     let kanten: Vec<&Kante> = roh.kanten().collect();
     // Unter dem Boden: Sohlplatte oder Decke, einmal je Raum
     let unten = traeger(model, platten, &roh, &kanten, Flaeche::Boden)
         .and_then(|id| model.element(id))
         .map(|e| e.category);
-    let mut lines: Vec<RoomLine> = rechnen(model, &roh, &aus, &Regeln::default())
+    let zeilen = rechnen(model, &roh, &aus, &Regeln::default());
+    let gewerke: Vec<Option<TradeId>> = zeilen
+        .iter()
+        .map(|z| gewerk_der_laenge(model, &zeilen, z.flaeche))
+        .collect();
+    let mut lines: Vec<RoomLine> = zeilen
         .into_iter()
-        .map(|z| zeile(model, unten, &kanten, z))
+        .zip(gewerke)
+        .map(|(z, t)| zeile(model, unten, &kanten, z, t))
         .collect();
     // Ohne Ausbautypen im Projekt keine Zeilen, dann fehlt der Raum
     if lines.is_empty() {
@@ -96,12 +108,52 @@ fn raum(model: &Model, platten: &Platten, roh: Rohbau) -> Option<(ElementId, Roo
     ))
 }
 
-fn zeile(model: &Model, unten: Option<Category>, kanten: &[&Kante], z: Zeile) -> RoomLine {
+/// Gewerk einer Schicht: das der Schicht, sonst das ihres Baustoffs.
+fn gewerk(model: &Model, typ: Option<(LayerSetId, usize)>) -> Option<TradeId> {
+    let l = typ.and_then(|(t, j)| model.layer_set(t)?.layers.get(j).copied())?;
+    l.trade.or_else(|| model.material(l.material)?.trade)
+}
+
+/// Gewerk einer Länge ohne eigenen Typ, für ihre Zeile im Mengenblatt nach
+/// Gewerk (Bedienbarkeit 43.10, mit Kosten abgestimmt): das der Fläche, an
+/// der sie liegt. Randdämmstreifen zum Estrich, Eckschienen zum Putz der
+/// Wandseiten (Schicht mit Dicke), Silikonfugen zu den Wandfliesen. Die
+/// Sockelleiste hat ihren Typ und dessen Gewerk (ab Werk das des Belags).
+fn gewerk_der_laenge(model: &Model, zeilen: &[Zeile], f: Flaeche) -> Option<TradeId> {
+    // nur für die drei Längen über die Zeilen, so bleibt der Raum linear
+    // in seinen Zeilen (Review #182 H-182f)
+    if !matches!(
+        f,
+        Flaeche::Randstreifen | Flaeche::Eckschienen | Flaeche::Silikon
+    ) {
+        return None;
+    }
+    let an = |z: &Zeile| match f {
+        Flaeche::Randstreifen => z.flaeche == Flaeche::Estrich,
+        Flaeche::Eckschienen => matches!(z.flaeche, Flaeche::Wand(_)) && z.dicke > 0.0,
+        Flaeche::Silikon => matches!(z.flaeche, Flaeche::Fliesen(_)),
+        _ => false,
+    };
+    zeilen
+        .iter()
+        .filter(|z| an(z))
+        .find_map(|z| gewerk(model, z.typ))
+}
+
+/// Zeile der Mengenliste aus der Zeile `z` des Raumbuchs; `laenge` ist das
+/// Gewerk einer Länge ohne eigenen Typ ([`gewerk_der_laenge`]).
+fn zeile(
+    model: &Model,
+    unten: Option<Category>,
+    kanten: &[&Kante],
+    z: Zeile,
+    laenge: Option<TradeId>,
+) -> RoomLine {
     let schicht = z
         .typ
         .and_then(|(t, j)| model.layer_set(t)?.layers.get(j).copied());
     let material = schicht.map(|l| l.material);
-    let trade = schicht.and_then(|l| l.trade.or_else(|| model.material(l.material)?.trade));
+    let trade = gewerk(model, z.typ).or(laenge);
     let side = match z.flaeche {
         Flaeche::Boden | Flaeche::Estrich | Flaeche::Sockel | Flaeche::Randstreifen => Side::Floor,
         Flaeche::Decke => Side::Ceiling,
@@ -110,6 +162,7 @@ fn zeile(model: &Model, unten: Option<Category>, kanten: &[&Kante], z: Zeile) ->
     let kg = kostengruppe(model, unten, kanten, z.flaeche, schicht);
     RoomLine {
         name: name(model, kanten, z.flaeche),
+        flaeche: z.flaeche.kennung(),
         side,
         finish: z.typ,
         material,
@@ -201,7 +254,7 @@ fn richtung(model: &Model, k: &Kante) -> &'static str {
 
 fn name(model: &Model, kanten: &[&Kante], f: Flaeche) -> String {
     match f {
-        Flaeche::Boden => "Boden".into(),
+        Flaeche::Boden => "Boden (VOB)".into(),
         Flaeche::Estrich => "Estrich".into(),
         Flaeche::Decke => "Decke".into(),
         Flaeche::Wand(k) => format!("Wand {}", seite(model, kanten, k)),
@@ -363,6 +416,21 @@ mod tests {
             assert_eq!(a.kg, Some(if a.storey == eg { 324 } else { 353 }));
             assert!(a.formula.ends_with(" m"), "{}", a.formula);
         }
+        // Gewerk der Längen: Sockelleiste nach ihrem Typ (Eiche wie das
+        // Parkett), Randdämmstreifen wie der Estrich (43.10)
+        for g in &gruppen {
+            let Some(ElementQto::Room(q)) = &g.rows[0].q else {
+                continue;
+            };
+            for l in q.lines.iter().filter(|l| l.is_auto()) {
+                let code = l.trade.and_then(|t| m.trade(t)).map(|t| t.code.as_str());
+                let soll = match l.key {
+                    Some("room.skirting") => "18356",
+                    _ => "18353",
+                };
+                assert_eq!(code, Some(soll), "{}", l.name);
+            }
+        }
         // Nach Gewerk: Parkett, Putz, Estrich mit Fläche
         assert!(b
             .by_trade
@@ -407,6 +475,204 @@ mod tests {
         assert_eq!(
             kgs.into_iter().collect::<Vec<_>>(),
             [324, 325, 336, 353, 354]
+        );
+    }
+
+    /// Bedienbarkeit 43.8: Die Grundfläche des Grundrisses
+    /// (`flaechen::grundflaeche_fertig`) ist die Fläche des Raums im
+    /// Mengenblatt, auch im Bad mit Wandfliesen ab Boden, wo der Putz der
+    /// Vorgabe allein eine größere Fläche ergäbe; ohne Ausbau bleibt sie die
+    /// Grundfläche mit dem Putz der Vorgabe.
+    #[test]
+    fn grundflaeche_wie_im_mengenblatt() {
+        use crate::flaechen::{grundflaeche, grundflaeche_fertig};
+        use sk_model::model::BATH_SPACE_GUID;
+        let gleich = |m: &Model, bad: bool, putz: f64| {
+            for (g, _) in m.storeys().iter() {
+                let mengen = raeume(m, g);
+                for f in formen(m, g) {
+                    let id = f.raum.unwrap();
+                    let q = &mengen.iter().find(|x| x.0 == id).unwrap().1;
+                    let ist = grundflaeche_fertig(m, &f);
+                    assert!((ist - q.area).abs() < 1e-6, "{ist} {}", q.area);
+                    let ist_bad = m.space(id).unwrap().nutzung == Some(BATH_SPACE_GUID);
+                    if bad && ist_bad {
+                        // Putz 15 mm und Fliese 10 mm statt Putz 15 mm
+                        assert!(grundflaeche(&f) - ist > 0.0, "Fliese abgezogen");
+                    } else {
+                        let soll = f.flaeche - f.umfang * putz + 4.0 * putz * putz;
+                        assert!((ist - soll).abs() < 1.0, "Putz {putz} mm: {ist} {soll}");
+                    }
+                }
+            }
+        };
+        let mut m = haus();
+        gleich(&m, false, 15.0);
+        let g = m.storeys().iter().next().unwrap().0;
+        let id = m.spaces(g)[0];
+        m.begin("Bad");
+        assert!(m.ensure_space_type(BATH_SPACE_GUID).is_some());
+        assert!(m.set_space(id, |s| s.nutzung = Some(BATH_SPACE_GUID)));
+        assert!(crate::ausbau::typen_anlegen(&mut m, id));
+        m.commit();
+        gleich(&m, true, 15.0);
+        // Vorlage ohne Wandbekleidung, Boden im Projekt: Das Mengenblatt
+        // zeigt den Raum mit der Rohbaufläche, die Grundfläche ebenso
+        // (Review #182 B1)
+        let mut m = haus();
+        m.begin("Ohne Wand");
+        let mut w = m
+            .space_type(sk_model::model::DEFAULT_SPACE_GUID)
+            .unwrap()
+            .clone();
+        (w.wall, w.tiles) = (None, None);
+        assert!(m.put_space_type(w));
+        m.commit();
+        gleich(&m, false, 0.0);
+        // Ohne Ausbau im Projekt: wie bisher
+        let m = crate::raumliste::tests::haus_roh();
+        for (g, _) in m.storeys().iter() {
+            for f in formen(&m, g) {
+                assert_eq!(grundflaeche_fertig(&m, &f), grundflaeche(&f));
+            }
+        }
+    }
+
+    /// Review #182 B1: Eine Wandzunge teilt die Seite der Außenwand in zwei
+    /// Wandseiten gleichen Namens. In die Gewerksumme geht jede Fläche je
+    /// Gewerk einmal, beide Wandseiten also ganz; nur die Schichten unter
+    /// einer Fläche (Estrich samt Dämmung) zählen einmal.
+    #[test]
+    fn gewerksumme_mit_wandzunge() {
+        use sk_math::vec3;
+        let mut m = haus();
+        let eg = m
+            .levels_in(m.buildings().iter().next().map(|b| b.0))
+            .into_iter()
+            .find(|g| m.storey(*g).unwrap().kind == sk_model::LevelKind::Storey)
+            .unwrap();
+        let iw = m.defaults().interior_wall;
+        let aw = m.defaults().exterior_wall;
+        let t: f64 = m.wall_layers(aw).iter().map(|l| l.thickness).sum();
+        let p = [vec3(5000.0, t, 0.0), vec3(5000.0, 2000.0, 0.0)];
+        m.begin("Zunge");
+        m.add_wall_run(
+            &p,
+            false,
+            sk_model::RefSide::Center,
+            eg,
+            iw,
+            Category::InteriorWall,
+        )
+        .unwrap();
+        crate::abgleichen(&mut m, &[eg]);
+        m.commit();
+        let s = schedule_mit(&m, &raeume);
+        let st = s.buildings[0].storeys.iter().find(|x| x.id == eg).unwrap();
+        let r = st
+            .groups
+            .iter()
+            .find(|g| g.category == Category::Space)
+            .map(|g| &g.rows[0])
+            .unwrap();
+        let Some(ElementQto::Room(q)) = &r.q else {
+            panic!("Raum ohne Mengen");
+        };
+        // zwei Wandseiten gleichen Namens, verschiedene Flächen
+        let sued: Vec<&RoomLine> = q
+            .lines
+            .iter()
+            .filter(|l| l.name == "Wand AW-004 Süd" && l.finish.is_some_and(|f| f.1 == 1))
+            .collect();
+        assert_eq!(
+            sued.len(),
+            2,
+            "{:?}",
+            q.lines.iter().map(|l| &l.name).collect::<Vec<_>>()
+        );
+        assert_eq!(sued[0].name, sued[1].name);
+        assert_ne!(sued[0].flaeche, sued[1].flaeche);
+        // je Gewerk: Summe nach VOB = je Fläche einmal ihre Menge
+        let zeilen = sk_model::qto_raum::layer_rows(&m, r, eg, q);
+        let mut gewerke: Vec<_> = zeilen.iter().map(|z| z.trade).collect();
+        gewerke.dedup();
+        for t in gewerke {
+            let summe: f64 = zeilen
+                .iter()
+                .filter(|z| z.trade == t)
+                .map(|z| z.bill_area)
+                .sum();
+            let mut je: Vec<(u32, f64)> = Vec::new();
+            for z in zeilen.iter().filter(|z| z.trade == t) {
+                let f = q.lines[z.layer].flaeche;
+                if !je.iter().any(|x| x.0 == f) {
+                    je.push((f, z.area));
+                }
+            }
+            let soll: f64 = je.iter().map(|x| x.1).sum();
+            assert!((summe - soll).abs() < 1e-6, "{t:?}: {summe} {soll}");
+        }
+        // Putz: jede Wandseite zählt, auch die zweite mit gleichem Namen
+        let putz = |z: &&LayerRow| z.side == Some(Side::Wall) && z.thickness > 0.0;
+        let a: f64 = zeilen.iter().filter(putz).map(|z| z.area).sum();
+        let b: f64 = zeilen.iter().filter(putz).map(|z| z.bill_area).sum();
+        assert!(a > 0.0 && (a - b).abs() < 1e-6, "{a} {b}");
+    }
+
+    /// Gewerk einer Länge ohne Typ nach der Fläche, an der sie liegt
+    /// (43.10): Randdämmstreifen wie der Estrich, Eckschienen wie der Putz
+    /// (nicht der Anstrich), Silikonfugen wie die Wandfliesen; ohne diese
+    /// Fläche keins.
+    #[test]
+    fn gewerk_der_laengen() {
+        use sk_model::model::{LIME_WALL_TYPE_GUID, SCREED_FLOOR_TYPE_GUID, WALL_TILES_TYPE_GUID};
+        let mut m = haus();
+        m.begin("Typen");
+        let mut typ = |g| m.ensure_finish_type(g).unwrap();
+        let (estrich, wand, fliesen) = (
+            typ(SCREED_FLOOR_TYPE_GUID),
+            typ(LIME_WALL_TYPE_GUID),
+            typ(WALL_TILES_TYPE_GUID),
+        );
+        m.commit();
+        let z = |flaeche, typ, dicke| Zeile {
+            flaeche,
+            typ: Some(typ),
+            dicke,
+            schluessel: None,
+            bezug: Bezug::Flaeche,
+            terme: Vec::new(),
+        };
+        let zeilen = [
+            z(Flaeche::Wand(0), (wand, 0), 0.0),
+            z(Flaeche::Wand(0), (wand, 1), 15.0),
+            z(Flaeche::Estrich, (estrich, 0), 65.0),
+            z(Flaeche::Fliesen(1), (fliesen, 0), 10.0),
+        ];
+        let code = |z: &[Zeile], f| {
+            gewerk_der_laenge(&m, z, f)
+                .and_then(|t| m.trade(t))
+                .map(|t| t.code.clone())
+        };
+        assert_eq!(
+            code(&zeilen, Flaeche::Randstreifen).as_deref(),
+            Some("18353")
+        );
+        assert_eq!(
+            code(&zeilen, Flaeche::Eckschienen).as_deref(),
+            Some("18350")
+        );
+        assert_eq!(code(&zeilen, Flaeche::Silikon).as_deref(), Some("18352"));
+        assert_eq!(
+            code(&zeilen[..1], Flaeche::Eckschienen),
+            None,
+            "nur Anstrich"
+        );
+        assert_eq!(code(&zeilen[..2], Flaeche::Randstreifen), None);
+        assert_eq!(
+            code(&zeilen, Flaeche::Sockel),
+            None,
+            "die Sockelleiste hat ihren Typ"
         );
     }
 

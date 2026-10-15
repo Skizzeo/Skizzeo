@@ -208,7 +208,7 @@ pub(crate) fn fertigmass(
 
 /// Fertigumriss: jeder Ring je Kante um `dicken` (fortlaufend gezählt)
 /// nach innen versetzt; `None`, wenn ein Ring dabei zerfällt.
-fn fertigumriss(ringe: &[&[Kante]], dicken: &[f64]) -> Option<Umriss> {
+pub(crate) fn fertigumriss(ringe: &[&[Kante]], dicken: &[f64]) -> Option<Umriss> {
     let mut i = 0;
     let mut out = Vec::new();
     for r in ringe {

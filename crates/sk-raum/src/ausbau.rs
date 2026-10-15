@@ -29,6 +29,12 @@ pub struct SeitenAusbau {
     pub sockel: Option<LayerSetId>,
 }
 
+impl SeitenAusbau {
+    fn mit_typ(&self) -> bool {
+        self.wand.is_some() || self.fliesen.is_some() || self.sockel.is_some()
+    }
+}
+
 /// Ausbau eines Raums, aufgelöst bis auf die Typen des Projekts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RaumAusbau {
@@ -147,6 +153,17 @@ impl RaumAusbau {
         Some(RaumAusbau::nach(model, roh, &s, vorgabe))
     }
 
+    /// Führt das Projekt einen Typ dieses Ausbaus? Ohne keinen ist der Raum
+    /// einer ohne Ausbau: Er hat keine Mengen (alte Dateien, Haus ohne
+    /// Raumbuch), und seine Grundfläche rechnet der Grundriss mit dem Putz
+    /// der Vorgabe ([`dicken_der_form`]).
+    pub fn mit_typen(&self) -> bool {
+        self.boden.is_some()
+            || self.estrich.is_some()
+            || self.decke.is_some()
+            || self.seiten.iter().any(SeitenAusbau::mit_typ)
+    }
+
     /// Ausbau nach der Raumvorlage `s`, jede Wandseite wie die Vorlage. Wo
     /// der Wandtyp selbst Putz zum Raum hat, setzt das Raumbuch nur Anstrich
     /// oder Tapete dazu, wo er auch die Beschichtung hat, nichts (§5.6); wo
@@ -168,30 +185,40 @@ impl RaumAusbau {
     ) -> RaumAusbau {
         let typ = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g));
         let estrich = s.screed.or_else(|| Some(vorgabe()));
-        let fliesen = s
-            .tiles
-            .and_then(|t| Some((model.type_by_guid(t.set)?, t.height)));
-        let seite = |k: &Kante| SeitenAusbau {
-            wand: if k.ausbau_typ.iter().any(|l| l.0 <= 0.0) {
-                None
-            } else {
-                typ(s.wall)
-            },
-            fliesen,
-            sockel: if fliesen.is_some() {
-                None
-            } else {
-                typ(s.skirting)
-            },
-        };
         RaumAusbau {
             boden: typ(s.floor),
             estrich: typ(estrich),
             decke: typ(s.ceiling),
-            seiten: form.kanten().map(seite).collect(),
+            seiten: seiten(model, s, form.kanten()),
             aufbau: AUFBAU,
         }
     }
+}
+
+/// Ausbau der Wandseiten an den Kanten `kanten` nach der Vorlage `s`.
+fn seiten<'a>(
+    model: &Model,
+    s: &SpaceType,
+    kanten: impl Iterator<Item = &'a Kante>,
+) -> Vec<SeitenAusbau> {
+    let typ = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g));
+    let fliesen = s
+        .tiles
+        .and_then(|t| Some((model.type_by_guid(t.set)?, t.height)));
+    let seite = |k: &Kante| SeitenAusbau {
+        wand: if k.ausbau_typ.iter().any(|l| l.0 <= 0.0) {
+            None
+        } else {
+            typ(s.wall)
+        },
+        fliesen,
+        sockel: if fliesen.is_some() {
+            None
+        } else {
+            typ(s.skirting)
+        },
+    };
+    kanten.map(seite).collect()
 }
 
 /// Dicke eines Typs (mm), 0 ohne Typ.
@@ -241,10 +268,43 @@ pub fn laibung_behandelt(art: OpeningKind) -> bool {
 /// Grundrisses: Putz plus Wandfliese, wo sie unten liegt; Sockelleisten
 /// zählen nicht.
 pub fn dicken(model: &Model, form: &Rohbau, a: &RaumAusbau) -> Vec<f64> {
-    form.kanten()
-        .zip(&a.seiten)
+    dicken_an(model, form.kanten(), &a.seiten)
+}
+
+fn dicken_an<'a>(
+    model: &Model,
+    kanten: impl Iterator<Item = &'a Kante>,
+    seiten: &[SeitenAusbau],
+) -> Vec<f64> {
+    kanten
+        .zip(seiten)
         .map(|(k, s)| putz(model, k, s) + s.fliesen.map_or(0.0, |f| dicke(model, Some(f.0))))
         .collect()
+}
+
+/// [`dicken`] nur aus der Form `f`, ohne Rohbau (Öffnungen, Höhen) und
+/// ohne Platten, für die Grundfläche des Grundrisses
+/// ([`crate::flaechen::grundflaeche_fertig`]). Liest außer der Form die
+/// Nutzung des gespeicherten Raums, ihre Raumvorlage (die des Projekts,
+/// sonst die des Werks; ohne Nutzung Wohnzimmer), deren Wandbekleidung
+/// und Wandfliesen aus den Typen des Projekts und an den Kanten den Ausbau
+/// der Wandtypen (`Kante::ausbau_typ`); ob der Raum Ausbau hat, dazu die
+/// Typen von Boden, Decke und Estrich (ohne Estrich in der Vorlage der des
+/// Geschosses, nur wenn sonst keiner da ist). `None` bei einem Raum ohne
+/// Ausbau ([`RaumAusbau::mit_typen`]), wie ihn das Mengenblatt weglässt.
+pub fn dicken_der_form(model: &Model, f: &RaumForm) -> Option<Vec<f64>> {
+    let s = vorlage(model, nutzung(model, f)).or_else(|| vorlage(model, DEFAULT_SPACE_GUID))?;
+    let im_projekt = |g: Option<Guid>| g.and_then(|g| model.type_by_guid(g)).is_some();
+    let kanten = || std::iter::once(&f.umriss).chain(&f.loecher).flatten();
+    let seiten = seiten(model, &s, kanten());
+    let mit_typen = im_projekt(s.floor)
+        || im_projekt(s.ceiling)
+        || seiten.iter().any(SeitenAusbau::mit_typ)
+        || im_projekt(Some(
+            s.screed
+                .unwrap_or_else(|| estrich_vorgabe(model, f.geschoss)),
+        ));
+    mit_typen.then(|| dicken_an(model, kanten(), &seiten))
 }
 
 /// Putzdicke je Laibung (mm), in der Reihenfolge von
