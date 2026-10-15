@@ -180,6 +180,54 @@ impl Model {
         self.space(raum)?.ausbau.iter().find(|a| a.stelle == stelle)
     }
 
+    /// Vereinte Wände (Verlängern in einer Flucht, G5c): Die Abweichungen
+    /// der Wandseiten von `alt` gelten nun an `neu`, mit getauschter Seite,
+    /// wenn `alt` gegen `neu` lief (`spiegeln`). Hat ein Raum an der Stelle
+    /// von `neu` schon eine, bleibt diese. `alt == neu` mit `spiegeln`
+    /// tauscht nur die Seiten (Review #210 B4).
+    pub(super) fn ausbau_wand_vereint(&mut self, alt: Guid, neu: Guid, spiegeln: bool) {
+        if alt == neu && !spiegeln {
+            return;
+        }
+        let raeume: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                ElementKind::Space(s)
+                    if s.ausbau
+                        .iter()
+                        .any(|a| a.stelle.seite().is_some_and(|w| w.wand == alt)) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .collect();
+        for id in raeume {
+            self.set_space(id, |s| {
+                let (weg, mut bleibt): (Vec<AusbauAbweichung>, Vec<AusbauAbweichung>) = s
+                    .ausbau
+                    .iter()
+                    .partition(|a| a.stelle.seite().is_some_and(|w| w.wand == alt));
+                for a in weg {
+                    let Some(w) = a.stelle.seite() else {
+                        continue;
+                    };
+                    let seite = WandSeite {
+                        wand: neu,
+                        links: w.links != spiegeln,
+                    };
+                    let stelle = a.stelle.an(seite);
+                    if !bleibt.iter().any(|b| b.stelle == stelle) {
+                        bleibt.push(AusbauAbweichung { stelle, ..a });
+                    }
+                }
+                ordnen(&mut bleibt);
+                s.ausbau = bleibt;
+            });
+        }
+    }
+
     /// Geteilte Wand (`set_points`): Die Abweichungen der Wandseiten von
     /// `alt` gelten auch für das neue Stück `neu` (schnittstelle-raum.md
     /// §4, Grundriss 17:29).

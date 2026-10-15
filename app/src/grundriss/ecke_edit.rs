@@ -298,7 +298,7 @@ impl EckeWahl {
     /// Zielwand für weitere Wände.
     fn vereinen(&mut self, scene: &mut Scene, b: ElementId, v: &Vereint, out: &mut Outcome) {
         let (x, y) = self.paar(b);
-        if !scene.edit_model("Wände vereint", |m| m.verlaengern(x, y).is_ok()) {
+        if !scene.waende_vereinen(x, y, v.weg) {
             out.refused = Some(EckeFehler::Ungueltig);
             return;
         }
@@ -306,9 +306,9 @@ impl EckeWahl {
             return;
         };
         out.schritt = Some(neu);
-        if self.ziel.is_none() {
-            out.karte = Some(karte_weiter(&Self::nummer(scene, neu)));
-        }
+        // Auch nach dem zweiten Schritt: Die Zielwand kann jetzt eine
+        // andere Nummer tragen (Review #210 B5)
+        out.karte = Some(karte_weiter(&Self::nummer(scene, neu)));
         self.ziel = Some(neu);
         self.hover = None;
         self.vorschau = None;
@@ -701,6 +701,17 @@ mod tests {
             )
             .unwrap();
         let f = m.wall_at(r, 0).unwrap();
+        let g = m
+            .add_wall_run(
+                &[vec3(9200.0, 5000.0, 0.0), vec3(9600.0, 5000.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let g = m.wall_at(g, 0).unwrap();
         let mut s = Scene::with_model(m);
         let nr = s.model().element(b).unwrap().number.clone();
         let mut t = EckeWahl::start(&s, f, Art::Verlaengern).unwrap();
@@ -712,6 +723,12 @@ mod tests {
         assert!(s.model().segment_of(f).is_none(), "f geht in b auf");
         assert!((enden(&s, b).1 - vec3(9000.0, 5000.0, 0.0)).length() < 1e-6);
         assert_eq!(s.undo_label(), Some("Wände vereint"));
+        // Zweiter Schritt, der vereint: Die Karte nennt die Zielwand neu
+        // (Review #210 B5)
+        let out = klick(&mut t, &mut s, &c, vec3(9400.0, 5010.0, 0.0));
+        assert_eq!(out.schritt, Some(b), "{out:?}");
+        assert_eq!(out.karte.unwrap()[0], format!("Weitere Wände bis {nr}"));
+        assert!(s.model().segment_of(g).is_none());
         // Weitere Wand bis zur vereinten
         let out = klick(&mut t, &mut s, &c, vec3(5000.0, 2000.0, 0.0));
         assert_eq!(out.schritt, Some(d), "{out:?}");
