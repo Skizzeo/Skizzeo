@@ -49,7 +49,7 @@ fn angaben(preise: bool) -> Angaben {
         umfang: "Gebäude 1 · alle Geschosse".into(),
         stand: "09.10.2026".into(),
         preisquelle: preise.then(|| "Referenzpreise 10/2026, unverbindlich".into()),
-        geschosse: Vec::new(),
+        geschosse: Default::default(),
     }
 }
 
@@ -623,12 +623,13 @@ fn anlage_mengenermittlung() {
     let mut lv = lv(&mut s, true, false);
     let m = s.model();
     let mut a = angaben(true);
-    a.geschosse = m
-        .storeys()
-        .iter()
-        .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
-        .collect();
-    assert!(a.geschosse.iter().any(|g| g.1 == "Fundament"));
+    a.geschosse = std::rc::Rc::new(
+        m.storeys()
+            .iter()
+            .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
+            .collect(),
+    );
+    assert!(a.geschosse.values().any(|g| g == "Fundament"));
     let w = Wahl {
         preise: true,
         ansatz: true,
@@ -652,7 +653,7 @@ fn anlage_mengenermittlung() {
     seite_x_von_y(&b, 0);
     let p = &beton(&mut lv).positionen[0].clone();
     let z = &p.ansatz[0];
-    let name = &a.geschosse.iter().find(|g| g.0 == z.geschoss).unwrap().1;
+    let name = &a.geschosse[&z.geschoss];
     let teile = crate::ava_view::nummern_kurz(&z.nummern);
     let t = alle(&b);
     assert!(!teile.is_empty());
@@ -857,11 +858,12 @@ fn anlage_je_dicke_nur_eigene_raeume() {
     );
     assert_ne!(eg, og);
     let mut a = angaben(false);
-    a.geschosse = m
-        .storeys()
-        .iter()
-        .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
-        .collect();
+    a.geschosse = std::rc::Rc::new(
+        m.storeys()
+            .iter()
+            .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
+            .collect(),
+    );
     let wahl = Wahl {
         ansatz: true,
         ..Wahl::default()

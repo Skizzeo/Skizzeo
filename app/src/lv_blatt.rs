@@ -12,6 +12,8 @@ use sk_cost::lv::{Ansatzzeile, Lv, LvPosition, LvTitel};
 use sk_model::StoreyId;
 use sk_paint::font::Font;
 use sk_paint::pdf::{mm, Op, Seite, A4};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Ränder: links 20 mm (Lochung), sonst 15 mm; Nutzbreite 175 mm.
 const LINKS: f32 = 20.0;
@@ -55,8 +57,9 @@ pub struct Angaben {
     pub stand: String,
     /// Nur mit Preisen: „Referenzpreise 10/2026, unverbindlich“.
     pub preisquelle: Option<String>,
-    /// Kurznamen der Geschosse für die Anlage Mengenermittlung: „EG“, „OG“.
-    pub geschosse: Vec<(StoreyId, String)>,
+    /// Kurznamen der Geschosse für die Anlage Mengenermittlung: „EG“, „OG“;
+    /// je Ansatzzeile nachgeschlagen, geteilt bis sich das Modell ändert.
+    pub geschosse: Rc<HashMap<StoreyId, String>>,
 }
 
 /// Schalter in der Vorschau-Leiste; der Arbeitsplatz merkt sie sich.
@@ -874,9 +877,8 @@ impl<'a> Fluss<'a> {
         }
         self.a
             .geschosse
-            .iter()
-            .find(|(id, _)| *id == a.geschoss)
-            .map(|(_, n)| n.clone())
+            .get(&a.geschoss)
+            .cloned()
             .unwrap_or_default()
     }
 

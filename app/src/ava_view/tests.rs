@@ -1654,3 +1654,27 @@ fn druckvorschau_verknuepft_mit_dem_modell() {
         v.paint_gross(&mut c, &t, &fonts);
     }
 }
+
+/// Review H-239a/b: Geschossnamen und Projekt nur bei neuem Modellstand
+/// oder neuer Szene neu, sonst geteilt.
+#[test]
+fn geschosse_nur_bei_neuem_stand() {
+    let mut s = haus();
+    let mut v = AvaView::new();
+    v.sync(&mut s, None);
+    let a = v.geschosse.clone();
+    assert!(!a.is_empty());
+    v.sync(&mut s, None);
+    assert!(Rc::ptr_eq(&a, &v.geschosse));
+    let mut p = s.model().project().clone();
+    p.site = "Neubau Musterweg".into();
+    assert!(s.projekt_setzen("Projekt", p));
+    v.sync(&mut s, None);
+    assert!(!Rc::ptr_eq(&a, &v.geschosse));
+    assert_eq!(*a, *v.geschosse);
+    assert_eq!(v.projekt.as_ref().unwrap().site, "Neubau Musterweg");
+    let b = v.geschosse.clone();
+    let mut t = haus();
+    v.sync(&mut t, None);
+    assert!(!Rc::ptr_eq(&b, &v.geschosse), "andere Szene");
+}
