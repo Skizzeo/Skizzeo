@@ -90,6 +90,9 @@ const ZAHL_SCHRITT: f64 = 2_000.0;
 /// Aufmaß (Laserscan, dichtes Raster) zeigt nur die Kreuze, sonst deckten
 /// die Zahlen das Bild zu und kosteten Speicher.
 const PUNKT_KOTEN: usize = 2_000;
+/// Abstand einer Kote von der Grundstücksgrenze (mm am Bau), damit der
+/// Strichpunkt keine Ziffer streift.
+const RAND: f64 = 50.0;
 
 /// Gelände aus dem Aufmaß im Modell (mm, z zu ±0,00). Was nur vom Modell
 /// abhängt, steht hier einmal gerechnet: Höhenlinien und Messpunkte sind
@@ -503,6 +506,19 @@ impl Gelaende {
         let mut nah = Vec::new();
         self.haeuser.bei(&[p[0], p[1], p[0], p[1]], &mut nah);
         self.in_einem(&nah, p)
+    }
+
+    /// Kreuzt die Grundstücksgrenze das Rechteck `k`: liegen seine Ecken
+    /// auf beiden Seiten, oder eine Ecke der Grenze darin? (Eine Gerade
+    /// durch ein Rechteck lässt auf jeder Seite eine Ecke.)
+    fn grenze_trifft(&self, k: &Kasten) -> bool {
+        if self.ringe.is_empty() {
+            return false;
+        }
+        let [x0, y0, x1, y1] = *k;
+        let innen = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].map(|p| self.innen(p));
+        let im = |p: &P2| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+        innen.iter().any(|&i| i != innen[0]) || self.ringe.iter().flatten().any(im)
     }
 
     /// Berührt das Rechteck `k` ein Haus: eine Ecke des Hauses darin oder
@@ -1352,13 +1368,14 @@ pub(crate) fn zahlen_tinte(
             belegt.setze(kasten(&ecken));
             (-b / 2.0, 0.3 * h)
         } else {
-            // rechts vom Kreuz, sonst links; ans Haus oder über eine
-            // schon gesetzte Zahl keine (Test #223)
+            // rechts vom Kreuz, sonst links; ans Haus, über die Grenze
+            // oder über eine schon gesetzte Zahl keine (Test und
+            // Bedienbarkeit #223)
             let k = |x0: f64| [q[0] + x0, q[1] - 0.5 * h, q[0] + x0 + b, q[1] + 0.5 * h];
-            let Some(x0) = [0.5 * h, -0.5 * h - b]
-                .into_iter()
-                .find(|&x0| belegt.frei(&k(x0)) && !g.haus_trifft(&k(x0)))
-            else {
+            let rand = |k: Kasten| [k[0] - RAND, k[1] - RAND, k[2] + RAND, k[3] + RAND];
+            let Some(x0) = [0.5 * h, -0.5 * h - b].into_iter().find(|&x0| {
+                belegt.frei(&k(x0)) && !g.haus_trifft(&k(x0)) && !g.grenze_trifft(&rand(k(x0)))
+            }) else {
                 continue;
             };
             belegt.setze(k(x0));
@@ -1803,6 +1820,24 @@ mod tests {
             let frei = zahlen_tinte(&b, &s, 250.0, &t);
             let links = frei.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
             assert!(links.fold(f64::MAX, f64::min) > x0 - 20_000.0);
+            // an der Grenze (Bedienbarkeit #223): 30 cm links einer steilen
+            // Grenzkante steht die Kote links vom Kreuz, nicht über dem
+            // Strichpunkt
+            let grenze = &b.ringe[0];
+            let n = grenze.len();
+            let (a, e) = (0..n)
+                .map(|i| (grenze[i], grenze[(i + 1) % n]))
+                .filter(|(a, e)| (e[1] - a[1]).abs() > 4.0 * (e[0] - a[0]).abs())
+                .max_by(|x, y| (x.1[1] - x.0[1]).abs().total_cmp(&(y.1[1] - y.0[1]).abs()))
+                .expect("steile Grenzkante");
+            let mitte = [(a[0] + e[0]) / 2.0, (a[1] + e[1]) / 2.0];
+            let qg = [mitte[0] - 300.0, mitte[1]];
+            assert_ne!(b.innen(qg), b.innen([mitte[0] + 300.0, mitte[1]]));
+            assert!(!b.im_haus(qg));
+            b.koten = vec![kote(qg)];
+            let tinte = zahlen_tinte(&b, &s, 250.0, &t);
+            let rechts = tinte.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
+            assert!(rechts.fold(f64::MIN, f64::max) < qg[0], "vor der Grenze");
             // geändertes Haus, andere Prüfsumme (die Lage der Koten hängt
             // daran)
             let vorher = zahlen_inhalt(&b);
