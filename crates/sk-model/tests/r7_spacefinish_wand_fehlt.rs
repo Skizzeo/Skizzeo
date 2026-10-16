@@ -36,6 +36,22 @@ fn mit(zeile: &str) -> String {
     out
 }
 
+/// Raum R-001 im geladenen Modell und seine Abweichungen.
+fn r001(m: &sk_model::Model) -> usize {
+    let r = m
+        .elements()
+        .iter()
+        .find(|(_, e)| e.guid.to_string() == R001)
+        .map(|(id, _)| id)
+        .expect("R-001");
+    m.space(r).unwrap().ausbau.len()
+}
+
+/// Abweichungen von R-001 in R7 selbst (seit #230 mit Ausbau je Raum).
+fn basis() -> usize {
+    r001(&szo::read(R7, GuidGen::with_seed(1)).expect("lädt").model)
+}
+
 fn sockel(wand: &str) -> String {
     format!("[spacefinish] space={R001} at=skirting wall={wand} side=l type=none")
 }
@@ -52,14 +68,7 @@ fn r7_spacefinish_wand_fehlt_bleibt_roh() {
         "{:?}",
         l.hints
     );
-    let r = l
-        .model
-        .elements()
-        .iter()
-        .find(|(_, e)| e.guid.to_string() == R001)
-        .map(|(id, _)| id)
-        .expect("R-001");
-    assert!(l.model.space(r).unwrap().ausbau.is_empty());
+    assert_eq!(r001(&l.model), basis(), "die Zeile zählt nicht");
     let aus = szo::write(&l.model);
     assert_eq!(aus.matches(&sockel(FREMD)).count(), 1, "{aus}");
     let zwei = szo::write(&szo::read(&aus, GuidGen::with_seed(1)).unwrap().model);
@@ -75,12 +84,6 @@ fn r7_spacefinish_wand_da_zaehlt() {
         "{:?}",
         l.hints
     );
-    let r = l
-        .model
-        .elements()
-        .iter()
-        .find(|(_, e)| e.guid.to_string() == R001)
-        .map(|(id, _)| id)
-        .expect("R-001");
-    assert_eq!(l.model.space(r).unwrap().ausbau.len(), 1);
+    assert!(!R7.contains(&sockel(WAND)));
+    assert_eq!(r001(&l.model), basis() + 1);
 }
