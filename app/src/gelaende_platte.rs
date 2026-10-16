@@ -176,6 +176,9 @@ pub(crate) struct Platte {
     pub(crate) unterlage: crate::gelaende_app::Unterlage,
     /// Linien in Ansicht und Schnitt.
     linien: Option<Linien>,
+    /// Höhenzahlen im Grundriss als Tinte, zu Gelände, Ziffernhöhe und
+    /// Zeichentabelle ([`App::gelaende_zahlen`]).
+    zahlen: Option<((u64, u64, u64, u64), crate::bemassung::Teil)>,
     /// Der Lageplan kam nach dem letzten Nachzug: das Gelände zieht mit
     /// der Unterlage nach, auch beim selben Modellstand.
     mit_plan: bool,
@@ -978,6 +981,41 @@ impl App {
         let sicht = (view, self.plane());
         let (b, t) = (self.scene.bounds(), self.scene.table());
         self.platte.linien_im_bild(m, sicht, b, t, (scale, mm_px))
+    }
+
+    /// Höhenzahlen an Höhenlinien und ebenen Geländeflächen im Grundriss
+    /// des Erdgeschosses als Tinte, in der Ziffernhöhe der Maßzahlen
+    /// (Bedienbarkeit, Ist-Bilder zu #202); gemerkt, neu nur mit neuem
+    /// Gelände, Maßstil oder neuer Zeichentabelle, nicht je Zoom.
+    /// Ausgeblendet und ohne Aufmaß keine.
+    pub(crate) fn gelaende_zahlen(&mut self) -> Option<crate::bemassung::Teil> {
+        if self.ui.view != ViewKind::Plan
+            || self.scene.terrain_hidden()
+            || !self.scene.ground_active()
+        {
+            return None;
+        }
+        let m = self.scene.model();
+        let stil = m.massstil();
+        let h = stil.am_bau(stil.schrift_mm);
+        let t = self.scene.table();
+        let g = self.platte.gelaende_im_bild(m);
+        if g.is_none_or(|g| g.zahlen.is_empty()) {
+            return None;
+        }
+        let key = (self.platte.fassung, h.to_bits(), t.rev, t.theme_rev);
+        if let Some((k, teil)) = &self.platte.zahlen {
+            if *k == key {
+                return Some(teil.clone());
+            }
+        }
+        let ui = self.ui.fonts.regular.as_ref();
+        let schrift = self.massketten.schrift(&stil.schrift, ui)?;
+        let g = self.platte.gelaende_im_bild(m)?;
+        let ink = gelaende_netz::zahlen_tinte(g, &schrift, h, t);
+        let teil: crate::bemassung::Teil = (crate::scene::neuer_stand() << 1, ink.into());
+        self.platte.zahlen = Some((key, teil.clone()));
+        Some(teil)
     }
 
     /// Der Lageplan unter dem Gelände in eigenen Puffern des Renderers
