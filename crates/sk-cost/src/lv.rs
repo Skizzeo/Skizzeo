@@ -47,6 +47,22 @@ pub const VORBEMERKUNG_NETZ: &str = "Die Vordersätze der Erdarbeiten sind aus d
     nach DIN 18300 Abschnitt 5 auf Grundlage einer gemeinsamen Geländeaufnahme vor Beginn der \
     Arbeiten; ein DGM aus dieser Aufnahme ist als Ermittlungsverfahren vereinbart.";
 
+/// [`VORBEMERKUNG_NETZ`] mit der Herkunft des Netzes in der Klammer
+/// („Höhenaufmaß x.csv vom 12.10.2026, 1.834 Dreiecke“,
+/// [`sk_model::qto_earth::netz_herkunft`]): Die Ansätze nennen die
+/// Dreieckszahl nicht mehr je Zeile, der Prüfer des AG sieht sie hier
+/// einmal (VOB-Spruch zu A2 vom 15.10.).
+pub fn vorbemerkung_netz(herkunft: Option<&str>) -> String {
+    match herkunft {
+        Some(h) => VORBEMERKUNG_NETZ.replacen(
+            "(Dreiecksprismen, REB-VB 22.013)",
+            &format!("(Dreiecksprismen, REB-VB 22.013; {h})"),
+            1,
+        ),
+        None => VORBEMERKUNG_NETZ.to_string(),
+    }
+}
+
 /// Kopf des LV (ka-4-fach §3.2). Umfang und Datum setzt die Ansicht (Uhr
 /// und Kopfzeile aus KA-1), ebenso den Dateinamen, wenn `bauvorhaben` leer
 /// ist ([`bauvorhaben_aus_datei`]).
@@ -1075,7 +1091,9 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
         if !v.is_empty() {
             v.push_str("\n\n");
         }
-        v.push_str(VORBEMERKUNG_NETZ);
+        v.push_str(&vorbemerkung_netz(
+            sk_model::qto_earth::netz_herkunft(m).as_deref(),
+        ));
     }
     for t in k
         .lose

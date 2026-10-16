@@ -155,7 +155,7 @@ Plattendicke | 10 bis 100 cm
 Sockelrücksprung | 0 (bündig) oder 2 bis 50 cm; Platte und Schürze springen gemeinsam
 Schürze | Breite 30 bis 45 cm (Standard 35), Tiefe 20 bis 300 cm ab Unterkante Platte
 Ungültig | roter Rahmen mit Grund
-Baugrund | Projektdaten: Oberboden, Abtrag um die Platte, Arbeitsraum, Kiesschicht und Böschung rechnen die Erdarbeiten; leer gilt der Vorschlag
+Baugrund | Projektdaten: Oberboden, Abtrag um die Platte, Arbeitsraum, Kiesschicht und Böschung (in Grad, daneben als 1:n) rechnen die Erdarbeiten; leer gilt der Vorschlag
 
 [thema] id=decke titel="Decke"
 Entstehen | EG- und OG-Decke kommen mit dem Gebäude
@@ -407,7 +407,7 @@ Platte | ohne Aufmaß liegt unter dem Haus eine ebene grüne Geländeplatte; mit
 Modul | echtes Gelände aus Lageplan und Höhenaufmaß gibt es mit dem Geländemodul (Dateimenü › „Ausbaustufe …“)
 Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen. Geht sie zu, liest Skizzeo fertig und behält den Lageplan
 Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss
-Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien; im Grundriss stehen an den Höhenlinien (volle Meter) und in ebenen Geländeflächen die Höhen in m ü. NHN. Deckt es die Baugrube eines Hauses nicht, steht das rot unter der Höhenlage. „Gelände entfernen“ führt zurück zur Platte; Geländeflächen bleiben gespeichert, Lage, Nordrichtung und Höhe von ±0,00 bleiben
+Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien; im Grundriss stehen an den Höhenlinien (volle Meter), in ebenen Geländeflächen und an den Messpunkten (bis 2.000 Punkte) die Höhen in m ü. NHN. Deckt es die Baugrube eines Hauses nicht, steht das rot unter der Höhenlage. „Gelände entfernen“ führt zurück zur Platte; Geländeflächen bleiben gespeichert, Lage, Nordrichtung und Höhe von ±0,00 bleiben
 Lage | das Gelände bewegt sich, das Haus bleibt: „Schieben“ (im Grundriss nach rechts und nach oben) und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“
 Höhenlage | „relativ“: ±0,00 liegt um „über Gelände“ über dem höchsten Geländepunkt am Plattenrand; „absolut“: ±0,00 fest in m ü. NHN
 Geländeflächen | „Fläche zeichnen“, Ecken im Grundriss klicken (sie rasten an Ecken und Kanten von Haus, Flächen und Grenze, an der Ecke mit Quadrat, an der Kante mit Punkt; mit gehaltener **Strg**-Taste nur im 1-cm-Raster), die erste Ecke oder **Enter** schließt, **Rücktaste** oder **Strg+Z** nimmt die letzte, **Esc** bricht ab. Die Fläche liegt eben, ihre Böschung läuft bis ans Gelände; ein Klick wählt sie, ein Klick daneben wählt sie ab, das Paneel ändert Höhe (über ±0,00, mit Aufmaß daneben in m ü. NHN), Böschung und „befestigt“, für alle Flächen „Oberboden andecken“ und „Eigenboden fest zu eingebaut“ (unter 1: Boden setzt sich beim Verdichten); **Entf** löscht sie
