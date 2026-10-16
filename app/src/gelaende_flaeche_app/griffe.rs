@@ -355,7 +355,8 @@ impl App {
         let Some(r) = p.and_then(|p| gezogen(z.griff, z.start, &z.ring, p)) else {
             return;
         };
-        let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = z.griff;
+        let griff = z.griff;
+        let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = griff;
         // eine Schleife zeigt die Zeile; das Modell bleibt beim letzten
         // guten Stand
         if !sk_model::parcel_ring_ok(&r) {
@@ -368,7 +369,7 @@ impl App {
             }
             self.upload_model();
         }
-        let t = zug_zeile(z.griff, &r);
+        let t = zug_zeile(griff, &r);
         self.status(
             Meldung::mit("{}", &[&t]),
             std::time::Duration::from_secs(3600),
