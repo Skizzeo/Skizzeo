@@ -1782,7 +1782,7 @@ pub fn schedule_storey(model: &Model, e: &Element) -> StoreyId {
 
 /// Gründungsband je Geschoss für [`schedule_storey`], in einem Gang über
 /// die Geschosse aller Gebäude statt je Bauteil (Review #195 H-195g).
-fn gruendungen(model: &Model) -> HashMap<StoreyId, StoreyId> {
+pub(crate) fn gruendungen(model: &Model) -> HashMap<StoreyId, StoreyId> {
     let mut out = HashMap::new();
     for ebenen in model.levels_by_building().into_values() {
         let gruendung = ebenen.iter().copied().find(|g| {
@@ -1798,7 +1798,7 @@ fn gruendungen(model: &Model) -> HashMap<StoreyId, StoreyId> {
 }
 
 /// [`schedule_storey`] mit den vorab gesammelten [`gruendungen`].
-fn schedule_storey_in(gruendung: &HashMap<StoreyId, StoreyId>, e: &Element) -> StoreyId {
+pub(crate) fn schedule_storey_in(gruendung: &HashMap<StoreyId, StoreyId>, e: &Element) -> StoreyId {
     match e.category {
         Category::GroundSlab | Category::StripFooting => {
             gruendung.get(&e.storey).copied().unwrap_or(e.storey)

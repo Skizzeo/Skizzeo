@@ -733,24 +733,9 @@ impl Vis<'_> {
         })
     }
 
-    /// Masken eines Bauteils im laufenden Übergang.
+    /// Masken eines Bauteils im laufenden Übergang ([`Vis::masks_mit`]).
     fn element_masks(&self, id: ElementId) -> Masks {
-        let m = self.model;
-        match self.anim {
-            None => m.masks(id),
-            Some(a) => match a.kind {
-                VisFade::IsolateOn => m.masks(id),
-                VisFade::IsolateOff => m.masks_in(&a.old, id),
-                // Was sich ändert, liegt für den Übergang im blassen Netz
-                VisFade::Out | VisFade::In => {
-                    let (o, n) = (m.masks_in(&a.old, id), m.masks(id));
-                    Masks {
-                        solid: o.solid & n.solid,
-                        ghost: o.solid ^ n.solid,
-                    }
-                }
-            },
-        }
+        self.masks_mit(|v| self.model.masks_in(v, id))
     }
 
     fn class(&self, run: RunId, part: u32, layer: u8) -> Class {

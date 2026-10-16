@@ -2265,6 +2265,122 @@ fn perf_ausbau_innen() {
     println!("Zeiten in ms (Release); geprüft: Räume je Loslassen.");
 }
 
+/// Ausbau nach Raum, Ausbauart und Gewerk (Jörn 16.10.): Netz in 3D und im
+/// Schnitt, jeweils das erste nach dem Umschalten (Median aus fünf), mit
+/// dem Schalter „Ausbau innen“. Ohne Filter der schnelle Weg mit den Netzen
+/// der Hausgruppen, wie vorher; mit Filter je Körper. „Fallrohr“ blendet
+/// nur eine Bauteilart aus, die den Ausbau nicht betrifft.
+#[test]
+#[ignore]
+fn perf_ausbau_filter() {
+    use sk_model::view::Visibility;
+    use sk_model::{Category, TypeCategory};
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    println!();
+    println!(
+        "{:>6} {:>12} | {:>8} {:>8}",
+        "Häuser", "Filter", "3D", "Schnitt"
+    );
+    for n in [100, 1000] {
+        let mut s = town_with_interior(n);
+        for i in 0..3 {
+            s.set_view_finish(i, true);
+        }
+        let side = (n as f64).sqrt().ceil() as usize;
+        let y0 = (side / 2) as f64 * 15000.0;
+        let ebene = Some((vec3(0.0, y0 + 4000.0, 0.0), vec3(0.0, 1.0, 0.0)));
+        let putz = {
+            let m = s.model();
+            let wb = m.type_by_guid(sk_model::model::WOODCHIP_WALL_TYPE_GUID);
+            wb.and_then(|t| m.type_layer_trade(t, 2))
+        };
+        let fallrohr = Visibility {
+            hidden_cat: [Category::Downpipe].into(),
+            ..Visibility::default()
+        };
+        let estrich = Visibility {
+            hidden_finish: [TypeCategory::Screed].into(),
+            ..Visibility::default()
+        };
+        let gewerk = Visibility {
+            hidden_trade: putz.into_iter().collect(),
+            ..Visibility::default()
+        };
+        let filter = [
+            ("ohne", Visibility::default()),
+            ("Fallrohr", fallrohr),
+            ("Estrich aus", estrich),
+            ("Putz aus", gewerk),
+        ];
+        for (name, v) in filter {
+            let mut z = [Vec::new(), Vec::new()];
+            for _ in 0..5 {
+                for (j, (view, e)) in [(ViewKind::Persp, None), (ViewKind::Section, ebene)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    // Erst ein anderer Stand, dann der gemessene
+                    s.set_visibility(Visibility {
+                        terrain_hidden: true,
+                        ..v.clone()
+                    });
+                    std::hint::black_box(s.mesh(view, e, &[]));
+                    s.set_visibility(v.clone());
+                    let t = Instant::now();
+                    std::hint::black_box(s.mesh(view, e, &[]));
+                    z[j].push(ms(t));
+                }
+            }
+            let [a, b] = z.map(|mut v| median(&mut v).0);
+            println!("{n:>6} {name:>12} | {a:>8.2} {b:>8.2}");
+        }
+    }
+    println!("Zeiten in ms (Release).");
+}
+
+/// Review #232 (B-232a): Neubau der Karten des Objekt-Panels je Modellstand (nach
+/// jedem Schritt): bisher `tree::build`, jetzt `build_mit` samt
+/// `typen_der_raeume`; Median aus fünf, ms.
+#[test]
+#[ignore]
+fn perf_baum_mit_ausbau() {
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    println!();
+    println!(
+        "{:>6} {:>7} | {:>8} {:>8} {:>8} {:>8} | {:>7} {:>7}",
+        "Häuser", "Räume", "build", "typen", "mit", "Summe", "Zeilen", "mit"
+    );
+    for n in [100, 1000, 4000] {
+        let s = town_with_interior(n);
+        let m = s.model();
+        let ty = sk_raum::ausbau::typen_der_raeume(m);
+        let raeume = ty.len();
+        let zeilen =
+            |t: &sk_model::tree::ProjectTree| -> usize { t.tabs.iter().map(Vec::len).sum() };
+        let z0 = zeilen(&sk_model::tree::build(m));
+        let z1 = zeilen(&sk_model::tree::build_mit(m, &ty));
+        let (mut a, mut b, mut c, mut d) = (vec![], vec![], vec![], vec![]);
+        for _ in 0..5 {
+            let t = Instant::now();
+            std::hint::black_box(sk_model::tree::build(m));
+            a.push(ms(t));
+            let t = Instant::now();
+            let ty = sk_raum::ausbau::typen_der_raeume(m);
+            b.push(ms(t));
+            let t2 = Instant::now();
+            std::hint::black_box(sk_model::tree::build_mit(m, &ty));
+            c.push(ms(t2));
+            d.push(ms(t));
+        }
+        let (a, ..) = median(&mut a);
+        let (b, ..) = median(&mut b);
+        let (c, ..) = median(&mut c);
+        let (d, ..) = median(&mut d);
+        println!("{n:>6} {raeume:>7} | {a:>8.2} {b:>8.2} {c:>8.2} {d:>8.2} | {z0:>7} {z1:>7}");
+    }
+    println!("build: wie bisher; Summe: typen_der_raeume + build_mit (jetzt je Stand)");
+}
+
 /// Eine 300 m lange Mauer südlich der Häuser (Review #149 B1): Auch mit
 /// ihr läuft kein Vortest je Mausbewegung über das ganze Modell.
 fn mauer(s: &mut Scene) {

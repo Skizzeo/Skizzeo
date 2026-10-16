@@ -1145,11 +1145,26 @@ fn druckvorschau_blaettern_und_pdf() {
     assert_eq!(v.seite_jetzt(&fonts), n - 2);
     // Titelblatt und Verzeichnis: zwei Seiten mehr, die Wahl geht in die
     // Einstellungen
-    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(false));
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(0));
     assert_eq!(out, Some(ListOut::BlattWahl((true, false))));
-    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(true));
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(1));
     assert_eq!(out, Some(ListOut::BlattWahl((true, true))));
     assert_eq!(v.blatt(&fonts).unwrap().seiten.len(), n + 2);
+    // Anlage Mengenermittlung (Jörn 16.10.): an ab Werk, das Häkchen nimmt
+    // sie heraus
+    let ops = |v: &AvaView| -> usize {
+        let b = v.blatt(&fonts).unwrap();
+        b.seiten.iter().map(|s| s.ops.len()).sum()
+    };
+    let mit = (v.blatt(&fonts).unwrap().seiten.len(), ops(&v));
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(2));
+    assert_eq!(out, Some(ListOut::Repaint));
+    assert!(!v.blatt_ansatz);
+    assert!(v.blatt(&fonts).unwrap().seiten.len() <= mit.0);
+    assert!(ops(&v) < mit.1, "{} statt {}", ops(&v), mit.1);
+    klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(2));
+    assert!(v.blatt_ansatz);
+    assert_eq!(v.blatt_wahl, (true, true));
     // Der Knopf speichert das PDF
     let (x, y, w, h) = v.knopf_rect(&t, &fonts);
     let k = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
@@ -1638,4 +1653,28 @@ fn druckvorschau_verknuepft_mit_dem_modell() {
         let mut c = Canvas::new(w as usize, h as usize);
         v.paint_gross(&mut c, &t, &fonts);
     }
+}
+
+/// Review H-239a/b: Geschossnamen und Projekt nur bei neuem Modellstand
+/// oder neuer Szene neu, sonst geteilt.
+#[test]
+fn geschosse_nur_bei_neuem_stand() {
+    let mut s = haus();
+    let mut v = AvaView::new();
+    v.sync(&mut s, None);
+    let a = v.geschosse.clone();
+    assert!(!a.is_empty());
+    v.sync(&mut s, None);
+    assert!(Rc::ptr_eq(&a, &v.geschosse));
+    let mut p = s.model().project().clone();
+    p.site = "Neubau Musterweg".into();
+    assert!(s.projekt_setzen("Projekt", p));
+    v.sync(&mut s, None);
+    assert!(!Rc::ptr_eq(&a, &v.geschosse));
+    assert_eq!(*a, *v.geschosse);
+    assert_eq!(v.projekt.as_ref().unwrap().site, "Neubau Musterweg");
+    let b = v.geschosse.clone();
+    let mut t = haus();
+    v.sync(&mut t, None);
+    assert!(!Rc::ptr_eq(&b, &v.geschosse), "andere Szene");
 }

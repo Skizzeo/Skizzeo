@@ -322,7 +322,7 @@ fn faktor_nach_hoehe_vorlage_und_raum() {
     assert_eq!((r.faktor.prozent, r.wohn), (0.0, 0));
     assert_eq!(
         r.faktor.grund,
-        "Raumvorlage „Technik, Hausanschluss“: 0 % (Zubehörraum, § 2 Abs. 3)"
+        "Raumvorlage „Haustechnikraum“: 0 % (Zubehörraum, § 2 Abs. 3)"
     );
     assert_eq!(
         (r.nummer.as_str(), r.name.as_str()),

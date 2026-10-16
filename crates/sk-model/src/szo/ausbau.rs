@@ -133,6 +133,14 @@ pub(crate) fn read_space_types(
         let who = |hints: &mut Vec<String>, what: String| {
             hints.push(format!("Zeile {}: Raumvorlage {what}", r.line));
         };
+        // Werksvorlage mit früherem Namen heißt wie heute, wenn der neue
+        // Name nicht schon vergeben ist (Review H-236a, Jörn 16.10.)
+        if let Some(neu) = Model::werksname_heute(guid, &name) {
+            if !recs.iter().any(|x| x.opt("name") == Some(neu)) {
+                who(hints, format!("„{name}“ heißt jetzt „{neu}“"));
+                name = neu.to_string();
+            }
+        }
         if out.iter().any(|s| s.name == name) {
             let neu = (2..)
                 .map(|i| format!("{name} {i}"))
