@@ -24,6 +24,7 @@ pub mod preis;
 pub mod rechnung;
 pub mod satz;
 mod schema;
+mod streu;
 pub use sk_model::sha256;
 pub mod verwaltung;
 pub mod wahl;
