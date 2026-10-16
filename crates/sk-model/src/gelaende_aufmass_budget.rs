@@ -432,8 +432,10 @@ fn bestwert(ziel: f64, mut f: impl FnMut(usize)) -> f64 {
 /// (B-234b, vorher 554 ms); eingesetzt stimmt alles wie gerechnet. Was
 /// bleibt, ist vor allem die Kopie des Geländes für Rückgängig (H-234g):
 /// 2 bis 4 ms, mit neuem Speicher je Schritt bis 8 ms. Die Grenze von
-/// 12 ms lässt ihr und der Last der übrigen Tests Raum; ohne sie liegen
-/// die Bestwerte hier bei 6 bis 9 ms.
+/// 20 ms lässt ihr und der Last der übrigen Tests Raum (auf dem Rechner
+/// von Test lag das Heben allein bei 7 bis 9 ms); ohne sie liegen die
+/// Bestwerte hier bei 6 bis 9 ms. Dazu muss jeder Bestwert unter einem
+/// Zwanzigstel des Neuaufbaus liegen, der unter Last mitwächst.
 #[test]
 fn punkte_aendern_im_budget() {
     let (mut m, _) = haeuser_am_hang(25);
@@ -471,7 +473,7 @@ fn punkte_aendern_im_budget() {
     let p = m.terrain_spots()[i].p;
     // die Schritte bleiben wie in der App zum Rückgängigmachen
     let mut schritte = Vec::new();
-    let grenze = budget(12.0);
+    let grenze = budget(20.0);
     let heben = bestwert(budget(8.0), |k| {
         m.begin("Höhe");
         assert!(m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 100.0 * (k + 1) as f64])]));
@@ -501,5 +503,11 @@ fn punkte_aendern_im_budget() {
     );
     for (wert, was) in [(heben, "Heben"), (lage, "Verschieben"), (setzen, "Setzen")] {
         assert!(wert < grenze, "{was}: {wert:.1} ms");
+        if !cfg!(debug_assertions) {
+            assert!(
+                wert * 20.0 < neubau,
+                "{was}: {wert:.1} ms, Neuaufbau {neubau:.1} ms"
+            );
+        }
     }
 }

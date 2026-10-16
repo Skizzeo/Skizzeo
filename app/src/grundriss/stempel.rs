@@ -222,14 +222,20 @@ fn schrift<'a>(fonts: &'a Fonts, fett: bool, s: f64, t: &Theme) -> (Option<&'a F
 }
 
 /// Raumvorlagen zum Suchtext: erst die, deren Name damit beginnt, dann die,
-/// deren Name ihn enthält (ohne Groß- und Kleinschreibung).
+/// deren Name oder Suchwort ihn enthält (ohne Groß- und Kleinschreibung;
+/// Suchwörter der Werksvorlagen wie „HAR“, Bedienbarkeit zu #236).
 pub fn vorschlaege(alle: Vec<(Guid, String)>, such: Option<&str>) -> Vec<(Guid, String)> {
     let Some(q) = such.map(|q| q.trim().to_lowercase()) else {
         return alle;
     };
+    let wort = |g: Guid| {
+        sk_model::Model::space_template_aliases(g)
+            .iter()
+            .any(|w| w.to_lowercase().contains(&q))
+    };
     let (mut v, rest): (Vec<_>, Vec<_>) = alle
         .into_iter()
-        .filter(|(_, n)| n.to_lowercase().contains(&q))
+        .filter(|(g, n)| n.to_lowercase().contains(&q) || wort(*g))
         .partition(|(_, n)| n.to_lowercase().starts_with(&q));
     v.extend(rest);
     v
@@ -1326,10 +1332,32 @@ mod tests {
         assert_eq!(namen(None).len(), 13, "die Werksvorlagen");
         assert_eq!(
             namen(Some("k")),
-            ["Küche", "Kinderzimmer", "Technik, Hausanschluss"],
+            ["Küche", "Kinderzimmer", "Haustechnikraum"],
             "erst die Anfänge, dann der Rest"
         );
         assert_eq!(namen(Some(" BA ")), ["Bad"]);
+        // Haustechnikraum (Jörn 16.10.): auch über „Technik“ zu finden
+        for such in ["h", "t", "technik"] {
+            assert!(
+                namen(Some(such)).iter().any(|n| n == "Haustechnikraum"),
+                "{such}"
+            );
+        }
+        // Suchwörter (Bedienbarkeit zu #236): hinter den Anfängen
+        for (such, soll) in [
+            ("har", "Haustechnikraum"),
+            ("Hausanschluss", "Haustechnikraum"),
+            ("hwr", "Hauswirtschaftsraum"),
+            ("wc", "Gäste-WC"),
+        ] {
+            assert!(namen(Some(such)).iter().any(|n| n == soll), "{such}");
+        }
+        assert_eq!(namen(Some("hausanschluss")), ["Haustechnikraum"]);
+        // Name und Suchwort zugleich: jede Vorlage nur einmal (Grundriss)
+        let haus = namen(Some("haus"));
+        for n in ["Haustechnikraum", "Hauswirtschaftsraum"] {
+            assert_eq!(haus.iter().filter(|x| *x == n).count(), 1, "{n}");
+        }
         assert!(namen(Some("xyz")).is_empty());
     }
 

@@ -162,7 +162,7 @@ SZO 4
 [spacetype] guid=1IDw4UKZUX7b8teHu00001 name="R7 Hobbyraum" group=nuf4 woflv=50 floor=3AqI9gLwoFSTNT8zEeaHQZ screed=2dZvQs4XQTuAMbQxsMktyy wall=0Jup2V0moU2JKnl6Mtv1Ec tiles=0To0be8vhKGD0dmVbnjnk9 tiles_h=2000 ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [spacetype] guid=1OVi8rjVbPUYr1rmvVZAqK name="Kinderzimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [spacetype] guid=1hJ46xKm4iJgTEJq5bQwmU name="Diele, Flur" group=vf woflv=100 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
-[spacetype] guid=27cy5v9N1e4lPLXb6$pN1d name="Technik, Hausanschluss" group=tf woflv=0 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=0Jup2V0moU2JKnl6Mtv1Ec ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
+[spacetype] guid=27cy5v9N1e4lPLXb6$pN1d name="Haustechnikraum" group=tf woflv=0 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=0Jup2V0moU2JKnl6Mtv1Ec ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
 [spacetype] guid=2mpXdQDG9QoKDR9tooXviM name="Küche" group=nuf1 woflv=100 floor=3AqI9gLwoFSTNT8zEeaHQZ wall=3CTi6fc2dkToeqHIp3GKj7 ceiling=3JniZloTCAdorNYpHAQN8X skirting=37XnK7nDRA7U9887S649Ng
 [spacetype] guid=31zglCSmq9Qp7HTWdGhLlx name="Schlafzimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [spacetype] guid=3CYcJx0LZCbWucQS9NIjKW name="Bad" group=nuf7 woflv=100 floor=0vUyl5qL_UntNyH3KdOH4B wall=0Jup2V0moU2JKnl6Mtv1Ec tiles=0To0be8vhKGD0dmVbnjnk9 tiles_h=1200 ceiling=3JniZloTCAdorNYpHAQN8X

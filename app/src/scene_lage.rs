@@ -287,6 +287,68 @@ mod tests {
         assert!(!s.netz_rechnet(), "das Gelände hat sein Netz");
     }
 
+    /// Mengen, Kosten, Datei und IFC gleich nach dem Setzen eines Punkts
+    /// kommen aus dem fertigen Netz, nicht aus dem vorläufigen
+    /// (Integration zu #234 B-234b): wie in der Szene ohne Faden und wie
+    /// nach dem Öffnen der Datei.
+    #[test]
+    fn mengen_warten_auf_das_netz() {
+        let tief = |s: &Scene| {
+            s.model()
+                .terrain_spots()
+                .iter()
+                .map(|x| x.p[2])
+                .fold(f64::MAX, f64::min)
+        };
+        let u = sk_model::qto::Umfang::projekt();
+        let netto = |s: &mut Scene| s.kosten_vorschau(None, &[], &u).unwrap().netto;
+        let mut s0 = haus_am_hang();
+        let p = [5000.0, -1000.0, tief(&s0) - 2000.0];
+        let setzen = |m: &mut Model| !m.add_terrain_points(&[p]).is_empty();
+        let (mengen0, kosten0) = (s0.schedule().clone(), netto(&mut s0));
+        let mut ohne = haus_am_hang();
+        assert!(ohne.edit_model("Höhenpunkt", |m| {
+            m.netz_im_faden(false);
+            setzen(m)
+        }));
+        let (mengen, kosten) = (ohne.schedule().clone(), netto(&mut ohne));
+        assert_ne!(mengen, mengen0, "der Punkt ändert die Mengen");
+        assert_ne!(kosten, kosten0, "der Punkt ändert die Kosten");
+        // je Weg eine frische Szene, deren Netz noch im Faden ist
+        let frisch = || {
+            let mut s = haus_am_hang();
+            assert!(s.edit_model("Höhenpunkt", setzen));
+            assert!(s.netz_rechnet() && s.model().netz_vorlaeufig());
+            s
+        };
+        let mut s = frisch();
+        assert_eq!(*s.schedule(), mengen, "Mengenliste");
+        assert!(!s.netz_rechnet() && !s.model().netz_vorlaeufig());
+        let mut s = frisch();
+        assert_eq!(netto(&mut s), kosten, "Kosten");
+        // Speichern und wieder öffnen
+        // (Öffnen nummeriert neu: verglichen wird mit der Datei ohne Faden)
+        let oeffnen = |m: &Model| {
+            let text = sk_model::szo::write(m);
+            let guids = sk_model::GuidGen::from_time();
+            let l = sk_model::szo::read_with(&text, guids, &sk_cost::lesen::ABSCHNITTE_SZO);
+            Scene::with_model(l.unwrap().model)
+        };
+        let mut soll = oeffnen(ohne.model());
+        let mut s = frisch();
+        let mut offen = oeffnen(s.model_fertig());
+        assert!(!s.model().netz_vorlaeufig());
+        assert_eq!(*offen.schedule(), *soll.schedule(), "nach dem Öffnen");
+        assert_eq!(netto(&mut offen), kosten);
+        // IFC schreibt das fertige Netz
+        let mut s = frisch();
+        let _ = s.model_fertig();
+        assert!(!s.netz_rechnet() && !s.model().netz_vorlaeufig());
+        // die Änderungen beim Einsetzen gehören zum Schritt des Punkts
+        assert!(s.undo());
+        assert_eq!(*s.schedule(), mengen0);
+    }
+
     /// Projektdaten und Nordpfeil bewegen mit Aufmaß die Gründung; die
     /// Körper in 3D folgen im selben Schritt.
     #[test]

@@ -30,10 +30,11 @@
 //! Raum ohne gespeicherten Raum (Datei vor G3, vor dem ersten Wandschritt)
 //! zeigt keinen Ausbau.
 
-use super::{class_in, mesh_into, union, Aabb, Boden, Class, Plane, Scene, Vis};
+use super::{class_in, mesh_into, union, Aabb, Boden, Class, Plane, Scene, Vis, VisFade};
 use crate::scene::MeshData;
 use crate::ui::ViewKind;
 use sk_math::vec3;
+use sk_model::view::{Masks, Visibility};
 use sk_model::{
     BuildingId, Change, ElementId, ElementKind, LayerSet, LevelKind, Model, RunId, Solid, StoreyId,
 };
@@ -159,6 +160,8 @@ struct Gerechnet {
     /// Geschnittene Körper (Estrich, Rest, je erst bei Bedarf) je Sicht,
     /// zuletzt gefragte zuerst.
     schnitte: Vec<(Sicht, [Option<Solid>; 2])>,
+    /// Mit Filter: je Körper geschnitten, für die zuletzt gefragte Sicht.
+    einzeln: Option<(Sicht, Vec<Option<Solid>>)>,
 }
 
 impl Gerechnet {
@@ -173,6 +176,7 @@ impl Gerechnet {
             alle,
             schluessel,
             schnitte: Vec::new(),
+            einzeln: None,
         }
     }
 
@@ -208,6 +212,77 @@ impl Gerechnet {
         self.schnitte.insert(0, s);
         let [e, rest] = &self.schnitte[0].1;
         Some((e.as_ref()?, rest.as_ref().filter(|_| alles)))
+    }
+
+    /// Wie [`Gerechnet::zeigt`] je Körper, für den Filter nach Ausbauart
+    /// und Gewerk (Jörn 16.10.): die Körper (mit `alles` alle, sonst die
+    /// des Estrichs) mit dem, was die Sicht von ihnen zeigt.
+    fn zeigt_je(&mut self, sicht: Sicht, alles: bool, n: &mut u64) -> Vec<(&Koerper, &Solid)> {
+        let mit = |k: &Koerper| alles || k.flaeche == Flaeche::Estrich;
+        match lage(self.kasten[usize::from(alles)], sicht) {
+            Lage::Weg => return Vec::new(),
+            Lage::Ganz => {
+                let k = self.koerper.iter().filter(|k| mit(k));
+                return k.map(|k| (k, &k.solid)).collect();
+            }
+            Lage::Geschnitten => {}
+        }
+        let Some((p0, nv)) = sicht.ebene() else {
+            return Vec::new();
+        };
+        if self.einzeln.as_ref().is_none_or(|e| e.0 != sicht) {
+            self.einzeln = Some((sicht, vec![None; self.koerper.len()]));
+        }
+        let Some((_, je)) = self.einzeln.as_mut() else {
+            return Vec::new();
+        };
+        let mut neu = false;
+        for (k, x) in self.koerper.iter().zip(je.iter_mut()) {
+            if mit(k) && x.is_none() {
+                *x = Some(k.geschnitten(p0, nv));
+                neu = true;
+            }
+        }
+        *n += u64::from(neu);
+        let je = self.koerper.iter().zip(je.iter());
+        je.filter_map(|(k, x)| Some((k, x.as_ref().filter(|_| mit(k))?)))
+            .collect()
+    }
+}
+
+impl Vis<'_> {
+    /// Masken im laufenden Übergang aus den Masken `f` unter einer
+    /// Sichtbarkeit: vorher und jetzt. Steht hier, damit `scene.rs` nicht
+    /// wächst.
+    pub(super) fn masks_mit(&self, f: impl Fn(&Visibility) -> Masks) -> Masks {
+        let jetzt = self.model.visibility();
+        match self.anim {
+            None => f(jetzt),
+            Some(a) => match a.kind {
+                VisFade::IsolateOn => f(jetzt),
+                VisFade::IsolateOff => f(&a.old),
+                // Was sich ändert, liegt für den Übergang im blassen Netz
+                VisFade::Out | VisFade::In => {
+                    let (o, n) = (f(&a.old), f(jetzt));
+                    Masks {
+                        solid: o.solid & n.solid,
+                        ghost: o.solid ^ n.solid,
+                    }
+                }
+            },
+        }
+    }
+
+    /// Klasse eines Ausbaukörpers im Raum `id`: nach dem Raum, seiner
+    /// Ausbauart und dem Gewerk seiner Schicht.
+    fn ausbau_klasse(&self, id: ElementId, k: &Koerper) -> Class {
+        let m = self.model;
+        let Some(art) = m.layer_set(k.typ).map(|t| t.category) else {
+            return class_in(self.element_masks(id), sk_model::NO_LAYER);
+        };
+        let trade = m.type_layer_trade(k.typ, k.schicht);
+        let masks = self.masks_mit(|v| m.finish_masks_in(v, id, art, trade));
+        class_in(masks, sk_model::NO_LAYER)
     }
 }
 
@@ -929,7 +1004,8 @@ impl RaumCache {
 
     /// Ausbau der Sicht ins Netz: ohne Filter die Netze der Hausgruppen
     /// angehängt (im Grundriss nur die des Geschosses `plan`), mit Filter
-    /// je Raum deckend oder blass wie die Erweiterungen.
+    /// je Körper deckend oder blass wie die Erweiterungen, nach Raum,
+    /// Ausbauart und Gewerk.
     fn anhaengen(
         &mut self,
         s: &Scene,
@@ -993,15 +1069,13 @@ impl RaumCache {
                     let Some(r) = x.raum.as_mut() else {
                         continue;
                     };
-                    let k = match class_in(vis.element_masks(id), sk_model::NO_LAYER) {
-                        Class::Solid => 0,
-                        Class::Ghost => 1,
-                        Class::Hidden => continue,
-                    };
-                    if let Some((e, rest)) = r.zeigt(sicht, alles, &mut z.netze.1) {
-                        for t in std::iter::once(e).chain(rest) {
-                            mesh_into(&mut m[k], t, ground(id));
-                        }
+                    for (koerper, t) in r.zeigt_je(sicht, alles, &mut z.netze.1) {
+                        let k = match vis.ausbau_klasse(id, koerper) {
+                            Class::Solid => 0,
+                            Class::Ghost => 1,
+                            Class::Hidden => continue,
+                        };
+                        mesh_into(&mut m[k], t, ground(id));
                     }
                 }
             }
@@ -2002,5 +2076,88 @@ mod tests {
         assert!(Rc::ptr_eq(&nach, &s.woflv_umfeld()), "Stand beim Öffnen");
         s.cancel_settings(rev);
         assert!(Rc::ptr_eq(&nach, &s.woflv_umfeld()));
+    }
+
+    /// Jörn 16.10.: Mit Filter zeigt der Schnitt je Körper, was Raum,
+    /// Ausbauart und Gewerk zeigen. Ein Filter, der den Ausbau nicht
+    /// betrifft, zeigt ihn wie ohne; ausgeblendeter Estrich fehlt; ein
+    /// ausgeblendetes Gewerk nimmt nur seine Schicht; isoliert nach dem
+    /// Gewerk des Estrichs liegt der übrige Ausbau im blassen Netz.
+    #[test]
+    fn ausbau_nach_art_und_gewerk() {
+        use sk_model::view::{Isolate, Visibility};
+        use sk_model::TypeCategory;
+        let (mut s, _) = haus();
+        s.set_view_finish(1, true);
+        let estrich = schluessel(&s, SCREED_SLAB_TYPE_GUID);
+        let putz: Vec<u16> = schluessel(&s, WOODCHIP_WALL_TYPE_GUID)
+            .into_iter()
+            .filter(|k| !estrich.contains(k))
+            .collect();
+        let m = s.model();
+        let wb = m.type_by_guid(WOODCHIP_WALL_TYPE_GUID).unwrap();
+        let es = m.type_by_guid(SCREED_SLAB_TYPE_GUID).unwrap();
+        // Die dickste Schicht der Wandbekleidung: der Putz
+        let ls = &m.layer_set(wb).unwrap().layers;
+        let j = (0..ls.len())
+            .max_by(|a, b| ls[*a].thickness.total_cmp(&ls[*b].thickness))
+            .unwrap();
+        let tp = m.type_layer_trade(wb, j).unwrap();
+        let te = m.type_layer_trade(es, 0).unwrap();
+        let k_putz = vec![material_key(ls[j].material)];
+        // Die Schichten des Estrichaufbaus im Gewerk des Estrichs
+        let le = &m.layer_set(es).unwrap().layers;
+        let k_te: Vec<u16> = (0..le.len())
+            .filter(|&i| m.type_layer_trade(es, i) == Some(te))
+            .map(|i| material_key(le[i].material))
+            .collect();
+        assert!(m
+            .layer_set(es)
+            .unwrap()
+            .layers
+            .iter()
+            .all(|l| { l.trade.or_else(|| m.material(l.material)?.trade) != Some(tp) }));
+        let quer = Some((vec3(5000.0, 4000.0, 0.0), vec3(1.0, 0.0, 0.0)));
+        let alle = |m: &MeshData, k: &[u16]| flaechen(m, k, true) + flaechen(m, k, false);
+        let zaehl = |s: &mut Scene| {
+            let m = s.mesh(ViewKind::Section, quer, &[]);
+            (alle(&m, &estrich), alle(&m, &putz), alle(&m, &k_putz))
+        };
+        let te_alle = alle(&s.mesh(ViewKind::Section, quer, &[]), &k_te);
+        assert!(te_alle > 0);
+        let ohne = zaehl(&mut s);
+        assert!(ohne.0 > 0 && ohne.2 > 0);
+        let mut v = Visibility::default();
+        v.hidden_cat.insert(Category::Downpipe);
+        assert!(s.set_visibility(v.clone()));
+        assert_eq!(zaehl(&mut s), ohne, "je Körper wie im Ganzen");
+        v.hidden_finish.insert(TypeCategory::Screed);
+        assert!(s.set_visibility(v));
+        assert_eq!(zaehl(&mut s), (0, ohne.1, ohne.2), "ohne Estrich");
+        let v = Visibility {
+            hidden_trade: [tp].into(),
+            ..Visibility::default()
+        };
+        assert!(s.set_visibility(v));
+        // Anstrich und Raufaser haben keine Dicke: Sie färben die Fläche
+        // des Putzes und gehen mit ihm
+        assert_eq!(zaehl(&mut s), (ohne.0, 0, 0), "ohne Putz");
+        let v = Visibility {
+            isolate: Some(Isolate::Trade(te)),
+            ..Visibility::default()
+        };
+        assert!(s.set_visibility(v));
+        let deckend = zaehl(&mut s);
+        // Deckend nur die Schichten im Gewerk des Estrichs, der übrige
+        // Aufbau (Dämmung, Abdichtung anderer Gewerke) blass
+        let solid = alle(&s.mesh(ViewKind::Section, quer, &[]), &k_te);
+        let blass = &s.ghost.as_ref().unwrap().2;
+        assert_eq!(solid, te_alle);
+        assert!(deckend.0 > 0 && deckend.0 <= ohne.0);
+        assert_eq!((deckend.1, deckend.2), (0, 0));
+        assert_eq!(alle(blass, &k_putz), ohne.2);
+        // Ohne Filter wieder wie vorher
+        assert!(s.set_visibility(Visibility::default()));
+        assert_eq!(zaehl(&mut s), ohne);
     }
 }

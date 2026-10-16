@@ -22,7 +22,7 @@ impl App {
             datei: datei.clone(),
             version: env!("CARGO_PKG_VERSION").into(),
         };
-        let (text, _) = sk_ifc::export(self.scene.model(), &opt);
+        let (text, _) = sk_ifc::export(self.scene.model_fertig(), &opt);
         match sk_ifc::step::read(&text) {
             Ok(f) => {
                 let mut neu = IfcFenster::new(sk_ifc::lesen::vorschau(&f), &datei);
