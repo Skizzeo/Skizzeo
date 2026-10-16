@@ -174,7 +174,7 @@ fn unbekannter_auto_schluessel_gibt_befund() {
 #[test]
 fn erdmengen_aus_dem_aufmass_geben_hinweis() {
     use sk_cost::befund::Ort;
-    use sk_cost::lv::{lv_aus, LvWahl, VORBEMERKUNG_NETZ};
+    use sk_cost::lv::{lv_aus, vorbemerkung_netz, LvWahl};
     use sk_cost::rechnung::ERDE_AUS_MITTEL;
     use sk_model::qto_earth::DREIECKSPRISMEN;
     let aushub = leistung(AUSHUB, "Aushub", 20, "unit=m3 basis=auto auto=earth.trench");
@@ -220,12 +220,15 @@ fn erdmengen_aus_dem_aufmass_geben_hinweis() {
     let f = graben(&b);
     assert!(
         f.iter().all(|f| f.contains(DREIECKSPRISMEN)
-            && f.ends_with("2 Dreiecke, Aufmaß aufmass.txt, 2026-10-14")),
+            && f.ends_with("aus dem Höhenaufmaß aufmass.txt vom 14.10.2026")),
         "{f:?}"
     );
     let lv = lv_aus(&m, &b, &lesen::katalog(&m, None), &w);
     assert!(lv.befunde.iter().all(|x| x.satz != ERDE_AUS_MITTEL));
-    assert_eq!(lv.kopf.vorbemerkungen.as_deref(), Some(VORBEMERKUNG_NETZ));
+    // die Dreieckszahl einmal in der Vorbemerkung (VOB-Spruch zu A2)
+    let v = vorbemerkung_netz(Some("Höhenaufmaß aufmass.txt vom 14.10.2026, 2 Dreiecke"));
+    assert!(v.contains("(Dreiecksprismen, REB-VB 22.013; Höhenaufmaß aufmass.txt vom"));
+    assert_eq!(lv.kopf.vorbemerkungen.as_deref(), Some(v.as_str()));
 
     // das Netz deckt nur einen Teil: mittlere Höhe mit Hinweis
     let m = mit_aufmass([

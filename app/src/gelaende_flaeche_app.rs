@@ -482,6 +482,11 @@ fn eben(p: &TerrainPatch) -> Option<f64> {
     }
 }
 
+/// Neigung einer Böschung 1:`n` in Grad (0 senkrecht: 90°).
+fn grad(n: f64) -> f64 {
+    (1.0 / n).atan().to_degrees()
+}
+
 /// Böschung ringsum (n von 1:n, 0 senkrecht), `None`, wenn sie je Kante
 /// verschieden ist.
 fn boeschung(p: &TerrainPatch) -> Option<f64> {
@@ -501,8 +506,7 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
         ("Ecken", p.outline.len().to_string()),
     ];
     let mut fields = Vec::new();
-    // mit Aufmaß daneben die Höhe in m ü. NHN (Bedienbarkeit, später zu
-    // #216)
+    // mit Aufmaß daneben die Höhe in m ü. NHN (Bedienbarkeit Gelände)
     if let Some((z, h0)) = eben(p).zip(m.terrain_nhn()) {
         values.push(("Höhe ü. NHN", format!("{} m", de(h0 + z / 1000.0, 2))));
     }
@@ -526,6 +530,10 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
             einheit: Some(""),
         }),
         None => values.push(("Böschung", "je Kante, aus der Datei".to_string())),
+    }
+    // die andere Form daneben (VOB-Prüfung G3): Grad mit einer Stelle
+    if let Some(n) = boeschung(p) {
+        values.push(("Böschungswinkel", format!("{} °", de(grad(n), 1))));
     }
     let s = m.site_soil();
     let befestigt = if p.paved {
@@ -1289,6 +1297,11 @@ mod tests {
         assert_eq!(f[0].field, Field::Gelaende(GelaendeFeld::Hoehe));
         assert_eq!(f[0].value, -600.0);
         assert_eq!(f[1].value, PATCH_SLOPE);
+        // 1:1,5 daneben in Grad (VOB-Prüfung G3)
+        assert!(p
+            .values
+            .contains(&("Böschungswinkel", "33,7 °".to_string())));
+        assert_eq!(grad(0.0), 90.0);
         assert_eq!(p.sections[1].fields[0].value, 200.0);
         // ein Name wie im Modell, Hinweise zu Faktor und befestigt (43.1 B)
         assert_eq!(
@@ -1324,6 +1337,7 @@ mod tests {
         assert!(p
             .values
             .contains(&("Böschung", "je Kante, aus der Datei".to_string())));
+        assert!(!p.values.iter().any(|v| v.0 == "Böschungswinkel"));
         assert!(props(&m, 1).is_none());
         // mit Aufmaß und ±0,00 = 24,95 m ü. NHN: −0,60 m stehen als 24,35
         let mut text = String::new();
