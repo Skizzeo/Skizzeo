@@ -877,4 +877,41 @@ mod tests {
         assert_eq!(m.space(r).unwrap().ausbau, vorher);
         assert!(tote(&m, r).is_empty());
     }
+
+    /// Wandzug entfernen: Die Abweichungen an allen seinen Wänden gehen im
+    /// selben Schritt; Rückgängig stellt `[spacefinish]` Byte für Byte
+    /// wieder her (Architektur zu Regel 24, 16.10.).
+    #[test]
+    fn wandzug_entfernen_und_rueckgaengig() {
+        let (mut m, r, nord) = haus();
+        let run = frei(&mut m, nord);
+        let waende = m.run(run).unwrap().segments.clone();
+        for &e in &waende {
+            m.set_space_finish(r, ab(Sockel(Some(rechts(&m, e))), Some(Keiner), None))
+                .unwrap();
+        }
+        let nordseite = ab(Sockel(Some(rechts(&m, nord))), Some(Keiner), None);
+        m.set_space_finish(r, nordseite).unwrap();
+        let zeilen = |m: &Model| -> Vec<String> {
+            szo::write(m)
+                .lines()
+                .filter(|l| l.starts_with("[spacefinish]"))
+                .map(str::to_string)
+                .collect()
+        };
+        let vorher = zeilen(&m);
+        assert_eq!(vorher.len(), 4, "{vorher:?}");
+        m.begin("Wandzug entfernen");
+        assert!(m.remove_run(run));
+        let tx = m.commit().unwrap();
+        assert!(waende.iter().all(|&e| m.element(e).is_none()));
+        assert!(tote(&m, r).is_empty(), "{:?}", tote(&m, r));
+        assert_eq!(m.space(r).unwrap().ausbau, vec![nordseite]);
+        m.apply(&tx, Direction::Undo);
+        assert_eq!(zeilen(&m), vorher);
+        assert!(tote(&m, r).is_empty());
+        m.apply(&tx, Direction::Redo);
+        assert_eq!(zeilen(&m).len(), 1);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
 }
