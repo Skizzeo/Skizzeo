@@ -21,6 +21,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[path = "gelaende_trennwand.rs"]
+mod trennwand;
+
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainPoint {
@@ -527,6 +530,19 @@ impl Terrain {
         self.along(ring).into_iter().reduce(f64::min)
     }
 
+    /// Wie [`Terrain::along`], nur über einzelne Strecken (Landeswerte).
+    fn along_strecken(&self, s: &[((f64, f64), (f64, f64))]) -> Vec<f64> {
+        let m = self.mesh();
+        if m.netz.dreiecke.is_empty() {
+            return Vec::new();
+        }
+        let (e0, n0) = m.bezug;
+        s.iter()
+            .flat_map(|(a, b)| m.abfrage.profil([a.0 - e0, a.1 - n0], [b.0 - e0, b.1 - n0]))
+            .map(|w| w[1])
+            .collect()
+    }
+
     /// Höhen entlang eines Umrisses: an jeder Ecke und jedem Schnitt mit
     /// einer Netzkante, dazwischen verläuft das Gelände geradlinig.
     fn along(&self, ring: &[(f64, f64)]) -> Vec<f64> {
@@ -767,20 +783,19 @@ impl Model {
         let mut lage = Lage::default();
         // je Zug mit Gebäude: Gebäude und höchster Punkt am Umriss
         let mut hoch: Vec<(BuildingId, Option<f64>)> = Vec::new();
-        for (id, r) in self.runs.iter() {
-            let Some(ring) = self.plate_outline(id) else {
+        let umrisse = self.umrisse_der_zuege();
+        for (k, (id, b, _)) in umrisse.iter().enumerate() {
+            let Some(r) = self.runs.get(*id) else {
                 continue;
             };
-            let along = aufmass.map_or_else(Vec::new, |(t, f)| {
-                let q: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
-                t.along(&q)
-            });
+            let along =
+                aufmass.map_or_else(Vec::new, |(t, f)| Self::am_freien_rand(t, &f, &umrisse, k));
             let lo = along.iter().copied().reduce(f64::min);
             if let (Some(h), Some(gr)) = (lo, self.foundation_level_of(r.storey)) {
                 let x = lage.tief.entry(gr).or_insert(h);
                 *x = x.min(h);
             }
-            if let Some(b) = self.building_of(r.storey) {
+            if let Some(b) = *b {
                 hoch.push((b, along.into_iter().reduce(f64::max)));
             }
         }
@@ -819,6 +834,61 @@ impl Model {
         let t = self.terrain()?;
         let (e, n) = self.survey_frame()?.to_survey(x, y);
         Some((t.height(e, n)? - nhn) * 1000.0)
+    }
+
+    /// Plattenumriss je Wandzug mit Gründung (mm, Grundriss) und sein
+    /// Gebäude.
+    fn umrisse_der_zuege(&self) -> Vec<(RunId, Option<BuildingId>, Vec<[f64; 2]>)> {
+        self.runs
+            .iter()
+            .filter_map(|(id, r)| {
+                let ring = self.plate_outline(id)?;
+                let ring = ring.iter().map(|p| [p.x, p.y]).collect();
+                Some((id, self.building_of(r.storey), ring))
+            })
+            .collect()
+    }
+
+    /// Geländehöhen (Landeswerte) am freien Plattenrand von `umrisse[k]`:
+    /// ohne die Stücke in oder an der Platte eines anderen Gebäudes, der
+    /// Haustrennwand (H-245a, VOB). Ist kein Stück frei, der ganze Rand.
+    fn am_freien_rand(
+        t: &Terrain,
+        f: &SurveyFrame,
+        umrisse: &[(RunId, Option<BuildingId>, Vec<[f64; 2]>)],
+        k: usize,
+    ) -> Vec<f64> {
+        let (_, b, ring) = &umrisse[k];
+        let kasten = |r: &[[f64; 2]]| {
+            r.iter()
+                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
+                    [
+                        k[0].min(p[0]),
+                        k[1].min(p[1]),
+                        k[2].max(p[0]),
+                        k[3].max(p[1]),
+                    ]
+                })
+        };
+        let mein = kasten(ring);
+        let nah = |r: &[[f64; 2]]| {
+            let k = kasten(r);
+            let d = trennwand::AN_DER_WAND;
+            k[0] <= mein[2] + d && mein[0] <= k[2] + d && k[1] <= mein[3] + d && mein[1] <= k[3] + d
+        };
+        let andere: Vec<&[[f64; 2]]> = umrisse
+            .iter()
+            .filter(|(_, x, r)| b.is_some() && x.is_some() && x != b && nah(r))
+            .map(|(.., r)| r.as_slice())
+            .collect();
+        let land = |p: [f64; 2]| f.to_survey(p[0], p[1]);
+        let frei = trennwand::freie_strecken(ring, &andere);
+        if frei.is_empty() {
+            let q: Vec<(f64, f64)> = ring.iter().map(|&p| land(p)).collect();
+            return t.along(&q);
+        }
+        let s: Vec<_> = frei.iter().map(|&(a, b)| (land(a), land(b))).collect();
+        t.along_strecken(&s)
     }
 
     /// Mit Aufmaß: tiefster Geländepunkt am Plattenrand der Gründung `gr`
@@ -1407,13 +1477,10 @@ impl Model {
         let h0 = self.terrain_nhn()?;
         let b = self.level_building()?;
         let mut hoehen: Vec<f64> = Vec::new();
-        let zuege = self
-            .runs
-            .iter()
-            .filter(|(_, r)| self.building_of(r.storey) == Some(b));
-        for ring in zuege.filter_map(|(id, _)| self.plate_outline(id)) {
-            let r: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
-            hoehen.extend(t.along(&r).into_iter().map(|h| (h - h0) * 1000.0));
+        let umrisse = self.umrisse_der_zuege();
+        for k in (0..umrisse.len()).filter(|&k| umrisse[k].1 == Some(b)) {
+            let along = Self::am_freien_rand(t, &f, &umrisse, k);
+            hoehen.extend(along.into_iter().map(|h| (h - h0) * 1000.0));
         }
         let lo = hoehen.iter().copied().reduce(f64::min)?;
         let hi = hoehen.iter().copied().reduce(f64::max)?;

@@ -521,6 +521,51 @@ mod tests {
         }
     }
 
+    /// Wand an Wand, 1 m Höhenunterschied: Die Gründungen bleiben beim
+    /// Anlegen der ersten Fläche, wo sie waren. Die Einbindetiefe zählt nur
+    /// am freien Plattenrand, nicht an der Haustrennwand, wo das Gelände
+    /// des Nachbarn liegt (H-245a, VOB; vorher rutschte die Gründung des
+    /// höheren Hauses 1 m tiefer).
+    #[test]
+    fn trennwand_zieht_nicht_hinab() {
+        let mut m = Model::with_seed(5);
+        let mut haeuser = Vec::new();
+        for (x0, versatz) in [(0.0, 500.0), (8000.0, 1500.0)] {
+            let b = m.add_building(1);
+            let pts = [
+                vec3(x0, 0.0, 0.0),
+                vec3(x0 + 8000.0, 0.0, 0.0),
+                vec3(x0 + 8000.0, 10000.0, 0.0),
+                vec3(x0, 10000.0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+            m.begin("Gelände");
+            assert!(m.set_terrain_offset_of(b, versatz));
+            m.commit();
+            haeuser.push(b);
+        }
+        let gruendungen = |m: &Model| -> Vec<(StoreyId, f64, f64)> {
+            m.storeys
+                .iter()
+                .filter(|(_, s)| s.kind == LevelKind::Foundation)
+                .map(|(id, s)| (id, s.elevation, m.terrain_z_of_level(id)))
+                .collect()
+        };
+        let vorher = gruendungen(&m);
+        assert_eq!(vorher.len(), 2);
+        m.begin("Fläche");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        let nachher = gruendungen(&m);
+        for ((g, uk0, z0), (h, uk1, z1)) in vorher.iter().zip(&nachher) {
+            assert_eq!(g, h);
+            assert!((uk0 - uk1).abs() < 1e-6, "{g:?}: UK {uk0} → {uk1}");
+            assert!((z0 - z1).abs() < 1e-6, "{g:?}: Gelände {z0} → {z1}");
+        }
+        let f = m.terrain_folgen().unwrap();
+        assert!(f.frostfrei);
+    }
+
     /// Eine Fläche neben dem Haus bekommt ihr Rechteck dazu; Ecken in der
     /// Platte fallen weg. Mit NHN in der Lage stehen die Höhen in NHN.
     #[test]
