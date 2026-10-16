@@ -96,12 +96,12 @@ impl Model {
         let Some((mut t, f, h0)) = self.punkte_rahmen() else {
             return Vec::new();
         };
-        let mut nr = naechste_nummer(&t);
+        let nr = naechste_nummer(&t);
         let start = t.points.len();
-        for p in neu {
+        for (k, p) in (nr..).zip(neu) {
             let (e, n) = f.to_survey(p[0], p[1]);
             t.points.push(TerrainPoint {
-                nr: format!("{NR}{nr}"),
+                nr: format!("{NR}{k}"),
                 e: rund(e),
                 n: rund(n),
                 h: rund(h0 + p[2] / 1000.0),
@@ -109,7 +109,6 @@ impl Model {
                 off: false,
                 hand: true,
             });
-            nr += 1;
         }
         if doppelt(&t) || !self.punkte_schreiben(t) {
             return Vec::new();
