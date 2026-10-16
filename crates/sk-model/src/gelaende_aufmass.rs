@@ -1077,6 +1077,7 @@ impl Model {
     /// über dem höchsten Geländepunkt am Plattenrand.
     pub fn import_terrain(&mut self, mut t: Terrain) -> bool {
         let vorher = self.foundation_terrain();
+        let gezeichnet = self.gezeichnete_grenzen();
         // Grundstück und Unterlage aus dem Lageplan bleiben, wenn beide in
         // derselben UTM-Zone liegen (sie passen von selbst zueinander)
         if let Some(alt) = self
@@ -1118,6 +1119,7 @@ impl Model {
                 }
             }
         }
+        self.grenzen_mitnehmen(&mut t, &gezeichnet);
         let neu = self.put_survey(Some(t));
         self.terrain_nhn_merken();
         self.resettle_foundations(vorher);

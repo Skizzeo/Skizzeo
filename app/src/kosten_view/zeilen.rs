@@ -179,8 +179,9 @@ impl Bau<'_> {
     /// Bauteile der Ansatzzeilen, jedes einmal; eine Automatikmenge der
     /// Gründung mit der ganzen Gründung ([`fokus::bauteile`]).
     fn bauteile(&self, ansatz: &[&Ansatz]) -> Vec<ElementId> {
-        let mut els: Vec<ElementId> = Vec::new();
-        let mut schon = HashSet::new();
+        let mut els: Vec<ElementId> = Vec::with_capacity(ansatz.len());
+        // gleich groß angelegt, sonst wächst die Menge je Position mehrmals
+        let mut schon = HashSet::with_capacity(ansatz.len());
         for a in ansatz {
             for e in fokus::bauteile(self.m, a) {
                 if schon.insert(e) {

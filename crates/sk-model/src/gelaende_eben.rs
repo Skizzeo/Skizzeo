@@ -139,6 +139,45 @@ impl Model {
         self.set_terrain(Some(t))
     }
 
+    /// Die Grenzen eines Geländes ohne Lageplan, also von Hand gezeichnet
+    /// (I2), im Grundriss (mm).
+    pub(super) fn gezeichnete_grenzen(&self) -> Vec<Vec<[f64; 2]>> {
+        let Some(t) = self.terrain().filter(|t| t.underlay.is_none()) else {
+            return Vec::new();
+        };
+        let Some(f) = self.survey_frame_of(t) else {
+            return Vec::new();
+        };
+        t.parcels
+            .iter()
+            .map(|r| r.iter().map(|&(e, n)| f.to_model(e, n)).collect())
+            .collect()
+    }
+
+    /// Ein neues Aufmaß ohne eigene Grenze übernimmt die gezeichneten
+    /// `grenzen` (mm) dort, wo sie im Grundriss lagen, in seinem System;
+    /// `t` hat seinen Platz schon. Sonst bliebe die Grenze, die man vor dem
+    /// Vermessen gezeichnet hat, nicht stehen.
+    pub(super) fn grenzen_mitnehmen(&self, t: &mut Terrain, grenzen: &[Vec<[f64; 2]>]) {
+        if grenzen.is_empty() || !t.boundary_rings().is_empty() {
+            return;
+        }
+        let Some(f) = self.survey_frame_of(t) else {
+            return;
+        };
+        t.parcels = grenzen
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|p| {
+                        let (e, n) = f.to_survey(p[0], p[1]);
+                        (rund(e), rund(n))
+                    })
+                    .collect()
+            })
+            .collect();
+    }
+
     /// Ein leeres Gelände im örtlichen System, Nullpunkt im Modell, Nord
     /// nach oben; mit fester Höhe in der Lage in NHN.
     fn oertlich(&self) -> Terrain {
@@ -415,6 +454,71 @@ mod tests {
         let max_x = xs.iter().map(|q| q[0]).fold(f64::MIN, f64::max);
         assert!((max_x - (30000.0 + rand)).abs() < 1e-3, "{xs:?}");
         assert_eq!(t.parcels.len(), 1, "die Grenze bleibt");
+    }
+
+    /// Das Aufmaß kommt nach der gezeichneten Grenze: Sie bleibt im
+    /// Grundriss, wo sie war, jetzt im System des Aufmaßes. Bringt das
+    /// Aufmaß eine eigene Grenze mit, gilt seine.
+    #[test]
+    fn grenze_bleibt_beim_aufmass() {
+        let ring = [
+            [-5000.0, -4000.0],
+            [20000.0, -4000.0],
+            [20000.0, 16000.0],
+            [-5000.0, 16000.0],
+        ];
+        let aufmass = |grenze: bool| {
+            let mut t = Terrain::new(Crs::Local);
+            for (i, (e, n)) in [
+                (100.0, 200.0),
+                (160.0, 200.0),
+                (160.0, 250.0),
+                (100.0, 250.0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                t.points.push(TerrainPoint {
+                    nr: format!("{}", i + 1),
+                    e,
+                    n,
+                    h: 30.0,
+                    code: String::new(),
+                    off: false,
+                    hand: false,
+                });
+            }
+            if grenze {
+                t.parcels = vec![vec![(110.0, 210.0), (150.0, 210.0), (150.0, 240.0)]];
+            }
+            t
+        };
+        for grenze in [false, true] {
+            let mut m = haus();
+            m.begin("Grenze");
+            assert!(m.add_parcel(&ring));
+            m.commit();
+            m.begin("Aufmaß");
+            assert!(m.import_terrain(aufmass(grenze)));
+            m.commit();
+            let t = m.terrain().unwrap();
+            assert_eq!(t.parcels.len(), 1);
+            let f = m.survey_frame_of(t).unwrap();
+            let im_plan: Vec<[f64; 2]> = t.parcels[0]
+                .iter()
+                .map(|&(e, n)| f.to_model(e, n))
+                .collect();
+            if grenze {
+                assert_eq!(t.parcels[0].len(), 3, "die Grenze des Aufmaßes");
+            } else {
+                for (a, b) in im_plan.iter().zip(&ring) {
+                    assert!(
+                        (a[0] - b[0]).abs() < 1.0 && (a[1] - b[1]).abs() < 1.0,
+                        "{a:?} {b:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// Ohne Haus und ohne Fläche gibt es nichts anzulegen; mit vermessenen
