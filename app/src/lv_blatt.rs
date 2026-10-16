@@ -870,9 +870,10 @@ impl<'a> Fluss<'a> {
         }
     }
 
-    /// Kurzname des Geschosses einer Zeile; der Rundungsausgleich hat keins.
+    /// Kurzname des Geschosses einer Zeile; nur der Rundungsausgleich hat
+    /// keins, andere Zeilen ohne Bauteile behalten ihres (Kosten H-239b).
     fn geschoss(&self, a: &Ansatzzeile) -> String {
-        if a.elemente.is_empty() && a.nummern.is_empty() {
+        if a.elemente.is_empty() && a.nummern.is_empty() && a.herkunft == "Rundungsausgleich" {
             return String::new();
         }
         self.a

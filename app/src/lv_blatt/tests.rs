@@ -728,7 +728,9 @@ fn anlage_mengenermittlung() {
     rund.nummern.clear();
     rund.elemente.clear();
     rund.herkunft = "Rundungsausgleich".into();
-    let mut viele = vec![lang.clone()];
+    let mut hand = rund.clone();
+    hand.herkunft = "von Hand 12,00".into();
+    let mut viele = vec![lang.clone(), hand];
     viele.extend(std::iter::repeat_n(t.positionen[0].ansatz[0].clone(), 150));
     viele.push(rund);
     t.positionen[0].ansatz = viele;
@@ -754,6 +756,25 @@ fn anlage_mengenermittlung() {
     assert!(t.iter().any(|x| x.starts_with("R-001, R-003")));
     assert!(t.iter().any(|x| x.contains("R-159")), "nie gekürzt");
     assert!(t.contains(&"Rundungsausgleich".to_string()));
+    // Ohne Bauteile hat nur der Rundungsausgleich kein Geschoss (Kosten
+    // H-239b): auf ihrer Seite und Höhe steht der Kurzname oder nicht
+    let mit_geschoss = |was: &str| {
+        b.seiten
+            .iter()
+            .find_map(|sei| {
+                let y = sei.ops.iter().find_map(|o| match o {
+                    Op::Text { text, y, .. } if text == was => Some(*y),
+                    _ => None,
+                })?;
+                Some(sei.ops.iter().any(|o| {
+                    matches!(o, Op::Text { text, y: y2, pt, .. }
+                        if *pt == KLEIN && *y2 == y && text == name)
+                }))
+            })
+            .unwrap()
+    };
+    assert!(mit_geschoss("von Hand 12,00"));
+    assert!(!mit_geschoss("Rundungsausgleich"));
     // Über mehrere Seiten, jede mit Kopf und Spalten darunter
     let y_von = |sei: &sk_paint::pdf::Seite, f: &dyn Fn(&str) -> bool| {
         sei.ops.iter().find_map(|o| match o {
