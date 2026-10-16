@@ -505,6 +505,34 @@ impl Gelaende {
         self.in_einem(&nah, p)
     }
 
+    /// Berührt das Rechteck `k` ein Haus: eine Ecke des Hauses darin oder
+    /// ein Punkt seines Rands oder seiner Mitte im Haus?
+    fn haus_trifft(&self, k: &Kasten) -> bool {
+        let mut nah = Vec::new();
+        self.haeuser.bei(k, &mut nah);
+        if nah.is_empty() {
+            return false;
+        }
+        let [x0, y0, x1, y1] = *k;
+        let (xm, ym) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let proben = [
+            [x0, y0],
+            [xm, y0],
+            [x1, y0],
+            [x0, ym],
+            [xm, ym],
+            [x1, ym],
+            [x0, y1],
+            [xm, y1],
+            [x1, y1],
+        ];
+        let innen = |p: &P2| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+        proben.iter().any(|&p| self.in_einem(&nah, p))
+            || nah
+                .iter()
+                .any(|&i| self.haus[i as usize].0.iter().any(innen))
+    }
+
     /// Liegt `p` in einem der Häuser `nah`?
     fn in_einem(&self, nah: &[u32], p: P2) -> bool {
         nah.iter().any(|&h| im_ring(&self.haus[h as usize].0, p))
@@ -1270,8 +1298,8 @@ fn schwerpunkt(r: &[P2]) -> Option<P2> {
     (a.abs() > 1e-9).then(|| [cx / (3.0 * a), cy / (3.0 * a)])
 }
 
-/// Inhalt der Höhenzahlen und Koten (Ort, Richtung, Text, voll) als
-/// Prüfsumme: gleich, solange die Tinte gleich bliebe.
+/// Inhalt der Höhenzahlen und Koten (Ort, Richtung, Text, voll) und die
+/// Häuser als Prüfsumme: gleich, solange die Tinte gleich bliebe.
 pub(crate) fn zahlen_inhalt(g: &Gelaende) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut s = std::collections::hash_map::DefaultHasher::new();
@@ -1282,6 +1310,13 @@ pub(crate) fn zahlen_inhalt(g: &Gelaende) -> u64 {
         (text, voll).hash(&mut s);
     }
     g.zahlen.len().hash(&mut s);
+    // die Koten weichen den Häusern aus
+    for (ring, _) in &g.haus {
+        for p in ring {
+            p.map(f64::to_bits).hash(&mut s);
+        }
+        ring.len().hash(&mut s);
+    }
     s.finish()
 }
 
@@ -1298,6 +1333,7 @@ pub(crate) fn zahlen_tinte(
 ) -> Vec<sk_render::Ink> {
     let mut out = Vec::new();
     let mut d = Vec::new();
+    let mut belegt = Belegt::neu(4.0 * h);
     let mitte = g.zahlen.iter().map(|z| (z, true));
     for ((q, w, z, text, voll), mittig) in mitte.chain(g.koten.iter().map(|z| (z, false))) {
         d.clear();
@@ -1305,9 +1341,28 @@ pub(crate) fn zahlen_tinte(
         let (c, s) = (w.cos(), w.sin());
         let color = if *voll { t.ground.1 } else { t.background.1 };
         let (dx, dy) = if mittig {
+            // Rechteck der gedrehten Zahl, damit Koten ihr ausweichen
+            let ecken = [
+                (-b / 2.0, 0.0),
+                (b / 2.0, 0.0),
+                (-b / 2.0, 1.3 * h),
+                (b / 2.0, 1.3 * h),
+            ]
+            .map(|(x, y)| [q[0] + c * x - s * y, q[1] + s * x + c * y]);
+            belegt.setze(kasten(&ecken));
             (-b / 2.0, 0.3 * h)
         } else {
-            (0.5 * h, -0.5 * h)
+            // rechts vom Kreuz, sonst links; ans Haus oder über eine
+            // schon gesetzte Zahl keine (Test #223)
+            let k = |x0: f64| [q[0] + x0, q[1] - 0.5 * h, q[0] + x0 + b, q[1] + 0.5 * h];
+            let Some(x0) = [0.5 * h, -0.5 * h - b]
+                .into_iter()
+                .find(|&x0| belegt.frei(&k(x0)) && !g.haus_trifft(&k(x0)))
+            else {
+                continue;
+            };
+            belegt.setze(k(x0));
+            (x0, -0.5 * h)
         };
         out.extend(d.iter().map(|tri| sk_render::Ink {
             p: tri.map(|[x, y]| {
@@ -1323,6 +1378,46 @@ pub(crate) fn zahlen_tinte(
         }));
     }
     out
+}
+
+/// Schon gesetzte Zahlen im Grundriss, je Feld des Rasters `zelle`.
+struct Belegt {
+    zelle: f64,
+    kaesten: Vec<Kasten>,
+    felder: HashMap<(i64, i64), Vec<u32>>,
+}
+
+impl Belegt {
+    fn neu(zelle: f64) -> Belegt {
+        Belegt {
+            zelle: zelle.max(1.0),
+            kaesten: Vec::new(),
+            felder: HashMap::new(),
+        }
+    }
+
+    fn felder(&self, k: &Kasten) -> impl Iterator<Item = (i64, i64)> {
+        let f = |v: f64| (v / self.zelle).floor() as i64;
+        let (x0, y0, x1, y1) = (f(k[0]), f(k[1]), f(k[2]), f(k[3]));
+        (y0..=y1).flat_map(move |y| (x0..=x1).map(move |x| (x, y)))
+    }
+
+    fn frei(&self, k: &Kasten) -> bool {
+        self.felder(k).all(|f| {
+            self.felder
+                .get(&f)
+                .is_none_or(|v| v.iter().all(|&i| !ueberlappt(&self.kaesten[i as usize], k)))
+        })
+    }
+
+    fn setze(&mut self, k: Kasten) {
+        let i = self.kaesten.len() as u32;
+        let felder: Vec<_> = self.felder(&k).collect();
+        for f in felder {
+            self.felder.entry(f).or_default().push(i);
+        }
+        self.kaesten.push(k);
+    }
 }
 
 /// Strich von `a` nach `b` mit Stift und Muster.
@@ -1684,6 +1779,35 @@ mod tests {
             let abstand: f32 = (0..3).map(|i| (t.background.1[i] - t.paper[i]).abs()).sum();
             assert!(abstand > 0.3, "{:?} {:?}", t.background, t.paper);
             assert!(tinte.iter().all(|i| i.color == t.background.1));
+            // Koten weichen aus (Test #223): an der linken Hauswand steht
+            // sie links vom Kreuz, eine zweite fast am selben Punkt
+            // entfällt, zwischen zwei Häuserwänden keine
+            let ring = &b.haus[0].0;
+            let x0 = ring.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+            let (y0, y1) = ring
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(a, z), p| (a.min(p[1]), z.max(p[1])));
+            let q = [x0 - 300.0, (y0 + y1) / 2.0];
+            assert!(!b.im_haus(q));
+            let kote = |q: P2| (q, 0.0, 0.0, "25,06".to_string(), true);
+            b.zahlen.clear();
+            b.koten = vec![kote(q)];
+            let eine = zahlen_tinte(&b, &s, 250.0, &t);
+            assert!(!eine.is_empty());
+            let rechts = eine.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
+            assert!(rechts.fold(f64::MIN, f64::max) < q[0], "links vom Kreuz");
+            b.koten.push(kote([q[0] + 40.0, q[1] + 60.0]));
+            assert_eq!(zahlen_tinte(&b, &s, 250.0, &t).len(), eine.len());
+            // frei stehend rechts
+            b.koten = vec![kote([x0 - 20_000.0, q[1]])];
+            let frei = zahlen_tinte(&b, &s, 250.0, &t);
+            let links = frei.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
+            assert!(links.fold(f64::MAX, f64::min) > x0 - 20_000.0);
+            // geändertes Haus, andere Prüfsumme (die Lage der Koten hängt
+            // daran)
+            let vorher = zahlen_inhalt(&b);
+            b.haus[0].0[0][0] += 1.0;
+            assert_ne!(zahlen_inhalt(&b), vorher);
         }
         // Schnitt quer durch das Haus: Schnittfläche bis zur Unterkante
         let (p0, n) = (vec3(12000.0, 10000.0, 0.0), vec3(0.0, 1.0, 0.0));
