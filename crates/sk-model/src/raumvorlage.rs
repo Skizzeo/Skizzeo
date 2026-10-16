@@ -310,6 +310,15 @@ pub const SPACE_TEMPLATES: [SpaceTemplate; 13] = [
     ),
 ];
 
+/// Frühere Namen von Werksvorlagen: Beim Laden heißt eine Vorlage mit
+/// dieser Guid und genau diesem Namen wie heute (Review H-236a, Jörn
+/// 16.10. „Umbenennen“).
+const ALTE_WERKSNAMEN: [(Guid, &str, &str); 1] = [(
+    TECHNICAL_SPACE_GUID,
+    "Technik, Hausanschluss",
+    "Haustechnikraum",
+)];
+
 /// Rang einer Vorlage in der Auswahlliste: Werksvorlagen in ihrer
 /// Reihenfolge, eigene danach.
 pub fn space_template_rank(g: Guid) -> usize {
@@ -320,6 +329,14 @@ pub fn space_template_rank(g: Guid) -> usize {
 }
 
 impl Model {
+    /// Heutiger Name der Werksvorlage `g`, wenn `name` ihr früherer ist.
+    pub(crate) fn werksname_heute(g: Guid, name: &str) -> Option<&'static str> {
+        ALTE_WERKSNAMEN
+            .iter()
+            .find(|(x, alt, _)| *x == g && name == *alt)
+            .map(|(_, _, neu)| *neu)
+    }
+
     /// Weitere Suchwörter einer Werksvorlage für den Raumstempel, neben
     /// ihrem Namen (Bedienbarkeit zu #236): „HAR“ und „Hausanschlussraum“
     /// finden den Haustechnikraum, „HWR“ den Hauswirtschaftsraum.
@@ -891,6 +908,58 @@ mod tests {
             .any(|h| h.contains("Bodenbelag") && h.contains("entfällt")));
         let doppelt = format!("{text}{alt}\n");
         assert!(szo::read(&doppelt, GuidGen::with_seed(5)).is_err());
+    }
+
+    /// Eine Datei mit dem früheren Werksnamen „Technik, Hausanschluss“
+    /// lädt als „Haustechnikraum“ mit Hinweis und speichert den neuen
+    /// Namen; ein zweites Laden gibt keinen Hinweis, ein eigener Name bleibt,
+    /// ebenso der alte, wenn „Haustechnikraum“ schon vergeben ist, und eine
+    /// andere Vorlage mit dem alten Namen (Review H-236a, Test 16.10.).
+    #[test]
+    fn alter_werksname_beim_laden() {
+        let (m, _) = mit_vorlagen();
+        let text = szo::write(&m);
+        let zeile = |t: &str, name: &str| {
+            t.lines()
+                .find(|l| l.contains(&format!("name=\"{name}\"")))
+                .unwrap()
+                .to_string()
+        };
+        let neu_zeile = zeile(&text, "Haustechnikraum");
+        let alt_zeile = neu_zeile.replace("Haustechnikraum", "Technik, Hausanschluss");
+        let alt = text.replace(&neu_zeile, &alt_zeile);
+        let l = szo::read(&alt, GuidGen::with_seed(5)).unwrap();
+        let t = l.model.space_type(TECHNICAL_SPACE_GUID).unwrap();
+        assert_eq!(t.name, "Haustechnikraum");
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+        assert!(l.hints[0].contains("„Technik, Hausanschluss“ heißt jetzt „Haustechnikraum“"));
+        let gespeichert = szo::write(&l.model);
+        assert_eq!(gespeichert, text, "speichert den neuen Namen");
+        // Zweites Laden: kein Hinweis mehr
+        assert!(szo::read(&gespeichert, GuidGen::with_seed(5))
+            .unwrap()
+            .hints
+            .is_empty());
+        // Ein eigener Name bleibt
+        let eigen = text.replace(&neu_zeile, &neu_zeile.replace("Haustechnikraum", "HAR"));
+        let l = szo::read(&eigen, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(
+            l.model.space_type(TECHNICAL_SPACE_GUID).unwrap().name,
+            "HAR"
+        );
+        assert!(l.hints.is_empty());
+        // „Haustechnikraum“ schon vergeben: der alte Name bleibt
+        let kueche = zeile(&text, "Küche");
+        let belegt = alt.replace(&kueche, &kueche.replace("Küche", "Haustechnikraum"));
+        let l = szo::read(&belegt, GuidGen::with_seed(5)).unwrap();
+        let t = l.model.space_type(TECHNICAL_SPACE_GUID).unwrap();
+        assert_eq!(t.name, "Technik, Hausanschluss");
+        // Nur die Guid der Werksvorlage: eine andere mit dem alten Namen bleibt
+        let fremd = text.replace(&kueche, &kueche.replace("Küche", "Technik, Hausanschluss"));
+        let l = szo::read(&fremd, GuidGen::with_seed(5)).unwrap();
+        let k = l.model.space_type(KITCHEN_SPACE_GUID).unwrap();
+        assert_eq!(k.name, "Technik, Hausanschluss");
+        assert!(l.hints.is_empty());
     }
 
     /// Suchwörter nur für Werksvorlagen.
