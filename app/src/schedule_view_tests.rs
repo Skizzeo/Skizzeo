@@ -23,6 +23,24 @@ fn zahlen_deutsch() {
     assert_eq!(de(236000.12341, 4), "236.000,1234");
 }
 
+/// Review M1: Der schnelle Weg von `de` schreibt dieselben Ziffern wie der
+/// lange über `format!`, auch an halben Stellen, bei negativen und sehr
+/// großen Zahlen.
+#[test]
+fn zahlen_schnell_wie_lang() {
+    let mut x = 0.000_123_f64;
+    while x < 1e22 {
+        for v in [x, -x, x * 1.000_5, (x * 1e3).round() / 1e3 + 5e-4] {
+            for dec in 0..=4 {
+                assert_eq!(de(v, dec), zahl::de_lang(v, dec), "{v} auf {dec}");
+                assert_eq!(de(-v, dec), zahl::de_lang(-v, dec), "{} auf {dec}", -v);
+            }
+        }
+        x *= 1.0123;
+    }
+    assert_eq!(de(f64::NAN, 2), zahl::de_lang(f64::NAN, 2));
+}
+
 #[test]
 fn gliederung_wird_gemerkt() {
     use crate::windows::{read_grouping, write_settings_grouped, Windows};
@@ -997,4 +1015,83 @@ fn wohnflaeche_ohne_umschalter() {
     assert_eq!(o, Some(ListOut::Picking { selection: true }));
     assert_eq!(p.selected, vec![raum]);
     assert_eq!(s.model().element(raum).unwrap().category, Category::Space);
+}
+
+/// Review M2: Die Liste der Szene nimmt die Mengen der Wandzüge aus der
+/// Szene. Nach Öffnung, Ziehen, Rückgängig und Wiederholen sind die Mengen
+/// jeder Wand, Decke und Gründung dieselben, die die Liste selbst rechnet.
+#[test]
+fn liste_mit_vorrat_wie_ohne() {
+    use sk_math::vec3;
+    use sk_model::oeffnung::{HeightLine, HeightRef, Opening, OpeningKind};
+    let mut s = haus_mit_raeumen();
+    let gleich = |s: &mut Scene, wann: &str| {
+        let ohne = sk_model::qto::schedule(s.model());
+        let mit = s.schedule().clone();
+        let zeilen = |x: &Schedule| -> HashMap<ElementId, Option<ElementQto>> {
+            x.buildings
+                .iter()
+                .flat_map(|b| &b.storeys)
+                .chain(&x.loose)
+                .flat_map(|st| &st.groups)
+                .flat_map(|g| &g.rows)
+                .filter(|r| !matches!(r.q, Some(ElementQto::Room(_))))
+                .map(|r| (r.element, r.q.clone()))
+                .collect()
+        };
+        let (a, b) = (zeilen(&mit), zeilen(&ohne));
+        assert!(a.len() > 10, "{wann}");
+        assert_eq!(a, b, "{wann}");
+    };
+    gleich(&mut s, "Anfang");
+    let run = s.model().runs().ids().next().unwrap();
+    let st = s.model().run(run).unwrap().storey;
+    let (face, p) = s
+        .outer_face_at(vec3(5000.0, -9000.0, 1500.0), vec3(0.0, 1.0, 0.0))
+        .expect("Außenfläche");
+    let (a, c) = (
+        face.at(face.u_of(p) - 600.0, 0.0),
+        face.at(face.u_of(p) + 600.0, 0.0),
+    );
+    let fenster = Opening {
+        kind: OpeningKind::Window,
+        path: vec![vec3(a.x, a.y, 0.0), vec3(c.x, c.y, 0.0)],
+        bottom: HeightRef::Line(st, HeightLine::Sill),
+        top: HeightRef::Line(st, HeightLine::Lintel),
+        reveal: None,
+        install: Default::default(),
+        swing: None,
+        lock: Default::default(),
+    };
+    let id = s.add_opening(fenster.clone()).expect("Fenster");
+    gleich(&mut s, "Fenster");
+    // Öffnung im Schritt verschieben und breiter machen (wie am Griff)
+    let mut breiter = fenster;
+    breiter.path[0].x -= 400.0;
+    breiter.path[1].x += 200.0;
+    assert!(s.opening_schritt(id, breiter, "Öffnung ändern"));
+    gleich(&mut s, "Öffnung geändert");
+    // Geschosshöhe und Höhenlinien (Paneel „Geschosse“), dann zurück
+    let h = s.model().storey(st).unwrap().height;
+    assert!(s.edit_model("Geschosshöhe", |m| m.set_storey_height(st, h + 250.0)));
+    gleich(&mut s, "Geschosshöhe");
+    let mut linien = s.model().storey(st).unwrap().lines;
+    linien.sill += 150.0;
+    assert!(s.edit_model("Höhenlinien", |m| m.set_height_lines(st, linien)));
+    gleich(&mut s, "Brüstung");
+    assert!(s.undo() && s.undo());
+    gleich(&mut s, "Höhen rückgängig");
+    let orig = s.chain(run).unwrap().clone();
+    s.begin("Wand verschieben");
+    for d in [-100.0, -200.0, -300.0] {
+        let moved = orig.with_segment_moved(0, d).unwrap();
+        s.set_run_points(run, &moved.points);
+        s.schedule();
+    }
+    s.commit();
+    gleich(&mut s, "gezogen");
+    assert!(s.undo());
+    gleich(&mut s, "rückgängig");
+    assert!(s.redo());
+    gleich(&mut s, "wiederholt");
 }
