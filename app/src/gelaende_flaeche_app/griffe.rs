@@ -7,8 +7,9 @@
 //! Nachbarkanten behalten ihre Richtung. Entf löscht die Ecke unter der
 //! Maus; eine Grenze behält drei. Was unter der Maus liegt, sagt die
 //! Statuszeile, beim Ziehen die Fläche des Grundstücks und die Längen der
-//! Kanten am Griff. Loslassen ist ein
-//! Schritt, Esc bricht ab.
+//! Kanten am Griff. Gezogen wird nur im Bild; erst Loslassen schreibt die
+//! Grenze ins Modell, als ein Schritt (Review B-233a: sonst bauten Netz und
+//! Objektbaum bei jeder Mausbewegung neu). Esc bricht ab.
 
 use super::fang::{self, Ziele};
 use super::STEP;
@@ -54,14 +55,16 @@ pub enum Griff {
 }
 
 /// Ein Zug am Griff: Bodenpunkt beim Greifen, der Ring dabei (nach dem
-/// Einfügen), Ziele für den Fang und ob sich etwas geändert hat.
+/// Einfügen), Ziele für den Fang und der Ring, den Loslassen schreibt
+/// (`None`: nichts geändert).
 #[derive(Clone, Debug)]
 struct Zug {
     griff: Griff,
     start: [f64; 2],
     ring: Vec<[f64; 2]>,
     ziele: Ziele,
-    geaendert: bool,
+    label: &'static str,
+    neu: Option<Vec<[f64; 2]>>,
 }
 
 /// Griffe der Grenze im Grundriss.
@@ -289,12 +292,12 @@ impl App {
                 let Some(z) = self.platte.griffe.zug.take() else {
                     return false;
                 };
-                if z.geaendert {
-                    self.scene.commit();
-                    self.upload_model();
-                    self.quantity.dirty = true;
-                } else {
-                    self.scene.rollback();
+                let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = z.griff;
+                if let Some(r) = z.neu {
+                    if self.scene.edit_model(z.label, |m| m.set_parcel_ring(i, &r)) {
+                        self.upload_model();
+                        self.quantity.dirty = true;
+                    }
                 }
                 self.platte.leiste.neu = true;
                 self.gelaende_sync();
@@ -305,8 +308,8 @@ impl App {
         }
     }
 
-    /// Greifen: Schritt öffnen; am Punkt der Kantenmitte gleich die Ecke
-    /// einfügen und als Ecke weiterziehen.
+    /// Greifen: am Punkt der Kantenmitte gleich die Ecke einfügen (im Bild)
+    /// und als Ecke weiterziehen.
     fn grenz_greifen(&mut self, g: Griff, start: [f64; 2], ringe: &[Vec<[f64; 2]>]) {
         let (i, k) = match g {
             Griff::Ecke(i, k) | Griff::Plus(i, k) | Griff::Kante(i, k) => (i, k),
@@ -320,16 +323,14 @@ impl App {
             Griff::Plus(..) => LABEL_EINGEFUEGT,
             Griff::Kante(..) => LABEL_KANTE,
         };
-        self.scene.begin(label);
         let mut ring = ring.clone();
         let mut griff = g;
-        let mut geaendert = false;
+        let mut neu = None;
         if let Griff::Plus(..) = g {
             let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
             ring.insert(k + 1, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]);
-            geaendert = self.scene.grenze_ziehen(i, &ring);
+            neu = Some(ring.clone());
             griff = Griff::Ecke(i, k + 1);
-            self.upload_model();
         }
         self.platte.griffe.hover = Some(griff);
         self.platte.griffe.zug = Some(Zug {
@@ -337,12 +338,13 @@ impl App {
             start,
             ring,
             ziele,
-            geaendert,
+            label,
+            neu,
         });
         self.redraw = true;
     }
 
-    /// Ziehen: der Ring aus dem Stand beim Greifen, live im Modell; die
+    /// Ziehen: der Ring aus dem Stand beim Greifen, nur im Bild; die
     /// Statuszeile nennt die Fläche und die Kanten am Griff.
     fn grenz_ziehen(&mut self, x: f64, y: f64, vw: f64, vh: f64, sc: f64, mods: Modifiers) {
         let Some(z) = self.platte.griffe.zug.as_ref() else {
@@ -356,20 +358,17 @@ impl App {
             return;
         };
         let griff = z.griff;
-        let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = griff;
-        // eine Schleife zeigt die Zeile; das Modell bleibt beim letzten
-        // guten Stand
+        // eine Schleife zeigt die Zeile; das Bild bleibt beim letzten guten
+        // Stand
         if !sk_model::parcel_ring_ok(&r) {
             self.status(Meldung::satz(GEHT_NICHT), crate::NOTICE_TIME);
             return;
         }
-        if self.scene.grenze_ziehen(i, &r) {
-            if let Some(z) = self.platte.griffe.zug.as_mut() {
-                z.geaendert = true;
-            }
-            self.upload_model();
-        }
         let t = zug_zeile(griff, &r);
+        if let Some(z) = self.platte.griffe.zug.as_mut() {
+            z.neu = (r != z.ring || z.label == LABEL_EINGEFUEGT).then_some(r);
+        }
+        self.redraw = true;
         self.status(
             Meldung::mit("{}", &[&t]),
             std::time::Duration::from_secs(3600),
@@ -381,8 +380,6 @@ impl App {
         if self.platte.griffe.zug.take().is_none() {
             return false;
         }
-        self.scene.rollback();
-        self.upload_model();
         self.grenz_zeile(self.platte.griffe.hover);
         self.redraw = true;
         true
@@ -442,12 +439,23 @@ impl App {
 
     /// Quadrate an den Ecken, Punkte in den Kantenmitten; der Griff unter
     /// der Maus und der gezogene in der Farbe des Ziehens, die Kante dazu
-    /// als Linie.
+    /// als Linie. Beim Ziehen steht der gezogene Ring an seiner neuen
+    /// Stelle, ganz als Linie (das Modell folgt erst beim Loslassen).
     pub(crate) fn grenz_linien(&self, z: f64, scale: f32, theme: &Theme) -> Vec<Helper> {
         if !self.grenz_griffe_an() {
             return Vec::new();
         }
-        let ringe = self.scene.model().parcel_rings();
+        let mut ringe = self.scene.model().parcel_rings();
+        let zug = self.platte.griffe.zug.as_ref();
+        let gezogen = zug.map(|z| {
+            let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = z.griff;
+            (i, z.neu.as_ref().unwrap_or(&z.ring).clone())
+        });
+        if let Some((i, r)) = &gezogen {
+            if let Some(alt) = ringe.get_mut(*i) {
+                *alt = r.clone();
+            }
+        }
         let heiss = self.platte.griffe.hover;
         let col = &theme.interact;
         let p = |q: [f64; 2]| [q[0] as f32, q[1] as f32, z as f32 + 2.0];
@@ -466,7 +474,7 @@ impl App {
             let n = ring.len();
             for k in 0..n {
                 let (a, b) = (ring[k], ring[(k + 1) % n]);
-                if heiss == Some(Griff::Kante(i, k)) {
+                if gezogen.as_ref().is_some_and(|g| g.0 == i) || heiss == Some(Griff::Kante(i, k)) {
                     out.push(Helper {
                         a: p(a),
                         b: p(b),
@@ -541,9 +549,9 @@ mod tests {
         assert_eq!(t(18000.0 + 150.0, 5000.0), None);
     }
 
-    /// Ein Zug in der Szene: Greifen öffnet den Schritt, jeder Stand geht
-    /// live ins Modell, eine Schleife nicht; Loslassen ist ein Schritt, den
-    /// Rückgängig ganz zurücknimmt.
+    /// Ein Zug ändert das Modell nicht (Review B-233a), nur das Bild;
+    /// eine Schleife bleibt beim letzten guten Stand. Loslassen schreibt den
+    /// letzten Ring als einen Schritt, den Rückgängig ganz zurücknimmt.
     #[test]
     fn zug_ist_ein_schritt() {
         let mut m = sk_model::Model::with_seed(1);
@@ -552,16 +560,18 @@ mod tests {
         m.commit();
         let mut s = crate::scene::Scene::with_model(m);
         let r = s.model().parcel_rings()[0].clone();
-        assert!(!s.grenze_ziehen(0, &r), "ohne offenen Schritt nichts");
-        s.begin(LABEL_ECKE);
-        for x in [19000.0, 20000.0] {
-            let e = gezogen(Griff::Ecke(0, 2), [0.0, 0.0], &r, [x, 13000.0]).unwrap();
-            assert!(s.grenze_ziehen(0, &e));
+        let rev = s.model().revision();
+        let mut letzter = None;
+        for p in [[19000.0, 13000.0], [20000.0, 13000.0], [10000.0, -3000.0]] {
+            let e = gezogen(Griff::Ecke(0, 2), [0.0, 0.0], &r, p).unwrap();
+            if sk_model::parcel_ring_ok(&e) {
+                letzter = Some(e);
+            }
         }
-        let schleife = gezogen(Griff::Ecke(0, 2), [0.0, 0.0], &r, [10000.0, -3000.0]).unwrap();
-        assert!(!sk_model::parcel_ring_ok(&schleife));
-        assert!(!s.grenze_ziehen(0, &schleife));
-        s.commit();
+        assert_eq!(s.model().revision(), rev, "beim Ziehen bleibt das Modell");
+        let e = letzter.unwrap();
+        assert_eq!(e[2], [20000.0, 13000.0], "die Schleife zählt nicht");
+        assert!(s.edit_model(LABEL_ECKE, |m| m.set_parcel_ring(0, &e)));
         assert_eq!(s.model().parcel_rings()[0][2], [20000.0, 13000.0]);
         assert!(s.undo());
         assert_eq!(s.model().parcel_rings()[0], r);
