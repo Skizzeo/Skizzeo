@@ -540,7 +540,8 @@ impl MaterialView {
     }
 
     /// Wie [`MaterialView::open`] mit Firmenkatalog, gewähltem Baustoff und
-    /// dem Zustand „Mehr“ aus der Sitzung.
+    /// dem Zustand „Mehr“ aus der Sitzung. Arbeitet auf einer Kopie des
+    /// Modells: die Szene mit fertigem Geländenetz ([`Scene::fertig`]).
     pub fn open_with(
         scene: &Scene,
         company: Option<&Company>,

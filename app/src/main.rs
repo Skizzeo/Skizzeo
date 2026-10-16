@@ -1523,7 +1523,7 @@ impl App {
         }
         self.ui.hover = None;
         self.title.hover = None;
-        let mut c = catalog_view::Catalog::open(&self.scene, self.company.as_ref());
+        let mut c = catalog_view::Catalog::open(self.scene.fertig(), self.company.as_ref());
         c.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
         c.set_ext(&self.ext_bib.defs);
         self.catalog = Some(c);
@@ -1647,7 +1647,7 @@ impl App {
         self.ui.hover = None;
         self.title.hover = None;
         let mut m = material_view::MaterialView::open_with(
-            &self.scene,
+            self.scene.fertig(),
             self.company.as_ref(),
             select,
             self.mat_more,
@@ -1770,7 +1770,7 @@ impl App {
         if let Some(c) = self.company.as_mut() {
             c.entwurf_laden();
         }
-        let mut v = verwaltung::Verwaltung::open(&self.scene, self.company.as_ref(), wahl);
+        let mut v = verwaltung::Verwaltung::open(self.scene.fertig(), self.company.as_ref(), wahl);
         v.set_haus_name(&self.doc.name());
         if self.rolle() == sk_cost::Rolle::Nutzer {
             v.sperren();
@@ -1806,7 +1806,7 @@ impl App {
         }
         self.ui.hover = None;
         self.title.hover = None;
-        let mut v = verwaltung::Verwaltung::open(&self.scene, self.company.as_ref(), None);
+        let mut v = verwaltung::Verwaltung::open(self.scene.fertig(), self.company.as_ref(), None);
         if v.ablauf_im_haus(g) {
             self.verwaltung = Some(v);
             self.prefs_dirty = true;

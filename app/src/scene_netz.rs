@@ -75,6 +75,13 @@ impl Scene {
         }
     }
 
+    /// Die Szene mit fertigem Netz ([`Scene::netz_fertig`]), für Wege,
+    /// die das Modell kopieren (Verwaltung, Kosten-Review B-234c).
+    pub fn fertig(&mut self) -> &Scene {
+        self.netz_fertig();
+        self
+    }
+
     /// Das Modell mit fertigem Netz ([`Scene::netz_fertig`]), zum
     /// Speichern und für IFC.
     pub fn model_fertig(&mut self) -> &Model {

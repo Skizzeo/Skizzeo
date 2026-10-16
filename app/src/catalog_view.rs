@@ -471,6 +471,8 @@ fn follow_name(name: &str, old: f64, new: f64) -> Option<String> {
 type ListLayout = (Vec<(Item, Rect)>, Vec<(String, f32)>, f32);
 
 impl Catalog {
+    /// Der Katalog arbeitet auf einer Kopie des Modells; die Szene kommt
+    /// deshalb mit fertigem Geländenetz ([`Scene::fertig`]).
     pub fn open(scene: &Scene, company: Option<&Company>) -> Catalog {
         let mut work = scene.model().clone();
         work.allow_unstepped();

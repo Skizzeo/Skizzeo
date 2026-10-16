@@ -312,6 +312,11 @@ impl Merker {
         Merker(OnceLock::new(), m)
     }
 
+    /// Nur ein vorläufiges Netz, noch kein fertiges.
+    fn nur_vorlaeufig(&self) -> bool {
+        self.0.get().is_none() && self.1.is_some()
+    }
+
     /// Das Netz, sonst das vorläufige.
     fn jetzt(&self) -> Option<&Arc<TerrainMesh>> {
         self.0.get().map(|n| &n.1).or(self.1.as_ref())
@@ -449,12 +454,18 @@ fn punkte_gleich(a: &[TerrainPoint], b: &[TerrainPoint]) -> bool {
 }
 
 impl PartialEq for Terrain {
+    /// Inhaltlich gleich. Ein Gelände mit nur vorläufigem Netz ist nicht
+    /// gleich dem mit fertigem, damit das Einsetzen ein Schritt im Verlauf
+    /// bleibt (B-234c).
     fn eq(&self, o: &Terrain) -> bool {
-        (
-            &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href, self.local,
-        ) == (
-            &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
-        ) && punkte_gleich(&self.points, &o.points)
+        self.mesh.nur_vorlaeufig() == o.mesh.nur_vorlaeufig()
+            && (
+                &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href,
+                self.local,
+            ) == (
+                &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
+            )
+            && punkte_gleich(&self.points, &o.points)
             && (&self.boundaries, &self.codes, &self.raw) == (&o.boundaries, &o.codes, &o.raw)
             && self.breaks == o.breaks
             && (&self.parcels, &self.underlay) == (&o.parcels, &o.underlay)
@@ -969,7 +980,7 @@ impl Model {
         self.project
             .terrain
             .as_ref()
-            .is_some_and(|t| t.mesh.0.get().is_none() && t.mesh.1.is_some())
+            .is_some_and(|t| t.mesh.nur_vorlaeufig())
     }
 
     /// Das im Faden gerechnete Netz einsetzen (im offenen Schritt):
@@ -984,11 +995,17 @@ impl Model {
         else {
             return false;
         };
-        let t = t.clone();
+        // ein neues Gelände mit dem Netz, wie jede andere Änderung: Das
+        // alte teilen der Verlauf und Kopien des Modells, die es nicht
+        // nachträglich ändern darf (Architektur zu B-234c)
+        let mut neu = Terrain::clone(t);
+        neu.mesh = Merker::default();
+        let _ = neu.mesh.0.set((fertig.schluessel, Arc::new(fertig.netz)));
         let vorher = self.foundation_terrain();
         let vor = self.terrain_nhn();
         let haus = self.level_building();
-        let _ = t.mesh.0.set((fertig.schluessel, Arc::new(fertig.netz)));
+        self.note_project();
+        self.project.terrain = Some(Arc::new(neu));
         self.touch();
         self.netz_folgen(vorher, vor, haus);
         true
@@ -2165,21 +2182,30 @@ mod tests {
         spaeter.begin("Netz");
         assert!(!spaeter.netz_einsetzen(a.rechnen()));
         spaeter.commit();
-        m.begin("Netz");
-        assert!(m.netz_einsetzen(fertig));
-        m.commit();
-        assert!(m.netz_auftrag().is_none());
-        let t = m.terrain().unwrap();
-        assert!(t.netz_passt());
-        assert_eq!(t.mesh().netz, ohne.terrain().unwrap().mesh().netz);
-        assert_eq!(m.foundation_terrain(), ohne.foundation_terrain());
-        assert_eq!(m.terrain_nhn(), ohne.terrain_nhn());
         let uk = |m: &Model| {
             m.foundation_terrain()
                 .iter()
                 .map(|(gr, _)| m.storey(*gr).unwrap().elevation)
                 .collect::<Vec<_>>()
         };
+        // ein Klon sieht nicht, was danach eingesetzt wird (Architektur zu
+        // B-234c)
+        let klon = m.clone();
+        m.begin("Netz");
+        assert!(m.netz_einsetzen(fertig));
+        m.commit();
+        assert!(
+            Arc::ptr_eq(&klon.terrain().unwrap().mesh(), &alt),
+            "der Klon bleibt"
+        );
+        assert!(klon.netz_vorlaeufig());
+        assert_eq!(uk(&klon), uk0);
+        assert!(m.netz_auftrag().is_none());
+        let t = m.terrain().unwrap();
+        assert!(t.netz_passt());
+        assert_eq!(t.mesh().netz, ohne.terrain().unwrap().mesh().netz);
+        assert_eq!(m.foundation_terrain(), ohne.foundation_terrain());
+        assert_eq!(m.terrain_nhn(), ohne.terrain_nhn());
         assert_eq!(uk(&m), uk(&ohne));
         assert_ne!(uk(&m), uk0, "die Gründung ist mitgegangen");
     }

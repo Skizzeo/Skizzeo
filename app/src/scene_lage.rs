@@ -345,6 +345,32 @@ mod tests {
         let l = sk_model::szo::read_with(&text, guids, &sk_cost::lesen::ABSCHNITTE_SZO);
         let mut offen = Scene::with_model(l.unwrap().model);
         assert_eq!(netto(&mut offen), kosten, "Kosten nach dem Öffnen");
+        // die Verwaltung rechnet auf einer Kopie des Modells (Kosten B-234c)
+        let haus = |s: &mut Scene| {
+            crate::verwaltung::Verwaltung::open(s.fertig(), None, None).dieses_vorher()
+        };
+        let soll = haus(&mut ohne);
+        assert!(soll.is_some());
+        assert_eq!(haus(&mut frisch()), soll, "Verwaltung");
+        let roh = crate::verwaltung::Verwaltung::open(&frisch(), None, None).dieses_vorher();
+        assert_ne!(roh, soll, "ohne Warten rechnete sie mit dem alten Netz");
+        // ein Klon der Szene bleibt, wie er war, auch wenn danach das Netz
+        // eingesetzt wird (Architektur zu B-234c)
+        let mut s = frisch();
+        let klon = s.model().clone();
+        let netz = klon.terrain().unwrap().mesh();
+        let mut vorlaeufig = Scene::with_model(klon.clone());
+        assert!(s.netz_abwarten());
+        assert!(std::sync::Arc::ptr_eq(
+            &klon.terrain().unwrap().mesh(),
+            &netz
+        ));
+        assert!(klon.netz_vorlaeufig());
+        let gr = |m: &Model| m.foundation_level().map(|g| m.storey(g).unwrap().elevation);
+        assert_eq!(gr(&klon), gr(s0.model()));
+        assert_ne!(gr(s.model()), gr(&klon));
+        // und eine Szene darauf rechnet ihr eigenes Netz
+        assert_eq!(*vorlaeufig.schedule(), mengen);
         // IFC schreibt das fertige Netz
         let mut s = frisch();
         let _ = s.model_fertig();
