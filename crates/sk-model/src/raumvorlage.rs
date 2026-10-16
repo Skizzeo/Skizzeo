@@ -303,7 +303,7 @@ pub const SPACE_TEMPLATES: [SpaceTemplate; 13] = [
     ),
     side(
         TECHNICAL_SPACE_GUID,
-        "Technik, Hausanschluss",
+        "Haustechnikraum",
         SpaceGroup::Tf,
         0,
         LIME_WALL_TYPE_GUID,
