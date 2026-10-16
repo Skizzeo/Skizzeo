@@ -102,7 +102,7 @@ fn klammer(
     if nr.len() <= NUMMERN {
         format!(", davon {punkte} {was} ({})", nr.join(", "))
     } else {
-        format!(", davon {punkte} {was}, in der Punktliste als „{marke}“ gekennzeichnet")
+        format!(", davon {punkte} {was}, in der Punktliste als ‚{marke}‘ gekennzeichnet")
     }
 }
 
