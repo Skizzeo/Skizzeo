@@ -425,6 +425,10 @@ pub use gelaende_aufmass::{
 #[path = "gelaende_eben.rs"]
 mod gelaende_eben;
 
+#[path = "gelaende_grenze.rs"]
+mod gelaende_grenze;
+pub use gelaende_grenze::{offset_ring_edge, parcel_ring_ok};
+
 #[path = "gelaende_flaeche.rs"]
 mod gelaende_flaeche;
 pub use gelaende_flaeche::{

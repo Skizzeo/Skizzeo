@@ -121,7 +121,7 @@ impl Model {
     /// Grenze, ohne Punkte: Die Platte bleibt eben (im offenen Schritt).
     /// `false` unter drei Ecken, ohne Fläche oder ohne Lage des Systems.
     pub fn add_parcel(&mut self, ring: &[[f64; 2]]) -> bool {
-        if ring.len() < 3 || flaeche(ring) < 1.0 {
+        if !super::gelaende_grenze::parcel_ring_ok(ring) {
             return false;
         }
         let mut t = self.terrain().cloned().unwrap_or_else(|| self.oertlich());
@@ -195,12 +195,12 @@ impl Model {
 }
 
 /// Auf mm.
-fn rund(v: f64) -> f64 {
+pub(super) fn rund(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
 
 /// Inhalt eines Umrisses (mm²).
-fn flaeche(ring: &[[f64; 2]]) -> f64 {
+pub(super) fn flaeche(ring: &[[f64; 2]]) -> f64 {
     let n = ring.len();
     let s: f64 = (0..n)
         .map(|i| {
@@ -412,7 +412,7 @@ mod tests {
         m.commit();
         assert_eq!(m.terrain().unwrap().parcels.len(), 2);
         m.begin("Grenze");
-        assert!(m.add_parcel(&[[0.0, 0.0], [1000.0, 0.0], [0.0, 1000.0]]));
+        assert!(m.add_parcel(&[[0.0, 0.0], [2000.0, 0.0], [0.0, 2000.0]]));
         m.rollback();
         assert_eq!(m.terrain().unwrap().parcels.len(), 2, "im Schritt");
     }
