@@ -1141,7 +1141,9 @@ pub fn kosten_mit(
     befunde.extend(auto_ansaetze(m, s, k, &mut sammel, &mut index));
     // Befunde der benutzten Typen, je einmal
     let mut schluessel: Vec<&Schluessel> = typen.keys().collect();
-    schluessel.sort_by_key(|s| (s.typ, s.kat as u8, s.schichten));
+    // alle Felder des Schlüssels, sonst entschiede bei Gleichstand die
+    // Reihenfolge der Tafel (Review #228 H-228b)
+    schluessel.sort_by_key(|s| (s.typ, s.kat as u8, s.schichten, s.seite.map(|x| x as u8)));
     for s in schluessel {
         for w in &typen[s] {
             for b in &w.befunde {
