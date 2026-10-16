@@ -4,7 +4,10 @@
 //! gemeinsamen Wand. Reicht die Sohle des einen Hauses weiter als die des
 //! anderen (Garage kürzer als die Hauswand), hat das längere Vorrang: Die
 //! Platte des kürzeren endet in der Flucht seiner Sohle (VOB-Spruch c zu
-//! H-245a).
+//! H-245a). Überdecken sich die Rechtecke um die Wandzüge (gedrehte Häuser,
+//! Garage in der Kehle eines L), bleibt es wie vor dem Trennen: beide
+//! Platten ganz, ohne Rand als Bruchkante, das Netz vermittelt (Geometrie
+//! H-245-geo-c: nicht schlechter als vorher).
 
 /// Eine Platte vor dem Trennen (mm, `[x0, y0, x1, y1]`).
 #[derive(Clone, Copy, Debug)]
@@ -25,6 +28,9 @@ pub(super) struct Bereich {
     pub rect: [f64; 4],
     pub loecher: Vec<[f64; 4]>,
     pub z: f64,
+    /// Der Rand wird Bruchkante; nicht, wenn sich die Wandzüge mit denen
+    /// eines anderen Hauses überdecken.
+    pub rand: bool,
 }
 
 /// Unter diesem Unterschied (mm) reichen zwei Sohlen gleich weit.
@@ -33,13 +39,13 @@ const GLEICH: f64 = 1.0;
 /// Trennt die Platten mit Streifen von 2 × `fuge` zwischen ihnen. Die
 /// Richtung ist die, in der die Wandzüge am weitesten auseinander liegen;
 /// getrennt wird in der Mitte zwischen den Sohlen. Überdecken sich die
-/// Wandzüge selbst, bleibt es beim Vorrang der früheren Platte.
+/// Rechtecke um die Wandzüge, bleiben beide Platten ganz und ohne Rand.
 pub(super) fn trennen(platten: &[Platte], fuge: f64) -> Vec<Bereich> {
     let n = platten.len();
     let mut rect: Vec<[f64; 4]> = platten.iter().map(|p| p.rect).collect();
     // (k, i, Richtung, Mitte, k liegt vorn)
     let mut paare: Vec<(usize, usize, usize, f64, bool)> = Vec::new();
-    let mut vorrang: Vec<(usize, usize)> = Vec::new();
+    let mut ohne_rand = vec![false; n];
     for i in 0..n {
         for k in 0..i {
             let (a, b) = (platten[k].rect, platten[i].rect);
@@ -61,7 +67,8 @@ pub(super) fn trennen(platten: &[Platte], fuge: f64) -> Vec<Bereich> {
                 (Some(x), _) => (0, x.1),
                 (None, Some(y)) => (1, y.1),
                 (None, None) => {
-                    vorrang.push((i, k));
+                    ohne_rand[i] = true;
+                    ohne_rand[k] = true;
                     continue;
                 }
             };
@@ -103,17 +110,13 @@ pub(super) fn trennen(platten: &[Platte], fuge: f64) -> Vec<Bereich> {
             loecher[x].push(l);
         }
     }
-    for (i, k) in vorrang {
-        let r = rect[k];
-        let f = 2.0 * fuge;
-        loecher[i].push([r[0] - f, r[1] - f, r[2] + f, r[3] + f]);
-    }
     (0..n)
         .filter(|&i| rect[i][0] < rect[i][2] && rect[i][1] < rect[i][3])
         .map(|i| Bereich {
             rect: rect[i],
             loecher: std::mem::take(&mut loecher[i]),
             z: platten[i].z,
+            rand: !ohne_rand[i],
         })
         .collect()
 }
@@ -316,18 +319,24 @@ mod tests {
         assert!(!b[1].enthaelt([8500.0, 5000.0]));
     }
 
-    /// Ein Haus um eine Garage herum: Die Wandzüge überdecken sich, die
-    /// frühere Platte hat Vorrang, die spätere bekommt ein Loch.
+    /// Ein Haus um eine Garage herum: Die Wandzüge überdecken sich, beide
+    /// Platten bleiben ganz und ohne Rand; ein drittes Haus weit weg behält
+    /// seinen.
     #[test]
     fn umschlossen() {
         let b = trennen(
             &[
                 platte([0.0, 0.0, 20000.0, 20000.0], 0.0),
                 platte([5000.0, 5000.0, 8000.0, 8000.0], -1000.0),
+                platte([40000.0, 0.0, 48000.0, 10000.0], 500.0),
             ],
             10.0,
         );
-        assert!(!b[1].enthaelt([6000.0, 6000.0]));
-        assert!(b[0].enthaelt([6000.0, 6000.0]));
+        assert!(b[0].enthaelt([6000.0, 6000.0]) && b[1].enthaelt([6000.0, 6000.0]));
+        assert!(b.iter().all(|x| x.loecher.is_empty()));
+        assert_eq!(
+            b.iter().map(|x| x.rand).collect::<Vec<_>>(),
+            [false, false, true]
+        );
     }
 }
