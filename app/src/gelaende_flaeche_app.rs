@@ -10,6 +10,10 @@
 //! Böschung nach Vorgabe; Höhe und Böschung stellt man danach im Paneel.
 //! Beim Zeichnen rastet der Punkt an Ecken und Kanten von Haus, Flächen
 //! und Grenzen ([`fang`], H-189a).
+//!
+//! Dasselbe Werkzeug zeichnet als „Grenze zeichnen“ ein Grundstück (I2):
+//! Der geschlossene Umriss wird ein Flurstück im Gelände
+//! ([`sk_model::Model::add_parcel`]), auch ohne Lageplan.
 
 mod fang;
 
@@ -48,6 +52,17 @@ pub const ZEICHNEN: &str = "Fläche zeichnen: Ecken im Grundriss klicken (mit St
     erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
 /// Alle Ecken auf einer Linie (H-189d).
 pub const OHNE_INHALT: &str = "Die Ecken liegen auf einer Linie; die Fläche hat keinen Inhalt.";
+/// Dieselben Sätze für „Grenze zeichnen“ (I2).
+pub const GRENZE: &str = "Grenze zeichnen: Ecken im Grundriss klicken (mit Strg ohne Fang); die \
+    erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
+pub const GRENZE_ZU_WENIG: &str = "Eine Grenze braucht mindestens drei Ecken.";
+pub const GRENZE_KREUZT: &str = "Die Kanten der Grenze kreuzen sich; bitte anders schließen.";
+pub const GRENZE_OHNE_INHALT: &str =
+    "Die Ecken liegen auf einer Linie; das Grundstück hat keine Fläche.";
+pub const GRENZE_ZU_WEIT: &str =
+    "Die Grenze liegt zu weit außerhalb; bitte näher am Haus zeichnen.";
+/// Schritt im Rückgängig.
+pub const LABEL_GRENZE: &str = "Grenze gezeichnet";
 /// Die Fläche ließ sich auf der Geländehöhe in ihrer Mitte nicht anlegen
 /// (H-189d).
 pub const ZU_HOCH: &str =
@@ -73,10 +88,12 @@ pub struct Ausgang {
     pub fehler: Option<&'static str>,
 }
 
-/// Werkzeug „Fläche zeichnen“.
+/// Werkzeug „Fläche zeichnen“, mit `grenze` „Grenze zeichnen“.
 #[derive(Clone, Debug, Default)]
 pub struct Werkzeug {
     pub aktiv: bool,
+    /// Zeichnet eine Grenze statt einer Fläche (I2).
+    pub grenze: bool,
     /// Gesetzte Ecken (mm).
     ecken: Vec<[f64; 2]>,
     /// Bodenpunkt unter der Maus (Gummiband).
@@ -98,6 +115,23 @@ impl Werkzeug {
         if !on {
             self.ziele = Ziele::default();
             self.stand = None;
+        }
+    }
+
+    /// Als „Fläche zeichnen“ oder „Grenze zeichnen“ (`grenze`) einschalten;
+    /// läuft es schon so, aus. Ein Wechsel verwirft die gesetzten Ecken.
+    pub fn umschalten(&mut self, grenze: bool) {
+        let an = !(self.aktiv && self.grenze == grenze);
+        self.set_aktiv(an);
+        self.grenze = grenze;
+    }
+
+    /// Satz der Statuszeile, solange es an ist.
+    pub fn zeile(&self) -> &'static str {
+        if self.grenze {
+            GRENZE
+        } else {
+            ZEICHNEN
         }
     }
 
@@ -198,19 +232,22 @@ impl Werkzeug {
     /// bleibt er stehen und `fehler` sagt warum.
     fn schliessen(&mut self, out: &mut Ausgang) {
         out.redraw = true;
+        let g = self.grenze;
         if self.ecken.len() < 3 {
-            out.fehler = Some(ZU_WENIG);
+            out.fehler = Some(if g { GRENZE_ZU_WENIG } else { ZU_WENIG });
             return;
         }
+        // eine Grenze muss sich bauen lassen wie eine Fläche
         let p = TerrainPatch::flat(self.ecken.clone(), 0.0);
         if !p.valid() {
             let weit = self.ecken.iter().flatten().any(|v| v.abs() > PATCH_XY_MAX);
-            out.fehler = Some(if auf_einer_linie(&self.ecken) {
-                OHNE_INHALT
-            } else if weit {
-                ZU_WEIT
-            } else {
-                KREUZT
+            out.fehler = Some(match (auf_einer_linie(&self.ecken), weit, g) {
+                (true, _, false) => OHNE_INHALT,
+                (true, _, true) => GRENZE_OHNE_INHALT,
+                (_, true, false) => ZU_WEIT,
+                (_, true, true) => GRENZE_ZU_WEIT,
+                (_, _, false) => KREUZT,
+                (_, _, true) => GRENZE_KREUZT,
             });
             return;
         }
@@ -256,7 +293,7 @@ impl Werkzeug {
                 } else if am_anfang {
                     // nicht die erste Ecke noch einmal setzen
                     if self.ecken.len() == 2 {
-                        out.fehler = Some(ZU_WENIG);
+                        out.fehler = Some(if self.grenze { GRENZE_ZU_WENIG } else { ZU_WENIG });
                     }
                 } else if self.ecken.last() != Some(&p) {
                     self.ecken.push(p);
@@ -640,7 +677,7 @@ impl App {
             self.nord_zeile();
         } else if self.platte.leiste.werkzeug.aktiv {
             self.status(
-                crate::meldung::Meldung::satz(ZEICHNEN),
+                crate::meldung::Meldung::satz(self.platte.leiste.werkzeug.zeile()),
                 std::time::Duration::from_secs(3600),
             );
         }
@@ -649,7 +686,10 @@ impl App {
     /// Das Werkzeug ist aus: seine Zeile geht aus der Statuszeile.
     pub(crate) fn flaeche_zeile_ende(&mut self) {
         if self.platte.leiste.werkzeug.aktiv
-            || !self.notice.as_ref().is_some_and(|n| n.text == ZEICHNEN)
+            || !self
+                .notice
+                .as_ref()
+                .is_some_and(|n| n.text == ZEICHNEN || n.text == GRENZE)
         {
             return;
         }
@@ -681,8 +721,10 @@ impl App {
         if let Some(f) = out.fehler {
             self.status(crate::meldung::Meldung::satz(f), crate::NOTICE_TIME);
         }
-        if let Some(ring) = out.commit {
-            self.flaeche_anlegen(ring);
+        match out.commit {
+            Some(ring) if self.platte.leiste.werkzeug.grenze => self.grenze_anlegen(ring),
+            Some(ring) => self.flaeche_anlegen(ring),
+            None => {}
         }
         out.consumed
     }
@@ -718,6 +760,32 @@ impl App {
         }
         self.platte.leiste.neu = true;
         self.gelaende_sync();
+    }
+
+    /// Neue Grenze aus dem Umriss `ring` (I2), ein Schritt; das Werkzeug
+    /// geht aus, die Statuszeile nennt das Grundstück.
+    fn grenze_anlegen(&mut self, ring: Vec<[f64; 2]>) {
+        if !self
+            .scene
+            .edit_model(LABEL_GRENZE, |m| m.add_parcel(&ring))
+        {
+            self.platte.leiste.werkzeug.ecken_zurueck(ring);
+            let satz = crate::meldung::Meldung::satz(GRENZE_OHNE_INHALT);
+            self.status(satz, crate::NOTICE_TIME);
+            return;
+        }
+        self.upload_model();
+        self.quantity.dirty = true;
+        self.platte.leiste.werkzeug.set_aktiv(false);
+        self.platte.leiste.neu = true;
+        self.gelaende_sync();
+        self.flaeche_zeile_ende();
+        let qm = inhalt(&ring) / 1e6;
+        let satz = crate::meldung::Meldung::mit(
+            "Grundstück {} m² (aus der Zeichnung)",
+            &[&de(qm, 2)],
+        );
+        self.status(satz, crate::NOTICE_TIME);
     }
 
     /// Ein Werkzeug in Eingabe, etwas gezogen oder Ecken einer Fläche
@@ -866,10 +934,11 @@ impl App {
     /// Knöpfe der gewählten Fläche und das Werkzeug.
     pub(crate) fn flaeche_knopf(&mut self, k: GelaendeKnopf) {
         match k {
-            GelaendeKnopf::Flaeche => {
+            GelaendeKnopf::Flaeche | GelaendeKnopf::Grenze => {
                 let w = &mut self.platte.leiste.werkzeug;
-                let an = !w.aktiv;
-                w.set_aktiv(an);
+                w.umschalten(k == GelaendeKnopf::Grenze);
+                let an = w.aktiv;
+                let zeile = w.zeile();
                 if an {
                     // gezeichnet wird im Grundriss, wo der Klick den Boden trifft
                     if self.ui.view != ViewKind::Plan {
@@ -880,7 +949,7 @@ impl App {
                     self.refresh_cursor();
                     // steht, solange das Werkzeug an ist, wie beim Nordpfeil
                     self.status(
-                        crate::meldung::Meldung::satz(ZEICHNEN),
+                        crate::meldung::Meldung::satz(zeile),
                         std::time::Duration::from_secs(3600),
                     );
                 }
@@ -1126,6 +1195,39 @@ mod tests {
         let mut o = Ausgang::default();
         w.key(Key::Enter, OHNE, &mut o);
         assert_eq!(o.fehler, Some(OHNE_INHALT));
+    }
+
+    /// „Grenze zeichnen“ (I2): derselbe Knopf schaltet aus, „Fläche
+    /// zeichnen“ wechselt und verwirft die Ecken; Statuszeile und Fehler
+    /// sprechen von der Grenze, geschlossen wird wie bei einer Fläche.
+    #[test]
+    fn grenze_zeichnen() {
+        let (cam, _, _) = kamera();
+        let mut w = Werkzeug::default();
+        w.umschalten(true);
+        assert!(w.aktiv && w.grenze);
+        assert_eq!(w.zeile(), GRENZE);
+        klick(&mut w, &cam, punkt(0.0, 0.0));
+        w.umschalten(false);
+        assert!(w.aktiv && !w.grenze && w.ecken().is_empty());
+        assert_eq!(w.zeile(), ZEICHNEN);
+        w.umschalten(true);
+        for p in [(0.0, 0.0), (6000.0, 0.0)] {
+            klick(&mut w, &cam, punkt(p.0, p.1));
+        }
+        let mut o = Ausgang::default();
+        w.key(Key::Enter, OHNE, &mut o);
+        assert_eq!(o.fehler, Some(GRENZE_ZU_WENIG));
+        klick(&mut w, &cam, punkt(0.0, 6000.0));
+        klick(&mut w, &cam, punkt(6000.0, 6000.0));
+        let mut o = Ausgang::default();
+        w.key(Key::Enter, OHNE, &mut o);
+        assert_eq!(o.fehler, Some(GRENZE_KREUZT));
+        w.key(Key::Backspace, OHNE, &mut o);
+        let o = klick(&mut w, &cam, punkt(0.0, 0.0));
+        assert_eq!(o.commit.map(|r| r.len()), Some(3));
+        w.umschalten(true);
+        assert!(!w.aktiv, "derselbe Knopf schaltet aus");
     }
 
     /// Beim Zeichnen nimmt Strg+Z die letzte Ecke; Strg+Y, Strg+Umschalt+Z

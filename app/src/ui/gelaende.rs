@@ -52,6 +52,9 @@ pub enum GelaendeKnopf {
     Zuschnitt(Show),
     /// Werkzeug „Fläche zeichnen“ (G3d).
     Flaeche,
+    /// Dasselbe Werkzeug als „Grenze zeichnen“: ein Grundstück ohne
+    /// Lageplan (I2).
+    Grenze,
     /// Im Paneel der gewählten Geländefläche: befestigt ja/nein, löschen.
     Befestigt,
     Loeschen,
@@ -78,6 +81,7 @@ impl GelaendeKnopf {
             | GelaendeKnopf::Absolut
             | GelaendeKnopf::Zuschnitt(_)
             | GelaendeKnopf::Flaeche
+            | GelaendeKnopf::Grenze
             | GelaendeKnopf::Befestigt
             | GelaendeKnopf::Loeschen
             | GelaendeKnopf::Hinweise
@@ -139,8 +143,10 @@ pub struct GelaendeLeiste {
     pub zuschnitt: Option<Show>,
     /// Verschieben oder Drehen ist offen.
     pub tippen: Option<GelaendeKnopf>,
-    /// Das Werkzeug „Fläche zeichnen“ ist an; `ecken` sind gesetzt.
+    /// Das Werkzeug „Fläche zeichnen“ bzw. „Grenze zeichnen“ ist an;
+    /// `ecken` sind gesetzt.
     pub zeichnen: bool,
+    pub grenze_zeichnen: bool,
     pub ecken: usize,
     /// Felder in der Reihenfolge der Leiste.
     pub felder: Vec<FieldRow>,
@@ -196,12 +202,31 @@ impl Ui {
                 }
             }
         };
+        // die Ecken beim Zeichnen; „die erste Ecke schließt“ wie in der
+        // Statuszeile
+        let ecken = |rows: &mut Vec<Row>| {
+            rows.extend(match l.ecken {
+                0 => [
+                    Row::Hint("Ecken im Grundriss klicken,"),
+                    Row::Hint("die erste Ecke schließt."),
+                ],
+                _ => [
+                    Row::Hint("Enter schließt, Rücktaste"),
+                    Row::Hint("nimmt die letzte Ecke."),
+                ],
+            });
+        };
         rows.push(paar((K::Lageplan, "Lageplan"), (K::Hoehen, "Höhen")));
         if l.uebernehmen {
             rows.push(Row::Button(
                 Id::Gelaende(K::Uebernehmen),
                 "Flurstück übernehmen",
             ));
+        }
+        // ohne Lageplan von Hand (I2)
+        rows.push(Row::Button(Id::Gelaende(K::Grenze), "Grenze zeichnen"));
+        if l.grenze_zeichnen {
+            ecken(&mut rows);
         }
         if l.aufmass {
             // „Verschieben“ passte nicht in den Knopf (Ist-Bild 42.7)
@@ -260,16 +285,7 @@ impl Ui {
             Row::Button(Id::Gelaende(K::Flaeche), "Fläche zeichnen"),
         ]);
         if l.zeichnen {
-            rows.extend(match l.ecken {
-                0 => [
-                    Row::Hint("Ecken im Grundriss klicken,"),
-                    Row::Hint("die erste Ecke schließt."),
-                ],
-                _ => [
-                    Row::Hint("Enter schließt, Rücktaste"),
-                    Row::Hint("nimmt die letzte Ecke."),
-                ],
-            });
+            ecken(&mut rows);
         } else {
             rows.push(Row::Hint("Klick wählt eine Fläche."));
         }
@@ -337,6 +353,7 @@ impl Ui {
             GelaendeKnopf::Absolut => l.absolut,
             GelaendeKnopf::Zuschnitt(s) => l.zuschnitt == Some(s),
             GelaendeKnopf::Flaeche => l.zeichnen,
+            GelaendeKnopf::Grenze => l.grenze_zeichnen,
             GelaendeKnopf::Lageplan
             | GelaendeKnopf::Uebernehmen
             | GelaendeKnopf::Hoehen
@@ -389,6 +406,7 @@ mod tests {
                 K::Leiste,
                 K::Lageplan,
                 K::Hoehen,
+                K::Grenze,
                 K::Verschieben,
                 K::Drehen,
                 K::Ausrichten,
@@ -447,6 +465,18 @@ mod tests {
             ..leiste()
         });
         assert!(hinweise(&ui)[0].starts_with("Enter schließt"));
+        // Grenze zeichnen (I2): hervorgehoben, die Hinweise unter dem Knopf
+        ui.gelaende = Some(GelaendeLeiste {
+            grenze_zeichnen: true,
+            ..leiste()
+        });
+        assert!(ui.is_on(Id::Gelaende(K::Grenze)) && !ui.is_on(Id::Gelaende(K::Flaeche)));
+        let rows = ui.rows(Panel::Tools);
+        let i = rows
+            .iter()
+            .position(|r| matches!(r, Row::Button(id, _) if *id == Id::Gelaende(K::Grenze)))
+            .unwrap();
+        assert!(matches!(&rows[i + 1], Row::Hint(t) if t.starts_with("Ecken im Grundriss")));
         ui.gelaende = Some(leiste());
         // Ein gelesener Lageplan bietet sein Flurstück an; ohne Höhen keine
         // Höhenlage
@@ -457,8 +487,8 @@ mod tests {
         });
         let k = knoepfe(&ui);
         assert_eq!(
-            k[..4],
-            [K::Leiste, K::Lageplan, K::Hoehen, K::Uebernehmen].map(Id::Gelaende)
+            k[..5],
+            [K::Leiste, K::Lageplan, K::Hoehen, K::Uebernehmen, K::Grenze].map(Id::Gelaende)
         );
         assert!(!k.contains(&Id::Gelaende(K::Ueber)));
         ui.gelaende = Some(leiste());

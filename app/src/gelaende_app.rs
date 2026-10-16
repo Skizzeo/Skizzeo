@@ -220,6 +220,7 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Zuschnitt(Show::Fade) => "Umgebung blass",
         GelaendeKnopf::Zuschnitt(Show::Parcel) => "Umgebung nicht",
         GelaendeKnopf::Flaeche => "Fläche zeichnen",
+        GelaendeKnopf::Grenze => "Grenze zeichnen",
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
         GelaendeKnopf::Hinweise => "Alle Hinweise",
@@ -507,7 +508,7 @@ impl App {
             K::Zuschnitt(s) => {
                 self.gelaende_schritt("Umgebung zeigen", |m| m.set_terrain_show(s));
             }
-            K::Flaeche | K::Befestigt | K::Loeschen => self.flaeche_knopf(k),
+            K::Flaeche | K::Grenze | K::Befestigt | K::Loeschen => self.flaeche_knopf(k),
             K::Entfernen => self.aufmass_entfernen(),
         }
         self.gelaende_sync();
@@ -1301,6 +1302,7 @@ mod tests {
             K::Leiste,
             K::Lageplan,
             K::Uebernehmen,
+            K::Grenze,
             K::Hoehen,
             K::Verschieben,
             K::Drehen,

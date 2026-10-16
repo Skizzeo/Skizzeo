@@ -206,6 +206,7 @@ const KNOEPFE: [&str; 34] = [
     "Gelände",
     "Lageplan",
     "Flurstück übernehmen",
+    "Grenze zeichnen",
     "Höhen",
     "Gelände verschieben",
     "Gelände drehen",
