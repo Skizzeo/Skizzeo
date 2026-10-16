@@ -833,7 +833,7 @@ impl App {
         self.platte.leiste.neu = true;
         self.gelaende_sync();
         self.flaeche_zeile_ende();
-        let qm = inhalt(&ring) / 1e6;
+        let qm = TerrainPatch::flat(ring, 0.0).area() / 1e6;
         let satz =
             crate::meldung::Meldung::mit("Grundstück {} m² (aus der Zeichnung)", &[&de(qm, 2)]);
         self.status(satz, crate::NOTICE_TIME);
