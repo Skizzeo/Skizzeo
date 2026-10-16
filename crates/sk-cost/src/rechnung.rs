@@ -11,6 +11,7 @@
 use crate::befund::{Befund, Ort};
 use crate::geld::{runden, Cent, Dez};
 use crate::katalog::{fnv, Bezug, Einheit, Katalog, Leistung, FNV_START};
+use crate::streu::{Menge, Tafel};
 use crate::zuordnung::{self, dicke, Grund, Zuordnung};
 use sk_model::element::Category;
 use sk_model::library::Material;
@@ -135,7 +136,7 @@ impl Position {
         schluessel: impl Fn(&Ansatz) -> K,
     ) -> Vec<(K, Dez)> {
         let mut t: Vec<(K, i128)> = Vec::new();
-        let mut stelle: HashMap<K, usize> = HashMap::new();
+        let mut stelle: Tafel<K, usize> = Tafel::default();
         for a in &self.ansatz {
             let k = schluessel(a);
             match stelle.get(&k) {
@@ -165,7 +166,7 @@ fn summieren<K: Eq + std::hash::Hash + Copy>(
     v: &mut Vec<(K, Cent)>,
     teile: impl IntoIterator<Item = (K, Cent)>,
 ) {
-    let mut stelle: HashMap<K, usize> = v.iter().enumerate().map(|(i, (k, _))| (*k, i)).collect();
+    let mut stelle: Tafel<K, usize> = v.iter().enumerate().map(|(i, (k, _))| (*k, i)).collect();
     for (k, c) in teile {
         match stelle.get(&k) {
             Some(&i) => v[i].1 += c,
@@ -299,7 +300,7 @@ pub struct Kostenspeicher {
     /// [`Katalog::stempel_zuordnung`]: Gleich, aber `stempel` anders (ein
     /// Preis geändert), bleibt die Zuordnung der `typen` (Review #197 B3).
     stempel_zuordnung: u64,
-    typen: HashMap<Schluessel, Vec<SchichtWert>>,
+    typen: Tafel<Schluessel, Vec<SchichtWert>>,
     neu: u64,
 }
 
@@ -793,7 +794,7 @@ struct Sammel {
 #[allow(clippy::too_many_arguments)]
 fn legen_in(
     sammel: &mut Vec<Sammel>,
-    index: &mut HashMap<PosKey, usize>,
+    index: &mut Tafel<PosKey, usize>,
     key: PosKey,
     einheit: Einheit,
     gewerk: Option<Guid>,
@@ -841,16 +842,16 @@ pub fn kosten_mit(
     // Gleicher Katalog: alles bleibt; nur Preise anders: die Zuordnung
     // bleibt, Stoff-EP und Befunde rechnen neu (Review #197 B3)
     let (alt, mut zuvor) = if sp.stempel == k.stempel {
-        (sp.typen, HashMap::new())
+        (sp.typen, Tafel::default())
     } else if sp.stempel_zuordnung == k.stempel_zuordnung {
-        (HashMap::new(), sp.typen)
+        (Tafel::default(), sp.typen)
     } else {
-        (HashMap::new(), HashMap::new())
+        (Tafel::default(), Tafel::default())
     };
     let mut alt = alt;
-    let mut typen: HashMap<Schluessel, Vec<SchichtWert>> = HashMap::new();
+    let mut typen: Tafel<Schluessel, Vec<SchichtWert>> = Tafel::default();
     let mut neu = 0u64;
-    let schalung: HashMap<ElementId, &FormworkQto> =
+    let schalung: Tafel<ElementId, &FormworkQto> =
         s.formwork.iter().map(|(e, f)| (*e, f)).collect();
     // Schlüssel je Bauteil, bei Raumzeilen je Raum, Ausbautyp und Seite
     // Raumzeilen dazu mit Stelle, wirksamer Dicke und Baustoff der Zeile
@@ -862,15 +863,22 @@ pub fn kosten_mit(
         Option<Side>,
         Option<(usize, u64, MaterialId)>,
     );
-    let mut je_element: HashMap<Fach, Schluessel> = HashMap::new();
+    let mut je_element: Tafel<Fach, Schluessel> = Tafel::default();
     let mut sammel: Vec<Sammel> = Vec::new();
-    let mut index: HashMap<PosKey, usize> = HashMap::new();
+    let mut index: Tafel<PosKey, usize> = Tafel::default();
     let mut ohne: Vec<OhneZeile> = Vec::new();
     let mut befunde: Vec<Befund> = Vec::new();
     let mut lose_gemeldet: Vec<ElementId> = Vec::new();
     // Bauteilmengen (Umfang, Schalung) je (Bauteil, Folge) nur einmal
-    let mut einmal: std::collections::HashSet<(ElementId, Guid)> = Default::default();
-    let mut ep_fest: HashMap<Guid, (Cent, Cent, Cent, Option<Cent>)> = HashMap::new();
+    let mut einmal: Menge<(ElementId, Guid)> = Menge::default();
+    let mut ep_fest: Tafel<Guid, (Cent, Cent, Cent, Option<Cent>)> = Tafel::default();
+    // Bauleistung je Guid; `Katalog::leistung` sucht linear, hier je Zeile
+    // (die erste mit der Guid, wie dort)
+    let mut je_guid: Tafel<Guid, &Leistung> = Tafel::default();
+    for l in &k.leistungen {
+        je_guid.entry(l.guid).or_insert(l);
+    }
+    let leistung = |g: Guid| je_guid.get(&g).copied();
 
     let rows = s.layer_rows_ref(m);
     for (gebaeude, r) in rows.iter() {
@@ -998,10 +1006,7 @@ pub fn kosten_mit(
                 Bezug::Auto => return None,
             })
         };
-        match (
-            &w.zuordnung.grund,
-            w.zuordnung.leistung.and_then(|g| k.leistung(g)),
-        ) {
+        match (&w.zuordnung.grund, w.zuordnung.leistung.and_then(leistung)) {
             (Grund::Richtpreis, _) => {
                 let Some((p, e)) = w.richtpreis else { continue };
                 let menge = match e {
@@ -1055,7 +1060,7 @@ pub fn kosten_mit(
                 );
                 // Folgepositionen (Regel 85), Ort und KG der Quelle
                 for (fg, faktor, stoff, pf) in &w.folgen {
-                    let Some(fl) = k.leistung(*fg) else { continue };
+                    let Some(fl) = leistung(*fg) else { continue };
                     let bauteilmenge = matches!(fl.bezug, Bezug::Umfang | Bezug::Schalung);
                     if bauteilmenge && !einmal.insert((r.element, *fg)) {
                         continue;
@@ -1156,7 +1161,7 @@ pub fn kosten_mit(
     // Geld (Regel 83) je Position
     let mut positionen: Vec<Position> = Vec::new();
     // Zahl der Stoff-EP je genauer Bauleistung (K12: „· d=…mm“)
-    let mut eps: HashMap<Guid, usize> = HashMap::new();
+    let mut eps: Tafel<Guid, usize> = Tafel::default();
     for p in &sammel {
         if let Quelle::Leistung(g) = p.quelle {
             *eps.entry(g).or_default() += 1;
@@ -1169,7 +1174,7 @@ pub fn kosten_mit(
         let menge = drei(menge_klein, p.einheit);
         let (kurz, oz, lohn, geraet, sonst, nu) = match &p.quelle {
             Quelle::Leistung(g) | Quelle::Geschaetzt(g) => {
-                let l = k.leistung(*g).expect("Leistung");
+                let l = leistung(*g).expect("Leistung");
                 let (lo, ge, so, nu) = *ep_fest.entry(*g).or_insert_with(|| feste_ep(k, l));
                 let mut kurz = l.kurz.clone();
                 let d = dicken.last().copied();
@@ -1248,7 +1253,7 @@ pub fn kosten_mit(
     let rang = |p: &Position| {
         let (los, titel, pos) = match &p.quelle {
             Quelle::Leistung(g) | Quelle::Geschaetzt(g) => {
-                let l = k.leistung(*g).expect("Leistung");
+                let l = leistung(*g).expect("Leistung");
                 let t = k.los(l.titel);
                 let los = t
                     .and_then(|t| t.parent)
@@ -1318,8 +1323,8 @@ pub fn kosten_mit(
     );
     // Teilungen (Regel 96): Teilmenge auf 3 Stellen × EP, Ausgleich am Ende
     // Stelle jedes Geschosses in der Folge des ersten Vorkommens (H-195g)
-    let geschoss_folge: HashMap<StoreyId, usize> = {
-        let mut v: HashMap<StoreyId, usize> = HashMap::new();
+    let geschoss_folge: Tafel<StoreyId, usize> = {
+        let mut v: Tafel<StoreyId, usize> = Tafel::default();
         let auto = s.auto.iter().map(|a| a.storey);
         for st in rows
             .iter()
@@ -1417,7 +1422,7 @@ fn ext_ansaetze(
     s: &Schedule,
     k: &Katalog,
     sammel: &mut Vec<Sammel>,
-    index: &mut HashMap<PosKey, usize>,
+    index: &mut Tafel<PosKey, usize>,
     lose_gemeldet: &mut Vec<ElementId>,
 ) -> ExtBeitrag {
     use crate::erweiterung::{einheit_wort, leistung_von};
@@ -1607,7 +1612,7 @@ fn auto_ansaetze(
     s: &Schedule,
     k: &Katalog,
     sammel: &mut Vec<Sammel>,
-    index: &mut HashMap<PosKey, usize>,
+    index: &mut Tafel<PosKey, usize>,
 ) -> Vec<Befund> {
     let mut befunde = Vec::new();
     // schon gemeldet; je Raum mit eigenem Sockelbaustoff ein Hinweis, die
