@@ -49,7 +49,7 @@ fn angaben(preise: bool) -> Angaben {
         umfang: "Gebäude 1 · alle Geschosse".into(),
         stand: "09.10.2026".into(),
         preisquelle: preise.then(|| "Referenzpreise 10/2026, unverbindlich".into()),
-        geschosse: Vec::new(),
+        geschosse: Default::default(),
     }
 }
 
@@ -623,12 +623,13 @@ fn anlage_mengenermittlung() {
     let mut lv = lv(&mut s, true, false);
     let m = s.model();
     let mut a = angaben(true);
-    a.geschosse = m
-        .storeys()
-        .iter()
-        .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
-        .collect();
-    assert!(a.geschosse.iter().any(|g| g.1 == "Fundament"));
+    a.geschosse = std::rc::Rc::new(
+        m.storeys()
+            .iter()
+            .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
+            .collect(),
+    );
+    assert!(a.geschosse.values().any(|g| g == "Fundament"));
     let w = Wahl {
         preise: true,
         ansatz: true,
@@ -652,7 +653,7 @@ fn anlage_mengenermittlung() {
     seite_x_von_y(&b, 0);
     let p = &beton(&mut lv).positionen[0].clone();
     let z = &p.ansatz[0];
-    let name = &a.geschosse.iter().find(|g| g.0 == z.geschoss).unwrap().1;
+    let name = &a.geschosse[&z.geschoss];
     let teile = crate::ava_view::nummern_kurz(&z.nummern);
     let t = alle(&b);
     assert!(!teile.is_empty());
@@ -727,7 +728,9 @@ fn anlage_mengenermittlung() {
     rund.nummern.clear();
     rund.elemente.clear();
     rund.herkunft = "Rundungsausgleich".into();
-    let mut viele = vec![lang.clone()];
+    let mut hand = rund.clone();
+    hand.herkunft = "von Hand 12,00".into();
+    let mut viele = vec![lang.clone(), hand];
     viele.extend(std::iter::repeat_n(t.positionen[0].ansatz[0].clone(), 150));
     viele.push(rund);
     t.positionen[0].ansatz = viele;
@@ -753,6 +756,25 @@ fn anlage_mengenermittlung() {
     assert!(t.iter().any(|x| x.starts_with("R-001, R-003")));
     assert!(t.iter().any(|x| x.contains("R-159")), "nie gekürzt");
     assert!(t.contains(&"Rundungsausgleich".to_string()));
+    // Ohne Bauteile hat nur der Rundungsausgleich kein Geschoss (Kosten
+    // H-239b): auf ihrer Seite und Höhe steht der Kurzname oder nicht
+    let mit_geschoss = |was: &str| {
+        b.seiten
+            .iter()
+            .find_map(|sei| {
+                let y = sei.ops.iter().find_map(|o| match o {
+                    Op::Text { text, y, .. } if text == was => Some(*y),
+                    _ => None,
+                })?;
+                Some(sei.ops.iter().any(|o| {
+                    matches!(o, Op::Text { text, y: y2, pt, .. }
+                        if *pt == KLEIN && *y2 == y && text == name)
+                }))
+            })
+            .unwrap()
+    };
+    assert!(mit_geschoss("von Hand 12,00"));
+    assert!(!mit_geschoss("Rundungsausgleich"));
     // Über mehrere Seiten, jede mit Kopf und Spalten darunter
     let y_von = |sei: &sk_paint::pdf::Seite, f: &dyn Fn(&str) -> bool| {
         sei.ops.iter().find_map(|o| match o {
@@ -857,11 +879,12 @@ fn anlage_je_dicke_nur_eigene_raeume() {
     );
     assert_ne!(eg, og);
     let mut a = angaben(false);
-    a.geschosse = m
-        .storeys()
-        .iter()
-        .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
-        .collect();
+    a.geschosse = std::rc::Rc::new(
+        m.storeys()
+            .iter()
+            .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
+            .collect(),
+    );
     let wahl = Wahl {
         ansatz: true,
         ..Wahl::default()

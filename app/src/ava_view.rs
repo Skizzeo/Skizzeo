@@ -473,8 +473,11 @@ pub struct AvaView {
     blatt_cache: std::cell::RefCell<Option<(blatt::Schluessel, Rc<lv_blatt::Blatt>)>>,
     /// Umfang und Stand für den aufgeklappten Kopf.
     kopf_umfang: (String, String),
-    /// Kurznamen der Geschosse für die Anlage Mengenermittlung.
-    geschosse: Vec<(sk_model::StoreyId, String)>,
+    /// Kurznamen der Geschosse für die Anlage Mengenermittlung, mit dem
+    /// Projekt neu bei anderer Szene oder anderem Modellstand
+    /// (`angaben_von`).
+    geschosse: Rc<std::collections::HashMap<sk_model::StoreyId, String>>,
+    angaben_von: Option<(u64, u64)>,
     /// „Referenzpreise 10/2026“ bzw. „Preise Firmenkatalog“; leer ohne
     /// Preise.
     preisquelle: String,
@@ -555,7 +558,8 @@ impl AvaView {
             blatt_cache: std::cell::RefCell::new(None),
             breiten: std::cell::RefCell::new(Vec::new()),
             kopf_umfang: (String::new(), String::new()),
-            geschosse: Vec::new(),
+            geschosse: Default::default(),
+            angaben_von: None,
             preisquelle: String::new(),
             knopf_down: false,
             fokus_auswahl: None,
@@ -697,13 +701,18 @@ impl AvaView {
         if let Some(sp) = self.sprung.take() {
             changed |= self.springe(&sp);
         }
-        self.projekt = Some(s.model().project().clone());
         let m = s.model();
-        self.geschosse = m
-            .storeys()
-            .iter()
-            .map(|(id, _)| (id, umfang_view::kurzname(m, id)))
-            .collect();
+        let von = (s.kennung(), m.revision());
+        if self.angaben_von != Some(von) {
+            self.projekt = Some(m.project().clone());
+            self.geschosse = Rc::new(
+                m.storeys()
+                    .iter()
+                    .map(|(id, _)| (id, umfang_view::kurzname(m, id)))
+                    .collect(),
+            );
+            self.angaben_von = Some(von);
+        }
         self.preisquelle = if self.preise {
             sk_cost::lesen::preisquelle(&kat)
         } else {
