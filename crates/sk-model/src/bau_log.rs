@@ -96,7 +96,9 @@ impl BauLog {
 }
 
 /// Gebäude, deren Mengen die Änderungen `changes` ändern können, im
-/// Zustand nach ihnen; `None`: alle.
+/// Zustand nach ihnen; `None`: alle. Kosten linear in `changes` (je
+/// Änderung ein Blick auf Geschoss und Gebäude), nie über alle Gebäude
+/// (Architektur 16.10.).
 pub(crate) fn gebaeude(m: &Model, changes: &[Change]) -> Gebaeude {
     let mut out: Vec<Option<BuildingId>> = Vec::new();
     for c in changes {
@@ -198,6 +200,69 @@ mod tests {
         assert_eq!(m.gebaeude_seit(u), None);
         // Eine Kopie weiß nichts über den Stand des Originals
         assert_eq!(m.clone().gebaeude_seit(m.bau_stand()), None);
+    }
+
+    /// Rückgängig und Wiederholen nennen dieselben Gebäude wie der Schritt
+    /// selbst: ein Wandzug, ein Raum, beides in zwei Gebäuden (Architektur
+    /// 16.10.).
+    #[test]
+    fn rueckgaengig_und_wiederholen_wie_der_schritt() {
+        let (mut m, [a, b], _) = zwei();
+        let quadrat = |x: f64| {
+            [
+                vec3(x, 0.0, 0.0),
+                vec3(x, 8000.0, 0.0),
+                vec3(x + 10000.0, 8000.0, 0.0),
+                vec3(x + 10000.0, 0.0, 0.0),
+            ]
+        };
+        let zug = m.build_from_polygon(a, &quadrat(-30e3)).unwrap();
+        let rb = m.spaces(m.ground_of(Some(b)).unwrap())[0];
+        let mut schritte: Vec<(Txn, Vec<Option<BuildingId>>)> = Vec::new();
+        type Fall<'a> = (
+            &'static str,
+            &'a dyn Fn(&mut Model) -> bool,
+            Vec<Option<BuildingId>>,
+        );
+        let faelle: [Fall; 3] = [
+            (
+                "Wandzug",
+                &|m: &mut Model| m.set_run_points(zug, &quadrat(-31e3)).is_some(),
+                vec![Some(a)],
+            ),
+            (
+                "Raum",
+                &|m: &mut Model| m.set_space(rb, |x| x.faktor = Some(0.5)),
+                vec![Some(b)],
+            ),
+            (
+                "beide",
+                &|m: &mut Model| {
+                    m.set_run_points(zug, &quadrat(-32e3)).is_some()
+                        && m.set_space(rb, |x| x.faktor = Some(0.25))
+                },
+                vec![Some(a), Some(b)],
+            ),
+        ];
+        for (name, f, erwartet) in faelle {
+            let s = m.bau_stand();
+            m.begin(name);
+            assert!(f(&mut m), "{name}");
+            let t = m.commit().unwrap();
+            assert_eq!(m.gebaeude_seit(s).as_ref(), Some(&erwartet), "{name}");
+            schritte.push((t, erwartet));
+        }
+        // Rückwärts zurück, vorwärts wieder: je Schritt dieselben Gebäude
+        for (t, erwartet) in schritte.iter().rev() {
+            let u = m.bau_stand();
+            m.apply(t, Direction::Undo);
+            assert_eq!(m.gebaeude_seit(u).as_ref(), Some(erwartet), "{}", t.label);
+        }
+        for (t, erwartet) in &schritte {
+            let u = m.bau_stand();
+            m.apply(t, Direction::Redo);
+            assert_eq!(m.gebaeude_seit(u).as_ref(), Some(erwartet), "{}", t.label);
+        }
     }
 
     /// Ein Bauteil, das in ein Geschoss eines anderen Gebäudes wechselt,
