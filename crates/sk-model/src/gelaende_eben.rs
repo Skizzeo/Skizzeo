@@ -5,6 +5,9 @@
 //! die Ecken der Platten in ihrer Höhe, so dass nichts springt (§5 J4 B).
 //! Bis dahin steht in der Datei nichts (J3 B: alte Dateien bleiben
 //! bytegleich).
+//!
+//! Die Grenze geht auch ohne Lageplan: von Hand gezeichnet (I2,
+//! [`Model::add_parcel`]) liegt sie wie ein Flurstück im Gelände.
 
 use super::*;
 
@@ -40,9 +43,27 @@ impl Model {
                 ecken.push((p, *z));
             }
         }
-        // die Geländeflächen, die schon da sind, liegen mit darauf
+        // die Geländeflächen, die schon da sind, und das Grundstück liegen
+        // mit darauf (I2)
         let flaechen = self.site_patches().iter().flat_map(|f| f.outline.iter());
-        let extra: Vec<[f64; 2]> = extra.iter().chain(flaechen).copied().collect();
+        let grenze: Vec<[f64; 2]> = match self.terrain() {
+            Some(t) => match self.survey_frame_of(t) {
+                Some(f) => t
+                    .boundary_rings()
+                    .iter()
+                    .flatten()
+                    .map(|&(e, n)| f.to_model(e, n))
+                    .collect(),
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        let extra: Vec<[f64; 2]> = extra
+            .iter()
+            .chain(flaechen)
+            .chain(&grenze)
+            .copied()
+            .collect();
         if !extra.is_empty() {
             let e = f64::INFINITY;
             let mut k = [e, e, -e, -e];
@@ -72,28 +93,12 @@ impl Model {
         if ecken.len() < 3 {
             return false;
         }
-        let loc = *self.location();
-        let mut t = match self.terrain() {
-            Some(t) => t.clone(),
-            None => {
-                let mut t = Terrain::new(Crs::Local);
-                t.local = Some(LocalFrame {
-                    e0: 0.0,
-                    n0: 0.0,
-                    rot: 0.0,
-                });
-                if loc.nhn.is_some() {
-                    t.href = HeightRef::Abs;
-                }
-                t
-            }
-        };
+        let mut t = self.terrain().cloned().unwrap_or_else(|| self.oertlich());
         let Some(f) = self.survey_frame_of(&t) else {
             return false;
         };
         // ±0,00 bleibt, wo es ist: fest in NHN, sonst bei 0
-        let h0 = loc.nhn.unwrap_or(0.0);
-        let rund = |v: f64| (v * 1000.0).round() / 1000.0;
+        let h0 = self.location().nhn.unwrap_or(0.0);
         for (i, (p, z)) in ecken.into_iter().enumerate() {
             let (e, n) = f.to_survey(p[0], p[1]);
             t.points.push(TerrainPoint {
@@ -108,6 +113,102 @@ impl Model {
         }
         self.set_terrain(Some(t))
     }
+
+    /// Eine von Hand gezeichnete Grenze (I2): `ring` sind ihre Ecken im
+    /// Grundriss (mm). Sie kommt als Flurstück zu den Grenzen des Geländes,
+    /// in dessen System auf mm gerundet; ohne Gelände entsteht eins im
+    /// örtlichen System wie bei [`Model::seed_flat_terrain`], nur mit der
+    /// Grenze, ohne Punkte: Die Platte bleibt eben (im offenen Schritt).
+    /// `false` unter drei Ecken, ohne Fläche oder ohne Lage des Systems.
+    pub fn add_parcel(&mut self, ring: &[[f64; 2]]) -> bool {
+        if ring.len() < 3 || flaeche(ring) < 1.0 {
+            return false;
+        }
+        let mut t = self.terrain().cloned().unwrap_or_else(|| self.oertlich());
+        let Some(f) = self.survey_frame_of(&t) else {
+            return false;
+        };
+        let r: Vec<(f64, f64)> = ring
+            .iter()
+            .map(|p| {
+                let (e, n) = f.to_survey(p[0], p[1]);
+                (rund(e), rund(n))
+            })
+            .collect();
+        t.parcels.push(r);
+        self.set_terrain(Some(t))
+    }
+
+    /// Die Grenzen eines Geländes ohne Lageplan, also von Hand gezeichnet
+    /// (I2), im Grundriss (mm).
+    pub(super) fn gezeichnete_grenzen(&self) -> Vec<Vec<[f64; 2]>> {
+        let Some(t) = self.terrain().filter(|t| t.underlay.is_none()) else {
+            return Vec::new();
+        };
+        let Some(f) = self.survey_frame_of(t) else {
+            return Vec::new();
+        };
+        t.parcels
+            .iter()
+            .map(|r| r.iter().map(|&(e, n)| f.to_model(e, n)).collect())
+            .collect()
+    }
+
+    /// Ein neues Aufmaß ohne eigene Grenze übernimmt die gezeichneten
+    /// `grenzen` (mm) dort, wo sie im Grundriss lagen, in seinem System;
+    /// `t` hat seinen Platz schon. Sonst bliebe die Grenze, die man vor dem
+    /// Vermessen gezeichnet hat, nicht stehen.
+    pub(super) fn grenzen_mitnehmen(&self, t: &mut Terrain, grenzen: &[Vec<[f64; 2]>]) {
+        if grenzen.is_empty() || !t.boundary_rings().is_empty() {
+            return;
+        }
+        let Some(f) = self.survey_frame_of(t) else {
+            return;
+        };
+        t.parcels = grenzen
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|p| {
+                        let (e, n) = f.to_survey(p[0], p[1]);
+                        (rund(e), rund(n))
+                    })
+                    .collect()
+            })
+            .collect();
+    }
+
+    /// Ein leeres Gelände im örtlichen System, Nullpunkt im Modell, Nord
+    /// nach oben; mit fester Höhe in der Lage in NHN.
+    fn oertlich(&self) -> Terrain {
+        let mut t = Terrain::new(Crs::Local);
+        t.local = Some(LocalFrame {
+            e0: 0.0,
+            n0: 0.0,
+            rot: 0.0,
+        });
+        if self.location().nhn.is_some() {
+            t.href = HeightRef::Abs;
+        }
+        t
+    }
+}
+
+/// Auf mm.
+fn rund(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
+}
+
+/// Inhalt eines Umrisses (mm²).
+fn flaeche(ring: &[[f64; 2]]) -> f64 {
+    let n = ring.len();
+    let s: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    s.abs() / 2.0
 }
 
 #[cfg(test)]
@@ -181,11 +282,11 @@ mod tests {
         assert!(m.seed_flat_terrain(&[]));
         m.commit();
         let nachher = crate::qto::schedule(&m).auto;
-        let erde = |v: &[crate::qto::AutoMenge]| -> Vec<(String, f64)> {
-            let mut e: Vec<(String, f64)> = v
+        let erde = |v: &[crate::qto::AutoMenge]| -> Vec<(String, &str, f64)> {
+            let mut e: Vec<(String, &str, f64)> = v
                 .iter()
                 .filter(|a| a.key.starts_with("earth."))
-                .map(|a| (a.key.to_string(), a.value))
+                .map(|a| (a.key.to_string(), a.unit, a.value))
                 .collect();
             e.sort_by(|a, b| a.0.cmp(&b.0));
             e
@@ -194,9 +295,15 @@ mod tests {
         assert!(!a.is_empty());
         assert_eq!(a.len(), b.len(), "{a:?}\n{b:?}");
         for (x, y) in a.iter().zip(&b) {
-            assert_eq!(x.0, y.0);
-            // mm³: unter 1 dm³
-            assert!((x.1 - y.1).abs() < 1e6, "{} {} {}", x.0, x.1, y.1);
+            assert_eq!((&x.0, x.1), (&y.0, y.1));
+            // je Einheit (VOB-Hinweis c zu #229): unter 1 dm³ bzw. 1 dm²
+            let tol = match x.1 {
+                "m3" => 1e6,
+                "m2" => 1e4,
+                "m" => 1e2,
+                _ => 1e-3,
+            };
+            assert!((x.2 - y.2).abs() < tol, "{} {} {} {}", x.0, x.1, x.2, y.2);
         }
         let netz: Vec<&crate::qto::AutoMenge> = nachher
             .iter()
@@ -267,6 +374,151 @@ mod tests {
             t.points[0]
         );
         assert!(t.assumed());
+    }
+
+    /// Eine gezeichnete Grenze ohne Gelände: ein örtliches Gelände nur mit
+    /// ihr, ohne Punkte, die Platte bleibt eben. Eine zweite kommt dazu;
+    /// zu wenig Ecken oder keine Fläche ändern nichts.
+    #[test]
+    fn grenze_gezeichnet() {
+        let mut m = haus();
+        let z = m.terrain_z();
+        let ring = [
+            [-5000.0, -4000.0],
+            [20000.0, -4000.0],
+            [20000.0, 16000.0],
+            [-5000.0, 16000.0],
+        ];
+        m.begin("Grenze");
+        assert!(!m.add_parcel(&ring[..2]));
+        assert!(!m.add_parcel(&[[0.0, 0.0], [5000.0, 0.0], [10000.0, 0.0]]));
+        assert!(m.terrain().is_none());
+        assert!(m.add_parcel(&ring));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert_eq!(t.crs, Crs::Local);
+        assert!(t.points.is_empty() && !t.assumed());
+        assert_eq!(
+            t.parcels,
+            vec![vec![(-5.0, -4.0), (20.0, -4.0), (20.0, 16.0), (-5.0, 16.0)]]
+        );
+        assert!((t.parcel_area() - 500.0).abs() < 1e-9);
+        let b = m.level_building();
+        assert_eq!(m.terrain_z(), z);
+        // ohne Punkte die ebene Platte am Haus
+        assert_eq!(m.terrain_z_at(b, 5000.0, 4000.0), z);
+        m.begin("Grenze");
+        assert!(m.add_parcel(&[[30000.0, 0.0], [40000.0, 0.0], [40000.0, 10000.0]]));
+        m.commit();
+        assert_eq!(m.terrain().unwrap().parcels.len(), 2);
+        m.begin("Grenze");
+        assert!(m.add_parcel(&[[0.0, 0.0], [1000.0, 0.0], [0.0, 1000.0]]));
+        m.rollback();
+        assert_eq!(m.terrain().unwrap().parcels.len(), 2, "im Schritt");
+    }
+
+    /// Im System eines Lageplans (gedreht) kommt die Grenze in dessen
+    /// Werten dazu; die erste Fläche legt die Punkte dann bis über das
+    /// Grundstück an.
+    #[test]
+    fn grenze_im_system_und_gelaende_darueber() {
+        let mut m = haus();
+        let mut t = Terrain::new(Crs::Local);
+        t.local = Some(LocalFrame {
+            e0: 1000.0,
+            n0: 2000.0,
+            rot: 90.0,
+        });
+        m.begin("Lageplan");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        let ring = [
+            [-10000.0, -10000.0],
+            [30000.0, -10000.0],
+            [30000.0, 20000.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.commit();
+        let p = &m.terrain().unwrap().parcels[0];
+        // Modell-x zeigt nach Nord
+        assert_eq!(p[0], (1010.0, 1990.0));
+        assert_eq!(p[1], (1010.0, 2030.0));
+        m.begin("Fläche");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        let t = m.terrain().unwrap();
+        let f = m.survey_frame_of(t).unwrap();
+        let rand = m.plate_settings().margin;
+        let xs: Vec<[f64; 2]> = t.points.iter().map(|q| f.to_model(q.e, q.n)).collect();
+        let max_x = xs.iter().map(|q| q[0]).fold(f64::MIN, f64::max);
+        assert!((max_x - (30000.0 + rand)).abs() < 1e-3, "{xs:?}");
+        assert_eq!(t.parcels.len(), 1, "die Grenze bleibt");
+    }
+
+    /// Das Aufmaß kommt nach der gezeichneten Grenze: Sie bleibt im
+    /// Grundriss, wo sie war, jetzt im System des Aufmaßes. Bringt das
+    /// Aufmaß eine eigene Grenze mit, gilt seine.
+    #[test]
+    fn grenze_bleibt_beim_aufmass() {
+        let ring = [
+            [-5000.0, -4000.0],
+            [20000.0, -4000.0],
+            [20000.0, 16000.0],
+            [-5000.0, 16000.0],
+        ];
+        let aufmass = |grenze: bool| {
+            let mut t = Terrain::new(Crs::Local);
+            for (i, (e, n)) in [
+                (100.0, 200.0),
+                (160.0, 200.0),
+                (160.0, 250.0),
+                (100.0, 250.0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                t.points.push(TerrainPoint {
+                    nr: format!("{}", i + 1),
+                    e,
+                    n,
+                    h: 30.0,
+                    code: String::new(),
+                    off: false,
+                    hand: false,
+                });
+            }
+            if grenze {
+                t.parcels = vec![vec![(110.0, 210.0), (150.0, 210.0), (150.0, 240.0)]];
+            }
+            t
+        };
+        for grenze in [false, true] {
+            let mut m = haus();
+            m.begin("Grenze");
+            assert!(m.add_parcel(&ring));
+            m.commit();
+            m.begin("Aufmaß");
+            assert!(m.import_terrain(aufmass(grenze)));
+            m.commit();
+            let t = m.terrain().unwrap();
+            assert_eq!(t.parcels.len(), 1);
+            let f = m.survey_frame_of(t).unwrap();
+            let im_plan: Vec<[f64; 2]> = t.parcels[0]
+                .iter()
+                .map(|&(e, n)| f.to_model(e, n))
+                .collect();
+            if grenze {
+                assert_eq!(t.parcels[0].len(), 3, "die Grenze des Aufmaßes");
+            } else {
+                for (a, b) in im_plan.iter().zip(&ring) {
+                    assert!(
+                        (a[0] - b[0]).abs() < 1.0 && (a[1] - b[1]).abs() < 1.0,
+                        "{a:?} {b:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// Ohne Haus und ohne Fläche gibt es nichts anzulegen; mit vermessenen

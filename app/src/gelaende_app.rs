@@ -221,6 +221,7 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Zuschnitt(Show::Parcel) => "Umgebung nicht",
         GelaendeKnopf::AmHaus => "Gelände ans Haus",
         GelaendeKnopf::Flaeche => "Fläche zeichnen",
+        GelaendeKnopf::Grenze => "Grenze zeichnen",
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
         GelaendeKnopf::Hinweise => "Alle Hinweise",
@@ -285,7 +286,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
         )),
     }
     // das Werkzeug geht auch ohne Gelände (I1)
-    l.zeichnen = z.werkzeug.aktiv;
+    l.zeichnen = z.werkzeug.aktiv && !z.werkzeug.grenze;
+    l.grenze_zeichnen = z.werkzeug.aktiv && z.werkzeug.grenze;
     l.ecken = z.werkzeug.ecken().len();
     let Some(t) = m.terrain() else {
         return l;
@@ -362,7 +364,9 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
         let t = de(s, 2);
         t.trim_end_matches('0').trim_end_matches(',').to_string()
     };
+    // nur eine Grenze, keine Höhen: keine Zeile zu Höhenlinien
     l.hoehenlinien = match m.terrain_contour_step(wunsch) {
+        _ if !l.hoehen => None,
         Some(s) if s == wunsch => None,
         Some(s) => Some(format!(
             "Höhenlinien alle {} m, bei {} m wären es zu viele",
@@ -509,7 +513,9 @@ impl App {
             K::Zuschnitt(s) => {
                 self.gelaende_schritt("Umgebung zeigen", |m| m.set_terrain_show(s));
             }
-            K::AmHaus | K::Flaeche | K::Befestigt | K::Loeschen => self.flaeche_knopf(k),
+            K::AmHaus | K::Flaeche | K::Grenze | K::Befestigt | K::Loeschen => {
+                self.flaeche_knopf(k)
+            }
             K::Entfernen => self.aufmass_entfernen(),
         }
         self.gelaende_sync();
@@ -1073,6 +1079,9 @@ mod tests {
         let mut zeichnen = Zustand::default();
         zeichnen.werkzeug.set_aktiv(true);
         assert!(m.terrain().is_none() && leiste(&m, &zeichnen).zeichnen);
+        zeichnen.werkzeug.umschalten(true);
+        let l = leiste(&m, &zeichnen);
+        assert!(l.grenze_zeichnen && !l.zeichnen, "Grenze zeichnen (I2)");
         let (t, satz, _) = Terrain::lesen(CSV, "aufmass.csv", "2026-10-12", 32).unwrap();
         assert!(satz.contains("Punkte"), "{satz}");
         m.begin("Aufmaß");
@@ -1309,6 +1318,7 @@ mod tests {
             K::Leiste,
             K::Lageplan,
             K::Uebernehmen,
+            K::Grenze,
             K::Hoehen,
             K::Verschieben,
             K::Drehen,
@@ -1404,6 +1414,7 @@ mod tests {
         let l = leiste(s.model(), &Zustand::default());
         assert!(l.aufmass && !l.hoehen && l.grenze && !l.uebernehmen);
         assert!(l.hoehenlage.is_empty() && l.steckt.is_none());
+        assert_eq!(l.hoehenlinien, None, "ohne Höhen keine Höhenlinien");
         assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,90 m²"));
         // übernommen: kein Knopf mehr, nach Rückgängig wieder (H3)
         assert!(!leiste(s.model(), &z).uebernehmen);
