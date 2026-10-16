@@ -133,8 +133,17 @@ pub struct Huelle {
 /// Züge: Außenwandzüge samt Aufkantung des Flachdachs, denn das Gerüst
 /// reicht über ihre Krone.
 pub fn huellen(model: &Model) -> HashMap<Option<BuildingId>, Huelle> {
+    huellen_in(model, model.runs().ids())
+}
+
+/// [`huellen`] über die Züge `runs` (in der Reihenfolge des Modells), etwa
+/// die eines Gebäudes für seine Mengen allein.
+pub(crate) fn huellen_in(
+    model: &Model,
+    runs: impl Iterator<Item = RunId>,
+) -> HashMap<Option<BuildingId>, Huelle> {
     let mut out: HashMap<Option<BuildingId>, (Huelle, Vec<StoreyId>)> = HashMap::new();
-    for (id, r) in model.runs().iter() {
+    for (id, r) in runs.filter_map(|id| Some((id, model.run(id)?))) {
         let aussen = r.closed
             && r.segments
                 .first()
