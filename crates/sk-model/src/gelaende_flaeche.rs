@@ -10,7 +10,7 @@
 //! Andeckung und Faktor Eigenboden fest → eingebaut (VOB-Prüfung G3, B4
 //! und B5).
 
-use super::{Model, SurveyFrame};
+use super::{HouseStrip, Model, SurveyFrame};
 use sk_gelaende::planung::{oberflaeche, schraffen, Baustein, Herkunft, Kante, Teil};
 use sk_math::{vec3, Vec3};
 use std::sync::{Arc, Mutex};
@@ -62,6 +62,10 @@ pub struct TerrainPatch {
     pub slopes: Vec<f64>,
     /// Befestigte Fläche (Q = P, kein Andecken; Aufbau ab G4).
     pub paved: bool,
+    /// Streifen am Haus („Gelände ans Haus“): `outline` ist sein
+    /// Außenrand, die Höhe eben die OK am Haus, je Wand eine geneigte
+    /// Teilfläche ([`HouseStrip`]).
+    pub house: Option<HouseStrip>,
 }
 
 impl TerrainPatch {
@@ -74,6 +78,7 @@ impl TerrainPatch {
             abs: false,
             slopes: Vec::new(),
             paved: false,
+            house: None,
         }
     }
 
@@ -130,7 +135,13 @@ impl TerrainPatch {
                 .slopes
                 .iter()
                 .all(|s| *s == 0.0 || (*s >= lo && *s <= hi));
-        ecken && hoehe && boeschung
+        // der Streifen: eben, über ±0,00, sein Rand passt zum Haus
+        let streifen = match (&self.house, &self.height) {
+            (None, _) => true,
+            (Some(s), PatchHeight::Flat(z)) => !self.abs && s.gueltig(&self.outline, *z),
+            (Some(_), _) => false,
+        };
+        ecken && hoehe && boeschung && streifen
     }
 
     /// n der Böschung an Kante `i`; `None` senkrecht.
@@ -186,6 +197,13 @@ impl TerrainPatch {
     /// Höhe über ±0,00 (mm) an `(x, y)`; `h0` ist ±0,00 in m ü. NHN, nur
     /// mit `abs` gebraucht.
     pub fn z_at(&self, x: f64, y: f64, h0: f64) -> f64 {
+        if self.house.is_some() {
+            // die Teilfläche, in der der Punkt liegt, sonst die nächste
+            let teile = self.teile_mm(h0);
+            let ab = |r: &[[f64; 2]]| abstand(r, [x, y]);
+            let t = teile.iter().min_by(|a, b| ab(&a.0).total_cmp(&ab(&b.0)));
+            return t.map_or(0.0, |(_, e)| e[0] + e[1] * x + e[2] * y);
+        }
         let [a, b, c] = self.plane();
         let z = a + b * x + c * y;
         if self.abs {
@@ -193,6 +211,22 @@ impl TerrainPatch {
         } else {
             z
         }
+    }
+
+    /// Teilflächen im Modell mit ihrer Ebene `z = a + b·x + c·y` in mm über
+    /// ±0,00 (`h0` ist ±0,00 in m ü. NHN): die Fläche selbst, beim Streifen
+    /// am Haus je Wand ein Viereck ([`HouseStrip::teile`]).
+    pub fn teile_mm(&self, h0: f64) -> Vec<(Vec<[f64; 2]>, [f64; 3])> {
+        if let (Some(s), PatchHeight::Flat(z)) = (&self.house, &self.height) {
+            return s.teile(&self.outline, *z);
+        }
+        let [a, b, c] = self.plane();
+        let e = if self.abs {
+            [(a - h0) * 1000.0, b * 1000.0, c * 1000.0]
+        } else {
+            [a, b, c]
+        };
+        vec![(self.outline.clone(), e)]
     }
 
     /// Die Fläche als Baustein im Netz des Aufmaßes: Lage in m relativ zu
@@ -206,25 +240,38 @@ impl TerrainPatch {
             let (e, n) = frame.to_survey(p[0], p[1]);
             [e - bezug.0, n - bezug.1]
         };
-        let hoehe = |p: [f64; 2]| h0 + self.z_at(p[0], p[1], h0) / 1000.0;
         // Ebene im Netz durch drei Punkte (die Lage ist längentreu)
-        let o = self.outline[0];
-        let [q0, q1, q2] = [o, [o[0] + 1000.0, o[1]], [o[0], o[1] + 1000.0]];
-        let [m0, m1, m2] = [q0, q1, q2].map(im_netz);
-        let [z0, z1, z2] = [q0, q1, q2].map(hoehe);
-        let (u, v) = (
-            [m1[0] - m0[0], m1[1] - m0[1]],
-            [m2[0] - m0[0], m2[1] - m0[1]],
-        );
-        let det = u[0] * v[1] - u[1] * v[0];
-        let gb = ((z1 - z0) * v[1] - (z2 - z0) * u[1]) / det;
-        let gc = ((z2 - z0) * u[0] - (z1 - z0) * v[0]) / det;
-        let ebene = [z0 - gb * m0[0] - gc * m0[1], gb, gc];
+        let im_netz_eben = |ring: &[[f64; 2]], e: [f64; 3]| {
+            let hoehe = |p: [f64; 2]| h0 + (e[0] + e[1] * p[0] + e[2] * p[1]) / 1000.0;
+            let o = ring[0];
+            let [q0, q1, q2] = [o, [o[0] + 1000.0, o[1]], [o[0], o[1] + 1000.0]];
+            let [m0, m1, m2] = [q0, q1, q2].map(im_netz);
+            let [z0, z1, z2] = [q0, q1, q2].map(hoehe);
+            let (u, v) = (
+                [m1[0] - m0[0], m1[1] - m0[1]],
+                [m2[0] - m0[0], m2[1] - m0[1]],
+            );
+            let det = u[0] * v[1] - u[1] * v[0];
+            let gb = ((z1 - z0) * v[1] - (z2 - z0) * u[1]) / det;
+            let gc = ((z2 - z0) * u[0] - (z1 - z0) * v[0]) / det;
+            [z0 - gb * m0[0] - gc * m0[1], gb, gc]
+        };
+        let teile: Vec<Teil> = self
+            .teile_mm(h0)
+            .into_iter()
+            .map(|(r, e)| Teil {
+                ebene: im_netz_eben(&r, e),
+                ring: r.into_iter().map(im_netz).collect(),
+            })
+            .collect();
         let ring: Vec<[f64; 2]> = self.outline.iter().map(|&p| im_netz(p)).collect();
         let n = ring.len();
+        // Kante i gehört zur Fläche, beim Streifen zur Teilfläche an Wand i
+        let streifen = self.house.is_some();
         let rand = (0..n)
             .map(|i| {
                 let (a, b) = (ring[i], ring[(i + 1) % n]);
+                let ebene = teile[if streifen { i } else { 0 }].ebene;
                 let z = |p: [f64; 2]| ebene[0] + ebene[1] * p[0] + ebene[2] * p[1];
                 Kante {
                     a: [a[0], a[1], z(a)],
@@ -233,11 +280,56 @@ impl TerrainPatch {
                 }
             })
             .collect();
-        Some(Baustein {
-            teile: vec![Teil { ring, ebene }],
-            rand,
-        })
+        Some(Baustein { teile, rand })
     }
+
+    /// Liegt `p` (mm) auf der Fläche? Beim Streifen nicht im Haus.
+    pub fn contains(&self, p: [f64; 2]) -> bool {
+        innen(&self.outline, p) && self.house.as_ref().is_none_or(|s| !innen(&s.house, p))
+    }
+
+    /// Inhalt der Fläche im Grundriss (mm²), beim Streifen ohne das Haus.
+    pub fn area(&self) -> f64 {
+        let haus = self.house.as_ref().map_or(0.0, |s| flaeche(&s.house).abs());
+        flaeche(&self.outline).abs() - haus
+    }
+}
+
+/// Liegt `p` im Ring `r` (gerade-ungerade)?
+fn innen(r: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let n = r.len();
+    let mut drin = false;
+    for i in 0..n {
+        let (a, b) = (r[i], r[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1]) {
+            let x = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            if p[0] < x {
+                drin = !drin;
+            }
+        }
+    }
+    drin
+}
+
+/// Abstand von `p` zum Ring `r` (mm), 0 innen.
+fn abstand(r: &[[f64; 2]], p: [f64; 2]) -> f64 {
+    if innen(r, p) {
+        return 0.0;
+    }
+    let n = r.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (r[i], r[(i + 1) % n]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 > 0.0 {
+                (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Ebene durch zwei Punkte, quer zu ihrer Verbindung waagerecht.
@@ -324,6 +416,10 @@ pub struct PlannedTerrain {
     pub hatch: Vec<([Vec3; 2], bool)>,
     /// Umriss jeder Fläche, die sich bauen lässt, auf ihrer Höhe.
     pub outlines: Vec<Vec<Vec3>>,
+    /// Je Umriss: beim Streifen am Haus der Punkt für seine Höhenzahl, die
+    /// Mitte seiner größten Teilfläche auf ihrer Höhe (die Mitte des
+    /// Umrisses läge im Haus); sonst `None`.
+    pub strip_marks: Vec<Option<Vec3>>,
     /// Senkrechte Wände, wo die Höhe springt (Kante ohne Böschung, zwei
     /// Flächen, Böschung auf Böschung); die Normale zeigt zur tieferen
     /// Seite.
@@ -442,6 +538,22 @@ impl Model {
                         .iter()
                         .map(|q| vec3(q[0], q[1], p.z_at(q[0], q[1], h0)))
                         .collect()
+                })
+                .collect(),
+            strip_marks: gilt
+                .iter()
+                .map(|&(i, _)| {
+                    let p = &patches[i];
+                    p.house.as_ref()?;
+                    let teile = p.teile_mm(h0);
+                    let (r, e) = teile
+                        .iter()
+                        .max_by(|a, b| flaeche(&a.0).abs().total_cmp(&flaeche(&b.0).abs()))?;
+                    let m = r.len() as f64;
+                    let [x, y] = r
+                        .iter()
+                        .fold([0.0, 0.0], |s, q| [s[0] + q[0] / m, s[1] + q[1] / m]);
+                    Some(vec3(x, y, e[0] + e[1] * x + e[2] * y))
                 })
                 .collect(),
             walls: o.waende.iter().map(|d| d.map(im_modell)).collect(),

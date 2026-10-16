@@ -744,6 +744,9 @@ pub(crate) struct RaumCache {
     /// OK Gelände aus dem Aufmaß ([`Scene::terrain_grid`]).
     raster: Raster,
     z: Zaehler,
+    /// Umfeld der Wohnfläche je Modellstand ([`Scene::woflv_umfeld`]);
+    /// steht hier, damit `scene.rs` nicht wächst.
+    woflv: std::cell::RefCell<Option<(u64, Rc<sk_raum::wohnflaeche::Umfeld>)>>,
     /// Wandseite, die das Paneel des Raums bearbeitet (RB6); sonst alle.
     /// Steht hier, damit `scene.rs` nicht wächst.
     pub(crate) seite: Option<(ElementId, sk_model::model::WandSeite)>,
@@ -1141,6 +1144,28 @@ pub fn platz(v: ViewKind) -> Option<usize> {
 }
 
 impl Scene {
+    /// Umfeld der Wohnfläche (Höhen, Stützen, Treppen) einmal je
+    /// Modellstand für Stempel, Paneel und Blatt Wohnfläche (Review #220
+    /// B1). Im offenen Schritt gilt das vom Stand beim Öffnen weiter:
+    /// Stützen, Treppen und Geschosse ändern sich beim Ziehen nicht. Ein im
+    /// Schritt gebautes Umfeld bleibt ungemerkt, sonst träfe es nach
+    /// „Abbrechen“ (Revision wie vorher) den alten Stand (A-220c).
+    pub(crate) fn woflv_umfeld(&self) -> Rc<sk_raum::wohnflaeche::Umfeld> {
+        let schritt = self.model.step_revision();
+        let rev = schritt.unwrap_or(self.model.revision());
+        let mut w = self.ausbau.woflv.borrow_mut();
+        match &*w {
+            Some((r, u)) if *r == rev => u.clone(),
+            _ => {
+                let u = Rc::new(sk_raum::wohnflaeche::Umfeld::aus(&self.model));
+                if schritt.is_none() {
+                    *w = Some((rev, u.clone()));
+                }
+                u
+            }
+        }
+    }
+
     /// Schalter „Ausbau innen“ der Ansicht `i` (Ansichtszustand ohne
     /// Schritt, wie die Schnitthöhe).
     pub fn set_view_finish(&mut self, i: usize, an: bool) {
@@ -1951,5 +1976,31 @@ mod tests {
         assert!(!mit_teilen(&mut s, ViewKind::Persp, &mut ablagen)
             .1
             .is_empty());
+    }
+
+    /// Ein im Einstellungsschritt gebautes Umfeld der Wohnfläche gilt nach
+    /// „Abbrechen“ (Revision wie vorher) nicht weiter (A-220c); ein vor dem
+    /// Schritt gebautes gilt im Schritt weiter, also kein Umfeld je Bild.
+    #[test]
+    fn woflv_umfeld_nach_abbrechen_neu() {
+        use std::rc::Rc;
+        let (mut s, _) = haus();
+        let m = s.model();
+        let eg = m.levels_in(m.buildings().iter().next().map(|b| b.0))[1];
+        let h = m.storey(eg).unwrap().height;
+        let rev = s.begin_settings();
+        assert!(s.edit_attr(|m| m.set_storey_height(eg, h + 200.0)));
+        let im = s.woflv_umfeld();
+        assert!(!Rc::ptr_eq(&im, &s.woflv_umfeld()), "im Schritt ungemerkt");
+        s.cancel_settings(rev);
+        assert_eq!(s.model().revision(), rev);
+        let nach = s.woflv_umfeld();
+        assert!(!Rc::ptr_eq(&im, &nach), "Zwischenstand gilt nicht weiter");
+        assert!(Rc::ptr_eq(&nach, &s.woflv_umfeld()), "einmal je Stand");
+        let rev = s.begin_settings();
+        assert!(s.edit_attr(|m| m.set_storey_height(eg, h + 200.0)));
+        assert!(Rc::ptr_eq(&nach, &s.woflv_umfeld()), "Stand beim Öffnen");
+        s.cancel_settings(rev);
+        assert!(Rc::ptr_eq(&nach, &s.woflv_umfeld()));
     }
 }
