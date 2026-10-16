@@ -2338,6 +2338,49 @@ fn perf_ausbau_filter() {
     println!("Zeiten in ms (Release).");
 }
 
+/// Review #232 (B-232a): Neubau der Karten des Objekt-Panels je Modellstand (nach
+/// jedem Schritt): bisher `tree::build`, jetzt `build_mit` samt
+/// `typen_der_raeume`; Median aus fünf, ms.
+#[test]
+#[ignore]
+fn perf_baum_mit_ausbau() {
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    println!();
+    println!(
+        "{:>6} {:>7} | {:>8} {:>8} {:>8} {:>8} | {:>7} {:>7}",
+        "Häuser", "Räume", "build", "typen", "mit", "Summe", "Zeilen", "mit"
+    );
+    for n in [100, 1000, 4000] {
+        let s = town_with_interior(n);
+        let m = s.model();
+        let ty = sk_raum::ausbau::typen_der_raeume(m);
+        let raeume = ty.len();
+        let zeilen =
+            |t: &sk_model::tree::ProjectTree| -> usize { t.tabs.iter().map(Vec::len).sum() };
+        let z0 = zeilen(&sk_model::tree::build(m));
+        let z1 = zeilen(&sk_model::tree::build_mit(m, &ty));
+        let (mut a, mut b, mut c, mut d) = (vec![], vec![], vec![], vec![]);
+        for _ in 0..5 {
+            let t = Instant::now();
+            std::hint::black_box(sk_model::tree::build(m));
+            a.push(ms(t));
+            let t = Instant::now();
+            let ty = sk_raum::ausbau::typen_der_raeume(m);
+            b.push(ms(t));
+            let t2 = Instant::now();
+            std::hint::black_box(sk_model::tree::build_mit(m, &ty));
+            c.push(ms(t2));
+            d.push(ms(t));
+        }
+        let (a, ..) = median(&mut a);
+        let (b, ..) = median(&mut b);
+        let (c, ..) = median(&mut c);
+        let (d, ..) = median(&mut d);
+        println!("{n:>6} {raeume:>7} | {a:>8.2} {b:>8.2} {c:>8.2} {d:>8.2} | {z0:>7} {z1:>7}");
+    }
+    println!("build: wie bisher; Summe: typen_der_raeume + build_mit (jetzt je Stand)");
+}
+
 /// Eine 300 m lange Mauer südlich der Häuser (Review #149 B1): Auch mit
 /// ihr läuft kein Vortest je Mausbewegung über das ganze Modell.
 fn mauer(s: &mut Scene) {

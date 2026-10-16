@@ -506,8 +506,15 @@ fn trade_tab(m: &Model, members: &mut Vec<ElementId>, raeume: &[RaumTypen]) -> V
     by_number(m, &mut all);
     let mut per: Vec<(ElementId, Vec<(TradeId, String)>)> =
         all.iter().map(|&id| (id, trades_of(m, id))).collect();
+    // Räume mit eigenen Gewerken nachschlagen, nicht je Raum alle Bauteile
+    // durchsuchen (Review #232: sonst quadratisch, 1,4 s bei 4000 Häusern)
+    let mit_gewerk: std::collections::HashSet<ElementId> = per
+        .iter()
+        .filter(|x| !x.1.is_empty())
+        .map(|x| x.0)
+        .collect();
     for (id, ts) in raeume {
-        if m.element(*id).is_none() || per.iter().any(|x| x.0 == *id && !x.1.is_empty()) {
+        if m.element(*id).is_none() || mit_gewerk.contains(id) {
             continue;
         }
         let mut out = Vec::new();
