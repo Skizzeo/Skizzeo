@@ -1314,8 +1314,9 @@ fn schwerpunkt(r: &[P2]) -> Option<P2> {
     (a.abs() > 1e-9).then(|| [cx / (3.0 * a), cy / (3.0 * a)])
 }
 
-/// Inhalt der Höhenzahlen und Koten (Ort, Richtung, Text, voll) und die
-/// Häuser als Prüfsumme: gleich, solange die Tinte gleich bliebe.
+/// Inhalt der Höhenzahlen und Koten (Ort, Richtung, Text, voll), die
+/// Häuser und die Grenze als Prüfsumme: gleich, solange die Tinte gleich
+/// bliebe.
 pub(crate) fn zahlen_inhalt(g: &Gelaende) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut s = std::collections::hash_map::DefaultHasher::new();
@@ -1326,13 +1327,15 @@ pub(crate) fn zahlen_inhalt(g: &Gelaende) -> u64 {
         (text, voll).hash(&mut s);
     }
     g.zahlen.len().hash(&mut s);
-    // die Koten weichen den Häusern aus
-    for (ring, _) in &g.haus {
+    // die Koten weichen den Häusern und der Grenze aus
+    let haeuser = g.haus.iter().map(|(ring, _)| ring);
+    for ring in haeuser.chain(&g.ringe) {
         for p in ring {
             p.map(f64::to_bits).hash(&mut s);
         }
         ring.len().hash(&mut s);
     }
+    g.haus.len().hash(&mut s);
     s.finish()
 }
 
@@ -1842,6 +1845,10 @@ mod tests {
             // daran)
             let vorher = zahlen_inhalt(&b);
             b.haus[0].0[0][0] += 1.0;
+            assert_ne!(zahlen_inhalt(&b), vorher);
+            // ebenso eine verschobene Grenzecke (Review B2 zu #223)
+            let vorher = zahlen_inhalt(&b);
+            b.ringe[0][0][1] += 1.0;
             assert_ne!(zahlen_inhalt(&b), vorher);
         }
         // Schnitt quer durch das Haus: Schnittfläche bis zur Unterkante
