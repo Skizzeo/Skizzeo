@@ -315,11 +315,15 @@ fn boden_wert(k: usize, text: &str) -> Result<f64, ()> {
 const BOESCHUNG: usize = BODEN + 4;
 
 /// Die andere Form neben dem Böschungswinkel (VOB-Prüfung G3): „= 1:n“ mit
-/// zwei Stellen; `None` ohne gültige Zahl.
+/// zwei Stellen, bei 90° „= senkrecht“; `None` ohne gültige Zahl.
 fn boeschung_neben(text: &str) -> Option<String> {
     let g = boden_wert(4, text).ok()?;
     let n = (1.0 / g.to_radians().tan()).max(0.0);
-    Some(format!("= 1:{}", crate::selection::de(n, 2)))
+    Some(if n < 0.005 {
+        "= senkrecht".to_string()
+    } else {
+        format!("= 1:{}", crate::selection::de(n, 2))
+    })
 }
 
 /// Breite (Feld 8) und Länge (Feld 9): Grenze in Grad.
@@ -1546,7 +1550,8 @@ mod tests {
         // die andere Form daneben (VOB-Prüfung G3): 1:n mit zwei Stellen
         assert_eq!(boeschung_neben("45").as_deref(), Some("= 1:1,00"));
         assert_eq!(boeschung_neben("33,7 °").as_deref(), Some("= 1:1,50"));
-        assert_eq!(boeschung_neben("90").as_deref(), Some("= 1:0,00"));
+        assert_eq!(boeschung_neben("90").as_deref(), Some("= senkrecht"));
+        assert_eq!(boeschung_neben("89,5").as_deref(), Some("= 1:0,01"));
         assert_eq!(boeschung_neben("10"), None);
         assert_eq!(BOESCHUNG, UTM - 1);
         m.felder[10] = TextEdit::new("40");
