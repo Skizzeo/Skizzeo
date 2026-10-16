@@ -28,6 +28,7 @@ use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Kopf, Fuß, Rand (dip).
@@ -355,6 +356,8 @@ pub struct Catalog {
     list_sub: std::cell::RefCell<Canvas>,
     /// Schraffuren des Schnittbilds (Übergang ohne Rechnen je Bildpunkt).
     patterns: RefCell<Patterns>,
+    /// [`Self::in_raeumen`] je Typ zum Modellstand (Review #190 H-190i).
+    raum_typen: RefCell<(u64, HashMap<LayerSetId, bool>)>,
     /// Kachelflug (K3b): Kopie der Kachel fliegt zum Reiter; Beginn.
     fly: Option<(Item, Tab, Instant)>,
     /// Bild der fliegenden Kopie und wo sie zuletzt gezeichnet wurde.
@@ -509,6 +512,7 @@ impl Catalog {
             scratch: Canvas::new(0, 0),
             list_sub: std::cell::RefCell::new(Canvas::new(0, 0)),
             patterns: RefCell::default(),
+            raum_typen: RefCell::default(),
             fly: None,
             fly_img: None,
             fly_drawn: None,
@@ -2325,7 +2329,13 @@ impl Catalog {
     /// Dann weder löschen noch die Art umstellen, wie im Modell (Review
     /// #190 B2).
     fn in_raeumen(&self, id: LayerSetId) -> bool {
-        self.work.type_in_space_type(id) || self.work.type_in_space_finish(id)
+        let mut c = self.raum_typen.borrow_mut();
+        if c.0 != self.work.revision() {
+            *c = (self.work.revision(), HashMap::new());
+        }
+        let w = &self.work;
+        *c.1.entry(id)
+            .or_insert_with(|| w.type_in_space_type(id) || w.type_in_space_finish(id))
     }
 
     fn choose(&mut self, i: usize, cx: &Ctx) {

@@ -14,7 +14,10 @@
 //! - Pfeiler, Schornsteine und Vormauerungen im Raum über 0,1 m² werden
 //!   abgezogen (§ 3 Abs. 3 Nr. 1), kleinere nicht; Stützen über 0,1 m² und
 //!   höher als 1,50 m und Treppen mit über drei Steigungen ebenso
-//!   ([`einbau`], § 3 Abs. 3 Nr. 1 und 2).
+//!   ([`einbau`], § 3 Abs. 3 Nr. 1 und 2). Eine Treppe aus dem Geschoss
+//!   darunter steht als Treppenloch ohne Fußboden und wird abgezogen; was
+//!   abgezogene Pfeiler, Stützen und Treppen gemeinsam decken, geht einmal
+//!   ab (Review #195 H-195j).
 //! - Faktor nach § 4: lichte Höhe ab 2 m voll, ab 1 m zur Hälfte, darunter
 //!   nicht, mal die Anrechnung der Raumvorlage (100, 50, 25 oder 0 %); ein
 //!   Faktor am Raum geht beiden vor.
@@ -526,6 +529,10 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
     let mut roh_teile: Vec<(Roh, Art)> = Vec::new();
     let mut umriss: Vec<Vec<Vec3>> = Vec::new();
     let mut genau = 0.0;
+    // Abgezogene Pfeiler und Einbauten: Was ein weiterer Einbau mit ihnen
+    // deckt, ist schon ab (Review #195 H-195j). Paarweise: Wo drei
+    // Abgezogene übereinander liegen, ginge ihr gemeinsamer Teil doppelt ab.
+    let mut abgezogen: Vec<Vec<[Vec3; 3]>> = Vec::new();
     let mut erste = 0;
     for (i, ring) in roh.ringe().enumerate() {
         let p: Vec<Vec3> = ring.iter().map(|k| k.a).collect();
@@ -552,6 +559,7 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
                 ));
             } else {
                 genau -= a;
+                abgezogen.push(einbau::dreiecke(&fertig));
                 for (text, wert, u) in zerlegen(&fertig) {
                     roh_teile.push(((format!("{name} {text}"), -wert, u), Art::Abzug));
                 }
@@ -613,17 +621,43 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
         }
     }
 
-    // Stützen und Treppen im Raum (B1)
+    // Stützen und Treppen im Raum (B1); eine Stütze mit dem Putz des Raums
+    // ringsum, wie ein Pfeiler aus einem Wandring an der Vorderkante seiner
+    // Bekleidung (§ 3 Abs. 1, Review #195 H-195i)
+    let putz = if vorgabe {
+        PUTZ
+    } else {
+        // Putz der Wandseiten (Raumbuch oder Wandtyp), der dickste
+        kanten
+            .iter()
+            .zip(&aus.seiten)
+            .map(|(k, s)| ausbau::putz(model, k, s))
+            .fold(0.0, f64::max)
+    };
     if let Some(rand) = umriss.first().filter(|_| !einbauten.is_empty()) {
         let dreiecke = einbau::dreiecke(rand);
         for e in einbauten.bei(einbau::rahmen(rand)) {
-            let f = einbau::im_raum(e, &dreiecke);
+            let geputzt = (!e.treppe && putz > 0.0)
+                .then(|| einbau::geputzt(e, putz))
+                .flatten();
+            let mit_putz = match geputzt {
+                Some(_) => format!(" einschl. Putz {} mm", putz.round()),
+                None => String::new(),
+            };
+            let e = geputzt.as_ref().unwrap_or(e);
+            // Die Schwelle 0,1 m² gilt für die ganze bekleidete Stütze im
+            // Raum, abgezogen wird der Rest neben schon Abgezogenem (VOB
+            // A-241a)
+            let ganz = einbau::im_raum(e, &dreiecke);
+            let f = ganz - abgezogen.iter().map(|l| einbau::im_raum(e, l)).sum::<f64>();
             if f < 1.0 {
                 continue;
             }
             let name = nummer(model, e.id, if e.treppe { "Treppe" } else { "Stütze" });
             let hoch = e.z.1.min(fd) - e.z.0.max(ffb);
-            let (abzug, grund) = if e.treppe {
+            let (abzug, grund) = if e.loch {
+                (true, String::new())
+            } else if e.treppe {
                 match e.steigungen {
                     Some(n) if n <= einbau::STEIGUNGEN => (
                         false,
@@ -631,12 +665,12 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
                     ),
                     _ => (true, String::new()),
                 }
-            } else if (f / 1e3).round() <= PFEILER / 1e3 {
+            } else if (ganz / 1e3).round() <= PFEILER / 1e3 {
                 (
                     false,
                     format!(
                         "{name} {} bleibt in der Fläche (bis 0,1 m², § 3 Abs. 3 Nr. 1)",
-                        qm3(f)
+                        qm3(ganz)
                     ),
                 )
             } else if hoch <= einbau::STUETZE_HOCH + EPS {
@@ -655,17 +689,33 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
                 continue;
             }
             genau -= f;
-            let regel = if e.treppe {
-                "§ 3 Abs. 3 Nr. 2"
+            abgezogen.push(einbau::im_raum_dreiecke(e, &dreiecke));
+            // Ein Treppenloch ist im Modell nicht abgebildet: angenommen wie
+            // die Treppe darunter (VOB V-241b/c)
+            let (name, regel) = if e.loch {
+                (format!("Treppenloch {name}"), "Deckenöffnung, § 3 Abs. 1")
+            } else if e.treppe {
+                (name, "§ 3 Abs. 3 Nr. 2")
             } else {
-                "§ 3 Abs. 3 Nr. 1"
+                (name, "§ 3 Abs. 3 Nr. 1")
+            };
+            let wie = if e.loch {
+                " angenommen wie Treppe darunter"
+            } else {
+                ""
             };
             let (text, wert) = match einbau::rechteck(e, f) {
                 Some((a, b)) => {
                     let (a, b) = (a.round(), b.round());
-                    (format!("{name} {} × {} ({regel})", m(a), m(b)), a * b)
+                    (
+                        format!("{name} {} × {}{mit_putz}{wie} ({regel})", m(a), m(b)),
+                        a * b,
+                    )
                 }
-                None => (format!("{name} im Raum ({regel})"), (f / 1e3).round() * 1e3),
+                None => (
+                    format!("{name} im Raum{mit_putz}{wie} ({regel})"),
+                    (f / 1e3).round() * 1e3,
+                ),
             };
             let u = e.stuecke.first().cloned().unwrap_or_default();
             roh_teile.push(((text, -wert, u), Art::Abzug));
