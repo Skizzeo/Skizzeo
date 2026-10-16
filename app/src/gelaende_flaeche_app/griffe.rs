@@ -223,7 +223,7 @@ fn satz(g: Griff) -> &'static str {
 impl App {
     /// Sind die Griffe der Grenze an? Im Grundriss bei offener Leiste mit
     /// Modul, ohne Werkzeug, mit sichtbarem Gelände.
-    fn grenz_griffe_an(&self) -> bool {
+    pub(super) fn grenz_griffe_an(&self) -> bool {
         let l = &self.platte.leiste;
         self.ui.view == ViewKind::Plan
             && l.offen

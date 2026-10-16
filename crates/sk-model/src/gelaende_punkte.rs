@@ -328,6 +328,41 @@ mod tests {
         m.rollback();
     }
 
+    /// Ein Aufmaß mit eigenen Punkten bleibt vermessen; Ansatz und
+    /// Vorbemerkung sagen, wie viele von Hand ergänzt sind.
+    #[test]
+    fn mengen_nennen_eigene_punkte() {
+        let mut m = haus();
+        m.begin("Höhenpunkt");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        let mut t = m.terrain().unwrap().clone();
+        for p in &mut t.points {
+            p.hand = false;
+        }
+        t.src = "aufmass.csv".into();
+        m.begin("Aufmaß");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        let h = crate::qto_earth::netz_herkunft(&m).unwrap();
+        assert!(!h.contains("von Hand"), "{h}");
+        m.begin("Höhenpunkt");
+        assert_eq!(m.add_terrain_points(&[[15000.0, 4000.0, -200.0]]).len(), 1);
+        m.commit();
+        assert!(!m.terrain().unwrap().assumed());
+        let h = crate::qto_earth::netz_herkunft(&m).unwrap();
+        assert!(h.ends_with(", davon 1 Punkt von Hand ergänzt"), "{h}");
+        let auto = crate::qto::schedule(&m).auto;
+        let netz: Vec<_> = auto
+            .iter()
+            .filter(|a| a.formula.contains(crate::qto_earth::DREIECKSPRISMEN))
+            .collect();
+        assert!(!netz.is_empty());
+        assert!(netz
+            .iter()
+            .all(|a| a.formula.contains("davon 1 Punkt von Hand ergänzt")));
+    }
+
     /// Nummern zählen hinter der höchsten weiter.
     #[test]
     fn nummern() {

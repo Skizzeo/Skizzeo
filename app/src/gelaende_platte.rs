@@ -177,6 +177,8 @@ pub(crate) struct Platte {
     pub(crate) leiste: crate::gelaende_app::Zustand,
     /// Griffe der Grenze bei offener Leiste (I3).
     pub(crate) griffe: crate::gelaende_flaeche_app::griffe::Griffe,
+    /// Höhenpunkte im Grundriss (I4).
+    pub(crate) punkte: crate::gelaende_flaeche_app::punkte::Punkte,
     /// Der Lageplan der Unterlage, gelesen (G1c).
     pub(crate) unterlage: crate::gelaende_app::Unterlage,
     /// Linien in Ansicht und Schnitt.

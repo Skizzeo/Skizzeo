@@ -27,9 +27,24 @@ pub(crate) fn verfahren(t: &crate::Terrain) -> String {
     if t.assumed() {
         return format!("; {DREIECKSPRISMEN} {ANGENOMMEN}");
     }
+    let hand = von_hand(t);
     match datum(&t.read) {
-        Some(d) => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {} vom {d}", t.src),
-        None => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {}", t.src),
+        Some(d) => format!(
+            "; {DREIECKSPRISMEN} aus dem Höhenaufmaß {} vom {d}{hand}",
+            t.src
+        ),
+        None => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {}{hand}", t.src),
+    }
+}
+
+/// Ein Aufmaß mit eigenen Höhenpunkten (I4) sagt, wie viele davon von
+/// Hand sind (VOB-Hinweis a zu #229): „, davon 3 Punkte von Hand
+/// ergänzt“; ohne solche leer.
+fn von_hand(t: &crate::Terrain) -> String {
+    match t.points.iter().filter(|p| p.hand && !p.off).count() {
+        0 => String::new(),
+        1 => ", davon 1 Punkt von Hand ergänzt".into(),
+        n => format!(", davon {} Punkte von Hand ergänzt", tausend(n)),
     }
 }
 
@@ -54,9 +69,10 @@ pub fn netz_herkunft(m: &Model) -> Option<String> {
     let n = t.mesh().netz.dreiecke.len();
     let vom = datum(&t.read).map_or(String::new(), |d| format!(" vom {d}"));
     Some(format!(
-        "Höhenaufmaß {}{vom}, {} Dreiecke",
+        "Höhenaufmaß {}{vom}, {} Dreiecke{}",
         t.src,
-        tausend(n)
+        tausend(n),
+        von_hand(t)
     ))
 }
 
