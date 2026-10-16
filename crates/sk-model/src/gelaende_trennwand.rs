@@ -47,18 +47,40 @@ pub(super) fn freie_strecken(
             continue;
         }
         let punkt = |t: f64| [a[0] + t * d[0], a[1] + t * d[1]];
-        // Teilungen an Schnitten und nahen Ecken, je ± den Abstand
-        let dt = tol / len;
+        // Teilungen, wo sich die Lage zu den anderen ändern kann: an
+        // Schnitten mit ihren Kanten und dort, wo der Abstand zu ihnen genau
+        // `tol` ist (Kanten um `tol` versetzt, Kreise um ihre Ecken). Auch
+        // eine Ecke knapp hinter dem Ende der Strecke teilt so (VOB B-245b:
+        // Außenflächen 1 bis 19 mm auseinander).
         let mut ts = vec![0.0, 1.0];
         for p in &nah {
             for j in 0..p.len() {
                 let (c, e) = (p[j], p[(j + 1) % p.len()]);
-                if let Some(t) = schnitt(a, b, c, e) {
-                    ts.extend([t - dt, t + dt]);
+                ts.extend(schnitt(a, b, c, e));
+                let k = [e[0] - c[0], e[1] - c[1]];
+                let kl = k[0].hypot(k[1]);
+                if kl > 1e-9 {
+                    let nv = [-k[1] / kl * tol, k[0] / kl * tol];
+                    for s in [1.0, -1.0] {
+                        let v = |q: [f64; 2]| [q[0] + s * nv[0], q[1] + s * nv[1]];
+                        ts.extend(schnitt(a, b, v(c), v(e)));
+                    }
                 }
-                let t = ((c[0] - a[0]) * d[0] + (c[1] - a[1]) * d[1]) / (len * len);
-                if (0.0..=1.0).contains(&t) && abstand(punkt(t), c) < tol {
-                    ts.extend([t - dt, t + dt]);
+                // |a + t·d − c| = tol
+                let w = [a[0] - c[0], a[1] - c[1]];
+                let (qa, qb, qc) = (
+                    len * len,
+                    2.0 * (w[0] * d[0] + w[1] * d[1]),
+                    w[0] * w[0] + w[1] * w[1] - tol * tol,
+                );
+                let disk = qb * qb - 4.0 * qa * qc;
+                if disk > 0.0 {
+                    let r = disk.sqrt();
+                    ts.extend(
+                        [(-qb - r) / (2.0 * qa), (-qb + r) / (2.0 * qa)]
+                            .into_iter()
+                            .filter(|t| (0.0..=1.0).contains(t)),
+                    );
                 }
             }
         }
@@ -217,6 +239,26 @@ mod tests {
         ];
         for b in &ja {
             assert!(ineinander(&a, b) && ineinander(b, &a), "{b:?}");
+        }
+    }
+
+    /// Außenflächen knapp auseinander (VOB B-245b): Auch die Enden der
+    /// Seiten nahe dem Nachbarn sind nicht frei, wie Wand an Wand.
+    #[test]
+    fn knapp_daneben() {
+        let a = rechteck(-315.0, -315.0, 8315.0, 10315.0);
+        for g in [0.0, 1.0, 5.0, 10.0, 19.0, 30.0] {
+            let b = rechteck(8315.0 + g, -315.0, 16945.0 + g, 10315.0);
+            let s = freie_strecken(&a, &[&b]);
+            let ende = 8315.0 + g - AN_DER_WAND;
+            assert!(
+                s.iter()
+                    .all(|(p, q)| p[0] <= ende + 1e-6 && q[0] <= ende + 1e-6),
+                "{g}: {s:?}"
+            );
+            // unten und oben bis zum Ende, links ganz, rechts nichts
+            let soll = 2.0 * (ende + 315.0) + 10630.0;
+            assert!((laenge(&s) - soll).abs() < 1e-6, "{g}: {}", laenge(&s));
         }
     }
 

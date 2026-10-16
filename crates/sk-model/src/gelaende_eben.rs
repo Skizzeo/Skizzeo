@@ -55,8 +55,12 @@ impl Model {
         let mut umlaeufe = 0;
         for b in &bereiche {
             for u in b.umlaeufe() {
-                ecken.extend(u.into_iter().map(|p| (p, b.z, Some(umlaeufe))));
-                umlaeufe += 1;
+                if b.rand {
+                    ecken.extend(u.into_iter().map(|p| (p, b.z, Some(umlaeufe))));
+                    umlaeufe += 1;
+                } else {
+                    ecken.extend(u.into_iter().map(|p| (p, b.z, None)));
+                }
             }
         }
         // die Geländeflächen, die schon da sind, und das Grundstück liegen
@@ -616,45 +620,107 @@ mod tests {
     /// Anlegen der ersten Fläche, wo sie waren. Die Einbindetiefe zählt nur
     /// am freien Plattenrand, nicht an der Haustrennwand, wo das Gelände
     /// des Nachbarn liegt (H-245a, VOB; vorher rutschte die Gründung des
-    /// höheren Hauses 1 m tiefer).
+    /// höheren Hauses 1 m tiefer). Ebenso mit einer Fuge von 1 bis 19 mm
+    /// zwischen den Außenflächen (VOB B-245b: bis 0,45 m tiefer), längs und
+    /// quer, mit Haus und mit Garage.
     #[test]
     fn trennwand_zieht_nicht_hinab() {
-        let mut m = Model::with_seed(5);
-        let mut haeuser = Vec::new();
-        for (x0, versatz) in [(0.0, 500.0), (8000.0, 1500.0)] {
+        for spalt in [0.0, 630.0, 631.0, 635.0, 640.0, 645.0, 649.0, 650.0] {
+            for (quer, garage) in [(false, false), (true, false), (false, true), (true, true)] {
+                let fall = format!("{spalt} quer {quer} Garage {garage}");
+                let mut m = Model::with_seed(5);
+                let (w, h) = if garage {
+                    (3000.0, 3000.0)
+                } else {
+                    (8000.0, 10000.0)
+                };
+                let zweites = if quer {
+                    (0.0, 10000.0 + spalt, w, h)
+                } else {
+                    (8000.0 + spalt, 0.0, w, h)
+                };
+                for ((x0, y0, w, h), versatz) in
+                    [((0.0, 0.0, 8000.0, 10000.0), 500.0), (zweites, 1500.0)]
+                {
+                    let b = m.add_building(1);
+                    let pts = [
+                        vec3(x0, y0, 0.0),
+                        vec3(x0 + w, y0, 0.0),
+                        vec3(x0 + w, y0 + h, 0.0),
+                        vec3(x0, y0 + h, 0.0),
+                    ];
+                    m.build_from_polygon(b, &pts).unwrap();
+                    m.begin("Gelände");
+                    assert!(m.set_terrain_offset_of(b, versatz));
+                    m.commit();
+                }
+                let gruendungen = |m: &Model| -> Vec<(StoreyId, f64, f64)> {
+                    m.storeys
+                        .iter()
+                        .filter(|(_, s)| s.kind == LevelKind::Foundation)
+                        .map(|(id, s)| (id, s.elevation, m.terrain_z_of_level(id)))
+                        .collect()
+                };
+                let vorher = gruendungen(&m);
+                assert_eq!(vorher.len(), 2);
+                m.begin("Fläche");
+                assert!(m.seed_flat_terrain(&[]));
+                m.commit();
+                let nachher = gruendungen(&m);
+                for ((g, uk0, z0), (h, uk1, z1)) in vorher.iter().zip(&nachher) {
+                    assert_eq!(g, h);
+                    assert!((uk0 - uk1).abs() < 1e-6, "{fall}: UK {uk0} → {uk1}");
+                    assert!((z0 - z1).abs() < 1e-6, "{fall}: Gelände {z0} → {z1}");
+                }
+                let f = m.terrain_folgen().unwrap();
+                assert!(f.frostfrei, "{fall}");
+            }
+        }
+    }
+
+    /// Gedrehte Häuser, deren Rechtecke sich überdecken (Geometrie
+    /// H-245-geo-c): wie vor dem Trennen die Ecken beider Platten in ihrer
+    /// Höhe, ohne Bruchkante; ein Haus weit weg behält seinen Rand.
+    #[test]
+    fn gedreht_wie_vorher() {
+        for (grad, spalt) in [
+            (30.0_f64, 3000.0),
+            (45.0, 3000.0),
+            (10.0, 630.0),
+            (45.0, 630.0),
+        ] {
+            let mut m = Model::with_seed(5);
+            let (s, c) = grad.to_radians().sin_cos();
+            let dreh = |x: f64, y: f64| vec3(x * c - y * s, x * s + y * c, 0.0);
+            for (x0, versatz) in [(0.0, 500.0), (8000.0 + spalt, 1500.0)] {
+                let b = m.add_building(1);
+                let pts = [
+                    dreh(x0, 0.0),
+                    dreh(x0 + 8000.0, 0.0),
+                    dreh(x0 + 8000.0, 10000.0),
+                    dreh(x0, 10000.0),
+                ];
+                m.build_from_polygon(b, &pts).unwrap();
+                m.begin("Gelände");
+                assert!(m.set_terrain_offset_of(b, versatz));
+                m.commit();
+            }
             let b = m.add_building(1);
-            let pts = [
-                vec3(x0, 0.0, 0.0),
-                vec3(x0 + 8000.0, 0.0, 0.0),
-                vec3(x0 + 8000.0, 10000.0, 0.0),
-                vec3(x0, 10000.0, 0.0),
+            let weit = [
+                vec3(90000.0, 0.0, 0.0),
+                vec3(98000.0, 0.0, 0.0),
+                vec3(98000.0, 10000.0, 0.0),
+                vec3(90000.0, 10000.0, 0.0),
             ];
-            m.build_from_polygon(b, &pts).unwrap();
-            m.begin("Gelände");
-            assert!(m.set_terrain_offset_of(b, versatz));
+            m.build_from_polygon(b, &weit).unwrap();
+            m.begin("Fläche");
+            assert!(m.seed_flat_terrain(&[]));
             m.commit();
-            haeuser.push(b);
+            let t = m.terrain().unwrap();
+            assert_eq!(t.points.len(), 12, "{grad}° {spalt}");
+            assert_eq!(t.breaks.len(), 1, "{grad}° {spalt}");
+            assert_eq!(t.breaks[0].pts.len(), 4, "{grad}° {spalt}");
         }
-        let gruendungen = |m: &Model| -> Vec<(StoreyId, f64, f64)> {
-            m.storeys
-                .iter()
-                .filter(|(_, s)| s.kind == LevelKind::Foundation)
-                .map(|(id, s)| (id, s.elevation, m.terrain_z_of_level(id)))
-                .collect()
-        };
-        let vorher = gruendungen(&m);
-        assert_eq!(vorher.len(), 2);
-        m.begin("Fläche");
-        assert!(m.seed_flat_terrain(&[]));
-        m.commit();
-        let nachher = gruendungen(&m);
-        for ((g, uk0, z0), (h, uk1, z1)) in vorher.iter().zip(&nachher) {
-            assert_eq!(g, h);
-            assert!((uk0 - uk1).abs() < 1e-6, "{g:?}: UK {uk0} → {uk1}");
-            assert!((z0 - z1).abs() < 1e-6, "{g:?}: Gelände {z0} → {z1}");
-        }
-        let f = m.terrain_folgen().unwrap();
-        assert!(f.frostfrei);
     }
 
     /// Haus und Garage in jedem Abstand der Wandzüge von 0,65 bis 3 m (in
