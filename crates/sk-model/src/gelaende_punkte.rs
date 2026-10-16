@@ -63,6 +63,7 @@ impl Model {
         let Some((mut t, f, h0)) = self.punkte_rahmen() else {
             return false;
         };
+        let mut seitlich = Vec::new();
         for &(i, p) in neu {
             let Some(q) = t.points.get_mut(i).filter(|q| q.hand) else {
                 return false;
@@ -73,15 +74,17 @@ impl Model {
             if (q.e - e).abs() >= 5e-4 || (q.n - n).abs() >= 5e-4 {
                 q.e = e;
                 q.n = n;
+                seitlich.push(i);
             }
             if (q.h - h).abs() >= 5e-4 {
                 q.h = h;
             }
         }
-        if doppelt(&t) {
+        if doppelt_bei(&t, &seitlich) {
             return false;
         }
-        self.punkte_schreiben(t)
+        let geaendert: Vec<usize> = neu.iter().map(|x| x.0).collect();
+        self.punkte_schreiben(t, Some(&geaendert))
     }
 
     /// Eigene Punkte setzen (Lage und Höhe in mm, im offenen Schritt). Hat
@@ -113,10 +116,11 @@ impl Model {
                 hand: true,
             });
         }
-        if doppelt(&t) || !self.punkte_schreiben(t) {
+        let neu: Vec<usize> = (start..t.points.len()).collect();
+        if doppelt_bei(&t, &neu) || !self.punkte_schreiben(t, None) {
             return Vec::new();
         }
-        (start..start + neu.len()).collect()
+        neu
     }
 
     /// Punkte löschen (im offenen Schritt): eigene fallen weg, Punkte des
@@ -145,7 +149,7 @@ impl Model {
                 t.points[i].off = true;
             }
         }
-        self.punkte_schreiben(t)
+        self.punkte_schreiben(t, None)
     }
 
     /// Gelände, System und Höhe von ±0,00 zum Ändern der Punkte.
@@ -155,12 +159,18 @@ impl Model {
     }
 
     /// Geänderte Punkte schreiben; ±0,00 bleibt (siehe Kopf), die
-    /// Gründungen behalten ihre Einbindetiefe.
-    fn punkte_schreiben(&mut self, t: Terrain) -> bool {
+    /// Gründungen behalten ihre Einbindetiefe. Mit `geaendert` hat sich
+    /// nur Lage und Höhe dieser Punkte geändert
+    /// ([`Model::put_survey_punkte`]).
+    fn punkte_schreiben(&mut self, t: Terrain, geaendert: Option<&[usize]>) -> bool {
         let vorher = self.foundation_terrain();
         let vor = self.terrain_nhn();
         let haus = self.level_building();
-        if !self.put_survey(Some(t)) {
+        let neu = match geaendert {
+            Some(g) => self.put_survey_punkte(t, g),
+            None => self.put_survey(Some(t)),
+        };
+        if !neu {
             return false;
         }
         let ueber = self.terrain().is_some_and(|t| t.href == HeightRef::High);
@@ -177,13 +187,34 @@ impl Model {
     }
 }
 
-/// Zwei Punkte im Gelände auf derselben Stelle (unter 1 mm).
-fn doppelt(t: &Terrain) -> bool {
-    let mut seen = std::collections::HashSet::new();
-    !t.points
-        .iter()
-        .filter(|p| !p.off)
-        .all(|p| seen.insert(((p.e * 1000.0).round() as i64, (p.n * 1000.0).round() as i64)))
+/// Ein Punkt aus `bewegt` auf derselben Stelle (unter 1 mm) wie ein
+/// anderer im Gelände; abgewählte zählen nicht. Nur die bewegten gegen
+/// alle, ohne Gang über alle Paare (Review #234 B-234a).
+fn doppelt_bei(t: &Terrain, bewegt: &[usize]) -> bool {
+    use std::collections::HashSet;
+    let stelle = |p: &TerrainPoint| ((p.e * 1000.0).round() as i64, (p.n * 1000.0).round() as i64);
+    let mut stellen = HashSet::new();
+    let mut eigen = HashSet::new();
+    for &i in bewegt {
+        let p = &t.points[i];
+        if !p.off && eigen.insert(i) && !stellen.insert(stelle(p)) {
+            return true;
+        }
+    }
+    let Some(&s0) = stellen.iter().next() else {
+        return false;
+    };
+    let (lo, hi) = stellen.iter().fold((s0, s0), |(lo, hi), &(x, y)| {
+        ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y)))
+    });
+    t.points.iter().enumerate().any(|(j, q)| {
+        let s = stelle(q);
+        !q.off
+            && (lo.0..=hi.0).contains(&s.0)
+            && (lo.1..=hi.1).contains(&s.1)
+            && !eigen.contains(&j)
+            && stellen.contains(&s)
+    })
 }
 
 /// Die nächste freie Nummer nach „H“.
