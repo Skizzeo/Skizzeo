@@ -9,7 +9,9 @@
 //! Geschoss); alles andere (Aufbauten, Baustoffe, Geschosse, Gebäude,
 //! Gewerke, Raumvorlagen, Vorgaben, Gelände, Erweiterungen, Darstellung)
 //! heißt alle. Jede Änderung ohne Schritt (Laden, Zurücksetzen, Import)
-//! ist unbekannt, also ebenfalls alle.
+//! ist unbekannt, also ebenfalls alle. Ebenso ein Schritt, nach dem ±0,00
+//! ([`Model::terrain_nhn`]) ungerundet anders liegt: Daran hängen die
+//! Erdmengen aller Häuser (Kosten B-246a).
 
 use super::*;
 use std::collections::VecDeque;
@@ -41,6 +43,9 @@ pub(crate) struct BauLog {
     ab: u64,
     /// Je Schritt der Stand danach und seine Gebäude.
     schritte: VecDeque<(u64, Gebaeude)>,
+    /// ±0,00 nach dem letzten Schritt, ungerundet; `None`: nicht bekannt
+    /// (neu oder nach einer Änderung ohne Schritt).
+    nhn: Option<Option<f64>>,
 }
 
 impl Default for BauLog {
@@ -63,6 +68,7 @@ impl BauLog {
             stand: 0,
             ab: 0,
             schritte: VecDeque::new(),
+            nhn: None,
         }
     }
 
@@ -77,11 +83,20 @@ impl BauLog {
         self.stand += 1;
         self.ab = self.stand;
         self.schritte.clear();
+        self.nhn = None;
     }
 
     /// Abgeschlossener oder verworfener Schritt, Rückgängig oder
-    /// Wiederholen mit den Gebäuden aus [`gebaeude`].
-    pub(crate) fn schritt(&mut self, g: Gebaeude) {
+    /// Wiederholen mit den Gebäuden aus [`gebaeude`] und ±0,00 danach.
+    /// Liegt ±0,00 anders als nach dem letzten Schritt, gilt er für alle,
+    /// auch unter der Rundung von `[location] nhn` (Kosten B-246a); ohne
+    /// bekannten Wert davor, wenn es jetzt einen gibt.
+    pub(crate) fn schritt(&mut self, g: Gebaeude, nhn: Option<f64>) {
+        let gleich = match self.nhn.replace(nhn) {
+            Some(vorher) => vorher == nhn,
+            None => nhn.is_none(),
+        };
+        let g = g.filter(|_| gleich);
         if g.as_deref().is_some_and(|g| g.is_empty()) {
             return;
         }

@@ -222,3 +222,63 @@ fn raeume_je_abruf_einmal() {
         );
     }
 }
+
+/// Kosten B-246a: Mit geneigtem Aufmaß hängt ±0,00 am höchsten Punkt der
+/// Platte des Bezugsgebäudes (RH-1), daran die Erdmengen aller Häuser.
+/// Eine kleine Verschiebung seiner Wand rückt ±0,00 um weniger als 0,5 mm,
+/// `[location] nhn` bleibt gleich; der Schritt gilt trotzdem für alle, und
+/// das Kostenblatt ist das einer frischen Szene.
+#[test]
+fn bezugsgebaeude_rueckt_null_fuer_alle() {
+    const AUFMASS: &str = "[terrain] src=\"aufmass.txt\" read=\"2026-10-14\" crs=local hsys=DHHN2016 local=1 e0=100 n0=100 rot=0
+[tpoint] nr=1 e=0 n=0 h=10
+[tpoint] nr=2 e=200 n=0 h=10
+[tpoint] nr=3 e=200 n=200 h=18
+[tpoint] nr=4 e=0 n=200 h=18
+";
+    let mut knapp = 0;
+    for d in [-5.0, 5.0, -10.0, 10.0, -12.0, 12.0] {
+        let mut m = sk_model::szo::read_with(
+            &format!("{RH1}{AUFMASS}"),
+            GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .expect("lädt")
+        .model;
+        haus(&mut m, 30e3);
+        haus(&mut m, 50e3);
+        let mut s = Scene::with_model(m);
+        let u = sk_cost::Umfang::projekt();
+        s.kostenblatt(None, &u);
+        let a = s.model().buildings().ids().next().unwrap();
+        let run = s
+            .model()
+            .runs()
+            .iter()
+            .find(|(id, r)| {
+                s.model().building_of(r.storey) == Some(a) && s.model().ground_basis(*id).is_some()
+            })
+            .map(|(id, _)| id)
+            .expect("Zug mit Platte");
+        let Some(moved) = s.chain(run).unwrap().with_segment_moved(1, d) else {
+            continue;
+        };
+        let (nhn0, stand) = (s.model().terrain_nhn(), s.model().bau_stand());
+        s.begin("Wand RH-1");
+        s.set_run_points(run, &moved.points);
+        s.commit();
+        let nhn1 = s.model().terrain_nhn();
+        if let (Some(v), Some(n)) = (nhn0, nhn1) {
+            if v != n {
+                assert_eq!(s.model().gebaeude_seit(stand), None, "{d}");
+                if (v - n).abs() < 5e-4 {
+                    knapp += 1;
+                }
+            }
+        }
+        let blatt = s.kostenblatt(None, &u).clone();
+        let mut frisch = Scene::with_model(s.model().clone());
+        assert!(*blatt == *frisch.kostenblatt(None, &u), "{d}");
+    }
+    assert!(knapp > 0, "±0,00 rückt unter der Rundung");
+}
