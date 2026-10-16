@@ -235,8 +235,11 @@ impl Ui {
                 "Flurstück übernehmen",
             ));
         }
-        // ohne Lageplan von Hand (I2)
-        rows.push(Row::Button(Id::Gelaende(K::Grenze), "Grenze zeichnen"));
+        // ohne Lageplan von Hand (I2); steht schon eine Grenze, wird sie
+        // geändert, nicht eine zweite gezeichnet
+        if !l.grenze || l.grenze_zeichnen {
+            rows.push(Row::Button(Id::Gelaende(K::Grenze), "Grenze zeichnen"));
+        }
         if l.grenze_zeichnen {
             ecken(&mut rows);
         }
@@ -420,7 +423,6 @@ mod tests {
                 K::Leiste,
                 K::Lageplan,
                 K::Hoehen,
-                K::Grenze,
                 K::Verschieben,
                 K::Drehen,
                 K::Ausrichten,
@@ -492,12 +494,15 @@ mod tests {
             .position(|r| matches!(r, Row::Button(id, _) if *id == Id::Gelaende(K::Grenze)))
             .unwrap();
         assert!(matches!(&rows[i + 1], Row::Hint(t) if t.starts_with("Ecken im Grundriss")));
+        // mit Grenze kein zweites Flurstück von Hand
         ui.gelaende = Some(leiste());
+        assert!(!knoepfe(&ui).contains(&Id::Gelaende(K::Grenze)));
         // Ein gelesener Lageplan bietet sein Flurstück an; ohne Höhen keine
         // Höhenlage
         ui.gelaende = Some(GelaendeLeiste {
             uebernehmen: true,
             hoehen: false,
+            grenze: false,
             ..leiste()
         });
         let k = knoepfe(&ui);
