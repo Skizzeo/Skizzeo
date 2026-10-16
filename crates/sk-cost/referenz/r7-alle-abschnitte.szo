@@ -174,6 +174,15 @@ SZO 4
 [spacetype] guid=3jxEtgf1$vuKf7$1opxuYG name="Gästezimmer" group=nuf1 woflv=100 floor=3qs8fx9fCJhdjCg3i9xau8 wall=0IuWBd0EWeomW0JSWDmW7T ceiling=3JniZloTCAdorNYpHAQN8X skirting=3CN1YVJ9Bz4SO26hBZG8C0
 [viewfinish] view=plan on=0
 [viewfinish] view=section on=1
+[spacefinish] space=1JxRjJ2eb3A99QwGHJp0Ji at=skirting type=37XnK7nDRA7U9887S649Ng
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=floor type=3AqI9gLwoFSTNT8zEeaHQZ
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=screed type=2dZvQs4XQTuAMbQxsMktyy
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=ceiling type=none
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=wall type=0Jup2V0moU2JKnl6Mtv1Ec
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=wall wall=0$yXEJb9zDfQ7qcijPd1BB side=l type=3CTi6fc2dkToeqHIp3GKj7
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=tiles type=0To0be8vhKGD0dmVbnjnk9 h=1200
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=tiles wall=194UBgWWnDPPovBzCK95sJ side=r h=2400
+[spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=skirting wall=0$yXEJb9zDfQ7qcijPd1BB side=r type=none
 [project] guid=2YaOeyxqn6WPcq0HPeUvj0 name="Projekt" storey=2raHMuYTD64hQ6K56DbC_u wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY topsoil=250 slope=60
 [projectinfo] key=project kind="Neubau Einfamilienhaus" projno="R7/26" site="Haus Rundlauf" place="Musterweg 1\n27777 Ganderkesee" client="Max Mustermann" clientaddr="Phantasiestraße 7\n12345 Irgendwo" author="Test und Abnahme" authoraddr="Denkmalsweg 18b\n27777 Ganderkesee"
 [soil] key=project topsoil=250 slope=60
@@ -189,6 +198,8 @@ SZO 4
 [tpatch] pts=-4000,-3000;0,-3000;0,0;-4000,0 z=-150
 [tpatch] pts=-4000,-8000;0,-8000;0,-4000;-4000,-4000 z=-300.5 fall=2 dir=90 n=1.5,0,1.5,2 paved=1
 [tpatch] pts=12000,0;16000,0;14000,3000 ecken=0:28.35;2:28.1 href=abs n=2
+[tpatch] pts=25000,-1000;25000,9000;15000,9000;15000,-1000 z=-150 bau=1tBffObw134uGxOa1UQhBN innen=24000,0;24000,8000;16000,8000;16000,0 breite=1000 gefaelle=2
+[tpatch] pts=11000,-1000;11000,9000;-1000,9000;-1000,-1000 z=-150 bau=3KSRR0Gnz9rBLKj19nZ4YO innen=10000,0;10000,8000;0,8000;0,0 breite=1000 gefaelle=2
 [sitesoil] key=project spread=300 reuse=0.8
 [location] lat=53.0589 lon=8.591 north=12.5 x=-3500 y=21000 utm_e=472589.291 utm_n=5878900.895 utm_zone=32 nhn=28.35
 [building] guid=1tBffObw134uGxOa1UQhBN name="Gebäude 2" number="GB-02" terrain=-1000
