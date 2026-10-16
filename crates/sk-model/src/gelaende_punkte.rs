@@ -54,14 +54,17 @@ impl Model {
     }
 
     /// Punkte verschieben (Index, neue Lage und Höhe in mm; im offenen
-    /// Schritt). `false`, wenn sich nichts ändert, ein Index fehlt oder
-    /// zwei Punkte auf eine Stelle fielen.
+    /// Schritt). `false`, wenn sich nichts ändert, ein Index fehlt, ein
+    /// Messpunkt dabei ist oder zwei Punkte auf eine Stelle fielen.
+    /// Messpunkte bleiben, wie der Vermesser sie gemessen hat; sonst ginge
+    /// eine geänderte Höhe ohne Vermerk in die Mengen (VOB H-234c, bis zur
+    /// Sperre in I5).
     pub fn move_terrain_points(&mut self, neu: &[(usize, [f64; 3])]) -> bool {
         let Some((mut t, f, h0)) = self.punkte_rahmen() else {
             return false;
         };
         for &(i, p) in neu {
-            let Some(q) = t.points.get_mut(i) else {
+            let Some(q) = t.points.get_mut(i).filter(|q| q.hand) else {
                 return false;
             };
             let (e, n) = f.to_survey(p[0], p[1]);
@@ -313,6 +316,10 @@ mod tests {
         m.begin("Aufmaß");
         assert!(m.set_terrain(Some(t)));
         m.commit();
+        let p = m.terrain_spots().into_iter().find(|s| s.i == 1).unwrap().p;
+        m.begin("Messpunkt");
+        assert!(!m.move_terrain_points(&[(1, [p[0], p[1], p[2] + 100.0])]));
+        m.rollback();
         m.begin("Löschen");
         assert!(m.remove_terrain_points(&[i, 1]));
         m.commit();
@@ -360,6 +367,48 @@ mod tests {
         assert!(netz
             .iter()
             .all(|a| a.formula.contains("davon 1 Punkt von Hand ergänzt")));
+    }
+
+    /// Ein eigener Punkt in einer Bruchkante wird beim Löschen nur
+    /// ausgeschaltet; er ist kein Messpunkt und zählt nicht als „nicht
+    /// verwendet“ (VOB H-234b).
+    #[test]
+    fn eigener_punkt_in_bruchkante() {
+        let mut m = haus();
+        m.begin("Höhenpunkt");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        let mut t = m.terrain().unwrap().clone();
+        for p in &mut t.points {
+            p.hand = false;
+        }
+        t.src = "aufmass.csv".into();
+        m.begin("Aufmaß");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        m.begin("Höhenpunkt");
+        let i = m.add_terrain_points(&[[15000.0, 4000.0, -200.0]])[0];
+        m.commit();
+        let mut t = m.terrain().unwrap().clone();
+        let kante = vec![t.points[0].nr.clone(), t.points[i].nr.clone()];
+        t.breaks.push(crate::TerrainLine {
+            pts: kante,
+            closed: false,
+        });
+        m.begin("Kante");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        m.begin("Löschen");
+        assert!(m.remove_terrain_points(&[i]));
+        m.commit();
+        let p = &m.terrain().unwrap().points[i];
+        assert!(p.off && p.hand);
+        assert_eq!(crate::qto_earth::netz_geaendert(&m), None);
+        let h = crate::qto_earth::netz_herkunft(&m).unwrap();
+        assert!(
+            !h.contains("nicht verwendet") && !h.contains("von Hand"),
+            "{h}"
+        );
     }
 
     /// Nummern zählen hinter der höchsten weiter.

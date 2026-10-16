@@ -72,22 +72,22 @@ pub fn netz_herkunft(m: &Model) -> Option<String> {
         "Höhenaufmaß {}{vom}, {} Dreiecke{}{}",
         t.src,
         tausend(n),
-        klammer(t, |p| p.hand && !p.off, "von Hand ergänzt", "von Hand"),
-        klammer(t, |p| p.off, "nicht verwendet", "nicht verwendet"),
+        klammer(t, |p| p.hand && !p.off, "von Hand ergänzt"),
+        klammer(t, nicht_verwendet, "nicht verwendet"),
     ))
 }
 
-/// So viele Nummern nennt die Vorbemerkung höchstens (VOB-Spruch zu I4).
-const NUMMERN: usize = 10;
+/// Ein Messpunkt, den der Nutzer aus dem Gelände genommen hat. Ein eigener
+/// Punkt, der in einer Bruchkante bleibt und darum nur `off` wird, ist kein
+/// Messpunkt und zählt nicht (VOB H-234b).
+fn nicht_verwendet(p: &crate::TerrainPoint) -> bool {
+    p.off && !p.hand
+}
 
-/// „, davon 3 Punkte von Hand ergänzt (H1, H2, H3)“; über [`NUMMERN`] nur
-/// die Anzahl und wie die Punktliste sie kennzeichnet. Leer ohne solche.
-fn klammer(
-    t: &crate::Terrain,
-    welche: impl Fn(&crate::TerrainPoint) -> bool,
-    was: &str,
-    marke: &str,
-) -> String {
+/// „, davon 3 Punkte von Hand ergänzt (H1, H2, H3)“, leer ohne solche.
+/// Immer alle Nummern: Solange es keine Ausgabe der Punktliste gibt, darf
+/// die Vorbemerkung nicht auf sie verweisen (VOB H-234a, VOB/A § 7 (1)).
+fn klammer(t: &crate::Terrain, welche: impl Fn(&crate::TerrainPoint) -> bool, was: &str) -> String {
     let nr: Vec<&str> = t
         .points
         .iter()
@@ -99,11 +99,7 @@ fn klammer(
         1 => "1 Punkt".to_string(),
         n => format!("{} Punkte", tausend(n)),
     };
-    if nr.len() <= NUMMERN {
-        format!(", davon {punkte} {was} ({})", nr.join(", "))
-    } else {
-        format!(", davon {punkte} {was}, in der Punktliste als ‚{marke}‘ gekennzeichnet")
-    }
+    format!(", davon {punkte} {was} ({})", nr.join(", "))
 }
 
 /// Von Hand geänderte Punkte eines vermessenen Aufmaßes: (ergänzt, nicht
@@ -111,7 +107,7 @@ fn klammer(
 /// keiner geändert ist. Kostenblatt und LV geben dazu den Befund
 /// [`HAND_GEAENDERT`] (VOB-Spruch zu I4).
 ///
-/// „Nicht verwendet“ zählt jeden Punkt mit `off`, auch einen, der schon so in
+/// „Nicht verwendet“ zählt jeden Messpunkt mit `off`, auch einen, der schon so in
 /// der Datei steht (`off=1`): `off` setzt nur der Nutzer (Entf oder von Hand
 /// in der Datei), nie das Einlesen; Punkte mit einem Code „nicht ins
 /// Gelände“ haben kein `off` und zählen nicht. Die Mengen lassen den
@@ -120,7 +116,7 @@ fn klammer(
 pub fn netz_geaendert(m: &Model) -> Option<(usize, usize)> {
     let t = m.terrain().filter(|t| !t.assumed())?;
     let neu = t.points.iter().filter(|p| p.hand && !p.off).count();
-    let weg = t.points.iter().filter(|p| p.off).count();
+    let weg = t.points.iter().filter(|p| nicht_verwendet(p)).count();
     (neu + weg > 0).then_some((neu, weg))
 }
 
