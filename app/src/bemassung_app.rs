@@ -55,6 +55,8 @@ impl App {
             });
             tinte.push((w.tinte_nr << 1, ink.collect()));
         }
+        // Höhenzahlen des Geländes im Grundriss
+        tinte.extend(self.gelaende_zahlen());
         self.renderer.set_ink_teile(&tinte);
         linien
     }

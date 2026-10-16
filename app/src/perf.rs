@@ -1564,8 +1564,8 @@ fn perf_ecke_und_wandende() {
     use sk_platform::MouseButton;
     println!();
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8}",
-        "Häuser", "Zeigen", "Klick", "Fang", "Greifen"
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Häuser", "Zeigen", "Klick", "Fang", "Greifen", "Spiegel"
     );
     let mods = Modifiers::default();
     for n in [1, 100, 1000] {
@@ -1624,9 +1624,30 @@ fn perf_ecke_und_wandende() {
             std::hint::black_box(&z);
             s.rollback();
         });
-        println!("{n:>6} {zeigen:>8.3} {klick:>8.3} {fang:>8.3} {greifen:>8.3}");
+        // Zeigen auf eine gegenläufig gezeichnete Wand in der Flucht: Die
+        // Außenflächen liegen gespiegelt, das Vereinen sucht die Öffnungen
+        // auf der Außenfläche (Review #222 B1)
+        let gegen = WallChain {
+            points: vec![vec3(1500.0, 6000.0, 0.0), vec3(1500.0, 4500.0, 0.0)],
+            ..iw.clone()
+        };
+        let run_b = s
+            .add_wall_as(&gegen, sk_model::Category::InteriorWall)
+            .unwrap();
+        let b = s.model().wall_at(run_b, 0).unwrap();
+        let v = s.model().vereinen_punkte(a, b).unwrap();
+        assert!(v.versatz.length() > 1.0, "gespiegelt");
+        let (x, y) = cam.project(vec3(1500.0, 5200.0, 0.0), W, H).unwrap();
+        let mut t = EckeWahl::start(&s, a, Art::Verlaengern).unwrap();
+        let spiegel = time(50, || {
+            flip = !flip;
+            let x = if flip { x + 1.0 } else { x };
+            t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        });
+        assert!(t.pill(&s).is_some_and(|p| p.0.ends_with(" vereint")));
+        println!("{n:>6} {zeigen:>8.3} {klick:>8.3} {fang:>8.3} {greifen:>8.3} {spiegel:>8.3}");
     }
-    println!("Zeiten in ms; Ziel: Zeigen < 1 ms, Klick (Loslassen) < 8 ms.");
+    println!("Zeiten in ms; Ziel: Zeigen und Spiegel < 1 ms, Klick (Loslassen) < 8 ms.");
 }
 
 /// Review #87 R2: Raumarbeit je Bild und je Mausbewegung im Grundriss
