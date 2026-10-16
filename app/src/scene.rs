@@ -733,24 +733,9 @@ impl Vis<'_> {
         })
     }
 
-    /// Masken eines Bauteils im laufenden Übergang.
+    /// Masken eines Bauteils im laufenden Übergang ([`Vis::masks_mit`]).
     fn element_masks(&self, id: ElementId) -> Masks {
-        let m = self.model;
-        match self.anim {
-            None => m.masks(id),
-            Some(a) => match a.kind {
-                VisFade::IsolateOn => m.masks(id),
-                VisFade::IsolateOff => m.masks_in(&a.old, id),
-                // Was sich ändert, liegt für den Übergang im blassen Netz
-                VisFade::Out | VisFade::In => {
-                    let (o, n) = (m.masks_in(&a.old, id), m.masks(id));
-                    Masks {
-                        solid: o.solid & n.solid,
-                        ghost: o.solid ^ n.solid,
-                    }
-                }
-            },
-        }
+        self.masks_mit(|v| self.model.masks_in(v, id))
     }
 
     fn class(&self, run: RunId, part: u32, layer: u8) -> Class {
@@ -1007,6 +992,7 @@ impl Scene {
     /// Mengenliste (B7): einmal je Modellstand berechnet und gemerkt, nie
     /// während eines offenen Schritts (Ziehen); dann bleibt der alte Stand.
     pub fn schedule(&mut self) -> &Schedule {
+        self.netz_fertig();
         let rev = self.model.revision();
         let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
         if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
@@ -2612,6 +2598,7 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<(), Vec<sk_cost::Befund>> {
+        self.netz_fertig();
         // Erst prüfen: ein abgelehnter Plan öffnet keinen Schritt
         sk_cost::vorschau(&self.model, firma, self.rolle, ops)?;
         self.begin(label);

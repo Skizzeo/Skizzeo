@@ -37,6 +37,33 @@ fn ab(stelle: AusbauStelle, wahl: Option<AusbauWahl>, hoehe: Option<f64>) -> Aus
     }
 }
 
+/// Die Typen des Ausbaus `a` je einmal.
+fn typen_der_form(a: &RaumAusbau) -> Vec<LayerSetId> {
+    let mut v = Vec::new();
+    let seiten = a.seiten.iter();
+    let an = seiten.flat_map(|s| [s.wand, s.fliesen.map(|f| f.0), s.sockel]);
+    for t in [a.boden, a.estrich, a.decke]
+        .into_iter()
+        .chain(an)
+        .flatten()
+    {
+        if !v.contains(&t) {
+            v.push(t);
+        }
+    }
+    v
+}
+
+/// [`typen_der_raeume`] ohne Form nennt dieselben Typen wie der Ausbau
+/// aus der Form (Objekt-Panel, Jörn 16.10.).
+fn wie_aus_der_form(m: &Model, r: ElementId, a: &RaumAusbau) {
+    let alle = typen_der_raeume(m);
+    let (_, ohne) = alle.iter().find(|x| x.0 == r).unwrap();
+    let mit = typen_der_form(a);
+    assert_eq!(ohne.len(), mit.len(), "{ohne:?} {mit:?}");
+    assert!(mit.iter().all(|t| ohne.contains(t)), "{ohne:?} {mit:?}");
+}
+
 /// Wohnzimmer im EG: Ohne Abweichung Parkett, Wandbekleidung und
 /// Sockelleiste an jeder Wandseite. Mit Abweichungen kein Belag, Kalkputz
 /// an allen Wandseiten und Raufaser an einer; die Mengen folgen,
@@ -47,6 +74,7 @@ fn abweichungen_im_raum() {
     let (eg, r) = erdgeschoss(&m);
     let roh = rohbau(&m, eg, r);
     let vorher = RaumAusbau::fuer(&m, &roh).unwrap();
+    wie_aus_der_form(&m, r, &vorher);
     assert!(vorher.boden.is_some());
     assert!(vorher
         .seiten
@@ -82,6 +110,7 @@ fn abweichungen_im_raum() {
         m.type_by_guid(LIME_WALL_TYPE_GUID),
         m.type_by_guid(WOODCHIP_WALL_TYPE_GUID),
     );
+    wie_aus_der_form(&m, r, &a);
     assert_eq!(a.boden, None);
     assert_eq!(a.estrich, vorher.estrich);
     assert_eq!(a.decke, vorher.decke);

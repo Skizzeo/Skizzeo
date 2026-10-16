@@ -181,7 +181,12 @@ impl AutoSave {
     /// übrigen Gründungen noch alt, Review #123 F2) und wird erst nach dem
     /// Schritt gesichert.
     fn changed(&self, m: &Model, doc: &Document) -> bool {
-        !m.in_step() && doc.is_dirty(m) && self.covered != Some(m.revision())
+        // Mit vorläufigem Geländenetz noch nicht: die Gründungen folgen
+        // erst dem fertigen (Review #234 B-234b)
+        !m.in_step()
+            && !m.netz_vorlaeufig()
+            && doc.is_dirty(m)
+            && self.covered != Some(m.revision())
     }
 
     /// Zur Zeit `now` (seit Programmstart): sichert, wenn geändert und seit

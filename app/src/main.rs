@@ -2622,7 +2622,7 @@ impl App {
                 }
             }
         };
-        match document::save(self.scene.model(), &path) {
+        match document::save(self.scene.model_fertig(), &path) {
             Ok(()) => {
                 self.remember(&path);
                 self.doc.mark_saved(path, self.scene.model().revision());

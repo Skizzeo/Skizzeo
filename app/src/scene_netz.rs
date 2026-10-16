@@ -6,7 +6,7 @@
 //! im Verlauf, damit ein „Rückgängig“ beides zurücknimmt.
 
 use super::{raum, Scene};
-use sk_model::{NetzAuftrag, NetzFertig};
+use sk_model::{Model, NetzAuftrag, NetzFertig};
 use std::sync::mpsc;
 
 /// Ein laufender Faden: für welches Gelände, und wo sein Netz ankommt.
@@ -54,14 +54,32 @@ impl Scene {
         self.netz_einsetzen(fertig)
     }
 
-    /// Wartet auf den Faden und setzt sein Netz ein (Tests).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Wartet auf den Faden und setzt sein Netz ein.
     pub fn netz_abwarten(&mut self) -> bool {
         let mut neu = false;
         while let Some((_, rx)) = self.netz_faden.take() {
             neu |= self.netz_einsetzen(rx.recv().ok());
         }
         neu
+    }
+
+    /// Hat das Gelände nur ein vorläufiges Netz, auf das fertige warten
+    /// (außerhalb eines Schritts). Mengen, Kosten, Speichern und IFC rufen
+    /// das vorher: Sie dürfen nichts aus dem alten Netz ausgeben, sonst
+    /// stimmten sie nicht mit dem Stand nach dem Öffnen überein
+    /// (Integration zu #234 B-234b).
+    pub fn netz_fertig(&mut self) {
+        if !self.model.in_step() {
+            self.netz_anstossen();
+            self.netz_abwarten();
+        }
+    }
+
+    /// Das Modell mit fertigem Netz ([`Scene::netz_fertig`]), zum
+    /// Speichern und für IFC.
+    pub fn model_fertig(&mut self) -> &Model {
+        self.netz_fertig();
+        &self.model
     }
 
     /// Das Netz einsetzen. Was Gründungen und ±0,00 dabei ändern, kommt
@@ -92,8 +110,10 @@ impl Scene {
                 }
             }
             self.rebuild_dirty(false);
+            // Ein Faden, der ohne Netz endet, wird nicht gleich neu
+            // gestartet; sonst liefe [`Scene::netz_abwarten`] im Kreis.
+            self.netz_anstossen();
         }
-        self.netz_anstossen();
         neu
     }
 }

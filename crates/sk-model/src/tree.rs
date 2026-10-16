@@ -3,9 +3,15 @@
 //! unabhängig vom Auf- und Zuklappen. Gliederung wie das Mengenfenster:
 //! Geschoss aus [`crate::qto::schedule_storey`], Gruppen nach `qto_rank`.
 //! Gebaut einmal je Modellrevision.
+//!
+//! Der Ausbau der Räume (Raumbuch, Jörn 16.10.) hängt an keinem Bauteil;
+//! seine Typen je Raum gibt der Aufrufer ([`build_mit`]). Die Karte
+//! „Bauteil“ führt ihn je Ausbauart nach den Bauteilarten, die Karte
+//! „Gewerk“ die Räume unter den Gewerken ihrer Ausbauschichten.
 
 use crate::element::{Category, ElementId, StoreyId};
 use crate::guid::Guid;
+use crate::library::TypeCategory;
 use crate::model::Model;
 use crate::trade::TradeId;
 use crate::view::{Masks, Visibility, UNLAYERED};
@@ -48,9 +54,18 @@ pub enum NodeKey {
     KindType(Category, Guid),
     Trade(TradeId),
     Element(Guid),
-    /// Bauteil unter einem Gewerk.
+    /// Bauteil unter einem Gewerk, auch ein Raum mit Ausbau darin.
     TradeElement(TradeId, Guid),
+    /// Ausbauart der Räume ([`TypeCategory::FINISHES`]).
+    AusbauArt(TypeCategory),
+    /// Typzeile unter einer Ausbauart (Guid des Typs).
+    AusbauTyp(TypeCategory, Guid),
+    /// Raum unter einer Ausbauart.
+    AusbauRaum(TypeCategory, Guid),
 }
+
+/// Ausbautypen eines Raums für die Karten: der Raum und seine Typen.
+pub type RaumTypen = (ElementId, Vec<crate::LayerSetId>);
 
 /// Eine Zeile.
 #[derive(Clone, Debug, PartialEq)]
@@ -235,12 +250,39 @@ fn trades_of(m: &Model, id: ElementId) -> Vec<(TradeId, String)> {
     out
 }
 
-/// Baut die drei Karten.
+/// Gewerke der Schichten des Typs `t` mit ihrem Text, wie [`trades_of`],
+/// in `out` dazu.
+fn type_trades(m: &Model, t: crate::LayerSetId, out: &mut Vec<(TradeId, String)>) {
+    let Some(set) = m.layer_set(t) else { return };
+    for (j, l) in set.layers.iter().enumerate() {
+        let Some(tr) = m.type_layer_trade(t, j) else {
+            continue;
+        };
+        let name = m.material(l.material).map_or("", |x| x.name.as_str());
+        let text = format!("{} cm {name}", cm(l.thickness));
+        match out.iter_mut().find(|(x, _)| *x == tr) {
+            Some((_, s)) if s.split(", ").any(|x| x == text) => {}
+            Some((_, s)) => {
+                s.push_str(", ");
+                s.push_str(&text);
+            }
+            None => out.push((tr, text)),
+        }
+    }
+}
+
+/// Baut die drei Karten ohne den Ausbau der Räume.
 pub fn build(m: &Model) -> ProjectTree {
+    build_mit(m, &[])
+}
+
+/// Baut die drei Karten mit den Ausbautypen der Räume `raeume` (nach
+/// Raumnummer).
+pub fn build_mit(m: &Model, raeume: &[RaumTypen]) -> ProjectTree {
     let mut members = Vec::new();
     let tree = tree_tab(m, &mut members);
-    let kind = kind_tab(m, &mut members);
-    let trade = trade_tab(m, &mut members);
+    let kind = kind_tab(m, &mut members, raeume);
+    let trade = trade_tab(m, &mut members, raeume);
     ProjectTree {
         tabs: [tree, kind, trade],
         members,
@@ -254,13 +296,17 @@ fn tree_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
         nodes: Vec::new(),
         members,
     };
-    let in_storey = |sid: StoreyId| -> Vec<ElementId> {
-        m.elements()
-            .iter()
-            .filter(|(_, e)| crate::qto::schedule_storey(m, e) == sid)
-            .map(|(id, _)| id)
-            .collect()
-    };
+    // Bauteile je Geschoss in einem Gang, nicht je Geschoss alle Bauteile
+    // (Review #233: bei 1000 Häusern mit je einem Gebäude 7 s je Stand)
+    let gruendung = crate::qto::gruendungen(m);
+    let mut je: std::collections::HashMap<StoreyId, Vec<ElementId>> =
+        std::collections::HashMap::new();
+    for (id, e) in m.elements().iter() {
+        je.entry(crate::qto::schedule_storey_in(&gruendung, e))
+            .or_default()
+            .push(id);
+    }
+    let in_storey = |sid: StoreyId| -> Vec<ElementId> { je.get(&sid).cloned().unwrap_or_default() };
     let storey = |l: &mut List, sid: StoreyId, depth: u8| {
         let Some(st) = m.storey(sid) else { return };
         let s = l.open(
@@ -332,8 +378,9 @@ fn tree_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
     l.nodes
 }
 
-/// Karte „Bauteil“: Arten → (Typ, wenn mehr als einer) → Bauteile.
-fn kind_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
+/// Karte „Bauteil“: Arten → (Typ, wenn mehr als einer) → Bauteile; danach
+/// die Ausbauarten → (Typ, wenn mehr als einer) → Räume.
+fn kind_tab(m: &Model, members: &mut Vec<ElementId>, raeume: &[RaumTypen]) -> Vec<Node> {
     let mut l = List {
         nodes: Vec::new(),
         members,
@@ -384,19 +431,95 @@ fn kind_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
         }
         l.close(k);
     }
+    for art in TypeCategory::FINISHES {
+        ausbau_art(m, &mut l, raeume, art, &short);
+    }
     l.nodes
 }
 
-/// Karte „Gewerk“: Gewerke nach Bauablauf → Bauteile mit ihrer Schicht.
-fn trade_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
+/// Ausbauart `art` der Karte „Bauteil“: die Räume mit einem Typ der Art.
+fn ausbau_art(
+    m: &Model,
+    l: &mut List,
+    raeume: &[RaumTypen],
+    art: TypeCategory,
+    short: &dyn Fn(ElementId) -> String,
+) {
+    let von_art = |t: &crate::LayerSetId| m.layer_set(*t).is_some_and(|x| x.category == art);
+    let mit: Vec<&RaumTypen> = raeume
+        .iter()
+        .filter(|(id, ts)| m.element(*id).is_some() && ts.iter().any(von_art))
+        .collect();
+    if mit.is_empty() {
+        return;
+    }
+    let ids: Vec<ElementId> = mit.iter().map(|x| x.0).collect();
+    let label = format!("{} ({})", art.name(), ids.len());
+    let k = l.open(NodeKey::AusbauArt(art), label, span(m, &ids), 0);
+    let raum = |l: &mut List, id: ElementId, depth: u8| {
+        let Some(e) = m.element(id) else { return };
+        let key = NodeKey::AusbauRaum(art, e.guid);
+        l.element(key, e.number.clone(), short(id), depth, id);
+    };
+    let name = |t: crate::LayerSetId| m.layer_set(t).map_or(String::new(), |x| x.name.clone());
+    let mut types: Vec<crate::LayerSetId> = Vec::new();
+    for t in mit.iter().flat_map(|x| x.1.iter().copied().filter(von_art)) {
+        if !types.contains(&t) {
+            types.push(t);
+        }
+    }
+    types.sort_by_key(|t| name(*t));
+    if let [_] = types[..] {
+        for id in ids {
+            raum(l, id, 1);
+        }
+    } else {
+        for t in types {
+            let of: Vec<ElementId> = mit
+                .iter()
+                .filter(|x| x.1.contains(&t))
+                .map(|x| x.0)
+                .collect();
+            let g = m.layer_set(t).map_or(Guid(0), |x| x.guid);
+            let label = format!("{} · {}×", name(t), of.len());
+            let r = l.open(NodeKey::AusbauTyp(art, g), label, span(m, &of), 1);
+            for id in of {
+                raum(l, id, 2);
+            }
+            l.close(r);
+        }
+    }
+    l.close(k);
+}
+
+/// Karte „Gewerk“: Gewerke nach Bauablauf → Bauteile mit ihrer Schicht,
+/// dann die Räume mit ihren Ausbauschichten darin.
+fn trade_tab(m: &Model, members: &mut Vec<ElementId>, raeume: &[RaumTypen]) -> Vec<Node> {
     let mut l = List {
         nodes: Vec::new(),
         members,
     };
     let mut all: Vec<ElementId> = m.elements().iter().map(|(id, _)| id).collect();
     by_number(m, &mut all);
-    let per: Vec<(ElementId, Vec<(TradeId, String)>)> =
+    let mut per: Vec<(ElementId, Vec<(TradeId, String)>)> =
         all.iter().map(|&id| (id, trades_of(m, id))).collect();
+    // Räume mit eigenen Gewerken nachschlagen, nicht je Raum alle Bauteile
+    // durchsuchen (Review #232: sonst quadratisch, 1,4 s bei 4000 Häusern)
+    let mit_gewerk: std::collections::HashSet<ElementId> = per
+        .iter()
+        .filter(|x| !x.1.is_empty())
+        .map(|x| x.0)
+        .collect();
+    for (id, ts) in raeume {
+        if m.element(*id).is_none() || mit_gewerk.contains(id) {
+            continue;
+        }
+        let mut out = Vec::new();
+        for &t in ts {
+            type_trades(m, t, &mut out);
+        }
+        per.push((*id, out));
+    }
     for t in m.trades() {
         let tid = t.id();
         let rows: Vec<(ElementId, &String)> = per
@@ -475,6 +598,11 @@ pub fn eye(m: &Model, t: &ProjectTree, tab: Tab, i: usize) -> State {
             };
         }
         NodeKey::Trade(tr) if v.hidden_trade.contains(&tr) => return State::None,
+        NodeKey::AusbauArt(a) | NodeKey::AusbauTyp(a, _) | NodeKey::AusbauRaum(a, _)
+            if v.hidden_finish.contains(&a) =>
+        {
+            return State::None
+        }
         _ => {}
     }
     let ids = t.elements(tab, i);
