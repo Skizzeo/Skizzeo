@@ -298,7 +298,7 @@ impl Model {
 
     /// Schreibt den Versatz eines Gebäudes (mit Rückgängig). Die Lage im
     /// Aufmaß bleibt gemerkt, der Versatz kommt beim Lesen dazu.
-    fn put_terrain(&mut self, b: BuildingId, offset: f64) {
+    pub(super) fn put_terrain(&mut self, b: BuildingId, offset: f64) {
         note!(self, Building, self.buildings, b);
         if let Some(x) = self.buildings.get_mut(b) {
             x.terrain = offset;

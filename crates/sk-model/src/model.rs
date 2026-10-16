@@ -429,6 +429,10 @@ mod gelaende_eben;
 mod gelaende_grenze;
 pub use gelaende_grenze::{offset_ring_edge, parcel_ring_ok};
 
+#[path = "gelaende_punkte.rs"]
+mod gelaende_punkte;
+pub use gelaende_punkte::TerrainSpot;
+
 #[path = "gelaende_flaeche.rs"]
 mod gelaende_flaeche;
 pub use gelaende_flaeche::{
