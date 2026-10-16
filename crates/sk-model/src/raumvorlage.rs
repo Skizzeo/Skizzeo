@@ -320,6 +320,19 @@ pub fn space_template_rank(g: Guid) -> usize {
 }
 
 impl Model {
+    /// Weitere Suchwörter einer Werksvorlage für den Raumstempel, neben
+    /// ihrem Namen (Bedienbarkeit zu #236): „HAR“ und „Hausanschlussraum“
+    /// finden den Haustechnikraum, „HWR“ den Hauswirtschaftsraum.
+    pub fn space_template_aliases(g: Guid) -> &'static [&'static str] {
+        match g {
+            TECHNICAL_SPACE_GUID => &["Hausanschlussraum", "HAR", "Heizungsraum"],
+            UTILITY_SPACE_GUID => &["HWR"],
+            BATH_SPACE_GUID => &["Badezimmer"],
+            WC_SPACE_GUID => &["WC", "Toilette"],
+            _ => &[],
+        }
+    }
+
     /// Raumvorlagen des Projekts.
     pub fn space_types(&self) -> &[SpaceType] {
         &self.space_types
@@ -878,6 +891,14 @@ mod tests {
             .any(|h| h.contains("Bodenbelag") && h.contains("entfällt")));
         let doppelt = format!("{text}{alt}\n");
         assert!(szo::read(&doppelt, GuidGen::with_seed(5)).is_err());
+    }
+
+    /// Suchwörter nur für Werksvorlagen.
+    #[test]
+    fn suchwoerter_der_werksvorlagen() {
+        assert!(Model::space_template_aliases(TECHNICAL_SPACE_GUID).contains(&"HAR"));
+        assert!(Model::space_template_aliases(UTILITY_SPACE_GUID).contains(&"HWR"));
+        assert!(Model::space_template_aliases(Guid(0x1)).is_empty());
     }
 
     /// Fehlt `tiles_h`, ist ein Verweis unlesbar oder fehlt die Gruppe,
