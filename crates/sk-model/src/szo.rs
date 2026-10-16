@@ -12,6 +12,7 @@
 
 mod aufmass;
 pub(crate) mod ausbau;
+mod ausbauart;
 mod bemassung;
 pub use bemassung::{firmenstil_lesen, firmenstil_text};
 mod dach;
@@ -1259,6 +1260,7 @@ fn write_known(m: &Model) -> String {
             Line::new("hide").guid("trade", Some(t.0)).finish(&mut out);
         }
     }
+    ausbauart::write(m, &mut out);
     if v.terrain_hidden {
         Line::new("hide").flag("terrain", true).finish(&mut out);
     }
@@ -2655,7 +2657,11 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     // je Zeile: Bauteil, Art, Gewerk, Gelände
     type Hide = (Option<Guid>, Option<crate::Category>, Option<Guid>, bool);
     let mut hide: Vec<Hide> = Vec::new();
-    for r in recs("hide").iter().filter(|r| !roh(r)) {
+    let (finish, finish_raw) = ausbauart::read(recs("hide"), &lines, &mut hints);
+    for r in recs("hide")
+        .iter()
+        .filter(|r| !roh(r) && r.opt("finish").is_none())
+    {
         let g = |k: &str| r.opt(k).and_then(Guid::from_ifc);
         let cat = r.opt("cat").and_then(|w| {
             crate::Category::ALL
@@ -2719,6 +2725,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_view_shade(shade, shade_raw);
     model.load_view_below(below, below_raw);
     model.view_hide = view_hide;
+    model.view_hide.hide_raw = finish_raw;
     model.load_bemassung(bem, bem_sicht);
     model.load_plan_cut(plan_cut, plan_cut_raw);
     model.load_opening_raw(opening_raw);
@@ -2751,7 +2758,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         model.set_cut(i, c);
     }
     model.set_active_cut(active_cut);
-    let mut vis = crate::view::Visibility::default();
+    let mut vis = crate::view::Visibility {
+        hidden_finish: finish,
+        ..Default::default()
+    };
     for (elem, cat, trade, terrain) in hide {
         if let Some(g) = elem.filter(|g| model.elements().iter().any(|(_, e)| e.guid == *g)) {
             vis.hidden.insert(g);

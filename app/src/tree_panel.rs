@@ -9,7 +9,7 @@ use crate::picking::Picking;
 use crate::scene::Scene;
 use sk_model::tree::{self, Node, NodeKey, ProjectTree, State, Tab};
 use sk_model::view::{Isolate, Visibility};
-use sk_model::{ElementId, Guid, LevelKind, Model, Refusal};
+use sk_model::{Category, ElementId, Guid, LevelKind, Model, Refusal};
 use sk_paint::font::Font;
 use sk_paint::{Canvas, Path};
 use sk_platform::{Event, Modifiers, MouseButton};
@@ -48,12 +48,15 @@ pub struct RowIcons {
 /// Symbole, die eine Zeile haben kann, von rechts gepackt (§1.4, §1.5):
 /// Projekt nur Schloss und Auge, Gelände nur das Auge, Karte „Bauteil“
 /// ohne Löschen, in der Karte „Gewerk“ Auge und Isolieren nur an der
-/// Gewerkzeile.
+/// Gewerkzeile. Der Ausbau der Räume hat nur das Auge an seiner Art; er
+/// hängt an keinem Bauteil, das sich sperren oder löschen ließe.
 pub fn slots(tab: Tab, key: &NodeKey) -> &'static [Icon] {
     match (tab, key) {
         (Tab::Tree, NodeKey::Project) => &[Icon::Lock, Icon::Eye],
         (Tab::Tree, NodeKey::Terrain | NodeKey::TerrainPlate) => &[Icon::Eye],
         (Tab::Tree, _) => &ICONS,
+        (Tab::Kind, NodeKey::AusbauArt(_)) => &[Icon::Eye],
+        (Tab::Kind, NodeKey::AusbauTyp(..) | NodeKey::AusbauRaum(..)) => &[],
         (Tab::Kind, _) => &[Icon::Lock, Icon::Eye, Icon::Isolate],
         (Tab::Trade, NodeKey::Trade(_)) => &[Icon::Eye, Icon::Isolate],
         (Tab::Trade, _) => &[],
@@ -411,7 +414,7 @@ impl TreePanel {
         let m = scene.model();
         let rev = m.revision();
         if self.built != Some(rev) {
-            self.tree = tree::build(m);
+            self.tree = tree::build_mit(m, &sk_raum::ausbau::typen_der_raeume(m));
             self.built = Some(rev);
             // Neue Gebäude gehen auf (beim Öffnen alle), Geschosse bleiben zu
             for n in self.tree.tab(Tab::Tree) {
@@ -1040,6 +1043,19 @@ impl TreePanel {
                     v.hidden_trade.remove(tr);
                 }
             }
+            (Tab::Kind, NodeKey::AusbauArt(a)) => {
+                if hide {
+                    v.hidden_finish.insert(*a);
+                } else {
+                    // Der Ausbau folgt seinem Raum: Zeigen zeigt auch die
+                    // Räume, die ihn verdecken
+                    v.hidden_finish.remove(a);
+                    v.hidden_cat.remove(&Category::Space);
+                    for g in &guids {
+                        v.hidden.remove(g);
+                    }
+                }
+            }
             _ => {
                 for g in guids {
                     if hide {
@@ -1461,7 +1477,9 @@ impl TreePanel {
         let n = &self.nodes()[i];
         let hovered = self.hover.and_then(Hit::row) == Some(vi);
         let guid = match n.key {
-            NodeKey::Element(g) | NodeKey::TradeElement(_, g) => Some(g),
+            NodeKey::Element(g) | NodeKey::TradeElement(_, g) | NodeKey::AusbauRaum(_, g) => {
+                Some(g)
+            }
             _ => None,
         };
         let sel = guid.is_some_and(|g| cx.selected.contains(&g))
@@ -1758,6 +1776,7 @@ fn named(m: &Model, n: &Node, text: &str) -> bool {
     if let Some(w) = text.strip_prefix("art=") {
         return match n.key {
             NodeKey::Kind(c) | NodeKey::Group(_, c) => sk_model::kinds::spec(c).szo == w,
+            NodeKey::AusbauArt(a) => a.word() == w,
             _ => false,
         };
     }
@@ -1846,7 +1865,7 @@ fn row_label(m: &Model, n: &Node) -> String {
 /// (Karte „Bauteil“ und aufgeklappte Gruppen); Spannen nur im Hinweis.
 fn right_text(m: &Model, tab: Tab, n: &Node) -> String {
     match (tab, &n.key) {
-        (Tab::Kind, NodeKey::Element(_)) => n.right.clone(),
+        (Tab::Kind, NodeKey::Element(_) | NodeKey::AusbauRaum(..)) => n.right.clone(),
         (Tab::Tree, NodeKey::Element(g)) if n.depth >= 4 => {
             let e = m.elements().iter().find(|(_, e)| e.guid == *g).map(|x| x.1);
             e.and_then(|e| e.layer_set)
@@ -1893,9 +1912,11 @@ fn row_tip(m: &Model, n: &Node, ids: &[ElementId]) -> Option<String> {
             let e = m.element(*ids.first()?)?;
             (e.number != n.label).then(|| e.number.clone())
         }
-        NodeKey::Group(..) | NodeKey::Kind(_) | NodeKey::KindType(..) => {
-            (!n.right.is_empty()).then(|| n.right.clone())
-        }
+        NodeKey::Group(..)
+        | NodeKey::Kind(_)
+        | NodeKey::KindType(..)
+        | NodeKey::AusbauArt(_)
+        | NodeKey::AusbauTyp(..) => (!n.right.is_empty()).then(|| n.right.clone()),
         _ => None,
     }
 }
@@ -1966,7 +1987,10 @@ pub fn hidden_elsewhere(m: &Model, tab: Tab) -> Option<String> {
             .then(|| count(v.hidden.len(), "Bauteil", "Bauteile"))
             .flatten(),
         (tab != Tab::Kind)
-            .then(|| count(v.hidden_cat.len(), "Art", "Arten"))
+            .then(|| {
+                let n = v.hidden_cat.len() + v.hidden_finish.len();
+                count(n, "Art", "Arten")
+            })
             .flatten(),
         (tab != Tab::Trade)
             .then(|| count(v.hidden_trade.len(), "Gewerk", "Gewerke"))
@@ -2111,7 +2135,7 @@ mod tests {
         assert!(p
             .rows
             .iter()
-            .all(|&i| matches!(p.nodes()[i].key, NodeKey::Kind(_))));
+            .all(|&i| matches!(p.nodes()[i].key, NodeKey::Kind(_) | NodeKey::AusbauArt(_))));
         p.reveal(m, id, &t, 1.0);
         assert!(p.rows.len() > zu.len(), "Gruppe offen");
         p.fold();
@@ -2169,5 +2193,106 @@ mod tests {
             assert_eq!((c.width, c.height), (ganz.width, ganz.height));
             assert!(bytes(&c) == bytes(&ganz), "{h}");
         }
+    }
+
+    /// Jörn 16.10.: Der Ausbau der Räume steht in der Karte „Bauteil“ je
+    /// Ausbauart nach den Bauteilarten, in der Karte „Gewerk“ mit seinen
+    /// Schichten unter den Gewerken. Das Auge der Ausbauart blendet nur sie
+    /// aus; Zeigen zeigt auch die Räume, die sie verdecken.
+    #[test]
+    fn raum_elemente_in_bauteil_und_gewerk() {
+        use sk_model::TypeCategory;
+        let t = Theme::dark();
+        let mut s = Scene::with_model(Model::with_seed(85));
+        assert!(s.edit_model("Haus", |m| {
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).is_some()
+        }));
+        let m = s.model();
+        let eg = m.levels_in(m.buildings().iter().next().map(|b| b.0))[1];
+        let r = m.spaces(eg)[0];
+        assert!(s.edit_model("Ausbau", |m| sk_raum::ausbau::typen_anlegen(m, r)));
+        let mut p = panel(&s, &t, 400.0);
+        let m = s.model();
+        let g = m.element(r).unwrap().guid;
+        let kind = p.tree.tab(Tab::Kind);
+        let at = |k: &NodeKey| kind.iter().position(|n| n.key == *k);
+        let raeume = at(&NodeKey::Kind(Category::Space)).expect("Räume");
+        let es = at(&NodeKey::AusbauArt(TypeCategory::Screed)).expect("Estrich");
+        assert!(es > raeume);
+        assert!(kind[es].label.starts_with("Estrichaufbau ("));
+        assert_eq!(kind[es].depth, 0);
+        assert!(p.tree.elements(Tab::Kind, es).contains(&r));
+        let typen = &sk_raum::ausbau::typen_der_raeume(m)
+            .into_iter()
+            .find(|x| x.0 == r)
+            .unwrap()
+            .1;
+        for &ty in typen {
+            let art = m.layer_set(ty).unwrap().category;
+            let i = at(&NodeKey::AusbauArt(art)).expect("jede Ausbauart des Raums");
+            let unter = &kind[i + 1..kind[i].end];
+            assert!(unter.iter().any(|n| n.key == NodeKey::AusbauRaum(art, g)));
+        }
+        assert!(typen.len() >= 4, "Boden, Estrich, Wand, Decke: {typen:?}");
+        assert_eq!(slots(Tab::Kind, &kind[es].key), &[Icon::Eye]);
+        let raum = es + 1 + kind[es + 1..].iter().position(|n| n.depth > 0).unwrap();
+        assert!(slots(Tab::Kind, &kind[raum].key).is_empty());
+        // Karte „Gewerk“: der Raum unter dem Gewerk des Estrichs
+        let st = m.type_by_guid(sk_model::model::SCREED_FLOOR_TYPE_GUID);
+        let st = typen
+            .iter()
+            .copied()
+            .find(|&x| m.layer_set(x).unwrap().category == TypeCategory::Screed)
+            .or(st)
+            .unwrap();
+        let te = m.type_layer_trade(st, 0).unwrap();
+        let trade = p.tree.tab(Tab::Trade);
+        let zeile = trade
+            .iter()
+            .find(|n| n.key == NodeKey::TradeElement(te, g))
+            .expect("Raum unter dem Gewerk");
+        assert!(zeile
+            .layer_hint
+            .as_ref()
+            .is_some_and(|h| h.contains(" cm ")));
+        // Auge
+        p.tab = Tab::Kind;
+        let v = p.eye_toggle(m, es);
+        assert_eq!(v.hidden_finish, [TypeCategory::Screed].into());
+        assert!(v.hidden_cat.is_empty() && v.hidden.is_empty());
+        assert!(s.set_visibility(v));
+        let m = s.model();
+        assert_eq!(tree::eye(m, &p.tree, Tab::Kind, es), State::None);
+        assert_eq!(tree::eye(m, &p.tree, Tab::Kind, raeume), State::Full);
+        assert_eq!(
+            hidden_elsewhere(m, Tab::Tree).as_deref(),
+            Some("1 Art ausgeblendet")
+        );
+        assert_eq!(hidden_elsewhere(m, Tab::Kind), None);
+        let mut v = m.visibility().clone();
+        v.hidden_cat.insert(Category::Space);
+        assert!(s.set_visibility(v));
+        let v = p.eye_toggle(s.model(), es);
+        assert!(v.hidden_finish.is_empty() && v.hidden_cat.is_empty());
+        assert!(v.is_plain());
+        // Befehlszeile: ausblenden ja, isolieren nein
+        let m = s.model();
+        let v = crate::cli::visibility_args(&["--ausblenden", "art=screed"], m).unwrap();
+        assert_eq!(v.hidden_finish, [TypeCategory::Screed].into());
+        assert!(crate::cli::visibility_args(&["--isolieren", "art=screed"], m).is_err());
+        // Ohne die Typen der Räume (alle anderen Aufrufer) wie bisher
+        let ohne = tree::build(m);
+        assert!(!ohne
+            .tab(Tab::Kind)
+            .iter()
+            .any(|n| matches!(n.key, NodeKey::AusbauArt(_))));
+        assert_eq!(ohne.tab(Tab::Tree), p.tree.tab(Tab::Tree));
     }
 }

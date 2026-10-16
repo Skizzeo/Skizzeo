@@ -4,15 +4,21 @@
 //! keine neue Revision, ändert nie Mengen; das Ausgeblendete steht in der
 //! Datei (`[hide]`), das Isolieren nie (Entscheidung 11).
 //!
+//! Dazu der Ausbau innen der Räume (Raumbuch, Jörn 16.10.): Ausbauarten
+//! (Estrich, Wandbekleidung, …) ausblenden, und Gewerke blenden auch die
+//! Ausbauschichten aus, die sie haben ([`Model::finish_masks_in`]).
+//!
 //! Dazu je Ansicht eine Schnelloption am Zahnrad (Jörn 12.10.): Arten, die
 //! nur diese Ansicht ausblendet, heute die Dachentwässerung. Sie wirken wie
 //! im Baum ausgeblendet, ändern den Baum aber nicht (`[viewhide]`).
 
 use crate::element::{Category, ElementId};
 use crate::guid::Guid;
+use crate::library::TypeCategory;
 use crate::model::Model;
 use crate::solid::NO_LAYER;
 use crate::trade::TradeId;
+use crate::LayerSetId;
 use std::collections::BTreeSet;
 
 /// Was ausgeblendet bzw. isoliert ist.
@@ -22,8 +28,10 @@ pub struct Visibility {
     pub hidden: BTreeSet<Guid>,
     /// Bauteilarten (Karte „Bauteil“), auch für später gezeichnete Bauteile.
     pub hidden_cat: BTreeSet<Category>,
-    /// Gewerke (Karte „Gewerk“), schichtgenau.
+    /// Gewerke (Karte „Gewerk“), schichtgenau, auch im Ausbau der Räume.
     pub hidden_trade: BTreeSet<TradeId>,
+    /// Ausbauarten der Räume (Karte „Bauteil“, [`TypeCategory::FINISHES`]).
+    pub hidden_finish: BTreeSet<TypeCategory>,
     /// Geländeebene in 3D und Geländelinie in den 2D-Ansichten.
     pub terrain_hidden: bool,
     /// Nur Sitzung, nie in der Datei.
@@ -40,6 +48,7 @@ impl Visibility {
         self.hidden.is_empty()
             && self.hidden_cat.is_empty()
             && self.hidden_trade.is_empty()
+            && self.hidden_finish.is_empty()
             && self.isolate.is_none()
             && self.view_cat.is_empty()
     }
@@ -66,11 +75,14 @@ pub const ENTWAESSERUNG: [Category; 1] = [Category::Downpipe];
 
 /// Schnelloption je Ansicht: ausgeblendete Arten je Platz in
 /// [`SICHT_VIEWS`], nur aus [`ENTWAESSERUNG`] (Review W28), dazu
-/// `[viewhide]`-Zeilen, die nicht zählen, roh.
+/// `[viewhide]`-Zeilen, die nicht zählen, roh; und `[hide]`-Zeilen mit
+/// einer unbekannten Ausbauart, die nicht in die Sichtbarkeit gehören.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ViewHide {
     pub(crate) cats: [BTreeSet<Category>; 7],
     pub(crate) raw: Vec<String>,
+    /// `[hide]`-Zeilen mit einer unbekannten Ausbauart, roh (Regel 72).
+    pub(crate) hide_raw: Vec<String>,
 }
 
 static KEINE: BTreeSet<Category> = BTreeSet::new();
@@ -277,6 +289,54 @@ impl Model {
         }
     }
 
+    /// Gewerk der Schicht `j` des Typs `typ`: Schicht vor Baustoff, wie
+    /// [`Model::layer_trade`] ohne Bauteilart (Ausbau der Räume).
+    pub fn type_layer_trade(&self, typ: LayerSetId, j: usize) -> Option<TradeId> {
+        let l = self.layer_set(typ)?.layers.get(j)?;
+        l.trade.or_else(|| self.material(l.material)?.trade)
+    }
+
+    /// Masken eines Ausbaukörpers der Art `art` mit dem Gewerk `trade` im
+    /// Raum `id`, im Bit [`UNLAYERED`]: Er folgt seinem Raum, dazu blenden
+    /// ihn seine Ausbauart und sein Gewerk aus. Isoliert ist er mit dem
+    /// Raum, mit der Art „Räume“ oder mit seinem Gewerk.
+    pub fn finish_masks_in(
+        &self,
+        v: &Visibility,
+        id: ElementId,
+        art: TypeCategory,
+        trade: Option<TradeId>,
+    ) -> Masks {
+        let Some(e) = self.element(id) else {
+            return Masks { solid: 0, ghost: 0 };
+        };
+        if v.is_plain() {
+            return Masks::ALL;
+        }
+        let aus = v.hidden.contains(&e.guid)
+            || v.hidden_cat.contains(&e.category)
+            || v.view_cat.contains(&e.category)
+            || v.hidden_finish.contains(&art)
+            || trade.is_some_and(|t| v.hidden_trade.contains(&t));
+        let base = if aus { 0 } else { UNLAYERED };
+        let inside = match &v.isolate {
+            None => {
+                return Masks {
+                    solid: base,
+                    ghost: 0,
+                }
+            }
+            Some(Isolate::Elements(s)) => s.contains(&e.guid),
+            Some(Isolate::Category(c)) => e.category == *c,
+            Some(Isolate::Trade(t)) => trade == Some(*t),
+        };
+        let inside = if inside { UNLAYERED } else { 0 };
+        Masks {
+            solid: inside,
+            ghost: base & !inside,
+        }
+    }
+
     /// Masken eines Bauteils unter der aktuellen Sichtbarkeit.
     pub fn masks(&self, id: ElementId) -> Masks {
         self.masks_in(&self.visibility, id)
@@ -306,5 +366,126 @@ impl Model {
         } else {
             (to(m.ghost), Look::Ghost)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Space;
+    use crate::{GuidGen, LevelKind};
+    use sk_math::vec3;
+    use TypeCategory::{Screed, Skirting, WallFinish};
+
+    /// Ein gespeicherter Raum im Erdgeschoss.
+    fn raum() -> (Model, ElementId) {
+        let mut m = Model::new();
+        let b = m.add_building(1);
+        let st = m.levels_in(Some(b));
+        let eg = st
+            .into_iter()
+            .find(|s| m.storey(*s).is_some_and(|x| x.kind == LevelKind::Storey))
+            .unwrap();
+        let r = m.add_space(eg, Space::neu(vec3(1000.0, 1000.0, 0.0), "Raum 1".into()));
+        (m, r)
+    }
+
+    /// Jörn 16.10.: Ein Ausbaukörper folgt seinem Raum, seiner Ausbauart und
+    /// dem Gewerk seiner Schicht; isoliert mit dem Raum, den Räumen oder
+    /// seinem Gewerk. Die Bauteile merken von der Ausbauart nichts.
+    #[test]
+    fn ausbau_nach_art_gewerk_und_raum() {
+        let (m, r) = raum();
+        let (t, u) = (m.trades()[0].id(), m.trades()[1].id());
+        let k = |v: &Visibility, art, tr| m.finish_masks_in(v, r, art, tr);
+        let an = Masks {
+            solid: UNLAYERED,
+            ghost: 0,
+        };
+        let blass = Masks {
+            solid: 0,
+            ghost: UNLAYERED,
+        };
+        let weg = Masks { solid: 0, ghost: 0 };
+        let mut v = Visibility::default();
+        assert_eq!(k(&v, Screed, Some(t)), Masks::ALL);
+        v.hidden_finish.insert(Screed);
+        assert!(!v.is_plain());
+        assert_eq!(k(&v, Screed, Some(t)), weg);
+        assert_eq!(k(&v, WallFinish, Some(t)), an);
+        assert_eq!(m.masks_in(&v, r).solid & UNLAYERED, UNLAYERED, "der Raum");
+        let v = Visibility {
+            hidden_trade: [t].into(),
+            ..Visibility::default()
+        };
+        assert_eq!(k(&v, WallFinish, Some(t)), weg);
+        assert_eq!(k(&v, WallFinish, Some(u)), an);
+        assert_eq!(k(&v, WallFinish, None), an);
+        let v = Visibility {
+            hidden_cat: [Category::Space].into(),
+            ..Visibility::default()
+        };
+        assert_eq!(k(&v, WallFinish, Some(u)), weg);
+        let v = Visibility {
+            isolate: Some(Isolate::Trade(t)),
+            hidden_finish: [Screed].into(),
+            ..Visibility::default()
+        };
+        assert_eq!(k(&v, WallFinish, Some(t)), an);
+        assert_eq!(k(&v, WallFinish, Some(u)), blass);
+        assert_eq!(k(&v, Screed, Some(u)), weg);
+        assert_eq!(k(&v, Screed, Some(t)), an, "Isoliertes vor Ausgeblendetem");
+        let iso = |i| Visibility {
+            isolate: Some(i),
+            ..Visibility::default()
+        };
+        assert_eq!(
+            k(&iso(Isolate::Category(Category::Space)), Skirting, None),
+            an
+        );
+        assert_eq!(
+            k(
+                &iso(Isolate::Category(Category::ExteriorWall)),
+                Skirting,
+                None
+            ),
+            blass
+        );
+        let g = m.element(r).unwrap().guid;
+        assert_eq!(k(&iso(Isolate::Elements([g].into())), Skirting, None), an);
+    }
+
+    /// Ausgeblendete Ausbauarten stehen in der Datei (`[hide] finish=`),
+    /// Rundlauf bytegleich, eine alte Datei bleibt bytegleich; eine
+    /// unbekannte Art bleibt roh stehen mit Hinweis (Regel 72), auch wenn
+    /// das Panel alles zeigt.
+    #[test]
+    fn ausbauart_in_der_datei() {
+        let load = |t: &str| crate::szo::read(t, GuidGen::with_seed(9)).unwrap();
+        let (mut m, _) = raum();
+        let alt = crate::szo::write(&m);
+        assert!(!alt.contains("finish="));
+        let mut v = m.visibility().clone();
+        v.hidden_finish.extend([Skirting, Screed]);
+        m.set_visibility(v.clone());
+        let neu = crate::szo::write(&m);
+        let zeilen: Vec<&str> = neu.lines().filter(|z| z.starts_with("[hide]")).collect();
+        assert_eq!(zeilen, ["[hide] finish=screed", "[hide] finish=skirting"]);
+        let back = load(&neu);
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(back.model.visibility().hidden_finish, v.hidden_finish);
+        assert_eq!(crate::szo::write(&back.model), neu);
+        let back = load(&alt);
+        assert_eq!(crate::szo::write(&back.model), alt);
+        let roh = neu.replace("finish=skirting", "finish=kamin");
+        let back = load(&roh);
+        assert_eq!(back.hints.len(), 1, "{:?}", back.hints);
+        assert!(back.hints[0].contains("„kamin“"));
+        assert_eq!(back.model.visibility().hidden_finish, [Screed].into());
+        assert_eq!(crate::szo::write(&back.model), roh);
+        let mut m = back.model;
+        m.set_visibility(Visibility::default());
+        let ohne = crate::szo::write(&m);
+        assert!(ohne.contains("[hide] finish=kamin") && !ohne.contains("finish=screed"));
     }
 }

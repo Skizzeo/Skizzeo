@@ -2265,6 +2265,79 @@ fn perf_ausbau_innen() {
     println!("Zeiten in ms (Release); geprüft: Räume je Loslassen.");
 }
 
+/// Ausbau nach Raum, Ausbauart und Gewerk (Jörn 16.10.): Netz in 3D und im
+/// Schnitt, jeweils das erste nach dem Umschalten (Median aus fünf), mit
+/// dem Schalter „Ausbau innen“. Ohne Filter der schnelle Weg mit den Netzen
+/// der Hausgruppen, wie vorher; mit Filter je Körper. „Fallrohr“ blendet
+/// nur eine Bauteilart aus, die den Ausbau nicht betrifft.
+#[test]
+#[ignore]
+fn perf_ausbau_filter() {
+    use sk_model::view::Visibility;
+    use sk_model::{Category, TypeCategory};
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    println!();
+    println!(
+        "{:>6} {:>12} | {:>8} {:>8}",
+        "Häuser", "Filter", "3D", "Schnitt"
+    );
+    for n in [100, 1000] {
+        let mut s = town_with_interior(n);
+        for i in 0..3 {
+            s.set_view_finish(i, true);
+        }
+        let side = (n as f64).sqrt().ceil() as usize;
+        let y0 = (side / 2) as f64 * 15000.0;
+        let ebene = Some((vec3(0.0, y0 + 4000.0, 0.0), vec3(0.0, 1.0, 0.0)));
+        let putz = {
+            let m = s.model();
+            let wb = m.type_by_guid(sk_model::model::WOODCHIP_WALL_TYPE_GUID);
+            wb.and_then(|t| m.type_layer_trade(t, 2))
+        };
+        let fallrohr = Visibility {
+            hidden_cat: [Category::Downpipe].into(),
+            ..Visibility::default()
+        };
+        let estrich = Visibility {
+            hidden_finish: [TypeCategory::Screed].into(),
+            ..Visibility::default()
+        };
+        let gewerk = Visibility {
+            hidden_trade: putz.into_iter().collect(),
+            ..Visibility::default()
+        };
+        let filter = [
+            ("ohne", Visibility::default()),
+            ("Fallrohr", fallrohr),
+            ("Estrich aus", estrich),
+            ("Putz aus", gewerk),
+        ];
+        for (name, v) in filter {
+            let mut z = [Vec::new(), Vec::new()];
+            for _ in 0..5 {
+                for (j, (view, e)) in [(ViewKind::Persp, None), (ViewKind::Section, ebene)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    // Erst ein anderer Stand, dann der gemessene
+                    s.set_visibility(Visibility {
+                        terrain_hidden: true,
+                        ..v.clone()
+                    });
+                    std::hint::black_box(s.mesh(view, e, &[]));
+                    s.set_visibility(v.clone());
+                    let t = Instant::now();
+                    std::hint::black_box(s.mesh(view, e, &[]));
+                    z[j].push(ms(t));
+                }
+            }
+            let [a, b] = z.map(|mut v| median(&mut v).0);
+            println!("{n:>6} {name:>12} | {a:>8.2} {b:>8.2}");
+        }
+    }
+    println!("Zeiten in ms (Release).");
+}
+
 /// Eine 300 m lange Mauer südlich der Häuser (Review #149 B1): Auch mit
 /// ihr läuft kein Vortest je Mausbewegung über das ganze Modell.
 fn mauer(s: &mut Scene) {
