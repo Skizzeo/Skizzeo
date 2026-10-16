@@ -1792,7 +1792,11 @@ mod tests {
         // jede Kante des Netzes einmal: mehr als Dreiecke, weniger als
         // dreimal so viele (Rand und Teilung an Grenze und Haus)
         let n = g.dreiecke.len();
-        assert!(kanten.len() > n && kanten.len() < 3 * n, "{} {n}", kanten.len());
+        assert!(
+            kanten.len() > n && kanten.len() < 3 * n,
+            "{} {n}",
+            kanten.len()
+        );
         // keine im Haus
         let r = &g.haus[0].0;
         for e in mit.edges.iter().filter(|e| e.kind == edge_kind::FINE) {

@@ -886,6 +886,11 @@ mod tests {
             let cam = blick(&h, vec3(-1.0, -1.3, 0.8), 52_000.0);
             let px = bild(&mut r, &mut h, sun, &cam);
             ab(&px, &format!("ist-aufmass-3d-{n}.png"));
+            // mit Hilfsnetz (I4b, Jörns §4.3a)
+            let netz = crate::scene::mesh_of(&gn::koerper_mit_netz(&g, keys, true));
+            r.set_mesh(gp::MESH_PLATE, &netz);
+            let px = bild(&mut r, &mut h, sun, &cam);
+            ab(&px, &format!("ist-aufmass-3d-{n}-netz.png"));
         }
         r.set_mesh(gp::MESH_PLATE, &Default::default());
         // Grundriss, Schnitt und Vorne auf Papier
