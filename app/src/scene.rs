@@ -49,6 +49,8 @@ pub mod kanten;
 mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
+#[path = "scene_netz.rs"]
+mod netz;
 #[path = "scene_neubau.rs"]
 mod neubau;
 #[path = "scene_raster.rs"]
@@ -592,6 +594,8 @@ pub struct Scene {
     /// Züge mit Sohlplatte der übrigen Gebäude, die einem Gelände-Zug im
     /// Leerlauf folgen ([`Scene::nachziehen`]).
     nachzug: Vec<RunId>,
+    /// Faden, der das Geländenetz neu rechnet ([`Scene::netz_abholen`]).
+    netz_faden: Option<netz::NetzFaden>,
     bounds: Option<Aabb>,
     /// Seiten aller Körper, gezählt ([`neubau::Grenzen`]).
     grenzen: neubau::Grenzen,
@@ -935,6 +939,7 @@ impl Scene {
 
     pub fn with_model(mut model: Model) -> Scene {
         model.require_steps();
+        model.netz_im_faden(true);
         let theme = Theme::dark();
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
@@ -960,6 +965,7 @@ impl Scene {
             live: Vec::new(),
             gelaende_zug: None,
             nachzug: Vec::new(),
+            netz_faden: None,
             bounds: None,
             grenzen: Default::default(),
             table,
@@ -1956,6 +1962,7 @@ impl Scene {
         self.live.clear();
         self.rebuild_dirty(false);
         self.settle();
+        self.netz_anstossen();
     }
 
     /// Zähler der Schritte im Verlauf: wächst mit jedem neuen Schritt
@@ -3316,6 +3323,7 @@ impl Scene {
         }
         self.mark_touched(&touched);
         self.rebuild_dirty(false);
+        self.netz_anstossen();
         true
     }
 

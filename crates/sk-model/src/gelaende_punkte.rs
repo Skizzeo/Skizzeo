@@ -117,7 +117,7 @@ impl Model {
             });
         }
         let neu: Vec<usize> = (start..t.points.len()).collect();
-        if doppelt_bei(&t, &neu) || !self.punkte_schreiben(t, None) {
+        if doppelt_bei(&t, &neu) || !self.punkte_schreiben(t, Some(&neu)) {
             return Vec::new();
         }
         neu
@@ -173,6 +173,20 @@ impl Model {
         if !neu {
             return false;
         }
+        self.netz_folgen(vorher, vor, haus);
+        true
+    }
+
+    /// Nach einem neuen Netz: ±0,00 bleibt (siehe Kopf), die Gründungen
+    /// behalten ihre Einbindetiefe; `vorher` sind OK Gelände je Gründung,
+    /// `vor` die Höhe von ±0,00 und `haus` das Gebäude mit der Höhenlage,
+    /// wie vor der Änderung.
+    pub(super) fn netz_folgen(
+        &mut self,
+        vorher: Vec<(StoreyId, f64)>,
+        vor: Option<f64>,
+        haus: Option<BuildingId>,
+    ) {
         let ueber = self.terrain().is_some_and(|t| t.href == HeightRef::High);
         if let (true, Some(v), Some(b), Some(n)) = (ueber, vor, haus, self.terrain_nhn()) {
             let d = (v - n) * 1000.0;
@@ -183,7 +197,6 @@ impl Model {
             }
         }
         self.resettle_foundations(vorher);
-        true
     }
 }
 
@@ -201,19 +214,25 @@ fn doppelt_bei(t: &Terrain, bewegt: &[usize]) -> bool {
             return true;
         }
     }
-    let Some(&s0) = stellen.iter().next() else {
+    if stellen.is_empty() {
         return false;
-    };
-    let (lo, hi) = stellen.iter().fold((s0, s0), |(lo, hi), &(x, y)| {
-        ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y)))
-    });
+    }
+    // Rechteck um die bewegten in m, 1 mm Rand: der Gang über alle Punkte
+    // vergleicht nur Zahlen
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for &i in &eigen {
+        let p = &t.points[i];
+        lo = [lo[0].min(p.e), lo[1].min(p.n)];
+        hi = [hi[0].max(p.e), hi[1].max(p.n)];
+    }
     t.points.iter().enumerate().any(|(j, q)| {
-        let s = stelle(q);
-        !q.off
-            && (lo.0..=hi.0).contains(&s.0)
-            && (lo.1..=hi.1).contains(&s.1)
+        q.e >= lo[0] - 1e-3
+            && q.e <= hi[0] + 1e-3
+            && q.n >= lo[1] - 1e-3
+            && q.n <= hi[1] + 1e-3
+            && !q.off
             && !eigen.contains(&j)
-            && stellen.contains(&s)
+            && stellen.contains(&stelle(q))
     })
 }
 

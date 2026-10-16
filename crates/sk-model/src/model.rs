@@ -309,6 +309,8 @@ pub struct Model {
     ext_revision: u64,
     /// Stand der Räume und die zuletzt geänderten ([`Model::raum_revision`]).
     raum_log: raum::RaumLog,
+    /// Netze nach Punktänderungen im Faden ([`Model::netz_im_faden`]).
+    netz_faden: bool,
     /// Definitionen der Erweiterungsbauteile, nach `key` (E3).
     ext_defs: Vec<crate::erweiterung::ExtDef>,
     /// Zuletzt vergebene Nummer je Präfix einer Erweiterung.
@@ -418,8 +420,8 @@ mod gelaende_aufmass;
 #[path = "gelaende_aufmass_budget.rs"]
 mod gelaende_aufmass_budget;
 pub use gelaende_aufmass::{
-    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
-    TerrainLine, TerrainMesh, TerrainPoint, Trim,
+    Crs, HeightRef, HeightSystem, LocalFrame, NetzAuftrag, NetzFertig, Show, SurveyFrame, Terrain,
+    TerrainFolgen, TerrainLine, TerrainMesh, TerrainPoint, Trim,
 };
 
 #[path = "gelaende_eben.rs"]
@@ -918,6 +920,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             raum_log: Default::default(),
+            netz_faden: false,
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
@@ -1011,6 +1014,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             raum_log: Default::default(),
+            netz_faden: false,
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
