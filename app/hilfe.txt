@@ -406,7 +406,7 @@ Gesperrt | steht grau da, daneben die Stufe, ab der es das gibt: Knöpfe, Zeilen
 Eben | ohne Aufmaß liegt um das Haus ein ebenes grünes Gelände; mit einem Klick darauf in 3D oder im Baum wählen, dann Dicke und Abstand ums Haus im Paneel
 Modul | echtes Gelände aus Lageplan und Höhenaufmaß gibt es mit dem Geländemodul (Dateimenü › „Ausbaustufe …“)
 Ablauf | Knopf „Gelände“ öffnet die Leiste; sie führt von oben nach unten: Lageplan, Flurstück, Höhen, Lage, Höhenlage, Geländeflächen. Geht sie zu, liest Skizzeo fertig und behält den Lageplan
-Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss; ohne Plan zeichnet „Grenze zeichnen“ das Grundstück von Hand, Ecken im Grundriss wie bei einer Fläche, danach nennt die Statuszeile seine Fläche
+Lageplan | „Lageplan“ liest eine Liegenschaftskarte als PDF, Maßstab (etwa 1:500) und Flurstück erkennt Skizzeo selbst; „Flurstück übernehmen“ macht die Grenze zum Grundstück und den Plan zur Unterlage im Grundriss; ohne Plan zeichnet „Grenze zeichnen“ das Grundstück von Hand, Ecken im Grundriss wie bei einer Fläche, danach nennt die Statuszeile seine Fläche; jede Grenze ändern Griffe im Grundriss: Ecke ziehen, das Plus in der Kantenmitte fügt eine Ecke ein, eine Kante quer gezogen rückt parallel, Entf löscht die Ecke unter der Maus, Strg zieht ohne Fang
 Höhen | „Höhen“ liest die Punktliste oder DXF des Vermessers (CSV, TXT, DXF); daraus wird das Geländenetz mit Höhenlinien; im Grundriss stehen an den Höhenlinien (volle Meter), in ebenen Geländeflächen und an den Messpunkten (bis 2.000 Punkte) die Höhen in m ü. NHN. Deckt es die Baugrube eines Hauses nicht, steht das rot unter der Höhenlage. „Gelände entfernen“ führt zurück zur Platte; Geländeflächen bleiben gespeichert, Lage, Nordrichtung und Höhe von ±0,00 bleiben
 Lage | das Gelände bewegt sich, das Haus bleibt: „Schieben“ (im Grundriss nach rechts und nach oben) und „Drehen“ mit getippten Werten oder „An Grenze ausrichten“
 Höhenlage | „relativ“: ±0,00 liegt um „über Gelände“ über dem höchsten Geländepunkt am Plattenrand; „absolut“: ±0,00 fest in m ü. NHN
@@ -424,7 +424,7 @@ Türöffnung | Haustür in eine Außenwand aufziehen, im Grundriss Innentür in 
 Gelände | Gelände bearbeiten: Flächen zeichnen, Höhenaufmaß und Lageplan einlesen, Grundstück und Lage des Hauses darauf.
 Lageplan | Lageplan oder Liegenschaftskarte als PDF einlesen; Maßstab, Lage und Flurstück erkennt Skizzeo selbst, auch in verschlüsselten Auszügen ohne Kennwort.
 Flurstück übernehmen | Das erkannte Flurstück wird die Grundstücksgrenze und der Lageplan die Unterlage im Grundriss; ohne Höhen bleibt das Gelände eben.
-Grenze zeichnen | Grundstücksgrenze ohne Lageplan: Ecken im Grundriss klicken, die erste schließt; ohne Höhen bleibt das Gelände eben.
+Grenze zeichnen | Grundstücksgrenze ohne Lageplan: Ecken im Grundriss klicken, die erste schließt; ohne Höhen bleibt das Gelände eben. Danach ändern Griffe die Grenze.
 Höhen | Punktliste oder DXF des Vermessers einlesen (CSV, TXT, DXF); Spalten, Trennzeichen und Lage erkennt Skizzeo selbst, in der DXF auch Bruchkanten, Höhenlinien und Grenzen.
 Gelände verschieben | Gelände unter dem Haus verschieben; das Haus bleibt, wo es gezeichnet ist.
 Gelände drehen | Gelände um die Mitte des Hauses drehen; ein positiver Winkel dreht gegen den Uhrzeigersinn.
