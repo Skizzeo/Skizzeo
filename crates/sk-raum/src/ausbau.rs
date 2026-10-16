@@ -215,6 +215,68 @@ impl RaumAusbau {
     }
 }
 
+/// Ausbautypen jedes gespeicherten Raums, ohne seine Form (Objekt-Panel,
+/// Jörn 16.10.): die der Vorlage mit den Abweichungen des Raums wie
+/// [`RaumAusbau::nach_vorlage`], an den Wandseiten der für alle und jeder,
+/// den eine Wandseite für sich wählt. Ob ein Wandtyp selbst Putz zum Raum
+/// hat oder Fliesen die Sockelleiste ersetzen, weiß erst die Form; das
+/// Panel ordnet nur zu, gezeichnet und gerechnet wird nach der Form. Typen,
+/// die das Projekt nicht führt, fehlen; Räume nach Nummer.
+pub fn typen_der_raeume(model: &Model) -> Vec<(ElementId, Vec<LayerSetId>)> {
+    let mut vorgaben: Vec<(StoreyId, Guid)> = Vec::new();
+    let mut out = Vec::new();
+    for (id, e) in model.elements().iter() {
+        let Some(r) = model.space(id) else { continue };
+        let Some(s) = vorlage(model, r.nutzung.unwrap_or(DEFAULT_SPACE_GUID))
+            .or_else(|| vorlage(model, DEFAULT_SPACE_GUID))
+        else {
+            continue;
+        };
+        let abw = r.ausbau.as_slice();
+        let estrich = s
+            .screed
+            .unwrap_or_else(|| match vorgaben.iter().find(|v| v.0 == e.storey) {
+                Some(v) => v.1,
+                None => {
+                    let g = estrich_vorgabe(model, e.storey);
+                    vorgaben.push((e.storey, g));
+                    g
+                }
+            });
+        let mut g = vec![
+            wahl([bei(abw, AusbauStelle::Boden), None], s.floor),
+            wahl([bei(abw, AusbauStelle::Estrich), None], Some(estrich)),
+            wahl([bei(abw, AusbauStelle::Decke), None], s.ceiling),
+        ];
+        let stellen = [
+            (AusbauStelle::Wand(None), s.wall),
+            (AusbauStelle::Fliesen(None), s.tiles.map(|t| t.set)),
+            (AusbauStelle::Sockel(None), s.skirting),
+        ];
+        for (st, v) in stellen {
+            g.push(wahl([None, bei(abw, st)], v));
+            for a in abw.iter().filter(|a| a.stelle.seite().is_some()) {
+                if a.stelle.art() == st.art() {
+                    g.push(wahl([Some(a), None], None));
+                }
+            }
+        }
+        let mut typen: Vec<LayerSetId> = Vec::new();
+        for t in g
+            .into_iter()
+            .flatten()
+            .filter_map(|g| model.type_by_guid(g))
+        {
+            if !typen.contains(&t) {
+                typen.push(t);
+            }
+        }
+        out.push((e.number.as_str(), id, typen));
+    }
+    out.sort_by(|a, b| a.0.cmp(b.0));
+    out.into_iter().map(|(_, id, t)| (id, t)).collect()
+}
+
 /// Abweichungen des gespeicherten Raums der Form `f` (RB6), leer ohne Raum.
 fn abweichungen<'a>(model: &'a Model, f: &RaumForm) -> &'a [AusbauAbweichung] {
     f.raum

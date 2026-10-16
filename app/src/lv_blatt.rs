@@ -8,9 +8,12 @@
 
 use crate::kosten_view::menge_text;
 use sk_cost::geld::Cent;
-use sk_cost::lv::{Lv, LvPosition, LvTitel};
+use sk_cost::lv::{Ansatzzeile, Lv, LvPosition, LvTitel};
+use sk_model::StoreyId;
 use sk_paint::font::Font;
 use sk_paint::pdf::{mm, Op, Seite, A4};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Ränder: links 20 mm (Lochung), sonst 15 mm; Nutzbreite 175 mm.
 const LINKS: f32 = 20.0;
@@ -36,6 +39,12 @@ const LEISE: u8 = 105;
 /// Leere Linie für den Bieter in EP und GP.
 const LINIE_EP: f32 = 16.0;
 const LINIE_GP: f32 = 21.0;
+/// Anlage Mengenermittlung (Jörn 16.10.): unter jeder Position Geschoss ab
+/// `KURZ_X`, Räume bzw. Bauteile ab `ANSATZ_X`, Menge rechtsbündig an
+/// `MENGE_R`.
+const ANSATZ_X: f32 = 40.0;
+const ANSATZ_R: f32 = 100.0;
+const ANSATZ_ZEILE: f32 = 10.0;
 
 /// Was das Blatt neben dem LV braucht: wie am Bildschirm.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +57,9 @@ pub struct Angaben {
     pub stand: String,
     /// Nur mit Preisen: „Referenzpreise 10/2026, unverbindlich“.
     pub preisquelle: Option<String>,
+    /// Kurznamen der Geschosse für die Anlage Mengenermittlung: „EG“, „OG“;
+    /// je Ansatzzeile nachgeschlagen, geteilt bis sich das Modell ändert.
+    pub geschosse: Rc<HashMap<StoreyId, String>>,
 }
 
 /// Schalter in der Vorschau-Leiste; der Arbeitsplatz merkt sie sich.
@@ -56,6 +68,10 @@ pub struct Wahl {
     pub preise: bool,
     pub titelblatt: bool,
     pub verzeichnis: bool,
+    /// Anlage Mengenermittlung hinter dem LV: je Position Geschoss, Räume
+    /// bzw. Bauteile und Menge wie am Bildschirm. Das LV selbst bleibt nach
+    /// Gewerken ohne Ansatz, die Anlage dient der Information (Jörn 16.10.).
+    pub ansatz: bool,
 }
 
 /// Eintrag im Inhaltsverzeichnis: Text, Einrückung und Seite (ab 1).
@@ -162,7 +178,11 @@ fn umbrechen_glieder(f: &Font, text: &str, pt: f32, breite: f32) -> Vec<String> 
 
 /// Menge ohne Einheit: „172,224“.
 fn menge(p: &LvPosition) -> String {
-    menge_text(p.menge, p.einheit)
+    menge_ohne(p.menge, p)
+}
+
+fn menge_ohne(d: sk_cost::geld::Dez, p: &LvPosition) -> String {
+    menge_text(d, p.einheit)
         .trim_end_matches(p.einheit.zeichen())
         .trim()
         .to_string()
@@ -217,6 +237,18 @@ fn umbrechen(f: &Font, text: &str, pt: f32, breite: f32) -> Vec<String> {
         zeilen.push(String::new());
     }
     zeilen
+}
+
+/// Räume bzw. Bauteile einer Zeile des Mengenansatzes: „R-001, R-002“,
+/// eine Reihe kurz „AW-001 … 004“ wie am Bildschirm; dahinter die Herkunft,
+/// wenn sie nicht „aus Modell“ ist.
+fn ansatz_teile(a: &Ansatzzeile) -> String {
+    let nummern = crate::ava_view::nummern_kurz(&a.nummern);
+    match (nummern.is_empty(), a.herkunft.as_str()) {
+        (_, "aus Modell") => nummern,
+        (true, h) => h.to_string(),
+        (false, h) => format!("{nummern} · {h}"),
+    }
 }
 
 /// Schriften des Blatts.
@@ -324,6 +356,20 @@ enum Stueck<'a> {
     Titel(&'a LvTitel, Vec<String>),
     Untertitel(String, Vec<String>),
     Position(&'a LvPosition, Vec<String>),
+    /// Position in der Anlage Mengenermittlung: OZ, Kurztext und Menge,
+    /// ohne Preise.
+    AnlagePosition(&'a LvPosition, Vec<String>),
+    /// Eine Zeile des Mengenansatzes: Geschoss, Räume bzw. Bauteile (mit
+    /// Umbruch), Menge und Einheit; die erste steht nie ohne ihre Position,
+    /// nach der letzten etwas Luft wie nach einer Position.
+    Ansatz {
+        geschoss: String,
+        teile: Vec<String>,
+        menge: String,
+        einheit: &'static str,
+        erste: bool,
+        letzte: bool,
+    },
     /// „Summe 01.02 Erdgeschoss“.
     UntertitelSumme(String, Option<Cent>),
     /// „Summe 01 Betonarbeiten“, `(unvollständig)`.
@@ -335,7 +381,10 @@ impl Stueck<'_> {
         match self {
             Stueck::Titel(_, z) => 10.0 + z.len() as f32 * 13.0 + 3.0,
             Stueck::Untertitel(_, z) => 4.0 + z.len() as f32 * ZEILE + 2.0,
-            Stueck::Position(_, z) => z.len() as f32 * ZEILE + 3.0,
+            Stueck::Position(_, z) | Stueck::AnlagePosition(_, z) => z.len() as f32 * ZEILE + 3.0,
+            Stueck::Ansatz { teile, letzte, .. } => {
+                teile.len() as f32 * ANSATZ_ZEILE + if *letzte { 3.0 } else { 0.0 }
+            }
             Stueck::UntertitelSumme(..) => ZEILE + 5.0,
             Stueck::TitelSumme(..) => ZEILE + 9.0,
         }
@@ -348,7 +397,12 @@ impl Stueck<'_> {
 
     /// Steht nie allein oben: nimmt das vorige Stück mit.
     fn mit_vorigem(&self) -> bool {
-        matches!(self, Stueck::UntertitelSumme(..) | Stueck::TitelSumme(..))
+        matches!(
+            self,
+            Stueck::UntertitelSumme(..)
+                | Stueck::TitelSumme(..)
+                | Stueck::Ansatz { erste: true, .. }
+        )
     }
 }
 
@@ -592,7 +646,7 @@ impl<'a> Fluss<'a> {
                     y += ZEILE;
                 }
             }
-            Stueck::Position(p, z) => {
+            Stueck::Position(p, z) | Stueck::AnlagePosition(p, z) => {
                 self.stellen.push(Stelle {
                     seite: self.seiten.len(),
                     oz: p.oz.clone(),
@@ -607,7 +661,9 @@ impl<'a> Fluss<'a> {
                 // Menge in der ersten Zeile, auch wenn der Kurztext umbricht
                 self.st.rechts(MENGE_R, y, TEXT, false, 0, &menge(p));
                 self.st.text(ME_X, y, TEXT, false, 0, p.einheit.zeichen());
-                if self.w.preise {
+                if matches!(x, Stueck::AnlagePosition(..)) {
+                    // Die Anlage nennt nur Mengen
+                } else if self.w.preise {
                     // Ohne Preis (K12) bleiben EP und GP leer, ohne Linie
                     if let (Some(ep), Some(gp)) = (p.ep, p.gp) {
                         self.st.rechts(EP_R, y, TEXT, false, 0, &ep.deutsch());
@@ -617,6 +673,29 @@ impl<'a> Fluss<'a> {
                     self.st.leer(EP_R, y, LINIE_EP);
                     self.st.leer(GP_R, y, LINIE_GP);
                 }
+            }
+            Stueck::Ansatz {
+                geschoss,
+                teile,
+                menge,
+                einheit,
+                ..
+            } => {
+                // Auf derselben Seite gehört die Zeile zur Fläche der
+                // Position (Klick in der Vorschau)
+                let seite = self.seiten.len();
+                let unten = self.y + x.hoehe();
+                if let Some(st) = self.stellen.last_mut().filter(|st| st.seite == seite) {
+                    st.flaeche.3 = unten - st.flaeche.1;
+                }
+                let y = self.y + KLEIN;
+                self.st.text(KURZ_X, y, KLEIN, false, LEISE, geschoss);
+                for (i, l) in teile.iter().enumerate() {
+                    let yi = y + i as f32 * ANSATZ_ZEILE;
+                    self.st.text(ANSATZ_X, yi, KLEIN, false, LEISE, l);
+                }
+                self.st.rechts(MENGE_R, y, KLEIN, false, LEISE, menge);
+                self.st.text(ME_X, y, KLEIN, false, LEISE, einheit);
             }
             Stueck::UntertitelSumme(label, summe) => {
                 let y = self.y + 2.0 + TEXT;
@@ -681,6 +760,129 @@ impl<'a> Fluss<'a> {
         v
     }
 
+    /// Stücke der Anlage: Titel und Positionen mit Mengenansatz, je
+    /// Position ihre Zeilen.
+    fn anlage_stuecke(&self) -> Vec<Stueck<'a>> {
+        let s = self.s();
+        let kurz_w = mm(KURZ_W) - 4.0;
+        let titel_w = mm(EP_R - KURZ_X);
+        let mut v = Vec::new();
+        for t in &self.lv.titel {
+            let mit: Vec<_> = t
+                .positionen
+                .iter()
+                .filter(|p| !p.ansatz.is_empty())
+                .collect();
+            if mit.is_empty() {
+                continue;
+            }
+            v.push(Stueck::Titel(t, umbrechen(s.fett, &t.name, TITEL, titel_w)));
+            for p in mit {
+                let z = umbrechen(s.regular, &p.kurztext, TEXT, kurz_w);
+                v.push(Stueck::AnlagePosition(p, z));
+                self.ansatz(p, &mut v);
+            }
+        }
+        v
+    }
+
+    /// Kopf der Anlage: Name, Hinweis und Spalten ohne EP und GP.
+    fn anlage_kopf(&mut self, fortsetzung: bool) {
+        let mut y = self.y + 10.0 + TITEL;
+        let mut kopf = format!("Anlage Mengenermittlung · {}", self.los_text());
+        if fortsetzung {
+            kopf.push_str(" (Fortsetzung)");
+        }
+        self.st.text(0.0, y, TITEL, true, 0, &kopf);
+        y += ZEILE + 2.0;
+        if !fortsetzung {
+            let t = "Zur Information, nicht Vertragsbestandteil: \
+                     Herleitung der Mengen des LV je Geschoss und Raum bzw. Bauteil.";
+            for l in umbrechen(self.s().regular, t, KLEIN, mm(BREITE)) {
+                self.st.text(0.0, y, KLEIN, false, LEISE, &l);
+                y += ANSATZ_ZEILE;
+            }
+        }
+        y += 6.0;
+        let st = &mut self.st;
+        st.text(0.0, y, KLEIN, false, LEISE, "OZ");
+        st.text(KURZ_X, y, KLEIN, false, LEISE, "Kurztext");
+        st.text(ANSATZ_X, y, KLEIN, false, LEISE, "Räume bzw. Bauteile");
+        st.rechts(MENGE_R, y, KLEIN, false, LEISE, "Menge");
+        st.text(ME_X, y, KLEIN, false, LEISE, "ME");
+        st.linie(0.0, BREITE, y + 4.0, 0.5);
+        self.y = y + 4.0 + 12.0;
+    }
+
+    /// Anlage Mengenermittlung auf eigenen Seiten hinter dem LV (Jörn
+    /// 16.10.): ohne Preise, Summen und Überträge; nichts, wenn keine
+    /// Position einen Ansatz hat.
+    fn anlage(&mut self) {
+        let stuecke = self.anlage_stuecke();
+        if stuecke.is_empty() {
+            return;
+        }
+        self.neue_seite();
+        self.eintrag("Anlage Mengenermittlung".into(), false);
+        self.anlage_kopf(false);
+        let mut gruppen: Vec<Vec<&Stueck>> = Vec::new();
+        for x in &stuecke {
+            let anhaengen = gruppen
+                .last()
+                .and_then(|g| g.last())
+                .is_some_and(|l| l.mit_naechstem())
+                || x.mit_vorigem();
+            match gruppen.last_mut() {
+                Some(g) if anhaengen => g.push(x),
+                _ => gruppen.push(vec![x]),
+            }
+        }
+        for g in gruppen {
+            let h: f32 = g.iter().map(|x| x.hoehe()).sum();
+            if self.y + h > unten() && self.y > mm(RAND) + 60.0 {
+                self.neue_seite();
+                self.anlage_kopf(true);
+            }
+            for x in g {
+                self.zeichne(x);
+            }
+        }
+    }
+
+    /// Mengenansatz der Position `p` wie im Detail am Bildschirm: je Zeile
+    /// Geschoss, Räume bzw. Bauteile und Menge. Die Herkunft steht dabei,
+    /// wenn sie nicht „aus Modell“ ist. Lange Reihen brechen am Leerzeichen
+    /// um (nie in „80,00 m²“), nie gekürzt; zwischen den Zeilen darf die
+    /// Seite wechseln.
+    fn ansatz(&self, p: &'a LvPosition, v: &mut Vec<Stueck<'a>>) {
+        let s = self.s();
+        let breit = mm(ANSATZ_R - ANSATZ_X);
+        for (i, a) in p.ansatz.iter().enumerate() {
+            let text = ansatz_teile(a);
+            v.push(Stueck::Ansatz {
+                geschoss: self.geschoss(a),
+                teile: umbrechen(s.regular, &text, KLEIN, breit),
+                menge: menge_ohne(a.menge, p),
+                einheit: p.einheit.zeichen(),
+                erste: i == 0,
+                letzte: i + 1 == p.ansatz.len(),
+            });
+        }
+    }
+
+    /// Kurzname des Geschosses einer Zeile; nur der Rundungsausgleich hat
+    /// keins, andere Zeilen ohne Bauteile behalten ihres (Kosten H-239b).
+    fn geschoss(&self, a: &Ansatzzeile) -> String {
+        if a.elemente.is_empty() && a.nummern.is_empty() && a.herkunft == "Rundungsausgleich" {
+            return String::new();
+        }
+        self.a
+            .geschosse
+            .get(&a.geschoss)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Die LV-Seiten mit Umbruch und Übertrag (§5).
     fn positionen(&mut self) {
         let stuecke = self.stuecke();
@@ -740,7 +942,9 @@ impl<'a> Fluss<'a> {
                         };
                     }
                     Stueck::TitelSumme(..) => offen = None,
-                    Stueck::UntertitelSumme(..) => {}
+                    Stueck::UntertitelSumme(..)
+                    | Stueck::AnlagePosition(..)
+                    | Stueck::Ansatz { .. } => {}
                 }
                 self.zeichne(x);
             }
@@ -950,8 +1154,8 @@ fn je_verzeichnisseite() -> usize {
 }
 
 /// Das ganze Blatt: Titelblatt und Verzeichnis nach Wahl, Seite 1 mit Kopf,
-/// LV-Seiten, Zusammenstellung, Bieterblock; Fußzeile auf jeder Seite außer
-/// dem Titelblatt.
+/// LV-Seiten, Zusammenstellung, Bieterblock, nach Wahl die Anlage
+/// Mengenermittlung; Fußzeile auf jeder Seite außer dem Titelblatt.
 pub fn blatt(lv: &Lv, a: &Angaben, w: Wahl, s: Schriften) -> Blatt {
     let fluss = |versatz: usize| {
         let mut f = Fluss {
@@ -969,6 +1173,9 @@ pub fn blatt(lv: &Lv, a: &Angaben, w: Wahl, s: Schriften) -> Blatt {
         f.spaltenkopf();
         f.positionen();
         f.zusammenstellung();
+        if w.ansatz {
+            f.anlage();
+        }
         let letzte = f.st.seite();
         f.seiten.push(letzte);
         f

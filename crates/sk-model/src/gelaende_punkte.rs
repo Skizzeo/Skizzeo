@@ -69,6 +69,7 @@ impl Model {
         let Some((mut t, f, h0)) = self.punkte_rahmen() else {
             return false;
         };
+        let mut seitlich = Vec::new();
         for &(i, p) in neu {
             let Some(q) = t.points.get_mut(i) else {
                 return false;
@@ -94,11 +95,15 @@ impl Model {
                 }
                 q.gemessen = (!zurueck).then_some(g);
             }
+            if [q.e, q.n] != [vorher[0], vorher[1]] {
+                seitlich.push(i);
+            }
         }
-        if doppelt(&t) {
+        if doppelt_bei(&t, &seitlich) {
             return false;
         }
-        self.punkte_schreiben(t)
+        let geaendert: Vec<usize> = neu.iter().map(|x| x.0).collect();
+        self.punkte_schreiben(t, Some(&geaendert))
     }
 
     /// Eigene Punkte setzen (Lage und Höhe in mm, im offenen Schritt). Hat
@@ -131,10 +136,11 @@ impl Model {
                 gemessen: None,
             });
         }
-        if doppelt(&t) || !self.punkte_schreiben(t) {
+        let neu: Vec<usize> = (start..t.points.len()).collect();
+        if doppelt_bei(&t, &neu) || !self.punkte_schreiben(t, Some(&neu)) {
             return Vec::new();
         }
-        (start..start + neu.len()).collect()
+        neu
     }
 
     /// Punkte löschen (im offenen Schritt): eigene fallen weg, Punkte des
@@ -163,7 +169,7 @@ impl Model {
                 t.points[i].off = true;
             }
         }
-        self.punkte_schreiben(t)
+        self.punkte_schreiben(t, None)
     }
 
     /// Geänderte Messpunkte auf die gemessenen Werte zurück (im offenen
@@ -172,19 +178,22 @@ impl Model {
         let Some((mut t, ..)) = self.punkte_rahmen() else {
             return false;
         };
-        let mut neu = false;
+        let (mut neu, mut seitlich) = (Vec::new(), Vec::new());
         for &i in idx {
             if let Some(q) = t.points.get_mut(i) {
                 if let Some([e, n, h]) = q.gemessen.take() {
+                    if [q.e, q.n] != [e, n] {
+                        seitlich.push(i);
+                    }
                     (q.e, q.n, q.h) = (e, n, h);
-                    neu = true;
+                    neu.push(i);
                 }
             }
         }
-        if !neu || doppelt(&t) {
+        if neu.is_empty() || doppelt_bei(&t, &seitlich) {
             return false;
         }
-        self.punkte_schreiben(t)
+        self.punkte_schreiben(t, Some(&neu))
     }
 
     /// Gelände, System und Höhe von ±0,00 zum Ändern der Punkte.
@@ -194,14 +203,34 @@ impl Model {
     }
 
     /// Geänderte Punkte schreiben; ±0,00 bleibt (siehe Kopf), die
-    /// Gründungen behalten ihre Einbindetiefe.
-    fn punkte_schreiben(&mut self, t: Terrain) -> bool {
+    /// Gründungen behalten ihre Einbindetiefe. Mit `geaendert` hat sich
+    /// nur Lage und Höhe dieser Punkte geändert
+    /// ([`Model::put_survey_punkte`]).
+    fn punkte_schreiben(&mut self, t: Terrain, geaendert: Option<&[usize]>) -> bool {
         let vorher = self.foundation_terrain();
         let vor = self.terrain_nhn();
         let haus = self.level_building();
-        if !self.put_survey(Some(t)) {
+        let neu = match geaendert {
+            Some(g) => self.put_survey_punkte(t, g),
+            None => self.put_survey(Some(t)),
+        };
+        if !neu {
             return false;
         }
+        self.netz_folgen(vorher, vor, haus);
+        true
+    }
+
+    /// Nach einem neuen Netz: ±0,00 bleibt (siehe Kopf), die Gründungen
+    /// behalten ihre Einbindetiefe; `vorher` sind OK Gelände je Gründung,
+    /// `vor` die Höhe von ±0,00 und `haus` das Gebäude mit der Höhenlage,
+    /// wie vor der Änderung.
+    pub(super) fn netz_folgen(
+        &mut self,
+        vorher: Vec<(StoreyId, f64)>,
+        vor: Option<f64>,
+        haus: Option<BuildingId>,
+    ) {
         let ueber = self.terrain().is_some_and(|t| t.href == HeightRef::High);
         if let (true, Some(v), Some(b), Some(n)) = (ueber, vor, haus, self.terrain_nhn()) {
             let d = (v - n) * 1000.0;
@@ -212,17 +241,43 @@ impl Model {
             }
         }
         self.resettle_foundations(vorher);
-        true
     }
 }
 
-/// Zwei Punkte im Gelände auf derselben Stelle (unter 1 mm).
-fn doppelt(t: &Terrain) -> bool {
-    let mut seen = std::collections::HashSet::new();
-    !t.points
-        .iter()
-        .filter(|p| !p.off)
-        .all(|p| seen.insert(((p.e * 1000.0).round() as i64, (p.n * 1000.0).round() as i64)))
+/// Ein Punkt aus `bewegt` auf derselben Stelle (unter 1 mm) wie ein
+/// anderer im Gelände; abgewählte zählen nicht. Nur die bewegten gegen
+/// alle, ohne Gang über alle Paare (Review #234 B-234a).
+fn doppelt_bei(t: &Terrain, bewegt: &[usize]) -> bool {
+    use std::collections::HashSet;
+    let stelle = |p: &TerrainPoint| ((p.e * 1000.0).round() as i64, (p.n * 1000.0).round() as i64);
+    let mut stellen = HashSet::new();
+    let mut eigen = HashSet::new();
+    for &i in bewegt {
+        let p = &t.points[i];
+        if !p.off && eigen.insert(i) && !stellen.insert(stelle(p)) {
+            return true;
+        }
+    }
+    if stellen.is_empty() {
+        return false;
+    }
+    // Rechteck um die bewegten in m, 1 mm Rand: der Gang über alle Punkte
+    // vergleicht nur Zahlen
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for &i in &eigen {
+        let p = &t.points[i];
+        lo = [lo[0].min(p.e), lo[1].min(p.n)];
+        hi = [hi[0].max(p.e), hi[1].max(p.n)];
+    }
+    t.points.iter().enumerate().any(|(j, q)| {
+        q.e >= lo[0] - 1e-3
+            && q.e <= hi[0] + 1e-3
+            && q.n >= lo[1] - 1e-3
+            && q.n <= hi[1] + 1e-3
+            && !q.off
+            && !eigen.contains(&j)
+            && stellen.contains(&stelle(q))
+    })
 }
 
 /// Die nächste freie Nummer nach „H“.

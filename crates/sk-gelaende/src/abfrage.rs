@@ -5,27 +5,30 @@
 
 use crate::netz::Netz;
 use crate::volumen::{erdmenge_dreieck, Bezug, Erdmenge};
+use std::sync::Arc;
 
-/// Höhenabfrage über einem fertigen Netz (x, y, z in m wie im Netz).
+/// Höhenabfrage über einem fertigen Netz (x, y, z in m wie im Netz). Was
+/// nur an der Lage hängt, teilen sich Abfragen mit anderen Höhen
+/// ([`Abfrage::mit_hoehen`]).
 #[derive(Clone, Debug)]
 pub struct Abfrage {
     punkte: Vec<[f64; 3]>,
-    dreiecke: Vec<[u32; 3]>,
+    dreiecke: Arc<[[u32; 3]]>,
     /// Randkanten (Inneres links von a → b).
-    rand: Vec<[u32; 2]>,
+    rand: Arc<[[u32; 2]]>,
     /// Je Randkante ihr Dreieck.
-    rand_von: Vec<u32>,
+    rand_von: Arc<[u32]>,
     /// Je Dreieck und Kante k (Ecke k → k + 1) das Dreieck jenseits,
     /// [`KEIN`] am Rand.
-    nachbarn: Vec<[u32; 3]>,
+    nachbarn: Arc<[[u32; 3]]>,
     x0: f64,
     y0: f64,
     zelle: f64,
     nx: usize,
     ny: usize,
     /// Dreiecke je Zelle, Zeile für Zeile.
-    start: Vec<u32>,
-    inhalt: Vec<u32>,
+    start: Arc<[u32]>,
+    inhalt: Arc<[u32]>,
     /// Tiefste und höchste Höhe, einmal beim Bau bestimmt.
     bereich: Option<(f64, f64)>,
 }
@@ -96,17 +99,17 @@ impl Abfrage {
         let ny = (((y1 - y0) / zelle) as usize + 1).max(1);
         let mut a = Abfrage {
             punkte,
-            dreiecke,
+            dreiecke: dreiecke.into(),
             rand,
             rand_von,
-            nachbarn,
+            nachbarn: nachbarn.into(),
             x0,
             y0,
             zelle,
             nx,
             ny,
-            start: vec![0; nx * ny + 1],
-            inhalt: Vec::new(),
+            start: Arc::from([]),
+            inhalt: Arc::from([]),
             bereich: None,
         };
         let mut z = a.punkte.iter().map(|p| p[2]);
@@ -127,7 +130,7 @@ impl Abfrage {
             (lo, hi)
         };
         let mut zahl = vec![0u32; nx * ny + 1];
-        for t in &a.dreiecke {
+        for t in a.dreiecke.iter() {
             let ((cx0, cy0), (cx1, cy1)) = zellen(&a, t);
             for cy in cy0..=cy1 {
                 for cx in cx0..=cx1 {
@@ -150,8 +153,8 @@ impl Abfrage {
                 }
             }
         }
-        a.start = zahl;
-        a.inhalt = inhalt;
+        a.start = zahl.into();
+        a.inhalt = inhalt.into();
         a
     }
 
@@ -212,7 +215,7 @@ impl Abfrage {
     /// Nächster Punkt auf dem Rand: (Abstand, Höhe dort).
     fn am_rand(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         let mut best: Option<(f64, f64)> = None;
-        for &[a, b] in &self.rand {
+        for &[a, b] in self.rand.iter() {
             let (p, q) = (self.punkte[a as usize], self.punkte[b as usize]);
             let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
             let l2 = dx * dx + dy * dy;
@@ -227,6 +230,20 @@ impl Abfrage {
             }
         }
         best
+    }
+
+    /// Dieselbe Abfrage mit neuen Höhen `(Punkt, z)`: Dreiecke, Nachbarn
+    /// und Zellen hängen nur an der Lage und bleiben (Review #234 B-234a).
+    pub fn mit_hoehen(&self, neu: &[(usize, f64)]) -> Abfrage {
+        let mut a = self.clone();
+        for &(i, z) in neu {
+            a.punkte[i][2] = z;
+        }
+        let mut z = a.punkte.iter().map(|p| p[2]);
+        a.bereich = z
+            .next()
+            .map(|z0| z.fold((z0, z0), |(lo, hi), z| (lo.min(z), hi.max(z))));
+        a
     }
 
     /// Tiefste und höchste Höhe des Netzes; `None` ohne Punkte.
@@ -308,7 +325,7 @@ impl Abfrage {
     pub fn randkanten(&self) -> impl Iterator<Item = (u32, [[f64; 3]; 2])> + '_ {
         self.rand
             .iter()
-            .zip(&self.rand_von)
+            .zip(self.rand_von.iter())
             .map(|(&[a, b], &t)| (t, [self.punkte[a as usize], self.punkte[b as usize]]))
     }
 
@@ -588,7 +605,7 @@ mod tests {
             let bezug = [10.2, 0.01, -0.02];
             let schnell = a.erdmenge(&stern, bezug);
             let mut langsam = [Erdmenge::default()];
-            for t in &a.dreiecke {
+            for t in a.dreiecke.iter() {
                 let q = t.map(|i| a.punkte[i as usize]);
                 erdmenge_dreieck(q, &stern, &[bezug], &mut langsam);
             }

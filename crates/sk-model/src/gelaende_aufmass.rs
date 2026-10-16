@@ -238,15 +238,46 @@ impl TerrainMesh {
     }
 }
 
+/// Ein Gelände, dessen Netz ein Faden rechnen soll
+/// ([`Model::netz_auftrag`]).
+#[derive(Clone, Debug)]
+pub struct NetzAuftrag(Arc<Terrain>);
+
+impl NetzAuftrag {
+    /// Das Netz rechnen (im Faden).
+    pub fn rechnen(&self) -> NetzFertig {
+        NetzFertig {
+            gelaende: self.0.clone(),
+            schluessel: self.0.netz_schluessel(),
+            netz: self.0.vernetzen(),
+        }
+    }
+
+    /// Für dasselbe Gelände wie `o`?
+    pub fn gleich(&self, o: &NetzAuftrag) -> bool {
+        Arc::ptr_eq(&self.0, &o.0)
+    }
+}
+
+/// Ein im Faden gerechnetes Netz für [`Model::netz_einsetzen`].
+#[derive(Debug)]
+pub struct NetzFertig {
+    gelaende: Arc<Terrain>,
+    schluessel: u64,
+    netz: TerrainMesh,
+}
+
 /// Das Netz, einmal gerechnet, mit dem Schlüssel der Punkte, Codes und
 /// des Rands, aus denen es entstand ([`Terrain::netz_schluessel`]); gilt
-/// bei jedem Vergleich als gleich.
+/// bei jedem Vergleich als gleich. Dazu, bis das Netz aus dem Faden kommt,
+/// das vorläufige: das Netz vor dem Verschieben oder Setzen eines Punkts
+/// ([`Model::netz_auftrag`], Review #234 B-234b).
 #[derive(Default)]
-struct Merker(OnceLock<(u64, Arc<TerrainMesh>)>);
+struct Merker(OnceLock<(u64, Arc<TerrainMesh>)>, Option<Arc<TerrainMesh>>);
 
 impl Clone for Merker {
     fn clone(&self) -> Merker {
-        let m = Merker::default();
+        let m = Merker(OnceLock::new(), self.1.clone());
         if let Some(n) = self.0.get() {
             let _ = m.0.set(n.clone());
         }
@@ -256,7 +287,39 @@ impl Clone for Merker {
 
 impl std::fmt::Debug for Merker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.get().is_some() { "Netz" } else { "-" })
+        f.write_str(match (self.0.get(), &self.1) {
+            (Some(_), _) => "Netz",
+            (None, Some(_)) => "vorläufig",
+            (None, None) => "-",
+        })
+    }
+}
+
+/// Netze im Faden ([`Model::netz_im_faden`]). Ein Klon hat es aus: Kopien
+/// des Modells (Vorschauen, Prüfungen) rechnen ihr Netz gleich im Schritt.
+#[derive(Debug, Default)]
+pub(crate) struct NetzImFaden(bool);
+
+impl Clone for NetzImFaden {
+    fn clone(&self) -> NetzImFaden {
+        NetzImFaden(false)
+    }
+}
+
+impl Merker {
+    /// Nur das vorläufige Netz `m`.
+    fn vorlaeufig(m: Option<Arc<TerrainMesh>>) -> Merker {
+        Merker(OnceLock::new(), m)
+    }
+
+    /// Nur ein vorläufiges Netz, noch kein fertiges.
+    fn nur_vorlaeufig(&self) -> bool {
+        self.0.get().is_none() && self.1.is_some()
+    }
+
+    /// Das Netz, sonst das vorläufige.
+    fn jetzt(&self) -> Option<&Arc<TerrainMesh>> {
+        self.0.get().map(|n| &n.1).or(self.1.as_ref())
     }
 }
 
@@ -348,14 +411,62 @@ pub struct Terrain {
     mesh: Merker,
 }
 
+/// Anteil des Punkts `i` an [`Terrain::netz_schluessel`].
+fn punkt_schluessel(i: usize, p: &TerrainPoint) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (
+        i,
+        &p.nr,
+        p.e.to_bits(),
+        p.n.to_bits(),
+        p.h.to_bits(),
+        &p.code,
+        p.off,
+    )
+        .hash(&mut h);
+    h.finish()
+}
+
+/// Gleiche Punkte, die Zahlen zuerst: Sie liegen in einem Stück im
+/// Speicher, die Nummern und Codes je für sich. Eine geänderte Höhe zeigt
+/// sich so ohne den Gang über alle Texte (Review #234 B-234a).
+fn punkte_gleich(a: &[TerrainPoint], b: &[TerrainPoint]) -> bool {
+    // zerlegt, damit ein neues Feld hier nicht still herausfällt (H-234e)
+    let zahlen = |p: &TerrainPoint| {
+        let TerrainPoint {
+            nr: _,
+            e,
+            n,
+            h,
+            code: _,
+            off,
+            hand,
+            gemessen,
+        } = p;
+        (*e, *n, *h, *off, *hand, *gemessen)
+    };
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(p, q)| zahlen(p) == zahlen(q))
+        && a.iter()
+            .zip(b)
+            .all(|(p, q)| (&p.nr, &p.code) == (&q.nr, &q.code))
+}
+
 impl PartialEq for Terrain {
+    /// Inhaltlich gleich. Ein Gelände mit nur vorläufigem Netz ist nicht
+    /// gleich dem mit fertigem, damit das Einsetzen ein Schritt im Verlauf
+    /// bleibt (B-234c).
     fn eq(&self, o: &Terrain) -> bool {
-        (
-            &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href, self.local,
-        ) == (
-            &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
-        ) && (&self.points, &self.boundaries, &self.codes, &self.raw)
-            == (&o.points, &o.boundaries, &o.codes, &o.raw)
+        self.mesh.nur_vorlaeufig() == o.mesh.nur_vorlaeufig()
+            && (
+                &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href,
+                self.local,
+            ) == (
+                &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
+            )
+            && punkte_gleich(&self.points, &o.points)
+            && (&self.boundaries, &self.codes, &self.raw) == (&o.boundaries, &o.codes, &o.raw)
             && self.breaks == o.breaks
             && (&self.parcels, &self.underlay) == (&o.parcels, &o.underlay)
             && self.head_raw == o.head_raw
@@ -405,8 +516,12 @@ impl Terrain {
             })
     }
 
-    /// Das Netz (einmal gerechnet, dann gemerkt).
+    /// Das Netz (einmal gerechnet, dann gemerkt). Rechnet ein Faden es
+    /// gerade neu, bis dahin das vorläufige ([`Model::netz_auftrag`]).
     pub fn mesh(&self) -> Arc<TerrainMesh> {
+        if let Some(m) = self.mesh.jetzt() {
+            return m.clone();
+        }
         self.mesh
             .0
             .get_or_init(|| (self.netz_schluessel(), Arc::new(self.vernetzen())))
@@ -416,7 +531,9 @@ impl Terrain {
 
     /// Prüfsumme über alles, woraus das Netz entsteht (Rand, Codes,
     /// Punkte mit Abwahl, Bruchkanten der Datei), wie
-    /// [`Terrain::netz_gleich`] vergleicht.
+    /// [`Terrain::netz_gleich`] vergleicht. Die Punkte zählen als Summe, so
+    /// dass ein geänderter Punkt sie ohne Gang über alle ändert
+    /// ([`punkt_schluessel`], Review #234 B-234a).
     fn netz_schluessel(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -424,21 +541,15 @@ impl Terrain {
         for (c, b) in &self.codes {
             (c, *b as u8).hash(&mut h);
         }
-        for p in &self.points {
-            (
-                &p.nr,
-                p.e.to_bits(),
-                p.n.to_bits(),
-                p.h.to_bits(),
-                &p.code,
-                p.off,
-            )
-                .hash(&mut h);
-        }
         for l in &self.breaks {
             (&l.pts, l.closed).hash(&mut h);
         }
-        h.finish()
+        self.points
+            .iter()
+            .enumerate()
+            .fold(h.finish(), |k, (i, p)| {
+                k.wrapping_add(punkt_schluessel(i, p))
+            })
     }
 
     /// Das gemerkte Netz gehört zu diesen Punkten, Codes und diesem Rand.
@@ -597,8 +708,117 @@ impl Terrain {
     fn netz_gleich(&self, o: &Terrain) -> bool {
         self.trim == o.trim
             && self.codes == o.codes
-            && self.points == o.points
+            && punkte_gleich(&self.points, &o.points)
             && self.breaks == o.breaks
+    }
+
+    /// Nur Höhen anders als `o` (Review #234 B-234a): gleicher Rand, gleiche
+    /// Codes und Bruchkanten, je Punkt dieselbe Nummer, Lage, Code und
+    /// Abwahl. Die Punkte mit anderer Höhe, sonst `None`.
+    fn nur_hoehen(&self, o: &Terrain) -> Option<Vec<usize>> {
+        if self.trim != o.trim
+            || self.codes != o.codes
+            || self.breaks != o.breaks
+            || self.points.len() != o.points.len()
+        {
+            return None;
+        }
+        // die Zahlen zuerst, die Texte danach (wie `punkte_gleich`)
+        let mut neu = Vec::new();
+        for (i, (a, b)) in self.points.iter().zip(&o.points).enumerate() {
+            if a.e != b.e || a.n != b.n || a.off != b.off {
+                return None;
+            }
+            if a.h.to_bits() != b.h.to_bits() {
+                neu.push(i);
+            }
+        }
+        self.points
+            .iter()
+            .zip(&o.points)
+            .all(|(a, b)| a.nr == b.nr && a.code == b.code)
+            .then_some(neu)
+    }
+
+    /// [`Terrain::netz_schluessel`] von `self`, aus dem von `alt`, wenn
+    /// sich nur die Punkte `neu` geändert haben.
+    fn schluessel_nach(&self, alt: &Terrain, k: u64, neu: &[usize]) -> u64 {
+        neu.iter().fold(k, |k, &i| {
+            k.wrapping_sub(punkt_schluessel(i, &alt.points[i]))
+                .wrapping_add(punkt_schluessel(i, &self.points[i]))
+        })
+    }
+
+    /// Das gemerkte Netz von `alt` mit den neuen Höhen der Punkte `neu`
+    /// (sonst gleich), leer, wenn es nicht geht. Ein vorläufiges bleibt
+    /// vorläufig, mit den neuen Höhen.
+    fn mit_hoehen_von(&self, alt: &Terrain, neu: &[usize]) -> Merker {
+        let merker = Merker::default();
+        if let Some((k, m)) = alt.mesh.0.get() {
+            if let Some(m) = self.netz_mit_hoehen(m, neu) {
+                let k = self.schluessel_nach(alt, *k, neu);
+                let _ = merker.0.set((k, Arc::new(m)));
+            }
+        } else if let Some(m) = &alt.mesh.1 {
+            let m = self
+                .netz_mit_hoehen(m, neu)
+                .map_or_else(|| m.clone(), Arc::new);
+            return Merker::vorlaeufig(Some(m));
+        }
+        merker
+    }
+
+    /// Das Netz `alt` mit den neuen Höhen der Punkte `neu`, ohne neu zu
+    /// teilen: Die Dreiecke hängen nur an der Lage (Review #234 B-234a).
+    /// `None`, wenn die Höhe mitentscheidet, ob ein Punkt im Netz liegt:
+    /// unplausible Höhe, ein Punkt, der vorher außen vor blieb, oder ein
+    /// zweiter Punkt an derselben Stelle (dort bleibt der höhere außen
+    /// vor). Hinweise und Ausreißer gelten nur beim Einlesen und bleiben
+    /// vom alten Stand, auch wenn die neue Höhe einen Punkt zum Ausreißer
+    /// machte oder keiner mehr wäre (H-234f).
+    fn netz_mit_hoehen(&self, alt: &TerrainMesh, neu: &[usize]) -> Option<TerrainMesh> {
+        use sk_gelaende::pruefen::{GLEICHE_STELLE, MAX_HOEHE};
+        let mut z = Vec::with_capacity(neu.len());
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for &i in neu {
+            let p = &self.points[i];
+            if !p.h.is_finite() || p.h.abs() > MAX_HOEHE {
+                return None;
+            }
+            z.push((alt.index.binary_search(&i).ok()?, p.h));
+            lo = [lo[0].min(p.e), lo[1].min(p.n)];
+            hi = [hi[0].max(p.e), hi[1].max(p.n)];
+        }
+        // ein Gang über alle Punkte, genau geprüft nur im Rechteck um die
+        // geänderten
+        let d = 2.0 * GLEICHE_STELLE;
+        let nah = self.points.iter().enumerate().any(|(j, q)| {
+            q.e >= lo[0] - d
+                && q.e <= hi[0] + d
+                && q.n >= lo[1] - d
+                && q.n <= hi[1] + d
+                && neu.iter().any(|&i| {
+                    let p = &self.points[i];
+                    i != j && (q.e - p.e).hypot(q.n - p.n) <= d
+                })
+        });
+        if nah {
+            return None;
+        }
+        let mut netz = alt.netz.clone();
+        for &(k, h) in &z {
+            netz.punkte[k][2] = h;
+        }
+        Some(TerrainMesh {
+            bezug: alt.bezug,
+            abfrage: alt.abfrage.mit_hoehen(&z),
+            netz,
+            index: alt.index.clone(),
+            hinweise: alt.hinweise.clone(),
+            ausreisser: alt.ausreisser.clone(),
+            linien: Mutex::default(),
+            stufen: Mutex::default(),
+        })
     }
 
     /// Kanten der Bruchkanten aus der Datei als Index in `punkte` (nach
@@ -672,7 +892,12 @@ impl Model {
             t.mesh = match self.terrain() {
                 Some(alt) if alt.netz_gleich(&t) => alt.mesh.clone(),
                 _ if t.netz_passt() => std::mem::take(&mut t.mesh),
-                _ => Merker::default(),
+                // nur Höhen anders: dasselbe Netz mit neuen Höhen (B-234a)
+                Some(alt) => match alt.nur_hoehen(&t) {
+                    Some(neu) => t.mit_hoehen_von(alt, &neu),
+                    None => Merker::default(),
+                },
+                None => Merker::default(),
             };
             // neue Werte im Kopf ersetzen die rohe `[terrain]`-Zeile
             if self.terrain().is_some_and(|alt| !alt.kopf_gleich(&t)) {
@@ -683,6 +908,106 @@ impl Model {
         self.note_project();
         self.project.terrain = t;
         self.touch();
+        true
+    }
+
+    /// [`Model::put_survey`] für ein Aufmaß, das sich vom jetzigen höchstens
+    /// in Lage, Höhe und gemessenen Werten der Punkte `geaendert`
+    /// unterscheidet oder sie neu anhängt (Ziehen, Heben, Setzen, „Gemessen
+    /// zurück“): ohne Gang über alle Punkte. Bleibt die Lage, bleibt das
+    /// Netz (Review #234 B-234a); sonst rechnet es, wo die Szene es will,
+    /// ein Faden neu, bis dahin gilt das alte vorläufig (B-234b).
+    pub(super) fn put_survey_punkte(&mut self, mut t: Terrain, geaendert: &[usize]) -> bool {
+        let Some(alt) = self.terrain().filter(|a| a.points.len() <= t.points.len()) else {
+            return self.put_survey(Some(t));
+        };
+        debug_assert!(alt.kopf_gleich(&t));
+        let n = alt.points.len();
+        debug_assert!((n..t.points.len()).all(|i| geaendert.contains(&i)));
+        let lage = |p: &TerrainPoint| (p.e.to_bits(), p.n.to_bits());
+        let mut neu: Vec<usize> = geaendert
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let Some(a) = alt.points.get(i) else {
+                    return true;
+                };
+                let b = &t.points[i];
+                (lage(a), a.h.to_bits()) != (lage(b), b.h.to_bits()) || a.gemessen != b.gemessen
+            })
+            .collect();
+        neu.sort_unstable();
+        neu.dedup();
+        if neu.is_empty() {
+            return false;
+        }
+        let hoehen = neu
+            .iter()
+            .all(|&i| i < n && lage(&alt.points[i]) == lage(&t.points[i]));
+        let m = if hoehen {
+            t.mit_hoehen_von(alt, &neu)
+        } else {
+            Merker::default()
+        };
+        t.mesh = match m.jetzt() {
+            None if self.netz_faden.0 => Merker::vorlaeufig(alt.mesh.jetzt().cloned()),
+            _ => m,
+        };
+        self.note_project();
+        self.project.terrain = Some(Arc::new(t));
+        self.touch();
+        true
+    }
+
+    /// Netze nach dem Verschieben oder Setzen eines Punkts im Faden rechnen
+    /// lassen ([`Model::netz_auftrag`]); bis dahin gilt das alte vorläufig.
+    /// Aus, wird es gleich im Schritt neu gerechnet (Tests, Werkzeuge ohne
+    /// Szene).
+    pub fn netz_im_faden(&mut self, an: bool) {
+        self.netz_faden = NetzImFaden(an);
+    }
+
+    /// Das Netz, das ein Faden für das jetzige Gelände rechnen soll: wenn
+    /// es nur ein vorläufiges hat (Review #234 B-234b).
+    pub fn netz_auftrag(&self) -> Option<NetzAuftrag> {
+        let t = self.project.terrain.as_ref()?;
+        self.netz_vorlaeufig().then(|| NetzAuftrag(t.clone()))
+    }
+
+    /// Hat das Gelände nur ein vorläufiges Netz? Dann gibt es noch keine
+    /// Mengen, die zur Datei passen ([`Model::netz_auftrag`]).
+    pub fn netz_vorlaeufig(&self) -> bool {
+        self.project
+            .terrain
+            .as_ref()
+            .is_some_and(|t| t.mesh.nur_vorlaeufig())
+    }
+
+    /// Das im Faden gerechnete Netz einsetzen (im offenen Schritt):
+    /// Gründungen und ±0,00 folgen ihm wie beim Ändern der Punkte.
+    /// `false`, wenn das Gelände inzwischen ein anderes ist.
+    pub fn netz_einsetzen(&mut self, fertig: NetzFertig) -> bool {
+        let Some(t) = self
+            .project
+            .terrain
+            .as_ref()
+            .filter(|t| Arc::ptr_eq(t, &fertig.gelaende) && t.mesh.0.get().is_none())
+        else {
+            return false;
+        };
+        // ein neues Gelände mit dem Netz, wie jede andere Änderung: Das
+        // alte teilen der Verlauf und Kopien des Modells, die es nicht
+        // nachträglich ändern darf (Architektur zu B-234c)
+        let mut neu = Terrain::clone(t);
+        neu.mesh = Merker::default();
+        let _ = neu.mesh.0.set((fertig.schluessel, Arc::new(fertig.netz)));
+        let vorher = self.foundation_terrain();
+        let vor = self.terrain_nhn();
+        let haus = self.level_building();
+        self.note_project();
+        self.project.terrain = Some(Arc::new(neu));
+        self.touch();
+        self.netz_folgen(vorher, vor, haus);
         true
     }
 
@@ -1576,6 +1901,59 @@ mod tests {
     const CSV: &[u8] =
         include_bytes!("../../sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
 
+    /// Nur Höhen geändert: Das übernommene Netz gleicht dem neu gerechneten
+    /// (Review #234 B-234a). Ein zweiter Punkt an derselben Stelle oder ein
+    /// abgewählter Punkt rechnet neu.
+    #[test]
+    fn netz_mit_neuen_hoehen_wie_neu() {
+        let (alt, ..) = Terrain::lesen(CSV, "aufmass.csv", "2026-10-12", 32).unwrap();
+        let m = alt.mesh();
+        let mut t = alt.clone();
+        let (i, j) = (m.index[3], m.index[40]);
+        t.points[i].h += 1.25;
+        t.points[j].h -= 0.5;
+        let neu = alt.nur_hoehen(&t).unwrap();
+        assert_eq!(neu, [i.min(j), i.max(j)]);
+        let uebernommen = t.netz_mit_hoehen(&m, &neu).unwrap();
+        let gerechnet = t.vernetzen();
+        assert_eq!(uebernommen.netz, gerechnet.netz);
+        assert_eq!(uebernommen.index, gerechnet.index);
+        assert_eq!(uebernommen.bezug, gerechnet.bezug);
+        assert_eq!(
+            uebernommen.abfrage.hoehenbereich(),
+            gerechnet.abfrage.hoehenbereich()
+        );
+        for p in &gerechnet.netz.punkte {
+            for (dx, dy) in [(0.0, 0.0), (0.3, 0.2), (-0.7, 0.4)] {
+                assert_eq!(
+                    uebernommen.abfrage.hoehe(p[0] + dx, p[1] + dy),
+                    gerechnet.abfrage.hoehe(p[0] + dx, p[1] + dy)
+                );
+            }
+        }
+        // Lage geändert: kein Übernehmen
+        let mut lage = alt.clone();
+        lage.points[i].e += 0.5;
+        assert_eq!(alt.nur_hoehen(&lage), None);
+        // ein abgewählter Punkt liegt nicht im Netz
+        let mut aus = alt.clone();
+        aus.points[i].off = true;
+        let mut aus2 = aus.clone();
+        aus2.points[i].h += 1.0;
+        let neu = aus.nur_hoehen(&aus2).unwrap();
+        assert!(aus2.netz_mit_hoehen(&aus.vernetzen(), &neu).is_none());
+        // ein zweiter Punkt an derselben Stelle: die Höhe entscheidet mit
+        let mut zwei = alt.clone();
+        let mut q = zwei.points[i].clone();
+        q.nr = "doppelt".into();
+        q.h += 0.2;
+        zwei.points.push(q);
+        let mut zwei2 = zwei.clone();
+        zwei2.points[i].h += 1.0;
+        let neu = zwei.nur_hoehen(&zwei2).unwrap();
+        assert!(zwei2.netz_mit_hoehen(&zwei.vernetzen(), &neu).is_none());
+    }
+
     /// Haus des Beispiels: Außenfläche x 7 bis 17 m, y 6 bis 14 m.
     fn lindenhof_haus() -> (Model, BuildingId) {
         let mut m = Model::with_seed(7);
@@ -1760,6 +2138,121 @@ mod tests {
         let neu = m.terrain().unwrap().mesh();
         assert_eq!(neu.index.len() + 1, netz.index.len());
         assert!(!neu.index.contains(&netz.index[0]));
+    }
+
+    /// Mit dem Faden (Review #234 B-234b): Setzen und Verschieben lassen
+    /// das alte Netz vorläufig stehen; das im Faden gerechnete setzt der
+    /// Schritt danach ein, und Gründungen und ±0,00 stehen dann wie ohne
+    /// Faden. Ein Auftrag für ein älteres Gelände geht nicht mehr.
+    #[test]
+    fn netz_im_faden_wie_ohne() {
+        let nach = |faden: bool| {
+            let (mut m, _) = lindenhof_haus();
+            m.netz_im_faden(faden);
+            assert_eq!(m.netz_faden.0, faden);
+            assert!(!m.clone().netz_faden.0, "ein Klon rechnet im Schritt");
+            m.begin("Aufmaß");
+            assert!(m.import_terrain(aufmass()));
+            m.commit();
+            let uk0: Vec<f64> = m
+                .foundation_terrain()
+                .iter()
+                .map(|(gr, _)| m.storey(*gr).unwrap().elevation)
+                .collect();
+            let alt = m.terrain().unwrap().mesh();
+            let s = m.terrain_spots();
+            // nah am Haus und tief, damit die Gründung mitgeht
+            let tief = s.iter().map(|s| s.p[2]).fold(f64::MAX, f64::min);
+            let p = [12000.0, 5500.0, tief - 1500.0];
+            m.begin("Höhenpunkt");
+            let i = m.add_terrain_points(&[p])[0];
+            m.commit();
+            m.begin("Lage");
+            assert!(m.move_terrain_points(&[(i, [p[0] + 400.0, p[1] - 300.0, p[2]])]));
+            m.commit();
+            (m, alt, uk0)
+        };
+        let (ohne, ..) = nach(false);
+        assert!(ohne.netz_auftrag().is_none());
+        let (mut m, alt, uk0) = nach(true);
+        assert!(Arc::ptr_eq(&m.terrain().unwrap().mesh(), &alt), "vorläufig");
+        let a = m.netz_auftrag().expect("Auftrag");
+        let fertig = a.rechnen();
+        // ein älterer Auftrag geht nicht mehr
+        let mut spaeter = m.clone();
+        spaeter.begin("Höhe");
+        let k = spaeter.terrain().unwrap().points.len() - 1;
+        let q = spaeter.terrain_spots()[k].p;
+        assert!(spaeter.move_terrain_points(&[(k, [q[0], q[1], q[2] + 100.0])]));
+        spaeter.commit();
+        spaeter.begin("Netz");
+        assert!(!spaeter.netz_einsetzen(a.rechnen()));
+        spaeter.commit();
+        let uk = |m: &Model| {
+            m.foundation_terrain()
+                .iter()
+                .map(|(gr, _)| m.storey(*gr).unwrap().elevation)
+                .collect::<Vec<_>>()
+        };
+        // ein Klon sieht nicht, was danach eingesetzt wird (Architektur zu
+        // B-234c)
+        let klon = m.clone();
+        m.begin("Netz");
+        assert!(m.netz_einsetzen(fertig));
+        m.commit();
+        assert!(
+            Arc::ptr_eq(&klon.terrain().unwrap().mesh(), &alt),
+            "der Klon bleibt"
+        );
+        assert!(klon.netz_vorlaeufig());
+        assert_eq!(uk(&klon), uk0);
+        assert!(m.netz_auftrag().is_none());
+        let t = m.terrain().unwrap();
+        assert!(t.netz_passt());
+        assert_eq!(t.mesh().netz, ohne.terrain().unwrap().mesh().netz);
+        assert_eq!(m.foundation_terrain(), ohne.foundation_terrain());
+        assert_eq!(m.terrain_nhn(), ohne.terrain_nhn());
+        assert_eq!(uk(&m), uk(&ohne));
+        assert_ne!(uk(&m), uk0, "die Gründung ist mitgegangen");
+    }
+
+    /// Einen eigenen Punkt heben behält das Netz mit neuer Höhe, gleich
+    /// dem neu gerechneten, und der Schlüssel passt (Review #234 B-234a).
+    /// Seitlich verschoben wird neu geteilt.
+    #[test]
+    fn heben_behaelt_das_netz() {
+        let (mut m, _) = lindenhof_haus();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(aufmass()));
+        m.commit();
+        let s = m.terrain_spots();
+        let mitte = |k: usize| (s[0].p[k] + s[1].p[k] + s[2].p[k]) / 3.0;
+        let p = [mitte(0), mitte(1), mitte(2)];
+        m.begin("Höhenpunkt");
+        let i = m.add_terrain_points(&[p])[0];
+        m.commit();
+        let vorher = m.terrain().unwrap().mesh();
+        assert!(vorher.index.contains(&i));
+        m.begin("Höhe");
+        assert!(m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 400.0])]));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert!(t.mesh.0.get().is_some(), "Netz übernommen");
+        assert!(t.netz_passt());
+        let netz = t.mesh();
+        assert_eq!(netz.netz, t.vernetzen().netz);
+        assert!(!Arc::ptr_eq(&netz, &vorher));
+        // dieselbe Höhe noch einmal: nichts zu tun
+        m.begin("Höhe");
+        assert!(!m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 400.0])]));
+        m.commit();
+        // seitlich: neu geteilt
+        m.begin("Lage");
+        assert!(m.move_terrain_points(&[(i, [p[0] + 300.0, p[1], p[2]])]));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert!(t.netz_passt());
+        assert_eq!(t.mesh().netz, t.vernetzen().netz);
     }
 
     /// Frostschürze ab dem tiefsten Gelände am Plattenrand, Erdmengen über

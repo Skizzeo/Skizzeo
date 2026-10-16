@@ -408,3 +408,106 @@ fn netz_der_datei_im_budget() {
         "{mit:.0} ms, ohne {ohne:.0} ms"
     );
 }
+
+/// Bestwert von bis zu 15 Läufen von `f` in ms, Schluss sobald einer
+/// unter `ziel` bleibt (Review #234: Maßstab ist der Bestwert). Neben den
+/// übrigen Tests verdrängt die Maschine einzelne Läufe um viele ms.
+fn bestwert(ziel: f64, mut f: impl FnMut(usize)) -> f64 {
+    let mut best = f64::INFINITY;
+    for k in 0..15 {
+        let t0 = Instant::now();
+        f(k);
+        best = best.min(ms_seit(t0));
+        if best < ziel {
+            break;
+        }
+    }
+    best
+}
+
+/// Höhenpunkte von Hand bei 25 Häusern und rund 100.000 Punkten, wie in
+/// der App mit dem Netz im Faden. Heben übernimmt das Netz und setzt nur
+/// die Höhe (Review #234 B-234a, vorher 618 ms). Verschieben und Setzen
+/// lassen das alte Netz vorläufig stehen, das neue rechnet der Faden
+/// (B-234b, vorher 554 ms); eingesetzt stimmt alles wie gerechnet. Was
+/// bleibt, ist vor allem die Kopie des Geländes für Rückgängig (H-234g):
+/// 2 bis 4 ms, mit neuem Speicher je Schritt bis 8 ms. Die Grenze von
+/// 20 ms lässt ihr und der Last der übrigen Tests Raum (auf dem Rechner
+/// von Test lag das Heben allein bei 7 bis 9 ms); ohne sie liegen die
+/// Bestwerte hier bei 6 bis 9 ms. Dazu muss jeder Bestwert unter einem
+/// Zwanzigstel des Neuaufbaus liegen, der unter Last mitwächst.
+#[test]
+fn punkte_aendern_im_budget() {
+    let (mut m, _) = haeuser_am_hang(25);
+    let mut t = Terrain::new(Crs::Local);
+    let (nx, ny) = (317, 317);
+    for i in 0..nx {
+        for j in 0..ny {
+            let (e, nn) = (900.0 + 4.0 * i as f64, 1900.0 + 4.0 * j as f64);
+            t.points.push(TerrainPoint {
+                nr: (i * ny + j + 1).to_string(),
+                e,
+                n: nn,
+                h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
+                code: String::new(),
+                off: false,
+                hand: false,
+                gemessen: None,
+            });
+        }
+    }
+    m.begin("Aufmaß");
+    assert!(m.import_terrain(t));
+    m.commit();
+    m.netz_im_faden(true);
+    m.begin("Höhenpunkt");
+    let i = m.add_terrain_points(&[[-3000.0, -3000.0, 0.0]])[0];
+    m.commit();
+    // das Netz mit dem neuen Punkt, wie es der Faden brächte
+    let t0 = Instant::now();
+    let fertig = m.netz_auftrag().expect("Auftrag").rechnen();
+    let neubau = ms_seit(t0);
+    m.begin("Netz");
+    assert!(m.netz_einsetzen(fertig));
+    m.commit();
+    let p = m.terrain_spots()[i].p;
+    // die Schritte bleiben wie in der App zum Rückgängigmachen
+    let mut schritte = Vec::new();
+    let grenze = budget(20.0);
+    let heben = bestwert(budget(8.0), |k| {
+        m.begin("Höhe");
+        assert!(m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 100.0 * (k + 1) as f64])]));
+        schritte.push(m.commit());
+    });
+    assert!(m.netz_auftrag().is_none(), "Heben teilt nicht neu");
+    let lage = bestwert(budget(8.0), |k| {
+        m.begin("Lage");
+        let x = p[0] + 100.0 * (k + 1) as f64;
+        assert!(m.move_terrain_points(&[(i, [x, p[1], p[2]])]));
+        schritte.push(m.commit());
+    });
+    let setzen = bestwert(budget(8.0), |k| {
+        m.begin("Höhenpunkt");
+        let x = -6000.0 - 300.0 * k as f64;
+        assert_eq!(m.add_terrain_points(&[[x, -3000.0, 0.0]]).len(), 1);
+        schritte.push(m.commit());
+    });
+    let fertig = m.netz_auftrag().expect("Auftrag").rechnen();
+    m.begin("Netz");
+    assert!(m.netz_einsetzen(fertig));
+    m.commit();
+    wie_gerechnet(&m);
+    eprintln!(
+        "100.489 Punkte, 25 Häuser, Bestwerte: Heben {heben:.1} ms, Verschieben {lage:.1} ms, \
+         Setzen {setzen:.1} ms; Netz im Faden {neubau:.1} ms"
+    );
+    for (wert, was) in [(heben, "Heben"), (lage, "Verschieben"), (setzen, "Setzen")] {
+        assert!(wert < grenze, "{was}: {wert:.1} ms");
+        if !cfg!(debug_assertions) {
+            assert!(
+                wert * 20.0 < neubau,
+                "{was}: {wert:.1} ms, Neuaufbau {neubau:.1} ms"
+            );
+        }
+    }
+}

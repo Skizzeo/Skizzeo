@@ -238,6 +238,157 @@ mod tests {
         Scene::with_model(m)
     }
 
+    /// Höhenpunkt setzen mit dem Netz im Faden (Review #234 B-234b): Der
+    /// Schritt lässt das alte Netz und die Gründung stehen; das Netz aus
+    /// dem Faden bringt die Gründung dahin, wo sie ohne Faden stünde, im
+    /// selben Schritt des Verlaufs.
+    #[test]
+    fn netz_im_faden_ein_schritt() {
+        let uk = |s: &Scene| -> Vec<f64> { s.gruendungen_uk().iter().map(|x| x.1).collect() };
+        let mut s = haus_am_hang();
+        let (uk0, n0) = (uk(&s), s.model().terrain().unwrap().points.len());
+        let netz0 = s.model().terrain().unwrap().mesh();
+        // tief neben dem Haus: die Gründung geht mit
+        let tief = s
+            .model()
+            .terrain_spots()
+            .iter()
+            .map(|x| x.p[2])
+            .fold(f64::MAX, f64::min);
+        let p = [5000.0, -1000.0, tief - 2000.0];
+        let setzen = |m: &mut Model| !m.add_terrain_points(&[p]).is_empty();
+        assert!(s.edit_model("Höhenpunkt", setzen));
+        assert!(std::sync::Arc::ptr_eq(
+            &s.model().terrain().unwrap().mesh(),
+            &netz0
+        ));
+        assert_eq!(uk(&s), uk0);
+        assert!(s.netz_rechnet());
+        assert!(s.netz_abwarten());
+        assert!(!s.netz_rechnet());
+        let uk1 = uk(&s);
+        assert_ne!(uk1, uk0, "die Gründung ist mitgegangen");
+        let mut ohne = haus_am_hang();
+        assert!(ohne.edit_model("Höhenpunkt", |m| {
+            m.netz_im_faden(false);
+            setzen(m)
+        }));
+        assert!(!ohne.netz_rechnet());
+        assert_eq!(uk(&ohne), uk1);
+        // ein Rückgängig nimmt beides zurück, Wiederholen bringt beides
+        assert_eq!(s.undo_label(), Some("Höhenpunkt"));
+        assert!(s.undo());
+        assert_eq!(
+            (uk(&s), s.model().terrain().unwrap().points.len()),
+            (uk0, n0)
+        );
+        assert!(s.redo());
+        assert_eq!(uk(&s), uk1);
+        assert!(!s.netz_rechnet(), "das Gelände hat sein Netz");
+    }
+
+    /// Mengen, Kosten, Datei und IFC gleich nach dem Setzen eines Punkts
+    /// kommen aus dem fertigen Netz, nicht aus dem vorläufigen
+    /// (Integration zu #234 B-234b): wie in der Szene ohne Faden und wie
+    /// nach dem Öffnen der Datei.
+    #[test]
+    fn mengen_warten_auf_das_netz() {
+        let tief = |s: &Scene| {
+            s.model()
+                .terrain_spots()
+                .iter()
+                .map(|x| x.p[2])
+                .fold(f64::MAX, f64::min)
+        };
+        let u = sk_model::qto::Umfang::projekt();
+        let netto = |s: &mut Scene| s.kosten_vorschau(None, &[], &u).unwrap().netto;
+        let mut s0 = haus_am_hang();
+        let p = [5000.0, -1000.0, tief(&s0) - 2000.0];
+        let setzen = |m: &mut Model| !m.add_terrain_points(&[p]).is_empty();
+        let (mengen0, kosten0) = (s0.schedule().clone(), netto(&mut s0));
+        // alle aus demselben Modell, damit auch die Datei gleich ist
+        let mut ohne = Scene::with_model(s0.model().clone());
+        assert!(ohne.edit_model("Höhenpunkt", |m| {
+            m.netz_im_faden(false);
+            setzen(m)
+        }));
+        let (mengen, kosten) = (ohne.schedule().clone(), netto(&mut ohne));
+        assert_ne!(mengen, mengen0, "der Punkt ändert die Mengen");
+        assert_ne!(kosten, kosten0, "der Punkt ändert die Kosten");
+        // je Weg eine frische Szene, deren Netz noch im Faden ist
+        let frisch = || {
+            let mut s = Scene::with_model(s0.model().clone());
+            assert!(s.edit_model("Höhenpunkt", setzen));
+            assert!(s.netz_rechnet() && s.model().netz_vorlaeufig());
+            s
+        };
+        let mut s = frisch();
+        assert_eq!(*s.schedule(), mengen, "Mengenliste");
+        assert!(!s.netz_rechnet() && !s.model().netz_vorlaeufig());
+        let mut s = frisch();
+        assert_eq!(netto(&mut s), kosten, "Kosten");
+        // Speichern und wieder öffnen
+        let mut s = frisch();
+        let text = sk_model::szo::write(s.model_fertig());
+        assert!(!s.model().netz_vorlaeufig());
+        let soll = sk_model::szo::write(ohne.model());
+        let anders: Vec<_> = text
+            .lines()
+            .zip(soll.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert!(
+            anders.is_empty() && text.len() == soll.len(),
+            "Datei: {anders:?}"
+        );
+        let guids = sk_model::GuidGen::from_time();
+        let l = sk_model::szo::read_with(&text, guids, &sk_cost::lesen::ABSCHNITTE_SZO);
+        let mut offen = Scene::with_model(l.unwrap().model);
+        assert_eq!(netto(&mut offen), kosten, "Kosten nach dem Öffnen");
+        // die Verwaltung rechnet auf einer Kopie des Modells (Kosten B-234c)
+        let haus = |s: &mut Scene| {
+            crate::verwaltung::Verwaltung::open(s.fertig(), None, None).dieses_vorher()
+        };
+        let soll = haus(&mut ohne);
+        assert!(soll.is_some());
+        assert_eq!(haus(&mut frisch()), soll, "Verwaltung");
+        let roh = crate::verwaltung::Verwaltung::open(&frisch(), None, None).dieses_vorher();
+        assert_ne!(roh, soll, "ohne Warten rechnete sie mit dem alten Netz");
+        // ein Klon der Szene bleibt, wie er war, auch wenn danach das Netz
+        // eingesetzt wird (Architektur zu B-234c)
+        let mut s = frisch();
+        let klon = s.model().clone();
+        let netz = klon.terrain().unwrap().mesh();
+        let mut vorlaeufig = Scene::with_model(klon.clone());
+        assert!(s.netz_abwarten());
+        assert!(std::sync::Arc::ptr_eq(
+            &klon.terrain().unwrap().mesh(),
+            &netz
+        ));
+        assert!(klon.netz_vorlaeufig());
+        let gr = |m: &Model| m.foundation_level().map(|g| m.storey(g).unwrap().elevation);
+        assert_eq!(gr(&klon), gr(s0.model()));
+        assert_ne!(gr(s.model()), gr(&klon));
+        // und eine Szene darauf rechnet ihr eigenes Netz
+        assert_eq!(*vorlaeufig.schedule(), mengen);
+        // IFC schreibt das fertige Netz
+        let mut s = frisch();
+        let _ = s.model_fertig();
+        assert!(!s.netz_rechnet() && !s.model().netz_vorlaeufig());
+        // die Änderungen beim Einsetzen gehören zum Schritt des Punkts
+        assert!(s.undo());
+        assert_eq!(*s.schedule(), mengen0);
+        // auch wenn gleich der nächste Schritt beginnt
+        let mut s = frisch();
+        let weit = [60_000.0, 60_000.0, p[2]];
+        assert!(s.edit_model("Weit weg", |m| !m.add_terrain_points(&[weit]).is_empty()));
+        assert!(s.undo());
+        assert_eq!(s.undo_label(), Some("Höhenpunkt"));
+        assert_eq!(*s.schedule(), mengen, "der erste Punkt mit seinen Folgen");
+        assert!(s.undo());
+        assert_eq!(*s.schedule(), mengen0);
+    }
+
     /// Projektdaten und Nordpfeil bewegen mit Aufmaß die Gründung; die
     /// Körper in 3D folgen im selben Schritt.
     #[test]
