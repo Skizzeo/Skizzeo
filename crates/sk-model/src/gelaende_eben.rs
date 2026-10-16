@@ -552,6 +552,66 @@ mod tests {
         }
     }
 
+    /// Häuser ineinander (H-245-geo-a): Erst wenn sich die Wände
+    /// überdecken (Bezugslinien näher als zwei Wanddicken), meldet das
+    /// Modell das Paar, und jede Erdmenge beider Häuser trägt den Hinweis.
+    /// Wand an Wand (0,63 m) und mit Spalt nicht.
+    #[test]
+    fn haeuser_ineinander_mit_hinweis() {
+        // (Abstand der Bezugslinien, Garage, ineinander)
+        let faelle = [
+            (0.0, false, true),
+            (400.0, false, true),
+            (0.0, true, true),
+            (630.0, false, false),
+            (650.0, false, false),
+            (2000.0, true, false),
+        ];
+        for (spalt, garage, soll) in faelle {
+            let mut m = Model::with_seed(5);
+            let mut neu = |x0: f64, w: f64, h: f64| {
+                let b = m.add_building(1);
+                let pts = [
+                    vec3(x0, 0.0, 0.0),
+                    vec3(x0 + w, 0.0, 0.0),
+                    vec3(x0 + w, h, 0.0),
+                    vec3(x0, h, 0.0),
+                ];
+                m.build_from_polygon(b, &pts).unwrap();
+                b
+            };
+            let a = neu(0.0, 8000.0, 10000.0);
+            let (w, h) = if garage {
+                (3000.0, 3000.0)
+            } else {
+                (8000.0, 10000.0)
+            };
+            let b = neu(8000.0 + spalt, w, h);
+            let fall = format!("{spalt} Garage {garage}");
+            let paare = m.haeuser_ineinander();
+            if soll {
+                assert_eq!(paare.len(), 1, "{fall}");
+                let p = paare[0];
+                assert!(p == (a, b) || p == (b, a), "{fall}");
+            } else {
+                assert!(paare.is_empty(), "{fall}");
+            }
+            let s = crate::qto::schedule(&m);
+            for haus in [a, b] {
+                let erde: Vec<_> = s
+                    .auto
+                    .iter()
+                    .filter(|r| r.building == Some(haus) && r.key.starts_with("earth."))
+                    .collect();
+                assert!(!erde.is_empty(), "{fall}");
+                for r in erde {
+                    let da = r.hinweis.contains(crate::qto_earth::INEINANDER);
+                    assert_eq!(da, soll, "{fall}: {}", r.key);
+                }
+            }
+        }
+    }
+
     /// Wand an Wand, 1 m Höhenunterschied: Die Gründungen bleiben beim
     /// Anlegen der ersten Fläche, wo sie waren. Die Einbindetiefe zählt nur
     /// am freien Plattenrand, nicht an der Haustrennwand, wo das Gelände

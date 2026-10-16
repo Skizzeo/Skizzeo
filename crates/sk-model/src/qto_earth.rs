@@ -22,6 +22,30 @@ pub use flaechen::{
     Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL, KEIL,
     OHNE_AUFMASS, OHNE_TRAEGER, UEBERLAPPT, UNGUELTIG,
 };
+/// Hinweis an den Erdmengen von Häusern, die ineinander stehen
+/// (H-245-geo-a, [`crate::Model::haeuser_ineinander`]).
+pub const INEINANDER: &str =
+    "Häuser stehen ineinander: Wände und Baugruben überdecken sich, Erdmengen dort doppelt, Lage prüfen";
+
+/// [`INEINANDER`] an jede Erdmenge eines Hauses, das mit einem anderen
+/// ineinander steht.
+pub(crate) fn ineinander(m: &crate::Model, out: &mut [AutoMenge]) {
+    let paare = m.haeuser_ineinander();
+    if paare.is_empty() {
+        return;
+    }
+    for r in out.iter_mut().filter(|r| {
+        r.key.starts_with("earth.")
+            && r.building
+                .is_some_and(|b| paare.iter().any(|p| p.0 == b || p.1 == b))
+    }) {
+        if !r.hinweis.is_empty() {
+            r.hinweis.push('\n');
+        }
+        r.hinweis.push_str(INEINANDER);
+    }
+}
+
 pub use netz::{
     netz_angenommen, netz_herkunft, steil_hinweis, ErdNetz, ANGENOMMEN, DREIECKSPRISMEN, STEIL,
     STEIL_AB,

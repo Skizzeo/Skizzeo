@@ -28,6 +28,8 @@ mod trennwand;
 type Strecke = ((f64, f64), (f64, f64));
 /// Plattenumriss eines Wandzugs (mm, Grundriss) und sein Gebäude.
 type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>);
+/// Ein Haus mit seiner Guid, für eine feste Reihenfolge.
+type Haus = (Guid, BuildingId);
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -852,6 +854,52 @@ impl Model {
                 Some((id, self.building_of(r.storey), ring))
             })
             .collect()
+    }
+
+    /// Paare von Häusern, deren Umrisse ineinander stehen: Ihre Wände
+    /// überdecken sich, etwa wenn ein Haus auf die Bezugslinie des anderen
+    /// gezeichnet ist (H-245-geo-a). Je Paar einmal, nach Guid geordnet;
+    /// Wand an Wand zählt nicht.
+    pub fn haeuser_ineinander(&self) -> Vec<(BuildingId, BuildingId)> {
+        let mut umrisse: Vec<([f64; 4], Haus, Vec<[f64; 2]>)> = self
+            .lesend(|| self.umrisse_der_zuege())
+            .into_iter()
+            .filter_map(|(_, b, ring)| {
+                let k = ring
+                    .iter()
+                    .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
+                        [
+                            k[0].min(p[0]),
+                            k[1].min(p[1]),
+                            k[2].max(p[0]),
+                            k[3].max(p[1]),
+                        ]
+                    });
+                let b = b?;
+                Some((k, (self.building(b)?.guid, b), ring))
+            })
+            .collect();
+        // nach links geordnet: Kandidaten nur bis zum rechten Rand
+        umrisse.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+        let mut paare: Vec<(Haus, Haus)> = Vec::new();
+        for (i, (k, b, ring)) in umrisse.iter().enumerate() {
+            for (l, c, andere) in &umrisse[i + 1..] {
+                if l[0] > k[2] {
+                    break;
+                }
+                let paar = if b.0 < c.0 { (*b, *c) } else { (*c, *b) };
+                if b.1 != c.1
+                    && l[1] <= k[3]
+                    && k[1] <= l[3]
+                    && !paare.contains(&paar)
+                    && trennwand::ineinander(ring, andere)
+                {
+                    paare.push(paar);
+                }
+            }
+        }
+        paare.sort_by_key(|(b, c)| (b.0, c.0));
+        paare.into_iter().map(|(b, c)| (b.1, c.1)).collect()
     }
 
     /// Geländehöhen (Landeswerte) am freien Plattenrand von `umrisse[k]`:

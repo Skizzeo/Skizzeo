@@ -78,6 +78,27 @@ pub(super) fn freie_strecken(
     out
 }
 
+/// Stehen die Umrisse `a` und `b` ineinander (H-245-geo-a)? Ja, wenn eine
+/// Ecke oder ein Stück des einen Randes tiefer als [`AN_DER_WAND`] im anderen
+/// Umriss liegt; die Ränder werden an ihren Schnitten geteilt und je Stück die
+/// Mitte geprüft. Aneinander (Wand an Wand) ist nicht ineinander.
+pub(super) fn ineinander(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    let tief = |q: &[[f64; 2]], m: [f64; 2]| innen(q, m) && rand_abstand(q, m) > AN_DER_WAND;
+    [(a, b), (b, a)].into_iter().any(|(p, q)| {
+        let n = p.len();
+        (0..n).any(|i| {
+            let (s, e) = (p[i], p[(i + 1) % n]);
+            let mut ts = vec![0.0, 1.0];
+            for j in 0..q.len() {
+                ts.extend(schnitt(s, e, q[j], q[(j + 1) % q.len()]));
+            }
+            ts.sort_by(f64::total_cmp);
+            let punkt = |t: f64| [s[0] + t * (e[0] - s[0]), s[1] + t * (e[1] - s[1])];
+            tief(q, s) || ts.windows(2).any(|w| tief(q, punkt((w[0] + w[1]) / 2.0)))
+        })
+    })
+}
+
 fn abstand(p: [f64; 2], q: [f64; 2]) -> f64 {
     (p[0] - q[0]).hypot(p[1] - q[1])
 }
@@ -171,6 +192,32 @@ mod tests {
         let s = freie_strecken(&a, &[&b]);
         assert!(s.iter().all(|(p, q)| p[0] <= 7685.0 && q[0] <= 7685.0));
         assert!(laenge(&s) > 2.0 * 7900.0 + 10630.0 - 1.0);
+    }
+
+    /// Ineinander erst, wenn sich die Wände überdecken: aneinander, mit
+    /// Spalt oder nur in der Toleranz nicht; Streifen, Ecke, ganz innen und
+    /// über Kreuz ja, in beiden Richtungen.
+    #[test]
+    fn ineinander_erst_bei_ueberdeckung() {
+        let a = rechteck(0.0, 0.0, 8000.0, 10000.0);
+        let nein = [
+            rechteck(8000.0, 0.0, 16000.0, 10000.0),
+            rechteck(8100.0, 0.0, 16000.0, 10000.0),
+            rechteck(8000.0 - AN_DER_WAND, 0.0, 16000.0, 10000.0),
+            rechteck(20000.0, 0.0, 26000.0, 10000.0),
+        ];
+        for b in &nein {
+            assert!(!ineinander(&a, b) && !ineinander(b, &a), "{b:?}");
+        }
+        let ja = [
+            rechteck(7800.0, 0.0, 16000.0, 10000.0),
+            rechteck(7000.0, 9000.0, 12000.0, 14000.0),
+            rechteck(1000.0, 1000.0, 3000.0, 3000.0),
+            rechteck(3000.0, -2000.0, 5000.0, 12000.0),
+        ];
+        for b in &ja {
+            assert!(ineinander(&a, b) && ineinander(b, &a), "{b:?}");
+        }
     }
 
     /// Eine kürzere Garage nimmt nur ihr Stück der Wand.
