@@ -16,12 +16,13 @@ pub(super) type Faktoren = HashMap<ElementId, (f64, f64, f64)>;
 pub(super) fn bestell_faktoren(m: &Model, sched: &Schedule, modus: Modus) -> Faktoren {
     let mut sum: HashMap<ElementId, [f64; 5]> = HashMap::new();
     // alle Schichtzeilen, auch ohne Gewerk (Review #77, Hinweis)
-    for (_, r) in sched.layer_rows(m) {
+    // aus dem Speicher der Liste, nicht je Neuaufbau gerechnet (Review M1)
+    for (_, r) in sched.layer_rows_ref(m).iter() {
         let x = sum.entry(r.element).or_default();
         x[0] += r.volume;
-        x[1] += rechenweg::anzeige(m, &r, Bezug::Volumen, modus);
-        x[2] += rechenweg::wert(&r, Bezug::Flaeche);
-        x[3] += rechenweg::anzeige(m, &r, Bezug::Flaeche, modus);
+        x[1] += rechenweg::anzeige(m, r, Bezug::Volumen, modus);
+        x[2] += rechenweg::wert(r, Bezug::Flaeche);
+        x[3] += rechenweg::anzeige(m, r, Bezug::Flaeche, modus);
         x[4] += sk_model::vob::uebermessen_vol(&r.holes);
     }
     let q = |a: f64, b: f64| {

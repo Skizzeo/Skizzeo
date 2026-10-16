@@ -35,18 +35,17 @@ pub(super) fn namen(b: &BuildingQto) -> Namen {
 
 /// Rechenweg einer Raumzeile nach Gewerk: vor den Termen der Name der
 /// Fläche („Wand AW-004 Nord“), damit die Terme mehrerer Flächen eines
-/// Raums lesbar bleiben.
-pub(super) fn mit_namen(r: &mut LayerRow, namen: &Namen) {
+/// Raums lesbar bleiben. Hängt die Terme von `r` an `terme` an.
+pub(super) fn mit_namen(r: &LayerRow, namen: &Namen, terme: &mut Vec<Term>) {
+    terme.reserve(r.terms.len() + 1);
     if let Some(n) = namen.get(&(r.element, r.layer)) {
-        r.terms.insert(
-            0,
-            Term {
-                text: n.clone(),
-                wert: 0.0,
-                art: Art::Hinweis,
-            },
-        );
+        terme.push(Term {
+            text: n.clone(),
+            wert: 0.0,
+            art: Art::Hinweis,
+        });
     }
+    terme.extend(r.terms.iter().cloned());
 }
 
 /// Flächen einer Raumzeile nach Gewerk: „Boden“, „Außenwände“ (KG 336,

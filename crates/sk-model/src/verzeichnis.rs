@@ -1109,7 +1109,9 @@ mod tests {
             assert_eq!(ohne, mit);
             assert_eq!(ohne, alle(&m));
             assert!(ohne.iter().any(|x| x.0.is_some()));
-            let ohne = m.ohne_verzeichnis(|| crate::qto::schedule_im_gang(&m, &|_, _| Vec::new()));
+            let ohne = m.ohne_verzeichnis(|| {
+                crate::qto::schedule_im_gang(&m, &|_, _| Vec::new(), &|_| None)
+            });
             assert_eq!(ohne, crate::qto::schedule(&m));
             let ids: Vec<_> = m.elements().ids().collect();
             let gruendung = |m: &Model| {
