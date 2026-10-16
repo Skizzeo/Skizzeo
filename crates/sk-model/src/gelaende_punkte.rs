@@ -351,7 +351,7 @@ mod tests {
         m.commit();
         assert!(!m.terrain().unwrap().assumed());
         let h = crate::qto_earth::netz_herkunft(&m).unwrap();
-        assert!(h.ends_with(", davon 1 Punkt von Hand ergänzt"), "{h}");
+        assert!(h.ends_with(", davon 1 Punkt von Hand ergänzt (H5)"), "{h}");
         let auto = crate::qto::schedule(&m).auto;
         let netz: Vec<_> = auto
             .iter()

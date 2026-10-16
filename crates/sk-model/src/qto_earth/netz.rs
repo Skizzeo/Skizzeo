@@ -69,12 +69,64 @@ pub fn netz_herkunft(m: &Model) -> Option<String> {
     let n = t.mesh().netz.dreiecke.len();
     let vom = datum(&t.read).map_or(String::new(), |d| format!(" vom {d}"));
     Some(format!(
-        "Höhenaufmaß {}{vom}, {} Dreiecke{}",
+        "Höhenaufmaß {}{vom}, {} Dreiecke{}{}",
         t.src,
         tausend(n),
-        von_hand(t)
+        klammer(t, |p| p.hand && !p.off, "von Hand ergänzt", "von Hand"),
+        klammer(t, |p| p.off, "nicht verwendet", "nicht verwendet"),
     ))
 }
+
+/// So viele Nummern nennt die Vorbemerkung höchstens (VOB-Spruch zu I4).
+const NUMMERN: usize = 10;
+
+/// „, davon 3 Punkte von Hand ergänzt (H1, H2, H3)“; über [`NUMMERN`] nur
+/// die Anzahl und wie die Punktliste sie kennzeichnet. Leer ohne solche.
+fn klammer(
+    t: &crate::Terrain,
+    welche: impl Fn(&crate::TerrainPoint) -> bool,
+    was: &str,
+    marke: &str,
+) -> String {
+    let nr: Vec<&str> = t
+        .points
+        .iter()
+        .filter(|p| welche(p))
+        .map(|p| p.nr.as_str())
+        .collect();
+    let punkte = match nr.len() {
+        0 => return String::new(),
+        1 => "1 Punkt".to_string(),
+        n => format!("{} Punkte", tausend(n)),
+    };
+    if nr.len() <= NUMMERN {
+        format!(", davon {punkte} {was} ({})", nr.join(", "))
+    } else {
+        format!(", davon {punkte} {was}, in der Punktliste als „{marke}“ gekennzeichnet")
+    }
+}
+
+/// Von Hand geänderte Punkte eines vermessenen Aufmaßes: (ergänzt, nicht
+/// verwendet); `None` ohne Aufmaß, beim angenommenen Gelände oder wenn
+/// keiner geändert ist. Kostenblatt und LV geben dazu den Befund
+/// [`HAND_GEAENDERT`] (VOB-Spruch zu I4).
+pub fn netz_geaendert(m: &Model) -> Option<(usize, usize)> {
+    let t = m.terrain().filter(|t| !t.assumed())?;
+    let neu = t.points.iter().filter(|p| p.hand && !p.off).count();
+    let weg = t.points.iter().filter(|p| p.off).count();
+    (neu + weg > 0).then_some((neu, weg))
+}
+
+/// Befund zu [`netz_geaendert`]: kein Sperren.
+pub fn hand_geaendert(neu: usize, weg: usize) -> String {
+    format!(
+        "Höhenaufmaß von Hand geändert ({neu} ergänzt, {weg} nicht verwendet): vor der \
+         Ausschreibung vom Vermesser bestätigen lassen."
+    )
+}
+
+/// Anfang des Befunds [`hand_geaendert`], zum Erkennen.
+pub const HAND_GEAENDERT: &str = "Höhenaufmaß von Hand geändert";
 
 /// Datum des Einlesens deutsch („2026-10-12“ → „12.10.2026“); `None` ohne,
 /// unverändert, wenn es keines in dieser Form ist.

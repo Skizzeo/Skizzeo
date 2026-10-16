@@ -352,3 +352,57 @@ fn erdmengen_aus_angenommenem_gelaende() {
     assert!(vorbemerkung_angenommen("2")
         .contains("(Höhen nicht vermessen, Dreiecksprismen nach REB-VB 22.013, 2 Dreiecke)"));
 }
+
+/// Aufmaß mit Punkten von Hand (I4, VOB-Spruch zu I4): Es bleibt vermessen;
+/// die Vorbemerkung nennt ergänzte und nicht verwendete Punkte mit Nummer,
+/// Kostenblatt und LV geben den Befund „Höhenaufmaß von Hand geändert“
+/// (ohne zu sperren).
+#[test]
+fn erdmengen_aus_aufmass_mit_punkten_von_hand() {
+    use sk_cost::lv::{lv_aus, LvWahl};
+    use sk_model::qto_earth::{hand_geaendert, HAND_GEAENDERT};
+    let mut z = vec![leistung(
+        AUSHUB,
+        "Aushub",
+        20,
+        "unit=m3 basis=auto auto=earth.trench",
+    )];
+    z.extend(
+        [
+            "[terrain] src=\"x.csv\" crs=local hsys=DHHN2016 local=1 e0=0 n0=0 rot=0",
+            "[tpoint] nr=1 e=-100 n=-100 h=0",
+            "[tpoint] nr=2 e=100 n=-100 h=0",
+            "[tpoint] nr=3 e=100 n=100 h=0",
+            "[tpoint] nr=4 e=-100 n=100 h=0",
+            "[tpoint] nr=5 e=0 n=90 h=0 off=1",
+            "[tpoint] nr=H1 e=0 n=-90 h=0 src=hand",
+        ]
+        .map(String::from),
+    );
+    let m = haus(&z);
+    assert!(m.terrain().is_some_and(|t| !t.assumed()));
+    assert_eq!(sk_model::qto_earth::netz_geaendert(&m), Some((1, 1)));
+    let h = sk_model::qto_earth::netz_herkunft(&m).unwrap();
+    assert!(
+        h.ends_with(", davon 1 Punkt von Hand ergänzt (H1), davon 1 Punkt nicht verwendet (5)"),
+        "{h}"
+    );
+    let b = blatt(&m);
+    let satz = hand_geaendert(1, 1);
+    assert!(satz.starts_with(HAND_GEAENDERT));
+    let n = |v: &[sk_cost::Befund]| v.iter().filter(|x| x.satz == satz).count();
+    assert_eq!(n(&b.befunde), 1, "{:?}", b.befunde);
+    let w = LvWahl {
+        los: Guid::from_ifc("1S7bUW001008030000000A").unwrap(),
+        untertitel: false,
+        preise: false,
+        heute: None,
+    };
+    let lv = lv_aus(&m, &b, &lesen::katalog(&m, None), &w);
+    assert_eq!(n(&lv.befunde), 1, "{:?}", lv.befunde);
+    assert!(lv
+        .kopf
+        .vorbemerkungen
+        .as_deref()
+        .is_some_and(|v| v.contains("davon 1 Punkt von Hand ergänzt (H1)")));
+}

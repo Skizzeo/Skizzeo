@@ -1627,6 +1627,8 @@ fn auto_ansaetze(
     let mut erde_aus_mittel: Option<Ort> = None;
     // Erdmengen aus dem angenommenen Gelände (VOB-Spruch zu I1)
     let mut angenommen: Option<Ort> = None;
+    // Erdmengen aus einem Aufmaß mit Punkten von Hand (VOB-Spruch zu I4)
+    let mut aus_netz: Option<Ort> = None;
     let mut steil: Option<(String, Ort)> = None;
     // Hinweise, die keine Zeile tragen kann, für die Datei (VOB-Prüfung G3
     // D2)
@@ -1735,6 +1737,12 @@ fn auto_ansaetze(
             {
                 angenommen = Some(ort.clone());
             }
+            if a.key.starts_with("earth.")
+                && a.formula.contains(sk_model::qto_earth::DREIECKSPRISMEN)
+                && aus_netz.is_none()
+            {
+                aus_netz = Some(ort.clone());
+            }
             if steil.is_none() && a.key.starts_with("earth.") {
                 steil = sk_model::qto_earth::steil_hinweis(&a.formula).map(|h| (h, ort.clone()));
             }
@@ -1779,6 +1787,13 @@ fn auto_ansaetze(
     }
     if let Some(ort) = angenommen {
         befunde.push(Befund::hinweis(0, NICHT_VERMESSEN, ort));
+    }
+    if let (Some(ort), Some((neu, weg))) = (aus_netz, sk_model::qto_earth::netz_geaendert(m)) {
+        befunde.push(Befund::hinweis(
+            0,
+            sk_model::qto_earth::hand_geaendert(neu, weg),
+            ort,
+        ));
     }
     if let Some((h, ort)) = steil {
         befunde.push(Befund::hinweis(0, h, ort));
