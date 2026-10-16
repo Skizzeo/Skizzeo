@@ -86,6 +86,14 @@ const ZAHL_ABSTAND: f64 = 40_000.0;
 /// Zuschnitts), rückt sie in diesen Schritten (mm) weiter.
 const ZAHL_SCHRITT: f64 = 2_000.0;
 
+/// Bis zu so vielen Messpunkten steht an jedem seine Kote; ein größeres
+/// Aufmaß (Laserscan, dichtes Raster) zeigt nur die Kreuze, sonst deckten
+/// die Zahlen das Bild zu und kosteten Speicher.
+const PUNKT_KOTEN: usize = 2_000;
+/// Abstand einer Kote von der Grundstücksgrenze (mm am Bau), damit der
+/// Strichpunkt keine Ziffer streift.
+const RAND: f64 = 50.0;
+
 /// Gelände aus dem Aufmaß im Modell (mm, z zu ±0,00). Was nur vom Modell
 /// abhängt, steht hier einmal gerechnet: Höhenlinien und Messpunkte sind
 /// schon an Grenze und Haus geteilt, Häuser und Dreiecke stehen in je
@@ -125,6 +133,8 @@ pub(crate) struct Gelaende {
     /// Höhenzahlen an den Höhenlinien und in ebenen Geländeflächen
     /// (Bedienbarkeit, Ist-Bilder zu #202), einmal je Gelände.
     pub(crate) zahlen: Vec<Zahl>,
+    /// Koten der Messpunkte (bis [`PUNKT_KOTEN`]), rechts neben dem Kreuz.
+    pub(crate) koten: Vec<Zahl>,
     umrisse: Vec<Vec<Vec3>>,
     /// Senkrechte Wände, wo die Höhe springt (Review #183 b, B2).
     waende: Vec<[Vec3; 3]>,
@@ -292,6 +302,18 @@ impl Gelaende {
                 Some((vec3(q[0], q[1], (p.h - h0) * 1000.0), voll))
             })
             .collect();
+        // Koten der Messpunkte in m ü. NHN, zwei Nachkommastellen (Plan §8,
+        // Bedienbarkeit Gelände)
+        if g.marken.len() <= PUNKT_KOTEN {
+            g.koten = g
+                .marken
+                .iter()
+                .map(|&(p, voll)| {
+                    let text = crate::selection::de(p.z / 1000.0 + h0, 2);
+                    ([p.x, p.y], 0.0, p.z, text, voll)
+                })
+                .collect();
+        }
         Some(g)
     }
 
@@ -319,6 +341,7 @@ impl Gelaende {
             ur_netz: Gitter::neu(Vec::new()),
             schraffen: Vec::new(),
             zahlen: Vec::new(),
+            koten: Vec::new(),
             umrisse: Vec::new(),
             waende: Vec::new(),
             rand: None,
@@ -483,6 +506,47 @@ impl Gelaende {
         let mut nah = Vec::new();
         self.haeuser.bei(&[p[0], p[1], p[0], p[1]], &mut nah);
         self.in_einem(&nah, p)
+    }
+
+    /// Kreuzt die Grundstücksgrenze das Rechteck `k`: liegen seine Ecken
+    /// auf beiden Seiten, oder eine Ecke der Grenze darin? (Eine Gerade
+    /// durch ein Rechteck lässt auf jeder Seite eine Ecke.)
+    fn grenze_trifft(&self, k: &Kasten) -> bool {
+        if self.ringe.is_empty() {
+            return false;
+        }
+        let [x0, y0, x1, y1] = *k;
+        let innen = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].map(|p| self.innen(p));
+        let im = |p: &P2| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+        innen.iter().any(|&i| i != innen[0]) || self.ringe.iter().flatten().any(im)
+    }
+
+    /// Berührt das Rechteck `k` ein Haus: eine Ecke des Hauses darin oder
+    /// ein Punkt seines Rands oder seiner Mitte im Haus?
+    fn haus_trifft(&self, k: &Kasten) -> bool {
+        let mut nah = Vec::new();
+        self.haeuser.bei(k, &mut nah);
+        if nah.is_empty() {
+            return false;
+        }
+        let [x0, y0, x1, y1] = *k;
+        let (xm, ym) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let proben = [
+            [x0, y0],
+            [xm, y0],
+            [x1, y0],
+            [x0, ym],
+            [xm, ym],
+            [x1, ym],
+            [x0, y1],
+            [xm, y1],
+            [x1, y1],
+        ];
+        let innen = |p: &P2| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+        proben.iter().any(|&p| self.in_einem(&nah, p))
+            || nah
+                .iter()
+                .any(|&i| self.haus[i as usize].0.iter().any(innen))
     }
 
     /// Liegt `p` in einem der Häuser `nah`?
@@ -1250,10 +1314,36 @@ fn schwerpunkt(r: &[P2]) -> Option<P2> {
     (a.abs() > 1e-9).then(|| [cx / (3.0 * a), cy / (3.0 * a)])
 }
 
+/// Inhalt der Höhenzahlen und Koten (Ort, Richtung, Text, voll), die
+/// Häuser und die Grenze als Prüfsumme: gleich, solange die Tinte gleich
+/// bliebe.
+pub(crate) fn zahlen_inhalt(g: &Gelaende) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut s = std::collections::hash_map::DefaultHasher::new();
+    for (q, w, z, text, voll) in g.zahlen.iter().chain(&g.koten) {
+        for v in [q[0], q[1], *w, *z] {
+            v.to_bits().hash(&mut s);
+        }
+        (text, voll).hash(&mut s);
+    }
+    g.zahlen.len().hash(&mut s);
+    // die Koten weichen den Häusern und der Grenze aus
+    let haeuser = g.haus.iter().map(|(ring, _)| ring);
+    for ring in haeuser.chain(&g.ringe) {
+        for p in ring {
+            p.map(f64::to_bits).hash(&mut s);
+        }
+        ring.len().hash(&mut s);
+    }
+    g.haus.len().hash(&mut s);
+    s.finish()
+}
+
 /// Die Höhenzahlen als Tinte für den Renderer: Ziffernhöhe `h` (mm am
 /// Bau, wie die Maßzahlen), mittig über ihrem Punkt wie eine Maßzahl über
-/// der Maßlinie, leicht über dem Gelände; voll im Stift „Gelände“, sonst
-/// blass.
+/// der Maßlinie, die Koten der Messpunkte rechts neben ihrem Kreuz, auf
+/// halber Ziffernhöhe; leicht über dem Gelände; voll im Stift „Gelände“,
+/// sonst blass.
 pub(crate) fn zahlen_tinte(
     g: &Gelaende,
     schrift: &sk_plan::schrift::Schrift,
@@ -1262,14 +1352,41 @@ pub(crate) fn zahlen_tinte(
 ) -> Vec<sk_render::Ink> {
     let mut out = Vec::new();
     let mut d = Vec::new();
-    for (q, w, z, text, voll) in &g.zahlen {
+    let mut belegt = Belegt::neu(4.0 * h);
+    let mitte = g.zahlen.iter().map(|z| (z, true));
+    for ((q, w, z, text, voll), mittig) in mitte.chain(g.koten.iter().map(|z| (z, false))) {
         d.clear();
         let b = schrift.zeile(text, h, 0.0, &mut d);
         let (c, s) = (w.cos(), w.sin());
         let color = if *voll { t.ground.1 } else { t.background.1 };
+        let (dx, dy) = if mittig {
+            // Rechteck der gedrehten Zahl, damit Koten ihr ausweichen
+            let ecken = [
+                (-b / 2.0, 0.0),
+                (b / 2.0, 0.0),
+                (-b / 2.0, 1.3 * h),
+                (b / 2.0, 1.3 * h),
+            ]
+            .map(|(x, y)| [q[0] + c * x - s * y, q[1] + s * x + c * y]);
+            belegt.setze(kasten(&ecken));
+            (-b / 2.0, 0.3 * h)
+        } else {
+            // rechts vom Kreuz, sonst links; ans Haus, über die Grenze
+            // oder über eine schon gesetzte Zahl keine (Test und
+            // Bedienbarkeit #223)
+            let k = |x0: f64| [q[0] + x0, q[1] - 0.5 * h, q[0] + x0 + b, q[1] + 0.5 * h];
+            let rand = |k: Kasten| [k[0] - RAND, k[1] - RAND, k[2] + RAND, k[3] + RAND];
+            let Some(x0) = [0.5 * h, -0.5 * h - b].into_iter().find(|&x0| {
+                belegt.frei(&k(x0)) && !g.haus_trifft(&k(x0)) && !g.grenze_trifft(&rand(k(x0)))
+            }) else {
+                continue;
+            };
+            belegt.setze(k(x0));
+            (x0, -0.5 * h)
+        };
         out.extend(d.iter().map(|tri| sk_render::Ink {
             p: tri.map(|[x, y]| {
-                let (x, y) = (x - b / 2.0, y + 0.3 * h);
+                let (x, y) = (x + dx, y + dy);
                 [
                     (q[0] + c * x - s * y) as f32,
                     (q[1] + s * x + c * y) as f32,
@@ -1281,6 +1398,46 @@ pub(crate) fn zahlen_tinte(
         }));
     }
     out
+}
+
+/// Schon gesetzte Zahlen im Grundriss, je Feld des Rasters `zelle`.
+struct Belegt {
+    zelle: f64,
+    kaesten: Vec<Kasten>,
+    felder: HashMap<(i64, i64), Vec<u32>>,
+}
+
+impl Belegt {
+    fn neu(zelle: f64) -> Belegt {
+        Belegt {
+            zelle: zelle.max(1.0),
+            kaesten: Vec::new(),
+            felder: HashMap::new(),
+        }
+    }
+
+    fn felder(&self, k: &Kasten) -> impl Iterator<Item = (i64, i64)> {
+        let f = |v: f64| (v / self.zelle).floor() as i64;
+        let (x0, y0, x1, y1) = (f(k[0]), f(k[1]), f(k[2]), f(k[3]));
+        (y0..=y1).flat_map(move |y| (x0..=x1).map(move |x| (x, y)))
+    }
+
+    fn frei(&self, k: &Kasten) -> bool {
+        self.felder(k).all(|f| {
+            self.felder
+                .get(&f)
+                .is_none_or(|v| v.iter().all(|&i| !ueberlappt(&self.kaesten[i as usize], k)))
+        })
+    }
+
+    fn setze(&mut self, k: Kasten) {
+        let i = self.kaesten.len() as u32;
+        let felder: Vec<_> = self.felder(&k).collect();
+        for f in felder {
+            self.felder.entry(f).or_default().push(i);
+        }
+        self.kaesten.push(k);
+    }
 }
 
 /// Strich von `a` nach `b` mit Stift und Muster.
@@ -1615,6 +1772,16 @@ mod tests {
         for (q, _, _, text, voll) in &g.zahlen {
             assert!(!g.im_haus(*q) && g.innen(*q) && *voll, "{q:?} {text}");
         }
+        // an jedem gezeigten Messpunkt seine Kote, zwei Nachkommastellen
+        let h0 = m.terrain_nhn().unwrap();
+        assert!(!g.marken.is_empty());
+        for &(p, _) in &g.marken {
+            let text = crate::selection::de(p.z / 1000.0 + h0, 2);
+            assert!(
+                g.koten.iter().any(|z| z.0 == [p.x, p.y] && z.3 == text),
+                "{p:?} {text}"
+            );
+        }
         if let Some(f) = crate::wall_edit::mass_treffer::tests::schrift() {
             let s = sk_plan::schrift::Schrift::new(f);
             assert!(!zahlen_tinte(&g, &s, 250.0, &t).is_empty());
@@ -1622,12 +1789,67 @@ mod tests {
             // blass“) stehen im Stift der blassen Höhenlinien, nicht in
             // der Papierfarbe (Review #216 H-216a)
             let mut b = Gelaende::aus(&m).unwrap();
+            // gleiche Zahlen, gleiche Prüfsumme; blass ist eine andere
+            assert_eq!(zahlen_inhalt(&b), zahlen_inhalt(&g));
             b.zahlen.iter_mut().for_each(|z| z.4 = false);
+            b.koten.iter_mut().for_each(|z| z.4 = false);
+            assert_ne!(zahlen_inhalt(&b), zahlen_inhalt(&g));
             let tinte = zahlen_tinte(&b, &s, 250.0, &t);
             assert!(!tinte.is_empty());
             let abstand: f32 = (0..3).map(|i| (t.background.1[i] - t.paper[i]).abs()).sum();
             assert!(abstand > 0.3, "{:?} {:?}", t.background, t.paper);
             assert!(tinte.iter().all(|i| i.color == t.background.1));
+            // Koten weichen aus (Test #223): an der linken Hauswand steht
+            // sie links vom Kreuz, eine zweite fast am selben Punkt
+            // entfällt, zwischen zwei Häuserwänden keine
+            let ring = &b.haus[0].0;
+            let x0 = ring.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+            let (y0, y1) = ring
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(a, z), p| (a.min(p[1]), z.max(p[1])));
+            let q = [x0 - 300.0, (y0 + y1) / 2.0];
+            assert!(!b.im_haus(q));
+            let kote = |q: P2| (q, 0.0, 0.0, "25,06".to_string(), true);
+            b.zahlen.clear();
+            b.koten = vec![kote(q)];
+            let eine = zahlen_tinte(&b, &s, 250.0, &t);
+            assert!(!eine.is_empty());
+            let rechts = eine.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
+            assert!(rechts.fold(f64::MIN, f64::max) < q[0], "links vom Kreuz");
+            b.koten.push(kote([q[0] + 40.0, q[1] + 60.0]));
+            assert_eq!(zahlen_tinte(&b, &s, 250.0, &t).len(), eine.len());
+            // frei stehend rechts
+            b.koten = vec![kote([x0 - 20_000.0, q[1]])];
+            let frei = zahlen_tinte(&b, &s, 250.0, &t);
+            let links = frei.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
+            assert!(links.fold(f64::MAX, f64::min) > x0 - 20_000.0);
+            // an der Grenze (Bedienbarkeit #223): 30 cm links einer steilen
+            // Grenzkante steht die Kote links vom Kreuz, nicht über dem
+            // Strichpunkt
+            let grenze = &b.ringe[0];
+            let n = grenze.len();
+            let (a, e) = (0..n)
+                .map(|i| (grenze[i], grenze[(i + 1) % n]))
+                .filter(|(a, e)| (e[1] - a[1]).abs() > 4.0 * (e[0] - a[0]).abs())
+                .max_by(|x, y| (x.1[1] - x.0[1]).abs().total_cmp(&(y.1[1] - y.0[1]).abs()))
+                .expect("steile Grenzkante");
+            let mitte = [(a[0] + e[0]) / 2.0, (a[1] + e[1]) / 2.0];
+            let qg = [mitte[0] - 300.0, mitte[1]];
+            assert_ne!(b.innen(qg), b.innen([mitte[0] + 300.0, mitte[1]]));
+            assert!(!b.im_haus(qg));
+            b.koten = vec![kote(qg)];
+            let tinte = zahlen_tinte(&b, &s, 250.0, &t);
+            let rechts = tinte.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
+            assert!(rechts.fold(f64::MIN, f64::max) < qg[0], "vor der Grenze");
+            // geändertes Haus, andere Prüfsumme (die Lage der Koten hängt
+            // daran)
+            let vorher = zahlen_inhalt(&b);
+            b.haus[0].0[0][0] += 1.0;
+            assert_ne!(zahlen_inhalt(&b), vorher);
+            // ebenso eine verschobene Grenzecke (Review B2 zu #223)
+            let vorher = zahlen_inhalt(&b);
+            b.ringe[0][0][1] += 1.0;
+            assert_ne!(zahlen_inhalt(&b), vorher);
         }
         // Schnitt quer durch das Haus: Schnittfläche bis zur Unterkante
         let (p0, n) = (vec3(12000.0, 10000.0, 0.0), vec3(0.0, 1.0, 0.0));
@@ -1809,6 +2031,39 @@ mod tests {
         assert!(senkrecht >= 2, "{senkrecht}");
     }
 
+    /// Bis [`PUNKT_KOTEN`] Messpunkte hat jeder seine Kote, darüber keiner.
+    #[test]
+    fn koten_bis_punktgrenze() {
+        use std::fmt::Write;
+        let aufmass = |k: usize| {
+            let mut txt = String::new();
+            for i in 0..k {
+                for j in 0..k {
+                    let z = 10.0 + 0.01 * (i + j) as f64;
+                    let _ = writeln!(txt, "{} {} {} {z}", i * k + j + 1, 2 * i, 2 * j);
+                }
+            }
+            let (t, ..) =
+                sk_model::Terrain::lesen(txt.as_bytes(), "t.txt", "2026-10-16", 32).unwrap();
+            let mut m = Model::with_seed(3);
+            m.begin("Aufmaß");
+            assert!(m.import_terrain(t));
+            m.commit();
+            let g = Gelaende::aus(&m).unwrap();
+            let koten = g
+                .marken
+                .iter()
+                .filter(|(p, _)| g.koten.iter().any(|z| z.0 == [p.x, p.y]))
+                .count();
+            (g.marken.len(), koten)
+        };
+        // 44 × 44 = 1.936 Punkte: jeder mit Kote; 45 × 45 = 2.025: keine
+        let (n, k) = aufmass(44);
+        assert!(n <= PUNKT_KOTEN && k == n, "{n} {k}");
+        let (n, k) = aufmass(45);
+        assert!(n > PUNKT_KOTEN && k == 0, "{n} {k}");
+    }
+
     /// Höhenzahlen (Ist-Bilder zu #202): je 40 m eine, die erste nach 20 m,
     /// eine kurze Linie in der Mitte; nur Hauptlinien, wenn es welche
     /// gibt; lesbar von unten oder rechts; nicht, wo `frei` nein sagt.
@@ -1869,6 +2124,53 @@ mod tests {
         );
         assert_eq!(f[0].3, "50,60");
         assert_eq!(nhn_text(-0.5), "-0,50");
+    }
+
+    /// Tempo (Review H-223b): Tinte der Höhenzahlen bei 1.936 Koten, knapp
+    /// unter [`PUNKT_KOTEN`] (`--ignored --nocapture`, Release). Sie
+    /// entsteht nur nach einer Änderung neu, sonst zeichnet das Bild die
+    /// gemerkten Dreiecke.
+    #[test]
+    #[ignore]
+    fn tempo_koten() {
+        use std::fmt::Write;
+        use std::time::Instant;
+        let Some(f) = crate::wall_edit::mass_treffer::tests::schrift() else {
+            return;
+        };
+        let s = sk_plan::schrift::Schrift::new(f);
+        let mut txt = String::new();
+        let k = 44;
+        for i in 0..k {
+            for j in 0..k {
+                let z = 10.0 + 0.01 * (i + j) as f64;
+                let _ = writeln!(txt, "{} {} {} {z}", i * k + j + 1, 2 * i, 2 * j);
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(txt.as_bytes(), "t.txt", "2026-10-16", 32).unwrap();
+        let mut m = Model::with_seed(3);
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let g = Gelaende::aus(&m).unwrap();
+        assert_eq!(g.koten.len(), k * k);
+        let t = DrawTable::resolve(&m, &sk_ui::theme::Theme::dark());
+        let mut tinte = 0;
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let t0 = Instant::now();
+            tinte = zahlen_tinte(&g, &s, 250.0, &t).len();
+            best = best.min(t0.elapsed().as_secs_f64() * 1e3);
+        }
+        let t0 = Instant::now();
+        let _ = zahlen_inhalt(&g);
+        let pruef = t0.elapsed().as_secs_f64() * 1e3;
+        eprintln!(
+            "{} Koten, {} Zahlen: Tinte {best:.1} ms, {tinte} Dreiecke, \
+             Prüfsumme {pruef:.2} ms",
+            g.koten.len(),
+            g.zahlen.len()
+        );
     }
 
     /// Tempo (Review #183 B1): Bild und Schnitt bei 100 Flächen mit je 400
