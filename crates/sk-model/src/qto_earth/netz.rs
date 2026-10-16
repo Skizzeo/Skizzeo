@@ -81,12 +81,19 @@ fn aenderung(p: &crate::TerrainPoint) -> String {
     }
     let lage = (p.e - e).hypot(p.n - n);
     if lage >= 5e-4 {
-        if out.len() > p.nr.len() {
-            out.push(',');
-        }
-        out += &format!(" Lage um {} m versetzt", komma(lage, 2));
+        out += &format!(", Lage um {} versetzt", versatz(lage));
     }
     out
+}
+
+/// Lageversatz in m: unter 1 cm in ganzen mm („3 mm“), sonst auf cm
+/// („0,35 m“) (VOB H-237a).
+pub fn versatz(m: f64) -> String {
+    if m < 0.0095 {
+        format!("{} mm", (m * 1000.0).round())
+    } else {
+        format!("{} m", komma(m, 2))
+    }
 }
 
 /// Zahl mit Komma und `stellen` Nachkommastellen.
@@ -615,6 +622,30 @@ pub(super) fn mengen(
 
 #[cfg(test)]
 mod tests {
+    /// Lage unter 1 cm in mm, mit Komma hinter der Nummer (VOB H-237a/b).
+    #[test]
+    fn lage_in_mm_und_cm() {
+        assert_eq!(super::versatz(0.003), "3 mm");
+        assert_eq!(super::versatz(0.0006), "1 mm");
+        assert_eq!(super::versatz(0.35), "0,35 m");
+        let p = crate::TerrainPoint {
+            nr: "12".into(),
+            e: 10.003,
+            n: 20.0,
+            h: 24.342,
+            code: String::new(),
+            off: false,
+            hand: false,
+            gemessen: Some([10.0, 20.0, 24.342]),
+        };
+        assert_eq!(super::aenderung(&p), "12, Lage um 3 mm versetzt");
+        let p = crate::TerrainPoint { h: 24.1, ..p };
+        assert_eq!(
+            super::aenderung(&p),
+            "12 von 24,342 auf 24,100 m, Lage um 3 mm versetzt"
+        );
+    }
+
     #[test]
     fn mittel_unter_1_cm() {
         assert_eq!(super::mittel(30e6, 10e6), "unter 1 cm");

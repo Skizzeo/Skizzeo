@@ -263,7 +263,8 @@ fn schloss(l: &mut GelaendeLeiste, t: &Terrain, z: &Zustand) {
             )
         } else {
             let d = (p.e - e).hypot(p.n - n);
-            format!("Messpunkt {}: Lage um {} m versetzt", p.nr, m(d, 2))
+            let v = sk_model::qto_earth::versatz(d);
+            format!("Messpunkt {}: Lage um {v} versetzt", p.nr)
         })
     });
 }
