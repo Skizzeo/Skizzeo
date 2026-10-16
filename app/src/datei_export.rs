@@ -38,7 +38,7 @@ impl App {
                 .map_or(name, |n| n.to_string_lossy().into_owned()),
             version: env!("CARGO_PKG_VERSION").into(),
         };
-        let (text, bericht) = sk_ifc::export(self.scene.model(), &opt);
+        let (text, bericht) = sk_ifc::export(self.scene.model_fertig(), &opt);
         match document::tabelle_schreiben(&path, text.as_bytes()) {
             Ok(()) => self.status(
                 meldung::Meldung::mit("{}", &[&ifc_meldung(&bericht)]),

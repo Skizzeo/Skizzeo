@@ -943,7 +943,16 @@ impl Model {
     /// es nur ein vorläufiges hat (Review #234 B-234b).
     pub fn netz_auftrag(&self) -> Option<NetzAuftrag> {
         let t = self.project.terrain.as_ref()?;
-        (t.mesh.0.get().is_none() && t.mesh.1.is_some()).then(|| NetzAuftrag(t.clone()))
+        self.netz_vorlaeufig().then(|| NetzAuftrag(t.clone()))
+    }
+
+    /// Hat das Gelände nur ein vorläufiges Netz? Dann gibt es noch keine
+    /// Mengen, die zur Datei passen ([`Model::netz_auftrag`]).
+    pub fn netz_vorlaeufig(&self) -> bool {
+        self.project
+            .terrain
+            .as_ref()
+            .is_some_and(|t| t.mesh.0.get().is_none() && t.mesh.1.is_some())
     }
 
     /// Das im Faden gerechnete Netz einsetzen (im offenen Schritt):

@@ -992,6 +992,7 @@ impl Scene {
     /// Mengenliste (B7): einmal je Modellstand berechnet und gemerkt, nie
     /// während eines offenen Schritts (Ziehen); dann bleibt der alte Stand.
     pub fn schedule(&mut self) -> &Schedule {
+        self.netz_fertig();
         let rev = self.model.revision();
         let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
         if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
@@ -2597,6 +2598,7 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<(), Vec<sk_cost::Befund>> {
+        self.netz_fertig();
         // Erst prüfen: ein abgelehnter Plan öffnet keinen Schritt
         sk_cost::vorschau(&self.model, firma, self.rolle, ops)?;
         self.begin(label);
