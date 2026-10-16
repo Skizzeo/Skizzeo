@@ -12,13 +12,20 @@
 //!
 //! Gezogen wird ohne das Modell zu ändern; Loslassen ist ein Schritt. Esc
 //! bricht den Zug ab, ohne Zug hebt es die Wahl auf.
+//!
+//! In 3D (I4c) geht dasselbe, solange das Hilfsnetz die Punkte als Nadeln
+//! zeigt: Am ersten gewählten Punkt steht ein senkrechter Pfeil mit Kugel,
+//! die Maus zählt dann auf der senkrechten Ebene durch den Punkt, die zur
+//! Kamera schaut; der Punkt hebt sich also mit der Maus. Ein Quadrat am Fuß
+//! zeigt, dass der Punkt selbst waagerecht gleitet, in seiner Höhe.
 
 use super::fang::{self, Ziele};
 use super::STEP;
 use crate::camera::Camera;
 use crate::meldung::Meldung;
+use crate::ui::ViewKind;
 use crate::App;
-use sk_math::vec3;
+use sk_math::{vec3, Vec3};
 use sk_model::TerrainSpot;
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
@@ -41,6 +48,10 @@ const DOPPEL: Duration = Duration::from_millis(450);
 const DOPPEL_PX: f64 = 5.0;
 /// Strg+D versetzt um so viel (mm).
 const VERSATZ: f64 = 1000.0;
+/// In 3D: Länge des Höhenpfeils und halbe Seite des Quadrats am Fuß
+/// (Bildpunkte).
+const PFEIL_3D_PX: f64 = 56.0;
+const QUADRAT_PX: f64 = 10.0;
 
 /// Statuszeile (§4.0 Regel 2).
 pub const PUNKT: &str =
@@ -87,6 +98,12 @@ struct Zug {
     bewegt: bool,
     /// Unter den gezogenen ist ein Punkt des Vermessers: nur kopieren.
     fest: bool,
+    /// Höhe der waagerechten Ebene, auf der die Maus die Lage zählt: im
+    /// Grundriss 0, in 3D die des gegriffenen Punkts.
+    ebene: f64,
+    /// In 3D am Höhenpfeil: Punkt und Normale der senkrechten Ebene zur
+    /// Kamera und die Höhe der Maus darauf beim Greifen.
+    senkrecht: Option<(Vec3, Vec3, f64)>,
     /// Mit Strg auf einen schon gewählten Punkt geklickt: ohne Zug geht
     /// er aus der Wahl.
     raus: bool,
@@ -119,11 +136,13 @@ impl Punkte {
     }
 }
 
-/// Der Punkt unter dem Bildpunkt (der nächste bis [`GREIF_PX`]).
+/// Der Punkt unter dem Bildpunkt (der nächste bis [`GREIF_PX`]); `z` ist
+/// die Höhe der Zeichenebene im Grundriss, `None` in 3D (jeder Punkt in
+/// seiner Höhe).
 fn treffen<'a>(
-    spots: &'a [(String, TerrainSpot)],
+    spots: impl IntoIterator<Item = &'a (String, TerrainSpot)>,
     cam: &Camera,
-    z: f64,
+    z: Option<f64>,
     (x, y): (f64, f64),
     w: f64,
     h: f64,
@@ -132,7 +151,8 @@ fn treffen<'a>(
     let r = GREIF_PX * scale;
     let mut best: Option<(f64, &(String, TerrainSpot))> = None;
     for s in spots {
-        let Some(q) = cam.project(vec3(s.1.p[0], s.1.p[1], z), w, h) else {
+        let zz = z.unwrap_or(s.1.p[2]);
+        let Some(q) = cam.project(vec3(s.1.p[0], s.1.p[1], zz), w, h) else {
             continue;
         };
         let d = (q.0 - x).hypot(q.1 - y);
@@ -165,6 +185,95 @@ fn hub(dy_px: f64, scale: f64, shift: bool) -> f64 {
     (d / je).round() * je + 0.0
 }
 
+/// Höhe des Strahls `o + t·d` auf der senkrechten Ebene durch `p` mit der
+/// (waagerechten) Normale `n`; `None`, wenn er sie nicht vor sich trifft.
+fn senkrecht_z(o: Vec3, d: Vec3, p: Vec3, n: Vec3) -> Option<f64> {
+    let dn = d.dot(n);
+    if dn.abs() < 1e-6 {
+        return None;
+    }
+    let t = (p - o).dot(n) / dn;
+    (t > 0.0).then(|| (o + d * t).z)
+}
+
+/// In 3D gezogene Höhe auf cm (mit Umschalt dm) gerundet.
+fn hub_3d(dz: f64, shift: bool) -> f64 {
+    let je = if shift { MM_JE_PX * 10.0 } else { MM_JE_PX };
+    (dz / je).round() * je + 0.0
+}
+
+/// Abstand eines Bildpunkts von der Strecke `a`–`b` im Bild.
+fn abstand(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+}
+
+/// Weltlänge (mm) eines Bildpunkts quer zur Blickrichtung am Punkt `a`.
+fn mm_je_px(cam: &Camera, a: Vec3, vw: f64, vh: f64) -> Option<f64> {
+    let q0 = cam.project(a, vw, vh)?;
+    let q1 = cam.project(a + cam.right() * 1000.0, vw, vh)?;
+    let px = (q1.0 - q0.0).hypot(q1.1 - q0.1);
+    (px > 1e-9).then(|| 1000.0 / px)
+}
+
+/// In 3D die Spitze des Höhenpfeils über dem Punkt `a`.
+fn pfeil_spitze(cam: &Camera, a: Vec3, vw: f64, vh: f64, sc: f64) -> Option<Vec3> {
+    let l = mm_je_px(cam, a, vw, vh)? * PFEIL_3D_PX * sc;
+    Some(a + vec3(0.0, 0.0, l))
+}
+
+/// In 3D am Punkt `a` der senkrechte Pfeil mit Kugel (Höhe, Farbe `.0`)
+/// und das waagerechte Quadrat am Fuß (Lage, `.1`); `view`: Breite, Höhe
+/// und Maßstab des Bildes.
+pub(crate) fn gizmo_linien(
+    cam: &Camera,
+    a: Vec3,
+    (vw, vh, sc): (f64, f64, f64),
+    (pfeil, fuss): ([f32; 4], [f32; 4]),
+    scale: f32,
+) -> Vec<Helper> {
+    let (Some(b), Some(mm)) = (pfeil_spitze(cam, a, vw, vh, sc), mm_je_px(cam, a, vw, vh)) else {
+        return Vec::new();
+    };
+    let f = |v: Vec3| [v.x as f32, v.y as f32, v.z as f32];
+    let strich = |a: Vec3, b: Vec3, color, w: f32, round| Helper {
+        a: f(a),
+        b: f(b),
+        color,
+        width: w * scale,
+        dash: 0.0,
+        pattern: sk_render::SOLID,
+        occlude: false,
+        round,
+    };
+    let px = mm * sc;
+    let quer = cam.right() * (px * 4.0);
+    let unter = b - vec3(0.0, 0.0, px * 8.0);
+    let mut out = vec![
+        strich(a, b, pfeil, 2.0, false),
+        strich(b, unter + quer, pfeil, 2.0, false),
+        strich(b, unter - quer, pfeil, 2.0, false),
+        strich(b, b, pfeil, 9.0, true),
+    ];
+    let h = px * QUADRAT_PX;
+    let e = [
+        vec3(-h, -h, 0.0),
+        vec3(h, -h, 0.0),
+        vec3(h, h, 0.0),
+        vec3(-h, h, 0.0),
+    ];
+    for i in 0..4 {
+        out.push(strich(a + e[i], a + e[(i + 1) % 4], fuss, 1.5, false));
+    }
+    out
+}
+
 /// Meter mit Komma und zwei Stellen, mit Vorzeichen.
 fn m_vz(mm: f64) -> String {
     let v = mm / 1000.0;
@@ -177,9 +286,47 @@ fn m_vz(mm: f64) -> String {
 }
 
 impl App {
-    /// Sind die Höhenpunkte greifbar? Wie die Griffe der Grenze.
-    fn punkte_an(&self) -> bool {
+    /// Sind die Höhenpunkte greifbar? Im Grundriss wie die Griffe der
+    /// Grenze, in 3D, solange das Hilfsnetz sie zeigt (I4c).
+    pub(super) fn punkte_an(&self) -> bool {
+        if self.drei_d() {
+            return self.netz_an() && !self.platte.leiste.werkzeug.aktiv && !self.tool.enabled;
+        }
         self.grenz_griffe_an()
+    }
+
+    fn drei_d(&self) -> bool {
+        self.ui.view == ViewKind::Persp
+    }
+
+    /// In 3D der Höhenpfeil am ersten gewählten Punkt: Fuß und Spitze.
+    fn pfeil_3d(&self, vw: f64, vh: f64, sc: f64) -> Option<(Vec3, Vec3)> {
+        let erster = self.platte.punkte.gewaehlt.first()?;
+        let spots = self.spots();
+        let s = spots.iter().find(|s| s.0 == *erster)?;
+        let a = vec3(s.1.p[0], s.1.p[1], s.1.p[2]);
+        Some((a, pfeil_spitze(&self.cam, a, vw, vh, sc)?))
+    }
+
+    /// In 3D die senkrechte Ebene durch den Punkt `p`, die zur Kamera
+    /// schaut, und die Höhe der Maus darauf. Blickt die Kamera senkrecht
+    /// hinab, zählen die Bildpunkte wie im Grundriss (`None`).
+    fn senkrechte(
+        &self,
+        x: f64,
+        y: f64,
+        vw: f64,
+        vh: f64,
+        p: [f64; 3],
+    ) -> Option<(Vec3, Vec3, f64)> {
+        let f = self.cam.forward();
+        let n = vec3(f.x, f.y, 0.0);
+        if n.length() < 0.05 {
+            return None;
+        }
+        let (n, p) = (n.normalized(), vec3(p[0], p[1], p[2]));
+        let (o, d) = self.cam.ray(x, y, vw, vh);
+        Some((p, n, senkrecht_z(o, d, p, n)?))
     }
 
     /// Die Punkte im Gelände mit Nummer: gemerkt, wenn der Stand des
@@ -231,8 +378,13 @@ impl App {
         }
     }
 
-    /// Bildpunkt des Höhengriffs am ersten gewählten Punkt.
+    /// Bildpunkt des Höhengriffs am ersten gewählten Punkt (in 3D die
+    /// Kugel an der Spitze des Pfeils).
     fn hoehen_griff(&self, vw: f64, vh: f64, sc: f64) -> Option<(f64, f64)> {
+        if self.drei_d() {
+            let (_, b) = self.pfeil_3d(vw, vh, sc)?;
+            return self.cam.project(b, vw, vh);
+        }
         let erster = self.platte.punkte.gewaehlt.first()?.clone();
         let spots = self.spots();
         let s = spots.iter().find(|s| s.0 == erster)?;
@@ -311,8 +463,24 @@ impl App {
             }
         }
         let spots = self.spots();
-        let z = self.scene.model().terrain_z();
-        treffen(&spots, &self.cam, z, (x, y), vw, vh, sc).map(|s| Ziel::Punkt(s.0.clone()))
+        if !self.drei_d() {
+            let z = self.scene.model().terrain_z();
+            return treffen(spots.iter(), &self.cam, Some(z), (x, y), vw, vh, sc)
+                .map(|s| Ziel::Punkt(s.0.clone()));
+        }
+        // in 3D greift auch der Schaft des Pfeils, nicht aber sein Fuß: der
+        // ist der Punkt selbst
+        if let Some((a, b)) = self.pfeil_3d(vw, vh, sc) {
+            if let (Some(qa), Some(qb)) = (self.cam.project(a, vw, vh), self.cam.project(b, vw, vh))
+            {
+                let r = GREIF_PX * sc;
+                if abstand((x, y), qa, qb) <= r * 0.7 && (qa.0 - x).hypot(qa.1 - y) > r {
+                    return Some(Ziel::Hoehe);
+                }
+            }
+        }
+        treffen(self.nadeln(&spots), &self.cam, None, (x, y), vw, vh, sc)
+            .map(|s| Ziel::Punkt(s.0.clone()))
     }
 
     /// Klick neben die Punkte: die Wahl geht; der zweite schnell danach
@@ -331,11 +499,9 @@ impl App {
             return false;
         }
         self.platte.punkte.klick = None;
-        let Some(g) = self.cam.ground_point(x, y, vw, vh) else {
+        let Some((px, py)) = self.boden_unter(x, y, vw, vh) else {
             return false;
         };
-        let r = |v: f64| (v / STEP).round() * STEP + 0.0;
-        let (px, py) = (r(g.x), r(g.y));
         let m = self.scene.model();
         // unter dem Haus ist kein Gelände
         let im_haus = m
@@ -366,6 +532,35 @@ impl App {
         true
     }
 
+    /// Die Stelle im Gelände unter dem Bildpunkt, im Raster. In 3D trifft
+    /// der Strahl das Gelände (die Höhe in ein paar Schritten genähert) und
+    /// nicht vorher ein Bauteil.
+    fn boden_unter(&self, x: f64, y: f64, vw: f64, vh: f64) -> Option<(f64, f64)> {
+        let r = |v: f64| (v / STEP).round() * STEP + 0.0;
+        if !self.drei_d() {
+            let g = self.cam.ground_point(x, y, vw, vh)?;
+            return Some((r(g.x), r(g.y)));
+        }
+        let m = self.scene.model();
+        let lvl = m.level_building();
+        let mut g = self.cam.plane_point(x, y, vw, vh, m.terrain_z())?;
+        for _ in 0..6 {
+            let z = m.terrain_z_at(lvl, g.x, g.y);
+            let n = self.cam.plane_point(x, y, vw, vh, z)?;
+            let fertig = (n.x - g.x).hypot(n.y - g.y) < 1.0;
+            g = n;
+            if fertig {
+                break;
+            }
+        }
+        let (o, d) = self.cam.ray(x, y, vw, vh);
+        let weit = (g - o).length() / d.length().max(1e-12);
+        if self.scene.raycast(o, d).is_some_and(|(t, _)| t < weit) {
+            return None;
+        }
+        Some((r(g.x), r(g.y)))
+    }
+
     /// Greifen: am Punkt wählen (Strg: dazu) und den Zug vorbereiten; am
     /// Höhengriff die Höhe der Wahl.
     fn punkte_greifen(
@@ -377,9 +572,6 @@ impl App {
         vh: f64,
         mods: Modifiers,
     ) -> bool {
-        let Some(start) = self.cam.ground_point(x, y, vw, vh).map(|p| [p.x, p.y]) else {
-            return false;
-        };
         let (hoehe, nr, raus) = match ziel {
             Ziel::Hoehe => (true, self.platte.punkte.gewaehlt[0].clone(), false),
             Ziel::Punkt(nr) => {
@@ -395,16 +587,29 @@ impl App {
             }
         };
         let spots = self.spots();
+        let gp = spots.iter().find(|s| s.0 == nr).map(|s| s.1.p);
+        let ebene = match gp {
+            Some(p) if self.drei_d() => p[2],
+            _ => 0.0,
+        };
+        let senkrecht = gp
+            .filter(|_| hoehe && self.drei_d())
+            .and_then(|p| self.senkrechte(x, y, vw, vh, p));
+        let Some(start) = self
+            .cam
+            .plane_point(x, y, vw, vh, ebene)
+            .map(|p| [p.x, p.y])
+        else {
+            self.redraw = true;
+            return false;
+        };
         let w = &self.platte.punkte.gewaehlt;
         let alt: Vec<(usize, [f64; 3])> = spots
             .iter()
             .filter(|s| w.contains(&s.0))
             .map(|s| (s.1.i, s.1.p))
             .collect();
-        let griff = spots
-            .iter()
-            .find(|s| s.0 == nr)
-            .map_or(start, |s| [s.1.p[0], s.1.p[1]]);
+        let griff = gp.map_or(start, |p| [p[0], p[1]]);
         let neu = alt.iter().map(|a| a.1).collect();
         let fest = spots.iter().any(|s| w.contains(&s.0) && !s.1.hand);
         self.platte.punkte.zug = Some(Zug {
@@ -418,6 +623,8 @@ impl App {
             kopie: mods.ctrl,
             bewegt: false,
             fest,
+            ebene,
+            senkrecht,
             raus,
             nr,
         });
@@ -427,12 +634,19 @@ impl App {
 
     /// Ziehen: nur die Vorschau, das Modell bleibt bis zum Loslassen.
     fn punkte_ziehen(&mut self, x: f64, y: f64, vw: f64, vh: f64, sc: f64, mods: Modifiers) {
+        let ebene = self.platte.punkte.zug.as_ref().map_or(0.0, |z| z.ebene);
         let tol = {
-            let a = self.cam.ground_point(x, y, vw, vh);
-            let b = self.cam.ground_point(x + fang::FANG_PX * sc, y, vw, vh);
+            let a = self.cam.plane_point(x, y, vw, vh, ebene);
+            let b = self
+                .cam
+                .plane_point(x + fang::FANG_PX * sc, y, vw, vh, ebene);
             a.zip(b).map_or(0.0, |(a, b)| (b.x - a.x).hypot(b.y - a.y))
         };
-        let boden = self.cam.ground_point(x, y, vw, vh).map(|p| [p.x, p.y]);
+        let boden = self
+            .cam
+            .plane_point(x, y, vw, vh, ebene)
+            .map(|p| [p.x, p.y]);
+        let strahl = self.cam.ray(x, y, vw, vh);
         let Some(z) = self.platte.punkte.zug.as_mut() else {
             return;
         };
@@ -449,7 +663,13 @@ impl App {
         };
         z.bewegt = true;
         let text = if z.hoehe {
-            let d = hub(y - z.px.1, sc, mods.shift);
+            let d = match z.senkrecht {
+                Some((p, n, z0)) => match senkrecht_z(strahl.0, strahl.1, p, n) {
+                    Some(zz) => hub_3d(zz - z0, mods.shift),
+                    None => return,
+                },
+                None => hub(y - z.px.1, sc, mods.shift),
+            };
             z.neu = z.alt.iter().map(|a| [a.1[0], a.1[1], a.1[2] + d]).collect();
             let erster = z.neu[0][2];
             (erster, format!("Höhe {}", m_vz(d)))
@@ -633,14 +853,19 @@ impl App {
     }
 
     /// Die gewählten Punkte und der unter der Maus, der Höhengriff an der
-    /// Wahl, beim Ziehen die Punkte an ihrer neuen Stelle.
+    /// Wahl, beim Ziehen die Punkte an ihrer neuen Stelle. Im Grundriss auf
+    /// der Zeichenebene `z`, in 3D jeder Punkt in seiner Höhe.
     pub(crate) fn punkte_linien(&self, z: f64, scale: f32, theme: &Theme) -> Vec<Helper> {
         if !self.punkte_an() {
             return Vec::new();
         }
+        let drei_d = self.drei_d();
         let col = &theme.interact;
-        let p = |q: [f64; 2]| [q[0] as f32, q[1] as f32, z as f32 + 3.0];
-        let punkt = |q: [f64; 2], px: f32, color, round| Helper {
+        let p = |q: [f64; 3]| {
+            let h = if drei_d { q[2] } else { z };
+            [q[0] as f32, q[1] as f32, h as f32 + 3.0]
+        };
+        let punkt = |q: [f64; 3], px: f32, color, round| Helper {
             a: p(q),
             b: p(q),
             color,
@@ -650,7 +875,7 @@ impl App {
             occlude: false,
             round,
         };
-        let linie = |a: [f64; 2], b: [f64; 2], color, w: f32| Helper {
+        let linie = |a: [f64; 3], b: [f64; 3], color, w: f32| Helper {
             a: p(a),
             b: p(b),
             color,
@@ -671,25 +896,36 @@ impl App {
             let an = heiss.as_ref() == Some(&s.0);
             if w.contains(&s.0) || an {
                 let farbe = if an { col.drag } else { col.select };
-                out.push(punkt([s.1.p[0], s.1.p[1]], PUNKT_PX * 1.3, farbe, true));
+                out.push(punkt(s.1.p, PUNKT_PX * 1.3, farbe, true));
             }
         }
-        if let Some(zug) = self.platte.punkte.zug.as_ref().filter(|z| z.bewegt) {
+        let zug = self.platte.punkte.zug.as_ref();
+        if let Some(zug) = zug.filter(|z| z.bewegt) {
             for (a, n) in zug.alt.iter().zip(&zug.neu) {
-                let (q0, q1) = ([a.1[0], a.1[1]], [n[0], n[1]]);
-                if q0 != q1 {
-                    out.push(linie(q0, q1, col.guide, 1.0));
+                let anders = if drei_d {
+                    a.1 != *n
+                } else {
+                    a.1[..2] != n[..2]
+                };
+                if anders {
+                    out.push(linie(a.1, *n, col.guide, 1.0));
                 }
-                out.push(punkt(q1, PUNKT_PX * 1.3, col.drag, true));
+                out.push(punkt(*n, PUNKT_PX * 1.3, col.drag, true));
             }
+        }
+        let (vw, vh, sc) = self.view_size();
+        let an = self.platte.punkte.hover == Some(Ziel::Hoehe) || zug.is_some_and(|z| z.hoehe);
+        let farbe = if an { col.drag } else { col.select };
+        if drei_d {
+            let lage =
+                zug.is_some_and(|z| !z.hoehe) || heiss.is_some_and(|h| w.first() == Some(&h));
+            let fuss = if lage { col.drag } else { col.select };
+            out.extend(self.gizmo_3d(vw, vh, sc, (farbe, fuss), scale));
+            return out;
         }
         // Höhengriff: senkrechter Pfeil rechts über dem ersten gewählten
-        let (vw, vh, sc) = self.view_size();
         if let Some(g) = self.hoehen_griff(vw, vh, sc) {
-            let welt = |x: f64, y: f64| self.cam.ground_point(x, y, vw, vh).map(|v| [v.x, v.y]);
-            let an = self.platte.punkte.hover == Some(Ziel::Hoehe)
-                || self.platte.punkte.zug.as_ref().is_some_and(|z| z.hoehe);
-            let farbe = if an { col.drag } else { col.select };
+            let welt = |x: f64, y: f64| self.cam.ground_point(x, y, vw, vh).map(|v| [v.x, v.y, z]);
             let l = PFEIL_PX * sc;
             if let (Some(a), Some(b), Some(c), Some(d)) = (
                 welt(g.0, g.1 + l * 0.5),
@@ -704,6 +940,22 @@ impl App {
             }
         }
         out
+    }
+
+    /// In 3D am ersten gewählten Punkt Pfeil und Quadrat
+    /// ([`gizmo_linien`]).
+    fn gizmo_3d(
+        &self,
+        vw: f64,
+        vh: f64,
+        sc: f64,
+        farben: ([f32; 4], [f32; 4]),
+        scale: f32,
+    ) -> Vec<Helper> {
+        let Some((a, _)) = self.pfeil_3d(vw, vh, sc) else {
+            return Vec::new();
+        };
+        gizmo_linien(&self.cam, a, (vw, vh, sc), farben, scale)
     }
 }
 
@@ -735,7 +987,7 @@ mod tests {
         let s = [spot("H1", 0, 5000.0, 5000.0), spot("H2", 1, 5200.0, 5000.0)];
         let t = |x: f64, y: f64| {
             let q = cam.project(vec3(x, y, 0.0), 800.0, 800.0).unwrap();
-            treffen(&s, &cam, 0.0, q, 800.0, 800.0, 1.0).map(|s| s.0.clone())
+            treffen(&s, &cam, Some(0.0), q, 800.0, 800.0, 1.0).map(|s| s.0.clone())
         };
         assert_eq!(t(5050.0, 5000.0).as_deref(), Some("H1"));
         assert_eq!(t(5150.0, 5000.0).as_deref(), Some("H2"));
@@ -774,6 +1026,45 @@ mod tests {
         assert_eq!(s.model().terrain_spots(), vorher);
     }
 
+    /// In 3D: Punkte in ihrer Höhe greifen; der Höhenpfeil zählt auf der
+    /// senkrechten Ebene zur Kamera, die Maus und der Punkt bleiben
+    /// beieinander.
+    #[test]
+    fn hoehe_in_3d() {
+        let (w, h) = (800.0, 600.0);
+        let cam = Camera::looking_at(
+            vec3(-20000.0, -15000.0, 12000.0),
+            vec3(5000.0, 5000.0, 0.0),
+            45.0,
+        );
+        let mut hoch = spot("H1", 0, 5000.0, 5000.0);
+        hoch.1.p[2] = 2500.0;
+        let s = [hoch, spot("H2", 1, 5000.0, 5000.0)];
+        // H1 steht 2,50 m über H2: in 3D jeder in seiner Höhe getroffen
+        let q = cam.project(vec3(5000.0, 5000.0, 2500.0), w, h).unwrap();
+        let t = treffen(&s, &cam, None, q, w, h, 1.0).map(|s| s.0.as_str());
+        assert_eq!(t, Some("H1"));
+        let t = treffen(&s, &cam, Some(0.0), q, w, h, 1.0).map(|s| s.0.as_str());
+        assert_eq!(t, None, "auf der Zeichenebene liegt dort keiner");
+        // Maus auf der Höhe +0,73 m über dem Punkt: der Strahl trifft die
+        // senkrechte Ebene dort
+        let f = cam.forward();
+        let n = vec3(f.x, f.y, 0.0).normalized();
+        let p = vec3(5000.0, 5000.0, 0.0);
+        let z = |zz: f64| {
+            let q = cam.project(vec3(5000.0, 5000.0, zz), w, h).unwrap();
+            let (o, d) = cam.ray(q.0, q.1, w, h);
+            senkrecht_z(o, d, p, n).unwrap()
+        };
+        assert!((z(730.0) - 730.0).abs() < 1e-6);
+        assert_eq!(hub_3d(z(734.0) - z(0.0), false), 730.0);
+        assert_eq!(hub_3d(z(734.0) - z(0.0), true), 700.0);
+        // ein Strahl parallel zur Ebene trifft sie nicht
+        assert_eq!(senkrecht_z(p - n * 10.0, cam.right(), p, n), None);
+        assert_eq!(abstand((5.0, 3.0), (0.0, 0.0), (10.0, 0.0)), 3.0);
+        assert_eq!(abstand((-4.0, 3.0), (0.0, 0.0), (10.0, 0.0)), 5.0);
+    }
+
     #[test]
     fn hub_in_cm() {
         assert_eq!(hub(-10.0, 1.0, false), 100.0);
@@ -802,6 +1093,8 @@ mod tests {
             kopie: false,
             bewegt: true,
             fest: false,
+            ebene: 0.0,
+            senkrecht: None,
             raus: false,
             nr: "H1".into(),
         };

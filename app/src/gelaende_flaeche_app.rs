@@ -17,7 +17,7 @@
 
 mod fang;
 pub(crate) mod griffe;
-mod netz;
+pub(crate) mod netz;
 pub(crate) mod punkte;
 
 use crate::camera::Camera;
@@ -718,18 +718,28 @@ impl App {
     /// und Bauteile zeigen dann keinen Hover (H-189c).
     pub(crate) fn nord_hover(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
         self.nord_handle(ev, vw, vh, sc)
-            && (self.platte.leiste.werkzeug.aktiv
-                || self.platte.griffe.busy()
-                || self.platte.punkte.busy())
-            && self.ui.view == ViewKind::Plan
+            && match self.ui.view {
+                ViewKind::Plan => {
+                    self.platte.leiste.werkzeug.aktiv
+                        || self.platte.griffe.busy()
+                        || self.platte.punkte.busy()
+                }
+                // Höhenpunkte in 3D (I4c)
+                ViewKind::Persp => self.platte.punkte.busy(),
+                _ => false,
+            }
     }
 
-    /// Tasten beim Zeichnen, nur im Grundriss (H-189g).
+    /// Tasten beim Zeichnen, nur im Grundriss (H-189g); Strg+D an den
+    /// Höhenpunkten auch in 3D (I4c).
     pub(crate) fn flaeche_taste(&mut self, key: Key, mods: Modifiers) -> bool {
         let mut out = Ausgang::default();
         let vor = self.platte.leiste.werkzeug.ecken().len();
         if self.netz_taste(key, mods) {
             return true;
+        }
+        if self.ui.view == ViewKind::Persp {
+            return self.punkte_taste(key, mods);
         }
         if self.ui.view != ViewKind::Plan {
             return false;

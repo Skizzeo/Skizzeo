@@ -891,6 +891,41 @@ mod tests {
             r.set_mesh(gp::MESH_PLATE, &netz);
             let px = bild(&mut r, &mut h, sun, &cam);
             ab(&px, &format!("ist-aufmass-3d-{n}-netz.png"));
+            // dazu die Nadeln und am Punkt vor dem Haus Höhenpfeil und
+            // Quadrat (I4c)
+            if show == Show::All {
+                use crate::gelaende_flaeche_app::{netz, punkte};
+                let spots = h.model().terrain_spots();
+                let (lo, _) = h.bounds().unwrap();
+                let vorn = spots
+                    .iter()
+                    .filter(|s| s.p[0] < lo.x && s.p[1] < lo.y)
+                    .max_by(|a, b| (a.p[0] + a.p[1]).total_cmp(&(b.p[0] + b.p[1])))
+                    .unwrap();
+                let sel = theme.interact.select;
+                let haeuser = h.model().terrain_patches(0.0);
+                let im_haus = |p: [f64; 3]| {
+                    haeuser.iter().any(|(b, _)| {
+                        (b[0]..=b[2]).contains(&p[0]) && (b[1]..=b[3]).contains(&p[1])
+                    })
+                };
+                let a = vec3(vorn.p[0], vorn.p[1], vorn.p[2]);
+                let nah =
+                    Camera::looking_at(a + vec3(-1.0, -1.3, 0.8).normalized() * 14_000.0, a, 45.0);
+                for (cam, n) in [(&cam, "gizmo"), (&nah, "gizmo-nah")] {
+                    let mut l = Vec::new();
+                    for s in spots.iter().filter(|s| !im_haus(s.p)) {
+                        let w = s.i == vorn.i;
+                        netz::nadel(&mut l, s, w.then_some(sel), !w, 1.0);
+                    }
+                    let v = (W as f64, H as f64, 1.0);
+                    l.extend(punkte::gizmo_linien(cam, a, v, (sel, sel), 1.0));
+                    r.set_helpers(&l);
+                    let px = bild(&mut r, &mut h, sun, cam);
+                    ab(&px, &format!("ist-aufmass-3d-{n}.png"));
+                }
+                r.set_helpers(&[]);
+            }
         }
         r.set_mesh(gp::MESH_PLATE, &Default::default());
         // Grundriss, Schnitt und Vorne auf Papier

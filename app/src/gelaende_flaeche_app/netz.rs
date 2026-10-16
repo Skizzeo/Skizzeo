@@ -10,6 +10,7 @@
 use crate::freischaltung::Modul;
 use crate::ui::{GelaendeKnopf, ViewKind};
 use crate::App;
+use sk_model::TerrainSpot;
 use sk_platform::{Key, Modifiers};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -24,6 +25,34 @@ const NADELN: usize = 2_000;
 /// Messpunkt des Vermessers und eigener Punkt.
 const GRAU: [f32; 4] = [0.45, 0.45, 0.45, 1.0];
 const BLAU: [f32; 4] = [0.18, 0.42, 0.85, 1.0];
+
+/// Ein Höhenpunkt in 3D: Punkt und, mit `stab`, die Nadel darüber; grau
+/// der Messpunkt, blau der eigene, sonst in der Farbe `wahl`.
+pub(crate) fn nadel(
+    out: &mut Vec<Helper>,
+    s: &TerrainSpot,
+    wahl: Option<[f32; 4]>,
+    stab: bool,
+    scale: f32,
+) {
+    let farbe = wahl.unwrap_or(if s.hand { BLAU } else { GRAU });
+    let a = s.p.map(|v| v as f32);
+    let b = [a[0], a[1], a[2] + NADEL];
+    let strich = |a: [f32; 3], b: [f32; 3], px: f32, round: bool| Helper {
+        a,
+        b,
+        color: farbe,
+        width: px * scale,
+        dash: 0.0,
+        pattern: sk_render::SOLID,
+        occlude: true,
+        round,
+    };
+    if stab {
+        out.push(strich(a, b, 1.5, false));
+    }
+    out.push(strich(a, a, PUNKT_PX, true));
+}
 
 impl App {
     /// Ist das Hilfsnetz an? Bei offener Leiste mit dem Modul, solange es
@@ -55,13 +84,12 @@ impl App {
         true
     }
 
-    /// Die Höhenpunkte als Nadeln in 3D, wenn das Netz an ist; im Haus
-    /// keine.
-    pub(crate) fn netz_marken(&self, scale: f32, theme: &Theme) -> Vec<Helper> {
-        if self.ui.view != ViewKind::Persp || !self.netz_an() {
-            return Vec::new();
-        }
-        let spots = self.spots();
+    /// Die Punkte, die in 3D als Nadel stehen und greifbar sind: keine im
+    /// Haus, bei sehr vielen nur die eigenen und die gewählten.
+    pub(super) fn nadeln<'a>(
+        &self,
+        spots: &'a [(String, TerrainSpot)],
+    ) -> Vec<&'a (String, TerrainSpot)> {
         let haeuser = self.scene.model().terrain_patches(0.0);
         let im_haus = |p: [f64; 3]| {
             haeuser
@@ -70,33 +98,31 @@ impl App {
         };
         let gewaehlt = &self.platte.punkte.gewaehlt;
         let alle = spots.len() <= NADELN;
+        spots
+            .iter()
+            .filter(|(nr, s)| (alle || s.hand || gewaehlt.contains(nr)) && !im_haus(s.p))
+            .collect()
+    }
+
+    /// Die Höhenpunkte als Nadeln in 3D, wenn das Netz an ist.
+    pub(crate) fn netz_marken(&self, scale: f32, theme: &Theme) -> Vec<Helper> {
+        if self.ui.view != ViewKind::Persp || !self.netz_an() {
+            return Vec::new();
+        }
+        let spots = self.spots();
+        let gewaehlt = &self.platte.punkte.gewaehlt;
         let mut out = Vec::new();
-        for (nr, s) in spots.iter() {
+        for (nr, s) in self.nadeln(&spots) {
             let wahl = gewaehlt.contains(nr);
-            if !(alle || s.hand || wahl) || im_haus(s.p) {
-                continue;
-            }
-            let farbe = if wahl {
-                theme.interact.select
-            } else if s.hand {
-                BLAU
-            } else {
-                GRAU
-            };
-            let a = s.p.map(|v| v as f32);
-            let b = [a[0], a[1], a[2] + NADEL];
-            let strich = |a: [f32; 3], b: [f32; 3], px: f32, round: bool| Helper {
-                a,
-                b,
-                color: farbe,
-                width: px * scale,
-                dash: 0.0,
-                pattern: sk_render::SOLID,
-                occlude: true,
-                round,
-            };
-            out.push(strich(a, b, 1.5, false));
-            out.push(strich(a, a, PUNKT_PX, true));
+            // am ersten gewählten steht statt der Nadel der Höhenpfeil
+            let erster = gewaehlt.first() == Some(nr);
+            nadel(
+                &mut out,
+                s,
+                wahl.then_some(theme.interact.select),
+                !erster,
+                scale,
+            );
         }
         out
     }

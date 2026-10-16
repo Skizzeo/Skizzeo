@@ -991,12 +991,14 @@ fn seite(s: &mut Solid, a: Vec3, b: Vec3, unten: f64) {
     s.edge(au, bu);
 }
 
-/// Körper in 3D; `keys`: Rasen, Erdreich, Rasen blass.
+/// Körper in 3D; `keys`: Rasen, Erdreich, Rasen blass. Die App nimmt
+/// [`koerper_mit_netz`].
+#[cfg(test)]
 pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
     koerper_mit_netz(g, keys, false)
 }
 
-/// Wie [`koerper`], mit `netz` dazu das Hilfsnetz (Jörns §4.3a): die Kanten
+/// Körper in 3D wie `koerper`, mit `netz` dazu das Hilfsnetz (Jörns §4.3a): die Kanten
 /// des Dreiecksnetzes fein auf dem Rasen, die vollen Meter kräftig. Als
 /// Kanten des Körpers bleiben sie hinter Hügeln und Häusern verdeckt.
 pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Solid {
