@@ -409,11 +409,33 @@ fn netz_der_datei_im_budget() {
     );
 }
 
-/// Höhenpunkte von Hand (Review #234 B-234a): Einen eigenen Punkt anheben
-/// rechnet das Netz nicht neu, es übernimmt nur die Höhe. Gemessen bei 25
-/// Häusern und rund 100.000 Punkten; vorher 618 ms.
+/// Bestwert von bis zu 15 Läufen von `f` in ms, Schluss sobald einer
+/// unter `ziel` bleibt (Review #234: Maßstab ist der Bestwert). Neben den
+/// übrigen Tests verdrängt die Maschine einzelne Läufe um viele ms.
+fn bestwert(ziel: f64, mut f: impl FnMut(usize)) -> f64 {
+    let mut best = f64::INFINITY;
+    for k in 0..15 {
+        let t0 = Instant::now();
+        f(k);
+        best = best.min(ms_seit(t0));
+        if best < ziel {
+            break;
+        }
+    }
+    best
+}
+
+/// Höhenpunkte von Hand bei 25 Häusern und rund 100.000 Punkten, wie in
+/// der App mit dem Netz im Faden. Heben übernimmt das Netz und setzt nur
+/// die Höhe (Review #234 B-234a, vorher 618 ms). Verschieben und Setzen
+/// lassen das alte Netz vorläufig stehen, das neue rechnet der Faden
+/// (B-234b, vorher 554 ms); eingesetzt stimmt alles wie gerechnet. Was
+/// bleibt, ist vor allem die Kopie des Geländes für Rückgängig (H-234g):
+/// 2 bis 4 ms, mit neuem Speicher je Schritt bis 8 ms. Die Grenze von
+/// 12 ms lässt ihr und der Last der übrigen Tests Raum; ohne sie liegen
+/// die Bestwerte hier bei 6 bis 9 ms.
 #[test]
-fn punkt_heben_im_budget() {
+fn punkte_aendern_im_budget() {
     let (mut m, _) = haeuser_am_hang(25);
     let mut t = Terrain::new(Crs::Local);
     let (nx, ny) = (317, 317);
@@ -435,31 +457,49 @@ fn punkt_heben_im_budget() {
     m.begin("Aufmaß");
     assert!(m.import_terrain(t));
     m.commit();
+    m.netz_im_faden(true);
     m.begin("Höhenpunkt");
     let i = m.add_terrain_points(&[[-3000.0, -3000.0, 0.0]])[0];
+    m.commit();
+    // das Netz mit dem neuen Punkt, wie es der Faden brächte
+    let t0 = Instant::now();
+    let fertig = m.netz_auftrag().expect("Auftrag").rechnen();
+    let neubau = ms_seit(t0);
+    m.begin("Netz");
+    assert!(m.netz_einsetzen(fertig));
     m.commit();
     let p = m.terrain_spots()[i].p;
     // die Schritte bleiben wie in der App zum Rückgängigmachen
     let mut schritte = Vec::new();
-    let mut heben = Vec::new();
-    for k in 1..=5 {
-        let t0 = Instant::now();
+    let grenze = budget(12.0);
+    let heben = bestwert(budget(8.0), |k| {
         m.begin("Höhe");
-        assert!(m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 100.0 * k as f64])]));
+        assert!(m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 100.0 * (k + 1) as f64])]));
         schritte.push(m.commit());
-        heben.push(ms_seit(t0));
-    }
-    let t0 = Instant::now();
-    m.begin("Lage");
-    assert!(m.move_terrain_points(&[(i, [p[0] + 1000.0, p[1], p[2]])]));
-    schritte.push(m.commit());
-    let lage = ms_seit(t0);
-    heben.sort_by(f64::total_cmp);
-    let (best, mitte) = (heben[0], heben[heben.len() / 2]);
-    eprintln!("100.489 Punkte, 25 Häuser: Höhe {best:.1}/{mitte:.1} ms, Lage {lage:.1} ms");
+    });
+    assert!(m.netz_auftrag().is_none(), "Heben teilt nicht neu");
+    let lage = bestwert(budget(8.0), |k| {
+        m.begin("Lage");
+        let x = p[0] + 100.0 * (k + 1) as f64;
+        assert!(m.move_terrain_points(&[(i, [x, p[1], p[2]])]));
+        schritte.push(m.commit());
+    });
+    let setzen = bestwert(budget(8.0), |k| {
+        m.begin("Höhenpunkt");
+        let x = -6000.0 - 300.0 * k as f64;
+        assert_eq!(m.add_terrain_points(&[[x, -3000.0, 0.0]]).len(), 1);
+        schritte.push(m.commit());
+    });
+    let fertig = m.netz_auftrag().expect("Auftrag").rechnen();
+    m.begin("Netz");
+    assert!(m.netz_einsetzen(fertig));
+    m.commit();
     wie_gerechnet(&m);
-    // Das Beste gegen das Budget, die Mitte gegen den Neubau: Auf einer
-    // geteilten Maschine schwankt die Mitte um einige ms (wie #43)
-    assert!(best < budget(8.0), "Höhe: {best:.1} ms");
-    assert!(mitte * 20.0 < lage, "Höhe {mitte:.1} ms, Lage {lage:.1} ms");
+    eprintln!(
+        "100.489 Punkte, 25 Häuser, Bestwerte: Heben {heben:.1} ms, Verschieben {lage:.1} ms, \
+         Setzen {setzen:.1} ms; Netz im Faden {neubau:.1} ms"
+    );
+    for (wert, was) in [(heben, "Heben"), (lage, "Verschieben"), (setzen, "Setzen")] {
+        assert!(wert < grenze, "{was}: {wert:.1} ms");
+    }
 }

@@ -238,6 +238,55 @@ mod tests {
         Scene::with_model(m)
     }
 
+    /// Höhenpunkt setzen mit dem Netz im Faden (Review #234 B-234b): Der
+    /// Schritt lässt das alte Netz und die Gründung stehen; das Netz aus
+    /// dem Faden bringt die Gründung dahin, wo sie ohne Faden stünde, im
+    /// selben Schritt des Verlaufs.
+    #[test]
+    fn netz_im_faden_ein_schritt() {
+        let uk = |s: &Scene| -> Vec<f64> { s.gruendungen_uk().iter().map(|x| x.1).collect() };
+        let mut s = haus_am_hang();
+        let (uk0, n0) = (uk(&s), s.model().terrain().unwrap().points.len());
+        let netz0 = s.model().terrain().unwrap().mesh();
+        // tief neben dem Haus: die Gründung geht mit
+        let tief = s
+            .model()
+            .terrain_spots()
+            .iter()
+            .map(|x| x.p[2])
+            .fold(f64::MAX, f64::min);
+        let p = [5000.0, -1000.0, tief - 2000.0];
+        let setzen = |m: &mut Model| !m.add_terrain_points(&[p]).is_empty();
+        assert!(s.edit_model("Höhenpunkt", setzen));
+        assert!(std::sync::Arc::ptr_eq(
+            &s.model().terrain().unwrap().mesh(),
+            &netz0
+        ));
+        assert_eq!(uk(&s), uk0);
+        assert!(s.netz_rechnet());
+        assert!(s.netz_abwarten());
+        assert!(!s.netz_rechnet());
+        let uk1 = uk(&s);
+        assert_ne!(uk1, uk0, "die Gründung ist mitgegangen");
+        let mut ohne = haus_am_hang();
+        assert!(ohne.edit_model("Höhenpunkt", |m| {
+            m.netz_im_faden(false);
+            setzen(m)
+        }));
+        assert!(!ohne.netz_rechnet());
+        assert_eq!(uk(&ohne), uk1);
+        // ein Rückgängig nimmt beides zurück, Wiederholen bringt beides
+        assert_eq!(s.undo_label(), Some("Höhenpunkt"));
+        assert!(s.undo());
+        assert_eq!(
+            (uk(&s), s.model().terrain().unwrap().points.len()),
+            (uk0, n0)
+        );
+        assert!(s.redo());
+        assert_eq!(uk(&s), uk1);
+        assert!(!s.netz_rechnet(), "das Gelände hat sein Netz");
+    }
+
     /// Projektdaten und Nordpfeil bewegen mit Aufmaß die Gründung; die
     /// Körper in 3D folgen im selben Schritt.
     #[test]
