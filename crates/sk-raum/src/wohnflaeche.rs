@@ -761,21 +761,57 @@ pub fn projekt(model: &Model) -> Wohnflaeche {
     projekt_mit(model, model, |st| je.remove(&st).unwrap_or_default())
 }
 
+/// Was die Wohnfläche eines Raums außer seiner Form liest: Höhen der
+/// Geschosse, Stützen und Treppen je Geschoss. Einmal je Modellstand für
+/// alle Räume (Review #137 B2, #195 B1, B2); Blatt, Stempel und Paneel
+/// rechnen damit dieselbe Grundfläche (Review #195 B, Bedienbarkeit).
+#[derive(Clone, Debug, Default)]
+pub struct Umfeld {
+    lagen: Geschosse,
+    einbauten: HashMap<StoreyId, Einbauten>,
+}
+
+impl Umfeld {
+    pub fn aus(model: &Model) -> Umfeld {
+        Umfeld {
+            lagen: Geschosse::aus(model),
+            einbauten: einbau::sammeln(model),
+        }
+    }
+
+    /// Wohnfläche des Raums der Form `f` wie im Blatt; `None`, wenn die
+    /// Form keinen Raum trägt oder sein Ausbau fehlt.
+    pub fn raum(&self, model: &Model, k: &(impl Ketten + ?Sized), f: RaumForm) -> Option<WohnRaum> {
+        f.raum?;
+        let roh = Rohbau::mit_geschossen(model, k, f, &self.lagen);
+        let aus = RaumAusbau::fuer_in(model, &roh, &self.lagen)?;
+        let leer = Einbauten::default();
+        let ein = self.einbauten.get(&roh.form.geschoss).unwrap_or(&leer);
+        Some(raum_mit(model, &roh, &aus, ein))
+    }
+}
+
 /// Wie [`projekt`], die Wandzüge aus `k` und die Räume je Geschoss aus
 /// `raeume` (in der App aus der Erkennung der Szene). Nur gespeicherte
 /// Räume zählen; Gebäude und Geschosse ohne Raum fehlen.
 pub fn projekt_mit(
     model: &Model,
     k: &(impl Ketten + ?Sized),
+    raeume: impl FnMut(StoreyId) -> Vec<RaumForm>,
+) -> Wohnflaeche {
+    projekt_im_umfeld(model, k, &Umfeld::aus(model), raeume)
+}
+
+/// Wie [`projekt_mit`] mit dem Umfeld `umfeld` dieses Modellstands (in der
+/// App dasselbe wie für Stempel und Paneel, Review #220 B1).
+pub fn projekt_im_umfeld(
+    model: &Model,
+    k: &(impl Ketten + ?Sized),
+    umfeld: &Umfeld,
     mut raeume: impl FnMut(StoreyId) -> Vec<RaumForm>,
 ) -> Wohnflaeche {
     let mut gebaeude: Vec<Gebaeude> = Vec::new();
     let mut gebaeude_nr: HashMap<Option<BuildingId>, usize> = HashMap::new();
-    // Höhen der Geschosse, Stützen und Treppen einmal für alle Räume
-    // (Review #137 B2, #195 B1, B2)
-    let lagen = Geschosse::aus(model);
-    let einbauten = einbau::sammeln(model);
-    let leer = Einbauten::default();
     let mut geschosse: Vec<(StoreyId, &sk_model::Storey)> = model
         .storeys()
         .iter()
@@ -792,12 +828,7 @@ pub fn projekt_mit(
         }
         let mut rs: Vec<WohnRaum> = formen
             .into_iter()
-            .filter_map(|f| {
-                let roh = Rohbau::mit_geschossen(model, k, f, &lagen);
-                let aus = RaumAusbau::fuer_in(model, &roh, &lagen)?;
-                let ein = einbauten.get(&id).unwrap_or(&leer);
-                Some(raum_mit(model, &roh, &aus, ein))
-            })
+            .filter_map(|f| umfeld.raum(model, k, f))
             .collect();
         rs.sort_by(|a, b| a.nummer.cmp(&b.nummer));
         let g = Geschoss {

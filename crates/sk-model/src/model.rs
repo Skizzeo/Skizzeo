@@ -3368,11 +3368,19 @@ impl Model {
             changes: Vec::new(),
             noted: Default::default(),
             grab: Default::default(),
+            revision: self.revision,
         });
     }
 
     pub fn in_step(&self) -> bool {
         self.txn.is_some()
+    }
+
+    /// Modellstand beim Öffnen des offenen Schritts; `None` ohne Schritt.
+    /// Was nur nach einem abgeschlossenen Schritt neu entsteht, gilt im
+    /// Schritt zu diesem Stand weiter (Review #220 B1).
+    pub fn step_revision(&self) -> Option<u64> {
+        self.txn.as_ref().map(|t| t.revision)
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat
