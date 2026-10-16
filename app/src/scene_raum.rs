@@ -150,7 +150,9 @@ impl Scene {
             let p = platten.get_or_init(|| sk_raum::raumliste::Platten::neu(m, &k));
             sk_raum::mengen::raeume_mit(m, &k, p, formen)
         };
-        sk_model::qto::schedule_mit_zuegen(&self.model, &raeume, &|r| k.mengen(r))
+        self.ausbau
+            .mengen
+            .liste(&self.model, &raeume, &|r| k.mengen(r))
     }
 
     /// [`Scene::raumgruppen`] für jedes Geschoss mit Räumen, in einem Gang
