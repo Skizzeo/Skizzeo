@@ -146,16 +146,24 @@ fn untertitel_je_dicke() {
 }
 
 /// Review #213 H-213g: Die schmale OZ-Spalte fasst die längste OZ einer
-/// Teilposition mit Untertitel `TT.UU.PPPP.i` (Schrift der Ansicht).
+/// Teilposition mit Untertitel `TT.UU.PPPP.i` (Schrift der Ansicht). Ohne
+/// die Schrift mit den Breiten von Arial (Ziffer 0,556 em, Punkt
+/// 0,278 em), damit der Test nie still durchgeht (H-213m).
 #[test]
 fn oz_spalte_fasst_index() {
+    let oz = "00.00.0000.0";
     let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
-    let Some(f) = std::fs::read(lib.join("LiberationSans-Regular.ttf"))
+    let breit = match std::fs::read(lib.join("LiberationSans-Regular.ttf"))
         .ok()
         .and_then(sk_paint::font::Font::parse)
-    else {
-        return;
+    {
+        Some(f) => f.width(oz, 11.0),
+        None => {
+            oz.chars()
+                .map(|c| if c == '.' { 0.278 } else { 0.556 })
+                .sum::<f32>()
+                * 11.0
+        }
     };
-    let breit = f.width("00.00.0000.0", 11.0);
-    assert!(breit <= super::OZ_ENG - 4.0, "{breit}");
+    assert!(breit > 60.0 && breit <= super::OZ_ENG - 4.0, "{breit}");
 }

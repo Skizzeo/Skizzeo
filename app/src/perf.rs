@@ -1195,6 +1195,9 @@ fn preisblatt_taste_speicher_je_umfang() {
     s.kosten_live(None, &[], &[&haus]).unwrap();
     taste(&mut s, 3);
     assert_eq!(s.kosten_live_neu(), vec![0, 0]);
+    // Review #213 H-213n: Mengenfenster und Vorschau teilen die Liste
+    let liste = s.kosten_live_liste(0).expect("Liste des Hauses");
+    assert!(std::rc::Rc::ptr_eq(&s.schedule_in(&haus), &liste));
 }
 
 /// KA-2c (paket-ka2 §3): eine Taste im Preisblatt am großen Prüfhaus,
