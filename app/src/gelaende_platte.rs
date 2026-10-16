@@ -70,6 +70,9 @@ pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool);
 /// Schnittebene als Bits.
 type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool);
 
+/// Fassung, Ziffernhöhe, Zeichentabelle und Farben der Höhenzahlen.
+type ZahlenKey = (u64, u64, u64, u64);
+
 fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
     (fassung, s.0, s.1.map(bits), s.2, s.3)
 }
@@ -179,7 +182,7 @@ pub(crate) struct Platte {
     /// Höhenzahlen im Grundriss als Tinte, zu Gelände, Ziffernhöhe und
     /// Zeichentabelle ([`App::gelaende_zahlen`]), dazu ihr Inhalt
     /// ([`gelaende_netz::zahlen_inhalt`]).
-    zahlen: Option<((u64, u64, u64, u64), u64, crate::bemassung::Teil)>,
+    zahlen: Option<(ZahlenKey, u64, crate::bemassung::Teil)>,
     /// Der Lageplan kam nach dem letzten Nachzug: das Gelände zieht mit
     /// der Unterlage nach, auch beim selben Modellstand.
     mit_plan: bool,
