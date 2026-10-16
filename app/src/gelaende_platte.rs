@@ -70,6 +70,9 @@ pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool);
 /// Schnittebene als Bits.
 type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool);
 
+/// Fassung, Ziffernhöhe, Zeichentabelle und Farben der Höhenzahlen.
+type ZahlenKey = (u64, u64, u64, u64);
+
 fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
     (fassung, s.0, s.1.map(bits), s.2, s.3)
 }
@@ -177,8 +180,9 @@ pub(crate) struct Platte {
     /// Linien in Ansicht und Schnitt.
     linien: Option<Linien>,
     /// Höhenzahlen im Grundriss als Tinte, zu Gelände, Ziffernhöhe und
-    /// Zeichentabelle ([`App::gelaende_zahlen`]).
-    zahlen: Option<((u64, u64, u64, u64), crate::bemassung::Teil)>,
+    /// Zeichentabelle ([`App::gelaende_zahlen`]), dazu ihr Inhalt
+    /// ([`gelaende_netz::zahlen_inhalt`]).
+    zahlen: Option<(ZahlenKey, u64, crate::bemassung::Teil)>,
     /// Der Lageplan kam nach dem letzten Nachzug: das Gelände zieht mit
     /// der Unterlage nach, auch beim selben Modellstand.
     mit_plan: bool,
@@ -1000,13 +1004,24 @@ impl App {
         let h = stil.am_bau(stil.schrift_mm);
         let t = self.scene.table();
         let g = self.platte.gelaende_im_bild(m);
-        if g.is_none_or(|g| g.zahlen.is_empty()) {
+        if g.is_none_or(|g| g.zahlen.is_empty() && g.koten.is_empty()) {
             return None;
         }
         let key = (self.platte.fassung, h.to_bits(), t.rev, t.theme_rev);
-        if let Some((k, teil)) = &self.platte.zahlen {
+        if let Some((k, _, teil)) = &self.platte.zahlen {
             if *k == key {
                 return Some(teil.clone());
+            }
+        }
+        // Mit Aufmaß bringt jede Änderung eine neue Fassung; gleiche Zahlen
+        // behalten ihre Tinte, sonst lüde jeder Schritt bis zu 2.000 Koten
+        // neu hoch (Review H-223b: 3,4 ms und 354.000 Dreiecke)
+        let g = self.platte.gelaende_im_bild(m)?;
+        let inhalt = gelaende_netz::zahlen_inhalt(g);
+        if let Some((k, i, _)) = &mut self.platte.zahlen {
+            if *i == inhalt && (k.1, k.2, k.3) == (key.1, key.2, key.3) {
+                *k = key;
+                return self.platte.zahlen.as_ref().map(|z| z.2.clone());
             }
         }
         let ui = self.ui.fonts.regular.as_ref();
@@ -1014,7 +1029,7 @@ impl App {
         let g = self.platte.gelaende_im_bild(m)?;
         let ink = gelaende_netz::zahlen_tinte(g, &schrift, h, t);
         let teil: crate::bemassung::Teil = (crate::scene::neuer_stand() << 1, ink.into());
-        self.platte.zahlen = Some((key, teil.clone()));
+        self.platte.zahlen = Some((key, inhalt, teil.clone()));
         Some(teil)
     }
 

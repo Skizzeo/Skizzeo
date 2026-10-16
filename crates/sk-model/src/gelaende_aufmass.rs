@@ -1824,11 +1824,16 @@ mod tests {
         assert_eq!(summe(BACKFILL) + summe(SLOPE), 0.0);
         assert!(
             ansatz(TRENCH).ends_with(
-                "; aus Geländemodell, Dreiecksprismen (REB-VB 22.013), 200 Dreiecke, \
-                 Aufmaß hoehenaufmass-lindenhof-7.csv, 2026-10-12"
+                "; aus Geländemodell, Dreiecksprismen (REB-VB 22.013) aus dem Höhenaufmaß \
+                 hoehenaufmass-lindenhof-7.csv vom 12.10.2026"
             ),
             "{}",
             ansatz(TRENCH)
+        );
+        // Dreieckszahl einmal in die LV-Vorbemerkung (VOB-Prüfung A2)
+        assert_eq!(
+            crate::qto_earth::netz_herkunft(&m).as_deref(),
+            Some("Höhenaufmaß hoehenaufmass-lindenhof-7.csv vom 12.10.2026, 200 Dreiecke")
         );
         // exakt: keine Marke für den Hinweis (VOB-Prüfung A3); 2,8 %
         // Gefälle: kein Hinweis nach DIN 4124 (A4)
