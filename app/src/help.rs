@@ -1282,14 +1282,14 @@ mod tests {
             };
             k.zeilen(Topic::Gelaende).into_iter().map(|z| z.0).collect()
         };
-        assert_eq!(zeilen(Freischaltung::mit(&[])), ["Platte", "Modul"]);
+        assert_eq!(zeilen(Freischaltung::mit(&[])), ["Eben", "Modul"]);
         let alle = zeilen(Freischaltung::mit(&[
             Modul::Gelaende,
             Modul::Mengen,
             Modul::Kosten,
         ]));
         for a in [
-            "Platte",
+            "Eben",
             "Lageplan",
             "Höhen",
             "Lage",

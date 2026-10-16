@@ -218,6 +218,7 @@ mod tests {
                     h: 30.0 + 0.001 * (e - E0).powi(2),
                     code: String::new(),
                     off: false,
+                    hand: false,
                 });
             }
         }
@@ -356,6 +357,7 @@ mod tests {
                         h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
                         code: String::new(),
                         off: false,
+                        hand: false,
                     });
                 }
             }

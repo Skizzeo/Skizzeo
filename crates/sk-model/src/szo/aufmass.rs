@@ -4,6 +4,7 @@
 //! [terrain] src="aufmass.csv" read=2026-10-12 crs=utm32 hsys=DHHN2016
 //! [tpoint] nr=1 e=467108.214 n=5878741.637 h=24.337 code=GR
 //! [tpoint] nr=245 e=… n=… h=… code=GP off=1
+//! [tpoint] nr=H1 e=… n=… h=… src=hand
 //! [tline] kind=boundary pts=1,2,3,4
 //! [tline] kind=break pts=106,107,L1-1,108
 //! [tline] kind=break pts=N1,N2,N3 closed=1
@@ -68,6 +69,9 @@ pub(super) fn write(m: &Model, out: &mut String) {
         }
         if p.off {
             l = l.flag("off", true);
+        }
+        if p.hand {
+            l = l.word("src", "hand");
         }
         l.finish(out);
     }
@@ -254,6 +258,17 @@ pub(super) fn read<'r>(
                 false
             }
         };
+        let hand = match r.opt("src") {
+            None => false,
+            Some("hand") => true,
+            Some(_) => {
+                hints.push(format!(
+                    "Zeile {}: [tpoint] „src“ ist nicht „hand“, der Punkt gilt als gemessen",
+                    r.line
+                ));
+                false
+            }
+        };
         t.points.push(TerrainPoint {
             nr: nr.to_string(),
             e,
@@ -261,6 +276,7 @@ pub(super) fn read<'r>(
             h,
             code: r.opt("code").unwrap_or("").to_string(),
             off,
+            hand,
         });
     }
     for r in linien {
@@ -359,6 +375,7 @@ mod tests {
                 h,
                 code: code.into(),
                 off: nr == "3",
+                hand: nr == "A 7",
             });
         }
         t.boundaries.push(vec!["1".into(), "2".into(), "3".into()]);
@@ -418,7 +435,7 @@ mod tests {
                 "[tpoint] nr=1 e=467108.214 n=5878741.637 h=24.337 code=GR",
                 "[tpoint] nr=2 e=467132.035 n=5878744.562 h=24.624 code=GR",
                 "[tpoint] nr=3 e=467128.548 n=5878777.885 h=25.71 code=GR off=1",
-                "[tpoint] nr=\"A 7\" e=467120 n=5878760 h=25",
+                "[tpoint] nr=\"A 7\" e=467120 n=5878760 h=25 src=hand",
                 "[tline] kind=boundary pts=1,2,3",
                 "[tline] kind=break pts=1,2",
                 "[tline] kind=break pts=\"1,2,A 7\" closed=1",
@@ -431,6 +448,25 @@ mod tests {
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(l.model.terrain(), m.terrain());
         assert_eq!(write(&l.model), text, "bytegleich");
+    }
+
+    /// Ein unbekanntes `src` am Punkt: Hinweis, der Punkt gilt als
+    /// gemessen (I1).
+    #[test]
+    fn punkt_mit_unbekannter_herkunft() {
+        let mut m = house();
+        m.begin("Aufmaß");
+        assert!(m.set_terrain(Some(aufmass())));
+        m.commit();
+        let text = write(&m).replace("src=hand", "src=gps");
+        let l = read(&text, GuidGen::with_seed(99)).unwrap();
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+        assert!(
+            l.hints[0].contains("„src“ ist nicht „hand“"),
+            "{}",
+            l.hints[0]
+        );
+        assert!(l.model.terrain().unwrap().points.iter().all(|p| !p.hand));
     }
 
     /// Unlesbares hält das Öffnen nicht auf: Hinweis, Zeile bleibt roh.

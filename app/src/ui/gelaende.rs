@@ -128,6 +128,8 @@ pub struct GelaendeLeiste {
     pub aufmass: bool,
     /// Es hat Höhen: Höhenlage und ihre Folgen.
     pub hoehen: bool,
+    /// Alle Punkte sind von Hand gesetzt (I1): ohne Höhenlage in NHN.
+    pub angenommen: bool,
     /// Ein Lageplan ist gelesen und sein Flurstück kann übernommen werden.
     pub uebernehmen: bool,
     /// Es gibt eine Grenze: „An Grenze ausrichten“ und Zuschnitt.
@@ -219,7 +221,8 @@ impl Ui {
                     "An Grenze ausrichten",
                 ));
             }
-            if l.hoehen {
+            // ein angenommenes Gelände (I1) hat keine Höhenlage in NHN
+            if l.hoehen && !l.angenommen {
                 rows.extend([
                     Row::Separator,
                     Row::Label("Höhenlage"),
@@ -240,26 +243,37 @@ impl Ui {
                 if l.deckt_nicht {
                     rows.extend(self.rot(DECKT_NICHT));
                 }
-                rows.extend([
-                    Row::Separator,
-                    Row::Label("Geländeflächen"),
-                    Row::Button(Id::Gelaende(K::Flaeche), "Fläche zeichnen"),
-                ]);
-                if l.zeichnen {
-                    rows.extend(match l.ecken {
-                        0 => [
-                            Row::Hint("Ecken im Grundriss klicken,"),
-                            Row::Hint("die erste Ecke schließt."),
-                        ],
-                        _ => [
-                            Row::Hint("Enter schließt, Rücktaste"),
-                            Row::Hint("nimmt die letzte Ecke."),
-                        ],
-                    });
-                } else {
-                    rows.push(Row::Hint("Klick wählt eine Fläche."));
-                }
             }
+        } else if l.meldung.is_empty() && l.fehler.is_none() {
+            rows.extend([
+                Row::Hint("Lageplan: PDF, Maßstab"),
+                Row::Hint("und Flurstück erkannt."),
+                Row::Hint("Höhen: Punktliste oder"),
+                Row::Hint("DXF des Vermessers."),
+            ]);
+        }
+        // Geländeflächen gehen auch ohne Aufmaß: Die erste legt das ebene
+        // Gelände mit Punkten an (I1)
+        rows.extend([
+            Row::Separator,
+            Row::Label("Geländeflächen"),
+            Row::Button(Id::Gelaende(K::Flaeche), "Fläche zeichnen"),
+        ]);
+        if l.zeichnen {
+            rows.extend(match l.ecken {
+                0 => [
+                    Row::Hint("Ecken im Grundriss klicken,"),
+                    Row::Hint("die erste Ecke schließt."),
+                ],
+                _ => [
+                    Row::Hint("Enter schließt, Rücktaste"),
+                    Row::Hint("nimmt die letzte Ecke."),
+                ],
+            });
+        } else {
+            rows.push(Row::Hint("Klick wählt eine Fläche."));
+        }
+        if l.aufmass {
             if l.grenze {
                 rows.extend([
                     Row::Separator,
@@ -276,13 +290,6 @@ impl Ui {
             rows.extend(l.grundstueck.clone().map(Row::Text));
             rows.extend(l.hoehenlinien.clone().map(Row::Text));
             rows.push(Row::Button(Id::Gelaende(K::Entfernen), "Gelände entfernen"));
-        } else if l.meldung.is_empty() && l.fehler.is_none() {
-            rows.extend([
-                Row::Hint("Lageplan: PDF, Maßstab"),
-                Row::Hint("und Flurstück erkannt."),
-                Row::Hint("Höhen: Punktliste oder"),
-                Row::Hint("DXF des Vermessers."),
-            ]);
         }
         if !l.meldung.is_empty() || l.fehler.is_some() {
             rows.push(Row::Separator);
@@ -524,8 +531,9 @@ mod tests {
         }
     }
 
-    /// Ohne Aufmaß: Einlesen und ein kurzer Hinweis; eine Meldung wird auf
-    /// die Breite des Paneels umgebrochen.
+    /// Ohne Aufmaß: Einlesen, ein kurzer Hinweis und „Fläche zeichnen“
+    /// (I1); eine Meldung wird auf die Breite des Paneels umgebrochen. Ein
+    /// angenommenes Gelände hat keine Höhenlage in NHN.
     #[test]
     fn ohne_aufmass_und_meldung() {
         let t = Theme::dark();
@@ -536,6 +544,21 @@ mod tests {
             .iter()
             .any(|r| matches!(r, Row::Hint(t) if t.starts_with("Höhen:"))));
         assert!(!rows.iter().any(|r| matches!(r, Row::Label("Höhenlage"))));
+        let flaeche = Id::Gelaende(GelaendeKnopf::Flaeche);
+        assert!(rows
+            .iter()
+            .any(|r| matches!(r, Row::Button(id, _) if *id == flaeche)));
+        assert!(!rows.iter().any(|r| matches!(r, Row::Button(id, _)
+            if *id == Id::Gelaende(GelaendeKnopf::Entfernen))));
+        ui.gelaende = Some(GelaendeLeiste {
+            angenommen: true,
+            ..leiste()
+        });
+        let rows = ui.rows(Panel::Tools);
+        assert!(!rows.iter().any(|r| matches!(r, Row::Label("Höhenlage"))));
+        assert!(rows
+            .iter()
+            .any(|r| matches!(r, Row::Label("Geländeflächen"))));
         ui.gelaende = Some(GelaendeLeiste {
             fehler: Some(Meldung::satz(
                 "Aus den Punkten entsteht kein Gelände: Es braucht drei Punkte.",

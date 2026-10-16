@@ -31,6 +31,10 @@ pub struct TerrainPoint {
     pub code: String,
     /// Vom Nutzer aus dem Gelände genommen.
     pub off: bool,
+    /// Von Hand gesetzt, nicht vermessen (Datei `src=hand`): die Ecken des
+    /// ebenen Geländes, das Skizzeo beim ersten Werkzeug des Moduls anlegt
+    /// (I1), später eigene Höhenpunkte (I4).
+    pub hand: bool,
 }
 
 /// Eine Bruchkante aus der Datei (DXF, G1b): Punktnummern im Verlauf, wie
@@ -681,7 +685,12 @@ impl Model {
     /// Nordrichtung und Meridiankonvergenz, wie die IFC-Georeferenz), sonst
     /// die Lage am Aufmaß. `None`, solange die Lage fehlt.
     pub fn survey_frame(&self) -> Option<SurveyFrame> {
-        let t = self.terrain()?;
+        self.survey_frame_of(self.terrain()?)
+    }
+
+    /// [`Model::survey_frame`] für das Aufmaß `t`, ob es schon im Modell
+    /// steht oder nicht.
+    pub(super) fn survey_frame_of(&self, t: &Terrain) -> Option<SurveyFrame> {
         match t.crs {
             Crs::Utm(z) => {
                 let l = self.location().normalized();
@@ -965,6 +974,7 @@ impl Terrain {
                 h: p.h,
                 code: p.code.clone(),
                 off: false,
+                hand: false,
             })
             .collect();
         let codes = t.code_table();

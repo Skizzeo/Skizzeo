@@ -885,22 +885,42 @@ fn feld(field: Field, label: &'static str, value: f64, r: (f64, f64, f64)) -> Fi
     }
 }
 
-/// Inhalt des Paneels „Eigenschaften“ der Geländeplatte: Höhenlage aus dem
-/// Geschossmanager, Fläche, die zwei Felder.
+/// Inhalt des Paneels „Eigenschaften“ des Geländes (I1: eine Zeile im
+/// Baum, ein Paneel): ohne Punkte die Höhenlage aus dem Geschossmanager und
+/// die Fläche der Platten, mit Punkten ihre Herkunft; immer Dicke und
+/// Abstand ums Haus.
 pub(crate) fn props(m: &Model, plates: &[TerrainPlate]) -> Props {
     let s = m.plate_settings();
-    let ok = plates.first().map_or(m.terrain_z(), |p| p.top);
-    let flaeche: f64 = plates.iter().map(TerrainPlate::area).sum();
-    let values = vec![
-        ("Kategorie", "Geländeplatte".to_string()),
-        ("OK Gelände", format!("{} m", kote_text(ok))),
-        ("UK Platte", format!("{} m", kote_text(ok - s.thick))),
-        ("Fläche", format!("{} m²", de(flaeche / 1e6, 2))),
-    ];
+    let mut values = vec![("Kategorie", "Gelände".to_string())];
+    let hint = match m.terrain().filter(|t| !t.points.is_empty()) {
+        None => {
+            let ok = plates.first().map_or(m.terrain_z(), |p| p.top);
+            let flaeche: f64 = plates.iter().map(TerrainPlate::area).sum();
+            values.extend([
+                ("Form", "eben".to_string()),
+                ("OK Gelände", format!("{} m", kote_text(ok))),
+                ("UK Gelände", format!("{} m", kote_text(ok - s.thick))),
+                ("Fläche", format!("{} m²", de(flaeche / 1e6, 2))),
+            ]);
+            "Höhe aus dem Geschossmanager; zählt in keiner Menge. Bearbeiten: Knopf „Gelände“."
+        }
+        Some(t) => {
+            let herkunft = if t.assumed() {
+                "angenommen, nicht vermessen".to_string()
+            } else {
+                format!("Aufmaß {}", t.src)
+            };
+            values.extend([
+                ("Herkunft", herkunft),
+                ("Punkte", t.points.len().to_string()),
+            ]);
+            "Bearbeiten: Knopf „Gelände“."
+        }
+    };
     Props {
         values,
         sections: vec![Section {
-            title: "Geländeplatte",
+            title: "Gelände",
             fields: vec![
                 feld(Field::PlateThick, "Dicke", s.thick, PLATE_THICK),
                 // „Außenoffset“ sagte nicht, wovon (Bedienbarkeit, später zu
@@ -912,8 +932,7 @@ pub(crate) fn props(m: &Model, plates: &[TerrainPlate]) -> Props {
                     PLATE_MARGIN,
                 ),
             ],
-            hint: "Höhe aus dem Geschossmanager; zählt in keiner Menge. Echtes Gelände: \
-                   Knopf „Gelände“.",
+            hint,
             buttons: Vec::new(),
         }],
         ..Default::default()
@@ -1110,8 +1129,8 @@ impl App {
         self.renderer.set_ground_z(unten);
     }
 
-    /// Eigenschaften der Geländeplatte, solange sie im Objektbaum gewählt
-    /// ist; `true`, wenn das Paneel sie zeigt. Wird sie abgewählt, leert
+    /// Eigenschaften des Geländes, solange es gewählt ist (Baum oder Klick
+    /// in 3D); `true`, wenn das Paneel es zeigt. Wird es abgewählt, leert
     /// sich das Paneel für die übliche Auswahl.
     pub(crate) fn platte_props(&mut self) -> bool {
         let m = self.scene.model();
@@ -1189,8 +1208,8 @@ impl App {
         self.picking.flaeche = None;
     }
 
-    /// Zeile „Geländeplatte“ im Objektbaum: die Platte wählen, die
-    /// Bauteile abwählen.
+    /// Zeile „Gelände“ im Objektbaum: das Gelände wählen, die Bauteile
+    /// abwählen.
     pub(crate) fn platte_waehlen(&mut self) {
         self.picking.selected.clear();
         self.picking.plate = true;
@@ -1217,7 +1236,7 @@ impl App {
         }
         if self
             .scene
-            .edit_model("Geländeplatte", |m| m.set_plate_settings(s))
+            .edit_model("Gelände", |m| m.set_plate_settings(s))
         {
             self.upload_model();
         }
@@ -1744,7 +1763,7 @@ mod tests {
             thick: 700.0,
             margin: 2000.0,
         };
-        assert!(s.edit_model("Geländeplatte", |m| m.set_plate_settings(neu)));
+        assert!(s.edit_model("Gelände", |m| m.set_plate_settings(neu)));
         assert_eq!(s.model().plate_settings(), neu);
         assert!(s.undo());
         assert_eq!(s.model().plate_settings(), Default::default());
@@ -1756,10 +1775,19 @@ mod tests {
         assert_eq!((f[1].field, f[1].value), (Field::PlateMargin, 2000.0));
         assert_eq!((f[1].min, f[1].max), (1500.0, 3000.0));
         assert!(
-            p.values.contains(&("UK Platte", "−0,70 m".to_string())),
+            p.values.contains(&("UK Gelände", "−0,70 m".to_string())),
             "{:?}",
             p.values
         );
+        assert_eq!(p.sections[0].title, "Gelände");
+        // mit Punkten von Hand (I1): Herkunft statt Höhe, Felder bleiben
+        assert!(s.edit_model("Fläche", |m| m.seed_flat_terrain(&[])));
+        let p = props(s.model(), &s.model().terrain_plates());
+        assert!(p
+            .values
+            .contains(&("Herkunft", "angenommen, nicht vermessen".to_string())));
+        assert!(p.values.contains(&("Punkte", "4".to_string())));
+        assert_eq!(p.sections[0].fields.len(), 2);
     }
 
     /// Rasen und Erdreich liegen hinter den Baustoffen der Tabelle; das

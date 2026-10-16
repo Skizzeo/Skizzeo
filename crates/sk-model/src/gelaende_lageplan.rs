@@ -220,8 +220,11 @@ impl Model {
             fit: m,
             flst: nr.clone(),
         };
+        // ein angenommenes Gelände (I1) weicht dem Lageplan und wird in
+        // dessen System neu angelegt
+        let angenommen = self.terrain().is_some_and(Terrain::assumed);
         match self.terrain() {
-            Some(alt) if !alt.points.is_empty() => {
+            Some(alt) if !alt.points.is_empty() && !angenommen => {
                 let gleich = alt.crs == crs && (matches!(crs, Crs::Utm(_)) || fit.is_some());
                 if !gleich {
                     return false;
@@ -236,7 +239,11 @@ impl Model {
                 let mut t = Terrain::new(crs);
                 t.parcels = vec![ring];
                 t.underlay = Some(u);
-                self.import_terrain(t)
+                let neu = self.import_terrain(t);
+                if neu && angenommen {
+                    self.seed_flat_terrain(&[]);
+                }
+                neu
             }
         }
     }
@@ -431,6 +438,35 @@ mod tests {
             assert!(d < 0.02, "{d} m");
         }
         assert!(!m.terrain_triangles().is_empty());
+    }
+
+    /// Ein angenommenes Gelände (I1) weicht dem Lageplan: Grenze und Lage
+    /// kommen aus dem Plan, die Punkte von Hand neu in seinem System, so
+    /// dass die Fläche darauf weiter Mengen hat.
+    #[test]
+    fn lageplan_auf_angenommenem_gelaende() {
+        let plan = SitePlan::read(PLAN, 32).unwrap();
+        let mut m = haus();
+        let ring = vec![[20000.0, 6000.0], [24000.0, 6000.0], [24000.0, 9000.0]];
+        m.begin("Fläche");
+        assert!(m.seed_flat_terrain(&ring));
+        assert!(m
+            .add_site_patch(crate::TerrainPatch::flat(ring, -100.0))
+            .is_some());
+        m.commit();
+        assert_eq!(m.terrain().unwrap().crs, Crs::Local);
+        m.begin("Lageplan");
+        assert!(m.import_parcel(&plan, "lageplan.pdf", None));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert_eq!(t.parcels.len(), 1);
+        assert_eq!(t.underlay.as_ref().unwrap().flst, "123/4");
+        assert!(t.assumed(), "{:?}", t.points);
+        // die Fläche liegt im neuen Gelände
+        let f = m.survey_frame().unwrap();
+        let (e, n) = f.to_survey(24000.0, 9000.0);
+        assert!(t.height(e, n).is_some());
+        assert!(m.planned_terrain().is_some());
     }
 
     /// Erst das Aufmaß in UTM, dann der Lageplan eingepasst: die Grenze aus

@@ -297,3 +297,58 @@ fn erdmengen_aus_dem_aufmass_geben_hinweis() {
         .unwrap_or("")
         .contains("Aufmaß"))));
 }
+
+/// Angenommenes Gelände (I1, VOB-Spruch zu I1): Der Ansatz nennt es, das LV
+/// setzt seine eigene Vorbemerkung, Kostenblatt und LV geben den Hinweis
+/// „Urgelände nicht vermessen“ (ohne zu sperren).
+#[test]
+fn erdmengen_aus_angenommenem_gelaende() {
+    use sk_cost::lv::{lv_aus, vorbemerkung_angenommen, LvWahl};
+    use sk_cost::rechnung::NICHT_VERMESSEN;
+    use sk_model::qto_earth::ANGENOMMEN;
+    let mut z = vec![leistung(
+        AUSHUB,
+        "Aushub",
+        20,
+        "unit=m3 basis=auto auto=earth.trench",
+    )];
+    z.extend(
+        [
+            "[terrain] src=\"\" crs=local hsys=DHHN2016 local=1 e0=0 n0=0 rot=0",
+            "[tpoint] nr=H1 e=-100 n=-100 h=0 src=hand",
+            "[tpoint] nr=H2 e=100 n=-100 h=0 src=hand",
+            "[tpoint] nr=H3 e=100 n=100 h=0 src=hand",
+            "[tpoint] nr=H4 e=-100 n=100 h=0 src=hand",
+        ]
+        .map(String::from),
+    );
+    let m = haus(&z);
+    assert!(m.terrain().is_some_and(|t| t.assumed()));
+    let b = blatt(&m);
+    let a = Guid::from_ifc(AUSHUB).unwrap();
+    let p = b
+        .positionen
+        .iter()
+        .find(|p| p.quelle == Quelle::Leistung(a))
+        .expect("Graben als Position");
+    assert!(p
+        .ansatz
+        .iter()
+        .all(|x| x.formel.as_deref().unwrap_or("").contains(ANGENOMMEN)));
+    let n = |v: &[sk_cost::Befund]| v.iter().filter(|x| x.satz == NICHT_VERMESSEN).count();
+    assert_eq!(n(&b.befunde), 1, "{:?}", b.befunde);
+    let w = LvWahl {
+        los: Guid::from_ifc("1S7bUW001008030000000A").unwrap(),
+        untertitel: false,
+        preise: false,
+        heute: None,
+    };
+    let lv = lv_aus(&m, &b, &lesen::katalog(&m, None), &w);
+    assert_eq!(n(&lv.befunde), 1, "{:?}", lv.befunde);
+    assert_eq!(
+        lv.kopf.vorbemerkungen.as_deref(),
+        Some(vorbemerkung_angenommen("2").as_str())
+    );
+    assert!(vorbemerkung_angenommen("2")
+        .contains("(Höhen nicht vermessen, Dreiecksprismen nach REB-VB 22.013, 2 Dreiecke)"));
+}

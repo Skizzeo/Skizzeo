@@ -1618,6 +1618,8 @@ fn auto_ansaetze(
     // Erdmengen, die das Aufmaß nur angenähert liefert (Flächenmittel ohne
     // Netz, Böschung am Gelände), und Gelände steiler als 1:10
     let mut erde_aus_mittel: Option<Ort> = None;
+    // Erdmengen aus dem angenommenen Gelände (VOB-Spruch zu I1)
+    let mut angenommen: Option<Ort> = None;
     let mut steil: Option<(String, Ort)> = None;
     // Hinweise, die keine Zeile tragen kann, für die Datei (VOB-Prüfung G3
     // D2)
@@ -1720,6 +1722,12 @@ fn auto_ansaetze(
             {
                 erde_aus_mittel = Some(ort.clone());
             }
+            if a.key.starts_with("earth.")
+                && a.formula.contains(sk_model::qto_earth::ANGENOMMEN)
+                && angenommen.is_none()
+            {
+                angenommen = Some(ort.clone());
+            }
             if steil.is_none() && a.key.starts_with("earth.") {
                 steil = sk_model::qto_earth::steil_hinweis(&a.formula).map(|h| (h, ort.clone()));
             }
@@ -1762,11 +1770,20 @@ fn auto_ansaetze(
     if let Some(ort) = erde_aus_mittel {
         befunde.push(Befund::hinweis(0, ERDE_AUS_MITTEL, ort));
     }
+    if let Some(ort) = angenommen {
+        befunde.push(Befund::hinweis(0, NICHT_VERMESSEN, ort));
+    }
     if let Some((h, ort)) = steil {
         befunde.push(Befund::hinweis(0, h, ort));
     }
     befunde
 }
+
+/// Hinweis, wenn Erdmengen aus dem angenommenen Gelände kommen (Marke
+/// [`sk_model::qto_earth::ANGENOMMEN`], VOB-Spruch zu I1): kein Sperren.
+pub const NICHT_VERMESSEN: &str = "Urgelände nicht vermessen: Erdmengen geschätzt. Vor der \
+    Ausschreibung aufmessen lassen, spätestens gemeinsames Aufmaß des Urgeländes vor Beginn \
+    (VOB/B § 14 (2)).";
 
 /// Hinweis, wenn Erdmengen mit Höhenaufmaß angenähert sind (Marke
 /// [`sk_model::qto_earth::AUS_AUFMASS`]): die Böschung am Gelände, oder alle

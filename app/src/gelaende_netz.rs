@@ -196,6 +196,14 @@ impl Gelaende {
         m.lesend(|| Gelaende::rechnen(m))
     }
 
+    /// Trifft der Sehstrahl von `o` in Richtung `d` die Oberfläche? Ein
+    /// Klick in 3D wählt so das Gelände wie die Platte (I1).
+    pub(crate) fn getroffen(&self, o: Vec3, d: Vec3) -> bool {
+        self.dreiecke
+            .iter()
+            .any(|t| sk_math::ray_triangle(o, d, t[0], t[1], t[2]).is_some())
+    }
+
     fn rechnen(m: &Model) -> Option<Gelaende> {
         let mut dreiecke = m.terrain_triangles();
         if dreiecke.is_empty() {

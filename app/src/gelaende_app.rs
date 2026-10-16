@@ -291,6 +291,7 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     let ringe = t.boundary_rings();
     l.aufmass = true;
     l.hoehen = !t.points.is_empty();
+    l.angenommen = t.assumed();
     l.grenze = !ringe.is_empty();
     l.absolut = t.href == HeightRef::Abs;
     l.zuschnitt = Some(t.show());

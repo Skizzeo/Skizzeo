@@ -52,7 +52,7 @@ pub struct RowIcons {
 pub fn slots(tab: Tab, key: &NodeKey) -> &'static [Icon] {
     match (tab, key) {
         (Tab::Tree, NodeKey::Project) => &[Icon::Lock, Icon::Eye],
-        (Tab::Tree, NodeKey::Terrain | NodeKey::TerrainPlate) => &[Icon::Eye],
+        (Tab::Tree, NodeKey::Terrain) => &[Icon::Eye],
         (Tab::Tree, _) => &ICONS,
         (Tab::Kind, _) => &[Icon::Lock, Icon::Eye, Icon::Isolate],
         (Tab::Trade, NodeKey::Trade(_)) => &[Icon::Eye, Icon::Isolate],
@@ -160,7 +160,7 @@ impl Hit {
 pub enum Action {
     /// Neue Auswahl (Reihenfolge des Wählens).
     Select(Vec<ElementId>),
-    /// Zeile „Geländeplatte“: die Platte wählen (Gelände G0).
+    /// Zeile „Gelände“: das Gelände wählen (Gelände G0, I1).
     Plate,
     /// Geschosszeile: alles darunter wählen und das Geschoss zusätzlich
     /// aktiv machen.
@@ -711,9 +711,7 @@ impl TreePanel {
         let ids = self.tree.elements(self.tab, i);
         let lock_faded = lock_faded(m, &self.tree, self.tab, i);
         let delete_faded = match n.key {
-            NodeKey::Project | NodeKey::Terrain | NodeKey::TerrainPlate | NodeKey::Storey(_) => {
-                true
-            }
+            NodeKey::Project | NodeKey::Terrain | NodeKey::Storey(_) => true,
             NodeKey::Building(_) => false,
             _ => {
                 !ids.is_empty()
@@ -865,7 +863,7 @@ impl TreePanel {
         mods: Modifiers,
     ) -> Option<Action> {
         let i = self.rows[vi];
-        if self.nodes()[i].key == NodeKey::TerrainPlate {
+        if self.nodes()[i].key == NodeKey::Terrain {
             self.anchor = None;
             return Some(Action::Plate);
         }
@@ -1021,7 +1019,7 @@ impl TreePanel {
             .filter_map(|&id| m.element(id).map(|e| e.guid))
             .collect();
         match (self.tab, &n.key) {
-            (_, NodeKey::Terrain | NodeKey::TerrainPlate) => v.terrain_hidden = hide,
+            (_, NodeKey::Terrain) => v.terrain_hidden = hide,
             (Tab::Tree, NodeKey::Project) if !hide => return show_all(m),
             (Tab::Kind, NodeKey::Kind(c)) => {
                 if hide {
@@ -1465,7 +1463,7 @@ impl TreePanel {
             _ => None,
         };
         let sel = guid.is_some_and(|g| cx.selected.contains(&g))
-            || (cx.plate && n.key == NodeKey::TerrainPlate);
+            || (cx.plate && n.key == NodeKey::Terrain);
         let glow = guid.is_some() && guid == cx.model_hover;
         if sel || hovered || glow {
             let mut p = Path::new();
@@ -1904,7 +1902,7 @@ fn row_tip(m: &Model, n: &Node, ids: &[ElementId]) -> Option<String> {
 fn delete_reason(m: &Model, n: &Node, ids: &[ElementId]) -> String {
     match n.key {
         NodeKey::Storey(_) => "Geschosse entstehen mit dem Gebäude.".into(),
-        NodeKey::Terrain | NodeKey::TerrainPlate | NodeKey::Project => String::new(),
+        NodeKey::Terrain | NodeKey::Project => String::new(),
         _ => {
             let Some(&id) = ids.first() else {
                 return String::new();
@@ -2118,21 +2116,22 @@ mod tests {
         assert_eq!(p.rows, zu, "Bauteil wieder zu");
     }
 
-    /// Gelände G0 (Jörn 12.10.): Unter „Gelände“ steht die Zeile
-    /// „Geländeplatte“, gleich zu sehen; ein Klick wählt die Platte (nicht
-    /// Bauteile), sie hat nur das Auge, und das blendet das Gelände aus.
+    /// Gelände G0 (Jörn 12.10.), I1 (Jörn 16.10.): Die Zeile „Gelände“
+    /// steht gleich zu sehen, ohne eigene Zeile „Geländeplatte“; ein Klick
+    /// wählt das Gelände (nicht Bauteile), sie hat nur das Auge, und das
+    /// blendet das Gelände aus.
     #[test]
-    fn gelaendeplatte_im_baum() {
+    fn gelaende_im_baum() {
         let (s, t) = (haus(), Theme::dark());
         let m = s.model();
         let mut p = panel(&s, &t, 400.0);
         let vi = p
             .rows
             .iter()
-            .position(|&i| p.nodes()[i].key == NodeKey::TerrainPlate)
+            .position(|&i| p.nodes()[i].key == NodeKey::Terrain)
             .expect("Zeile sichtbar");
-        assert_eq!(p.nodes()[p.rows[vi]].label, "Geländeplatte");
-        assert_eq!(slots(Tab::Tree, &NodeKey::TerrainPlate), &[Icon::Eye]);
+        assert_eq!(p.nodes()[p.rows[vi]].label, "Gelände");
+        assert_eq!(slots(Tab::Tree, &NodeKey::Terrain), &[Icon::Eye]);
         let a = p.click_row(m, &Picking::default(), vi, Modifiers::default());
         assert_eq!(a, Some(Action::Plate));
         assert!(p.eye_toggle(m, p.rows[vi]).terrain_hidden);
