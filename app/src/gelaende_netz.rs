@@ -300,7 +300,7 @@ impl Gelaende {
             })
             .collect();
         // Koten der Messpunkte in m ü. NHN, zwei Nachkommastellen (Plan §8,
-        // Bedienbarkeit, später zu #216)
+        // Bedienbarkeit Gelände)
         if g.marken.len() <= PUNKT_KOTEN {
             g.koten = g
                 .marken
@@ -1270,6 +1270,21 @@ fn schwerpunkt(r: &[P2]) -> Option<P2> {
     (a.abs() > 1e-9).then(|| [cx / (3.0 * a), cy / (3.0 * a)])
 }
 
+/// Inhalt der Höhenzahlen und Koten (Ort, Richtung, Text, voll) als
+/// Prüfsumme: gleich, solange die Tinte gleich bliebe.
+pub(crate) fn zahlen_inhalt(g: &Gelaende) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut s = std::collections::hash_map::DefaultHasher::new();
+    for (q, w, z, text, voll) in g.zahlen.iter().chain(&g.koten) {
+        for v in [q[0], q[1], *w, *z] {
+            v.to_bits().hash(&mut s);
+        }
+        (text, voll).hash(&mut s);
+    }
+    g.zahlen.len().hash(&mut s);
+    s.finish()
+}
+
 /// Die Höhenzahlen als Tinte für den Renderer: Ziffernhöhe `h` (mm am
 /// Bau, wie die Maßzahlen), mittig über ihrem Punkt wie eine Maßzahl über
 /// der Maßlinie, die Koten der Messpunkte rechts neben ihrem Kreuz, auf
@@ -1659,8 +1674,11 @@ mod tests {
             // blass“) stehen im Stift der blassen Höhenlinien, nicht in
             // der Papierfarbe (Review #216 H-216a)
             let mut b = Gelaende::aus(&m).unwrap();
+            // gleiche Zahlen, gleiche Prüfsumme; blass ist eine andere
+            assert_eq!(zahlen_inhalt(&b), zahlen_inhalt(&g));
             b.zahlen.iter_mut().for_each(|z| z.4 = false);
             b.koten.iter_mut().for_each(|z| z.4 = false);
+            assert_ne!(zahlen_inhalt(&b), zahlen_inhalt(&g));
             let tinte = zahlen_tinte(&b, &s, 250.0, &t);
             assert!(!tinte.is_empty());
             let abstand: f32 = (0..3).map(|i| (t.background.1[i] - t.paper[i]).abs()).sum();
@@ -1847,9 +1865,7 @@ mod tests {
         assert!(senkrecht >= 2, "{senkrecht}");
     }
 
-    /// Höhenzahlen (Ist-Bilder zu #202): je 40 m eine, die erste nach 20 m,
-    /// eine kurze Linie in der Mitte; nur Hauptlinien, wenn es welche
-    /// gibt; lesbar von unten oder rechts; nicht, wo `frei` nein sagt.
+    /// Bis [`PUNKT_KOTEN`] Messpunkte hat jeder seine Kote, darüber keiner.
     #[test]
     fn koten_bis_punktgrenze() {
         use std::fmt::Write;
@@ -1882,6 +1898,9 @@ mod tests {
         assert!(n > PUNKT_KOTEN && k == 0, "{n} {k}");
     }
 
+    /// Höhenzahlen (Ist-Bilder zu #202): je 40 m eine, die erste nach 20 m,
+    /// eine kurze Linie in der Mitte; nur Hauptlinien, wenn es welche
+    /// gibt; lesbar von unten oder rechts; nicht, wo `frei` nein sagt.
     #[test]
     fn hoehenzahlen_an_linien() {
         let gerade = |z: f64, von: P2, bis: P2, haupt| (z, vec![von, bis], haupt);
@@ -1939,6 +1958,53 @@ mod tests {
         );
         assert_eq!(f[0].3, "50,60");
         assert_eq!(nhn_text(-0.5), "-0,50");
+    }
+
+    /// Tempo (Review H-223b): Tinte der Höhenzahlen bei 1.936 Koten, knapp
+    /// unter [`PUNKT_KOTEN`] (`--ignored --nocapture`, Release). Sie
+    /// entsteht nur nach einer Änderung neu, sonst zeichnet das Bild die
+    /// gemerkten Dreiecke.
+    #[test]
+    #[ignore]
+    fn tempo_koten() {
+        use std::fmt::Write;
+        use std::time::Instant;
+        let Some(f) = crate::wall_edit::mass_treffer::tests::schrift() else {
+            return;
+        };
+        let s = sk_plan::schrift::Schrift::new(f);
+        let mut txt = String::new();
+        let k = 44;
+        for i in 0..k {
+            for j in 0..k {
+                let z = 10.0 + 0.01 * (i + j) as f64;
+                let _ = writeln!(txt, "{} {} {} {z}", i * k + j + 1, 2 * i, 2 * j);
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(txt.as_bytes(), "t.txt", "2026-10-16", 32).unwrap();
+        let mut m = Model::with_seed(3);
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let g = Gelaende::aus(&m).unwrap();
+        assert_eq!(g.koten.len(), k * k);
+        let t = DrawTable::resolve(&m, &sk_ui::theme::Theme::dark());
+        let mut tinte = 0;
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let t0 = Instant::now();
+            tinte = zahlen_tinte(&g, &s, 250.0, &t).len();
+            best = best.min(t0.elapsed().as_secs_f64() * 1e3);
+        }
+        let t0 = Instant::now();
+        let _ = zahlen_inhalt(&g);
+        let pruef = t0.elapsed().as_secs_f64() * 1e3;
+        eprintln!(
+            "{} Koten, {} Zahlen: Tinte {best:.1} ms, {tinte} Dreiecke, \
+             Prüfsumme {pruef:.2} ms",
+            g.koten.len(),
+            g.zahlen.len()
+        );
     }
 
     /// Tempo (Review #183 B1): Bild und Schnitt bei 100 Flächen mit je 400
