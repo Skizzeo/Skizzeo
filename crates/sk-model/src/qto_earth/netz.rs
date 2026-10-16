@@ -110,6 +110,13 @@ fn klammer(
 /// verwendet); `None` ohne Aufmaß, beim angenommenen Gelände oder wenn
 /// keiner geändert ist. Kostenblatt und LV geben dazu den Befund
 /// [`HAND_GEAENDERT`] (VOB-Spruch zu I4).
+///
+/// „Nicht verwendet“ zählt jeden Punkt mit `off`, auch einen, der schon so in
+/// der Datei steht (`off=1`): `off` setzt nur der Nutzer (Entf oder von Hand
+/// in der Datei), nie das Einlesen; Punkte mit einem Code „nicht ins
+/// Gelände“ haben kein `off` und zählen nicht. Die Mengen lassen den
+/// gemessenen Punkt weg, also muss der AG das wissen, egal wann und wie er
+/// ausgeschaltet wurde.
 pub fn netz_geaendert(m: &Model) -> Option<(usize, usize)> {
     let t = m.terrain().filter(|t| !t.assumed())?;
     let neu = t.points.iter().filter(|p| p.hand && !p.off).count();
