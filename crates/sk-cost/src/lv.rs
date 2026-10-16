@@ -47,6 +47,19 @@ pub const VORBEMERKUNG_NETZ: &str = "Die Vordersätze der Erdarbeiten sind aus d
     nach DIN 18300 Abschnitt 5 auf Grundlage einer gemeinsamen Geländeaufnahme vor Beginn der \
     Arbeiten; ein DGM aus dieser Aufnahme ist als Ermittlungsverfahren vereinbart.";
 
+/// Vorbemerkung beim angenommenen Gelände (I1, VOB-Spruch zu I1): Die
+/// Höhen sind nicht vermessen, das gemeinsame Aufmaß vor Beginn gilt. `{}`
+/// ist die Dreieckszahl.
+pub const VORBEMERKUNG_ANGENOMMEN: &str = "Die Mengen der Erdarbeiten sind aus einem \
+    angenommenen Gelände ermittelt (Höhen nicht vermessen, Dreiecksprismen nach REB-VB 22.013, \
+    {} Dreiecke). Die Höhen des Urgeländes werden vor Beginn der Arbeiten gemeinsam \
+    aufgenommen; abgerechnet wird nach diesem Aufmaß.";
+
+/// [`VORBEMERKUNG_ANGENOMMEN`] mit der Dreieckszahl `n` („1.834“).
+pub fn vorbemerkung_angenommen(n: &str) -> String {
+    VORBEMERKUNG_ANGENOMMEN.replacen("{}", n, 1)
+}
+
 /// [`VORBEMERKUNG_NETZ`] mit der Herkunft des Netzes in der Klammer
 /// („Höhenaufmaß x.csv vom 12.10.2026, 1.834 Dreiecke“,
 /// [`sk_model::qto_earth::netz_herkunft`]): Die Ansätze nennen die
@@ -627,6 +640,8 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
     let mut mengen_hinweise: Vec<(String, String)> = Vec::new();
     let mut hinweis_gesehen: HashSet<(String, String)> = HashSet::new();
     let mut aus_netz = false;
+    // Erdmengen aus dem angenommenen Gelände (VOB-Spruch zu I1)
+    let mut angenommen: Option<String> = None;
     for (g, zeilen, je_dicke) in je_dicke_teilen(&b.positionen, rang, je_leistung) {
         let l = k.leistung(g).expect("Leistung");
         let ps: Vec<&Position> = zeilen.iter().map(|i| &b.positionen[*i]).collect();
@@ -672,6 +687,9 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
                 continue;
             }
             aus_netz |= f.contains(sk_model::qto_earth::DREIECKSPRISMEN);
+            if angenommen.is_none() && f.contains(sk_model::qto_earth::ANGENOMMEN) {
+                angenommen = Some(oz_basis.clone());
+            }
             if steil.is_none() {
                 steil = sk_model::qto_earth::steil_hinweis(f).map(|h| (h, oz_basis.clone()));
             }
@@ -867,6 +885,13 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
         befunde.push(Befund::hinweis(
             0,
             crate::rechnung::ERDE_AUS_MITTEL,
+            Ort::Position(oz),
+        ));
+    }
+    if let Some(oz) = angenommen {
+        befunde.push(Befund::hinweis(
+            0,
+            crate::rechnung::NICHT_VERMESSEN,
             Ort::Position(oz),
         ));
     }
@@ -1091,9 +1116,11 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
         if !v.is_empty() {
             v.push_str("\n\n");
         }
-        v.push_str(&vorbemerkung_netz(
-            sk_model::qto_earth::netz_herkunft(m).as_deref(),
-        ));
+        // ein angenommenes Gelände hat keinen Höhenaufmaß (VOB-Spruch zu I1)
+        v.push_str(&match sk_model::qto_earth::netz_angenommen(m) {
+            Some(n) => vorbemerkung_angenommen(&n),
+            None => vorbemerkung_netz(sk_model::qto_earth::netz_herkunft(m).as_deref()),
+        });
     }
     for t in k
         .lose

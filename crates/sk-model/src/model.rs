@@ -422,6 +422,9 @@ pub use gelaende_aufmass::{
     TerrainLine, TerrainMesh, TerrainPoint, Trim,
 };
 
+#[path = "gelaende_eben.rs"]
+mod gelaende_eben;
+
 #[path = "gelaende_flaeche.rs"]
 mod gelaende_flaeche;
 pub use gelaende_flaeche::{

@@ -24,17 +24,33 @@ pub const DREIECKSPRISMEN: &str = "aus Geländemodell, Dreiecksprismen (REB-VB 2
 /// Dreieckszahl steht nicht je Zeile, sondern einmal in der Vorbemerkung
 /// des LV ([`netz_herkunft`]; VOB-Spruch zu A2 vom 15.10.).
 pub(crate) fn verfahren(t: &crate::Terrain) -> String {
+    if t.assumed() {
+        return format!("; {DREIECKSPRISMEN} {ANGENOMMEN}");
+    }
     match datum(&t.read) {
         Some(d) => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {} vom {d}", t.src),
         None => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {}", t.src),
     }
 }
 
+/// Herkunft eines Geländes nur aus Punkten von Hand (I1): Es ist nicht
+/// vermessen, sondern angenommen, zuerst eben in Höhe OK Gelände.
+pub const ANGENOMMEN: &str = "aus dem angenommenen Gelände, nicht vermessen";
+
+/// Dreieckszahl des angenommenen Geländes (I1), „1.834“; `None` ohne
+/// Gelände oder mit vermessenen Punkten. Das LV setzt dann seine eigene
+/// Vorbemerkung (VOB-Spruch zu I1).
+pub fn netz_angenommen(m: &Model) -> Option<String> {
+    let t = m.terrain().filter(|t| t.assumed())?;
+    Some(tausend(t.mesh().netz.dreiecke.len()))
+}
+
 /// Herkunft des Netzes für die Vorbemerkung des LV: „Höhenaufmaß x.csv vom
 /// 12.10.2026, 1.834 Dreiecke“, damit der Prüfer des AG sieht, dass er
-/// dasselbe Netz nachrechnet (VOB/B § 14 (1)). `None` ohne Aufmaß.
+/// dasselbe Netz nachrechnet (VOB/B § 14 (1)). `None` ohne Aufmaß und beim
+/// angenommenen Gelände ([`netz_angenommen`]).
 pub fn netz_herkunft(m: &Model) -> Option<String> {
-    let t = m.terrain()?;
+    let t = m.terrain().filter(|t| !t.assumed())?;
     let n = t.mesh().netz.dreiecke.len();
     let vom = datum(&t.read).map_or(String::new(), |d| format!(" vom {d}"));
     Some(format!(

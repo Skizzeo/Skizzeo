@@ -35,6 +35,7 @@ fn viele(n: usize) -> Model {
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
                 code: String::new(),
                 off: false,
+                hand: false,
             });
         }
     }
@@ -272,6 +273,7 @@ fn baugruben_im_faden() {
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
                 code: String::new(),
                 off: false,
+                hand: false,
             });
         }
     }
@@ -766,6 +768,7 @@ fn folgen_im_faden_messen() {
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
                 code: String::new(),
                 off: false,
+                hand: false,
             });
         }
     }

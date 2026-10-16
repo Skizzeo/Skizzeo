@@ -52,6 +52,7 @@ fn haeuser_am_hang(n: usize) -> (Model, Terrain) {
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
                 code: String::new(),
                 off: false,
+                hand: false,
             });
         }
     }
@@ -315,6 +316,7 @@ fn grenzen_mit_vielen_punkten() {
             h: 50.0,
             code: String::new(),
             off: false,
+            hand: false,
         });
     }
     t.boundaries
@@ -346,6 +348,7 @@ fn netz_der_datei_im_budget() {
                 h: 50.0 + (e / 7.0).sin() + (n / 5.0).cos(),
                 code: String::new(),
                 off: false,
+                hand: false,
             });
         }
     }

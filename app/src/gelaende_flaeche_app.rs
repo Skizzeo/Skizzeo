@@ -374,13 +374,13 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Kann ein Klick die Platte wählen? Nur in 3D, wo sie gezeichnet ist: im
-/// Grundriss ist sie unsichtbar, ein Klick neben das Haus wählt dort ab
-/// (Review #212 B1). Die Platte gehört zur Grundausstattung, also auch
-/// ohne das Geländemodul; mit Höhenaufmaß steht dort das echte Gelände
-/// statt der Platte, ausgeblendet ist sie nicht zu treffen.
-fn platte_waehlbar(view: ViewKind, ausgeblendet: bool, m: &Model) -> bool {
-    view == ViewKind::Persp && !ausgeblendet && ruhen(m)
+/// Kann ein Klick das Gelände wählen? Nur in 3D, wo es gezeichnet ist: im
+/// Grundriss ist es unsichtbar, ein Klick neben das Haus wählt dort ab
+/// (Review #212 B1). Das Gelände gehört zur Grundausstattung, also auch
+/// ohne das Geländemodul, ob als ebene Platte oder mit Punkten (I1);
+/// ausgeblendet ist es nicht zu treffen.
+fn platte_waehlbar(view: ViewKind, ausgeblendet: bool) -> bool {
+    view == ViewKind::Persp && !ausgeblendet
 }
 
 /// Trifft der Sehstrahl eine der Platten? `strahl(z)` ist sein
@@ -740,7 +740,8 @@ impl App {
     }
 
     /// Neue Fläche aus dem Umriss `ring`: eben auf dem Gelände in ihrer
-    /// Mitte, auf 1 cm; gewählt.
+    /// Mitte, auf 1 cm; gewählt. Ohne Punkte legt derselbe Schritt das
+    /// ebene Gelände mit Punkten an, auf dem sie liegt (I1).
     fn flaeche_anlegen(&mut self, ring: Vec<[f64; 2]>) {
         let m = self.scene.model();
         let c = mitte(&ring);
@@ -748,6 +749,7 @@ impl App {
         let p = TerrainPatch::flat(ring.clone(), z);
         let mut neu = None;
         if self.scene.edit_model(LABEL_NEU, |m| {
+            m.seed_flat_terrain(&ring);
             neu = m.add_site_patch(p);
             neu.is_some()
         }) {
@@ -859,17 +861,24 @@ impl App {
         true
     }
 
-    /// Klick ins Leere auf die grüne Geländeplatte in 3D wählt sie wie
-    /// ihre Zeile im Baum (Bedienbarkeit Durchgang 41: „nur im Baum
-    /// wählbar“); wann das geht, sagt [`platte_waehlbar`]. `true`, wenn der
-    /// Klick die Platte traf.
+    /// Klick ins Leere auf das grüne Gelände in 3D wählt es wie seine
+    /// Zeile im Baum (Bedienbarkeit Durchgang 41: „nur im Baum wählbar“):
+    /// ohne Punkte die Platte, mit Punkten das Netz (I1); wann das geht,
+    /// sagt [`platte_waehlbar`]. `true`, wenn der Klick das Gelände traf.
     fn platte_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
         let m = self.scene.model();
-        if !platte_waehlbar(self.ui.view, self.scene.terrain_hidden(), m) {
+        if !platte_waehlbar(self.ui.view, self.scene.terrain_hidden()) {
             return false;
         }
         let cam = &self.cam;
-        let traf = platte_getroffen(self.platte.im_bild(m), |z| cam.plane_point(x, y, vw, vh, z));
+        let traf = if ruhen(m) {
+            platte_getroffen(self.platte.im_bild(m), |z| cam.plane_point(x, y, vw, vh, z))
+        } else {
+            let (o, d) = cam.ray(x, y, vw, vh);
+            self.platte
+                .gelaende_im_bild(m)
+                .is_some_and(|g| g.getroffen(o, d))
+        };
         if traf && !self.picking.plate {
             self.platte_waehlen();
         }
@@ -1004,8 +1013,11 @@ impl App {
             return;
         };
         let breite = p.house.as_ref().map_or(STRIP_WIDTH, |s| s.width);
+        let ring = p.outline.clone();
         let mut neu = None;
+        // ohne Punkte legt derselbe Schritt das ebene Gelände an (I1)
         if self.flaeche_schritt(LABEL_HAUS, |m| {
+            m.seed_flat_terrain(&ring);
             neu = m.add_site_patch(p);
             neu.is_some()
         }) {
@@ -1341,11 +1353,10 @@ mod tests {
     /// Review #212 B1, H-212a: Die Platte wählt nur ein Klick in 3D; im
     /// Grundriss ist sie unsichtbar, dort wählt ein Klick neben das Haus ab
     /// (`flaeche_klick` gibt `false`, die App wählt nichts). Ausgeblendet
-    /// oder mit Höhenaufmaß nicht; das Modul fragt [`platte_waehlbar`]
-    /// nicht ab, die Platte gibt es in jeder Ausbaustufe.
+    /// nicht; das Modul fragt [`platte_waehlbar`] nicht ab, das Gelände
+    /// gibt es in jeder Ausbaustufe, mit Höhenaufmaß wie ohne (I1).
     #[test]
     fn platte_nur_in_3d() {
-        let mut m = Model::with_seed(1);
         for v in [
             ViewKind::Plan,
             ViewKind::Section,
@@ -1354,21 +1365,10 @@ mod tests {
             ViewKind::Left,
             ViewKind::Right,
         ] {
-            assert!(!platte_waehlbar(v, false, &m), "{v:?}");
+            assert!(!platte_waehlbar(v, false), "{v:?}");
         }
-        assert!(platte_waehlbar(ViewKind::Persp, false, &m));
-        assert!(!platte_waehlbar(ViewKind::Persp, true, &m), "ausgeblendet");
-        let mut text = String::new();
-        for i in 0..3 {
-            for j in 0..3 {
-                text.push_str(&format!("{} {} {} 10.0\n", i * 3 + j + 1, j * 5, i * 5));
-            }
-        }
-        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-15", 32).unwrap();
-        m.begin("Aufmaß");
-        assert!(m.import_terrain(t));
-        m.commit();
-        assert!(!platte_waehlbar(ViewKind::Persp, false, &m), "mit Aufmaß");
+        assert!(platte_waehlbar(ViewKind::Persp, false));
+        assert!(!platte_waehlbar(ViewKind::Persp, true), "ausgeblendet");
         // der Strahl auf OK Platte: im Ring getroffen, im Haus und daneben
         // nicht
         let t = sk_model::TerrainPlate {

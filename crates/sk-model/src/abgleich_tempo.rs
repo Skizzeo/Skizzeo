@@ -146,6 +146,7 @@ fn gelaende_zug_ohne_bereich() {
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (n / 23.0).cos(),
                 code: String::new(),
                 off: false,
+                hand: false,
             });
         }
     }

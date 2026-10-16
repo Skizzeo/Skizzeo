@@ -284,6 +284,9 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
             "Unterlage: „{n}“ ist kein lesbarer Lageplan mehr; die Grenze bleibt."
         )),
     }
+    // das Werkzeug geht auch ohne Gelände (I1)
+    l.zeichnen = z.werkzeug.aktiv;
+    l.ecken = z.werkzeug.ecken().len();
     let Some(t) = m.terrain() else {
         return l;
     };
@@ -292,14 +295,13 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     let ringe = t.boundary_rings();
     l.aufmass = true;
     l.hoehen = !t.points.is_empty();
+    l.angenommen = t.assumed();
     l.grenze = !ringe.is_empty();
     l.absolut = t.href == HeightRef::Abs;
     l.zuschnitt = Some(t.show());
     l.tippen = z.tippen;
-    l.zeichnen = z.werkzeug.aktiv;
     // aus dem Faden; bis er nach einem Schritt fertig ist, der Stand davor
     l.deckt_nicht = l.hoehen && z.ohne_netz > 0;
-    l.ecken = z.werkzeug.ecken().len();
     match z.tippen {
         Some(GelaendeKnopf::Verschieben) => {
             let r = (-WEG, WEG);
@@ -1067,6 +1069,10 @@ mod tests {
         let z = Zustand::default();
         let l = leiste(&m, &z);
         assert!(!l.aufmass && l.felder.is_empty() && l.hoehenlage.is_empty());
+        // Fläche zeichnen geht ohne Gelände; die Leiste zeigt das (I1)
+        let mut zeichnen = Zustand::default();
+        zeichnen.werkzeug.set_aktiv(true);
+        assert!(m.terrain().is_none() && leiste(&m, &zeichnen).zeichnen);
         let (t, satz, _) = Terrain::lesen(CSV, "aufmass.csv", "2026-10-12", 32).unwrap();
         assert!(satz.contains("Punkte"), "{satz}");
         m.begin("Aufmaß");
