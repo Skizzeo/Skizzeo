@@ -50,6 +50,9 @@ pub enum GelaendeKnopf {
     Absolut,
     /// Umgebung zeigen: ganz, blass, nicht (§4.5).
     Zuschnitt(Show),
+    /// „Gelände ans Haus“ (G3): den Streifen um den Sockel des Hauses der
+    /// Höhenlage anlegen oder, wenn es ihn schon gibt, wählen.
+    AmHaus,
     /// Werkzeug „Fläche zeichnen“ (G3d).
     Flaeche,
     /// Dasselbe Werkzeug als „Grenze zeichnen“: ein Grundstück ohne
@@ -80,6 +83,7 @@ impl GelaendeKnopf {
             | GelaendeKnopf::Ueber
             | GelaendeKnopf::Absolut
             | GelaendeKnopf::Zuschnitt(_)
+            | GelaendeKnopf::AmHaus
             | GelaendeKnopf::Flaeche
             | GelaendeKnopf::Grenze
             | GelaendeKnopf::Befestigt
@@ -105,9 +109,12 @@ pub enum GelaendeFeld {
     /// Drehen: um so viel Grad gegen den Uhrzeigersinn um die Hausmitte.
     Winkel,
     /// Paneel der gewählten Geländefläche (G3d): Höhe über ±0,00 (mm) und
-    /// Böschung 1:n (0 senkrecht).
+    /// Böschung 1:n (0 senkrecht); am Streifen ums Haus dazu Breite (mm)
+    /// und Gefälle vom Haus weg (%).
     Hoehe,
     Boeschung,
+    Breite,
+    Gefaelle,
     /// Erdarbeiten am Grundstück: Oberboden andecken (mm) und Faktor fest
     /// zu eingebaut.
     Andecken,
@@ -120,7 +127,12 @@ impl GelaendeFeld {
     pub fn im_paneel(self) -> bool {
         matches!(
             self,
-            Self::Hoehe | Self::Boeschung | Self::Andecken | Self::Faktor
+            Self::Hoehe
+                | Self::Boeschung
+                | Self::Breite
+                | Self::Gefaelle
+                | Self::Andecken
+                | Self::Faktor
         )
     }
 }
@@ -282,6 +294,7 @@ impl Ui {
         rows.extend([
             Row::Separator,
             Row::Label("Geländeflächen"),
+            Row::Button(Id::Gelaende(K::AmHaus), "Gelände ans Haus"),
             Row::Button(Id::Gelaende(K::Flaeche), "Fläche zeichnen"),
         ]);
         if l.zeichnen {
@@ -358,6 +371,7 @@ impl Ui {
             | GelaendeKnopf::Uebernehmen
             | GelaendeKnopf::Hoehen
             | GelaendeKnopf::Ausrichten
+            | GelaendeKnopf::AmHaus
             | GelaendeKnopf::Befestigt
             | GelaendeKnopf::Loeschen
             | GelaendeKnopf::Hinweise
@@ -412,6 +426,7 @@ mod tests {
                 K::Ausrichten,
                 K::Ueber,
                 K::Absolut,
+                K::AmHaus,
                 K::Flaeche,
                 K::Zuschnitt(Show::All),
                 K::Zuschnitt(Show::Fade),

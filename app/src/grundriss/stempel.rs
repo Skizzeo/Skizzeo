@@ -1,8 +1,11 @@
 //! Raumstempel im Grundriss (Grundriss G4, plan.md §4.4): je Raum des
-//! aktiven Geschosses der Name und darunter die Grundfläche „12,34 m²“ an
-//! der fertigen Oberfläche ([`sk_raum::flaechen::grundflaeche_fertig`],
-//! ohne Faktor, dieselbe wie im Paneel und im Mengenblatt), wie gedruckt
-//! auf dem Papier des Grundrisses.
+//! aktiven Geschosses der Name und darunter die Grundfläche „12,34 m²“ nach
+//! WoFlV, ohne Faktor, dieselbe wie im Paneel und im Blatt Wohnfläche
+//! ([`sk_raum::wohnflaeche::Umfeld::raum`], Review #195 B: mit bodentiefen
+//! Fensternischen, ohne Pfeiler, Stützen und Treppen); ohne Raum oder
+//! Ausbau die Grundfläche an der fertigen Oberfläche
+//! ([`sk_raum::flaechen::grundflaeche_fertig`]), wie gedruckt auf dem
+//! Papier des Grundrisses.
 //!
 //! Platz: Der Stempel steht an seinem Punkt (verschoben, sonst die Mitte
 //! des größten Kreises im Raum), ganz im Raum, nicht unter einem Paneel und
@@ -38,10 +41,12 @@ use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, Guid, StoreyId};
 use sk_paint::{font::Font, Canvas, Path, Rgba};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
-use sk_raum::{Raumflaeche, Raumformen};
+use sk_raum::wohnflaeche as wf;
+use sk_raum::{RaumForm, Raumflaeche, Raumformen};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, FieldState, Fonts, Rect};
+use std::collections::HashMap;
 
 #[path = "aufschlag.rs"]
 mod aufschlag;
@@ -102,6 +107,46 @@ struct Formen {
     raeume: Raumformen,
     /// Türaufschläge des Geschosses, bei Bedarf.
     tueren: aufschlag::Tueren,
+    /// Grundfläche nach WoFlV (0,01 m²) je Raum, wie im Blatt; erst für
+    /// ausgelegte Stempel, das Umfeld beim ersten.
+    woflv: Woflv,
+}
+
+/// Grundflächen des Blatts für die Stempel (Review #195 B): ein Umfeld je
+/// Modellstand, die Fläche je Raum bei Bedarf. Im offenen Schritt (Ziehen)
+/// gelten Umfeld und Flächen weiter, solange die Form des Raums gleich ist:
+/// Stützen, Treppen und Geschosse ändern sich beim Wandziehen nicht, und
+/// das Blatt Wohnfläche rechnet im offenen Schritt ebenfalls nicht neu
+/// (Grundriss zu Review #195 B). So kostet ein Bild beim Ziehen keinen
+/// Gang über das Modell.
+#[derive(Default)]
+struct Woflv {
+    umfeld: Option<std::rc::Rc<wf::Umfeld>>,
+    grund: HashMap<ElementId, (RaumForm, Option<i64>)>,
+}
+
+impl Woflv {
+    /// Grundfläche nach WoFlV des Raums der Fläche `r`; `None` ohne Raum
+    /// oder Ausbau (dann zeigt der Stempel die Grundfläche im Fertigmaß).
+    fn grund(
+        &mut self,
+        s: &Scene,
+        k: &(impl sk_raum::Ketten + ?Sized),
+        r: &Raumflaeche,
+    ) -> Option<i64> {
+        let id = r.form.raum?;
+        if let Some((form, g)) = self.grund.get(&id) {
+            if *form == r.form {
+                return *g;
+            }
+        }
+        let m = s.model();
+        // dasselbe Umfeld wie Paneel und Blatt (Review #220 B1)
+        let umfeld = self.umfeld.get_or_insert_with(|| s.woflv_umfeld());
+        let g = umfeld.raum(m, k, r.form.clone()).map(|w| w.grund);
+        self.grund.insert(id, (r.form.clone(), g));
+        g
+    }
 }
 
 impl Formen {
@@ -252,10 +297,15 @@ impl Stempel {
             .as_ref()
             .is_none_or(|f| f.rev != rev || f.raeume.geschoss != g)
         {
+            let woflv = match self.formen.take() {
+                Some(f) if m.in_step() && f.raeume.geschoss == g => f.woflv,
+                _ => Woflv::default(),
+            };
             self.formen = Some(Formen {
                 rev,
                 raeume: s.raumgruppen(g),
                 tueren: Default::default(),
+                woflv,
             });
         }
     }
@@ -342,7 +392,13 @@ impl Stempel {
         gesperrt: &[Box],
         vortest: bool,
     ) -> Vec<Bild> {
-        let Some(Formen { raeume, tueren, .. }) = self.formen.as_mut() else {
+        let Some(Formen {
+            raeume,
+            tueren,
+            woflv,
+            ..
+        }) = self.formen.as_mut()
+        else {
             return Vec::new();
         };
         let z = s.plan_cut();
@@ -385,6 +441,7 @@ impl Stempel {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let bildflaeche = [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]];
+        let ketten = s.ketten();
         let mut belegt: Vec<Box> = gesperrt.to_vec();
         let mut bilder = Vec::new();
         for (k, r) in folge {
@@ -393,7 +450,10 @@ impl Stempel {
                 .raum
                 .and_then(|id| m.space(id))
                 .map_or_else(|| "Raum".to_string(), |r| r.name.clone());
-            let flaeche = format!("{} m²", crate::selection::de(a / 1e6, 2));
+            let flaeche = match woflv.grund(s, &ketten, r) {
+                Some(g) => wf::qm(g),
+                None => format!("{} m²", crate::selection::de(a / 1e6, 2)),
+            };
             let Some(mitte) = pt(f.stempel) else {
                 continue;
             };
@@ -1606,6 +1666,77 @@ mod tests {
             }
         }
         assert!(gezeigt > 20, "{gezeigt}");
+    }
+
+    /// Der Stempel zeigt die Grundfläche des Blatts Wohnfläche, nicht die im
+    /// Fertigmaß: Eine Stütze 40/40 im Raum (0,16 m², höher als 1,50 m)
+    /// geht nach WoFlV ab (Review #195 B); ohne gespeicherten Raum bleibt
+    /// das Fertigmaß.
+    #[test]
+    fn flaeche_wie_im_blatt() {
+        use sk_model::erweiterung::{ExtDef, ExtPart};
+        const STUETZE: &str = include_str!("../../../crates/sk-szb/beispiele/werk.stuetze.szb");
+        let mut s = Scene::with_model(Model::with_seed(5));
+        let g = s.model().defaults().storey;
+        let d = ExtDef::lesen(STUETZE).unwrap();
+        assert!(s.edit_model("Haus mit Stütze", |m| {
+            let (aw, iw) = (m.defaults().exterior_wall, m.defaults().interior_wall);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            m.add_wall_run(&pts, true, RefSide::Left, g, aw, Category::ExteriorWall)
+                .unwrap();
+            let pts = [vec3(3000.0, 300.0, 0.0), vec3(3000.0, 7700.0, 0.0)];
+            m.add_wall_run(&pts, false, RefSide::Center, g, iw, Category::InteriorWall)
+                .unwrap();
+            m.put_ext_def(d.clone()).unwrap();
+            let mut p = ExtPart::new(&d, [6500.0, 4000.0]);
+            p.werte = vec![("b".into(), 400.0), ("d".into(), 400.0)];
+            m.add_ext(g, p).is_ok()
+        }));
+        assert_eq!(
+            s.model().spaces(g).len(),
+            2,
+            "der Schritt legt die Räume an"
+        );
+        let mut st = Stempel::default();
+        auslegen(&mut st, &s, &kamera(&s));
+        let blatt = crate::schedule_view::wohn_rechnen(&s);
+        let formen = s.raumgruppen(g);
+        assert_eq!(st.bilder.len(), 2);
+        let mut abzug = 0;
+        for b in &st.bilder {
+            let w = blatt.raeume().find(|w| w.raum == b.raum).expect("im Blatt");
+            assert_eq!(b.flaeche, sk_raum::wohnflaeche::qm(w.grund), "{}", b.name);
+            let f = formen.flaechen().find(|f| f.form.raum == b.raum).unwrap();
+            let fertig = sk_raum::wohnflaeche::hundertstel(f.grundflaeche);
+            abzug += fertig - w.grund;
+        }
+        // 0,16 m² roh, mit Putz ringsum etwas mehr (Review #195 H-195i)
+        assert!(
+            (16..=19).contains(&abzug),
+            "die Stütze, sonst nichts: {abzug}"
+        );
+        // Innenwand im offenen Schritt ziehen: Die Stempel folgen mit dem
+        // Umfeld vom Greifen und zeigen danach, was das Blatt rechnet
+        let iw = s.model().runs().ids().nth(1).unwrap();
+        s.begin("Wand verschieben");
+        let pts = [vec3(3500.0, 300.0, 0.0), vec3(3500.0, 7700.0, 0.0)];
+        assert!(s.set_run_points(iw, &pts));
+        auslegen(&mut st, &s, &kamera(&s));
+        let im_schritt: Vec<String> = st.bilder.iter().map(|b| b.flaeche.clone()).collect();
+        assert!(st.formen.as_ref().unwrap().woflv.umfeld.is_some());
+        s.commit();
+        auslegen(&mut st, &s, &kamera(&s));
+        let blatt = crate::schedule_view::wohn_rechnen(&s);
+        for (b, vorher) in st.bilder.iter().zip(&im_schritt) {
+            let w = blatt.raeume().find(|w| w.raum == b.raum).expect("im Blatt");
+            assert_eq!(b.flaeche, sk_raum::wohnflaeche::qm(w.grund), "{}", b.name);
+            assert_eq!(&b.flaeche, vorher, "{}", b.name);
+        }
     }
 
     /// Ein Schritt mit Wänden legt die Räume an; der größte neue wartet auf

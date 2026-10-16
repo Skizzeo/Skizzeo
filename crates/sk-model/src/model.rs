@@ -297,6 +297,9 @@ pub struct Model {
     txn: Option<Open>,
     /// Jede Änderung muss in einem Schritt liegen (in der App; in Tests nicht).
     strict: bool,
+    /// Was der letzte Abgleich der Streifen am Haus melden will
+    /// ([`Model::house_strip_note`]); nicht in der Datei, nicht im Verlauf.
+    strip_note: Option<StripNote>,
     /// Was eine neuere Fassung in die Datei geschrieben hat und dieser Leser
     /// nicht kennt (F-17, F-17b): bleibt beim Speichern bytegleich.
     pub(crate) foreign: crate::catalog::Foreign,
@@ -427,6 +430,12 @@ mod gelaende_flaeche;
 pub use gelaende_flaeche::{
     PatchHeight, PlannedTerrain, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_HATCH, PATCH_SLOPE,
     PATCH_SLOPE_RANGE, PATCH_XY_MAX, PATCH_Z_MAX,
+};
+
+#[path = "gelaende_haus.rs"]
+mod gelaende_haus;
+pub use gelaende_haus::{
+    HouseStrip, StripNote, STRIP_FALL, STRIP_FALL_RANGE, STRIP_WIDTH, STRIP_WIDTH_RANGE, STRIP_Z,
 };
 
 #[path = "gelaende_lageplan.rs"]
@@ -892,6 +901,7 @@ impl Model {
             guids,
             txn: None,
             strict: false,
+            strip_note: None,
             cuts: Default::default(),
             active_cut: 0,
             visibility: Default::default(),
@@ -984,6 +994,7 @@ impl Model {
             guids,
             txn: None,
             strict: false,
+            strip_note: None,
             cuts: Default::default(),
             active_cut: 0,
             visibility: Default::default(),
@@ -3371,11 +3382,19 @@ impl Model {
             changes: Vec::new(),
             noted: Default::default(),
             grab: Default::default(),
+            revision: self.revision,
         });
     }
 
     pub fn in_step(&self) -> bool {
         self.txn.is_some()
+    }
+
+    /// Modellstand beim Öffnen des offenen Schritts; `None` ohne Schritt.
+    /// Was nur nach einem abgeschlossenen Schritt neu entsteht, gilt im
+    /// Schritt zu diesem Stand weiter (Review #220 B1).
+    pub fn step_revision(&self) -> Option<u64> {
+        self.txn.as_ref().map(|t| t.revision)
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat
@@ -3398,6 +3417,8 @@ impl Model {
             self.sync_soffits_mit(scope, Some(w.untersicht));
             self.sync_terraces_mit(scope, Some(w.terrasse));
             self.sync_flat_roofs_mit(scope, Some(w.flachdach));
+            // „Gelände ans Haus“ folgt dem Außenumriss
+            self.sync_house_strips(scope);
             self.terrain_nhn_merken();
         }
         if let Some(id) = self.locked_change() {

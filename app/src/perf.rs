@@ -1668,7 +1668,7 @@ fn perf_raumstempel() {
     use std::f64::consts::FRAC_PI_2;
     println!();
     println!(
-        "{:>6} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "{:>6} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
         "Häuser",
         "Räume",
         "Leer alle",
@@ -1677,12 +1677,14 @@ fn perf_raumstempel() {
         "Wand",
         "Wand ohne",
         "Beginn",
-        "ohne Bild"
+        "ohne Bild",
+        "Los Stemp",
+        "Los Pan."
     );
     let fonts = Fonts::system();
     let t = Theme::dark();
     let mods = Modifiers::default();
-    for n in [1, 100, 1000] {
+    for n in [1, 100, 1000, 4000] {
         let mut s = town_with_interior(n);
         let st = s.active_storey();
         let raeume = s.model().spaces(st).len();
@@ -1779,11 +1781,32 @@ fn perf_raumstempel() {
         }
         let (beginn, ..) = median(&mut beginn);
         let (ohne_bild, ..) = median(&mut ohne_bild);
+        // Loslassen (Review #220 B1): nach einem Wandschritt das erste
+        // Auslegen der Stempel, danach das erste Paneel eines Raums; beide
+        // mit dem einen Umfeld des neuen Modellstands
+        let raum = s.model().spaces(st)[0];
+        let (mut los_st, mut los_pa) = (Vec::new(), Vec::new());
+        for k in 0..7 {
+            s.begin("Wand verschieben");
+            s.set_run_points(iw, &auf(-300.0 - 10.0 * k as f64));
+            s.commit();
+            let t0 = Instant::now();
+            aus(&mut sp, &s, &nah);
+            los_st.push(t0.elapsed().as_secs_f64() * 1000.0);
+            let t0 = Instant::now();
+            std::hint::black_box(crate::selection::props(&s, raum));
+            los_pa.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        let (los_st, ..) = median(&mut los_st);
+        let (los_pa, ..) = median(&mut los_pa);
         println!(
-            "{n:>6} {raeume:>6} {leer_alle:>9.3} {leer_nah:>9.3} {stempel:>9.3} {wand:>9.3} {wand_ohne:>9.3} {beginn:>9.3} {ohne_bild:>9.3}"
+            "{n:>6} {raeume:>6} {leer_alle:>9.3} {leer_nah:>9.3} {stempel:>9.3} {wand:>9.3} {wand_ohne:>9.3} {beginn:>9.3} {ohne_bild:>9.3} {los_st:>9.3} {los_pa:>9.3}"
         );
     }
-    println!("Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen).");
+    println!(
+        "Zeiten in ms je Bild bzw. Mausbewegung (Stempel und Wand samt Auslegen); \
+         Loslassen: erstes Auslegen und erstes Paneel nach einem Wandschritt."
+    );
 }
 
 /// Review #112 B1: Raumbuch im Paneel des Raums bei `n` Häusern: Paneel

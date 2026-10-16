@@ -1,6 +1,6 @@
 //! Paneel „Eigenschaften“ eines Raums (Grundriss G3): Name, zuerst die
-//! Grundfläche an der fertigen Oberfläche wie am Stempel (Bedienbarkeit
-//! 39.4), dann Fläche und Umfang im Rohbau aus der Erkennung, die Wände um
+//! Grundfläche nach WoFlV wie am Stempel und im Blatt Wohnfläche
+//! (Bedienbarkeit 39.4, Review #195 B), dann Fläche und Umfang im Rohbau aus der Erkennung, die Wände um
 //! ihn; ruhend, wenn ihn keine Fläche trägt (vereint oder ohne
 //! Umschließung).
 
@@ -31,12 +31,17 @@ pub fn props(
         });
     };
     let f = &r.form;
-    values.extend([
-        // Wie am Stempel, mit derselben Rundung
-        (
+    // Wie am Stempel und im Blatt Wohnfläche (Review #195 B); ohne Ausbau
+    // die Grundfläche an der fertigen Oberfläche
+    let grund = match scene.woflv_umfeld().raum(m, &scene.ketten(), f.clone()) {
+        Some(w) => ("Grundfläche (WoFlV)", sk_raum::wohnflaeche::qm(w.grund)),
+        None => (
             "Grundfläche (fertig)",
             format!("{} m²", de(r.grundflaeche / 1e6, 2)),
         ),
+    };
+    values.extend([
+        grund,
         ("Fläche (Rohbau)", format!("{} m²", de(f.flaeche / 1e6, 2))),
         ("Umfang (Rohbau)", format!("{} m", de(f.umfang / 1e3, 2))),
     ]);
@@ -105,7 +110,7 @@ mod tests {
         assert!(wert("Fläche (Rohbau)").unwrap().ends_with(" m²"));
         // Zuerst die Grundfläche wie am Stempel, dann der Rohbau (39.4)
         let stelle = |k: &str| p.values.iter().position(|v| v.0 == k).unwrap();
-        assert!(stelle("Grundfläche (fertig)") < stelle("Fläche (Rohbau)"));
+        assert!(stelle("Grundfläche (WoFlV)") < stelle("Fläche (Rohbau)"));
         let zahl = |k: &str| {
             let w = wert(k).unwrap();
             w.trim_end_matches(" m²")
@@ -113,10 +118,17 @@ mod tests {
                 .parse::<f64>()
                 .unwrap()
         };
-        let fertig = zahl("Grundfläche (fertig)");
+        let fertig = zahl("Grundfläche (WoFlV)");
         assert!(
             fertig > 0.0 && fertig < zahl("Fläche (Rohbau)"),
             "ohne Putz"
+        );
+        // Dieselbe wie im Blatt Wohnfläche (Review #195 B)
+        let blatt = crate::schedule_view::wohn_rechnen(&s);
+        let w = blatt.raeume().find(|w| w.raum == Some(r[1])).unwrap();
+        assert_eq!(
+            wert("Grundfläche (WoFlV)").unwrap(),
+            sk_raum::wohnflaeche::qm(w.grund)
         );
         // Die Mengen der Flächen stehen in `mengen`, Nutzung und Höhen davor
         // (Review #120 B2)

@@ -229,6 +229,8 @@ pub(crate) struct Open {
     pub noted: std::collections::HashSet<Key>,
     /// Lage der Öffnungen beim Greifen (Ziehen von Wänden, Review #92).
     pub grab: crate::model::OpeningGrab,
+    /// Modellstand beim Öffnen ([`crate::Model::step_revision`]).
+    pub revision: u64,
 }
 
 /// Bezeichnung eines Schritts mit Zahl („3 Bauteile gelöscht“) als

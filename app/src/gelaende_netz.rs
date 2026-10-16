@@ -271,7 +271,20 @@ impl Gelaende {
         let frei = |q: P2| (!g.im_haus(q)).then(|| g.zeigen(g.innen(q))).flatten();
         let urgelaende = |q: P2| frei(q).filter(|_| ur.is_empty() || !im_plan(q));
         let mut zahlen = hoehenzahlen(&linien, h0, urgelaende);
-        zahlen.extend(flaechenzahlen(&plan.outlines, h0, frei));
+        // Streifen am Haus: in seiner größten Teilfläche, nicht in der
+        // Mitte des Umrisses (dort steht das Haus)
+        let (streifen, flaechen): (Vec<_>, Vec<_>) = plan
+            .outlines
+            .iter()
+            .zip(plan.strip_marks.iter().chain(std::iter::repeat(&None)))
+            .partition(|(_, s)| s.is_some());
+        let flaechen: Vec<Vec<Vec3>> = flaechen.into_iter().map(|(r, _)| r.clone()).collect();
+        zahlen.extend(flaechenzahlen(&flaechen, h0, frei));
+        zahlen.extend(streifen.into_iter().filter_map(|(_, q)| {
+            let q = (*q)?;
+            let voll = frei([q.x, q.y])?;
+            Some(([q.x, q.y], 0.0, q.z, nhn_text(q.z / 1000.0 + h0), voll))
+        }));
         let mut linien: Vec<(f64, [P2; 2], bool)> = linien
             .iter()
             .flat_map(|(z, p, haupt)| p.windows(2).map(move |w| (*z, [w[0], w[1]], *haupt)))
@@ -1361,6 +1374,13 @@ pub(crate) fn zahlen_tinte(
     let mut out = Vec::new();
     let mut d = Vec::new();
     let mut belegt = Belegt::neu(4.0 * h);
+    // keine Zahl über dem Kreuz eines Messpunkts (Test H-223e); je
+    // sichtbarem Kreuz eine Kote: ein Punkt fast auf einem schon
+    // beschrifteten bekommt keine zweite (Bedienbarkeit #223)
+    for (q, ..) in &g.koten {
+        belegt.setze(um(*q, 0.25 * h));
+    }
+    let mut beschriftet = Belegt::neu(4.0 * h);
     let mitte = g.zahlen.iter().map(|z| (z, true));
     for ((q, w, z, text, voll), mittig) in mitte.chain(g.koten.iter().map(|z| (z, false))) {
         d.clear();
@@ -1384,12 +1404,17 @@ pub(crate) fn zahlen_tinte(
             // Bedienbarkeit #223)
             let k = |x0: f64| [q[0] + x0, q[1] - 0.5 * h, q[0] + x0 + b, q[1] + 0.5 * h];
             let rand = |k: Kasten| [k[0] - RAND, k[1] - RAND, k[2] + RAND, k[3] + RAND];
+            let punkt = um(*q, 0.5 * h);
             let Some(x0) = [0.5 * h, -0.5 * h - b].into_iter().find(|&x0| {
                 belegt.frei(&k(x0)) && !g.haus_trifft(&k(x0)) && !g.grenze_trifft(&rand(k(x0)))
             }) else {
                 continue;
             };
+            if !beschriftet.frei(&punkt) {
+                continue;
+            }
             belegt.setze(k(x0));
+            beschriftet.setze(punkt);
             (x0, -0.5 * h)
         };
         out.extend(d.iter().map(|tri| sk_render::Ink {
@@ -1406,6 +1431,11 @@ pub(crate) fn zahlen_tinte(
         }));
     }
     out
+}
+
+/// Quadrat mit halber Seite `r` um `q`.
+fn um(q: P2, r: f64) -> Kasten {
+    [q[0] - r, q[1] - r, q[0] + r, q[1] + r]
 }
 
 /// Schon gesetzte Zahlen im Grundriss, je Feld des Rasters `zelle`.
@@ -1831,6 +1861,19 @@ mod tests {
             let frei = zahlen_tinte(&b, &s, 250.0, &t);
             let links = frei.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
             assert!(links.fold(f64::MAX, f64::min) > x0 - 20_000.0);
+            // frei stehend fast am selben Punkt: eine Kote, nicht eine
+            // rechts und eine links desselben Kreuzes (24,30 × 24,41)
+            let p = [x0 - 20_000.0, q[1]];
+            b.koten.push(kote([p[0] + 40.0, p[1] + 60.0]));
+            assert_eq!(zahlen_tinte(&b, &s, 250.0, &t).len(), frei.len());
+            // ein Kreuz rechts daneben: die Kote weicht nach links aus
+            // statt es zu überschreiben (H-223e)
+            b.koten = vec![kote(p), kote([p[0] + 400.0, p[1]])];
+            let zwei = zahlen_tinte(&b, &s, 250.0, &t);
+            let erste = &zwei[..frei.len()];
+            let rechts = erste.iter().flat_map(|i| i.p).map(|p| f64::from(p[0]));
+            assert!(rechts.fold(f64::MIN, f64::max) < p[0], "links vom Kreuz");
+            assert_eq!(zwei.len(), 2 * frei.len());
             // an der Grenze (Bedienbarkeit #223): 30 cm links einer steilen
             // Grenzkante steht die Kote links vom Kreuz, nicht über dem
             // Strichpunkt
