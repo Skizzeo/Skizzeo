@@ -359,9 +359,15 @@ mod tests {
         let t = m.terrain().unwrap();
         assert_eq!(t.crs, Crs::Local);
         assert!(t.points.is_empty() && !t.assumed());
-        assert_eq!(t.parcels, vec![vec![(-5.0, -4.0), (20.0, -4.0), (20.0, 16.0), (-5.0, 16.0)]]);
+        assert_eq!(
+            t.parcels,
+            vec![vec![(-5.0, -4.0), (20.0, -4.0), (20.0, 16.0), (-5.0, 16.0)]]
+        );
         assert!((t.parcel_area() - 500.0).abs() < 1e-9);
-        assert!((m.terrain_z_at(None, 5000.0, 4000.0) - z).abs() < 1e-6);
+        let b = m.level_building();
+        assert_eq!(m.terrain_z(), z);
+        // ohne Punkte die ebene Platte am Haus
+        assert_eq!(m.terrain_z_at(b, 5000.0, 4000.0), z);
         m.begin("Grenze");
         assert!(m.add_parcel(&[[30000.0, 0.0], [40000.0, 0.0], [40000.0, 10000.0]]));
         m.commit();

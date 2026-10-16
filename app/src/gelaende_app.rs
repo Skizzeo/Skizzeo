@@ -285,7 +285,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
         )),
     }
     // das Werkzeug geht auch ohne Gelände (I1)
-    l.zeichnen = z.werkzeug.aktiv;
+    l.zeichnen = z.werkzeug.aktiv && !z.werkzeug.grenze;
+    l.grenze_zeichnen = z.werkzeug.aktiv && z.werkzeug.grenze;
     l.ecken = z.werkzeug.ecken().len();
     let Some(t) = m.terrain() else {
         return l;
@@ -1071,6 +1072,9 @@ mod tests {
         let mut zeichnen = Zustand::default();
         zeichnen.werkzeug.set_aktiv(true);
         assert!(m.terrain().is_none() && leiste(&m, &zeichnen).zeichnen);
+        zeichnen.werkzeug.umschalten(true);
+        let l = leiste(&m, &zeichnen);
+        assert!(l.grenze_zeichnen && !l.zeichnen, "Grenze zeichnen (I2)");
         let (t, satz, _) = Terrain::lesen(CSV, "aufmass.csv", "2026-10-12", 32).unwrap();
         assert!(satz.contains("Punkte"), "{satz}");
         m.begin("Aufmaß");

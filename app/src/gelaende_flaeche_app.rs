@@ -293,7 +293,11 @@ impl Werkzeug {
                 } else if am_anfang {
                     // nicht die erste Ecke noch einmal setzen
                     if self.ecken.len() == 2 {
-                        out.fehler = Some(if self.grenze { GRENZE_ZU_WENIG } else { ZU_WENIG });
+                        out.fehler = Some(if self.grenze {
+                            GRENZE_ZU_WENIG
+                        } else {
+                            ZU_WENIG
+                        });
                     }
                 } else if self.ecken.last() != Some(&p) {
                     self.ecken.push(p);
@@ -765,10 +769,7 @@ impl App {
     /// Neue Grenze aus dem Umriss `ring` (I2), ein Schritt; das Werkzeug
     /// geht aus, die Statuszeile nennt das Grundstück.
     fn grenze_anlegen(&mut self, ring: Vec<[f64; 2]>) {
-        if !self
-            .scene
-            .edit_model(LABEL_GRENZE, |m| m.add_parcel(&ring))
-        {
+        if !self.scene.edit_model(LABEL_GRENZE, |m| m.add_parcel(&ring)) {
             self.platte.leiste.werkzeug.ecken_zurueck(ring);
             let satz = crate::meldung::Meldung::satz(GRENZE_OHNE_INHALT);
             self.status(satz, crate::NOTICE_TIME);
@@ -781,10 +782,8 @@ impl App {
         self.gelaende_sync();
         self.flaeche_zeile_ende();
         let qm = inhalt(&ring) / 1e6;
-        let satz = crate::meldung::Meldung::mit(
-            "Grundstück {} m² (aus der Zeichnung)",
-            &[&de(qm, 2)],
-        );
+        let satz =
+            crate::meldung::Meldung::mit("Grundstück {} m² (aus der Zeichnung)", &[&de(qm, 2)]);
         self.status(satz, crate::NOTICE_TIME);
     }
 
