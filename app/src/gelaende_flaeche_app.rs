@@ -19,7 +19,7 @@ use crate::App;
 use sk_math::vec3;
 use sk_model::{
     HouseStrip, Model, PatchHeight, SiteSoil, TerrainPatch, PATCH_SLOPE, PATCH_SLOPE_RANGE,
-    PATCH_XY_MAX, STRIP_FALL_RANGE, STRIP_WIDTH_RANGE,
+    PATCH_XY_MAX, STRIP_FALL_RANGE, STRIP_WIDTH, STRIP_WIDTH_RANGE,
 };
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
@@ -40,7 +40,16 @@ pub const LABEL_HAUS: &str = "Gelände ans Haus";
 /// sich kein Streifen legen lässt.
 pub const KEIN_HAUS: &str = "Gelände ans Haus braucht ein Haus mit Außenwänden und Gründung.";
 pub const NICHT_UM: &str = "Um dieses Haus lässt sich kein Streifen legen: Eine Einbuchtung ist \
-    schmaler als zwei Streifen.";
+    schmaler als 0,40 m.";
+/// Der neue Streifen ist schmaler als 1,00 m, weil eine Einbuchtung nicht
+/// mehr zulässt (Bedienbarkeit zu #226).
+pub const SCHMAL: &str = "Der Streifen ist {} m breit: Für 1,00 m ist eine Einbuchtung zu schmal.";
+/// Beim Schritt: Der Streifen folgt dem Haus schmaler, oder gar nicht.
+pub const SCHMALER: &str = "Der Streifen am Haus ist jetzt {} m breit: Breiter passt er nicht in \
+    eine Einbuchtung.";
+pub const STEHT: &str =
+    "Der Streifen am Haus folgt dem Haus nicht, weil eine Einbuchtung schmaler \
+    als 0,40 m ist; er bleibt, wie er war.";
 /// Das Haus hat schon einen Streifen: er ist jetzt gewählt.
 pub const SCHON: &str = "Das Haus hat schon einen Streifen; er ist gewählt.";
 /// „Geländebau“ verstand niemand (Bedienbarkeit, später zu #189).
@@ -994,6 +1003,7 @@ impl App {
             self.status(crate::meldung::Meldung::satz(satz), crate::NOTICE_TIME);
             return;
         };
+        let breite = p.house.as_ref().map_or(STRIP_WIDTH, |s| s.width);
         let mut neu = None;
         if self.flaeche_schritt(LABEL_HAUS, |m| {
             neu = m.add_site_patch(p);
@@ -1003,10 +1013,31 @@ impl App {
             if neu.is_some_and(|i| self.scene.model().site_patch_overlaps(i)) {
                 let m = crate::meldung::Meldung::satz(sk_model::qto_earth::UEBERLAPPT);
                 self.status(m, crate::NOTICE_TIME);
+            } else if breite < STRIP_WIDTH {
+                let m = crate::meldung::Meldung::mit(SCHMAL, &[&de(breite / 1000.0, 2)]);
+                self.status(m, crate::NOTICE_TIME);
             }
         }
         self.platte.leiste.neu = true;
         self.gelaende_sync();
+    }
+
+    /// Je Durchlauf: meldet einmal, was der Abgleich der Streifen beim
+    /// letzten Schritt zu sagen hat, schmaler geworden oder stehen
+    /// geblieben (Bedienbarkeit zu #226).
+    pub(crate) fn streifen_pruefen(&mut self) {
+        let Some(n) = self.scene.model().house_strip_note() else {
+            return;
+        };
+        if n.serial == self.platte.streifen_gemeldet {
+            return;
+        }
+        self.platte.streifen_gemeldet = n.serial;
+        let m = match n.width {
+            Some(w) => crate::meldung::Meldung::mit(SCHMALER, &[&de(w / 1000.0, 2)]),
+            None => crate::meldung::Meldung::satz(STEHT),
+        };
+        self.status(m, crate::NOTICE_TIME);
     }
 
     /// Eine Änderung an den Flächen als ein Schritt; Bild und Mengen
@@ -1516,6 +1547,13 @@ mod tests {
         let r = vec![[0.0, 0.0], [3000.0, 0.0], [3000.0, 3000.0], [0.0, 3000.0]];
         let g = TerrainPatch::flat(r, 0.0);
         assert!(mit_feld(&g, GelaendeFeld::Breite, 1500.0).is_none());
+        // die Sätze passen zu den Grenzen des Streifens (Bedienbarkeit zu
+        // #226): ein Platzhalter für die Breite, die kleinste Nische
+        assert!([SCHMAL, SCHMALER]
+            .iter()
+            .all(|t| t.matches("{}").count() == 1));
+        let min = format!("{} m", de(2.0 * STRIP_WIDTH_RANGE.0 / 1000.0, 2));
+        assert!(NICHT_UM.contains(&min) && STEHT.contains(&min));
     }
 
     /// Mit gehaltener Strg-Taste kein Fang, nur das Raster (Bedienbarkeit,

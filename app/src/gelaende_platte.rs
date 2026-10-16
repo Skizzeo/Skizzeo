@@ -196,6 +196,8 @@ pub(crate) struct Platte {
     /// Der Renderer hat, was `im_renderer` sagt; eine neue Platte (Neu,
     /// Öffnen) weiß es nicht und leert ihn im ersten Bild (Review #139 N3).
     renderer_bekannt: bool,
+    /// Zuletzt gemeldete Nummer von [`sk_model::StripNote`].
+    pub(crate) streifen_gemeldet: u64,
 }
 
 impl Platte {
@@ -1163,6 +1165,7 @@ impl App {
         let sicht = self.platte_sicht();
         let neu = self.platte.nachziehen(self.scene.model(), sicht);
         self.unterlage_stand();
+        self.streifen_pruefen();
         neu || gelesen
     }
 

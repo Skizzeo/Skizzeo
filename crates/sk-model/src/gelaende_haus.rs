@@ -11,8 +11,9 @@
 //! zieht ihn im selben Schritt mit ([`Model::sync_house_strips`]), wie die
 //! Randdämmstreifen den Wänden folgen; ohne das Haus entfällt er.
 
-use super::{BuildingId, Guid, Model, PatchHeight, TerrainPatch, PATCH_Z_MAX};
+use super::{BuildingId, Guid, Model, PatchHeight, RunId, TerrainPatch, PATCH_Z_MAX};
 use sk_math::vec3;
+use std::collections::HashSet;
 
 /// Vorgaben des Streifens: Breite (mm), OK am Haus über ±0,00 (mm),
 /// Gefälle vom Haus weg (%).
@@ -41,6 +42,19 @@ pub struct HouseStrip {
     pub fall: f64,
 }
 
+/// Was der Abgleich beim Schließen eines Schritts über einen Streifen zu
+/// melden hat ([`Model::house_strip_note`]); `serial` zählt die Meldungen,
+/// damit die App jede nur einmal zeigt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripNote {
+    pub serial: u64,
+    /// Gebäude des Streifens.
+    pub building: Guid,
+    /// `Some(b)`: schmaler geworden, jetzt `b` mm breit; `None`: folgt dem
+    /// Haus nicht, weil nicht einmal der schmalste Streifen passt.
+    pub width: Option<f64>,
+}
+
 impl HouseStrip {
     /// Außenrand des Streifens um das Haus `house` (gegen den
     /// Uhrzeigersinn), Ecke `i` außen zu Ecke `i` des Hauses: jede Kante um
@@ -63,6 +77,28 @@ impl HouseStrip {
             return None;
         }
         Some(o.iter().map(|p| [p.x, p.y]).collect())
+    }
+
+    /// Die größte Breite bis `bis` (auf 1 cm, mindestens
+    /// [`STRIP_WIDTH_RANGE`]`.0`), mit der sich der Streifen um `house`
+    /// legen lässt, samt Außenrand; `None`, wenn nicht einmal die kleinste
+    /// passt. Eine Einbuchtung schmaler als zwei Streifen begrenzt sie
+    /// (Bedienbarkeit zu #226).
+    pub fn breiteste(house: &[[f64; 2]], bis: f64) -> Option<(f64, Vec<[f64; 2]>)> {
+        if let Some(o) = Self::aussen(house, bis) {
+            return Some((bis, o));
+        }
+        // in cm halbieren: passt `lo`, passt `hi` nicht
+        let (mut lo, mut hi) = ((STRIP_WIDTH_RANGE.0 / 10.0).ceil(), (bis / 10.0).floor());
+        let mut o = Self::aussen(house, lo * 10.0)?;
+        while hi - lo > 1.0 {
+            let mitte = ((lo + hi) / 2.0).floor();
+            match Self::aussen(house, mitte * 10.0) {
+                Some(x) => (lo, o) = (mitte, x),
+                None => hi = mitte,
+            }
+        }
+        Some((lo * 10.0, o))
     }
 
     /// Ebene der Teilfläche an Wand `i` (von Ecke `i` nach `i + 1`):
@@ -143,12 +179,16 @@ impl Model {
     /// Umrissen ([`Model::plate_outlines`]) der größte, ohne doppelte Ecken,
     /// gegen den Uhrzeigersinn; `None` ohne Gründung.
     pub fn house_ring(&self, b: BuildingId) -> Option<Vec<[f64; 2]>> {
-        self.plate_outlines()
-            .into_iter()
-            .filter(|(x, _)| *x == b)
-            .map(|(_, r)| r)
-            .max_by(|r, s| sk_math::polygon::area(r).total_cmp(&sk_math::polygon::area(s)))
-            .map(|r| bereinigt(&r))
+        // nur die Züge dieses Gebäudes (Review A-226a: alle Umrisse aller
+        // Häuser sprengten bei 1000 Häusern das Loslassen)
+        self.lesend(|| {
+            self.runs
+                .iter()
+                .filter(|(_, r)| self.building_of(r.storey) == Some(b))
+                .filter_map(|(id, _)| self.plate_outline(id))
+                .max_by(|r, s| sk_math::polygon::area(r).total_cmp(&sk_math::polygon::area(s)))
+        })
+        .map(|r| bereinigt(&r))
     }
 
     /// Ein neuer Streifen um das Gebäude `b` nach den Vorgaben; `None` ohne
@@ -156,7 +196,7 @@ impl Model {
     pub fn house_strip(&self, b: BuildingId) -> Option<TerrainPatch> {
         let building = self.building(b)?.guid;
         let house = self.house_ring(b)?;
-        let outline = HouseStrip::aussen(&house, STRIP_WIDTH)?;
+        let (width, outline) = HouseStrip::breiteste(&house, STRIP_WIDTH)?;
         let p = TerrainPatch {
             outline,
             height: PatchHeight::Flat(STRIP_Z),
@@ -166,7 +206,7 @@ impl Model {
             house: Some(HouseStrip {
                 building,
                 house,
-                width: STRIP_WIDTH,
+                width,
                 fall: STRIP_FALL,
             }),
         };
@@ -181,17 +221,31 @@ impl Model {
             .position(|p| p.house.as_ref().is_some_and(|s| s.building == g))
     }
 
+    /// Was der letzte Abgleich der Streifen gemeldet hat (siehe
+    /// [`StripNote`]).
+    pub fn house_strip_note(&self) -> Option<&StripNote> {
+        self.strip_note.as_ref()
+    }
+
     /// Die Streifen folgen ihren Häusern (beim Schließen eines Schritts):
-    /// Hat sich der Außenumriss geändert, wird der Streifen neu gelegt;
-    /// lässt er sich um den neuen Umriss nicht bauen, bleibt er, wie er
-    /// war, und die Mengen melden ihn. Ohne Haus (Gebäude oder Gründung
-    /// fort) entfällt er.
-    pub(crate) fn sync_house_strips(&mut self) {
+    /// Hat sich der Außenumriss geändert, wird der Streifen neu gelegt,
+    /// wenn nötig schmaler (mit Meldung); passt nicht einmal der schmalste,
+    /// bleibt er, wie er war, und meldet das. Ohne Haus (Gebäude oder
+    /// Gründung fort) entfällt er. Nur Streifen an Gebäuden, deren Züge der
+    /// Schritt berührt (`scope` wie [`Model::sync_scope`]); im Zweifel
+    /// (`None`, ein Zug fort) alle (Review A-226a).
+    pub(crate) fn sync_house_strips(&mut self, scope: Option<&[RunId]>) {
         if self.site_patches().iter().all(|p| p.house.is_none()) {
             return;
         }
+        let beruehrt: Option<HashSet<BuildingId>> = scope.and_then(|runs| {
+            runs.iter()
+                .map(|r| self.runs.get(*r).and_then(|r| self.building_of(r.storey)))
+                .collect()
+        });
         let mut neu = self.site_patches().to_vec();
         let mut weg = Vec::new();
+        let mut meldung = None;
         for (i, p) in neu.iter_mut().enumerate() {
             let Some(s) = p.house.as_mut() else {
                 continue;
@@ -201,6 +255,11 @@ impl Model {
                 .iter()
                 .find(|(_, x)| x.guid == s.building)
                 .map(|(id, _)| id);
+            if let (Some(b), Some(nur)) = (b, &beruehrt) {
+                if !nur.contains(&b) {
+                    continue;
+                }
+            }
             let Some(ring) = b.and_then(|b| self.house_ring(b)) else {
                 weg.push(i);
                 continue;
@@ -208,14 +267,27 @@ impl Model {
             if ring == s.house {
                 continue;
             }
-            if let Some(o) = HouseStrip::aussen(&ring, s.width) {
-                // Böschung je Kante nur, solange es dieselben Kanten sind
-                if p.slopes.len() > 1 && o.len() != p.slopes.len() {
-                    p.slopes = vec![p.slopes[0]];
+            match HouseStrip::breiteste(&ring, s.width) {
+                Some((w, o)) => {
+                    // Böschung je Kante nur, solange es dieselben Kanten sind
+                    if p.slopes.len() > 1 && o.len() != p.slopes.len() {
+                        p.slopes = vec![p.slopes[0]];
+                    }
+                    if w < s.width {
+                        meldung = Some((s.building, Some(w)));
+                    }
+                    (s.house, s.width, p.outline) = (ring, w, o);
                 }
-                s.house = ring;
-                p.outline = o;
+                None => meldung = Some((s.building, None)),
             }
+        }
+        if let Some((building, width)) = meldung {
+            let serial = self.strip_note.as_ref().map_or(1, |n| n.serial + 1);
+            self.strip_note = Some(StripNote {
+                serial,
+                building,
+                width,
+            });
         }
         for &i in weg.iter().rev() {
             neu.remove(i);
@@ -305,7 +377,7 @@ mod tests {
     }
 
     /// Eine Einbuchtung schmaler als zwei Streifen: kein Streifen; ein
-    /// schmalerer geht.
+    /// schmalerer geht, der breiteste auf 1 cm (Bedienbarkeit zu #226).
     #[test]
     fn einbuchtung() {
         let u = vec![
@@ -320,6 +392,16 @@ mod tests {
         ];
         assert!(HouseStrip::aussen(&u, 1_000.0).is_none());
         assert!(HouseStrip::aussen(&u, 500.0).is_some());
+        let (w, o) = HouseStrip::breiteste(&u, 1_000.0).unwrap();
+        assert!((500.0..750.0).contains(&w) && w % 10.0 == 0.0, "{w}");
+        assert_eq!(HouseStrip::aussen(&u, w), Some(o));
+        assert!(HouseStrip::aussen(&u, w + 10.0).is_none());
+        assert_eq!(HouseStrip::breiteste(&u, 400.0).unwrap().0, 400.0);
+        // schmaler als 2 × 20 cm: gar keiner
+        let mut eng = u.clone();
+        (eng[3][0], eng[6][0]) = (5_150.0, 4_850.0);
+        (eng[4][0], eng[5][0]) = (5_150.0, 4_850.0);
+        assert!(HouseStrip::breiteste(&eng, 1_000.0).is_none());
         // im Uhrzeigersinn gilt nicht (der Umriss kommt gegen ihn)
         let mut cw = rechteck(0.0, 0.0, 10_000.0, 8_000.0);
         cw.reverse();
@@ -344,7 +426,7 @@ mod tests {
         (m, b, run)
     }
 
-    /// Am Haus auf ebenem Gelände (±0,00 50 cm über Gelände): Der Streifen
+    /// Am Haus auf ebenem Gelände (±0,00 50 cm unter Gelände): Der Streifen
     /// liegt um das Haus, im Netz waagerecht am Außenrand, hat Auftrag und
     /// eine Höhenzahl in einer Teilfläche, kommt aus der Datei gleich
     /// zurück und folgt dem Haus, wenn sich die Wände ändern; ohne Haus
@@ -378,15 +460,15 @@ mod tests {
         let q = g.strip_marks[0].unwrap();
         assert!((-170.0..=-150.0).contains(&q.z) && !p.contains([12_000.0, 10_000.0]));
         assert!(p.contains([q.x, q.y]));
-        let auf: f64 = crate::qto::schedule(&m)
-            .auto
-            .iter()
-            .filter(|r| {
-                r.key == crate::qto_earth::EMBANK || r.key == crate::qto_earth::EMBANK_SUPPLY
-            })
-            .map(|r| r.value / 1e9)
-            .sum();
+        let auf = aufschuettung(&m);
         assert!(auf > 0.0, "{auf}");
+        // Regelfall: Gelände unter ±0,00, der Streifen wird angeschüttet
+        // (Prüfung VOB zu #226, c)
+        m.begin("Höhe");
+        assert!(m.set_terrain_nhn(10.5));
+        let hoch = m.commit().unwrap();
+        assert!(aufschuettung(&m) > auf + 1.0, "{}", aufschuettung(&m));
+        m.apply(&hoch, Direction::Undo);
         // Datei hin und zurück
         let t = crate::szo::write(&m);
         assert!(t.contains("[tpatch]") && t.contains(" bau="), "{t}");
@@ -412,6 +494,35 @@ mod tests {
         assert_eq!(m.site_patches()[0], p);
         m.apply(&wand, Direction::Redo);
         assert_eq!(m.site_patches()[0].house.as_ref().unwrap().house, r2);
+        // eine Nische von 1,50 m: der Streifen folgt schmaler und meldet
+        // es (Bedienbarkeit zu #226)
+        assert_eq!(m.house_strip_note(), None);
+        let nische = [
+            vec3(7000.0, 6000.0, 0.0),
+            vec3(7000.0, 14000.0, 0.0),
+            vec3(12250.0, 14000.0, 0.0),
+            vec3(12250.0, 9000.0, 0.0),
+            vec3(13750.0, 9000.0, 0.0),
+            vec3(13750.0, 14000.0, 0.0),
+            vec3(19000.0, 14000.0, 0.0),
+            vec3(19000.0, 6000.0, 0.0),
+        ];
+        m.begin("Nische");
+        assert!(m.set_run_points(run, &nische).is_some());
+        let schritt = m.commit().unwrap();
+        let s = m.site_patches()[0].house.clone().unwrap();
+        assert_eq!(s.house, m.house_ring(b).unwrap());
+        assert!(
+            s.width < 750.0 && s.width >= STRIP_WIDTH_RANGE.0,
+            "{}",
+            s.width
+        );
+        assert!(m.site_patches()[0].valid());
+        let n = m.house_strip_note().unwrap().clone();
+        assert_eq!((n.serial, n.width), (1, Some(s.width)));
+        assert_eq!(n.building, s.building);
+        m.apply(&schritt, Direction::Undo);
+        assert_eq!(m.site_patches()[0].house.as_ref().unwrap().width, 1_000.0);
         // ohne Haus kein Streifen
         m.begin("weg");
         assert!(m.remove_building(b));
@@ -421,5 +532,101 @@ mod tests {
         assert_eq!(m.site_patches().len(), 1);
         m.apply(&neu, Direction::Undo);
         assert!(m.site_patches().is_empty() || m.site_patches()[0].house.is_some());
+    }
+
+    /// Auftrag der Böschung samt Lieferung (m³).
+    fn aufschuettung(m: &Model) -> f64 {
+        crate::qto::schedule(m)
+            .auto
+            .iter()
+            .filter(|r| {
+                r.key == crate::qto_earth::EMBANK || r.key == crate::qto_earth::EMBANK_SUPPLY
+            })
+            .map(|r| r.value / 1e9)
+            .sum()
+    }
+
+    /// `n` Häuser 10 × 8 m im Raster zu 15 m, je eins ein Gebäude, mit
+    /// ihren Wandzügen.
+    fn viele(n: usize) -> (Model, Vec<BuildingId>, Vec<RunId>) {
+        let mut m = Model::with_seed(5);
+        let (mut gb, mut runs) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let b = m.add_building(1);
+            runs.push(m.build_from_polygon(b, &rechteck_um(i, 0.0)).unwrap());
+            gb.push(b);
+        }
+        (m, gb, runs)
+    }
+
+    fn rechteck_um(i: usize, dx: f64) -> [sk_math::Vec3; 4] {
+        let (ox, oy) = ((i % 64) as f64 * 15000.0, (i / 64) as f64 * 15000.0);
+        let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+        [
+            p(0.0, 0.0),
+            p(0.0, 8000.0),
+            p(10000.0 + dx, 8000.0),
+            p(10000.0 + dx, 0.0),
+        ]
+    }
+
+    /// Bestwert des Abgleichs der Streifen (ms) über `k` Wandzüge an Haus
+    /// `haus`, im Schritt gemessen wie beim Loslassen.
+    fn zuege(m: &mut Model, runs: &[RunId], haus: usize, k: usize) -> f64 {
+        let mut best = f64::INFINITY;
+        for j in 0..k {
+            m.begin("Wand");
+            let dx = if j % 2 == 0 { 200.0 } else { 0.0 };
+            assert!(m
+                .set_run_points(runs[haus], &rechteck_um(haus, dx))
+                .is_some());
+            let scope = m.sync_scope();
+            let t = std::time::Instant::now();
+            m.sync_house_strips(scope.as_deref());
+            best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+            m.commit();
+        }
+        best
+    }
+
+    /// Leistung (Review A-226a): 1000 Häuser, ein Streifen an Haus 0. Ein
+    /// Wandzug an einem anderen Haus rechnet keinen Umriss, einer am Haus
+    /// des Streifens nur die Züge dieses Hauses; der Streifen folgt.
+    #[test]
+    fn tempo_viele_haeuser() {
+        let (mut m, gb, runs) = viele(1000);
+        let p = m.house_strip(gb[0]).unwrap();
+        m.begin("am Haus");
+        m.add_site_patch(p.clone());
+        m.commit();
+        let anderes = zuege(&mut m, &runs, 500, 5);
+        assert_eq!(m.site_patches()[0], p, "fremdes Haus");
+        let eigenes = zuege(&mut m, &runs, 0, 5);
+        let s = m.site_patches()[0].house.clone().unwrap();
+        assert_eq!(s.house, m.house_ring(gb[0]).unwrap());
+        let (a, e) = if cfg!(debug_assertions) {
+            (20.0, 80.0)
+        } else {
+            (0.5, 2.0)
+        };
+        assert!(anderes < a && eigenes < e, "{anderes:.2} / {eigenes:.2} ms");
+    }
+
+    /// Wie [`tempo_viele_haeuser`] bei 1000 und 4000 Häusern, mit Ausgabe.
+    #[test]
+    #[ignore = "Messung im Release"]
+    fn messen() {
+        for n in [1000, 4000] {
+            let (mut m, gb, runs) = viele(n);
+            let p = m.house_strip(gb[0]).unwrap();
+            m.begin("am Haus");
+            m.add_site_patch(p);
+            m.commit();
+            let anderes = zuege(&mut m, &runs, n / 2, 7);
+            let eigenes = zuege(&mut m, &runs, 0, 7);
+            println!(
+                "{n} Häuser: fremdes Haus {anderes:.3} ms, Haus des Streifens {eigenes:.3} ms"
+            );
+        }
     }
 }
