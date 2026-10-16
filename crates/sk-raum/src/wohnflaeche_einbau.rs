@@ -348,6 +348,11 @@ fn ohne(p: &[Vec3], c: &[Vec3]) -> Vec<Vec<Vec3>> {
     let mut out = Vec::new();
     for i in 0..c.len() {
         let (a, b) = (c[i], c[(i + 1) % c.len()]);
+        // Doppelter Eckpunkt (Rest eines Schnitts): Die Kante hat keine
+        // Seite, sonst ginge der ganze Rest als „außerhalb“ (VOB B-241e)
+        if (b.x - a.x).hypot(b.y - a.y) < 1e-6 {
+            continue;
+        }
         let aussen = halbebene(&rest, b, a);
         if aussen.len() >= 3 && polygon::area(&aussen) > KRUEMEL {
             out.push(aussen);
