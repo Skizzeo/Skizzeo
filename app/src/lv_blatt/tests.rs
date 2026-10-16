@@ -49,6 +49,7 @@ fn angaben(preise: bool) -> Angaben {
         umfang: "Gebäude 1 · alle Geschosse".into(),
         stand: "09.10.2026".into(),
         preisquelle: preise.then(|| "Referenzpreise 10/2026, unverbindlich".into()),
+        geschosse: Vec::new(),
     }
 }
 
@@ -291,6 +292,7 @@ fn uebertrag_ueber_seiten() {
         preise: true,
         titelblatt: true,
         verzeichnis: true,
+        ansatz: false,
     };
     let mit = blatt(&lv, &angaben(true), w, f);
     assert_eq!(mit.seiten.len(), b.seiten.len() + 2);
@@ -363,6 +365,7 @@ fn ohne_vorbemerkungen_und_lange_zusammenstellung() {
         preise: true,
         titelblatt: false,
         verzeichnis: true,
+        ansatz: false,
     };
     let b = blatt(&lv, &angaben(true), w, f);
     assert!(!b.inhalt.iter().any(|e| e.text == "Vorbemerkungen"));
@@ -440,6 +443,7 @@ fn titelblatt_und_verzeichnis() {
         preise: true,
         titelblatt: true,
         verzeichnis: true,
+        ansatz: false,
     };
     let b = blatt(&lv, &a, w, f);
     assert_eq!(b.seiten.len(), ohne.seiten.len() + 2);
@@ -591,4 +595,309 @@ fn uebertrag_unvollstaendig_bei_fehlendem_artikelpreis() {
     assert!(a
         .iter()
         .any(|x| x == "Summe 03 Betonarbeiten (unvollständig)"));
+}
+
+/// Index der Überschrift der Anlage in `alle`.
+fn anlage_ab(t: &[String]) -> usize {
+    t.iter()
+        .position(|x| x.starts_with("Anlage Mengenermittlung · "))
+        .expect("Anlage fehlt")
+}
+
+/// Anlage Mengenermittlung (Jörn 16.10., „Eigene Anlage“): das LV bleibt
+/// ohne Ansatz; hinter ihm auf eigenen Seiten je Position Geschoss, Räume
+/// bzw. Bauteile und Menge wie am Bildschirm, als Information gekennzeichnet
+/// und im Verzeichnis. Lange Reihen brechen um, viele Zeilen laufen mit
+/// Spaltenkopf über die Seite, nichts unter der Fußzeile; aus, dann wie
+/// bisher.
+#[test]
+fn anlage_mengenermittlung() {
+    let Some((r, fe)) = schriften() else {
+        return;
+    };
+    let f = Schriften {
+        regular: &r,
+        fett: &fe,
+    };
+    let mut s = haus();
+    let mut lv = lv(&mut s, true, false);
+    let m = s.model();
+    let mut a = angaben(true);
+    a.geschosse = m
+        .storeys()
+        .iter()
+        .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
+        .collect();
+    assert!(a.geschosse.iter().any(|g| g.1 == "Fundament"));
+    let w = Wahl {
+        preise: true,
+        ansatz: true,
+        ..Wahl::default()
+    };
+    let ohne = blatt(&lv, &a, Wahl { ansatz: false, ..w }, f);
+    assert_eq!(
+        ohne,
+        blatt(
+            &lv,
+            &a,
+            Wahl {
+                preise: true,
+                ..Wahl::default()
+            },
+            f
+        )
+    );
+    let b = blatt(&lv, &a, w, f);
+    ueberdeckt_nichts(&b, f);
+    seite_x_von_y(&b, 0);
+    let p = &beton(&mut lv).positionen[0].clone();
+    let z = &p.ansatz[0];
+    let name = &a.geschosse.iter().find(|g| g.0 == z.geschoss).unwrap().1;
+    let teile = crate::ava_view::nummern_kurz(&z.nummern);
+    let t = alle(&b);
+    assert!(!teile.is_empty());
+    assert!(!alle(&ohne).contains(&teile), "{teile} ohne Anlage");
+    assert!(!alle(&ohne).iter().any(|x| x.starts_with("Anlage")));
+    // Das LV ist dasselbe, die Anlage kommt erst hinter dem Bieterblock
+    let ab = anlage_ab(&t);
+    assert!(t[..ab].iter().any(|x| x == "Summe brutto"));
+    assert!(!t[..ab].contains(&teile), "Ansatz im LV");
+    assert!(b.seiten.len() > ohne.seiten.len());
+    assert!(t[ab + 1].starts_with("Zur Information, nicht Vertragsbestandteil"));
+    for x in [name, &teile, &menge_ohne(z.menge, p), &p.oz] {
+        assert!(t[ab..].contains(x), "{x} fehlt in der Anlage");
+    }
+    // Ohne Preise und ohne Summen
+    assert!(!t[ab..].iter().any(|x| x.starts_with("Summe")));
+    if let Some(ep) = p.ep {
+        assert!(!t[ab..].contains(&ep.deutsch()), "EP in der Anlage");
+    }
+    // Die Position in der Anlage reicht in der Vorschau über ihren Ansatz
+    let auf_seite = |text: &str| {
+        b.seiten.iter().enumerate().find_map(|(i, sei)| {
+            sei.ops.iter().find_map(|o| match o {
+                Op::Text { text: x, y, .. } if x == text => Some((i, *y)),
+                _ => None,
+            })
+        })
+    };
+    let (seite, y_teile) = auf_seite(&teile).unwrap();
+    let st = b
+        .stellen
+        .iter()
+        .find(|st| st.oz == p.oz && st.seite == seite)
+        .unwrap();
+    assert!(y_teile < st.flaeche.1 + st.flaeche.3, "Fläche ohne Ansatz");
+    // Mit Verzeichnis steht die Anlage darin, auf ihrer Seite
+    let mit_v = blatt(
+        &lv,
+        &a,
+        Wahl {
+            verzeichnis: true,
+            ..w
+        },
+        f,
+    );
+    let e = mit_v
+        .inhalt
+        .iter()
+        .find(|e| e.text == "Anlage Mengenermittlung")
+        .expect("Anlage im Verzeichnis");
+    assert!(texte(&mit_v.seiten[e.seite - 1])
+        .iter()
+        .any(|x| x.starts_with("Anlage Mengenermittlung · ")));
+    // Eine Position ohne Ansatzzeilen (Pauschale, Menge von Hand) fehlt in
+    // der Anlage bewusst, im LV steht sie; die OZ der Anlage ist die der
+    // LV-Position, wörtlich (Kosten 16.10.)
+    let mut ohne_zeilen = lv.clone();
+    let q = &mut beton(&mut ohne_zeilen).positionen[1];
+    let oz = q.oz.clone();
+    q.ansatz.clear();
+    assert!(t[ab..].contains(&oz), "{oz} mit Ansatz in der Anlage");
+    let t2 = alle(&blatt(&ohne_zeilen, &a, w, f));
+    let ab2 = anlage_ab(&t2);
+    assert!(t2[..ab2].contains(&oz), "{oz} im LV");
+    assert!(!t2[ab2..].contains(&oz), "{oz} ohne Ansatz in der Anlage");
+    // Eine lange Reihe einzelner Räume und 150 Zeilen an einer Position
+    let t = beton(&mut lv);
+    let mut lang = t.positionen[0].ansatz[0].clone();
+    lang.nummern = (0..80).map(|i| format!("R-{:03}", 2 * i + 1)).collect();
+    lang.herkunft = "aus Modell".into();
+    let mut rund = lang.clone();
+    rund.nummern.clear();
+    rund.elemente.clear();
+    rund.herkunft = "Rundungsausgleich".into();
+    let mut viele = vec![lang.clone()];
+    viele.extend(std::iter::repeat_n(t.positionen[0].ansatz[0].clone(), 150));
+    viele.push(rund);
+    t.positionen[0].ansatz = viele;
+    let b = blatt(&lv, &a, w, f);
+    ueberdeckt_nichts(&b, f);
+    seite_x_von_y(&b, 0);
+    for (i, sei) in b.seiten.iter().enumerate() {
+        for o in &sei.ops {
+            if let Op::Text { y, pt, text, x, .. } = o {
+                // Zeilen des Ansatzes: in ihrer Spalte, über der Fußzeile
+                let spalte = mm(LINKS + ANSATZ_X)..mm(LINKS + MENGE_R) - 30.0;
+                if *pt == KLEIN && spalte.contains(x) {
+                    assert!(
+                        f.regular.width(text, *pt) <= mm(ANSATZ_R - ANSATZ_X) + 0.5,
+                        "„{text}“ zu breit"
+                    );
+                    assert!(*y <= unten(), "Seite {}: „{text}“ unten", i + 1);
+                }
+            }
+        }
+    }
+    let t = alle(&b);
+    assert!(t.iter().any(|x| x.starts_with("R-001, R-003")));
+    assert!(t.iter().any(|x| x.contains("R-159")), "nie gekürzt");
+    assert!(t.contains(&"Rundungsausgleich".to_string()));
+    // Über mehrere Seiten, jede mit Kopf und Spalten darunter
+    let y_von = |sei: &sk_paint::pdf::Seite, f: &dyn Fn(&str) -> bool| {
+        sei.ops.iter().find_map(|o| match o {
+            Op::Text { text, y, .. } if f(text) => Some(*y),
+            _ => None,
+        })
+    };
+    let mut folge = 0;
+    for sei in &b.seiten {
+        let kopf = y_von(sei, &|x| {
+            x.starts_with("Anlage") && x.ends_with("(Fortsetzung)")
+        });
+        let spalten = y_von(sei, &|x| x == "Räume bzw. Bauteile");
+        if let (Some(k), Some(sp)) = (kopf, spalten) {
+            assert!(sp - k >= TITEL + KLEIN, "Kopf über den Spalten");
+            folge += 1;
+        }
+    }
+    assert!(folge >= 2, "{folge} Folgeseiten");
+}
+
+/// Kosten 16.10.: Teilpositionen je Dicke (Dämmung unter Estrich 40 mm im
+/// Erdgeschoss, 45 mm im Obergeschoss, wie `ava_view/je_dicke_tests.rs`).
+/// Unter jeder Teilposition stehen nur ihre Räume, die Zeilen ergeben ihre
+/// Menge; das Blatt nimmt `LvPosition::ansatz` unverändert.
+#[test]
+fn anlage_je_dicke_nur_eigene_raeume() {
+    use sk_model::{LevelKind, Model};
+    let Some((r, fe)) = schriften() else {
+        return;
+    };
+    let f = Schriften {
+        regular: &r,
+        fett: &fe,
+    };
+    let mut m = Model::with_seed(9);
+    let b = m.add_building(2);
+    let pts = [
+        sk_math::vec3(0.0, 0.0, 0.0),
+        sk_math::vec3(0.0, 8000.0, 0.0),
+        sk_math::vec3(10000.0, 8000.0, 0.0),
+        sk_math::vec3(10000.0, 0.0, 0.0),
+    ];
+    m.build_from_polygon(b, &pts).unwrap();
+    let geschosse: Vec<_> = m
+        .levels_in(Some(b))
+        .into_iter()
+        .filter(|g| m.storey(*g).unwrap().kind == LevelKind::Storey)
+        .collect();
+    m.begin("Räume");
+    assert!(sk_raum::abgleichen(&mut m, &geschosse) > 0);
+    m.commit();
+    for g in &geschosse {
+        let id = m.spaces(*g)[0];
+        m.begin("Ausbau");
+        assert!(sk_raum::ausbau::typen_anlegen(&mut m, id));
+        m.commit();
+    }
+    let mut s = Scene::with_model(m);
+    let k = s.katalog(None);
+    let l = k
+        .leistungen
+        .iter()
+        .find(|l| l.kurz.starts_with("Wärmedämmung EPS 035 DEO unter Estrich"))
+        .unwrap();
+    let (g, mut los) = (l.guid, l.titel);
+    while let Some(p) = k.los(los).and_then(|t| t.parent) {
+        los = p;
+    }
+    let w = LvWahl {
+        los,
+        preise: false,
+        untertitel: false,
+        heute: Some((2030, 1)),
+    };
+    let lv = (*s.lv(None, &Umfang::projekt(), &w)).clone();
+    let m = s.model();
+    let teile: Vec<&LvPosition> = lv
+        .titel
+        .iter()
+        .flat_map(|t| &t.positionen)
+        .filter(|p| p.quelle == g)
+        .collect();
+    assert_eq!(teile.len(), 2, "40 und 45 mm");
+    for (p, st) in teile.iter().zip(&geschosse) {
+        let summe: i64 = p.ansatz.iter().map(|a| a.menge.0).sum();
+        assert_eq!(summe, p.menge.0, "{}", p.oz);
+        let raum = m.spaces(*st)[0];
+        for a in &p.ansatz {
+            assert_eq!(
+                (a.geschoss, &a.elemente[..]),
+                (*st, &[raum][..]),
+                "{}",
+                p.oz
+            );
+            assert_eq!(a.nummern.len(), 1, "{}", p.oz);
+        }
+    }
+    let (eg, og) = (
+        teile[0].ansatz[0].nummern[0].clone(),
+        teile[1].ansatz[0].nummern[0].clone(),
+    );
+    assert_ne!(eg, og);
+    let mut a = angaben(false);
+    a.geschosse = m
+        .storeys()
+        .iter()
+        .map(|(id, _)| (id, crate::umfang_view::kurzname(m, id)))
+        .collect();
+    let wahl = Wahl {
+        ansatz: true,
+        ..Wahl::default()
+    };
+    let b = blatt(&lv, &a, wahl, f);
+    ueberdeckt_nichts(&b, f);
+    let t = alle(&b);
+    let bei_ab = |t: &[String], x: &str| {
+        t.iter()
+            .position(|y| y == x)
+            .unwrap_or_else(|| panic!("{x}"))
+    };
+    // In der Anlage ist der erste Raum hinter der OZ der eigene
+    let ab = anlage_ab(&t);
+    assert!(!t[..ab].iter().any(|y| *y == eg || *y == og), "Raum im LV");
+    let bei = |x: &str| ab + bei_ab(&t[ab..], x);
+    let raum_nach = |oz: &str| {
+        t[bei(oz)..]
+            .iter()
+            .find(|y| **y == eg || **y == og)
+            .cloned()
+    };
+    assert_eq!(raum_nach(&teile[0].oz), Some(eg.clone()));
+    assert_eq!(raum_nach(&teile[1].oz), Some(og.clone()));
+    // Der Raum steht unter jeder seiner Ansatzzeilen, auch mit Herkunft
+    // dahinter, nie unter 45 mm
+    let zeilen = lv
+        .titel
+        .iter()
+        .flat_map(|t| &t.positionen)
+        .flat_map(|p| &p.ansatz)
+        .filter(|a| a.nummern == [eg.clone()])
+        .count();
+    let gedruckt = t
+        .iter()
+        .filter(|y| **y == eg || y.starts_with(&format!("{eg} ")))
+        .count();
+    assert_eq!(gedruckt, zeilen);
 }

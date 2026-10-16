@@ -1145,11 +1145,26 @@ fn druckvorschau_blaettern_und_pdf() {
     assert_eq!(v.seite_jetzt(&fonts), n - 2);
     // Titelblatt und Verzeichnis: zwei Seiten mehr, die Wahl geht in die
     // Einstellungen
-    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(false));
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(0));
     assert_eq!(out, Some(ListOut::BlattWahl((true, false))));
-    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(true));
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(1));
     assert_eq!(out, Some(ListOut::BlattWahl((true, true))));
     assert_eq!(v.blatt(&fonts).unwrap().seiten.len(), n + 2);
+    // Anlage Mengenermittlung (Jörn 16.10.): an ab Werk, das Häkchen nimmt
+    // sie heraus
+    let ops = |v: &AvaView| -> usize {
+        let b = v.blatt(&fonts).unwrap();
+        b.seiten.iter().map(|s| s.ops.len()).sum()
+    };
+    let mit = (v.blatt(&fonts).unwrap().seiten.len(), ops(&v));
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(2));
+    assert_eq!(out, Some(ListOut::Repaint));
+    assert!(!v.blatt_ansatz);
+    assert!(v.blatt(&fonts).unwrap().seiten.len() <= mit.0);
+    assert!(ops(&v) < mit.1, "{} statt {}", ops(&v), mit.1);
+    klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(2));
+    assert!(v.blatt_ansatz);
+    assert_eq!(v.blatt_wahl, (true, true));
     // Der Knopf speichert das PDF
     let (x, y, w, h) = v.knopf_rect(&t, &fonts);
     let k = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);

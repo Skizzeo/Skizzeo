@@ -224,9 +224,9 @@ enum Hot {
     Projektdaten,
     /// Druckvorschau: „‹“ (`false`) bzw. „›“ (`true`).
     Seite(bool),
-    /// Druckvorschau: Häkchen „Titelblatt“ (`false`) bzw.
-    /// „Inhaltsverzeichnis“ (`true`).
-    BlattWahl(bool),
+    /// Druckvorschau: Häkchen „Titelblatt“ (0), „Inhaltsverzeichnis“ (1)
+    /// bzw. „Anlage Mengen“ (2).
+    BlattWahl(u8),
     /// „LV … als Tabelle speichern“.
     Knopf,
     /// „Bauleistung öffnen ↗“ in der Spalte „Preis“: Verwaltung (KA-3a2).
@@ -463,6 +463,9 @@ pub struct AvaView {
     /// Druckvorschau: Titelblatt und Inhaltsverzeichnis (Arbeitsplatz,
     /// `einstellungen.txt`).
     pub blatt_wahl: (bool, bool),
+    /// Druckvorschau: Anlage Mengenermittlung hinter dem LV (Jörn 16.10.); an
+    /// ab Werk, gilt bis zum Schließen der App.
+    blatt_ansatz: bool,
     /// Breite des Kurztexts je Zeile (dip bei `KURZ_PX`), aus `messen`;
     /// leer nach jedem Aufbau der Zeilen.
     breiten: std::cell::RefCell<Vec<f32>>,
@@ -470,6 +473,8 @@ pub struct AvaView {
     blatt_cache: std::cell::RefCell<Option<(blatt::Schluessel, Rc<lv_blatt::Blatt>)>>,
     /// Umfang und Stand für den aufgeklappten Kopf.
     kopf_umfang: (String, String),
+    /// Kurznamen der Geschosse für die Anlage Mengenermittlung.
+    geschosse: Vec<(sk_model::StoreyId, String)>,
     /// „Referenzpreise 10/2026“ bzw. „Preise Firmenkatalog“; leer ohne
     /// Preise.
     preisquelle: String,
@@ -546,9 +551,11 @@ impl AvaView {
             baum_blatt: false,
             seite: 0,
             blatt_wahl: (false, false),
+            blatt_ansatz: true,
             blatt_cache: std::cell::RefCell::new(None),
             breiten: std::cell::RefCell::new(Vec::new()),
             kopf_umfang: (String::new(), String::new()),
+            geschosse: Vec::new(),
             preisquelle: String::new(),
             knopf_down: false,
             fokus_auswahl: None,
@@ -691,6 +698,12 @@ impl AvaView {
             changed |= self.springe(&sp);
         }
         self.projekt = Some(s.model().project().clone());
+        let m = s.model();
+        self.geschosse = m
+            .storeys()
+            .iter()
+            .map(|(id, _)| (id, umfang_view::kurzname(m, id)))
+            .collect();
         self.preisquelle = if self.preise {
             sk_cost::lesen::preisquelle(&kat)
         } else {
@@ -1421,8 +1434,12 @@ impl AvaView {
                 Some(ListOut::Repaint)
             }
             Hot::Seite(vor) => self.blaettern(fonts, vor).then_some(ListOut::Repaint),
+            Hot::BlattWahl(2) => {
+                self.blatt_ansatz = !self.blatt_ansatz;
+                Some(ListOut::Repaint)
+            }
             Hot::BlattWahl(v) => {
-                if v {
+                if v == 1 {
                     self.blatt_wahl.1 = !self.blatt_wahl.1;
                 } else {
                     self.blatt_wahl.0 = !self.blatt_wahl.0;
@@ -2486,7 +2503,7 @@ fn menge_zahl(d: Dez) -> String {
 
 /// Bauteilnummern kurz: eine durchgehende Reihe gleicher Art als
 /// „AW-001 … 004“, sonst mit Komma.
-fn nummern_kurz(n: &[String]) -> String {
+pub(crate) fn nummern_kurz(n: &[String]) -> String {
     let teil = |x: &str| {
         let i = x.rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
         let (a, z) = x.split_at(i);

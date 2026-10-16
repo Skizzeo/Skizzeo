@@ -1,7 +1,7 @@
 //! Druckvorschau des LV-Blatts (kosten/lv-blatt-a4.md §9, paket-projektdaten
 //! §5): Seite für Seite wie der Ausdruck, darüber Blättern und die Häkchen
-//! „Titelblatt“ und „Inhaltsverzeichnis“; der Knopf oben schreibt genau
-//! diese Seiten als PDF.
+//! „Titelblatt“, „Inhaltsverzeichnis“ und „Anlage Mengen“ (Anlage
+//! Mengenermittlung); der Knopf oben schreibt genau diese Seiten als PDF.
 
 use super::*;
 use crate::lv_blatt::{self, Angaben, Blatt, Schriften, Wahl};
@@ -17,13 +17,16 @@ const PFEIL: f32 = 24.0;
 const KASTEN: f32 = 14.0;
 /// Fassung in der Leiste.
 const FASSUNG: [(bool, &str); 2] = [(false, "Anfrage"), (true, "Mit Preisen")];
+/// Häkchen in der Leiste: `blatt_wahl` und `blatt_ansatz`; „Anlage
+/// Mengen“ kurz, damit die Leiste auch schmal in zwei Zeilen passt.
+const HAKEN: [&str; 3] = ["Titelblatt", "Inhaltsverzeichnis", "Anlage Mengen"];
 
 /// Woraus das Blatt gebaut ist; gleich, dann gilt das gemerkte. Das LV
 /// hält der Schlüssel fest, damit seine Adresse nicht neu vergeben wird.
 pub(super) struct Schluessel {
     lv: Rc<Lv>,
     angaben: Angaben,
-    wahl: (bool, bool, bool),
+    wahl: (bool, bool, bool, bool),
     schrift: (*const Font, *const Font),
 }
 
@@ -53,6 +56,7 @@ impl AvaView {
             umfang: self.kopf_umfang.0.clone(),
             stand: stand.to_string(),
             preisquelle: quelle,
+            geschosse: self.geschosse.clone(),
         }
     }
 
@@ -62,10 +66,11 @@ impl AvaView {
         let regular = fonts.regular.as_ref()?;
         let fett = fonts.bold.as_ref().unwrap_or(regular);
         let (titelblatt, verzeichnis) = self.blatt_wahl;
+        let ansatz = self.blatt_ansatz;
         let key = Schluessel {
             lv: lv.clone(),
             angaben: self.angaben(lv),
-            wahl: (self.preise, titelblatt, verzeichnis),
+            wahl: (self.preise, titelblatt, verzeichnis, ansatz),
             schrift: (regular, fett),
         };
         if let Some((k, b)) = self.blatt_cache.borrow().as_ref() {
@@ -77,6 +82,7 @@ impl AvaView {
             preise: self.preise,
             titelblatt,
             verzeichnis,
+            ansatz,
         };
         let s = Schriften { regular, fett };
         let b = Rc::new(lv_blatt::blatt(lv, &key.angaben, w, s));
@@ -162,7 +168,7 @@ impl AvaView {
             x += w;
         }
         // Die Häkchen daneben, sonst in einer zweiten Zeile
-        let w_haken: f32 = ["Titelblatt", "Inhaltsverzeichnis"]
+        let w_haken: f32 = HAKEN
             .iter()
             .map(|l| (KASTEN + 6.0 + 18.0) * s + breite(f, l))
             .sum();
@@ -173,9 +179,9 @@ impl AvaView {
             (x + 20.0 * s, mitte)
         };
         let mut haken = Vec::new();
-        for (i, label) in ["Titelblatt", "Inhaltsverzeichnis"].into_iter().enumerate() {
+        for (i, label) in (0..).zip(HAKEN) {
             let w = KASTEN * s + 6.0 * s + breite(f, label);
-            haken.push(((hx, hm - 10.0 * s, w, 20.0 * s), label, i == 1));
+            haken.push(((hx, hm - 10.0 * s, w, 20.0 * s), label, i));
             hx += w + 18.0 * s;
         }
         VorschauLeiste {
@@ -296,10 +302,10 @@ impl AvaView {
         }
         let base = l.haken_mitte + regular.cap_height(px) * 0.5;
         for ((x, _, _, _), label, v) in &l.haken {
-            let an = if *v {
-                self.blatt_wahl.1
-            } else {
-                self.blatt_wahl.0
+            let an = match v {
+                0 => self.blatt_wahl.0,
+                1 => self.blatt_wahl.1,
+                _ => self.blatt_ansatz,
             };
             let hot = self.hot == Some(Hot::BlattWahl(*v));
             // Kästchen in den Farben des Blatts
@@ -371,6 +377,7 @@ pub(super) struct VorschauLeiste {
     pub(super) haken_mitte: f32,
     /// Zeilen der Leiste (1 oder 2).
     pub(super) zeilen: f32,
-    /// Häkchen: Fläche, Text und `true` für „Inhaltsverzeichnis“.
-    pub(super) haken: Vec<(Rect, &'static str, bool)>,
+    /// Häkchen: Fläche, Text und Nummer (0 Titelblatt, 1 Verzeichnis,
+    /// 2 Anlage Mengenermittlung).
+    pub(super) haken: Vec<(Rect, &'static str, u8)>,
 }
