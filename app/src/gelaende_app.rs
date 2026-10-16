@@ -364,7 +364,9 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
         let t = de(s, 2);
         t.trim_end_matches('0').trim_end_matches(',').to_string()
     };
+    // nur eine Grenze, keine Höhen: keine Zeile zu Höhenlinien
     l.hoehenlinien = match m.terrain_contour_step(wunsch) {
+        _ if !l.hoehen => None,
         Some(s) if s == wunsch => None,
         Some(s) => Some(format!(
             "Höhenlinien alle {} m, bei {} m wären es zu viele",
@@ -1412,6 +1414,7 @@ mod tests {
         let l = leiste(s.model(), &Zustand::default());
         assert!(l.aufmass && !l.hoehen && l.grenze && !l.uebernehmen);
         assert!(l.hoehenlage.is_empty() && l.steckt.is_none());
+        assert_eq!(l.hoehenlinien, None, "ohne Höhen keine Höhenlinien");
         assert_eq!(l.grundstueck.as_deref(), Some("Grundstück 822,90 m²"));
         // übernommen: kein Knopf mehr, nach Rückgängig wieder (H3)
         assert!(!leiste(s.model(), &z).uebernehmen);
