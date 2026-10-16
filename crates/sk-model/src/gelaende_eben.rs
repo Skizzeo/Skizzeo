@@ -15,8 +15,13 @@ use super::*;
 const NR: &str = "H";
 
 /// Halbe Breite (mm) des Streifens zwischen zwei getrennten Platten: Dort
-/// geht das Gelände von der einen Höhe in die andere über.
-const FUGE: f64 = 5.0;
+/// geht das Gelände von der einen Höhe in die andere über. So breit wie
+/// der Abstand, unter dem die Prüfung zwei Punkte als dieselbe Stelle
+/// nimmt: Die Ecken beider Seiten liegen dann auch nach dem Runden auf mm
+/// fast doppelt so weit auseinander. Mit 5 mm fiel eine Ecke als „Mauer
+/// oder Bord?“ heraus, und beide Häuser lagen 0,76 m daneben (Geometrie zu
+/// #245).
+const FUGE: f64 = sk_gelaende::pruefen::GLEICHE_STELLE * 1000.0;
 
 /// Platten, die sich überdecken oder berühren, an der Mitte zwischen
 /// ihren Häusern trennen (H-243a, VOB): Im eigenen Umriss gilt so die
@@ -564,6 +569,55 @@ mod tests {
         }
         let f = m.terrain_folgen().unwrap();
         assert!(f.frostfrei);
+
+    /// Haus und Garage in jedem Abstand der Wandzüge von 0,65 bis 3 m (in
+    /// cm, jeder siebte um 0,4 mm daneben), längs und quer: keine Ecke
+    /// fällt bei der Prüfung heraus, und OK Gelände an beiden Gründungen
+    /// bleibt (Geometrie zu #245; mit FUGE 5 mm fast überall 0,76 m tiefer).
+    /// Darunter berühren sich die Platten selbst (Wand 0,315 m außen).
+    #[test]
+    fn fuge_in_jedem_abstand() {
+        for quer in [false, true] {
+            for k in 65..=300 {
+                let spalt = k as f64 * 10.0 + if k % 7 == 3 { 0.4 } else { 0.0 };
+                let mut m = Model::with_seed(5);
+                let mut gr = Vec::new();
+                let zweites = if quer {
+                    (3000.0, 10000.0 + spalt, 1500.0)
+                } else {
+                    (8000.0 + spalt, 0.0, 1500.0)
+                };
+                for (x0, y0, versatz) in [(0.0, 0.0, 500.0), zweites] {
+                    let b = m.add_building(1);
+                    let pts = [
+                        vec3(x0, y0, 0.0),
+                        vec3(x0 + 8000.0, y0, 0.0),
+                        vec3(x0 + 8000.0, y0 + 10000.0, 0.0),
+                        vec3(x0, y0 + 10000.0, 0.0),
+                    ];
+                    let run = m.build_from_polygon(b, &pts).unwrap();
+                    m.begin("Gelände");
+                    assert!(m.set_terrain_offset_of(b, versatz));
+                    m.commit();
+                    let st = m.run(run).unwrap().storey;
+                    gr.push(m.foundation_level_of(st).unwrap());
+                }
+                m.begin("Fläche");
+                assert!(m.seed_flat_terrain(&[]));
+                m.commit();
+                let t = m.terrain().unwrap();
+                assert!(
+                    t.mesh().hinweise.is_empty(),
+                    "{spalt} {quer}: {:?}",
+                    t.mesh().hinweise
+                );
+                assert_eq!(t.breaks.len(), 2, "{spalt} {quer}");
+                for (g, z) in gr.iter().zip([-500.0, -1500.0]) {
+                    let d = m.terrain_z_of_level(*g) - z;
+                    assert!(d.abs() < 1e-6, "{spalt} {quer}: {d}");
+                }
+            }
+        }
     }
 
     /// Eine Fläche neben dem Haus bekommt ihr Rechteck dazu; Ecken in der
