@@ -10,7 +10,7 @@
 //! `Model`, aus `model.rs` ausgelagert.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Seite eines Wandsegments: links bzw. rechts der Zeichenrichtung.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -230,18 +230,25 @@ impl Model {
         }
     }
 
-    /// Geteilte Wand (`set_points`): Die Abweichungen der Wandseiten von
-    /// `alt` gelten auch für das neue Stück `neu` (schnittstelle-raum.md
-    /// §4, Grundriss 17:29).
-    pub(super) fn ausbau_wand_geteilt(&mut self, alt: Guid, neu: Guid) {
+    /// Geteilte Wände (`set_points`): Die Abweichungen der Wandseiten der
+    /// alten Wand gelten auch für ihr neues Stück, je Paar (alt, neu)
+    /// (schnittstelle-raum.md §4, Grundriss 17:29). Ein Gang über die
+    /// Bauteile für alle Stücke (Review #190 H-190c).
+    pub(super) fn ausbau_wand_geteilt(&mut self, teile: &[(Guid, Guid)]) {
+        if teile.is_empty() {
+            return;
+        }
+        let neu_zu = |alt: Guid| teile.iter().filter(move |t| t.0 == alt).map(|t| t.1);
         let raeume: Vec<ElementId> = self
             .elements
             .iter()
             .filter_map(|(id, e)| match &e.kind {
                 ElementKind::Space(s)
-                    if s.ausbau
-                        .iter()
-                        .any(|a| a.stelle.seite().is_some_and(|w| w.wand == alt)) =>
+                    if s.ausbau.iter().any(|a| {
+                        a.stelle
+                            .seite()
+                            .is_some_and(|w| teile.iter().any(|t| t.0 == w.wand))
+                    }) =>
                 {
                     Some(id)
                 }
@@ -253,17 +260,41 @@ impl Model {
                 let dazu: Vec<AusbauAbweichung> = s
                     .ausbau
                     .iter()
-                    .filter_map(|a| {
-                        let w = a.stelle.seite().filter(|w| w.wand == alt)?;
-                        Some(AusbauAbweichung {
-                            stelle: a.stelle.an(WandSeite { wand: neu, ..w }),
-                            ..*a
+                    .flat_map(|a| {
+                        let w = a.stelle.seite();
+                        w.into_iter().flat_map(move |w| {
+                            neu_zu(w.wand).map(move |neu| AusbauAbweichung {
+                                stelle: a.stelle.an(WandSeite { wand: neu, ..w }),
+                                ..*a
+                            })
                         })
                     })
                     .collect();
                 s.ausbau.extend(dazu);
                 ordnen(&mut s.ausbau);
             });
+        }
+    }
+
+    /// Weggefallene Wandsegmente (Löschen, Zugpunkte, Wandzug): Die
+    /// Abweichungen ihrer Wandseiten gehen im selben Schritt aus den Räumen,
+    /// kein toter Verweis (BIM Regel 24); Rückgängig bringt beides zurück.
+    pub(super) fn ausbau_wand_weg(&mut self, weg: &[Guid]) {
+        if weg.is_empty() {
+            return;
+        }
+        let weg: HashSet<Guid> = weg.iter().copied().collect();
+        let trifft = |a: &AusbauAbweichung| a.stelle.seite().is_some_and(|w| weg.contains(&w.wand));
+        let raeume: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match &e.kind {
+                ElementKind::Space(s) if s.ausbau.iter().any(trifft) => Some(id),
+                _ => None,
+            })
+            .collect();
+        for id in raeume {
+            self.set_space(id, |s| s.ausbau.retain(|a| !trifft(a)));
         }
     }
 
@@ -588,6 +619,53 @@ mod tests {
         );
     }
 
+    /// Eine rohe Zeile ohne gültige derselben Kennung bleibt vor der
+    /// gültigen, die in der Datei auf sie folgt: Der erste Rundlauf ist
+    /// bytegleich (Review #190 H-190e).
+    #[test]
+    fn rohe_zeile_bleibt_an_ihrer_stelle() {
+        let (mut m, r, _) = haus();
+        m.set_space_finish(r, ab(Boden, Some(Keiner), None))
+            .unwrap();
+        m.set_space_finish(r, ab(Decke, Some(Keiner), None))
+            .unwrap();
+        let text = szo::write(&m);
+        let decke = text
+            .lines()
+            .find(|l| l.starts_with("[spacefinish]") && l.contains("at=ceiling"))
+            .unwrap()
+            .to_string();
+        let roh = decke.replace("at=ceiling", "at=xyz");
+        let datei = text.replace(&decke, &format!("{roh}\n{decke}"));
+        let l = szo::read(&datei, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(szo::write(&l.model), datei);
+    }
+
+    /// `side=` ohne `wall=` bleibt als rohe Zeile wörtlich stehen, mit
+    /// fremdem Schlüssel, und gilt nicht als Abweichung der ganzen Wand
+    /// (Review #190 H-190g).
+    #[test]
+    fn seite_ohne_wand_bleibt_roh() {
+        let (mut m, r, _) = haus();
+        m.set_space_finish(r, ab(Wand(None), Some(Keiner), None))
+            .unwrap();
+        let text = szo::write(&m);
+        let gueltig = text
+            .lines()
+            .find(|l| l.starts_with("[spacefinish]"))
+            .unwrap()
+            .to_string();
+        let seitlos = format!("{gueltig} side=l zukunft=1");
+        let l = szo::read(&text.replace(&gueltig, &seitlos), GuidGen::with_seed(5)).unwrap();
+        let raum = l.model.spaces(m.element(r).unwrap().storey)[0];
+        let sp = l.model.space(raum).unwrap();
+        assert!(sp.ausbau.is_empty(), "{:?}", sp.ausbau);
+        let wieder = szo::write(&l.model);
+        assert!(wieder.lines().any(|z| z == seitlos), "{wieder}");
+        let l2 = szo::read(&wieder, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(szo::write(&l2.model), wieder, "stabil");
+    }
+
     /// Ein Typ, den nur eine Abweichung nennt, lässt sich weder löschen
     /// noch in eine andere Art umstellen (Review #190 B2); ohne die
     /// Abweichung geht beides.
@@ -659,5 +737,181 @@ mod tests {
         );
         m.apply(&tx, Direction::Undo);
         assert_eq!(m.space(r).unwrap().ausbau, vorher);
+    }
+
+    /// Eine Stufe in der Nordwand: Nur ein Teilstück auf ihrer Linie
+    /// übernimmt die Wandseiten, nicht die neuen Wände, deren Vorlage der
+    /// Nachbar ist (Review #190 H-190c).
+    #[test]
+    fn stufe_uebernimmt_keine_wandseite() {
+        let (mut m, r, nord) = haus();
+        let w = rechts(&m, nord);
+        m.set_space_finish(r, ab(Sockel(Some(w)), Some(Keiner), None))
+            .unwrap();
+        let zug = m.segment_of(nord).unwrap().0;
+        m.begin("Stufe");
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(5000.0, 8000.0, 0.0),
+            vec3(5000.0, 9000.0, 0.0),
+            vec3(10000.0, 9000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        assert!(m.set_run_points(zug, &pts).is_some());
+        m.commit();
+        let waende: Vec<Guid> = m
+            .space(r)
+            .unwrap()
+            .ausbau
+            .iter()
+            .filter_map(|a| a.stelle.seite())
+            .map(|s| s.wand)
+            .collect();
+        assert_eq!(waende, vec![w.wand], "nur die Nordwand selbst");
+    }
+
+    /// Wandseiten des Raums, deren Wand es nicht gibt (BIM Regel 24).
+    fn tote(m: &Model, r: ElementId) -> Vec<WandSeite> {
+        m.space(r)
+            .unwrap()
+            .ausbau
+            .iter()
+            .filter_map(|a| a.stelle.seite())
+            .filter(|w| {
+                !m.elements()
+                    .iter()
+                    .any(|(_, e)| e.guid == w.wand && matches!(e.kind, ElementKind::Wall(_)))
+            })
+            .collect()
+    }
+
+    /// Freier Wandzug neben dem Haus mit drei Segmenten (Umrisswände
+    /// lassen sich nicht löschen); die Abweichungen prüfen ihre Wand nicht
+    /// gegen den Raum.
+    fn frei(m: &mut Model, nord: ElementId) -> RunId {
+        let set = m.element(nord).unwrap().layer_set.unwrap();
+        let (seite, st) = {
+            let r = m.run(m.segment_of(nord).unwrap().0).unwrap();
+            (r.ref_side, r.storey)
+        };
+        let pts = [
+            vec3(14000.0, 0.0, 0.0),
+            vec3(14000.0, 6000.0, 0.0),
+            vec3(18000.0, 6000.0, 0.0),
+            vec3(18000.0, 0.0, 0.0),
+        ];
+        m.begin("Wand");
+        let run = m
+            .add_wall_run(&pts, false, seite, st, set, Category::ExteriorWall)
+            .unwrap();
+        m.commit();
+        run
+    }
+
+    /// Gelöschte Wand: Ihre Wandseiten-Abweichungen gehen im selben Schritt
+    /// aus dem Raum, die für alle Wandseiten bleibt; Rückgängig bringt Wand
+    /// und Abweichungen zurück (BIM Regel 24).
+    #[test]
+    fn wand_loeschen() {
+        let (mut m, r, nord) = haus();
+        let run = frei(&mut m, nord);
+        let wand = m.wall_at(run, 1).unwrap();
+        let w = rechts(&m, wand);
+        let fliesen = ab(
+            Fliesen(Some(w)),
+            Some(Typ(WALL_TILES_TYPE_GUID)),
+            Some(2000.0),
+        );
+        m.set_space_finish(r, fliesen).unwrap();
+        let links = WandSeite { links: true, ..w };
+        m.set_space_finish(r, ab(Sockel(Some(links)), Some(Keiner), None))
+            .unwrap();
+        let alle = ab(Wand(None), Some(Keiner), None);
+        m.set_space_finish(r, alle).unwrap();
+        let nordseite = ab(Sockel(Some(rechts(&m, nord))), Some(Keiner), None);
+        m.set_space_finish(r, nordseite).unwrap();
+        let vorher = m.space(r).unwrap().ausbau.clone();
+        m.begin("Löschen");
+        let d = m.delete_elements(&[wand]);
+        assert_eq!(d.removed, vec![wand], "{:?}", d.refused);
+        let tx = m.commit().unwrap();
+        let mut bleibt = vec![alle, nordseite];
+        ordnen(&mut bleibt);
+        assert_eq!(m.space(r).unwrap().ausbau, bleibt);
+        m.apply(&tx, Direction::Undo);
+        assert_eq!(m.space(r).unwrap().ausbau, vorher);
+        assert!(tote(&m, r).is_empty());
+        m.apply(&tx, Direction::Redo);
+        assert_eq!(m.space(r).unwrap().ausbau, bleibt);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Zugpunkte mit weniger Segmenten: Was an einer weggefallenen Wand
+    /// hing, geht mit ihr; keine Abweichung zeigt auf eine fehlende Wand,
+    /// Rückgängig bringt alle zurück (BIM Regel 24).
+    #[test]
+    fn zug_mit_weniger_segmenten() {
+        let (mut m, r, nord) = haus();
+        let run = frei(&mut m, nord);
+        let waende = m.run(run).unwrap().segments.clone();
+        assert_eq!(waende.len(), 3);
+        for &e in &waende {
+            m.set_space_finish(r, ab(Sockel(Some(rechts(&m, e))), Some(Keiner), None))
+                .unwrap();
+        }
+        let vorher = m.space(r).unwrap().ausbau.clone();
+        m.begin("Zug");
+        let pts = [
+            vec3(14000.0, 0.0, 0.0),
+            vec3(14000.0, 6000.0, 0.0),
+            vec3(18000.0, 6000.0, 0.0),
+        ];
+        assert!(m.set_run_points(run, &pts).is_some());
+        let tx = m.commit().unwrap();
+        assert_eq!(m.run(run).unwrap().segments.len(), 2);
+        assert!(waende.iter().any(|&e| m.element(e).is_none()));
+        assert!(tote(&m, r).is_empty(), "{:?}", tote(&m, r));
+        assert_eq!(m.space(r).unwrap().ausbau.len(), 2);
+        m.apply(&tx, Direction::Undo);
+        assert_eq!(m.space(r).unwrap().ausbau, vorher);
+        assert!(tote(&m, r).is_empty());
+    }
+
+    /// Wandzug entfernen: Die Abweichungen an allen seinen Wänden gehen im
+    /// selben Schritt; Rückgängig stellt `[spacefinish]` Byte für Byte
+    /// wieder her (Architektur zu Regel 24, 16.10.).
+    #[test]
+    fn wandzug_entfernen_und_rueckgaengig() {
+        let (mut m, r, nord) = haus();
+        let run = frei(&mut m, nord);
+        let waende = m.run(run).unwrap().segments.clone();
+        for &e in &waende {
+            m.set_space_finish(r, ab(Sockel(Some(rechts(&m, e))), Some(Keiner), None))
+                .unwrap();
+        }
+        let nordseite = ab(Sockel(Some(rechts(&m, nord))), Some(Keiner), None);
+        m.set_space_finish(r, nordseite).unwrap();
+        let zeilen = |m: &Model| -> Vec<String> {
+            szo::write(m)
+                .lines()
+                .filter(|l| l.starts_with("[spacefinish]"))
+                .map(str::to_string)
+                .collect()
+        };
+        let vorher = zeilen(&m);
+        assert_eq!(vorher.len(), 4, "{vorher:?}");
+        m.begin("Wandzug entfernen");
+        assert!(m.remove_run(run));
+        let tx = m.commit().unwrap();
+        assert!(waende.iter().all(|&e| m.element(e).is_none()));
+        assert!(tote(&m, r).is_empty(), "{:?}", tote(&m, r));
+        assert_eq!(m.space(r).unwrap().ausbau, vec![nordseite]);
+        m.apply(&tx, Direction::Undo);
+        assert_eq!(zeilen(&m), vorher);
+        assert!(tote(&m, r).is_empty());
+        m.apply(&tx, Direction::Redo);
+        assert_eq!(zeilen(&m).len(), 1);
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 }

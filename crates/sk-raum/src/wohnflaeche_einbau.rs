@@ -9,10 +9,15 @@
 //! - Treppen mit über drei Steigungen samt Podest werden abgezogen (§ 3
 //!   Abs. 3 Nr. 2), sonst ein Hinweis.
 //!
+//! - Eine Treppe, die das Geschoss darüber erreicht, steht dort als
+//!   Treppenloch in der Größe ihres Grundrisses; es hat keinen Fußboden und
+//!   wird immer abgezogen (Review #195 H-195j).
+//!
 //! Je Geschoss liegen die Einbauten in einem Raster ([`Einbauten`]), ein
 //! Raum schneidet nur die Einbauten der Felder unter seinem Rechteck
 //! (Review #195 B4).
 
+use crate::oeffnungen::Geschosse;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::erweiterung::{self, Geschoss};
 use sk_model::erweiterung_koerper::Lage;
@@ -26,6 +31,9 @@ const FELD: f64 = 5000.0;
 /// Ab so vielen Steigungen (mehr als drei) zählt eine Treppe als Abzug (§ 3
 /// Abs. 3 Nr. 2).
 pub const STEIGUNGEN: f64 = 3.0;
+/// Ohne Zahl der Steigungen erreicht eine Treppe das Geschoss darüber, wenn
+/// ihre Oberkante höchstens so weit (mm) unter dessen Höhenlage liegt.
+const STUFE: f64 = 210.0;
 
 /// Stütze oder Treppe im Grundriss.
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +47,8 @@ pub struct Einbau {
     /// Steigungen einer Treppe aus ihrem Parameter `stufen`, wenn sie einen
     /// hat.
     pub steigungen: Option<f64>,
+    /// Treppenloch: die Treppe aus dem Geschoss darunter (H-195j).
+    pub loch: bool,
 }
 
 impl Einbau {
@@ -145,6 +155,8 @@ pub fn sammeln(model: &Model) -> HashMap<StoreyId, Einbauten> {
         }
     }
     let mut out: HashMap<StoreyId, Vec<Einbau>> = HashMap::new();
+    // Nur mit Treppen gebraucht
+    let mut lagen: Option<Geschosse> = None;
     for (id, storey, p) in kandidaten {
         let Some(d) = model.ext_def(&p.key) else {
             continue;
@@ -208,13 +220,29 @@ pub fn sammeln(model: &Model) -> HashMap<StoreyId, Einbauten> {
         let steigungen = treppe
             .then(|| d.werte(p, &g).get("stufen").copied())
             .flatten();
-        out.entry(storey).or_default().push(Einbau {
+        let e = Einbau {
             id,
             treppe,
             stuecke,
             z: (lo, hi),
             steigungen,
-        });
+            loch: false,
+        };
+        if treppe {
+            // Die letzte Steigung führt auf den Fußboden darüber
+            let reicht = match steigungen {
+                Some(n) if n > 1.0 => lage.z + (hi - lage.z) * n / (n - 1.0),
+                _ => hi + STUFE,
+            };
+            let g = lagen.get_or_insert_with(|| Geschosse::aus(model));
+            if let Some((oben, _)) = g.darueber(storey).filter(|(_, z)| reicht >= z - 10.0) {
+                out.entry(oben).or_default().push(Einbau {
+                    loch: true,
+                    ..e.clone()
+                });
+            }
+        }
+        out.entry(storey).or_default().push(e);
     }
     out.into_iter()
         .map(|(g, v)| (g, Einbauten::neu(v)))
@@ -312,6 +340,23 @@ pub fn im_raum(e: &Einbau, raum: &[[Vec3; 3]]) -> f64 {
     f
 }
 
+/// Der Teil des Einbaus im Raum (Fertigumriss in Dreiecken) als Dreiecke:
+/// Was ein abgezogener Einbau deckt, zieht ein weiterer nicht noch einmal
+/// ab (H-195j).
+pub fn im_raum_dreiecke(e: &Einbau, raum: &[[Vec3; 3]]) -> Vec<[Vec3; 3]> {
+    let mut out = Vec::new();
+    for s in &e.stuecke {
+        for t in raum {
+            // Schnitt zweier konvexer Stücke ist konvex: ein Fächer
+            let q = schneiden(t, s);
+            for i in 1..q.len().saturating_sub(1) {
+                out.push([q[0], q[i], q[i + 1]]);
+            }
+        }
+    }
+    out
+}
+
 /// Fertigumriss in Dreiecken (z = 0).
 pub fn dreiecke(umriss: &[Vec3]) -> Vec<[Vec3; 3]> {
     let p: Vec<Vec3> = umriss.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
@@ -319,6 +364,20 @@ pub fn dreiecke(umriss: &[Vec3]) -> Vec<[Vec3; 3]> {
         .into_iter()
         .map(|t| [p[t[0]], p[t[1]], p[t[2]]])
         .collect()
+}
+
+/// Der Einbau mit `putz` (mm) ringsum, wie an der Vorderkante seiner
+/// Bekleidung (Review #195 H-195i); `None`, wenn er aus mehreren Stücken
+/// besteht (die Fugen bekämen sonst Putz) oder ein Stück zerfällt.
+pub fn geputzt(e: &Einbau, putz: f64) -> Option<Einbau> {
+    let [s] = e.stuecke.as_slice() else {
+        return None;
+    };
+    let p = sk_math::flaeche::versatz(s, &vec![-putz; s.len()])?;
+    Some(Einbau {
+        stuecke: vec![p],
+        ..e.clone()
+    })
 }
 
 /// Seitenlängen (mm), wenn der Einbau ein Rechteck ganz im Raum ist.

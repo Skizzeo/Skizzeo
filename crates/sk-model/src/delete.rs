@@ -268,12 +268,14 @@ impl Model {
             }
             p
         };
+        let mut weg = Vec::new();
         for &k in drop {
             if let Some(&e) = r.segments.get(k) {
                 note!(self, Element, self.elements, e);
-                self.elements.remove(e);
+                weg.extend(self.elements.remove(e).map(|x| x.guid));
             }
         }
+        self.ausbau_wand_weg(&weg);
         let mut runs = vec![id];
         for (i, segs) in parts.iter().enumerate() {
             let run = if i == 0 {
