@@ -1326,10 +1326,17 @@ mod tests {
         assert_eq!(namen(None).len(), 13, "die Werksvorlagen");
         assert_eq!(
             namen(Some("k")),
-            ["Küche", "Kinderzimmer", "Technik, Hausanschluss"],
+            ["Küche", "Kinderzimmer", "Haustechnikraum"],
             "erst die Anfänge, dann der Rest"
         );
         assert_eq!(namen(Some(" BA ")), ["Bad"]);
+        // Haustechnikraum (Jörn 16.10.): auch über „Technik“ zu finden
+        for such in ["h", "t", "technik"] {
+            assert!(
+                namen(Some(such)).iter().any(|n| n == "Haustechnikraum"),
+                "{such}"
+            );
+        }
         assert!(namen(Some("xyz")).is_empty());
     }
 
