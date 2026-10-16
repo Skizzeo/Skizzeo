@@ -408,3 +408,57 @@ fn netz_der_datei_im_budget() {
         "{mit:.0} ms, ohne {ohne:.0} ms"
     );
 }
+
+/// Höhenpunkte von Hand (Review #234 B-234a): Einen eigenen Punkt anheben
+/// rechnet das Netz nicht neu, es übernimmt nur die Höhe. Gemessen bei 25
+/// Häusern und rund 100.000 Punkten; vorher 618 ms.
+#[test]
+fn punkt_heben_im_budget() {
+    let (mut m, _) = haeuser_am_hang(25);
+    let mut t = Terrain::new(Crs::Local);
+    let (nx, ny) = (317, 317);
+    for i in 0..nx {
+        for j in 0..ny {
+            let (e, nn) = (900.0 + 4.0 * i as f64, 1900.0 + 4.0 * j as f64);
+            t.points.push(TerrainPoint {
+                nr: (i * ny + j + 1).to_string(),
+                e,
+                n: nn,
+                h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
+                code: String::new(),
+                off: false,
+                hand: false,
+            });
+        }
+    }
+    m.begin("Aufmaß");
+    assert!(m.import_terrain(t));
+    m.commit();
+    m.begin("Höhenpunkt");
+    let i = m.add_terrain_points(&[[-3000.0, -3000.0, 0.0]])[0];
+    m.commit();
+    let p = m.terrain_spots()[i].p;
+    // die Schritte bleiben wie in der App zum Rückgängigmachen
+    let mut schritte = Vec::new();
+    let mut heben = Vec::new();
+    for k in 1..=5 {
+        let t0 = Instant::now();
+        m.begin("Höhe");
+        assert!(m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 100.0 * k as f64])]));
+        schritte.push(m.commit());
+        heben.push(ms_seit(t0));
+    }
+    let t0 = Instant::now();
+    m.begin("Lage");
+    assert!(m.move_terrain_points(&[(i, [p[0] + 1000.0, p[1], p[2]])]));
+    schritte.push(m.commit());
+    let lage = ms_seit(t0);
+    heben.sort_by(f64::total_cmp);
+    let (best, mitte) = (heben[0], heben[heben.len() / 2]);
+    eprintln!("100.489 Punkte, 25 Häuser: Höhe {best:.1}/{mitte:.1} ms, Lage {lage:.1} ms");
+    wie_gerechnet(&m);
+    // Das Beste gegen das Budget, die Mitte gegen den Neubau: Auf einer
+    // geteilten Maschine schwankt die Mitte um einige ms (wie #43)
+    assert!(best < budget(8.0), "Höhe: {best:.1} ms");
+    assert!(mitte * 20.0 < lage, "Höhe {mitte:.1} ms, Lage {lage:.1} ms");
+}
