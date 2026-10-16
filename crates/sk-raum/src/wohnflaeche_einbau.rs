@@ -287,38 +287,73 @@ fn huelle(p: &[Vec3]) -> Vec<Vec3> {
     h
 }
 
+/// Teil des Polygons `p` links der Geraden `a`→`b` (auf ihr eingeschlossen).
+fn halbebene(p: &[Vec3], a: Vec3, b: Vec3) -> Vec<Vec3> {
+    let innen = |q: Vec3| (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x) >= 0.0;
+    let schnitt = |p: Vec3, q: Vec3| {
+        let (dx, dy) = (q.x - p.x, q.y - p.y);
+        let (ex, ey) = (b.x - a.x, b.y - a.y);
+        let nenner = dx * ey - dy * ex;
+        let t = if nenner.abs() < 1e-12 {
+            0.0
+        } else {
+            ((a.x - p.x) * ey - (a.y - p.y) * ex) / nenner
+        };
+        vec3(p.x + dx * t, p.y + dy * t, 0.0)
+    };
+    let mut out = Vec::new();
+    for j in 0..p.len() {
+        let (p, q) = (p[j], p[(j + 1) % p.len()]);
+        match (innen(p), innen(q)) {
+            (true, true) => out.push(q),
+            (true, false) => out.push(schnitt(p, q)),
+            (false, true) => {
+                out.push(schnitt(p, q));
+                out.push(q);
+            }
+            (false, false) => {}
+        }
+    }
+    out
+}
+
 /// Schnitt des Polygons `p` mit dem konvexen `c` (gegen den
 /// Uhrzeigersinn), Sutherland–Hodgman.
 fn schneiden(p: &[Vec3], c: &[Vec3]) -> Vec<Vec3> {
     let mut out: Vec<Vec3> = p.to_vec();
     for i in 0..c.len() {
-        let (a, b) = (c[i], c[(i + 1) % c.len()]);
-        let innen = |q: Vec3| (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x) >= 0.0;
-        let schnitt = |p: Vec3, q: Vec3| {
-            let (dx, dy) = (q.x - p.x, q.y - p.y);
-            let (ex, ey) = (b.x - a.x, b.y - a.y);
-            let nenner = dx * ey - dy * ex;
-            let t = if nenner.abs() < 1e-12 {
-                0.0
-            } else {
-                ((a.x - p.x) * ey - (a.y - p.y) * ex) / nenner
-            };
-            vec3(p.x + dx * t, p.y + dy * t, 0.0)
-        };
-        let ein = std::mem::take(&mut out);
-        for j in 0..ein.len() {
-            let (p, q) = (ein[j], ein[(j + 1) % ein.len()]);
-            match (innen(p), innen(q)) {
-                (true, true) => out.push(q),
-                (true, false) => out.push(schnitt(p, q)),
-                (false, true) => {
-                    out.push(schnitt(p, q));
-                    out.push(q);
-                }
-                (false, false) => {}
-            }
-        }
+        out = halbebene(&out, c[i], c[(i + 1) % c.len()]);
         if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
+/// Stücke unter dieser Fläche (mm²) sind Rundungsreste.
+const KRUEMEL: f64 = 1e-3;
+
+/// Das konvexe `p` ohne das konvexe `c`, in konvexen Stücken: je Kante von
+/// `c` der Teil von `p` außerhalb, der Rest geht an die nächste Kante.
+fn ohne(p: &[Vec3], c: &[Vec3]) -> Vec<Vec<Vec3>> {
+    let (rp, rc) = (rahmen(p), rahmen(c));
+    if rp[0] >= rc[2] || rc[0] >= rp[2] || rp[1] >= rc[3] || rc[1] >= rp[3] {
+        return vec![p.to_vec()];
+    }
+    let mut c = c.to_vec();
+    if polygon::signed_area(&c) < 0.0 {
+        c.reverse();
+    }
+    let mut rest = p.to_vec();
+    let mut out = Vec::new();
+    for i in 0..c.len() {
+        let (a, b) = (c[i], c[(i + 1) % c.len()]);
+        let aussen = halbebene(&rest, b, a);
+        if aussen.len() >= 3 && polygon::area(&aussen) > KRUEMEL {
+            out.push(aussen);
+        }
+        rest = halbebene(&rest, a, b);
+        if rest.len() < 3 {
             break;
         }
     }
@@ -340,21 +375,27 @@ pub fn im_raum(e: &Einbau, raum: &[[Vec3; 3]]) -> f64 {
     f
 }
 
-/// Der Teil des Einbaus im Raum (Fertigumriss in Dreiecken) als Dreiecke:
-/// Was ein abgezogener Einbau deckt, zieht ein weiterer nicht noch einmal
-/// ab (H-195j).
-pub fn im_raum_dreiecke(e: &Einbau, raum: &[[Vec3; 3]]) -> Vec<[Vec3; 3]> {
-    let mut out = Vec::new();
+/// Der Teil des Einbaus im Raum (Fertigumriss in Dreiecken), den `schon`
+/// noch nicht deckt, in konvexen Stücken. `schon` sind die Stücke, die
+/// vorher abgingen, untereinander ohne Überdeckung; so geht auch ein Teil,
+/// den drei Abgezogene gemeinsam decken, nur einmal ab (H-195j, H-241b).
+pub fn im_raum_ohne(e: &Einbau, raum: &[[Vec3; 3]], schon: &[Vec<Vec3>]) -> Vec<Vec<Vec3>> {
+    let mut neu = Vec::new();
     for s in &e.stuecke {
         for t in raum {
-            // Schnitt zweier konvexer Stücke ist konvex: ein Fächer
             let q = schneiden(t, s);
-            for i in 1..q.len().saturating_sub(1) {
-                out.push([q[0], q[i], q[i + 1]]);
+            if q.len() >= 3 && polygon::area(&q) > KRUEMEL {
+                neu.push(q);
             }
         }
     }
-    out
+    for d in schon {
+        neu = neu.iter().flat_map(|p| ohne(p, d)).collect();
+        if neu.is_empty() {
+            break;
+        }
+    }
+    neu
 }
 
 /// Fertigumriss in Dreiecken (z = 0).

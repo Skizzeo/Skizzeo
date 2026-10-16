@@ -785,6 +785,54 @@ fn stuetze_neben_pfeiler_schwelle_ganz() {
     assert_eq!(r.grund, 7921);
 }
 
+/// Wie oben, dazu eine zweite Stütze über Pfeiler und erster Stütze: Was
+/// alle drei decken (0,13 × 0,18 m), geht einmal ab, nicht zweimal
+/// (VOB H-241b).
+#[test]
+fn dreifache_ueberdeckung_einmal() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4000.0, 4000.0),
+            (4000.0, 4400.0),
+            (4400.0, 4400.0),
+            (4400.0, 4000.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    let stuetze = |id: ElementId, x: (f64, f64), y: (f64, f64)| Einbau {
+        id,
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(x.0, y.0, 0.0),
+            vec3(x.1, y.0, 0.0),
+            vec3(x.1, y.1, 0.0),
+            vec3(x.0, y.1, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+        loch: false,
+    };
+    let a = stuetze(h.w[2], (4300.0, 4600.0), (4050.0, 4350.0));
+    let b = stuetze(h.w[3], (4300.0, 4600.0), (4200.0, 4500.0));
+    let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(vec![a, b]));
+    let abzug: Vec<f64> = r
+        .teile
+        .iter()
+        .filter(|t| t.art == Art::Abzug)
+        .map(|t| t.wert)
+        .collect();
+    assert_eq!(abzug.len(), 3, "{abzug:?}");
+    // Geputzt 330 × 330; neben Pfeiler und erster Stütze bleiben
+    // 330² − (130 · 230 + 330 · 180 − 130 · 180)
+    let rest = 330.0 * 330.0 - (130.0 * 230.0 + 330.0 * 180.0 - 130.0 * 180.0);
+    assert!((abzug[2] + rest).abs() <= 1e3, "{abzug:?}");
+    // 79,4609 − 0,1849 − 0,0660 − 0,0430
+    assert_eq!(r.grund, 7917);
+}
+
 /// Die Treppe im EG (16 Steigungen, 4,20 × 1,00 m) steht im OG als
 /// Treppenloch und geht dort ab; eine Treppe im OG genau darüber zieht
 /// denselben Grundriss nicht noch einmal ab (Review #195 H-195j).
