@@ -1901,6 +1901,9 @@ impl Scene {
         if self.model.in_step() {
             self.commit();
         }
+        // Erst das Netz des letzten Schritts einsetzen, damit seine Folgen
+        // zu diesem Schritt kommen und nicht zum neuen
+        self.netz_fertig();
         self.live.clear();
         self.staende_fuellen();
         self.model.begin(label);

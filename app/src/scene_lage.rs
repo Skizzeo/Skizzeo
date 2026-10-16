@@ -306,7 +306,8 @@ mod tests {
         let p = [5000.0, -1000.0, tief(&s0) - 2000.0];
         let setzen = |m: &mut Model| !m.add_terrain_points(&[p]).is_empty();
         let (mengen0, kosten0) = (s0.schedule().clone(), netto(&mut s0));
-        let mut ohne = haus_am_hang();
+        // alle aus demselben Modell, damit auch die Datei gleich ist
+        let mut ohne = Scene::with_model(s0.model().clone());
         assert!(ohne.edit_model("Höhenpunkt", |m| {
             m.netz_im_faden(false);
             setzen(m)
@@ -316,7 +317,7 @@ mod tests {
         assert_ne!(kosten, kosten0, "der Punkt ändert die Kosten");
         // je Weg eine frische Szene, deren Netz noch im Faden ist
         let frisch = || {
-            let mut s = haus_am_hang();
+            let mut s = Scene::with_model(s0.model().clone());
             assert!(s.edit_model("Höhenpunkt", setzen));
             assert!(s.netz_rechnet() && s.model().netz_vorlaeufig());
             s
@@ -327,24 +328,37 @@ mod tests {
         let mut s = frisch();
         assert_eq!(netto(&mut s), kosten, "Kosten");
         // Speichern und wieder öffnen
-        // (Öffnen nummeriert neu: verglichen wird mit der Datei ohne Faden)
-        let oeffnen = |m: &Model| {
-            let text = sk_model::szo::write(m);
-            let guids = sk_model::GuidGen::from_time();
-            let l = sk_model::szo::read_with(&text, guids, &sk_cost::lesen::ABSCHNITTE_SZO);
-            Scene::with_model(l.unwrap().model)
-        };
-        let mut soll = oeffnen(ohne.model());
         let mut s = frisch();
-        let mut offen = oeffnen(s.model_fertig());
+        let text = sk_model::szo::write(s.model_fertig());
         assert!(!s.model().netz_vorlaeufig());
-        assert_eq!(*offen.schedule(), *soll.schedule(), "nach dem Öffnen");
-        assert_eq!(netto(&mut offen), kosten);
+        let soll = sk_model::szo::write(ohne.model());
+        let anders: Vec<_> = text
+            .lines()
+            .zip(soll.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert!(
+            anders.is_empty() && text.len() == soll.len(),
+            "Datei: {anders:?}"
+        );
+        let guids = sk_model::GuidGen::from_time();
+        let l = sk_model::szo::read_with(&text, guids, &sk_cost::lesen::ABSCHNITTE_SZO);
+        let mut offen = Scene::with_model(l.unwrap().model);
+        assert_eq!(netto(&mut offen), kosten, "Kosten nach dem Öffnen");
         // IFC schreibt das fertige Netz
         let mut s = frisch();
         let _ = s.model_fertig();
         assert!(!s.netz_rechnet() && !s.model().netz_vorlaeufig());
         // die Änderungen beim Einsetzen gehören zum Schritt des Punkts
+        assert!(s.undo());
+        assert_eq!(*s.schedule(), mengen0);
+        // auch wenn gleich der nächste Schritt beginnt
+        let mut s = frisch();
+        let weit = [60_000.0, 60_000.0, p[2]];
+        assert!(s.edit_model("Weit weg", |m| !m.add_terrain_points(&[weit]).is_empty()));
+        assert!(s.undo());
+        assert_eq!(s.undo_label(), Some("Höhenpunkt"));
+        assert_eq!(*s.schedule(), mengen, "der erste Punkt mit seinen Folgen");
         assert!(s.undo());
         assert_eq!(*s.schedule(), mengen0);
     }

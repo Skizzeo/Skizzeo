@@ -309,8 +309,11 @@ pub struct Model {
     ext_revision: u64,
     /// Stand der Räume und die zuletzt geänderten ([`Model::raum_revision`]).
     raum_log: raum::RaumLog,
-    /// Netze nach Punktänderungen im Faden ([`Model::netz_im_faden`]).
-    netz_faden: bool,
+    /// Netze nach Punktänderungen im Faden ([`Model::netz_im_faden`]). Nur
+    /// die Szene der App schaltet es ein; sk-cost, CLI und Tests haben es
+    /// immer aus. Es wird nicht gespeichert, zählt nicht zur Revision,
+    /// Rückgängig stellt es nicht zurück, und ein Klon hat es aus.
+    netz_faden: gelaende_aufmass::NetzImFaden,
     /// Definitionen der Erweiterungsbauteile, nach `key` (E3).
     ext_defs: Vec<crate::erweiterung::ExtDef>,
     /// Zuletzt vergebene Nummer je Präfix einer Erweiterung.
@@ -920,7 +923,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             raum_log: Default::default(),
-            netz_faden: false,
+            netz_faden: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
@@ -1014,7 +1017,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             raum_log: Default::default(),
-            netz_faden: false,
+            netz_faden: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),

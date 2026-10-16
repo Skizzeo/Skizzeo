@@ -295,6 +295,17 @@ impl std::fmt::Debug for Merker {
     }
 }
 
+/// Netze im Faden ([`Model::netz_im_faden`]). Ein Klon hat es aus: Kopien
+/// des Modells (Vorschauen, Prüfungen) rechnen ihr Netz gleich im Schritt.
+#[derive(Debug, Default)]
+pub(crate) struct NetzImFaden(bool);
+
+impl Clone for NetzImFaden {
+    fn clone(&self) -> NetzImFaden {
+        NetzImFaden(false)
+    }
+}
+
 impl Merker {
     /// Nur das vorläufige Netz `m`.
     fn vorlaeufig(m: Option<Arc<TerrainMesh>>) -> Merker {
@@ -928,7 +939,7 @@ impl Model {
             Merker::default()
         };
         t.mesh = match m.jetzt() {
-            None if self.netz_faden => Merker::vorlaeufig(alt.mesh.jetzt().cloned()),
+            None if self.netz_faden.0 => Merker::vorlaeufig(alt.mesh.jetzt().cloned()),
             _ => m,
         };
         self.note_project();
@@ -942,7 +953,7 @@ impl Model {
     /// Aus, wird es gleich im Schritt neu gerechnet (Tests, Werkzeuge ohne
     /// Szene).
     pub fn netz_im_faden(&mut self, an: bool) {
-        self.netz_faden = an;
+        self.netz_faden = NetzImFaden(an);
     }
 
     /// Das Netz, das ein Faden für das jetzige Gelände rechnen soll: wenn
@@ -2115,6 +2126,8 @@ mod tests {
         let nach = |faden: bool| {
             let (mut m, _) = lindenhof_haus();
             m.netz_im_faden(faden);
+            assert_eq!(m.netz_faden.0, faden);
+            assert!(!m.clone().netz_faden.0, "ein Klon rechnet im Schritt");
             m.begin("Aufmaß");
             assert!(m.import_terrain(aufmass()));
             m.commit();
