@@ -121,7 +121,7 @@ struct Formen {
 /// Gang über das Modell.
 #[derive(Default)]
 struct Woflv {
-    umfeld: Option<wf::Umfeld>,
+    umfeld: Option<std::rc::Rc<wf::Umfeld>>,
     grund: HashMap<ElementId, (RaumForm, Option<i64>)>,
 }
 
@@ -141,7 +141,8 @@ impl Woflv {
             }
         }
         let m = s.model();
-        let umfeld = self.umfeld.get_or_insert_with(|| wf::Umfeld::aus(m));
+        // dasselbe Umfeld wie Paneel und Blatt (Review #220 B1)
+        let umfeld = self.umfeld.get_or_insert_with(|| s.woflv_umfeld());
         let g = umfeld.raum(m, k, r.form.clone()).map(|w| w.grund);
         self.grund.insert(id, (r.form.clone(), g));
         g

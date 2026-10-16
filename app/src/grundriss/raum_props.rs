@@ -33,7 +33,7 @@ pub fn props(
     let f = &r.form;
     // Wie am Stempel und im Blatt Wohnfläche (Review #195 B); ohne Ausbau
     // die Grundfläche an der fertigen Oberfläche
-    let grund = match sk_raum::wohnflaeche::Umfeld::aus(m).raum(m, &scene.ketten(), f.clone()) {
+    let grund = match scene.woflv_umfeld().raum(m, &scene.ketten(), f.clone()) {
         Some(w) => ("Grundfläche (WoFlV)", sk_raum::wohnflaeche::qm(w.grund)),
         None => (
             "Grundfläche (fertig)",

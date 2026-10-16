@@ -543,3 +543,26 @@ fn stift_loeschen_nur_unbenutzt() {
     m.commit();
     assert!(m.check().iter().any(|e| e.contains("Stiftnummer")));
 }
+
+/// Stand beim Öffnen des Schritts (Review #220 B1): `None` ohne offenen
+/// Schritt, im Schritt der Stand davor, auch wenn er sich im Schritt ändert.
+#[test]
+fn step_revision_ist_stand_beim_oeffnen() {
+    let mut m = Model::new();
+    let st = m.defaults().storey;
+    assert_eq!(m.step_revision(), None);
+    let vorher = m.revision();
+    m.begin("Raum");
+    assert_eq!(m.step_revision(), Some(vorher));
+    m.add_space(st, Space::neu(vec3(1000.0, 1000.0, 0.0), "Raum 1".into()));
+    assert_ne!(m.revision(), vorher);
+    assert_eq!(m.step_revision(), Some(vorher));
+    assert!(m.commit().is_some());
+    assert_eq!(m.step_revision(), None);
+    let vorher = m.revision();
+    m.begin("Raum");
+    assert_eq!(m.step_revision(), Some(vorher));
+    m.add_space(st, Space::neu(vec3(3000.0, 1000.0, 0.0), "Raum 2".into()));
+    m.rollback();
+    assert_eq!(m.step_revision(), None);
+}

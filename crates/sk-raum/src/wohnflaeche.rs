@@ -797,11 +797,21 @@ impl Umfeld {
 pub fn projekt_mit(
     model: &Model,
     k: &(impl Ketten + ?Sized),
+    raeume: impl FnMut(StoreyId) -> Vec<RaumForm>,
+) -> Wohnflaeche {
+    projekt_im_umfeld(model, k, &Umfeld::aus(model), raeume)
+}
+
+/// Wie [`projekt_mit`] mit dem Umfeld `umfeld` dieses Modellstands (in der
+/// App dasselbe wie für Stempel und Paneel, Review #220 B1).
+pub fn projekt_im_umfeld(
+    model: &Model,
+    k: &(impl Ketten + ?Sized),
+    umfeld: &Umfeld,
     mut raeume: impl FnMut(StoreyId) -> Vec<RaumForm>,
 ) -> Wohnflaeche {
     let mut gebaeude: Vec<Gebaeude> = Vec::new();
     let mut gebaeude_nr: HashMap<Option<BuildingId>, usize> = HashMap::new();
-    let umfeld = Umfeld::aus(model);
     let mut geschosse: Vec<(StoreyId, &sk_model::Storey)> = model
         .storeys()
         .iter()

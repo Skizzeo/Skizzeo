@@ -744,6 +744,9 @@ pub(crate) struct RaumCache {
     /// OK Gelände aus dem Aufmaß ([`Scene::terrain_grid`]).
     raster: Raster,
     z: Zaehler,
+    /// Umfeld der Wohnfläche je Modellstand ([`Scene::woflv_umfeld`]);
+    /// steht hier, damit `scene.rs` nicht wächst.
+    woflv: std::cell::RefCell<Option<(u64, Rc<sk_raum::wohnflaeche::Umfeld>)>>,
     /// Wandseite, die das Paneel des Raums bearbeitet (RB6); sonst alle.
     /// Steht hier, damit `scene.rs` nicht wächst.
     pub(crate) seite: Option<(ElementId, sk_model::model::WandSeite)>,
@@ -1141,6 +1144,24 @@ pub fn platz(v: ViewKind) -> Option<usize> {
 }
 
 impl Scene {
+    /// Umfeld der Wohnfläche (Höhen, Stützen, Treppen) einmal je
+    /// Modellstand für Stempel, Paneel und Blatt Wohnfläche (Review #220
+    /// B1). Im offenen Schritt gilt das vom Stand beim Öffnen weiter
+    /// (sonst das erste im Schritt): Stützen, Treppen und Geschosse ändern
+    /// sich beim Ziehen nicht.
+    pub(crate) fn woflv_umfeld(&self) -> Rc<sk_raum::wohnflaeche::Umfeld> {
+        let rev = self.model.step_revision().unwrap_or(self.model.revision());
+        let mut w = self.ausbau.woflv.borrow_mut();
+        match &*w {
+            Some((r, u)) if *r == rev => u.clone(),
+            _ => {
+                let u = Rc::new(sk_raum::wohnflaeche::Umfeld::aus(&self.model));
+                *w = Some((rev, u.clone()));
+                u
+            }
+        }
+    }
+
     /// Schalter „Ausbau innen“ der Ansicht `i` (Ansichtszustand ohne
     /// Schritt, wie die Schnitthöhe).
     pub fn set_view_finish(&mut self, i: usize, an: bool) {
