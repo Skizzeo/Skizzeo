@@ -37,10 +37,18 @@ impl Model {
         }
         let s = self.plate_settings();
         let platten = self.terrain_patches(s.margin);
-        let mut ecken: Vec<([f64; 2], f64)> = Vec::new();
-        for (r, z) in &platten {
+        let in_platte = |q: &[f64; 4], p: [f64; 2]| {
+            (q[0]..=q[2]).contains(&p[0]) && (q[1]..=q[3]).contains(&p[1])
+        };
+        // je Ecke ihre Höhe und ihre Platte; eine Ecke in oder auf einer
+        // früheren Platte fällt weg, dort gilt die erste (wie bei
+        // `terrain_patches`)
+        let mut ecken: Vec<([f64; 2], f64, Option<usize>)> = Vec::new();
+        for (i, (r, z)) in platten.iter().enumerate() {
             for p in [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]] {
-                ecken.push((p, *z));
+                if !platten[..i].iter().any(|(q, _)| in_platte(q, p)) {
+                    ecken.push((p, *z, Some(i)));
+                }
             }
         }
         // die Geländeflächen, die schon da sind, und das Grundstück liegen
@@ -80,16 +88,13 @@ impl Model {
             let r = [k[0] - m, k[1] - m, k[2] + m, k[3] + m];
             for p in [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]] {
                 // in einer Platte gilt deren Höhe
-                let drin = platten
-                    .iter()
-                    .any(|(q, _)| (q[0]..=q[2]).contains(&p[0]) && (q[1]..=q[3]).contains(&p[1]));
-                if !drin {
-                    ecken.push((p, z));
+                if !platten.iter().any(|(q, _)| in_platte(q, p)) {
+                    ecken.push((p, z, None));
                 }
             }
         }
         let mut gesehen = std::collections::HashSet::new();
-        ecken.retain(|(p, _)| gesehen.insert(p.map(f64::to_bits)));
+        ecken.retain(|(p, ..)| gesehen.insert(p.map(f64::to_bits)));
         if ecken.len() < 3 {
             return false;
         }
@@ -99,10 +104,26 @@ impl Model {
         };
         // ±0,00 bleibt, wo es ist: fest in NHN, sonst bei 0
         let h0 = self.location().nhn.unwrap_or(0.0);
-        for (i, (p, z)) in ecken.into_iter().enumerate() {
+        // Die Ränder ganzer Platten werden Bruchkanten: Sonst verbindet das
+        // Netz quer durch eine Platte mit der Ecke eines anderen Hauses in
+        // anderer Höhe, und es springt doch (J4 B; Geometrie, Routine
+        // 16.10. 19:03). Platten mit Ecken in einer früheren bekommen
+        // keine, die eine frühere berühren: Ihr Rand kreuzte deren.
+        let ganz = |i: usize| {
+            let r = platten[i].0;
+            !platten[..i]
+                .iter()
+                .any(|(q, _)| r[0] <= q[2] && q[0] <= r[2] && r[1] <= q[3] && q[1] <= r[3])
+        };
+        let mut ringe: Vec<Vec<String>> = vec![Vec::new(); platten.len()];
+        for (i, (p, z, platte)) in ecken.iter().enumerate() {
+            let nr = format!("{NR}{}", i + 1);
+            if let Some(k) = platte.filter(|&k| ganz(k)) {
+                ringe[k].push(nr.clone());
+            }
             let (e, n) = f.to_survey(p[0], p[1]);
             t.points.push(TerrainPoint {
-                nr: format!("{NR}{}", i + 1),
+                nr,
                 e: rund(e),
                 n: rund(n),
                 h: rund(h0 + z / 1000.0),
@@ -111,6 +132,12 @@ impl Model {
                 hand: true,
             });
         }
+        t.breaks.extend(
+            ringe
+                .into_iter()
+                .filter(|r| r.len() == 4)
+                .map(|pts| TerrainLine { pts, closed: true }),
+        );
         self.set_terrain(Some(t))
     }
 
@@ -315,6 +342,69 @@ mod tests {
             .all(|a| a.formula.contains(crate::qto_earth::ANGENOMMEN)));
         assert_eq!(crate::qto_earth::netz_herkunft(&m), None);
         assert_eq!(crate::qto_earth::netz_angenommen(&m).as_deref(), Some("2"));
+    }
+
+    /// Langes Haus und Schuppen 1 m tiefer, die Platten 6 m auseinander:
+    /// Jede Platte bleibt in ihrer Höhe, auch wo die Ecke des anderen
+    /// Hauses im Umkreis ihrer Diagonale liegt (ohne Bruchkanten bis
+    /// 0,35 m im Haus), und die Erdmengen bleiben (Geometrie, Routine
+    /// 16.10. 19:03).
+    #[test]
+    fn zwei_haeuser_springen_nicht() {
+        let mut m = Model::with_seed(3);
+        let neu = |m: &mut Model, x0: f64, y0: f64, w: f64, h: f64, versatz: f64| {
+            let b = m.add_building(1);
+            let pts = [
+                vec3(x0, y0, 0.0),
+                vec3(x0 + w, y0, 0.0),
+                vec3(x0 + w, y0 + h, 0.0),
+                vec3(x0, y0 + h, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+            m.begin("Gelände");
+            assert!(m.set_terrain_offset_of(b, versatz));
+            m.commit();
+            b
+        };
+        let haus = neu(&mut m, 0.0, 0.0, 30000.0, 6000.0, 500.0);
+        let schuppen = neu(&mut m, 13000.0, 18000.0, 4000.0, 3000.0, 1500.0);
+        let platten = m.terrain_patches(m.plate_settings().margin);
+        let vorher = crate::qto::schedule(&m).auto;
+        m.begin("Fläche");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        assert_eq!(m.terrain().unwrap().breaks.len(), 2);
+        for (r, z) in &platten {
+            let b = if *z == m.terrain_z_of(Some(haus)) {
+                haus
+            } else {
+                schuppen
+            };
+            for i in 0..=20 {
+                for j in 0..=20 {
+                    let x = r[0] + (r[2] - r[0]) * i as f64 / 20.0;
+                    let y = r[1] + (r[3] - r[1]) * j as f64 / 20.0;
+                    let d = m.terrain_z_at(Some(b), x, y) - z;
+                    assert!(d.abs() < 1e-6, "{x} {y}: {d}");
+                }
+            }
+        }
+        let nachher = crate::qto::schedule(&m).auto;
+        let erde = |v: &[crate::qto::AutoMenge]| -> Vec<(String, f64)> {
+            let mut e: Vec<(String, f64)> = v
+                .iter()
+                .filter(|a| a.key.starts_with("earth.") && a.unit == "m3")
+                .map(|a| (a.key.to_string(), a.value))
+                .collect();
+            e.sort_by(|a, b| a.0.cmp(&b.0));
+            e
+        };
+        let (a, b) = (erde(&vorher), erde(&nachher));
+        assert!(!a.is_empty());
+        assert_eq!(a.len(), b.len(), "{a:?}\n{b:?}");
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x.1 - y.1).abs() < 1e6, "{} {} {}", x.0, x.1, y.1);
+        }
     }
 
     /// Eine Fläche neben dem Haus bekommt ihr Rechteck dazu; Ecken in der
