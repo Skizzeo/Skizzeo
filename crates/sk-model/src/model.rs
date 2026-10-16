@@ -309,6 +309,11 @@ pub struct Model {
     ext_revision: u64,
     /// Stand der Räume und die zuletzt geänderten ([`Model::raum_revision`]).
     raum_log: raum::RaumLog,
+    /// Netze nach Punktänderungen im Faden ([`Model::netz_im_faden`]). Nur
+    /// die Szene der App schaltet es ein; sk-cost, CLI und Tests haben es
+    /// immer aus. Es wird nicht gespeichert, zählt nicht zur Revision,
+    /// Rückgängig stellt es nicht zurück, und ein Klon hat es aus.
+    netz_faden: gelaende_aufmass::NetzImFaden,
     /// Definitionen der Erweiterungsbauteile, nach `key` (E3).
     ext_defs: Vec<crate::erweiterung::ExtDef>,
     /// Zuletzt vergebene Nummer je Präfix einer Erweiterung.
@@ -418,8 +423,8 @@ mod gelaende_aufmass;
 #[path = "gelaende_aufmass_budget.rs"]
 mod gelaende_aufmass_budget;
 pub use gelaende_aufmass::{
-    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
-    TerrainLine, TerrainMesh, TerrainPoint, Trim,
+    Crs, HeightRef, HeightSystem, LocalFrame, NetzAuftrag, NetzFertig, Show, SurveyFrame, Terrain,
+    TerrainFolgen, TerrainLine, TerrainMesh, TerrainPoint, Trim,
 };
 
 #[path = "gelaende_eben.rs"]
@@ -428,6 +433,10 @@ mod gelaende_eben;
 #[path = "gelaende_grenze.rs"]
 mod gelaende_grenze;
 pub use gelaende_grenze::{offset_ring_edge, parcel_ring_ok};
+
+#[path = "gelaende_punkte.rs"]
+mod gelaende_punkte;
+pub use gelaende_punkte::TerrainSpot;
 
 #[path = "gelaende_flaeche.rs"]
 mod gelaende_flaeche;
@@ -914,6 +923,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             raum_log: Default::default(),
+            netz_faden: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
@@ -1007,6 +1017,7 @@ impl Model {
             ext: Default::default(),
             ext_revision: 0,
             raum_log: Default::default(),
+            netz_faden: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),

@@ -177,6 +177,8 @@ pub(crate) struct Platte {
     pub(crate) leiste: crate::gelaende_app::Zustand,
     /// Griffe der Grenze bei offener Leiste (I3).
     pub(crate) griffe: crate::gelaende_flaeche_app::griffe::Griffe,
+    /// Höhenpunkte im Grundriss (I4).
+    pub(crate) punkte: crate::gelaende_flaeche_app::punkte::Punkte,
     /// Der Lageplan der Unterlage, gelesen (G1c).
     pub(crate) unterlage: crate::gelaende_app::Unterlage,
     /// Linien in Ansicht und Schnitt.
@@ -1172,7 +1174,8 @@ impl App {
     /// ([`Scene::nachziehen`](crate::scene::Scene::nachziehen), Review #123
     /// F1); sind alle neu, folgen Bild, Mengen und Paneel.
     pub(crate) fn platte_nachziehen(&mut self) -> bool {
-        if self.scene.nachziehen(NACHZUG) == Some(true) {
+        // das Geländenetz aus seinem Faden (Review #234 B-234b)
+        if (self.scene.nachziehen(NACHZUG) == Some(true)) | self.scene.netz_abholen() {
             self.upload_model();
             self.quantity.dirty = true;
             self.props_key = None;
@@ -1199,6 +1202,7 @@ impl App {
             || self.platte.rechnet()
             || self.baugruben_rechnen()
             || self.scene.zieht_nach()
+            || self.scene.netz_rechnet()
     }
 
     /// Neues Projekt (Neu, Öffnen, Sicherung): Objektbaum zu, Platte

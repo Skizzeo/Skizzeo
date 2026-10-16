@@ -22,6 +22,8 @@ pub const NHN: &str = "±0,00 ü. NHN";
 /// Ohne Modul: wo man es freischaltet (Bedienbarkeit, später zu
 /// Durchgang 42: „Geländemodul freischalten“ stand ohne Weg da).
 const FREISCHALTEN: &str = "Dateimenü › Ausbaustufe …";
+/// Hinweis zu den Höhenpunkten (I4a), zwei Zeilen.
+pub const HOEHENPUNKT: [&str; 2] = ["Doppelklick im Grundriss", "setzt einen Höhenpunkt."];
 
 /// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
 /// 42.5).
@@ -229,6 +231,11 @@ impl Ui {
             });
         };
         rows.push(paar((K::Lageplan, "Lageplan"), (K::Hoehen, "Höhen")));
+        // Höhenpunkte haben keinen Knopf (I4a); ohne die Zeile fand man sie
+        // nur in der Hilfe (Bedienbarkeit B zu #234)
+        if !l.zeichnen && !l.grenze_zeichnen {
+            rows.extend(HOEHENPUNKT.map(Row::Hint));
+        }
         if l.uebernehmen {
             rows.push(Row::Button(
                 Id::Gelaende(K::Uebernehmen),
@@ -470,6 +477,7 @@ mod tests {
         };
         assert!(!ui.is_on(Id::Gelaende(K::Flaeche)));
         assert!(hinweise(&ui).contains(&"Klick wählt eine Fläche.".into()));
+        assert!(hinweise(&ui).starts_with(&HOEHENPUNKT.map(String::from)));
         ui.gelaende = Some(GelaendeLeiste {
             zeichnen: true,
             ..leiste()

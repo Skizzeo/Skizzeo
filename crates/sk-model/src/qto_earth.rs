@@ -23,8 +23,8 @@ pub use flaechen::{
     OHNE_AUFMASS, OHNE_TRAEGER, UEBERLAPPT, UNGUELTIG,
 };
 pub use netz::{
-    netz_angenommen, netz_herkunft, steil_hinweis, ErdNetz, ANGENOMMEN, DREIECKSPRISMEN, STEIL,
-    STEIL_AB,
+    hand_geaendert, netz_angenommen, netz_geaendert, netz_herkunft, steil_hinweis, ErdNetz,
+    ANGENOMMEN, DREIECKSPRISMEN, HAND_GEAENDERT, STEIL, STEIL_AB,
 };
 
 /// Bodenkennwerte des Projekts (mm, Grad); stehen am Projekt

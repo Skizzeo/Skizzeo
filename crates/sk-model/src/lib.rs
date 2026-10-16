@@ -114,10 +114,10 @@ pub use model::{
     STRIP_PART, TERRACE_CROWN, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, UTM_N,
     WALKABLE_DEPTH,
 };
-pub use model::{offset_ring_edge, parcel_ring_ok};
+pub use model::{offset_ring_edge, parcel_ring_ok, TerrainSpot};
 pub use model::{
-    Crs, HeightRef, HeightSystem, LocalFrame, Show, SurveyFrame, Terrain, TerrainFolgen,
-    TerrainLine, TerrainMesh, TerrainPoint, Trim,
+    Crs, HeightRef, HeightSystem, LocalFrame, NetzAuftrag, NetzFertig, Show, SurveyFrame, Terrain,
+    TerrainFolgen, TerrainLine, TerrainMesh, TerrainPoint, Trim,
 };
 pub use model::{EckeFehler, Fangziele, OpeningFault, Vereint, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{FreieRaumnamen, Space, SPACE_SEQ};

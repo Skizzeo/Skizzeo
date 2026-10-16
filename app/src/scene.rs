@@ -49,6 +49,8 @@ pub mod kanten;
 mod lage;
 #[path = "scene_massstand.rs"]
 mod massstand;
+#[path = "scene_netz.rs"]
+mod netz;
 #[path = "scene_neubau.rs"]
 mod neubau;
 #[path = "scene_raster.rs"]
@@ -592,6 +594,8 @@ pub struct Scene {
     /// Züge mit Sohlplatte der übrigen Gebäude, die einem Gelände-Zug im
     /// Leerlauf folgen ([`Scene::nachziehen`]).
     nachzug: Vec<RunId>,
+    /// Faden, der das Geländenetz neu rechnet ([`Scene::netz_abholen`]).
+    netz_faden: Option<netz::NetzFaden>,
     bounds: Option<Aabb>,
     /// Seiten aller Körper, gezählt ([`neubau::Grenzen`]).
     grenzen: neubau::Grenzen,
@@ -920,6 +924,7 @@ impl Scene {
 
     pub fn with_model(mut model: Model) -> Scene {
         model.require_steps();
+        model.netz_im_faden(true);
         let theme = Theme::dark();
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
@@ -945,6 +950,7 @@ impl Scene {
             live: Vec::new(),
             gelaende_zug: None,
             nachzug: Vec::new(),
+            netz_faden: None,
             bounds: None,
             grenzen: Default::default(),
             table,
@@ -986,6 +992,7 @@ impl Scene {
     /// Mengenliste (B7): einmal je Modellstand berechnet und gemerkt, nie
     /// während eines offenen Schritts (Ziehen); dann bleibt der alte Stand.
     pub fn schedule(&mut self) -> &Schedule {
+        self.netz_fertig();
         let rev = self.model.revision();
         let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
         if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
@@ -1894,6 +1901,9 @@ impl Scene {
         if self.model.in_step() {
             self.commit();
         }
+        // Erst das Netz des letzten Schritts einsetzen, damit seine Folgen
+        // zu diesem Schritt kommen und nicht zum neuen
+        self.netz_fertig();
         self.live.clear();
         self.staende_fuellen();
         self.model.begin(label);
@@ -1941,6 +1951,7 @@ impl Scene {
         self.live.clear();
         self.rebuild_dirty(false);
         self.settle();
+        self.netz_anstossen();
     }
 
     /// Zähler der Schritte im Verlauf: wächst mit jedem neuen Schritt
@@ -2590,6 +2601,7 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<(), Vec<sk_cost::Befund>> {
+        self.netz_fertig();
         // Erst prüfen: ein abgelehnter Plan öffnet keinen Schritt
         sk_cost::vorschau(&self.model, firma, self.rolle, ops)?;
         self.begin(label);
@@ -3301,6 +3313,7 @@ impl Scene {
         }
         self.mark_touched(&touched);
         self.rebuild_dirty(false);
+        self.netz_anstossen();
         true
     }
 
