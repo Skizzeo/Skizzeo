@@ -296,13 +296,17 @@ fn tree_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
         nodes: Vec::new(),
         members,
     };
-    let in_storey = |sid: StoreyId| -> Vec<ElementId> {
-        m.elements()
-            .iter()
-            .filter(|(_, e)| crate::qto::schedule_storey(m, e) == sid)
-            .map(|(id, _)| id)
-            .collect()
-    };
+    // Bauteile je Geschoss in einem Gang, nicht je Geschoss alle Bauteile
+    // (Review #233: bei 1000 Häusern mit je einem Gebäude 7 s je Stand)
+    let gruendung = crate::qto::gruendungen(m);
+    let mut je: std::collections::HashMap<StoreyId, Vec<ElementId>> =
+        std::collections::HashMap::new();
+    for (id, e) in m.elements().iter() {
+        je.entry(crate::qto::schedule_storey_in(&gruendung, e))
+            .or_default()
+            .push(id);
+    }
+    let in_storey = |sid: StoreyId| -> Vec<ElementId> { je.get(&sid).cloned().unwrap_or_default() };
     let storey = |l: &mut List, sid: StoreyId, depth: u8| {
         let Some(st) = m.storey(sid) else { return };
         let s = l.open(
