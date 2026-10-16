@@ -103,8 +103,11 @@ pub struct Punkte {
     /// Der letzte Klick ins Leere, für den Doppelklick.
     klick: Option<(Instant, f64, f64)>,
     /// Punkte zum Stand des Modells.
-    merker: Option<(u64, std::sync::Arc<Vec<(String, TerrainSpot)>>)>,
+    merker: Option<(u64, Spots)>,
 }
+
+/// Die Punkte mit Nummer, geteilt bis zur nächsten Änderung.
+type Spots = std::sync::Arc<Vec<(String, TerrainSpot)>>;
 
 impl Punkte {
     pub fn busy(&self) -> bool {
@@ -121,8 +124,7 @@ fn treffen<'a>(
     spots: &'a [(String, TerrainSpot)],
     cam: &Camera,
     z: f64,
-    x: f64,
-    y: f64,
+    (x, y): (f64, f64),
     w: f64,
     h: f64,
     scale: f64,
@@ -182,7 +184,7 @@ impl App {
 
     /// Die Punkte im Gelände mit Nummer: gemerkt, wenn der Stand des
     /// Modells passt, sonst neu.
-    fn spots(&self) -> std::sync::Arc<Vec<(String, TerrainSpot)>> {
+    fn spots(&self) -> Spots {
         let m = self.scene.model();
         if let Some((r, s)) = &self.platte.punkte.merker {
             if *r == m.revision() {
@@ -310,7 +312,7 @@ impl App {
         }
         let spots = self.spots();
         let z = self.scene.model().terrain_z();
-        treffen(&spots, &self.cam, z, x, y, vw, vh, sc).map(|s| Ziel::Punkt(s.0.clone()))
+        treffen(&spots, &self.cam, z, (x, y), vw, vh, sc).map(|s| Ziel::Punkt(s.0.clone()))
     }
 
     /// Klick neben die Punkte: die Wahl geht; der zweite schnell danach
@@ -733,7 +735,7 @@ mod tests {
         let s = [spot("H1", 0, 5000.0, 5000.0), spot("H2", 1, 5200.0, 5000.0)];
         let t = |x: f64, y: f64| {
             let q = cam.project(vec3(x, y, 0.0), 800.0, 800.0).unwrap();
-            treffen(&s, &cam, 0.0, q.0, q.1, 800.0, 800.0, 1.0).map(|s| s.0.clone())
+            treffen(&s, &cam, 0.0, q, 800.0, 800.0, 1.0).map(|s| s.0.clone())
         };
         assert_eq!(t(5050.0, 5000.0).as_deref(), Some("H1"));
         assert_eq!(t(5150.0, 5000.0).as_deref(), Some("H2"));
