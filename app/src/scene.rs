@@ -626,6 +626,9 @@ pub struct Scene {
     /// Leistungsverzeichnisse (KA-4) je Kostenblatt, Modellstand (Kopf) und
     /// Wahl; der Reiter AVA fragt jedes Los für den Baum.
     lv: Vec<(LvSchluessel, Rc<sk_cost::lv::Lv>)>,
+    /// Indizes je Dicke aus dem Blatt des Projekts, gemerkt je Blatt
+    /// (Review #213 H-213k).
+    dickenrang: Option<(Rc<sk_cost::Kostenblatt>, Rc<sk_cost::lv::Dickenrang>)>,
     /// Firmen- oder Werkskatalog ohne Projekt (Firmenwerte im Preisblatt).
     firmenkatalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
     /// Bezeichnungen mit Werten, je Wortlaut einmal ([`Scene::bezeichnung`]).
@@ -971,6 +974,7 @@ impl Scene {
             katalog: None,
             kostenblatt: Vec::new(),
             lv: Vec::new(),
+            dickenrang: None,
             firmenkatalog: None,
             bezeichnungen: Vec::new(),
             kostenspeicher: sk_cost::Kostenspeicher::default(),
@@ -1016,14 +1020,27 @@ impl Scene {
         if u.alles() {
             return full;
         }
-        if let Some((r, w, s)) = &self.schedule_in {
-            if *r == runs && w == u {
-                return s.clone();
-            }
-        }
-        let s = Rc::new(full.restrict(&self.model, u));
+        let s = match self.gemerkte_liste(runs, u) {
+            Some(s) => s,
+            None => Rc::new(full.restrict(&self.model, u)),
+        };
         self.schedule_in = Some((runs, u.clone(), s.clone()));
         s
+    }
+
+    /// Eine schon eingeschränkte Liste im Umfang `u` aus der Berechnung
+    /// `runs`, aus [`Scene::schedule_in`] oder der Vorschau: jede Liste nur
+    /// einmal im Speicher (Review #213 H-213n).
+    fn gemerkte_liste(&self, runs: u64, u: &Umfang) -> Option<Rc<Schedule>> {
+        self.schedule_in
+            .iter()
+            .chain(
+                self.kostenspeicher_live
+                    .iter()
+                    .filter_map(|e| e.liste.as_ref()),
+            )
+            .find(|(r, w, _)| *r == runs && w == u)
+            .map(|(_, _, s)| s.clone())
     }
 
     /// Wirksamer Kostenkatalog (Projekt, Firma oder Werk), gemerkt je
@@ -1107,7 +1124,14 @@ impl Scene {
             sk_cost::lv::lv_aus(&self.model, &blatt, &kat, w)
         } else {
             let projekt = self.kostenblatt(firma, &Umfang::projekt());
-            let rang = sk_cost::lv::Dickenrang::aus(&self.model, &projekt);
+            let rang = match &self.dickenrang {
+                Some((b, r)) if Rc::ptr_eq(b, &projekt) => r.clone(),
+                _ => {
+                    let r = Rc::new(sk_cost::lv::Dickenrang::aus(&self.model, &projekt));
+                    self.dickenrang = Some((projekt, r.clone()));
+                    r
+                }
+            };
             sk_cost::lv::lv_im_umfang(&self.model, &blatt, &rang, &kat, w)
         };
         let lv = Rc::new(lv);
@@ -1175,16 +1199,16 @@ impl Scene {
             b.push(match gleich {
                 Some(j) => b[j].clone(),
                 None => {
-                    let e = &mut self.kostenspeicher_live[i];
-                    let liste = match &e.liste {
-                        _ if u.alles() => sched.clone(),
-                        Some((r, w, l)) if *r == runs && w == *u => l.clone(),
-                        _ => {
-                            let l = Rc::new(sched.restrict(&self.model, u));
-                            e.liste = Some((runs, (*u).clone(), l.clone()));
-                            l
-                        }
+                    let liste = if u.alles() {
+                        sched.clone()
+                    } else {
+                        let l = self
+                            .gemerkte_liste(runs, u)
+                            .unwrap_or_else(|| Rc::new(sched.restrict(&self.model, u)));
+                        self.kostenspeicher_live[i].liste = Some((runs, (*u).clone(), l.clone()));
+                        l
                     };
+                    let e = &mut self.kostenspeicher_live[i];
                     // die Liste ist schon im Umfang
                     let sp = std::mem::take(&mut e.speicher);
                     let (blatt, sp) =
@@ -1195,6 +1219,16 @@ impl Scene {
             });
         }
         Ok((k, b))
+    }
+
+    /// Die gemerkte Liste des Umfangs `i` der Vorschau.
+    #[cfg(test)]
+    pub fn kosten_live_liste(&self, i: usize) -> Option<Rc<Schedule>> {
+        self.kostenspeicher_live
+            .get(i)?
+            .liste
+            .as_ref()
+            .map(|l| l.2.clone())
     }
 
     /// Je Umfang der Vorschau: wie viele Typen der letzte Aufruf neu

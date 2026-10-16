@@ -2413,6 +2413,10 @@ impl Schedule {
     /// Wie [`Schedule::layer_rows`], aber je Liste und Modellstand einmal
     /// gerechnet: Mit einem anderen Stand (etwa einer geänderten Kopie in
     /// der Vorschau) rechnet sie neu und merkt nichts (Review #213 H-213c).
+    /// Der Stand ist nur [`Model::revision`]: Ein fremdes Modell mit
+    /// zufällig gleicher Revision läse die gemerkten Zeilen; darum nur mit
+    /// dem Modell rufen, aus dem die Liste stammt, oder einer Kopie davon
+    /// (Review #213 H-213l).
     pub fn layer_rows_ref(&self, model: &Model) -> std::borrow::Cow<'_, [GebaeudeZeile]> {
         let (stand, zeilen) = self
             .zeilen
