@@ -10,10 +10,12 @@
 use crate::freischaltung::Modul;
 use crate::ui::{GelaendeKnopf, ViewKind};
 use crate::App;
+use sk_math::{vec3, Vec3};
 use sk_model::TerrainSpot;
 use sk_platform::{Key, Modifiers};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
+use std::collections::HashSet;
 
 /// Länge der Nadel über dem Punkt (mm).
 const NADEL: f32 = 600.0;
@@ -25,6 +27,32 @@ const NADELN: usize = 2_000;
 /// Messpunkt des Vermessers und eigener Punkt.
 const GRAU: [f32; 4] = [0.45, 0.45, 0.45, 1.0];
 const BLAU: [f32; 4] = [0.18, 0.42, 0.85, 1.0];
+
+/// Schneidet die Strecke `a`–`b` den Quader `lo`–`hi`, bevor sie `b`
+/// erreicht? (Strahlverfahren nach Platten.)
+pub(crate) fn verdeckt(a: Vec3, b: Vec3, lo: Vec3, hi: Vec3) -> bool {
+    let d = b - a;
+    let (mut t0, mut t1): (f64, f64) = (0.0, 1.0 - 1e-6);
+    for (o, d, lo, hi) in [
+        (a.x, d.x, lo.x, hi.x),
+        (a.y, d.y, lo.y, hi.y),
+        (a.z, d.z, lo.z, hi.z),
+    ] {
+        if d.abs() < 1e-12 {
+            if o < lo || o > hi {
+                return false;
+            }
+            continue;
+        }
+        let (u, v) = ((lo - o) / d, (hi - o) / d);
+        t0 = t0.max(u.min(v));
+        t1 = t1.min(u.max(v));
+        if t0 > t1 {
+            return false;
+        }
+    }
+    true
+}
 
 /// Ein Höhenpunkt in 3D: Punkt und, mit `stab`, die Nadel darüber; grau
 /// der Messpunkt, blau der eigene, sonst in der Farbe `wahl`.
@@ -85,22 +113,57 @@ impl App {
     }
 
     /// Die Punkte, die in 3D als Nadel stehen und greifbar sind: keine im
-    /// Haus, bei sehr vielen nur die eigenen und die gewählten.
+    /// Haus und keine hinter einem Haus (Bedienbarkeit zu #235), bei sehr
+    /// vielen nur die eigenen und die gewählten.
     pub(super) fn nadeln<'a>(
         &self,
         spots: &'a [(String, TerrainSpot)],
     ) -> Vec<&'a (String, TerrainSpot)> {
-        let haeuser = self.scene.model().terrain_patches(0.0);
+        let quader = self.haus_quader();
         let im_haus = |p: [f64; 3]| {
-            haeuser
+            quader
                 .iter()
-                .any(|(b, _)| (b[0]..=b[2]).contains(&p[0]) && (b[1]..=b[3]).contains(&p[1]))
+                .any(|(lo, hi)| (lo.x..=hi.x).contains(&p[0]) && (lo.y..=hi.y).contains(&p[1]))
         };
-        let gewaehlt = &self.platte.punkte.gewaehlt;
+        let (vw, vh, _) = self.view_size();
+        let dahinter = |p: [f64; 3]| {
+            let p = vec3(p[0], p[1], p[2]);
+            let Some(q) = self.cam.project(p, vw, vh) else {
+                return true;
+            };
+            let (o, d) = self.cam.ray(q.0, q.1, vw, vh);
+            let ende = o + d * ((p - o).dot(d) / d.dot(d));
+            quader.iter().any(|&(lo, hi)| verdeckt(o, ende, lo, hi))
+        };
+        let gewaehlt: HashSet<&str> = self
+            .platte
+            .punkte
+            .gewaehlt
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         let alle = spots.len() <= NADELN;
         spots
             .iter()
-            .filter(|(nr, s)| (alle || s.hand || gewaehlt.contains(nr)) && !im_haus(s.p))
+            .filter(|(nr, s)| {
+                (alle || s.hand || gewaehlt.contains(nr.as_str()))
+                    && !im_haus(s.p)
+                    && !dahinter(s.p)
+            })
+            .collect()
+    }
+
+    /// Die Häuser als Quader: Grundriss aus [`sk_model::Model::terrain_patches`],
+    /// Höhe aus dem Quader der Szene.
+    fn haus_quader(&self) -> Vec<(Vec3, Vec3)> {
+        let Some((lo, hi)) = self.scene.bounds() else {
+            return Vec::new();
+        };
+        self.scene
+            .model()
+            .terrain_patches(0.0)
+            .iter()
+            .map(|(b, _)| (vec3(b[0], b[1], lo.z), vec3(b[2], b[3], hi.z)))
             .collect()
     }
 
@@ -125,5 +188,28 @@ impl App {
             );
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ein Haus 10 × 10 × 8 m: der Punkt dahinter ist verdeckt, der davor
+    /// und der daneben nicht.
+    #[test]
+    fn hinter_dem_haus() {
+        let (lo, hi) = (vec3(0.0, 0.0, -500.0), vec3(10000.0, 10000.0, 8000.0));
+        let auge = vec3(-20000.0, 5000.0, 6000.0);
+        assert!(verdeckt(auge, vec3(15000.0, 5000.0, 0.0), lo, hi));
+        assert!(!verdeckt(auge, vec3(-2000.0, 5000.0, 0.0), lo, hi));
+        assert!(!verdeckt(auge, vec3(15000.0, 14000.0, 0.0), lo, hi));
+        // von hoch oben über das Haus hinweg
+        let oben = vec3(-20000.0, 5000.0, 60000.0);
+        assert!(!verdeckt(oben, vec3(25000.0, 5000.0, 0.0), lo, hi));
+        assert!(
+            verdeckt(oben, vec3(14000.0, 5000.0, 0.0), lo, hi),
+            "über die Dachkante"
+        );
     }
 }

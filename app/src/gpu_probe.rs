@@ -914,7 +914,18 @@ mod tests {
                     Camera::looking_at(a + vec3(-1.0, -1.3, 0.8).normalized() * 14_000.0, a, 45.0);
                 for (cam, n) in [(&cam, "gizmo"), (&nah, "gizmo-nah")] {
                     let mut l = Vec::new();
-                    for s in spots.iter().filter(|s| !im_haus(s.p)) {
+                    let (lo, hi) = h.bounds().unwrap();
+                    let quader: Vec<_> = haeuser
+                        .iter()
+                        .map(|(b, _)| (vec3(b[0], b[1], lo.z), vec3(b[2], b[3], hi.z)))
+                        .collect();
+                    let dahinter = |p: [f64; 3]| {
+                        let p = vec3(p[0], p[1], p[2]);
+                        quader
+                            .iter()
+                            .any(|&(lo, hi)| netz::verdeckt(cam.eye, p, lo, hi))
+                    };
+                    for s in spots.iter().filter(|s| !im_haus(s.p) && !dahinter(s.p)) {
                         let w = s.i == vorn.i;
                         netz::nadel(&mut l, s, w.then_some(sel), !w, 1.0);
                     }
