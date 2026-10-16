@@ -309,7 +309,7 @@ pub enum Field {
     /// Parameter `i` einer gewählten Erweiterung im Paneel „Eigenschaften“
     /// (E7).
     ExtProp(u8),
-    /// Geländeplatte (Gelände G0): Dicke in cm, Außenoffset in m.
+    /// Geländeplatte (Gelände G0): Dicke in cm, Abstand ums Haus in m.
     PlateThick,
     PlateMargin,
     /// Felder der Leiste „Gelände“ (G1).

@@ -300,3 +300,77 @@ fn sockel_aus_eigenem_baustoff() {
         b.befunde
     );
 }
+
+/// LVs aller Lose mit Preisen und ohne Untertitel.
+fn lvs(m: &Model, sched: &Schedule, k: &Katalog) -> Vec<sk_cost::lv::Lv> {
+    k.lose
+        .iter()
+        .filter(|l| !l.retired && l.parent.is_none())
+        .map(|l| {
+            let w = sk_cost::lv::LvWahl {
+                los: l.guid,
+                untertitel: false,
+                preise: true,
+                heute: None,
+            };
+            sk_cost::lesen::lv(m, sched, k, &Umfang::projekt(), &w)
+        })
+        .collect()
+}
+
+/// R1-B3 (Integration 15.10.): Die Dämmung unter dem Estrich gleicht den
+/// Fußbodenaufbau aus, ihre Dicke hängt am Belag und am Geschoss. Das LV
+/// teilt die Bauleistung je Dicke in Teilpositionen mit Index (DIN 18353
+/// Abschnitt 0.5); Σ LV = netto. Mit einer Dicke bleibt die OZ ohne Index.
+#[test]
+fn estrichdaemmung_je_dicke() {
+    let mut s = haus();
+    let sched = s.schedule_in(&Umfang::projekt());
+    let m = s.model();
+    let k = sk_cost::lesen::katalog(m, None);
+    let b = sk_cost::lesen::kosten(m, &sched, &k, &Umfang::projekt());
+    let alle = lvs(m, &sched, &k);
+    let summe: i64 = alle
+        .iter()
+        .map(|lv| {
+            let z = &lv.zusammenstellung;
+            z.netto.unwrap().0 + z.ohne_los.map_or(0, |c| c.0)
+        })
+        .sum();
+    assert_eq!(summe, b.netto.0, "Σ LV = netto");
+    assert!(
+        alle.iter()
+            .flat_map(|lv| &lv.befunde)
+            .all(|f| f.regel != 101),
+        "keine Regel 101"
+    );
+    let daemmung = leistung(&k, "Wärmedämmung EPS 035 DEO unter Estrich");
+    let teile: Vec<(String, String)> = alle
+        .iter()
+        .flat_map(|lv| lv.titel.iter().flat_map(|t| &t.positionen))
+        .filter(|p| p.quelle == daemmung)
+        .map(|p| (p.oz.clone(), p.kurztext.clone()))
+        .collect();
+    let oz = k.oz(k.leistung(daemmung).unwrap());
+    assert_eq!(teile.len(), 2, "{teile:?}");
+    for (i, (z, kurz)) in teile.iter().enumerate() {
+        assert_eq!(*z, format!("{oz}.{}", i + 1));
+        let d = if i == 0 { "40" } else { "45" };
+        assert!(kurz.ends_with(&format!(", d = {d} mm")), "{kurz}");
+        assert!(kurz.chars().count() <= 70, "{kurz}");
+    }
+
+    // Bad im EG: 45 mm unter Fliese auf der Sohlplatte wie 45 mm unter
+    // Parkett auf der Decke, also eine Position ohne Index
+    let mut s = haus_mit(Some(sk_model::model::BATH_SPACE_GUID));
+    let sched = s.schedule_in(&Umfang::projekt());
+    let m = s.model();
+    let k = sk_cost::lesen::katalog(m, None);
+    let ozs: Vec<String> = lvs(m, &sched, &k)
+        .iter()
+        .flat_map(|lv| lv.titel.iter().flat_map(|t| &t.positionen))
+        .filter(|p| p.quelle == daemmung)
+        .map(|p| p.oz.clone())
+        .collect();
+    assert_eq!(ozs, vec![oz]);
+}

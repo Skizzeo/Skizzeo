@@ -68,9 +68,10 @@ const MENGE_R: f32 = 340.0;
 /// Zahlenspalten zusammen und der Baum wird schmaler; reicht es dann noch
 /// nicht, bricht der Kurztext in seiner Spalte auf zwei Zeilen um.
 const KURZ_BREIT: f32 = 220.0;
-/// Enge Spalten: OZ; Menge, Einheit, EP und GP zusammen (Menge 80, Einheit
-/// 28, EP 64, GP 76 breit, dazwischen Luft).
-const OZ_ENG: f32 = 64.0;
+/// Enge Spalten: OZ (fasst `TT.UU.PPPP.i`, Review #213 H-213g); Menge,
+/// Einheit, EP und GP zusammen (Menge 80, Einheit 28, EP 64, GP 76 breit,
+/// dazwischen Luft).
+const OZ_ENG: f32 = 70.0;
 const ZAHLEN_ENG: f32 = 296.0;
 /// Zweite Zeile einer Position, wenn der Kurztext umbricht.
 const ROW_KURZ: f32 = 16.0;
@@ -2891,6 +2892,8 @@ mod csv;
 mod erweiterung;
 mod fokus_leiste;
 mod gross;
+#[cfg(test)]
+mod je_dicke_tests;
 mod kopf;
 mod stellen;
 #[cfg(test)]

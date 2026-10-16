@@ -199,7 +199,8 @@ pub fn kosten_mit(
 }
 
 /// Das LV des Loses `w.los` im Umfang `u` (KA-4a): ordnet das Kostenblatt
-/// desselben Umfangs um und rechnet nichts neu (Regeln 86, 94, 101).
+/// desselben Umfangs um und rechnet nichts neu (Regeln 86, 94, 101); die
+/// Indizes je Dicke aus dem Blatt des Projekts.
 pub fn lv(
     m: &Model,
     sched: &sk_model::qto::Schedule,
@@ -207,7 +208,13 @@ pub fn lv(
     u: &crate::Umfang,
     w: &crate::lv::LvWahl,
 ) -> crate::lv::Lv {
-    crate::lv::lv_aus(m, &kosten(m, sched, k, u), k, w)
+    let b = kosten(m, sched, k, u);
+    if u.alles() {
+        return crate::lv::lv_aus(m, &b, k, w);
+    }
+    // Indizes je Dicke aus dem ganzen Projekt (Review #213 B2)
+    let rang = crate::lv::Dickenrang::aus(m, &kosten(m, sched, k, &crate::Umfang::projekt()));
+    crate::lv::lv_im_umfang(m, &b, &rang, k, w)
 }
 
 /// Bauleistung der Schicht `schicht` im Typ `typ` mit Grund (Regel 81).

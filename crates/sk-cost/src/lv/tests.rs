@@ -701,3 +701,48 @@ fn verschiedene_kostengruppen_mit_mengen() {
         .expect("Position mit einer KG");
     assert!(b10.kg_teile.is_empty());
 }
+
+/// Review #213 B1: Teilpositionen je Dicke der Werksleistungen „Dicke nach
+/// Raumbuch“ (drei Putze, Estrich, Dämmung unter Estrich) nennen statt der
+/// Wendung die Dicke und bleiben in 70 Zeichen, auch bei 100 mm; ohne die
+/// Wendung kommt „, d = …“ dazu.
+#[test]
+fn kurztext_je_dicke_ersetzt_dicke_nach_raumbuch() {
+    let k = lesen::katalog(&rh1(), None);
+    let mit: Vec<&Leistung> = k
+        .leistungen
+        .iter()
+        .filter(|l| l.kurz.contains(DICKE_NACH_RAUMBUCH))
+        .collect();
+    let kurz: Vec<&str> = mit.iter().map(|l| l.kurz.as_str()).collect();
+    for name in [
+        "Innenputz Gipsputz",
+        "Deckenputz Gipsputz",
+        "Innenputz Kalkzementputz",
+        "Zementestrich",
+        "Wärmedämmung EPS 035 DEO",
+    ] {
+        assert!(kurz.iter().any(|x| x.starts_with(name)), "{name}: {kurz:?}");
+    }
+    for l in mit {
+        for d in [10, 15, 40, 100] {
+            let t = kurz_je_dicke(&l.kurz, Dez::ganz(d));
+            assert_eq!(
+                t,
+                l.kurz.replace(DICKE_NACH_RAUMBUCH, &format!("d = {d} mm"))
+            );
+            assert!(t.chars().count() <= 70, "{t}");
+        }
+    }
+    assert_eq!(
+        kurz_je_dicke(
+            "Innenputz Gipsputz maschinell 1-lagig Q2, Dicke nach Raumbuch",
+            Dez::ganz(15)
+        ),
+        "Innenputz Gipsputz maschinell 1-lagig Q2, d = 15 mm"
+    );
+    assert_eq!(
+        kurz_je_dicke("Trittschalldämmung", Dez(12_500_000)),
+        "Trittschalldämmung, d = 12,5 mm"
+    );
+}
