@@ -81,7 +81,6 @@ impl Model {
             if (q.e - e).abs() >= 5e-4 || (q.n - n).abs() >= 5e-4 {
                 q.e = e;
                 q.n = n;
-                seitlich.push(i);
             }
             if (q.h - h).abs() >= 5e-4 {
                 q.h = h;
@@ -95,6 +94,9 @@ impl Model {
                     [q.e, q.n, q.h] = g;
                 }
                 q.gemessen = (!zurueck).then_some(g);
+            }
+            if [q.e, q.n] != [vorher[0], vorher[1]] {
+                seitlich.push(i);
             }
         }
         if doppelt_bei(&t, &seitlich) {
@@ -176,19 +178,22 @@ impl Model {
         let Some((mut t, ..)) = self.punkte_rahmen() else {
             return false;
         };
-        let mut neu = false;
+        let (mut neu, mut seitlich) = (Vec::new(), Vec::new());
         for &i in idx {
             if let Some(q) = t.points.get_mut(i) {
                 if let Some([e, n, h]) = q.gemessen.take() {
+                    if [q.e, q.n] != [e, n] {
+                        seitlich.push(i);
+                    }
                     (q.e, q.n, q.h) = (e, n, h);
-                    neu = true;
+                    neu.push(i);
                 }
             }
         }
-        if !neu || doppelt(&t) {
+        if neu.is_empty() || doppelt_bei(&t, &seitlich) {
             return false;
         }
-        self.punkte_schreiben(t)
+        self.punkte_schreiben(t, Some(&neu))
     }
 
     /// Gelände, System und Höhe von ±0,00 zum Ändern der Punkte.

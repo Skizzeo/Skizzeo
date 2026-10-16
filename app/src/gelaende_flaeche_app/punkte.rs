@@ -122,6 +122,9 @@ pub struct Punkte {
     klick: Option<(Instant, f64, f64)>,
     /// Punkte zum Stand des Modells.
     merker: Option<(u64, Spots)>,
+    /// Häuser zum Stand des Modells, für die Nadeln in 3D (Review #237
+    /// B-237a).
+    pub(super) haeuser: Option<std::sync::Arc<super::netz::Haeuser>>,
 }
 
 /// Die Punkte mit Nummer, geteilt bis zur nächsten Änderung.
@@ -144,24 +147,38 @@ fn treffen<'a>(
     spots: impl IntoIterator<Item = &'a (String, TerrainSpot)>,
     cam: &Camera,
     z: Option<f64>,
-    (x, y): (f64, f64),
+    m: (f64, f64),
     w: f64,
     h: f64,
     scale: f64,
 ) -> Option<&'a (String, TerrainSpot)> {
+    treffer(spots, cam, z, m, w, h, scale).into_iter().next()
+}
+
+/// Alle Punkte im Greifkreis, der nächste zuerst.
+fn treffer<'a>(
+    spots: impl IntoIterator<Item = &'a (String, TerrainSpot)>,
+    cam: &Camera,
+    z: Option<f64>,
+    (x, y): (f64, f64),
+    w: f64,
+    h: f64,
+    scale: f64,
+) -> Vec<&'a (String, TerrainSpot)> {
     let r = GREIF_PX * scale;
-    let mut best: Option<(f64, &(String, TerrainSpot))> = None;
+    let mut alle: Vec<(f64, &(String, TerrainSpot))> = Vec::new();
     for s in spots {
         let zz = z.unwrap_or(s.1.p[2]);
         let Some(q) = cam.project(vec3(s.1.p[0], s.1.p[1], zz), w, h) else {
             continue;
         };
         let d = (q.0 - x).hypot(q.1 - y);
-        if d <= r && best.is_none_or(|b| d < b.0) {
-            best = Some((d, s));
+        if d <= r {
+            alle.push((d, s));
         }
     }
-    best.map(|b| b.1)
+    alle.sort_by(|a, b| a.0.total_cmp(&b.0));
+    alle.into_iter().map(|b| b.1).collect()
 }
 
 /// Lage beim Ziehen: der gegriffene Punkt am Fangziel (Alt ohne), sonst im
@@ -353,7 +370,7 @@ impl App {
     }
 
     /// Die Punkte zum jetzigen Stand merken.
-    fn spots_merken(&mut self) {
+    pub(super) fn spots_merken(&mut self) {
         let rev = self.scene.model().revision();
         if self
             .platte
@@ -364,6 +381,9 @@ impl App {
         {
             let s = self.spots();
             self.platte.punkte.merker = Some((rev, s));
+        }
+        if self.drei_d() {
+            self.haeuser_merken();
         }
     }
 
@@ -484,7 +504,10 @@ impl App {
                 }
             }
         }
-        treffen(self.nadeln(&spots), &self.cam, None, (x, y), vw, vh, sc)
+        // hinter einem Haus greift man nicht, gefragt nur im Greifkreis
+        treffer(self.nadeln(&spots), &self.cam, None, (x, y), vw, vh, sc)
+            .into_iter()
+            .find(|s| !self.dahinter(s.1.p))
             .map(|s| Ziel::Punkt(s.0.clone()))
     }
 

@@ -370,9 +370,9 @@ fn punkt_schluessel(i: usize, p: &TerrainPoint) -> u64 {
 /// sich so ohne den Gang über alle Texte (Review #234 B-234a).
 fn punkte_gleich(a: &[TerrainPoint], b: &[TerrainPoint]) -> bool {
     a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(p, q)| (p.e, p.n, p.h, p.off, p.hand) == (q.e, q.n, q.h, q.off, q.hand))
+        && a.iter().zip(b).all(|(p, q)| {
+            (p.e, p.n, p.h, p.off, p.hand, p.gemessen) == (q.e, q.n, q.h, q.off, q.hand, q.gemessen)
+        })
         && a.iter()
             .zip(b)
             .all(|(p, q)| p.nr == q.nr && p.code == q.code)
@@ -819,8 +819,8 @@ impl Model {
     }
 
     /// [`Model::put_survey`] für ein Aufmaß, das sich vom jetzigen höchstens
-    /// in Lage und Höhe der Punkte `geaendert` unterscheidet (Ziehen,
-    /// Heben): ohne Gang über alle Punkte; bleibt die Lage, bleibt das Netz
+    /// in Lage, Höhe und gemessenen Werten der Punkte `geaendert`
+    /// unterscheidet (Ziehen, Heben, „Gemessen zurück“): ohne Gang über alle Punkte; bleibt die Lage, bleibt das Netz
     /// (Review #234 B-234a).
     pub(super) fn put_survey_punkte(&mut self, mut t: Terrain, geaendert: &[usize]) -> bool {
         let Some(alt) = self.terrain().filter(|a| a.points.len() == t.points.len()) else {
@@ -833,7 +833,7 @@ impl Model {
             .copied()
             .filter(|&i| {
                 let (a, b) = (&alt.points[i], &t.points[i]);
-                (lage(a), a.h.to_bits()) != (lage(b), b.h.to_bits())
+                (lage(a), a.h.to_bits()) != (lage(b), b.h.to_bits()) || a.gemessen != b.gemessen
             })
             .collect();
         neu.sort_unstable();

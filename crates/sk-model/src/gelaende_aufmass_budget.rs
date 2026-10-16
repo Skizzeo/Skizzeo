@@ -428,6 +428,7 @@ fn punkt_heben_im_budget() {
                 code: String::new(),
                 off: false,
                 hand: false,
+                gemessen: None,
             });
         }
     }
