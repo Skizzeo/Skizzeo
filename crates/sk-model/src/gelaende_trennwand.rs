@@ -5,9 +5,10 @@
 //! deshalb nur am freien Rand.
 
 /// Unter diesem Abstand (mm) liegt der Plattenrand am Umriss eines anderen
-/// Hauses: Wand an Wand, auch mit dem Übergang zwischen den Platten
-/// (`gelaende_eben::FUGE`).
-pub(super) const AN_DER_WAND: f64 = 20.0;
+/// Hauses: Wand an Wand, samt dem Übergang zwischen den Platten. Der reicht
+/// bis 3 × `gelaende_eben::FUGE` über die Sohle des Nachbarn hinaus (Fuge
+/// vor seiner Platte, Streifen von 2 × FUGE); dazu eine Fuge Spiel.
+pub(super) const AN_DER_WAND: f64 = 4.0 * sk_gelaende::pruefen::GLEICHE_STELLE * 1000.0;
 
 /// Die Strecken des geschlossenen Umrisses `ring` (mm), die weder in einem
 /// der Umrisse `andere` liegen noch näher als [`AN_DER_WAND`] an ihnen.

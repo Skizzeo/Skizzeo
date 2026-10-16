@@ -24,6 +24,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[path = "gelaende_trennwand.rs"]
 mod trennwand;
 
+/// Eine Strecke in Landeswerten.
+type Strecke = ((f64, f64), (f64, f64));
+/// Plattenumriss eines Wandzugs (mm, Grundriss) und sein Gebäude.
+type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>);
+
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainPoint {
@@ -531,7 +536,7 @@ impl Terrain {
     }
 
     /// Wie [`Terrain::along`], nur über einzelne Strecken (Landeswerte).
-    fn along_strecken(&self, s: &[((f64, f64), (f64, f64))]) -> Vec<f64> {
+    fn along_strecken(&self, s: &[Strecke]) -> Vec<f64> {
         let m = self.mesh();
         if m.netz.dreiecke.is_empty() {
             return Vec::new();
@@ -838,7 +843,7 @@ impl Model {
 
     /// Plattenumriss je Wandzug mit Gründung (mm, Grundriss) und sein
     /// Gebäude.
-    fn umrisse_der_zuege(&self) -> Vec<(RunId, Option<BuildingId>, Vec<[f64; 2]>)> {
+    fn umrisse_der_zuege(&self) -> Vec<ZugUmriss> {
         self.runs
             .iter()
             .filter_map(|(id, r)| {
@@ -852,12 +857,7 @@ impl Model {
     /// Geländehöhen (Landeswerte) am freien Plattenrand von `umrisse[k]`:
     /// ohne die Stücke in oder an der Platte eines anderen Gebäudes, der
     /// Haustrennwand (H-245a, VOB). Ist kein Stück frei, der ganze Rand.
-    fn am_freien_rand(
-        t: &Terrain,
-        f: &SurveyFrame,
-        umrisse: &[(RunId, Option<BuildingId>, Vec<[f64; 2]>)],
-        k: usize,
-    ) -> Vec<f64> {
+    fn am_freien_rand(t: &Terrain, f: &SurveyFrame, umrisse: &[ZugUmriss], k: usize) -> Vec<f64> {
         let (_, b, ring) = &umrisse[k];
         let kasten = |r: &[[f64; 2]]| {
             r.iter()

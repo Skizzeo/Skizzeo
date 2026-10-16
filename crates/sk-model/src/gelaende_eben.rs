@@ -23,49 +23,8 @@ const NR: &str = "H";
 /// #245).
 const FUGE: f64 = sk_gelaende::pruefen::GLEICHE_STELLE * 1000.0;
 
-/// Platten, die sich überdecken oder berühren, an der Mitte zwischen
-/// ihren Häusern trennen (H-243a, VOB): Im eigenen Umriss gilt so die
-/// eigene Höhe, auch bei Doppelhaus und Garage am Haus, und der Rand
-/// zwischen ihnen wird Bruchkante. Die Häuser sind die Rechtecke der
-/// Platten ohne `margin`; getrennt wird quer zur Richtung, in der sie am
-/// weitesten auseinander liegen, mit einem Streifen von 2 × [`FUGE`].
-/// Überdecken sich die Häuser selbst, bleibt es beim Vorrang der früheren.
-fn platten_trennen(mut platten: Vec<([f64; 4], f64)>, margin: f64) -> Vec<([f64; 4], f64)> {
-    let haus = |r: [f64; 4]| [r[0] + margin, r[1] + margin, r[2] - margin, r[3] - margin];
-    let haeuser: Vec<[f64; 4]> = platten.iter().map(|(r, _)| haus(*r)).collect();
-    for i in 0..platten.len() {
-        for k in 0..i {
-            let (a, b) = (platten[k].0, platten[i].0);
-            if a[0] > b[2] || b[0] > a[2] || a[1] > b[3] || b[1] > a[3] {
-                continue;
-            }
-            let (hk, hi) = (haeuser[k], haeuser[i]);
-            // Abstand der Häuser je Richtung, mit der Seite von k
-            let spalt = |d: usize| {
-                if hk[d + 2] <= hi[d] {
-                    Some((hi[d] - hk[d + 2], (hk[d + 2] + hi[d]) / 2.0, true))
-                } else if hi[d + 2] <= hk[d] {
-                    Some((hk[d] - hi[d + 2], (hi[d + 2] + hk[d]) / 2.0, false))
-                } else {
-                    None
-                }
-            };
-            let (d, mitte, k_vorn) = match (spalt(0), spalt(1)) {
-                (Some(x), Some(y)) if y.0 > x.0 => (1, y.1, y.2),
-                (Some(x), _) => (0, x.1, x.2),
-                (None, Some(y)) => (1, y.1, y.2),
-                (None, None) => continue,
-            };
-            let (vorn, hinten) = if k_vorn { (k, i) } else { (i, k) };
-            let r = &mut platten[vorn].0;
-            r[d + 2] = r[d + 2].min(mitte - FUGE);
-            let r = &mut platten[hinten].0;
-            r[d] = r[d].max(mitte + FUGE);
-        }
-    }
-    platten.retain(|(r, _)| r[0] < r[2] && r[1] < r[3]);
-    platten
-}
+#[path = "gelaende_trennen.rs"]
+mod trennen;
 
 impl Terrain {
     /// Das Gelände hat Punkte, und alle sind von Hand gesetzt: Es ist
@@ -89,20 +48,15 @@ impl Model {
             return false;
         }
         let s = self.plate_settings();
-        let platten = platten_trennen(self.terrain_patches(s.margin), s.margin);
-        let in_platte = |q: &[f64; 4], p: [f64; 2]| {
-            (q[0]..=q[2]).contains(&p[0]) && (q[1]..=q[3]).contains(&p[1])
-        };
-        // je Ecke ihre Höhe und ihre Platte; eine Ecke in oder auf einer
-        // früheren Platte fällt weg, dort gilt die erste (wie bei
-        // `terrain_patches`; nach `platten_trennen` nur noch, wo sich die
-        // Häuser selbst überdecken)
+        let bereiche = trennen::trennen(&self.platten_zum_trennen(s.margin), FUGE);
+        // je Ecke ihre Höhe und ihr Umlauf: die Ecken der Bereiche, die von
+        // den Platten nach dem Trennen bleiben
         let mut ecken: Vec<([f64; 2], f64, Option<usize>)> = Vec::new();
-        for (i, (r, z)) in platten.iter().enumerate() {
-            for p in [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]] {
-                if !platten[..i].iter().any(|(q, _)| in_platte(q, p)) {
-                    ecken.push((p, *z, Some(i)));
-                }
+        let mut umlaeufe = 0;
+        for b in &bereiche {
+            for u in b.umlaeufe() {
+                ecken.extend(u.into_iter().map(|p| (p, b.z, Some(umlaeufe))));
+                umlaeufe += 1;
             }
         }
         // die Geländeflächen, die schon da sind, und das Grundstück liegen
@@ -142,7 +96,7 @@ impl Model {
             let r = [k[0] - m, k[1] - m, k[2] + m, k[3] + m];
             for p in [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]] {
                 // in einer Platte gilt deren Höhe
-                if !platten.iter().any(|(q, _)| in_platte(q, p)) {
+                if !bereiche.iter().any(|b| b.enthaelt(p)) {
                     ecken.push((p, z, None));
                 }
             }
@@ -158,22 +112,14 @@ impl Model {
         };
         // ±0,00 bleibt, wo es ist: fest in NHN, sonst bei 0
         let h0 = self.location().nhn.unwrap_or(0.0);
-        // Die Ränder ganzer Platten werden Bruchkanten: Sonst verbindet das
+        // Die Ränder der Platten werden Bruchkanten: Sonst verbindet das
         // Netz quer durch eine Platte mit der Ecke eines anderen Hauses in
         // anderer Höhe, und es springt doch (J4 B; Geometrie, Routine
-        // 16.10. 19:03). Platten, die eine frühere noch berühren (nur wo
-        // sich die Häuser selbst überdecken), bekommen keine: Ihr Rand
-        // kreuzte deren.
-        let ganz = |i: usize| {
-            let r = platten[i].0;
-            !platten[..i]
-                .iter()
-                .any(|(q, _)| r[0] <= q[2] && q[0] <= r[2] && r[1] <= q[3] && q[1] <= r[3])
-        };
-        let mut ringe: Vec<Vec<String>> = vec![Vec::new(); platten.len()];
-        for (i, (p, z, platte)) in ecken.iter().enumerate() {
+        // 16.10. 19:03).
+        let mut ringe: Vec<Vec<String>> = vec![Vec::new(); umlaeufe];
+        for (i, (p, z, umlauf)) in ecken.iter().enumerate() {
             let nr = format!("{NR}{}", i + 1);
-            if let Some(k) = platte.filter(|&k| ganz(k)) {
+            if let Some(k) = *umlauf {
                 ringe[k].push(nr.clone());
             }
             let (e, n) = f.to_survey(p[0], p[1]);
@@ -190,10 +136,39 @@ impl Model {
         t.breaks.extend(
             ringe
                 .into_iter()
-                .filter(|r| r.len() == 4)
+                .filter(|r| r.len() >= 3)
                 .map(|pts| TerrainLine { pts, closed: true }),
         );
         self.set_terrain(Some(t))
+    }
+
+    /// Die Platten um die Häuser zum Trennen, nach Guid wie
+    /// [`Model::terrain_patches`], mit dem Rechteck um ihre Sohle samt
+    /// Überstand ([`Model::plate_outlines`]).
+    fn platten_zum_trennen(&self, margin: f64) -> Vec<trennen::Platte> {
+        let sohlen = self.plate_outlines();
+        self.terrain_patch_boxes()
+            .into_iter()
+            .map(|(b, w)| {
+                let sohle = sohlen
+                    .iter()
+                    .filter(|(x, _)| *x == b)
+                    .flat_map(|(_, r)| r.iter())
+                    .fold(None, |k: Option<[f64; 4]>, p| {
+                        Some(k.map_or([p.x, p.y, p.x, p.y], |k| {
+                            [k[0].min(p.x), k[1].min(p.y), k[2].max(p.x), k[3].max(p.y)]
+                        }))
+                    })
+                    .unwrap_or(w);
+                let m = margin;
+                trennen::Platte {
+                    rect: [w[0] - m, w[1] - m, w[2] + m, w[3] + m],
+                    wand: w,
+                    sohle,
+                    z: self.terrain_z_of(Some(b)),
+                }
+            })
+            .collect()
     }
 
     /// Eine von Hand gezeichnete Grenze (I2): `ring` sind ihre Ecken im
@@ -462,65 +437,116 @@ mod tests {
         }
     }
 
-    /// Doppelhaus, Garage am Haus: Zwei Häuser 8 × 10 m in 0,50 und 1,50 m
-    /// unter ±0,00 näher als zwei Plattenabstände. Die Platten werden in
-    /// der Mitte getrennt, im Umriss jedes Hauses gilt seine Höhe, auch
-    /// beim späteren (H-243a, VOB; vorher bis 1,31 m daneben). Nur bei
-    /// Häusern Wand an Wand bleibt an der Wand ein Streifen von 2 × FUGE.
+    /// Doppelhaus, Garage am Haus: Ein Haus 8 × 10 m in 0,50 m und ein
+    /// zweites (oder eine Garage 3 × 3 m) in 1,50 m unter ±0,00 näher als
+    /// zwei Plattenabstände. Die Platten werden in der Mitte zwischen den
+    /// Sohlen getrennt (H-243a, VOB; Geometrie zu #245). Im Umriss jedes
+    /// Hauses gilt seine Höhe, auch beim späteren, und liegen die Sohlen
+    /// samt Überstand nicht übereinander, auch auf der ganzen Sohle; dann
+    /// bleiben auch die Erdmengen beim Anlegen der ersten Fläche, wie sie
+    /// waren (Review zu #245). Hinter einer kürzeren Garage gilt das Haus
+    /// (VOB-Spruch c zu H-245a). Wand an Wand bleibt unter der Wand ein
+    /// Streifen von 2 × FUGE.
     #[test]
     fn doppelhaus_und_garage() {
-        for (spalt, quer) in [
-            (0.0, false),
-            (1500.0, false),
-            (3000.0, false),
-            (6000.0, false),
-            (12000.0, false),
-            (0.0, true),
-            (2000.0, true),
-        ] {
+        // (Abstand der Wände, quer, Garage)
+        let faelle = [
+            (0.0, false, false),
+            (650.0, false, false),
+            (800.0, false, false),
+            (1000.0, false, false),
+            (1500.0, false, false),
+            (3000.0, false, false),
+            (6000.0, false, false),
+            (12000.0, false, false),
+            (0.0, true, false),
+            (650.0, true, false),
+            (2000.0, true, false),
+            (650.0, false, true),
+            (1000.0, false, true),
+            (2000.0, false, true),
+        ];
+        let erde = |m: &Model| -> Vec<(String, f64)> {
+            let mut e: Vec<(String, f64)> = crate::qto::schedule(m)
+                .auto
+                .iter()
+                .filter(|a| a.key.starts_with("earth.") && a.unit == "m3")
+                .map(|a| (format!("{:?} {}", a.building, a.key), a.value))
+                .collect();
+            e.sort_by(|a, b| a.0.cmp(&b.0));
+            e
+        };
+        for (spalt, quer, garage) in faelle {
+            let fall = format!("{spalt} quer {quer} Garage {garage}");
             let mut m = Model::with_seed(5);
-            let mut neu = |x0: f64, y0: f64, versatz: f64| {
+            let mut neu = |x0: f64, y0: f64, w: f64, h: f64, versatz: f64| {
                 let b = m.add_building(1);
                 let pts = [
                     vec3(x0, y0, 0.0),
-                    vec3(x0 + 8000.0, y0, 0.0),
-                    vec3(x0 + 8000.0, y0 + 10000.0, 0.0),
-                    vec3(x0, y0 + 10000.0, 0.0),
+                    vec3(x0 + w, y0, 0.0),
+                    vec3(x0 + w, y0 + h, 0.0),
+                    vec3(x0, y0 + h, 0.0),
                 ];
                 m.build_from_polygon(b, &pts).unwrap();
                 m.begin("Gelände");
                 assert!(m.set_terrain_offset_of(b, versatz));
                 m.commit();
-                (b, [x0, y0, x0 + 8000.0, y0 + 10000.0])
+                (b, [x0, y0, x0 + w, y0 + h])
             };
-            let a = neu(0.0, 0.0, 500.0);
-            let b = if quer {
-                neu(3000.0, 10000.0 + spalt, 1500.0)
+            let a = neu(0.0, 0.0, 8000.0, 10000.0, 500.0);
+            let (w, h) = if garage {
+                (3000.0, 3000.0)
             } else {
-                neu(8000.0 + spalt, 0.0, 1500.0)
+                (8000.0, 10000.0)
             };
+            let b = if quer {
+                neu(3000.0, 10000.0 + spalt, w, h, 1500.0)
+            } else {
+                neu(8000.0 + spalt, 0.0, w, h, 1500.0)
+            };
+            let vorher = erde(&m);
             m.begin("Fläche");
             assert!(m.seed_flat_terrain(&[]));
             m.commit();
-            assert_eq!(m.terrain().unwrap().breaks.len(), 2, "{spalt} {quer}");
+            let t = m.terrain().unwrap();
+            assert_eq!(t.breaks.len(), 2, "{fall}");
+            assert!(
+                t.mesh().hinweise.is_empty(),
+                "{fall}: {:?}",
+                t.mesh().hinweise
+            );
             // Mitte zwischen den Häusern, in x oder y
             let (d, mitte) = if quer {
                 (1, 10000.0 + spalt / 2.0)
             } else {
                 (0, 8000.0 + spalt / 2.0)
             };
-            for (haus, u) in [a, b] {
+            // Sohle samt Überstand, wenn sie nicht über der anderen liegt
+            let u = if spalt >= 2.0 * 315.0 + 2.0 * FUGE {
+                315.0
+            } else {
+                0.0
+            };
+            for (haus, r) in [a, b] {
                 let z = m.terrain_z_of(Some(haus));
                 for i in 0..=20 {
                     for j in 0..=20 {
-                        let x = u[0] + (u[2] - u[0]) * i as f64 / 20.0;
-                        let y = u[1] + (u[3] - u[1]) * j as f64 / 20.0;
+                        let x = r[0] - u + (r[2] - r[0] + 2.0 * u) * i as f64 / 20.0;
+                        let y = r[1] - u + (r[3] - r[1] + 2.0 * u) * j as f64 / 20.0;
                         if ([x, y][d] - mitte).abs() <= FUGE {
                             continue;
                         }
                         let dz = m.terrain_z_at(Some(haus), x, y) - z;
-                        assert!(dz.abs() < 1e-6, "{spalt} {quer} {x} {y}: {dz}");
+                        assert!(dz.abs() < 1e-6, "{fall}: {x} {y}: {dz}");
                     }
+                }
+            }
+            if u > 0.0 {
+                let nachher = erde(&m);
+                assert_eq!(vorher.len(), nachher.len(), "{fall}");
+                for (x, y) in vorher.iter().zip(&nachher) {
+                    assert_eq!(x.0, y.0, "{fall}");
+                    assert!((x.1 - y.1).abs() < 1e6, "{fall}: {} {} → {}", x.0, x.1, y.1);
                 }
             }
         }
@@ -569,6 +595,7 @@ mod tests {
         }
         let f = m.terrain_folgen().unwrap();
         assert!(f.frostfrei);
+    }
 
     /// Haus und Garage in jedem Abstand der Wandzüge von 0,65 bis 3 m (in
     /// cm, jeder siebte um 0,4 mm daneben), längs und quer: keine Ecke
