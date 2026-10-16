@@ -1033,7 +1033,13 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
     // so vielen Abständen wie bis hier und höchstens einem Viertel von
     // [`BUDGET`] durch die Zahl der Kanten; wo der beste Abstand auf einer
     // Linie liegt (Flur, Kreisring), reicht das nicht, dort bleibt `genau`.
-    if m.d >= soll(best.d + genau) {
+    // Bis `scharf` gilt als erreicht: Am Schwerpunkt und in der besten
+    // Zelle derselben Mitte rechnet die Rundung verschieden, fern vom
+    // Ursprung (Siedlungen) oft um ein paar Stellen; ohne diese Luft ginge
+    // dann jedes Rechteck in die beiden weiteren Suchen, bei 3000 Häusern
+    // je Raum doppelt so viel Arbeit wie am Ursprung (Integration,
+    // Erkennung::gruppe ×4,1 bei dreimal so vielen Häusern)
+    if m.d + scharf >= soll(best.d + genau) {
         return (m.c, m.d);
     }
     let kanten = pts.len() + b.inseln.iter().map(|i| i.punkte.len()).sum::<usize>();
@@ -1048,7 +1054,7 @@ pub fn innenpunkt_mit(b: &Bereich, genau: f64, weg: impl Fn(Vec3) -> f64) -> (Ve
     let schlange = std::mem::take(&mut rest).into_iter().collect();
     teilen(schlange, &mut best, &bis, &mut rest);
     let soll = soll(best.d);
-    if m.d >= soll {
+    if m.d + scharf >= soll {
         return (m.c, m.d);
     }
     let fein = genau / 100.0;
@@ -1564,6 +1570,34 @@ mod tests {
         assert!(b.enthaelt(p));
         assert!(d > 600.0 && d < 1500.0, "{d}");
         assert!((p - vec3(2000.0, 1500.0, 0.0)).length() > 400.0);
+    }
+
+    /// Ein Rechteck gibt seinen Schwerpunkt mit derselben Arbeit wie am
+    /// Ursprung, auch fern davon, wo die Rundung am Schwerpunkt und in den
+    /// Zellen verschieden ausfällt; vorher suchte es dort oft zweimal weiter
+    /// (gezählt an den Aufrufen von `weg`, einer je Zelle).
+    #[test]
+    fn innenpunkt_im_rechteck_fern_vom_ursprung() {
+        let zellen = |o: f64, genau: f64| {
+            let r = rechteck(o + 365.0, o + 365.0, o + 3442.5, o + 7635.0);
+            let mitte = crate::polygon::centroid(&r).unwrap();
+            let b = bereich(r, vec![]);
+            let n = std::cell::Cell::new(0usize);
+            let (p, d) = innenpunkt_mit(&b, genau, |_| {
+                n.set(n.get() + 1);
+                f64::INFINITY
+            });
+            assert_eq!((p.x, p.y), (mitte.x, mitte.y), "Versatz {o}");
+            assert!((d - 1538.75).abs() < 1e-6, "{d}");
+            n.get()
+        };
+        for genau in [1.0, 10.0] {
+            let am_ursprung = zellen(0.0, genau);
+            for i in 1..400 {
+                let o = 15000.0 * i as f64;
+                assert_eq!(zellen(o, genau), am_ursprung, "Versatz {o}, genau {genau}");
+            }
+        }
     }
 
     /// Viertelkreis 2,50 m um die Ecke unten links frei halten (Aufschlag

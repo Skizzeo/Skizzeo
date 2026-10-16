@@ -10,6 +10,7 @@ use crate::katalog::{Einheit, Katalog, Leistung};
 use crate::rechnung::OhneHerkunft;
 use crate::rechnung::{drei, gp, skala, Ansatz, Kostenblatt, Position, Quelle};
 use sk_model::{ElementId, Guid, Model, StoreyId};
+use std::collections::{HashMap, HashSet};
 
 /// Was der Nutzer für das LV wählt: das Los, „Geschosse als Untertitel“
 /// (`[costproject] lvstorey=1`) und „Mit Preisen“ statt „Für Anfrage
@@ -131,6 +132,8 @@ pub struct LvPosition {
     pub mehrere_preise: bool,
     /// Zeilen des Kostenblatts hinter der Position (Preisblatt).
     pub blatt: Vec<usize>,
+    /// Teilposition je Dicke (R1-B3): Index an der OZ und Dicke.
+    pub dicke: Option<(u32, Dez)>,
 }
 
 /// Ein Untertitel (Geschoss) in einem Titel.
@@ -303,6 +306,7 @@ fn mengenansatz(
 ) -> Vec<Ansatzzeile> {
     // je Geschoss, Folge-Quelle, Bewehrungsgrad (B16) und Rechenweg einer
     // Automatikmenge
+    type Schluessel<'a> = (StoreyId, Option<Guid>, Option<u32>, Option<&'a str>);
     type Gruppe<'a> = (
         StoreyId,
         Option<Guid>,
@@ -310,26 +314,31 @@ fn mengenansatz(
         Option<&'a str>,
         Vec<&'a Ansatz>,
     );
+    // Gruppen in der Reihenfolge ihres ersten Ansatzes; Stelle über den
+    // Schlüssel, Nummern und Bauteile über Mengen statt linear (Review
+    // #197 H-197i: eine Gruppe je Raum mit eigenem Rechenweg)
     let mut gruppen: Vec<Gruppe> = Vec::new();
+    let mut stelle: HashMap<Schluessel, usize> = HashMap::new();
     for a in ansatz {
         let f = a.formel.as_deref();
-        match gruppen
-            .iter_mut()
-            .find(|g| g.0 == a.geschoss && g.1 == a.aus && g.2 == a.grad && g.3 == f)
-        {
-            Some(g) => g.4.push(a),
-            None => gruppen.push((a.geschoss, a.aus, a.grad, f, vec![a])),
-        }
+        let j = *stelle
+            .entry((a.geschoss, a.aus, a.grad, f))
+            .or_insert_with(|| {
+                gruppen.push((a.geschoss, a.aus, a.grad, f, Vec::new()));
+                gruppen.len() - 1
+            });
+        gruppen[j].4.push(a);
     }
     let mut zeilen: Vec<(Ansatzzeile, i128)> = Vec::new();
     for (st, aus, grad, formel, v) in gruppen {
         let mut nummern: Vec<String> = Vec::new();
         let mut elemente: Vec<ElementId> = Vec::new();
+        let mut gesehen: (HashSet<&str>, HashSet<ElementId>) = Default::default();
         for a in &v {
-            if !nummern.contains(&a.nummer) {
+            if gesehen.0.insert(&a.nummer) {
                 nummern.push(a.nummer.clone());
             }
-            if !elemente.contains(&a.element) {
+            if gesehen.1.insert(a.element) {
                 elemente.push(a.element);
             }
         }
@@ -387,6 +396,130 @@ fn oz_im_los(k: &Katalog, l: &Leistung, uu: Option<u32>) -> String {
     }
 }
 
+/// Höchster Positionsindex einer Teilposition je Dicke (eine Stelle).
+const INDEX_MAX: u32 = 9;
+
+/// Bauleistung, ihre Zeilen im Kostenblatt und, als Teilposition je Dicke,
+/// Index und Dicke.
+type LvTeil = (Guid, Vec<usize>, Option<(u32, Dez)>);
+
+/// Dicken je Bauleistung an Räumen im ganzen Projekt (R1-B3): Zeilen
+/// derselben Bauleistung, die nur an Räumen rechnen und sich nur in der
+/// Dicke ihrer Schicht unterscheiden (K12, gleicher Baustoff, jede Zeile
+/// eine Dicke, jede Dicke einmal), aufsteigend. Der Index einer
+/// Teilposition ist der Rang ihrer Dicke hier, darum in jedem Umfang
+/// derselbe (Review #213 B2). Eine neue Dicke dazwischen verschiebt die
+/// Indizes dahinter; die OZ nach der Vergabe festzuhalten ist ein eigener
+/// Schritt (H-213i).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dickenrang(HashMap<Guid, Vec<Dez>>);
+
+impl Dickenrang {
+    /// Aus dem Kostenblatt im Umfang Projekt.
+    pub fn aus(m: &Model, projekt: &Kostenblatt) -> Dickenrang {
+        // je Bauleistung: Baustoff der ersten Zeile und die Dicken, `None`
+        // sobald eine Zeile nicht passt
+        let mut je: HashMap<Guid, Option<(Guid, Vec<Dez>)>> = HashMap::new();
+        for p in &projekt.positionen {
+            let Quelle::Leistung(g) = p.quelle else {
+                continue;
+            };
+            let zeile = match (p.schicht, p.dicken.as_slice()) {
+                (Some((bs, _)), [d]) if nur_raeume(m, p) => Some((bs, *d)),
+                _ => None,
+            };
+            let e = je
+                .entry(g)
+                .or_insert_with(|| zeile.map(|(bs, _)| (bs, Vec::new())));
+            match (e.as_mut(), zeile) {
+                (Some((bs, ds)), Some((b, d))) if *bs == b && !ds.contains(&d) => ds.push(d),
+                _ => *e = None,
+            }
+        }
+        Dickenrang(
+            je.into_iter()
+                .filter_map(|(g, x)| {
+                    let mut ds = x?.1;
+                    ds.sort();
+                    (ds.len() > 1).then_some((g, ds))
+                })
+                .collect(),
+        )
+    }
+
+    /// Dicken der Bauleistung `g` an Räumen, wenn sie sich je Dicke teilt
+    /// (auch mehr, als der Index fasst).
+    fn dicken(&self, g: Guid) -> Option<&[Dez]> {
+        self.0.get(&g).map(|d| d.as_slice())
+    }
+
+    /// Index der Dicke `d` von `g` (1 bis [`INDEX_MAX`]), wenn `g` sich
+    /// teilt und der Index alle Dicken fasst.
+    fn index(&self, g: Guid, d: Dez) -> Option<u32> {
+        let ds = self.dicken(g).filter(|ds| ds.len() <= INDEX_MAX as usize)?;
+        ds.iter().position(|x| *x == d).map(|i| i as u32 + 1)
+    }
+}
+
+/// Rechnet die Position nur an Räumen?
+fn nur_raeume(m: &Model, p: &Position) -> bool {
+    p.ansatz.iter().all(|a| {
+        m.element(a.element)
+            .is_some_and(|e| matches!(e.kind, sk_model::ElementKind::Space(_)))
+    })
+}
+
+/// Kostenzeilen je Bauleistung. Teilt sich eine Bauleistung im Projekt je
+/// Dicke ([`Dickenrang`]), wird jede ihrer Zeilen eine Teilposition mit
+/// dem Index ihrer Dicke, auch wenn der Umfang nur eine Dicke zeigt
+/// (DIN 18353 Abschnitt 0.5: Dämmschichten getrennt nach Dicke). Im Raum
+/// folgt die Dicke aus dem Raumbuch (die Dämmung gleicht den
+/// Fußbodenaufbau aus), eine Bauleistung je Dicke kann niemand anlegen. An
+/// Bauteilen ist die Dicke die des Typs; zwei Dicken heißen dort eine zu
+/// weite Regel und bleiben Regel 101, ebenso mehr Dicken, als der Index
+/// fasst. Eine Dicke im Projekt bleibt ohne Index.
+fn je_dicke_teilen(
+    positionen: &[Position],
+    rang: &Dickenrang,
+    je_leistung: Vec<(Guid, Vec<usize>)>,
+) -> Vec<LvTeil> {
+    let mut out = Vec::new();
+    for (g, zeilen) in je_leistung {
+        let teile: Option<Vec<(u32, Dez)>> = zeilen
+            .iter()
+            .map(|i| match positionen[*i].dicken.as_slice() {
+                [d] => rang.index(g, *d).map(|n| (n, *d)),
+                _ => None,
+            })
+            .collect();
+        match teile {
+            Some(t) => {
+                let mut je: Vec<((u32, Dez), usize)> = t.into_iter().zip(zeilen).collect();
+                je.sort();
+                for (t, i) in je {
+                    out.push((g, vec![i], Some(t)));
+                }
+            }
+            None => out.push((g, zeilen, None)),
+        }
+    }
+    out
+}
+
+/// Kurztext einer Teilposition der Dicke `d` (Review #213 B1): „Dicke nach
+/// Raumbuch“ wird „d = 40 mm“, sonst kommt „, d = 40 mm“ dazu.
+fn kurz_je_dicke(kurz: &str, d: Dez) -> String {
+    let dicke = format!("d = {} mm", mm(d));
+    if kurz.contains(DICKE_NACH_RAUMBUCH) {
+        kurz.replacen(DICKE_NACH_RAUMBUCH, &dicke, 1)
+    } else {
+        format!("{kurz}, {dicke}")
+    }
+}
+
+/// Wendung im Kurztext der Werksleistungen, deren Dicke das Raumbuch gibt.
+const DICKE_NACH_RAUMBUCH: &str = "Dicke nach Raumbuch";
+
 /// OZ mit Los davor für Befundsätze („1.01.0020“, paket-ka4 §3).
 fn oz_mit_los(los_nr: &str, oz: &str) -> String {
     format!("{los_nr}.{oz}")
@@ -419,9 +552,16 @@ fn monat_lesen(t: &str) -> Option<(u16, u8)> {
     Some((j.parse().ok()?, mo.parse().ok()?))
 }
 
-/// Das LV aus dem fertigen Kostenblatt `b` desselben Umfangs (für die
-/// Ansicht, die das Blatt zwischenspeichert; Regel 94: liest nur).
+/// Das LV aus dem fertigen Kostenblatt `b` im Umfang Projekt (für die
+/// Ansicht, die das Blatt zwischenspeichert; Regel 94: liest nur). Für
+/// einen anderen Umfang [`lv_im_umfang`].
 pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
+    lv_im_umfang(m, b, &Dickenrang::aus(m, b), k, w)
+}
+
+/// Das LV aus dem fertigen Kostenblatt `b` eines Umfangs; die Indizes der
+/// Teilpositionen je Dicke aus `rang` des ganzen Projekts.
+pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, w: &LvWahl) -> Lv {
     let los = k.los(w.los);
     let los_nr = los.map_or(String::new(), |l| l.nr.clone());
     let mut befunde: Vec<Befund> = Vec::new();
@@ -446,6 +586,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     // Kostenzeilen je Bauleistung dieses Loses (K12: mehrere Zeilen, eine
     // Position)
     let mut je_leistung: Vec<(Guid, Vec<usize>)> = Vec::new();
+    let mut stelle: HashMap<Guid, usize> = HashMap::new();
     for (i, p) in b.positionen.iter().enumerate() {
         let Quelle::Leistung(g) = p.quelle else {
             continue;
@@ -454,10 +595,11 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         if los_der_leistung(k, l) != Some(w.los) {
             continue;
         }
-        match je_leistung.iter_mut().find(|(x, _)| *x == g) {
-            Some((_, v)) => v.push(i),
-            None => je_leistung.push((g, vec![i])),
-        }
+        let j = *stelle.entry(g).or_insert_with(|| {
+            je_leistung.push((g, Vec::new()));
+            je_leistung.len() - 1
+        });
+        je_leistung[j].1.push(i);
     }
 
     // erste Position mit Erdmengen aus dem Höhenaufmaß (Hinweis unten)
@@ -467,12 +609,20 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     let mut steil: Option<(String, String)> = None;
     // Hinweise der Automatikmengen je Position (VOB-Prüfung G3 D1)
     let mut mengen_hinweise: Vec<(String, String)> = Vec::new();
+    let mut hinweis_gesehen: HashSet<(String, String)> = HashSet::new();
     let mut aus_netz = false;
-    for (g, zeilen) in je_leistung {
+    for (g, zeilen, je_dicke) in je_dicke_teilen(&b.positionen, rang, je_leistung) {
         let l = k.leistung(g).expect("Leistung");
         let ps: Vec<&Position> = zeilen.iter().map(|i| &b.positionen[*i]).collect();
         let p0 = ps[0];
         let mehrere = ps.len() > 1;
+        // Teilposition je Dicke (R1-B3): eigener Index an der OZ, Dicke im
+        // Kurztext
+        let index = je_dicke.map_or(String::new(), |(i, _)| format!(".{i}"));
+        let kurz = match je_dicke {
+            Some((_, d)) => kurz_je_dicke(&l.kurz, d),
+            None => l.kurz.clone(),
+        };
         let preis_fehlt = ps.iter().any(|p| p.preis_fehlt);
         let ansatz: Vec<&Ansatz> = ps.iter().flat_map(|p| p.ansatz.iter()).collect();
         let roh: i128 = ansatz.iter().map(|a| a.menge).sum();
@@ -482,7 +632,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         let Some(ti) = titel.iter().position(|t| t.guid == l.titel) else {
             continue;
         };
-        let oz_basis = k.oz(l);
+        let oz_basis = k.oz(l) + &index;
         let erde = |a: &&Ansatz| {
             a.auto.is_some_and(|x| x.starts_with("earth."))
                 && a.formel
@@ -495,7 +645,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         for a in &ansatz {
             for h in a.hinweis.lines().filter(|h| !h.is_empty()) {
                 let t = (h.to_string(), oz_basis.clone());
-                if !mengen_hinweise.contains(&t) {
+                if hinweis_gesehen.insert(t.clone()) {
                     mengen_hinweise.push(t);
                 }
             }
@@ -526,8 +676,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             let mut dicken: Vec<Dez> = ps
                 .iter()
                 .filter(|p| ext(p).is_none())
-                .filter_map(|p| p.schicht.map(|s| s.1))
-                .filter(|d| d.0 > 0)
+                .flat_map(|p| p.dicken.iter().copied())
                 .collect();
             dicken.sort();
             dicken.dedup();
@@ -540,10 +689,24 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                 "je Dicke und Erweiterung"
             };
             d.extend(bauteile);
+            // Räume: die Dicke kommt aus dem Raumbuch, eine Bauleistung je
+            // Dicke kann niemand anlegen (Review #213 H-213f)
+            let raum = ps.iter().all(|p| nur_raeume(m, p));
+            let bitte = match rang.dicken(g) {
+                Some(ds) if raum && ds.len() > INDEX_MAX as usize => format!(
+                    "{} Dicken im Projekt sind mehr, als der Positionsindex fasst (1 bis {INDEX_MAX}); bitte im Raumbuch weniger Dicken vorsehen.",
+                    ds.len()
+                ),
+                _ if raum && ps.iter().any(|p| p.schicht.map(|s| s.0) != p0.schicht.map(|s| s.0)) => {
+                    "bitte die Bauleistung je Baustoff anlegen.".to_string()
+                }
+                _ if raum => "bitte die Artikel je Dicke prüfen.".to_string(),
+                _ => "bitte die Bauleistung je Dicke anlegen.".to_string(),
+            };
             befunde.push(Befund::fehler(
                 101,
                 format!(
-                    "{} {} hat verschiedene Stoffpreise {je} ({}); bitte die Bauleistung je Dicke anlegen.",
+                    "{} {} hat verschiedene Stoffpreise {je} ({}); {bitte}",
                     oz_mit_los(&los_nr, &oz_basis),
                     l.kurz,
                     d.join(" und ")
@@ -598,7 +761,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                    ansatz: Vec<Ansatzzeile>,
                    uu: Option<u32>| LvPosition {
             oz,
-            kurztext: l.kurz.clone(),
+            kurztext: kurz.clone(),
             menge,
             einheit: l.einheit,
             ep,
@@ -614,6 +777,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             preis_fehlt,
             mehrere_preise: mehrere,
             blatt: zeilen.clone(),
+            dicke: je_dicke,
         };
         if w.untertitel {
             // je Geschoss eine Position mit eigener OZ (Nachtrag 07:05)
@@ -642,7 +806,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                     });
                 }
                 let ma = mengenansatz(k, &v, l.einheit, Some(uu));
-                let oz = oz_im_los(k, l, Some(uu));
+                let oz = oz_im_los(k, l, Some(uu)) + &index;
                 titel[ti]
                     .positionen
                     .push(neu(oz, menge, ep.map(|e| gp(menge, e)), ma, Some(uu)));
@@ -663,7 +827,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         t.untertitel.sort_by_key(|u| u.nr);
         t.positionen.sort_by_key(|p| {
             let pos = k.leistung(p.quelle).map_or(0, |l| l.pos);
-            (p.untertitel, pos)
+            (p.untertitel, pos, p.dicke.map(|x| x.0))
         });
         t.unvollstaendig = t
             .positionen
@@ -700,15 +864,13 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     // Regel 86 im LV: Der Katalog meldet eine doppelte OZ nur und behält
     // beide Bauleistungen (auch eine ausgemusterte, die noch verwendet
     // wird); im LV des Loses wäre die OZ dann zweimal da
-    let mut oz_gesehen: Vec<&str> = Vec::new();
+    // (Mengen statt Listen, Review #213 H-213h)
+    let mut oz_gesehen: HashSet<&str> = HashSet::new();
     let mut oz_doppelt: Vec<&str> = Vec::new();
+    let mut doppelt_gesehen: HashSet<&str> = HashSet::new();
     for p in titel.iter().flat_map(|t| &t.positionen) {
-        if oz_gesehen.contains(&p.oz.as_str()) {
-            if !oz_doppelt.contains(&p.oz.as_str()) {
-                oz_doppelt.push(&p.oz);
-            }
-        } else {
-            oz_gesehen.push(&p.oz);
+        if !oz_gesehen.insert(&p.oz) && doppelt_gesehen.insert(&p.oz) {
+            oz_doppelt.push(&p.oz);
         }
     }
     for oz in oz_doppelt {
@@ -719,7 +881,10 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         ));
     }
 
-    // Befunde je Position: Preis fehlt, Kurztext, Preisstand, eigener Preis
+    // Befunde je Position: Preis fehlt, Kurztext, Preisstand, eigener Preis;
+    // die übrigen nach dem Kurztext nur einmal je Bauleistung und Dicke,
+    // mit Untertiteln an der ersten (Review #213 H-213e, H-213h)
+    let mut gemeldet: HashSet<(Guid, Option<u32>)> = HashSet::new();
     for t in &titel {
         for p in &t.positionen {
             let voll = oz_mit_los(&los_nr, &p.oz);
@@ -732,13 +897,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                     ort.clone(),
                 ));
             }
-            // die übrigen nur einmal je Bauleistung (Untertitel)
-            if p.untertitel.is_some()
-                && t.positionen
-                    .iter()
-                    .find(|x| x.quelle == p.quelle)
-                    .is_some_and(|x| x.oz != p.oz)
-            {
+            if !gemeldet.insert((p.quelle, p.dicke.map(|x| x.0))) {
                 continue;
             }
             if w.preise && p.preis_fehlt {

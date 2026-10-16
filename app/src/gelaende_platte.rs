@@ -3,9 +3,10 @@
 //! mit Rasen oben und Erdreich an den Seiten, der auf dem Boden steht; im
 //! Schnitt ihre Schnittfläche mit Erdreich-Schraffur; in den Ansichten ihr
 //! Band (Oberkante mit dem Stift „Gelände“, Unterkante und Enden fein). Sie
-//! ist kein Bauteil: kein Hover und keine Auswahl im Bild (sie läge sonst
-//! unter jeder Maßkette); gewählt wird sie nur im Objektbaum, dort stehen
-//! Dicke und Außenoffset. Mit Höhenaufmaß steht statt der Platte das echte
+//! ist kein Bauteil: kein Hover und im Grundriss keine Auswahl (sie läge
+//! sonst unter jeder Maßkette); gewählt wird sie im Objektbaum oder mit
+//! einem Klick in 3D (Review #212 B1), im Paneel stehen dann Dicke und
+//! Abstand ums Haus. Mit Höhenaufmaß steht statt der Platte das echte
 //! Gelände da ([`crate::gelaende_netz`], G1).
 
 use crate::draw_table::{fallback_look, fill_kind, DrawTable, LineLook, MatLook, Stroke};
@@ -175,6 +176,9 @@ pub(crate) struct Platte {
     pub(crate) unterlage: crate::gelaende_app::Unterlage,
     /// Linien in Ansicht und Schnitt.
     linien: Option<Linien>,
+    /// Höhenzahlen im Grundriss als Tinte, zu Gelände, Ziffernhöhe und
+    /// Zeichentabelle ([`App::gelaende_zahlen`]).
+    zahlen: Option<((u64, u64, u64, u64), crate::bemassung::Teil)>,
     /// Der Lageplan kam nach dem letzten Nachzug: das Gelände zieht mit
     /// der Unterlage nach, auch beim selben Modellstand.
     mit_plan: bool,
@@ -895,9 +899,17 @@ pub(crate) fn props(m: &Model, plates: &[TerrainPlate]) -> Props {
             title: "Geländeplatte",
             fields: vec![
                 feld(Field::PlateThick, "Dicke", s.thick, PLATE_THICK),
-                feld(Field::PlateMargin, "Außenoffset", s.margin, PLATE_MARGIN),
+                // „Außenoffset“ sagte nicht, wovon (Bedienbarkeit, später zu
+                // Durchgang 41)
+                feld(
+                    Field::PlateMargin,
+                    "Abstand ums Haus",
+                    s.margin,
+                    PLATE_MARGIN,
+                ),
             ],
-            hint: "Höhe aus dem Geschossmanager. Echtes Gelände: Knopf „Gelände“.",
+            hint: "Höhe aus dem Geschossmanager; zählt in keiner Menge. Echtes Gelände: \
+                   Knopf „Gelände“.",
             buttons: Vec::new(),
         }],
         ..Default::default()
@@ -969,6 +981,41 @@ impl App {
         let sicht = (view, self.plane());
         let (b, t) = (self.scene.bounds(), self.scene.table());
         self.platte.linien_im_bild(m, sicht, b, t, (scale, mm_px))
+    }
+
+    /// Höhenzahlen an Höhenlinien und ebenen Geländeflächen im Grundriss
+    /// des Erdgeschosses als Tinte, in der Ziffernhöhe der Maßzahlen
+    /// (Bedienbarkeit, Ist-Bilder zu #202); gemerkt, neu nur mit neuem
+    /// Gelände, Maßstil oder neuer Zeichentabelle, nicht je Zoom.
+    /// Ausgeblendet und ohne Aufmaß keine.
+    pub(crate) fn gelaende_zahlen(&mut self) -> Option<crate::bemassung::Teil> {
+        if self.ui.view != ViewKind::Plan
+            || self.scene.terrain_hidden()
+            || !self.scene.ground_active()
+        {
+            return None;
+        }
+        let m = self.scene.model();
+        let stil = m.massstil();
+        let h = stil.am_bau(stil.schrift_mm);
+        let t = self.scene.table();
+        let g = self.platte.gelaende_im_bild(m);
+        if g.is_none_or(|g| g.zahlen.is_empty()) {
+            return None;
+        }
+        let key = (self.platte.fassung, h.to_bits(), t.rev, t.theme_rev);
+        if let Some((k, teil)) = &self.platte.zahlen {
+            if *k == key {
+                return Some(teil.clone());
+            }
+        }
+        let ui = self.ui.fonts.regular.as_ref();
+        let schrift = self.massketten.schrift(&stil.schrift, ui)?;
+        let g = self.platte.gelaende_im_bild(m)?;
+        let ink = gelaende_netz::zahlen_tinte(g, &schrift, h, t);
+        let teil: crate::bemassung::Teil = (crate::scene::neuer_stand() << 1, ink.into());
+        self.platte.zahlen = Some((key, teil.clone()));
+        Some(teil)
     }
 
     /// Der Lageplan unter dem Gelände in eigenen Puffern des Renderers
@@ -1645,7 +1692,7 @@ mod tests {
     }
 
     /// Ansicht von vorn: ein Band über die ganze Platte (16 m), von OK
-    /// Gelände bis zur Unterkante; Dicke und Außenoffset folgen den
+    /// Gelände bis zur Unterkante; Dicke und Abstand ums Haus folgen den
     /// Einstellungen.
     #[test]
     fn band_in_der_ansicht() {
@@ -1672,7 +1719,7 @@ mod tests {
         assert!(ys.contains(&-1500.0) && ys.contains(&9500.0));
     }
 
-    /// Dicke und Außenoffset sind ein Schritt: Rückgängig stellt die
+    /// Dicke und Abstand ums Haus sind ein Schritt: Rückgängig stellt die
     /// Vorgabe wieder her, Wiederholen den neuen Wert; das Paneel zeigt
     /// die Werte und die Höhe aus dem Geschossmanager.
     #[test]

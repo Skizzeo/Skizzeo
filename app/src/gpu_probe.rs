@@ -779,7 +779,7 @@ mod tests {
     /// Ist-Bilder Geländeplatte in 3D (Gelände G0, Jörn 12.10.): RH-1 auf
     /// der grünen Platte, 50 cm dick und 3 m umlaufend, am 21.06. um 15:00
     /// von Südwesten, nah an der Ecke und mit 0,80 m Dicke und 1,50 m
-    /// Außenoffset; dazu zwei Häuser auf verschiedener Höhe.
+    /// Abstand ums Haus; dazu zwei Häuser auf verschiedener Höhe.
     /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_platte -- --ignored`
     #[test]
     #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
@@ -846,8 +846,8 @@ mod tests {
     /// Ist-Bilder Gelände G1: RH-1 auf dem Höhenaufmaß „Am Lindenhof 7“
     /// (ohne Lage: das Grundstück mittig unter dem Haus), in 3D von
     /// Südwesten mit „Umgebung zeigen“ ganz, blass und nicht; Grundriss mit
-    /// Höhenlinien, Punkten und Grenze; Schnitt und Vorne mit der
-    /// Geländelinie.
+    /// Höhenlinien, Punkten, Grenze und Höhenzahlen (G3t), ganz und nah ums
+    /// Haus; Schnitt und Vorne mit der Geländelinie.
     /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_aufmass -- --ignored`
     #[test]
     #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
@@ -899,6 +899,7 @@ mod tests {
         r.set_terrain_grid(h.terrain_grid().as_deref());
         for (v, n) in [
             (ViewKind::Plan, "grundriss-blass"),
+            (ViewKind::Plan, "grundriss-nah"),
             (ViewKind::Section, "schnitt"),
             (ViewKind::Front, "vorne"),
             (ViewKind::Right, "rechts-unter-gelaende"),
@@ -919,17 +920,34 @@ mod tests {
                 None => Default::default(),
             };
             r.set_mesh(gp::MESH_PLATE, &kappe);
-            let b = Some((vec3(lo.x, lo.y, lo.z), vec3(hi.x, hi.y, hhi.z)));
+            let b = if n == "grundriss-nah" {
+                // Haus mit 6 m ringsum, etwa 1:100 am Bildschirm
+                let d = vec3(6000.0, 6000.0, 0.0);
+                Some((hlo - d, hhi + d))
+            } else {
+                Some((vec3(lo.x, lo.y, lo.z), vec3(hi.x, hi.y, hhi.z)))
+            };
             let cam = crate::fit_parallel(v, b, W as f64, H as f64);
             let mm_px = cam.ortho.map_or(10.0, |half| 2.0 * half / H as f64);
             let f = gn::fassade(&g, v, h.bounds());
             r.set_helpers(&gn::linien(&g, v, p, f, h.table(), 1.0, mm_px));
+            // Höhenzahlen im Grundriss (G3t), in der Schrifthöhe der Maße
+            let zahlen = crate::wall_edit::mass_treffer::tests::schrift()
+                .filter(|_| v == ViewKind::Plan)
+                .map(|f| {
+                    let stil = h.model().massstil();
+                    let s = sk_plan::schrift::Schrift::new(f);
+                    gn::zahlen_tinte(&g, &s, stil.am_bau(stil.schrift_mm), h.table())
+                })
+                .unwrap_or_default();
+            r.set_ink_teile(&[(v as u64 + 1, zahlen)]);
             let mut view = cam.view(W, H);
             view.paper = Some(h.table().paper);
             view.patterns = crate::draw_table::pattern_mode(v, theme.env.patterns_3d);
             r.draw(W, H, 0, &view).unwrap();
             ab(&r.read_pixels(W, H), &format!("ist-aufmass-{n}.png"));
         }
+        r.set_ink_teile::<Vec<sk_render::Ink>>(&[]);
         r.set_helpers(&[]);
         r.set_mesh(gp::MESH_PLATE, &Default::default());
         r.set_ground_z(None);

@@ -1,5 +1,5 @@
 //! Maske „Projektdaten“ (Paket PD-2, architektur/paket-projektdaten.md §4,
-//! Sollbild soll-projektdaten): bei Datei › Neu und über den Knopf
+//! Sollbild soll-projektdaten): bei Dateimenü › Neu und über den Knopf
 //! „Projektdaten“ im linken Paneel. Ein Blatt mit drei Gruppen; jedes Feld
 //! darf leer bleiben. „Übernehmen“ gibt die Projektdaten zurück, die App
 //! setzt sie (bei „Neu“ ohne Rückgängig-Schritt, sonst als ein Schritt).
@@ -471,7 +471,7 @@ struct Lage {
 }
 
 pub struct Maske {
-    /// Bei Datei › Neu: „Später“ statt „Abbrechen“.
+    /// Bei Dateimenü › Neu: „Später“ statt „Abbrechen“.
     pub neu: bool,
     felder: [TextEdit; N],
     fokus: usize,

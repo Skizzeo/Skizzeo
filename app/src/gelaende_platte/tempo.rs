@@ -361,8 +361,9 @@ struct Lageplan {
     /// die Schlüssel der Unterlage und die übrigen Linien.
     bild: f64,
     /// Einmal je neuer Unterlage: alle Kacheln für den Renderer bauen
-    /// (Linien und Ecken).
+    /// (Linien und Ecken), und wie viele Linien das sind.
     bauen: f64,
+    gebaut: usize,
     /// Nach einem Schritt im UI-Faden: den Nachzug beginnen.
     nachzug: f64,
     /// Nach einem Wandschritt über dem Plan im UI-Faden, bis die neuen
@@ -392,14 +393,16 @@ struct Lageplan {
 }
 
 /// Linien und Ecken der Kacheln `ix`, wie der Faden sie für den Renderer
-/// baut: Zeit in ms.
-fn kacheln_bauen(g: &Gelaende, ix: &[usize], t: &DrawTable) -> f64 {
+/// baut: Zeit in ms und Zahl der Linien.
+fn kacheln_bauen(g: &Gelaende, ix: &[usize], t: &DrawTable) -> (f64, usize) {
     let (t0, stil) = (Instant::now(), gelaende_netz::unterlage_stil(t, 1.0));
+    let mut n = 0;
     for &i in ix {
         let l = gelaende_netz::unterlage_kachel(g, i, stil);
+        n += l.len();
         std::hint::black_box(sk_render::helper_ecken(&l));
     }
-    ms(t0)
+    (ms(t0), n)
 }
 
 /// Bilder im EG-Grundriss, bis der Renderer alle Kacheln zeigt, wie die
@@ -535,7 +538,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     assert_eq!(n0, keys.len());
     let g = pl.gelaende.clone().unwrap();
     let alle: Vec<usize> = (0..keys.len()).collect();
-    let bauen = kacheln_bauen(&g, &alle, &t);
+    let (bauen, gebaut) = kacheln_bauen(&g, &alle, &t);
     let linien = gelaende_netz::unterlage_linien(&g, ViewKind::Plan, &t, 1.0);
     assert!(linien.len() >= k / 2, "{} Striche", linien.len());
     // je Bild: dieselben Schlüssel, kein Hochladen; die Grenzen ändern
@@ -624,6 +627,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     Lageplan {
         bild,
         bauen,
+        gebaut,
         nachzug,
         schritt,
         schritt_max,
@@ -691,7 +695,13 @@ fn lageplan_im_budget() {
     );
     assert!(gross.nachzug < 8.0 * f, "{gross:?}");
     if k > 5_000 {
-        assert!(gross.bauen > klein.bauen, "{klein:?} {gross:?}");
+        // die Arbeit wächst mit dem Plan; gezählt statt gestoppt, die Zeit
+        // kippt unter Last (Integration 15.10.)
+        assert!(gross.gebaut > klein.gebaut, "{klein:?} {gross:?}");
+        eprintln!(
+            "bauen: {:.1} ms für {} Linien, {:.1} ms für {}",
+            klein.bauen, klein.gebaut, gross.bauen, gross.gebaut
+        );
     }
     // ein Wandschritt über dem Plan baut nur die Kacheln, deren Strecken
     // das Haus schneidet (Review #139 N1: vorher alle, 28 ms und 57 MB bei

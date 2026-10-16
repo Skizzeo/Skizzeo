@@ -516,7 +516,7 @@ fn genutzte_baustoffe_und_nachlegen() {
     let d = m.ext_def("werk.stabgelaender").unwrap().clone();
     assert_eq!(
         m.ext_baustoff_hinweis(&d, "stahl_s235").as_deref(),
-        Some("Baustoff Baustahl S235, verzinkt fehlt; anlegen unter Datei › Erweiterungen …")
+        Some("Baustoff Baustahl S235, verzinkt fehlt; anlegen unter Dateimenü › Erweiterungen …")
     );
     // gleiche Fassung erneut: nichts; „Baustoffe anlegen“: ein Schritt
     m.begin("Einlesen");

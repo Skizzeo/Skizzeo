@@ -1161,6 +1161,42 @@ fn perf_kosten() {
     );
 }
 
+/// Review #197 H-197n: Blatt (ein Gebäude) und Chips (Projekt) haben je
+/// ihren Speicher; die zweite Taste ordnet in keinem Umfang neu zu.
+#[test]
+fn preisblatt_taste_speicher_je_umfang() {
+    let mut s = reference_stacked(1, 2, 1);
+    let haus = sk_cost::Umfang::gebaeude(s.active_building().unwrap());
+    let alle = sk_cost::Umfang::projekt();
+    let kat = sk_cost::lesen::katalog(s.model(), None);
+    let artikel = kat
+        .artikel
+        .iter()
+        .find(|a| a.preis.is_some())
+        .expect("Artikel mit Preis")
+        .guid;
+    let taste = |s: &mut Scene, n: i64| {
+        let ops = [sk_cost::Op::PreisSetzen {
+            artikel,
+            preis: Some(sk_cost::Dez::ganz(20 + n)),
+            stand: "10/2026".into(),
+            quelle: "Preisblatt".into(),
+            eingabe: String::new(),
+        }];
+        s.kosten_live(None, &ops, &[&haus, &alle]).unwrap();
+    };
+    taste(&mut s, 1);
+    let erst = s.kosten_live_neu();
+    assert!(erst.iter().all(|n| *n > 0), "{erst:?}");
+    taste(&mut s, 2);
+    assert_eq!(s.kosten_live_neu(), vec![0, 0]);
+    // Review #213 H-213d: Hover „übernehmen“ rechnet nur das Blatt; der
+    // Speicher der Chips bleibt
+    s.kosten_live(None, &[], &[&haus]).unwrap();
+    taste(&mut s, 3);
+    assert_eq!(s.kosten_live_neu(), vec![0, 0]);
+}
+
 /// KA-2c (paket-ka2 §3): eine Taste im Preisblatt am großen Prüfhaus,
 /// also `Katalog::mit` mit `PreisSetzen` und das Kostenblatt darauf
 /// (`Scene::kosten_live`), unter 3 ms (Release, Median aus drei Läufen).
@@ -1175,27 +1211,32 @@ fn perf_preisblatt_taste() {
         .find(|a| a.preis.is_some())
         .expect("Artikel mit Preis")
         .guid;
-    let umfang = sk_cost::Umfang::projekt();
-    let mut zeiten = Vec::new();
-    let mut n = 0;
-    for _ in 0..3 {
-        zeiten.push(time(10, || {
-            n += 1;
-            let ops = [sk_cost::Op::PreisSetzen {
-                artikel,
-                preis: Some(sk_cost::Dez::ganz(20 + n % 7)),
-                stand: "10/2026".into(),
-                quelle: "Preisblatt".into(),
-                eingabe: String::new(),
-            }];
-            std::hint::black_box(s.kosten_live(None, &ops, &[&umfang, &umfang]).unwrap());
-        }));
-    }
-    zeiten.sort_by(|a, b| a.total_cmp(b));
-    let t = zeiten[1];
-    println!("Preisblatt, eine Taste (Katalog::mit + Kosten): {t:.3} ms");
-    if cfg!(not(debug_assertions)) {
-        assert!(t < 3.0, "Taste im Preisblatt {t:.3} ms ≥ 3 ms");
+    let alle = sk_cost::Umfang::projekt();
+    let haus = sk_cost::Umfang::gebaeude(s.active_building().unwrap());
+    // Blatt im Projekt, und wie im Reiter Kosten: Blatt ein Gebäude, Chips
+    // alle (kosten_view.rs, Review #213 H-213b)
+    for (name, umfaenge) in [("Projekt", [&alle, &alle]), ("Haus + alle", [&haus, &alle])] {
+        let mut zeiten = Vec::new();
+        let mut n = 0;
+        for _ in 0..3 {
+            zeiten.push(time(10, || {
+                n += 1;
+                let ops = [sk_cost::Op::PreisSetzen {
+                    artikel,
+                    preis: Some(sk_cost::Dez::ganz(20 + n % 7)),
+                    stand: "10/2026".into(),
+                    quelle: "Preisblatt".into(),
+                    eingabe: String::new(),
+                }];
+                std::hint::black_box(s.kosten_live(None, &ops, &umfaenge).unwrap());
+            }));
+        }
+        zeiten.sort_by(|a, b| a.total_cmp(b));
+        let t = zeiten[1];
+        println!("Preisblatt, eine Taste (Katalog::mit + Kosten), {name}: {t:.3} ms");
+        if cfg!(not(debug_assertions)) {
+            assert!(t < 3.0, "Taste im Preisblatt ({name}) {t:.3} ms ≥ 3 ms");
+        }
     }
 }
 
@@ -1523,8 +1564,8 @@ fn perf_ecke_und_wandende() {
     use sk_platform::MouseButton;
     println!();
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8}",
-        "Häuser", "Zeigen", "Klick", "Fang", "Greifen"
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Häuser", "Zeigen", "Klick", "Fang", "Greifen", "Spiegel"
     );
     let mods = Modifiers::default();
     for n in [1, 100, 1000] {
@@ -1583,9 +1624,30 @@ fn perf_ecke_und_wandende() {
             std::hint::black_box(&z);
             s.rollback();
         });
-        println!("{n:>6} {zeigen:>8.3} {klick:>8.3} {fang:>8.3} {greifen:>8.3}");
+        // Zeigen auf eine gegenläufig gezeichnete Wand in der Flucht: Die
+        // Außenflächen liegen gespiegelt, das Vereinen sucht die Öffnungen
+        // auf der Außenfläche (Review #222 B1)
+        let gegen = WallChain {
+            points: vec![vec3(1500.0, 6000.0, 0.0), vec3(1500.0, 4500.0, 0.0)],
+            ..iw.clone()
+        };
+        let run_b = s
+            .add_wall_as(&gegen, sk_model::Category::InteriorWall)
+            .unwrap();
+        let b = s.model().wall_at(run_b, 0).unwrap();
+        let v = s.model().vereinen_punkte(a, b).unwrap();
+        assert!(v.versatz.length() > 1.0, "gespiegelt");
+        let (x, y) = cam.project(vec3(1500.0, 5200.0, 0.0), W, H).unwrap();
+        let mut t = EckeWahl::start(&s, a, Art::Verlaengern).unwrap();
+        let spiegel = time(50, || {
+            flip = !flip;
+            let x = if flip { x + 1.0 } else { x };
+            t.handle(&Event::MouseMove { x, y, mods }, &mut s, &cam, W, H);
+        });
+        assert!(t.pill(&s).is_some_and(|p| p.0.ends_with(" vereint")));
+        println!("{n:>6} {zeigen:>8.3} {klick:>8.3} {fang:>8.3} {greifen:>8.3} {spiegel:>8.3}");
     }
-    println!("Zeiten in ms; Ziel: Zeigen < 1 ms, Klick (Loslassen) < 8 ms.");
+    println!("Zeiten in ms; Ziel: Zeigen und Spiegel < 1 ms, Klick (Loslassen) < 8 ms.");
 }
 
 /// Review #87 R2: Raumarbeit je Bild und je Mausbewegung im Grundriss
@@ -3717,6 +3779,78 @@ fn perf_wohnflaeche_gebaeude() {
     }
 }
 
+/// Räume aller Geschosse bei je einem Gebäude je Haus (Integration nach
+/// #209: `Erkennung::gruppe` ×4,1 von 1000 auf 3000 Häuser): erster Abruf
+/// von `Scene::raumgruppen_mit_raeumen`, Abruf nach einem Schritt an einer
+/// Innenwand (Loslassen) und die Mengenliste nach einem solchen Schritt, je
+/// in ms. Die Zeit des ersten Abrufs je Haus darf bis `SKIZZEO_PERF_BIS`
+/// (Standard 1000, bis 8000) höchstens doppelt so groß sein wie bei 100.
+#[test]
+#[ignore]
+fn perf_raumgruppen_gebaeude() {
+    let bis: usize = std::env::var("SKIZZEO_PERF_BIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    println!();
+    println!(
+        "{:>6} {:>9} {:>9} {:>9} {:>9}",
+        "Häuser", "erst", "je Haus", "Schritt", "Mengen"
+    );
+    let mut je_haus = Vec::new();
+    for n in [100, 1000, 3000, 8000].into_iter().filter(|&n| n <= bis) {
+        let mut s = Scene::with_model(haeuser_je_gebaeude(n));
+        let t = Instant::now();
+        let formen = s.raumgruppen_mit_raeumen();
+        let erst = t.elapsed().as_secs_f64() * 1000.0;
+        let flaechen: usize = formen.values().map(|f| f.flaechen().count()).sum();
+        assert_eq!(flaechen, 4 * n, "drei Räume im EG, einer im OG");
+        drop(formen);
+        s.schedule();
+        let innen = |s: &Scene| {
+            s.model()
+                .runs()
+                .iter()
+                .find(|(_, r)| {
+                    s.model()
+                        .element(r.segments[0])
+                        .is_some_and(|e| e.category == sk_model::Category::InteriorWall)
+                })
+                .map(|(id, _)| id)
+                .unwrap()
+        };
+        let run = innen(&s);
+        let orig = s.model().run(run).unwrap().points.clone();
+        let (mut schritt, mut mengen) = (0.0, 0.0);
+        for i in 0..8 {
+            let dx = if i % 2 == 0 { 50.0 } else { 0.0 };
+            let pts: Vec<_> = orig.iter().map(|p| *p + vec3(dx, 0.0, 0.0)).collect();
+            s.begin("Wand verschieben");
+            assert!(s.set_run_points(run, &pts));
+            s.commit();
+            let t = Instant::now();
+            if i % 2 == 0 {
+                std::hint::black_box(s.raumgruppen_mit_raeumen());
+                schritt += t.elapsed().as_secs_f64() * 1000.0 / 4.0;
+            } else {
+                s.schedule();
+                mengen += t.elapsed().as_secs_f64() * 1000.0 / 4.0;
+            }
+        }
+        let h = erst / n as f64;
+        println!("{n:>6} {erst:>9.1} {h:>9.4} {schritt:>9.2} {mengen:>9.1}");
+        je_haus.push((n, h));
+    }
+    println!("Zeiten in ms (Release); Schritt und Mengen je Schritt, Mittel aus vier.");
+    let bezug = je_haus[0].1;
+    for &(n, h) in &je_haus[1..] {
+        assert!(
+            h <= 2.0 * bezug,
+            "{n} Häuser: {h:.4} ms je Haus, bei 100 {bezug:.4}"
+        );
+    }
+}
+
 /// Wohnfläche mit je einer Stütze 40/40 je Haus, alle Häuser auf einem
 /// Geschoss (Review #195 B4): `wohn_rechnen` aus der Szene, bestes von drei.
 /// Die Zeit je Haus darf bei 2000 Häusern (4000 mit `SKIZZEO_PERF_BIS=4000`)
@@ -3826,6 +3960,53 @@ fn perf_oeffnen_gebaeude() {
     for &(n, b) in &je_haus[1..] {
         let f = n as f64 / n0 as f64;
         assert!(b <= 2.0 * f * b0, "begin {n}: {b:.2} ms");
+    }
+}
+
+/// Review #197 H-197i: LV je Los bei `n` Häusern mit Innenwänden, aus dem
+/// fertigen Kostenblatt (`lv_aus`, rechnet nichts neu). Die Zeit soll
+/// linear in den Häusern wachsen.
+#[test]
+#[ignore]
+fn perf_lv_je_los() {
+    use sk_cost::lesen;
+    println!();
+    let mut je_haus = Vec::new();
+    for n in [100, 1000] {
+        let s = town_with_interior(n);
+        let kat = lesen::katalog(s.model(), None);
+        let sched = sk_model::qto::schedule(s.model());
+        let blatt = lesen::kosten(s.model(), &sched, &kat, &sk_cost::Umfang::projekt());
+        let mut summe = 0.0;
+        for los in kat.lose.iter().filter(|l| !l.retired && l.parent.is_none()) {
+            let w = sk_cost::lv::LvWahl {
+                los: los.guid,
+                untertitel: true,
+                preise: true,
+                heute: None,
+            };
+            let mut z = 0;
+            let t = time(3, || {
+                let lv = sk_cost::lv::lv_aus(s.model(), &blatt, &kat, &w);
+                z = lv.titel.iter().map(|t| t.positionen.len()).sum::<usize>();
+            });
+            summe += t;
+            if t > 1.0 {
+                println!(
+                    "{n:>6} Häuser  Los {:<4} {:<32} {z:>4} Pos. {t:>8.2} ms",
+                    los.nr, los.name
+                );
+            }
+        }
+        println!("{n:>6} Häuser  alle Lose {summe:>8.2} ms");
+        je_haus.push((n, summe / n as f64));
+    }
+    let (n0, t0) = je_haus[0];
+    for &(n, t) in &je_haus[1..] {
+        assert!(
+            t <= 3.0 * t0,
+            "LV bei {n} Häusern {t:.4} ms je Haus, bei {n0} {t0:.4}"
+        );
     }
 }
 

@@ -40,6 +40,7 @@ use sk_model::{
 };
 use sk_render::{DashPattern, Helper};
 use std::collections::HashMap;
+use std::f64::consts::{FRAC_PI_2, PI};
 
 mod gitter;
 
@@ -71,6 +72,19 @@ type P2 = [f64; 2];
 /// Ein Stück Höhenlinie, an Grenze und Haus geteilt: Höhe, Anfang und
 /// Ende, im Grundstück, Hauptlinie (volle Meter).
 type Stueck = (f64, [P2; 2], bool, bool);
+
+/// Eine Höhenzahl im Grundriss: Mitte, Richtung der Schrift (rad, lesbar
+/// von unten oder rechts), Höhe (mm zu ±0,00), Text in m ü. NHN, voll (im
+/// Grundstück) oder blass.
+pub(crate) type Zahl = (P2, f64, f64, String, bool);
+
+/// Abstand der Höhenzahlen längs einer Höhenlinie (mm); die erste steht
+/// einen halben Abstand vom Anfang, kurze Linien tragen eine in der Mitte.
+const ZAHL_ABSTAND: f64 = 40_000.0;
+
+/// Darf an der vorgesehenen Stelle keine Zahl stehen (Haus, außerhalb des
+/// Zuschnitts), rückt sie in diesen Schritten (mm) weiter.
+const ZAHL_SCHRITT: f64 = 2_000.0;
 
 /// Gelände aus dem Aufmaß im Modell (mm, z zu ±0,00). Was nur vom Modell
 /// abhängt, steht hier einmal gerechnet: Höhenlinien und Messpunkte sind
@@ -108,6 +122,9 @@ pub(crate) struct Gelaende {
     ur_netz: Gitter,
     /// Böschungsschraffen (lang: `true`) und Umrisse der Geländeflächen.
     schraffen: Vec<([Vec3; 2], bool)>,
+    /// Höhenzahlen an den Höhenlinien und in ebenen Geländeflächen
+    /// (Bedienbarkeit, Ist-Bilder zu #202), einmal je Gelände.
+    pub(crate) zahlen: Vec<Zahl>,
     umrisse: Vec<Vec<Vec3>>,
     /// Senkrechte Wände, wo die Höhe springt (Review #183 b, B2).
     waende: Vec<[Vec3; 3]>,
@@ -232,6 +249,11 @@ impl Gelaende {
             nah.iter()
                 .any(|&i| baryzentrisch(&ur[i as usize], p).is_some())
         };
+        // Höhenzahlen an den ganzen Linien, bevor sie in Stücke zerfallen
+        let frei = |q: P2| (!g.im_haus(q)).then(|| g.zeigen(g.innen(q))).flatten();
+        let urgelaende = |q: P2| frei(q).filter(|_| ur.is_empty() || !im_plan(q));
+        let mut zahlen = hoehenzahlen(&linien, h0, urgelaende);
+        zahlen.extend(flaechenzahlen(&plan.outlines, h0, frei));
         let mut linien: Vec<(f64, [P2; 2], bool)> = linien
             .iter()
             .flat_map(|(z, p, haupt)| p.windows(2).map(move |w| (*z, [w[0], w[1]], *haupt)))
@@ -250,6 +272,7 @@ impl Gelaende {
             }
         }
         g.stuecke = stuecke;
+        g.zahlen = zahlen;
         g.ur_netz = unter_plan;
         g.ur = ur;
         g.schraffen = plan.hatch.clone();
@@ -295,6 +318,7 @@ impl Gelaende {
             ur: Vec::new(),
             ur_netz: Gitter::neu(Vec::new()),
             schraffen: Vec::new(),
+            zahlen: Vec::new(),
             umrisse: Vec::new(),
             waende: Vec::new(),
             rand: None,
@@ -617,6 +641,11 @@ impl Gelaende {
         }
         out
     }
+}
+
+/// Abstand zweier Punkte im Grundriss.
+fn abstand(a: P2, b: P2) -> f64 {
+    (b[0] - a[0]).hypot(b[1] - a[1])
 }
 
 fn lerp2(a: P2, b: P2, t: f64) -> P2 {
@@ -1125,6 +1154,135 @@ pub(crate) fn unterlage_kachel(g: &Gelaende, i: usize, stil: UnterlageStil) -> V
     })
 }
 
+/// Höhe in m ü. NHN als Text: volle Meter ohne Nachkommastellen, sonst
+/// auf cm.
+fn nhn_text(m: f64) -> String {
+    if (m - m.round()).abs() < 1e-6 {
+        crate::selection::de(m, 0)
+    } else {
+        crate::selection::de(m, 2)
+    }
+}
+
+/// Richtung (rad) von `a` nach `b`, so gedreht, dass Schrift längs der
+/// Strecke von unten oder von rechts lesbar steht.
+fn lesbar(a: P2, b: P2) -> f64 {
+    let w = (b[1] - a[1]).atan2(b[0] - a[0]);
+    if w > FRAC_PI_2 + 1e-9 {
+        w - PI
+    } else if w <= -FRAC_PI_2 + 1e-9 {
+        w + PI
+    } else {
+        w
+    }
+}
+
+/// Höhenzahlen längs der Höhenlinien `linien` (Höhe mm zu ±0,00, Punkte,
+/// Hauptlinie; `h0` ist ±0,00 in m ü. NHN): an den Hauptlinien (volle
+/// Meter), gibt es keine, an allen. Je Linie alle [`ZAHL_ABSTAND`], die
+/// erste einen halben Abstand vom Anfang, eine kürzere Linie in der Mitte.
+/// `frei(p)` sagt, ob an `p` eine Zahl stehen darf (nicht im Haus, nicht
+/// im Planungsgelände, gezeigt) und ob voll; wo nicht, rückt die Zahl um
+/// [`ZAHL_SCHRITT`] weiter, die nächste steht einen Abstand nach ihr.
+fn hoehenzahlen(
+    linien: &[(f64, Vec<P2>, bool)],
+    h0: f64,
+    frei: impl Fn(P2) -> Option<bool>,
+) -> Vec<Zahl> {
+    let haupt = linien.iter().any(|l| l.2);
+    let mut out = Vec::new();
+    for (z, p, h) in linien {
+        if haupt && !h {
+            continue;
+        }
+        let laenge: f64 = p.windows(2).map(|w| abstand(w[0], w[1])).sum();
+        if laenge <= 0.0 {
+            continue;
+        }
+        let text = nhn_text(z / 1000.0 + h0);
+        let mut ziel = (ZAHL_ABSTAND / 2.0).min(laenge / 2.0);
+        let mut bis = 0.0;
+        for w in p.windows(2) {
+            let d = abstand(w[0], w[1]);
+            while d > 0.0 && ziel <= bis + d {
+                let q = lerp2(w[0], w[1], (ziel - bis) / d);
+                if let Some(voll) = frei(q) {
+                    out.push((q, lesbar(w[0], w[1]), *z, text.clone(), voll));
+                    ziel += ZAHL_ABSTAND;
+                } else {
+                    ziel += ZAHL_SCHRITT;
+                }
+            }
+            bis += d;
+        }
+    }
+    out
+}
+
+/// Höhenzahlen in der Mitte jeder ebenen Geländefläche (Umriss in mm, z
+/// zu ±0,00), waagerecht; eine Fläche mit Gefälle trägt keine.
+fn flaechenzahlen(umrisse: &[Vec<Vec3>], h0: f64, frei: impl Fn(P2) -> Option<bool>) -> Vec<Zahl> {
+    umrisse
+        .iter()
+        .filter_map(|r| {
+            let z = r.first()?.z;
+            if r.len() < 3 || r.iter().any(|p| (p.z - z).abs() > 1.0) {
+                return None;
+            }
+            let ring: Vec<P2> = r.iter().map(|p| [p.x, p.y]).collect();
+            let q = schwerpunkt(&ring)?;
+            let voll = frei(q)?;
+            Some((q, 0.0, z, nhn_text(z / 1000.0 + h0), voll))
+        })
+        .collect()
+}
+
+/// Flächenschwerpunkt des Rings; `None` ohne Inhalt.
+fn schwerpunkt(r: &[P2]) -> Option<P2> {
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for i in 0..r.len() {
+        let (p, q) = (r[i], r[(i + 1) % r.len()]);
+        let k = p[0] * q[1] - q[0] * p[1];
+        a += k;
+        cx += (p[0] + q[0]) * k;
+        cy += (p[1] + q[1]) * k;
+    }
+    (a.abs() > 1e-9).then(|| [cx / (3.0 * a), cy / (3.0 * a)])
+}
+
+/// Die Höhenzahlen als Tinte für den Renderer: Ziffernhöhe `h` (mm am
+/// Bau, wie die Maßzahlen), mittig über ihrem Punkt wie eine Maßzahl über
+/// der Maßlinie, leicht über dem Gelände; voll im Stift „Gelände“, sonst
+/// blass.
+pub(crate) fn zahlen_tinte(
+    g: &Gelaende,
+    schrift: &sk_plan::schrift::Schrift,
+    h: f64,
+    t: &DrawTable,
+) -> Vec<sk_render::Ink> {
+    let mut out = Vec::new();
+    let mut d = Vec::new();
+    for (q, w, z, text, voll) in &g.zahlen {
+        d.clear();
+        let b = schrift.zeile(text, h, 0.0, &mut d);
+        let (c, s) = (w.cos(), w.sin());
+        let color = if *voll { t.ground.1 } else { t.background.1 };
+        out.extend(d.iter().map(|tri| sk_render::Ink {
+            p: tri.map(|[x, y]| {
+                let (x, y) = (x - b / 2.0, y + 0.3 * h);
+                [
+                    (q[0] + c * x - s * y) as f32,
+                    (q[1] + s * x + c * y) as f32,
+                    (z + 1.0) as f32,
+                ]
+            }),
+            color,
+            occlude: false,
+        }));
+    }
+    out
+}
+
 /// Strich von `a` nach `b` mit Stift und Muster.
 fn strich(a: Vec3, b: Vec3, (w, c): Stroke, pattern: DashPattern, scale: f32) -> Helper {
     Helper {
@@ -1452,6 +1610,25 @@ mod tests {
             assert!(auf_grenze || grenzpunkt || g.innen(mitte), "{h:?}");
             assert!(auf_grenze || !g.im_haus(mitte), "im Haus: {h:?}");
         }
+        // Höhenzahlen: welche, keine im Haus, im Zuschnitt nur innen
+        assert!(!g.zahlen.is_empty());
+        for (q, _, _, text, voll) in &g.zahlen {
+            assert!(!g.im_haus(*q) && g.innen(*q) && *voll, "{q:?} {text}");
+        }
+        if let Some(f) = crate::wall_edit::mass_treffer::tests::schrift() {
+            let s = sk_plan::schrift::Schrift::new(f);
+            assert!(!zahlen_tinte(&g, &s, 250.0, &t).is_empty());
+            // blasse Zahlen (außerhalb des Grundstücks bei „Umgebung
+            // blass“) stehen im Stift der blassen Höhenlinien, nicht in
+            // der Papierfarbe (Review #216 H-216a)
+            let mut b = Gelaende::aus(&m).unwrap();
+            b.zahlen.iter_mut().for_each(|z| z.4 = false);
+            let tinte = zahlen_tinte(&b, &s, 250.0, &t);
+            assert!(!tinte.is_empty());
+            let abstand: f32 = (0..3).map(|i| (t.background.1[i] - t.paper[i]).abs()).sum();
+            assert!(abstand > 0.3, "{:?} {:?}", t.background, t.paper);
+            assert!(tinte.iter().all(|i| i.color == t.background.1));
+        }
         // Schnitt quer durch das Haus: Schnittfläche bis zur Unterkante
         let (p0, n) = (vec3(12000.0, 10000.0, 0.0), vec3(0.0, 1.0, 0.0));
         let f = SectionFrame::new(p0, n);
@@ -1560,6 +1737,17 @@ mod tests {
             .count();
         assert!(umriss >= 4, "{umriss}");
         assert!(plan.len() > ohne_plan.len());
+        // die ebene Fläche trägt ihre Höhe in m ü. NHN in der Mitte
+        let h0 = m.terrain_nhn().unwrap();
+        let soll = nhn_text(z / 1000.0 + h0);
+        assert!(
+            g.zahlen.iter().any(|(q, w, _, text, _)| *text == soll
+                && *w == 0.0
+                && (q[0] - 12_000.0).abs() < 1.0
+                && (q[1] - 2_500.0).abs() < 1.0),
+            "{soll}: {:?}",
+            g.zahlen
+        );
         // Schnitt längs durch die Fläche: Urgelände gestrichelt
         let (p0, n) = (vec3(12_000.0, 2_500.0, 0.0), vec3(0.0, 1.0, 0.0));
         let l = linien(&g, ViewKind::Section, Some((p0, n)), None, &t, 1.0, 10.0);
@@ -1619,6 +1807,68 @@ mod tests {
             .filter(|(a, b, _)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() > 1.0)
             .count();
         assert!(senkrecht >= 2, "{senkrecht}");
+    }
+
+    /// Höhenzahlen (Ist-Bilder zu #202): je 40 m eine, die erste nach 20 m,
+    /// eine kurze Linie in der Mitte; nur Hauptlinien, wenn es welche
+    /// gibt; lesbar von unten oder rechts; nicht, wo `frei` nein sagt.
+    #[test]
+    fn hoehenzahlen_an_linien() {
+        let gerade = |z: f64, von: P2, bis: P2, haupt| (z, vec![von, bis], haupt);
+        let frei = |_: P2| Some(true);
+        let z = hoehenzahlen(
+            &[gerade(1_000.0, [100_000.0, 0.0], [0.0, 0.0], true)],
+            50.0,
+            frei,
+        );
+        let x: Vec<f64> = z.iter().map(|(q, ..)| q[0]).collect();
+        assert_eq!(x, [80_000.0, 40_000.0, 0.0]);
+        assert!(z.iter().all(|(_, w, _, t, _)| *w == 0.0 && t == "51"));
+        // kurz: eine in der Mitte; Nebenlinien nur ohne Hauptlinien
+        let kurz = gerade(250.0, [0.0, 0.0], [0.0, 10_000.0], false);
+        let z = hoehenzahlen(std::slice::from_ref(&kurz), 50.0, frei);
+        assert_eq!(z.len(), 1);
+        assert_eq!(z[0].0, [0.0, 5_000.0]);
+        assert_eq!(z[0].3, "50,25");
+        assert!((z[0].1 - FRAC_PI_2).abs() < 1e-9);
+        let haupt = gerade(1_000.0, [0.0, 0.0], [10_000.0, 0.0], true);
+        assert_eq!(hoehenzahlen(&[kurz.clone(), haupt], 50.0, frei).len(), 1);
+        // abwärts gezeichnet steht die Zahl wie aufwärts
+        let ab = gerade(250.0, [0.0, 10_000.0], [0.0, 0.0], false);
+        assert!((hoehenzahlen(&[ab], 50.0, frei)[0].1 - FRAC_PI_2).abs() < 1e-9);
+        assert!((lesbar([0.0, 0.0], [-1.0, -1.0]) - std::f64::consts::FRAC_PI_4).abs() < 1e-9);
+        // im Haus oder außerhalb des Zuschnitts keine, blass bleibt blass
+        assert!(hoehenzahlen(std::slice::from_ref(&kurz), 50.0, |_| None).is_empty());
+        let lang = gerade(1_000.0, [0.0, 0.0], [100_000.0, 0.0], true);
+        let ab_30 = |q: P2| (q[0] >= 30_000.0).then_some(true);
+        let x: Vec<f64> = hoehenzahlen(&[lang], 50.0, ab_30)
+            .iter()
+            .map(|(q, ..)| q[0])
+            .collect();
+        assert_eq!(
+            x,
+            [30_000.0, 70_000.0],
+            "rückt bis zur ersten freien Stelle"
+        );
+        assert!(!hoehenzahlen(&[kurz], 50.0, |_| Some(false))[0].4);
+        // Flächen: eben eine Zahl im Schwerpunkt, mit Gefälle keine
+        let eben = vec![
+            vec3(0.0, 0.0, 600.0),
+            vec3(6_000.0, 0.0, 600.0),
+            vec3(6_000.0, 3_000.0, 600.0),
+            vec3(0.0, 3_000.0, 600.0),
+        ];
+        let mut schief = eben.clone();
+        schief[2].z = 900.0;
+        let f = flaechenzahlen(&[eben, schief], 50.0, frei);
+        assert_eq!(f.len(), 1);
+        let [x, y] = f[0].0;
+        assert!(
+            (x - 3_000.0).abs() < 1e-6 && (y - 1_500.0).abs() < 1e-6,
+            "{x} {y}"
+        );
+        assert_eq!(f[0].3, "50,60");
+        assert_eq!(nhn_text(-0.5), "-0,50");
     }
 
     /// Tempo (Review #183 B1): Bild und Schnitt bei 100 Flächen mit je 400

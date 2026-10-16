@@ -310,10 +310,13 @@ impl Werkzeug {
             m.width = 8.0 * scale;
             out.push(m);
         }
-        // Fang: ein Quadrat an der Ecke, ein kleineres an der Kante
+        // Fang: ein Quadrat an der Ecke, ein runder Punkt an der Kante;
+        // nur an der Größe war das kaum zu unterscheiden (Bedienbarkeit,
+        // später zu #198)
         if let Some((q, f)) = self.fang {
             let mut m = linie(q, q, col.guide, 0.0);
-            m.width = if f == Fang::Ecke { 12.0 } else { 7.0 } * scale;
+            m.width = if f == Fang::Ecke { 12.0 } else { 10.0 } * scale;
+            m.round = f == Fang::Kante;
             out.push(m);
         }
         out
@@ -349,6 +352,31 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .rev()
         .find(|(_, f)| innen(&f.outline, p))
         .map(|(i, _)| i)
+}
+
+/// Kann ein Klick die Platte wählen? Nur in 3D, wo sie gezeichnet ist: im
+/// Grundriss ist sie unsichtbar, ein Klick neben das Haus wählt dort ab
+/// (Review #212 B1). Die Platte gehört zur Grundausstattung, also auch
+/// ohne das Geländemodul; mit Höhenaufmaß steht dort das echte Gelände
+/// statt der Platte, ausgeblendet ist sie nicht zu treffen.
+fn platte_waehlbar(view: ViewKind, ausgeblendet: bool, m: &Model) -> bool {
+    view == ViewKind::Persp && !ausgeblendet && ruhen(m)
+}
+
+/// Trifft der Sehstrahl eine der Platten? `strahl(z)` ist sein
+/// Schnittpunkt mit der Ebene in Höhe `z` (OK Platte).
+fn platte_getroffen(
+    platten: &[sk_model::TerrainPlate],
+    strahl: impl Fn(f64) -> Option<sk_math::Vec3>,
+) -> bool {
+    platten
+        .iter()
+        .any(|p| strahl(p.top).is_some_and(|q| platte_bei(p, [q.x, q.y])))
+}
+
+/// Liegt `p` (mm, Draufsicht) auf der Platte `t`, in einem ihrer Trapeze?
+fn platte_bei(t: &sk_model::TerrainPlate, p: [f64; 2]) -> bool {
+    t.pieces.iter().any(|q| innen(&q.map(|e| [e.x, e.y]), p))
 }
 
 /// Ohne Höhenaufmaß ruhen die Flächen.
@@ -473,6 +501,11 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
         ("Ecken", p.outline.len().to_string()),
     ];
     let mut fields = Vec::new();
+    // mit Aufmaß daneben die Höhe in m ü. NHN (Bedienbarkeit, später zu
+    // #216)
+    if let Some((z, h0)) = eben(p).zip(m.terrain_nhn()) {
+        values.push(("Höhe ü. NHN", format!("{} m", de(h0 + z / 1000.0, 2))));
+    }
     match eben(p) {
         Some(z) => fields.push(feld(
             GelaendeFeld::Hoehe,
@@ -747,19 +780,40 @@ impl App {
     }
 
     /// Klick ins Leere im Grundriss: die Fläche darunter wählen, daneben
-    /// eine gewählte abwählen (H-189f). `true`, wenn der Klick einer Fläche
-    /// galt.
+    /// eine gewählte abwählen (H-189f); in 3D wählt ein Klick auf die
+    /// grüne Geländeplatte die Platte ([`App::platte_klick`]).
+    /// `true`, wenn der Klick einer Fläche oder der Platte galt.
     pub(crate) fn flaeche_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
         let frei = self.ui.frei.frei(crate::freischaltung::Modul::Gelaende);
         let g = self.cam.ground_point(x, y, vw, vh);
         let i = g
             .filter(|_| frei && self.ui.view == ViewKind::Plan && !self.scene.terrain_hidden())
             .and_then(|g| flaeche_bei(self.scene.model(), [g.x, g.y]));
+        if i.is_none() && self.platte_klick(x, y, vw, vh) {
+            return true;
+        }
         if i.is_none() && self.picking.flaeche.is_none() {
             return false;
         }
         self.flaeche_waehlen(i);
         true
+    }
+
+    /// Klick ins Leere auf die grüne Geländeplatte in 3D wählt sie wie
+    /// ihre Zeile im Baum (Bedienbarkeit Durchgang 41: „nur im Baum
+    /// wählbar“); wann das geht, sagt [`platte_waehlbar`]. `true`, wenn der
+    /// Klick die Platte traf.
+    fn platte_klick(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> bool {
+        let m = self.scene.model();
+        if !platte_waehlbar(self.ui.view, self.scene.terrain_hidden(), m) {
+            return false;
+        }
+        let cam = &self.cam;
+        let traf = platte_getroffen(self.platte.im_bild(m), |z| cam.plane_point(x, y, vw, vh, z));
+        if traf && !self.picking.plate {
+            self.platte_waehlen();
+        }
+        traf
     }
 
     /// Paneel „Eigenschaften“ der gewählten Fläche; `true`, wenn es sie
@@ -1124,6 +1178,101 @@ mod tests {
         assert_eq!(gewaehlte(&m, Some(1)), None);
     }
 
+    /// Klick auf die Platte trifft eines ihrer Trapeze, auch das mit zwei
+    /// zusammenfallenden Ecken; das Loch fürs Haus und daneben nicht
+    /// (Bedienbarkeit Durchgang 41).
+    #[test]
+    fn platte_treffen() {
+        let q = |a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]| {
+            [a, b, c, d].map(|e| punkt(e[0], e[1]))
+        };
+        // Ring 0..10 m um ein Haus 3..7 m, unten ein Rechteck, rechts ein
+        // Dreieck (zwei Ecken gleich)
+        let t = sk_model::TerrainPlate {
+            buildings: Vec::new(),
+            top: 0.0,
+            bottom: -500.0,
+            pieces: vec![
+                q(
+                    [0.0, 0.0],
+                    [10000.0, 0.0],
+                    [7000.0, 3000.0],
+                    [3000.0, 3000.0],
+                ),
+                q(
+                    [7000.0, 3000.0],
+                    [10000.0, 0.0],
+                    [10000.0, 10000.0],
+                    [10000.0, 10000.0],
+                ),
+            ],
+            edges: Vec::new(),
+        };
+        assert!(platte_bei(&t, [5000.0, 1000.0]));
+        assert!(platte_bei(&t, [9500.0, 5000.0]));
+        assert!(!platte_bei(&t, [5000.0, 5000.0]), "Loch fürs Haus");
+        assert!(!platte_bei(&t, [11000.0, 5000.0]), "daneben");
+        assert!(!platte_bei(&t, [5000.0, -100.0]), "daneben");
+    }
+
+    /// Review #212 B1, H-212a: Die Platte wählt nur ein Klick in 3D; im
+    /// Grundriss ist sie unsichtbar, dort wählt ein Klick neben das Haus ab
+    /// (`flaeche_klick` gibt `false`, die App wählt nichts). Ausgeblendet
+    /// oder mit Höhenaufmaß nicht; das Modul fragt [`platte_waehlbar`]
+    /// nicht ab, die Platte gibt es in jeder Ausbaustufe.
+    #[test]
+    fn platte_nur_in_3d() {
+        let mut m = Model::with_seed(1);
+        for v in [
+            ViewKind::Plan,
+            ViewKind::Section,
+            ViewKind::Front,
+            ViewKind::Back,
+            ViewKind::Left,
+            ViewKind::Right,
+        ] {
+            assert!(!platte_waehlbar(v, false, &m), "{v:?}");
+        }
+        assert!(platte_waehlbar(ViewKind::Persp, false, &m));
+        assert!(!platte_waehlbar(ViewKind::Persp, true, &m), "ausgeblendet");
+        let mut text = String::new();
+        for i in 0..3 {
+            for j in 0..3 {
+                text.push_str(&format!("{} {} {} 10.0\n", i * 3 + j + 1, j * 5, i * 5));
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-15", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        assert!(!platte_waehlbar(ViewKind::Persp, false, &m), "mit Aufmaß");
+        // der Strahl auf OK Platte: im Ring getroffen, im Haus und daneben
+        // nicht
+        let t = sk_model::TerrainPlate {
+            buildings: Vec::new(),
+            top: -200.0,
+            bottom: -700.0,
+            pieces: vec![[
+                punkt(0.0, 0.0),
+                punkt(10000.0, 0.0),
+                punkt(10000.0, 2000.0),
+                punkt(0.0, 2000.0),
+            ]],
+            edges: Vec::new(),
+        };
+        let bei = |x: f64, y: f64| move |z: f64| Some(vec3(x, y, z));
+        assert!(platte_getroffen(
+            std::slice::from_ref(&t),
+            bei(5000.0, 1000.0)
+        ));
+        assert!(!platte_getroffen(
+            std::slice::from_ref(&t),
+            bei(5000.0, 3000.0)
+        ));
+        assert!(!platte_getroffen(std::slice::from_ref(&t), |_| None));
+        assert!(!platte_getroffen(&[], bei(5000.0, 1000.0)));
+    }
+
     /// Paneel: Höhe und Böschung als Felder, solange sie für die ganze
     /// Fläche gelten; Werte, die nicht gelten, ändern nichts.
     #[test]
@@ -1135,6 +1284,7 @@ mod tests {
         m.commit();
         let p = props(&m, 0).unwrap();
         assert!(p.values.contains(&("Fläche", "20,00 m²".to_string())));
+        assert!(p.values.iter().all(|v| v.0 != "Höhe ü. NHN"), "ohne Aufmaß");
         let f = &p.sections[0].fields;
         assert_eq!(f[0].field, Field::Gelaende(GelaendeFeld::Hoehe));
         assert_eq!(f[0].value, -600.0);
@@ -1175,6 +1325,20 @@ mod tests {
             .values
             .contains(&("Böschung", "je Kante, aus der Datei".to_string())));
         assert!(props(&m, 1).is_none());
+        // mit Aufmaß und ±0,00 = 24,95 m ü. NHN: −0,60 m stehen als 24,35
+        let mut text = String::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                text.push_str(&format!("{} {} {} 24.5\n", i * 5 + j + 1, j * 5, i * 5));
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-15", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        assert!(m.set_terrain_nhn(24.95));
+        m.commit();
+        let p = props(&m, 0).unwrap();
+        assert!(p.values.contains(&("Höhe ü. NHN", "24,35 m".to_string())));
     }
 
     /// Mit gehaltener Strg-Taste kein Fang, nur das Raster (Bedienbarkeit,
@@ -1231,12 +1395,15 @@ mod tests {
         assert_eq!(w.ecken(), &[[9003.0, 8001.0]]);
         assert_eq!(w.fang.map(|f| f.1), Some(Fang::Ecke));
         let l = w.linien(0.0, 1.0, &Theme::dark());
-        assert!(l.iter().any(|h| h.width == 12.0));
+        assert!(l.iter().any(|h| h.width == 12.0 && !h.round), "Quadrat");
         klick(&mut w, &cam, punkt(7000.4, 4880.0));
         // auf der Kante, ungerundet (H-198c)
         let k = w.ecken()[1];
         assert!(k[1] == 5000.0 && (k[0] - 7000.4).abs() < 0.1, "{k:?}");
         assert_eq!(w.fang.map(|f| f.1), Some(Fang::Kante));
+        let l = w.linien(0.0, 1.0, &Theme::dark());
+        assert!(l.iter().any(|h| h.width == 10.0 && h.round), "Punkt");
+        assert!(!l.iter().any(|h| h.width == 12.0), "kein Quadrat");
         klick(&mut w, &cam, punkt(12004.0, 12996.0));
         assert_eq!(w.ecken()[2], [12000.0, 13000.0]);
         assert_eq!(w.fang, None);

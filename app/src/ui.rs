@@ -309,7 +309,7 @@ pub enum Field {
     /// Parameter `i` einer gewählten Erweiterung im Paneel „Eigenschaften“
     /// (E7).
     ExtProp(u8),
-    /// Geländeplatte (Gelände G0): Dicke in cm, Außenoffset in m.
+    /// Geländeplatte (Gelände G0): Dicke in cm, Abstand ums Haus in m.
     PlateThick,
     PlateMargin,
     /// Felder der Leiste „Gelände“ (G1).
@@ -2558,10 +2558,11 @@ impl Ui {
             // Zweizeilig ab KA-4 (Einstellungen §3 KA-4 Punkt 8): „Mengen“ /
             // „Kosten · AVA“, 12 fett, Zeilenabstand 16
             widgets::button(c, &self.fonts, b, "", st, s, t);
-            // Nur Mengen frei: einzeilig in der Mitte
+            // Nur Mengen frei: einzeilig in der Mitte, in der Schrift der
+            // übrigen Knöpfe (Bedienbarkeit, Ist-Bild zu #202)
             let (oben, unten) = self.frei.knopf_zeilen();
             if let Some(f) = self.fonts.bold.as_ref().or(self.fonts.regular.as_ref()) {
-                let px = 12.0 * s;
+                let px = if unten.is_empty() { t.size.font } else { 12.0 } * s;
                 let col = if st.disabled {
                     t.ui.text_disabled
                 } else if st.active {

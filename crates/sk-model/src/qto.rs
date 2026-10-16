@@ -1655,6 +1655,37 @@ pub struct Schedule {
     /// Hinweise zu Mengen, die keine Zeile tragen kann, etwa zu einer
     /// Geländefläche ohne Sohlplatte (VOB-Prüfung G3, D2).
     pub hinweise: Vec<String>,
+    /// [`Schedule::layer_rows_ref`]: die Schichtzeilen, einmal je Liste.
+    zeilen: Zeilenspeicher,
+}
+
+/// Schichtzeilen einer Mengenliste, beim ersten Lesen gerechnet (Review
+/// #197 H-197l: jede Taste im Preisblatt sortierte sie sonst neu), mit dem
+/// Stand des Modells, aus dem sie stammen (Review #213 H-213c). Eine Kopie
+/// der Liste fängt leer an, damit eine geänderte Kopie nie alte Zeilen
+/// liest; beim Vergleich zählt der Speicher nicht.
+#[derive(Default)]
+struct Zeilenspeicher(std::sync::OnceLock<(u64, Vec<GebaeudeZeile>)>);
+
+/// Schichtzeile mit ihrem Gebäude.
+type GebaeudeZeile = (Option<BuildingId>, LayerRow);
+
+impl Clone for Zeilenspeicher {
+    fn clone(&self) -> Self {
+        Zeilenspeicher::default()
+    }
+}
+
+impl PartialEq for Zeilenspeicher {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Zeilenspeicher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Zeilenspeicher")
+    }
 }
 
 /// Eine Automatikmenge: eine Menge eines Gebäudes, die an keiner Schicht
@@ -2377,6 +2408,21 @@ impl Schedule {
             }
         }
         out
+    }
+
+    /// Wie [`Schedule::layer_rows`], aber je Liste und Modellstand einmal
+    /// gerechnet: Mit einem anderen Stand (etwa einer geänderten Kopie in
+    /// der Vorschau) rechnet sie neu und merkt nichts (Review #213 H-213c).
+    pub fn layer_rows_ref(&self, model: &Model) -> std::borrow::Cow<'_, [GebaeudeZeile]> {
+        let (stand, zeilen) = self
+            .zeilen
+            .0
+            .get_or_init(|| (model.revision(), self.layer_rows(model)));
+        if *stand == model.revision() {
+            std::borrow::Cow::Borrowed(zeilen)
+        } else {
+            std::borrow::Cow::Owned(self.layer_rows(model))
+        }
     }
 
     /// Alle Mengenzeilen nach Schicht (Paket 1b), auch ohne Gewerk und
@@ -3290,6 +3336,29 @@ mod tests {
             .find(|(_, x)| x.name == "Porenbeton")
             .unwrap();
         m.attr().fill(g.cut_fill).unwrap().guid.to_ifc()
+    }
+
+    /// Review #213 H-213c: Die gemerkten Schichtzeilen gelten nur für den
+    /// Modellstand, aus dem sie stammen; eine geänderte Kopie bekommt neue.
+    #[test]
+    fn schichtzeilen_je_modellstand() {
+        let mut m = Model::with_seed(3);
+        haus(&mut m);
+        let sched = schedule(&m);
+        let vorher = sched.layer_rows_ref(&m);
+        assert!(matches!(vorher, std::borrow::Cow::Borrowed(_)));
+        assert!(vorher.iter().all(|(_, r)| r.kg != Some(399)));
+        let mut k = m.clone();
+        k.begin("KG");
+        assert!(k.set_layer_kg(k.defaults().exterior_wall, 0, Some(399)));
+        k.commit();
+        let nachher = sched.layer_rows_ref(&k);
+        assert!(nachher.iter().any(|(_, r)| r.kg == Some(399)));
+        assert_eq!(*nachher, sched.layer_rows(&k)[..]);
+        assert!(matches!(
+            sched.layer_rows_ref(&m),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     /// Gründung und Geschosse je Gebäude aus einem Gang wie je Bauteil
