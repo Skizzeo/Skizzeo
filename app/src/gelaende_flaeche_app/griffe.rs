@@ -6,7 +6,8 @@
 //! fügt sie nur ein. Eine Kante quer ziehen versetzt sie parallel, die
 //! Nachbarkanten behalten ihre Richtung. Entf löscht die Ecke unter der
 //! Maus; eine Grenze behält drei. Was unter der Maus liegt, sagt die
-//! Statuszeile, beim Ziehen die Fläche des Grundstücks. Loslassen ist ein
+//! Statuszeile, beim Ziehen die Fläche des Grundstücks und die Längen der
+//! Kanten am Griff. Loslassen ist ein
 //! Schritt, Esc bricht ab.
 
 use super::fang::{self, Ziele};
@@ -191,6 +192,25 @@ fn qm(ring: &[[f64; 2]]) -> f64 {
     sk_model::TerrainPatch::flat(ring.to_vec(), 0.0).area() / 1e6
 }
 
+/// Statuszeile beim Ziehen: Fläche und die Kanten, die sich ändern (an
+/// der Ecke beide Nachbarkanten, an der Kante sie selbst).
+fn zug_zeile(g: Griff, ring: &[[f64; 2]]) -> String {
+    let n = ring.len();
+    let kante = |k: usize| {
+        let (a, b) = (ring[k % n], ring[(k + 1) % n]);
+        super::de((b[0] - a[0]).hypot(b[1] - a[1]) / 1000.0, 2)
+    };
+    let f = super::de(qm(ring), 2);
+    match g {
+        Griff::Ecke(_, j) | Griff::Plus(_, j) => format!(
+            "Grundstück {f} m², Kanten {} m und {} m",
+            kante(j + n - 1),
+            kante(j)
+        ),
+        Griff::Kante(_, k) => format!("Grundstück {f} m², Kante {} m", kante(k)),
+    }
+}
+
 /// Satz der Statuszeile zum Griff.
 fn satz(g: Griff) -> &'static str {
     match g {
@@ -323,7 +343,7 @@ impl App {
     }
 
     /// Ziehen: der Ring aus dem Stand beim Greifen, live im Modell; die
-    /// Statuszeile nennt die Fläche.
+    /// Statuszeile nennt die Fläche und die Kanten am Griff.
     fn grenz_ziehen(&mut self, x: f64, y: f64, vw: f64, vh: f64, sc: f64, mods: Modifiers) {
         let Some(z) = self.platte.griffe.zug.as_ref() else {
             return;
@@ -348,7 +368,7 @@ impl App {
             }
             self.upload_model();
         }
-        let t = format!("Grundstück {} m²", super::de(qm(&r), 2));
+        let t = zug_zeile(z.griff, &r);
         self.status(
             Meldung::mit("{}", &[&t]),
             std::time::Duration::from_secs(3600),
@@ -559,5 +579,13 @@ mod tests {
         assert_eq!(k[1], [19230.0, 2000.0]);
         assert_eq!(k[2], [19230.0, 12000.0]);
         assert!(gezogen(Griff::Plus(0, 1), [0.0, 0.0], r, [0.0, 0.0]).is_none());
+        assert_eq!(
+            zug_zeile(Griff::Ecke(0, 0), r),
+            "Grundstück 160,00 m², Kanten 10,00 m und 16,00 m"
+        );
+        assert_eq!(
+            zug_zeile(Griff::Kante(0, 1), &k),
+            "Grundstück 172,30 m², Kante 10,00 m"
+        );
     }
 }
