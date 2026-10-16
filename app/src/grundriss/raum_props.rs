@@ -45,9 +45,9 @@ pub fn props(
         ("Fläche (Rohbau)", format!("{} m²", de(f.flaeche / 1e6, 2))),
         ("Umfang (Rohbau)", format!("{} m", de(f.umfang / 1e3, 2))),
     ]);
-    let (raum, mengen) = super::raumbuch::werte(m, &scene.ketten(), f);
-    let mengen = values.len() + mengen.start..values.len() + mengen.end;
-    values.extend(raum);
+    let rb = super::raumbuch::paneel(scene, f);
+    let mengen = values.len() + rb.mengen.start..values.len() + rb.mengen.end;
+    values.extend(rb.werte);
     let mut waende: Vec<ElementId> = Vec::new();
     for k in f.umriss.iter().chain(f.loecher.iter().flatten()) {
         let Begrenzung::Wand { wand, .. } = k.quelle;
@@ -66,7 +66,7 @@ pub fn props(
         layer_set: nummern.join(", "),
         set_umbruch: true,
         mengen,
-        sections: super::raumbuch::abschnitte(scene, f),
+        sections: rb.abschnitte,
         ..Default::default()
     })
 }

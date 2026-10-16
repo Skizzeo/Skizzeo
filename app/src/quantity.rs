@@ -106,6 +106,8 @@ pub struct QuantityWindow {
     /// Leinwand der Bilder, behält ihren Speicher ([`Canvas::reuse`]).
     canvas: Canvas,
     pill_shown: Option<(u8, u8)>,
+    /// Zuletzt gezeigte Pille des Blatts Wohnfläche.
+    wohn_pille: Option<(u8, u8)>,
     /// Hover oder Auswahl haben sich geändert: nur die Zeilen neu zeichnen,
     /// deren Band anders aussieht (Review 1h, U5). Dazu Bänder und Knopf,
     /// wie sie im gezeigten Bild stehen.
@@ -149,6 +151,7 @@ impl QuantityWindow {
             shown: Vec::new(),
             canvas: Canvas::new(0, 0),
             pill_shown: None,
+            wohn_pille: None,
             bands_dirty: false,
             bands_shown: Vec::new(),
             button_shown: (false, false),
@@ -524,11 +527,21 @@ impl QuantityWindow {
         if self.blatt() == Blatt::Kosten && self.kosten.as_mut().is_some_and(|k| k.tick(t, now)) {
             flashing = true;
         }
-        // Die Wohnfläche zeichnet beim Rollen ganz (Teilbilder kennt nur
-        // das Mengenblatt)
-        if self.blatt() == Blatt::Wohnflaeche && self.wohn.as_mut().is_some_and(|l| l.tick(t, now))
-        {
-            flashing = true;
+        // Die Wohnfläche zeichnet ganz, beim Rollen und wenn sich ihre Pille
+        // ändert: Teilbilder kennt nur das Mengenblatt (Review #195 H-195h)
+        let mut wohn_pille = false;
+        if self.blatt() == Blatt::Wohnflaeche {
+            if let Some(l) = self.wohn.as_mut() {
+                if l.tick(t, now) {
+                    flashing = true;
+                }
+                let key = l.pill_key(t, now);
+                if key != self.wohn_pille {
+                    self.wohn_pille = key;
+                    self.dirty = true;
+                }
+                wohn_pille = t.size.anim_ms > 0.0 && key.is_some();
+            }
         }
         if self.blatt() == Blatt::Ava && self.ava.as_mut().is_some_and(|a| a.tick(t, now)) {
             flashing = true;
@@ -561,7 +574,7 @@ impl QuantityWindow {
             self.dirty = true;
         }
         self.was_busy = flashing;
-        scrolling || flashing || pill
+        scrolling || flashing || pill || wohn_pille
     }
 
     fn list_out(&mut self, o: Option<ListOut>, t: &Theme) -> Option<Out> {
@@ -1605,6 +1618,46 @@ mod tests {
             y,
             mods: Default::default(),
         }
+    }
+
+    /// Auf dem Blatt Wohnfläche läuft die Pille „wird aktualisiert“
+    /// beim Ziehen weiter: Jeder neue Stand der Punkte zeichnet das Blatt
+    /// (Review #195 H-195h).
+    #[test]
+    fn wohnflaeche_pille_laeuft() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let mut s = standardhaus();
+        let p = Picking::default();
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (780, 900);
+        assert!(q.waehlen(Blatt::Wohnflaeche, &t));
+        q.sync(&mut s, &p, true);
+        let b = s.model().buildings().ids().next().unwrap();
+        let eg = s.model().ground_of(Some(b)).unwrap();
+        let oben = s.model().storey(eg).unwrap().height + 100.0;
+        s.begin("Geschoss ziehen");
+        s.drag_storey_top(eg, oben);
+        q.sync(&mut s, &p, true);
+        let now = Instant::now();
+        q.tick(&t, now);
+        assert!(q.frame(&t, &fonts, now).is_some(), "Pille erscheint");
+        // Gleiten der Karte und Einblenden vorbei, die Punkte stehen
+        for ms in [300, 310] {
+            let at = now + Duration::from_millis(ms);
+            q.tick(&t, at);
+            q.frame(&t, &fonts, at);
+        }
+        let ruhig = now + Duration::from_millis(320);
+        assert!(q.tick(&t, ruhig), "weitere Bilder");
+        assert!(q.frame(&t, &fonts, ruhig).is_none(), "nichts Neues");
+        // Nächster Punkt nach 220 ms
+        let spaeter = now + Duration::from_millis(450);
+        assert!(q.tick(&t, spaeter), "weitere Bilder");
+        assert!(
+            matches!(q.frame(&t, &fonts, spaeter), Some((_, None))),
+            "die Punkte sind weiter"
+        );
+        s.commit();
     }
 
     /// KA-2a (paket-ka2 Abnahme 9): zwei Karten mit lebender Zahl; ein
