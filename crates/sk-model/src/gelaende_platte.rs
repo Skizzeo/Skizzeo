@@ -1028,7 +1028,6 @@ mod tests {
         assert!((a - (13.0 * 11.0 - 80.0) * 1e6).abs() < 1.0, "{a}");
     }
 
-    /// Budget im Release (Review W34 B2), im Debug großzügig.
     /// Rechenzeit dieses Fadens in ms, auf 10 ms genau (Linux: utime und
     /// stime aus /proc/thread-self/stat, in Hundertstelsekunden), sonst
     /// `None`. schedstat ist nicht in jedem Kern an.
@@ -1040,6 +1039,7 @@ mod tests {
         Some((tick()? + tick()?) * 10.0)
     }
 
+    /// Budget im Release (Review W34 B2), im Debug großzügig.
     fn budget(ms: f64) -> f64 {
         if cfg!(debug_assertions) {
             ms * 40.0
