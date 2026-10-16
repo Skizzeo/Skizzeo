@@ -1028,6 +1028,17 @@ mod tests {
         assert!((a - (13.0 * 11.0 - 80.0) * 1e6).abs() < 1.0, "{a}");
     }
 
+    /// Rechenzeit dieses Fadens in ms, auf 10 ms genau (Linux: utime und
+    /// stime aus /proc/thread-self/stat, in Hundertstelsekunden), sonst
+    /// `None`. schedstat ist nicht in jedem Kern an.
+    fn rechenzeit() -> Option<f64> {
+        let s = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
+        // nach dem Namen in Klammern: Feld 3 (Zustand) bis 15 (stime)
+        let mut f = s.rsplit_once(')')?.1.split_whitespace().skip(11);
+        let mut tick = || f.next()?.parse::<f64>().ok();
+        Some((tick()? + tick()?) * 10.0)
+    }
+
     /// Budget im Release (Review W34 B2), im Debug großzügig.
     fn budget(ms: f64) -> f64 {
         if cfg!(debug_assertions) {
@@ -1155,10 +1166,14 @@ mod tests {
     /// rechnen in der Zeit der Eingabe, die Fläche stimmt.
     #[test]
     fn entartete_eingaben_im_budget() {
+        // Rechenzeit dieses Fadens, nicht die Wanduhr: unter Last (andere
+        // Tests, Neustart des Containers) wartete er einmal 400 ms auf eine
+        // CPU, ohne mehr zu rechnen (Test, okto188)
         let zeit = |f: &dyn Fn() -> Zerlegt| {
-            let t = std::time::Instant::now();
+            let (t, c) = (std::time::Instant::now(), rechenzeit());
             let z = f();
-            (z, t.elapsed().as_secs_f64() * 1000.0)
+            let wand = t.elapsed().as_secs_f64() * 1000.0;
+            (z, c.zip(rechenzeit()).map_or(wand, |(a, b)| b - a))
         };
         // ein Loch mit 100.000 kollinearen Punkten an einer schrägen Kante
         let mut loch: Vec<Vec3> = (0..=100_000)
