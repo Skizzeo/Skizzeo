@@ -501,6 +501,11 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
         ("Ecken", p.outline.len().to_string()),
     ];
     let mut fields = Vec::new();
+    // mit Aufmaß daneben die Höhe in m ü. NHN (Bedienbarkeit, später zu
+    // #216)
+    if let Some((z, h0)) = eben(p).zip(m.terrain_nhn()) {
+        values.push(("Höhe ü. NHN", format!("{} m", de(h0 + z / 1000.0, 2))));
+    }
     match eben(p) {
         Some(z) => fields.push(feld(
             GelaendeFeld::Hoehe,
@@ -1279,6 +1284,7 @@ mod tests {
         m.commit();
         let p = props(&m, 0).unwrap();
         assert!(p.values.contains(&("Fläche", "20,00 m²".to_string())));
+        assert!(p.values.iter().all(|v| v.0 != "Höhe ü. NHN"), "ohne Aufmaß");
         let f = &p.sections[0].fields;
         assert_eq!(f[0].field, Field::Gelaende(GelaendeFeld::Hoehe));
         assert_eq!(f[0].value, -600.0);
@@ -1319,6 +1325,20 @@ mod tests {
             .values
             .contains(&("Böschung", "je Kante, aus der Datei".to_string())));
         assert!(props(&m, 1).is_none());
+        // mit Aufmaß und ±0,00 = 24,95 m ü. NHN: −0,60 m stehen als 24,35
+        let mut text = String::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                text.push_str(&format!("{} {} {} 24.5\n", i * 5 + j + 1, j * 5, i * 5));
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-15", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        assert!(m.set_terrain_nhn(24.95));
+        m.commit();
+        let p = props(&m, 0).unwrap();
+        assert!(p.values.contains(&("Höhe ü. NHN", "24,35 m".to_string())));
     }
 
     /// Mit gehaltener Strg-Taste kein Fang, nur das Raster (Bedienbarkeit,

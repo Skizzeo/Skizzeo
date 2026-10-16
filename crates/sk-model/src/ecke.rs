@@ -382,11 +382,11 @@ impl Model {
         }
         // In einer Flucht, nicht nur fast parallel: Über die ganze Länge
         // der vereinten Wand, von einem fernen Ende zum anderen, weichen
-        // die Linien beider Wände höchstens um DECKUNG voneinander ab.
-        // Das gilt für beide Linien, egal welche bleibt (Review #210 B2,
-        // B6)
+        // die Linien beider Wände um `winkel` voneinander ab. Das gilt für
+        // beide Linien, egal welche bleibt (Review #210 B2, B6)
         let ganz = u0.max(u1).max(sa.len) - u0.min(u1).min(0.0);
-        if cross2(sa.d, sb.d).abs() * ganz > DECKUNG {
+        let winkel = cross2(sa.d, sb.d).abs() * ganz;
+        if winkel > DECKUNG {
             return None;
         }
         let n = right_of(sa.d);
@@ -401,7 +401,10 @@ impl Model {
             quer_b(lo_b).min(quer_b(hi_b)),
             quer_b(lo_b).max(quer_b(hi_b)),
         );
-        if (lo_b - lo_a).abs() > DECKUNG || (hi_b - hi_a).abs() > DECKUNG {
+        // Querversatz und Winkel zusammen höchstens DECKUNG: So sitzt eine
+        // Öffnung der wegfallenden Wand danach sicher auf der Außenfläche
+        // der vereinten (dort gilt 1 mm, Review H-210r)
+        if (lo_b - lo_a).abs().max((hi_b - hi_a).abs()) + winkel > DECKUNG {
             return None;
         }
         // Die Schichten liegen von der Außenfläche aus (Öffnungen sitzen
@@ -430,6 +433,13 @@ impl Model {
             let fern = sb.punkt(if eb == 0 { sb.len } else { 0.0 });
             (&sa, ea, sb.run, fern, la, lb, wb)
         };
+        // Eine Öffnung, die nur zum Teil auf der Außenfläche der
+        // wegfallenden Wand liegt (Ecköffnung über einen Anschluss an ihrem
+        // fernen Ende), verlöre beim Spiegeln ihren Sitz: dann stumpf
+        // (Review H-210n)
+        if gespiegelt && self.oeffnungen_aussen(weg).iter().any(|o| !o.1) {
+            return None;
+        }
         let zug = self.mit_ende(s, e, s.bei(fern)).ok()?;
         let seg = if e == 0 { 0 } else { zug.1.len() - 2 };
         // Öffnungen der wegfallenden Wand kommen auf die Außenfläche des
@@ -472,9 +482,11 @@ impl Model {
             .map(|e| e.guid)
             .ok_or(EckeFehler::Ungueltig)?;
         let tueren = self.oeffnungen_versetzt(v);
-        self.remove_run(v.weg);
-        // `stack_fits` hat die Punkte schon angenommen
-        self.set_run_points(*run, pts);
+        let weg_ok = self.remove_run(v.weg);
+        debug_assert!(weg_ok, "der wegfallende Zug war da");
+        // `stack_fits` hat die Punkte schon angenommen (Review H-210p)
+        let gesetzt = self.set_run_points(*run, pts);
+        debug_assert!(gesetzt.is_some(), "stack_fits hat die Punkte angenommen");
         for (id, o) in tueren {
             note!(self, Element, self.elements, id);
             if let Some(e) = self.elements.get_mut(id) {
@@ -516,33 +528,28 @@ impl Model {
     /// [`Vereint::versatz`] auf die Außenfläche der vereinten verschoben;
     /// leer, wenn sie bleiben, wo sie sind. Der Einbau gilt von der
     /// Außenfläche aus: Die äußere Einbautiefe wird zur Dicke abzüglich
-    /// Einbautiefe und Bautiefe, der Anschlag links und rechts tauscht
-    /// (Review #210 B7). Ecköffnungen gibt es an einer einzelnen Wand
-    /// mit freien Enden nicht.
+    /// Einbautiefe und Bautiefe (ohne eigene Bautiefe die Vorgabe
+    /// [`crate::oeffnung::ELEMENT_DEPTH`]), der Anschlag links und rechts
+    /// tauscht (Review #210 B7). Die Schichten liegen von beiden Seiten
+    /// gleich, so sitzt das Element danach in derselben Schicht; reicht es
+    /// über die Dicke, kommt es bündig an die Außenfläche (0). Ohne
+    /// gesetzte Einbautiefe bleibt sie ungesetzt: Dann gilt wie vorher der
+    /// Standardeinbau, nun von der neuen Außenfläche aus (Review H-210q).
+    /// Ecköffnungen, die nur zum Teil auf der Wand liegen, schließt
+    /// [`Model::vereinen_punkte`] vorher aus (Review H-210n).
     fn oeffnungen_versetzt(&self, v: &Vereint) -> Vec<(ElementId, crate::oeffnung::Opening)> {
         if v.versatz.length() < 1e-9 {
             return Vec::new();
         }
-        let (Some(r), Some(c)) = (self.run(v.weg), self.base_chain(v.weg)) else {
+        let Some(c) = self.base_chain(v.weg) else {
             return Vec::new();
         };
-        let (a, b) = (flach(r.points[0]), flach(r.points[r.points.len() - 1]));
-        let len = (b - a).length();
-        if len < 1e-6 {
-            return Vec::new();
-        }
-        let d = (b - a) * (1.0 / len);
-        let (n, aussen, dicke) = (right_of(d), c.outer_offset(), c.thickness());
-        let auf = |p: Vec3| {
-            let u = (flach(p) - a).dot(d);
-            ((flach(p) - a).dot(n) - aussen).abs() < 1.0 && u > -1.0 && u < len + 1.0
-        };
-        self.elements
-            .iter()
-            .filter_map(|(id, e)| match &e.kind {
-                ElementKind::Opening(o)
-                    if e.storey == r.storey && o.path.iter().all(|p| auf(*p)) =>
-                {
+        let dicke = c.thickness();
+        self.oeffnungen_aussen(v.weg)
+            .into_iter()
+            .filter(|o| o.1)
+            .filter_map(|(id, _)| match &self.element(id)?.kind {
+                ElementKind::Opening(o) => {
                     let mut o = o.clone();
                     o.path = o.path.iter().map(|p| *p + v.versatz).collect();
                     let element = o.install.element.unwrap_or(crate::oeffnung::ELEMENT_DEPTH);
@@ -551,6 +558,53 @@ impl Model {
                     Some((id, o))
                 }
                 _ => None,
+            })
+            .collect()
+    }
+
+    /// Öffnungen im Geschoss des Zuges `weg` (eine Wand), die mit einem
+    /// Pfadpunkt auf seiner Außenfläche liegen (1 mm): je Öffnung, ob alle
+    /// Punkte dort liegen (`true`) oder nur einige (`false`, etwa eine
+    /// Ecköffnung über einen Anschluss am Ende der Wand).
+    fn oeffnungen_aussen(&self, weg: RunId) -> Vec<(ElementId, bool)> {
+        let (Some(r), Some(c)) = (self.run(weg), self.base_chain(weg)) else {
+            return Vec::new();
+        };
+        let (a, b) = (flach(r.points[0]), flach(r.points[r.points.len() - 1]));
+        let len = (b - a).length();
+        if len < 1e-6 {
+            return Vec::new();
+        }
+        let d = (b - a) * (1.0 / len);
+        let (n, aussen) = (right_of(d), c.outer_offset());
+        let auf = |p: &Vec3| {
+            let u = (flach(*p) - a).dot(d);
+            ((flach(*p) - a).dot(n) - aussen).abs() < 1.0 && u > -1.0 && u < len + 1.0
+        };
+        // Nur die Öffnungen der Felder um die Außenfläche: Das läuft beim
+        // Zeigen je Mausbewegung und wächst sonst mit dem Modell (Review
+        // #222 B1). 2 mm Rand decken den Streifen von 1 mm um die Fläche
+        // in jeder Lage der Wand.
+        let kandidaten: Box<dyn Iterator<Item = ElementId>> = match self.verz() {
+            Some(v) => {
+                let (fa, fb) = (a + n * aussen, b + n * aussen);
+                let rand = vec3(2.0, 2.0, 0.0);
+                let lo = vec3(fa.x.min(fb.x), fa.y.min(fb.y), 0.0) - rand;
+                let hi = vec3(fa.x.max(fb.x), fa.y.max(fb.y), 0.0) + rand;
+                let building = self.storey(r.storey).and_then(|s| s.building);
+                Box::new(v.oeffnungen_bei(building, lo, hi).into_iter())
+            }
+            None => Box::new(self.elements.ids()),
+        };
+        kandidaten
+            .filter_map(|id| {
+                let e = self.element(id)?;
+                match &e.kind {
+                    ElementKind::Opening(o) if e.storey == r.storey && o.path.iter().any(auf) => {
+                        Some((id, o.path.iter().all(auf)))
+                    }
+                    _ => None,
+                }
             })
             .collect()
     }
@@ -1418,6 +1472,172 @@ mod tests {
         assert_eq!(o.reveal, Some([20.0, 10.0, 0.0, 0.0]));
         assert_eq!(m.opening(na).unwrap(), &nachbar);
         assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Fenster in der wegfallenden Wand, die länger ist und ihre Kennung
+    /// weitergibt, bei gespiegelter Außenfläche: Es sitzt danach auf der
+    /// Außenfläche der vereinten Wand, mit gespiegeltem Einbau; die
+    /// vereinte Wand hat die Kennung der wegfallenden (Review H-210t).
+    #[test]
+    fn fenster_mit_uebertrag_und_spiegelung() {
+        let (mut m, st, _) = haus();
+        let iw = m.defaults().interior_wall;
+        let ti = m
+            .layer_set(iw)
+            .map(|s| s.layers.iter().map(|l| l.thickness).sum::<f64>())
+            .unwrap();
+        // Zug mit Ecke, kurzer Schenkel am Ende; lange Wand gegenläufig
+        let r = m
+            .add_wall_run(
+                &[
+                    vec3(1000.0, 5000.0, 0.0),
+                    vec3(1000.0, 3000.0, 0.0),
+                    vec3(2000.0, 3000.0, 0.0),
+                ],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let a = m.wall_at(r, 1).unwrap();
+        let b = innenwand(
+            &mut m,
+            st,
+            vec3(8000.0, 3000.0, 0.0),
+            vec3(3000.0, 3000.0, 0.0),
+        );
+        let gb = m.element(b).unwrap().guid;
+        let mut f = tuer(&m, st, b, 1000.0);
+        f.kind = OpeningKind::Window;
+        f.bottom = HeightRef::Line(st, HeightLine::Sill);
+        f.top = HeightRef::Line(st, HeightLine::Lintel);
+        f.install = crate::oeffnung::Install {
+            outer: Some(20.0),
+            element: Some(70.0),
+        };
+        let id = m.add_opening(f.clone()).unwrap();
+        let v = m.vereinen_punkte(a, b).unwrap();
+        assert_eq!((v.zug.0, v.kennung), (r, Some(b)));
+        assert!(v.versatz.length() > 1.0, "gespiegelt");
+        // Die Öffnung aus dem Verzeichnis wie über das ganze Modell
+        assert_eq!(m.oeffnungen_aussen(v.weg), vec![(id, true)]);
+        assert_eq!(
+            m.ohne_verzeichnis(|| m.oeffnungen_aussen(v.weg)),
+            vec![(id, true)]
+        );
+        m.verlaengern(a, b).unwrap();
+        let w = m.wall_at(r, 1).unwrap();
+        assert_eq!(m.element(w).unwrap().guid, gb);
+        let o = m.opening(id).unwrap();
+        assert_eq!(o.install.outer, Some(ti - 20.0 - 70.0));
+        // Auf der Außenfläche der vereinten Wand
+        let c = m.chain(r).unwrap();
+        let (p, _, d) = c.layout().unwrap();
+        for q in &o.path {
+            let quer = (*q - p[1]).dot(right_of(d[1])) - c.outer_offset();
+            assert!(quer.abs() < 1e-6, "{quer}");
+        }
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Eine Ecköffnung über den Anschluss am fernen Ende der wegfallenden
+    /// Wand verlöre beim Spiegeln ihren Sitz: dann stumpf. Ohne Spiegeln
+    /// bleibt sie, wo sie ist, und es wird vereint (Review H-210n).
+    #[test]
+    fn eckoeffnung_am_fernen_ende_haelt_vom_spiegeln_ab() {
+        let aufbau = |gegen: bool| {
+            let (mut m, st, _) = haus();
+            let a = innenwand(
+                &mut m,
+                st,
+                vec3(1000.0, 3000.0, 0.0),
+                vec3(4000.0, 3000.0, 0.0),
+            );
+            let (b0, b1) = (vec3(7000.0, 3000.0, 0.0), vec3(5000.0, 3000.0, 0.0));
+            let b = if gegen {
+                innenwand(&mut m, st, b0, b1)
+            } else {
+                innenwand(&mut m, st, b1, b0)
+            };
+            let c = innenwand(
+                &mut m,
+                st,
+                vec3(7000.0, 3000.0, 0.0),
+                vec3(7000.0, 6000.0, 0.0),
+            );
+            // Außenflächen von b und c, Ecke dort, wo sie sich schneiden
+            let flaeche = |w: ElementId| {
+                let (r, _) = m.segment_of(w).unwrap();
+                let ch = m.chain(r).unwrap();
+                let (p, _, d) = ch.layout().unwrap();
+                (p[0] + right_of(d[0]) * ch.outer_offset(), d[0])
+            };
+            let ((pb, db), (pc, dc)) = (flaeche(b), flaeche(c));
+            let ecke = vec3(pc.x, pb.y, 0.0);
+            assert!(db.x.abs() > 0.99 && dc.y.abs() > 0.99);
+            let mut o = tuer(&m, st, b, 0.0);
+            o.kind = OpeningKind::Window;
+            o.bottom = HeightRef::Line(st, HeightLine::Sill);
+            o.top = HeightRef::Line(st, HeightLine::Lintel);
+            o.path = vec![
+                vec3(ecke.x - 600.0, ecke.y, 0.0),
+                ecke,
+                vec3(ecke.x, ecke.y + 500.0, 0.0),
+            ];
+            let id = m.add_opening(o.clone());
+            (m, a, b, id, o)
+        };
+        // Gegenläufig gezeichnet: gespiegelt, abgelehnt
+        let (m, a, b, id, _) = aufbau(true);
+        assert!(id.is_some(), "Ecköffnung über den Anschluss");
+        assert!(m.vereinen_punkte(a, b).is_none());
+        assert!(m.ohne_verzeichnis(|| m.vereinen_punkte(a, b)).is_none());
+        // Gleichläufig: Außenflächen fallen zusammen, es wird vereint, die
+        // Ecköffnung bleibt
+        let (mut m, a, b, id, o) = aufbau(false);
+        let id = id.unwrap();
+        let v = m.vereinen_punkte(a, b).unwrap();
+        assert!(v.versatz.length() < 1e-9);
+        m.verlaengern(a, b).unwrap();
+        assert_eq!(m.opening(id).unwrap(), &o);
+    }
+
+    /// Querversatz und Winkel zählen zusammen: je knapp unter der Grenze,
+    /// zusammen darüber, bleibt es stumpf (Review H-210r).
+    #[test]
+    fn querversatz_und_winkel_zusammen() {
+        let (mut m, st, _) = haus();
+        let a = innenwand(
+            &mut m,
+            st,
+            vec3(1000.0, 3000.0, 0.0),
+            vec3(4000.0, 3000.0, 0.0),
+        );
+        // 0,3 mm quer versetzt und über 6 m ganze Länge 0,3 mm geneigt
+        let b = innenwand(
+            &mut m,
+            st,
+            vec3(5000.0, 3000.3, 0.0),
+            vec3(7000.0, 3000.4, 0.0),
+        );
+        assert!(m.vereinen_punkte(a, b).is_none());
+        // Nur der Querversatz: vereint
+        let (mut m, st, _) = haus();
+        let a = innenwand(
+            &mut m,
+            st,
+            vec3(1000.0, 3000.0, 0.0),
+            vec3(4000.0, 3000.0, 0.0),
+        );
+        let b = innenwand(
+            &mut m,
+            st,
+            vec3(5000.0, 3000.3, 0.0),
+            vec3(7000.0, 3000.3, 0.0),
+        );
+        assert!(m.vereinen_punkte(a, b).is_some());
     }
 
     /// Raumbuch: Die Abweichung an der wegfallenden Wand gilt danach an
