@@ -53,6 +53,7 @@ fn haeuser_am_hang(n: usize) -> (Model, Terrain) {
                 code: String::new(),
                 off: false,
                 hand: false,
+                gemessen: None,
             });
         }
     }
@@ -317,6 +318,7 @@ fn grenzen_mit_vielen_punkten() {
             code: String::new(),
             off: false,
             hand: false,
+            gemessen: None,
         });
     }
     t.boundaries
@@ -349,6 +351,7 @@ fn netz_der_datei_im_budget() {
                 code: String::new(),
                 off: false,
                 hand: false,
+                gemessen: None,
             });
         }
     }

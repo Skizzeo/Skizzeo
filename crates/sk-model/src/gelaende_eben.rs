@@ -109,6 +109,7 @@ impl Model {
                 code: String::new(),
                 off: false,
                 hand: true,
+                gemessen: None,
             });
         }
         self.set_terrain(Some(t))
@@ -486,6 +487,7 @@ mod tests {
                     code: String::new(),
                     off: false,
                     hand: false,
+                    gemessen: None,
                 });
             }
             if grenze {
@@ -540,6 +542,7 @@ mod tests {
             code: String::new(),
             off: false,
             hand: false,
+            gemessen: None,
         });
         assert!(!t.assumed());
     }

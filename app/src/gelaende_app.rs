@@ -87,6 +87,11 @@ pub(crate) struct Zustand {
     /// Hilfsnetz in 3D ausgeschaltet; sonst ist es bei offener Leiste an
     /// und bleibt aus, bis man es wieder einschaltet (Jörns §4.3a).
     pub(crate) netz_aus: bool,
+    /// Die gewählten Höhenpunkte (Nummern), aus der Wahl der Punkte für das
+    /// Schloss (I5); [`App::gelaende_sync`] gleicht sie ab.
+    pub(crate) wahl: Vec<String>,
+    /// Messpunkte mit offenem Schloss (I5, §5 J2 C), bis man es schließt.
+    pub(crate) offen_nr: std::collections::HashSet<String>,
     /// Gewählte Geländefläche und Modellstand, für die das Paneel
     /// „Eigenschaften“ steht.
     pub(crate) props: Option<(usize, u64)>,
@@ -225,12 +230,42 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::AmHaus => "Gelände ans Haus",
         GelaendeKnopf::Flaeche => "Fläche zeichnen",
         GelaendeKnopf::Netz => "Netz",
+        GelaendeKnopf::Schloss => "Schloss offen",
+        GelaendeKnopf::Gemessen => "Gemessen zurück",
         GelaendeKnopf::Grenze => "Grenze zeichnen",
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
         GelaendeKnopf::Hinweise => "Alle Hinweise",
         GelaendeKnopf::Entfernen => "Gelände entfernen",
     }
+}
+
+/// Schloss und gemessener Wert der gewählten Messpunkte (I5).
+fn schloss(l: &mut GelaendeLeiste, t: &Terrain, z: &Zustand) {
+    let mess: Vec<&sk_model::TerrainPoint> = z
+        .wahl
+        .iter()
+        .filter_map(|nr| t.points.iter().find(|p| p.nr == *nr && !p.hand))
+        .collect();
+    if mess.is_empty() {
+        return;
+    }
+    l.schloss = Some(mess.iter().all(|p| z.offen_nr.contains(&p.nr)));
+    l.gemessen = mess.iter().find_map(|p| {
+        let [e, n, h] = p.gemessen?;
+        let m = |v: f64, k: usize| de(v, k);
+        Some(if (p.h - h).abs() >= 5e-4 {
+            format!(
+                "Messpunkt {}: gemessen {} m, jetzt {} m",
+                p.nr,
+                m(h, 3),
+                m(p.h, 3)
+            )
+        } else {
+            let d = (p.e - e).hypot(p.n - n);
+            format!("Messpunkt {}: Lage um {} m versetzt", p.nr, m(d, 2))
+        })
+    });
 }
 
 fn feld(
@@ -302,6 +337,7 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     l.aufmass = true;
     l.hoehen = !t.points.is_empty();
     l.netz = l.hoehen && !z.netz_aus;
+    schloss(&mut l, t, z);
     l.angenommen = t.assumed();
     l.grenze = !ringe.is_empty();
     l.absolut = t.href == HeightRef::Abs;
@@ -506,6 +542,21 @@ impl App {
             K::Hoehen => z.hoehen_wanted = true,
             K::Hinweise => z.alle = !z.alle,
             K::Netz => z.netz_aus = !z.netz_aus,
+            K::Schloss => {
+                let mess: Vec<String> = self.scene.model().terrain().map_or(Vec::new(), |t| {
+                    let ist = |nr: &String| t.points.iter().any(|p| p.nr == *nr && !p.hand);
+                    z.wahl.iter().filter(|nr| ist(nr)).cloned().collect()
+                });
+                let alle_offen = mess.iter().all(|nr| z.offen_nr.contains(nr));
+                for nr in &mess {
+                    if alle_offen {
+                        z.offen_nr.remove(nr);
+                    } else {
+                        z.offen_nr.insert(nr.clone());
+                    }
+                }
+            }
+            K::Gemessen => self.punkte_gemessen(),
             K::Verschieben | K::Drehen => z.tippen = (z.tippen != Some(k)).then_some(k),
             K::Ausrichten => {
                 self.gelaende_schritt("Gelände an Grenze ausrichten", |m| m.align_terrain());
@@ -924,6 +975,11 @@ impl App {
         if z.offen && zeichnet {
             z.zu();
         }
+        // die Wahl der Höhenpunkte für das Schloss (I5)
+        if z.wahl != self.platte.punkte.gewaehlt {
+            z.wahl = self.platte.punkte.gewaehlt.clone();
+            z.neu = true;
+        }
         let m = self.scene.model();
         if z.steht(m) {
             return;
@@ -1075,6 +1131,37 @@ mod tests {
 
     /// Ohne Aufmaß nur das Einlesen; mit Aufmaß Höhenlage, Folgen und
     /// Grundstück wie in der Abnahme (§12).
+    /// Schloss und gemessener Wert der gewählten Messpunkte (I5).
+    #[test]
+    fn schloss_der_messpunkte() {
+        let mut m = lindenhof();
+        let (t, ..) = Terrain::lesen(CSV, "aufmass.csv", "2026-10-12", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let nr = m.terrain().unwrap().points[0].nr.clone();
+        assert_eq!(leiste(&m, &Zustand::default()).schloss, None, "keine Wahl");
+        let mut z = Zustand {
+            wahl: vec![nr.clone()],
+            ..Zustand::default()
+        };
+        let l = leiste(&m, &z);
+        assert_eq!((l.schloss, l.gemessen), (Some(false), None));
+        z.offen_nr.insert(nr.clone());
+        assert_eq!(leiste(&m, &z).schloss, Some(true));
+        let s = m.terrain_spots().into_iter().find(|s| s.i == 0).unwrap();
+        m.begin("Höhe");
+        assert!(m.move_terrain_points(&[(s.i, [s.p[0], s.p[1], s.p[2] + 250.0])]));
+        m.commit();
+        let g = leiste(&m, &z).gemessen.unwrap();
+        assert!(g.starts_with(&format!("Messpunkt {nr}: gemessen ")), "{g}");
+        m.begin("Lage");
+        assert!(m.move_terrain_points(&[(s.i, [s.p[0] + 350.0, s.p[1], s.p[2]])]));
+        m.commit();
+        let g = leiste(&m, &z).gemessen.unwrap();
+        assert_eq!(g, format!("Messpunkt {nr}: Lage um 0,35 m versetzt"));
+    }
+
     #[test]
     fn leiste_zum_modell() {
         let mut m = lindenhof();

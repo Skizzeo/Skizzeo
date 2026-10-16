@@ -297,6 +297,9 @@ impl App {
                     if self.scene.edit_model(z.label, |m| m.set_parcel_ring(i, &r)) {
                         self.upload_model();
                         self.quantity.dirty = true;
+                    } else {
+                        // der Ring springt zurück; die Statuszeile sagt warum (H-233b)
+                        self.status(Meldung::satz(GEHT_NICHT), crate::NOTICE_TIME);
                     }
                 }
                 self.platte.leiste.neu = true;

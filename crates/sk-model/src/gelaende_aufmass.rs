@@ -35,6 +35,11 @@ pub struct TerrainPoint {
     /// ebenen Geländes, das Skizzeo beim ersten Werkzeug des Moduls anlegt
     /// (I1), später eigene Höhenpunkte (I4).
     pub hand: bool,
+    /// Ein Messpunkt, den der Nutzer nach dem Öffnen des Schlosses
+    /// verschoben hat (I5, §5 J2 C): Rechts, Hoch und Höhe, wie gemessen
+    /// (Datei `ge`, `gn`, `gh`, ungerundet). `None` bei unverändertem
+    /// Messpunkt und bei eigenen Punkten.
+    pub gemessen: Option<[f64; 3]>,
 }
 
 /// Eine Bruchkante aus der Datei (DXF, G1b): Punktnummern im Verlauf, wie
@@ -975,6 +980,7 @@ impl Terrain {
                 code: p.code.clone(),
                 off: false,
                 hand: false,
+                gemessen: None,
             })
             .collect();
         let codes = t.code_table();

@@ -219,6 +219,7 @@ mod tests {
                     code: String::new(),
                     off: false,
                     hand: false,
+                    gemessen: None,
                 });
             }
         }
@@ -358,6 +359,7 @@ mod tests {
                         code: String::new(),
                         off: false,
                         hand: false,
+                        gemessen: None,
                     });
                 }
             }

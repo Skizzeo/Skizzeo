@@ -381,14 +381,14 @@ fn erdmengen_aus_aufmass_mit_punkten_von_hand() {
     );
     let m = haus(&z);
     assert!(m.terrain().is_some_and(|t| !t.assumed()));
-    assert_eq!(sk_model::qto_earth::netz_geaendert(&m), Some((1, 1)));
+    assert_eq!(sk_model::qto_earth::netz_geaendert(&m), Some((1, 0, 1)));
     let h = sk_model::qto_earth::netz_herkunft(&m).unwrap();
     assert!(
         h.ends_with(", davon 1 Punkt von Hand ergänzt (H1), davon 1 Punkt nicht verwendet (5)"),
         "{h}"
     );
     let b = blatt(&m);
-    let satz = hand_geaendert(1, 1);
+    let satz = hand_geaendert((1, 0, 1));
     assert!(satz.starts_with(HAND_GEAENDERT));
     let n = |v: &[sk_cost::Befund]| v.iter().filter(|x| x.satz == satz).count();
     assert_eq!(n(&b.befunde), 1, "{:?}", b.befunde);

@@ -57,10 +57,10 @@ const QUADRAT_PX: f64 = 10.0;
 pub const PUNKT: &str =
     "Höhenpunkt {}: {}. Klicken wählt, ziehen verschiebt (Strg kopiert, Alt ohne Fang).";
 pub const HOEHE: &str = "Höhe ziehen: nach oben hebt, 1 Bildpunkt 1 cm, mit Umschalt 10 cm.";
-/// Messpunkte des Vermessers bleiben, bis das Schloss kommt (I5, §5 J2).
+/// Messpunkte des Vermessers tragen ein Schloss (I5, §5 J2 C).
 pub const MESSPUNKT: &str =
-    "Punkte des Vermessers bleiben, wie gemessen. Mit Strg ziehen setzt eine \
-     eigene Kopie, Entf nimmt sie aus dem Gelände.";
+    "Punkte des Vermessers sind gesperrt: „Schloss offen“ in der Leiste gibt sie \
+     frei, Strg ziehen setzt eine eigene Kopie, Entf nimmt sie aus dem Gelände.";
 pub const DREI: &str = "Das Gelände behält mindestens drei Punkte.";
 pub const BELEGT: &str = "Dort liegt schon ein Höhenpunkt; nichts geändert.";
 /// Schritte im Rückgängig (§4.0 Regel 5).
@@ -69,6 +69,7 @@ pub const LABEL_LAGE: &str = "Höhenpunkte verschoben";
 pub const LABEL_HOEHE: &str = "Höhe geändert";
 pub const LABEL_KOPIE: &str = "Höhenpunkte kopiert";
 pub const LABEL_GELOESCHT: &str = "Höhenpunkte gelöscht";
+pub const LABEL_GEMESSEN: &str = "Messpunkte wie gemessen";
 
 /// Was die Maus greift.
 #[derive(Clone, Debug, PartialEq)]
@@ -114,7 +115,7 @@ struct Zug {
 #[derive(Clone, Debug, Default)]
 pub struct Punkte {
     /// Die gewählten Punkte (Nummern).
-    pub(super) gewaehlt: Vec<String>,
+    pub(crate) gewaehlt: Vec<String>,
     hover: Option<Ziel>,
     zug: Option<Zug>,
     /// Der letzte Klick ins Leere, für den Doppelklick.
@@ -432,13 +433,16 @@ impl App {
                 mods,
             } => {
                 let ziel = self.punkte_ziel(x, y, vw, vh, sc);
-                match ziel {
+                let out = match ziel {
                     Some(z) => {
                         self.platte.punkte.klick = None;
                         self.punkte_greifen(z, x, y, vw, vh, mods)
                     }
                     None => self.punkte_ins_leere(x, y, vw, vh),
-                }
+                };
+                // die Leiste zeigt das Schloss der Wahl (I5)
+                self.gelaende_sync();
+                out
             }
             Event::MouseUp {
                 button: MouseButton::Left,
@@ -449,6 +453,7 @@ impl App {
                     return false;
                 };
                 self.punkte_loslassen(z, mods);
+                self.gelaende_sync();
                 true
             }
             _ => false,
@@ -611,7 +616,11 @@ impl App {
             .collect();
         let griff = gp.map_or(start, |p| [p[0], p[1]]);
         let neu = alt.iter().map(|a| a.1).collect();
-        let fest = spots.iter().any(|s| w.contains(&s.0) && !s.1.hand);
+        // ein Messpunkt mit geschlossenem Schloss lässt sich nur kopieren
+        let offen = &self.platte.leiste.offen_nr;
+        let fest = spots
+            .iter()
+            .any(|s| w.contains(&s.0) && !s.1.hand && !offen.contains(&s.0));
         self.platte.punkte.zug = Some(Zug {
             hoehe,
             px: (x, y),
@@ -769,8 +778,29 @@ impl App {
             return false;
         }
         self.platte.punkte.gewaehlt.clear();
+        self.gelaende_sync();
         self.redraw = true;
         true
+    }
+
+    /// „Gemessen zurück“: die gewählten geänderten Messpunkte auf die
+    /// gemessenen Werte (I5), ein Schritt.
+    pub(crate) fn punkte_gemessen(&mut self) {
+        let w = self.platte.punkte.gewaehlt.clone();
+        let idx: Vec<usize> = self
+            .spots()
+            .iter()
+            .filter(|s| w.contains(&s.0) && s.1.geaendert)
+            .map(|s| s.1.i)
+            .collect();
+        if self
+            .scene
+            .edit_model(LABEL_GEMESSEN, |m| m.reset_terrain_points(&idx))
+        {
+            self.punkte_fertig();
+        } else {
+            self.status(Meldung::satz(BELEGT), crate::NOTICE_TIME);
+        }
     }
 
     /// Entf löscht die gewählten Punkte; `true`, wenn Entf ihnen galt.
@@ -976,6 +1006,7 @@ mod tests {
                 i,
                 p: [x, y, 0.0],
                 hand: true,
+                geaendert: false,
             },
         )
     }
