@@ -175,6 +175,8 @@ pub(crate) struct Platte {
     kisten: Option<(u64, Kisten)>,
     /// Leiste „Gelände“ (G1).
     pub(crate) leiste: crate::gelaende_app::Zustand,
+    /// Griffe der Grenze bei offener Leiste (I3).
+    pub(crate) griffe: crate::gelaende_flaeche_app::griffe::Griffe,
     /// Der Lageplan der Unterlage, gelesen (G1c).
     pub(crate) unterlage: crate::gelaende_app::Unterlage,
     /// Linien in Ansicht und Schnitt.

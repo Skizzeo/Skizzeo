@@ -16,6 +16,7 @@
 //! ([`sk_model::Model::add_parcel`]), auch ohne Lageplan.
 
 mod fang;
+pub(crate) mod griffe;
 
 use crate::camera::Camera;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, Id, Props, Section, ViewKind};
@@ -693,8 +694,9 @@ impl App {
     /// Ereignis genommen hat. Ein geschlossener Umriss wird eine Fläche
     /// (ein Schritt) und ist dann gewählt.
     pub(crate) fn flaeche_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
+        // ohne Werkzeug die Griffe der Grenze (I3)
         if !self.platte.leiste.werkzeug.aktiv || self.ui.view != ViewKind::Plan {
-            return false;
+            return self.grenz_handle(ev, vw, vh, sc);
         }
         let vor = self.platte.leiste.werkzeug.ecken().len();
         let rev = self.scene.model().revision();
@@ -710,7 +712,7 @@ impl App {
     /// und Bauteile zeigen dann keinen Hover (H-189c).
     pub(crate) fn nord_hover(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
         self.nord_handle(ev, vw, vh, sc)
-            && self.platte.leiste.werkzeug.aktiv
+            && (self.platte.leiste.werkzeug.aktiv || self.platte.griffe.busy())
             && self.ui.view == ViewKind::Plan
     }
 
@@ -757,6 +759,9 @@ impl App {
 
     /// Esc beim Zeichnen.
     pub(crate) fn flaeche_escape(&mut self) -> bool {
+        if self.grenz_escape() {
+            return true;
+        }
         if !self.platte.leiste.werkzeug.escape() {
             return false;
         }
@@ -847,6 +852,7 @@ impl App {
             || self.edit.is_dragging()
             || self.drains.is_dragging()
             || self.platte.leiste.werkzeug.zeichnet()
+            || self.platte.griffe.zieht()
     }
 
     /// Rückgängig und Wiederherstellen (Knopf, Menü, Kürzel) beim Zeichnen:
@@ -871,6 +877,10 @@ impl App {
     /// wenn Entf den Bauteilen gilt.
     pub(crate) fn flaeche_entf(&mut self) -> bool {
         if self.im_zug() {
+            return true;
+        }
+        // eine Ecke der Grenze unter der Maus (I3)
+        if self.grenz_entf() {
             return true;
         }
         if self.picking.flaeche.is_none() || !self.picking.selected.is_empty() {
@@ -1138,6 +1148,7 @@ impl App {
         let m = self.scene.model();
         let z = m.terrain_z();
         let mut out = self.platte.leiste.werkzeug.linien(z, scale, &self.theme);
+        out.extend(self.grenz_linien(z, scale, &self.theme));
         if let Some(p) = self.picking.flaeche.and_then(|i| m.site_patches().get(i)) {
             let h0 = m.terrain_nhn().unwrap_or(0.0);
             let n = p.outline.len();

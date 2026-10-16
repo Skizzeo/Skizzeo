@@ -50,6 +50,12 @@ impl Scene {
         ok
     }
 
+    /// Flurstück `i` beim Ziehen eines Griffs (I3), im offenen Schritt;
+    /// `false`, wenn sich nichts ändert oder die Grenze so nicht geht.
+    pub fn grenze_ziehen(&mut self, i: usize, ring: &[[f64; 2]]) -> bool {
+        self.model.in_step() && self.model.set_parcel_ring(i, ring)
+    }
+
     /// OK Gelände an der Gründung des aktiven Gebäudes beim Ziehen (Kote
     /// `z`, Gelände Thema 1), geklemmt. Seine Gründung folgt; neu sind nur
     /// seine Züge mit Sohlplatte, denn die Kanten teilt der Netzbau ohnehin
