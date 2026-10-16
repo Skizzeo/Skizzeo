@@ -521,6 +521,54 @@ mod tests {
         m.rollback();
     }
 
+    /// Ohne `[location]` schreibt Setzen, Ändern und Zurückholen keine
+    /// Höhe von ±0,00 in die Datei, auch keine „-0“ (Test B-237a).
+    #[test]
+    fn datei_ohne_lage_bleibt() {
+        let mut m = haus();
+        assert!(!crate::szo::write(&m).contains("nhn="));
+        m.begin("Höhenpunkt");
+        let i = m.add_terrain_points(&[[15000.0, 4000.0, -200.0]])[0];
+        m.commit();
+        let p = m.terrain_spots()[i].p;
+        m.begin("Höhe");
+        assert!(m.move_terrain_points(&[(i, [p[0], p[1], p[2] + 300.0])]));
+        m.commit();
+        m.begin("Löschen");
+        assert!(m.remove_terrain_points(&[i]));
+        m.commit();
+        let text = crate::szo::write(&m);
+        assert!(!text.contains("nhn="), "{text}");
+    }
+
+    /// Drei Messpunkte geben ein Dreieck, in der Einzahl (Test zu R7).
+    #[test]
+    fn ein_dreieck() {
+        let mut m = haus();
+        let mut t = Terrain::new(Crs::Local);
+        t.src = "drei.csv".into();
+        for (k, (e, n)) in [(-20.0, -20.0), (40.0, -20.0), (10.0, 40.0)]
+            .into_iter()
+            .enumerate()
+        {
+            t.points.push(TerrainPoint {
+                nr: format!("{}", k + 1),
+                e,
+                n,
+                h: 10.0,
+                code: String::new(),
+                off: false,
+                hand: false,
+                gemessen: None,
+            });
+        }
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let h = crate::qto_earth::netz_herkunft(&m).unwrap();
+        assert!(h.ends_with(", 1 Dreieck"), "{h}");
+    }
+
     /// Nummern zählen hinter der höchsten weiter.
     #[test]
     fn nummern() {

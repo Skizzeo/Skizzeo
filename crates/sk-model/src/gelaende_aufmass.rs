@@ -1205,7 +1205,13 @@ impl Model {
     pub(super) fn terrain_nhn_merken(&mut self) {
         if self.terrain().is_some_and(|t| t.href == HeightRef::High) {
             if let Some(h) = self.terrain_nhn() {
-                let h = (h * 1000.0).round() / 1000.0;
+                // + 0,0 macht aus −0 eine 0 (Test B-237a)
+                let h = (h * 1000.0).round() / 1000.0 + 0.0;
+                // ohne [location] gilt 0,00 (gelaende_eben); eine Null zu
+                // schreiben änderte nur die Datei (Test B-237a)
+                if h == 0.0 && self.location().nhn.is_none() {
+                    return;
+                }
                 let l = Location {
                     nhn: Some(h),
                     ..self.location().normalized()

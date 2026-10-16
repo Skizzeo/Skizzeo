@@ -122,9 +122,10 @@ pub fn netz_herkunft(m: &Model) -> Option<String> {
     let n = t.mesh().netz.dreiecke.len();
     let vom = datum(&t.read).map_or(String::new(), |d| format!(" vom {d}"));
     Some(format!(
-        "Höhenaufmaß {}{vom}, {} Dreiecke{}{}{}",
+        "Höhenaufmaß {}{vom}, {} {}{}{}{}",
         t.src,
         tausend(n),
+        if n == 1 { "Dreieck" } else { "Dreiecke" },
         klammer(t, |p| p.hand && !p.off, "von Hand ergänzt"),
         geaenderte(t),
         klammer(t, nicht_verwendet, "nicht verwendet"),
