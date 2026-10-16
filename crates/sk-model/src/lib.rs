@@ -121,6 +121,9 @@ pub use model::{
 pub use model::{EckeFehler, Fangziele, OpeningFault, Vereint, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{FreieRaumnamen, Space, SPACE_SEQ};
 pub use model::{
+    HouseStrip, STRIP_FALL, STRIP_FALL_RANGE, STRIP_WIDTH, STRIP_WIDTH_RANGE, STRIP_Z,
+};
+pub use model::{
     PatchHeight, PlannedTerrain, SiteSoil, TerrainPatch, PATCH_FALL_MAX, PATCH_HATCH, PATCH_SLOPE,
     PATCH_SLOPE_RANGE, PATCH_XY_MAX, PATCH_Z_MAX,
 };

@@ -402,6 +402,7 @@ impl Field {
             )
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
             || self == Field::Gelaende(GelaendeFeld::Hoehe)
+            || self == Field::Gelaende(GelaendeFeld::Breite)
     }
 
     /// Zahl in Prozent, ohne Umrechnung (Gefälle).

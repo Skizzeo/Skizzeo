@@ -426,6 +426,12 @@ pub use gelaende_flaeche::{
     PATCH_SLOPE_RANGE, PATCH_XY_MAX, PATCH_Z_MAX,
 };
 
+#[path = "gelaende_haus.rs"]
+mod gelaende_haus;
+pub use gelaende_haus::{
+    HouseStrip, STRIP_FALL, STRIP_FALL_RANGE, STRIP_WIDTH, STRIP_WIDTH_RANGE, STRIP_Z,
+};
+
 #[path = "gelaende_lageplan.rs"]
 mod gelaende_lageplan;
 pub use gelaende_lageplan::{affine_apply, Affine, SitePlan, Underlay, UnderlayKind};
@@ -3395,6 +3401,8 @@ impl Model {
             self.sync_soffits_mit(scope, Some(w.untersicht));
             self.sync_terraces_mit(scope, Some(w.terrasse));
             self.sync_flat_roofs_mit(scope, Some(w.flachdach));
+            // „Gelände ans Haus“ folgt dem Außenumriss
+            self.sync_house_strips();
             self.terrain_nhn_merken();
         }
         if let Some(id) = self.locked_change() {

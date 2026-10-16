@@ -253,7 +253,20 @@ impl Gelaende {
         let frei = |q: P2| (!g.im_haus(q)).then(|| g.zeigen(g.innen(q))).flatten();
         let urgelaende = |q: P2| frei(q).filter(|_| ur.is_empty() || !im_plan(q));
         let mut zahlen = hoehenzahlen(&linien, h0, urgelaende);
-        zahlen.extend(flaechenzahlen(&plan.outlines, h0, frei));
+        // Streifen am Haus: in seiner größten Teilfläche, nicht in der
+        // Mitte des Umrisses (dort steht das Haus)
+        let (streifen, flaechen): (Vec<_>, Vec<_>) = plan
+            .outlines
+            .iter()
+            .zip(plan.strip_marks.iter().chain(std::iter::repeat(&None)))
+            .partition(|(_, s)| s.is_some());
+        let flaechen: Vec<Vec<Vec3>> = flaechen.into_iter().map(|(r, _)| r.clone()).collect();
+        zahlen.extend(flaechenzahlen(&flaechen, h0, frei));
+        zahlen.extend(streifen.into_iter().filter_map(|(_, q)| {
+            let q = (*q)?;
+            let voll = frei([q.x, q.y])?;
+            Some(([q.x, q.y], 0.0, q.z, nhn_text(q.z / 1000.0 + h0), voll))
+        }));
         let mut linien: Vec<(f64, [P2; 2], bool)> = linien
             .iter()
             .flat_map(|(z, p, haupt)| p.windows(2).map(move |w| (*z, [w[0], w[1]], *haupt)))
