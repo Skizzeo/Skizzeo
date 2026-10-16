@@ -581,13 +581,30 @@ impl Model {
             let u = (flach(*p) - a).dot(d);
             ((flach(*p) - a).dot(n) - aussen).abs() < 1.0 && u > -1.0 && u < len + 1.0
         };
-        self.elements
-            .iter()
-            .filter_map(|(id, e)| match &e.kind {
-                ElementKind::Opening(o) if e.storey == r.storey && o.path.iter().any(auf) => {
-                    Some((id, o.path.iter().all(auf)))
+        // Nur die Öffnungen der Felder um die Außenfläche: Das läuft beim
+        // Zeigen je Mausbewegung und wächst sonst mit dem Modell (Review
+        // #222 B1). 2 mm Rand decken den Streifen von 1 mm um die Fläche
+        // in jeder Lage der Wand.
+        let kandidaten: Box<dyn Iterator<Item = ElementId>> = match self.verz() {
+            Some(v) => {
+                let (fa, fb) = (a + n * aussen, b + n * aussen);
+                let rand = vec3(2.0, 2.0, 0.0);
+                let lo = vec3(fa.x.min(fb.x), fa.y.min(fb.y), 0.0) - rand;
+                let hi = vec3(fa.x.max(fb.x), fa.y.max(fb.y), 0.0) + rand;
+                let building = self.storey(r.storey).and_then(|s| s.building);
+                Box::new(v.oeffnungen_bei(building, lo, hi).into_iter())
+            }
+            None => Box::new(self.elements.ids()),
+        };
+        kandidaten
+            .filter_map(|id| {
+                let e = self.element(id)?;
+                match &e.kind {
+                    ElementKind::Opening(o) if e.storey == r.storey && o.path.iter().any(auf) => {
+                        Some((id, o.path.iter().all(auf)))
+                    }
+                    _ => None,
                 }
-                _ => None,
             })
             .collect()
     }
@@ -1504,6 +1521,12 @@ mod tests {
         let v = m.vereinen_punkte(a, b).unwrap();
         assert_eq!((v.zug.0, v.kennung), (r, Some(b)));
         assert!(v.versatz.length() > 1.0, "gespiegelt");
+        // Die Öffnung aus dem Verzeichnis wie über das ganze Modell
+        assert_eq!(m.oeffnungen_aussen(v.weg), vec![(id, true)]);
+        assert_eq!(
+            m.ohne_verzeichnis(|| m.oeffnungen_aussen(v.weg)),
+            vec![(id, true)]
+        );
         m.verlaengern(a, b).unwrap();
         let w = m.wall_at(r, 1).unwrap();
         assert_eq!(m.element(w).unwrap().guid, gb);
@@ -1570,6 +1593,7 @@ mod tests {
         let (m, a, b, id, _) = aufbau(true);
         assert!(id.is_some(), "Ecköffnung über den Anschluss");
         assert!(m.vereinen_punkte(a, b).is_none());
+        assert!(m.ohne_verzeichnis(|| m.vereinen_punkte(a, b)).is_none());
         // Gleichläufig: Außenflächen fallen zusammen, es wird vereint, die
         // Ecköffnung bleibt
         let (mut m, a, b, id, o) = aufbau(false);
