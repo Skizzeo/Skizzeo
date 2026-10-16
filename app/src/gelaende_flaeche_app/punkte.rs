@@ -97,7 +97,7 @@ struct Zug {
 #[derive(Clone, Debug, Default)]
 pub struct Punkte {
     /// Die gewählten Punkte (Nummern).
-    gewaehlt: Vec<String>,
+    pub(super) gewaehlt: Vec<String>,
     hover: Option<Ziel>,
     zug: Option<Zug>,
     /// Der letzte Klick ins Leere, für den Doppelklick.
@@ -184,7 +184,7 @@ impl App {
 
     /// Die Punkte im Gelände mit Nummer: gemerkt, wenn der Stand des
     /// Modells passt, sonst neu.
-    fn spots(&self) -> Spots {
+    pub(super) fn spots(&self) -> Spots {
         let m = self.scene.model();
         if let Some((r, s)) = &self.platte.punkte.merker {
             if *r == m.revision() {

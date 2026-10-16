@@ -63,18 +63,19 @@ pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)>
 }
 
 /// Was das Netz außer den Platten bestimmt: Ansicht, Schnittebene,
-/// Schlüssel von Rasen und Erdreich, ausgeblendet.
-pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool);
+/// Schlüssel von Rasen und Erdreich, ausgeblendet, Hilfsnetz in 3D
+/// (Jörns §4.3a).
+pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool, bool);
 
 /// Was im Renderer liegt: Fassung der Platten und die [`Sicht`], die
 /// Schnittebene als Bits.
-type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool);
+type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool, bool);
 
 /// Fassung, Ziffernhöhe, Zeichentabelle und Farben der Höhenzahlen.
 type ZahlenKey = (u64, u64, u64, u64);
 
 fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
-    (fassung, s.0, s.1.map(bits), s.2, s.3)
+    (fassung, s.0, s.1.map(bits), s.2, s.3, s.4)
 }
 
 /// Neue Platten, ihre Eingaben, das Gelände und ihr Netz zur Sicht beim
@@ -514,7 +515,7 @@ impl Platte {
                 return Some(n.clone());
             }
         }
-        let (view, _, _, hidden) = sicht;
+        let (view, _, _, hidden, _) = sicht;
         let g = match &self.gelaende {
             Some(g) if !hidden && matches!(view, ViewKind::Persp | ViewKind::Section) => g.clone(),
             g => {
@@ -806,10 +807,12 @@ pub(crate) fn netz(
 /// Netz zur Sicht: mit Aufmaß das Gelände (Körper in 3D, Schnittflächen im
 /// Schnitt, sonst keins), ohne die Platten; ausgeblendet leer.
 fn netz_der_sicht(p: &[TerrainPlate], g: Option<&Gelaende>, s: Sicht) -> MeshData {
-    let (view, plane, keys, hidden) = s;
+    let (view, plane, keys, hidden, hilfsnetz) = s;
     match (g, view, plane) {
         _ if hidden => MeshData::default(),
-        (Some(g), ViewKind::Persp, _) => crate::scene::mesh_of(&gelaende_netz::koerper(g, keys)),
+        (Some(g), ViewKind::Persp, _) => {
+            crate::scene::mesh_of(&gelaende_netz::koerper_mit_netz(g, keys, hilfsnetz))
+        }
         (Some(g), ViewKind::Section, Some((p0, n))) => {
             let f = SectionFrame::new(p0, n);
             crate::scene::mesh_of(&gelaende_netz::kappen(g, &f, p0, keys[1]))
@@ -960,6 +963,7 @@ impl App {
             self.plane(),
             keys,
             self.scene.terrain_hidden(),
+            self.ui.view == ViewKind::Persp && self.netz_an(),
         )
     }
 
@@ -1276,7 +1280,7 @@ mod tests {
     }
 
     /// Sicht der Tests: 3D, Rasen, Erdreich und blasser Rasen 40 bis 42.
-    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41, 42], false);
+    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41, 42], false, false);
 
     /// Erste Wand des Modells um `d` verschieben, ein geschlossener Schritt.
     fn wand_schieben(s: &mut crate::scene::Scene, d: f64) {
@@ -1408,7 +1412,10 @@ mod tests {
         assert_eq!(n.edges, soll.edges);
         // ausgeblendet: leeres Netz
         wand_schieben(&mut s, 500.0);
-        pl.nachziehen(s.model(), (ViewKind::Persp, None, [40, 41, 42], true));
+        pl.nachziehen(
+            s.model(),
+            (ViewKind::Persp, None, [40, 41, 42], true, false),
+        );
         assert!(pl.warten());
         assert!(pl.fertig.take().unwrap().1.faces.is_empty());
         // Esc: neue Revision, dieselben Platten
@@ -1516,7 +1523,7 @@ mod tests {
         assert!((breit(&l[k]) - 2.0 * breit(&vorher[k])).abs() < 1e-3);
         // Körper und Schnitt kommen aus einem Faden; der Körper bleibt für
         // den Rückweg gemerkt (#129 B4)
-        let persp: Sicht = (ViewKind::Persp, None, [1, 2, 3], false);
+        let persp: Sicht = (ViewKind::Persp, None, [1, 2, 3], false, false);
         let key = netz_key(pl.fassung, &persp);
         pl.fertig = None;
         assert!(pl.netz_zur_sicht(key, persp).is_none());
@@ -1534,7 +1541,7 @@ mod tests {
         assert!(!pl.rechnet());
         let g = Gelaende::aus(s.model());
         assert_eq!(n.faces, netz_der_sicht(&[], g.as_ref(), persp).faces);
-        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false);
+        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false, false);
         let leer = pl.netz_zur_sicht(netz_key(pl.fassung, &grund), grund);
         assert!(leer.unwrap().faces.is_empty(), "Grundriss ohne Faden");
         let wieder = pl.netz_zur_sicht(key, persp).expect("gemerkt");

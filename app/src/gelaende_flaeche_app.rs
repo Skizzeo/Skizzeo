@@ -17,6 +17,7 @@
 
 mod fang;
 pub(crate) mod griffe;
+mod netz;
 pub(crate) mod punkte;
 
 use crate::camera::Camera;
@@ -727,6 +728,9 @@ impl App {
     pub(crate) fn flaeche_taste(&mut self, key: Key, mods: Modifiers) -> bool {
         let mut out = Ausgang::default();
         let vor = self.platte.leiste.werkzeug.ecken().len();
+        if self.netz_taste(key, mods) {
+            return true;
+        }
         if self.ui.view != ViewKind::Plan {
             return false;
         }
@@ -1164,6 +1168,7 @@ impl App {
         let mut out = self.platte.leiste.werkzeug.linien(z, scale, &self.theme);
         out.extend(self.grenz_linien(z, scale, &self.theme));
         out.extend(self.punkte_linien(z, scale, &self.theme));
+        out.extend(self.netz_marken(scale, &self.theme));
         if let Some(p) = self.picking.flaeche.and_then(|i| m.site_patches().get(i)) {
             let h0 = m.terrain_nhn().unwrap_or(0.0);
             let n = p.outline.len();

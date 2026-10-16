@@ -57,6 +57,8 @@ pub enum GelaendeKnopf {
     AmHaus,
     /// Werkzeug „Fläche zeichnen“ (G3d).
     Flaeche,
+    /// Hilfsnetz in 3D ein und aus (Jörns §4.3a, auch Taste N).
+    Netz,
     /// Dasselbe Werkzeug als „Grenze zeichnen“: ein Grundstück ohne
     /// Lageplan (I2).
     Grenze,
@@ -87,6 +89,7 @@ impl GelaendeKnopf {
             | GelaendeKnopf::Zuschnitt(_)
             | GelaendeKnopf::AmHaus
             | GelaendeKnopf::Flaeche
+            | GelaendeKnopf::Netz
             | GelaendeKnopf::Grenze
             | GelaendeKnopf::Befestigt
             | GelaendeKnopf::Loeschen
@@ -152,6 +155,8 @@ pub struct GelaendeLeiste {
     pub uebernehmen: bool,
     /// Es gibt eine Grenze: „An Grenze ausrichten“ und Zuschnitt.
     pub grenze: bool,
+    /// Das Hilfsnetz in 3D ist an (Knopf „Netz“ hervorgehoben).
+    pub netz: bool,
     /// Höhenlage absolut (sonst über Gelände).
     pub absolut: bool,
     pub zuschnitt: Option<Show>,
@@ -235,6 +240,10 @@ impl Ui {
         // nur in der Hilfe (Bedienbarkeit B zu #234)
         if !l.zeichnen && !l.grenze_zeichnen {
             rows.extend(HOEHENPUNKT.map(Row::Hint));
+        }
+        // das Hilfsnetz in 3D braucht Punkte (§4.3a)
+        if l.hoehen {
+            rows.push(Row::Button(Id::Gelaende(K::Netz), "Netz"));
         }
         if l.uebernehmen {
             rows.push(Row::Button(
@@ -377,6 +386,7 @@ impl Ui {
             GelaendeKnopf::Zuschnitt(s) => l.zuschnitt == Some(s),
             GelaendeKnopf::Flaeche => l.zeichnen,
             GelaendeKnopf::Grenze => l.grenze_zeichnen,
+            GelaendeKnopf::Netz => l.netz,
             GelaendeKnopf::Lageplan
             | GelaendeKnopf::Uebernehmen
             | GelaendeKnopf::Hoehen
@@ -430,6 +440,7 @@ mod tests {
                 K::Leiste,
                 K::Lageplan,
                 K::Hoehen,
+                K::Netz,
                 K::Verschieben,
                 K::Drehen,
                 K::Ausrichten,
@@ -478,6 +489,20 @@ mod tests {
         assert!(!ui.is_on(Id::Gelaende(K::Flaeche)));
         assert!(hinweise(&ui).contains(&"Klick wählt eine Fläche.".into()));
         assert!(hinweise(&ui).starts_with(&HOEHENPUNKT.map(String::from)));
+        // „Netz“ (§4.3a) nur mit Punkten, hervorgehoben, solange es an ist
+        assert!(knoepfe(&ui).contains(&Id::Gelaende(K::Netz)));
+        assert!(!ui.is_on(Id::Gelaende(K::Netz)));
+        ui.gelaende = Some(GelaendeLeiste {
+            netz: true,
+            ..leiste()
+        });
+        assert!(ui.is_on(Id::Gelaende(K::Netz)));
+        ui.gelaende = Some(GelaendeLeiste {
+            hoehen: false,
+            ..leiste()
+        });
+        assert!(!knoepfe(&ui).contains(&Id::Gelaende(K::Netz)));
+        ui.gelaende = Some(leiste());
         ui.gelaende = Some(GelaendeLeiste {
             zeichnen: true,
             ..leiste()
