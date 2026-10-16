@@ -735,6 +735,56 @@ fn stuetze_um_pfeiler_nur_einmal() {
     assert_eq!(r.grund, 7877);
 }
 
+/// Eine Stütze 30/30 neben dem Pfeiler 40/40 aus dem Wandring, mit Putz
+/// 0,33 × 0,33 m = 0,1089 m², überdeckt ihn um 0,13 × 0,33 m: Die Schwelle
+/// 0,1 m² gilt für die ganze Stütze, abgezogen wird ihr Rest 0,066 m²
+/// (VOB A-241a).
+#[test]
+fn stuetze_neben_pfeiler_schwelle_ganz() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4000.0, 4000.0),
+            (4000.0, 4400.0),
+            (4400.0, 4400.0),
+            (4400.0, 4000.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    let (x, y) = ((4300.0, 4600.0), (4050.0, 4350.0));
+    let stuetze = Einbau {
+        id: h.w[2],
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(x.0, y.0, 0.0),
+            vec3(x.1, y.0, 0.0),
+            vec3(x.1, y.1, 0.0),
+            vec3(x.0, y.1, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+        loch: false,
+    };
+    let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(vec![stuetze]));
+    let abzug: Vec<f64> = r
+        .teile
+        .iter()
+        .filter(|t| t.art == Art::Abzug)
+        .map(|t| t.wert)
+        .collect();
+    assert_eq!(abzug.len(), 2, "{abzug:?}");
+    let rest = 330.0 * 330.0 - 130.0 * 330.0;
+    assert!((abzug[1] + rest).abs() <= 1e3, "{abzug:?}");
+    assert!(!r
+        .teile
+        .iter()
+        .any(|t| t.text.contains("bleibt in der Fläche")));
+    // 79,4609 − 0,1849 − 0,0660
+    assert_eq!(r.grund, 7921);
+}
+
 /// Die Treppe im EG (16 Steigungen, 4,20 × 1,00 m) steht im OG als
 /// Treppenloch und geht dort ab; eine Treppe im OG genau darüber zieht
 /// denselben Grundriss nicht noch einmal ab (Review #195 H-195j).
@@ -783,7 +833,10 @@ fn treppenloch_im_geschoss_darueber() {
     let (og1, abzug_og) = grund(&m, og);
     assert!(!abzug_eg.contains("Treppenloch"), "{abzug_eg}");
     assert!(
-        abzug_og.starts_with("Treppenloch ") && abzug_og.ends_with("4,200 × 1,000 (Deckenöffnung)"),
+        abzug_og.starts_with("Treppenloch ")
+            && abzug_og.ends_with(
+                "4,200 × 1,000 angenommen wie Treppe darunter (Deckenöffnung, § 3 Abs. 1)"
+            ),
         "{abzug_og}"
     );
     assert_eq!((eg0 - eg1, og0 - og1), (420, 420));
