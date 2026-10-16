@@ -4,13 +4,17 @@
 //! [tpatch] pts=0,0;10000,0;10000,8000;0,8000 z=-150
 //! [tpatch] pts=… z=-150 fall=2 dir=90 n=1.5,0,1.5,2 paved=1
 //! [tpatch] pts=… ecken=0:24.35;2:24.1 href=abs
+//! [tpatch] pts=… z=-150 bau=… innen=… breite=1000 gefaelle=2
 //! [sitesoil] key=project spread=250 reuse=0.9
 //! ```
 //!
 //! Umriss in mm im Modell, Höhe in mm über ±0,00 oder mit `href=abs` in m
 //! ü. NHN, so wie eingegeben. `fall` in Prozent in Richtung `dir` (Grad),
 //! `ecken` bis drei Höhen an Ecken (Nummer ab 0), `n` die Böschung 1:n
-//! ringsum oder je Kante (0 senkrecht), ohne `n` die Vorgabe.
+//! ringsum oder je Kante (0 senkrecht), ohne `n` die Vorgabe. Ein
+//! Streifen „Gelände ans Haus“ nennt sein Gebäude (`bau`), dessen
+//! Außenumriss (`innen`), Breite in mm und Gefälle vom Haus weg in Prozent;
+//! `pts` ist sein Außenrand, `z` die Höhe am Haus.
 //! `[sitesoil]` nur mit Werten, die von der Vorgabe abweichen. Ohne Flächen
 //! keine Zeile; Speichern, Öffnen, Speichern bleibt bytegleich. Eine Zeile,
 //! die nicht gilt, gibt einen Hinweis und bleibt roh stehen (Regel 72,
@@ -18,7 +22,7 @@
 //! roh dahinter (Regel 116).
 
 use super::{Line, LoadError, Record};
-use crate::model::{PatchHeight, Project, SiteSoil, TerrainPatch};
+use crate::model::{HouseStrip, PatchHeight, Project, SiteSoil, TerrainPatch};
 use crate::Model;
 
 /// Abschnitte der Geländeflächen.
@@ -53,6 +57,13 @@ pub(super) fn write(m: &Model, out: &mut String) {
                 let t: Vec<String> = e.iter().map(|(i, z)| format!("{i}:{z}")).collect();
                 l = l.word("ecken", &t.join(";"));
             }
+        }
+        if let Some(s) = &f.house {
+            l = l
+                .guid("bau", Some(s.building))
+                .word("innen", &paare(&s.house))
+                .num("breite", s.width)
+                .num("gefaelle", s.fall);
         }
         if f.abs {
             l = l.word("href", "abs");
@@ -162,12 +173,17 @@ fn patch(r: &Record) -> Result<TerrainPatch, String> {
         Some("1") => true,
         Some(v) => return Err(format!("„paved={v}“ nicht 0 oder 1")),
     };
+    let house = match roh("bau") {
+        None => None,
+        Some(_) => Some(streifen(r)?),
+    };
     let f = TerrainPatch {
         outline,
         height,
         abs,
         slopes,
         paved,
+        house,
     };
     if !f.valid() {
         return Err(
@@ -177,6 +193,32 @@ fn patch(r: &Record) -> Result<TerrainPatch, String> {
         );
     }
     Ok(f)
+}
+
+/// Gebäude, Hausumriss, Breite und Gefälle eines Streifens am Haus.
+fn streifen(r: &Record) -> Result<HouseStrip, String> {
+    let building = r
+        .guid("bau")
+        .map_err(|_| "„bau“ ist keine Kennung".to_string())?;
+    let innen = r.opt("innen").ok_or("„innen“ fehlt")?;
+    let house = innen
+        .split(';')
+        .map(|p| {
+            let (x, y) = p.split_once(',')?;
+            Some([zahl(x)?, zahl(y)?])
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| format!("„innen={innen}“ unlesbar"))?;
+    let wert = |k: &str| {
+        let v = r.opt(k).ok_or_else(|| format!("„{k}“ fehlt"))?;
+        zahl(v).ok_or_else(|| format!("„{k}={v}“ unlesbar"))
+    };
+    Ok(HouseStrip {
+        building,
+        house,
+        width: wert("breite")?,
+        fall: wert("gefaelle")?,
+    })
 }
 
 /// Geländeflächen und Werte des Geländebaus ins Projekt.
@@ -289,6 +331,7 @@ mod tests {
             abs: false,
             slopes: vec![1.5, 0.0, 1.5, 2.0],
             paved: true,
+            house: None,
         });
         m.add_site_patch(TerrainPatch {
             outline: q,
@@ -296,6 +339,7 @@ mod tests {
             abs: true,
             slopes: vec![2.0],
             paved: false,
+            house: None,
         });
         m.set_site_soil(SiteSoil {
             spread: 250.0,

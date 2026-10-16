@@ -18,7 +18,8 @@ use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, Id, Props, Section
 use crate::App;
 use sk_math::vec3;
 use sk_model::{
-    Model, PatchHeight, SiteSoil, TerrainPatch, PATCH_SLOPE, PATCH_SLOPE_RANGE, PATCH_XY_MAX,
+    HouseStrip, Model, PatchHeight, SiteSoil, TerrainPatch, PATCH_SLOPE, PATCH_SLOPE_RANGE,
+    PATCH_XY_MAX, STRIP_FALL_RANGE, STRIP_WIDTH, STRIP_WIDTH_RANGE,
 };
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
@@ -34,6 +35,23 @@ const SCHLIESSEN_PX: f64 = 10.0;
 pub const LABEL_NEU: &str = "Geländefläche";
 pub const LABEL_AENDERN: &str = "Geländefläche ändern";
 pub const LABEL_LOESCHEN: &str = "Geländefläche löschen";
+pub const LABEL_HAUS: &str = "Gelände ans Haus";
+/// „Gelände ans Haus“ ohne Haus mit Gründung bzw. um einen Umriss, um den
+/// sich kein Streifen legen lässt.
+pub const KEIN_HAUS: &str = "Gelände ans Haus braucht ein Haus mit Außenwänden und Gründung.";
+pub const NICHT_UM: &str = "Um dieses Haus lässt sich kein Streifen legen: Eine Einbuchtung ist \
+    schmaler als 0,40 m.";
+/// Der neue Streifen ist schmaler als 1,00 m, weil eine Einbuchtung nicht
+/// mehr zulässt (Bedienbarkeit zu #226).
+pub const SCHMAL: &str = "Der Streifen ist {} m breit: Für 1,00 m ist eine Einbuchtung zu schmal.";
+/// Beim Schritt: Der Streifen folgt dem Haus schmaler, oder gar nicht.
+pub const SCHMALER: &str = "Der Streifen am Haus ist jetzt {} m breit: Breiter passt er nicht in \
+    eine Einbuchtung.";
+pub const STEHT: &str =
+    "Der Streifen am Haus folgt dem Haus nicht, weil eine Einbuchtung schmaler \
+    als 0,40 m ist; er bleibt, wie er war.";
+/// Das Haus hat schon einen Streifen: er ist jetzt gewählt.
+pub const SCHON: &str = "Das Haus hat schon einen Streifen; er ist gewählt.";
 /// „Geländebau“ verstand niemand (Bedienbarkeit, später zu #189).
 pub const LABEL_BODEN: &str = "Erdarbeiten am Grundstück";
 /// Was die Statuszeile sagt, wenn sich die gezeichnete Fläche nicht bauen
@@ -59,6 +77,8 @@ pub const ZU_WEIT: &str = "Die Fläche liegt zu weit außerhalb; bitte näher am
 const HINWEIS: &str = "Höhe über ±0,00. Böschung 0: senkrechter Rand.";
 const HINWEIS_BEFESTIGT: &str = "Höhe über ±0,00. Böschung 0: senkrechter Rand. Aufbau der \
     befestigten Fläche wird noch nicht gerechnet, Auftrag bis OK Fläche.";
+const HINWEIS_HAUS: &str = "Höhe über ±0,00 am Haus, Gefälle vom Haus weg. Der Streifen folgt \
+    dem Haus. Böschung 0: senkrechter Rand.";
 const HINWEIS_BODEN: &str = "Gilt für alle Geländeflächen. Eigenboden fest zu eingebaut unter 1: \
     Boden setzt sich beim Verdichten; ändert nur Eigenboden und Lieferung.";
 
@@ -350,7 +370,7 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, f)| innen(&f.outline, p))
+        .find(|(_, f)| f.contains(p))
         .map(|(i, _)| i)
 }
 
@@ -445,18 +465,6 @@ fn mitte(ring: &[[f64; 2]]) -> [f64; 2] {
         .map_or(c, |u| [(u[0] + u[1]) / 2.0, c[1]])
 }
 
-/// Fläche eines Umrisses (mm²).
-fn inhalt(ring: &[[f64; 2]]) -> f64 {
-    let n = ring.len();
-    let s: f64 = (0..n)
-        .map(|i| {
-            let (a, b) = (ring[i], ring[(i + 1) % n]);
-            a[0] * b[1] - b[0] * a[1]
-        })
-        .sum();
-    s.abs() / 2.0
-}
-
 fn de(v: f64, stellen: usize) -> String {
     format!("{v:.stellen$}").replace('.', ",")
 }
@@ -500,24 +508,54 @@ fn boeschung(p: &TerrainPatch) -> Option<f64> {
 /// Paneel „Eigenschaften“ der Fläche `i`.
 pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
     let p = m.site_patches().get(i)?;
+    let streifen = p.house.as_ref();
     let mut values = vec![
-        ("Kategorie", "Geländefläche".to_string()),
-        ("Fläche", format!("{} m²", de(inhalt(&p.outline) / 1e6, 2))),
-        ("Ecken", p.outline.len().to_string()),
+        (
+            "Kategorie",
+            match streifen {
+                Some(_) => LABEL_HAUS.to_string(),
+                None => "Geländefläche".to_string(),
+            },
+        ),
+        ("Fläche", format!("{} m²", de(p.area() / 1e6, 2))),
     ];
+    match streifen {
+        Some(s) => {
+            let name = m.buildings().iter().find(|(_, b)| b.guid == s.building);
+            values.extend(name.map(|(_, b)| ("Haus", b.name.clone())));
+        }
+        None => values.push(("Ecken", p.outline.len().to_string())),
+    }
     let mut fields = Vec::new();
-    // mit Aufmaß daneben die Höhe in m ü. NHN (Bedienbarkeit Gelände)
+    // mit Aufmaß daneben die Höhe in m ü. NHN (Bedienbarkeit Gelände); am
+    // Streifen die Höhe am Haus
+    let (hoehe, nhn) = match streifen {
+        Some(_) => ("Höhe am Haus", "am Haus ü. NHN"),
+        None => ("Höhe", "Höhe ü. NHN"),
+    };
     if let Some((z, h0)) = eben(p).zip(m.terrain_nhn()) {
-        values.push(("Höhe ü. NHN", format!("{} m", de(h0 + z / 1000.0, 2))));
+        values.push((nhn, format!("{} m", de(h0 + z / 1000.0, 2))));
     }
     match eben(p) {
         Some(z) => fields.push(feld(
             GelaendeFeld::Hoehe,
-            "Höhe",
+            hoehe,
             z,
             (-sk_model::PATCH_Z_MAX, sk_model::PATCH_Z_MAX),
         )),
         None => values.push(("Höhe", "geneigt, aus der Datei".to_string())),
+    }
+    if let Some(s) = streifen {
+        fields.push(feld(
+            GelaendeFeld::Breite,
+            "Breite",
+            s.width,
+            STRIP_WIDTH_RANGE,
+        ));
+        fields.push(FieldRow {
+            einheit: Some("%"),
+            ..feld(GelaendeFeld::Gefaelle, "Gefälle", s.fall, STRIP_FALL_RANGE)
+        });
     }
     match boeschung(p) {
         Some(n) => fields.push(FieldRow {
@@ -545,9 +583,17 @@ pub(crate) fn props(m: &Model, i: usize) -> Option<Props> {
         values,
         sections: vec![
             Section {
-                title: "Geländefläche",
+                title: if streifen.is_some() {
+                    LABEL_HAUS
+                } else {
+                    "Geländefläche"
+                },
                 fields,
-                hint: if p.paved { HINWEIS_BEFESTIGT } else { HINWEIS },
+                hint: match (streifen.is_some(), p.paved) {
+                    (true, _) => HINWEIS_HAUS,
+                    (false, true) => HINWEIS_BEFESTIGT,
+                    (false, false) => HINWEIS,
+                },
                 buttons: vec![
                     (Id::Gelaende(GelaendeKnopf::Befestigt), befestigt),
                     (Id::Gelaende(GelaendeKnopf::Loeschen), "Fläche löschen"),
@@ -583,6 +629,12 @@ pub(crate) fn mit_feld(p: &TerrainPatch, f: GelaendeFeld, v: f64) -> Option<Terr
     let mut q = p.clone();
     match f {
         GelaendeFeld::Hoehe => q.height = PatchHeight::Flat(v),
+        GelaendeFeld::Breite => {
+            let s = q.house.as_mut()?;
+            q.outline = HouseStrip::aussen(&s.house, v)?;
+            s.width = v;
+        }
+        GelaendeFeld::Gefaelle => q.house.as_mut()?.fall = v,
         GelaendeFeld::Boeschung => {
             let (a, b) = PATCH_SLOPE_RANGE;
             if v != 0.0 && !(a..=b).contains(&v) {
@@ -876,6 +928,7 @@ impl App {
                     );
                 }
             }
+            GelaendeKnopf::AmHaus => self.am_haus(),
             GelaendeKnopf::Befestigt => {
                 if let Some(i) = self.picking.flaeche {
                     let p = self.scene.model().site_patches().get(i).cloned();
@@ -901,7 +954,10 @@ impl App {
     /// gehört. Ein Wert, der nicht gilt, ändert nichts.
     pub(crate) fn flaeche_feld(&mut self, f: GelaendeFeld, v: f64) -> bool {
         match f {
-            GelaendeFeld::Hoehe | GelaendeFeld::Boeschung => {
+            GelaendeFeld::Hoehe
+            | GelaendeFeld::Boeschung
+            | GelaendeFeld::Breite
+            | GelaendeFeld::Gefaelle => {
                 let Some(i) = self.picking.flaeche else {
                     return true;
                 };
@@ -923,6 +979,65 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// „Gelände ans Haus“: den Streifen um das Haus der Höhenlage anlegen
+    /// und wählen; hat es schon einen, ihn wählen.
+    fn am_haus(&mut self) {
+        let m = self.scene.model();
+        let Some(b) = m.level_building() else {
+            self.status(crate::meldung::Meldung::satz(KEIN_HAUS), crate::NOTICE_TIME);
+            return;
+        };
+        if let Some(i) = m.house_strip_of(b) {
+            self.flaeche_waehlen(Some(i));
+            self.status(crate::meldung::Meldung::satz(SCHON), crate::NOTICE_TIME);
+            return;
+        }
+        let Some(p) = m.house_strip(b) else {
+            let satz = if m.house_ring(b).is_some() {
+                NICHT_UM
+            } else {
+                KEIN_HAUS
+            };
+            self.status(crate::meldung::Meldung::satz(satz), crate::NOTICE_TIME);
+            return;
+        };
+        let breite = p.house.as_ref().map_or(STRIP_WIDTH, |s| s.width);
+        let mut neu = None;
+        if self.flaeche_schritt(LABEL_HAUS, |m| {
+            neu = m.add_site_patch(p);
+            neu.is_some()
+        }) {
+            self.flaeche_waehlen(neu);
+            if neu.is_some_and(|i| self.scene.model().site_patch_overlaps(i)) {
+                let m = crate::meldung::Meldung::satz(sk_model::qto_earth::UEBERLAPPT);
+                self.status(m, crate::NOTICE_TIME);
+            } else if breite < STRIP_WIDTH {
+                let m = crate::meldung::Meldung::mit(SCHMAL, &[&de(breite / 1000.0, 2)]);
+                self.status(m, crate::NOTICE_TIME);
+            }
+        }
+        self.platte.leiste.neu = true;
+        self.gelaende_sync();
+    }
+
+    /// Je Durchlauf: meldet einmal, was der Abgleich der Streifen beim
+    /// letzten Schritt zu sagen hat, schmaler geworden oder stehen
+    /// geblieben (Bedienbarkeit zu #226).
+    pub(crate) fn streifen_pruefen(&mut self) {
+        let Some(n) = self.scene.model().house_strip_note() else {
+            return;
+        };
+        if n.serial == self.platte.streifen_gemeldet {
+            return;
+        }
+        self.platte.streifen_gemeldet = n.serial;
+        let m = match n.width {
+            Some(w) => crate::meldung::Meldung::mit(SCHMALER, &[&de(w / 1000.0, 2)]),
+            None => crate::meldung::Meldung::satz(STEHT),
+        };
+        self.status(m, crate::NOTICE_TIME);
     }
 
     /// Eine Änderung an den Flächen als ein Schritt; Bild und Mengen
@@ -1353,6 +1468,92 @@ mod tests {
         m.commit();
         let p = props(&m, 0).unwrap();
         assert!(p.values.contains(&("Höhe ü. NHN", "24,35 m".to_string())));
+    }
+
+    /// „Gelände ans Haus“: Das Paneel nennt den Streifen und sein Haus,
+    /// Höhe am Haus, Breite und Gefälle; ein Klick trifft ihn um das Haus,
+    /// nicht im Haus; Breite und Gefälle außerhalb ihrer Bereiche ändern
+    /// nichts.
+    #[test]
+    fn streifen_am_haus() {
+        let mut m = Model::with_seed(1);
+        let b = m.add_building(1);
+        let pts = [
+            punkt(7000.0, 6000.0),
+            punkt(7000.0, 14000.0),
+            punkt(17000.0, 14000.0),
+            punkt(17000.0, 6000.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let mut text = String::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                text.push_str(&format!("{} {} {} 24.5\n", i * 5 + j + 1, j * 5, i * 5));
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-15", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        assert!(m.set_terrain_nhn(24.95));
+        m.commit();
+        assert_eq!(m.level_building(), Some(b));
+        let s = m.house_strip(b).unwrap();
+        m.begin(LABEL_HAUS);
+        assert_eq!(m.add_site_patch(s), Some(0));
+        m.commit();
+        let p = props(&m, 0).unwrap();
+        assert!(p.values.contains(&("Kategorie", LABEL_HAUS.to_string())));
+        // 12 × 10 m außen ohne das Haus 10 × 8 m
+        assert!(
+            p.values.contains(&("Fläche", "40,00 m²".to_string())),
+            "{:?}",
+            p.values
+        );
+        assert!(p
+            .values
+            .contains(&("am Haus ü. NHN", "24,80 m".to_string())));
+        assert_eq!(p.sections[0].title, LABEL_HAUS);
+        assert_eq!(p.sections[0].hint, HINWEIS_HAUS);
+        let f: Vec<_> = p.sections[0]
+            .fields
+            .iter()
+            .map(|f| (f.label, f.value))
+            .collect();
+        assert_eq!(
+            f[..3],
+            [
+                ("Höhe am Haus", -150.0),
+                ("Breite", 1000.0),
+                ("Gefälle", 2.0)
+            ]
+        );
+        assert_eq!(flaeche_bei(&m, [6500.0, 10_000.0]), Some(0));
+        assert_eq!(flaeche_bei(&m, [12_000.0, 10_000.0]), None, "im Haus");
+        assert_eq!(flaeche_bei(&m, [5500.0, 10_000.0]), None);
+        let q = &m.site_patches()[0];
+        let breiter = mit_feld(q, GelaendeFeld::Breite, 1500.0).unwrap();
+        assert!(breiter.contains([5700.0, 10_000.0]));
+        assert!(mit_feld(q, GelaendeFeld::Breite, 100.0).is_none());
+        assert_eq!(
+            mit_feld(q, GelaendeFeld::Gefaelle, 5.0)
+                .unwrap()
+                .house
+                .unwrap()
+                .fall,
+            5.0
+        );
+        assert!(mit_feld(q, GelaendeFeld::Gefaelle, 30.0).is_none());
+        // eine gezeichnete Fläche kennt Breite und Gefälle nicht
+        let r = vec![[0.0, 0.0], [3000.0, 0.0], [3000.0, 3000.0], [0.0, 3000.0]];
+        let g = TerrainPatch::flat(r, 0.0);
+        assert!(mit_feld(&g, GelaendeFeld::Breite, 1500.0).is_none());
+        // die Sätze passen zu den Grenzen des Streifens (Bedienbarkeit zu
+        // #226): ein Platzhalter für die Breite, die kleinste Nische
+        assert!([SCHMAL, SCHMALER]
+            .iter()
+            .all(|t| t.matches("{}").count() == 1));
+        let min = format!("{} m", de(2.0 * STRIP_WIDTH_RANGE.0 / 1000.0, 2));
+        assert!(NICHT_UM.contains(&min) && STEHT.contains(&min));
     }
 
     /// Mit gehaltener Strg-Taste kein Fang, nur das Raster (Bedienbarkeit,
