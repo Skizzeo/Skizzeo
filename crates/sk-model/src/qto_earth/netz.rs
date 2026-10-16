@@ -19,6 +19,58 @@ use std::sync::Arc;
 /// setzt daran die Vorbemerkung zum Ermittlungsverfahren.
 pub const DREIECKSPRISMEN: &str = "aus Geländemodell, Dreiecksprismen (REB-VB 22.013)";
 
+/// Verfahren und Herkunft im Ansatz: „; aus Geländemodell, Dreiecksprismen
+/// (REB-VB 22.013) aus dem Höhenaufmaß x.csv vom 12.10.2026“. Die
+/// Dreieckszahl steht nicht je Zeile, sondern einmal in der Vorbemerkung
+/// des LV ([`netz_herkunft`]; VOB-Spruch zu A2 vom 15.10.).
+pub(crate) fn verfahren(t: &crate::Terrain) -> String {
+    match datum(&t.read) {
+        Some(d) => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {} vom {d}", t.src),
+        None => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {}", t.src),
+    }
+}
+
+/// Herkunft des Netzes für die Vorbemerkung des LV: „Höhenaufmaß x.csv vom
+/// 12.10.2026, 1.834 Dreiecke“, damit der Prüfer des AG sieht, dass er
+/// dasselbe Netz nachrechnet (VOB/B § 14 (1)). `None` ohne Aufmaß.
+pub fn netz_herkunft(m: &Model) -> Option<String> {
+    let t = m.terrain()?;
+    let n = t.mesh().netz.dreiecke.len();
+    let vom = datum(&t.read).map_or(String::new(), |d| format!(" vom {d}"));
+    Some(format!(
+        "Höhenaufmaß {}{vom}, {} Dreiecke",
+        t.src,
+        tausend(n)
+    ))
+}
+
+/// Datum des Einlesens deutsch („2026-10-12“ → „12.10.2026“); `None` ohne,
+/// unverändert, wenn es keines in dieser Form ist.
+fn datum(iso: &str) -> Option<String> {
+    let s = iso.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let t: Vec<&str> = s.split('-').collect();
+    Some(match t.as_slice() {
+        [j, m, d] if j.len() == 4 && m.len() == 2 && d.len() == 2 => format!("{d}.{m}.{j}"),
+        _ => s.to_string(),
+    })
+}
+
+/// Ganze Zahl mit Tausenderpunkt.
+fn tausend(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push('.');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Zusatz am ersten Aushub, wenn das Gelände an der Baugrube steiler
 /// ansteigt als [`STEIL_AB`] (Auflage A4); [`steil_hinweis`] macht daraus
 /// den Hinweis.
@@ -94,11 +146,7 @@ impl ErdNetz {
             frame: m.survey_frame()?,
             h0: m.terrain_nhn()?,
             mesh: t.mesh(),
-            aufmass: if t.read.is_empty() {
-                format!("Aufmaß {}", t.src)
-            } else {
-                format!("Aufmaß {}, {}", t.src, t.read)
-            },
+            aufmass: verfahren(t),
             innen,
         })
     }
@@ -284,11 +332,7 @@ pub(super) fn mengen(
     let graben = ((platte_f - platte) - (i_f - i_s)).max(0.0);
     let auf = i_p.unter;
     let bo = boeschung(n, &sohle, z_s, o, boden.boeschung);
-    let verfahren = format!(
-        "; {DREIECKSPRISMEN}, {} Dreiecke, {}",
-        n.dreiecke(),
-        n.aufmass
-    );
+    let verfahren = n.aufmass.clone();
     let breite = |x: f64| format!("{} m", zahl(x, 1e3));
 
     // Oberboden über das Baufeld, mindestens bis zum Rand der Böschung

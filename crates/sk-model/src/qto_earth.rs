@@ -22,7 +22,7 @@ pub use flaechen::{
     Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL, KEIL,
     OHNE_AUFMASS, OHNE_TRAEGER, UEBERLAPPT, UNGUELTIG,
 };
-pub use netz::{steil_hinweis, ErdNetz, DREIECKSPRISMEN, STEIL, STEIL_AB};
+pub use netz::{netz_herkunft, steil_hinweis, ErdNetz, DREIECKSPRISMEN, STEIL, STEIL_AB};
 
 /// Bodenkennwerte des Projekts (mm, Grad); stehen am Projekt
 /// ([`crate::Project::soil`]) und in der Datei nur, wenn sie von der

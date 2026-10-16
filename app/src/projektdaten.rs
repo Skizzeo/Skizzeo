@@ -311,6 +311,21 @@ fn boden_wert(k: usize, text: &str) -> Result<f64, ()> {
         .ok_or(())
 }
 
+/// Feld des Böschungswinkels (Bodenkennwert 4).
+const BOESCHUNG: usize = BODEN + 4;
+
+/// Die andere Form neben dem Böschungswinkel (VOB-Prüfung G3): „= 1:n“ mit
+/// zwei Stellen, bei 90° „= senkrecht“; `None` ohne gültige Zahl.
+fn boeschung_neben(text: &str) -> Option<String> {
+    let g = boden_wert(4, text).ok()?;
+    let n = (1.0 / g.to_radians().tan()).max(0.0);
+    Some(if n < 0.005 {
+        "= senkrecht".to_string()
+    } else {
+        format!("= 1:{}", crate::selection::de(n, 2))
+    })
+}
+
 /// Breite (Feld 8) und Länge (Feld 9): Grenze in Grad.
 const GRAD_MAX: [f64; 2] = [90.0, 180.0];
 
@@ -1329,6 +1344,13 @@ impl Maske {
             widgets::text(&mut c, regular, f.name, fpx, lbl_x, lbl_y, u.text_dim);
             let ex = r.x + r.w + 6.0 * s;
             widgets::text(&mut c, regular, f.einheit, fpx, ex, lbl_y, u.text_dim);
+            if let Some(n) = (i == BOESCHUNG)
+                .then(|| boeschung_neben(&self.felder[i].text))
+                .flatten()
+            {
+                let nx = ex + regular.map_or(0.0, |ft| ft.width(f.einheit, fpx)) + 8.0 * s;
+                widgets::text(&mut c, regular, &n, fpx, nx, lbl_y, u.text_dim);
+            }
             if i == 0 {
                 widgets::combo(
                     &mut c,
@@ -1525,6 +1547,13 @@ mod tests {
         let mut m = Maske::new(&ohne(), false, None);
         let werte: Vec<&str> = (BODEN..UTM).map(|i| m.wert(i)).collect();
         assert_eq!(werte, ["30", "1,50", "0,50", "15", "45"]);
+        // die andere Form daneben (VOB-Prüfung G3): 1:n mit zwei Stellen
+        assert_eq!(boeschung_neben("45").as_deref(), Some("= 1:1,00"));
+        assert_eq!(boeschung_neben("33,7 °").as_deref(), Some("= 1:1,50"));
+        assert_eq!(boeschung_neben("90").as_deref(), Some("= senkrecht"));
+        assert_eq!(boeschung_neben("89,5").as_deref(), Some("= 1:0,01"));
+        assert_eq!(boeschung_neben("10"), None);
+        assert_eq!(BOESCHUNG, UTM - 1);
         m.felder[10] = TextEdit::new("40");
         m.felder[11] = TextEdit::new("2 m");
         m.felder[13] = TextEdit::new("");

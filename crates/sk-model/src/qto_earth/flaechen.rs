@@ -18,7 +18,7 @@
 //! Nummer und Geschoss sind die des Trägers, damit Hinweise und Sortierung
 //! einen Ort haben. Verfüllung und Abfuhr bleiben an ihrem Haus.
 
-use super::{eckzahl, zahl, Boden, ErdZone, DREIECKSPRISMEN, SCHLUESSEL};
+use super::{eckzahl, zahl, Boden, ErdZone, SCHLUESSEL};
 use super::{BACKFILL, CUT, DISPOSAL, EMBANK, EMBANK_SUPPLY, SURPLUS, TOPSOIL, TOPSOIL_SITE};
 use super::{KG, KG_ANDECKEN, KG_GELAENDE, SPREAD, SPREAD_SLOPE, TOPSOIL_REMOVE, TOPSOIL_SUPPLY};
 use crate::model::{SurveyFrame, TerrainMesh, TerrainPatch};
@@ -303,15 +303,7 @@ pub(crate) fn gelaende_mengen(
     };
     let Teil { s, weniger, keil } = &*teil;
 
-    let verfahren = format!(
-        "; {DREIECKSPRISMEN}, {} Dreiecke, {}",
-        mesh.netz.dreiecke.len(),
-        if t.read.is_empty() {
-            format!("Aufmaß {}", t.src)
-        } else {
-            format!("Aufmaß {}, {}", t.src, t.read)
-        }
-    );
+    let verfahren = super::netz::verfahren(t);
     let f = site.reuse;
     let f_text = zahl(f, 1.0);
     let zeile = |key: &'static str, kg: u16, value: f64, formula: String, hinweis: Vec<String>| {
