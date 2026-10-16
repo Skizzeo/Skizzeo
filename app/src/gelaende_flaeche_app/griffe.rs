@@ -447,9 +447,9 @@ impl App {
         }
         let mut ringe = self.scene.model().parcel_rings();
         let zug = self.platte.griffe.zug.as_ref();
-        let gezogen = zug.and_then(|z| {
+        let gezogen = zug.map(|z| {
             let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = z.griff;
-            Some((i, z.neu.as_ref().unwrap_or(&z.ring).clone()))
+            (i, z.neu.as_ref().unwrap_or(&z.ring).clone())
         });
         if let Some((i, r)) = &gezogen {
             if let Some(alt) = ringe.get_mut(*i) {
