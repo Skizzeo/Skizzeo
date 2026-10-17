@@ -250,7 +250,7 @@ fn schloss(l: &mut GelaendeLeiste, t: &Terrain, z: &Zustand) {
     if mess.is_empty() {
         return;
     }
-    l.schloss = Some(mess.iter().all(|p| z.offen_nr.contains(&p.nr)));
+    l.schloss = Some(mess.iter().all(|p| z.offen_nr.contains(p.nr.as_str())));
     l.gemessen = mess.iter().find_map(|p| {
         let [e, n, h] = *p.gemessen.as_deref()?;
         let m = |v: f64, k: usize| de(v, k);
@@ -1151,12 +1151,12 @@ mod tests {
         let nr = m.terrain().unwrap().points[0].nr.clone();
         assert_eq!(leiste(&m, &Zustand::default()).schloss, None, "keine Wahl");
         let mut z = Zustand {
-            wahl: vec![nr.clone()],
+            wahl: vec![nr.to_string()],
             ..Zustand::default()
         };
         let l = leiste(&m, &z);
         assert_eq!((l.schloss, l.gemessen), (Some(false), None));
-        z.offen_nr.insert(nr.clone());
+        z.offen_nr.insert(nr.to_string());
         assert_eq!(leiste(&m, &z).schloss, Some(true));
         let s = m.terrain_spots().into_iter().find(|s| s.i == 0).unwrap();
         m.begin("Höhe");

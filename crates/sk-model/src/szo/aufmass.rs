@@ -287,11 +287,11 @@ pub(super) fn read<'r>(
             }
         };
         t.points.push(TerrainPoint {
-            nr: nr.to_string(),
+            nr: nr.into(),
             e,
             n,
             h,
-            code: r.opt("code").unwrap_or("").to_string(),
+            code: r.opt("code").unwrap_or("").into(),
             off,
             hand,
             gemessen,

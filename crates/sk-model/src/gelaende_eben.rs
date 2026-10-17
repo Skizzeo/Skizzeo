@@ -137,11 +137,11 @@ impl Model {
             }
             let (e, n) = f.to_survey(p[0], p[1]);
             t.points.push(TerrainPoint {
-                nr,
+                nr: nr.into(),
                 e: rund(e),
                 n: rund(n),
                 h: rund(h0 + z / 1000.0),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: true,
                 gemessen: None,
@@ -262,7 +262,7 @@ impl Model {
             if !neu.is_empty() {
                 let rand: Vec<String> = huelle_ring(&huelle, &spots)
                     .into_iter()
-                    .filter_map(|i| t.points.get(i).map(|p| p.nr.clone()))
+                    .filter_map(|i| t.points.get(i).map(|p| p.nr.to_string()))
                     .collect();
                 self.add_terrain_points(&neu);
                 self.rand_als_bruchkante(rand);
@@ -1478,11 +1478,11 @@ mod tests {
             .enumerate()
             {
                 t.points.push(TerrainPoint {
-                    nr: format!("{}", i + 1),
+                    nr: format!("{}", i + 1).into(),
                     e,
                     n,
                     h: 30.0,
-                    code: String::new(),
+                    code: Default::default(),
                     off: false,
                     hand: false,
                     gemessen: None,
@@ -1537,7 +1537,7 @@ mod tests {
             e: 0.0,
             n: 0.0,
             h: 1.0,
-            code: String::new(),
+            code: Default::default(),
             off: false,
             hand: false,
             gemessen: None,

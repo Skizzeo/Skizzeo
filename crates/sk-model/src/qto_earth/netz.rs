@@ -73,9 +73,9 @@ fn messpunkt_geaendert(p: &crate::TerrainPoint) -> bool {
 /// der Prüfer nachrechnen kann; in Worten statt Pfeil).
 fn aenderung(p: &crate::TerrainPoint) -> String {
     let Some(&[e, n, h]) = p.gemessen.as_deref() else {
-        return p.nr.clone();
+        return p.nr.to_string();
     };
-    let mut out = p.nr.clone();
+    let mut out = p.nr.to_string();
     if (p.h - h).abs() >= 5e-4 {
         out += &format!(" von {} auf {} m", komma(h, 3), komma(p.h, 3));
     }
@@ -665,7 +665,7 @@ mod tests {
             e: 10.003,
             n: 20.0,
             h: 24.342,
-            code: String::new(),
+            code: Default::default(),
             off: false,
             hand: false,
             gemessen: Some(Box::new([10.0, 20.0, 24.342])),

@@ -46,11 +46,11 @@ fn haeuser_am_hang(n: usize) -> (Model, Terrain) {
         for j in 0..ny {
             let (e, nn) = (1000.0 + 20.0 * i as f64, 2000.0 + 20.0 * j as f64);
             t.points.push(TerrainPoint {
-                nr: (i * ny + j + 1).to_string(),
+                nr: (i * ny + j + 1).to_string().into(),
                 e,
                 n: nn,
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,
@@ -311,11 +311,11 @@ fn grenzen_mit_vielen_punkten() {
     for i in 0..n {
         let w = i as f64 / n as f64 * std::f64::consts::TAU;
         t.points.push(TerrainPoint {
-            nr: i.to_string(),
+            nr: i.to_string().into(),
             e: 1000.0 + 100.0 * w.cos(),
             n: 2000.0 + 100.0 * w.sin(),
             h: 50.0,
-            code: String::new(),
+            code: Default::default(),
             off: false,
             hand: false,
             gemessen: None,
@@ -344,11 +344,11 @@ fn netz_der_datei_im_budget() {
         for j in 0..k {
             let (e, n) = (1000.0 + 2.0 * i as f64, 2000.0 + 2.0 * j as f64);
             t.points.push(TerrainPoint {
-                nr: format!("N{}", i * k + j + 1),
+                nr: format!("N{}", i * k + j + 1).into(),
                 e,
                 n,
                 h: 50.0 + (e / 7.0).sin() + (n / 5.0).cos(),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,
@@ -445,11 +445,11 @@ fn punkte_aendern_im_budget() {
         for j in 0..ny {
             let (e, nn) = (900.0 + 4.0 * i as f64, 1900.0 + 4.0 * j as f64);
             t.points.push(TerrainPoint {
-                nr: (i * ny + j + 1).to_string(),
+                nr: (i * ny + j + 1).to_string().into(),
                 e,
                 n: nn,
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,
