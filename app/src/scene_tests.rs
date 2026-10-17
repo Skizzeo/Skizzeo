@@ -119,7 +119,7 @@ fn projektdaten_mit_lage() {
     assert_eq!(s.model().project().soil.oberboden, 400.0);
     let boden = sk_model::szo::write(s.model());
     assert!(
-        boden.contains("\n[soil] key=project topsoil=400\n"),
+        boden.contains("\n[soil] key=project topsoil=400 capillary_on=0\n"),
         "{boden}"
     );
     assert!(s.undo());
