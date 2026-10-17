@@ -290,6 +290,9 @@ pub struct Kostenblatt {
     pub nach_geschoss: Vec<(StoreyId, Cent)>,
     pub ausgleich_geschoss: Cent,
     pub befunde: Vec<Befund>,
+    /// Sätze der Häuser im Umfang, die ineinander stehen (H-245-geo-a), aus
+    /// der Mengenliste; stehen auch als Hinweis in `befunde`.
+    pub ineinander: Vec<String>,
 }
 
 /// Zwischenspeicher der Zuordnung (Bausteingrenze §5, Stufe 1): ein Wert des
@@ -1395,6 +1398,7 @@ pub fn kosten_mit(
         nach_geschoss,
         ausgleich_geschoss,
         befunde,
+        ineinander: s.ineinander.iter().map(|x| x.satz.clone()).collect(),
     };
     (
         blatt,
