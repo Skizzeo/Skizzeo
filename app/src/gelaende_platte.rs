@@ -9,6 +9,8 @@
 //! Abstand ums Haus. Mit Höhenaufmaß steht statt der Platte das echte
 //! Gelände da ([`crate::gelaende_netz`], G1).
 
+pub(crate) mod bodenaufbau;
+
 use crate::draw_table::{fallback_look, DrawTable, MatLook, Stroke};
 use crate::gelaende_app::unterlage::{Schluessel, Striche};
 use crate::gelaende_netz::{self, Gelaende};
@@ -1283,8 +1285,6 @@ impl App {
         true
     }
 }
-
-pub(crate) mod bodenaufbau;
 
 #[cfg(test)]
 mod tempo;
