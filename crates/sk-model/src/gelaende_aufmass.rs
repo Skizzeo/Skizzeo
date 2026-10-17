@@ -33,14 +33,93 @@ type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>, [f64; 4]);
 /// Ein Haus mit seiner Guid, für eine feste Reihenfolge.
 type Haus = (Guid, BuildingId);
 
+/// Nummer oder Code eines Messpunkts, geteilt statt kopiert: Jeder Schritt
+/// kopiert das ganze Aufmaß, mit eigenem Text je Punkt kostete das bei
+/// 100.000 Punkten so viel wie der Rest des Schritts (H-237).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Kennung(Arc<str>);
+
+impl Kennung {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for Kennung {
+    fn default() -> Kennung {
+        Kennung(Arc::from(""))
+    }
+}
+
+impl std::ops::Deref for Kennung {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for Kennung {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for Kennung {
+    fn from(s: &str) -> Kennung {
+        Kennung(Arc::from(s))
+    }
+}
+
+impl From<String> for Kennung {
+    fn from(s: String) -> Kennung {
+        Kennung(Arc::from(s))
+    }
+}
+
+impl From<&String> for Kennung {
+    fn from(s: &String) -> Kennung {
+        Kennung(Arc::from(s.as_str()))
+    }
+}
+
+impl PartialEq<str> for Kennung {
+    fn eq(&self, o: &str) -> bool {
+        *self.0 == *o
+    }
+}
+
+impl PartialEq<&str> for Kennung {
+    fn eq(&self, o: &&str) -> bool {
+        *self.0 == **o
+    }
+}
+
+impl PartialEq<String> for Kennung {
+    fn eq(&self, o: &String) -> bool {
+        *self.0 == **o
+    }
+}
+
+impl std::fmt::Display for Kennung {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::fmt::Debug for Kennung {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.0, f)
+    }
+}
+
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainPoint {
-    pub nr: String,
+    pub nr: Kennung,
     pub e: f64,
     pub n: f64,
     pub h: f64,
-    pub code: String,
+    pub code: Kennung,
     /// Vom Nutzer aus dem Gelände genommen.
     pub off: bool,
     /// Von Hand gesetzt, nicht vermessen (Datei `src=hand`): die Ecken des
@@ -653,11 +732,11 @@ impl Terrain {
             .points
             .iter()
             .map(|p| Punkt {
-                nr: p.nr.clone(),
+                nr: p.nr.to_string(),
                 e: p.e,
                 n: p.n,
                 h: p.h,
-                code: p.code.clone(),
+                code: p.code.to_string(),
                 text: String::new(),
                 zeile: 0,
             })
@@ -1615,11 +1694,11 @@ impl Terrain {
             .punkte
             .iter()
             .map(|p| TerrainPoint {
-                nr: p.nr.clone(),
+                nr: p.nr.as_str().into(),
                 e: p.e,
                 n: p.n,
                 h: p.h,
-                code: p.code.clone(),
+                code: p.code.as_str().into(),
                 off: false,
                 hand: false,
                 gemessen: None,
@@ -1644,7 +1723,7 @@ impl Terrain {
             t.boundaries.push(
                 im_umlauf(&lage)
                     .into_iter()
-                    .map(|k| t.points[grenze[k]].nr.clone())
+                    .map(|k| t.points[grenze[k]].nr.to_string())
                     .collect(),
             );
         }

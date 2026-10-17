@@ -105,9 +105,9 @@ pub fn dash_ink(dist: f32, len: f32, p: &DashPattern, w: f32) -> bool {
 /// |---|---|---|
 /// | 0 | Ansichtsfläche 3D | – |
 /// | 1 | Schnittfläche 3D | – |
-/// | 2 | Grund in der Zeichnung | Art: 0 leer, 1 Vollfläche, 2 Linien, 3 Zickzack |
+/// | 2 | Grund in der Zeichnung | Art: 0 leer, 1 Vollfläche, 2 Linien, 3 Zickzack, 4 gewachsener Boden, 5 Sand, 6 Kies |
 /// | 3 | Schraffurfarbe | Strichbreite px |
-/// | 4 | Schar 1: cx, cy, Periode px | Abstandsfaktor k |
+/// | 4 | Schar 1: cx, cy, Periode px (Art 4 bis 6: Zelle px) | Abstandsfaktor k |
 /// | 5 | Schar 2: cx, cy, Periode px | Abstandsfaktor k |
 /// | 6 | Versatz Schar 1, Versatz Schar 2, Anzahl Scharen | Zickzack-Periode |
 /// | 7 | Strich und Lücke Schar 1, Strich und Lücke Schar 2 (px, 0 = durchgezogen) | |
@@ -195,6 +195,9 @@ pub fn fill_color(
                 .max(1e-6);
             (fg[3] * 0.5 + 0.5 - f.abs() / g).clamp(0.0, 1.0)
         }
+        4 => erde_ink(x, y, rows[4][2], fg[3]),
+        5 => sand_ink(x, y, rows[4][2], fg[3]),
+        6 => kies_ink(x, y, rows[4][2], fg[3]),
         _ => 0.0,
     };
     for k in 0..3 {
@@ -229,6 +232,54 @@ fn ink_of(f: [f32; 4], offset: f32, w: f32, dash: [f32; 2], x: f32, y: f32) -> f
         ink *= (0.5 + s).clamp(0.0, 1.0);
     }
     ink
+}
+
+/// `boden_zufall` aus `FACE_FS`: Anteil 0..1 je Zelle `c` und Zweck `k`.
+fn boden_zufall(c: [f32; 2], k: f32) -> f32 {
+    let (x, y) = (modulo(c[0], 251.0), modulo(c[1], 241.0));
+    let a = modulo(x * 37.0 + y * 101.0 + k * 17.0, 251.0);
+    let b = modulo(x * 13.0 + y * 7.0 + k * 29.0 + 11.0, 241.0);
+    modulo(a * b + a, 257.0) / 257.0
+}
+
+/// `erde_ink` aus `FACE_FS`: gewachsener Boden, Zelle `a`, Strich `w` (px).
+fn erde_ink(x: f32, y: f32, a: f32, w: f32) -> f32 {
+    let s = std::f32::consts::FRAC_1_SQRT_2 / a;
+    let r = [(x + y) * s, (y - x) * s];
+    let c = [r[0].floor(), r[1].floor()];
+    let l = [(r[0] - c[0]) * a, (r[1] - c[1]) * a];
+    let quer = modulo(c[0] + c[1], 2.0) > 0.5;
+    let (along, across) = if quer { (l[1], l[0]) } else { (l[0], l[1]) };
+    let d = (across - a * 0.5).abs();
+    let dist = d.min((d - a * 0.22).abs());
+    let ink = (w * 0.5 + 0.5 - dist).clamp(0.0, 1.0);
+    let rand = a * 0.15;
+    ink * ((along - rand).min(a - rand - along) + 0.5).clamp(0.0, 1.0)
+}
+
+/// `sand_ink` aus `FACE_FS`: gestreute Punkte.
+fn sand_ink(x: f32, y: f32, a: f32, w: f32) -> f32 {
+    let c = [(x / a).floor(), (y / a).floor()];
+    if boden_zufall(c, 3.0) < 0.2 {
+        return 0.0;
+    }
+    let m = [
+        (c[0] + 0.2 + boden_zufall(c, 1.0) * 0.6) * a,
+        (c[1] + 0.2 + boden_zufall(c, 2.0) * 0.6) * a,
+    ];
+    (w * 0.8 + 0.5 - (x - m[0]).hypot(y - m[1])).clamp(0.0, 1.0)
+}
+
+/// `kies_ink` aus `FACE_FS`: gestreute Kreise.
+fn kies_ink(x: f32, y: f32, a: f32, w: f32) -> f32 {
+    let c = [(x / a).floor(), (y / a).floor()];
+    let r = a * (0.16 + 0.14 * boden_zufall(c, 4.0));
+    let spiel = (a - 2.0 * (r + w)).max(0.0);
+    let m = [
+        c[0] * a + r + w + boden_zufall(c, 5.0) * spiel,
+        c[1] * a + r + w + boden_zufall(c, 6.0) * spiel,
+    ];
+    (w * 0.5 + 0.5 - ((x - m[0]).hypot(y - m[1]) - r).abs()).clamp(0.0, 1.0)
 }
 
 impl View {
@@ -859,6 +910,47 @@ float ink_of(vec4 f, float offset, float w, vec2 dash) {
     }
     return ink;
 }
+// Bodenzeichen (Bodenaufbau): Zelle `a` px, Strich `w` px, am Fenster
+// verankert wie die Linien. Zufall ohne Bitrechnung (läuft auch ohne die
+// Muster): zwei Restklassen, deren Produkt in float genau bleibt, wie
+// `boden_zufall` in Rust
+float boden_zufall(vec2 c, float k) {
+    float x = mod(c.x, 251.0);
+    float y = mod(c.y, 241.0);
+    float a = mod(x * 37.0 + y * 101.0 + k * 17.0, 251.0);
+    float b = mod(x * 13.0 + y * 7.0 + k * 29.0 + 11.0, 241.0);
+    return mod(a * b + a, 257.0) / 257.0;
+}
+// Gewachsener Boden (DIN 1356-1): je Zelle drei kurze Striche, die
+// Nachbarzellen um 90° gedreht, das Ganze unter 45°
+float erde_ink(vec2 q, float a, float w) {
+    vec2 r = vec2(q.x + q.y, q.y - q.x) * 0.70710678 / a;
+    vec2 c = floor(r);
+    vec2 l = (r - c) * a;
+    bool quer = mod(c.x + c.y, 2.0) > 0.5;
+    float along = quer ? l.y : l.x;
+    float across = quer ? l.x : l.y;
+    float d = abs(across - a * 0.5);
+    float dist = min(d, abs(d - a * 0.22));
+    float ink = clamp(w * 0.5 + 0.5 - dist, 0.0, 1.0);
+    float rand = a * 0.15;
+    return ink * clamp(min(along - rand, a - rand - along) + 0.5, 0.0, 1.0);
+}
+// Sand: je Zelle ein Punkt, gestreut, jede fünfte Zelle leer
+float sand_ink(vec2 q, float a, float w) {
+    vec2 c = floor(q / a);
+    if (boden_zufall(c, 3.0) < 0.2) return 0.0;
+    vec2 m = (c + 0.2 + vec2(boden_zufall(c, 1.0), boden_zufall(c, 2.0)) * 0.6) * a;
+    return clamp(w * 0.8 + 0.5 - length(q - m), 0.0, 1.0);
+}
+// Kies: je Zelle ein Kreis, Größe und Lage gestreut
+float kies_ink(vec2 q, float a, float w) {
+    vec2 c = floor(q / a);
+    float r = a * (0.16 + 0.14 * boden_zufall(c, 4.0));
+    float spiel = max(a - 2.0 * (r + w), 0.0);
+    vec2 m = c * a + (r + w) + vec2(boden_zufall(c, 5.0), boden_zufall(c, 6.0)) * spiel;
+    return clamp(w * 0.5 + 0.5 - abs(length(q - m) - r), 0.0, 1.0);
+}
 void main() {
     bool cut = (v_key & 0x8000) != 0;
     // Bildpunktgröße auf dem Rasen vor jeder Verzweigung (Ableitungen)
@@ -941,6 +1033,12 @@ void main() {
             float f = v_uv.y - zig;
             float g = max(length(vec2(dFdx(f), dFdy(f))), 1e-6);
             ink = clamp(fg.a * 0.5 + 0.5 - abs(f) / g, 0.0, 1.0);
+        } else if (kind == 4) {
+            ink = erde_ink(gl_FragCoord.xy, look(4).z, fg.a);
+        } else if (kind == 5) {
+            ink = sand_ink(gl_FragCoord.xy, look(4).z, fg.a);
+        } else if (kind == 6) {
+            ink = kies_ink(gl_FragCoord.xy, look(4).z, fg.a);
         }
         c = mix(c, fg.rgb, ink);
     }

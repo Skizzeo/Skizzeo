@@ -9,15 +9,18 @@
 //! Abstand ums Haus. Mit Höhenaufmaß steht statt der Platte das echte
 //! Gelände da ([`crate::gelaende_netz`], G1).
 
-use crate::draw_table::{fallback_look, fill_kind, DrawTable, LineLook, MatLook, Stroke};
+pub(crate) mod bodenaufbau;
+
+use crate::draw_table::{fallback_look, DrawTable, MatLook, Stroke};
 use crate::gelaende_app::unterlage::{Schluessel, Striche};
 use crate::gelaende_netz::{self, Gelaende};
 use crate::selection::de;
 use crate::ui::{kote_text, Field, FieldRow, Props, Section, ViewKind};
 use crate::App;
+use bodenaufbau::Bodenaufbau;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame};
-use sk_model::{edge_kind, material, LevelKind, Model, PlateInput, Solid, TerrainPlate};
+use sk_model::{edge_kind, LevelKind, Model, PlateInput, Solid, TerrainPlate};
 use sk_model::{PLATE_MARGIN, PLATE_THICK};
 use sk_render::{Helper, MeshData};
 use sk_ui::theme::Theme;
@@ -86,6 +89,7 @@ type Neues = (
     Option<Gelaende>,
     MeshData,
     Option<(Schluessel, Arc<Striche>)>,
+    Arc<Bodenaufbau>,
 );
 
 /// Was der Faden zurückgibt.
@@ -162,6 +166,8 @@ pub(crate) struct Platte {
     gelaende: Option<Arc<Gelaende>>,
     /// Tiefste und höchste Höhe von `gelaende` (mm), für die Höhenfarben.
     hoehen: Option<(f64, f64)>,
+    /// Bodenaufbau unter den Platten zum Modellstand.
+    aufbau: Arc<Bodenaufbau>,
     netz: Option<NetzKey>,
     /// Netz aus dem Faden zu seinem Schlüssel, bis es hochgeladen ist.
     fertig: Option<(NetzKey, MeshData)>,
@@ -241,8 +247,16 @@ impl Platte {
                 self.platten = e.build();
                 self.eingabe = Some(Arc::new(e));
             }
+            // mit Aufmaß hat das Gelände ihn schon (Review H-261c)
+            let ba = g
+                .as_ref()
+                .map_or_else(|| Bodenaufbau::aus(m), |g| g.aufbau.clone());
+            let anders = *self.aufbau != ba;
+            if anders {
+                self.aufbau = Arc::new(ba);
+            }
             // mit Aufmaß zählt jede Änderung (das Gelände spart die Häuser aus)
-            if neu || g.is_some() || self.gelaende.is_some() {
+            if neu || anders || g.is_some() || self.gelaende.is_some() {
                 self.fassung += 1;
             }
             self.gelaende_setzen(g);
@@ -296,6 +310,7 @@ impl Platte {
         self.mit_plan = false;
         let kopie = m.clone();
         let alt = self.eingabe.clone();
+        let alt_ba = self.aufbau.clone();
         let ohne = self.gelaende.is_none();
         // Den Lageplan liest ein eigener Faden; die Linien bildet dieser
         // Faden ab, wenn sie nicht schon gemerkt sind (Review #139 B2, B3)
@@ -306,12 +321,15 @@ impl Platte {
             let u = abbild.map(|a| (a.key, a.linien(&kopie)));
             let l = u.as_ref().map_or(&[][..], |u| &u.1[..]);
             let g = Gelaende::aus(&kopie).map(|g| g.mit_unterlage(l));
-            let r = if alt.as_deref() == Some(&e) && ohne && g.is_none() {
+            let ba = g
+                .as_ref()
+                .map_or_else(|| Bodenaufbau::aus(&kopie), |g| g.aufbau.clone());
+            let r = if alt.as_deref() == Some(&e) && ohne && g.is_none() && *alt_ba == ba {
                 Ergebnis::Gleich
             } else {
                 let p = e.build();
-                let n = netz_der_sicht(&p, g.as_ref(), sicht);
-                Ergebnis::Neu(Box::new((Arc::new(e), p, g, n, u)))
+                let n = netz_der_sicht(&p, g.as_ref(), sicht, &ba);
+                Ergebnis::Neu(Box::new((Arc::new(e), p, g, n, u, Arc::new(ba))))
             };
             // fällt weg, wenn die Platte inzwischen neu begonnen hat
             let _ = tx.send(r);
@@ -362,7 +380,7 @@ impl Platte {
                     let f = gelaende_netz::fassade(g, view, bounds);
                     gelaende_netz::grundlinien(g, view, plane, f, t, scale)
                 }
-                None => linien(&self.platten, view, plane, bounds, t, scale),
+                None => linien(&self.platten, &self.aufbau, view, plane, bounds, t, scale),
             };
             let n = helfer.len();
             self.linien = Some(Linien {
@@ -530,14 +548,19 @@ impl Platte {
         let g = match &self.gelaende {
             Some(g) if !hidden && matches!(view, ViewKind::Persp | ViewKind::Section) => g.clone(),
             g => {
-                let n = netz_der_sicht(&self.platten, g.as_deref(), sicht);
+                let n = netz_der_sicht(&self.platten, g.as_deref(), sicht, &self.aufbau);
                 return Some(Arc::new(n));
             }
         };
         if self.netz_job.is_none() {
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
-                let _ = tx.send(netz_der_sicht(&[], Some(&g), sicht));
+                let _ = tx.send(netz_der_sicht(
+                    &[],
+                    Some(&g),
+                    sicht,
+                    &Bodenaufbau::default(),
+                ));
             });
             self.netz_job = Some((key, rx));
         }
@@ -583,7 +606,7 @@ impl Platte {
         let Ok(Ergebnis::Neu(neu)) = r else {
             return true;
         };
-        let (e, p, g, n, u) = *neu;
+        let (e, p, g, n, u, ba) = *neu;
         if let Some((key, l)) = u {
             self.unterlage.merke_linien(key, l);
         }
@@ -591,6 +614,7 @@ impl Platte {
         self.platten = p;
         self.eingabe = Some(e);
         self.gelaende_setzen(g);
+        self.aufbau = ba;
         self.netz_job = None;
         self.fertig = Some((netz_key(self.fassung, &job.sicht), n));
         true
@@ -609,9 +633,10 @@ impl Platte {
 
 /// Aussehen von Rasen, Erdreich und blassem Rasen (Schlüssel hinter den
 /// Baustoffen der Zeichentabelle): Rasen ohne Schnitt; Erdreich im Schnitt
-/// auf Papier mit der Schraffur „gewachsener Boden“ (45°, durchgezogen und
-/// gestrichelt im Wechsel) in der Farbe des Stifts „Gelände“; blasser
-/// Rasen außerhalb der Grenze bei „Umgebung blass“ (G1).
+/// auf Papier mit dem Zeichen „gewachsener Boden“ nach DIN 1356-1 (je
+/// Zelle drei kurze Striche, Nachbarn um 90° gedreht, unter 45°) in der
+/// Farbe des Stifts „Gelände“; blasser Rasen außerhalb der Grenze bei
+/// „Umgebung blass“ (G1).
 pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 3] {
     let rgb = |c: sk_paint::Rgba| {
         let [r, g, b, _] = c.to_f32();
@@ -619,33 +644,18 @@ pub(crate) fn looks(theme: &Theme, paper: [f32; 3], ink: [f32; 3]) -> [MatLook; 
     };
     let (grass, soil) = (rgb(theme.env.terrain_grass), rgb(theme.env.terrain_soil));
     let fade = rgb(theme.env.terrain_fade);
-    let mm = theme.px_per_mm;
     let base = MatLook {
         cut: soil,
         cut_bg: paper,
         cut_fg: ink,
         ..fallback_look(theme)
     };
-    let line = |offset: f32, dash: f32| LineLook {
-        angle_deg: 45.0,
-        spacing_px: 2.0 * mm,
-        offset_px: offset * mm,
-        dash_px: dash * mm,
-        gap_px: dash * mm,
-    };
     [
         MatLook {
             face: grass,
             ..base
         },
-        MatLook {
-            face: soil,
-            kind: fill_kind::LINES,
-            width_px: 0.13 * mm,
-            lines: [line(0.0, 0.0), line(1.0, 0.4)],
-            line_count: 2,
-            ..base
-        },
+        bodenaufbau::erde(soil, base, theme.px_per_mm),
         MatLook { face: fade, ..base },
     ]
 }
@@ -697,7 +707,7 @@ fn at(q: Vec3, z: f64) -> Vec3 {
 /// Körper einer Platte in 3D bis hinunter auf `bot` (den Boden): Rasen
 /// oben, Erdreich unten und an den Seiten; Kanten am oberen und unteren
 /// Rand und senkrecht dort, wo der Rand die Richtung wechselt.
-fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3]) -> Solid {
+fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3], ba: &Bodenaufbau) -> Solid {
     let top = p.top;
     let up = vec3(0.0, 0.0, 1.0);
     let mut s = Solid {
@@ -748,6 +758,11 @@ fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3]) -> Solid {
         best.map(|i| p.edges[i])
     };
     for &(a, b) in &p.edges {
+        // am Haus steht die Aussparung des Bodenaufbaus
+        let m = (a + b) * 0.5;
+        if ba.am_haus([m.x, m.y]) {
+            continue;
+        }
         let d = (b - a).normalized();
         s.quad(at(a, bot), at(b, bot), at(b, top), at(a, top), right_of(d));
         s.edge(at(a, top), at(b, top));
@@ -765,50 +780,57 @@ fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3]) -> Solid {
     s
 }
 
-/// Schnittflächen einer Platte mit der Ebene (zeigen in Richtung `f.n`).
-fn kappen(p: &TerrainPlate, f: &SectionFrame, p0: Vec3, soil: u16) -> Solid {
-    let mut s = Solid {
-        mat: soil | material::CUT,
-        edge_kind: edge_kind::CUT,
-        ..Solid::default()
-    };
-    for (a, b) in schnitt(p, f, p0) {
-        s.quad(
-            f.pt(a, p.bottom),
-            f.pt(b, p.bottom),
-            f.pt(b, p.top),
-            f.pt(a, p.top),
-            f.n,
-        );
-    }
-    s
+/// Strecken der Geländelinie einer Platte im Schnitt (Lauflänge, Höhe).
+fn oben(p: &TerrainPlate, f: &SectionFrame, p0: Vec3) -> Vec<([f64; 2], [f64; 2])> {
+    schnitt(p, f, p0)
+        .into_iter()
+        .map(|(a, b)| ([a, p.top], [b, p.top]))
+        .collect()
+}
+
+/// Unterkante der Platten in Körper und Schnitt: die tiefste, mindestens
+/// unter der tiefsten Gründung ([`Bodenaufbau::unten`]).
+fn boden(plates: &[TerrainPlate], ba: &Bodenaufbau) -> f64 {
+    ba.unten(
+        plates
+            .iter()
+            .map(|p| p.bottom)
+            .fold(f64::INFINITY, f64::min),
+    )
 }
 
 /// Netz der Platten: in 3D die Körper, alle bis auf die tiefste
-/// Unterkante (dort liegt der Boden, keine Platte schwebt); im Schnitt die
-/// Schnittflächen (ihr Umriss kommt aus [`linien`]); sonst leer.
+/// Unterkante (dort liegt der Boden, keine Platte schwebt), am Haus die
+/// Aussparung im Bodenaufbau; im Schnitt die Schichten des Bodenaufbaus
+/// (ihr Umriss kommt aus [`linien`]); sonst leer.
 pub(crate) fn netz(
     plates: &[TerrainPlate],
     view: ViewKind,
     plane: Option<(Vec3, Vec3)>,
     keys: [u16; 3],
+    ba: &Bodenaufbau,
 ) -> MeshData {
     let mut s = Solid::default();
+    let unten = boden(plates, ba);
+    let schichten = bodenaufbau::schluessel(keys);
     match (view, plane) {
-        (ViewKind::Persp, _) => {
-            let boden = plates
-                .iter()
-                .map(|p| p.bottom)
-                .fold(f64::INFINITY, f64::min);
+        (ViewKind::Persp, _) if !plates.is_empty() => {
             for p in plates {
-                s.append(&koerper(p, boden, keys));
+                s.append(&koerper(p, unten, keys, ba));
             }
+            let teilung = |_: [f64; 2], _: [f64; 2]| Vec::new();
+            s.append(&bodenaufbau::grube(
+                ba,
+                &|_| None,
+                &teilung,
+                unten,
+                schichten,
+            ));
         }
         (ViewKind::Section, Some((p0, n))) => {
             let f = SectionFrame::new(p0, n);
-            for p in plates {
-                s.append(&kappen(p, &f, p0, keys[1]));
-            }
+            let oben: Vec<_> = plates.iter().flat_map(|p| oben(p, &f, p0)).collect();
+            s.append(&bodenaufbau::schnitt(ba, &f, &oben, unten, schichten));
         }
         _ => {}
     }
@@ -817,7 +839,12 @@ pub(crate) fn netz(
 
 /// Netz zur Sicht: mit Aufmaß das Gelände (Körper in 3D, Schnittflächen im
 /// Schnitt, sonst keins), ohne die Platten; ausgeblendet leer.
-fn netz_der_sicht(p: &[TerrainPlate], g: Option<&Gelaende>, s: Sicht) -> MeshData {
+fn netz_der_sicht(
+    p: &[TerrainPlate],
+    g: Option<&Gelaende>,
+    s: Sicht,
+    ba: &Bodenaufbau,
+) -> MeshData {
     let (view, plane, keys, hidden, hilfsnetz, linien) = s;
     match (g, view, plane) {
         _ if hidden => MeshData::default(),
@@ -826,10 +853,10 @@ fn netz_der_sicht(p: &[TerrainPlate], g: Option<&Gelaende>, s: Sicht) -> MeshDat
         }
         (Some(g), ViewKind::Section, Some((p0, n))) => {
             let f = SectionFrame::new(p0, n);
-            crate::scene::mesh_of(&gelaende_netz::kappen(g, &f, p0, keys[1]))
+            crate::scene::mesh_of(&gelaende_netz::kappen(g, &f, p0, keys))
         }
         (Some(_), ..) => MeshData::default(),
-        (None, ..) => netz(p, view, plane, keys),
+        (None, ..) => netz(p, view, plane, keys, ba),
     }
 }
 
@@ -840,6 +867,7 @@ fn netz_der_sicht(p: &[TerrainPlate], g: Option<&Gelaende>, s: Sicht) -> MeshDat
 /// (S11).
 pub(crate) fn linien(
     plates: &[TerrainPlate],
+    ba: &Bodenaufbau,
     view: ViewKind,
     plane: Option<(Vec3, Vec3)>,
     bounds: Option<(Vec3, Vec3)>,
@@ -858,19 +886,22 @@ pub(crate) fn linien(
         round: false,
     };
     let mut out = Vec::new();
-    let mut rahmen = |pt: &dyn Fn(f64, f64) -> Vec3, p: &TerrainPlate, iv: Vec<(f64, f64)>| {
-        for (a, b) in iv {
-            out.push(line(pt(a, p.top), pt(b, p.top), t.ground));
-            out.push(line(pt(a, p.bottom), pt(b, p.bottom), fine));
-            out.push(line(pt(a, p.bottom), pt(a, p.top), fine));
-            out.push(line(pt(b, p.bottom), pt(b, p.top), fine));
-        }
-    };
+    // im Schnitt reicht die Platte unter die Gründung (Bodenaufbau)
+    let unten = boden(plates, ba);
+    let mut rahmen =
+        |pt: &dyn Fn(f64, f64) -> Vec3, p: &TerrainPlate, iv: Vec<(f64, f64)>, bottom: f64| {
+            for (a, b) in iv {
+                out.push(line(pt(a, p.top), pt(b, p.top), t.ground));
+                out.push(line(pt(a, bottom), pt(b, bottom), fine));
+                out.push(line(pt(a, bottom), pt(a, p.top), fine));
+                out.push(line(pt(b, bottom), pt(b, p.top), fine));
+            }
+        };
     match (view, plane) {
         (ViewKind::Section, Some((p0, n))) => {
             let f = SectionFrame::new(p0, n);
             for p in plates {
-                rahmen(&|u, z| f.pt(u, z), p, schnitt(p, &f, p0));
+                rahmen(&|u, z| f.pt(u, z), p, schnitt(p, &f, p0), unten);
             }
         }
         (ViewKind::Front | ViewKind::Back | ViewKind::Left | ViewKind::Right, _) => {
@@ -884,7 +915,7 @@ pub(crate) fn linien(
                 }
             };
             for p in plates {
-                rahmen(&pt, p, band(p, side));
+                rahmen(&pt, p, band(p, side), p.bottom);
             }
         }
         _ => {}
@@ -1159,7 +1190,8 @@ impl App {
 
     /// Gelände im Renderer: OK Gelände für „unter Gelände“, mit Aufmaß
     /// aus seinem Raster, sonst je Gebäude, und der Boden in 3D auf der
-    /// Unterkante der Platte (die Platte steht auf ihm); ausgeblendet auf
+    /// Unterkante der Platte, mindestens unter der Gründung (die Platte
+    /// steht auf ihm); ausgeblendet auf
     /// OK Gelände.
     pub(crate) fn gelaende_renderer(&mut self) {
         let raster = self.scene.terrain_grid();
@@ -1181,7 +1213,8 @@ impl App {
             Some(g.unten as f32)
         } else {
             let p = self.platte.im_bild(m);
-            p.iter().map(|p| p.bottom as f32).reduce(f32::min)
+            let b = p.iter().map(|p| p.bottom).reduce(f64::min);
+            b.map(|b| self.platte.aufbau.unten(b) as f32)
         };
         self.renderer.set_ground_z(unten);
     }
@@ -1306,6 +1339,34 @@ impl App {
 }
 
 mod farben;
+
+/// Das Gelände als Körper für den 3D-Export (Schnittstelle zum
+/// Export-Thread, `sk-export`): Weltkoordinaten in mm, z zu ±0,00, jedes
+/// Dreieck nach außen gerichtet; oben der Belag (`keys[0]`), Seiten, Boden
+/// und Aussparung am Haus Erdreich (`keys[1]`). Mit Aufmaß das Netz, sonst
+/// die Platten bis auf die tiefste Unterkante wie in 3D; `None` ohne
+/// Gelände. Ist das Gelände geglättet, liefert diese Stelle das feine Netz.
+pub(crate) fn export_koerper(m: &Model, keys: [u16; 2]) -> Option<Solid> {
+    if let Some(g) = Gelaende::aus(m) {
+        return Some(gelaende_netz::export_koerper(g, keys));
+    }
+    let plates = m.terrain_plates();
+    let boden = plates
+        .iter()
+        .map(|p| p.bottom)
+        .fold(f64::INFINITY, f64::min);
+    let mut s = Solid::default();
+    for p in &plates {
+        s.append(&koerper(
+            p,
+            boden,
+            [keys[0], keys[1], keys[0]],
+            &Bodenaufbau::default(),
+        ));
+    }
+    (!s.triangles.is_empty()).then_some(s)
+}
+
 #[cfg(test)]
 mod tempo;
 
@@ -1316,6 +1377,7 @@ mod istbilder;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sk_model::material;
 
     fn haus() -> Model {
         let mut m = Model::with_seed(3);
@@ -1458,7 +1520,7 @@ mod tests {
         assert_eq!(pl.fassung, f0 + 1);
         let (k, n) = pl.fertig.take().expect("Netz aus dem Faden");
         assert_eq!(k, netz_key(pl.fassung, &SICHT));
-        let soll = netz(&pl.platten, SICHT.0, SICHT.1, SICHT.2);
+        let soll = netz(&pl.platten, SICHT.0, SICHT.1, SICHT.2, &pl.aufbau);
         assert_eq!(n.faces, soll.faces);
         assert_eq!(n.edges, soll.edges);
         // ausgeblendet: leeres Netz
@@ -1539,7 +1601,10 @@ mod tests {
         assert_eq!(k, netz_key(pl.fassung, &SICHT));
         let g = Gelaende::aus(s.model());
         assert!(!n.faces.is_empty());
-        assert_eq!(n.faces, netz_der_sicht(&[], g.as_ref(), SICHT).faces);
+        assert_eq!(
+            n.faces,
+            netz_der_sicht(&[], g.as_ref(), SICHT, &Bodenaufbau::default()).faces
+        );
         // Esc
         let run = s.model().runs().ids().next().unwrap();
         let orig = s.chain(run).unwrap().clone();
@@ -1591,7 +1656,10 @@ mod tests {
         };
         assert!(!pl.rechnet());
         let g = Gelaende::aus(s.model());
-        assert_eq!(n.faces, netz_der_sicht(&[], g.as_ref(), persp).faces);
+        assert_eq!(
+            n.faces,
+            netz_der_sicht(&[], g.as_ref(), persp, &Bodenaufbau::default()).faces
+        );
         let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false, false, true);
         let leer = pl.netz_zur_sicht(netz_key(pl.fassung, &grund), grund);
         assert!(leer.unwrap().faces.is_empty(), "Grundriss ohne Faden");
@@ -1737,7 +1805,7 @@ mod tests {
         let m = haus();
         let p = m.terrain_plates();
         let keys = [40, 41, 42];
-        let s = koerper(&p[0], p[0].bottom, keys);
+        let s = koerper(&p[0], p[0].bottom, keys, &Bodenaufbau::default());
         let flaeche = |k: u16| -> f64 {
             s.triangles
                 .iter()
@@ -1754,7 +1822,9 @@ mod tests {
             .count();
         assert_eq!(senkrecht, 8);
         for v in [ViewKind::Plan, ViewKind::Front] {
-            assert!(netz(&p, v, None, keys).faces.is_empty());
+            assert!(netz(&p, v, None, keys, &Bodenaufbau::aus(&m))
+                .faces
+                .is_empty());
         }
     }
 
@@ -1772,15 +1842,24 @@ mod tests {
         for (a, b) in &iv {
             assert!((b - a - 3000.0).abs() < 1e-6, "{a} {b}");
         }
-        let n = netz(&p, ViewKind::Section, Some(plane), [40, 41, 42]);
-        assert_eq!(n.faces.len(), 2 * 6);
-        assert!(n
-            .faces
-            .iter()
-            .all(|v| v[6] as u32 == 41 | material::CUT as u32));
+        // ohne Gründung: Oberboden über gewachsenem Boden, je Stück zwei
+        // Flächen
+        let mut leer = Bodenaufbau::aus(&m);
+        leer.haeuser.clear();
+        let n = netz(&p, ViewKind::Section, Some(plane), [40, 41, 42], &leer);
+        assert_eq!(n.faces.len(), 2 * 2 * 6);
+        let oberboden = bodenaufbau::schluessel([40, 41, 42])[bodenaufbau::OBERBODEN];
+        assert!(n.faces.iter().all(|v| {
+            let k = v[6] as u32 & !(material::CUT as u32);
+            v[6] as u32 & material::CUT as u32 != 0 && (k == 41 || k == oberboden as u32)
+        }));
+        // mit der Gründung des Hauses auch die Schichten darunter
+        let ba = Bodenaufbau::aus(&m);
+        let mit = netz(&p, ViewKind::Section, Some(plane), [40, 41, 42], &ba);
+        assert!(mit.faces.len() > n.faces.len());
         let theme = Theme::dark();
         let t = DrawTable::resolve(&m, &theme);
-        let l = linien(&p, ViewKind::Section, Some(plane), None, &t, 1.0);
+        let l = linien(&p, &ba, ViewKind::Section, Some(plane), None, &t, 1.0);
         assert_eq!(l.len(), 8);
         let oben: Vec<_> = l
             .iter()
@@ -1798,7 +1877,15 @@ mod tests {
         let mut m = haus();
         let theme = Theme::dark();
         let t = DrawTable::resolve(&m, &theme);
-        let l = linien(&m.terrain_plates(), ViewKind::Front, None, None, &t, 1.0);
+        let l = linien(
+            &m.terrain_plates(),
+            &Bodenaufbau::default(),
+            ViewKind::Front,
+            None,
+            None,
+            &t,
+            1.0,
+        );
         assert_eq!(l.len(), 4);
         let xs: Vec<f32> = l.iter().flat_map(|h| [h.a[0], h.b[0]]).collect();
         let (lo, hi) = xs
@@ -1811,7 +1898,15 @@ mod tests {
             margin: 1500.0
         }));
         m.commit();
-        let l = linien(&m.terrain_plates(), ViewKind::Left, None, None, &t, 1.0);
+        let l = linien(
+            &m.terrain_plates(),
+            &Bodenaufbau::default(),
+            ViewKind::Left,
+            None,
+            None,
+            &t,
+            1.0,
+        );
         let zs: Vec<f32> = l.iter().flat_map(|h| [h.a[2], h.b[2]]).collect();
         assert!(zs.contains(&-800.0) && zs.contains(&0.0));
         let ys: Vec<f32> = l.iter().flat_map(|h| [h.a[1], h.b[1]]).collect();
@@ -1864,14 +1959,14 @@ mod tests {
         let t = DrawTable::resolve(&m, &theme);
         let [g, s, blass] = t.terrain;
         assert_eq!((s, blass), (g + 1, g + 2));
-        assert_eq!(blass as usize + 1, t.mats.len());
+        assert_eq!(blass as usize + 1 + bodenaufbau::LOOKS, t.mats.len());
         let [r, gr, b, _] = theme.env.terrain_fade.to_f32();
         assert_eq!(t.mats[blass as usize].face, [r, gr, b]);
         assert!(m
             .materials()
             .iter()
             .all(|(id, _)| sk_model::material_key(id) < g));
-        assert_eq!(t.mats[s as usize].kind, fill_kind::LINES);
+        assert_eq!(t.mats[s as usize].kind, crate::draw_table::fill_kind::ERDE);
         let [r, gr, b, _] = theme.env.terrain_grass.to_f32();
         assert_eq!(t.mats[g as usize].face, [r, gr, b]);
     }

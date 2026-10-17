@@ -242,7 +242,9 @@ impl Surface {
     /// Systemdialog „Öffnen“. `None`, wenn abgebrochen.
     #[cfg(windows)]
     pub fn open_dialog(&self, title: &str, filters: &[FileFilter]) -> Option<PathBuf> {
-        self.inner.file_dialog(false, title, filters, "", "")
+        self.inner
+            .file_dialog(false, title, filters, "", "", 0)
+            .map(|(p, _)| p)
     }
 
     /// Systemdialog „Speichern unter“ mit Vorschlag `suggested` und Endung
@@ -256,7 +258,24 @@ impl Surface {
         suggested: &str,
     ) -> Option<PathBuf> {
         self.inner
-            .file_dialog(true, title, filters, default_ext, suggested)
+            .file_dialog(true, title, filters, default_ext, suggested, 0)
+            .map(|(p, _)| p)
+    }
+
+    /// „Speichern unter“ wie [`Surface::save_dialog`], die Zeile `wahl`
+    /// (ab 0) unter „Dateityp“ vorgewählt; gibt auch die gewählte Zeile
+    /// zurück. So trägt der Dateityp eine Wahl wie Maßstab oder Achse.
+    #[cfg(windows)]
+    pub fn save_dialog_wahl(
+        &self,
+        title: &str,
+        filters: &[FileFilter],
+        default_ext: &str,
+        suggested: &str,
+        wahl: usize,
+    ) -> Option<(PathBuf, usize)> {
+        self.inner
+            .file_dialog(true, title, filters, default_ext, suggested, wahl)
     }
 
     /// Meldung mit OK-Knopf; `error` wählt das Fehlersymbol statt des Hinweises.
@@ -430,6 +449,17 @@ impl Surface {
         _default_ext: &str,
         _suggested: &str,
     ) -> Option<PathBuf> {
+        None
+    }
+    #[cfg(not(windows))]
+    pub fn save_dialog_wahl(
+        &self,
+        _title: &str,
+        _filters: &[FileFilter],
+        _default_ext: &str,
+        _suggested: &str,
+        _wahl: usize,
+    ) -> Option<(PathBuf, usize)> {
         None
     }
     #[cfg(not(windows))]

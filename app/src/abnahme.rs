@@ -3429,6 +3429,7 @@ fn befehl(c: Option<Command>) -> Option<String> {
         Command::MeasureFrameTime => "Bildzeit messen".into(),
         Command::ExportIfc => "IFC exportieren".into(),
         Command::IfcVorschau => "IFC-Vorschau".into(),
+        Command::Export3d(f) => format!("3D-Export {f:?}"),
         Command::Ausbaustufe => "Ausbaustufe".into(),
     })
 }
@@ -3660,6 +3661,9 @@ fn a60_dateimenue_eintraege_und_ausgrauen() {
         ("Speichern unter …", "Strg+Umschalt+S", true),
         ("IFC exportieren …", "", true),
         ("IFC-Vorschau …", "", true),
+        ("GLB für Twinmotion, Lumion …", "", true),
+        ("OBJ exportieren …", "", true),
+        ("STL für 3D-Druck …", "", true),
         ("—", "", false),
         ("Einstellungen …", "Strg+Komma", true),
         ("Bauteilkatalog …", "", true),
@@ -4203,9 +4207,12 @@ fn a66_einstellungen_aufrufen() {
         .expect("Eintrag");
     assert_eq!(z[i].1, "Strg+Komma");
     assert!(z[i].2, "aktiv");
-    assert_eq!(z[i - 2].0, "IFC-Vorschau …");
-    assert_eq!(z[i - 3].0, "IFC exportieren …");
-    assert_eq!(z[i - 4].0, "Speichern unter …");
+    assert_eq!(z[i - 2].0, "STL für 3D-Druck …");
+    assert_eq!(z[i - 3].0, "OBJ exportieren …");
+    assert_eq!(z[i - 4].0, "GLB für Twinmotion, Lumion …");
+    assert_eq!(z[i - 5].0, "IFC-Vorschau …");
+    assert_eq!(z[i - 6].0, "IFC exportieren …");
+    assert_eq!(z[i - 7].0, "Speichern unter …");
     assert_eq!(z[i - 1].0, "—", "eigene Gruppe");
     // K3: „Bauteilkatalog …“ in derselben Gruppe, Paket 5 §1.1:
     // „Baustoffe …“ direkt darunter

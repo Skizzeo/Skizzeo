@@ -700,6 +700,10 @@ impl App {
         if !self.platte.leiste.werkzeug.aktiv || self.ui.view != ViewKind::Plan {
             if self.punkte_handle(ev, vw, vh, sc) {
                 self.grenz_handle(&Event::MouseLeave, vw, vh, sc);
+                // ein Höhenpunkt gewählt: die Ecke der Grenze nicht mehr
+                if matches!(ev, Event::MouseDown { .. }) && self.platte.griffe.abwaehlen() {
+                    self.redraw = true;
+                }
                 return true;
             }
             return self.grenz_handle(ev, vw, vh, sc);
@@ -724,8 +728,8 @@ impl App {
                         || self.platte.griffe.busy()
                         || self.platte.punkte.busy()
                 }
-                // Höhenpunkte in 3D (I4c)
-                ViewKind::Persp => self.platte.punkte.busy(),
+                // Höhenpunkte (I4c) und Griffe der Grenze (I3b) in 3D
+                ViewKind::Persp => self.platte.punkte.busy() || self.platte.griffe.busy(),
                 _ => false,
             }
     }
@@ -907,7 +911,8 @@ impl App {
         if self.im_zug() {
             return true;
         }
-        // gewählte Höhenpunkte (I4), eine Ecke der Grenze unter der Maus (I3)
+        // gewählte Höhenpunkte (I4), die gewählte Ecke der Grenze oder die
+        // unter der Maus (I3, I3b)
         if self.punkte_entf() || self.grenz_entf() {
             return true;
         }
@@ -1176,7 +1181,7 @@ impl App {
         let m = self.scene.model();
         let z = m.terrain_z();
         let mut out = self.platte.leiste.werkzeug.linien(z, scale, &self.theme);
-        out.extend(self.grenz_linien(z, scale, &self.theme));
+        out.extend(self.grenz_linien(scale, &self.theme));
         out.extend(self.punkte_linien(z, scale, &self.theme));
         out.extend(self.netz_marken(scale, &self.theme));
         if let Some(p) = self.picking.flaeche.and_then(|i| m.site_patches().get(i)) {
