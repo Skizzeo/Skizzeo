@@ -200,7 +200,7 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                             && (x.thickness - r.thickness).abs() < 1e-6
                     })
                     .count();
-                let rows = per_element(&t.rows[i..i + n], &namen);
+                let rows = per_element(&t.rows[i..i + n], &namen, &|_| true);
                 i += n;
                 let title = layer_group_title(m, r, &rows);
                 let a: f64 = rows.iter().map(|x| zeig(x, Bezug::Flaeche)).sum();

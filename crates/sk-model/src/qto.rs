@@ -13,6 +13,7 @@ use crate::model::Model;
 use crate::roof::FlatRoof;
 use crate::wall::WallChain;
 use sk_math::{vec3, Vec3};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub use crate::qto_raum::{RoomFn, RoomLine, RoomQto, Side};
@@ -1118,19 +1119,33 @@ fn floor_formwork_with(model: &Model, run: RunId, f: &FloorSlab, own: &[WallQto]
 /// Wie [`floor_formwork_with`] für die Mengenliste: die Mengen der Züge
 /// (eigener und Innenwände darunter) aus `walls`, jeder Zug nur einmal
 /// gerechnet (Review 3ad: sonst je Decke alle Innenwände darunter neu).
-fn floor_formwork_cached(
+fn floor_formwork_cached<'a>(
     model: &Model,
     run: RunId,
     f: &FloorSlab,
-    walls: &mut HashMap<RunId, Vec<WallQto>>,
+    (walls, zuege): (&mut HashMap<RunId, Cow<'a, [WallQto]>>, ZugFn<'a>),
 ) -> FormworkQto {
     let mut runs = model.runs_under_outline(run, Some(&f.outline));
     runs.insert(0, run);
     for &r in &runs {
-        walls.entry(r).or_insert_with(|| run_qto(model, r));
+        walls.entry(r).or_insert_with(|| zug(model, zuege, r));
     }
     let walls = &*walls;
-    floor_formwork_from(model, f, runs.iter().map(|r| (*r, walls[r].as_slice())))
+    floor_formwork_from(model, f, runs.iter().map(|r| (*r, &*walls[r])))
+}
+
+/// Schon gerechnete Mengen eines Wandzugs je Segment, wie [`run_qto`] sie
+/// gibt; `None`, wenn keine vorliegen. In der App die Mengen, die die Szene
+/// mit dem Zug gerechnet hat (Review M2: die Liste rechnete nach jedem
+/// Loslassen jeden Zug neu).
+pub type ZugFn<'a> = &'a dyn Fn(RunId) -> Option<&'a [WallQto]>;
+
+/// Mengen des Zugs aus `zuege`, sonst gerechnet.
+fn zug<'a>(model: &Model, zuege: ZugFn<'a>, run: RunId) -> Cow<'a, [WallQto]> {
+    match zuege(run) {
+        Some(q) => Cow::Borrowed(q),
+        None => Cow::Owned(run_qto(model, run)),
+    }
 }
 
 /// Schalungsmengen der Decke `f` aus den Mengen der Züge unter ihr
@@ -1847,14 +1862,20 @@ pub fn schedule(model: &Model) -> Schedule {
 /// Automatikmengen ([`crate::qto_raum`]). Räume, die `raeume` nicht nennt,
 /// fehlen wie bisher.
 pub fn schedule_mit(model: &Model, raeume: RoomFn) -> Schedule {
-    // Ein Gang über das ganze Modell: Anschlüsse, Decken und Öffnungen aus
-    // dem Verzeichnis, sonst wächst er mit dem Quadrat der Züge
-    model.lesend(|| schedule_im_gang(model, raeume))
+    schedule_mit_zuegen(model, raeume, &|_| None)
 }
 
-pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
+/// [`schedule_mit`] mit den Mengen der Wandzüge aus `zuege`, soweit sie
+/// vorliegen; die übrigen rechnet die Liste selbst.
+pub fn schedule_mit_zuegen(model: &Model, raeume: RoomFn, zuege: ZugFn) -> Schedule {
+    // Ein Gang über das ganze Modell: Anschlüsse, Decken und Öffnungen aus
+    // dem Verzeichnis, sonst wächst er mit dem Quadrat der Züge
+    model.lesend(|| schedule_im_gang(model, raeume, zuege))
+}
+
+pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> Schedule {
     // Je Wandzug einmal rechnen
-    let mut walls: HashMap<RunId, Vec<WallQto>> = HashMap::new();
+    let mut walls: HashMap<RunId, Cow<[WallQto]>> = HashMap::new();
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
     // Sohlplatten je Wandzug, für die Automatikmengen
     let mut platten: Vec<(RunId, ElementId)> = Vec::new();
@@ -1915,7 +1936,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
         };
         let (q, note) = match e.kind {
             ElementKind::Wall(w) => {
-                let qs = walls.entry(run).or_insert_with(|| run_qto(model, run));
+                let qs = walls.entry(run).or_insert_with(|| zug(model, zuege, run));
                 match qs.get(w.seg as usize) {
                     Some(q) => (Some(ElementQto::Wall(q.clone())), None),
                     None => (None, Some("Kein Körper: Wandzug ungültig".to_string())),
@@ -2056,7 +2077,8 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
                 match f {
                     Ok(f) => {
                         let mut q = floor_qto_of(f);
-                        q.formwork = Some(floor_formwork_cached(model, run, f, &mut walls));
+                        q.formwork =
+                            Some(floor_formwork_cached(model, run, f, (&mut walls, zuege)));
                         q.bearing = walls[&run].iter().map(|w| w.pocket).sum();
                         (Some(ElementQto::Floor(q)), None)
                     }
@@ -2149,6 +2171,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
     let mut buildings: Vec<_> = model.buildings().iter().collect();
     buildings.sort_by(|a, b| a.1.number.cmp(&b.1.number));
     let mut ebenen = model.levels_by_building();
+    let mut alle: Vec<GebaeudeZeile> = Vec::new();
     for (bid, _) in buildings {
         let storeys: Vec<StoreyQto> = ebenen
             .remove(&Some(bid))
@@ -2159,6 +2182,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
             .collect();
         let by_material = material_sums(model, &storeys);
         let rows = layer_rows(model, &storeys);
+        alle.extend(rows.iter().map(|r| (Some(bid), r.clone())));
         sched.buildings.push(BuildingQto {
             id: bid,
             storeys,
@@ -2180,6 +2204,15 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn) -> Schedule {
             sched.loose.push(s);
         }
     }
+    // Die Schichtzeilen sind hier schon gerechnet: gleich in den Speicher
+    // der Liste, sonst rechnen „Kosten live“ sie beim ersten Lesen noch
+    // einmal (Review M2)
+    alle.extend(
+        layer_rows(model, &sched.loose)
+            .into_iter()
+            .map(|r| (None, r)),
+    );
+    let _ = sched.zeilen.0.set((model.revision(), alle));
     sched.formwork = formwork_rows(&sched);
     sched.auto = auto_rows(model, &gruendung, &platten, &mut sched.hinweise);
     roofs.sort_by_key(|(id, _)| model.element(*id).map(|e| e.number.clone()));
@@ -3365,6 +3398,29 @@ mod tests {
             sched.layer_rows_ref(&m),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    /// Review M2: Die beim Rechnen der Liste gemerkten Schichtzeilen sind
+    /// die, die `layer_rows` rechnet.
+    #[test]
+    fn zeilenspeicher_wie_gerechnet() {
+        let mut m = Model::with_seed(3);
+        for (i, n) in [2, 1].into_iter().enumerate() {
+            let b = m.add_building(n);
+            let o = i as f64 * 20000.0;
+            let pts = [
+                vec3(o, 0.0, 0.0),
+                vec3(o, 8000.0, 0.0),
+                vec3(o + 10000.0, 8000.0, 0.0),
+                vec3(o + 10000.0, 0.0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+        }
+        let s = schedule(&m);
+        let gemerkt = s.layer_rows_ref(&m);
+        assert!(matches!(gemerkt, std::borrow::Cow::Borrowed(_)));
+        assert!(gemerkt.len() > 10);
+        assert_eq!(*gemerkt, s.layer_rows(&m)[..]);
     }
 
     /// Gründung und Geschosse je Gebäude aus einem Gang wie je Bauteil

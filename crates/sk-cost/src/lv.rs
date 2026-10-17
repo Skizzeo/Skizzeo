@@ -642,6 +642,9 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
     let mut aus_netz = false;
     // Erdmengen aus dem angenommenen Gelände (VOB-Spruch zu I1)
     let mut angenommen: Option<String> = None;
+    // die erste Position aus dem Netz, für den Befund zu Punkten von Hand
+    // (VOB-Spruch zu I4)
+    let mut netz_oz: Option<String> = None;
     for (g, zeilen, je_dicke) in je_dicke_teilen(&b.positionen, rang, je_leistung) {
         let l = k.leistung(g).expect("Leistung");
         let ps: Vec<&Position> = zeilen.iter().map(|i| &b.positionen[*i]).collect();
@@ -686,7 +689,10 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
             if !a.auto.is_some_and(|x| x.starts_with("earth.")) {
                 continue;
             }
-            aus_netz |= f.contains(sk_model::qto_earth::DREIECKSPRISMEN);
+            if f.contains(sk_model::qto_earth::DREIECKSPRISMEN) {
+                aus_netz = true;
+                netz_oz.get_or_insert_with(|| oz_basis.clone());
+            }
             if angenommen.is_none() && f.contains(sk_model::qto_earth::ANGENOMMEN) {
                 angenommen = Some(oz_basis.clone());
             }
@@ -892,6 +898,13 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
         befunde.push(Befund::hinweis(
             0,
             crate::rechnung::NICHT_VERMESSEN,
+            Ort::Position(oz),
+        ));
+    }
+    if let (Some(oz), Some((neu, weg))) = (netz_oz, sk_model::qto_earth::netz_geaendert(m)) {
+        befunde.push(Befund::hinweis(
+            0,
+            sk_model::qto_earth::hand_geaendert(neu, weg),
             Ort::Position(oz),
         ));
     }

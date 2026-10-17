@@ -27,9 +27,24 @@ pub(crate) fn verfahren(t: &crate::Terrain) -> String {
     if t.assumed() {
         return format!("; {DREIECKSPRISMEN} {ANGENOMMEN}");
     }
+    let hand = von_hand(t);
     match datum(&t.read) {
-        Some(d) => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {} vom {d}", t.src),
-        None => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {}", t.src),
+        Some(d) => format!(
+            "; {DREIECKSPRISMEN} aus dem Höhenaufmaß {} vom {d}{hand}",
+            t.src
+        ),
+        None => format!("; {DREIECKSPRISMEN} aus dem Höhenaufmaß {}{hand}", t.src),
+    }
+}
+
+/// Ein Aufmaß mit eigenen Höhenpunkten (I4) sagt, wie viele davon von
+/// Hand sind (VOB-Hinweis a zu #229): „, davon 3 Punkte von Hand
+/// ergänzt“; ohne solche leer.
+fn von_hand(t: &crate::Terrain) -> String {
+    match t.points.iter().filter(|p| p.hand && !p.off).count() {
+        0 => String::new(),
+        1 => ", davon 1 Punkt von Hand ergänzt".into(),
+        n => format!(", davon {} Punkte von Hand ergänzt", tausend(n)),
     }
 }
 
@@ -54,11 +69,67 @@ pub fn netz_herkunft(m: &Model) -> Option<String> {
     let n = t.mesh().netz.dreiecke.len();
     let vom = datum(&t.read).map_or(String::new(), |d| format!(" vom {d}"));
     Some(format!(
-        "Höhenaufmaß {}{vom}, {} Dreiecke",
+        "Höhenaufmaß {}{vom}, {} Dreiecke{}{}",
         t.src,
-        tausend(n)
+        tausend(n),
+        klammer(t, |p| p.hand && !p.off, "von Hand ergänzt"),
+        klammer(t, nicht_verwendet, "nicht verwendet"),
     ))
 }
+
+/// Ein Messpunkt, den der Nutzer aus dem Gelände genommen hat. Ein eigener
+/// Punkt, der in einer Bruchkante bleibt und darum nur `off` wird, ist kein
+/// Messpunkt und zählt nicht (VOB H-234b).
+fn nicht_verwendet(p: &crate::TerrainPoint) -> bool {
+    p.off && !p.hand
+}
+
+/// „, davon 3 Punkte von Hand ergänzt (H1, H2, H3)“, leer ohne solche.
+/// Immer alle Nummern: Solange es keine Ausgabe der Punktliste gibt, darf
+/// die Vorbemerkung nicht auf sie verweisen (VOB H-234a, VOB/A § 7 (1)).
+fn klammer(t: &crate::Terrain, welche: impl Fn(&crate::TerrainPoint) -> bool, was: &str) -> String {
+    let nr: Vec<&str> = t
+        .points
+        .iter()
+        .filter(|p| welche(p))
+        .map(|p| p.nr.as_str())
+        .collect();
+    let punkte = match nr.len() {
+        0 => return String::new(),
+        1 => "1 Punkt".to_string(),
+        n => format!("{} Punkte", tausend(n)),
+    };
+    format!(", davon {punkte} {was} ({})", nr.join(", "))
+}
+
+/// Von Hand geänderte Punkte eines vermessenen Aufmaßes: (ergänzt, nicht
+/// verwendet); `None` ohne Aufmaß, beim angenommenen Gelände oder wenn
+/// keiner geändert ist. Kostenblatt und LV geben dazu den Befund
+/// [`HAND_GEAENDERT`] (VOB-Spruch zu I4).
+///
+/// „Nicht verwendet“ zählt jeden Messpunkt mit `off`, auch einen, der schon so in
+/// der Datei steht (`off=1`): `off` setzt nur der Nutzer (Entf oder von Hand
+/// in der Datei), nie das Einlesen; Punkte mit einem Code „nicht ins
+/// Gelände“ haben kein `off` und zählen nicht. Die Mengen lassen den
+/// gemessenen Punkt weg, also muss der AG das wissen, egal wann und wie er
+/// ausgeschaltet wurde.
+pub fn netz_geaendert(m: &Model) -> Option<(usize, usize)> {
+    let t = m.terrain().filter(|t| !t.assumed())?;
+    let neu = t.points.iter().filter(|p| p.hand && !p.off).count();
+    let weg = t.points.iter().filter(|p| nicht_verwendet(p)).count();
+    (neu + weg > 0).then_some((neu, weg))
+}
+
+/// Befund zu [`netz_geaendert`]: kein Sperren.
+pub fn hand_geaendert(neu: usize, weg: usize) -> String {
+    format!(
+        "Höhenaufmaß von Hand geändert ({neu} ergänzt, {weg} nicht verwendet): vor der \
+         Ausschreibung vom Vermesser bestätigen lassen."
+    )
+}
+
+/// Anfang des Befunds [`hand_geaendert`], zum Erkennen.
+pub const HAND_GEAENDERT: &str = "Höhenaufmaß von Hand geändert";
 
 /// Datum des Einlesens deutsch („2026-10-12“ → „12.10.2026“); `None` ohne,
 /// unverändert, wenn es keines in dieser Form ist.
@@ -132,6 +203,12 @@ pub struct ErdNetz {
     /// Innerhalb der Frostschürze, gegen den Uhrzeigersinn; leer, wenn die
     /// Schürze die ganze Platte füllt.
     pub innen: Vec<Vec3>,
+    /// Streifen der Schürze unter einer Haustrennwand und OK Gelände der
+    /// eigenen Gründung (mm über ±0,00): Dort zählt für den Graben die
+    /// eigene Höhe, nicht das Netz im Fugenstreifen zum Nachbarn
+    /// (VOB-Spruch zu H-245c, Weg b).
+    trennwand: Vec<Vec<Vec3>>,
+    ok: f64,
 }
 
 impl PartialEq for ErdNetz {
@@ -139,6 +216,7 @@ impl PartialEq for ErdNetz {
         Arc::ptr_eq(&self.mesh, &o.mesh)
             && (self.frame, self.h0, &self.aufmass, &self.innen)
                 == (o.frame, o.h0, &o.aufmass, &o.innen)
+            && (&self.trennwand, self.ok) == (&o.trennwand, o.ok)
     }
 }
 
@@ -158,12 +236,28 @@ impl ErdNetz {
             crate::foundation::FootingShape::Ring(i) => i.pts.clone(),
             crate::foundation::FootingShape::Full(_) => Vec::new(),
         };
+        let trennwand: Vec<Vec<Vec3>> = m
+            .trennwand_streifen(run)
+            .into_iter()
+            .map(|q| {
+                q.into_iter()
+                    .map(|p| sk_math::vec3(p[0], p[1], 0.0))
+                    .collect()
+            })
+            .collect();
+        let ok = if trennwand.is_empty() {
+            0.0
+        } else {
+            m.terrain_z_of_level(m.foundation_level_of(m.run(run)?.storey)?)
+        };
         Some(ErdNetz {
             frame: m.survey_frame()?,
             h0: m.terrain_nhn()?,
             mesh: t.mesh(),
             aufmass: verfahren(t),
             innen,
+            trennwand,
+            ok,
         })
     }
 
@@ -345,7 +439,15 @@ pub(super) fn mengen(
     let ring_fl = (fl - innen_fl).max(0.0);
     // ∫innen (min(z_s, N) − z_p)⁺ = ∫(N − z_p)⁺ − ∫(N − z_s)⁺, ebenso der Ring
     let bett = (i_p.ueber - i_s).max(0.0);
-    let graben = ((platte_f - platte) - (i_f - i_s)).max(0.0);
+    let mut graben = (platte_f - platte) - (i_f - i_s);
+    // unter der Haustrennwand mit der eigenen Höhe statt dem Netz
+    let h = n.ok - o;
+    for q in &n.trennwand {
+        let [s, f] = n.mengen(q, &[z_s + o, z_f + o]).map(|e| e.ueber);
+        let eigen = (h - z_f).max(0.0) - (h - z_s).max(0.0);
+        graben += sk_math::polygon::area(q) * eigen - (f - s);
+    }
+    let graben = graben.max(0.0);
     let auf = i_p.unter;
     let bo = boeschung(n, &sohle, z_s, o, boden.boeschung);
     let verfahren = n.aufmass.clone();
