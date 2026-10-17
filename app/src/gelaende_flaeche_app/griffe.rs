@@ -96,6 +96,15 @@ impl Griffe {
         self.zug.is_some()
     }
 
+    /// Die Ecke, die Entf löscht: die unter der Maus, wie es die
+    /// Statuszeile dort ansagt, sonst die gewählte (Bedienbarkeit U-253a).
+    fn entf_ziel(&self, ringe: &[Vec<[f64; 2]>]) -> Option<(usize, usize)> {
+        match self.hover {
+            Some(Griff::Ecke(i, k)) => Some((i, k)),
+            _ => self.wahl(ringe),
+        }
+    }
+
     /// Die gewählte Ecke, wenn sie noch so in `ringe` liegt.
     fn wahl(&self, ringe: &[Vec<[f64; 2]>]) -> Option<(usize, usize)> {
         let (i, k, p) = self.gewaehlt?;
@@ -481,18 +490,14 @@ impl App {
         true
     }
 
-    /// Entf löscht die gewählte Ecke, ohne Wahl die unter der Maus; `true`,
-    /// wenn Entf der Grenze galt.
+    /// Entf löscht die Ecke unter der Maus, sonst die gewählte
+    /// ([`Griffe::entf_ziel`]); `true`, wenn Entf der Grenze galt.
     pub(crate) fn grenz_entf(&mut self) -> bool {
         if !self.grenz_griffe_an() {
             return false;
         }
         let ringe = self.scene.model().parcel_rings();
-        let unter = match self.platte.griffe.hover {
-            Some(Griff::Ecke(i, k)) => Some((i, k)),
-            _ => None,
-        };
-        let Some((i, k)) = self.platte.griffe.wahl(&ringe).or(unter) else {
+        let Some((i, k)) = self.platte.griffe.entf_ziel(&ringe) else {
             return false;
         };
         let Some(mut ring) = ringe.get(i).cloned() else {
@@ -728,6 +733,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(g.wahl(&r), Some((0, 2)));
+        // Entf gilt der Ecke unter der Maus, sonst der gewählten (U-253a)
+        assert_eq!(g.entf_ziel(&r), Some((0, 2)));
+        g.hover = Some(Griff::Ecke(0, 1));
+        assert_eq!(g.entf_ziel(&r), Some((0, 1)));
+        g.hover = Some(Griff::Kante(0, 1));
+        assert_eq!(g.entf_ziel(&r), Some((0, 2)));
+        g.hover = None;
         r[0][2] = [19000.0, 13000.0];
         assert_eq!(g.wahl(&r), None, "anders geändert");
         assert_eq!(g.wahl(&[]), None);
