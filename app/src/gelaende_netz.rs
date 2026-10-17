@@ -505,6 +505,13 @@ impl Gelaende {
         self
     }
 
+    /// Tiefste und höchste Höhe der Dreiecke (mm), `None` ohne Dreiecke.
+    pub(crate) fn hoehen(&self) -> Option<(f64, f64)> {
+        let mut z = self.dreiecke.iter().flatten().map(|p| p.z);
+        let a = z.next()?;
+        Some(z.fold((a, a), |(lo, hi), z| (lo.min(z), hi.max(z))))
+    }
+
     /// Quader um das Netz bis zur Unterkante des Rands.
     #[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))] // Prüfbilder
     pub(crate) fn rahmen(&self) -> (Vec3, Vec3) {
@@ -1002,6 +1009,12 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
 /// des Dreiecksnetzes fein auf dem Rasen, die vollen Meter kräftig. Als
 /// Kanten des Körpers bleiben sie hinter Hügeln und Häusern verdeckt.
 pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Solid {
+    koerper_mit(g, keys, netz, true)
+}
+
+/// Körper in 3D wie [`koerper_mit_netz`]; ohne `linien` keine Höhenlinien
+/// darauf (Jörn 17.10.: mit den Höhenfarben stören sie).
+pub(crate) fn koerper_mit(g: &Gelaende, keys: [u16; 3], netz: bool, linien: bool) -> Solid {
     let mut s = Solid {
         mat: keys[0],
         edge_kind: edge_kind::VIEW,
@@ -1075,7 +1088,7 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
     } else {
         edge_kind::FINE
     };
-    for &(z, [a, b], innen, haupt) in &g.stuecke {
+    for &(z, [a, b], innen, haupt) in g.stuecke.iter().filter(|_| linien) {
         if !haupt || (g.show == Show::Parcel && !innen) {
             continue;
         }
@@ -1769,6 +1782,27 @@ mod tests {
 
     /// Mit Hilfsnetz (§4.3a) liegt jede Kante des Netzes einmal fein auf
     /// dem Körper, nicht im Haus, und die vollen Meter werden kräftig;
+    /// Ohne Höhenlinien (Jörn 17.10.) fehlen nur ihre Kanten; die Höhen
+    /// reichen vom tiefsten bis zum höchsten Punkt des Netzes.
+    #[test]
+    fn koerper_ohne_hoehenlinien() {
+        let m = lindenhof();
+        let g = Gelaende::aus(&m).unwrap();
+        let keys = [10, 11, 12];
+        let mit = koerper_mit(&g, keys, false, true);
+        let ohne = koerper_mit(&g, keys, false, false);
+        assert_eq!(mit.triangles.len(), ohne.triangles.len());
+        let fein = |s: &Solid| s.edges.iter().filter(|e| e.kind == edge_kind::FINE).count();
+        assert!(fein(&mit) > 0);
+        assert_eq!(fein(&ohne), 0);
+        assert_eq!(mit.edges.len() - fein(&mit), ohne.edges.len());
+        let (lo, hi) = g.hoehen().unwrap();
+        assert!(lo < hi);
+        for p in g.dreiecke.iter().flatten() {
+            assert!(p.z >= lo && p.z <= hi);
+        }
+    }
+
     /// Rasen und Erdreich bleiben gleich.
     #[test]
     fn hilfsnetz_im_koerper() {

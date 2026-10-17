@@ -163,7 +163,7 @@ fn messen(n: usize) -> Zeiten {
         px = if px == 10.0 { 12.5 } else { 10.0 };
         std::hint::black_box(pl.linien_im_bild(m, plan, None, &t, (1.0, px)).len());
     });
-    let sicht_von = |v: ViewKind, plane| -> Sicht { (v, plane, [40, 41, 42], false, false) };
+    let sicht_von = |v: ViewKind, plane| -> Sicht { (v, plane, [40, 41, 42], false, false, true) };
     let persp = sicht_von(ViewKind::Persp, None);
     let grund = sicht_von(ViewKind::Plan, None);
     let warten = |pl: &mut Platte| {
@@ -567,7 +567,7 @@ fn lageplan_messen(n: usize, k: usize, dicht: bool) -> Lageplan {
     // der Unterlage sind gemerkt, der Faden bildet sie nicht neu ab. Danach
     // sind nur die Kacheln neu, deren Strecken das Haus schneidet; ihre
     // Ecken baut ein Faden, der UI-Faden lädt nur hoch.
-    let sicht: Sicht = (ViewKind::Plan, None, [40, 41, 42], false, false);
+    let sicht: Sicht = (ViewKind::Plan, None, [40, 41, 42], false, false, true);
     let orig = s.chain(run).unwrap().clone();
     let (mut nachzug, mut hoch, mut neu) = (f64::INFINITY, 0.0f64, 0);
     let mut vorher = keys.clone();

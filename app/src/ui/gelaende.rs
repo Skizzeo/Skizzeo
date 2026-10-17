@@ -61,6 +61,10 @@ pub enum GelaendeKnopf {
     Flaeche,
     /// Hilfsnetz in 3D ein und aus (Jörns §4.3a, auch Taste N).
     Netz,
+    /// Höhenlinien auf dem Gelände in 3D ein und aus (Jörn 17.10.).
+    Linien,
+    /// Höhenfarben statt Rasen in 3D ein und aus (Jörn 17.10.).
+    Farben,
     /// Schloss der gewählten Messpunkte öffnen und schließen (I5, §5 J2 C).
     Schloss,
     /// Gewählte geänderte Messpunkte auf die gemessenen Werte zurück (I5).
@@ -96,6 +100,8 @@ impl GelaendeKnopf {
             | GelaendeKnopf::AmHaus
             | GelaendeKnopf::Flaeche
             | GelaendeKnopf::Netz
+            | GelaendeKnopf::Linien
+            | GelaendeKnopf::Farben
             | GelaendeKnopf::Schloss
             | GelaendeKnopf::Gemessen
             | GelaendeKnopf::Grenze
@@ -150,6 +156,9 @@ impl GelaendeFeld {
     }
 }
 
+/// Über der Legende der Höhenfarben.
+pub const LEGENDE: &str = "Höhenfarben in m ü. NHN";
+
 /// Was die Leiste zeigt; die App füllt es aus dem Modell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GelaendeLeiste {
@@ -165,6 +174,12 @@ pub struct GelaendeLeiste {
     pub grenze: bool,
     /// Das Hilfsnetz in 3D ist an (Knopf „Netz“ hervorgehoben).
     pub netz: bool,
+    /// Höhenlinien in 3D sind an (Knopf „Linien“).
+    pub linien: bool,
+    /// Höhenfarben sind an (Knopf „Farben“); ihre Legende von oben nach
+    /// unten: Farbe und Höhen der Stufe in m ü. NHN.
+    pub farben: bool,
+    pub legende: Vec<([f32; 3], String)>,
     /// Gewählte Messpunkte (I5): `Some(true)`, wenn ihr Schloss offen ist,
     /// `None` ohne gewählten Messpunkt.
     pub schloss: Option<bool>,
@@ -257,7 +272,17 @@ impl Ui {
         }
         // das Hilfsnetz in 3D braucht Punkte (§4.3a)
         if l.hoehen {
-            rows.push(Row::Button(Id::Gelaende(K::Netz), "Netz"));
+            rows.push(Row::Segments([
+                (Id::Gelaende(K::Netz), "Netz"),
+                (Id::Gelaende(K::Linien), "Linien"),
+                (Id::Gelaende(K::Farben), "Farben"),
+            ]));
+            if l.farben && !l.legende.is_empty() {
+                rows.push(Row::Hint(LEGENDE));
+                rows.extend(l.legende.iter().map(|(c, t)| {
+                    Row::Layer(Rgba::from_f32([c[0], c[1], c[2], 1.0]), t.clone(), None)
+                }));
+            }
         }
         // Messpunkte des Vermessers tragen ein Schloss (I5, §5 J2 C)
         if let Some(offen) = l.schloss {
@@ -435,6 +460,8 @@ impl Ui {
             GelaendeKnopf::Flaeche => l.zeichnen,
             GelaendeKnopf::Grenze => l.grenze_zeichnen,
             GelaendeKnopf::Netz => l.netz,
+            GelaendeKnopf::Linien => l.linien,
+            GelaendeKnopf::Farben => l.farben,
             GelaendeKnopf::Schloss => l.schloss == Some(true),
             GelaendeKnopf::Lageplan
             | GelaendeKnopf::Uebernehmen
@@ -491,6 +518,8 @@ mod tests {
                 K::Lageplan,
                 K::Hoehen,
                 K::Netz,
+                K::Linien,
+                K::Farben,
                 K::Verschieben,
                 K::Drehen,
                 K::Ausrichten,
@@ -552,6 +581,37 @@ mod tests {
             ..leiste()
         });
         assert!(!knoepfe(&ui).contains(&Id::Gelaende(K::Netz)));
+        // Höhenfarben mit Legende, von oben nach unten (Jörn 17.10.)
+        let legende = |ui: &Ui| -> Vec<String> {
+            ui.rows(Panel::Tools)
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Layer(_, t, None) => Some(t.clone()),
+                    Row::Hint(t) if *t == LEGENDE => Some(t.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        ui.gelaende = Some(GelaendeLeiste {
+            linien: true,
+            legende: vec![([0.9, 0.5, 0.2], "102,00 bis 102,50".into())],
+            ..leiste()
+        });
+        assert!(legende(&ui).is_empty(), "nur mit Farben");
+        assert!(ui.is_on(Id::Gelaende(K::Linien)) && !ui.is_on(Id::Gelaende(K::Farben)));
+        ui.gelaende = Some(GelaendeLeiste {
+            farben: true,
+            legende: vec![
+                ([0.9, 0.5, 0.2], "102,00 bis 102,50".into()),
+                ([0.2, 0.4, 0.7], "101,50 bis 102,00".into()),
+            ],
+            ..leiste()
+        });
+        assert_eq!(
+            legende(&ui),
+            [LEGENDE, "102,00 bis 102,50", "101,50 bis 102,00"]
+        );
+        assert!(ui.is_on(Id::Gelaende(K::Farben)) && !ui.is_on(Id::Gelaende(K::Linien)));
         ui.gelaende = Some(leiste());
         ui.gelaende = Some(GelaendeLeiste {
             zeichnen: true,
