@@ -2585,6 +2585,9 @@ impl Ui {
             return;
         }
         widgets::button(c, &self.fonts, b, label, st, s, t);
+        if id == Id::Gelaende(GelaendeKnopf::Schloss) {
+            self.schloss_symbol(t, c, b, st);
+        }
     }
 
     /// Paneel ohne Knöpfe.

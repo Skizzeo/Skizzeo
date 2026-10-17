@@ -909,7 +909,9 @@ impl QuantityWindow {
                     ..
                 } => {
                     let a = c.release(t, s, x, y);
-                    let out = a.map(|a| Out::Action(a, c.target, std::mem::take(ids)));
+                    let out = a
+                        .zip(c.target)
+                        .map(|(a, b)| Out::Action(a, b, std::mem::take(ids)));
                     if out.is_some() {
                         self.context = None;
                         self.dirty = true;
@@ -944,9 +946,9 @@ impl QuantityWindow {
                         }
                         Ok(None) => None,
                         Ok(Some(a)) => {
-                            let out = Out::Action(a, c.target, std::mem::take(ids));
+                            let out = c.target.map(|b| Out::Action(a, b, std::mem::take(ids)));
                             self.context = None;
-                            Some(out)
+                            out
                         }
                     });
                 }

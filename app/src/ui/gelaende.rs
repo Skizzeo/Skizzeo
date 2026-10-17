@@ -399,6 +399,27 @@ impl Ui {
             .collect()
     }
 
+    /// Schloss links im Knopf „Schloss offen“ (I5b), wie das am Punkt:
+    /// zu gefüllt, offen mit gehobenem Bügel; in der Schrift des Knopfs.
+    pub(super) fn schloss_symbol(&self, t: &Theme, c: &mut Canvas, b: Rect, st: ButtonState) {
+        let offen = self.gelaende.as_ref().and_then(|l| l.schloss) == Some(true);
+        let col = if st.disabled {
+            t.ui.text_disabled
+        } else if st.active {
+            t.ui.on_accent
+        } else {
+            t.ui.text
+        };
+        let fill = if offen {
+            widgets::Fill::None
+        } else {
+            widgets::Fill::Full
+        };
+        let s = self.scale;
+        let (x, y) = (b.x + 16.0 * s, b.y + (b.h * 0.5).round());
+        widgets::lock_icon(c, x.round(), y, fill, col, s);
+    }
+
     /// Knopf der Leiste hervorgehoben: die offene Leiste, die offene
     /// Eingabe, die Art der Höhenlage und der Zuschnitt.
     pub(super) fn gelaende_an(&self, k: GelaendeKnopf) -> bool {

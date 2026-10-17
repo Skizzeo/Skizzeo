@@ -22,6 +22,7 @@
 use super::fang::{self, Ziele};
 use super::STEP;
 use crate::camera::Camera;
+use crate::delete::{ContextMenu, HintCard, Link};
 use crate::meldung::Meldung;
 use crate::ui::ViewKind;
 use crate::App;
@@ -30,6 +31,8 @@ use sk_model::TerrainSpot;
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 /// So nah (Bildpunkte) greift die Maus einen Punkt oder den Höhengriff.
@@ -52,6 +55,9 @@ const VERSATZ: f64 = 1000.0;
 /// (Bildpunkte).
 const PFEIL_3D_PX: f64 = 56.0;
 const QUADRAT_PX: f64 = 10.0;
+/// Das Schloss der Wahl (I5b) steht so weit rechts neben der Spitze des
+/// Höhenpfeils bzw. dem Höhengriff (px).
+const SCHLOSS_DX: f64 = 22.0;
 
 /// Statuszeile (§4.0 Regel 2).
 pub const PUNKT: &str =
@@ -59,8 +65,18 @@ pub const PUNKT: &str =
 pub const HOEHE: &str = "Höhe ziehen: nach oben hebt, 1 Bildpunkt 1 cm, mit Umschalt 10 cm.";
 /// Messpunkte des Vermessers tragen ein Schloss (I5, §5 J2 C).
 pub const MESSPUNKT: &str =
-    "Punkte des Vermessers sind gesperrt: „Schloss offen“ in der Leiste gibt sie \
-     frei, Strg ziehen setzt eine eigene Kopie, Entf nimmt sie aus dem Gelände.";
+    "Punkte des Vermessers sind gesperrt: das Schloss am Punkt, sein Kontextmenü oder \
+     „Schloss offen“ in der Leiste gibt sie frei, Strg ziehen setzt eine eigene Kopie, \
+     Entf nimmt sie aus dem Gelände.";
+/// Karte am Cursor, wenn man einen gesperrten Messpunkt zieht (I5b).
+pub const GESPERRT: [&str; 2] = [
+    "Messpunkt gesperrt",
+    "Erst mit offenem Schloss ziehen; Strg ziehen setzt eine Kopie.",
+];
+/// Statuszeile am Schloss der Wahl (I5b).
+pub const SCHLOSS_ZU: &str =
+    "Messpunkt gesperrt: Klick öffnet das Schloss, dann lässt er sich ziehen. Der gemessene Wert bleibt gespeichert.";
+pub const SCHLOSS_AUF: &str = "Schloss offen: Klick schließt es wieder.";
 pub const DREI: &str = "Das Gelände behält mindestens drei Punkte.";
 pub const BELEGT: &str = "Dort liegt schon ein Höhenpunkt; nichts geändert.";
 /// Schritte im Rückgängig (§4.0 Regel 5).
@@ -78,6 +94,8 @@ pub enum Ziel {
     Punkt(String),
     /// Der Höhengriff der Wahl.
     Hoehe,
+    /// Das Schloss der gewählten Messpunkte (I5b).
+    Schloss,
 }
 
 /// Ein Zug: in der Lage oder in der Höhe.
@@ -125,7 +143,14 @@ pub struct Punkte {
     /// Häuser zum Stand des Modells, für die Nadeln in 3D (Review #237
     /// B-237a).
     pub(super) haeuser: Option<std::sync::Arc<super::netz::Haeuser>>,
+    /// [`App::schloss_zu`] zu Modellstand, Wahl und offenen Schlössern: Es
+    /// fragt je Bild und Mausbewegung, der Gang über alle Punkte nur, wenn
+    /// sich davon etwas ändert (Review B-250a).
+    schloss: RefCell<Option<SchlossStand>>,
 }
+
+/// Modellstand, Wahl, offene Schlösser und das Schloss der Wahl dazu.
+type SchlossStand = (u64, Vec<String>, HashSet<String>, Option<bool>);
 
 /// Die Punkte mit Nummer, geteilt bis zur nächsten Änderung.
 type Spots = std::sync::Arc<Vec<(String, TerrainSpot)>>;
@@ -218,6 +243,42 @@ fn senkrecht_z(o: Vec3, d: Vec3, p: Vec3, n: Vec3) -> Option<f64> {
 fn hub_3d(dz: f64, shift: bool) -> f64 {
     let je = if shift { MM_JE_PX * 10.0 } else { MM_JE_PX };
     (dz / je).round() * je + 0.0
+}
+
+/// [`App::schloss_zu`] für die Punkte `spots`, die Wahl `w` und die
+/// Messpunkte mit offenem Schloss `offen`.
+fn schloss_der_wahl(
+    spots: &[(String, TerrainSpot)],
+    w: &[String],
+    offen: &HashSet<String>,
+) -> Option<bool> {
+    let mut mess = spots
+        .iter()
+        .filter(|s| !s.1.hand && w.contains(&s.0))
+        .peekable();
+    mess.peek()?;
+    Some(mess.any(|s| !offen.contains(&s.0)))
+}
+
+/// Das Schloss der Wahl aus `merker`, wenn Modellstand `rev`, Wahl `w` und
+/// offene Schlösser `offen` dieselben sind, sonst `rechnen` und merken
+/// (Review B-250a): Vergleichen kostet so viel wie Wahl und offene
+/// Schlösser, nicht wie alle Punkte.
+fn schloss_gemerkt(
+    merker: &RefCell<Option<SchlossStand>>,
+    rev: u64,
+    w: &[String],
+    offen: &HashSet<String>,
+    rechnen: impl FnOnce() -> Option<bool>,
+) -> Option<bool> {
+    if let Some((r, gw, of, zu)) = merker.borrow().as_ref() {
+        if *r == rev && gw == w && of == offen {
+            return *zu;
+        }
+    }
+    let zu = rechnen();
+    *merker.borrow_mut() = Some((rev, w.to_vec(), offen.clone(), zu));
+    zu
 }
 
 /// Abstand eines Bildpunkts von der Strecke `a`–`b` im Bild.
@@ -414,6 +475,96 @@ impl App {
         Some((q.0 + GRIFF_DX * sc, q.1 + GRIFF_DY * sc))
     }
 
+    /// Schloss der Wahl (I5): `Some(true)`, wenn unter den gewählten ein
+    /// Messpunkt mit geschlossenem Schloss ist, `Some(false)`, wenn alle
+    /// gewählten Messpunkte offen sind; `None` ohne Messpunkt in der Wahl.
+    pub(super) fn schloss_zu(&self) -> Option<bool> {
+        let (w, offen) = (&self.platte.punkte.gewaehlt, &self.platte.leiste.offen_nr);
+        let rev = self.scene.model().revision();
+        schloss_gemerkt(&self.platte.punkte.schloss, rev, w, offen, || {
+            schloss_der_wahl(&self.spots(), w, offen)
+        })
+    }
+
+    /// Wo das Schloss der Wahl steht (Bildpunkt): rechts neben der Spitze
+    /// des Höhenpfeils bzw. dem Höhengriff (I5b).
+    fn schloss_griff(&self, vw: f64, vh: f64, sc: f64) -> Option<(f64, f64)> {
+        self.schloss_zu()?;
+        let g = if self.drei_d() {
+            let (_, b) = self.pfeil_3d(vw, vh, sc)?;
+            self.cam.project(b, vw, vh)?
+        } else {
+            self.hoehen_griff(vw, vh, sc)?
+        };
+        Some((g.0 + SCHLOSS_DX * sc, g.1))
+    }
+
+    /// Karte am Cursor (Bildpunkt `(x, y)` in der Ansicht) beim Ziehen
+    /// eines gesperrten Messpunkts, mit „Schloss öffnen“ (I5b). Steht sie
+    /// schon, bleibt sie, wo sie ist.
+    fn schloss_karte(&mut self, x: f64, y: f64) {
+        let unsere = |h: &HintCard| h.link.is_some_and(|l| l.1 == Link::Schloss);
+        if self.hint.as_ref().is_some_and(unsere) {
+            return;
+        }
+        let lines = GESPERRT.map(String::from).to_vec();
+        let mut h = HintCard::new(
+            lines,
+            Some(("Schloss öffnen", Link::Schloss)),
+            Vec::new(),
+            Instant::now(),
+        );
+        let s = self.ui.scale;
+        let size = h.size(&self.theme, &self.ui.fonts, s);
+        let top = self.top() as f32;
+        let maus = sk_ui::widgets::Rect::new(x as f32, y as f32 + top, 1.0, 1.0);
+        h.place(size, Some(maus), (self.w as f32, self.h as f32, top), s);
+        self.hint = Some(h);
+        self.hint_dirty = true;
+    }
+
+    /// Rechtsklick (Fenster-Bildpunkt) auf einen Messpunkt, sein Schloss
+    /// oder seinen Höhengriff (I5b): ihn wählen, wenn er es nicht ist, und
+    /// das Kontextmenü „Schloss öffnen“ bzw. „schließen“ öffnen. `false`
+    /// anderswo und an eigenen Punkten.
+    pub(crate) fn open_punkt_context(&mut self, x: f64, y: f64) -> bool {
+        let top = self.top();
+        if y < top as f64
+            || self.ui.dialog
+            || !self.punkte_an()
+            || self.platte.griffe.zieht()
+            || self.platte.punkte.zug.is_some()
+            || self.ui.over(x, y, self.w, top)
+        {
+            return false;
+        }
+        self.spots_merken();
+        let (vw, vh, sc) = self.view_size();
+        match self.punkte_ziel(x, y - top as f64, vw, vh, sc) {
+            Some(Ziel::Schloss | Ziel::Hoehe) => {}
+            Some(Ziel::Punkt(nr)) if !self.platte.punkte.gewaehlt.contains(&nr) => {
+                let mess = self.spots().iter().any(|s| s.0 == nr && !s.1.hand);
+                if !mess {
+                    return false;
+                }
+                self.platte.punkte.gewaehlt = vec![nr];
+            }
+            Some(Ziel::Punkt(_)) => {}
+            None => return false,
+        }
+        let Some(zu) = self.schloss_zu() else {
+            return false;
+        };
+        self.close_type_menu(false);
+        let win = (self.w, self.h, top);
+        let s = self.ui.scale;
+        self.context = Some(ContextMenu::for_punkt(zu, x, y, win, &self.theme, s));
+        self.context_dirty = true;
+        self.tip = None;
+        self.redraw = true;
+        true
+    }
+
     /// Ereignis an die Höhenpunkte; `true`, wenn sie es nehmen.
     pub(crate) fn punkte_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
         if !self.punkte_an() || self.platte.griffe.zieht() {
@@ -454,6 +605,11 @@ impl App {
             } => {
                 let ziel = self.punkte_ziel(x, y, vw, vh, sc);
                 let out = match ziel {
+                    Some(Ziel::Schloss) => {
+                        self.schloss_umschalten();
+                        self.punkte_zeile(Some(&Ziel::Schloss));
+                        true
+                    }
                     Some(z) => {
                         self.platte.punkte.klick = None;
                         self.punkte_greifen(z, x, y, vw, vh, mods)
@@ -482,6 +638,11 @@ impl App {
 
     /// Was unter dem Bildpunkt liegt: der Höhengriff vor den Punkten.
     fn punkte_ziel(&self, x: f64, y: f64, vw: f64, vh: f64, sc: f64) -> Option<Ziel> {
+        if let Some(g) = self.schloss_griff(vw, vh, sc) {
+            if (g.0 - x).hypot(g.1 - y) <= GREIF_PX * sc * 1.5 {
+                return Some(Ziel::Schloss);
+            }
+        }
         if let Some(g) = self.hoehen_griff(vw, vh, sc) {
             if (g.0 - x).hypot(g.1 - y) <= GREIF_PX * sc * 1.5 {
                 return Some(Ziel::Hoehe);
@@ -601,6 +762,7 @@ impl App {
         mods: Modifiers,
     ) -> bool {
         let (hoehe, nr, raus) = match ziel {
+            Ziel::Schloss => return false,
             Ziel::Hoehe => (true, self.platte.punkte.gewaehlt[0].clone(), false),
             Ziel::Punkt(nr) => {
                 let w = &mut self.platte.punkte.gewaehlt;
@@ -687,6 +849,7 @@ impl App {
         }
         z.kopie |= mods.ctrl;
         if z.fest && !z.kopie {
+            self.schloss_karte(x, y);
             self.status(Meldung::satz(MESSPUNKT), crate::NOTICE_TIME);
             return;
         }
@@ -885,6 +1048,14 @@ impl App {
     fn punkte_zeile(&mut self, ziel: Option<&Ziel>) {
         match ziel {
             Some(Ziel::Hoehe) => self.status(Meldung::satz(HOEHE), Duration::from_secs(3600)),
+            Some(Ziel::Schloss) => {
+                let text = if self.schloss_zu() == Some(true) {
+                    SCHLOSS_ZU
+                } else {
+                    SCHLOSS_AUF
+                };
+                self.status(Meldung::satz(text), Duration::from_secs(3600));
+            }
             Some(Ziel::Punkt(nr)) => {
                 let spots = self.spots();
                 let Some(s) = spots.iter().find(|s| s.0 == *nr) else {
@@ -894,7 +1065,9 @@ impl App {
                 self.status(Meldung::mit(PUNKT, &[nr, &h]), Duration::from_secs(3600));
             }
             None => {
-                let unsere = |t: &str| t == HOEHE || t.starts_with("Höhenpunkt ");
+                let unsere = |t: &str| {
+                    [HOEHE, SCHLOSS_ZU, SCHLOSS_AUF].contains(&t) || t.starts_with("Höhenpunkt ")
+                };
                 if self.notice.as_ref().is_some_and(|n| unsere(&n.text)) {
                     self.notice = None;
                     self.renderer
@@ -967,12 +1140,19 @@ impl App {
             }
         }
         let (vw, vh, sc) = self.view_size();
+        // gesperrt grau, bis man das Schloss öffnet (I5b)
+        let ruhig = if self.schloss_zu() == Some(true) {
+            super::netz::GRAU
+        } else {
+            col.select
+        };
+        out.extend(self.schloss_linien(z, scale, theme));
         let an = self.platte.punkte.hover == Some(Ziel::Hoehe) || zug.is_some_and(|z| z.hoehe);
-        let farbe = if an { col.drag } else { col.select };
+        let farbe = if an { col.drag } else { ruhig };
         if drei_d {
             let lage =
                 zug.is_some_and(|z| !z.hoehe) || heiss.is_some_and(|h| w.first() == Some(&h));
-            let fuss = if lage { col.drag } else { col.select };
+            let fuss = if lage { col.drag } else { ruhig };
             out.extend(self.gizmo_3d(vw, vh, sc, (farbe, fuss), scale));
             return out;
         }
@@ -992,6 +1172,80 @@ impl App {
                 out.push(punkt(a, 5.0, farbe, true));
             }
         }
+        out
+    }
+
+    /// Das Schloss der Wahl neben dem Höhenpfeil bzw. Höhengriff (I5b):
+    /// Körper und Bügel, offen mit gehobenem Bügel; grau, solange es zu
+    /// ist. Im Grundriss auf der Zeichenebene `z`.
+    fn schloss_linien(&self, z: f64, scale: f32, theme: &Theme) -> Vec<Helper> {
+        let (vw, vh, sc) = self.view_size();
+        let (Some(zu), Some(g)) = (self.schloss_zu(), self.schloss_griff(vw, vh, sc)) else {
+            return Vec::new();
+        };
+        let col = &theme.interact;
+        let farbe = if self.platte.punkte.hover == Some(Ziel::Schloss) {
+            col.drag
+        } else if zu {
+            super::netz::GRAU
+        } else {
+            col.select
+        };
+        // Bildpunkte um das Schloss (nach unten positiv) in die Welt: in 3D
+        // in der Ebene zur Kamera durch die Spitze des Pfeils
+        let drei_d = self.drei_d().then(|| self.pfeil_3d(vw, vh, sc)).flatten();
+        let mm = drei_d.and_then(|(_, b)| mm_je_px(&self.cam, b, vw, vh));
+        let welt = |dx: f64, dy: f64| -> Option<[f32; 3]> {
+            let v = match (drei_d, mm) {
+                (Some((_, b)), Some(mm)) => {
+                    let k = mm * sc;
+                    b + self.cam.right() * ((SCHLOSS_DX + dx) * k) - self.cam.up() * (dy * k)
+                }
+                _ => {
+                    let q = self
+                        .cam
+                        .ground_point(g.0 + dx * sc, g.1 + dy * sc, vw, vh)?;
+                    vec3(q.x, q.y, z + 3.0)
+                }
+            };
+            Some([v.x as f32, v.y as f32, v.z as f32])
+        };
+        let strich = |a: (f64, f64), b: (f64, f64), w: f32| {
+            Some(Helper {
+                a: welt(a.0, a.1)?,
+                b: welt(b.0, b.1)?,
+                color: farbe,
+                width: w * scale,
+                dash: 0.0,
+                pattern: sk_render::SOLID,
+                occlude: false,
+                round: false,
+            })
+        };
+        let buegel: &[(f64, f64)] = if zu {
+            &[
+                (-3.0, 0.0),
+                (-3.0, -4.0),
+                (-1.5, -6.0),
+                (1.5, -6.0),
+                (3.0, -4.0),
+                (3.0, 0.0),
+            ]
+        } else {
+            &[
+                (-3.0, 0.0),
+                (-3.0, -6.0),
+                (-1.5, -8.0),
+                (1.5, -8.0),
+                (3.0, -6.0),
+                (3.0, -4.0),
+            ]
+        };
+        let mut out: Vec<Helper> = buegel
+            .windows(2)
+            .filter_map(|w| strich(w[0], w[1], 1.6))
+            .collect();
+        out.extend(strich((-4.5, 3.5), (4.5, 3.5), 7.0));
         out
     }
 
@@ -1131,6 +1385,67 @@ mod tests {
         );
         assert_eq!(m_vz(-320.0), "−0,32");
         assert_eq!(m_vz(0.0), "+0,00");
+    }
+
+    /// Das Schloss der Wahl (I5b): zu, solange ein gewählter Messpunkt
+    /// gesperrt ist; eigene Punkte tragen keines.
+    #[test]
+    fn schloss_der_wahl_zu_und_offen() {
+        let mut m1 = spot("M1", 0, 0.0, 0.0);
+        m1.1.hand = false;
+        let mut m2 = spot("M2", 1, 1000.0, 0.0);
+        m2.1.hand = false;
+        let s = [m1, m2, spot("H1", 2, 2000.0, 0.0)];
+        let w = |n: &[&str]| n.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let mut offen = std::collections::HashSet::new();
+        assert_eq!(schloss_der_wahl(&s, &w(&[]), &offen), None);
+        assert_eq!(
+            schloss_der_wahl(&s, &w(&["H1"]), &offen),
+            None,
+            "eigener Punkt"
+        );
+        assert_eq!(schloss_der_wahl(&s, &w(&["M1", "H1"]), &offen), Some(true));
+        offen.insert("M1".to_string());
+        assert_eq!(schloss_der_wahl(&s, &w(&["M1", "H1"]), &offen), Some(false));
+        assert_eq!(schloss_der_wahl(&s, &w(&["M1", "M2"]), &offen), Some(true));
+    }
+
+    /// Das Schloss der Wahl gemerkt (Review B-250a): neu gerechnet nur bei
+    /// anderem Modellstand, anderer Wahl oder anderen offenen Schlössern.
+    #[test]
+    fn schloss_gemerkt_bis_zur_aenderung() {
+        let merker = RefCell::new(None);
+        let n = std::cell::Cell::new(0);
+        let zaehlen = |v: Option<bool>| {
+            n.set(n.get() + 1);
+            v
+        };
+        let w = vec!["M1".to_string()];
+        let mut offen = HashSet::new();
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w, &offen, || zaehlen(Some(true))),
+            Some(true)
+        );
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w, &offen, || zaehlen(None)),
+            Some(true)
+        );
+        assert_eq!(n.get(), 1, "gleicher Stand: gemerkt");
+        offen.insert("M1".to_string());
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w, &offen, || zaehlen(Some(false))),
+            Some(false)
+        );
+        let w2 = vec!["M2".to_string()];
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w2, &offen, || zaehlen(Some(true))),
+            Some(true)
+        );
+        assert_eq!(
+            schloss_gemerkt(&merker, 2, &w2, &offen, || zaehlen(None)),
+            None
+        );
+        assert_eq!(n.get(), 4);
     }
 
     /// Lage beim Ziehen: im Raster, mit Alt ohne Fang.
