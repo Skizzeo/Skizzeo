@@ -32,6 +32,8 @@ type Strecke = ((f64, f64), (f64, f64));
 type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>, [f64; 4]);
 /// Ein Haus mit seiner Guid, für eine feste Reihenfolge.
 type Haus = (Guid, BuildingId);
+/// Rechteck, Haus und Umriss eines Zugs für [`Model::haeuser_ineinander`].
+type HausUmriss<'a> = ([f64; 4], Haus, &'a [[f64; 2]]);
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -1255,7 +1257,7 @@ impl Model {
 
     /// [`Model::haeuser_ineinander`] aus den Umrissen der Züge.
     fn ineinander_rechnen(&self, umrisse: &[ZugUmriss]) -> Vec<(BuildingId, BuildingId)> {
-        let mut umrisse: Vec<([f64; 4], Haus, &[[f64; 2]])> = umrisse
+        let mut umrisse: Vec<HausUmriss> = umrisse
             .iter()
             .filter_map(|(_, b, ring, k)| {
                 let b = (*b)?;
