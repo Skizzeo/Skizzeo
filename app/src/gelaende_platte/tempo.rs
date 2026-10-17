@@ -36,6 +36,7 @@ fn viele(n: usize) -> Model {
                 code: String::new(),
                 off: false,
                 hand: false,
+                gemessen: None,
             });
         }
     }
@@ -274,6 +275,7 @@ fn baugruben_im_faden() {
                 code: String::new(),
                 off: false,
                 hand: false,
+                gemessen: None,
             });
         }
     }
@@ -769,6 +771,7 @@ fn folgen_im_faden_messen() {
                 code: String::new(),
                 off: false,
                 hand: false,
+                gemessen: None,
             });
         }
     }

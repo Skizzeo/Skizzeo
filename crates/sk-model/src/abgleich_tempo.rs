@@ -147,6 +147,7 @@ fn gelaende_zug_ohne_bereich() {
                 code: String::new(),
                 off: false,
                 hand: false,
+                gemessen: None,
             });
         }
     }

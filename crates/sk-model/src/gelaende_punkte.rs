@@ -11,6 +11,9 @@
 //!
 //! Eigene Punkte tragen `hand`; Punkte des Vermessers werden beim Löschen
 //! nur aus dem Gelände genommen (`off`), so bleibt das Aufmaß vollständig.
+//! Verschiebt man einen Messpunkt (das Schloss dazu ist in der App, I5),
+//! merkt er sich die gemessenen Werte in `gemessen`; zurück auf sie (unter
+//! 0,5 mm) oder [`Model::reset_terrain_points`] löscht den Vermerk.
 
 use super::gelaende_eben::rund;
 use super::*;
@@ -27,6 +30,8 @@ pub struct TerrainSpot {
     pub p: [f64; 3],
     /// Eigener Punkt (sonst vom Vermesser).
     pub hand: bool,
+    /// Ein Messpunkt, der nicht mehr an seiner gemessenen Stelle steht.
+    pub geaendert: bool,
 }
 
 impl Model {
@@ -48,36 +53,50 @@ impl Model {
                     i,
                     p: [q[0], q[1], (p.h - h0) * 1000.0],
                     hand: p.hand,
+                    geaendert: p.gemessen.is_some(),
                 }
             })
             .collect()
     }
 
     /// Punkte verschieben (Index, neue Lage und Höhe in mm; im offenen
-    /// Schritt). `false`, wenn sich nichts ändert, ein Index fehlt, ein
-    /// Messpunkt dabei ist oder zwei Punkte auf eine Stelle fielen.
-    /// Messpunkte bleiben, wie der Vermesser sie gemessen hat; sonst ginge
-    /// eine geänderte Höhe ohne Vermerk in die Mengen (VOB H-234c, bis zur
-    /// Sperre in I5).
+    /// Schritt). `false`, wenn sich nichts ändert, ein Index fehlt oder zwei
+    /// Punkte auf eine Stelle fielen. Ein Messpunkt merkt sich beim ersten
+    /// Mal die gemessenen Werte (VOB-Spruch zu I5: das Modell, nicht die
+    /// App); kommt er auf sie zurück, entfällt der Vermerk. Ob er sich
+    /// ziehen lässt, entscheidet das Schloss in der App.
     pub fn move_terrain_points(&mut self, neu: &[(usize, [f64; 3])]) -> bool {
         let Some((mut t, f, h0)) = self.punkte_rahmen() else {
             return false;
         };
         let mut seitlich = Vec::new();
         for &(i, p) in neu {
-            let Some(q) = t.points.get_mut(i).filter(|q| q.hand) else {
+            let Some(q) = t.points.get_mut(i) else {
                 return false;
             };
+            let vorher = [q.e, q.n, q.h];
             let (e, n) = f.to_survey(p[0], p[1]);
             let (e, n, h) = (rund(e), rund(n), rund(h0 + p[2] / 1000.0));
             // nur was sich bewegt, wird gerundet
             if (q.e - e).abs() >= 5e-4 || (q.n - n).abs() >= 5e-4 {
                 q.e = e;
                 q.n = n;
-                seitlich.push(i);
             }
             if (q.h - h).abs() >= 5e-4 {
                 q.h = h;
+            }
+            if !q.hand {
+                let g = q.gemessen.as_deref().copied().unwrap_or(vorher);
+                let zurueck = (0..3).all(|k| ([q.e, q.n, q.h][k] - g[k]).abs() < 5e-4);
+                // zurück auf der gemessenen Stelle gelten die Werte des
+                // Vermessers wieder ungerundet
+                if zurueck {
+                    [q.e, q.n, q.h] = g;
+                }
+                q.gemessen = (!zurueck).then(|| Box::new(g));
+            }
+            if [q.e, q.n] != [vorher[0], vorher[1]] {
+                seitlich.push(i);
             }
         }
         if doppelt_bei(&t, &seitlich) {
@@ -114,6 +133,7 @@ impl Model {
                 code: String::new(),
                 off: false,
                 hand: true,
+                gemessen: None,
             });
         }
         let neu: Vec<usize> = (start..t.points.len()).collect();
@@ -150,6 +170,30 @@ impl Model {
             }
         }
         self.punkte_schreiben(t, None)
+    }
+
+    /// Geänderte Messpunkte auf die gemessenen Werte zurück (im offenen
+    /// Schritt); `false`, wenn keiner der Indizes geändert ist.
+    pub fn reset_terrain_points(&mut self, idx: &[usize]) -> bool {
+        let Some((mut t, ..)) = self.punkte_rahmen() else {
+            return false;
+        };
+        let (mut neu, mut seitlich) = (Vec::new(), Vec::new());
+        for &i in idx {
+            if let Some(q) = t.points.get_mut(i) {
+                if let Some([e, n, h]) = q.gemessen.take().map(|g| *g) {
+                    if [q.e, q.n] != [e, n] {
+                        seitlich.push(i);
+                    }
+                    (q.e, q.n, q.h) = (e, n, h);
+                    neu.push(i);
+                }
+            }
+        }
+        if neu.is_empty() || doppelt_bei(&t, &seitlich) {
+            return false;
+        }
+        self.punkte_schreiben(t, Some(&neu))
     }
 
     /// Gelände, System und Höhe von ±0,00 zum Ändern der Punkte.
@@ -366,10 +410,6 @@ mod tests {
         m.begin("Aufmaß");
         assert!(m.set_terrain(Some(t)));
         m.commit();
-        let p = m.terrain_spots().into_iter().find(|s| s.i == 1).unwrap().p;
-        m.begin("Messpunkt");
-        assert!(!m.move_terrain_points(&[(1, [p[0], p[1], p[2] + 100.0])]));
-        m.rollback();
         m.begin("Löschen");
         assert!(m.remove_terrain_points(&[i, 1]));
         m.commit();
@@ -461,6 +501,91 @@ mod tests {
         );
     }
 
+    /// Ein Messpunkt merkt sich beim Verschieben die gemessenen Werte
+    /// (I5); zurück auf sie oder „gemessen zurück“ löscht den Vermerk. Die
+    /// Vorbemerkung nennt alte und neue Höhe und den Versatz, Ansatz und
+    /// Befund zählen ihn (VOB-Spruch zu I5); die Datei trägt ihn ungerundet.
+    #[test]
+    fn messpunkt_mit_schloss() {
+        let mut m = haus();
+        m.begin("Höhenpunkt");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        let mut t = m.terrain().unwrap().clone();
+        for p in &mut t.points {
+            p.hand = false;
+        }
+        t.points[1].h += 0.0004321;
+        t.src = "aufmass.csv".into();
+        m.begin("Aufmaß");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        let alt = m.terrain().unwrap().points[1].clone();
+        let p = m.terrain_spots().into_iter().find(|s| s.i == 1).unwrap().p;
+        m.begin("Messpunkt");
+        assert!(m.move_terrain_points(&[(1, [p[0] + 350.0, p[1], p[2] - 242.0])]));
+        m.commit();
+        let q = &m.terrain().unwrap().points[1];
+        assert_eq!(
+            q.gemessen.as_deref(),
+            Some(&[alt.e, alt.n, alt.h]),
+            "ungerundet"
+        );
+        assert!(m.terrain_spots().iter().any(|s| s.i == 1 && s.geaendert));
+        assert_eq!(crate::qto_earth::netz_geaendert(&m), Some((0, 1, 0)));
+        let h = crate::qto_earth::netz_herkunft(&m).unwrap();
+        let soll = format!(
+            ", davon 1 Messpunkt geändert ({} von {} auf {} m, Lage um 0,35 m versetzt)",
+            alt.nr,
+            format!("{:.3}", alt.h).replace('.', ","),
+            format!("{:.3}", q.h).replace('.', ",")
+        );
+        assert!(h.ends_with(&soll), "{h}\n{soll}");
+        let satz = crate::qto_earth::hand_geaendert((0, 1, 0));
+        assert!(satz.contains("(0 ergänzt, 1 geändert, 0 nicht verwendet)"));
+        let auto = crate::qto::schedule(&m).auto;
+        assert!(auto
+            .iter()
+            .filter(|a| a.formula.contains(crate::qto_earth::DREIECKSPRISMEN))
+            .all(|a| a.formula.contains("davon 1 Messpunkt geändert")
+                && !a.formula.contains("von Hand")));
+        // die Datei trägt die gemessenen Werte und liest sie wieder
+        let text = crate::szo::write(&m);
+        let neu = crate::szo::read(&text, crate::GuidGen::with_seed(9))
+            .unwrap()
+            .model;
+        assert_eq!(neu.terrain().unwrap().points[1].gemessen, q.gemessen);
+        // eine Kopie ist ein eigener Punkt ohne Vermerk
+        m.begin("Kopie");
+        let k = m.add_terrain_points(&[[p[0] + 2000.0, p[1], p[2]]])[0];
+        m.commit();
+        assert_eq!(m.terrain().unwrap().points[k].gemessen, None);
+        // zurück auf die gemessene Stelle löscht den Vermerk
+        m.begin("Zurück");
+        assert!(m.move_terrain_points(&[(1, p)]));
+        m.commit();
+        let q = &m.terrain().unwrap().points[1];
+        assert_eq!(
+            (q.e, q.n, q.h, q.gemessen.as_deref()),
+            (alt.e, alt.n, alt.h, None)
+        );
+        // „gemessen zurück“ holt die ungerundeten Werte
+        m.begin("Messpunkt");
+        assert!(m.move_terrain_points(&[(1, [p[0], p[1], p[2] + 500.0])]));
+        m.commit();
+        m.begin("Gemessen zurück");
+        assert!(m.reset_terrain_points(&[1, 0]));
+        m.commit();
+        let q = &m.terrain().unwrap().points[1];
+        assert_eq!(
+            (q.e, q.n, q.h, q.gemessen.as_deref()),
+            (alt.e, alt.n, alt.h, None)
+        );
+        m.begin("Nichts");
+        assert!(!m.reset_terrain_points(&[1]), "nichts mehr zurückzuholen");
+        m.rollback();
+    }
+
     /// Nummern zählen hinter der höchsten weiter.
     #[test]
     fn nummern() {
@@ -475,6 +600,7 @@ mod tests {
                 code: String::new(),
                 off: false,
                 hand: true,
+                gemessen: None,
             });
         }
         assert_eq!(naechste_nummer(&t), 4);

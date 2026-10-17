@@ -57,10 +57,10 @@ const QUADRAT_PX: f64 = 10.0;
 pub const PUNKT: &str =
     "Höhenpunkt {}: {}. Klicken wählt, ziehen verschiebt (Strg kopiert, Alt ohne Fang).";
 pub const HOEHE: &str = "Höhe ziehen: nach oben hebt, 1 Bildpunkt 1 cm, mit Umschalt 10 cm.";
-/// Messpunkte des Vermessers bleiben, bis das Schloss kommt (I5, §5 J2).
+/// Messpunkte des Vermessers tragen ein Schloss (I5, §5 J2 C).
 pub const MESSPUNKT: &str =
-    "Punkte des Vermessers bleiben, wie gemessen. Mit Strg ziehen setzt eine \
-     eigene Kopie, Entf nimmt sie aus dem Gelände.";
+    "Punkte des Vermessers sind gesperrt: „Schloss offen“ in der Leiste gibt sie \
+     frei, Strg ziehen setzt eine eigene Kopie, Entf nimmt sie aus dem Gelände.";
 pub const DREI: &str = "Das Gelände behält mindestens drei Punkte.";
 pub const BELEGT: &str = "Dort liegt schon ein Höhenpunkt; nichts geändert.";
 /// Schritte im Rückgängig (§4.0 Regel 5).
@@ -69,6 +69,7 @@ pub const LABEL_LAGE: &str = "Höhenpunkte verschoben";
 pub const LABEL_HOEHE: &str = "Höhe geändert";
 pub const LABEL_KOPIE: &str = "Höhenpunkte kopiert";
 pub const LABEL_GELOESCHT: &str = "Höhenpunkte gelöscht";
+pub const LABEL_GEMESSEN: &str = "Messpunkte wie gemessen";
 
 /// Was die Maus greift.
 #[derive(Clone, Debug, PartialEq)]
@@ -114,13 +115,16 @@ struct Zug {
 #[derive(Clone, Debug, Default)]
 pub struct Punkte {
     /// Die gewählten Punkte (Nummern).
-    pub(super) gewaehlt: Vec<String>,
+    pub(crate) gewaehlt: Vec<String>,
     hover: Option<Ziel>,
     zug: Option<Zug>,
     /// Der letzte Klick ins Leere, für den Doppelklick.
     klick: Option<(Instant, f64, f64)>,
     /// Punkte zum Stand des Modells.
     merker: Option<(u64, Spots)>,
+    /// Häuser zum Stand des Modells, für die Nadeln in 3D (Review #237
+    /// B-237a).
+    pub(super) haeuser: Option<std::sync::Arc<super::netz::Haeuser>>,
 }
 
 /// Die Punkte mit Nummer, geteilt bis zur nächsten Änderung.
@@ -143,24 +147,38 @@ fn treffen<'a>(
     spots: impl IntoIterator<Item = &'a (String, TerrainSpot)>,
     cam: &Camera,
     z: Option<f64>,
-    (x, y): (f64, f64),
+    m: (f64, f64),
     w: f64,
     h: f64,
     scale: f64,
 ) -> Option<&'a (String, TerrainSpot)> {
+    treffer(spots, cam, z, m, w, h, scale).into_iter().next()
+}
+
+/// Alle Punkte im Greifkreis, der nächste zuerst.
+fn treffer<'a>(
+    spots: impl IntoIterator<Item = &'a (String, TerrainSpot)>,
+    cam: &Camera,
+    z: Option<f64>,
+    (x, y): (f64, f64),
+    w: f64,
+    h: f64,
+    scale: f64,
+) -> Vec<&'a (String, TerrainSpot)> {
     let r = GREIF_PX * scale;
-    let mut best: Option<(f64, &(String, TerrainSpot))> = None;
+    let mut alle: Vec<(f64, &(String, TerrainSpot))> = Vec::new();
     for s in spots {
         let zz = z.unwrap_or(s.1.p[2]);
         let Some(q) = cam.project(vec3(s.1.p[0], s.1.p[1], zz), w, h) else {
             continue;
         };
         let d = (q.0 - x).hypot(q.1 - y);
-        if d <= r && best.is_none_or(|b| d < b.0) {
-            best = Some((d, s));
+        if d <= r {
+            alle.push((d, s));
         }
     }
-    best.map(|b| b.1)
+    alle.sort_by(|a, b| a.0.total_cmp(&b.0));
+    alle.into_iter().map(|b| b.1).collect()
 }
 
 /// Lage beim Ziehen: der gegriffene Punkt am Fangziel (Alt ohne), sonst im
@@ -352,7 +370,7 @@ impl App {
     }
 
     /// Die Punkte zum jetzigen Stand merken.
-    fn spots_merken(&mut self) {
+    pub(super) fn spots_merken(&mut self) {
         let rev = self.scene.model().revision();
         if self
             .platte
@@ -363,6 +381,9 @@ impl App {
         {
             let s = self.spots();
             self.platte.punkte.merker = Some((rev, s));
+        }
+        if self.drei_d() {
+            self.haeuser_merken();
         }
     }
 
@@ -432,13 +453,16 @@ impl App {
                 mods,
             } => {
                 let ziel = self.punkte_ziel(x, y, vw, vh, sc);
-                match ziel {
+                let out = match ziel {
                     Some(z) => {
                         self.platte.punkte.klick = None;
                         self.punkte_greifen(z, x, y, vw, vh, mods)
                     }
                     None => self.punkte_ins_leere(x, y, vw, vh),
-                }
+                };
+                // die Leiste zeigt das Schloss der Wahl (I5)
+                self.gelaende_sync();
+                out
             }
             Event::MouseUp {
                 button: MouseButton::Left,
@@ -449,6 +473,7 @@ impl App {
                     return false;
                 };
                 self.punkte_loslassen(z, mods);
+                self.gelaende_sync();
                 true
             }
             _ => false,
@@ -479,7 +504,10 @@ impl App {
                 }
             }
         }
-        treffen(self.nadeln(&spots), &self.cam, None, (x, y), vw, vh, sc)
+        // hinter einem Haus greift man nicht, gefragt nur im Greifkreis
+        treffer(self.nadeln(&spots), &self.cam, None, (x, y), vw, vh, sc)
+            .into_iter()
+            .find(|s| !self.dahinter(s.1.p))
             .map(|s| Ziel::Punkt(s.0.clone()))
     }
 
@@ -611,7 +639,11 @@ impl App {
             .collect();
         let griff = gp.map_or(start, |p| [p[0], p[1]]);
         let neu = alt.iter().map(|a| a.1).collect();
-        let fest = spots.iter().any(|s| w.contains(&s.0) && !s.1.hand);
+        // ein Messpunkt mit geschlossenem Schloss lässt sich nur kopieren
+        let offen = &self.platte.leiste.offen_nr;
+        let fest = spots
+            .iter()
+            .any(|s| w.contains(&s.0) && !s.1.hand && !offen.contains(&s.0));
         self.platte.punkte.zug = Some(Zug {
             hoehe,
             px: (x, y),
@@ -769,8 +801,29 @@ impl App {
             return false;
         }
         self.platte.punkte.gewaehlt.clear();
+        self.gelaende_sync();
         self.redraw = true;
         true
+    }
+
+    /// „Gemessen zurück“: die gewählten geänderten Messpunkte auf die
+    /// gemessenen Werte (I5), ein Schritt.
+    pub(crate) fn punkte_gemessen(&mut self) {
+        let w = self.platte.punkte.gewaehlt.clone();
+        let idx: Vec<usize> = self
+            .spots()
+            .iter()
+            .filter(|s| w.contains(&s.0) && s.1.geaendert)
+            .map(|s| s.1.i)
+            .collect();
+        if self
+            .scene
+            .edit_model(LABEL_GEMESSEN, |m| m.reset_terrain_points(&idx))
+        {
+            self.punkte_fertig();
+        } else {
+            self.status(Meldung::satz(BELEGT), crate::NOTICE_TIME);
+        }
     }
 
     /// Entf löscht die gewählten Punkte; `true`, wenn Entf ihnen galt.
@@ -976,6 +1029,7 @@ mod tests {
                 i,
                 p: [x, y, 0.0],
                 hand: true,
+                geaendert: false,
             },
         )
     }
