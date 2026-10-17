@@ -73,7 +73,7 @@ pub(super) fn write(m: &Model, out: &mut String) {
         if p.hand {
             l = l.word("src", "hand");
         }
-        if let Some(g) = p.gemessen {
+        if let Some(g) = p.gemessen.as_deref() {
             l = l.num("ge", g[0]).num("gn", g[1]).num("gh", g[2]);
         }
         l.finish(out);
@@ -275,7 +275,7 @@ pub(super) fn read<'r>(
         // gemessene Werte eines geänderten Messpunkts (I5): alle drei oder
         // keiner
         let gemessen = match (z("ge"), z("gn"), z("gh")) {
-            (Some(e), Some(n), Some(h)) if !hand => Some([e, n, h]),
+            (Some(e), Some(n), Some(h)) if !hand => Some(Box::new([e, n, h])),
             (None, None, None) => None,
             _ => {
                 hints.push(format!(

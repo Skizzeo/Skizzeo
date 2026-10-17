@@ -482,7 +482,9 @@ impl Model {
             .map(|e| e.guid)
             .ok_or(EckeFehler::Ungueltig)?;
         let tueren = self.oeffnungen_versetzt(v);
-        let weg_ok = self.remove_run(v.weg);
+        // Ohne Aufräumen der Raumbuch-Abweichungen (Regel 24): die überträgt
+        // `ausbau_wand_vereint` weiter unten auf die vereinte Wand
+        let weg_ok = self.remove_run_roh(v.weg).is_some();
         debug_assert!(weg_ok, "der wegfallende Zug war da");
         // `stack_fits` hat die Punkte schon angenommen (Review H-210p)
         let gesetzt = self.set_run_points(*run, pts);

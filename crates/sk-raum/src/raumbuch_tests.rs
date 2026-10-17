@@ -919,3 +919,24 @@ fn kaufmaennisch_auch_bei_grossen_zahlen() {
     assert_eq!(kaufm(123_456_789.4), 123_456_789.0);
     assert_eq!(qm(2_155_500.0), "2,156 m²");
 }
+
+/// Review M2: Die Zahlen der Rechenwege ohne `format!` schreiben dieselben
+/// Ziffern wie vorher, auch halbe Millimeter, negative Werte, −0 und sehr
+/// große Zahlen.
+#[test]
+fn zahlen_wie_mit_format() {
+    let alt_m = |x: f64| format!("{:.3}", kaufm(x) / 1e3).replace('.', ",");
+    let alt_qm = |x: f64| {
+        let t = kaufm(x / 1e3) * 1e3;
+        format!("{} m²", format!("{:.3}", t / 1e6).replace('.', ","))
+    };
+    let mut x = 0.000_37_f64;
+    while x < 1e22 {
+        for v in [x, -x, x + 0.5, -(x + 0.5), x.round() + 0.5, -0.3, -0.0] {
+            assert_eq!(m(v), alt_m(v), "{v}");
+            assert_eq!(qm(v), alt_qm(v), "{v}");
+        }
+        x *= 1.0137;
+    }
+    assert_eq!(m(f64::NAN), alt_m(f64::NAN));
+}

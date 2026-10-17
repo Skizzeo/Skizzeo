@@ -8,12 +8,13 @@
 //! RB6 ([`bearbeiten`]).
 
 use super::{de, de_m};
-pub use bearbeiten::abschnitte;
+use crate::scene::Scene;
+use crate::ui::Section;
 use sk_model::Model;
 use sk_raum::ausbau::{self, RaumAusbau};
 use sk_raum::oeffnungen::Rohbau;
 use sk_raum::raumbuch::{self, Bezug, Flaeche, Regeln, Zeile};
-use sk_raum::{Ketten, RaumForm};
+use sk_raum::RaumForm;
 
 #[path = "bearbeiten.rs"]
 mod bearbeiten;
@@ -33,14 +34,41 @@ const FLAECHEN: [(&str, Gehoert); 6] = [
     ("Sockelleiste", |f| f == Flaeche::Sockel),
 ];
 
-/// Zeilen für das Paneel des Raums mit der Form `form`, die Wandzüge aus
-/// `k` (die berechneten der Szene, Review #112 B1), und welche davon die
-/// Mengen der Flächen mit ihren Ausbautypen sind: Sie gehören zu Mengen,
-/// Nutzung und Höhen zu keinem Modul (Review #120 B2).
-pub fn werte(
+/// Raumbuch im Paneel des Raums mit der Form `form`, die Wandzüge aus der
+/// Szene (Review #112 B1); Rohbau und Ausbau einmal für Zeilen und
+/// Abschnitte (Review #190 H-190a).
+pub fn paneel(scene: &Scene, form: &RaumForm) -> Paneel {
+    let m = scene.model();
+    let roh = Rohbau::mit(m, &scene.ketten(), form.clone());
+    let a = RaumAusbau::fuer(m, &roh);
+    let (werte, mengen) = werte_mit(m, form, &roh, a.as_ref());
+    let abschnitte = match (form.raum, a) {
+        (Some(id), Some(a)) => bearbeiten::abschnitte_aus(scene, id, roh, a),
+        _ => Vec::new(),
+    };
+    Paneel {
+        werte,
+        mengen,
+        abschnitte,
+    }
+}
+
+/// Raumbuch im Paneel eines Raums: Zeilen, welche davon Mengen sind, und
+/// die Abschnitte mit den Abweichungen.
+pub struct Paneel {
+    pub werte: Vec<(&'static str, String)>,
+    pub mengen: std::ops::Range<usize>,
+    pub abschnitte: Vec<Section>,
+}
+
+/// Zeilen für das Paneel und welche davon die Mengen der Flächen mit ihren
+/// Ausbautypen sind: Sie gehören zu Mengen, Nutzung und Höhen zu keinem
+/// Modul (Review #120 B2).
+fn werte_mit(
     m: &Model,
-    k: &impl Ketten,
     form: &RaumForm,
+    roh: &Rohbau,
+    a: Option<&RaumAusbau>,
 ) -> (Vec<(&'static str, String)>, std::ops::Range<usize>) {
     let mut v = Vec::new();
     let g = ausbau::nutzung(m, form);
@@ -55,18 +83,17 @@ pub fn werte(
     if !gewaehlt {
         v.extend([("", VORGABE.into()), ("", VORGABE_WEG.into())]);
     }
-    let roh = Rohbau::mit(m, k, form.clone());
-    let Some(a) = RaumAusbau::fuer(m, &roh) else {
+    let Some(a) = a else {
         return (v, 0..0);
     };
-    let (ffb, ufd) = ausbau::hoehen(m, &roh, &a);
+    let (ffb, ufd) = ausbau::hoehen(m, roh, a);
     let vz = if ffb < -0.5 { "−" } else { "+" };
     v.push((
         "OK Fertigfußboden",
         format!("{vz}{} m", de(ffb.abs() / 1e3, 3)),
     ));
     v.push(("Lichte Höhe", format!("{} m", de_m(ufd - ffb))));
-    let zeilen = raumbuch::rechnen(m, &roh, &a, &Regeln::default());
+    let zeilen = raumbuch::rechnen(m, roh, a, &Regeln::default());
     let ab = v.len();
     for (name, gehoert) in FLAECHEN {
         if let Some((wert, typen)) = flaeche(m, &zeilen, gehoert) {

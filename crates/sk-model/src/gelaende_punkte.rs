@@ -86,14 +86,14 @@ impl Model {
                 q.h = h;
             }
             if !q.hand {
-                let g = q.gemessen.unwrap_or(vorher);
+                let g = q.gemessen.as_deref().copied().unwrap_or(vorher);
                 let zurueck = (0..3).all(|k| ([q.e, q.n, q.h][k] - g[k]).abs() < 5e-4);
                 // zurück auf der gemessenen Stelle gelten die Werte des
                 // Vermessers wieder ungerundet
                 if zurueck {
                     [q.e, q.n, q.h] = g;
                 }
-                q.gemessen = (!zurueck).then_some(g);
+                q.gemessen = (!zurueck).then(|| Box::new(g));
             }
             if [q.e, q.n] != [vorher[0], vorher[1]] {
                 seitlich.push(i);
@@ -181,7 +181,7 @@ impl Model {
         let (mut neu, mut seitlich) = (Vec::new(), Vec::new());
         for &i in idx {
             if let Some(q) = t.points.get_mut(i) {
-                if let Some([e, n, h]) = q.gemessen.take() {
+                if let Some([e, n, h]) = q.gemessen.take().map(|g| *g) {
                     if [q.e, q.n] != [e, n] {
                         seitlich.push(i);
                     }
@@ -526,7 +526,11 @@ mod tests {
         assert!(m.move_terrain_points(&[(1, [p[0] + 350.0, p[1], p[2] - 242.0])]));
         m.commit();
         let q = &m.terrain().unwrap().points[1];
-        assert_eq!(q.gemessen, Some([alt.e, alt.n, alt.h]), "ungerundet");
+        assert_eq!(
+            q.gemessen.as_deref(),
+            Some(&[alt.e, alt.n, alt.h]),
+            "ungerundet"
+        );
         assert!(m.terrain_spots().iter().any(|s| s.i == 1 && s.geaendert));
         assert_eq!(crate::qto_earth::netz_geaendert(&m), Some((0, 1, 0)));
         let h = crate::qto_earth::netz_herkunft(&m).unwrap();
@@ -561,7 +565,10 @@ mod tests {
         assert!(m.move_terrain_points(&[(1, p)]));
         m.commit();
         let q = &m.terrain().unwrap().points[1];
-        assert_eq!((q.e, q.n, q.h, q.gemessen), (alt.e, alt.n, alt.h, None));
+        assert_eq!(
+            (q.e, q.n, q.h, q.gemessen.as_deref()),
+            (alt.e, alt.n, alt.h, None)
+        );
         // „gemessen zurück“ holt die ungerundeten Werte
         m.begin("Messpunkt");
         assert!(m.move_terrain_points(&[(1, [p[0], p[1], p[2] + 500.0])]));
@@ -570,7 +577,10 @@ mod tests {
         assert!(m.reset_terrain_points(&[1, 0]));
         m.commit();
         let q = &m.terrain().unwrap().points[1];
-        assert_eq!((q.e, q.n, q.h, q.gemessen), (alt.e, alt.n, alt.h, None));
+        assert_eq!(
+            (q.e, q.n, q.h, q.gemessen.as_deref()),
+            (alt.e, alt.n, alt.h, None)
+        );
         m.begin("Nichts");
         assert!(!m.reset_terrain_points(&[1]), "nichts mehr zurückzuholen");
         m.rollback();

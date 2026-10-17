@@ -499,21 +499,25 @@ impl ListView {
     /// Neue Zeilen übernehmen: Nachrücken, Reihenfolge, Unterzeile und
     /// Aufleuchten geänderter Werte.
     fn setzen(&mut self, m: &Model, lines: Vec<Line>, groups: Vec<GroupRef>, animate: bool) {
-        // Fallen sichtbare Zeilen weg, rücken die übrigen sichtbar nach
-        let keys: HashSet<Key> = lines.iter().map(|l| l.key).collect();
-        let old: Vec<Line> = self
-            .lines
-            .iter()
-            .filter(|l| self.line_visible(l))
-            .cloned()
-            .collect();
-        let gone = old
-            .iter()
-            .any(|l| l.key != Key::None && !keys.contains(&l.key));
-        self.motion = (animate && gone).then(|| Motion {
-            start: Instant::now(),
-            old,
-        });
+        // Fallen sichtbare Zeilen weg, rücken die übrigen sichtbar nach (nur
+        // beim Aufleuchten, sonst kostet der Vergleich je Neuaufbau; M1)
+        self.motion = None;
+        if animate {
+            let keys: HashSet<Key> = lines.iter().map(|l| l.key).collect();
+            let old: Vec<Line> = self
+                .lines
+                .iter()
+                .filter(|l| self.line_visible(l))
+                .cloned()
+                .collect();
+            let gone = old
+                .iter()
+                .any(|l| l.key != Key::None && !keys.contains(&l.key));
+            self.motion = gone.then(|| Motion {
+                start: Instant::now(),
+                old,
+            });
+        }
         self.lines = lines;
         self.groups = groups;
         // jedes Bauteil einmal, auch wenn es mehrere Zeilen hat (Raum mit
@@ -534,7 +538,7 @@ impl ListView {
         self.subtitle =
             umfang_view::umfang_text(m, &self.leiste.umfang, sk_platform::local_date_time());
         // Geänderte Werte merken
-        let mut now_cells = HashMap::new();
+        let mut now_cells = HashMap::with_capacity(self.cells_old.len());
         for l in &self.lines {
             for (i, c) in l.cells.iter().enumerate().skip(2) {
                 if !c.is_empty() {
@@ -2229,58 +2233,6 @@ pub fn offset_note(m: &Model, wall: ElementId) -> Option<String> {
     Some(format!("Versatz {sign}{} m", de(v.abs(), 2)))
 }
 
-/// Zahl mit Dezimalkomma und Tausenderpunkt.
-pub fn de(v: f64, dec: usize) -> String {
-    let v = kaufmaennisch(v, dec);
-    let neg = v < 0.0 && (v * 10f64.powi(dec as i32)).round() != 0.0;
-    let s = format!("{:.*}", dec, v.abs());
-    let (int, frac) = match s.split_once('.') {
-        Some((a, b)) => (a.to_string(), Some(b.to_string())),
-        None => (s.clone(), None),
-    };
-    let mut grouped = String::new();
-    for (i, ch) in int.chars().enumerate() {
-        if i > 0 && (int.len() - i) % 3 == 0 {
-            grouped.push('.');
-        }
-        grouped.push(ch);
-    }
-    let mut out = String::new();
-    if neg {
-        out.push('−');
-    }
-    out.push_str(&grouped);
-    if let Some(f) = frac {
-        out.push(',');
-        out.push_str(&f);
-    }
-    out
-}
-
-/// Kaufmännisch auf `dec` Stellen: Die Hälfte rundet vom Nullpunkt weg,
-/// auch wenn die Rechnung sie als Binärzahl knapp darunter ablegt
-/// (4,5675 → 4,568, 23,815 → 23,82; Raumbuch RB5 mit Innenwänden, deren
-/// Achse auf halben Millimetern liegt). Die Toleranz ist fest in Einheiten
-/// der letzten Stelle, nur so groß wie das Rechenrauschen großer Zahlen
-/// (Review #170 H-170a: 236.000,12341 bleibt 236.000,1234).
-pub fn kaufmaennisch(v: f64, dec: usize) -> f64 {
-    let f = 10f64.powi(dec as i32);
-    let y = v * f;
-    (y + y.signum() * 1e-6f64.max(y.abs() * 1e-15)).round() / f
-}
-
-fn m_len(mm: f64) -> String {
-    format!("{} m", de(mm / 1e3, 2))
-}
-
-fn m_area(mm2: f64) -> String {
-    format!("{} m²", de(mm2 / 1e6, 2))
-}
-
-fn m_vol(mm3: f64) -> String {
-    format!("{} m³", de(mm3 / 1e9, 3))
-}
-
 /// Zeilen der Liste in der Sicht `(modus, offen)`: Rechenwege nur unter
 /// den aufgeklappten Zeilen `offen` (Review #77/1, Leistung).
 fn build_lines(
@@ -2292,7 +2244,13 @@ fn build_lines(
     let mut lines = Vec::new();
     let mut groups = Vec::new();
     let many = sched.buildings.len() > 1;
-    let faktor = bestell_faktoren(m, sched, modus);
+    // Die Faktoren braucht nur die Gliederung nach Geschoss, auch für die
+    // losen Geschosse (Review M1)
+    let faktor = if by == Grouping::Storey || !sched.loose.is_empty() {
+        bestell_faktoren(m, sched, modus)
+    } else {
+        Faktoren::new()
+    };
     for b in &sched.buildings {
         let info = m.building(b.id);
         if many {
@@ -2422,33 +2380,46 @@ fn layer_row_label(m: &Model, r: &LayerRow) -> String {
 /// Putz) zählen zusammen, ihre Rechenwege hintereinander, je mit dem Namen
 /// der Fläche (`namen`). Der Platz je Bauteil (beim Raum je Bauteil und
 /// Kostengruppe) steht in einem Index, so wächst das mit den Zeilen, nicht
-/// mit ihrem Quadrat (Review #170 B1).
-fn per_element(rows: &[LayerRow], namen: &raum::Namen) -> Vec<LayerRow> {
-    let mut out: Vec<LayerRow> = Vec::new();
-    let mut platz: HashMap<(ElementId, Option<Option<u16>>), usize> = HashMap::new();
+/// mit ihrem Quadrat (Review #170 B1). Die Terme eines Raums nur, wenn
+/// `terme` für seine Zeile gilt (in der Liste: aufgeklappt; Review M1).
+fn per_element(
+    rows: &[LayerRow],
+    namen: &raum::Namen,
+    terme: &dyn Fn(&LayerRow) -> bool,
+) -> Vec<LayerRow> {
+    use std::collections::hash_map::Entry;
+    let mut out: Vec<LayerRow> = Vec::with_capacity(rows.len());
+    let mut platz: HashMap<(ElementId, Option<Option<u16>>), usize> =
+        HashMap::with_capacity(rows.len());
     for r in rows {
-        let mut r = r.clone();
-        if r.category == Category::Space {
-            raum::mit_namen(&mut r, namen);
-        }
-        let k = (r.element, (r.category == Category::Space).then_some(r.kg));
-        match platz.get(&k).map(|&j| &mut out[j]) {
-            Some(x) => {
+        let raum = r.category == Category::Space;
+        match platz.entry((r.element, raum.then_some(r.kg))) {
+            Entry::Occupied(o) => {
+                let x = &mut out[*o.get()];
                 x.volume += r.volume;
                 x.area += r.area;
                 x.face += r.face;
                 x.bill_area += r.bill_area;
                 x.pocket += r.pocket;
                 x.attika |= r.attika;
-                if r.category == Category::Space {
+                if raum {
                     x.length += r.length;
                     x.bill_length += r.bill_length;
-                    x.terms.extend(r.terms);
+                    if terme(x) {
+                        raum::mit_namen(r, namen, &mut x.terms);
+                    }
                 }
             }
-            None => {
-                platz.insert(k, out.len());
-                out.push(r);
+            Entry::Vacant(v) => {
+                v.insert(out.len());
+                let mut x = r.clone();
+                if raum {
+                    x.terms = Vec::new();
+                    if terme(&x) {
+                        raum::mit_namen(r, namen, &mut x.terms);
+                    }
+                }
+                out.push(x);
             }
         }
     }
@@ -2474,6 +2445,16 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
         }
     }
     ids.sort_by_key(|t| m.trade(*t).map_or(u16::MAX, |x| x.order));
+    // Namen der Raumzeilen einmal je Gebäude, nicht je Gewerk (Review M1)
+    let namen = if b
+        .by_trade
+        .iter()
+        .any(|t| t.rows.iter().any(|r| r.category == Category::Space))
+    {
+        raum::namen(b)
+    } else {
+        raum::Namen::new()
+    };
     for id in ids {
         let Some(tr) = m.trade(id) else { continue };
         let order = tr.order as u32;
@@ -2496,7 +2477,7 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
             }
         }
         lines.push(head);
-        trade_rows(m, b, order, tkey, t, sicht, lines);
+        trade_rows(m, b, (order, tkey), t, &namen, sicht, lines);
         let ls: Vec<_> = laengen.iter().filter(|x| x.trade == id).collect();
         raum::gewerk_laengen(m, &ls, tkey, sicht.1, lines);
         ext::gewerk_zeilen(m, b, Some(id), tkey, lines);
@@ -2514,19 +2495,14 @@ fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines:
 fn trade_rows(
     m: &Model,
     b: &BuildingQto,
-    order: u32,
-    tkey: Key,
+    (order, tkey): (u32, Key),
     t: &TradeSum,
+    namen: &raum::Namen,
     (modus, offen): (Modus, &HashSet<Key>),
     lines: &mut Vec<Line>,
 ) {
     let zeig = |r: &LayerRow, b: Bezug| rechenweg::anzeige(m, r, b, modus);
     let bi = b.id.index();
-    let namen = if t.rows.iter().any(|r| r.category == Category::Space) {
-        raum::namen(b)
-    } else {
-        raum::Namen::new()
-    };
     {
         let mut i = 0;
         while i < t.rows.len() {
@@ -2574,7 +2550,8 @@ fn trade_rows(
                     && (x.thickness - r.thickness).abs() < 1e-6
             };
             let n = t.rows[i..].iter().take_while(|x| same(x)).count();
-            let rows = per_element(&t.rows[i..i + n], &namen);
+            let terme = |x: &LayerRow| offen.contains(&row_key(x));
+            let rows = per_element(&t.rows[i..i + n], namen, &terme);
             i += n;
             let gkey = Key::Layer(
                 (bi << 16) | (order & 0xffff),
@@ -2930,6 +2907,11 @@ mod ext;
 
 #[path = "schedule_weg.rs"]
 mod weg;
+
+#[path = "schedule_zahl.rs"]
+mod zahl;
+pub use zahl::{de, kaufmaennisch};
+use zahl::{m_area, m_len, m_vol};
 
 #[path = "schedule_raum.rs"]
 mod raum;

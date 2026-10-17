@@ -4,7 +4,9 @@
 //! ([`sk_model::qto_raum`]) mit Namen, Seite, Gewerk und Kostengruppe nach
 //! dem Träger (DIN 276:2018):
 //! - Boden, Estrich, Sockelleiste, Randdämmstreifen: auf der Sohlplatte 324
-//!   (ihre Abdichtung 325), auf einer Decke 353;
+//!   (die Abdichtung der Sohlplatte unter dem Estrich 325), auf einer Decke
+//!   353; die Verbundabdichtung unter Fliesen (DIN 18534) gehört zum Belag,
+//!   auf der Sohle 324, auf der Decke 353 (Review H-197j);
 //! - Wandseite, ihre Laibungen und Fliesen: an der Außenwand 336, sonst 345;
 //! - Decke 354;
 //! - Eckschienen, Silikon und Dichtband gehören zu keiner einzelnen
@@ -200,8 +202,11 @@ pub(crate) fn kostengruppe(
         Flaeche::Eckschienen | Flaeche::Silikon | Flaeche::Dichtband => KG_INNENWAND,
         Flaeche::Boden | Flaeche::Estrich | Flaeche::Sockel | Flaeche::Randstreifen => {
             match unten {
+                // Nur die Abdichtung im Estrichaufbau dichtet die Sohle; die
+                // Verbundabdichtung im Belag liegt auf dem Estrich (H-197j)
                 Some(Category::GroundSlab)
-                    if schicht.is_some_and(|l| l.function == LayerFunction::Membrane) =>
+                    if flaeche == Flaeche::Estrich
+                        && schicht.is_some_and(|l| l.function == LayerFunction::Membrane) =>
                 {
                     KG_SOHLE_ABDICHTUNG
                 }
@@ -476,6 +481,58 @@ mod tests {
         assert_eq!(
             kgs.into_iter().collect::<Vec<_>>(),
             [324, 325, 336, 353, 354]
+        );
+    }
+
+    /// Review H-197j: Die Verbundabdichtung unter den Fliesen des Bads
+    /// gehört zum Belag, auf der Sohle 324, auf der Decke 353; nur die
+    /// Abdichtung der Sohlplatte im Estrichaufbau zählt in 325.
+    #[test]
+    fn verbundabdichtung_zum_belag() {
+        use sk_model::model::{BATH_SPACE_GUID, SLAB_SEAL_GUID, TILE_SEAL_GUID};
+        let mut m = haus();
+        m.begin("Bäder");
+        assert!(m.ensure_space_type(BATH_SPACE_GUID).is_some());
+        let geschosse: Vec<StoreyId> = m.storeys().iter().map(|(g, _)| g).collect();
+        for &g in &geschosse {
+            for id in m.spaces(g) {
+                assert!(m.set_space(id, |s| s.nutzung = Some(BATH_SPACE_GUID)));
+                assert!(crate::ausbau::typen_anlegen(&mut m, id));
+            }
+        }
+        m.commit();
+        let mat = |g| {
+            m.materials()
+                .iter()
+                .find(|(_, x)| x.guid == g)
+                .map(|(id, _)| id)
+                .unwrap()
+        };
+        let (verbund, sohle) = (mat(TILE_SEAL_GUID), mat(SLAB_SEAL_GUID));
+        let mut gesehen = Vec::new();
+        for &g in &geschosse {
+            for (_, q) in raeume(&m, g) {
+                for l in q.lines.iter().filter(|l| l.side == Side::Floor) {
+                    let auf_sohle = l.kg.is_some_and(|k| k < 350);
+                    if l.material == Some(verbund) {
+                        assert_eq!(l.kg, Some(if auf_sohle { 324 } else { 353 }), "{}", l.name);
+                        gesehen.push(("verbund", l.kg));
+                    } else if l.material == Some(sohle) {
+                        assert_eq!(l.kg, Some(325), "{}", l.name);
+                        gesehen.push(("sohle", l.kg));
+                    }
+                }
+            }
+        }
+        gesehen.sort();
+        gesehen.dedup();
+        assert_eq!(
+            gesehen,
+            [
+                ("sohle", Some(325)),
+                ("verbund", Some(324)),
+                ("verbund", Some(353))
+            ]
         );
     }
 

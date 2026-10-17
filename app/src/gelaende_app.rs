@@ -252,7 +252,7 @@ fn schloss(l: &mut GelaendeLeiste, t: &Terrain, z: &Zustand) {
     }
     l.schloss = Some(mess.iter().all(|p| z.offen_nr.contains(&p.nr)));
     l.gemessen = mess.iter().find_map(|p| {
-        let [e, n, h] = p.gemessen?;
+        let [e, n, h] = *p.gemessen.as_deref()?;
         let m = |v: f64, k: usize| de(v, k);
         Some(if (p.h - h).abs() >= 5e-4 {
             format!(

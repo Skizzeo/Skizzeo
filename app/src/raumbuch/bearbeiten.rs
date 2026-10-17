@@ -20,6 +20,16 @@ use sk_raum::oeffnungen::Rohbau;
 use sk_raum::{Kante, RaumForm};
 use std::sync::Mutex;
 
+/// Hinweis im Paneel bei Abweichungen an Wandseiten, die den Raum nicht
+/// mehr begrenzen (Review #190 H-190d).
+pub const VERWAIST: &str = "Abweichungen von der Raumvorlage gelten nur in diesem Raum. \
+    Abweichungen an Wandseiten, die den Raum nicht mehr begrenzen, wirken nicht.";
+
+/// Hinweis unter der Fliesenhöhe, wenn sie über der lichten Höhe liegt:
+/// Gerechnet wird bis zur Decke (Bedienbarkeit, C zu #190).
+pub const FLIESEN_GEKAPPT: &str = "Ab OK Fertigfußboden, an der gewählten Wandseite. \
+    Über der lichten Höhe enden die Fliesen an der Decke.";
+
 /// Knöpfe im Paneel, Wert in [`Id::Raumbuch`].
 pub const BODEN: u8 = 0;
 pub const ESTRICH: u8 = 1;
@@ -111,6 +121,10 @@ impl Raum {
         let m = scene.model();
         let roh = Rohbau::mit(m, &scene.ketten(), form);
         let aus = RaumAusbau::fuer(m, &roh)?;
+        Some(Raum::aus(m, id, roh, aus))
+    }
+
+    fn aus(m: &Model, id: ElementId, roh: Rohbau, aus: RaumAusbau) -> Raum {
         let kanten: Vec<&Kante> = roh.kanten().collect();
         let mut seiten: Vec<(WandSeite, String)> = Vec::new();
         for (k, kante) in kanten.iter().enumerate() {
@@ -122,12 +136,12 @@ impl Raum {
                 seiten.push((w, format!("Wand {name}")));
             }
         }
-        Some(Raum {
+        Raum {
             id,
             roh,
             aus,
             seiten,
-        })
+        }
     }
 
     /// Aus dem Speicher der Räume wie das Paneel (Review #87), nicht aus
@@ -149,6 +163,17 @@ impl Raum {
             .raum_seite()
             .filter(|s| s.0 == self.id && self.seiten.iter().any(|x| x.0 == s.1))
             .map(|s| s.1)
+    }
+
+    /// Gilt eine Abweichung an einer Wandseite, die den Raum nicht mehr
+    /// begrenzt (Wand gelöscht, verschoben oder gekippt)?
+    fn verwaist(&self, m: &Model) -> bool {
+        m.space(self.id).is_some_and(|s| {
+            s.ausbau
+                .iter()
+                .filter_map(|a| a.stelle.seite())
+                .any(|w| self.name(w).is_none())
+        })
     }
 
     fn name(&self, w: WandSeite) -> Option<&str> {
@@ -185,13 +210,16 @@ impl Raum {
     }
 }
 
-/// Abschnitte des Raumbuchs im Paneel des Raums mit der Form `form`; leer
-/// für einen ruhenden Raum.
-pub fn abschnitte(scene: &Scene, form: &RaumForm) -> Vec<Section> {
+/// Abschnitte des Raumbuchs im Paneel des Raums `id` mit Rohbau und
+/// Ausbau.
+pub(super) fn abschnitte_aus(
+    scene: &Scene,
+    id: ElementId,
+    roh: Rohbau,
+    aus: RaumAusbau,
+) -> Vec<Section> {
     let m = scene.model();
-    let Some(r) = form.raum.and_then(|id| Raum::neu(scene, id, form.clone())) else {
-        return Vec::new();
-    };
+    let r = Raum::aus(m, id, roh, aus);
     let seite = r.seite(scene);
     let knopf = |k: u8| {
         let t = KNOEPFE[k as usize];
@@ -202,7 +230,11 @@ pub fn abschnitte(scene: &Scene, form: &RaumForm) -> Vec<Section> {
     let mut v = vec![Section {
         title: "Raumbuch",
         fields: Vec::new(),
-        hint: "Abweichungen von der Raumvorlage gelten nur in diesem Raum.",
+        hint: if r.verwaist(m) {
+            VERWAIST
+        } else {
+            "Abweichungen von der Raumvorlage gelten nur in diesem Raum."
+        },
         buttons: vec![knopf(NUTZUNG), knopf(BODEN), knopf(ESTRICH), knopf(DECKE)],
     }];
     if r.seiten.is_empty() {
@@ -222,6 +254,7 @@ pub fn abschnitte(scene: &Scene, form: &RaumForm) -> Vec<Section> {
     });
     if let Some(h) = r.fliesenhoehe(m, seite) {
         let (min, max) = TILES_HEIGHT;
+        let (ffb, ufd) = ausbau::hoehen(m, &r.roh, &r.aus);
         v.push(Section {
             title: "Wandfliesen",
             fields: vec![FieldRow {
@@ -233,7 +266,11 @@ pub fn abschnitte(scene: &Scene, form: &RaumForm) -> Vec<Section> {
                 zero: false,
                 einheit: None,
             }],
-            hint: "Ab OK Fertigfußboden, an der gewählten Wandseite.",
+            hint: if h > ufd - ffb + 0.5 {
+                FLIESEN_GEKAPPT
+            } else {
+                "Ab OK Fertigfußboden, an der gewählten Wandseite."
+            },
             buttons: Vec::new(),
         });
     }
@@ -570,6 +607,30 @@ mod tests {
         assert!(!s.model().in_step());
     }
 
+    /// Eine Abweichung an einer Wandseite, die den Raum nicht begrenzt
+    /// (hier eine Wand im OG), nennt das Paneel (Review #190 H-190d).
+    #[test]
+    fn verwaiste_wandseite_mit_hinweis() {
+        let (mut s, r) = haus();
+        let hinweis = |s: &Scene| crate::selection::props(s, r).unwrap().sections[0].hint;
+        assert_ne!(hinweis(&s), VERWAIST);
+        let m = s.model();
+        let og = m.levels_in(m.buildings().iter().next().map(|b| b.0))[2];
+        let wand = m
+            .elements()
+            .iter()
+            .find(|(_, e)| e.storey == og && matches!(e.kind, sk_model::ElementKind::Wall(_)))
+            .map(|(_, e)| e.guid)
+            .unwrap();
+        let a = AusbauAbweichung {
+            stelle: AusbauStelle::Sockel(Some(WandSeite { wand, links: true })),
+            wahl: Some(AusbauWahl::Keiner),
+            hoehe: None,
+        };
+        assert!(s.raeume_aendern("Raumbuch ändern", |m| m.set_space_finish(r, a).is_ok()));
+        assert_eq!(hinweis(&s), VERWAIST);
+    }
+
     /// Ohne Abweichung: Knöpfe je Fläche, Liste mit Vorlage, „ohne“ und
     /// den Typen; „ohne Belag“ macht den Boden abweichend, Rückgängig nimmt
     /// es zurück.
@@ -680,6 +741,11 @@ mod tests {
             .space_finish(r, AusbauStelle::Fliesen(Some(w)))
             .unwrap();
         assert_eq!((a.wahl, a.hoehe), (fliesen, Some(2000.0)));
+        let hinweis = |s: &Scene| crate::selection::props(s, r).unwrap().sections[2].hint;
+        assert_ne!(hinweis(&s), FLIESEN_GEKAPPT);
+        assert!(s.set_field(r, Field::RaumFliesen, 4000.0));
+        assert_eq!(hinweis(&s), FLIESEN_GEKAPPT, "über der lichten Höhe");
+        assert!(s.undo());
         assert!(s
             .model()
             .space_finish(r, AusbauStelle::Fliesen(None))

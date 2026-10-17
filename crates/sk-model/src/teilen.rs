@@ -378,15 +378,23 @@ pub(super) fn match_walls(
     out
 }
 
-/// Vorlage für ein neues Segment `i` ohne Zuordnung: das alte Segment, mit
-/// dem es auf einer Linie am meisten überdeckt (ein Teilstück), sonst der
-/// Nachbar davor bzw. danach im neuen Zug (eine Stufe).
+/// Vorlage für ein neues Segment `i` ohne Zuordnung: das alte Segment, aus
+/// dem es geteilt wurde ([`split_of`]), sonst der Nachbar davor bzw. danach
+/// im neuen Zug (eine Stufe).
 pub(super) fn template_of(
     old: &[(Vec3, Vec3)],
     new: &[(Vec3, Vec3)],
     matched: &[Option<usize>],
     i: usize,
 ) -> Option<usize> {
+    let n = new.len();
+    split_of(old, new, i)
+        .or_else(|| (1..n).find_map(|s| matched[(i + n - s) % n].or(matched[(i + s) % n])))
+}
+
+/// Das alte Segment, mit dem das neue Segment `i` auf einer Linie am meisten
+/// überdeckt: Es ist ein Teilstück davon.
+pub(super) fn split_of(old: &[(Vec3, Vec3)], new: &[(Vec3, Vec3)], i: usize) -> Option<usize> {
     let (a, b) = new[i];
     let mut best: Option<(f64, usize)> = None;
     if (b - a).length() > 1e-9 {
@@ -407,9 +415,7 @@ pub(super) fn template_of(
             }
         }
     }
-    let n = new.len();
     best.map(|(_, k)| k)
-        .or_else(|| (1..n).find_map(|s| matched[(i + n - s) % n].or(matched[(i + s) % n])))
 }
 
 #[cfg(test)]

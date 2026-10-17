@@ -146,13 +146,41 @@ impl Zeile {
 
 /// „4,240“ aus mm, kaufmännisch auf den Millimeter (4567,5 → „4,568“).
 fn m(x: f64) -> String {
-    format!("{:.3}", kaufm(x) / 1e3).replace('.', ",")
+    tausendstel(kaufm(x))
 }
 
 /// „2,156 m²“ aus mm², kaufmännisch auf 1000 mm².
 fn qm(x: f64) -> String {
-    let t = kaufm(x / 1e3) * 1e3;
-    format!("{} m²", format!("{:.3}", t / 1e6).replace('.', ","))
+    let k = kaufm(x / 1e3);
+    if k.is_nan() || k.abs() >= 1e12 {
+        return format!("{} m²", format!("{:.3}", k * 1e3 / 1e6).replace('.', ","));
+    }
+    let mut s = tausendstel(k);
+    s.push_str(" m²");
+    s
+}
+
+/// Ganze Tausendstel `k` mit drei Stellen nach dem Komma, wie
+/// `format!("{:.3}", k / 1e3)` mit Komma, aber ohne `format!` (Review M2:
+/// Rechenwege der Räume nach jedem Loslassen).
+fn tausendstel(k: f64) -> String {
+    // Bis 10^12 hat die Zahl höchstens 15 Stellen, so schreibt `format!`
+    // genau dieselben Ziffern
+    if k.is_nan() || k.abs() >= 1e12 {
+        return format!("{:.3}", k / 1e3).replace('.', ",");
+    }
+    let n = k.abs() as u64;
+    let mut s = String::with_capacity(16);
+    if k.is_sign_negative() {
+        s.push('-');
+    }
+    s.push_str(&(n / 1000).to_string());
+    let f = n % 1000;
+    s.push(',');
+    s.push(char::from(b'0' + (f / 100) as u8));
+    s.push(char::from(b'0' + (f / 10 % 10) as u8));
+    s.push(char::from(b'0' + (f % 10) as u8));
+    s
 }
 
 /// Auf ganze Einheiten, die Hälfte vom Nullpunkt weg, auch wenn die

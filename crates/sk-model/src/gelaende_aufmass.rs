@@ -38,8 +38,10 @@ pub struct TerrainPoint {
     /// Ein Messpunkt, den der Nutzer nach dem Öffnen des Schlosses
     /// verschoben hat (I5, §5 J2 C): Rechts, Hoch und Höhe, wie gemessen
     /// (Datei `ge`, `gn`, `gh`, ungerundet). `None` bei unverändertem
-    /// Messpunkt und bei eigenen Punkten.
-    pub gemessen: Option<[f64; 3]>,
+    /// Messpunkt und bei eigenen Punkten. Im Kasten, damit der Punkt nur
+    /// 8 Byte größer wird: Jeder Schritt kopiert das ganze Aufmaß (Test
+    /// zu #237, Budget bei 100.000 Punkten).
+    pub gemessen: Option<Box<[f64; 3]>>,
 }
 
 /// Eine Bruchkante aus der Datei (DXF, G1b): Punktnummern im Verlauf, wie
@@ -444,7 +446,7 @@ fn punkte_gleich(a: &[TerrainPoint], b: &[TerrainPoint]) -> bool {
             hand,
             gemessen,
         } = p;
-        (*e, *n, *h, *off, *hand, *gemessen)
+        (*e, *n, *h, *off, *hand, gemessen.as_deref().copied())
     };
     a.len() == b.len()
         && a.iter().zip(b).all(|(p, q)| zahlen(p) == zahlen(q))

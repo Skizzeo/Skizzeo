@@ -474,7 +474,9 @@ fn haus_mit_raum() -> (Model, StoreyId, sk_model::ExtDef, sk_model::ExtDef) {
 
 /// Stütze 40/40 (0,16 m², raumhoch) und Treppe mit 16 Steigungen
 /// (4,20 × 1,00 m) werden abgezogen (§ 3 Abs. 3 Nr. 1 und 2), die Stütze
-/// 24/24 (0,0576 m²) bleibt mit Hinweis (Review #195 B1).
+/// 24/24 (0,0576 m²) bleibt mit Hinweis (Review #195 B1). Die Stütze zählt
+/// mit dem Putz des Raums ringsum, 0,43 × 0,43 m, wie ein Pfeiler aus einem
+/// Wandring (H-195i); die Treppe ohne.
 #[test]
 fn stuetzen_und_treppen_nach_woflv() {
     let (mut m, st, stuetze, treppe) = haus_mit_raum();
@@ -493,7 +495,7 @@ fn stuetzen_und_treppen_nach_woflv() {
     let abzug = texte(r, Art::Abzug);
     assert_eq!(abzug.len(), 2, "{abzug:?}");
     assert!(
-        abzug[0].ends_with("0,400 × 0,400 (§ 3 Abs. 3 Nr. 1)"),
+        abzug[0].ends_with("0,430 × 0,430 einschl. Putz 15 mm (§ 3 Abs. 3 Nr. 1)"),
         "{abzug:?}"
     );
     assert!(
@@ -504,10 +506,11 @@ fn stuetzen_und_treppen_nach_woflv() {
     assert!(
         hinweise
             .iter()
-            .any(|h| h.ends_with("0,058 m² bleibt in der Fläche (bis 0,1 m², § 3 Abs. 3 Nr. 1)")),
+            .any(|h| h.ends_with("0,073 m² bleibt in der Fläche (bis 0,1 m², § 3 Abs. 3 Nr. 1)")),
         "{hinweise:?}"
     );
-    assert_eq!(r.grund, vorher - 16 - 420);
+    // 0,1849 + 4,20 m², je Raum gerundet: auf 0,01 m² genau
+    assert!((vorher - 438 - r.grund).abs() <= 1, "{vorher} {}", r.grund);
 }
 
 /// Stütze 50/50 nur 1,40 m hoch und Treppe mit drei Steigungen bleiben in
@@ -607,6 +610,7 @@ fn einbauten_im_raster() {
         ]],
         z: (0.0, 3000.0),
         steigungen: None,
+        loch: false,
     };
     let e = Einbauten::neu(vec![
         quadrat(4900.0, 100.0, 300.0),
@@ -686,4 +690,161 @@ fn grundflaeche_wie_am_stempel() {
             .count();
     }
     assert!(ausgleich > 0, "halbe Millimeter an der Innenwand");
+}
+
+/// Eine Stütze 80/80 um den Pfeiler 40/40 aus dem Wandring: Was beide
+/// decken, zieht nur der Pfeiler ab, die Stütze den Rest; zusammen
+/// 0,83 × 0,83 m mit Putz (Review #195 H-195j).
+#[test]
+fn stuetze_um_pfeiler_nur_einmal() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4000.0, 4000.0),
+            (4000.0, 4400.0),
+            (4400.0, 4400.0),
+            (4400.0, 4000.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    let (a, b) = (3800.0, 4600.0);
+    let stuetze = Einbau {
+        id: h.w[2],
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(a, a, 0.0),
+            vec3(b, a, 0.0),
+            vec3(b, b, 0.0),
+            vec3(a, b, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+        loch: false,
+    };
+    let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(vec![stuetze]));
+    let abzug: f64 = r
+        .teile
+        .iter()
+        .filter(|t| t.art == Art::Abzug)
+        .map(|t| t.wert)
+        .sum();
+    assert!((abzug + 830.0 * 830.0).abs() < 1.0, "{abzug}");
+    // 79,4609 − 0,6889
+    assert_eq!(r.grund, 7877);
+}
+
+/// Eine Stütze 30/30 neben dem Pfeiler 40/40 aus dem Wandring, mit Putz
+/// 0,33 × 0,33 m = 0,1089 m², überdeckt ihn um 0,13 × 0,33 m: Die Schwelle
+/// 0,1 m² gilt für die ganze Stütze, abgezogen wird ihr Rest 0,066 m²
+/// (VOB A-241a).
+#[test]
+fn stuetze_neben_pfeiler_schwelle_ganz() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4000.0, 4000.0),
+            (4000.0, 4400.0),
+            (4400.0, 4400.0),
+            (4400.0, 4000.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    let (x, y) = ((4300.0, 4600.0), (4050.0, 4350.0));
+    let stuetze = Einbau {
+        id: h.w[2],
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(x.0, y.0, 0.0),
+            vec3(x.1, y.0, 0.0),
+            vec3(x.1, y.1, 0.0),
+            vec3(x.0, y.1, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+        loch: false,
+    };
+    let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(vec![stuetze]));
+    let abzug: Vec<f64> = r
+        .teile
+        .iter()
+        .filter(|t| t.art == Art::Abzug)
+        .map(|t| t.wert)
+        .collect();
+    assert_eq!(abzug.len(), 2, "{abzug:?}");
+    let rest = 330.0 * 330.0 - 130.0 * 330.0;
+    assert!((abzug[1] + rest).abs() <= 1e3, "{abzug:?}");
+    assert!(!r
+        .teile
+        .iter()
+        .any(|t| t.text.contains("bleibt in der Fläche")));
+    // 79,4609 − 0,1849 − 0,0660
+    assert_eq!(r.grund, 7921);
+}
+
+/// Die Treppe im EG (16 Steigungen, 4,20 × 1,00 m) steht im OG als
+/// Treppenloch und geht dort ab; eine Treppe im OG genau darüber zieht
+/// denselben Grundriss nicht noch einmal ab (Review #195 H-195j).
+#[test]
+fn treppenloch_im_geschoss_darueber() {
+    let mut m = Model::with_seed(5);
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let eg = m.ground_of(Some(b)).unwrap();
+    let og = m.level_above(eg).unwrap();
+    let aw = m.type_by_guid(sk_model::EXTERIOR_TYPE_GUID).unwrap();
+    m.begin("Haus");
+    for st in [eg, og] {
+        m.add_wall_run(&pts, true, RefSide::Left, st, aw, Category::ExteriorWall)
+            .unwrap();
+    }
+    assert!(crate::abgleichen(&mut m, &[eg, og]) > 0);
+    for st in [eg, og] {
+        let r = crate::raeume(&m, st)[0].raum.unwrap();
+        assert!(crate::ausbau::typen_anlegen(&mut m, r));
+    }
+    let treppe =
+        sk_model::ExtDef::lesen(include_str!("../../sk-szb/beispiele/werk.treppe.szb")).unwrap();
+    m.put_ext_def(treppe.clone()).unwrap();
+    assert!(m.commit().is_some());
+    let grund = |m: &Model, st: StoreyId| {
+        let w = projekt(m);
+        let r = w
+            .raeume()
+            .find(|r| crate::raeume(m, st).iter().any(|f| f.raum == r.raum))
+            .unwrap();
+        (r.grund, texte(r, Art::Abzug).join(" | "))
+    };
+    let (eg0, og0) = (grund(&m, eg).0, grund(&m, og).0);
+
+    m.begin("Treppe EG");
+    m.add_ext(eg, sk_model::ExtPart::new(&treppe, [1000.0, 3000.0]))
+        .unwrap();
+    assert!(m.commit().is_some());
+    let (eg1, abzug_eg) = grund(&m, eg);
+    let (og1, abzug_og) = grund(&m, og);
+    assert!(!abzug_eg.contains("Treppenloch"), "{abzug_eg}");
+    assert!(
+        abzug_og.starts_with("Treppenloch ")
+            && abzug_og.ends_with(
+                "4,200 × 1,000 angenommen wie Treppe darunter (Deckenöffnung, § 3 Abs. 1)"
+            ),
+        "{abzug_og}"
+    );
+    assert_eq!((eg0 - eg1, og0 - og1), (420, 420));
+
+    m.begin("Treppe OG");
+    m.add_ext(og, sk_model::ExtPart::new(&treppe, [1000.0, 3000.0]))
+        .unwrap();
+    assert!(m.commit().is_some());
+    let (og2, abzug_og) = grund(&m, og);
+    assert_eq!(og2, og1, "{abzug_og}");
 }
