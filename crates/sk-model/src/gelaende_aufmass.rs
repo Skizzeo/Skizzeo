@@ -714,6 +714,13 @@ impl Terrain {
             })
     }
 
+    /// Das gemerkte Netz vergessen: Nach Änderungen an einer Kopie rechnet
+    /// [`Terrain::height`] aus ihren Punkten neu, nicht aus dem Netz des
+    /// Originals.
+    pub(super) fn netz_vergessen(&mut self) {
+        self.mesh = Merker::default();
+    }
+
     /// Das gemerkte Netz gehört zu diesen Punkten, Codes und diesem Rand.
     fn netz_passt(&self) -> bool {
         self.mesh

@@ -134,22 +134,7 @@ impl Model {
         let Some((mut t, f, h0)) = self.punkte_rahmen() else {
             return Vec::new();
         };
-        let nr = naechste_nummer(&t);
-        let start = t.points.len();
-        for (k, p) in (nr..).zip(neu) {
-            let (e, n) = f.to_survey(p[0], p[1]);
-            t.points.push(TerrainPoint {
-                nr: format!("{NR}{k}").into(),
-                e: rund(e),
-                n: rund(n),
-                h: rund(h0 + p[2] / 1000.0),
-                code: code.into(),
-                off: false,
-                hand: true,
-                gemessen: None,
-            });
-        }
-        let neu: Vec<usize> = (start..t.points.len()).collect();
+        let neu = punkte_dazu(&mut t, &f, h0, neu, code);
         if doppelt_bei(&t, &neu) || !self.punkte_schreiben(t, Some(&neu)) {
             return Vec::new();
         }
@@ -219,7 +204,7 @@ impl Model {
     /// Gründungen behalten ihre Einbindetiefe. Mit `geaendert` hat sich
     /// nur Lage und Höhe dieser Punkte geändert
     /// ([`Model::put_survey_punkte`]).
-    fn punkte_schreiben(&mut self, t: Terrain, geaendert: Option<&[usize]>) -> bool {
+    pub(super) fn punkte_schreiben(&mut self, t: Terrain, geaendert: Option<&[usize]>) -> bool {
         let vorher = self.foundation_terrain();
         let vor = self.terrain_nhn();
         let haus = self.level_building();
@@ -260,7 +245,7 @@ impl Model {
 /// Ein Punkt aus `bewegt` auf derselben Stelle (unter 1 mm) wie ein
 /// anderer im Gelände; abgewählte zählen nicht. Nur die bewegten gegen
 /// alle, ohne Gang über alle Paare (Review #234 B-234a).
-fn doppelt_bei(t: &Terrain, bewegt: &[usize]) -> bool {
+pub(super) fn doppelt_bei(t: &Terrain, bewegt: &[usize]) -> bool {
     use std::collections::HashSet;
     let stelle = |p: &TerrainPoint| ((p.e * 1000.0).round() as i64, (p.n * 1000.0).round() as i64);
     let mut stellen = HashSet::new();
@@ -291,6 +276,35 @@ fn doppelt_bei(t: &Terrain, bewegt: &[usize]) -> bool {
             && !eigen.contains(&j)
             && stellen.contains(&stelle(q))
     })
+}
+
+/// Eigene Punkte `neu` (Lage und Höhe in mm, ±0,00 bei `h0` m ü. NHN)
+/// mit `code` an `t` hängen, in dessen System `f` auf mm gerundet, mit den
+/// nächsten freien Nummern. Gibt ihre Indizes; ob einer auf einen anderen
+/// fällt, prüft [`doppelt_bei`].
+pub(super) fn punkte_dazu(
+    t: &mut Terrain,
+    f: &SurveyFrame,
+    h0: f64,
+    neu: &[[f64; 3]],
+    code: &str,
+) -> Vec<usize> {
+    let nr = naechste_nummer(t);
+    let start = t.points.len();
+    for (k, p) in (nr..).zip(neu) {
+        let (e, n) = f.to_survey(p[0], p[1]);
+        t.points.push(TerrainPoint {
+            nr: format!("{NR}{k}").into(),
+            e: rund(e),
+            n: rund(n),
+            h: rund(h0 + p[2] / 1000.0),
+            code: code.into(),
+            off: false,
+            hand: true,
+            gemessen: None,
+        });
+    }
+    (start..t.points.len()).collect()
 }
 
 /// Die nächste freie Nummer nach „H“.
