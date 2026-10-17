@@ -76,9 +76,8 @@ impl Model {
         t.parcels[i] = neu;
         let neu = self.set_terrain(Some(t));
         if neu {
-            self.grenze_abdecken();
-            // die Punkte an der Grenze ziehen mit (U-264a)
-            self.grenze_anheften(ring, Some(&vorher));
+            // die Punkte an der Grenze ziehen mit (U-264a, B-264a)
+            self.grenze_umsetzen(ring, &vorher);
         }
         neu
     }

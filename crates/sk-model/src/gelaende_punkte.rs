@@ -15,7 +15,7 @@
 //! merkt er sich die gemessenen Werte in `gemessen`; zurück auf sie (unter
 //! 0,5 mm) oder [`Model::reset_terrain_points`] löscht den Vermerk.
 
-use super::gelaende_eben::rund;
+use super::gelaende_eben::{rund, AN_DER_GRENZE, UM_DIE_GRENZE};
 use super::*;
 
 /// Kürzel der Nummern eigener Punkte, wie beim angenommenen Gelände.
@@ -98,6 +98,14 @@ impl Model {
             if [q.e, q.n] != [vorher[0], vorher[1]] {
                 seitlich.push(i);
             }
+            // gezogen oder gehoben ist es ein eigener Punkt; die Grenze
+            // nimmt ihn beim Ändern nicht mehr mit (B-264a)
+            if q.hand
+                && [q.e, q.n, q.h] != vorher
+                && [AN_DER_GRENZE, UM_DIE_GRENZE].contains(&q.code.as_str())
+            {
+                q.code = Default::default();
+            }
         }
         if doppelt_bei(&t, &seitlich) {
             return false;
@@ -111,6 +119,11 @@ impl Model {
     /// Platte dazu (I1), so dass nichts springt. Gibt die Indizes der neuen
     /// Punkte zurück; leer, wenn keiner ging (Stelle schon belegt).
     pub fn add_terrain_points(&mut self, neu: &[[f64; 3]]) -> Vec<usize> {
+        self.add_terrain_points_mit(neu, "")
+    }
+
+    /// Wie [`Model::add_terrain_points`], die neuen Punkte mit `code`.
+    pub(super) fn add_terrain_points_mit(&mut self, neu: &[[f64; 3]], code: &str) -> Vec<usize> {
         if neu.is_empty() {
             return Vec::new();
         }
@@ -130,7 +143,7 @@ impl Model {
                 e: rund(e),
                 n: rund(n),
                 h: rund(h0 + p[2] / 1000.0),
-                code: Default::default(),
+                code: code.into(),
                 off: false,
                 hand: true,
                 gemessen: None,
