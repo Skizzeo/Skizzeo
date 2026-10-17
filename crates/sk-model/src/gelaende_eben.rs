@@ -7,7 +7,10 @@
 //! bytegleich).
 //!
 //! Die Grenze geht auch ohne Lageplan: von Hand gezeichnet (I2,
-//! [`Model::add_parcel`]) liegt sie wie ein Flurstück im Gelände.
+//! [`Model::add_parcel`]) liegt sie wie ein Flurstück im Gelände. Ein
+//! angenommenes Gelände reicht dann bis über sie hinaus (I6, Jörn 17.10.):
+//! Die ebene Platte wächst bis zur Grenze und um den Plattenabstand
+//! darüber, die Umgebung außerhalb zeigt sie ganz, blass oder gar nicht.
 
 use super::*;
 
@@ -145,9 +148,10 @@ impl Model {
     /// Eine von Hand gezeichnete Grenze (I2): `ring` sind ihre Ecken im
     /// Grundriss (mm). Sie kommt als Flurstück zu den Grenzen des Geländes,
     /// in dessen System auf mm gerundet; ohne Gelände entsteht eins im
-    /// örtlichen System wie bei [`Model::seed_flat_terrain`], nur mit der
-    /// Grenze, ohne Punkte: Die Platte bleibt eben (im offenen Schritt).
-    /// `false` unter drei Ecken, ohne Fläche oder ohne Lage des Systems.
+    /// örtlichen System wie bei [`Model::seed_flat_terrain`]. Das Gelände
+    /// reicht danach bis über die Grenze ([`Model::grenze_abdecken`], im
+    /// offenen Schritt). `false` unter drei Ecken, ohne Fläche oder ohne
+    /// Lage des Systems.
     pub fn add_parcel(&mut self, ring: &[[f64; 2]]) -> bool {
         if !super::gelaende_grenze::parcel_ring_ok(ring) {
             return false;
@@ -164,7 +168,65 @@ impl Model {
             })
             .collect();
         t.parcels.push(r);
-        self.set_terrain(Some(t))
+        let neu = self.set_terrain(Some(t));
+        if neu {
+            self.grenze_abdecken();
+        }
+        neu
+    }
+
+    /// Nach einer gezeichneten oder geänderten Grenze (I6, Jörn 17.10.):
+    /// Ein angenommenes Gelände reicht bis um den Plattenabstand über alle
+    /// Grenzen hinaus. Ohne Punkte tut es das schon (die App zeigt dann das
+    /// Rechteck um die Grenzen eben); mit Punkten von Hand kommen die Ecken
+    /// dieses Rechtecks dazu, die das Netz noch nicht deckt, in der Höhe OK
+    /// Gelände des Bezugsgebäudes. Ein Aufmaß des Vermessers bleibt, wie es
+    /// ist. Ohne Lageplan zeigt das Gelände die Umgebung außerhalb der
+    /// Grenze ganz, bis man „blass“ oder „nicht“ wählt.
+    pub(super) fn grenze_abdecken(&mut self) {
+        let Some(t) = self.terrain() else {
+            return;
+        };
+        let gezeichnet = t.underlay.is_none() && t.show.is_none();
+        if t.assumed() {
+            let ecken: Vec<[f64; 2]> = self.parcel_rings().into_iter().flatten().collect();
+            if ecken.is_empty() {
+                return;
+            }
+            let e = f64::INFINITY;
+            let mut k = [e, e, -e, -e];
+            for p in &ecken {
+                k = [
+                    k[0].min(p[0]),
+                    k[1].min(p[1]),
+                    k[2].max(p[0]),
+                    k[3].max(p[1]),
+                ];
+            }
+            let m = self.plate_settings().margin;
+            let r = [k[0] - m, k[1] - m, k[2] + m, k[3] + m];
+            let z = self.terrain_z_of(self.level_building());
+            // das Netz deckt die konvexe Hülle seiner Punkte
+            let punkte: Vec<Vec3> = self
+                .terrain_spots()
+                .iter()
+                .map(|s| vec3(s.p[0], s.p[1], 0.0))
+                .collect();
+            let huelle = crate::qto_site::convex_hull(&punkte);
+            let neu: Vec<[f64; 3]> = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
+                .into_iter()
+                .filter(|p| !in_huelle(&huelle, *p))
+                .map(|p| [p[0], p[1], z])
+                .collect();
+            if !neu.is_empty() {
+                self.add_terrain_points(&neu);
+            }
+        } else if !t.points.is_empty() {
+            return;
+        }
+        if gezeichnet {
+            self.set_terrain_show(Show::All);
+        }
     }
 
     /// Die Grenzen eines Geländes ohne Lageplan, also von Hand gezeichnet
@@ -220,6 +282,18 @@ impl Model {
         }
         t
     }
+}
+
+/// Liegt `p` in der konvexen Hülle `h` (gegen den Uhrzeigersinn), auf dem
+/// Rand eingeschlossen (1 mm)?
+fn in_huelle(h: &[Vec3], p: [f64; 2]) -> bool {
+    let n = h.len();
+    n >= 3
+        && (0..n).all(|i| {
+            let (a, b) = (h[i], h[(i + 1) % n]);
+            let l = (b.x - a.x).hypot(b.y - a.y);
+            (b.x - a.x) * (p[1] - a.y) - (b.y - a.y) * (p[0] - a.x) >= -l
+        })
 }
 
 /// Auf mm.
@@ -489,6 +563,8 @@ mod tests {
         let t = m.terrain().unwrap();
         assert_eq!(t.crs, Crs::Local);
         assert!(t.points.is_empty() && !t.assumed());
+        // die Umgebung um die gezeichnete Grenze ganz (I6)
+        assert_eq!(t.show(), Show::All);
         assert_eq!(
             t.parcels,
             vec![vec![(-5.0, -4.0), (20.0, -4.0), (20.0, 16.0), (-5.0, 16.0)]]
@@ -506,6 +582,93 @@ mod tests {
         assert!(m.add_parcel(&[[0.0, 0.0], [2000.0, 0.0], [0.0, 2000.0]]));
         m.rollback();
         assert_eq!(m.terrain().unwrap().parcels.len(), 2, "im Schritt");
+    }
+
+    /// Steht schon ein angenommenes Gelände (Punkte von Hand um das Haus),
+    /// reicht es nach einer größeren Grenze bis um den Plattenabstand über
+    /// sie hinaus, eben in der Höhe des Hauses (I6, Jörn 17.10.). Eine
+    /// gezogene Grenze nimmt es mit; „nicht“ bleibt gewählt.
+    #[test]
+    fn platte_waechst_bis_zur_grenze() {
+        let mut m = haus();
+        let z = m.terrain_z();
+        m.begin("Fläche");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        let ring = [
+            [-20000.0, -15000.0],
+            [35000.0, -15000.0],
+            [35000.0, 30000.0],
+            [-20000.0, 30000.0],
+        ];
+        let rand = m.plate_settings().margin;
+        // Die Höhenabfrage hält sich außen an den Netzrand, darum zählt die
+        // Ausdehnung der Punkte.
+        let bis = |m: &Model| {
+            let s = m.terrain_spots();
+            let x = s.iter().map(|p| p.p[0]);
+            let y = s.iter().map(|p| p.p[1]);
+            [
+                x.clone().fold(f64::MAX, f64::min),
+                y.clone().fold(f64::MAX, f64::min),
+                x.fold(f64::MIN, f64::max),
+                y.fold(f64::MIN, f64::max),
+            ]
+        };
+        let n0 = m.terrain().unwrap().points.len();
+        assert!(bis(&m)[0] > -20000.0, "vorher {:?}", bis(&m));
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert!(t.assumed());
+        assert_eq!(t.show(), Show::All);
+        for p in ring {
+            for q in [[p[0] - rand * 0.99, p[1]], [p[0] + rand * 0.99, p[1]], p] {
+                let h = m.terrain_z_survey(q[0], q[1]);
+                assert!(h.is_some_and(|h| (h - z).abs() < 1.0), "{q:?} {h:?}");
+            }
+        }
+        assert!(t.points.len() > n0);
+        let b = bis(&m);
+        assert!(
+            b[0] <= -20000.0 - rand * 0.99 && b[1] <= -15000.0 - rand * 0.99,
+            "{b:?}"
+        );
+        assert!(
+            b[2] >= 35000.0 + rand * 0.99 && b[3] >= 30000.0 + rand * 0.99,
+            "{b:?}"
+        );
+        // am Haus bleibt es, wo es war
+        assert!((m.terrain_z_at(m.level_building(), 5000.0, -1000.0) - z).abs() < 1.0);
+        let n = m.terrain().unwrap().points.len();
+        // „nicht“ gewählt, dann eine Ecke weit hinaus gezogen
+        m.begin("Zuschnitt");
+        assert!(m.set_terrain_show(Show::Parcel));
+        m.commit();
+        let mut weiter = ring;
+        weiter[2] = [60000.0, 50000.0];
+        m.begin("Ecke");
+        assert!(m.set_parcel_ring(0, &weiter));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert_eq!(t.show(), Show::Parcel, "die Wahl bleibt");
+        assert!(t.points.len() > n);
+        let b = bis(&m);
+        assert!(
+            b[2] >= 60000.0 + rand * 0.99 && b[3] >= 50000.0 + rand * 0.99,
+            "{b:?}"
+        );
+        let h = m.terrain_z_survey(60000.0 + rand * 0.99, 50000.0 + rand * 0.99);
+        assert!(h.is_some_and(|h| (h - z).abs() < 1.0), "{h:?}");
+        // innen genügt: nichts kommt dazu
+        let n = t.points.len();
+        let mut innen = weiter;
+        innen[0] = [-19000.0, -14000.0];
+        m.begin("Ecke");
+        assert!(m.set_parcel_ring(0, &innen));
+        m.commit();
+        assert_eq!(m.terrain().unwrap().points.len(), n);
     }
 
     /// Im System eines Lageplans (gedreht) kommt die Grenze in dessen
