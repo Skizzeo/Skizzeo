@@ -95,15 +95,25 @@ impl BauLog {
     /// [`Gelaendestand`] danach. Liegt ±0,00 anders als nach dem letzten
     /// Schritt, gilt er für alle, auch unter der Rundung von `[location]
     /// nhn` (Kosten B-246a); ebenso, wenn eine Einbindetiefe oder eine
-    /// Haustrennwand anders liegt (B-245d); ohne bekannten Stand davor,
-    /// wenn es jetzt ein Aufmaß gibt.
+    /// Haustrennwand anders liegt (B-245d), für deren Gebäude (B-245f);
+    /// ohne bekannten Stand davor, wenn es jetzt ein Aufmaß gibt.
     pub(crate) fn schritt(&mut self, g: Gebaeude, gelaende: Gelaendestand) {
-        let gleich = match &self.gelaende {
-            Some(vorher) => *vorher == gelaende,
-            None => gelaende == Gelaendestand::default(),
+        let dazu = match &self.gelaende {
+            Some(vorher) => vorher.abweichend(&gelaende),
+            None => (gelaende == Gelaendestand::default()).then(Vec::new),
         };
         self.gelaende = Some(gelaende);
-        let g = g.filter(|_| gleich);
+        let g = match (g, dazu) {
+            (Some(g), Some(dazu)) if dazu.is_empty() => Some(g),
+            (Some(g), Some(dazu)) => {
+                let mut v = g.into_vec();
+                v.extend(dazu);
+                v.sort_by_key(|b| b.map(|b| b.index()));
+                v.dedup();
+                Some(v.into())
+            }
+            _ => None,
+        };
         if g.as_deref().is_some_and(|g| g.is_empty()) {
             return;
         }
@@ -379,5 +389,67 @@ mod tests {
             }
         }
         assert!(geprueft > 0, "Graben oder Gründung von B ändert sich");
+    }
+
+    /// Am Hang weit auseinander, ±0,00 fest (Review B-245f): Rückt A eine
+    /// Wand, liegt sein tiefster Punkt am Rand anders, die Mengen von B
+    /// bleiben. Der Schritt nennt nur A, nicht alle.
+    #[test]
+    fn eigene_einbindetiefe_nennt_nur_das_eigene_haus() {
+        const CSV: &[u8] =
+            include_bytes!("../../sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
+        let mut alle = 0;
+        for seg in 0..4 {
+            for d in [-300.0, -50.0, 50.0, 300.0] {
+                let mut m = Model::new();
+                let mut haeuser = Vec::new();
+                for x0 in [7000.0, 27000.0] {
+                    let b = m.add_building(1);
+                    let pts = [
+                        vec3(x0, 6000.0, 0.0),
+                        vec3(x0 + 8000.0, 6000.0, 0.0),
+                        vec3(x0 + 8000.0, 16000.0, 0.0),
+                        vec3(x0, 16000.0, 0.0),
+                    ];
+                    haeuser.push((b, m.build_from_polygon(b, &pts).unwrap()));
+                }
+                let (e0, n0) = (467108.214, 5878741.637);
+                m.begin("Lage");
+                m.set_location(Location {
+                    utm: Some(Utm {
+                        e: e0,
+                        n: n0,
+                        zone: 32,
+                    }),
+                    ..Location::default()
+                });
+                m.commit();
+                let a = sk_gelaende::lesen::lesen(CSV).unwrap();
+                m.begin("Aufmaß");
+                assert!(m.import_terrain(Terrain::from_survey(&a, "l.csv", "2026-10-17", 32)));
+                m.commit();
+                m.begin("Fest");
+                assert!(m.set_terrain_nhn(25.0));
+                m.commit();
+                let [(a, run), (b, _)] = haeuser[..] else {
+                    unreachable!()
+                };
+                let gr = m.foundation_level_of(m.run(run).unwrap().storey).unwrap();
+                let (tief, stand) = (m.terrain_low_survey(gr), m.bau_stand());
+                let Some(neu) = m.chain(run).unwrap().with_segment_moved(seg, d) else {
+                    continue;
+                };
+                m.begin("Wand");
+                m.set_run_points(run, &neu.points);
+                m.commit();
+                alle += usize::from(m.terrain_low_survey(gr) != tief);
+                assert_eq!(
+                    m.gebaeude_seit(stand),
+                    Some(vec![Some(a)]),
+                    "{seg} {d} {b:?}"
+                );
+            }
+        }
+        assert!(alle > 0, "die eigene Einbindetiefe ändert sich");
     }
 }
