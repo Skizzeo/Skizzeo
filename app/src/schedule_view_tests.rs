@@ -1094,4 +1094,31 @@ fn liste_mit_vorrat_wie_ohne() {
     gleich(&mut s, "rückgängig");
     assert!(s.redo());
     gleich(&mut s, "wiederholt");
+    // Decke dicker: Auflager und Schalung der Wandzüge ändern sich ohne
+    // Schritt an einem Zug (Kosten H-242a)
+    let (decke, d) = s
+        .model()
+        .elements()
+        .iter()
+        .find_map(|(id, e)| match &e.kind {
+            sk_model::ElementKind::Floor(f) => Some((id, f.thickness)),
+            _ => None,
+        })
+        .expect("Decke");
+    let waende = |m: &Model| -> Vec<ElementQto> {
+        let x = sk_model::qto::schedule(m);
+        x.buildings
+            .iter()
+            .flat_map(|b| &b.storeys)
+            .flat_map(|st| &st.groups)
+            .flat_map(|g| &g.rows)
+            .filter_map(|r| r.q.clone().filter(|q| matches!(q, ElementQto::Wall(_))))
+            .collect()
+    };
+    let vorher = waende(s.model());
+    assert!(s.edit_model("Deckendicke", |m| m.set_floor_thickness(decke, d + 60.0)));
+    assert_ne!(waende(s.model()), vorher, "Auflager in den Wänden");
+    gleich(&mut s, "Decke dicker");
+    assert!(s.undo());
+    gleich(&mut s, "Decke zurück");
 }

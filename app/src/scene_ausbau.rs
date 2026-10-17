@@ -49,6 +49,8 @@ use std::rc::Rc;
 pub(crate) use teile::TEILE;
 use teile::{teil_von, Teile};
 
+#[path = "scene_mengen.rs"]
+pub(crate) mod mengen;
 #[path = "scene_ausbau_teile.rs"]
 mod teile;
 
@@ -825,6 +827,9 @@ pub(crate) struct RaumCache {
     /// Wandseite, die das Paneel des Raums bearbeitet (RB6); sonst alle.
     /// Steht hier, damit `scene.rs` nicht wächst.
     pub(crate) seite: Option<(ElementId, sk_model::model::WandSeite)>,
+    /// Mengenliste je Gebäude gemerkt (Review M2); steht hier, damit
+    /// `scene.rs` nicht wächst.
+    pub(crate) mengen: mengen::MengenTeile,
 }
 
 /// Estrich (`j` = 0) oder alles andere (1), aus den Körpern zusammengesetzt.
