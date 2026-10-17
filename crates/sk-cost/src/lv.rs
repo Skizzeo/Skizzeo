@@ -216,6 +216,9 @@ pub struct Lv {
     pub titel: Vec<LvTitel>,
     pub zusammenstellung: Zusammenstellung,
     pub befunde: Vec<Befund>,
+    /// Häuser, die ineinander stehen (VOB V-248c): als Warnung in
+    /// `befunde` und beim Ausgeben, nie im Dokument.
+    pub ineinander: Vec<String>,
 }
 
 impl Lv {
@@ -237,18 +240,8 @@ impl Lv {
     /// Was das Programm beim Ausgeben des LV warnt, ohne es ins Dokument
     /// zu schreiben (VOB V-248c): Häuser, die ineinander stehen.
     pub fn warnungen_beim_ausgeben(&self) -> Vec<&str> {
-        self.befunde
-            .iter()
-            .filter(|b| b.schwere == Schwere::Warnung && ineinander(b))
-            .map(|b| b.satz.as_str())
-            .collect()
+        self.ineinander.iter().map(String::as_str).collect()
     }
-}
-
-/// Der Hinweis der Mengenliste „… stehen ineinander“ (H-245-geo-a), bei
-/// der Datei.
-fn ineinander(b: &Befund) -> bool {
-    b.ort == Ort::Datei && b.satz.ends_with(sk_model::qto_earth::INEINANDER)
 }
 
 /// „haus.szo“ → „Haus“: Bauvorhaben ohne `Project.site`.
@@ -1153,11 +1146,10 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
     }
     // Häuser, die ineinander stehen, melden einen Zeichenfehler, keine
     // Leistung: nicht ins Dokument (VOB/A § 7 (1)), aber als Warnung im
-    // Prüfen, solange die Mengenliste sie nennt (VOB V-248c)
-    for f in b.befunde.iter().filter(|f| ineinander(f)) {
-        if !befunde.iter().any(|x| x.satz == f.satz) {
-            befunde.push(Befund::warnung(f.regel, f.satz.clone(), Ort::Datei));
-        }
+    // Prüfen, solange die Mengenliste sie im Umfang nennt (VOB V-248c,
+    // V-254a)
+    for s in &b.ineinander {
+        befunde.push(Befund::warnung(0, s.clone(), Ort::Datei));
     }
     for t in k
         .lose
@@ -1214,6 +1206,7 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
         titel,
         zusammenstellung,
         befunde,
+        ineinander: b.ineinander.clone(),
     }
 }
 

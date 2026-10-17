@@ -748,9 +748,9 @@ fn kurztext_je_dicke_ersetzt_dicke_nach_raumbuch() {
 }
 
 /// Zwei Häuser 8 × 10 m, das zweite `abstand` (mm) rechts vom ersten.
-fn zwei_haeuser(abstand: f64) -> Model {
+fn drei_haeuser(abstand: f64) -> Model {
     let mut m = Model::with_seed(5);
-    for x0 in [0.0, abstand] {
+    for x0 in [0.0, abstand, 60000.0] {
         let b = m.add_building(1);
         let pts = [
             sk_math::vec3(x0, 0.0, 0.0),
@@ -765,17 +765,25 @@ fn zwei_haeuser(abstand: f64) -> Model {
 
 /// Häuser, die ineinander stehen (VOB V-248c): Das Prüfen des LV warnt
 /// bei der Datei, im Projekt wie je Haus; im Dokument (Kopf, Positionen,
-/// Zusammenstellung) steht der Satz nicht. Nebeneinander warnt nichts.
+/// Zusammenstellung) steht der Satz nicht. Nebeneinander warnt nichts, das
+/// LV des dritten, unbeteiligten Hauses auch nicht (VOB V-254a).
 #[test]
 fn haeuser_ineinander_warnen_nur_im_pruefen() {
     let ineinander = sk_model::qto_earth::INEINANDER;
-    for (abstand, warnt) in [(7800.0, true), (20000.0, false)] {
-        let m = zwei_haeuser(abstand);
+    for (abstand, paar) in [(7800.0, true), (20000.0, false)] {
+        let m = drei_haeuser(abstand);
         let k = lesen::katalog(&m, None);
         let s = qto::schedule(&m);
-        let mut umfaenge = vec![Umfang::projekt()];
-        umfaenge.extend(m.buildings().iter().map(|(b, _)| Umfang::gebaeude(b)));
-        for u in &umfaenge {
+        let mut umfaenge = vec![(Umfang::projekt(), paar)];
+        umfaenge.extend(
+            m.buildings()
+                .iter()
+                .enumerate()
+                .map(|(i, (b, _))| (Umfang::gebaeude(b), paar && i < 2)),
+        );
+        assert_eq!(umfaenge.len(), 4);
+        for (u, warnt) in &umfaenge {
+            let warnt = *warnt;
             let lv = lesen::lv(&m, &s, &k, u, &wahl(false, true));
             assert!(lv.anzahl() > 0, "{abstand}");
             let w: Vec<_> = lv

@@ -818,6 +818,57 @@ mod tests {
         }
     }
 
+    /// Im Umfang eines Hauses nennt die Mengenliste nur dessen Paar
+    /// ineinander (VOB V-254a): GB-03 weit weg ohne den Hinweis zu GB-01
+    /// und GB-02, das Projekt und beide Häuser des Paars mit.
+    #[test]
+    fn ineinander_nur_beim_paar() {
+        let mut m = Model::with_seed(5);
+        let mut haeuser = Vec::new();
+        for x0 in [0.0, 7800.0, 60000.0] {
+            let b = m.add_building(1);
+            let pts = [
+                vec3(x0, 0.0, 0.0),
+                vec3(x0 + 8000.0, 0.0, 0.0),
+                vec3(x0 + 8000.0, 10000.0, 0.0),
+                vec3(x0, 10000.0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+            haeuser.push(b);
+        }
+        let s = crate::qto::schedule(&m);
+        assert_eq!(s.ineinander.len(), 1, "{:?}", s.hinweise);
+        assert_eq!(s.ineinander[0].haeuser, (haeuser[0], haeuser[1]));
+        let satz = s.ineinander[0].satz.clone();
+        let hat = |s: &crate::qto::Schedule| (s.hinweise.contains(&satz), s.ineinander.len());
+        assert_eq!(hat(&s), (true, 1));
+        for (b, soll) in haeuser.iter().zip([true, true, false]) {
+            let r = s.restrict(&m, &crate::qto::Umfang::gebaeude(*b));
+            assert_eq!(hat(&r), (soll, usize::from(soll)), "{:?}", r.hinweise);
+        }
+        // in einer Kette nach Nummer, nicht nach Guid (VOB H-256a)
+        for seed in 1..=8 {
+            let mut m = Model::with_seed(seed);
+            let mut kette = Vec::new();
+            for i in 0..4 {
+                let b = m.add_building(1);
+                let x0 = f64::from(i) * 7800.0;
+                let pts = [
+                    vec3(x0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 10000.0, 0.0),
+                    vec3(x0, 10000.0, 0.0),
+                ];
+                m.build_from_polygon(b, &pts).unwrap();
+                kette.push(b);
+            }
+            let s = crate::qto::schedule(&m);
+            let paare: Vec<_> = s.ineinander.iter().map(|x| x.haeuser).collect();
+            let soll: Vec<_> = kette.windows(2).map(|w| (w[0], w[1])).collect();
+            assert_eq!(paare, soll, "Seed {seed}");
+        }
+    }
+
     /// Der Hinweis gilt genau dort, wo die Trennung der Platten endet
     /// (Geometrie zu #248): Rechnen die Gründungen beim Anlegen der ersten
     /// Fläche gemeinsam, weil sich die Wände überdecken, meldet das Modell
