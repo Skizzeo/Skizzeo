@@ -29,11 +29,11 @@ fn viele(n: usize) -> Model {
         for j in 0..ny {
             let (e, nn) = (1000.0 + 20.0 * i as f64, 2000.0 + 20.0 * j as f64);
             t.points.push(TerrainPoint {
-                nr: (i * ny + j + 1).to_string(),
+                nr: (i * ny + j + 1).to_string().into(),
                 e,
                 n: nn,
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,
@@ -269,11 +269,11 @@ fn baugruben_im_faden() {
         for j in 0..n {
             let (e, nn) = (1000.0 + 2.0 * i as f64, 2000.0 + 2.0 * j as f64);
             t.points.push(TerrainPoint {
-                nr: (i * n + j + 1).to_string(),
+                nr: (i * n + j + 1).to_string().into(),
                 e,
                 n: nn,
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,
@@ -765,11 +765,11 @@ fn folgen_im_faden_messen() {
         for j in 0..n {
             let (e, nn) = (1000.0 + 0.3 * i as f64, 2000.0 + 0.3 * j as f64);
             t.points.push(TerrainPoint {
-                nr: (i * n + j + 1).to_string(),
+                nr: (i * n + j + 1).to_string().into(),
                 e,
                 n: nn,
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,

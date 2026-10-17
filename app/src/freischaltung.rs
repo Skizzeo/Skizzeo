@@ -252,6 +252,7 @@ impl Eingang for Command {
             | Command::MeasureFrameTime
             | Command::ExportIfc
             | Command::IfcVorschau
+            | Command::Export3d(_)
             | Command::Ausbaustufe => None,
         }
     }

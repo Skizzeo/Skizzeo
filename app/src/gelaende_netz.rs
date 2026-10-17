@@ -1062,6 +1062,16 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
             for r in &g.ringe {
                 rand_an_grenze(&mut s, g, r, unten, true);
             }
+            // Endet das Netz vor der Grenze, schließt sein eigener Rand den
+            // Körper im Grundstück; sonst sah man dort hindurch (Jörn 17.10.)
+            let rand = g.rand.clone().unwrap_or_else(|| randkanten(&g.dreiecke));
+            for (a, b) in rand {
+                for (t0, t1, innen) in g.teile([a.x, a.y], [b.x, b.y]) {
+                    if innen {
+                        seite(&mut s, a + (b - a) * t0, a + (b - a) * t1, unten);
+                    }
+                }
+            }
         }
         Show::All | Show::Fade => {
             let rand = g.rand.clone().unwrap_or_else(|| randkanten(&g.dreiecke));
@@ -1081,6 +1091,14 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
     for r in &g.umrisse {
         for i in 0..r.len() {
             s.edge(r[i], r[(i + 1) % r.len()]);
+        }
+    }
+    // Die Grenze als Kante auf dem Gelände wie im Grundriss (Jörn 17.10.);
+    // bei „nicht“ ist sie schon der Rand des Körpers
+    if g.show != Show::Parcel {
+        let dz = if g.show == Show::Fade { HEBEN } else { 0.0 };
+        for r in &g.ringe {
+            grenze_als_kante(&mut s, g, r, dz);
         }
     }
     // Volle Meter als feine Kanten auf dem Rasen, mit dem Netz kräftig
@@ -1118,24 +1136,77 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
 }
 
 /// Kanten des Dreiecksnetzes, jede einmal, an Grenze und Haus geteilt wie
-/// die Höhenlinien (im Haus keine): von, bis und ob im Grundstück.
+/// die Höhenlinien (im Haus keine): von, bis und ob im Grundstück. Eine
+/// Kante zwischen zwei Dreiecken in derselben Ebene fällt weg, dort knickt
+/// nichts: Sonst teilte eine Diagonale die ebene Platte (Jörn 17.10.).
 fn netzkanten(g: &Gelaende) -> Vec<(Vec3, Vec3, bool)> {
     let key = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
-    let mut gesehen = std::collections::HashSet::with_capacity(g.dreiecke.len() * 2);
-    let mut out = Vec::with_capacity(g.dreiecke.len() * 2);
+    // je Kante von, bis, die Normale des ersten Dreiecks und ob ein zweites
+    // in derselben Ebene liegt
+    let mut stelle = HashMap::with_capacity(g.dreiecke.len() * 2);
+    let mut kanten: Vec<(Vec3, Vec3, Vec3, bool)> = Vec::with_capacity(g.dreiecke.len() * 2);
     for t in &g.dreiecke {
+        let n = normale(t);
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
             let (ka, kb) = (key(a), key(b));
-            if !gesehen.insert(if ka < kb { (ka, kb) } else { (kb, ka) }) {
-                continue;
-            }
-            for (t0, t1, innen) in g.teile([a.x, a.y], [b.x, b.y]) {
-                out.push((a + (b - a) * t0, a + (b - a) * t1, innen));
+            match stelle.entry(if ka < kb { (ka, kb) } else { (kb, ka) }) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    let k: &mut (Vec3, Vec3, Vec3, bool) = &mut kanten[*e.get()];
+                    k.3 |= k.2.dot(n) > 1.0 - EBEN;
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(kanten.len());
+                    kanten.push((a, b, n, false));
+                }
             }
         }
     }
+    let mut out = Vec::with_capacity(kanten.len());
+    for (a, b, _, eben) in kanten {
+        if eben {
+            continue;
+        }
+        for (t0, t1, innen) in g.teile([a.x, a.y], [b.x, b.y]) {
+            out.push((a + (b - a) * t0, a + (b - a) * t1, innen));
+        }
+    }
     out
+}
+
+/// Unter dieser Abweichung (1 − cos) liegen zwei Dreiecke in derselben
+/// Ebene: etwa 0,0008°.
+const EBEN: f64 = 1e-10;
+
+/// Die Grenze `r` als Kante auf dem Netz, um `dz` gehoben: an jeder
+/// Netzkante geteilt wie [`rand_an_grenze`], im Haus nicht.
+fn grenze_als_kante(s: &mut Solid, g: &Gelaende, r: &[P2], dz: f64) {
+    let n = r.len();
+    let mut nah = Vec::new();
+    for i in 0..n {
+        let (a, b) = (r[i], r[(i + 1) % n]);
+        let mut ts = vec![0.0, 1.0];
+        g.netz.bei(&kasten(&[a, b]), &mut nah);
+        for t in nah.iter().map(|&j| &g.dreiecke[j as usize]) {
+            for k in 0..3 {
+                let (c, d) = (t[k], t[(k + 1) % 3]);
+                if let Some(x) = kreuzung(a, b, [c.x, c.y], [d.x, d.y]) {
+                    ts.push(x);
+                }
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        for w in ts.windows(2) {
+            let (p, q) = (lerp2(a, b, w[0]), lerp2(a, b, w[1]));
+            if g.im_haus(lerp2(p, q, 0.5)) {
+                continue;
+            }
+            if let (Some(zp), Some(zq)) = (g.hoehe(p), g.hoehe(q)) {
+                s.edge(vec3(p[0], p[1], zp + dz), vec3(q[0], q[1], zq + dz));
+            }
+        }
+    }
 }
 
 /// Rand längs des Rings `r` bis `unten`: geteilt an jeder Netzkante,
@@ -1651,8 +1722,19 @@ pub(crate) fn fassade(
     Some(n)
 }
 
+/// Körper für den 3D-Export ([`crate::gelaende_platte::export_koerper`]):
+/// wie in 3D ohne Hilfsnetz, `keys` Belag und Erdreich. Bei „Umgebung
+/// blass“ das ganze Netz im Belag; die angehobene Kopie des Grundstücks
+/// gehört nur zur Darstellung.
+pub(crate) fn export_koerper(mut g: Gelaende, keys: [u16; 2]) -> Solid {
+    if g.show == Show::Fade {
+        g.show = Show::All;
+    }
+    koerper_mit_netz(&g, [keys[0], keys[1], keys[0]], false)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use sk_model::material;
 
@@ -1791,6 +1873,131 @@ mod tests {
         {
             let mitte = [(e.a.x + e.b.x) / 2.0, (e.a.y + e.b.y) / 2.0];
             assert!(!im_ring(r, mitte), "{mitte:?}");
+        }
+    }
+
+    /// Aufmaß 20 × 20 m, die Grenze ragt rechts 4 m darüber hinaus;
+    /// gibt das Modell und das Rechteck des Netzes (mm).
+    pub(crate) fn grenze_ueber_netz() -> (Model, [f64; 4]) {
+        let mut m = Model::with_seed(7);
+        let mut text = String::new();
+        for (k, (e, n)) in [(0, 0), (20, 0), (20, 20), (0, 20), (10, 10)]
+            .iter()
+            .enumerate()
+        {
+            text.push_str(&format!("{} {e} {n} 10.{k}\n", k + 1));
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-17", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let k = m
+            .terrain_border()
+            .iter()
+            .flatten()
+            .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
+                [k[0].min(p.x), k[1].min(p.y), k[2].max(p.x), k[3].max(p.y)]
+            });
+        let ring = [
+            [k[0] + 2000.0, k[1] + 2000.0],
+            [k[2] + 4000.0, k[1] + 2000.0],
+            [k[2] + 4000.0, k[3] - 2000.0],
+            [k[0] + 2000.0, k[3] - 2000.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.set_terrain_show(Show::Parcel);
+        m.commit();
+        (m, k)
+    }
+
+    /// Endet das Netz vor der Grenze, schließt sein Rand den Körper im
+    /// Grundstück (Jörn 17.10.: eine Ecke war durchsichtig).
+    #[test]
+    fn netz_endet_vor_der_grenze() {
+        let (m, k) = grenze_ueber_netz();
+        let g = Gelaende::aus(&m).unwrap();
+        assert_eq!(g.show, Show::Parcel);
+        let s = koerper(&g, [10, 11, 12]);
+        let mitte = (k[1] + k[3]) / 2.0;
+        let wand = s.triangles.iter().any(|t| {
+            t.mat == 11
+                && t.p.iter().all(|p| (p.x - k[2]).abs() < 1.0)
+                && t.p.iter().any(|p| p.y <= mitte)
+                && t.p.iter().any(|p| p.y >= mitte)
+        });
+        assert!(wand, "Seitenwand am Rand des Netzes im Grundstück");
+        // außerhalb des Grundstücks keine
+        let draussen = s.triangles.iter().any(|t| {
+            t.mat == 11
+                && t.p.iter().all(|p| (p.x - k[2]).abs() < 1.0)
+                && t.p.iter().all(|p| p.y < k[1] + 2000.0 - 1.0)
+        });
+        assert!(!draussen);
+    }
+
+    /// Ebene Platte mit von Hand gezeichneter Grenze in 3D (Jörn 17.10.):
+    /// Das Hilfsnetz zeigt keine Diagonale zwischen den beiden Dreiecken
+    /// der Platte, und die Grenze liegt ganz als Kante auf dem Gelände, bei
+    /// „blass“ auf dem gehobenen Grundstück. Bei „nicht“ ist sie der Rand.
+    #[test]
+    fn ebene_platte_grenze_in_3d() {
+        let mut m = Model::with_seed(7);
+        let b = m.add_building(1);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(6000.0, 0.0, 0.0),
+            vec3(6000.0, 6000.0, 0.0),
+            vec3(0.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let ring = [
+            [-9000.0, -11000.0],
+            [17000.0, -12000.0],
+            [15000.0, 4000.0],
+            [16000.0, 9000.0],
+            [-8000.0, 15000.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.commit();
+        let umfang: f64 = (0..ring.len())
+            .map(|i| {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                (b[0] - a[0]).hypot(b[1] - a[1])
+            })
+            .sum();
+        let z = m.terrain_z();
+        let keys = [10, 11, 12];
+        for (show, dz) in [(Show::All, 0.0), (Show::Fade, HEBEN)] {
+            m.begin("Zuschnitt");
+            m.set_terrain_show(show);
+            m.commit();
+            let g = Gelaende::aus(&m).unwrap();
+            assert_eq!(g.dreiecke.len(), 2, "eben");
+            assert!(netzkanten(&g).iter().all(|(a, b, _)| {
+                // nur der Rand der Platte, keine Diagonale
+                (a.x - b.x).abs() < 1e-6 || (a.y - b.y).abs() < 1e-6
+            }));
+            let s = koerper_mit_netz(&g, keys, true);
+            let auf_der_grenze: f64 = s
+                .edges
+                .iter()
+                .filter(|e| (e.a.z - (z + dz)).abs() < 1e-6 && (e.b.z - (z + dz)).abs() < 1e-6)
+                .filter(|e| {
+                    let mitte = [(e.a.x + e.b.x) / 2.0, (e.a.y + e.b.y) / 2.0];
+                    (0..ring.len()).any(|i| {
+                        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                        let (d, l) = ([b[0] - a[0], b[1] - a[1]], (b[0] - a[0]).hypot(b[1] - a[1]));
+                        ((mitte[0] - a[0]) * d[1] - (mitte[1] - a[1]) * d[0]).abs() / l < 1e-3
+                    })
+                })
+                .map(|e| (e.b - e.a).length())
+                .sum();
+            assert!(
+                (auf_der_grenze - umfang).abs() < 1.0,
+                "{show:?}: {auf_der_grenze} {umfang}"
+            );
         }
     }
 
