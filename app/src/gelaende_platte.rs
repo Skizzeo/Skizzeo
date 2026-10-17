@@ -1258,6 +1258,28 @@ impl App {
     }
 }
 
+/// Das Gelände als Körper für den 3D-Export (Schnittstelle zum
+/// Export-Thread, `sk-export`): Weltkoordinaten in mm, z zu ±0,00, jedes
+/// Dreieck nach außen gerichtet; oben der Belag (`keys[0]`), Seiten, Boden
+/// und Aussparung am Haus Erdreich (`keys[1]`). Mit Aufmaß das Netz, sonst
+/// die Platten bis auf die tiefste Unterkante wie in 3D; `None` ohne
+/// Gelände. Ist das Gelände geglättet, liefert diese Stelle das feine Netz.
+pub(crate) fn export_koerper(m: &Model, keys: [u16; 2]) -> Option<Solid> {
+    if let Some(g) = Gelaende::aus(m) {
+        return Some(gelaende_netz::export_koerper(g, keys));
+    }
+    let plates = m.terrain_plates();
+    let boden = plates
+        .iter()
+        .map(|p| p.bottom)
+        .fold(f64::INFINITY, f64::min);
+    let mut s = Solid::default();
+    for p in &plates {
+        s.append(&koerper(p, boden, [keys[0], keys[1], keys[0]]));
+    }
+    (!s.triangles.is_empty()).then_some(s)
+}
+
 #[cfg(test)]
 mod tempo;
 

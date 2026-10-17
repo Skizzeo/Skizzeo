@@ -12,6 +12,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sk-export"
+version = "0.2.0"
+
+[[package]]
 name = "sk-gelaende"
 version = "0.2.0"
 
@@ -85,6 +89,7 @@ name = "skizzeo"
 version = "0.2.0"
 dependencies = [
  "sk-cost",
+ "sk-export",
  "sk-ifc",
  "sk-math",
  "sk-model",

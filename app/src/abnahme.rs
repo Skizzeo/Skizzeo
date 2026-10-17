@@ -3429,6 +3429,7 @@ fn befehl(c: Option<Command>) -> Option<String> {
         Command::MeasureFrameTime => "Bildzeit messen".into(),
         Command::ExportIfc => "IFC exportieren".into(),
         Command::IfcVorschau => "IFC-Vorschau".into(),
+        Command::Export3d(f) => format!("3D-Export {f:?}"),
         Command::Ausbaustufe => "Ausbaustufe".into(),
     })
 }

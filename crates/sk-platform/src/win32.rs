@@ -2014,7 +2014,8 @@ impl Surface {
         filters: &[FileFilter],
         default_ext: &str,
         suggested: &str,
-    ) -> Option<PathBuf> {
+        wahl: usize,
+    ) -> Option<(PathBuf, usize)> {
         if !self.com.get() {
             unsafe {
                 CoInitializeEx(null_mut(), COINIT_APARTMENTTHREADED);
@@ -2041,7 +2042,7 @@ impl Surface {
             lpstrFilter: filter.as_ptr(),
             lpstrCustomFilter: null_mut(),
             nMaxCustFilter: 0,
-            nFilterIndex: 1,
+            nFilterIndex: wahl.min(filters.len().saturating_sub(1)) as u32 + 1,
             lpstrFile: file.as_mut_ptr(),
             nMaxFile: file.len() as u32,
             lpstrFileTitle: null_mut(),
@@ -2082,7 +2083,11 @@ impl Surface {
             return None;
         }
         let len = file.iter().position(|&c| c == 0).unwrap_or(file.len());
-        Some(PathBuf::from(String::from_utf16_lossy(&file[..len])))
+        let gewaehlt = (o.nFilterIndex as usize).saturating_sub(1);
+        Some((
+            PathBuf::from(String::from_utf16_lossy(&file[..len])),
+            gewaehlt,
+        ))
     }
 
     pub fn message(&self, text: &str, error: bool) {

@@ -55,9 +55,22 @@ pub enum Command {
     ExportIfc,
     /// „IFC-Vorschau …“: die Datei so, wie andere sie lesen (ifc/plan.md §6).
     IfcVorschau,
+    /// 3D-Export für Visualisierung und Druck (Export-Thread, Jörn 17.10.).
+    Export3d(Format3d),
     /// „Ausbaustufe …“: Hilfethema mit der Stufe dieser Installation und dem,
     /// was jede Stufe kann (Bedienbarkeit 41.5).
     Ausbaustufe,
+}
+
+/// Format des 3D-Exports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format3d {
+    /// glTF binär mit Gliederung und Materialien (Twinmotion, Lumion).
+    Glb,
+    /// OBJ mit MTL.
+    Obj,
+    /// STL für den 3D-Druck.
+    Stl,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -242,6 +255,24 @@ impl FileMenu {
             ),
             item("IFC exportieren …", "", Command::ExportIfc, true),
             item("IFC-Vorschau …", "", Command::IfcVorschau, true),
+            item(
+                "GLB für Twinmotion, Lumion …",
+                "",
+                Command::Export3d(Format3d::Glb),
+                true,
+            ),
+            item(
+                "OBJ exportieren …",
+                "",
+                Command::Export3d(Format3d::Obj),
+                true,
+            ),
+            item(
+                "STL für 3D-Druck …",
+                "",
+                Command::Export3d(Format3d::Stl),
+                true,
+            ),
             separator(),
             item("Einstellungen …", "Strg+Komma", Command::Settings, true),
             item("Bauteilkatalog …", "", Command::Catalog, true),

@@ -4,6 +4,8 @@
 use crate::{cards, document, meldung, schedule_view, umfang_view, App, NOTICE_TIME};
 use sk_platform::Surface;
 
+mod modell;
+
 impl App {
     /// Dateiname des Hauses ohne Endung, ohne Datei „Unbenannt“.
     pub(crate) fn datei_stamm(&self) -> String {

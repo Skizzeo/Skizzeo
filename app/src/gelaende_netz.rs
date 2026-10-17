@@ -1680,6 +1680,17 @@ pub(crate) fn fassade(
     Some(n)
 }
 
+/// Körper für den 3D-Export ([`crate::gelaende_platte::export_koerper`]):
+/// wie in 3D ohne Hilfsnetz, `keys` Belag und Erdreich. Bei „Umgebung
+/// blass“ das ganze Netz im Belag; die angehobene Kopie des Grundstücks
+/// gehört nur zur Darstellung.
+pub(crate) fn export_koerper(mut g: Gelaende, keys: [u16; 2]) -> Solid {
+    if g.show == Show::Fade {
+        g.show = Show::All;
+    }
+    koerper_mit_netz(&g, [keys[0], keys[1], keys[0]], false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

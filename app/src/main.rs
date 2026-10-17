@@ -1497,7 +1497,7 @@ impl App {
             Command::Delete => self.delete_selection(),
             Command::Help | Command::Ausbaustufe => self.hilfe_befehl(c),
             Command::MeasureFrameTime => self.start_frame_measure(),
-            Command::ExportIfc => self.export_ifc(surface),
+            Command::ExportIfc | Command::Export3d(_) => self.exportieren(c, surface),
             Command::IfcVorschau => self.open_ifc_vorschau(surface),
         }
     }
