@@ -39,14 +39,21 @@ impl Scene {
     }
 
     /// Neue Dicke der Decke über dem Zug `run`: Er, die Innenwände unter
-    /// der Decke und alle Züge darüber samt Aufkantung rechnen neu. Seit
+    /// der Decke und alle Züge über ihnen samt Aufkantung rechnen neu. Seit
     /// #242 nimmt die Mengenliste die Wandmengen aus dem Zwischenspeicher
-    /// der Szene, und die Züge darüber hängen an der Decke (Test B-242a).
+    /// der Szene, und die Züge darüber hängen an der Decke (Test B-242a,
+    /// über den Innenwänden Kosten H-247a).
     pub(crate) fn decke_markieren(&mut self, run: RunId) {
         let m = &self.model;
         let mut zuege = vec![run];
         zuege.extend(m.runs_under_floor(run));
-        zuege.extend(m.stack_above(run));
+        for k in 0..zuege.len() {
+            for r in m.stack_above(zuege[k]) {
+                if !zuege.contains(&r) {
+                    zuege.push(r);
+                }
+            }
+        }
         for r in zuege {
             self.mark(r);
         }

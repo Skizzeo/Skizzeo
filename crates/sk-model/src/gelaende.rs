@@ -38,6 +38,21 @@ impl Model {
     /// (`[x0, y0, x1, y1]`, mm), mit seiner Höhe von OK Gelände. Nach Guid
     /// geordnet; wo sich Rechtecke überlappen, gilt das erste.
     pub fn terrain_patches(&self, margin: f64) -> Vec<([f64; 4], f64)> {
+        self.terrain_patch_boxes()
+            .into_iter()
+            .map(|(b, x)| {
+                let m = margin;
+                (
+                    [x[0] - m, x[1] - m, x[2] + m, x[3] + m],
+                    self.terrain_z_of(Some(b)),
+                )
+            })
+            .collect()
+    }
+
+    /// Je Gebäude mit Wänden das Rechteck um seine Wandzüge im Grundriss
+    /// (mm), nach Guid wie [`Model::terrain_patches`].
+    pub(super) fn terrain_patch_boxes(&self) -> Vec<(BuildingId, [f64; 4])> {
         let mut boxes: Vec<(Guid, BuildingId, [f64; 4])> = Vec::new();
         let mut stelle: std::collections::HashMap<BuildingId, usize> =
             std::collections::HashMap::new();
@@ -63,16 +78,7 @@ impl Model {
         }
         boxes.retain(|x| x.2[0] <= x.2[2]);
         boxes.sort_by_key(|x| x.0);
-        boxes
-            .into_iter()
-            .map(|(_, b, x)| {
-                let m = margin;
-                (
-                    [x[0] - m, x[1] - m, x[2] + m, x[3] + m],
-                    self.terrain_z_of(Some(b)),
-                )
-            })
-            .collect()
+        boxes.into_iter().map(|(_, b, x)| (b, x)).collect()
     }
 
     /// OK Gelände an der Gründung `gr`: ohne Aufmaß die Ebene ihres
