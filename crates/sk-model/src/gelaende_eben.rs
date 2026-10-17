@@ -558,8 +558,8 @@ mod tests {
 
     /// Häuser ineinander (H-245-geo-a): Erst wenn sich die Wände
     /// überdecken (Bezugslinien näher als zwei Wanddicken), meldet das
-    /// Modell das Paar, und jede Erdmenge beider Häuser trägt den Hinweis.
-    /// Wand an Wand (0,63 m) und mit Spalt nicht.
+    /// Modell das Paar, und die Mengenliste nennt beide Häuser in einem
+    /// Projekthinweis (VOB). Wand an Wand (0,63 m) und mit Spalt nicht.
     #[test]
     fn haeuser_ineinander_mit_hinweis() {
         // (Abstand der Bezugslinien, Garage, ineinander)
@@ -601,17 +601,22 @@ mod tests {
                 assert!(paare.is_empty(), "{fall}");
             }
             let s = crate::qto::schedule(&m);
-            for haus in [a, b] {
-                let erde: Vec<_> = s
-                    .auto
-                    .iter()
-                    .filter(|r| r.building == Some(haus) && r.key.starts_with("earth."))
-                    .collect();
-                assert!(!erde.is_empty(), "{fall}");
-                for r in erde {
-                    let da = r.hinweis.contains(crate::qto_earth::INEINANDER);
-                    assert_eq!(da, soll, "{fall}: {}", r.key);
+            let h: Vec<&String> = s
+                .hinweise
+                .iter()
+                .filter(|h| h.contains(crate::qto_earth::INEINANDER))
+                .collect();
+            if soll {
+                assert_eq!(h.len(), 1, "{fall}: {:?}", s.hinweise);
+                for haus in [a, b] {
+                    let x = m.building(haus).unwrap();
+                    assert!(
+                        h[0].contains(&format!("{} ({})", x.name, x.number)),
+                        "{h:?}"
+                    );
                 }
+            } else {
+                assert!(h.is_empty(), "{fall}: {h:?}");
             }
         }
     }

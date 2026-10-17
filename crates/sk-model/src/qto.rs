@@ -2338,8 +2338,8 @@ fn auto_rows(
         gruende.sort_by_cached_key(|g| model.element(g.vorlage.element).map(rang));
     }
     crate::qto_earth::gelaende_mengen(model, &gruende, &boden, &mut out, hinweise);
-    // Häuser ineinander (H-245-geo-a): Hinweis an ihren Erdmengen
-    crate::qto_earth::ineinander(model, &mut out);
+    // Häuser ineinander (H-245-geo-a): Hinweis beim Projekt
+    crate::qto_earth::ineinander(model, hinweise);
     out
 }
 

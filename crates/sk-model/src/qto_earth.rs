@@ -22,27 +22,21 @@ pub use flaechen::{
     Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL, KEIL,
     OHNE_AUFMASS, OHNE_TRAEGER, UEBERLAPPT, UNGUELTIG,
 };
-/// Hinweis an den Erdmengen von Häusern, die ineinander stehen
-/// (H-245-geo-a, [`crate::Model::haeuser_ineinander`]).
-pub const INEINANDER: &str =
-    "Häuser stehen ineinander: Wände und Baugruben überdecken sich, Erdmengen dort doppelt, Lage prüfen";
+/// Projekthinweis für zwei Häuser, die ineinander stehen (H-245-geo-a,
+/// [`crate::Model::haeuser_ineinander`]), hinter ihren Namen; VOB: im
+/// Rechenweg, mit beiden Häusern.
+pub const INEINANDER: &str = "stehen ineinander: Wände und Baugruben überdecken sich, \
+     Mauerwerk und Erdmengen dort doppelt, Lage prüfen";
 
-/// [`INEINANDER`] an jede Erdmenge eines Hauses, das mit einem anderen
-/// ineinander steht.
-pub(crate) fn ineinander(m: &crate::Model, out: &mut [AutoMenge]) {
-    let paare = m.haeuser_ineinander();
-    if paare.is_empty() {
-        return;
-    }
-    for r in out.iter_mut().filter(|r| {
-        r.key.starts_with("earth.")
-            && r.building
-                .is_some_and(|b| paare.iter().any(|p| p.0 == b || p.1 == b))
-    }) {
-        if !r.hinweis.is_empty() {
-            r.hinweis.push('\n');
-        }
-        r.hinweis.push_str(INEINANDER);
+/// [`INEINANDER`] je Paar von Häusern, die ineinander stehen, an die
+/// Hinweise des Projekts.
+pub(crate) fn ineinander(m: &crate::Model, hinweise: &mut Vec<String>) {
+    let name = |b| {
+        m.building(b)
+            .map_or_else(String::new, |x| format!("{} ({})", x.name, x.number))
+    };
+    for (a, b) in m.haeuser_ineinander() {
+        hinweise.push(format!("{} und {} {INEINANDER}", name(a), name(b)));
     }
 }
 
