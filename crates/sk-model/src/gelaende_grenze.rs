@@ -73,7 +73,11 @@ impl Model {
         }
         let mut t = t.clone();
         t.parcels[i] = neu;
-        self.set_terrain(Some(t))
+        let neu = self.set_terrain(Some(t));
+        if neu {
+            self.grenze_abdecken();
+        }
+        neu
     }
 }
 
