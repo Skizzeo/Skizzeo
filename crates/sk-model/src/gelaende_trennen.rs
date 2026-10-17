@@ -4,11 +4,15 @@
 //! gemeinsamen Wand. Reicht die Sohle des einen Hauses weiter als die des
 //! anderen (Garage kürzer als die Hauswand), hat das längere Vorrang: Die
 //! Platte des kürzeren endet in der Flucht seiner Sohle (VOB-Spruch c zu
-//! H-245a). Überdecken sich die Rechtecke um die Wandzüge (gedrehte Häuser,
-//! Garage in der Kehle eines L) oder reichen die Sohlen übereinander (Wände
-//! ineinander), bleibt es wie auf main seit #243: Die frühere Platte gilt,
-//! die spätere verliert ihre Ecken darin und ihren Rand als Bruchkante
-//! (Geometrie H-245-geo-c, B-245e: nirgends schlechter als main).
+//! H-245a). Gedrehte Häuser gleicher Richtung trennt es in ihrer Richtung
+//! (B-245g, [`Dreh`]). Überdecken sich die Rechtecke um die Wandzüge auch
+//! dann (Garage in der Kehle eines L, Nachbarn in verschiedener Richtung)
+//! oder reichen die Sohlen übereinander (Wände ineinander), bleibt es wie
+//! auf main seit #243: Die frühere Platte gilt, die spätere verliert ihre
+//! Ecken darin und ihren Rand als Bruchkante (Geometrie H-245-geo-c,
+//! B-245e: nirgends schlechter als main).
+
+use std::f64::consts::FRAC_PI_2;
 
 /// Eine Platte vor dem Trennen (mm, `[x0, y0, x1, y1]`).
 #[derive(Clone, Copy, Debug)]
@@ -35,6 +39,78 @@ pub(super) struct Bereich {
     /// Rechtecke früherer Platten, mit denen sich diese überdeckt: Ecken
     /// darin fallen weg, dort gilt die frühere (wie auf main seit #243).
     pub verdeckt: Vec<[f64; 4]>,
+    /// Stelle der Platte in der Eingabe von [`trennen`].
+    pub platte: usize,
+    /// In diesem System liegen `rect`, `loecher` und `verdeckt`.
+    pub dreh: Dreh,
+}
+
+/// Das System, in dem getrennt wird (B-245g): achsparallel (`None`) oder
+/// um θ gedreht (`[sin θ, cos θ]`). Die Rechtecke um gedrehte Häuser
+/// überdeckten sich achsparallel und rechneten gemeinsam; in ihrer eigenen
+/// Richtung liegen sie wie achsparallele.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Dreh(Option<[f64; 2]>);
+
+impl Dreh {
+    /// Um `theta` (rad) gedreht; bei genau 0 achsparallel ohne Rechnung.
+    pub fn um(theta: f64) -> Self {
+        if theta == 0.0 {
+            Dreh(None)
+        } else {
+            let (s, c) = theta.sin_cos();
+            Dreh(Some([s, c]))
+        }
+    }
+
+    /// Vom Grundriss ins System.
+    pub fn hin(self, p: [f64; 2]) -> [f64; 2] {
+        match self.0 {
+            None => p,
+            Some([s, c]) => [p[0] * c + p[1] * s, p[1] * c - p[0] * s],
+        }
+    }
+
+    /// Vom System in den Grundriss.
+    pub fn zurueck(self, p: [f64; 2]) -> [f64; 2] {
+        match self.0 {
+            None => p,
+            Some([s, c]) => [p[0] * c - p[1] * s, p[0] * s + p[1] * c],
+        }
+    }
+}
+
+/// Unter diesem Winkel (rad) laufen zwei Wände gleich (bis auf 90°): 1 mm
+/// auf 1 m.
+pub(super) const RICHTUNG: f64 = 1e-3;
+
+/// Abstand der Richtungen `a` und `b` (rad) bis auf Vielfache von 90°.
+pub(super) fn richtung_ab(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(FRAC_PI_2);
+    d.min(FRAC_PI_2 - d)
+}
+
+/// Die Richtung eines Hauses aus seinen Wänden `strecken` (mm): die der
+/// längsten, in [0, 90°); nahe 0 oder 90° genau 0, ohne Wand länger als
+/// [`GLEICH`] auch. Jede Richtung deckt alle Wände (das Rechteck umfasst
+/// alle Ecken im System); sie bestimmt nur, wie eng.
+pub(super) fn richtung(strecken: &[[[f64; 2]; 2]]) -> f64 {
+    let laenge = |s: &[[f64; 2]; 2]| (s[1][0] - s[0][0]).hypot(s[1][1] - s[0][1]);
+    let Some(lang) = strecken
+        .iter()
+        .filter(|s| laenge(s) > GLEICH)
+        .max_by(|a, b| laenge(a).total_cmp(&laenge(b)))
+    else {
+        return 0.0;
+    };
+    let phi = (lang[1][1] - lang[0][1])
+        .atan2(lang[1][0] - lang[0][0])
+        .rem_euclid(FRAC_PI_2);
+    if richtung_ab(phi, 0.0) <= RICHTUNG {
+        0.0
+    } else {
+        phi
+    }
 }
 
 /// Unter diesem Unterschied (mm) reichen zwei Sohlen gleich weit.
@@ -136,6 +212,8 @@ pub(super) fn trennen(platten: &[Platte], fuge: f64) -> Vec<Bereich> {
             z: platten[i].z,
             rand: !ohne_rand[i],
             verdeckt: std::mem::take(&mut verdeckt[i]),
+            platte: i,
+            dreh: Dreh::default(),
         })
         .collect()
 }
@@ -261,6 +339,40 @@ impl Bereich {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Die Richtung eines Hauses ist die seiner längsten Wand bis auf 90°,
+    /// nahe 0 genau 0; hin und zurück ist dieselbe Stelle, achsparallel
+    /// ohne Rechnung (B-245g).
+    #[test]
+    fn richtung_und_dreh() {
+        let wand = |grad: f64, l: f64| {
+            let (s, c) = grad.to_radians().sin_cos();
+            [[100.0, 200.0], [100.0 + l * c, 200.0 + l * s]]
+        };
+        for grad in [0.0, 90.0, 180.0, -90.0, 0.03, 89.97] {
+            assert_eq!(richtung(&[wand(grad, 10000.0)]), 0.0, "{grad}°");
+        }
+        for (grad, soll) in [
+            (30.0_f64, 30.0_f64),
+            (120.0, 30.0),
+            (-60.0, 30.0),
+            (45.0, 45.0),
+        ] {
+            let r = richtung(&[wand(5.0, 3000.0), wand(grad, 10000.0)]);
+            assert!((r - soll.to_radians()).abs() < 1e-9, "{grad}°: {r}");
+        }
+        assert_eq!(richtung(&[wand(30.0, 0.5)]), 0.0);
+        let p = [12345.6, -987.0];
+        assert_eq!(Dreh::um(0.0).hin(p), p);
+        assert_eq!(Dreh::um(0.0).zurueck(p), p);
+        let d = Dreh::um(30.0_f64.to_radians());
+        let q = d.zurueck(d.hin(p));
+        assert!((q[0] - p[0]).abs() < 1e-9 && (q[1] - p[1]).abs() < 1e-9);
+        // eine Wand in Richtung 30° liegt im System waagrecht
+        let w = wand(30.0, 10000.0);
+        let (a, b) = (d.hin(w[0]), d.hin(w[1]));
+        assert!((a[1] - b[1]).abs() < 1e-9);
+    }
 
     fn platte(w: [f64; 4], z: f64) -> Platte {
         let u = 315.0;

@@ -27,9 +27,17 @@ mod trennwand;
 
 /// Eine Strecke in Landeswerten.
 type Strecke = ((f64, f64), (f64, f64));
-/// Plattenumriss eines Wandzugs (mm, Grundriss), sein Gebäude und sein
-/// Rechteck (`[x0, y0, x1, y1]`).
-type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>, [f64; 4]);
+/// Plattenumriss eines Wandzugs (mm, Grundriss), sein Gebäude, sein
+/// Rechteck (`[x0, y0, x1, y1]`), das System, in dem seine Platte getrennt
+/// wird (B-245g), und sein Rechteck darin.
+type ZugUmriss = (
+    RunId,
+    Option<BuildingId>,
+    Vec<[f64; 2]>,
+    [f64; 4],
+    super::gelaende_eben::Dreh,
+    [f64; 4],
+);
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -1263,6 +1271,7 @@ impl Model {
     /// Gebäude und sein Rechteck, einmal je Rechnung statt je Paar (Review
     /// B-245c).
     fn umrisse_der_zuege(&self) -> Vec<ZugUmriss> {
+        let dreh = self.trenn_drehung();
         self.runs
             .iter()
             .filter_map(|(id, r)| {
@@ -1278,7 +1287,14 @@ impl Model {
                             k[3].max(p[1]),
                         ]
                     });
-                Some((id, self.building_of(r.storey), ring, kasten))
+                let b = self.building_of(r.storey);
+                let d = b.and_then(|b| dreh.get(&b)).copied().unwrap_or_default();
+                let im_system = if d == Default::default() {
+                    kasten
+                } else {
+                    super::gelaende_eben::kasten(&ring, d).unwrap_or(kasten)
+                };
+                Some((id, b, ring, kasten, d, im_system))
             })
             .collect()
     }
@@ -1305,14 +1321,15 @@ impl Model {
     /// Platten zwischen ihnen mit dem Fugenstreifen; dann zählt das Rechteck des
     /// anderen, nicht sein Umriss: Neben der schrägen Wand eines gedrehten
     /// Nachbarn liegt sonst der eigene Rand im Fugenstreifen (VOB H-245e).
+    /// Wird gedreht getrennt (B-245g), gelten die Rechtecke in dem System.
     fn nachbarn(umrisse: &[ZugUmriss], k: usize) -> Vec<Cow<'_, [[f64; 2]]>> {
-        let (_, b, _, mein) = &umrisse[k];
+        let (_, b, _, mein, sys, mein_sys) = &umrisse[k];
         let d = trennwand::AN_DER_WAND;
         let nah = |k: &[f64; 4]| {
             k[0] <= mein[2] + d && mein[0] <= k[2] + d && k[1] <= mein[3] + d && mein[1] <= k[3] + d
         };
         // wie trennen::GLEICH: so weit dürfen die Rechtecke übereinander reichen
-        let getrennt = |k: &[f64; 4]| {
+        let getrennt = |mein: &[f64; 4], k: &[f64; 4]| {
             k[0] - mein[2] > -1.0
                 || mein[0] - k[2] > -1.0
                 || k[1] - mein[3] > -1.0
@@ -1320,10 +1337,16 @@ impl Model {
         };
         umrisse
             .iter()
-            .filter(|(_, x, _, k)| b.is_some() && x.is_some() && x != b && nah(k))
-            .map(|(_, _, r, k)| {
-                if getrennt(k) {
-                    Cow::Owned(vec![[k[0], k[1]], [k[2], k[1]], [k[2], k[3]], [k[0], k[3]]])
+            .filter(|(_, x, _, k, ..)| b.is_some() && x.is_some() && x != b && nah(k))
+            .map(|(_, _, r, k, d, k_sys)| {
+                let (d, mein, k) = if d == sys {
+                    (*d, mein_sys, k_sys)
+                } else {
+                    (Default::default(), mein, k)
+                };
+                if getrennt(mein, k) {
+                    let ecken = [[k[0], k[1]], [k[2], k[1]], [k[2], k[3]], [k[0], k[3]]];
+                    Cow::Owned(ecken.map(|p| d.zurueck(p)).to_vec())
                 } else {
                     Cow::Borrowed(r.as_slice())
                 }

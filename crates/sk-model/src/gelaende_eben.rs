@@ -25,6 +25,7 @@ const FUGE: f64 = sk_gelaende::pruefen::GLEICHE_STELLE * 1000.0;
 
 #[path = "gelaende_trennen.rs"]
 mod trennen;
+pub(super) use trennen::Dreh;
 
 impl Terrain {
     /// Das Gelände hat Punkte, und alle sind von Hand gesetzt: Es ist
@@ -48,7 +49,7 @@ impl Model {
             return false;
         }
         let s = self.plate_settings();
-        let bereiche = trennen::trennen(&self.platten_zum_trennen(s.margin), FUGE);
+        let bereiche = self.bereiche_getrennt(s.margin);
         // je Ecke ihre Höhe und ihr Umlauf: die Ecken der Bereiche, die von
         // den Platten nach dem Trennen bleiben
         let mut ecken: Vec<([f64; 2], f64, Option<usize>)> = Vec::new();
@@ -56,7 +57,10 @@ impl Model {
         for b in &bereiche {
             for u in b.umlaeufe() {
                 if b.rand {
-                    ecken.extend(u.into_iter().map(|p| (p, b.z, Some(umlaeufe))));
+                    ecken.extend(
+                        u.into_iter()
+                            .map(|p| (b.dreh.zurueck(p), b.z, Some(umlaeufe))),
+                    );
                     umlaeufe += 1;
                 } else {
                     // Ecken in einer früheren Platte fallen weg (wie main)
@@ -65,7 +69,11 @@ impl Model {
                             .iter()
                             .any(|r| (r[0]..=r[2]).contains(&p[0]) && (r[1]..=r[3]).contains(&p[1]))
                     };
-                    ecken.extend(u.into_iter().filter(frei).map(|p| (p, b.z, None)));
+                    ecken.extend(
+                        u.into_iter()
+                            .filter(frei)
+                            .map(|p| (b.dreh.zurueck(p), b.z, None)),
+                    );
                 }
             }
         }
@@ -106,7 +114,7 @@ impl Model {
             let r = [k[0] - m, k[1] - m, k[2] + m, k[3] + m];
             for p in [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]] {
                 // in einer Platte gilt deren Höhe
-                if !bereiche.iter().any(|b| b.enthaelt(p)) {
+                if !bereiche.iter().any(|b| b.enthaelt(b.dreh.hin(p))) {
                     ecken.push((p, z, None));
                 }
             }
@@ -153,32 +161,156 @@ impl Model {
         self.set_terrain(Some(t))
     }
 
-    /// Die Platten um die Häuser zum Trennen, nach Guid wie
-    /// [`Model::terrain_patches`], mit dem Rechteck um ihre Sohle samt
-    /// Überstand ([`Model::plate_outlines`]).
-    fn platten_zum_trennen(&self, margin: f64) -> Vec<trennen::Platte> {
+    /// Die Platten um die Häuser nach dem Trennen ([`trennen::trennen`]),
+    /// je Gruppe in ihrem System ([`Model::trenn_systeme`]). Sind alle
+    /// achsparallel, rechnet es genau wie vorher.
+    fn bereiche_getrennt(&self, margin: f64) -> Vec<trennen::Bereich> {
+        let sys = self.trenn_systeme(margin);
         let sohlen = self.plate_outlines();
-        self.terrain_patch_boxes()
-            .into_iter()
-            .map(|(b, w)| {
-                let sohle = sohlen
+        let umriss: Vec<Vec<[f64; 2]>> = sys
+            .boxen
+            .iter()
+            .map(|(b, _)| {
+                sohlen
                     .iter()
-                    .filter(|(x, _)| *x == b)
-                    .flat_map(|(_, r)| r.iter())
-                    .fold(None, |k: Option<[f64; 4]>, p| {
-                        Some(k.map_or([p.x, p.y, p.x, p.y], |k| {
-                            [k[0].min(p.x), k[1].min(p.y), k[2].max(p.x), k[3].max(p.y)]
-                        }))
-                    })
-                    .unwrap_or(w);
-                let m = margin;
-                trennen::Platte {
-                    rect: [w[0] - m, w[1] - m, w[2] + m, w[3] + m],
-                    wand: w,
-                    sohle,
-                    z: self.terrain_z_of(Some(b)),
-                }
+                    .filter(|(x, _)| x == b)
+                    .flat_map(|(_, r)| r.iter().map(|p| [p.x, p.y]))
+                    .collect()
             })
+            .collect();
+        let platte = |i: usize, d: trennen::Dreh| {
+            let mut p = sys.platte(i, d, margin);
+            p.sohle = kasten(&umriss[i], d).unwrap_or(p.wand);
+            p.z = self.terrain_z_of(Some(sys.boxen[i].0));
+            p
+        };
+        if sys.gruppen.is_empty() {
+            let platten: Vec<_> = (0..sys.boxen.len())
+                .map(|i| platte(i, trennen::Dreh::default()))
+                .collect();
+            return trennen::trennen(&platten, FUGE);
+        }
+        let mut alle: Vec<trennen::Bereich> = Vec::new();
+        for glieder in &sys.gruppen {
+            let d = sys.dreh[glieder[0]];
+            let platten: Vec<_> = glieder.iter().map(|&i| platte(i, d)).collect();
+            alle.extend(trennen::trennen(&platten, FUGE).into_iter().map(|mut b| {
+                b.platte = glieder[b.platte];
+                b.dreh = d;
+                b
+            }));
+        }
+        alle.sort_by_key(|b| b.platte);
+        alle
+    }
+
+    /// In welchem System die Platten getrennt werden (B-245g): Häuser,
+    /// deren Platten einander nahe kommen, bilden eine Gruppe. Laufen alle
+    /// Häuser einer Gruppe in derselben Richtung (bis auf 90°,
+    /// [`trennen::richtung`]), wird in dieser getrennt, sonst achsparallel
+    /// wie bisher. Sind alle Häuser achsparallel, ist `gruppen` leer.
+    fn trenn_systeme(&self, margin: f64) -> Systeme {
+        let boxen = self.terrain_patch_boxes();
+        let stelle: std::collections::HashMap<BuildingId, usize> = boxen
+            .iter()
+            .enumerate()
+            .map(|(i, (b, _))| (*b, i))
+            .collect();
+        // je Haus die Ecken und Strecken seiner Wandzüge
+        let mut ecken: Vec<Vec<[f64; 2]>> = vec![Vec::new(); boxen.len()];
+        let mut strecken: Vec<Vec<[[f64; 2]; 2]>> = vec![Vec::new(); boxen.len()];
+        for (_, r) in self.runs.iter() {
+            let Some(&i) = self.building_of(r.storey).and_then(|b| stelle.get(&b)) else {
+                continue;
+            };
+            let p: Vec<[f64; 2]> = r.points.iter().map(|p| [p.x, p.y]).collect();
+            let n = p.len();
+            let zu = if r.closed { n } else { n.saturating_sub(1) };
+            strecken[i].extend((0..zu).map(|k| [p[k], p[(k + 1) % n]]));
+            ecken[i].extend(p);
+        }
+        let theta: Vec<f64> = strecken.iter().map(|s| trennen::richtung(s)).collect();
+        let n = boxen.len();
+        let mut sys = Systeme {
+            boxen,
+            ecken,
+            dreh: vec![trennen::Dreh::default(); n],
+            gruppen: Vec::new(),
+        };
+        if theta.iter().all(|&t| t == 0.0) {
+            return sys;
+        }
+        // nahe: die Platten achsparallel oder in der eigenen Richtung, im
+        // Grundriss um beide Rechtecke, berühren sich
+        let huelle: Vec<[f64; 4]> = (0..n)
+            .map(|i| {
+                let a = sys.platte(i, trennen::Dreh::default(), margin).rect;
+                let d = trennen::Dreh::um(theta[i]);
+                let r = sys.platte(i, d, margin).rect;
+                let ecken = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]];
+                ecken.iter().fold(a, |k, p| {
+                    let p = d.zurueck(*p);
+                    [
+                        k[0].min(p[0]),
+                        k[1].min(p[1]),
+                        k[2].max(p[0]),
+                        k[3].max(p[1]),
+                    ]
+                })
+            })
+            .collect();
+        let mut gruppe: Vec<usize> = (0..n).collect();
+        let wurzel = |g: &[usize], mut i: usize| {
+            while g[i] != i {
+                i = g[i];
+            }
+            i
+        };
+        // nach x0 durchlaufen, offen sind die Hüllen, die bis hierher reichen
+        let mut nach_x: Vec<usize> = (0..n).collect();
+        nach_x.sort_by(|&a, &b| huelle[a][0].total_cmp(&huelle[b][0]));
+        let mut offen: Vec<usize> = Vec::new();
+        for &i in &nach_x {
+            let b = huelle[i];
+            offen.retain(|&k| huelle[k][2] >= b[0]);
+            for &k in &offen {
+                let a = huelle[k];
+                if a[1] > b[3] || b[1] > a[3] {
+                    continue;
+                }
+                let (x, y) = (wurzel(&gruppe, k), wurzel(&gruppe, i));
+                gruppe[x.max(y)] = x.min(y);
+            }
+            offen.push(i);
+        }
+        let mut glieder_von: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for i in 0..n {
+            glieder_von[wurzel(&gruppe, i)].push(i);
+        }
+        for glieder in glieder_von.into_iter().filter(|g| !g.is_empty()) {
+            let t = theta[glieder[0]];
+            let gleich = glieder
+                .iter()
+                .all(|&i| trennen::richtung_ab(theta[i], t) <= trennen::RICHTUNG);
+            let d = trennen::Dreh::um(if gleich { t } else { 0.0 });
+            for &i in &glieder {
+                sys.dreh[i] = d;
+            }
+            sys.gruppen.push(glieder);
+        }
+        sys
+    }
+
+    /// Je Haus, dessen Platte gedreht getrennt wird, das System dazu
+    /// ([`Model::trenn_systeme`]); leer, wenn alle achsparallel getrennt
+    /// werden.
+    pub(super) fn trenn_drehung(&self) -> std::collections::HashMap<BuildingId, trennen::Dreh> {
+        let sys = self.trenn_systeme(self.plate_settings().margin);
+        sys.boxen
+            .iter()
+            .zip(&sys.dreh)
+            .filter(|(_, d)| **d != trennen::Dreh::default())
+            .map(|((b, _), d)| (*b, *d))
             .collect()
     }
 
@@ -263,6 +395,52 @@ impl Model {
 }
 
 /// Auf mm.
+/// Wie die Häuser beim Trennen liegen ([`Model::trenn_systeme`]).
+struct Systeme {
+    /// Je Haus das Rechteck um seine Wandzüge, nach Guid.
+    boxen: Vec<(BuildingId, [f64; 4])>,
+    /// Je Haus die Ecken seiner Wandzüge.
+    ecken: Vec<Vec<[f64; 2]>>,
+    /// Je Haus das System, in dem seine Platte getrennt wird.
+    dreh: Vec<trennen::Dreh>,
+    /// Die Häuser je Gruppe; leer, wenn alle achsparallel getrennt werden.
+    gruppen: Vec<Vec<usize>>,
+}
+
+impl Systeme {
+    /// Die Platte von Haus `i` im System `d`, ohne Sohle und Höhe (dort die
+    /// Wände und 0).
+    fn platte(&self, i: usize, d: trennen::Dreh, m: f64) -> trennen::Platte {
+        let w = self.boxen[i].1;
+        let w = if d == trennen::Dreh::default() {
+            w
+        } else {
+            kasten(&self.ecken[i], d).unwrap_or(w)
+        };
+        trennen::Platte {
+            rect: [w[0] - m, w[1] - m, w[2] + m, w[3] + m],
+            wand: w,
+            sohle: w,
+            z: 0.0,
+        }
+    }
+}
+
+/// Das Rechteck um `pts` (mm) im System `d`; `None` ohne Punkte.
+pub(super) fn kasten(pts: &[[f64; 2]], d: trennen::Dreh) -> Option<[f64; 4]> {
+    pts.iter().fold(None, |k: Option<[f64; 4]>, p| {
+        let p = d.hin(*p);
+        Some(k.map_or([p[0], p[1], p[0], p[1]], |k| {
+            [
+                k[0].min(p[0]),
+                k[1].min(p[1]),
+                k[2].max(p[0]),
+                k[3].max(p[1]),
+            ]
+        }))
+    })
+}
+
 pub(super) fn rund(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
@@ -635,21 +813,26 @@ mod tests {
         }
     }
 
-    /// Gedrehte Häuser, deren Rechtecke sich überdecken (Geometrie
-    /// H-245-geo-c): wie auf main behält die frühere Platte ihren Rand; von
-    /// der späteren bleiben ohne Rand die Ecken außerhalb der früheren. Ein
-    /// Haus weit weg behält seinen Rand.
+    /// Gedrehte Häuser gleicher Richtung, deren Rechtecke sich achsparallel
+    /// überdecken (B-245g, Test; vorher wie auf main gemeinsam): Getrennt
+    /// wird in ihrer Richtung, jedes behält seine Platte mit Rand, auch Wand
+    /// an Wand (630 mm). OK Gelände, UK Gründung und Erdmengen beider bleiben
+    /// beim Anlegen der ersten Fläche. Ein Haus weit weg, achsparallel,
+    /// behält seinen Rand.
     #[test]
-    fn gedreht_wie_vorher() {
+    fn gedreht_getrennt() {
         for (grad, spalt) in [
             (30.0_f64, 3000.0),
             (45.0, 3000.0),
             (10.0, 630.0),
             (45.0, 630.0),
+            (60.0, 1000.0),
         ] {
+            let fall = format!("{grad}° {spalt}");
             let mut m = Model::with_seed(5);
             let (s, c) = grad.to_radians().sin_cos();
             let dreh = |x: f64, y: f64| vec3(x * c - y * s, x * s + y * c, 0.0);
+            let mut gr = Vec::new();
             for (x0, versatz) in [(0.0, 500.0), (8000.0 + spalt, 1500.0)] {
                 let b = m.add_building(1);
                 let pts = [
@@ -658,10 +841,11 @@ mod tests {
                     dreh(x0 + 8000.0, 10000.0),
                     dreh(x0, 10000.0),
                 ];
-                m.build_from_polygon(b, &pts).unwrap();
+                let run = m.build_from_polygon(b, &pts).unwrap();
                 m.begin("Gelände");
                 assert!(m.set_terrain_offset_of(b, versatz));
                 m.commit();
+                gr.push(m.foundation_level_of(m.run(run).unwrap().storey).unwrap());
             }
             let b = m.add_building(1);
             let weit = [
@@ -671,13 +855,36 @@ mod tests {
                 vec3(90000.0, 10000.0, 0.0),
             ];
             m.build_from_polygon(b, &weit).unwrap();
+            let stand = |m: &Model| -> Vec<(f64, f64)> {
+                gr.iter()
+                    .map(|g| (m.terrain_z_of_level(*g), m.storey(*g).unwrap().elevation))
+                    .collect()
+            };
+            let erde = |m: &Model| -> Vec<(String, f64)> {
+                crate::qto::schedule(m)
+                    .auto
+                    .iter()
+                    .filter(|a| a.key.starts_with("earth.") && a.unit == "m3")
+                    .map(|a| (format!("{:?} {}", a.building, a.key), a.value))
+                    .collect()
+            };
+            let (h0, e0) = (stand(&m), erde(&m));
             m.begin("Fläche");
             assert!(m.seed_flat_terrain(&[]));
             m.commit();
             let t = m.terrain().unwrap();
-            assert!(t.points.len() < 12, "{grad}° {spalt}");
-            assert_eq!(t.breaks.len(), 2, "{grad}° {spalt}");
-            assert!(t.breaks.iter().all(|b| b.pts.len() == 4), "{grad}° {spalt}");
+            assert_eq!(t.points.len(), 12, "{fall}");
+            assert_eq!(t.breaks.len(), 3, "{fall}");
+            assert!(t.breaks.iter().all(|b| b.pts.len() == 4), "{fall}");
+            for (a, b) in h0.iter().zip(stand(&m)) {
+                assert!((a.0 - b.0).abs() < 1e-6, "{fall}: OK {} → {}", a.0, b.0);
+                assert!((a.1 - b.1).abs() < 1e-6, "{fall}: UK {} → {}", a.1, b.1);
+            }
+            let e1 = erde(&m);
+            assert_eq!(e0.len(), e1.len(), "{fall}");
+            for (x, y) in e0.iter().zip(&e1) {
+                assert!((x.1 - y.1).abs() < 1e6, "{fall}: {} {} → {}", x.0, x.1, y.1);
+            }
         }
     }
 
@@ -744,6 +951,53 @@ mod tests {
             assert_eq!(e0.len(), e1.len(), "{fall}");
             for (x, y) in e0.iter().zip(&e1) {
                 assert!((x.1 - y.1).abs() < 1e6, "{fall}: {} {} → {}", x.0, x.1, y.1);
+            }
+        }
+    }
+
+    /// Gedrehtes L knapp neben dem Haus, beide um 30° gedreht (B-245g, wie
+    /// VOB H-245e achsparallel): Neben dem Rücksprung des L liegt der Rand
+    /// des Hauses im Fugenstreifen zwischen den Rechtecken im gedrehten
+    /// System und zählt nicht als frei. OK Gelände und UK Gründung beider
+    /// Häuser bleiben beim Anlegen der ersten Fläche.
+    #[test]
+    fn gedrehtes_l_knapp() {
+        for spalt in [640.0, 650.0] {
+            let mut m = Model::with_seed(5);
+            let (s, c) = 30.0_f64.to_radians().sin_cos();
+            let dreh = |p: &[f64; 2]| vec3(p[0] * c - p[1] * s, p[0] * s + p[1] * c, 0.0);
+            let x0 = 8000.0 + spalt;
+            let haus = [[0.0, 0.0], [8000.0, 0.0], [8000.0, 10000.0], [0.0, 10000.0]];
+            let l = [
+                [x0, 0.0],
+                [x0 + 6000.0, 0.0],
+                [x0 + 6000.0, 10000.0],
+                [x0 + 3000.0, 10000.0],
+                [x0 + 3000.0, 5000.0],
+                [x0, 5000.0],
+            ];
+            let mut gr = Vec::new();
+            for (pts, versatz) in [(&haus[..], 500.0), (&l[..], 1500.0)] {
+                let b = m.add_building(1);
+                let pts: Vec<Vec3> = pts.iter().map(dreh).collect();
+                let run = m.build_from_polygon(b, &pts).unwrap();
+                m.begin("Gelände");
+                assert!(m.set_terrain_offset_of(b, versatz));
+                m.commit();
+                gr.push(m.foundation_level_of(m.run(run).unwrap().storey).unwrap());
+            }
+            let stand = |m: &Model| -> Vec<(f64, f64)> {
+                gr.iter()
+                    .map(|g| (m.terrain_z_of_level(*g), m.storey(*g).unwrap().elevation))
+                    .collect()
+            };
+            let h0 = stand(&m);
+            m.begin("Fläche");
+            assert!(m.seed_flat_terrain(&[]));
+            m.commit();
+            for (a, b) in h0.iter().zip(stand(&m)) {
+                assert!((a.0 - b.0).abs() < 1e-6, "{spalt}: OK {} → {}", a.0, b.0);
+                assert!((a.1 - b.1).abs() < 1e-6, "{spalt}: UK {} → {}", a.1, b.1);
             }
         }
     }
