@@ -526,7 +526,7 @@ impl Platte {
                 return Some(n.clone());
             }
         }
-        let (view, _, _, hidden, _) = sicht;
+        let (view, _, _, hidden, ..) = sicht;
         let g = match &self.gelaende {
             Some(g) if !hidden && matches!(view, ViewKind::Persp | ViewKind::Section) => g.clone(),
             g => {
@@ -1465,7 +1465,7 @@ mod tests {
         wand_schieben(&mut s, 500.0);
         pl.nachziehen(
             s.model(),
-            (ViewKind::Persp, None, [40, 41, 42], true, false),
+            (ViewKind::Persp, None, [40, 41, 42], true, false, true),
         );
         assert!(pl.warten());
         assert!(pl.fertig.take().unwrap().1.faces.is_empty());
@@ -1592,7 +1592,7 @@ mod tests {
         assert!(!pl.rechnet());
         let g = Gelaende::aus(s.model());
         assert_eq!(n.faces, netz_der_sicht(&[], g.as_ref(), persp).faces);
-        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false, false);
+        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false, false, true);
         let leer = pl.netz_zur_sicht(netz_key(pl.fassung, &grund), grund);
         assert!(leer.unwrap().faces.is_empty(), "Grundriss ohne Faden");
         let wieder = pl.netz_zur_sicht(key, persp).expect("gemerkt");

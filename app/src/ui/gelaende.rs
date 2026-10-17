@@ -7,6 +7,7 @@
 //! Zeilen. Ohne Freischaltung zeigt der Knopf, was das Modul kann.
 
 use super::*;
+use sk_gelaende::glatt::Glaettung;
 use sk_model::Show;
 
 /// Beschriftungen der Zahlenfelder in der Leiste; links neben dem Feld ist
@@ -65,6 +66,8 @@ pub enum GelaendeKnopf {
     Linien,
     /// Höhenfarben statt Rasen in 3D ein und aus (Jörn 17.10.).
     Farben,
+    /// Gelände glätten: aus, fein, sehr fein (Jörn 17.10.).
+    Glatt(Glaettung),
     /// Schloss der gewählten Messpunkte öffnen und schließen (I5, §5 J2 C).
     Schloss,
     /// Gewählte geänderte Messpunkte auf die gemessenen Werte zurück (I5).
@@ -102,6 +105,7 @@ impl GelaendeKnopf {
             | GelaendeKnopf::Netz
             | GelaendeKnopf::Linien
             | GelaendeKnopf::Farben
+            | GelaendeKnopf::Glatt(_)
             | GelaendeKnopf::Schloss
             | GelaendeKnopf::Gemessen
             | GelaendeKnopf::Grenze
@@ -159,6 +163,13 @@ impl GelaendeFeld {
 /// Über der Legende der Höhenfarben.
 pub const LEGENDE: &str = "Höhenfarben in m ü. NHN";
 
+/// Unter „Gelände glätten“, wenn es an ist (Jörn 17.10.).
+pub const GLATT: [&str; 3] = [
+    "Nur Darstellung und Export,",
+    "Mengen bleiben am Aufmaß.",
+    "Das Gelände rechnet länger.",
+];
+
 /// Was die Leiste zeigt; die App füllt es aus dem Modell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GelaendeLeiste {
@@ -180,6 +191,10 @@ pub struct GelaendeLeiste {
     /// unten: Farbe und Höhen der Stufe in m ü. NHN.
     pub farben: bool,
     pub legende: Vec<([f32; 3], String)>,
+    /// Glättung in Darstellung und Export; gröber, weil es sonst zu
+    /// viele Dreiecke wären: der Satz dazu.
+    pub glatt: Glaettung,
+    pub glatt_grob: Option<String>,
     /// Gewählte Messpunkte (I5): `Some(true)`, wenn ihr Schloss offen ist,
     /// `None` ohne gewählten Messpunkt.
     pub schloss: Option<bool>,
@@ -282,6 +297,21 @@ impl Ui {
                 rows.extend(l.legende.iter().map(|(c, t)| {
                     Row::Layer(Rgba::from_f32([c[0], c[1], c[2], 1.0]), t.clone(), None)
                 }));
+            }
+            rows.push(Row::Label("Gelände glätten"));
+            let g = |x: Glaettung, t: &'static str| (Id::Gelaende(K::Glatt(x)), t);
+            rows.push(Row::Segments([
+                g(Glaettung::Aus, "aus"),
+                g(Glaettung::Fein, "fein"),
+                g(Glaettung::SehrFein, "feiner"),
+            ]));
+            if l.glatt != Glaettung::Aus {
+                rows.extend(GLATT.map(Row::Hint));
+            }
+            if let Some(t) = &l.glatt_grob {
+                let f = self.fonts.regular.as_ref();
+                let z = widgets::wrap(f, t, self.size.font_small, breite);
+                rows.extend(z.into_iter().map(Row::Text));
             }
         }
         // Messpunkte des Vermessers tragen ein Schloss (I5, §5 J2 C)
@@ -462,6 +492,7 @@ impl Ui {
             GelaendeKnopf::Netz => l.netz,
             GelaendeKnopf::Linien => l.linien,
             GelaendeKnopf::Farben => l.farben,
+            GelaendeKnopf::Glatt(g) => l.glatt == g,
             GelaendeKnopf::Schloss => l.schloss == Some(true),
             GelaendeKnopf::Lageplan
             | GelaendeKnopf::Uebernehmen
@@ -520,6 +551,9 @@ mod tests {
                 K::Netz,
                 K::Linien,
                 K::Farben,
+                K::Glatt(Glaettung::Aus),
+                K::Glatt(Glaettung::Fein),
+                K::Glatt(Glaettung::SehrFein),
                 K::Verschieben,
                 K::Drehen,
                 K::Ausrichten,
@@ -612,6 +646,18 @@ mod tests {
             [LEGENDE, "102,00 bis 102,50", "101,50 bis 102,00"]
         );
         assert!(ui.is_on(Id::Gelaende(K::Farben)) && !ui.is_on(Id::Gelaende(K::Linien)));
+        // Glätten: aus hervorgehoben; an mit dem Hinweis, dass die Mengen
+        // am Aufmaß bleiben
+        ui.gelaende = Some(leiste());
+        assert!(ui.is_on(Id::Gelaende(K::Glatt(Glaettung::Aus))));
+        assert!(!hinweise(&ui).contains(&GLATT[1].to_string()));
+        ui.gelaende = Some(GelaendeLeiste {
+            glatt: Glaettung::Fein,
+            ..leiste()
+        });
+        assert!(ui.is_on(Id::Gelaende(K::Glatt(Glaettung::Fein))));
+        assert!(!ui.is_on(Id::Gelaende(K::Glatt(Glaettung::Aus))));
+        assert!(hinweise(&ui).contains(&GLATT[1].to_string()));
         ui.gelaende = Some(leiste());
         ui.gelaende = Some(GelaendeLeiste {
             zeichnen: true,
@@ -733,6 +779,12 @@ mod tests {
             ],
             grundstueck: Some("Grundstück 822,86 m²".into()),
             tippen: Some(GelaendeKnopf::Verschieben),
+            farben: true,
+            legende: vec![([0.5, 0.7, 0.3], "102,00 bis 102,50".into())],
+            glatt: Glaettung::SehrFein,
+            glatt_grob: Some(
+                "Zu viele Dreiecke für „feiner“, das Gelände ist fein geglättet.".into(),
+            ),
             ..leiste()
         });
         // ohne die Schriften nicht still bestanden (Review #202 H-202a)

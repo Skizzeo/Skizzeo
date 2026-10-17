@@ -204,6 +204,25 @@ impl Zustand {
     }
 }
 
+/// Satz, wenn das Gelände gröber geglättet wird als eingestellt, weil es
+/// sonst mehr als [`gelaende_netz::GLATT_HOECHSTENS`] Dreiecke wären.
+fn glatt_grob(t: &Terrain) -> Option<String> {
+    use sk_gelaende::glatt::Glaettung as G;
+    if t.glatt == G::Aus {
+        return None;
+    }
+    let n = t.mesh().netz.dreiecke.len();
+    let passt =
+        |g: G| n * (g.teile() * g.teile()) as usize <= crate::gelaende_netz::GLATT_HOECHSTENS;
+    match t.glatt {
+        _ if passt(t.glatt) => None,
+        G::SehrFein if passt(G::Fein) => {
+            Some("Zu viele Dreiecke für „feiner“, das Gelände ist fein geglättet.".into())
+        }
+        _ => Some("Zu viele Dreiecke zum Glätten, das Gelände bleibt eckig.".into()),
+    }
+}
+
 /// Statuszeile, wenn ein Lageplan oder ein Aufmaß bei geschlossener Leiste
 /// fertig gelesen ist (43.4).
 pub const GELESEN_PLAN: &str = "Lageplan gelesen; mehr unter „Gelände“";
@@ -236,6 +255,9 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Netz => "Netz",
         GelaendeKnopf::Linien => "Höhenlinien im Gelände",
         GelaendeKnopf::Farben => "Höhenfarben",
+        GelaendeKnopf::Glatt(sk_gelaende::glatt::Glaettung::Aus) => "Glätten aus",
+        GelaendeKnopf::Glatt(sk_gelaende::glatt::Glaettung::Fein) => "Glätten fein",
+        GelaendeKnopf::Glatt(sk_gelaende::glatt::Glaettung::SehrFein) => "Glätten feiner",
         GelaendeKnopf::Schloss => "Schloss offen",
         GelaendeKnopf::Gemessen => "Gemessen zurück",
         GelaendeKnopf::Grenze => "Grenze zeichnen",
@@ -414,6 +436,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
         let t = de(s, 2);
         t.trim_end_matches('0').trim_end_matches(',').to_string()
     };
+    l.glatt = t.glatt;
+    l.glatt_grob = glatt_grob(t);
     // nur eine Grenze, keine Höhen: keine Zeile zu Höhenlinien
     l.hoehenlinien = match m.terrain_contour_step(wunsch) {
         _ if !l.hoehen => None,
@@ -567,6 +591,9 @@ impl App {
             }
             K::Zuschnitt(s) => {
                 self.gelaende_schritt("Umgebung zeigen", |m| m.set_terrain_show(s));
+            }
+            K::Glatt(g) => {
+                self.gelaende_schritt("Gelände glätten", |m| m.set_terrain_smoothing(g));
             }
             K::AmHaus | K::Flaeche | K::Grenze | K::Befestigt | K::Loeschen => {
                 self.flaeche_knopf(k)
