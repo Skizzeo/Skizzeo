@@ -661,6 +661,7 @@ mod tests {
         let linien = |h: &Scene, v: ViewKind, plane| {
             gp::linien(
                 &h.model().terrain_plates(),
+                &gp::bodenaufbau::Bodenaufbau::aus(h.model()),
                 v,
                 plane,
                 h.bounds(),
@@ -720,7 +721,13 @@ mod tests {
             let keys = h.table().terrain;
             r.set_mesh(
                 gp::MESH_PLATE,
-                &gp::netz(&plates, ViewKind::Section, Some(plane), keys),
+                &gp::netz(
+                    &plates,
+                    ViewKind::Section,
+                    Some(plane),
+                    keys,
+                    &gp::bodenaufbau::Bodenaufbau::aus(h.model()),
+                ),
             );
             r.set_helpers(&linien(&h, ViewKind::Section, Some(plane)));
             // Ausschnitt: linke Ecke der Gründung
@@ -806,7 +813,13 @@ mod tests {
             r.set_grass(keys[0]);
             r.set_mesh(
                 gp::MESH_PLATE,
-                &gp::netz(&plates, ViewKind::Persp, None, keys),
+                &gp::netz(
+                    &plates,
+                    ViewKind::Persp,
+                    None,
+                    keys,
+                    &gp::bodenaufbau::Bodenaufbau::aus(h.model()),
+                ),
             );
             let px = bild(r, h, sun, cam);
             ab(&px, n);
@@ -966,7 +979,7 @@ mod tests {
             let kappe = match p {
                 Some((p0, nn)) => {
                     let f = sk_model::solid::SectionFrame::new(p0, nn);
-                    crate::scene::mesh_of(&gn::kappen(&g, &f, p0, keys[1]))
+                    crate::scene::mesh_of(&gn::kappen(&g, &f, p0, keys))
                 }
                 None => Default::default(),
             };
@@ -1085,7 +1098,7 @@ mod tests {
             let kappe = match p {
                 Some((p0, nn)) => {
                     let f = sk_model::solid::SectionFrame::new(p0, nn);
-                    crate::scene::mesh_of(&gn::kappen(&g, &f, p0, keys[1]))
+                    crate::scene::mesh_of(&gn::kappen(&g, &f, p0, keys))
                 }
                 None => Default::default(),
             };
