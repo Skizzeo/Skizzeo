@@ -314,6 +314,8 @@ pub struct Model {
     /// immer aus. Es wird nicht gespeichert, zählt nicht zur Revision,
     /// Rückgängig stellt es nicht zurück, und ein Klon hat es aus.
     netz_faden: gelaende_aufmass::NetzImFaden,
+    /// Gebäude der letzten Schritte ([`Model::gebaeude_seit`]).
+    bau_log: bau_log::BauLog,
     /// Definitionen der Erweiterungsbauteile, nach `key` (E3).
     ext_defs: Vec<crate::erweiterung::ExtDef>,
     /// Zuletzt vergebene Nummer je Präfix einer Erweiterung.
@@ -508,8 +510,11 @@ pub use fang::{Fangziele, Wandende, Wandflaeche};
 #[path = "ecke.rs"]
 mod ecke;
 pub use ecke::{EckeFehler, Vereint, ZugPunkte};
+#[path = "bau_log.rs"]
+mod bau_log;
 #[path = "raum.rs"]
 mod raum;
+pub use bau_log::BauStand;
 pub(crate) use raum::RawSpace;
 pub use raum::{FreieRaumnamen, Space, SPACE_SEQ};
 #[path = "raum_ausbau.rs"]
@@ -924,6 +929,7 @@ impl Model {
             ext_revision: 0,
             raum_log: Default::default(),
             netz_faden: Default::default(),
+            bau_log: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
@@ -1018,6 +1024,7 @@ impl Model {
             ext_revision: 0,
             raum_log: Default::default(),
             netz_faden: Default::default(),
+            bau_log: Default::default(),
             merker: Default::default(),
             halter: Default::default(),
             lagemerker: Default::default(),
@@ -1244,6 +1251,7 @@ impl Model {
         self.revision += 1;
         if self.txn.is_none() {
             self.raum_log.unbekannt();
+            self.bau_log.unbekannt();
         }
         self.lagemerker.weiter();
     }
@@ -1256,6 +1264,7 @@ impl Model {
         self.revision += 1;
         if self.txn.is_none() {
             self.raum_log.unbekannt();
+            self.bau_log.unbekannt();
         }
     }
 
@@ -1266,6 +1275,7 @@ impl Model {
         debug_assert!(self.txn.is_none());
         self.revision = rev;
         self.lagemerker.vergessen();
+        self.bau_log.unbekannt();
     }
 
     /// Neue, noch nie vergebene Guid.
@@ -3471,6 +3481,8 @@ impl Model {
         }
         changes.retain(|c| !c.is_noop());
         self.raum_log.schritt(&changes);
+        self.bau_log
+            .schritt(bau_log::gebaeude(self, &changes), self.gelaendestand());
         (!changes.is_empty()).then_some(Txn {
             label: open.label,
             changes,
@@ -3602,6 +3614,7 @@ impl Model {
         debug_assert!(self.txn.is_none(), "Rückgängig in einem offenen Schritt");
         // Was hier ohne Schritt geändert wird, ist `t`
         let raeume = std::mem::take(&mut self.raum_log);
+        let bau = std::mem::replace(&mut self.bau_log, bau_log::BauLog::platzhalter());
         let mut touched = Touched::default();
         let mut footings = Vec::new();
         let mut floors = Vec::new();
@@ -3759,6 +3772,9 @@ impl Model {
         self.touch();
         self.raum_log = raeume;
         self.raum_log.schritt(&t.changes);
+        self.bau_log = bau;
+        self.bau_log
+            .schritt(bau_log::gebaeude(self, &t.changes), self.gelaendestand());
         touched
     }
 

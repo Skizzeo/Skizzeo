@@ -14,7 +14,7 @@ use crate::roof::FlatRoof;
 use crate::wall::WallChain;
 use sk_math::{vec3, Vec3};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub use crate::qto_raum::{RoomFn, RoomLine, RoomQto, Side};
 
@@ -1874,20 +1874,139 @@ pub fn schedule_mit_zuegen(model: &Model, raeume: RoomFn, zuege: ZugFn) -> Sched
 }
 
 pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> Schedule {
+    let mut teile = teile_im_gang(model, raeume, zuege, &|_| true);
+    zusammenfuehren_im_gang(model, None, &mut teile).expect("alle Teile frisch")
+}
+
+/// Mengen eines Gebäudes, oder der Geschosse ohne Gebäude, für
+/// [`zusammenfuehren`]: alles, was die Mengenliste je Gebäude rechnet. Was
+/// über die Gebäude hinweg gilt (Geländebilanz, Reihenfolge der Gründungen
+/// und Dächer, Regenfallrohre), rechnet erst das Zusammenführen.
+/// Zustandslos; ein Teil merkt sich die Szene (Review M2, Architektur
+/// 16.10.).
+#[derive(Clone, Debug)]
+pub struct Teil {
+    /// Das Gebäude; `None`: die Geschosse ohne Gebäude.
+    gebaeude: Option<BuildingId>,
+    /// Gebäude, Geschosse ohne Gebäude und Schichtzeilen liegen noch im
+    /// Teil; nach dem Zusammenführen in der Liste ([`zusammenfuehren`]).
+    voll: bool,
+    building: Option<BuildingQto>,
+    loose: Vec<StoreyQto>,
+    /// Schichtzeilen für den Zeilenspeicher der Liste.
+    zeilen: Vec<LayerRow>,
+    formwork: Vec<(ElementId, FormworkQto)>,
+    /// Je Sohlplatte mit Gründung ihre Erdarbeiten und Bauvorbereitung und
+    /// die Gründung für die Geländebilanz.
+    platten: Vec<(ElementId, Vec<AutoMenge>, crate::qto_earth::Gruendung)>,
+    /// Flachdächer mit ihrer Rechnung, in der Reihenfolge des Modells.
+    daecher: Vec<(ElementId, FlatRoof)>,
+    /// Zulagen am Attikablech, Untersichten, Laibungen und Raumlängen.
+    bauteil: [Vec<AutoMenge>; 4],
+}
+
+impl Teil {
+    /// Das Gebäude des Teils; `None`: die Geschosse ohne Gebäude.
+    pub fn gebaeude(&self) -> Option<BuildingId> {
+        self.gebaeude
+    }
+}
+
+/// Teile der Mengenliste ([`Teil`]) für die Gebäude, die `nur` wählt
+/// (`None`: die Geschosse ohne Gebäude), in einem Gang über das Modell; die
+/// übrigen rechnet er nicht. Räume und Wandzüge wie bei
+/// [`schedule_mit_zuegen`].
+pub fn teile(
+    model: &Model,
+    raeume: RoomFn,
+    zuege: ZugFn,
+    nur: &dyn Fn(Option<BuildingId>) -> bool,
+) -> Vec<Teil> {
+    model.lesend(|| teile_im_gang(model, raeume, zuege, nur))
+}
+
+/// Mengenliste aus den Teilen aller Gebäude und dem der Geschosse ohne
+/// Gebäude, in beliebiger Reihenfolge. Gleich [`schedule_mit_zuegen`], wenn
+/// jedes Teil zum Stand des Modells passt.
+///
+/// Ohne Kopie (Review M2): Gebäude, Geschosse ohne Gebäude und
+/// Schichtzeilen wandern aus den Teilen in die Liste. Ein Teil, das sie so
+/// schon abgegeben hat, holt sie aus `alt`, der Liste seiner letzten
+/// Zusammenführung; geliehen als Kopie. `None` und kein Teil geändert, wenn
+/// `alt` dafür fehlt oder nicht passt ([`zusammenfuehrbar`]).
+pub fn zusammenfuehren(
+    model: &Model,
+    alt: Option<Cow<'_, Schedule>>,
+    teile: &mut [Teil],
+) -> Option<Schedule> {
+    model.lesend(|| zusammenfuehren_im_gang(model, alt, teile))
+}
+
+/// Ob [`zusammenfuehren`] die Teile `teile` mit der Liste `alt` ihrer
+/// letzten Zusammenführung zusammenführen kann: Sie trägt ihre
+/// Schichtzeilen und die Gebäude der Teile, die sie abgegeben haben.
+pub fn zusammenfuehrbar(alt: Option<&Schedule>, teile: &[Teil]) -> bool {
+    if teile.iter().all(|t| t.voll) {
+        return true;
+    }
+    let Some(alt) = alt else {
+        return false;
+    };
+    alt.zeilen.0.get().is_some()
+        && teile.iter().filter(|t| !t.voll).all(|t| match t.gebaeude {
+            Some(b) => alt.buildings.iter().any(|x| x.id == b),
+            None => true,
+        })
+}
+
+/// (Geschoss der Gruppe, Rang, Aufbau, Erweiterung) → Zeilen mit
+/// Baustoffanteilen; die Erweiterung als Stelle in `ext_defs`, sonst 0.
+type GruppenKey = (StoreyId, u8, Option<LayerSetId>, usize);
+
+/// Was der Gang über die Bauteile je Teil sammelt.
+#[derive(Default)]
+struct Sammlung {
+    groups: HashMap<GruppenKey, (Category, Vec<RowQto>)>,
+    /// Sohlplatten je Wandzug, für die Automatikmengen.
+    platten: Vec<(RunId, ElementId)>,
+    /// Flachdächer, für ihre Automatikmengen.
+    roofs: Vec<(ElementId, FlatRoof)>,
+}
+
+fn teile_im_gang(
+    model: &Model,
+    raeume: RoomFn,
+    zuege: ZugFn,
+    nur: &dyn Fn(Option<BuildingId>) -> bool,
+) -> Vec<Teil> {
+    // Gebäude nach Nummer (GB-01, GB-02 …), nicht nach Lage im Speicher;
+    // die Geschosse ohne Gebäude als letztes Teil
+    let mut buildings: Vec<_> = model.buildings().iter().collect();
+    buildings.sort_by(|a, b| a.1.number.cmp(&b.1.number));
+    let lose = buildings.len();
+    let mut ebenen = model.levels_by_building();
+    let mut stelle: HashMap<StoreyId, usize> = HashMap::new();
+    let mut geschosse: Vec<Vec<StoreyId>> = Vec::with_capacity(lose + 1);
+    for (i, (bid, _)) in buildings.iter().enumerate() {
+        let g = ebenen.remove(&Some(*bid)).unwrap_or_default();
+        stelle.extend(g.iter().map(|s| (*s, i)));
+        geschosse.push(g);
+    }
+    geschosse.push(Vec::new());
+    let gewaehlt: Vec<bool> = buildings
+        .iter()
+        .map(|(b, _)| nur(Some(*b)))
+        .chain([nur(None)])
+        .collect();
+    // Teil eines Geschosses: das seines Gebäudes, sonst das ohne Gebäude
+    let teil_von = |s: StoreyId| stelle.get(&s).copied().unwrap_or(lose);
+    let mut sammlung: Vec<Sammlung> = (0..=lose).map(|_| Sammlung::default()).collect();
     // Je Wandzug einmal rechnen
     let mut walls: HashMap<RunId, Cow<[WallQto]>> = HashMap::new();
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
-    // Sohlplatten je Wandzug, für die Automatikmengen
-    let mut platten: Vec<(RunId, ElementId)> = Vec::new();
-    // Flachdächer, für ihre Automatikmengen
-    let mut roofs: Vec<(ElementId, FlatRoof)> = Vec::new();
     // Flachdach je Decke einmal rechnen (Dachaufbau und Attikablech)
     let mut flat: HashMap<ElementId, Option<FlatRoof>> = HashMap::new();
     let mut floors: HashMap<RunId, Result<FloorSlab, FloorError>> = HashMap::new();
-    // (Geschoss der Gruppe, Rang, Aufbau, Erweiterung) → Zeilen mit
-    // Baustoffanteilen; die Erweiterung als Stelle in `ext_defs`, sonst 0
-    type Key = (StoreyId, u8, Option<LayerSetId>, usize);
-    let mut groups: HashMap<Key, (Category, Vec<RowQto>)> = HashMap::new();
     let defs = model.ext_defs();
     let mut rechnungen = ExtRechnungen::default();
     // Räume je Geschoss, einmal gerechnet
@@ -1895,12 +2014,17 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
     let gruendung = gruendungen(model);
     for (id, e) in model.elements().iter() {
         if let ElementKind::Space(_) = &e.kind {
+            let p = teil_von(e.storey);
+            if !gewaehlt[p] {
+                continue;
+            }
             let q = raum_qto
                 .entry(e.storey)
                 .or_insert_with(|| raeume(model, e.storey).into_iter().collect())
                 .remove(&id);
             if let Some(q) = q {
-                groups
+                sammlung[p]
+                    .groups
                     .entry((e.storey, group_rank(e.category), None, 0))
                     .or_insert_with(|| (e.category, Vec::new()))
                     .1
@@ -1914,12 +2038,17 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
             continue;
         }
         if let ElementKind::Ext(p) = &e.kind {
+            let t = teil_von(e.storey);
+            if !gewaehlt[t] {
+                continue;
+            }
             let (q, note) = ext_qto(model, e.storey, p, &mut rechnungen);
             let i = defs
                 .iter()
                 .position(|d| d.key == p.key)
                 .map_or(0, |i| i + 1);
-            groups
+            sammlung[t]
+                .groups
                 .entry((e.storey, group_rank(e.category), None, i))
                 .or_insert_with(|| (e.category, Vec::new()))
                 .1
@@ -1934,6 +2063,12 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
         let Some(run) = model.run_of(id) else {
             continue;
         };
+        let storey = schedule_storey_in(&gruendung, e);
+        let p = teil_von(storey);
+        if !gewaehlt[p] {
+            continue;
+        }
+        let s = &mut sammlung[p];
         let (q, note) = match e.kind {
             ElementKind::Wall(w) => {
                 let qs = walls.entry(run).or_insert_with(|| zug(model, zuege, run));
@@ -1946,7 +2081,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
             | ElementKind::StripFooting(_)
             | ElementKind::PerimeterInsulation { .. } => {
                 if matches!(e.kind, ElementKind::GroundSlab(_)) {
-                    platten.push((run, id));
+                    s.platten.push((run, id));
                 }
                 let f = found
                     .entry(run)
@@ -2029,7 +2164,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
             {
                 Some(r) => {
                     let q = flat_roof_qto_of(model, id, r);
-                    roofs.push((id, r.clone()));
+                    s.roofs.push((id, r.clone()));
                     (Some(ElementQto::Terrace(q)), None)
                 }
                 None => (None, Some("Kein Körper: keine Aufkantung".into())),
@@ -2097,12 +2232,11 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
             // Mengen als Automatikmengen am Bauteil (`downpipe.*`)
             ElementKind::Downpipe { .. } => (None, None),
         };
-        let storey = schedule_storey_in(&gruendung, e);
         let set = match e.kind {
             ElementKind::Wall(_) => e.layer_set,
             _ => None,
         };
-        groups
+        s.groups
             .entry((storey, group_rank(e.category), set, 0))
             .or_insert_with(|| (e.category, Vec::new()))
             .1
@@ -2114,7 +2248,6 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
             });
     }
 
-    let mut keys: Vec<Key> = groups.keys().copied().collect();
     // Aufbauten in fester Reihenfolge (Name, dann Kennung)
     let set_name = |s: Option<LayerSetId>| {
         s.and_then(|s| model.layer_set(s))
@@ -2128,94 +2261,255 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
                 (d.plural().to_lowercase(), d.key.as_str())
             })
     };
-    keys.sort_by(|a, b| {
-        (a.1, set_name(a.2), a.2.map(|s| s.index()), ext_name(a.3)).cmp(&(
-            b.1,
-            set_name(b.2),
-            b.2.map(|s| s.index()),
-            ext_name(b.3),
-        ))
-    });
-    // Schlüssel je Geschoss in dieser Reihenfolge, ohne Gang über alle
-    // Schlüssel je Geschoss (Review #195 H-195g)
-    let mut je_geschoss: HashMap<StoreyId, Vec<Key>> = HashMap::new();
-    for k in &keys {
-        je_geschoss.entry(k.0).or_default().push(*k);
-    }
-    let storey_qto = |sid: StoreyId, groups: &mut HashMap<Key, (Category, Vec<RowQto>)>| {
-        let mut out = Vec::new();
-        for k in je_geschoss.get(&sid).map_or(&[][..], Vec::as_slice) {
-            let (category, mut rows) = groups.remove(k).unwrap_or((Category::Space, Vec::new()));
-            rows.sort_by(|a, b| a.number.cmp(&b.number));
-            let total = totals(&rows);
-            out.push(GroupQto {
-                category,
-                layer_set: k.2,
-                ext: k
-                    .3
-                    .checked_sub(1)
-                    .and_then(|i| defs.get(i))
-                    .map(|d| d.key.clone()),
-                rows,
-                total,
-            });
+    // Züge je Gebäude, für die Hüllen der Gründungen
+    let zuege_je: HashMap<Option<BuildingId>, Vec<RunId>> =
+        if sammlung.iter().any(|s| !s.platten.is_empty()) {
+            let mut z: HashMap<Option<BuildingId>, Vec<RunId>> = HashMap::new();
+            for (id, r) in model.runs().iter() {
+                z.entry(model.building_of(r.storey)).or_default().push(id);
+            }
+            z
+        } else {
+            HashMap::new()
+        };
+    let mut out = Vec::new();
+    for (i, s) in sammlung.into_iter().enumerate() {
+        if !gewaehlt[i] {
+            continue;
         }
-        StoreyQto {
-            id: sid,
-            groups: out,
+        let Sammlung {
+            mut groups,
+            platten,
+            roofs,
+        } = s;
+        let mut keys: Vec<GruppenKey> = groups.keys().copied().collect();
+        keys.sort_by(|a, b| {
+            (a.1, set_name(a.2), a.2.map(|s| s.index()), ext_name(a.3)).cmp(&(
+                b.1,
+                set_name(b.2),
+                b.2.map(|s| s.index()),
+                ext_name(b.3),
+            ))
+        });
+        // Schlüssel je Geschoss in dieser Reihenfolge, ohne Gang über alle
+        // Schlüssel je Geschoss (Review #195 H-195g)
+        let mut je_geschoss: HashMap<StoreyId, Vec<GruppenKey>> = HashMap::new();
+        for k in &keys {
+            je_geschoss.entry(k.0).or_default().push(*k);
         }
-    };
-
-    let mut sched = Schedule::default();
-    // Gebäude nach Nummer (GB-01, GB-02 …), nicht nach Lage im Speicher
-    let mut buildings: Vec<_> = model.buildings().iter().collect();
-    buildings.sort_by(|a, b| a.1.number.cmp(&b.1.number));
-    let mut ebenen = model.levels_by_building();
-    let mut alle: Vec<GebaeudeZeile> = Vec::new();
-    for (bid, _) in buildings {
-        let storeys: Vec<StoreyQto> = ebenen
-            .remove(&Some(bid))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|sid| storey_qto(sid, &mut groups))
-            .filter(|s| !s.groups.is_empty())
-            .collect();
-        let by_material = material_sums(model, &storeys);
-        let rows = layer_rows(model, &storeys);
-        alle.extend(rows.iter().map(|r| (Some(bid), r.clone())));
-        sched.buildings.push(BuildingQto {
-            id: bid,
-            storeys,
-            by_material,
-            by_trade: trade_sums(model, &rows),
-            by_kg: kg_sums(rows),
+        let storey_qto =
+            |sid: StoreyId, groups: &mut HashMap<GruppenKey, (Category, Vec<RowQto>)>| {
+                let mut out = Vec::new();
+                for k in je_geschoss.get(&sid).map_or(&[][..], Vec::as_slice) {
+                    let (category, mut rows) =
+                        groups.remove(k).unwrap_or((Category::Space, Vec::new()));
+                    rows.sort_by(|a, b| a.number.cmp(&b.number));
+                    let total = totals(&rows);
+                    out.push(GroupQto {
+                        category,
+                        layer_set: k.2,
+                        ext: k
+                            .3
+                            .checked_sub(1)
+                            .and_then(|i| defs.get(i))
+                            .map(|d| d.key.clone()),
+                        rows,
+                        total,
+                    });
+                }
+                StoreyQto {
+                    id: sid,
+                    groups: out,
+                }
+            };
+        let mut sched = Schedule::default();
+        let gebaeude = buildings.get(i).map(|(b, _)| *b);
+        let zeilen = match gebaeude {
+            Some(bid) => {
+                let storeys: Vec<StoreyQto> = std::mem::take(&mut geschosse[i])
+                    .into_iter()
+                    .map(|sid| storey_qto(sid, &mut groups))
+                    .filter(|s| !s.groups.is_empty())
+                    .collect();
+                let by_material = material_sums(model, &storeys);
+                let rows = layer_rows(model, &storeys);
+                let zeilen = rows.clone();
+                sched.buildings.push(BuildingQto {
+                    id: bid,
+                    storeys,
+                    by_material,
+                    by_trade: trade_sums(model, &rows),
+                    by_kg: kg_sums(rows),
+                });
+                zeilen
+            }
+            None => {
+                // Was übrig ist, liegt in Geschossen ohne Gebäude
+                let mut rest: Vec<StoreyId> = groups.keys().map(|k| k.0).collect();
+                rest.sort_by(|a, b| {
+                    let z = |s: &StoreyId| model.storey(*s).map_or(0.0, |x| x.elevation);
+                    z(a).total_cmp(&z(b))
+                });
+                rest.dedup();
+                for sid in rest {
+                    let s = storey_qto(sid, &mut groups);
+                    if !s.groups.is_empty() {
+                        sched.loose.push(s);
+                    }
+                }
+                layer_rows(model, &sched.loose)
+            }
+        };
+        let formwork = formwork_rows(&sched);
+        let platten = platten_mengen(model, &gruendung, &platten, &zuege_je);
+        let bauteil = [
+            // Zulagen am Attikablech, nach den Mengen der Gründung
+            crate::qto_dach::bauteil_mengen(model, &sched),
+            // Lattung und Randprofil der Untersichten
+            crate::qto_fassade::bauteil_mengen(model, &sched),
+            // Laibungen der Öffnungen und Diagonalbewehrung (VOB/C)
+            crate::qto_laibung::bauteil_mengen(model, &sched),
+            // Längen der Räume mit Schlüssel (RB5)
+            crate::qto_raum::auto_mengen(model, &sched),
+        ];
+        out.push(Teil {
+            gebaeude,
+            voll: true,
+            building: sched.buildings.pop(),
+            loose: sched.loose,
+            zeilen,
+            formwork,
+            platten,
+            daecher: roofs,
+            bauteil,
         });
     }
-    // Was übrig ist, liegt in Geschossen ohne Gebäude
-    let mut rest: Vec<StoreyId> = groups.keys().map(|k| k.0).collect();
-    rest.sort_by(|a, b| {
-        let z = |s: &StoreyId| model.storey(*s).map_or(0.0, |x| x.elevation);
-        z(a).total_cmp(&z(b))
-    });
-    rest.dedup();
-    for sid in rest {
-        let s = storey_qto(sid, &mut groups);
-        if !s.groups.is_empty() {
-            sched.loose.push(s);
-        }
+    out
+}
+
+fn zusammenfuehren_im_gang(
+    model: &Model,
+    alt: Option<Cow<'_, Schedule>>,
+    teile: &mut [Teil],
+) -> Option<Schedule> {
+    if !zusammenfuehrbar(alt.as_deref(), teile) {
+        return None;
     }
-    // Die Schichtzeilen sind hier schon gerechnet: gleich in den Speicher
-    // der Liste, sonst rechnen „Kosten live“ sie beim ersten Lesen noch
-    // einmal (Review M2)
-    alle.extend(
-        layer_rows(model, &sched.loose)
-            .into_iter()
-            .map(|r| (None, r)),
-    );
+    // Was die abgegebenen Teile aus der alten Liste brauchen: übernommen
+    // oder, geliehen, kopiert; der Rest der alten Liste fällt weg
+    let mut alt_geb: HashMap<BuildingId, BuildingQto> = HashMap::new();
+    let mut alt_lose: Vec<StoreyQto> = Vec::new();
+    let mut alt_zeilen: HashMap<Option<BuildingId>, Vec<LayerRow>> = HashMap::new();
+    let fehlt: HashSet<Option<BuildingId>> = teile
+        .iter()
+        .filter(|t| !t.voll)
+        .map(|t| t.gebaeude)
+        .collect();
+    match alt {
+        _ if fehlt.is_empty() => {}
+        Some(Cow::Owned(a)) => {
+            alt_geb.extend(a.buildings.into_iter().map(|b| (b.id, b)));
+            alt_lose = a.loose;
+            for (b, r) in a.zeilen.0.into_inner().map(|z| z.1).unwrap_or_default() {
+                alt_zeilen.entry(b).or_default().push(r);
+            }
+        }
+        Some(Cow::Borrowed(a)) => {
+            let gesucht = |b: BuildingId| fehlt.contains(&Some(b));
+            alt_geb.extend(
+                a.buildings
+                    .iter()
+                    .filter(|b| gesucht(b.id))
+                    .map(|b| (b.id, b.clone())),
+            );
+            if fehlt.contains(&None) {
+                alt_lose = a.loose.clone();
+            }
+            for (b, r) in a.zeilen.0.get().map_or(&[][..], |z| &z.1[..]) {
+                if fehlt.contains(b) {
+                    alt_zeilen.entry(*b).or_default().push(r.clone());
+                }
+            }
+        }
+        None => return None,
+    }
+    // Gebäude nach Nummer wie in der Liste, die Geschosse ohne Gebäude zuletzt
+    let mut folge: Vec<usize> = (0..teile.len()).collect();
+    folge.sort_by_cached_key(|&i| match teile[i].gebaeude {
+        Some(b) => (
+            false,
+            model.building(b).map(|x| x.number.clone()),
+            b.index(),
+        ),
+        None => (true, None, 0),
+    });
+    let mut sched = Schedule::default();
+    let mut alle: Vec<GebaeudeZeile> = Vec::new();
+    for &i in &folge {
+        let t = &mut teile[i];
+        let (building, loose, zeilen) = if t.voll {
+            t.voll = false;
+            (
+                t.building.take(),
+                std::mem::take(&mut t.loose),
+                std::mem::take(&mut t.zeilen),
+            )
+        } else {
+            (
+                t.gebaeude.and_then(|b| alt_geb.remove(&b)),
+                match t.gebaeude {
+                    Some(_) => Vec::new(),
+                    None => std::mem::take(&mut alt_lose),
+                },
+                alt_zeilen.remove(&t.gebaeude).unwrap_or_default(),
+            )
+        };
+        sched.buildings.extend(building);
+        sched.loose.extend(loose);
+        alle.extend(zeilen.into_iter().map(|r| (t.gebaeude, r)));
+        sched.formwork.extend(t.formwork.iter().cloned());
+    }
+    let teile: Vec<&Teil> = folge.iter().map(|&i| &teile[i]).collect();
+    // Die Schichtzeilen sind schon gerechnet: gleich in den Speicher der
+    // Liste, sonst rechnen „Kosten live“ sie beim ersten Lesen noch einmal
+    // (Review M2)
     let _ = sched.zeilen.0.set((model.revision(), alle));
-    sched.formwork = formwork_rows(&sched);
-    sched.auto = auto_rows(model, &gruendung, &platten, &mut sched.hinweise);
-    roofs.sort_by_key(|(id, _)| model.element(*id).map(|e| e.number.clone()));
+    // Automatikmengen je Gründung in der Reihenfolge der Platten im Modell;
+    // mit Geländeflächen nach Nummer: so stehen die Zeilen je Position nach
+    // Speichern und Öffnen in gleicher Reihenfolge, auch mit dem Einbau im
+    // Rechenweg (H-185a)
+    let flaechen = !model.site_patches().is_empty();
+    let mut platten: Vec<_> = teile.iter().flat_map(|t| &t.platten).collect();
+    platten.sort_by_cached_key(|(s, _, _)| {
+        (
+            flaechen.then(|| model.element(*s).map(rang)).flatten(),
+            s.index(),
+        )
+    });
+    let mut gruende: Vec<crate::qto_earth::Gruendung> = Vec::with_capacity(platten.len());
+    for (_, mengen, g) in platten {
+        sched.auto.extend(mengen.iter().cloned());
+        gruende.push(g.clone());
+    }
+    // Geländeflächen (G3b) mit der Bilanz über alle Gründungen, in fester
+    // Reihenfolge wie der Träger: nach Speichern und Öffnen verteilt sie
+    // sich gleich auf die Häuser (Review #173 B2); sortiert nur mit
+    // Flächen (H-173n)
+    if flaechen {
+        gruende.sort_by_cached_key(|g| model.element(g.vorlage.element).map(rang));
+    }
+    let boden = model.project().soil;
+    crate::qto_earth::gelaende_mengen(
+        model,
+        &gruende,
+        &boden,
+        &mut sched.auto,
+        &mut sched.hinweise,
+    );
+    // Häuser ineinander (H-245-geo-a): Hinweis beim Projekt
+    crate::qto_earth::ineinander(model, &mut sched.hinweise);
+    let mut roofs: Vec<&(ElementId, FlatRoof)> = teile.iter().flat_map(|t| &t.daecher).collect();
+    roofs.sort_by_cached_key(|(id, _)| (model.element(*id).map(|e| e.number.clone()), id.index()));
     // Regenfallrohre je Dach in einem Gang, wie `Model::downpipes_of`
     // (Review #195 H-195g)
     let mut fallrohre: HashMap<ElementId, Vec<(u16, ElementId)>> = HashMap::new();
@@ -2229,7 +2523,7 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
             v.sort_by_key(|x| x.0);
         }
     }
-    for (id, r) in &roofs {
+    for (id, r) in roofs.iter().map(|x| (&x.0, &x.1)) {
         let Some(e) = model.element(*id) else {
             continue;
         };
@@ -2264,51 +2558,51 @@ pub(crate) fn schedule_im_gang(model: &Model, raeume: RoomFn, zuege: ZugFn) -> S
             sched.auto.extend(crate::fallrohr::mengen(&vorlage, p));
         }
     }
-    // Zulagen am Attikablech, nach den Mengen der Gründung
-    let dach = crate::qto_dach::bauteil_mengen(model, &sched);
-    sched.auto.extend(dach);
-    // Lattung und Randprofil der Untersichten
-    let untersicht = crate::qto_fassade::bauteil_mengen(model, &sched);
-    sched.auto.extend(untersicht);
-    // Laibungen der Öffnungen und Diagonalbewehrung (VOB/C)
-    let laibung = crate::qto_laibung::bauteil_mengen(model, &sched);
-    sched.auto.extend(laibung);
-    // Längen der Räume mit Schlüssel (RB5)
-    let raum = crate::qto_raum::auto_mengen(model, &sched);
-    sched.auto.extend(raum);
-    sched
+    for k in 0..4 {
+        for t in &teile {
+            sched.auto.extend(t.bauteil[k].iter().cloned());
+        }
+    }
+    Some(sched)
 }
 
-/// Automatikmengen je Gründung: die eine Stelle, an der sie gesammelt
-/// werden (Erdarbeiten, Bauvorbereitung), in der Reihenfolge der Platten.
-fn auto_rows(
+/// Rang einer Sohlplatte als Träger: die mit der kleinsten Nummer (Guid
+/// bei gleicher Nummer), unabhängig von der Speicherreihenfolge.
+fn rang(e: &Element) -> (usize, String, crate::Guid) {
+    (e.number.len(), e.number.clone(), e.guid)
+}
+
+/// Automatikmengen je Gründung eines Teils (Erdarbeiten, Bauvorbereitung)
+/// mit der Gründung für die Geländebilanz, je Platte mit Gründung.
+/// `zuege_je`: Wandzüge je Gebäude für die Hüllen.
+fn platten_mengen(
     model: &Model,
     gruendung: &HashMap<StoreyId, StoreyId>,
     platten: &[(RunId, ElementId)],
-    hinweise: &mut Vec<String>,
-) -> Vec<AutoMenge> {
+    zuege_je: &HashMap<Option<BuildingId>, Vec<RunId>>,
+) -> Vec<(ElementId, Vec<AutoMenge>, crate::qto_earth::Gruendung)> {
     let mut out = Vec::new();
-    let mut gruende = Vec::new();
-    let boden = model.project().soil;
-    // Außenwände je Gebäude einmal, nicht je Platte
-    let huellen = match platten {
-        [] => HashMap::new(),
-        _ => crate::qto_site::huellen(model),
-    };
-    let leer = crate::qto_site::Huelle::default();
-    // Träger der Mengen je Gebäude: die Platte mit der kleinsten Nummer
-    // (Guid bei gleicher Nummer), unabhängig von der Speicherreihenfolge
-    let rang = |e: &Element| (e.number.len(), e.number.clone(), e.guid);
-    // mit Geländeflächen die Gründungen nach Nummer: so stehen die Zeilen
-    // je Position nach Speichern und Öffnen in gleicher Reihenfolge, auch
-    // mit dem Einbau im Rechenweg (H-185a); ohne Flächen wie bisher
-    let mut platten = platten.to_vec();
-    if !model.site_patches().is_empty() {
-        platten.sort_by_cached_key(|&(_, s)| model.element(s).map(rang));
+    if platten.is_empty() {
+        return out;
     }
+    let boden = model.project().soil;
+    let gebaeude_von = |run: RunId| model.run(run).and_then(|r| model.building_of(r.storey));
+    // Außenwände je Gebäude einmal, nicht je Platte: die der Gebäude dieser
+    // Platten
+    let mut gebaeude: Vec<Option<BuildingId>> = platten.iter().map(|p| gebaeude_von(p.0)).collect();
+    gebaeude.sort_by_key(|b| b.map(|b| b.index()));
+    gebaeude.dedup();
+    let mut huellen = HashMap::new();
+    for b in gebaeude {
+        if let Some(z) = zuege_je.get(&b) {
+            huellen.extend(crate::qto_site::huellen_in(model, z.iter().copied()));
+        }
+    }
+    let leer = crate::qto_site::Huelle::default();
+    // Träger der Mengen je Gebäude
     let mut traeger: HashMap<BuildingId, ((usize, String, crate::Guid), ElementId)> =
         HashMap::new();
-    for &(run, slab) in &platten {
+    for &(run, slab) in platten {
         let (Some(_), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
         };
@@ -2324,7 +2618,7 @@ fn auto_rows(
             }
         }
     }
-    for &(run, slab) in &platten {
+    for &(run, slab) in platten {
         let (Some(g), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
         };
@@ -2343,18 +2637,17 @@ fn auto_rows(
             material: None,
         };
         let basis = crate::qto_earth::ErdBasis::im_modell(model, &g);
-        let (erde, zone) = crate::qto_earth::auto_mengen(&vorlage, &basis, &boden);
-        out.extend(erde);
-        gruende.push(crate::qto_earth::Gruendung {
+        let (mut mengen, zone) = crate::qto_earth::auto_mengen(&vorlage, &basis, &boden);
+        let gr = crate::qto_earth::Gruendung {
             vorlage: vorlage.clone(),
             outline: g.outline.clone(),
             zone,
-        });
-        let b = model.run(run).and_then(|r| model.building_of(r.storey));
+        };
+        let b = gebaeude_von(run);
         // ohne Gebäude zählt jede Platte für sich
         let erste = b.is_none_or(|b| traeger.get(&b).is_some_and(|t| t.1 == slab));
         let huelle = huellen.get(&b).unwrap_or(&leer);
-        out.extend(crate::qto_site::site_mengen_in(
+        mengen.extend(crate::qto_site::site_mengen_in(
             huelle,
             run,
             &g.outline,
@@ -2362,17 +2655,8 @@ fn auto_rows(
             g.terrain_z,
             erste,
         ));
+        out.push((slab, mengen, gr));
     }
-    // Geländeflächen (G3b) mit der Bilanz über alle Gründungen, in fester
-    // Reihenfolge wie der Träger: nach Speichern und Öffnen verteilt sie
-    // sich gleich auf die Häuser (Review #173 B2); sortiert nur mit
-    // Flächen (H-173n)
-    if !model.site_patches().is_empty() {
-        gruende.sort_by_cached_key(|g| model.element(g.vorlage.element).map(rang));
-    }
-    crate::qto_earth::gelaende_mengen(model, &gruende, &boden, &mut out, hinweise);
-    // Häuser ineinander (H-245-geo-a): Hinweis beim Projekt
-    crate::qto_earth::ineinander(model, hinweise);
     out
 }
 
@@ -3421,6 +3705,88 @@ mod tests {
         assert!(matches!(gemerkt, std::borrow::Cow::Borrowed(_)));
         assert!(gemerkt.len() > 10);
         assert_eq!(*gemerkt, s.layer_rows(&m)[..]);
+    }
+
+    /// Review M2: Die Teile je Gebäude, jedes für sich gerechnet und in
+    /// beliebiger Reihenfolge zusammengeführt, ergeben dieselbe Liste wie
+    /// ein Gang über alles, mit gemerkten Schichtzeilen. Die Prüfhäuser mit
+    /// zwei weiteren Häusern, mit und ohne Geländefläche über alle
+    /// Gründungen.
+    #[test]
+    fn teile_einzeln_wie_ganz() {
+        const HAEUSER: [&str; 9] = [
+            include_str!("../../sk-cost/referenz/rh1-standardhaus.szo"),
+            include_str!("../../sk-cost/referenz/rh2-mehrschalig.szo"),
+            include_str!("../../sk-cost/referenz/rh3-versatz-dachterrasse.szo"),
+            include_str!("../../sk-cost/referenz/rh4-erweiterungen.szo"),
+            include_str!("../../sk-cost/referenz/rh5-flachdach.szo"),
+            include_str!("../../sk-cost/referenz/r7-alle-abschnitte.szo"),
+            include_str!("../../../app/src/abnahme_haus_v3.szo"),
+            include_str!("../../../app/src/abnahme_p5.szo"),
+            include_str!("../../../app/src/abnahme_p6.szo"),
+        ];
+        let keine = |_: &Model, _: StoreyId| Vec::new();
+        for (n, text) in HAEUSER.iter().enumerate() {
+            for flaeche in [false, true] {
+                let mut m = crate::szo::read(text, crate::GuidGen::with_seed(1))
+                    .expect("lädt")
+                    .model;
+                m.begin("Häuser");
+                for (i, x) in [40e3, 60e3].into_iter().enumerate() {
+                    let b = m.add_building(1 + i as u8);
+                    let pts = [
+                        vec3(x, 0.0, 0.0),
+                        vec3(x, 6000.0, 0.0),
+                        vec3(x + 7000.0, 6000.0, 0.0),
+                        vec3(x + 7000.0, 0.0, 0.0),
+                    ];
+                    m.build_from_polygon(b, &pts).unwrap();
+                }
+                m.commit();
+                if flaeche {
+                    m.begin("Fläche");
+                    let r = vec![[-5e3, -5e3], [80e3, -5e3], [80e3, 30e3], [-5e3, 30e3]];
+                    assert!(m
+                        .add_site_patch(crate::TerrainPatch::flat(r, 0.0))
+                        .is_some());
+                    m.commit();
+                }
+                let ganz = schedule(&m);
+                let alle = teile(&m, &keine, &|_| None, &|_| true);
+                assert_eq!(alle.len(), m.buildings().len() + 1, "je Gebäude und lose");
+                let mut einzeln: Vec<Teil> = alle
+                    .iter()
+                    .rev()
+                    .flat_map(|t| {
+                        let g = t.gebaeude();
+                        teile(&m, &keine, &|_| None, &|b| b == g)
+                    })
+                    .collect();
+                let wie = format!("Haus {n}, Fläche {flaeche}");
+                // Ohne alte Liste nur mit Teilen, die noch alles tragen
+                let mut leer = einzeln.clone();
+                assert!(zusammenfuehren(&m, None, &mut leer).is_some());
+                assert!(zusammenfuehren(&m, None, &mut leer).is_none());
+                let z = zusammenfuehren(&m, None, &mut einzeln).unwrap();
+                assert_eq!(z, ganz, "{wie}");
+                assert_eq!(*z.layer_rows_ref(&m), *ganz.layer_rows(&m));
+                assert!(!ganz.auto.is_empty());
+                // Je Gebäude neu, die übrigen aus der alten Liste: geliehen
+                // und übernommen
+                let mut alt = z;
+                for i in 0..einzeln.len() {
+                    let g = einzeln[i].gebaeude();
+                    einzeln[i] = teile(&m, &keine, &|_| None, &|b| b == g).remove(0);
+                    let mut kopie = einzeln.clone();
+                    let geliehen = zusammenfuehren(&m, Some(Cow::Borrowed(&alt)), &mut kopie);
+                    assert_eq!(geliehen.as_ref(), Some(&ganz), "{wie}, geliehen, Teil {i}");
+                    alt = zusammenfuehren(&m, Some(Cow::Owned(alt)), &mut einzeln)
+                        .expect("übernommen");
+                    assert_eq!(alt, ganz, "{wie}, übernommen, Teil {i}");
+                    assert_eq!(*alt.layer_rows_ref(&m), *ganz.layer_rows(&m), "{wie}");
+                }
+            }
+        }
     }
 
     /// Gründung und Geschosse je Gebäude aus einem Gang wie je Bauteil
