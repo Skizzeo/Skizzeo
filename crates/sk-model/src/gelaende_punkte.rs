@@ -126,11 +126,11 @@ impl Model {
         for (k, p) in (nr..).zip(neu) {
             let (e, n) = f.to_survey(p[0], p[1]);
             t.points.push(TerrainPoint {
-                nr: format!("{NR}{k}"),
+                nr: format!("{NR}{k}").into(),
                 e: rund(e),
                 n: rund(n),
                 h: rund(h0 + p[2] / 1000.0),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: true,
                 gemessen: None,
@@ -480,7 +480,7 @@ mod tests {
         let i = m.add_terrain_points(&[[15000.0, 4000.0, -200.0]])[0];
         m.commit();
         let mut t = m.terrain().unwrap().clone();
-        let kante = vec![t.points[0].nr.clone(), t.points[i].nr.clone()];
+        let kante = vec![t.points[0].nr.to_string(), t.points[i].nr.to_string()];
         t.breaks.push(crate::TerrainLine {
             pts: kante,
             closed: false,
@@ -617,11 +617,11 @@ mod tests {
             .enumerate()
         {
             t.points.push(TerrainPoint {
-                nr: format!("{}", k + 1),
+                nr: format!("{}", k + 1).into(),
                 e,
                 n,
                 h: 10.0,
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,
@@ -645,7 +645,7 @@ mod tests {
                 e: 0.0,
                 n: 0.0,
                 h: 0.0,
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: true,
                 gemessen: None,

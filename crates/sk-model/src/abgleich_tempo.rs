@@ -140,11 +140,11 @@ fn gelaende_zug_ohne_bereich() {
         for j in 0..5 {
             let (e, n) = (1000.0 + 20.0 * i as f64, 2000.0 + 20.0 * j as f64);
             t.points.push(crate::TerrainPoint {
-                nr: (i * 5 + j + 1).to_string(),
+                nr: (i * 5 + j + 1).to_string().into(),
                 e,
                 n,
                 h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (n / 23.0).cos(),
-                code: String::new(),
+                code: Default::default(),
                 off: false,
                 hand: false,
                 gemessen: None,

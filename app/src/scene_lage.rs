@@ -212,11 +212,11 @@ mod tests {
             for j in 0..7 {
                 let (e, n) = (E0 - 20.0 + 10.0 * i as f64, N0 - 20.0 + 10.0 * j as f64);
                 t.points.push(TerrainPoint {
-                    nr: (i * 7 + j + 1).to_string(),
+                    nr: (i * 7 + j + 1).to_string().into(),
                     e,
                     n,
                     h: 30.0 + 0.001 * (e - E0).powi(2),
-                    code: String::new(),
+                    code: Default::default(),
                     off: false,
                     hand: false,
                     gemessen: None,
@@ -503,11 +503,11 @@ mod tests {
                 for j in 0..ny {
                     let (e, nn) = (1000.0 + 20.0 * i as f64, 2000.0 + 20.0 * j as f64);
                     t.points.push(TerrainPoint {
-                        nr: (i * ny + j + 1).to_string(),
+                        nr: (i * ny + j + 1).to_string().into(),
                         e,
                         n: nn,
                         h: 50.0 + 3.0 * (e / 37.0).sin() + 2.0 * (nn / 23.0).cos(),
-                        code: String::new(),
+                        code: Default::default(),
                         off: false,
                         hand: false,
                         gemessen: None,
