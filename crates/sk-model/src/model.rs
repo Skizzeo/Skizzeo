@@ -3482,7 +3482,7 @@ impl Model {
         changes.retain(|c| !c.is_noop());
         self.raum_log.schritt(&changes);
         self.bau_log
-            .schritt(bau_log::gebaeude(self, &changes), self.terrain_nhn());
+            .schritt(bau_log::gebaeude(self, &changes), self.gelaendestand());
         (!changes.is_empty()).then_some(Txn {
             label: open.label,
             changes,
@@ -3774,7 +3774,7 @@ impl Model {
         self.raum_log.schritt(&t.changes);
         self.bau_log = bau;
         self.bau_log
-            .schritt(bau_log::gebaeude(self, &t.changes), self.terrain_nhn());
+            .schritt(bau_log::gebaeude(self, &t.changes), self.gelaendestand());
         touched
     }
 
