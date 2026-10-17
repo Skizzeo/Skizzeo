@@ -1519,7 +1519,7 @@ mod tests {
         let hoch = |_: [f64; 2]| 1500.0;
         let mut w = Werkzeug::default();
         w.umschalten(true);
-        let mut klick3 = |w: &mut Werkzeug, p: [f64; 2], z: f64| {
+        let klick3 = |w: &mut Werkzeug, p: [f64; 2], z: f64| {
             let (x, y) = cam.project(vec3(p[0], p[1], z), w0, h0).unwrap();
             let boden = Boden {
                 treff: cam.plane_point(x, y, w0, h0, 1500.0),
