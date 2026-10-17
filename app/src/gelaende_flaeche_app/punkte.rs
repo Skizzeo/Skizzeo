@@ -31,6 +31,8 @@ use sk_model::TerrainSpot;
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 /// So nah (Bildpunkte) greift die Maus einen Punkt oder den Höhengriff.
@@ -141,7 +143,14 @@ pub struct Punkte {
     /// Häuser zum Stand des Modells, für die Nadeln in 3D (Review #237
     /// B-237a).
     pub(super) haeuser: Option<std::sync::Arc<super::netz::Haeuser>>,
+    /// [`App::schloss_zu`] zu Modellstand, Wahl und offenen Schlössern: Es
+    /// fragt je Bild und Mausbewegung, der Gang über alle Punkte nur, wenn
+    /// sich davon etwas ändert (Review B-250a).
+    schloss: RefCell<Option<SchlossStand>>,
 }
+
+/// Modellstand, Wahl, offene Schlösser und das Schloss der Wahl dazu.
+type SchlossStand = (u64, Vec<String>, HashSet<String>, Option<bool>);
 
 /// Die Punkte mit Nummer, geteilt bis zur nächsten Änderung.
 type Spots = std::sync::Arc<Vec<(String, TerrainSpot)>>;
@@ -241,7 +250,7 @@ fn hub_3d(dz: f64, shift: bool) -> f64 {
 fn schloss_der_wahl(
     spots: &[(String, TerrainSpot)],
     w: &[String],
-    offen: &std::collections::HashSet<String>,
+    offen: &HashSet<String>,
 ) -> Option<bool> {
     let mut mess = spots
         .iter()
@@ -249,6 +258,27 @@ fn schloss_der_wahl(
         .peekable();
     mess.peek()?;
     Some(mess.any(|s| !offen.contains(&s.0)))
+}
+
+/// Das Schloss der Wahl aus `merker`, wenn Modellstand `rev`, Wahl `w` und
+/// offene Schlösser `offen` dieselben sind, sonst `rechnen` und merken
+/// (Review B-250a): Vergleichen kostet so viel wie Wahl und offene
+/// Schlösser, nicht wie alle Punkte.
+fn schloss_gemerkt(
+    merker: &RefCell<Option<SchlossStand>>,
+    rev: u64,
+    w: &[String],
+    offen: &HashSet<String>,
+    rechnen: impl FnOnce() -> Option<bool>,
+) -> Option<bool> {
+    if let Some((r, gw, of, zu)) = merker.borrow().as_ref() {
+        if *r == rev && gw == w && of == offen {
+            return *zu;
+        }
+    }
+    let zu = rechnen();
+    *merker.borrow_mut() = Some((rev, w.to_vec(), offen.clone(), zu));
+    zu
 }
 
 /// Abstand eines Bildpunkts von der Strecke `a`–`b` im Bild.
@@ -449,12 +479,11 @@ impl App {
     /// Messpunkt mit geschlossenem Schloss ist, `Some(false)`, wenn alle
     /// gewählten Messpunkte offen sind; `None` ohne Messpunkt in der Wahl.
     pub(super) fn schloss_zu(&self) -> Option<bool> {
-        let spots = self.spots();
-        schloss_der_wahl(
-            &spots,
-            &self.platte.punkte.gewaehlt,
-            &self.platte.leiste.offen_nr,
-        )
+        let (w, offen) = (&self.platte.punkte.gewaehlt, &self.platte.leiste.offen_nr);
+        let rev = self.scene.model().revision();
+        schloss_gemerkt(&self.platte.punkte.schloss, rev, w, offen, || {
+            schloss_der_wahl(&self.spots(), w, offen)
+        })
     }
 
     /// Wo das Schloss der Wahl steht (Bildpunkt): rechts neben der Spitze
@@ -1379,6 +1408,44 @@ mod tests {
         offen.insert("M1".to_string());
         assert_eq!(schloss_der_wahl(&s, &w(&["M1", "H1"]), &offen), Some(false));
         assert_eq!(schloss_der_wahl(&s, &w(&["M1", "M2"]), &offen), Some(true));
+    }
+
+    /// Das Schloss der Wahl gemerkt (Review B-250a): neu gerechnet nur bei
+    /// anderem Modellstand, anderer Wahl oder anderen offenen Schlössern.
+    #[test]
+    fn schloss_gemerkt_bis_zur_aenderung() {
+        let merker = RefCell::new(None);
+        let n = std::cell::Cell::new(0);
+        let zaehlen = |v: Option<bool>| {
+            n.set(n.get() + 1);
+            v
+        };
+        let w = vec!["M1".to_string()];
+        let mut offen = HashSet::new();
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w, &offen, || zaehlen(Some(true))),
+            Some(true)
+        );
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w, &offen, || zaehlen(None)),
+            Some(true)
+        );
+        assert_eq!(n.get(), 1, "gleicher Stand: gemerkt");
+        offen.insert("M1".to_string());
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w, &offen, || zaehlen(Some(false))),
+            Some(false)
+        );
+        let w2 = vec!["M2".to_string()];
+        assert_eq!(
+            schloss_gemerkt(&merker, 1, &w2, &offen, || zaehlen(Some(true))),
+            Some(true)
+        );
+        assert_eq!(
+            schloss_gemerkt(&merker, 2, &w2, &offen, || zaehlen(None)),
+            None
+        );
+        assert_eq!(n.get(), 4);
     }
 
     /// Lage beim Ziehen: im Raster, mit Alt ohne Fang.

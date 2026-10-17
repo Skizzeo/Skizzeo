@@ -254,7 +254,14 @@ impl App {
             Action::AddDrain => self.drain_button(Id::PropsDrainAdd),
             Action::DeleteDrain => self.drain_button(Id::PropsDrainDelete),
             Action::Schloss => self.schloss_umschalten(),
-            _ => {}
+            // die Aktionen am Bauteil nimmt `context_action`; eine neue
+            // Aktion fällt so dem Compiler auf (Review H-250c)
+            Action::ShowInModel
+            | Action::ChangeType
+            | Action::Properties
+            | Action::Quantity
+            | Action::Delete
+            | Action::DeleteBuilding => {}
         }
     }
 
