@@ -240,7 +240,7 @@ impl Ui {
         let ecken = |rows: &mut Vec<Row>| {
             rows.extend(match l.ecken {
                 0 => [
-                    Row::Hint("Ecken im Grundriss klicken,"),
+                    Row::Hint("Ecken im Grundriss/3D klicken,"),
                     Row::Hint("die erste Ecke schließt."),
                 ],
                 _ => [

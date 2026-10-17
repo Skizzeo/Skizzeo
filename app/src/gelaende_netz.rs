@@ -204,6 +204,17 @@ impl Gelaende {
             .any(|t| sk_math::ray_triangle(o, d, t[0], t[1], t[2]).is_some())
     }
 
+    /// Der nächste Punkt, in dem der Sehstrahl von `o` in Richtung `d` die
+    /// Oberfläche trifft; dort setzt „Grenze zeichnen“ in 3D die Ecke (Jörn
+    /// 17.10.).
+    pub(crate) fn treffpunkt(&self, o: Vec3, d: Vec3) -> Option<Vec3> {
+        self.dreiecke
+            .iter()
+            .filter_map(|t| sk_math::ray_triangle(o, d, t[0], t[1], t[2]))
+            .min_by(f64::total_cmp)
+            .map(|t| o + d * t)
+    }
+
     fn rechnen(m: &Model) -> Option<Gelaende> {
         let mut dreiecke = m.terrain_triangles();
         if dreiecke.is_empty() {

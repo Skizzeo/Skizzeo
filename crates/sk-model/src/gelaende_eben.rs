@@ -75,13 +75,12 @@ impl Model {
         // die Geländeflächen, die schon da sind, und das Grundstück liegen
         // mit darauf (I2)
         let flaechen = self.site_patches().iter().flat_map(|f| f.outline.iter());
-        let grenze: Vec<[f64; 2]> = match self.terrain() {
+        let grenzen: Vec<Vec<[f64; 2]>> = match self.terrain() {
             Some(t) => match self.survey_frame_of(t) {
                 Some(f) => t
                     .boundary_rings()
                     .iter()
-                    .flatten()
-                    .map(|&(e, n)| f.to_model(e, n))
+                    .map(|r| r.iter().map(|&(e, n)| f.to_model(e, n)).collect())
                     .collect(),
                 None => Vec::new(),
             },
@@ -90,7 +89,7 @@ impl Model {
         let extra: Vec<[f64; 2]> = extra
             .iter()
             .chain(flaechen)
-            .chain(&grenze)
+            .chain(grenzen.iter().flatten())
             .copied()
             .collect();
         if !extra.is_empty() {
@@ -112,6 +111,35 @@ impl Model {
                 if !bereiche.iter().any(|b| b.enthaelt(p)) {
                     ecken.push((p, z, None));
                 }
+            }
+        }
+        // Die Grenzen halten das Gelände (Jörn 17.10.): Punkte an ihren
+        // Ecken und Viertelpunkten in der Höhe der Platte dort, der Ring als
+        // Bruchkante, wenn er keinen Rand einer Platte kreuzt. Ein Punkt
+        // innerhalb wirkt dann nur bis zur Grenze, nicht bis zum Rechteck
+        // um sie.
+        let z = self.terrain_z_of(self.level_building());
+        let raender: Vec<Vec<[f64; 2]>> = (0..umlaeufe)
+            .map(|k| {
+                let r = ecken.iter().filter(|e| e.2 == Some(k));
+                r.map(|e| e.0).collect()
+            })
+            .collect();
+        for ring in &grenzen {
+            let pts: Vec<[f64; 2]> = grenz_punkte(ring)
+                .into_iter()
+                .filter(|p| !ecken.iter().any(|e| nah(e.0, *p)))
+                .collect();
+            let zu = kanten(&pts, true);
+            let umlauf = (pts.len() >= 3
+                && !raender.iter().any(|r| kreuzen(&zu, &kanten(r, true))))
+            .then(|| {
+                umlaeufe += 1;
+                umlaeufe - 1
+            });
+            for p in pts {
+                let h = bereiche.iter().find(|b| b.enthaelt(p)).map_or(z, |b| b.z);
+                ecken.push((p, h, umlauf));
             }
         }
         let mut gesehen = std::collections::HashSet::new();
@@ -211,8 +239,74 @@ impl Model {
         let neu = self.set_terrain(Some(t));
         if neu {
             self.grenze_abdecken();
+            self.grenze_anheften(ring);
         }
         neu
+    }
+
+    /// Eine neue Grenze hält ein angenommenes Gelände (Jörn 17.10.): Punkte
+    /// an ihren Ecken und Viertelpunkten in der Höhe, die das Netz dort
+    /// zeigt, so dass nichts springt; der Ring als Bruchkante, wenn er
+    /// keine andere kreuzt. Ein Punkt innerhalb wirkt dann nur bis zur
+    /// Grenze. Wo schon ein Punkt liegt, gilt er. Ein Aufmaß des Vermessers
+    /// bleibt, wie es ist; ohne Punkte kommen sie mit den ersten
+    /// ([`Model::seed_flat_terrain`]).
+    fn grenze_anheften(&mut self, ring: &[[f64; 2]]) {
+        let Some(t) = self.terrain().filter(|t| t.assumed()) else {
+            return;
+        };
+        let Some(f) = self.survey_frame_of(t) else {
+            return;
+        };
+        let lage: Vec<(&str, [f64; 2])> = t
+            .points
+            .iter()
+            .filter(|p| !p.off)
+            .map(|p| (p.nr.as_str(), f.to_model(p.e, p.n)))
+            .collect();
+        let bei = |nr: &str| lage.iter().find(|q| q.0 == nr).map(|q| q.1);
+        let andere: Vec<([f64; 2], [f64; 2])> = t
+            .breaks
+            .iter()
+            .flat_map(|b| {
+                kanten(
+                    &b.pts.iter().filter_map(|n| bei(n)).collect::<Vec<_>>(),
+                    b.closed,
+                )
+            })
+            .collect();
+        let pts = grenz_punkte(ring);
+        if pts.len() < 3 {
+            return;
+        }
+        let vorhanden: Vec<Option<String>> = pts
+            .iter()
+            .map(|p| lage.iter().find(|q| nah(q.1, *p)).map(|q| q.0.to_string()))
+            .collect();
+        let kreuzt = kreuzen(&kanten(&pts, true), &andere);
+        let z0 = self.hoehe_an_der_platte();
+        let neu: Vec<[f64; 3]> = pts
+            .iter()
+            .zip(&vorhanden)
+            .filter(|(_, v)| v.is_none())
+            .map(|(p, _)| [p[0], p[1], self.terrain_z_survey(p[0], p[1]).unwrap_or(z0)])
+            .collect();
+        let idx = self.add_terrain_points(&neu);
+        if idx.len() != neu.len() || kreuzt {
+            return;
+        }
+        let Some(t) = self.terrain() else {
+            return;
+        };
+        let mut neue = idx
+            .iter()
+            .filter_map(|&i| t.points.get(i).map(|p| p.nr.clone()));
+        let namen: Vec<String> = vorhanden
+            .into_iter()
+            .map(|v| v.or_else(|| neue.next()))
+            .collect::<Option<_>>()
+            .unwrap_or_default();
+        self.rand_als_bruchkante(namen);
     }
 
     /// Nach einer gezeichneten oder geänderten Grenze (I6, Jörn 17.10.):
@@ -423,6 +517,66 @@ fn huelle_ring(h: &[Vec3], spots: &[TerrainSpot]) -> Vec<usize> {
         }
     }
     ring
+}
+
+/// Teilung jeder Grenzkante für die Punkte an der Grenze (Jörn 17.10.:
+/// Drittel- oder Viertelpunkte).
+const GRENZ_TEILE: usize = 4;
+/// Kürzer (mm) als dieses Stück je Teil bleibt eine Grenzkante ungeteilt:
+/// Die Punkte lägen sonst dicht an dicht.
+const GRENZ_TEIL_MIN: f64 = 500.0;
+
+/// Die Ecken eines Grenzrings (mm) und die Viertelpunkte seiner Kanten, der
+/// Reihe nach.
+fn grenz_punkte(ring: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let n = ring.len();
+    let mut out = Vec::with_capacity(n * GRENZ_TEILE);
+    for k in 0..n {
+        let (a, b) = (ring[k], ring[(k + 1) % n]);
+        out.push(a);
+        if (b[0] - a[0]).hypot(b[1] - a[1]) / GRENZ_TEILE as f64 >= GRENZ_TEIL_MIN {
+            for i in 1..GRENZ_TEILE {
+                let s = i as f64 / GRENZ_TEILE as f64;
+                out.push([a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s]);
+            }
+        }
+    }
+    out
+}
+
+/// Liegen zwei Punkte (mm) an derselben Stelle, so nah, dass die Prüfung
+/// des Netzes sie zusammennähme?
+fn nah(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).hypot(a[1] - b[1]) <= 2.0 * FUGE
+}
+
+/// Die Kanten eines Linienzugs, mit `zu` geschlossen.
+fn kanten(r: &[[f64; 2]], zu: bool) -> Vec<([f64; 2], [f64; 2])> {
+    let n = r.len();
+    let m = if zu && n >= 3 { n } else { n.saturating_sub(1) };
+    (0..m).map(|k| (r[k], r[(k + 1) % n])).collect()
+}
+
+/// Kreuzt oder berührt eine Kante aus `a` eine aus `b`? Im Zweifel ja: Die
+/// Bruchkante unterbleibt dann, statt dass das Netz sie mit einer Meldung
+/// verwirft.
+fn kreuzen(a: &[([f64; 2], [f64; 2])], b: &[([f64; 2], [f64; 2])]) -> bool {
+    let o = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
+        ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])).signum()
+    };
+    let aussen = |s: &([f64; 2], [f64; 2]), t: &([f64; 2], [f64; 2])| {
+        s.0[0].max(s.1[0]) < t.0[0].min(t.1[0])
+            || t.0[0].max(t.1[0]) < s.0[0].min(s.1[0])
+            || s.0[1].max(s.1[1]) < t.0[1].min(t.1[1])
+            || t.0[1].max(t.1[1]) < s.0[1].min(s.1[1])
+    };
+    a.iter().any(|s| {
+        b.iter().any(|t| {
+            !aussen(s, t)
+                && o(t.0, t.1, s.0) * o(t.0, t.1, s.1) <= 0.0
+                && o(s.0, s.1, t.0) * o(s.0, s.1, t.1) <= 0.0
+        })
+    })
 }
 
 /// Auf mm.
@@ -1381,13 +1535,15 @@ mod tests {
         assert!(m.add_parcel(&ring));
         m.commit();
         let t = m.terrain().unwrap();
-        assert_eq!(t.points.len(), n + 4);
-        assert_eq!(t.breaks.len(), brueche + 1, "der alte Rand");
+        // vier Ecken des Rechtecks, dazu die Grenze mit ihren Ecken und
+        // Viertelpunkten (Jörn 17.10.)
+        assert_eq!(t.points.len(), n + 4 + 16);
+        assert_eq!(t.breaks.len(), brueche + 2, "der alte Rand und die Grenze");
         for (q, z) in &raster {
             let h = m.terrain_z_survey(q[0], q[1]).unwrap();
             assert!((h - z).abs() < 1e-6, "{q:?}: {z} → {h}");
         }
-        for s in m.terrain_spots().iter().skip(n) {
+        for s in m.terrain_spots().iter().skip(n).take(4) {
             assert!((s.p[2] - platte).abs() < 1.0, "{:?} statt {platte}", s.p);
         }
         // weiter gezogen: der Rand von eben kommt dazu, keiner doppelt
@@ -1397,7 +1553,7 @@ mod tests {
         assert!(m.set_parcel_ring(0, &weiter));
         m.commit();
         let t = m.terrain().unwrap();
-        assert_eq!(t.breaks.len(), brueche + 2);
+        assert_eq!(t.breaks.len(), brueche + 3);
         let mut ringe: Vec<Vec<String>> = t
             .breaks
             .iter()
@@ -1414,6 +1570,81 @@ mod tests {
             let h = m.terrain_z_survey(q[0], q[1]).unwrap();
             assert!((h - z).abs() < 1e-6, "weiter {q:?}: {z} → {h}");
         }
+    }
+
+    /// Eine gezeichnete Grenze hält das Gelände (Jörn 17.10.): Mit den
+    /// ersten Punkten kommen Punkte an ihre Ecken und Viertelpunkte in der
+    /// Höhe der Platte, ihr Ring wird Bruchkante. Ein tiefer Punkt mitten
+    /// im Grundstück wirkt nur bis zur Grenze, draußen bleibt alles eben.
+    #[test]
+    fn grenze_haelt_das_gelaende() {
+        let mut m = haus();
+        let z = m.terrain_z();
+        let ring = [
+            [-10000.0, -8000.0],
+            [20000.0, -8000.0],
+            [20000.0, 16000.0],
+            [-10000.0, 16000.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.commit();
+        m.begin("Punkt");
+        assert_eq!(
+            m.add_terrain_points(&[[15000.0, 12000.0, z - 2000.0]])
+                .len(),
+            1
+        );
+        m.commit();
+        let t = m.terrain().unwrap();
+        let f = m.survey_frame_of(t).unwrap();
+        let lage: Vec<[f64; 2]> = t.points.iter().map(|p| f.to_model(p.e, p.n)).collect();
+        let an_der_grenze = grenz_punkte(&ring);
+        assert_eq!(an_der_grenze.len(), 16);
+        for q in &an_der_grenze {
+            assert!(lage.iter().any(|p| nah(*p, *q)), "{q:?}");
+        }
+        assert!(t.breaks.iter().any(|b| b.closed && b.pts.len() == 16));
+        let innen = m.terrain_z_survey(15000.0, 12000.0).unwrap();
+        assert!((innen - (z - 2000.0)).abs() < 1.0, "{innen}");
+        // auf der Grenze und in einem Band draußen eben
+        let rand = m.plate_settings().margin;
+        let mut draussen = vec![[20000.0, 13000.0], [17000.0, 16000.0]];
+        for i in 0..=20 {
+            let s = f64::from(i) / 20.0;
+            for d in [0.3, 0.6, 0.9] {
+                let w = rand * d;
+                draussen.push([20000.0 + w, -8000.0 + 24000.0 * s]);
+                draussen.push([-10000.0 + 30000.0 * s, 16000.0 + w]);
+            }
+        }
+        for q in draussen {
+            let h = m.terrain_z_survey(q[0], q[1]).unwrap();
+            assert!((h - z).abs() < 1.0, "{q:?}: {h} statt {z}");
+        }
+    }
+
+    /// Kurze Kanten bleiben ungeteilt; Kanten, die sich kreuzen oder
+    /// berühren, gelten als kreuzend.
+    #[test]
+    fn grenzpunkte_und_kreuzen() {
+        let klein = [[0.0, 0.0], [1500.0, 0.0], [1500.0, 1000.0]];
+        assert_eq!(grenz_punkte(&klein).len(), 3);
+        let p = grenz_punkte(&[[0.0, 0.0], [4000.0, 0.0], [0.0, 1000.0]]);
+        assert_eq!(
+            p[..4],
+            [[0.0, 0.0], [1000.0, 0.0], [2000.0, 0.0], [3000.0, 0.0]]
+        );
+        assert_eq!(p.len(), 9, "die kurze Kante ungeteilt");
+        let a = kanten(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]], true);
+        assert_eq!(a.len(), 3);
+        assert_eq!(kanten(&[[0.0, 0.0], [10.0, 0.0]], false).len(), 1);
+        let quer = kanten(&[[5.0, -5.0], [5.0, 5.0]], false);
+        let weit = kanten(&[[50.0, -5.0], [50.0, 5.0]], false);
+        let ecke = kanten(&[[10.0, 10.0], [20.0, 20.0]], false);
+        assert!(kreuzen(&a, &quer));
+        assert!(!kreuzen(&a, &weit));
+        assert!(kreuzen(&a, &ecke), "berührt");
     }
 
     /// Im System eines Lageplans (gedreht) kommt die Grenze in dessen
