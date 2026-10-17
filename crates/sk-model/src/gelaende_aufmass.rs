@@ -17,6 +17,7 @@ use sk_gelaende::dxf::Linienart;
 use sk_gelaende::lesen::Punkt;
 use sk_gelaende::linien::Hoehenlinie;
 use sk_gelaende::{netz, Netz, Rand};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1205,7 +1206,8 @@ impl Model {
     /// Haustrennwand (H-245a, VOB). Ist kein Stück frei, der ganze Rand.
     fn am_freien_rand(t: &Terrain, f: &SurveyFrame, umrisse: &[ZugUmriss], k: usize) -> Vec<f64> {
         let ring = &umrisse[k].2;
-        let andere = Self::nachbarn(umrisse, k);
+        let nb = Self::nachbarn(umrisse, k);
+        let andere: Vec<&[[f64; 2]]> = nb.iter().map(|r| r.as_ref()).collect();
         let land = |p: [f64; 2]| f.to_survey(p[0], p[1]);
         let frei = trennwand::freie_strecken(ring, &andere);
         if frei.is_empty() {
@@ -1216,24 +1218,42 @@ impl Model {
         t.along_strecken(&s)
     }
 
-    /// Die Plattenumrisse anderer Gebäude nahe `umrisse[k]`.
-    fn nachbarn(umrisse: &[ZugUmriss], k: usize) -> Vec<&[[f64; 2]]> {
+    /// Die Plattenumrisse anderer Gebäude nahe `umrisse[k]`. Trennt eine
+    /// Gerade die Rechtecke beider, trennt das Anlegen der Fläche die
+    /// Platten zwischen ihnen mit dem Fugenstreifen; dann zählt das Rechteck des
+    /// anderen, nicht sein Umriss: Neben der schrägen Wand eines gedrehten
+    /// Nachbarn liegt sonst der eigene Rand im Fugenstreifen (VOB H-245e).
+    fn nachbarn(umrisse: &[ZugUmriss], k: usize) -> Vec<Cow<'_, [[f64; 2]]>> {
         let (_, b, _, mein) = &umrisse[k];
+        let d = trennwand::AN_DER_WAND;
         let nah = |k: &[f64; 4]| {
-            let d = trennwand::AN_DER_WAND;
             k[0] <= mein[2] + d && mein[0] <= k[2] + d && k[1] <= mein[3] + d && mein[1] <= k[3] + d
+        };
+        // wie trennen::GLEICH: so weit dürfen die Rechtecke übereinander reichen
+        let getrennt = |k: &[f64; 4]| {
+            k[0] - mein[2] > -1.0
+                || mein[0] - k[2] > -1.0
+                || k[1] - mein[3] > -1.0
+                || mein[1] - k[3] > -1.0
         };
         umrisse
             .iter()
             .filter(|(_, x, _, k)| b.is_some() && x.is_some() && x != b && nah(k))
-            .map(|(_, _, r, _)| r.as_slice())
+            .map(|(_, _, r, k)| {
+                if getrennt(k) {
+                    Cow::Owned(vec![[k[0], k[1]], [k[2], k[1]], [k[2], k[3]], [k[0], k[3]]])
+                } else {
+                    Cow::Borrowed(r.as_slice())
+                }
+            })
             .collect()
     }
 
     /// Streifen der Schürze von `umrisse[k]` unter seiner Haustrennwand
     /// ([`trennwand::unter_der_trennwand`]); leer ohne.
     fn unter_der_trennwand(&self, umrisse: &[ZugUmriss], k: usize) -> Vec<Vec<[f64; 2]>> {
-        let andere = Self::nachbarn(umrisse, k);
+        let nb = Self::nachbarn(umrisse, k);
+        let andere: Vec<&[[f64; 2]]> = nb.iter().map(|r| r.as_ref()).collect();
         if andere.is_empty() {
             return Vec::new();
         }

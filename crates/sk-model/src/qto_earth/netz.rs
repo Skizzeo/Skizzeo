@@ -239,7 +239,11 @@ impl ErdNetz {
         let trennwand: Vec<Vec<Vec3>> = m
             .trennwand_streifen(run)
             .into_iter()
-            .map(|q| q.into_iter().map(|p| sk_math::vec3(p[0], p[1], 0.0)).collect())
+            .map(|q| {
+                q.into_iter()
+                    .map(|p| sk_math::vec3(p[0], p[1], 0.0))
+                    .collect()
+            })
             .collect();
         let ok = if trennwand.is_empty() {
             0.0

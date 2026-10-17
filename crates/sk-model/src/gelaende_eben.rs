@@ -680,6 +680,73 @@ mod tests {
         }
     }
 
+    /// Gedrehter Nachbar, seine Ecke 10 bis 20 mm vor der Hauswand (VOB
+    /// H-245e): Der Rand des Hauses neben der schrägen Wand liegt im
+    /// Fugenstreifen zwischen den Rechtecken und zählt nicht als frei. OK
+    /// Gelände und UK Gründung beider Häuser bleiben, und die Erdmengen
+    /// des Hauses beim Anlegen der ersten Fläche auch (vorher bis 0,50 m
+    /// tiefer, Graben 6,50 → 12,76 m³).
+    #[test]
+    fn gedrehter_nachbar_knapp() {
+        for (grad, spalt) in [(2.0_f64, 640.0), (2.0, 650.0)] {
+            let fall = format!("{grad}° {spalt}");
+            let mut m = Model::with_seed(5);
+            let (s, c) = grad.to_radians().sin_cos();
+            let x0 = 8000.0 + spalt;
+            let nachbar: Vec<Vec3> = [[0.0, 0.0], [6000.0, 0.0], [6000.0, 8000.0], [0.0, 8000.0]]
+                .iter()
+                .map(|p| {
+                    vec3(
+                        x0 + p[0] * c - p[1] * s + 8000.0 * s,
+                        p[0] * s + p[1] * c,
+                        0.0,
+                    )
+                })
+                .collect();
+            let haus = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(8000.0, 0.0, 0.0),
+                vec3(8000.0, 10000.0, 0.0),
+                vec3(0.0, 10000.0, 0.0),
+            ];
+            let mut gr = Vec::new();
+            for (pts, versatz) in [(&haus[..], 500.0), (&nachbar[..], 1500.0)] {
+                let b = m.add_building(1);
+                let run = m.build_from_polygon(b, pts).unwrap();
+                m.begin("Gelände");
+                assert!(m.set_terrain_offset_of(b, versatz));
+                m.commit();
+                gr.push(m.foundation_level_of(m.run(run).unwrap().storey).unwrap());
+            }
+            let stand = |m: &Model| -> Vec<(f64, f64)> {
+                gr.iter()
+                    .map(|g| (m.terrain_z_of_level(*g), m.storey(*g).unwrap().elevation))
+                    .collect()
+            };
+            let erde = |m: &Model| -> Vec<(String, f64)> {
+                crate::qto::schedule(m)
+                    .auto
+                    .iter()
+                    .filter(|a| a.key.starts_with("earth.") && a.unit == "m3")
+                    .map(|a| (format!("{:?} {}", a.building, a.key), a.value))
+                    .collect()
+            };
+            let (h0, e0) = (stand(&m), erde(&m));
+            m.begin("Fläche");
+            assert!(m.seed_flat_terrain(&[]));
+            m.commit();
+            for (a, b) in h0.iter().zip(stand(&m)) {
+                assert!((a.0 - b.0).abs() < 1e-6, "{fall}: OK {} → {}", a.0, b.0);
+                assert!((a.1 - b.1).abs() < 1e-6, "{fall}: UK {} → {}", a.1, b.1);
+            }
+            let e1 = erde(&m);
+            assert_eq!(e0.len(), e1.len(), "{fall}");
+            for (x, y) in e0.iter().zip(&e1) {
+                assert!((x.1 - y.1).abs() < 1e6, "{fall}: {} {} → {}", x.0, x.1, y.1);
+            }
+        }
+    }
+
     /// Haus und Garage in jedem Abstand der Wandzüge von 0,65 bis 3 m (in
     /// cm, jeder siebte um 0,4 mm daneben), längs und quer: keine Ecke
     /// fällt bei der Prüfung heraus, und OK Gelände an beiden Gründungen
