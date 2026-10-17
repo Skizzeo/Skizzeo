@@ -597,16 +597,15 @@ mod tests {
                     vec3(x0 + w, h, 0.0),
                     vec3(x0, h, 0.0),
                 ];
-                m.build_from_polygon(b, &pts).unwrap();
-                b
+                (b, m.build_from_polygon(b, &pts).unwrap())
             };
-            let a = neu(0.0, 8000.0, 10000.0);
+            let (a, _) = neu(0.0, 8000.0, 10000.0);
             let (w, h) = if garage {
                 (3000.0, 3000.0)
             } else {
                 (8000.0, 10000.0)
             };
-            let b = neu(8000.0 + spalt, w, h);
+            let (b, zug) = neu(8000.0 + spalt, w, h);
             let fall = format!("{spalt} Garage {garage}");
             let paare = m.haeuser_ineinander();
             if soll {
@@ -633,6 +632,20 @@ mod tests {
                 }
             } else {
                 assert!(h.is_empty(), "{fall}: {h:?}");
+            }
+            // gemerkt mit der Lage: weggerückt ist das Paar fort
+            if soll {
+                let weg: Vec<_> = m
+                    .run(zug)
+                    .unwrap()
+                    .points
+                    .iter()
+                    .map(|p| vec3(p.x + 5000.0, p.y, p.z))
+                    .collect();
+                m.begin("Weg");
+                assert!(m.set_run_points(zug, &weg).is_some());
+                m.commit();
+                assert!(m.haeuser_ineinander().is_empty(), "{fall}");
             }
         }
     }

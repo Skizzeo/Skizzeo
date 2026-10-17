@@ -354,6 +354,10 @@ pub(crate) struct Lage {
     /// Grundriss): Dort rechnet der Graben mit der eigenen Höhe (VOB-Spruch
     /// zu H-245c, Weg b).
     trennwand: HashMap<RunId, Vec<Vec<[f64; 2]>>>,
+    /// Häuser, die ineinander stehen ([`Model::haeuser_ineinander`]), mit
+    /// den Umrissen gerechnet, die die Lage ohnehin braucht: So kostet der
+    /// Hinweis beim Zusammenführen der Mengenliste nichts (Review #248).
+    ineinander: Vec<(BuildingId, BuildingId)>,
 }
 
 /// Was an Gelände und Lage die Erdmengen aller Häuser trägt, für das
@@ -1158,6 +1162,7 @@ impl Model {
         // je Zug mit Gebäude: Gebäude und höchster Punkt am Umriss
         let mut hoch: Vec<(BuildingId, Option<f64>)> = Vec::new();
         let umrisse = self.umrisse_der_zuege();
+        lage.ineinander = self.ineinander_rechnen(&umrisse);
         for (k, (id, b, ..)) in umrisse.iter().enumerate() {
             let Some(r) = self.runs.get(*id) else {
                 continue;
@@ -1243,14 +1248,18 @@ impl Model {
     /// Paare von Häusern, deren Umrisse ineinander stehen: Ihre Wände
     /// überdecken sich, etwa wenn ein Haus auf die Bezugslinie des anderen
     /// gezeichnet ist (H-245-geo-a). Je Paar einmal, nach Guid geordnet;
-    /// Wand an Wand zählt nicht.
+    /// Wand an Wand zählt nicht. Gemerkt mit der [`Lage`].
     pub fn haeuser_ineinander(&self) -> Vec<(BuildingId, BuildingId)> {
-        let mut umrisse: Vec<([f64; 4], Haus, Vec<[f64; 2]>)> = self
-            .lesend(|| self.umrisse_der_zuege())
-            .into_iter()
+        self.lage().ineinander.clone()
+    }
+
+    /// [`Model::haeuser_ineinander`] aus den Umrissen der Züge.
+    fn ineinander_rechnen(&self, umrisse: &[ZugUmriss]) -> Vec<(BuildingId, BuildingId)> {
+        let mut umrisse: Vec<([f64; 4], Haus, &[[f64; 2]])> = umrisse
+            .iter()
             .filter_map(|(_, b, ring, k)| {
-                let b = b?;
-                Some((k, (self.building(b)?.guid, b), ring))
+                let b = (*b)?;
+                Some((*k, (self.building(b)?.guid, b), ring.as_slice()))
             })
             .collect();
         // nach links geordnet: Kandidaten nur bis zum rechten Rand
