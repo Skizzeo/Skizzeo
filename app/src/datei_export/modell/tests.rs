@@ -85,9 +85,13 @@ fn glb_und_obj_aus_dem_haus() {
         u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize,
         b.len()
     );
-    let (o, mtl) = sk_export::obj::schreiben(&s, &Lage::default(), "haus.mtl");
-    assert!(o.contains("\nusemtl "));
-    assert_eq!(mtl.matches("newmtl ").count(), s.materialien.len());
+    let r = sk_export::obj::schreiben(&s, &Lage::default(), "haus");
+    assert!(r.obj.contains("\nusemtl "));
+    assert_eq!(r.mtl.matches("newmtl ").count(), s.materialien.len());
+    assert_eq!(
+        r.bilder.len(),
+        s.materialien.iter().filter(|m| m.textur.is_some()).count()
+    );
 }
 
 #[test]

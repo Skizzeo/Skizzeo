@@ -13,9 +13,11 @@
 //!
 //! Der Export liest nur; Modell, Mengen und Kosten bleiben unberührt.
 
+use super::kachel;
 use crate::menu::Format3d;
 use crate::{document, meldung, App, NOTICE_TIME};
 use sk_export::{Dreieck, Knoten, Lage, Lagesystem, Material, Netz, Oben, Szene};
+use sk_model::proctex::Pattern;
 use sk_model::tree::{self, NodeKey, ProjectTree, Tab};
 use sk_model::view::Masks;
 use sk_model::{material, ElementId, Model, Solid};
@@ -132,15 +134,21 @@ impl App {
             }
             Format3d::Obj => {
                 let (_, oben, utm) = OBJ_WAHL[wahl];
-                let mtl = path.with_extension("mtl");
-                let mtl_name = mtl
-                    .file_name()
-                    .map_or("modell.mtl".into(), |n| n.to_string_lossy().into_owned());
-                let (o, m) = sk_export::obj::schreiben(&szene, &lage(oben, utm), &mtl_name);
-                (
-                    vec![(path.clone(), o.into_bytes()), (mtl, m.into_bytes())],
-                    bild_satz("OBJ", &szene, ohne_utm(utm)),
-                )
+                let stamm = path
+                    .file_stem()
+                    .map_or("modell".into(), |n| n.to_string_lossy().into_owned());
+                let r = sk_export::obj::schreiben(&szene, &lage(oben, utm), &stamm);
+                let mut d = vec![
+                    (path.clone(), r.obj.into_bytes()),
+                    (
+                        path.with_file_name(format!("{stamm}.mtl")),
+                        r.mtl.into_bytes(),
+                    ),
+                ];
+                for (name, png) in r.bilder {
+                    d.push((path.with_file_name(name), png));
+                }
+                (d, bild_satz("OBJ", &szene, ohne_utm(utm)))
             }
             Format3d::Stl => {
                 let (_, massstab, text) = STL_WAHL[wahl];
@@ -211,6 +219,17 @@ fn bild_satz(format: &str, s: &Szene, ohne_utm: bool) -> String {
         teile,
         tausender(s.dreiecke())
     );
+    let bilder = s.materialien.iter().filter(|m| m.textur.is_some()).count();
+    if bilder > 0 {
+        satz += &format!(
+            ", {}",
+            if bilder == 1 {
+                "1 Muster als Bild".to_string()
+            } else {
+                format!("{bilder} Muster als Bild")
+            }
+        );
+    }
     if ohne_utm {
         satz += " · ohne Lage im Lagesystem (Projektdaten), Ursprung am Projektnullpunkt";
     }
@@ -377,7 +396,7 @@ impl Bau<'_> {
         match self.zweck {
             Zweck::Bild => {
                 for t in &s.triangles {
-                    let mat = self.material(t.mat, gelaende);
+                    let mat = self.material(t.mat, gelaende, t.n.z.abs() >= 0.5 * t.n.length());
                     let d = Dreieck {
                         p: t.p.map(|p| [p.x, p.y, p.z]),
                         n: [t.n.x, t.n.y, t.n.z],
@@ -402,7 +421,7 @@ impl Bau<'_> {
                     if !sk_ifc::geometrie::geschlossen(&n) {
                         self.offen += 1;
                     }
-                    let mat = self.material(n.mat, gelaende);
+                    let mat = self.material(n.mat, gelaende, false);
                     let pt = |i: u32| {
                         let p = n.punkte[i as usize];
                         [p.x, p.y, p.z]
@@ -422,14 +441,23 @@ impl Bau<'_> {
     }
 
     /// Platz des Materials zum Schlüssel; Baustoffe mit Namen und Farbe
-    /// der Oberfläche (ein Muster mit seiner Mischfarbe aus der Ferne),
-    /// das Gelände mit Belag und Erdreich.
-    fn material(&mut self, key: u16, gelaende: bool) -> usize {
+    /// der Oberfläche (ein Muster mit seiner Mischfarbe aus der Ferne, für
+    /// die Visualisierung dazu als Bild), das Gelände mit Belag und
+    /// Erdreich. `eben`: das Dreieck liegt flach; Muster, die die Ansicht
+    /// dort nicht zeigt, bekommen dann ein eigenes Material ohne Bild.
+    fn material(&mut self, key: u16, gelaende: bool, eben: bool) -> usize {
         let key = key & !material::CUT;
+        let mat = (!gelaende).then(|| self.m.material_by_key(key)).flatten();
+        let sf = mat.and_then(|x| self.m.attr().surface(x.surface));
+        let muster = sf
+            .and_then(|f| f.pattern.as_ref())
+            .filter(|p| !matches!(p, Pattern::Foreign(_)));
+        let bild = self.zweck == Zweck::Bild && muster.is_some();
+        let flach = bild && eben && muster.is_some_and(|p| !kachel::auch_eben(p));
         let slot = if gelaende {
             u32::from(u16::MAX) + u32::from(key)
         } else {
-            u32::from(key)
+            u32::from(key) | u32::from(flach) << 17
         };
         if let Some(&i) = self.stoffe.get(&slot) {
             return i;
@@ -439,17 +467,26 @@ impl Bau<'_> {
             Material {
                 name: if erd { "Erdreich" } else { "Geländebelag" }.into(),
                 farbe: self.farben[usize::from(erd)],
+                textur: None,
             }
         } else {
-            let mat = self.m.material_by_key(key);
-            let sf = mat.and_then(|x| self.m.attr().surface(x.surface));
             let farbe = sf.map_or([200, 200, 200], |f| match &f.pattern {
                 Some(p) => sk_model::proctex::mix(p, f.color),
                 None => f.color,
             });
+            let name = mat.map_or("Ohne Baustoff", |x| x.name.as_str());
+            let textur = match (sf, muster) {
+                (Some(f), Some(p)) if bild && !flach => kachel::kachel(p, f.color),
+                _ => None,
+            };
             Material {
-                name: mat.map_or("Ohne Baustoff", |x| x.name.as_str()).into(),
+                name: if flach {
+                    format!("{name} (Oberseite)")
+                } else {
+                    name.into()
+                },
                 farbe,
+                textur,
             }
         };
         self.materialien.push(neu);

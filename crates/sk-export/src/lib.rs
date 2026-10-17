@@ -18,11 +18,48 @@ pub mod stl;
 /// Ein Punkt oder eine Richtung (mm bzw. Einheitsvektor).
 pub type P3 = [f64; 3];
 
-/// Ein Material: Name und Farbe der Oberfläche (sRGB).
-#[derive(Clone, Debug, PartialEq)]
+/// Ein Material: Name und Farbe der Oberfläche (sRGB), dazu auf Wunsch
+/// ein Bild, das sich auf der Fläche wiederholt.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Material {
     pub name: String,
     pub farbe: [u8; 3],
+    pub textur: Option<Textur>,
+}
+
+/// Ein Bild (PNG), das die Fläche kachelt: `breite` × `hoehe` mm am Bau.
+/// Es liegt wie das Muster in der Ansicht ([`muster_uv`]): auf senkrechten
+/// Flächen waagerecht längs der Fläche und senkrecht ab ±0,00, auf ebenen
+/// Flächen nach x und y. Die obere Bildzeile ist die obere Kante der
+/// Kachel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Textur {
+    pub png: Vec<u8>,
+    pub breite: f64,
+    pub hoehe: f64,
+}
+
+impl Textur {
+    /// Texturkoordinate (glTF und OBJ: Anteil der Kachel, t nach unten)
+    /// eines Punkts mit der Normale `n`.
+    pub fn st(&self, p: P3, n: P3) -> [f64; 2] {
+        let [u, v] = muster_uv(p, n);
+        [u / self.breite.max(1.0), -v / self.hoehe.max(1.0)]
+    }
+}
+
+/// Musterkoordinaten (mm) wie der Shader der Ansicht (`pattern_uv`):
+/// senkrechte Flächen (|n.z| < 0,5) waagerecht längs der Fläche und
+/// senkrecht die Höhe, alle anderen x und y.
+pub fn muster_uv(p: P3, n: P3) -> [f64; 2] {
+    let l = laenge(n).max(1e-12);
+    if (n[2] / l).abs() < 0.5 {
+        let h = (n[0] * n[0] + n[1] * n[1]).sqrt().max(1e-12);
+        let t = [-n[1] / h, n[0] / h];
+        [p[0] * t[0] + p[1] * t[1], p[2]]
+    } else {
+        [p[0], p[1]]
+    }
 }
 
 /// Ein Dreieck gegen den Uhrzeigersinn um seine Normale (Außenseite).
@@ -289,14 +326,17 @@ pub(crate) mod probe {
                 Material {
                     name: "Porenbeton".into(),
                     farbe: [230, 230, 220],
+                    textur: None,
                 },
                 Material {
                     name: "Stahlbeton".into(),
                     farbe: [160, 160, 160],
+                    textur: None,
                 },
                 Material {
                     name: "Rasen".into(),
                     farbe: [90, 140, 60],
+                    textur: None,
                 },
             ],
             knoten: vec![gel, g],
@@ -350,6 +390,28 @@ mod tests {
         assert!((p[0] - 600_000.0).abs() < 1e-9);
         assert!((p[1] - 5_500_001.0).abs() < 1e-9);
         assert!((p[2] - 302.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn musterkoordinaten_wie_der_shader() {
+        // Wand nach Süden (n = −y): u längs x, v die Höhe
+        assert_eq!(
+            muster_uv([1200.0, 50.0, 800.0], [0.0, -1.0, 0.0]),
+            [1200.0, 800.0]
+        );
+        // Wand nach Osten (n = +x): u längs y
+        assert_eq!(
+            muster_uv([30.0, 700.0, 100.0], [1.0, 0.0, 0.0]),
+            [700.0, 100.0]
+        );
+        // Decke: x und y
+        assert_eq!(muster_uv([1.0, 2.0, 3.0], [0.0, 0.0, 1.0]), [1.0, 2.0]);
+        let t = Textur {
+            png: Vec::new(),
+            breite: 2000.0,
+            hoehe: 1000.0,
+        };
+        assert_eq!(t.st([1000.0, 0.0, 500.0], [0.0, -1.0, 0.0]), [0.5, -0.5]);
     }
 
     #[test]

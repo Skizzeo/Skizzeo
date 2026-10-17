@@ -4,6 +4,7 @@
 use crate::{cards, document, meldung, schedule_view, umfang_view, App, NOTICE_TIME};
 use sk_platform::Surface;
 
+mod kachel;
 mod modell;
 
 impl App {
