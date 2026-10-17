@@ -1760,7 +1760,6 @@ pub(crate) mod tests {
 
     /// Kanten, die nur ein Dreieck hat, mit Punkten auf 0,001 mm
     /// verschweißt (offen; ein dichter Körper hat keine).
-    /// Kanten, die nur ein Dreieck hat (Punkte auf 0,001 mm verschweißt).
     fn offene_kanten(s: &Solid) -> Vec<[Vec3; 2]> {
         let k = |p: Vec3| [p.x, p.y, p.z].map(|v| (v * 1000.0).round() as i64);
         let mut n: HashMap<_, (i32, [Vec3; 2])> = HashMap::new();

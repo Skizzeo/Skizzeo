@@ -106,7 +106,7 @@ fn projektdaten_mit_lage() {
     assert!(s.redo());
     assert_eq!(sk_model::szo::write(s.model()), neu);
     // Bodenkennwerte (Gruppe Baugrund): ein Schritt, in `[soil]`
-    // (Regel 113)
+    // (Regel 113); neue Projekte ohne Kiesschicht
     let mut m = Maske::new(s.model().project(), false, None).mit_ort(s.model().location());
     m.fokus_auf(10);
     for ch in "40".chars() {
