@@ -626,7 +626,10 @@ mod tests {
                 assert_eq!(h.len(), 1, "{fall}: {:?}", s.hinweise);
                 let stelle = |haus| {
                     let x = m.building(haus).unwrap();
-                    (h[0].find(&format!("{} ({})", x.name, x.number)), x.number.clone())
+                    (
+                        h[0].find(&format!("{} ({})", x.name, x.number)),
+                        x.number.clone(),
+                    )
                 };
                 let ((sa, na), (sb, nb)) = (stelle(a), stelle(b));
                 assert!(sa.is_some() && sb.is_some(), "{h:?}");
@@ -649,6 +652,46 @@ mod tests {
                 m.commit();
                 assert!(m.haeuser_ineinander().is_empty(), "{fall}");
             }
+        }
+    }
+
+    /// Der Hinweis gilt genau dort, wo die Trennung der Platten endet
+    /// (Geometrie zu #248): Rechnen die Gründungen beim Anlegen der ersten
+    /// Fläche gemeinsam, weil sich die Wände überdecken, meldet das Modell
+    /// das Paar; trennt es die Platten, nicht. Auch 2 bis 40 mm Überdeckung.
+    #[test]
+    fn ineinander_wo_die_trennung_endet() {
+        for spalt in [
+            500.0, 590.0, 600.0, 620.0, 628.0, 628.6, 629.4, 630.0, 650.0,
+        ] {
+            let mut m = Model::with_seed(5);
+            let mut gr = Vec::new();
+            for (x0, v) in [(0.0, 500.0), (8000.0 + spalt, 1500.0)] {
+                let b = m.add_building(1);
+                let pts = [
+                    vec3(x0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 10000.0, 0.0),
+                    vec3(x0, 10000.0, 0.0),
+                ];
+                let zug = m.build_from_polygon(b, &pts).unwrap();
+                m.begin("Versatz");
+                m.set_terrain_offset_of(b, v);
+                m.commit();
+                let st = m.run(zug).unwrap().storey;
+                gr.push(m.foundation_level_of(st).unwrap());
+            }
+            let vor: Vec<f64> = gr.iter().map(|g| m.terrain_z_of_level(*g)).collect();
+            let hinweis = !m.haeuser_ineinander().is_empty();
+            m.begin("Fläche");
+            assert!(m.seed_flat_terrain(&[]));
+            m.commit();
+            let gemeinsam = gr
+                .iter()
+                .zip(&vor)
+                .any(|(g, z)| (m.terrain_z_of_level(*g) - z).abs() > 1e-6);
+            assert_eq!(hinweis, gemeinsam, "Spalt {spalt}");
+            assert_eq!(hinweis, spalt < 629.0, "Spalt {spalt}");
         }
     }
 

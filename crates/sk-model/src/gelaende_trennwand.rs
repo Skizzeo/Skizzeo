@@ -10,6 +10,12 @@
 /// vor seiner Platte, Streifen von 2 × FUGE); dazu eine Fuge Spiel.
 pub(super) const AN_DER_WAND: f64 = 4.0 * sk_gelaende::pruefen::GLEICHE_STELLE * 1000.0;
 
+/// Tiefer als dies (mm) stehen zwei Umrisse ineinander. Schon ab hier trennt
+/// `gelaende_eben::trennen` die Platten nicht mehr (dort `GLEICH`), und beide
+/// Gründungen rechnen gemeinsam wie auf main: Der Hinweis gilt ab derselben
+/// Überdeckung (Geometrie zu #248), nicht erst ab [`AN_DER_WAND`].
+pub(super) const UEBERDECKT: f64 = 1.0;
+
 /// Die Strecken des geschlossenen Umrisses `ring` (mm), die weder in einem
 /// der Umrisse `andere` liegen noch näher als [`AN_DER_WAND`] an ihnen.
 pub(super) fn freie_strecken(
@@ -204,11 +210,11 @@ fn stuecke(ring: &[[f64; 2]], andere: &[&[[f64; 2]]]) -> Vec<(usize, f64, f64, b
 }
 
 /// Stehen die Umrisse `a` und `b` ineinander (H-245-geo-a)? Ja, wenn eine
-/// Ecke oder ein Stück des einen Randes tiefer als [`AN_DER_WAND`] im anderen
+/// Ecke oder ein Stück des einen Randes tiefer als [`UEBERDECKT`] im anderen
 /// Umriss liegt; die Ränder werden an ihren Schnitten geteilt und je Stück die
 /// Mitte geprüft. Aneinander (Wand an Wand) ist nicht ineinander.
 pub(super) fn ineinander(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
-    let tief = |q: &[[f64; 2]], m: [f64; 2]| innen(q, m) && rand_abstand(q, m) > AN_DER_WAND;
+    let tief = |q: &[[f64; 2]], m: [f64; 2]| innen(q, m) && rand_abstand(q, m) > UEBERDECKT;
     [(a, b), (b, a)].into_iter().any(|(p, q)| {
         let n = p.len();
         (0..n).any(|i| {
@@ -320,7 +326,7 @@ mod tests {
     }
 
     /// Ineinander erst, wenn sich die Wände überdecken: aneinander, mit
-    /// Spalt oder nur in der Toleranz nicht; Streifen, Ecke, ganz innen und
+    /// Spalt oder unter [`UEBERDECKT`] nicht, schon 2 mm tief ja; Streifen, Ecke, ganz innen und
     /// über Kreuz ja, in beiden Richtungen.
     #[test]
     fn ineinander_erst_bei_ueberdeckung() {
@@ -328,13 +334,15 @@ mod tests {
         let nein = [
             rechteck(8000.0, 0.0, 16000.0, 10000.0),
             rechteck(8100.0, 0.0, 16000.0, 10000.0),
-            rechteck(8000.0 - AN_DER_WAND, 0.0, 16000.0, 10000.0),
+            rechteck(8000.0 - UEBERDECKT / 2.0, 0.0, 16000.0, 10000.0),
             rechteck(20000.0, 0.0, 26000.0, 10000.0),
         ];
         for b in &nein {
             assert!(!ineinander(&a, b) && !ineinander(b, &a), "{b:?}");
         }
         let ja = [
+            rechteck(8000.0 - 2.0 * UEBERDECKT, 0.0, 16000.0, 10000.0),
+            rechteck(8000.0 - AN_DER_WAND, 0.0, 16000.0, 10000.0),
             rechteck(7800.0, 0.0, 16000.0, 10000.0),
             rechteck(7000.0, 9000.0, 12000.0, 14000.0),
             rechteck(1000.0, 1000.0, 3000.0, 3000.0),

@@ -38,7 +38,11 @@ pub(crate) fn ineinander(m: &crate::Model, hinweise: &mut Vec<String>) {
     let nummer = |b| m.building(b).map(|x| x.number.clone());
     for (a, b) in m.haeuser_ineinander() {
         // nach Nummer gelesen: „Gebäude 1 und Gebäude 2“ (Kosten K-248a)
-        let (a, b) = if nummer(b) < nummer(a) { (b, a) } else { (a, b) };
+        let (a, b) = if nummer(b) < nummer(a) {
+            (b, a)
+        } else {
+            (a, b)
+        };
         hinweise.push(format!("{} und {} {INEINANDER}", name(a), name(b)));
     }
 }
