@@ -111,6 +111,13 @@ impl Griffe {
         (ringe.get(i)?.get(k)? == &p).then_some((i, k))
     }
 
+    /// Ecke `k` von Flurstück `i` wählen, wo sie in `ringe` liegt: nach dem
+    /// Schreiben aus dem Modell gelesen, denn bewegte Ecken kommen auf mm
+    /// gerundet ins System zurück (Review B-253a).
+    fn waehlen(&mut self, ringe: &[Vec<[f64; 2]>], i: usize, k: usize) {
+        self.gewaehlt = ringe.get(i).and_then(|r| r.get(k)).map(|&p| (i, k, p));
+    }
+
     /// Nichts mehr gewählt; `true`, wenn etwas gewählt war.
     pub fn abwaehlen(&mut self) -> bool {
         self.gewaehlt.take().is_some()
@@ -290,9 +297,14 @@ impl App {
         let m = self.scene.model();
         let drei_d = self.ui.view == ViewKind::Persp;
         let (b, z) = (m.level_building(), m.terrain_z());
+        // ±0,00 und die Höhe ohne Aufmaß einmal vorab, nicht je Punkt
+        // (Review H-253b); sonst wie `terrain_z_at`
+        let nhn = m.terrain_nhn();
+        let ohne = m.terrain_z_of(b);
         move |p| {
             if drei_d {
-                m.terrain_z_at(b, p[0], p[1])
+                nhn.and_then(|h| m.terrain_z_survey_with(h, p[0], p[1]))
+                    .unwrap_or(ohne)
             } else {
                 z
             }
@@ -391,8 +403,8 @@ impl App {
                 }
                 // die gezogene oder angeklickte Ecke bleibt gewählt (I3b)
                 if let (true, Griff::Ecke(_, k)) = (ok, z.griff) {
-                    let p = z.neu.as_ref().unwrap_or(&z.ring).get(k).copied();
-                    self.platte.griffe.gewaehlt = p.map(|p| (i, k, p));
+                    let ringe = self.scene.model().parcel_rings();
+                    self.platte.griffe.waehlen(&ringe, i, k);
                     if z.neu.is_none() {
                         self.status(Meldung::satz(GEWAEHLT), crate::NOTICE_TIME);
                     }
@@ -749,6 +761,44 @@ mod tests {
             Some([18000.0, 7000.0])
         );
         assert_eq!(ort(Griff::Ecke(0, 3), &rechteck()), Some([2000.0, 12000.0]));
+    }
+
+    /// Gewählt bleibt die gezogene Ecke, wo das Modell sie hinschreibt
+    /// (Review B-253a): Im Lageplan-System kommt sie auf mm gerundet und
+    /// gedreht zurück, nicht genau an den gezogenen Punkt.
+    #[test]
+    fn wahl_nach_dem_zug_aus_dem_modell() {
+        let mut m = sk_model::Model::with_seed(1);
+        let mut t = sk_model::Terrain::new(sk_model::Crs::Local);
+        t.local = Some(sk_model::LocalFrame {
+            e0: 1000.0,
+            n0: 2000.0,
+            rot: 33.0,
+        });
+        t.parcels = vec![vec![(1000.0, 2000.0), (1030.0, 2001.0), (1029.0, 2020.0)]];
+        m.begin("Lageplan");
+        assert!(m.set_terrain(Some(t)));
+        m.commit();
+        let mut r = m.parcel_rings()[0].clone();
+        r[1] = [r[1][0] + 5430.0, r[1][1] + 7650.0];
+        m.begin(LABEL_ECKE);
+        assert!(m.set_parcel_ring(0, &r));
+        m.commit();
+        let ringe = m.parcel_rings();
+        let gezogen = Griffe {
+            gewaehlt: Some((0, 1, r[1])),
+            ..Default::default()
+        };
+        assert_eq!(
+            gezogen.wahl(&ringe),
+            None,
+            "der gezogene Punkt liegt daneben"
+        );
+        let mut g = Griffe::default();
+        g.waehlen(&ringe, 0, 1);
+        assert_eq!(g.wahl(&ringe), Some((0, 1)));
+        g.waehlen(&ringe, 0, 7);
+        assert_eq!(g.wahl(&ringe), None);
     }
 
     /// Ein Zug ändert das Modell nicht (Review B-233a), nur das Bild;
