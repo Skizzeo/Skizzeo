@@ -54,6 +54,8 @@ impl Model {
     /// (mm), nach Guid wie [`Model::terrain_patches`].
     pub(super) fn terrain_patch_boxes(&self) -> Vec<(BuildingId, [f64; 4])> {
         let mut boxes: Vec<(Guid, BuildingId, [f64; 4])> = Vec::new();
+        let mut stelle: std::collections::HashMap<BuildingId, usize> =
+            std::collections::HashMap::new();
         for (_, r) in self.runs.iter() {
             let Some(b) = self.building_of(r.storey) else {
                 continue;
@@ -61,14 +63,11 @@ impl Model {
             let Some(guid) = self.building(b).map(|x| x.guid) else {
                 continue;
             };
-            let i = match boxes.iter().position(|x| x.1 == b) {
-                Some(i) => i,
-                None => {
-                    let e = f64::INFINITY;
-                    boxes.push((guid, b, [e, e, -e, -e]));
-                    boxes.len() - 1
-                }
-            };
+            let i = *stelle.entry(b).or_insert_with(|| {
+                let e = f64::INFINITY;
+                boxes.push((guid, b, [e, e, -e, -e]));
+                boxes.len() - 1
+            });
             let bx = &mut boxes[i].2;
             for p in &r.points {
                 bx[0] = bx[0].min(p.x);

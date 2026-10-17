@@ -1788,10 +1788,10 @@ fn auto_ansaetze(
     if let Some(ort) = angenommen {
         befunde.push(Befund::hinweis(0, NICHT_VERMESSEN, ort));
     }
-    if let (Some(ort), Some((neu, weg))) = (aus_netz, sk_model::qto_earth::netz_geaendert(m)) {
+    if let (Some(ort), Some(g)) = (aus_netz, sk_model::qto_earth::netz_geaendert(m)) {
         befunde.push(Befund::hinweis(
             0,
-            sk_model::qto_earth::hand_geaendert(neu, weg),
+            sk_model::qto_earth::hand_geaendert(g),
             ort,
         ));
     }

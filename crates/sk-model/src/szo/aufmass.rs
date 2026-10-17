@@ -73,6 +73,9 @@ pub(super) fn write(m: &Model, out: &mut String) {
         if p.hand {
             l = l.word("src", "hand");
         }
+        if let Some(g) = p.gemessen.as_deref() {
+            l = l.num("ge", g[0]).num("gn", g[1]).num("gh", g[2]);
+        }
         l.finish(out);
     }
     for b in &t.boundaries {
@@ -269,6 +272,20 @@ pub(super) fn read<'r>(
                 false
             }
         };
+        // gemessene Werte eines geänderten Messpunkts (I5): alle drei oder
+        // keiner
+        let gemessen = match (z("ge"), z("gn"), z("gh")) {
+            (Some(e), Some(n), Some(h)) if !hand => Some(Box::new([e, n, h])),
+            (None, None, None) => None,
+            _ => {
+                hints.push(format!(
+                    "Zeile {}: [tpoint] gemessene Werte (ge, gn, gh) unvollständig oder an einem \
+                     eigenen Punkt, nicht übernommen",
+                    r.line
+                ));
+                None
+            }
+        };
         t.points.push(TerrainPoint {
             nr: nr.to_string(),
             e,
@@ -277,6 +294,7 @@ pub(super) fn read<'r>(
             code: r.opt("code").unwrap_or("").to_string(),
             off,
             hand,
+            gemessen,
         });
     }
     for r in linien {
@@ -376,6 +394,7 @@ mod tests {
                 code: code.into(),
                 off: nr == "3",
                 hand: nr == "A 7",
+                gemessen: None,
             });
         }
         t.boundaries.push(vec!["1".into(), "2".into(), "3".into()]);

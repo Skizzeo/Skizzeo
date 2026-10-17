@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 const RH1: &str = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
+const R7: &str = include_str!("../../crates/sk-cost/referenz/r7-alle-abschnitte.szo");
 
 /// Haus mit zwei Geschossen ab `x`, Räumen und Ausbautypen.
 fn haus(m: &mut Model, x: f64) -> BuildingId {
@@ -281,4 +282,59 @@ fn bezugsgebaeude_rueckt_null_fuer_alle() {
         assert!(*blatt == *frisch.kostenblatt(None, &u), "{d}");
     }
     assert!(knapp > 0, "±0,00 rückt unter der Rundung");
+}
+
+/// Test B-242a: „Deckendicke“ im Paneel über dem Erdgeschoss eines Hauses
+/// neben R7, das Obergeschoss springt 30 cm vor. Die Außenschicht der
+/// vorspringenden Wand reicht über die Deckenstirn. Die Wände darüber nahmen
+/// ihre Mengen aus dem Zwischenspeicher der Szene und behielten die alten
+/// (bei Test AW-006 10,542 statt 10,601 m³); jetzt wie in einer frischen
+/// Szene, Rückgängig ebenso.
+#[test]
+fn deckendicke_rechnet_zuege_darueber() {
+    let mut m =
+        sk_model::szo::read_with(R7, GuidGen::with_seed(1), &sk_cost::lesen::ABSCHNITTE_SZO)
+            .expect("lädt")
+            .model;
+    let b = haus(&mut m, 60e3);
+    haus(&mut m, 80e3);
+    let mut s = Scene::with_model(m);
+    let run = zug(&s, b);
+    let og = s.model().stack_above(run)[0];
+    let w = s.model().wall_at(og, 1).expect("Wand im Obergeschoss");
+    assert!(s.edit_model("Kopplung gelöst", |m| m.set_linked(w, false)));
+    assert!(s.edit_model("Wand verschoben", |m| m.move_segment(w, 300.0).is_some()));
+    s.schedule();
+    let m = s.model();
+    let Some(sk_model::ElementKind::Floor(f)) = m
+        .floor_of(run)
+        .and_then(|id| m.element(id))
+        .map(|e| e.kind.clone())
+    else {
+        panic!("Decke über dem Zug");
+    };
+    let oben = m.stack_above(run);
+    assert!(!oben.is_empty(), "Zug über der Decke");
+    let wand = |s: &mut Scene| {
+        let l = s.schedule().clone();
+        l.buildings
+            .iter()
+            .flat_map(|b| &b.storeys)
+            .flat_map(|st| &st.groups)
+            .flat_map(|g| &g.rows)
+            .filter(|z| {
+                s.model()
+                    .run_of(z.element)
+                    .is_some_and(|r| oben.contains(&r))
+            })
+            .map(|z| z.q.clone())
+            .collect::<Vec<_>>()
+    };
+    let vorher = wand(&mut s);
+    assert!(s.set_floor_thickness(run, f.thickness + 40.0));
+    assert_ne!(wand(&mut s), vorher, "Wände darüber hängen an der Decke");
+    gleich(&mut s, Some(1), "Deckendicke");
+    assert!(s.undo());
+    assert_eq!(wand(&mut s), vorher);
+    gleich(&mut s, Some(1), "Deckendicke rückgängig");
 }

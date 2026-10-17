@@ -901,10 +901,10 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
             Ort::Position(oz),
         ));
     }
-    if let (Some(oz), Some((neu, weg))) = (netz_oz, sk_model::qto_earth::netz_geaendert(m)) {
+    if let (Some(oz), Some(g)) = (netz_oz, sk_model::qto_earth::netz_geaendert(m)) {
         befunde.push(Befund::hinweis(
             0,
-            sk_model::qto_earth::hand_geaendert(neu, weg),
+            sk_model::qto_earth::hand_geaendert(g),
             Ort::Position(oz),
         ));
     }

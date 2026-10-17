@@ -45,6 +45,13 @@ pub struct TerrainPoint {
     /// ebenen Geländes, das Skizzeo beim ersten Werkzeug des Moduls anlegt
     /// (I1), später eigene Höhenpunkte (I4).
     pub hand: bool,
+    /// Ein Messpunkt, den der Nutzer nach dem Öffnen des Schlosses
+    /// verschoben hat (I5, §5 J2 C): Rechts, Hoch und Höhe, wie gemessen
+    /// (Datei `ge`, `gn`, `gh`, ungerundet). `None` bei unverändertem
+    /// Messpunkt und bei eigenen Punkten. Im Kasten, damit der Punkt nur
+    /// 8 Byte größer wird: Jeder Schritt kopiert das ganze Aufmaß (Test
+    /// zu #237, Budget bei 100.000 Punkten).
+    pub gemessen: Option<Box<[f64; 3]>>,
 }
 
 /// Eine Bruchkante aus der Datei (DXF, G1b): Punktnummern im Verlauf, wie
@@ -512,8 +519,9 @@ fn punkte_gleich(a: &[TerrainPoint], b: &[TerrainPoint]) -> bool {
             code: _,
             off,
             hand,
+            gemessen,
         } = p;
-        (*e, *n, *h, *off, *hand)
+        (*e, *n, *h, *off, *hand, gemessen.as_deref().copied())
     };
     a.len() == b.len()
         && a.iter().zip(b).all(|(p, q)| zahlen(p) == zahlen(q))
@@ -994,11 +1002,11 @@ impl Model {
     }
 
     /// [`Model::put_survey`] für ein Aufmaß, das sich vom jetzigen höchstens
-    /// in Lage und Höhe der Punkte `geaendert` unterscheidet oder sie neu
-    /// anhängt (Ziehen, Heben, Setzen): ohne Gang über alle Punkte. Bleibt
-    /// die Lage, bleibt das Netz (Review #234 B-234a); sonst rechnet es,
-    /// wo die Szene es will, ein Faden neu, bis dahin gilt das alte
-    /// vorläufig (B-234b).
+    /// in Lage, Höhe und gemessenen Werten der Punkte `geaendert`
+    /// unterscheidet oder sie neu anhängt (Ziehen, Heben, Setzen, „Gemessen
+    /// zurück“): ohne Gang über alle Punkte. Bleibt die Lage, bleibt das
+    /// Netz (Review #234 B-234a); sonst rechnet es, wo die Szene es will,
+    /// ein Faden neu, bis dahin gilt das alte vorläufig (B-234b).
     pub(super) fn put_survey_punkte(&mut self, mut t: Terrain, geaendert: &[usize]) -> bool {
         let Some(alt) = self.terrain().filter(|a| a.points.len() <= t.points.len()) else {
             return self.put_survey(Some(t));
@@ -1015,7 +1023,7 @@ impl Model {
                     return true;
                 };
                 let b = &t.points[i];
-                (lage(a), a.h.to_bits()) != (lage(b), b.h.to_bits())
+                (lage(a), a.h.to_bits()) != (lage(b), b.h.to_bits()) || a.gemessen != b.gemessen
             })
             .collect();
         neu.sort_unstable();
@@ -1505,6 +1513,7 @@ impl Terrain {
                 code: p.code.clone(),
                 off: false,
                 hand: false,
+                gemessen: None,
             })
             .collect();
         let codes = t.code_table();
@@ -1729,7 +1738,13 @@ impl Model {
     pub(super) fn terrain_nhn_merken(&mut self) {
         if self.terrain().is_some_and(|t| t.href == HeightRef::High) {
             if let Some(h) = self.terrain_nhn() {
-                let h = (h * 1000.0).round() / 1000.0;
+                // + 0,0 macht aus −0 eine 0 (Test B-237a)
+                let h = (h * 1000.0).round() / 1000.0 + 0.0;
+                // ohne [location] gilt 0,00 (gelaende_eben); eine Null zu
+                // schreiben änderte nur die Datei (Test B-237a)
+                if h == 0.0 && self.location().nhn.is_none() {
+                    return;
+                }
                 let l = Location {
                     nhn: Some(h),
                     ..self.location().normalized()

@@ -38,14 +38,67 @@ pub(crate) fn verfahren(t: &crate::Terrain) -> String {
 }
 
 /// Ein Aufmaß mit eigenen Höhenpunkten (I4) sagt, wie viele davon von
-/// Hand sind (VOB-Hinweis a zu #229): „, davon 3 Punkte von Hand
-/// ergänzt“; ohne solche leer.
+/// Hand sind (VOB-Hinweis a zu #229), mit geänderten Messpunkten (I5) auch
+/// diese: „, davon 3 Punkte von Hand ergänzt, 1 Messpunkt geändert“; jeder
+/// Teil nur, wenn er nicht null ist (VOB-Spruch zu I5), ohne beide leer.
 fn von_hand(t: &crate::Terrain) -> String {
-    match t.points.iter().filter(|p| p.hand && !p.off).count() {
-        0 => String::new(),
-        1 => ", davon 1 Punkt von Hand ergänzt".into(),
-        n => format!(", davon {} Punkte von Hand ergänzt", tausend(n)),
+    let neu = t.points.iter().filter(|p| p.hand && !p.off).count();
+    let geaendert = t.points.iter().filter(|p| messpunkt_geaendert(p)).count();
+    let mut teile = Vec::new();
+    match neu {
+        0 => {}
+        1 => teile.push("1 Punkt von Hand ergänzt".to_string()),
+        n => teile.push(format!("{} Punkte von Hand ergänzt", tausend(n))),
     }
+    match geaendert {
+        0 => {}
+        1 => teile.push("1 Messpunkt geändert".to_string()),
+        n => teile.push(format!("{} Messpunkte geändert", tausend(n))),
+    }
+    if teile.is_empty() {
+        return String::new();
+    }
+    format!(", davon {}", teile.join(", "))
+}
+
+/// Ein Messpunkt, den der Nutzer verschoben hat und der im Gelände ist
+/// (I5). Geändert und ausgeschaltet zählt nur als „nicht verwendet“
+/// (VOB-Spruch zu I5).
+fn messpunkt_geaendert(p: &crate::TerrainPoint) -> bool {
+    !p.hand && !p.off && p.gemessen.is_some()
+}
+
+/// „12 von 24,342 auf 24,100 m“, mit Versatz in der Lage über 0,5 mm „,
+/// Lage um 0,35 m versetzt“ (VOB-Spruch zu I5: alte und neue Höhe, damit
+/// der Prüfer nachrechnen kann; in Worten statt Pfeil).
+fn aenderung(p: &crate::TerrainPoint) -> String {
+    let Some(&[e, n, h]) = p.gemessen.as_deref() else {
+        return p.nr.clone();
+    };
+    let mut out = p.nr.clone();
+    if (p.h - h).abs() >= 5e-4 {
+        out += &format!(" von {} auf {} m", komma(h, 3), komma(p.h, 3));
+    }
+    let lage = (p.e - e).hypot(p.n - n);
+    if lage >= 5e-4 {
+        out += &format!(", Lage um {} versetzt", versatz(lage));
+    }
+    out
+}
+
+/// Lageversatz in m: unter 1 cm in ganzen mm („3 mm“), sonst auf cm
+/// („0,35 m“) (VOB H-237a).
+pub fn versatz(m: f64) -> String {
+    if m < 0.0095 {
+        format!("{} mm", (m * 1000.0).round())
+    } else {
+        format!("{} m", komma(m, 2))
+    }
+}
+
+/// Zahl mit Komma und `stellen` Nachkommastellen.
+fn komma(v: f64, stellen: usize) -> String {
+    format!("{:.*}", stellen, v + 0.0).replace('.', ",")
 }
 
 /// Herkunft eines Geländes nur aus Punkten von Hand (I1): Es ist nicht
@@ -69,12 +122,31 @@ pub fn netz_herkunft(m: &Model) -> Option<String> {
     let n = t.mesh().netz.dreiecke.len();
     let vom = datum(&t.read).map_or(String::new(), |d| format!(" vom {d}"));
     Some(format!(
-        "Höhenaufmaß {}{vom}, {} Dreiecke{}{}",
+        "Höhenaufmaß {}{vom}, {} {}{}{}{}",
         t.src,
         tausend(n),
+        if n == 1 { "Dreieck" } else { "Dreiecke" },
         klammer(t, |p| p.hand && !p.off, "von Hand ergänzt"),
+        geaenderte(t),
         klammer(t, nicht_verwendet, "nicht verwendet"),
     ))
+}
+
+/// „, davon 2 Messpunkte geändert (12 von 24,342 auf 24,100 m; 15 von
+/// 24,518 auf 24,600 m)“, immer alle (wie VOB H-234a); leer ohne solche.
+fn geaenderte(t: &crate::Terrain) -> String {
+    let teile: Vec<String> = t
+        .points
+        .iter()
+        .filter(|p| messpunkt_geaendert(p))
+        .map(aenderung)
+        .collect();
+    let punkte = match teile.len() {
+        0 => return String::new(),
+        1 => "1 Messpunkt".to_string(),
+        n => format!("{} Messpunkte", tausend(n)),
+    };
+    format!(", davon {punkte} geändert ({})", teile.join("; "))
 }
 
 /// Ein Messpunkt, den der Nutzer aus dem Gelände genommen hat. Ein eigener
@@ -102,9 +174,10 @@ fn klammer(t: &crate::Terrain, welche: impl Fn(&crate::TerrainPoint) -> bool, wa
     format!(", davon {punkte} {was} ({})", nr.join(", "))
 }
 
-/// Von Hand geänderte Punkte eines vermessenen Aufmaßes: (ergänzt, nicht
-/// verwendet); `None` ohne Aufmaß, beim angenommenen Gelände oder wenn
-/// keiner geändert ist. Kostenblatt und LV geben dazu den Befund
+/// Von Hand geänderte Punkte eines vermessenen Aufmaßes: (ergänzt,
+/// geändert, nicht verwendet), in der Reihenfolge der Vorbemerkung
+/// (VOB-Spruch zu I5); `None` ohne Aufmaß, beim angenommenen Gelände oder
+/// wenn keiner geändert ist. Kostenblatt und LV geben dazu den Befund
 /// [`HAND_GEAENDERT`] (VOB-Spruch zu I4).
 ///
 /// „Nicht verwendet“ zählt jeden Messpunkt mit `off`, auch einen, der schon so in
@@ -113,18 +186,19 @@ fn klammer(t: &crate::Terrain, welche: impl Fn(&crate::TerrainPoint) -> bool, wa
 /// Gelände“ haben kein `off` und zählen nicht. Die Mengen lassen den
 /// gemessenen Punkt weg, also muss der AG das wissen, egal wann und wie er
 /// ausgeschaltet wurde.
-pub fn netz_geaendert(m: &Model) -> Option<(usize, usize)> {
+pub fn netz_geaendert(m: &Model) -> Option<(usize, usize, usize)> {
     let t = m.terrain().filter(|t| !t.assumed())?;
     let neu = t.points.iter().filter(|p| p.hand && !p.off).count();
+    let geaendert = t.points.iter().filter(|p| messpunkt_geaendert(p)).count();
     let weg = t.points.iter().filter(|p| nicht_verwendet(p)).count();
-    (neu + weg > 0).then_some((neu, weg))
+    (neu + geaendert + weg > 0).then_some((neu, geaendert, weg))
 }
 
 /// Befund zu [`netz_geaendert`]: kein Sperren.
-pub fn hand_geaendert(neu: usize, weg: usize) -> String {
+pub fn hand_geaendert((neu, geaendert, weg): (usize, usize, usize)) -> String {
     format!(
-        "Höhenaufmaß von Hand geändert ({neu} ergänzt, {weg} nicht verwendet): vor der \
-         Ausschreibung vom Vermesser bestätigen lassen."
+        "Höhenaufmaß von Hand geändert ({neu} ergänzt, {geaendert} geändert, {weg} nicht \
+         verwendet): vor der Ausschreibung vom Vermesser bestätigen lassen."
     )
 }
 
@@ -580,6 +654,30 @@ pub(super) fn mengen(
 
 #[cfg(test)]
 mod tests {
+    /// Lage unter 1 cm in mm, mit Komma hinter der Nummer (VOB H-237a/b).
+    #[test]
+    fn lage_in_mm_und_cm() {
+        assert_eq!(super::versatz(0.003), "3 mm");
+        assert_eq!(super::versatz(0.0006), "1 mm");
+        assert_eq!(super::versatz(0.35), "0,35 m");
+        let p = crate::TerrainPoint {
+            nr: "12".into(),
+            e: 10.003,
+            n: 20.0,
+            h: 24.342,
+            code: String::new(),
+            off: false,
+            hand: false,
+            gemessen: Some(Box::new([10.0, 20.0, 24.342])),
+        };
+        assert_eq!(super::aenderung(&p), "12, Lage um 3 mm versetzt");
+        let p = crate::TerrainPoint { h: 24.1, ..p };
+        assert_eq!(
+            super::aenderung(&p),
+            "12 von 24,342 auf 24,100 m, Lage um 3 mm versetzt"
+        );
+    }
+
     #[test]
     fn mittel_unter_1_cm() {
         assert_eq!(super::mittel(30e6, 10e6), "unter 1 cm");

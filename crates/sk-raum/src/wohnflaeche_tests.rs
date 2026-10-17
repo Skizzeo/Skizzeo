@@ -785,6 +785,54 @@ fn stuetze_neben_pfeiler_schwelle_ganz() {
     assert_eq!(r.grund, 7921);
 }
 
+/// Wie oben, dazu eine zweite Stütze über Pfeiler und erster Stütze: Was
+/// alle drei decken (0,13 × 0,18 m), geht einmal ab, nicht zweimal
+/// (VOB H-241b).
+#[test]
+fn dreifache_ueberdeckung_einmal() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4000.0, 4000.0),
+            (4000.0, 4400.0),
+            (4400.0, 4400.0),
+            (4400.0, 4000.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    let stuetze = |id: ElementId, x: (f64, f64), y: (f64, f64)| Einbau {
+        id,
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(x.0, y.0, 0.0),
+            vec3(x.1, y.0, 0.0),
+            vec3(x.1, y.1, 0.0),
+            vec3(x.0, y.1, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+        loch: false,
+    };
+    let a = stuetze(h.w[2], (4300.0, 4600.0), (4050.0, 4350.0));
+    let b = stuetze(h.w[3], (4300.0, 4600.0), (4200.0, 4500.0));
+    let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(vec![a, b]));
+    let abzug: Vec<f64> = r
+        .teile
+        .iter()
+        .filter(|t| t.art == Art::Abzug)
+        .map(|t| t.wert)
+        .collect();
+    assert_eq!(abzug.len(), 3, "{abzug:?}");
+    // Geputzt 330 × 330; neben Pfeiler und erster Stütze bleiben
+    // 330² − (130 · 230 + 330 · 180 − 130 · 180)
+    let rest = 330.0 * 330.0 - (130.0 * 230.0 + 330.0 * 180.0 - 130.0 * 180.0);
+    assert!((abzug[2] + rest).abs() <= 1e3, "{abzug:?}");
+    // 79,4609 − 0,1849 − 0,0660 − 0,0430
+    assert_eq!(r.grund, 7917);
+}
+
 /// Die Treppe im EG (16 Steigungen, 4,20 × 1,00 m) steht im OG als
 /// Treppenloch und geht dort ab; eine Treppe im OG genau darüber zieht
 /// denselben Grundriss nicht noch einmal ab (Review #195 H-195j).
@@ -847,4 +895,84 @@ fn treppenloch_im_geschoss_darueber() {
     assert!(m.commit().is_some());
     let (og2, abzug_og) = grund(&m, og);
     assert_eq!(og2, og1, "{abzug_og}");
+}
+
+/// Pfeiler und drei Stützen übereinander (VOB B-241e): Die Abzüge ergeben
+/// zusammen die Vereinigung der bekleideten Umrisse (im 5-mm-Raster
+/// gezählt), in jeder Reihenfolge. Ein Stück mit doppeltem Eckpunkt zog
+/// vorher nichts ab.
+#[test]
+fn vierfache_ueberdeckung_reihenfolge_egal() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4000.0, 4000.0),
+            (4000.0, 4400.0),
+            (4400.0, 4400.0),
+            (4400.0, 4000.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    let st = |id: ElementId, x: (f64, f64), y: (f64, f64)| Einbau {
+        id,
+        treppe: false,
+        stuecke: vec![vec![
+            vec3(x.0, y.0, 0.0),
+            vec3(x.1, y.0, 0.0),
+            vec3(x.1, y.1, 0.0),
+            vec3(x.0, y.1, 0.0),
+        ]],
+        z: (0.0, 3000.0),
+        steigungen: None,
+        loch: false,
+    };
+    let roh_st = [
+        ((4300.0, 4600.0), (4050.0, 4350.0)),
+        ((4300.0, 4600.0), (4200.0, 4500.0)),
+        ((4150.0, 4500.0), (4250.0, 4550.0)),
+    ];
+    // fertige Umrisse: Pfeiler + 15 mm, Stützen + 15 mm
+    let mut fertig = vec![((3985.0, 4415.0), (3985.0, 4415.0))];
+    fertig.extend(
+        roh_st
+            .iter()
+            .map(|(x, y)| ((x.0 - 15.0, x.1 + 15.0), (y.0 - 15.0, y.1 + 15.0))),
+    );
+    let mut zellen = 0u64;
+    let mut x = 3900.0;
+    while x < 4700.0 {
+        let mut y = 3900.0;
+        while y < 4700.0 {
+            let (cx, cy) = (x + 2.5, y + 2.5);
+            if fertig
+                .iter()
+                .any(|(a, b)| cx > a.0 && cx < a.1 && cy > b.0 && cy < b.1)
+            {
+                zellen += 1;
+            }
+            y += 5.0;
+        }
+        x += 5.0;
+    }
+    let union = zellen as f64 * 25.0;
+    let ids = [h.w[2], h.w[3], h.w[0]];
+    let mut ergebnisse = Vec::new();
+    for folge in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
+        let e: Vec<Einbau> = folge
+            .iter()
+            .map(|&i| st(ids[i], roh_st[i].0, roh_st[i].1))
+            .collect();
+        let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(e));
+        let abzug: f64 = r
+            .teile
+            .iter()
+            .filter(|t| t.art == Art::Abzug)
+            .map(|t| t.wert)
+            .sum();
+        assert!((abzug + union).abs() <= 1.0, "{abzug} vs {union}");
+        ergebnisse.push(r.grund);
+    }
+    assert!(ergebnisse.windows(2).all(|w| w[0] == w[1]));
 }
