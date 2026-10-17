@@ -444,6 +444,13 @@ impl Bau<'_> {
     /// dort nicht zeigt, bekommen dann ein eigenes Material ohne Bild.
     fn material(&mut self, key: u16, gelaende: bool, eben: bool) -> usize {
         let key = key & !material::CUT;
+        // am Gelände ist alles außer dem Belag Erdreich, auch die Schichten
+        // des Bodenaufbaus an der Grube
+        let key = if gelaende && key != BELAG {
+            ERDREICH
+        } else {
+            key
+        };
         let mat = (!gelaende).then(|| self.m.material_by_key(key)).flatten();
         let sf = mat.and_then(|x| self.m.attr().surface(x.surface));
         let muster = sf

@@ -14,6 +14,12 @@ pub mod fill_kind {
     pub const SOLID: f32 = 1.0;
     pub const LINES: f32 = 2.0;
     pub const ZIGZAG: f32 = 3.0;
+    /// Bodenzeichen des Bodenaufbaus ([`crate::gelaende_platte::bodenaufbau`]): gewachsener
+    /// Boden (DIN 1356-1), Sand (Punkte), Kies (Kreise); Zelle in der
+    /// ersten Schar.
+    pub const ERDE: f32 = 4.0;
+    pub const SAND: f32 = 5.0;
+    pub const KIES: f32 = 6.0;
 }
 
 /// Eine Schar Schraffurlinien in Bildpunkten bei 96 dpi.
@@ -289,6 +295,12 @@ impl DrawTable {
         let terrain = [0, 1, 2].map(|i| (mats.len() + i) as u16);
         let ink = stroke(&d.ground).1;
         mats.extend(crate::gelaende_platte::looks(
+            theme,
+            rgb(d.paper),
+            [ink[0], ink[1], ink[2]],
+        ));
+        // Schichten des Bodenaufbaus hinter Rasen blass
+        mats.extend(crate::gelaende_platte::bodenaufbau::looks(
             theme,
             rgb(d.paper),
             [ink[0], ink[1], ink[2]],
