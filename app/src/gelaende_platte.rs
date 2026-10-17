@@ -64,18 +64,18 @@ pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)>
 
 /// Was das Netz außer den Platten bestimmt: Ansicht, Schnittebene,
 /// Schlüssel von Rasen und Erdreich, ausgeblendet, Hilfsnetz in 3D
-/// (Jörns §4.3a).
-pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool, bool);
+/// (Jörns §4.3a), Höhenlinien in 3D (Jörn 17.10.).
+pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool, bool, bool);
 
 /// Was im Renderer liegt: Fassung der Platten und die [`Sicht`], die
 /// Schnittebene als Bits.
-type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool, bool);
+type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool, bool, bool);
 
 /// Fassung, Ziffernhöhe, Zeichentabelle und Farben der Höhenzahlen.
 type ZahlenKey = (u64, u64, u64, u64);
 
 fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
-    (fassung, s.0, s.1.map(bits), s.2, s.3, s.4)
+    (fassung, s.0, s.1.map(bits), s.2, s.3, s.4, s.5)
 }
 
 /// Neue Platten, ihre Eingaben, das Gelände und ihr Netz zur Sicht beim
@@ -160,6 +160,8 @@ pub(crate) struct Platte {
     eingabe: Option<Arc<PlateInput>>,
     /// Gelände aus dem Höhenaufmaß; statt der Platten, wenn da.
     gelaende: Option<Arc<Gelaende>>,
+    /// Tiefste und höchste Höhe von `gelaende` (mm), für die Höhenfarben.
+    hoehen: Option<(f64, f64)>,
     netz: Option<NetzKey>,
     /// Netz aus dem Faden zu seinem Schlüssel, bis es hochgeladen ist.
     fertig: Option<(NetzKey, MeshData)>,
@@ -243,8 +245,17 @@ impl Platte {
             if neu || g.is_some() || self.gelaende.is_some() {
                 self.fassung += 1;
             }
-            self.gelaende = g.map(Arc::new);
+            self.gelaende_setzen(g);
         }
+    }
+
+    /// Neues Gelände; die Legende der Höhenfarben folgt.
+    fn gelaende_setzen(&mut self, g: Option<Gelaende>) {
+        self.hoehen = g.as_ref().and_then(Gelaende::hoehen);
+        if self.leiste.hoehenfarben {
+            self.leiste.neu = true;
+        }
+        self.gelaende = g.map(Arc::new);
     }
 
     /// Für das Bild: die Platten, wie sie stehen; gerechnet nur, wenn es
@@ -515,7 +526,7 @@ impl Platte {
                 return Some(n.clone());
             }
         }
-        let (view, _, _, hidden, _) = sicht;
+        let (view, _, _, hidden, ..) = sicht;
         let g = match &self.gelaende {
             Some(g) if !hidden && matches!(view, ViewKind::Persp | ViewKind::Section) => g.clone(),
             g => {
@@ -579,7 +590,7 @@ impl Platte {
         self.fassung += 1;
         self.platten = p;
         self.eingabe = Some(e);
-        self.gelaende = g.map(Arc::new);
+        self.gelaende_setzen(g);
         self.netz_job = None;
         self.fertig = Some((netz_key(self.fassung, &job.sicht), n));
         true
@@ -807,11 +818,11 @@ pub(crate) fn netz(
 /// Netz zur Sicht: mit Aufmaß das Gelände (Körper in 3D, Schnittflächen im
 /// Schnitt, sonst keins), ohne die Platten; ausgeblendet leer.
 fn netz_der_sicht(p: &[TerrainPlate], g: Option<&Gelaende>, s: Sicht) -> MeshData {
-    let (view, plane, keys, hidden, hilfsnetz) = s;
+    let (view, plane, keys, hidden, hilfsnetz, linien) = s;
     match (g, view, plane) {
         _ if hidden => MeshData::default(),
         (Some(g), ViewKind::Persp, _) => {
-            crate::scene::mesh_of(&gelaende_netz::koerper_mit_netz(g, keys, hilfsnetz))
+            crate::scene::mesh_of(&gelaende_netz::koerper_mit(g, keys, hilfsnetz, linien))
         }
         (Some(g), ViewKind::Section, Some((p0, n))) => {
             let f = SectionFrame::new(p0, n);
@@ -955,6 +966,39 @@ fn bits(p: (Vec3, Vec3)) -> [u64; 6] {
 }
 
 impl App {
+    /// Stufen der Höhenfarben, wenn sie an sind und das Gelände Höhen hat
+    /// (Jörn 17.10.); `None` sonst.
+    pub(crate) fn hoehenstufen(&self) -> Option<farben::Stufen> {
+        let an = self.platte.leiste.hoehenfarben
+            && self.ui.frei.frei(crate::freischaltung::Modul::Gelaende)
+            && !self.scene.terrain_hidden();
+        let (lo, hi) = self.platte.hoehen.filter(|_| an)?;
+        let h0 = self.scene.model().terrain_nhn().unwrap_or(0.0);
+        Some(farben::stufen(lo, hi, h0))
+    }
+
+    /// Legende der Höhenfarben für die Leiste, von oben nach unten.
+    pub(crate) fn hoehenlegende(&self) -> Vec<([f32; 3], String)> {
+        let h0 = self.scene.model().terrain_nhn().unwrap_or(0.0);
+        self.hoehenstufen()
+            .map(|s| farben::legende(&s, h0))
+            .unwrap_or_default()
+    }
+
+    /// Höhenfarben für den Renderer: auf dem Rasen in 3D.
+    fn hoehenfarben(&self, sicht: &Sicht) -> Option<sk_render::Hoehenfarben> {
+        if sicht.0 != ViewKind::Persp {
+            return None;
+        }
+        let s = self.hoehenstufen()?;
+        Some(sk_render::Hoehenfarben {
+            key: sicht.2[0],
+            z0: s.z0 as f32,
+            stufe: s.stufe as f32,
+            n: s.n,
+        })
+    }
+
     /// Was das Netz der Platte außer den Platten bestimmt.
     fn platte_sicht(&self) -> Sicht {
         let keys = self.scene.table().terrain;
@@ -964,6 +1008,7 @@ impl App {
             keys,
             self.scene.terrain_hidden(),
             self.ui.view == ViewKind::Persp && self.netz_an(),
+            !self.platte.leiste.linien_aus,
         )
     }
 
@@ -975,6 +1020,8 @@ impl App {
     /// ([`Platte::netz_zur_sicht`]).
     pub(crate) fn platte_hochladen(&mut self) {
         let sicht = self.platte_sicht();
+        let farben = self.hoehenfarben(&sicht);
+        self.renderer.set_hoehenfarben(farben);
         let m = self.scene.model();
         self.platte.im_bild(m);
         let key = netz_key(self.platte.fassung, &sicht);
@@ -1258,6 +1305,7 @@ impl App {
     }
 }
 
+mod farben;
 #[cfg(test)]
 mod tempo;
 
@@ -1283,7 +1331,7 @@ mod tests {
     }
 
     /// Sicht der Tests: 3D, Rasen, Erdreich und blasser Rasen 40 bis 42.
-    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41, 42], false, false);
+    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41, 42], false, false, true);
 
     /// Erste Wand des Modells um `d` verschieben, ein geschlossener Schritt.
     fn wand_schieben(s: &mut crate::scene::Scene, d: f64) {
@@ -1417,7 +1465,7 @@ mod tests {
         wand_schieben(&mut s, 500.0);
         pl.nachziehen(
             s.model(),
-            (ViewKind::Persp, None, [40, 41, 42], true, false),
+            (ViewKind::Persp, None, [40, 41, 42], true, false, true),
         );
         assert!(pl.warten());
         assert!(pl.fertig.take().unwrap().1.faces.is_empty());
@@ -1526,7 +1574,7 @@ mod tests {
         assert!((breit(&l[k]) - 2.0 * breit(&vorher[k])).abs() < 1e-3);
         // Körper und Schnitt kommen aus einem Faden; der Körper bleibt für
         // den Rückweg gemerkt (#129 B4)
-        let persp: Sicht = (ViewKind::Persp, None, [1, 2, 3], false, false);
+        let persp: Sicht = (ViewKind::Persp, None, [1, 2, 3], false, false, true);
         let key = netz_key(pl.fassung, &persp);
         pl.fertig = None;
         assert!(pl.netz_zur_sicht(key, persp).is_none());
@@ -1544,7 +1592,7 @@ mod tests {
         assert!(!pl.rechnet());
         let g = Gelaende::aus(s.model());
         assert_eq!(n.faces, netz_der_sicht(&[], g.as_ref(), persp).faces);
-        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false, false);
+        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false, false, true);
         let leer = pl.netz_zur_sicht(netz_key(pl.fassung, &grund), grund);
         assert!(leer.unwrap().faces.is_empty(), "Grundriss ohne Faden");
         let wieder = pl.netz_zur_sicht(key, persp).expect("gemerkt");

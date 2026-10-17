@@ -437,6 +437,11 @@ Umgebung nicht | Das Gelände an der Grenze abschneiden; gerechnet wird weiter m
 Gelände ans Haus | Ein Streifen rings um den Sockel: 1,00 m breit, 15 cm unter ±0,00, 2 % vom Haus weg, Böschung bis ans Gelände.
 Fläche zeichnen | Terrasse, Garten oder Hof als Geländefläche: Ecken im Grundriss klicken, die erste schließt.
 Netz | In 3D die Kanten des Geländenetzes und die Höhenpunkte zeigen oder ausblenden; Taste **N**.
+Höhenlinien im Gelände | In 3D die Höhenlinien der vollen Meter auf dem Gelände zeigen oder ausblenden.
+Glätten aus | Das Gelände in 3D und im Export so zeigen, wie das Aufmaß es misst: ebene Dreiecke zwischen den Punkten.
+Glätten fein | Das Gelände in 3D und im Export rund zeigen, jedes Dreieck in 4 geteilt; die Punkte des Aufmaßes bleiben, Kanten an Platten und Bruchkanten bleiben gerade. Die Mengen rechnen weiter am Aufmaß.
+Glätten feiner | Wie „fein“, noch runder: jedes Dreieck in 16 geteilt; rechnet länger.
+Höhenfarben | In 3D das Gelände nach der Höhe einfärben statt in Rasen, mit kräftigerem Licht auf den Hängen; die Leiste zeigt die Stufen in m ü. NHN. Die Mengen ändert das nicht.
 Schloss offen | Gewählte Punkte des Vermessers zum Verschieben und Heben freigeben; der gemessene Wert bleibt gespeichert. Ein zweiter Klick schließt das Schloss wieder.
 Gemessen zurück | Gewählte geänderte Punkte des Vermessers wieder auf Lage und Höhe des Aufmaßes setzen.
 Fläche befestigt | Die gewählte Geländefläche ist befestigt (Pflaster, Platten) oder nicht (Rasen, Beet).
