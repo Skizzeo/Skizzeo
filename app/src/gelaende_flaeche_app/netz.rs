@@ -26,7 +26,7 @@ const PUNKT_PX: f32 = 6.0;
 /// und die gewählten (wie die Koten im Grundriss).
 const NADELN: usize = 2_000;
 /// Messpunkt des Vermessers und eigener Punkt.
-const GRAU: [f32; 4] = [0.45, 0.45, 0.45, 1.0];
+pub(super) const GRAU: [f32; 4] = [0.45, 0.45, 0.45, 1.0];
 const BLAU: [f32; 4] = [0.18, 0.42, 0.85, 1.0];
 
 /// Schneidet die Strecke `a`–`b` den Quader `lo`–`hi`, bevor sie `b`

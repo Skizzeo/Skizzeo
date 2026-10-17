@@ -3694,7 +3694,7 @@ impl App {
             ..
         } = e
         {
-            if self.open_drain_context(x, y) || self.open_context(x, y) {
+            if self.open_werkzeug_context(x, y) || self.open_context(x, y) {
                 return true;
             }
         }
@@ -5049,6 +5049,7 @@ impl App {
             delete::Link::Materials => self.open_materials(None),
             delete::Link::Help => self.show_help(true),
             delete::Link::Dismiss => {}
+            delete::Link::Schloss => self.schloss_umschalten(),
             delete::Link::Merge(wall) => self.merge(wall, None),
         }
     }
@@ -5073,8 +5074,7 @@ impl App {
     /// Rückfrage „Gebäude N löschen?“ zeigen; das Gebäude leuchtet.
     fn open_confirm(&mut self, b: sk_model::BuildingId) {
         self.close_type_menu(false);
-        self.context = None;
-        self.context_dirty = true;
+        self.close_context();
         self.hint = None;
         self.hint_dirty = true;
         self.confirm = delete::ConfirmCard::new(self.scene.model(), b);
@@ -5211,8 +5211,7 @@ impl App {
 
     fn open_card(&mut self, card: backup_card::BackupCard) {
         self.close_type_menu(false);
-        self.context = None;
-        self.context_dirty = true;
+        self.close_context();
         self.tip = None;
         self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
         self.card = Some(card);
@@ -5498,8 +5497,7 @@ impl App {
             }
             Event::MouseDown { button, x, y, .. } => {
                 if !c.press(t, s, x, y) {
-                    self.context = None;
-                    self.context_dirty = true;
+                    self.close_context();
                     if button == MouseButton::Right {
                         self.open_context(x, y);
                     }
@@ -5527,17 +5525,18 @@ impl App {
                 }
             }
             Event::Focus(false) => {
-                self.context = None;
-                self.context_dirty = true;
+                self.close_context();
                 return false;
             }
             _ => return false,
         };
         if let Some(a) = action {
             let target = c.target;
-            self.context = None;
-            self.context_dirty = true;
-            self.context_action(a, target, None);
+            self.close_context();
+            match target {
+                Some(t) => self.context_action(a, t, None),
+                None => self.werkzeug_action(a),
+            }
         }
         true
     }
@@ -5577,12 +5576,12 @@ impl App {
                 }
             }
             delete::Action::Delete => self.erase(list.is_some()),
-            a @ (delete::Action::AddDrain | delete::Action::DeleteDrain) => self.drain_action(a),
             delete::Action::DeleteBuilding => {
                 if let Some(b) = self.scene.model().building_of_element(target) {
                     self.open_confirm(b);
                 }
             }
+            a => self.werkzeug_action(a),
         }
     }
 
