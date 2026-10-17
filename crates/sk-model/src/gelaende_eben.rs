@@ -179,10 +179,14 @@ impl Model {
     /// Ein angenommenes Gelände reicht bis um den Plattenabstand über alle
     /// Grenzen hinaus. Ohne Punkte tut es das schon (die App zeigt dann das
     /// Rechteck um die Grenzen eben); mit Punkten von Hand kommen die Ecken
-    /// dieses Rechtecks dazu, die das Netz noch nicht deckt, in der Höhe OK
-    /// Gelände des Bezugsgebäudes. Ein Aufmaß des Vermessers bleibt, wie es
-    /// ist. Ohne Lageplan zeigt das Gelände die Umgebung außerhalb der
-    /// Grenze ganz, bis man „blass“ oder „nicht“ wählt.
+    /// dieses Rechtecks dazu, die das Netz noch nicht deckt, in der Höhe,
+    /// die das Netz an der Platte des Bezugsgebäudes zeigt (Kosten H-251a:
+    /// so wie bei Grenze vor Fläche). Der bisherige Rand des Netzes wird
+    /// Bruchkante: Innen bleibt jedes Dreieck, wie es war, auch zwischen
+    /// Häusern in verschiedener Höhe (VOB B-251a). Ein Aufmaß des
+    /// Vermessers bleibt, wie es ist. Ohne Lageplan zeigt das Gelände die
+    /// Umgebung außerhalb der Grenze ganz, bis man „blass“ oder „nicht“
+    /// wählt.
     pub(super) fn grenze_abdecken(&mut self) {
         let Some(t) = self.terrain() else {
             return;
@@ -205,13 +209,10 @@ impl Model {
             }
             let m = self.plate_settings().margin;
             let r = [k[0] - m, k[1] - m, k[2] + m, k[3] + m];
-            let z = self.terrain_z_of(self.level_building());
+            let z = self.hoehe_an_der_platte();
             // das Netz deckt die konvexe Hülle seiner Punkte
-            let punkte: Vec<Vec3> = self
-                .terrain_spots()
-                .iter()
-                .map(|s| vec3(s.p[0], s.p[1], 0.0))
-                .collect();
+            let spots = self.terrain_spots();
+            let punkte: Vec<Vec3> = spots.iter().map(|s| vec3(s.p[0], s.p[1], 0.0)).collect();
             let huelle = crate::qto_site::convex_hull(&punkte);
             let neu: Vec<[f64; 3]> = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
                 .into_iter()
@@ -219,7 +220,12 @@ impl Model {
                 .map(|p| [p[0], p[1], z])
                 .collect();
             if !neu.is_empty() {
+                let rand: Vec<String> = huelle_ring(&huelle, &spots)
+                    .into_iter()
+                    .filter_map(|i| t.points.get(i).map(|p| p.nr.clone()))
+                    .collect();
                 self.add_terrain_points(&neu);
+                self.rand_als_bruchkante(rand);
             }
         } else if !t.points.is_empty() {
             return;
@@ -227,6 +233,51 @@ impl Model {
         if gezeichnet {
             self.set_terrain_show(Show::All);
         }
+    }
+
+    /// OK Gelände (mm), wie das Netz es in der Mitte des Bezugsgebäudes
+    /// zeigt, also auf seiner Platte; ohne Netz dort sein Versatz.
+    fn hoehe_an_der_platte(&self) -> f64 {
+        let b = self.level_building();
+        let e = f64::INFINITY;
+        let mut k = [e, e, -e, -e];
+        for (_, r) in self.runs.iter() {
+            if b.is_none() || self.building_of(r.storey) != b {
+                continue;
+            }
+            for p in &r.points {
+                k = [k[0].min(p.x), k[1].min(p.y), k[2].max(p.x), k[3].max(p.y)];
+            }
+        }
+        (k[0] <= k[2])
+            .then(|| self.terrain_z_survey((k[0] + k[2]) / 2.0, (k[1] + k[3]) / 2.0))
+            .flatten()
+            .unwrap_or_else(|| self.terrain_z_of(b))
+    }
+
+    /// Der Ring `rand` (Nummern der Punkte) als geschlossene Bruchkante,
+    /// wenn er nicht schon eine ist (die Platte eines einzelnen Hauses).
+    fn rand_als_bruchkante(&mut self, rand: Vec<String>) {
+        if rand.len() < 3 {
+            return;
+        }
+        let Some(mut t) = self.terrain().cloned() else {
+            return;
+        };
+        let sortiert = |v: &[String]| {
+            let mut v = v.to_vec();
+            v.sort();
+            v
+        };
+        let s = sortiert(&rand);
+        if t.breaks.iter().any(|b| b.closed && sortiert(&b.pts) == s) {
+            return;
+        }
+        t.breaks.push(TerrainLine {
+            pts: rand,
+            closed: true,
+        });
+        self.set_terrain(Some(t));
     }
 
     /// Die Grenzen eines Geländes ohne Lageplan, also von Hand gezeichnet
@@ -294,6 +345,44 @@ fn in_huelle(h: &[Vec3], p: [f64; 2]) -> bool {
             let l = (b.x - a.x).hypot(b.y - a.y);
             (b.x - a.x) * (p[1] - a.y) - (b.y - a.y) * (p[0] - a.x) >= -l
         })
+}
+
+/// Der Rand der Hülle `h` als Ring von Punkten (Indizes in
+/// [`Terrain::points`]): ihre Ecken und die Punkte, die auf ihren Kanten
+/// liegen (bis 0,5 mm), damit die Bruchkante keinen Punkt überspringt.
+fn huelle_ring(h: &[Vec3], spots: &[TerrainSpot]) -> Vec<usize> {
+    let n = h.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let mut ring: Vec<usize> = Vec::new();
+    let mut lage: Vec<[f64; 2]> = Vec::new();
+    for k in 0..n {
+        let (a, b) = (h[k], h[(k + 1) % n]);
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let l2 = dx * dx + dy * dy;
+        if l2 < 1e-12 {
+            continue;
+        }
+        let mut auf: Vec<(f64, usize, [f64; 2])> = spots
+            .iter()
+            .filter_map(|s| {
+                let (px, py) = (s.p[0] - a.x, s.p[1] - a.y);
+                let t = (px * dx + py * dy) / l2;
+                let quer = (px * dy - py * dx).abs() / l2.sqrt();
+                ((0.0..1.0).contains(&t) && quer <= 0.5).then_some((t, s.i, [s.p[0], s.p[1]]))
+            })
+            .collect();
+        auf.sort_by(|x, y| x.0.total_cmp(&y.0));
+        for (_, i, p) in auf {
+            // je Stelle ein Punkt
+            if !lage.iter().any(|q| (q[0] - p[0]).hypot(q[1] - p[1]) <= 0.5) {
+                ring.push(i);
+                lage.push(p);
+            }
+        }
+    }
+    ring
 }
 
 /// Auf mm.
@@ -669,6 +758,99 @@ mod tests {
         assert!(m.set_parcel_ring(0, &innen));
         m.commit();
         assert_eq!(m.terrain().unwrap().points.len(), n);
+    }
+
+    /// Zwei Häuser in verschiedener Höhe, dann eine Grenze dicht um sie
+    /// (VOB B-251a): Innerhalb des bisherigen Netzrands bleibt jede Höhe,
+    /// die neuen Ecken liegen so hoch, wie das Netz an der Platte des
+    /// Bezugsgebäudes steht (Kosten H-251a), und ein zweites Mal kommt
+    /// keine Bruchkante doppelt dazu.
+    #[test]
+    fn grenze_aendert_innen_nichts() {
+        let mut m = Model::with_seed(3);
+        let neu = |m: &mut Model, x0: f64, w: f64, versatz: f64| {
+            let b = m.add_building(1);
+            let pts = [
+                vec3(x0, 0.0, 0.0),
+                vec3(x0 + w, 0.0, 0.0),
+                vec3(x0 + w, 10000.0, 0.0),
+                vec3(x0, 10000.0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+            m.begin("Gelände");
+            assert!(m.set_terrain_offset_of(b, versatz));
+            m.commit();
+        };
+        neu(&mut m, 0.0, 8000.0, 500.0);
+        neu(&mut m, 11000.0, 8000.0, 1500.0);
+        m.begin("Fläche");
+        assert!(m.seed_flat_terrain(&[]));
+        m.commit();
+        let spots = m.terrain_spots();
+        let x = |f: fn(f64, f64) -> f64, i: usize, a: f64| spots.iter().map(|s| s.p[i]).fold(a, f);
+        let k = [
+            x(f64::min, 0, f64::MAX),
+            x(f64::min, 1, f64::MAX),
+            x(f64::max, 0, f64::MIN),
+            x(f64::max, 1, f64::MIN),
+        ];
+        // ein Raster im bisherigen Netz, 1 mm vom Rand
+        let mut raster = Vec::new();
+        for i in 0..=40 {
+            for j in 0..=40 {
+                let q = [
+                    k[0] + 1.0 + (k[2] - k[0] - 2.0) * f64::from(i) / 40.0,
+                    k[1] + 1.0 + (k[3] - k[1] - 2.0) * f64::from(j) / 40.0,
+                ];
+                raster.push((q, m.terrain_z_survey(q[0], q[1]).unwrap()));
+            }
+        }
+        let platte = m.hoehe_an_der_platte();
+        let n = m.terrain().unwrap().points.len();
+        let brueche = m.terrain().unwrap().breaks.len();
+        let ring = [
+            [k[0] - 500.0, k[1] - 500.0],
+            [k[2] + 500.0, k[1] - 500.0],
+            [k[2] + 500.0, k[3] + 500.0],
+            [k[0] - 500.0, k[3] + 500.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert_eq!(t.points.len(), n + 4);
+        assert_eq!(t.breaks.len(), brueche + 1, "der alte Rand");
+        for (q, z) in &raster {
+            let h = m.terrain_z_survey(q[0], q[1]).unwrap();
+            assert!((h - z).abs() < 1e-6, "{q:?}: {z} → {h}");
+        }
+        for s in m.terrain_spots().iter().skip(n) {
+            assert!((s.p[2] - platte).abs() < 1.0, "{:?} statt {platte}", s.p);
+        }
+        // weiter gezogen: der Rand von eben kommt dazu, keiner doppelt
+        let mut weiter = ring;
+        weiter[2] = [k[2] + 20000.0, k[3] + 20000.0];
+        m.begin("Ecke");
+        assert!(m.set_parcel_ring(0, &weiter));
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert_eq!(t.breaks.len(), brueche + 2);
+        let mut ringe: Vec<Vec<String>> = t
+            .breaks
+            .iter()
+            .map(|b| {
+                let mut v = b.pts.clone();
+                v.sort();
+                v
+            })
+            .collect();
+        ringe.sort();
+        ringe.dedup();
+        assert_eq!(ringe.len(), t.breaks.len());
+        for (q, z) in &raster {
+            let h = m.terrain_z_survey(q[0], q[1]).unwrap();
+            assert!((h - z).abs() < 1e-6, "weiter {q:?}: {z} → {h}");
+        }
     }
 
     /// Im System eines Lageplans (gedreht) kommt die Grenze in dessen
