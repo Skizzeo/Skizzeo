@@ -206,10 +206,17 @@ impl Gelaende {
 
     /// Der nächste Punkt, in dem der Sehstrahl von `o` in Richtung `d` die
     /// Oberfläche trifft; dort setzt „Grenze zeichnen“ in 3D die Ecke (Jörn
-    /// 17.10.).
+    /// 17.10.). Geprüft werden nur die Dreiecke im Raster an der Linie des
+    /// Strahls im Grundriss (Review B-264b: sonst je Mausbewegung alle).
     pub(crate) fn treffpunkt(&self, o: Vec3, d: Vec3) -> Option<Vec3> {
-        self.dreiecke
-            .iter()
+        let mut nah = Vec::new();
+        if d.x == 0.0 && d.y == 0.0 {
+            self.netz.bei(&[o.x, o.y, o.x, o.y], &mut nah);
+        } else {
+            self.netz.entlang([o.x, o.y], [-d.y, d.x], &mut nah);
+        }
+        nah.iter()
+            .map(|&i| &self.dreiecke[i as usize])
             .filter_map(|t| sk_math::ray_triangle(o, d, t[0], t[1], t[2]))
             .min_by(f64::total_cmp)
             .map(|t| o + d * t)
@@ -1786,6 +1793,42 @@ pub(crate) mod tests {
 
     const CSV: &[u8] =
         include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
+
+    /// Der Treffpunkt über das Raster ist derselbe wie über alle Dreiecke
+    /// (Review B-264b), schräg, flach und senkrecht von oben.
+    #[test]
+    fn treffpunkt_wie_ueber_alle() {
+        let g = Gelaende::aus(&lindenhof()).unwrap();
+        let alle = |o: Vec3, d: Vec3| {
+            g.dreiecke
+                .iter()
+                .filter_map(|t| sk_math::ray_triangle(o, d, t[0], t[1], t[2]))
+                .min_by(f64::total_cmp)
+                .map(|t| o + d * t)
+        };
+        let (lo, hi) = g.rahmen();
+        let (mut treffer, mut n) = (0, 0);
+        for i in 0..=12 {
+            for j in 0..=12 {
+                let x = lo.x + (hi.x - lo.x) * i as f64 / 12.0;
+                let y = lo.y + (hi.y - lo.y) * j as f64 / 12.0;
+                let o = vec3(x, y, hi.z + 20_000.0);
+                for d in [
+                    vec3(0.0, 0.0, -1.0),
+                    vec3(1.0, 0.4, -0.8),
+                    vec3(-0.3, 1.0, -0.2),
+                    vec3(-1.0, -1.0, -0.05),
+                ] {
+                    let d = d.normalized();
+                    let (a, b) = (g.treffpunkt(o, d), alle(o, d));
+                    assert_eq!(a, b, "{o:?} {d:?}");
+                    treffer += usize::from(a.is_some());
+                    n += 1;
+                }
+            }
+        }
+        assert!(treffer > n / 5, "{treffer} von {n}");
+    }
 
     fn lindenhof() -> Model {
         let mut m = Model::with_seed(7);
