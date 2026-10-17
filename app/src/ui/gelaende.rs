@@ -31,6 +31,10 @@ pub const SCHLOSS: [&str; 2] = ["Gemessene Punkte ziehen", "erst mit offenem Sch
 /// 42.5).
 pub const DECKT_NICHT: &str = "Aufmaß deckt die Baugrube nicht, Erdmengen mit mittlerer Höhe. \
     Gelände zurückschieben oder ein größeres Aufmaß einlesen.";
+/// Rote Zeile, wenn eine Grenze über das Netz hinausragt: Dort hat das
+/// Grundstück kein Gelände (Jörn 17.10.).
+pub const UEBER_NETZ: &str = "Grundstück ragt über das Gelände hinaus, dort fehlt es. \
+    Höhenpunkte an der Grenze setzen oder ein größeres Aufmaß einlesen.";
 
 /// Knöpfe der Leiste.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +193,8 @@ pub struct GelaendeLeiste {
     pub steckt: Option<Meldung>,
     /// Das Aufmaß deckt eine Baugrube nicht: rot darunter (42.5).
     pub deckt_nicht: bool,
+    /// Eine Grenze ragt über das Netz hinaus: rot darunter.
+    pub ueber_netz: bool,
     /// „Grundstück 822,87 m²“.
     pub grundstueck: Option<String>,
     /// Höhenlinien gröber als gewünscht oder keine, weil es zu viele wären.
@@ -325,6 +331,9 @@ impl Ui {
                 rows.extend(l.steckt.clone().map(Row::Error));
                 if l.deckt_nicht {
                     rows.extend(self.rot(DECKT_NICHT));
+                }
+                if l.ueber_netz {
+                    rows.extend(self.rot(UEBER_NETZ));
                 }
             }
         } else if l.meldung.is_empty() && l.fehler.is_none() {

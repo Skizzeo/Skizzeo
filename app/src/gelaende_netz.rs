@@ -1045,6 +1045,16 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
             for r in &g.ringe {
                 rand_an_grenze(&mut s, g, r, unten, true);
             }
+            // Endet das Netz vor der Grenze, schließt sein eigener Rand den
+            // Körper im Grundstück; sonst sah man dort hindurch (Jörn 17.10.)
+            let rand = g.rand.clone().unwrap_or_else(|| randkanten(&g.dreiecke));
+            for (a, b) in rand {
+                for (t0, t1, innen) in g.teile([a.x, a.y], [b.x, b.y]) {
+                    if innen {
+                        seite(&mut s, a + (b - a) * t0, a + (b - a) * t1, unten);
+                    }
+                }
+            }
         }
         Show::All | Show::Fade => {
             let rand = g.rand.clone().unwrap_or_else(|| randkanten(&g.dreiecke));
@@ -1681,7 +1691,7 @@ pub(crate) fn fassade(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const CSV: &[u8] =
@@ -1805,6 +1815,66 @@ mod tests {
             let mitte = [(e.a.x + e.b.x) / 2.0, (e.a.y + e.b.y) / 2.0];
             assert!(!im_ring(r, mitte), "{mitte:?}");
         }
+    }
+
+    /// Aufmaß 20 × 20 m, die Grenze ragt rechts 4 m darüber hinaus;
+    /// gibt das Modell und das Rechteck des Netzes (mm).
+    pub(crate) fn grenze_ueber_netz() -> (Model, [f64; 4]) {
+        let mut m = Model::with_seed(7);
+        let mut text = String::new();
+        for (k, (e, n)) in [(0, 0), (20, 0), (20, 20), (0, 20), (10, 10)]
+            .iter()
+            .enumerate()
+        {
+            text.push_str(&format!("{} {e} {n} 10.{k}\n", k + 1));
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-17", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let k = m
+            .terrain_border()
+            .iter()
+            .flatten()
+            .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
+                [k[0].min(p.x), k[1].min(p.y), k[2].max(p.x), k[3].max(p.y)]
+            });
+        let ring = [
+            [k[0] + 2000.0, k[1] + 2000.0],
+            [k[2] + 4000.0, k[1] + 2000.0],
+            [k[2] + 4000.0, k[3] - 2000.0],
+            [k[0] + 2000.0, k[3] - 2000.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.set_terrain_show(Show::Parcel);
+        m.commit();
+        (m, k)
+    }
+
+    /// Endet das Netz vor der Grenze, schließt sein Rand den Körper im
+    /// Grundstück (Jörn 17.10.: eine Ecke war durchsichtig).
+    #[test]
+    fn netz_endet_vor_der_grenze() {
+        let (m, k) = grenze_ueber_netz();
+        let g = Gelaende::aus(&m).unwrap();
+        assert_eq!(g.show, Show::Parcel);
+        let s = koerper(&g, [10, 11, 12]);
+        let mitte = (k[1] + k[3]) / 2.0;
+        let wand = s.triangles.iter().any(|t| {
+            t.mat == 11
+                && t.p.iter().all(|p| (p.x - k[2]).abs() < 1.0)
+                && t.p.iter().any(|p| p.y <= mitte)
+                && t.p.iter().any(|p| p.y >= mitte)
+        });
+        assert!(wand, "Seitenwand am Rand des Netzes im Grundstück");
+        // außerhalb des Grundstücks keine
+        let draussen = s.triangles.iter().any(|t| {
+            t.mat == 11
+                && t.p.iter().all(|p| (p.x - k[2]).abs() < 1.0)
+                && t.p.iter().all(|p| p.y < k[1] + 2000.0 - 1.0)
+        });
+        assert!(!draussen);
     }
 
     /// Nur der Lageplan: eben in Höhe OK Gelände, zugeschnitten auf das
