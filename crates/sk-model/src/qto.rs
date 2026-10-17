@@ -1670,6 +1670,9 @@ pub struct Schedule {
     /// Hinweise zu Mengen, die keine Zeile tragen kann, etwa zu einer
     /// Geländefläche ohne Sohlplatte (VOB-Prüfung G3, D2).
     pub hinweise: Vec<String>,
+    /// Häuser, die ineinander stehen (H-245-geo-a), je Paar mit seinem Satz
+    /// aus `hinweise`; im Umfang eines Hauses nur dessen Paare (VOB V-254a).
+    pub ineinander: Vec<crate::qto_earth::Ineinander>,
     /// [`Schedule::layer_rows_ref`]: die Schichtzeilen, einmal je Liste.
     zeilen: Zeilenspeicher,
 }
@@ -2507,7 +2510,10 @@ fn zusammenfuehren_im_gang(
         &mut sched.hinweise,
     );
     // Häuser ineinander (H-245-geo-a): Hinweis beim Projekt
-    crate::qto_earth::ineinander(model, &mut sched.hinweise);
+    sched.ineinander = crate::qto_earth::ineinander(model);
+    sched
+        .hinweise
+        .extend(sched.ineinander.iter().map(|x| x.satz.clone()));
     let mut roofs: Vec<&(ElementId, FlatRoof)> = teile.iter().flat_map(|t| &t.daecher).collect();
     roofs.sort_by_cached_key(|(id, _)| (model.element(*id).map(|e| e.number.clone()), id.index()));
     // Regenfallrohre je Dach in einem Gang, wie `Model::downpipes_of`
@@ -2797,7 +2803,25 @@ impl Schedule {
             out.loose = self.loose.iter().filter(keep).cloned().collect();
         }
         out.formwork = formwork_rows(&out);
-        out.hinweise = self.hinweise.clone();
+        // ein Paar ineinander nur im Projekt und bei seinen Häusern (VOB
+        // V-254a)
+        out.ineinander = self
+            .ineinander
+            .iter()
+            .filter(|x| u.gebaeude.is_none_or(|g| x.mit(g)))
+            .cloned()
+            .collect();
+        out.hinweise = self
+            .hinweise
+            .iter()
+            .filter(|h| {
+                !self
+                    .ineinander
+                    .iter()
+                    .any(|x| x.satz == **h && !out.ineinander.contains(x))
+            })
+            .cloned()
+            .collect();
         // Erdarbeiten des Grundstücks stehen bei keinem Haus; bei gewähltem
         // Haus sagt es ein Hinweis (VOB-Prüfung G3, E1)
         if u.gebaeude.is_some()

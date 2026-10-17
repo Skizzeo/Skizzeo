@@ -28,14 +28,30 @@ pub use flaechen::{
 pub const INEINANDER: &str = "stehen ineinander: Wände und Baugruben überdecken sich, \
      Wand-, Gründungs- und Erdmengen dort doppelt, Lage prüfen";
 
-/// [`INEINANDER`] je Paar von Häusern, die ineinander stehen, an die
+/// Zwei Häuser, die ineinander stehen, mit ihrem Hinweis aus
+/// [`ineinander`], wie er in [`crate::qto::Schedule::hinweise`] steht.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ineinander {
+    pub haeuser: (crate::BuildingId, crate::BuildingId),
+    pub satz: String,
+}
+
+impl Ineinander {
+    /// Gehört das Haus `b` zum Paar?
+    pub fn mit(&self, b: crate::BuildingId) -> bool {
+        self.haeuser.0 == b || self.haeuser.1 == b
+    }
+}
+
+/// [`INEINANDER`] je Paar von Häusern, die ineinander stehen, für die
 /// Hinweise des Projekts.
-pub(crate) fn ineinander(m: &crate::Model, hinweise: &mut Vec<String>) {
+pub(crate) fn ineinander(m: &crate::Model) -> Vec<Ineinander> {
     let name = |b| {
         m.building(b)
             .map_or_else(String::new, |x| format!("{} ({})", x.name, x.number))
     };
     let nummer = |b| m.building(b).map(|x| x.number.clone());
+    let mut paare = Vec::new();
     for (a, b) in m.haeuser_ineinander() {
         // nach Nummer gelesen: „Gebäude 1 und Gebäude 2“ (Kosten K-248a)
         let (a, b) = if nummer(b) < nummer(a) {
@@ -43,8 +59,12 @@ pub(crate) fn ineinander(m: &crate::Model, hinweise: &mut Vec<String>) {
         } else {
             (a, b)
         };
-        hinweise.push(format!("{} und {} {INEINANDER}", name(a), name(b)));
+        paare.push(Ineinander {
+            haeuser: (a, b),
+            satz: format!("{} und {} {INEINANDER}", name(a), name(b)),
+        });
     }
+    paare
 }
 
 pub use netz::{
