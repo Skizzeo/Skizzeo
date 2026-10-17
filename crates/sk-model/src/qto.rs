@@ -2506,6 +2506,8 @@ fn zusammenfuehren_im_gang(
         &mut sched.auto,
         &mut sched.hinweise,
     );
+    // Häuser ineinander (H-245-geo-a): Hinweis beim Projekt
+    crate::qto_earth::ineinander(model, &mut sched.hinweise);
     let mut roofs: Vec<&(ElementId, FlatRoof)> = teile.iter().flat_map(|t| &t.daecher).collect();
     roofs.sort_by_cached_key(|(id, _)| (model.element(*id).map(|e| e.number.clone()), id.index()));
     // Regenfallrohre je Dach in einem Gang, wie `Model::downpipes_of`

@@ -573,6 +573,128 @@ mod tests {
         }
     }
 
+    /// Häuser ineinander (H-245-geo-a): Erst wenn sich die Wände
+    /// überdecken (Bezugslinien näher als zwei Wanddicken), meldet das
+    /// Modell das Paar, und die Mengenliste nennt beide Häuser in einem
+    /// Projekthinweis (VOB). Wand an Wand (0,63 m) und mit Spalt nicht.
+    #[test]
+    fn haeuser_ineinander_mit_hinweis() {
+        // (Abstand der Bezugslinien, Garage, ineinander)
+        let faelle = [
+            (0.0, false, true),
+            (400.0, false, true),
+            (0.0, true, true),
+            (630.0, false, false),
+            (650.0, false, false),
+            (2000.0, true, false),
+        ];
+        for (spalt, garage, soll) in faelle {
+            let mut m = Model::with_seed(5);
+            let mut neu = |x0: f64, w: f64, h: f64| {
+                let b = m.add_building(1);
+                let pts = [
+                    vec3(x0, 0.0, 0.0),
+                    vec3(x0 + w, 0.0, 0.0),
+                    vec3(x0 + w, h, 0.0),
+                    vec3(x0, h, 0.0),
+                ];
+                (b, m.build_from_polygon(b, &pts).unwrap())
+            };
+            let (a, _) = neu(0.0, 8000.0, 10000.0);
+            let (w, h) = if garage {
+                (3000.0, 3000.0)
+            } else {
+                (8000.0, 10000.0)
+            };
+            let (b, zug) = neu(8000.0 + spalt, w, h);
+            let fall = format!("{spalt} Garage {garage}");
+            let paare = m.haeuser_ineinander();
+            if soll {
+                assert_eq!(paare.len(), 1, "{fall}");
+                let p = paare[0];
+                assert!(p == (a, b) || p == (b, a), "{fall}");
+            } else {
+                assert!(paare.is_empty(), "{fall}");
+            }
+            let s = crate::qto::schedule(&m);
+            let h: Vec<&String> = s
+                .hinweise
+                .iter()
+                .filter(|h| h.contains(crate::qto_earth::INEINANDER))
+                .collect();
+            if soll {
+                assert_eq!(h.len(), 1, "{fall}: {:?}", s.hinweise);
+                let stelle = |haus| {
+                    let x = m.building(haus).unwrap();
+                    (
+                        h[0].find(&format!("{} ({})", x.name, x.number)),
+                        x.number.clone(),
+                    )
+                };
+                let ((sa, na), (sb, nb)) = (stelle(a), stelle(b));
+                assert!(sa.is_some() && sb.is_some(), "{h:?}");
+                // nach Nummer gelesen, nicht nach Guid (Kosten K-248a)
+                assert_eq!(sa < sb, na < nb, "{h:?}");
+            } else {
+                assert!(h.is_empty(), "{fall}: {h:?}");
+            }
+            // gemerkt mit der Lage: weggerückt ist das Paar fort
+            if soll {
+                let weg: Vec<_> = m
+                    .run(zug)
+                    .unwrap()
+                    .points
+                    .iter()
+                    .map(|p| vec3(p.x + 5000.0, p.y, p.z))
+                    .collect();
+                m.begin("Weg");
+                assert!(m.set_run_points(zug, &weg).is_some());
+                m.commit();
+                assert!(m.haeuser_ineinander().is_empty(), "{fall}");
+            }
+        }
+    }
+
+    /// Der Hinweis gilt genau dort, wo die Trennung der Platten endet
+    /// (Geometrie zu #248): Rechnen die Gründungen beim Anlegen der ersten
+    /// Fläche gemeinsam, weil sich die Wände überdecken, meldet das Modell
+    /// das Paar; trennt es die Platten, nicht. Auch 2 bis 40 mm Überdeckung.
+    #[test]
+    fn ineinander_wo_die_trennung_endet() {
+        for spalt in [
+            500.0, 590.0, 600.0, 620.0, 628.0, 628.6, 629.4, 630.0, 650.0,
+        ] {
+            let mut m = Model::with_seed(5);
+            let mut gr = Vec::new();
+            for (x0, v) in [(0.0, 500.0), (8000.0 + spalt, 1500.0)] {
+                let b = m.add_building(1);
+                let pts = [
+                    vec3(x0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 10000.0, 0.0),
+                    vec3(x0, 10000.0, 0.0),
+                ];
+                let zug = m.build_from_polygon(b, &pts).unwrap();
+                m.begin("Versatz");
+                m.set_terrain_offset_of(b, v);
+                m.commit();
+                let st = m.run(zug).unwrap().storey;
+                gr.push(m.foundation_level_of(st).unwrap());
+            }
+            let vor: Vec<f64> = gr.iter().map(|g| m.terrain_z_of_level(*g)).collect();
+            let hinweis = !m.haeuser_ineinander().is_empty();
+            m.begin("Fläche");
+            assert!(m.seed_flat_terrain(&[]));
+            m.commit();
+            let gemeinsam = gr
+                .iter()
+                .zip(&vor)
+                .any(|(g, z)| (m.terrain_z_of_level(*g) - z).abs() > 1e-6);
+            assert_eq!(hinweis, gemeinsam, "Spalt {spalt}");
+            assert_eq!(hinweis, spalt < 629.0, "Spalt {spalt}");
+        }
+    }
+
     /// Wand an Wand, 1 m Höhenunterschied: Die Gründungen bleiben beim
     /// Anlegen der ersten Fläche, wo sie waren. Die Einbindetiefe zählt nur
     /// am freien Plattenrand, nicht an der Haustrennwand, wo das Gelände

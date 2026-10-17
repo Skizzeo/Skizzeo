@@ -22,6 +22,31 @@ pub use flaechen::{
     Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL, KEIL,
     OHNE_AUFMASS, OHNE_TRAEGER, UEBERLAPPT, UNGUELTIG,
 };
+/// Projekthinweis für zwei Häuser, die ineinander stehen (H-245-geo-a,
+/// [`crate::Model::haeuser_ineinander`]), hinter ihren Namen; VOB: im
+/// Rechenweg, mit beiden Häusern.
+pub const INEINANDER: &str = "stehen ineinander: Wände und Baugruben überdecken sich, \
+     Wand-, Gründungs- und Erdmengen dort doppelt, Lage prüfen";
+
+/// [`INEINANDER`] je Paar von Häusern, die ineinander stehen, an die
+/// Hinweise des Projekts.
+pub(crate) fn ineinander(m: &crate::Model, hinweise: &mut Vec<String>) {
+    let name = |b| {
+        m.building(b)
+            .map_or_else(String::new, |x| format!("{} ({})", x.name, x.number))
+    };
+    let nummer = |b| m.building(b).map(|x| x.number.clone());
+    for (a, b) in m.haeuser_ineinander() {
+        // nach Nummer gelesen: „Gebäude 1 und Gebäude 2“ (Kosten K-248a)
+        let (a, b) = if nummer(b) < nummer(a) {
+            (b, a)
+        } else {
+            (a, b)
+        };
+        hinweise.push(format!("{} und {} {INEINANDER}", name(a), name(b)));
+    }
+}
+
 pub use netz::{
     hand_geaendert, netz_angenommen, netz_geaendert, netz_herkunft, steil_hinweis, versatz,
     ErdNetz, ANGENOMMEN, DREIECKSPRISMEN, HAND_GEAENDERT, STEIL, STEIL_AB,

@@ -30,6 +30,10 @@ type Strecke = ((f64, f64), (f64, f64));
 /// Plattenumriss eines Wandzugs (mm, Grundriss), sein Gebäude und sein
 /// Rechteck (`[x0, y0, x1, y1]`).
 type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>, [f64; 4]);
+/// Ein Haus mit seiner Guid, für eine feste Reihenfolge.
+type Haus = (Guid, BuildingId);
+/// Rechteck, Haus und Umriss eines Zugs für [`Model::haeuser_ineinander`].
+type HausUmriss<'a> = ([f64; 4], Haus, &'a [[f64; 2]]);
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -360,6 +364,10 @@ pub(crate) struct Lage {
     /// Grundriss): Dort rechnet der Graben mit der eigenen Höhe (VOB-Spruch
     /// zu H-245c, Weg b), mit seinem Gebäude.
     trennwand: HashMap<RunId, Streifen>,
+    /// Häuser, die ineinander stehen ([`Model::haeuser_ineinander`]), mit
+    /// den Umrissen gerechnet, die die Lage ohnehin braucht: So kostet der
+    /// Hinweis beim Zusammenführen der Mengenliste nichts (Review #248).
+    ineinander: Vec<(BuildingId, BuildingId)>,
 }
 
 /// Tiefster Punkt am freien Rand einer Gründung (m ü. NHN) mit ihrem
@@ -1201,6 +1209,7 @@ impl Model {
         // je Zug mit Gebäude: Gebäude und höchster Punkt am Umriss
         let mut hoch: Vec<(BuildingId, Option<f64>)> = Vec::new();
         let umrisse = self.umrisse_der_zuege();
+        lage.ineinander = self.ineinander_rechnen(&umrisse);
         for (k, (id, b, ..)) in umrisse.iter().enumerate() {
             let Some(r) = self.runs.get(*id) else {
                 continue;
@@ -1281,6 +1290,46 @@ impl Model {
                 Some((id, self.building_of(r.storey), ring, kasten))
             })
             .collect()
+    }
+
+    /// Paare von Häusern, deren Umrisse ineinander stehen: Ihre Wände
+    /// überdecken sich, etwa wenn ein Haus auf die Bezugslinie des anderen
+    /// gezeichnet ist (H-245-geo-a). Je Paar einmal, nach Guid geordnet;
+    /// Wand an Wand zählt nicht. Gemerkt mit der [`Lage`].
+    pub fn haeuser_ineinander(&self) -> Vec<(BuildingId, BuildingId)> {
+        self.lage().ineinander.clone()
+    }
+
+    /// [`Model::haeuser_ineinander`] aus den Umrissen der Züge.
+    fn ineinander_rechnen(&self, umrisse: &[ZugUmriss]) -> Vec<(BuildingId, BuildingId)> {
+        let mut umrisse: Vec<HausUmriss> = umrisse
+            .iter()
+            .filter_map(|(_, b, ring, k)| {
+                let b = (*b)?;
+                Some((*k, (self.building(b)?.guid, b), ring.as_slice()))
+            })
+            .collect();
+        // nach links geordnet: Kandidaten nur bis zum rechten Rand
+        umrisse.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+        let mut paare: Vec<(Haus, Haus)> = Vec::new();
+        for (i, (k, b, ring)) in umrisse.iter().enumerate() {
+            for (l, c, andere) in &umrisse[i + 1..] {
+                if l[0] > k[2] {
+                    break;
+                }
+                let paar = if b.0 < c.0 { (*b, *c) } else { (*c, *b) };
+                if b.1 != c.1
+                    && l[1] <= k[3]
+                    && k[1] <= l[3]
+                    && !paare.contains(&paar)
+                    && trennwand::ineinander(ring, andere)
+                {
+                    paare.push(paar);
+                }
+            }
+        }
+        paare.sort_by_key(|(b, c)| (b.0, c.0));
+        paare.into_iter().map(|(b, c)| (b.1, c.1)).collect()
     }
 
     /// Geländehöhen (Landeswerte) am freien Plattenrand von `umrisse[k]`:
