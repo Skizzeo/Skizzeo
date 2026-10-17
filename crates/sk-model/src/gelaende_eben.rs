@@ -623,13 +623,14 @@ mod tests {
                 .collect();
             if soll {
                 assert_eq!(h.len(), 1, "{fall}: {:?}", s.hinweise);
-                for haus in [a, b] {
+                let stelle = |haus| {
                     let x = m.building(haus).unwrap();
-                    assert!(
-                        h[0].contains(&format!("{} ({})", x.name, x.number)),
-                        "{h:?}"
-                    );
-                }
+                    (h[0].find(&format!("{} ({})", x.name, x.number)), x.number.clone())
+                };
+                let ((sa, na), (sb, nb)) = (stelle(a), stelle(b));
+                assert!(sa.is_some() && sb.is_some(), "{h:?}");
+                // nach Nummer gelesen, nicht nach Guid (Kosten K-248a)
+                assert_eq!(sa < sb, na < nb, "{h:?}");
             } else {
                 assert!(h.is_empty(), "{fall}: {h:?}");
             }
