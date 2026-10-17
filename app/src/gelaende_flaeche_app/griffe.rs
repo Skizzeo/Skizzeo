@@ -1,11 +1,14 @@
 //! Grenze mit Griffen ändern (I3, gelaende/analyse-interaktives-gelaende.md
 //! §4.2): Ist die Leiste „Gelände“ offen (§4.0 Regel 1, J9 A), zeigt jedes
-//! Flurstück im Grundriss an den Ecken ein Quadrat und in jeder Kantenmitte
-//! einen Punkt. Eine Ecke ziehen verschiebt sie mit Fang (Strg ohne), den
-//! Punkt ziehen fügt dort eine Ecke ein und zieht sie gleich mit, ein Klick
-//! fügt sie nur ein. Eine Kante quer ziehen versetzt sie parallel, die
-//! Nachbarkanten behalten ihre Richtung. Entf löscht die Ecke unter der
-//! Maus; eine Grenze behält drei. Was unter der Maus liegt, sagt die
+//! Flurstück im Grundriss und in 3D an den Ecken ein Quadrat und in jeder
+//! Kantenmitte einen Punkt (I3b, Jörn 17.10.: in 3D auf dem Gelände). Eine
+//! Ecke ziehen verschiebt sie mit Fang (Strg ohne), den Punkt ziehen fügt
+//! dort eine Ecke ein und zieht sie gleich mit, ein Klick fügt sie nur ein.
+//! Eine Kante quer ziehen versetzt sie parallel, die Nachbarkanten behalten
+//! ihre Richtung. In 3D wird in der Ebene auf der Höhe des Griffs gezogen.
+//! Ein Klick wählt eine Ecke, Esc oder ein Klick daneben wählt sie ab. Entf
+//! löscht die gewählte Ecke, ohne Wahl die unter der Maus; eine Grenze
+//! behält drei. Was unter der Maus liegt, sagt die
 //! Statuszeile, beim Ziehen die Fläche des Grundstücks und die Längen der
 //! Kanten am Griff. Gezogen wird nur im Bild; erst Loslassen schreibt die
 //! Grenze ins Modell, als ein Schritt (Review B-233a: sonst bauten Netz und
@@ -34,6 +37,9 @@ pub const ECKE: &str =
     "Ecke der Grenze: ziehen verschiebt sie (mit Strg ohne Fang), Entf löscht sie.";
 pub const PLUS: &str = "Neue Ecke: klicken fügt sie ein, ziehen fügt sie ein und verschiebt sie.";
 pub const KANTE: &str = "Kante der Grenze: quer ziehen verschiebt sie parallel.";
+/// Nach dem Klick auf eine Ecke.
+pub const GEWAEHLT: &str =
+    "Ecke gewählt: Entf löscht sie, ziehen verschiebt sie, Esc wählt sie ab.";
 /// Entf an einem Dreieck.
 pub const DREI: &str = "Eine Grenze behält mindestens drei Ecken.";
 /// Die gezogene Grenze ließe sich nicht bauen (Schleife, keine Fläche).
@@ -54,24 +60,30 @@ pub enum Griff {
     Kante(usize, usize),
 }
 
-/// Ein Zug am Griff: Bodenpunkt beim Greifen, der Ring dabei (nach dem
-/// Einfügen), Ziele für den Fang und der Ring, den Loslassen schreibt
-/// (`None`: nichts geändert).
+/// Ein Zug am Griff: Bodenpunkt beim Greifen auf der Höhe `z` des Griffs
+/// (in ihrer Ebene wird gezogen), der Ring dabei (nach dem Einfügen), Ziele
+/// für den Fang und der Ring, den Loslassen schreibt (`None`: nichts
+/// geändert).
 #[derive(Clone, Debug)]
 struct Zug {
     griff: Griff,
     start: [f64; 2],
+    z: f64,
     ring: Vec<[f64; 2]>,
     ziele: Ziele,
     label: &'static str,
     neu: Option<Vec<[f64; 2]>>,
 }
 
-/// Griffe der Grenze im Grundriss.
+/// Griffe der Grenze im Grundriss und in 3D.
 #[derive(Clone, Debug, Default)]
 pub struct Griffe {
     hover: Option<Griff>,
     zug: Option<Zug>,
+    /// Die gewählte Ecke: Flurstück, Ecke und wo sie lag. Ändert sich die
+    /// Grenze anders (Rückgängig, eine Kante gezogen), gilt die Wahl nicht
+    /// mehr.
+    gewaehlt: Option<(usize, usize, [f64; 2])>,
 }
 
 impl Griffe {
@@ -83,11 +95,25 @@ impl Griffe {
     pub fn zieht(&self) -> bool {
         self.zug.is_some()
     }
+
+    /// Die gewählte Ecke, wenn sie noch so in `ringe` liegt.
+    fn wahl(&self, ringe: &[Vec<[f64; 2]>]) -> Option<(usize, usize)> {
+        let (i, k, p) = self.gewaehlt?;
+        (ringe.get(i)?.get(k)? == &p).then_some((i, k))
+    }
+
+    /// Nichts mehr gewählt; `true`, wenn etwas gewählt war.
+    pub fn abwaehlen(&mut self) -> bool {
+        self.gewaehlt.take().is_some()
+    }
 }
 
-/// Griff unter dem Bildpunkt: Ecken vor Punkten vor Kanten.
+/// Griff unter dem Bildpunkt: Ecken vor Punkten vor Kanten. `hoehe` gibt
+/// die Höhe der Grenze an einer Stelle (mm).
+#[allow(clippy::too_many_arguments)]
 pub fn treffen(
     ringe: &[Vec<[f64; 2]>],
+    hoehe: &dyn Fn([f64; 2]) -> f64,
     cam: &Camera,
     x: f64,
     y: f64,
@@ -96,7 +122,7 @@ pub fn treffen(
     scale: f64,
 ) -> Option<Griff> {
     let r = GREIF_PX * scale;
-    let bild = |p: [f64; 2]| cam.project(vec3(p[0], p[1], 0.0), w, h);
+    let bild = |p: [f64; 2]| cam.project(vec3(p[0], p[1], hoehe(p)), w, h);
     let abstand = |p: [f64; 2]| bild(p).map(|q| (q.0 - x).hypot(q.1 - y));
     let naechster = |f: &dyn Fn(usize, usize) -> Option<f64>| {
         let mut best: Option<(f64, usize, usize)> = None;
@@ -164,8 +190,8 @@ fn gezogen(griff: Griff, start: [f64; 2], ring: &[[f64; 2]], p: [f64; 2]) -> Opt
     }
 }
 
-/// Bodenpunkt unter dem Bildpunkt: am Fangziel bis [`fang::FANG_PX`], sonst
-/// im Raster; mit Strg nur im Raster.
+/// Punkt unter dem Bildpunkt in der Ebene auf der Höhe `z`: am Fangziel
+/// bis [`fang::FANG_PX`], sonst im Raster; mit Strg nur im Raster.
 #[allow(clippy::too_many_arguments)]
 fn boden(
     cam: &Camera,
@@ -174,13 +200,14 @@ fn boden(
     y: f64,
     w: f64,
     h: f64,
+    z: f64,
     scale: f64,
     mods: Modifiers,
 ) -> Option<[f64; 2]> {
-    let g = cam.ground_point(x, y, w, h)?;
+    let g = cam.plane_point(x, y, w, h, z)?;
     if !mods.ctrl {
         let tol = cam
-            .ground_point(x + fang::FANG_PX * scale, y, w, h)
+            .plane_point(x + fang::FANG_PX * scale, y, w, h, z)
             .map_or(0.0, |n| (n.x - g.x).hypot(n.y - g.y));
         if let Some((q, _)) = ziele.fangen([g.x, g.y], tol) {
             return Some(q);
@@ -214,6 +241,18 @@ fn zug_zeile(g: Griff, ring: &[[f64; 2]]) -> String {
     }
 }
 
+/// Wo ein Griff sitzt: die Ecke, die Mitte des Punkts oder der Kante.
+fn ort(g: Griff, ringe: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
+    let (Griff::Ecke(i, k) | Griff::Plus(i, k) | Griff::Kante(i, k)) = g;
+    let ring = ringe.get(i)?;
+    let a = *ring.get(k)?;
+    if let Griff::Ecke(..) = g {
+        return Some(a);
+    }
+    let b = ring[(k + 1) % ring.len()];
+    Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
+}
+
 /// Satz der Statuszeile zum Griff.
 fn satz(g: Griff) -> &'static str {
     match g {
@@ -224,16 +263,44 @@ fn satz(g: Griff) -> &'static str {
 }
 
 impl App {
-    /// Sind die Griffe der Grenze an? Im Grundriss bei offener Leiste mit
-    /// Modul, ohne Werkzeug, mit sichtbarem Gelände.
+    /// Sind die Griffe der Grenze an? Im Grundriss und in 3D (I3b) bei
+    /// offener Leiste mit Modul, ohne Werkzeug, mit sichtbarem Gelände.
     pub(super) fn grenz_griffe_an(&self) -> bool {
         let l = &self.platte.leiste;
-        self.ui.view == ViewKind::Plan
+        matches!(self.ui.view, ViewKind::Plan | ViewKind::Persp)
             && l.offen
             && !l.werkzeug.aktiv
             && !self.tool.enabled
             && self.ui.frei.frei(crate::freischaltung::Modul::Gelaende)
             && !self.scene.terrain_hidden()
+    }
+
+    /// Höhe der Grenze an einer Stelle (mm): in 3D auf dem Gelände wie ihre
+    /// Linie dort, im Grundriss auf OK Gelände.
+    fn grenz_hoehe(&self) -> impl Fn([f64; 2]) -> f64 + '_ {
+        let m = self.scene.model();
+        let drei_d = self.ui.view == ViewKind::Persp;
+        let (b, z) = (m.level_building(), m.terrain_z());
+        move |p| {
+            if drei_d {
+                m.terrain_z_at(b, p[0], p[1])
+            } else {
+                z
+            }
+        }
+    }
+
+    /// Griff unter dem Bildpunkt.
+    fn grenz_treffen(
+        &self,
+        ringe: &[Vec<[f64; 2]>],
+        x: f64,
+        y: f64,
+        vw: f64,
+        vh: f64,
+        sc: f64,
+    ) -> Option<Griff> {
+        treffen(ringe, &self.grenz_hoehe(), &self.cam, x, y, vw, vh, sc)
     }
 
     /// Ereignis an die Griffe der Grenze; `true`, wenn sie es nehmen.
@@ -245,6 +312,7 @@ impl App {
             if self.platte.griffe.hover.take().is_some() {
                 self.grenz_zeile(None);
             }
+            self.platte.griffe.abwaehlen();
             return false;
         }
         match *ev {
@@ -254,7 +322,7 @@ impl App {
                     return true;
                 }
                 let ringe = self.scene.model().parcel_rings();
-                let g = treffen(&ringe, &self.cam, x, y, vw, vh, sc);
+                let g = self.grenz_treffen(&ringe, x, y, vw, vh, sc);
                 if g != self.platte.griffe.hover {
                     self.platte.griffe.hover = g;
                     self.grenz_zeile(g);
@@ -276,13 +344,21 @@ impl App {
                 ..
             } => {
                 let ringe = self.scene.model().parcel_rings();
-                let Some(g) = treffen(&ringe, &self.cam, x, y, vw, vh, sc) else {
+                let Some(g) = self.grenz_treffen(&ringe, x, y, vw, vh, sc) else {
+                    // ein Klick daneben wählt die Ecke ab
+                    if self.platte.griffe.abwaehlen() {
+                        self.grenz_zeile(None);
+                        self.redraw = true;
+                    }
                     return false;
                 };
-                let Some(start) = self.cam.ground_point(x, y, vw, vh).map(|p| [p.x, p.y]) else {
+                let Some(z) = ort(g, &ringe).map(|p| self.grenz_hoehe()(p)) else {
                     return false;
                 };
-                self.grenz_greifen(g, start, &ringe);
+                let Some(start) = self.cam.plane_point(x, y, vw, vh, z).map(|p| [p.x, p.y]) else {
+                    return false;
+                };
+                self.grenz_greifen(g, start, z, &ringe);
                 true
             }
             Event::MouseUp {
@@ -293,13 +369,23 @@ impl App {
                     return false;
                 };
                 let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = z.griff;
-                if let Some(r) = z.neu {
-                    if self.scene.edit_model(z.label, |m| m.set_parcel_ring(i, &r)) {
+                let mut ok = true;
+                if let Some(r) = &z.neu {
+                    ok = self.scene.edit_model(z.label, |m| m.set_parcel_ring(i, r));
+                    if ok {
                         self.upload_model();
                         self.quantity.dirty = true;
                     } else {
                         // der Ring springt zurück; die Statuszeile sagt warum (H-233b)
                         self.status(Meldung::satz(GEHT_NICHT), crate::NOTICE_TIME);
+                    }
+                }
+                // die gezogene oder angeklickte Ecke bleibt gewählt (I3b)
+                if let (true, Griff::Ecke(_, k)) = (ok, z.griff) {
+                    let p = z.neu.as_ref().unwrap_or(&z.ring).get(k).copied();
+                    self.platte.griffe.gewaehlt = p.map(|p| (i, k, p));
+                    if z.neu.is_none() {
+                        self.status(Meldung::satz(GEWAEHLT), crate::NOTICE_TIME);
                     }
                 }
                 self.platte.leiste.neu = true;
@@ -313,7 +399,7 @@ impl App {
 
     /// Greifen: am Punkt der Kantenmitte gleich die Ecke einfügen (im Bild)
     /// und als Ecke weiterziehen.
-    fn grenz_greifen(&mut self, g: Griff, start: [f64; 2], ringe: &[Vec<[f64; 2]>]) {
+    fn grenz_greifen(&mut self, g: Griff, start: [f64; 2], z: f64, ringe: &[Vec<[f64; 2]>]) {
         let (i, k) = match g {
             Griff::Ecke(i, k) | Griff::Plus(i, k) | Griff::Kante(i, k) => (i, k),
         };
@@ -339,6 +425,7 @@ impl App {
         self.platte.griffe.zug = Some(Zug {
             griff,
             start,
+            z,
             ring,
             ziele,
             label,
@@ -354,8 +441,8 @@ impl App {
             return;
         };
         let p = match z.griff {
-            Griff::Ecke(..) => boden(&self.cam, &z.ziele, x, y, vw, vh, sc, mods),
-            _ => self.cam.ground_point(x, y, vw, vh).map(|p| [p.x, p.y]),
+            Griff::Ecke(..) => boden(&self.cam, &z.ziele, x, y, vw, vh, z.z, sc, mods),
+            _ => self.cam.plane_point(x, y, vw, vh, z.z).map(|p| [p.x, p.y]),
         };
         let Some(r) = p.and_then(|p| gezogen(z.griff, z.start, &z.ring, p)) else {
             return;
@@ -378,23 +465,37 @@ impl App {
         );
     }
 
-    /// Esc beim Ziehen: alles wie vorher. `true`, wenn gezogen wurde.
+    /// Esc beim Ziehen: alles wie vorher; sonst geht die Wahl der Ecke.
+    /// `true`, wenn gezogen wurde oder eine Ecke gewählt war.
     pub(crate) fn grenz_escape(&mut self) -> bool {
         if self.platte.griffe.zug.take().is_none() {
-            return false;
+            if !self.platte.griffe.abwaehlen() {
+                return false;
+            }
+            self.grenz_zeile(None);
+            self.redraw = true;
+            return true;
         }
         self.grenz_zeile(self.platte.griffe.hover);
         self.redraw = true;
         true
     }
 
-    /// Entf über einer Ecke löscht sie; `true`, wenn Entf der Grenze galt.
+    /// Entf löscht die gewählte Ecke, ohne Wahl die unter der Maus; `true`,
+    /// wenn Entf der Grenze galt.
     pub(crate) fn grenz_entf(&mut self) -> bool {
-        let Some(Griff::Ecke(i, k)) = self.platte.griffe.hover.filter(|_| self.grenz_griffe_an())
-        else {
+        if !self.grenz_griffe_an() {
+            return false;
+        }
+        let ringe = self.scene.model().parcel_rings();
+        let unter = match self.platte.griffe.hover {
+            Some(Griff::Ecke(i, k)) => Some((i, k)),
+            _ => None,
+        };
+        let Some((i, k)) = self.platte.griffe.wahl(&ringe).or(unter) else {
             return false;
         };
-        let Some(mut ring) = self.scene.model().parcel_rings().get(i).cloned() else {
+        let Some(mut ring) = ringe.get(i).cloned() else {
             return false;
         };
         if ring.len() <= 3 || k >= ring.len() {
@@ -409,6 +510,7 @@ impl App {
             self.upload_model();
             self.quantity.dirty = true;
             self.platte.griffe.hover = None;
+            self.platte.griffe.abwaehlen();
             self.grenz_zeile(None);
             self.platte.leiste.neu = true;
             self.gelaende_sync();
@@ -425,7 +527,7 @@ impl App {
         match g {
             Some(g) => self.status(Meldung::satz(satz(g)), std::time::Duration::from_secs(3600)),
             None => {
-                let unsere = [ECKE, PLUS, KANTE];
+                let unsere = [ECKE, PLUS, KANTE, GEWAEHLT];
                 if self
                     .notice
                     .as_ref()
@@ -440,15 +542,17 @@ impl App {
         }
     }
 
-    /// Quadrate an den Ecken, Punkte in den Kantenmitten; der Griff unter
-    /// der Maus und der gezogene in der Farbe des Ziehens, die Kante dazu
-    /// als Linie. Beim Ziehen steht der gezogene Ring an seiner neuen
-    /// Stelle, ganz als Linie (das Modell folgt erst beim Loslassen).
-    pub(crate) fn grenz_linien(&self, z: f64, scale: f32, theme: &Theme) -> Vec<Helper> {
+    /// Quadrate an den Ecken, Punkte in den Kantenmitten, in 3D auf dem
+    /// Gelände; der Griff unter der Maus, die gewählte Ecke und der
+    /// gezogene Griff in der Farbe des Ziehens, die Kante dazu als Linie.
+    /// Beim Ziehen steht der gezogene Ring an seiner neuen Stelle, ganz als
+    /// Linie (das Modell folgt erst beim Loslassen).
+    pub(crate) fn grenz_linien(&self, scale: f32, theme: &Theme) -> Vec<Helper> {
         if !self.grenz_griffe_an() {
             return Vec::new();
         }
         let mut ringe = self.scene.model().parcel_rings();
+        let wahl = self.platte.griffe.wahl(&ringe);
         let zug = self.platte.griffe.zug.as_ref();
         let gezogen = zug.map(|z| {
             let (Griff::Ecke(i, _) | Griff::Kante(i, _) | Griff::Plus(i, _)) = z.griff;
@@ -461,7 +565,8 @@ impl App {
         }
         let heiss = self.platte.griffe.hover;
         let col = &theme.interact;
-        let p = |q: [f64; 2]| [q[0] as f32, q[1] as f32, z as f32 + 2.0];
+        let hoehe = self.grenz_hoehe();
+        let p = |q: [f64; 2]| [q[0] as f32, q[1] as f32, hoehe(q) as f32 + 2.0];
         let punkt = |q: [f64; 2], px: f32, color, round| Helper {
             a: p(q),
             b: p(q),
@@ -500,10 +605,18 @@ impl App {
             }
             for (k, &q) in ring.iter().enumerate() {
                 let an = heiss == Some(Griff::Ecke(i, k));
+                let gewaehlt = wahl == Some((i, k)) && gezogen.is_none();
+                let gross = if gewaehlt {
+                    1.7
+                } else if an {
+                    1.4
+                } else {
+                    1.0
+                };
                 out.push(punkt(
                     q,
-                    ECKE_PX * if an { 1.4 } else { 1.0 },
-                    if an { col.drag } else { col.select },
+                    ECKE_PX * gross,
+                    if an || gewaehlt { col.drag } else { col.select },
                     false,
                 ));
             }
@@ -542,7 +655,7 @@ mod tests {
         let r = rechteck();
         let t = |x: f64, y: f64| {
             let (bx, by) = bild(&cam, x, y);
-            treffen(&r, &cam, bx, by, 800.0, 800.0, 1.0)
+            treffen(&r, &|_| 0.0, &cam, bx, by, 800.0, 800.0, 1.0)
         };
         assert_eq!(t(2050.0, 2050.0), Some(Griff::Ecke(0, 0)));
         assert_eq!(t(10000.0, 2050.0), Some(Griff::Plus(0, 0)));
@@ -550,6 +663,80 @@ mod tests {
         assert_eq!(t(10000.0, 7000.0), None);
         // eine Kante greift nur halb so weit wie ein Punkt
         assert_eq!(t(18000.0 + 150.0, 5000.0), None);
+    }
+
+    /// In 3D liegen die Griffe auf der Höhe der Grenze (I3b): Die Ecke
+    /// greift, wo sie auf 1,50 m im Bild steht, nicht auf 0. Gezogen wird in
+    /// der Ebene auf ihrer Höhe, der Punkt unter der Maus bleibt unter ihr.
+    #[test]
+    fn griffe_in_3d_auf_der_hoehe() {
+        let cam = Camera::looking_at(
+            vec3(10000.0, -20000.0, 15000.0),
+            vec3(10000.0, 7000.0, 0.0),
+            45.0,
+        );
+        let r = rechteck();
+        let hoch = |_: [f64; 2]| 1500.0;
+        let an = |p: [f64; 2], z: f64| cam.project(vec3(p[0], p[1], z), 800.0, 800.0).unwrap();
+        let t = |q: (f64, f64)| treffen(&r, &hoch, &cam, q.0, q.1, 800.0, 800.0, 1.0);
+        let oben = an([2000.0, 2000.0], 1500.0);
+        let unten = an([2000.0, 2000.0], 0.0);
+        assert!((oben.0 - unten.0).hypot(oben.1 - unten.1) > 3.0 * GREIF_PX);
+        assert_eq!(t(oben), Some(Griff::Ecke(0, 0)));
+        assert_ne!(t(unten), Some(Griff::Ecke(0, 0)));
+        assert_eq!(t(an([10000.0, 12000.0], 1500.0)), Some(Griff::Plus(0, 2)));
+        let strg = Modifiers {
+            ctrl: true,
+            shift: false,
+            alt: false,
+        };
+        let q = an([5432.0, 7654.0], 1500.0);
+        let b = boden(
+            &cam,
+            &Ziele::default(),
+            q.0,
+            q.1,
+            800.0,
+            800.0,
+            1500.0,
+            1.0,
+            strg,
+        );
+        assert_eq!(b, Some([5430.0, 7650.0]));
+        // auf 0 genommen läge der Punkt weit daneben
+        let b0 = boden(
+            &cam,
+            &Ziele::default(),
+            q.0,
+            q.1,
+            800.0,
+            800.0,
+            0.0,
+            1.0,
+            strg,
+        )
+        .unwrap();
+        assert!((b0[1] - 7650.0).abs() > 1000.0, "{b0:?}");
+    }
+
+    /// Die gewählte Ecke gilt, solange sie dort liegt, wo sie gewählt wurde.
+    #[test]
+    fn wahl_folgt_der_grenze() {
+        let mut r = rechteck();
+        let mut g = Griffe {
+            gewaehlt: Some((0, 2, r[0][2])),
+            ..Default::default()
+        };
+        assert_eq!(g.wahl(&r), Some((0, 2)));
+        r[0][2] = [19000.0, 13000.0];
+        assert_eq!(g.wahl(&r), None, "anders geändert");
+        assert_eq!(g.wahl(&[]), None);
+        assert!(g.abwaehlen() && !g.abwaehlen());
+        assert_eq!(
+            ort(Griff::Kante(0, 1), &rechteck()),
+            Some([18000.0, 7000.0])
+        );
+        assert_eq!(ort(Griff::Ecke(0, 3), &rechteck()), Some([2000.0, 12000.0]));
     }
 
     /// Ein Zug ändert das Modell nicht (Review B-233a), nur das Bild;
