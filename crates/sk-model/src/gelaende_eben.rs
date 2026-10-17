@@ -648,13 +648,23 @@ fn anheften(
         .map(|((p, z), _)| [p[0], p[1], *z])
         .collect();
     let anker = neu.len();
+    // Nur Schnitte an genau derselben Stelle werden einer: Über den
+    // Streifen zwischen zwei Platten liegen zwei Schnitte 2·FUGE
+    // auseinander, in verschiedener Höhe; zusammengenommen zog der eine
+    // den Rand der anderen Platte auf seine Höhe (VOB B-264f). Liegen zwei
+    // so nah, dass die Prüfung des Netzes sie zusammennähme, hält die
+    // Grenze ohne Bruchkante.
     let mut einzeln: Vec<[f64; 3]> = Vec::new();
     let mut wo: Vec<usize> = Vec::with_capacity(schnitte.len());
     for s in &schnitte {
-        let p = [s.5[0], s.5[1]];
-        match einzeln.iter().position(|q| nah([q[0], q[1]], p)) {
-            Some(i) => wo.push(i),
+        let weit = |q: &[f64; 3]| (q[0] - s.5[0]).hypot(q[1] - s.5[1]);
+        match einzeln.iter().position(|q| weit(q) < 1.0) {
+            Some(i) => {
+                heikel |= (einzeln[i][2] - s.5[2]).abs() >= 1.0;
+                wo.push(i);
+            }
             None => {
+                heikel |= einzeln.iter().any(|q| weit(q) <= FUGE);
                 wo.push(einzeln.len());
                 einzeln.push(s.5);
             }
@@ -2120,6 +2130,55 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Eine Grenze über zwei Platten Wand an Wand in verschiedener Höhe
+    /// ändert keine Menge (VOB B-264f, wie vob/probe-251-grenze.rs): Ihre
+    /// Schnitte mit beiden Plattenrändern, 2·FUGE auseinander, bleiben zwei
+    /// Punkte, jeder in der Höhe seiner Platte.
+    #[test]
+    fn grenze_ueber_zwei_platten() {
+        let ring = [
+            [-2000.0, -2000.0],
+            [60000.0, -2000.0],
+            [60000.0, 12000.0],
+            [-2000.0, 12000.0],
+        ];
+        for (x2, z2) in [(8630.0, 1500.0), (11000.0, 1500.0)] {
+            let mut m = Model::with_seed(3);
+            for h in [(0.0, 500.0), (x2, z2)] {
+                let b = m.add_building(1);
+                let p = [
+                    vec3(h.0, 0.0, 0.0),
+                    vec3(h.0 + 8000.0, 0.0, 0.0),
+                    vec3(h.0 + 8000.0, 10000.0, 0.0),
+                    vec3(h.0, 10000.0, 0.0),
+                ];
+                m.build_from_polygon(b, &p).unwrap();
+                m.begin("Gelände");
+                m.set_terrain_offset_of(b, h.1);
+                m.commit();
+            }
+            m.begin("Fläche");
+            assert!(m.seed_flat_terrain(&[]));
+            m.commit();
+            let vor = erdmengen(&m);
+            let brueche = m.terrain().unwrap().breaks.len();
+            m.begin("Grenze");
+            assert!(m.add_parcel(&ring));
+            m.commit();
+            // die Grenze hält weiter mit ihrer Bruchkante
+            assert_eq!(m.terrain().unwrap().breaks.len(), brueche + 2, "{x2}");
+            let nach = erdmengen(&m);
+            assert_eq!(vor.len(), nach.len());
+            for (x, y) in vor.iter().zip(&nach) {
+                assert_eq!(x.0, y.0);
+                assert!(
+                    (x.1 - y.1).abs() <= 1e-9 * x.1.abs().max(1.0),
+                    "{x2}: {x:?} {y:?}"
+                );
+            }
+        }
     }
 
     /// Dieselbe Grenze gibt dieselben Mengen, ob gleich so gezeichnet oder
