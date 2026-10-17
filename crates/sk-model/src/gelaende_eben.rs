@@ -846,6 +846,27 @@ mod tests {
             let r = s.restrict(&m, &crate::qto::Umfang::gebaeude(*b));
             assert_eq!(hat(&r), (soll, usize::from(soll)), "{:?}", r.hinweise);
         }
+        // in einer Kette nach Nummer, nicht nach Guid (VOB H-256a)
+        for seed in 1..=8 {
+            let mut m = Model::with_seed(seed);
+            let mut kette = Vec::new();
+            for i in 0..4 {
+                let b = m.add_building(1);
+                let x0 = f64::from(i) * 7800.0;
+                let pts = [
+                    vec3(x0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 10000.0, 0.0),
+                    vec3(x0, 10000.0, 0.0),
+                ];
+                m.build_from_polygon(b, &pts).unwrap();
+                kette.push(b);
+            }
+            let s = crate::qto::schedule(&m);
+            let paare: Vec<_> = s.ineinander.iter().map(|x| x.haeuser).collect();
+            let soll: Vec<_> = kette.windows(2).map(|w| (w[0], w[1])).collect();
+            assert_eq!(paare, soll, "Seed {seed}");
+        }
     }
 
     /// Der Hinweis gilt genau dort, wo die Trennung der Platten endet

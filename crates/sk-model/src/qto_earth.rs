@@ -64,6 +64,8 @@ pub(crate) fn ineinander(m: &crate::Model) -> Vec<Ineinander> {
             satz: format!("{} und {} {INEINANDER}", name(a), name(b)),
         });
     }
+    // mehrere Paare nach Nummer gelesen (VOB H-256a)
+    paare.sort_by_cached_key(|x| (nummer(x.haeuser.0), nummer(x.haeuser.1)));
     paare
 }
 
