@@ -71,11 +71,13 @@ impl Model {
         if neu == *alt {
             return false;
         }
+        let vorher: Vec<[f64; 2]> = im_plan.iter().map(|q| q.0).collect();
         let mut t = t.clone();
         t.parcels[i] = neu;
         let neu = self.set_terrain(Some(t));
         if neu {
-            self.grenze_abdecken();
+            // die Punkte an der Grenze ziehen mit (U-264a, B-264a)
+            self.grenze_umsetzen(ring, &vorher);
         }
         neu
     }
