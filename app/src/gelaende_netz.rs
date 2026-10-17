@@ -1034,6 +1034,7 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
 /// Körper in 3D wie `koerper`, mit `netz` dazu das Hilfsnetz (Jörns §4.3a): die Kanten
 /// des Dreiecksnetzes fein auf dem Rasen, die vollen Meter kräftig. Als
 /// Kanten des Körpers bleiben sie hinter Hügeln und Häusern verdeckt.
+#[cfg_attr(not(test), allow(dead_code))] // 3D-Export (#258)
 pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Solid {
     koerper_mit(g, keys, netz, true)
 }

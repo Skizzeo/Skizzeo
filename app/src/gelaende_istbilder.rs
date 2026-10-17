@@ -10,6 +10,11 @@
 //! (Mesa unter Xvfb, wie [`crate::gpu_probe`]):
 //!
 //! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_gelaende -- --ignored`
+//!
+//! Höhenfarben, Höhenlinien und Glätten in 3D, dazu eine Kuppe mit
+//! geschlossenen Höhenlinien (Jörn 17.10., Test B-257a):
+//!
+//! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_hoehen -- --ignored`
 
 use super::*;
 use crate::freischaltung::Freischaltung;
@@ -149,6 +154,19 @@ mod gpu {
         ebene: Option<(Vec3, Vec3)>,
         cam: &Camera,
     ) -> Vec<u8> {
+        bild_mit(r, s, pl, (v, ebene), cam, (true, false))
+    }
+
+    /// Wie [`bild`], mit `(linien, farben)`: Höhenlinien in 3D und
+    /// Höhenfarben wie mit den Schaltern der Leiste.
+    fn bild_mit(
+        r: &mut Renderer,
+        s: &mut Scene,
+        pl: &mut Platte,
+        (v, ebene): (ViewKind, Option<(Vec3, Vec3)>),
+        cam: &Camera,
+        (linien, farben): (bool, bool),
+    ) -> Vec<u8> {
         let theme = Theme::dark();
         s.set_theme(&theme);
         r.set_style(crate::style(&theme.env));
@@ -157,7 +175,7 @@ mod gpu {
         r.set_sun(None);
         let m = s.model();
         pl.im_bild(m);
-        let sicht: Sicht = (v, ebene, s.table().terrain, false, false, true);
+        let sicht: Sicht = (v, ebene, s.table().terrain, false, false, linien);
         let key = netz_key(pl.fassung, &sicht);
         let netz = loop {
             if let Some(n) = pl.netz_zur_sicht(key, sicht) {
@@ -170,6 +188,16 @@ mod gpu {
         };
         r.set_mesh(MESH_PLATE, &netz);
         r.set_grass(sicht.2[0]);
+        let stufen = pl
+            .hoehen
+            .filter(|_| farben && v == ViewKind::Persp)
+            .map(|(lo, hi)| farben::stufen(lo, hi, m.terrain_nhn().unwrap_or(0.0)));
+        r.set_hoehenfarben(stufen.map(|st| sk_render::Hoehenfarben {
+            key: sicht.2[0],
+            z0: st.z0 as f32,
+            stufe: st.stufe as f32,
+            n: st.n,
+        }));
         let mm_px = cam.ortho.map_or(10.0, |half| 2.0 * half / f64::from(H));
         let h = pl
             .linien_im_bild(m, (v, ebene), s.bounds(), s.table(), (1.0, mm_px))
@@ -232,5 +260,120 @@ mod gpu {
             &bild(&mut r, &mut s, &mut pl, ViewKind::Persp, None, &cam3),
             "ist-427-3d.png",
         );
+    }
+
+    /// Kuppe 40 × 40 m, in der Mitte 1,50 m höher: Höhenlinien als Ringe
+    /// um die Kuppe, im Grundriss und in 3D, eckig und geglättet.
+    fn kuppe() -> Model {
+        let mut m = Model::with_seed(7);
+        let mut text = String::new();
+        for i in 0..9 {
+            for j in 0..9 {
+                let (x, y) = (5.0 * j as f64, 5.0 * i as f64);
+                let r2 = (x - 20.0).powi(2) + (y - 20.0).powi(2);
+                let h = 10.0 + 1.5 * (-r2 / 120.0).exp();
+                text.push_str(&format!("{} {x} {y} {h:.3}\n", i * 9 + j + 1));
+            }
+        }
+        let (t, ..) = Terrain::lesen(text.as_bytes(), "kuppe.txt", "2026-10-17", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        m
+    }
+
+    /// Höhenfarben mit und ohne Höhenlinien, Glätten fein und die Kuppe.
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_hoehen() {
+        use sk_gelaende::glatt::Glaettung;
+        let Some(ziel) = ziel() else {
+            return;
+        };
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png_gepackt(W, H, px)).unwrap();
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let p3 = (ViewKind::Persp, None);
+        // Lindenhof: Rasen, Farben, Farben ohne Linien, geglättet
+        let mitte = vec3(14000.0, 8000.0, 0.0);
+        let cam3 = Camera::looking_at(
+            mitte + vec3(0.55, -1.0, 0.8).normalized() * 32000.0,
+            mitte,
+            45.0,
+        );
+        let mut s = Scene::with_model(lindenhof());
+        let mut pl = Platte::default();
+        for (n, art) in [
+            ("ist-hoehen-3d-rasen.png", (true, false)),
+            ("ist-hoehen-3d-farben.png", (true, true)),
+            ("ist-hoehen-3d-farben-ohne-linien.png", (false, true)),
+        ] {
+            ab(&bild_mit(&mut r, &mut s, &mut pl, p3, &cam3, art), n);
+        }
+        let mut m = lindenhof();
+        m.begin("Gelände glätten");
+        assert!(m.set_terrain_smoothing(Glaettung::Fein));
+        m.commit();
+        let mut s = Scene::with_model(m);
+        let mut pl = Platte::default();
+        ab(
+            &bild_mit(&mut r, &mut s, &mut pl, p3, &cam3, (true, false)),
+            "ist-hoehen-3d-glatt-fein.png",
+        );
+        ab(
+            &bild_mit(&mut r, &mut s, &mut pl, p3, &cam3, (true, true)),
+            "ist-hoehen-3d-glatt-fein-farben.png",
+        );
+        // Kuppe: geschlossene Ringe im Grundriss und in 3D
+        for (glatt, n) in [(Glaettung::Aus, "eckig"), (Glaettung::Fein, "glatt")] {
+            let mut m = kuppe();
+            if glatt != Glaettung::Aus {
+                m.begin("Gelände glätten");
+                assert!(m.set_terrain_smoothing(glatt));
+                m.commit();
+            }
+            let k = m.terrain_border().iter().flatten().fold(
+                [f64::MAX, f64::MAX, f64::MAX, f64::MIN, f64::MIN, f64::MIN],
+                |k, p| {
+                    [
+                        k[0].min(p.x),
+                        k[1].min(p.y),
+                        k[2].min(p.z),
+                        k[3].max(p.x),
+                        k[4].max(p.y),
+                        k[5].max(p.z),
+                    ]
+                },
+            );
+            let rahmen = Some((
+                vec3(k[0] - 3000.0, k[1] - 3000.0, k[2] - 1000.0),
+                vec3(k[3] + 3000.0, k[4] + 3000.0, k[5] + 3000.0),
+            ));
+            let plan = ViewKind::Plan;
+            let cam = crate::fit_parallel(plan, rahmen, f64::from(W), f64::from(H));
+            let mut s = Scene::with_model(m);
+            let mut pl = Platte::default();
+            ab(
+                &bild_mit(&mut r, &mut s, &mut pl, (plan, None), &cam, (true, false)),
+                &format!("ist-kuppe-grundriss-{n}.png"),
+            );
+            let mitte = vec3((k[0] + k[3]) / 2.0, (k[1] + k[4]) / 2.0, k[2]);
+            let cam3 = Camera::looking_at(
+                mitte + vec3(0.6, -1.0, 0.7).normalized() * 55000.0,
+                mitte,
+                45.0,
+            );
+            ab(
+                &bild_mit(&mut r, &mut s, &mut pl, p3, &cam3, (true, false)),
+                &format!("ist-kuppe-3d-{n}.png"),
+            );
+            ab(
+                &bild_mit(&mut r, &mut s, &mut pl, p3, &cam3, (true, true)),
+                &format!("ist-kuppe-3d-{n}-farben.png"),
+            );
+        }
     }
 }
