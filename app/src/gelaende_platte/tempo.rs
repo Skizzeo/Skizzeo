@@ -203,7 +203,10 @@ fn messen(n: usize) -> Zeiten {
         let e = kopie.terrain_plate_input();
         let g = Gelaende::aus(&kopie);
         let p = e.build();
-        let ba = super::Bodenaufbau::aus(&kopie);
+        // wie der Faden: mit Aufmaß hat das Gelände ihn schon (H-261c)
+        let ba = g
+            .as_ref()
+            .map_or_else(|| super::Bodenaufbau::aus(&kopie), |g| g.aufbau.clone());
         let t1 = Instant::now();
         let netz = netz_der_sicht(&p, g.as_ref(), persp, &ba);
         koerper = koerper.min(ms(t1));
