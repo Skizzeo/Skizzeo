@@ -192,7 +192,9 @@ SZO 4
 [tpoint] nr=2 e=472604.035 n=5878893.562 h=28.624 code=GR
 [tpoint] nr=3 e=472600.548 n=5878926.885 h=29.71 code=GR off=1
 [tpoint] nr="A 7" e=472592 n=5878909 h=29
+[tpoint] nr=H1 e=472581.536 n=5878893.991 h=28.487 src=hand
 [tline] kind=boundary pts=1,2,3
+[tline] kind=break pts=1,2,H1 closed=1
 [tcode] code=XY kind=off
 [underlay] src="Lageplan Flurstück 123-4.pdf" page=1 m=0.17638888888888887,0,0,0.17638888888888887,472570.5,5878880.25 flst=123/4
 [tpatch] pts=-4000,-3000;0,-3000;0,0;-4000,0 z=-150
@@ -286,6 +288,7 @@ SZO 4
 [massversatz] storey=2raHMuYTD64hQ6K56DbC_u seite=90 kette=gesamt versatz=-120
 [massansicht] view=plan zeigen=1 bezug=1
 [plancut] h=1200
+[hide] finish=screed
 [pattern] surface=0193nkAlT2LhksTCegVeuh gen=concrete w=2500 h=500 joint=0 anchors=0 cloud=2 pores=0.5 seed=11
 [pattern] surface=0cjmYoBNs8lV6uBVR4Q0GU gen=plaster grain=0.8 spread=4 seed=7
 [pattern] surface=2I0iV4XeLFxOVLUIsiaPG9 gen=masonry len=240 h=71 joint=10 bond=wild jrgb=d1cbc2 pal=87493c:79;675549:9;7b6d65:12 hpal=87493c:50;675549:50 flame=100 fend=64 relief=100 spread=7 seed=17
