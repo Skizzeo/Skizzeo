@@ -72,7 +72,7 @@ fn messpunkt_geaendert(p: &crate::TerrainPoint) -> bool {
 /// Lage um 0,35 m versetzt“ (VOB-Spruch zu I5: alte und neue Höhe, damit
 /// der Prüfer nachrechnen kann; in Worten statt Pfeil).
 fn aenderung(p: &crate::TerrainPoint) -> String {
-    let Some([e, n, h]) = p.gemessen else {
+    let Some(&[e, n, h]) = p.gemessen.as_deref() else {
         return p.nr.clone();
     };
     let mut out = p.nr.clone();
@@ -636,7 +636,7 @@ mod tests {
             code: String::new(),
             off: false,
             hand: false,
-            gemessen: Some([10.0, 20.0, 24.342]),
+            gemessen: Some(Box::new([10.0, 20.0, 24.342])),
         };
         assert_eq!(super::aenderung(&p), "12, Lage um 3 mm versetzt");
         let p = crate::TerrainPoint { h: 24.1, ..p };
