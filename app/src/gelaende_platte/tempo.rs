@@ -203,8 +203,9 @@ fn messen(n: usize) -> Zeiten {
         let e = kopie.terrain_plate_input();
         let g = Gelaende::aus(&kopie);
         let p = e.build();
+        let ba = super::Bodenaufbau::aus(&kopie);
         let t1 = Instant::now();
-        let netz = netz_der_sicht(&p, g.as_ref(), persp);
+        let netz = netz_der_sicht(&p, g.as_ref(), persp, &ba);
         koerper = koerper.min(ms(t1));
         faden = faden.min(ms(t0));
         assert!(!netz.faces.is_empty());

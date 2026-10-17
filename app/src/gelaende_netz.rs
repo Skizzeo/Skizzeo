@@ -31,13 +31,12 @@
 //! sich ändert, gestrichelt unter oder über der Geländelinie.
 
 use crate::draw_table::{DrawTable, Stroke};
+use crate::gelaende_platte::bodenaufbau::{self, schluessel, Bodenaufbau};
 use crate::ui::ViewKind;
 use gitter::{ueberlappt, Gitter, Kasten};
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame, Tri, NO_LAYER};
-use sk_model::{
-    edge_kind, material, BuildingId, FootingShape, LevelKind, Model, Show, Solid, UnderlayKind,
-};
+use sk_model::{edge_kind, BuildingId, LevelKind, Model, Show, Solid, UnderlayKind};
 use sk_render::{DashPattern, Helper};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -117,10 +116,10 @@ pub(crate) struct Gelaende {
     haus: Vec<(Vec<P2>, f64)>,
     /// Raster über den Häusern.
     haeuser: Gitter,
-    /// Innenseite jeder Frostschürze mit Unterkante und Oberkante des
-    /// Erdreichs in ihr (UK Schürze bis UK Dämmung oder Platte).
-    kern: Vec<(Vec<P2>, f64, f64)>,
-    /// Unterkante des Rands: eine Geländedicke unter dem tiefsten Punkt.
+    /// Schichten unter und um jede Gründung ([`Bodenaufbau`]).
+    pub(crate) aufbau: Bodenaufbau,
+    /// Unterkante des Rands: eine Geländedicke unter dem tiefsten Punkt,
+    /// mindestens unter der tiefsten Gründung ([`Bodenaufbau::unten`]).
     pub(crate) unten: f64,
     /// Der Lageplan im Grundriss in Kacheln ([`Kachel`]).
     pub(crate) unterlage: Vec<Kachel>,
@@ -355,7 +354,7 @@ impl Gelaende {
             marken: Vec::new(),
             haus: Vec::new(),
             haeuser: Gitter::neu(Vec::new()),
-            kern: Vec::new(),
+            aufbau: Bodenaufbau::default(),
             unten,
             unterlage: Vec::new(),
             ur: Vec::new(),
@@ -406,7 +405,7 @@ impl Gelaende {
         Some(g)
     }
 
-    /// Umrisse der Häuser, ihr Raster und die Innenseiten ihrer Schürzen.
+    /// Umrisse der Häuser, ihr Raster und der Bodenaufbau unter ihnen.
     fn am_haus(&mut self, m: &Model) {
         // Unterkante der Gründung je Gebäude, einmal gesammelt
         let mut uk: HashMap<BuildingId, f64> = HashMap::new();
@@ -424,20 +423,8 @@ impl Gelaende {
             .map(|(b, r)| (flach(&r), uk(b)))
             .collect();
         self.haeuser = Gitter::neu(self.haus.iter().map(|(r, _)| kasten(r)).collect());
-        self.kern = m
-            .runs()
-            .iter()
-            .filter_map(|(id, r)| {
-                let b = m.building_of(r.storey)?;
-                let Some(Ok(f)) = m.foundation(id) else {
-                    return None;
-                };
-                let FootingShape::Ring(i) = &f.footing else {
-                    return None;
-                };
-                Some((flach(&i.pts), uk(b), uk(b) + f.params.footing_depth))
-            })
-            .collect();
+        self.aufbau = Bodenaufbau::aus(m);
+        self.unten = self.aufbau.unten(self.unten);
     }
 
     /// Linien des Lageplans (Modell, mm) auf das Gelände legen, in
@@ -661,6 +648,29 @@ impl Gelaende {
             let l = baryzentrisch(t, p)?;
             Some(l[0] * t[0].z + l[1] * t[1].z + l[2] * t[2].z)
         })
+    }
+
+    /// Teilstellen der Strecke `a`→`b` (0 bis 1, mit den Enden) an jeder
+    /// Netzkante, damit ein Rand genau auf dem Netz liegt.
+    pub(crate) fn teilung(&self, a: P2, b: P2) -> Vec<f64> {
+        self.teilung_mit(a, b, &mut Vec::new())
+    }
+
+    fn teilung_mit(&self, a: P2, b: P2, nah: &mut Vec<u32>) -> Vec<f64> {
+        let mut ts = vec![0.0, 1.0];
+        // nur die Dreiecke am Rechteck der Kante (Review #129 B4)
+        self.netz.bei(&kasten(&[a, b]), nah);
+        for t in nah.iter().map(|&j| &self.dreiecke[j as usize]) {
+            for k in 0..3 {
+                let (c, d) = (t[k], t[(k + 1) % 3]);
+                if let Some(x) = kreuzung(a, b, [c.x, c.y], [d.x, d.y]) {
+                    ts.push(x);
+                }
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        ts
     }
 
     /// Wie die Strecke `a`→`b` gezeigt wird: im Grundstück voll, außerhalb
@@ -1053,16 +1063,13 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
             }
         }
     }
-    // Am Haus bis zur Unterkante der Gründung, darunter Erdreich
-    for (r, uk) in &g.haus {
-        rand_an_grenze(&mut s, g, r, uk.max(unten), false);
-        if *uk > unten + 1.0 {
-            let p: Vec<Vec3> = r.iter().map(|q| vec3(q[0], q[1], *uk)).collect();
-            for [a, b, c] in polygon::triangulate(&p) {
-                dreieck(&mut s, [p[a], p[b], p[c]], vec3(0.0, 0.0, 1.0));
-            }
-        }
-    }
+    // Am Haus die Aussparung im Bodenaufbau, im Zuschnitt (Fade: um das
+    // Grundstück gehoben)
+    let dz = if g.show == Show::Fade { HEBEN } else { 0.0 };
+    let hoehe = |p: P2| g.hoehe(p).map(|z| z + dz);
+    let teilung = |a: P2, b: P2| g.teilung(a, b);
+    let aussparung = bodenaufbau::grube(&g.aufbau, &hoehe, &teilung, unten, schluessel(keys));
+    s.append(&aussparung);
     // Umriss jeder Geländefläche als Kante
     for r in &g.umrisse {
         for i in 0..r.len() {
@@ -1144,19 +1151,7 @@ fn rand_an_grenze(s: &mut Solid, g: &Gelaende, r: &[P2], unten: f64, aussen: boo
         } else {
             (r[(i + 1) % n], r[i])
         };
-        let mut ts = vec![0.0, 1.0];
-        // nur die Dreiecke am Rechteck der Kante (Review #129 B4)
-        g.netz.bei(&kasten(&[a, b]), &mut nah);
-        for t in nah.iter().map(|&j| &g.dreiecke[j as usize]) {
-            for k in 0..3 {
-                let (c, d) = (t[k], t[(k + 1) % 3]);
-                if let Some(x) = kreuzung(a, b, [c.x, c.y], [d.x, d.y]) {
-                    ts.push(x);
-                }
-            }
-        }
-        ts.sort_by(f64::total_cmp);
-        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        let ts = g.teilung_mit(a, b, &mut nah);
         for w in ts.windows(2) {
             let (p, q) = (lerp2(a, b, w[0]), lerp2(a, b, w[1]));
             if !aussen && g.zeigen(g.innen(lerp2(p, q, 0.5))).is_none() {
@@ -1173,48 +1168,17 @@ fn rand_an_grenze(s: &mut Solid, g: &Gelaende, r: &[P2], unten: f64, aussen: boo
     }
 }
 
-/// Schnittflächen mit der Ebene (zeigen in Richtung `f.n`), Erdreich.
-pub(crate) fn kappen(g: &Gelaende, f: &SectionFrame, p0: Vec3, soil: u16) -> Solid {
-    let mut s = Solid {
-        mat: soil | material::CUT,
-        edge_kind: edge_kind::CUT,
-        ..Solid::default()
-    };
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for (a, b, voll) in g.profil(f, p0) {
-        if !voll {
-            continue;
-        }
-        let (a, b) = if a[0] <= b[0] { (a, b) } else { (b, a) };
-        (lo, hi) = (lo.min(a[0]), hi.max(b[0]));
-        s.quad(
-            f.pt(a[0], g.unten),
-            f.pt(b[0], g.unten),
-            f.pt(b[0], b[1]),
-            f.pt(a[0], a[1]),
-            f.n,
-        );
-    }
-    // Unter dem Haus bis zur Unterkante der Gründung, in der Schürze bis
-    // unter Dämmung oder Platte
-    let schichten = g.haus.iter().map(|(r, uk)| (r, g.unten, *uk));
-    let kern = g
-        .kern
-        .iter()
-        .map(|(r, von, bis)| (r, von.max(g.unten), *bis));
-    for (r, von, bis) in schichten.chain(kern) {
-        if bis <= von + 1.0 {
-            continue;
-        }
-        let q: Vec<Vec3> = r.iter().map(|p| vec3(p[0], p[1], 0.0)).collect();
-        for (a, b) in polygon::plane_intervals(&q, p0, f.n, f.along) {
-            let (a, b) = (a.max(lo), b.min(hi));
-            if a < b {
-                s.quad(f.pt(a, von), f.pt(b, von), f.pt(b, bis), f.pt(a, bis), f.n);
-            }
-        }
-    }
-    s
+/// Schnittflächen mit der Ebene (zeigen in Richtung `f.n`): die Schichten
+/// des Bodenaufbaus unter der Geländelinie, unter dem Haus bis zur
+/// Aussparung ([`bodenaufbau::schnitt`]); `keys` wie im Körper.
+pub(crate) fn kappen(g: &Gelaende, f: &SectionFrame, p0: Vec3, keys: [u16; 3]) -> Solid {
+    let oben: Vec<(P2, P2)> = g
+        .profil(f, p0)
+        .into_iter()
+        .filter(|s| s.2)
+        .map(|(a, b, _)| (a, b))
+        .collect();
+    bodenaufbau::schnitt(&g.aufbau, f, &oben, g.unten, schluessel(keys))
 }
 
 /// Linien in Grundriss, Schnitt und Ansicht samt Lageplan und Punktmarken
@@ -1683,6 +1647,7 @@ pub(crate) fn fassade(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sk_model::material;
 
     const CSV: &[u8] =
         include_bytes!("../../crates/sk-gelaende/tests/daten/hoehenaufmass-lindenhof-7.csv");
@@ -1779,14 +1744,23 @@ mod tests {
         let mit = koerper_mit_netz(&g, keys, true);
         assert_eq!(ohne.triangles.len(), mit.triangles.len());
         let zahl = |s: &Solid, k: u8| s.edges.iter().filter(|e| e.kind == k).count();
-        let meter = zahl(&ohne, edge_kind::FINE);
+        // fein sind auch die Fugen zwischen den Schichten am Haus
+        let grube = bodenaufbau::grube(
+            &g.aufbau,
+            &|p| g.hoehe(p),
+            &|a, b| g.teilung(a, b),
+            g.unten,
+            schluessel(keys),
+        );
+        let fugen = zahl(&grube, edge_kind::FINE);
+        let meter = zahl(&ohne, edge_kind::FINE) - fugen;
         assert!(meter > 0);
         // die vollen Meter sind mit dem Netz Sichtkanten
         assert_eq!(
             zahl(&mit, edge_kind::VIEW),
             zahl(&ohne, edge_kind::VIEW) + meter
         );
-        let netz = zahl(&mit, edge_kind::FINE);
+        let netz = zahl(&mit, edge_kind::FINE) - fugen;
         let kanten = netzkanten(&g);
         let im_grundstueck = kanten.iter().filter(|k| k.2).count();
         assert_eq!(g.show, Show::Parcel);
@@ -1801,7 +1775,13 @@ mod tests {
         );
         // keine im Haus
         let r = &g.haus[0].0;
-        for e in mit.edges.iter().filter(|e| e.kind == edge_kind::FINE) {
+        let fuge =
+            |e: &&sk_model::solid::Edge| grube.edges.iter().any(|x| x.a == e.a && x.b == e.b);
+        for e in mit
+            .edges
+            .iter()
+            .filter(|e| e.kind == edge_kind::FINE && !fuge(e))
+        {
             let mitte = [(e.a.x + e.b.x) / 2.0, (e.a.y + e.b.y) / 2.0];
             assert!(!im_ring(r, mitte), "{mitte:?}");
         }
@@ -1831,7 +1811,7 @@ mod tests {
         assert_eq!(g.show, Show::Parcel);
         let z = m.terrain_z();
         assert!(g.dreiecke.iter().flatten().all(|p| p.z == z));
-        assert_eq!(g.unten, z - m.plate_settings().thick);
+        assert_eq!(g.unten, g.aufbau.unten(z - m.plate_settings().thick));
         let s = koerper(&g, [10, 11, 12]);
         let rasen: Vec<[Vec3; 3]> = s
             .triangles
@@ -1993,20 +1973,23 @@ mod tests {
         // Schnitt quer durch das Haus: Schnittfläche bis zur Unterkante
         let (p0, n) = (vec3(12000.0, 10000.0, 0.0), vec3(0.0, 1.0, 0.0));
         let f = SectionFrame::new(p0, n);
-        let k = kappen(&g, &f, p0, 11);
+        let keys = [10, 11, 12];
+        let k = kappen(&g, &f, p0, keys);
         assert!(!k.triangles.is_empty());
-        assert!(k.triangles.iter().all(|t| t.mat == 11 | material::CUT));
+        let schichten = schluessel(keys);
+        assert!(k
+            .triangles
+            .iter()
+            .all(|t| t.mat & material::CUT != 0 && schichten.contains(&(t.mat & !material::CUT))));
         let l = linien(&g, ViewKind::Section, Some((p0, n)), None, &t, 1.0, 10.0);
         assert!(l.len() > 3);
-        // Am Haus endet die Geländelinie, darunter Erdreich ab der
-        // Unterkante der Gründung, in der Schürze bis unter die Platte
+        // Am Haus endet die Geländelinie, darunter der Bodenaufbau bis zur
+        // Aussparung: in der Schürze bis unter die Platte, unter der
+        // Gründung gewachsener Boden
         let (ring, uk) = &g.haus[0];
         assert!(*uk < 0.0 && *uk > g.unten, "{uk} {}", g.unten);
-        let [(_, von, dach)] = g.kern[..] else {
-            panic!("eine Schürze: {:?}", g.kern.len());
-        };
-        assert_eq!(von, *uk);
-        assert!(dach > *uk && dach < 0.0, "{dach}");
+        assert_eq!(g.aufbau.haeuser.len(), 1);
+        let dach = -200.0;
         let q: Vec<Vec3> = ring.iter().map(|p| vec3(p[0], p[1], 0.0)).collect();
         let [(ha, hb)] = polygon::plane_intervals(&q, p0, f.n, f.along)[..] else {
             panic!("Schnitt trifft das Haus nicht");
