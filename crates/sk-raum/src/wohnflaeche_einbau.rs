@@ -299,6 +299,10 @@ fn halbebene(p: &[Vec3], a: Vec3, b: Vec3) -> Vec<Vec3> {
         } else {
             ((a.x - p.x) * ey - (a.y - p.y) * ex) / nenner
         };
+        // Der Schnitt liegt auf der Kante: Bei fast gleichlaufenden Geraden
+        // schösse er sonst über ihr Ende hinaus, das Stück bekäme eine
+        // Spitze und wäre nicht mehr konvex (VOB B-247d)
+        let t = t.clamp(0.0, 1.0);
         vec3(p.x + dx * t, p.y + dy * t, 0.0)
     };
     let mut out = Vec::new();
