@@ -18,6 +18,7 @@ use sk_model::{ElementId, Guid, Model, SpaceType};
 use sk_raum::ausbau::{self, RaumAusbau};
 use sk_raum::oeffnungen::Rohbau;
 use sk_raum::{Kante, RaumForm};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Hinweis im Paneel bei Abweichungen an Wandseiten, die den Raum nicht
@@ -187,21 +188,32 @@ impl Raum {
         let Some(s) = m.space(self.id) else {
             return Vec::new();
         };
-        s.ausbau
+        let lose: Vec<(AusbauStelle, WandSeite)> = s
+            .ausbau
             .iter()
             .filter_map(|a| Some((a.stelle, a.stelle.seite()?)))
             .filter(|(_, w)| self.name(*w).is_none())
+            .collect();
+        if lose.is_empty() {
+            return Vec::new();
+        }
+        // ein Gang über die Bauteile statt einer Suche je Eintrag (H-247b)
+        let nummer: HashMap<Guid, &str> = m
+            .elements()
+            .iter()
+            .map(|(_, e)| (e.guid, e.number.as_str()))
+            .collect();
+        lose.into_iter()
             .map(|(st, w)| {
                 let art = match st {
                     AusbauStelle::Wand(_) => KNOEPFE[WAND as usize].2,
                     AusbauStelle::Fliesen(_) => KNOEPFE[FLIESEN as usize].2,
                     _ => KNOEPFE[SOCKEL as usize].2,
                 };
-                let wand = m.elements().iter().find(|(_, e)| e.guid == w.wand);
-                let wo = match wand {
-                    Some((_, e)) if !e.number.is_empty() => {
+                let wo = match nummer.get(&w.wand) {
+                    Some(n) if !n.is_empty() => {
                         let seite = if w.links { "links" } else { "rechts" };
-                        format!("an Wand {} {seite}", e.number)
+                        format!("an Wand {n} {seite}")
                     }
                     Some(_) => "an einer Wand außerhalb des Raums".to_string(),
                     None => "an einer gelöschten Wand".to_string(),
