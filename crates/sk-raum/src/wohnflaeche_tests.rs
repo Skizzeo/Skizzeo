@@ -976,3 +976,51 @@ fn vierfache_ueberdeckung_reihenfolge_egal() {
     }
     assert!(ergebnisse.windows(2).all(|w| w[0] == w[1]));
 }
+
+/// Pfeiler und drei gedrehte Stützen übereinander (VOB B-247d): Ein
+/// Schnittpunkt über das Ende der Kante hinaus gab einem Stück eine Spitze;
+/// was die letzte Stütze mit den anderen deckt, ging dann nicht ab
+/// (0,052 statt 0,046 m², genau 45 932 mm²).
+#[test]
+fn gedrehte_stuetzen_ueberdeckt_einmal() {
+    let h = haus();
+    let pfeiler = ring(
+        &[
+            (4070.0, 4345.0),
+            (4070.0, 4990.0),
+            (4715.0, 4990.0),
+            (4715.0, 4345.0),
+        ],
+        h.w[1],
+    );
+    let roh = rohbau(&h, rechteck(&h), vec![pfeiler], vec![]);
+    let aus = RaumAusbau::fuer(&h.m, &roh).unwrap();
+    // Mitte, halbe Seiten im Rohbau, Drehung in Grad
+    let st = |id: ElementId, (cx, cy): (f64, f64), (a, b): (f64, f64), grad: f64| {
+        let (s, c) = grad.to_radians().sin_cos();
+        let e = |u: f64, v: f64| vec3(cx + u * c - v * s, cy + u * s + v * c, 0.0);
+        Einbau {
+            id,
+            treppe: false,
+            stuecke: vec![vec![e(-a, -b), e(a, -b), e(a, b), e(-a, b)]],
+            z: (0.0, 3000.0),
+            steigungen: None,
+            loch: false,
+        }
+    };
+    let e = vec![
+        st(h.w[2], (4625.0, 4580.0), (280.0, 265.0), 173.0),
+        st(h.w[3], (4525.0, 3985.0), (340.0, 310.0), 63.0),
+        st(h.w[0], (4455.0, 4160.0), (300.0, 285.0), 22.0),
+    ];
+    let r = raum_mit(&h.m, &roh, &aus, &Einbauten::neu(e));
+    let abzug: Vec<f64> = r
+        .teile
+        .iter()
+        .filter(|t| t.art == Art::Abzug)
+        .map(|t| t.wert)
+        .collect();
+    assert_eq!(abzug[3], -46_000.0, "{abzug:?}");
+    // 79,4609 − 1,054062 (Vereinigung) = 78,406838
+    assert_eq!(r.grund, 7841);
+}

@@ -17,9 +17,19 @@ use sk_gelaende::dxf::Linienart;
 use sk_gelaende::lesen::Punkt;
 use sk_gelaende::linien::Hoehenlinie;
 use sk_gelaende::{netz, Netz, Rand};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
+
+#[path = "gelaende_trennwand.rs"]
+mod trennwand;
+
+/// Eine Strecke in Landeswerten.
+type Strecke = ((f64, f64), (f64, f64));
+/// Plattenumriss eines Wandzugs (mm, Grundriss), sein Gebäude und sein
+/// Rechteck (`[x0, y0, x1, y1]`).
+type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>, [f64; 4]);
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -343,8 +353,73 @@ pub(crate) struct Lage {
     hoch: Option<f64>,
     /// Mittlere Punkthöhe des Aufmaßes (m ü. NHN).
     mittel: Option<f64>,
-    /// Tiefster Geländepunkt am Plattenrand je Gründung (m ü. NHN).
-    tief: HashMap<StoreyId, f64>,
+    /// Tiefster Geländepunkt am Plattenrand je Gründung (m ü. NHN), mit
+    /// ihrem Gebäude für das Bau-Log.
+    tief: HashMap<StoreyId, Tief>,
+    /// Je Zug mit Haustrennwand die Streifen der Schürze unter ihr (mm,
+    /// Grundriss): Dort rechnet der Graben mit der eigenen Höhe (VOB-Spruch
+    /// zu H-245c, Weg b), mit seinem Gebäude.
+    trennwand: HashMap<RunId, Streifen>,
+}
+
+/// Tiefster Punkt am freien Rand einer Gründung (m ü. NHN) mit ihrem
+/// Gebäude. Eine Gründung ist ein Geschoss genau eines Gebäudes.
+type Tief = (Option<BuildingId>, f64);
+/// Streifen unter der Haustrennwand eines Zugs (mm) mit seinem Gebäude.
+type Streifen = (Option<BuildingId>, Vec<Vec<[f64; 2]>>);
+
+/// Was an Gelände und Lage die Erdmengen aller Häuser trägt, für das
+/// Bau-Log (Review B-245d): ±0,00 ungerundet, je Gründung der tiefste Punkt
+/// am freien Rand und die Streifen unter den Haustrennwänden. Die beiden
+/// hängen an den Umrissen der Nachbarn: Rückt die Wand eines Hauses an ein
+/// anderes heran, ändern sich dessen Einbindetiefe und Graben, obwohl der
+/// Schritt nur das eine Haus nennt. Sie gehören je einem Gebäude, und nur
+/// dessen Mengen hängen an ihnen ([`Gelaendestand::abweichend`], B-245f).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Gelaendestand {
+    nhn: Option<f64>,
+    lage: Option<Arc<Lage>>,
+}
+
+impl Gelaendestand {
+    /// Gebäude, deren Einbindetiefe oder Haustrennwand gegen `o` anders
+    /// liegt (in beliebiger Folge, auch doppelt); `None`: alle, weil ±0,00
+    /// anders liegt oder nur einer ein Aufmaß hat. Ein Haus, das am Hang
+    /// nur seine eigene Wand rückt, nennt so nur sich (Review B-245f);
+    /// linear in Gründungen und Haustrennwänden.
+    pub(crate) fn abweichend(&self, o: &Gelaendestand) -> Option<Vec<Option<BuildingId>>> {
+        if self.nhn != o.nhn {
+            return None;
+        }
+        let (a, b) = match (&self.lage, &o.lage) {
+            (Some(a), Some(b)) => (a, b),
+            (None, None) => return Some(Vec::new()),
+            _ => return None,
+        };
+        let mut out = Vec::new();
+        if Arc::ptr_eq(a, b) {
+            return Some(out);
+        }
+        for (x, y) in [(a, b), (b, a)] {
+            for (gr, v) in &x.tief {
+                if y.tief.get(gr) != Some(v) {
+                    out.push(v.0);
+                }
+            }
+            for (run, v) in &x.trennwand {
+                if y.trennwand.get(run) != Some(v) {
+                    out.push(v.0);
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+impl PartialEq for Gelaendestand {
+    fn eq(&self, o: &Gelaendestand) -> bool {
+        self.abweichend(o).is_some_and(|v| v.is_empty())
+    }
 }
 
 /// Platz für die [`Lage`] im Modell mit dem Stand, zu dem sie gehört.
@@ -643,6 +718,19 @@ impl Terrain {
     /// Tiefste Höhe entlang eines geschlossenen Umrisses (Landeswerte).
     pub fn min_along(&self, ring: &[(f64, f64)]) -> Option<f64> {
         self.along(ring).into_iter().reduce(f64::min)
+    }
+
+    /// Wie [`Terrain::along`], nur über einzelne Strecken (Landeswerte).
+    fn along_strecken(&self, s: &[Strecke]) -> Vec<f64> {
+        let m = self.mesh();
+        if m.netz.dreiecke.is_empty() {
+            return Vec::new();
+        }
+        let (e0, n0) = m.bezug;
+        s.iter()
+            .flat_map(|(a, b)| m.abfrage.profil([a.0 - e0, a.1 - n0], [b.0 - e0, b.1 - n0]))
+            .map(|w| w[1])
+            .collect()
     }
 
     /// Höhen entlang eines Umrisses: an jeder Ecke und jedem Schnitt mit
@@ -1058,6 +1146,19 @@ impl Model {
         self.nhn_aus(&self.lage())
     }
 
+    /// [`Gelaendestand`] jetzt; ohne Aufmaß leer, dann trägt das Gelände
+    /// keine Erdmengen anderer Häuser.
+    pub(crate) fn gelaendestand(&self) -> Gelaendestand {
+        if self.terrain().is_none() {
+            return Gelaendestand::default();
+        }
+        let lage = self.lage();
+        Gelaendestand {
+            nhn: self.nhn_aus(&lage),
+            lage: Some(lage),
+        }
+    }
+
     /// ±0,00 in m ü. NHN aus der gemerkten [`Lage`], mit fester Höhe oder
     /// Versatz zum jetzigen Stand.
     fn nhn_aus(&self, lage: &Lage) -> Option<f64> {
@@ -1099,20 +1200,25 @@ impl Model {
         let mut lage = Lage::default();
         // je Zug mit Gebäude: Gebäude und höchster Punkt am Umriss
         let mut hoch: Vec<(BuildingId, Option<f64>)> = Vec::new();
-        for (id, r) in self.runs.iter() {
-            let Some(ring) = self.plate_outline(id) else {
+        let umrisse = self.umrisse_der_zuege();
+        for (k, (id, b, ..)) in umrisse.iter().enumerate() {
+            let Some(r) = self.runs.get(*id) else {
                 continue;
             };
-            let along = aufmass.map_or_else(Vec::new, |(t, f)| {
-                let q: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
-                t.along(&q)
-            });
+            let along =
+                aufmass.map_or_else(Vec::new, |(t, f)| Self::am_freien_rand(t, &f, &umrisse, k));
+            if aufmass.is_some() {
+                let streifen = self.unter_der_trennwand(&umrisse, k);
+                if !streifen.is_empty() {
+                    lage.trennwand.insert(*id, (*b, streifen));
+                }
+            }
             let lo = along.iter().copied().reduce(f64::min);
             if let (Some(h), Some(gr)) = (lo, self.foundation_level_of(r.storey)) {
-                let x = lage.tief.entry(gr).or_insert(h);
-                *x = x.min(h);
+                let x = lage.tief.entry(gr).or_insert((*b, h));
+                x.1 = x.1.min(h);
             }
-            if let Some(b) = self.building_of(r.storey) {
+            if let Some(b) = *b {
                 hoch.push((b, along.into_iter().reduce(f64::max)));
             }
         }
@@ -1153,13 +1259,113 @@ impl Model {
         Some((t.height(e, n)? - nhn) * 1000.0)
     }
 
+    /// Plattenumriss je Wandzug mit Gründung (mm, Grundriss), sein
+    /// Gebäude und sein Rechteck, einmal je Rechnung statt je Paar (Review
+    /// B-245c).
+    fn umrisse_der_zuege(&self) -> Vec<ZugUmriss> {
+        self.runs
+            .iter()
+            .filter_map(|(id, r)| {
+                let ring: Vec<[f64; 2]> =
+                    self.plate_outline(id)?.iter().map(|p| [p.x, p.y]).collect();
+                let kasten = ring
+                    .iter()
+                    .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
+                        [
+                            k[0].min(p[0]),
+                            k[1].min(p[1]),
+                            k[2].max(p[0]),
+                            k[3].max(p[1]),
+                        ]
+                    });
+                Some((id, self.building_of(r.storey), ring, kasten))
+            })
+            .collect()
+    }
+
+    /// Geländehöhen (Landeswerte) am freien Plattenrand von `umrisse[k]`:
+    /// ohne die Stücke in oder an der Platte eines anderen Gebäudes, der
+    /// Haustrennwand (H-245a, VOB). Ist kein Stück frei, der ganze Rand.
+    fn am_freien_rand(t: &Terrain, f: &SurveyFrame, umrisse: &[ZugUmriss], k: usize) -> Vec<f64> {
+        let ring = &umrisse[k].2;
+        let nb = Self::nachbarn(umrisse, k);
+        let andere: Vec<&[[f64; 2]]> = nb.iter().map(|r| r.as_ref()).collect();
+        let land = |p: [f64; 2]| f.to_survey(p[0], p[1]);
+        let frei = trennwand::freie_strecken(ring, &andere);
+        if frei.is_empty() {
+            let q: Vec<(f64, f64)> = ring.iter().map(|&p| land(p)).collect();
+            return t.along(&q);
+        }
+        let s: Vec<_> = frei.iter().map(|&(a, b)| (land(a), land(b))).collect();
+        t.along_strecken(&s)
+    }
+
+    /// Die Plattenumrisse anderer Gebäude nahe `umrisse[k]`. Trennt eine
+    /// Gerade die Rechtecke beider, trennt das Anlegen der Fläche die
+    /// Platten zwischen ihnen mit dem Fugenstreifen; dann zählt das Rechteck des
+    /// anderen, nicht sein Umriss: Neben der schrägen Wand eines gedrehten
+    /// Nachbarn liegt sonst der eigene Rand im Fugenstreifen (VOB H-245e).
+    fn nachbarn(umrisse: &[ZugUmriss], k: usize) -> Vec<Cow<'_, [[f64; 2]]>> {
+        let (_, b, _, mein) = &umrisse[k];
+        let d = trennwand::AN_DER_WAND;
+        let nah = |k: &[f64; 4]| {
+            k[0] <= mein[2] + d && mein[0] <= k[2] + d && k[1] <= mein[3] + d && mein[1] <= k[3] + d
+        };
+        // wie trennen::GLEICH: so weit dürfen die Rechtecke übereinander reichen
+        let getrennt = |k: &[f64; 4]| {
+            k[0] - mein[2] > -1.0
+                || mein[0] - k[2] > -1.0
+                || k[1] - mein[3] > -1.0
+                || mein[1] - k[3] > -1.0
+        };
+        umrisse
+            .iter()
+            .filter(|(_, x, _, k)| b.is_some() && x.is_some() && x != b && nah(k))
+            .map(|(_, _, r, k)| {
+                if getrennt(k) {
+                    Cow::Owned(vec![[k[0], k[1]], [k[2], k[1]], [k[2], k[3]], [k[0], k[3]]])
+                } else {
+                    Cow::Borrowed(r.as_slice())
+                }
+            })
+            .collect()
+    }
+
+    /// Streifen der Schürze von `umrisse[k]` unter seiner Haustrennwand
+    /// ([`trennwand::unter_der_trennwand`]); leer ohne.
+    fn unter_der_trennwand(&self, umrisse: &[ZugUmriss], k: usize) -> Vec<Vec<[f64; 2]>> {
+        let nb = Self::nachbarn(umrisse, k);
+        let andere: Vec<&[[f64; 2]]> = nb.iter().map(|r| r.as_ref()).collect();
+        if andere.is_empty() {
+            return Vec::new();
+        }
+        let Some(Ok(f)) = self.foundation(umrisse[k].0) else {
+            return Vec::new();
+        };
+        let innen: Vec<[f64; 2]> = match &f.footing {
+            crate::foundation::FootingShape::Ring(i) => i.pts.iter().map(|p| [p.x, p.y]).collect(),
+            crate::foundation::FootingShape::Full(_) => Vec::new(),
+        };
+        trennwand::unter_der_trennwand(&umrisse[k].2, &andere, &innen)
+    }
+
+    /// Streifen der Schürze unter der Haustrennwand des Zugs `run` (mm,
+    /// Grundriss); leer ohne Aufmaß oder Haustrennwand.
+    pub(crate) fn trennwand_streifen(&self, run: RunId) -> Vec<Vec<[f64; 2]>> {
+        self.lage()
+            .trennwand
+            .get(&run)
+            .map(|t| t.1.clone())
+            .unwrap_or_default()
+    }
+
     /// Mit Aufmaß: tiefster Geländepunkt am Plattenrand der Gründung `gr`
     /// (mm, relativ zu ±0,00); ab hier zählt ihre Einbindetiefe (§5 G1).
     /// `None` ohne Aufmaß, Lage, Netz oder Platte.
     pub(super) fn terrain_low_survey(&self, gr: StoreyId) -> Option<f64> {
         self.terrain()?;
         let lage = self.lage();
-        Some((lage.tief.get(&gr)? - self.nhn_aus(&lage)?) * 1000.0)
+        Some((lage.tief.get(&gr)?.1 - self.nhn_aus(&lage)?) * 1000.0)
     }
 
     /// Abtrag und Auftrag des Aufmaßes über dem Umriss `outline` (Modell,
@@ -1746,13 +1952,10 @@ impl Model {
         let h0 = self.terrain_nhn()?;
         let b = self.level_building()?;
         let mut hoehen: Vec<f64> = Vec::new();
-        let zuege = self
-            .runs
-            .iter()
-            .filter(|(_, r)| self.building_of(r.storey) == Some(b));
-        for ring in zuege.filter_map(|(id, _)| self.plate_outline(id)) {
-            let r: Vec<(f64, f64)> = ring.iter().map(|p| f.to_survey(p.x, p.y)).collect();
-            hoehen.extend(t.along(&r).into_iter().map(|h| (h - h0) * 1000.0));
+        let umrisse = self.umrisse_der_zuege();
+        for k in (0..umrisse.len()).filter(|&k| umrisse[k].1 == Some(b)) {
+            let along = Self::am_freien_rand(t, &f, &umrisse, k);
+            hoehen.extend(along.into_iter().map(|h| (h - h0) * 1000.0));
         }
         let lo = hoehen.iter().copied().reduce(f64::min)?;
         let hi = hoehen.iter().copied().reduce(f64::max)?;

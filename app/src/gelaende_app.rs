@@ -543,20 +543,7 @@ impl App {
             K::Hoehen => z.hoehen_wanted = true,
             K::Hinweise => z.alle = !z.alle,
             K::Netz => z.netz_aus = !z.netz_aus,
-            K::Schloss => {
-                let mess: Vec<String> = self.scene.model().terrain().map_or(Vec::new(), |t| {
-                    let ist = |nr: &String| t.points.iter().any(|p| p.nr == *nr && !p.hand);
-                    z.wahl.iter().filter(|nr| ist(nr)).cloned().collect()
-                });
-                let alle_offen = mess.iter().all(|nr| z.offen_nr.contains(nr));
-                for nr in &mess {
-                    if alle_offen {
-                        z.offen_nr.remove(nr);
-                    } else {
-                        z.offen_nr.insert(nr.clone());
-                    }
-                }
-            }
+            K::Schloss => self.schloss_umschalten(),
             K::Gemessen => self.punkte_gemessen(),
             K::Verschieben | K::Drehen => z.tippen = (z.tippen != Some(k)).then_some(k),
             K::Ausrichten => {
@@ -962,6 +949,27 @@ impl App {
             self.gelaende_sync();
             self.redraw = true;
         }
+    }
+
+    /// Schloss der gewählten Messpunkte (I5): Ist eines zu, gehen alle auf,
+    /// sonst alle zu. Aus der Leiste und vom Schloss am Punkt (I5b).
+    pub(crate) fn schloss_umschalten(&mut self) {
+        let wahl = &self.platte.punkte.gewaehlt;
+        let mess: Vec<String> = self.scene.model().terrain().map_or(Vec::new(), |t| {
+            let ist = |nr: &String| t.points.iter().any(|p| p.nr == *nr && !p.hand);
+            wahl.iter().filter(|nr| ist(nr)).cloned().collect()
+        });
+        let z = &mut self.platte.leiste;
+        let alle_offen = mess.iter().all(|nr| z.offen_nr.contains(nr));
+        for nr in &mess {
+            if alle_offen {
+                z.offen_nr.remove(nr);
+            } else {
+                z.offen_nr.insert(nr.clone());
+            }
+        }
+        z.neu = true;
+        self.redraw = true;
     }
 
     /// Paneel „Werkzeuge“ an die Leiste angleichen; ein Zeichenwerkzeug
