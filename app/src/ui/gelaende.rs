@@ -7,7 +7,7 @@
 //! Zeilen. Ohne Freischaltung zeigt der Knopf, was das Modul kann.
 
 use super::*;
-use sk_gelaende::glatt::Glaettung;
+use sk_model::Glaettung;
 use sk_model::Show;
 
 /// Beschriftungen der Zahlenfelder in der Leiste; links neben dem Feld ist

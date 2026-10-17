@@ -207,7 +207,7 @@ impl Zustand {
 /// Satz, wenn das Gelände gröber geglättet wird als eingestellt, weil es
 /// sonst mehr als [`gelaende_netz::GLATT_HOECHSTENS`] Dreiecke wären.
 fn glatt_grob(t: &Terrain) -> Option<String> {
-    use sk_gelaende::glatt::Glaettung as G;
+    use sk_model::Glaettung as G;
     if t.glatt == G::Aus {
         return None;
     }
@@ -255,9 +255,9 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Netz => "Netz",
         GelaendeKnopf::Linien => "Höhenlinien im Gelände",
         GelaendeKnopf::Farben => "Höhenfarben",
-        GelaendeKnopf::Glatt(sk_gelaende::glatt::Glaettung::Aus) => "Glätten aus",
-        GelaendeKnopf::Glatt(sk_gelaende::glatt::Glaettung::Fein) => "Glätten fein",
-        GelaendeKnopf::Glatt(sk_gelaende::glatt::Glaettung::SehrFein) => "Glätten feiner",
+        GelaendeKnopf::Glatt(sk_model::Glaettung::Aus) => "Glätten aus",
+        GelaendeKnopf::Glatt(sk_model::Glaettung::Fein) => "Glätten fein",
+        GelaendeKnopf::Glatt(sk_model::Glaettung::SehrFein) => "Glätten feiner",
         GelaendeKnopf::Schloss => "Schloss offen",
         GelaendeKnopf::Gemessen => "Gemessen zurück",
         GelaendeKnopf::Grenze => "Grenze zeichnen",

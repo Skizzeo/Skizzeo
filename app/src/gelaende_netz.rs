@@ -1821,7 +1821,7 @@ mod tests {
     /// bleibt geschlossen wie ohne Glätten.
     #[test]
     fn geglaettet() {
-        use sk_gelaende::glatt::Glaettung;
+        use sk_model::Glaettung;
         let mut m = lindenhof();
         let eckig = Gelaende::aus(&m).unwrap();
         let ecken: std::collections::HashSet<[u64; 3]> = eckig

@@ -286,7 +286,7 @@ mod gpu {
     #[test]
     #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
     fn gpu_istbilder_hoehen() {
-        use sk_gelaende::glatt::Glaettung;
+        use sk_model::Glaettung;
         let Some(ziel) = ziel() else {
             return;
         };
