@@ -9,7 +9,7 @@
 use crate::scene::Scene;
 use sk_model::model::BauStand;
 use sk_model::qto::{self, RoomFn, Schedule, Teil, ZugFn};
-use sk_model::{BuildingId, Model};
+use sk_model::{BuildingId, Model, RunId};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -36,6 +36,20 @@ impl Scene {
         let s = Rc::new(self.mengenliste());
         self.ausbau.mengen.merken(&s);
         s
+    }
+
+    /// Neue Dicke der Decke über dem Zug `run`: Er, die Innenwände unter
+    /// der Decke und alle Züge darüber samt Aufkantung rechnen neu. Seit
+    /// #242 nimmt die Mengenliste die Wandmengen aus dem Zwischenspeicher
+    /// der Szene, und die Züge darüber hängen an der Decke (Test B-242a).
+    pub(crate) fn decke_markieren(&mut self, run: RunId) {
+        let m = &self.model;
+        let mut zuege = vec![run];
+        zuege.extend(m.runs_under_floor(run));
+        zuege.extend(m.stack_above(run));
+        for r in zuege {
+            self.mark(r);
+        }
     }
 }
 

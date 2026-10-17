@@ -2385,10 +2385,7 @@ impl Scene {
         }
         self.begin("Deckendicke");
         let ok = self.model.set_floor_thickness(id, mm);
-        self.mark(run);
-        for r in self.model.runs_under_floor(run) {
-            self.mark(r);
-        }
+        self.decke_markieren(run);
         self.commit();
         ok
     }

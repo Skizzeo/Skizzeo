@@ -17,7 +17,7 @@
 //!   ([`einbau`], § 3 Abs. 3 Nr. 1 und 2). Eine Treppe aus dem Geschoss
 //!   darunter steht als Treppenloch ohne Fußboden und wird abgezogen; was
 //!   abgezogene Pfeiler, Stützen und Treppen gemeinsam decken, geht einmal
-//!   ab (Review #195 H-195j).
+//!   ab, auch wo mehrere übereinander liegen (Review #195 H-195j, H-241b).
 //! - Faktor nach § 4: lichte Höhe ab 2 m voll, ab 1 m zur Hälfte, darunter
 //!   nicht, mal die Anrechnung der Raumvorlage (100, 50, 25 oder 0 %); ein
 //!   Faktor am Raum geht beiden vor.
@@ -529,10 +529,10 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
     let mut roh_teile: Vec<(Roh, Art)> = Vec::new();
     let mut umriss: Vec<Vec<Vec3>> = Vec::new();
     let mut genau = 0.0;
-    // Abgezogene Pfeiler und Einbauten: Was ein weiterer Einbau mit ihnen
-    // deckt, ist schon ab (Review #195 H-195j). Paarweise: Wo drei
-    // Abgezogene übereinander liegen, ginge ihr gemeinsamer Teil doppelt ab.
-    let mut abgezogen: Vec<Vec<[Vec3; 3]>> = Vec::new();
+    // Abgezogene Pfeiler und Einbauten in Stücken ohne Überdeckung: Was ein
+    // weiterer Einbau mit ihnen deckt, ist schon ab, auch wo mehrere
+    // übereinander liegen (Review #195 H-195j, H-241b)
+    let mut abgezogen: Vec<Vec<Vec3>> = Vec::new();
     let mut erste = 0;
     for (i, ring) in roh.ringe().enumerate() {
         let p: Vec<Vec3> = ring.iter().map(|k| k.a).collect();
@@ -559,7 +559,7 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
                 ));
             } else {
                 genau -= a;
-                abgezogen.push(einbau::dreiecke(&fertig));
+                abgezogen.extend(einbau::dreiecke(&fertig).iter().map(|t| t.to_vec()));
                 for (text, wert, u) in zerlegen(&fertig) {
                     roh_teile.push(((format!("{name} {text}"), -wert, u), Art::Abzug));
                 }
@@ -649,7 +649,8 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
             // Raum, abgezogen wird der Rest neben schon Abgezogenem (VOB
             // A-241a)
             let ganz = einbau::im_raum(e, &dreiecke);
-            let f = ganz - abgezogen.iter().map(|l| einbau::im_raum(e, l)).sum::<f64>();
+            let neu = einbau::im_raum_ohne(e, &dreiecke, &abgezogen);
+            let f: f64 = neu.iter().map(|p| sk_math::polygon::area(p)).sum();
             if f < 1.0 {
                 continue;
             }
@@ -689,7 +690,7 @@ pub fn raum_mit(model: &Model, roh: &Rohbau, aus: &RaumAusbau, einbauten: &Einba
                 continue;
             }
             genau -= f;
-            abgezogen.push(einbau::im_raum_dreiecke(e, &dreiecke));
+            abgezogen.extend(neu);
             // Ein Treppenloch ist im Modell nicht abgebildet: angenommen wie
             // die Treppe darunter (VOB V-241b/c)
             let (name, regel) = if e.loch {
