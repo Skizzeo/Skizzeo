@@ -373,7 +373,9 @@ fn op_schluessel(op: &Op) -> Option<String> {
 
 impl Verwaltung {
     /// Öffnet das Fenster auf dem Firmenkatalog `company` (ohne: Werksbestand,
-    /// OK schreibt nicht), auf Wunsch mit `wahl` gewählt.
+    /// OK schreibt nicht), auf Wunsch mit `wahl` gewählt. Die Szene kommt
+    /// mit fertigem Geländenetz ([`Scene::fertig`]): Die Verwaltung
+    /// rechnet auf einer Kopie des Modells.
     pub fn open(scene: &Scene, company: Option<&Company>, wahl: Option<Knoten>) -> Verwaltung {
         let m = scene.model().clone();
         // Mit Verwaltungskennwort arbeitet die Verwaltung am Entwurf
@@ -546,6 +548,12 @@ impl Verwaltung {
     /// Die gesammelten Operationen (für OK).
     pub fn ops(&self) -> &[Op] {
         &self.ops
+    }
+
+    /// Netto des offenen Hauses beim Öffnen (Tests).
+    #[cfg(test)]
+    pub(crate) fn dieses_vorher(&self) -> Option<sk_cost::Cent> {
+        self.wirkung.dieses.as_ref().map(|h| h.vorher)
     }
 
     /// OK gesperrt: sperrende Befunde (paket-ka3a §1).

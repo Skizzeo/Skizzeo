@@ -72,6 +72,22 @@ impl SzenenKetten<'_> {
     }
 }
 
+impl<'a> SzenenKetten<'a> {
+    /// Mengen des Zugs je Segment, wie die Szene sie mit ihm gerechnet hat;
+    /// `None` für einen Zug, der neu gerechnet werden muss oder gerade
+    /// gezogen wird (Review M2).
+    fn mengen(&self, run: RunId) -> Option<&'a [sk_model::WallQto]> {
+        if self.alle || self.dirty.contains(&run) {
+            return None;
+        }
+        self.cache
+            .get(run.index() as usize)?
+            .as_ref()
+            .filter(|c| c.id == run && !c.qto.is_empty())
+            .map(|c| c.qto.as_slice())
+    }
+}
+
 impl sk_raum::Ketten for SzenenKetten<'_> {
     fn fassung(&self, run: RunId) -> Option<u64> {
         self.frisch(run).map(|c| c.builds as u64)
@@ -134,7 +150,7 @@ impl Scene {
             let p = platten.get_or_init(|| sk_raum::raumliste::Platten::neu(m, &k));
             sk_raum::mengen::raeume_mit(m, &k, p, formen)
         };
-        sk_model::qto::schedule_mit(&self.model, &raeume)
+        sk_model::qto::schedule_mit_zuegen(&self.model, &raeume, &|r| k.mengen(r))
     }
 
     /// [`Scene::raumgruppen`] für jedes Geschoss mit Räumen, in einem Gang

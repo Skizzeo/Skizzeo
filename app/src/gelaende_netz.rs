@@ -991,8 +991,17 @@ fn seite(s: &mut Solid, a: Vec3, b: Vec3, unten: f64) {
     s.edge(au, bu);
 }
 
-/// Körper in 3D; `keys`: Rasen, Erdreich, Rasen blass.
+/// Körper in 3D; `keys`: Rasen, Erdreich, Rasen blass. Die App nimmt
+/// [`koerper_mit_netz`].
+#[cfg(test)]
 pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
+    koerper_mit_netz(g, keys, false)
+}
+
+/// Körper in 3D wie `koerper`, mit `netz` dazu das Hilfsnetz (Jörns §4.3a): die Kanten
+/// des Dreiecksnetzes fein auf dem Rasen, die vollen Meter kräftig. Als
+/// Kanten des Körpers bleiben sie hinter Hügeln und Häusern verdeckt.
+pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Solid {
     let mut s = Solid {
         mat: keys[0],
         edge_kind: edge_kind::VIEW,
@@ -1060,8 +1069,12 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
             s.edge(r[i], r[(i + 1) % r.len()]);
         }
     }
-    // Volle Meter als feine Kanten auf dem Rasen
-    s.edge_kind = edge_kind::FINE;
+    // Volle Meter als feine Kanten auf dem Rasen, mit dem Netz kräftig
+    s.edge_kind = if netz {
+        edge_kind::VIEW
+    } else {
+        edge_kind::FINE
+    };
     for &(z, [a, b], innen, haupt) in &g.stuecke {
         if !haupt || (g.show == Show::Parcel && !innen) {
             continue;
@@ -1073,7 +1086,42 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
         };
         s.edge(vec3(a[0], a[1], z + dz), vec3(b[0], b[1], z + dz));
     }
+    if netz {
+        s.edge_kind = edge_kind::FINE;
+        for (a, b, innen) in netzkanten(g) {
+            if g.show == Show::Parcel && !innen {
+                continue;
+            }
+            let dz = if innen && g.show == Show::Fade {
+                HEBEN
+            } else {
+                0.0
+            };
+            s.edge(heben(a, dz), heben(b, dz));
+        }
+    }
     s
+}
+
+/// Kanten des Dreiecksnetzes, jede einmal, an Grenze und Haus geteilt wie
+/// die Höhenlinien (im Haus keine): von, bis und ob im Grundstück.
+fn netzkanten(g: &Gelaende) -> Vec<(Vec3, Vec3, bool)> {
+    let key = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    let mut gesehen = std::collections::HashSet::with_capacity(g.dreiecke.len() * 2);
+    let mut out = Vec::with_capacity(g.dreiecke.len() * 2);
+    for t in &g.dreiecke {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            let (ka, kb) = (key(a), key(b));
+            if !gesehen.insert(if ka < kb { (ka, kb) } else { (kb, ka) }) {
+                continue;
+            }
+            for (t0, t1, innen) in g.teile([a.x, a.y], [b.x, b.y]) {
+                out.push((a + (b - a) * t0, a + (b - a) * t1, innen));
+            }
+        }
+    }
+    out
 }
 
 /// Rand längs des Rings `r` bis `unten`: geteilt an jeder Netzkante,
@@ -1717,6 +1765,46 @@ mod tests {
             .triangles
             .iter()
             .all(|t| t.p.iter().all(|p| p.z >= g.unten - 1e-6)));
+    }
+
+    /// Mit Hilfsnetz (§4.3a) liegt jede Kante des Netzes einmal fein auf
+    /// dem Körper, nicht im Haus, und die vollen Meter werden kräftig;
+    /// Rasen und Erdreich bleiben gleich.
+    #[test]
+    fn hilfsnetz_im_koerper() {
+        let m = lindenhof();
+        let g = Gelaende::aus(&m).unwrap();
+        let keys = [10, 11, 12];
+        let ohne = koerper(&g, keys);
+        let mit = koerper_mit_netz(&g, keys, true);
+        assert_eq!(ohne.triangles.len(), mit.triangles.len());
+        let zahl = |s: &Solid, k: u8| s.edges.iter().filter(|e| e.kind == k).count();
+        let meter = zahl(&ohne, edge_kind::FINE);
+        assert!(meter > 0);
+        // die vollen Meter sind mit dem Netz Sichtkanten
+        assert_eq!(
+            zahl(&mit, edge_kind::VIEW),
+            zahl(&ohne, edge_kind::VIEW) + meter
+        );
+        let netz = zahl(&mit, edge_kind::FINE);
+        let kanten = netzkanten(&g);
+        let im_grundstueck = kanten.iter().filter(|k| k.2).count();
+        assert_eq!(g.show, Show::Parcel);
+        assert_eq!(netz, im_grundstueck);
+        // jede Kante des Netzes einmal: mehr als Dreiecke, weniger als
+        // dreimal so viele (Rand und Teilung an Grenze und Haus)
+        let n = g.dreiecke.len();
+        assert!(
+            kanten.len() > n && kanten.len() < 3 * n,
+            "{} {n}",
+            kanten.len()
+        );
+        // keine im Haus
+        let r = &g.haus[0].0;
+        for e in mit.edges.iter().filter(|e| e.kind == edge_kind::FINE) {
+            let mitte = [(e.a.x + e.b.x) / 2.0, (e.a.y + e.b.y) / 2.0];
+            assert!(!im_ring(r, mitte), "{mitte:?}");
+        }
     }
 
     /// Nur der Lageplan: eben in Höhe OK Gelände, zugeschnitten auf das

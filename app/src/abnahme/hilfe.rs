@@ -195,7 +195,7 @@ const OHNE: Modifiers = Modifiers {
 /// Knöpfe mit Tooltip (§1.3); „Winkelsprung“ (vormals „90°-Sprung“, G2)
 /// steht im Paneel Werkzeuge (Koordinator 21:45), „Erweiterungen“ dort ab
 /// E6 (Schrittplan .szb).
-const KNOEPFE: [&str; 36] = [
+const KNOEPFE: [&str; 37] = [
     "Gebäude",
     "Innenwand",
     "Wandöffnung",
@@ -208,6 +208,7 @@ const KNOEPFE: [&str; 36] = [
     "Flurstück übernehmen",
     "Grenze zeichnen",
     "Höhen",
+    "Netz",
     "Gelände verschieben",
     "Gelände drehen",
     "An Grenze ausrichten",
@@ -727,6 +728,10 @@ fn a293_genannte_tasten_sind_belegt() {
             "alles wählen im Namensfeld des Raumstempels (stempel)",
         ),
         ("OK", "Knopf, keine Taste"),
+        (
+            "N",
+            "Hilfsnetz in 3D bei offener Leiste Gelände (gelaende_flaeche_app/netz.rs, netz_taste)",
+        ),
     ];
     for t in fett(hilfetext()) {
         let bekannt = kuerzel_von(&t).is_some()

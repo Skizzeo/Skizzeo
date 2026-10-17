@@ -84,6 +84,9 @@ pub(crate) struct Zustand {
     pub(crate) neu: bool,
     /// Werkzeug „Fläche zeichnen“ (G3d).
     pub(crate) werkzeug: crate::gelaende_flaeche_app::Werkzeug,
+    /// Hilfsnetz in 3D ausgeschaltet; sonst ist es bei offener Leiste an
+    /// und bleibt aus, bis man es wieder einschaltet (Jörns §4.3a).
+    pub(crate) netz_aus: bool,
     /// Gewählte Geländefläche und Modellstand, für die das Paneel
     /// „Eigenschaften“ steht.
     pub(crate) props: Option<(usize, u64)>,
@@ -221,6 +224,7 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::Zuschnitt(Show::Parcel) => "Umgebung nicht",
         GelaendeKnopf::AmHaus => "Gelände ans Haus",
         GelaendeKnopf::Flaeche => "Fläche zeichnen",
+        GelaendeKnopf::Netz => "Netz",
         GelaendeKnopf::Grenze => "Grenze zeichnen",
         GelaendeKnopf::Befestigt => "Fläche befestigt",
         GelaendeKnopf::Loeschen => "Fläche löschen",
@@ -297,6 +301,7 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     let ringe = t.boundary_rings();
     l.aufmass = true;
     l.hoehen = !t.points.is_empty();
+    l.netz = l.hoehen && !z.netz_aus;
     l.angenommen = t.assumed();
     l.grenze = !ringe.is_empty();
     l.absolut = t.href == HeightRef::Abs;
@@ -500,6 +505,7 @@ impl App {
             K::Uebernehmen => self.flurstueck_uebernehmen(),
             K::Hoehen => z.hoehen_wanted = true,
             K::Hinweise => z.alle = !z.alle,
+            K::Netz => z.netz_aus = !z.netz_aus,
             K::Verschieben | K::Drehen => z.tippen = (z.tippen != Some(k)).then_some(k),
             K::Ausrichten => {
                 self.gelaende_schritt("Gelände an Grenze ausrichten", |m| m.align_terrain());
@@ -1089,6 +1095,13 @@ mod tests {
         m.commit();
         let l = leiste(&m, &z);
         assert!(l.aufmass && l.grenze && !l.absolut);
+        // das Hilfsnetz ist an, bis man es ausschaltet (§4.3a)
+        assert!(l.netz);
+        let aus = Zustand {
+            netz_aus: true,
+            ..Zustand::default()
+        };
+        assert!(!leiste(&m, &aus).netz);
         assert_eq!(l.felder.len(), 1);
         assert_eq!(l.felder[0].field, Field::Gelaende(GelaendeFeld::Versatz));
         // Ohne Lage liegt das Grundstück mittig unter dem Haus; ±0,00 liegt

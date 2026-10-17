@@ -1361,6 +1361,14 @@ fn ka1_umfang_ohne_neurechnung_und_ohne_datei() {
 /// `KostenView::sync` (Mengen über `Scene::schedule`, Kostenblatt, Punkte,
 /// Abgleich) unter
 /// 8 ms; `abgleich()` allein zum Vergleich (Release, Median aus drei Läufen).
+///
+/// Noch rot (Review M2, Architektur 16.10. 00:22): 17–18 ms auf main vor
+/// Review M2, 12–13 ms danach. Callgrind je Loslassen etwa 86 M Befehle,
+/// davon `Scene::schedule` 61 M (Räume 18 M, `layer_rows` 11 M, Freigabe
+/// des alten Schedule 7 M, `floor` 6 M, Gelände 5 M, Gewerk- und
+/// KG-Summen 6 M) und `kosten_mit` 16 M: Jedes Loslassen rechnet alle
+/// Gebäude neu. Die 8 ms soll das Merken der Mengen je Gebäude in der
+/// Szene bringen (eigener PR).
 #[test]
 #[ignore]
 fn perf_loslassen_mit_abgleich() {
