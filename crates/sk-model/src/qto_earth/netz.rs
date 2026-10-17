@@ -203,6 +203,12 @@ pub struct ErdNetz {
     /// Innerhalb der Frostschürze, gegen den Uhrzeigersinn; leer, wenn die
     /// Schürze die ganze Platte füllt.
     pub innen: Vec<Vec3>,
+    /// Streifen der Schürze unter einer Haustrennwand und OK Gelände der
+    /// eigenen Gründung (mm über ±0,00): Dort zählt für den Graben die
+    /// eigene Höhe, nicht das Netz im Fugenstreifen zum Nachbarn
+    /// (VOB-Spruch zu H-245c, Weg b).
+    trennwand: Vec<Vec<Vec3>>,
+    ok: f64,
 }
 
 impl PartialEq for ErdNetz {
@@ -210,6 +216,7 @@ impl PartialEq for ErdNetz {
         Arc::ptr_eq(&self.mesh, &o.mesh)
             && (self.frame, self.h0, &self.aufmass, &self.innen)
                 == (o.frame, o.h0, &o.aufmass, &o.innen)
+            && (&self.trennwand, self.ok) == (&o.trennwand, o.ok)
     }
 }
 
@@ -229,12 +236,24 @@ impl ErdNetz {
             crate::foundation::FootingShape::Ring(i) => i.pts.clone(),
             crate::foundation::FootingShape::Full(_) => Vec::new(),
         };
+        let trennwand: Vec<Vec<Vec3>> = m
+            .trennwand_streifen(run)
+            .into_iter()
+            .map(|q| q.into_iter().map(|p| sk_math::vec3(p[0], p[1], 0.0)).collect())
+            .collect();
+        let ok = if trennwand.is_empty() {
+            0.0
+        } else {
+            m.terrain_z_of_level(m.foundation_level_of(m.run(run)?.storey)?)
+        };
         Some(ErdNetz {
             frame: m.survey_frame()?,
             h0: m.terrain_nhn()?,
             mesh: t.mesh(),
             aufmass: verfahren(t),
             innen,
+            trennwand,
+            ok,
         })
     }
 
@@ -416,7 +435,15 @@ pub(super) fn mengen(
     let ring_fl = (fl - innen_fl).max(0.0);
     // ∫innen (min(z_s, N) − z_p)⁺ = ∫(N − z_p)⁺ − ∫(N − z_s)⁺, ebenso der Ring
     let bett = (i_p.ueber - i_s).max(0.0);
-    let graben = ((platte_f - platte) - (i_f - i_s)).max(0.0);
+    let mut graben = (platte_f - platte) - (i_f - i_s);
+    // unter der Haustrennwand mit der eigenen Höhe statt dem Netz
+    let h = n.ok - o;
+    for q in &n.trennwand {
+        let [s, f] = n.mengen(q, &[z_s + o, z_f + o]).map(|e| e.ueber);
+        let eigen = (h - z_f).max(0.0) - (h - z_s).max(0.0);
+        graben += sk_math::polygon::area(q) * eigen - (f - s);
+    }
+    let graben = graben.max(0.0);
     let auf = i_p.unter;
     let bo = boeschung(n, &sohle, z_s, o, boden.boeschung);
     let verfahren = n.aufmass.clone();

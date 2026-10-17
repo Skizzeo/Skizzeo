@@ -59,7 +59,13 @@ impl Model {
                     ecken.extend(u.into_iter().map(|p| (p, b.z, Some(umlaeufe))));
                     umlaeufe += 1;
                 } else {
-                    ecken.extend(u.into_iter().map(|p| (p, b.z, None)));
+                    // Ecken in einer früheren Platte fallen weg (wie main)
+                    let frei = |p: &[f64; 2]| {
+                        !b.verdeckt
+                            .iter()
+                            .any(|r| (r[0]..=r[2]).contains(&p[0]) && (r[1]..=r[3]).contains(&p[1]))
+                    };
+                    ecken.extend(u.into_iter().filter(frei).map(|p| (p, b.z, None)));
                 }
             }
         }
@@ -456,6 +462,7 @@ mod tests {
         // (Abstand der Wände, quer, Garage)
         let faelle = [
             (0.0, false, false),
+            (630.0, false, false),
             (650.0, false, false),
             (800.0, false, false),
             (1000.0, false, false),
@@ -464,8 +471,10 @@ mod tests {
             (6000.0, false, false),
             (12000.0, false, false),
             (0.0, true, false),
+            (630.0, true, false),
             (650.0, true, false),
             (2000.0, true, false),
+            (630.0, false, true),
             (650.0, false, true),
             (1000.0, false, true),
             (2000.0, false, true),
@@ -513,7 +522,11 @@ mod tests {
             assert!(m.seed_flat_terrain(&[]));
             m.commit();
             let t = m.terrain().unwrap();
-            assert_eq!(t.breaks.len(), 2, "{fall}");
+            // Wände ineinander: wie main gilt die frühere Platte, die
+            // spätere bleibt ohne Rand (Hinweis „ineinander“)
+            let ineinander = spalt < 2.0 * 315.0;
+            let soll = if ineinander { 1 } else { 2 };
+            assert_eq!(t.breaks.len(), soll, "{fall}");
             assert!(
                 t.mesh().hinweise.is_empty(),
                 "{fall}: {:?}",
@@ -531,7 +544,8 @@ mod tests {
             } else {
                 0.0
             };
-            for (haus, r) in [a, b] {
+            let haeuser = if ineinander { vec![] } else { vec![a, b] };
+            for (haus, r) in haeuser {
                 let z = m.terrain_z_of(Some(haus));
                 for i in 0..=20 {
                     for j in 0..=20 {
@@ -545,7 +559,9 @@ mod tests {
                     }
                 }
             }
-            if u > 0.0 {
+            // ab Wand an Wand; dort rechnet der Graben unter der
+            // Haustrennwand mit der eigenen Höhe (VOB-Spruch zu H-245c)
+            if spalt >= 2.0 * 315.0 {
                 let nachher = erde(&m);
                 assert_eq!(vorher.len(), nachher.len(), "{fall}");
                 for (x, y) in vorher.iter().zip(&nachher) {
@@ -565,7 +581,7 @@ mod tests {
     /// quer, mit Haus und mit Garage.
     #[test]
     fn trennwand_zieht_nicht_hinab() {
-        for spalt in [0.0, 630.0, 631.0, 635.0, 640.0, 645.0, 649.0, 650.0] {
+        for spalt in [630.0, 631.0, 635.0, 640.0, 645.0, 649.0, 650.0] {
             for (quer, garage) in [(false, false), (true, false), (false, true), (true, true)] {
                 let fall = format!("{spalt} quer {quer} Garage {garage}");
                 let mut m = Model::with_seed(5);
@@ -619,8 +635,9 @@ mod tests {
     }
 
     /// Gedrehte Häuser, deren Rechtecke sich überdecken (Geometrie
-    /// H-245-geo-c): wie vor dem Trennen die Ecken beider Platten in ihrer
-    /// Höhe, ohne Bruchkante; ein Haus weit weg behält seinen Rand.
+    /// H-245-geo-c): wie auf main behält die frühere Platte ihren Rand; von
+    /// der späteren bleiben ohne Rand die Ecken außerhalb der früheren. Ein
+    /// Haus weit weg behält seinen Rand.
     #[test]
     fn gedreht_wie_vorher() {
         for (grad, spalt) in [
@@ -657,9 +674,9 @@ mod tests {
             assert!(m.seed_flat_terrain(&[]));
             m.commit();
             let t = m.terrain().unwrap();
-            assert_eq!(t.points.len(), 12, "{grad}° {spalt}");
-            assert_eq!(t.breaks.len(), 1, "{grad}° {spalt}");
-            assert_eq!(t.breaks[0].pts.len(), 4, "{grad}° {spalt}");
+            assert!(t.points.len() < 12, "{grad}° {spalt}");
+            assert_eq!(t.breaks.len(), 2, "{grad}° {spalt}");
+            assert!(t.breaks.iter().all(|b| b.pts.len() == 4), "{grad}° {spalt}");
         }
     }
 

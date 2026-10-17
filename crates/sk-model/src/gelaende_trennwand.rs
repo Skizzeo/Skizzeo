@@ -16,6 +16,111 @@ pub(super) fn freie_strecken(
     ring: &[[f64; 2]],
     andere: &[&[[f64; 2]]],
 ) -> Vec<([f64; 2], [f64; 2])> {
+    stuecke(ring, andere)
+        .into_iter()
+        .filter(|s| s.3)
+        .map(|(i, t0, t1, _)| (auf(ring, i, t0), auf(ring, i, t1)))
+        .collect()
+}
+
+/// Die Streifen innerhalb von `ring` unter den Strecken, die nicht frei
+/// sind ([`freie_strecken`]), also unter der Haustrennwand: je Folge
+/// zusammenhängender Strecken ein Umriss, so breit wie der Ring bis
+/// `innen` (Frostschürze), ohne `innen` [`AN_DER_WAND`]; an Ecken auf der
+/// Winkelhalbierenden, an den Enden senkrecht. Gegen den Uhrzeigersinn;
+/// leer ohne Haustrennwand, ohne freie Strecke und für einen Streifen,
+/// der sich selbst schneiden würde.
+pub(super) fn unter_der_trennwand(
+    ring: &[[f64; 2]],
+    andere: &[&[[f64; 2]]],
+    innen: &[[f64; 2]],
+) -> Vec<Vec<[f64; 2]>> {
+    let mut st = stuecke(ring, andere);
+    let Some(erstes) = st.iter().position(|s| s.3) else {
+        return Vec::new();
+    };
+    if st.iter().all(|s| s.3) {
+        return Vec::new();
+    }
+    st.rotate_left(erstes);
+    let breite = if innen.len() >= 3 {
+        st.iter()
+            .filter(|s| !s.3)
+            .map(|s| rand_abstand(innen, auf(ring, s.0, 0.5)))
+            .fold(f64::INFINITY, f64::min)
+    } else {
+        AN_DER_WAND
+    };
+    let n = ring.len();
+    let links = (0..n)
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            a[0] * b[1] - a[1] * b[0]
+        })
+        .sum::<f64>()
+        > 0.0;
+    // nach innen gerichtete Einheitsnormale der Kante i
+    let normale = |i: usize| {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx.hypot(dy);
+        if links {
+            [-dy / l, dx / l]
+        } else {
+            [dy / l, -dx / l]
+        }
+    };
+    let versetzt = |p: [f64; 2], v: [f64; 2]| [p[0] + breite * v[0], p[1] + breite * v[1]];
+    let mut out = Vec::new();
+    // Folgen nicht freier Stücke; die erste ist frei, also endet jede Folge
+    for folge in st.split(|s| s.3).filter(|f| !f.is_empty()) {
+        let (erst, letzt) = (folge[0], folge[folge.len() - 1]);
+        let mut aussen = vec![auf(ring, erst.0, erst.1)];
+        let mut drin = vec![versetzt(aussen[0], normale(erst.0))];
+        for w in folge.windows(2) {
+            let p = auf(ring, w[0].0, w[0].2);
+            aussen.push(p);
+            if w[0].0 == w[1].0 {
+                continue;
+            }
+            let (u, v) = (normale(w[0].0), normale(w[1].0));
+            let k = 1.0 + u[0] * v[0] + u[1] * v[1];
+            if k > 0.2 {
+                drin.push(versetzt(p, [(u[0] + v[0]) / k, (u[1] + v[1]) / k]));
+            } else {
+                drin.extend([versetzt(p, u), versetzt(p, v)]);
+            }
+        }
+        let p = auf(ring, letzt.0, letzt.2);
+        aussen.push(p);
+        drin.push(versetzt(p, normale(letzt.0)));
+        drin.reverse();
+        aussen.extend(drin);
+        aussen.dedup_by(|p, q| abstand(*p, *q) < 1e-6);
+        if !links {
+            aussen.reverse();
+        }
+        let v: Vec<sk_math::Vec3> = aussen
+            .iter()
+            .map(|p| sk_math::vec3(p[0], p[1], 0.0))
+            .collect();
+        if sk_math::polygon::is_simple(&v) {
+            out.push(aussen);
+        }
+    }
+    out
+}
+
+/// Punkt auf der Kante `i` von `ring` beim Anteil `t`.
+fn auf(ring: &[[f64; 2]], i: usize, t: f64) -> [f64; 2] {
+    let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+    [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
+}
+
+/// Der Umriss `ring` in Stücken (Kante, Anteil von, bis, frei), der Reihe
+/// nach; frei ist ein Stück, das weder in einem der Umrisse `andere` liegt
+/// noch näher als [`AN_DER_WAND`] an ihnen.
+fn stuecke(ring: &[[f64; 2]], andere: &[&[[f64; 2]]]) -> Vec<(usize, f64, f64, bool)> {
     let tol = AN_DER_WAND;
     let n = ring.len();
     let mut out = Vec::new();
@@ -43,7 +148,7 @@ pub(super) fn freie_strecken(
             })
             .collect();
         if nah.is_empty() {
-            out.push((a, b));
+            out.push((i, 0.0, 1.0, true));
             continue;
         }
         let punkt = |t: f64| [a[0] + t * d[0], a[1] + t * d[1]];
@@ -92,9 +197,7 @@ pub(super) fn freie_strecken(
         for w in ts.windows(2) {
             let m = punkt((w[0] + w[1]) / 2.0);
             let frei = !nah.iter().any(|p| innen(p, m) || rand_abstand(p, m) < tol);
-            if frei {
-                out.push((punkt(w[0]), punkt(w[1])));
-            }
+            out.push((i, w[0], w[1], frei));
         }
     }
     out
@@ -213,6 +316,50 @@ mod tests {
             let soll = 2.0 * (ende + 315.0) + 10630.0;
             assert!((laenge(&s) - soll).abs() < 1e-6, "{g}: {}", laenge(&s));
         }
+    }
+
+    fn flaeche(q: &[[f64; 2]]) -> f64 {
+        (0..q.len())
+            .map(|i| {
+                let (a, b) = (q[i], q[(i + 1) % q.len()]);
+                a[0] * b[1] - a[1] * b[0]
+            })
+            .sum::<f64>()
+            / 2.0
+    }
+
+    /// Unter der Haustrennwand ein Streifen so breit wie die Schürze, an den
+    /// Ecken bis zu den Stücken der Nachbarseiten, gegen den Uhrzeigersinn;
+    /// allein keiner. Mit der Garage nur ihr Stück, die Enden senkrecht.
+    #[test]
+    fn streifen_unter_der_wand() {
+        let a = rechteck(0.0, 0.0, 8000.0, 10000.0);
+        let innen = rechteck(300.0, 300.0, 7700.0, 9700.0);
+        assert!(unter_der_trennwand(&a, &[], &innen).is_empty());
+        let b = rechteck(8000.0, 0.0, 16000.0, 10000.0);
+        let s = unter_der_trennwand(&a, &[&b], &innen);
+        assert_eq!(s.len(), 1);
+        // an der Wand bis zur Schürze innen, dazu unten und oben je das
+        // Stück AN_DER_WAND × 300
+        let d = AN_DER_WAND;
+        let soll = 300.0 * 9400.0 + 2.0 * d * 300.0;
+        assert!((flaeche(&s[0]) - soll).abs() < 1e-3, "{}", flaeche(&s[0]));
+        // im Uhrzeigersinn derselbe Streifen, wieder links herum
+        let mut r = a.clone();
+        r.reverse();
+        let t = unter_der_trennwand(&r, &[&b], &innen);
+        assert!((flaeche(&t[0]) - soll).abs() < 1e-3, "{}", flaeche(&t[0]));
+        // Garage: bis AN_DER_WAND über ihr Ende, dort senkrecht; ohne
+        // Schürze AN_DER_WAND breit
+        let g = rechteck(8000.0, 0.0, 11000.0, 3000.0);
+        let s = unter_der_trennwand(&a, &[&g], &innen);
+        assert_eq!(s.len(), 1);
+        let soll = 300.0 * (3000.0 + d - 300.0) + d * 300.0;
+        assert!((flaeche(&s[0]) - soll).abs() < 1e-3, "{}", flaeche(&s[0]));
+        let s = unter_der_trennwand(&a, &[&g], &[]);
+        assert_eq!(s.len(), 1);
+        assert!((flaeche(&s[0]) - d * (3000.0 + d)).abs() < 1e-3);
+        assert!(s[0].iter().all(|p| p[0] >= 8000.0 - d - 1e-6));
     }
 
     /// Eine kürzere Garage nimmt nur ihr Stück der Wand.

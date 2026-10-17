@@ -5,9 +5,10 @@
 //! anderen (Garage kürzer als die Hauswand), hat das längere Vorrang: Die
 //! Platte des kürzeren endet in der Flucht seiner Sohle (VOB-Spruch c zu
 //! H-245a). Überdecken sich die Rechtecke um die Wandzüge (gedrehte Häuser,
-//! Garage in der Kehle eines L), bleibt es wie vor dem Trennen: beide
-//! Platten ganz, ohne Rand als Bruchkante, das Netz vermittelt (Geometrie
-//! H-245-geo-c: nicht schlechter als vorher).
+//! Garage in der Kehle eines L) oder reichen die Sohlen übereinander (Wände
+//! ineinander), bleibt es wie auf main seit #243: Die frühere Platte gilt,
+//! die spätere verliert ihre Ecken darin und ihren Rand als Bruchkante
+//! (Geometrie H-245-geo-c, B-245e: nirgends schlechter als main).
 
 /// Eine Platte vor dem Trennen (mm, `[x0, y0, x1, y1]`).
 #[derive(Clone, Copy, Debug)]
@@ -28,9 +29,12 @@ pub(super) struct Bereich {
     pub rect: [f64; 4],
     pub loecher: Vec<[f64; 4]>,
     pub z: f64,
-    /// Der Rand wird Bruchkante; nicht, wenn sich die Wandzüge mit denen
-    /// eines anderen Hauses überdecken.
+    /// Der Rand wird Bruchkante; nicht, wenn sich die Rechtecke um die
+    /// Wandzüge mit denen eines früheren Hauses überdecken.
     pub rand: bool,
+    /// Rechtecke früherer Platten, mit denen sich diese überdeckt: Ecken
+    /// darin fallen weg, dort gilt die frühere (wie auf main seit #243).
+    pub verdeckt: Vec<[f64; 4]>,
 }
 
 /// Unter diesem Unterschied (mm) reichen zwei Sohlen gleich weit.
@@ -39,13 +43,14 @@ const GLEICH: f64 = 1.0;
 /// Trennt die Platten mit Streifen von 2 × `fuge` zwischen ihnen. Die
 /// Richtung ist die, in der die Wandzüge am weitesten auseinander liegen;
 /// getrennt wird in der Mitte zwischen den Sohlen. Überdecken sich die
-/// Rechtecke um die Wandzüge, bleiben beide Platten ganz und ohne Rand.
+/// Rechtecke um die Wandzüge oder um die Sohlen, gilt die frühere Platte.
 pub(super) fn trennen(platten: &[Platte], fuge: f64) -> Vec<Bereich> {
     let n = platten.len();
     let mut rect: Vec<[f64; 4]> = platten.iter().map(|p| p.rect).collect();
     // (k, i, Richtung, Mitte, k liegt vorn)
     let mut paare: Vec<(usize, usize, usize, f64, bool)> = Vec::new();
     let mut ohne_rand = vec![false; n];
+    let mut verdeckt: Vec<Vec<[f64; 4]>> = vec![Vec::new(); n];
     for i in 0..n {
         for k in 0..i {
             let (a, b) = (platten[k].rect, platten[i].rect);
@@ -68,11 +73,24 @@ pub(super) fn trennen(platten: &[Platte], fuge: f64) -> Vec<Bereich> {
                 (None, Some(y)) => (1, y.1),
                 (None, None) => {
                     ohne_rand[i] = true;
-                    ohne_rand[k] = true;
+                    verdeckt[i].push(platten[k].rect);
                     continue;
                 }
             };
             let (sk, si) = (platten[k].sohle, platten[i].sohle);
+            // Reichen die Sohlen in Richtung d übereinander (gedrehte
+            // Häuser, Wände ineinander), schnitte die Mitte durch eine
+            // Sohle: dann wie überdeckt
+            let ueber = if k_vorn {
+                sk[d + 2] - si[d]
+            } else {
+                si[d + 2] - sk[d]
+            };
+            if ueber > GLEICH {
+                ohne_rand[i] = true;
+                verdeckt[i].push(platten[k].rect);
+                continue;
+            }
             let mitte = if k_vorn {
                 (sk[d + 2] + si[d]) / 2.0
             } else {
@@ -117,6 +135,7 @@ pub(super) fn trennen(platten: &[Platte], fuge: f64) -> Vec<Bereich> {
             loecher: std::mem::take(&mut loecher[i]),
             z: platten[i].z,
             rand: !ohne_rand[i],
+            verdeckt: std::mem::take(&mut verdeckt[i]),
         })
         .collect()
 }
@@ -270,20 +289,28 @@ mod tests {
         );
     }
 
-    /// Doppelhaus: getrennt unter der gemeinsamen Wand.
+    /// Doppelhaus Wand an Wand: getrennt unter der gemeinsamen Wand. Stehen
+    /// die Wände ineinander, reichen die Sohlen übereinander: Dann gilt die
+    /// frühere Platte, die spätere bleibt ohne Rand (wie main).
     #[test]
     fn doppelhaus() {
         let b = trennen(
             &[
                 platte([0.0, 0.0, 8000.0, 10000.0], -500.0),
-                platte([8000.0, 0.0, 16000.0, 10000.0], -1500.0),
+                platte([8630.0, 0.0, 16630.0, 10000.0], -1500.0),
             ],
             10.0,
         );
-        assert_eq!(b[0].umlaeufe()[0][1], [7990.0, -3000.0]);
-        assert_eq!(b[1].umlaeufe()[0][0], [8010.0, -3000.0]);
+        assert_eq!(b[0].umlaeufe()[0][1], [8305.0, -3000.0]);
+        assert_eq!(b[1].umlaeufe()[0][0], [8325.0, -3000.0]);
         assert_eq!(b[0].umlaeufe().len(), 1);
         assert_eq!(b[0].umlaeufe()[0].len(), 4);
+        assert!(b[0].rand && b[1].rand);
+        let a = platte([0.0, 0.0, 8000.0, 10000.0], -500.0);
+        let b = trennen(&[a, platte([8000.0, 0.0, 16000.0, 10000.0], -1500.0)], 10.0);
+        assert!(b[0].rand && !b[1].rand);
+        assert_eq!(b[1].verdeckt, vec![a.rect]);
+        assert!(b[0].verdeckt.is_empty());
     }
 
     /// Garage, kürzer als die Hauswand, 1 m daneben: Ihre Platte endet in
@@ -319,9 +346,9 @@ mod tests {
         assert!(!b[1].enthaelt([8500.0, 5000.0]));
     }
 
-    /// Ein Haus um eine Garage herum: Die Wandzüge überdecken sich, beide
-    /// Platten bleiben ganz und ohne Rand; ein drittes Haus weit weg behält
-    /// seinen.
+    /// Ein Haus um eine Garage herum: Die Wandzüge überdecken sich, die
+    /// frühere Platte gilt und behält ihren Rand, die spätere verliert ihn;
+    /// ein drittes Haus weit weg behält seinen.
     #[test]
     fn umschlossen() {
         let b = trennen(
@@ -332,11 +359,12 @@ mod tests {
             ],
             10.0,
         );
-        assert!(b[0].enthaelt([6000.0, 6000.0]) && b[1].enthaelt([6000.0, 6000.0]));
         assert!(b.iter().all(|x| x.loecher.is_empty()));
         assert_eq!(
             b.iter().map(|x| x.rand).collect::<Vec<_>>(),
-            [false, false, true]
+            [true, false, true]
         );
+        assert_eq!(b[1].verdeckt, [b[0].rect]);
+        assert!(b[0].verdeckt.is_empty() && b[2].verdeckt.is_empty());
     }
 }

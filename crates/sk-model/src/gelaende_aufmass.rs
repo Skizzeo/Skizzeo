@@ -347,6 +347,10 @@ pub(crate) struct Lage {
     mittel: Option<f64>,
     /// Tiefster Geländepunkt am Plattenrand je Gründung (m ü. NHN).
     tief: HashMap<StoreyId, f64>,
+    /// Je Zug mit Haustrennwand die Streifen der Schürze unter ihr (mm,
+    /// Grundriss): Dort rechnet der Graben mit der eigenen Höhe (VOB-Spruch
+    /// zu H-245c, Weg b).
+    trennwand: HashMap<RunId, Vec<Vec<[f64; 2]>>>,
 }
 
 /// Platz für die [`Lage`] im Modell mit dem Stand, zu dem sie gehört.
@@ -1120,6 +1124,12 @@ impl Model {
             };
             let along =
                 aufmass.map_or_else(Vec::new, |(t, f)| Self::am_freien_rand(t, &f, &umrisse, k));
+            if aufmass.is_some() {
+                let streifen = self.unter_der_trennwand(&umrisse, k);
+                if !streifen.is_empty() {
+                    lage.trennwand.insert(*id, streifen);
+                }
+            }
             let lo = along.iter().copied().reduce(f64::min);
             if let (Some(h), Some(gr)) = (lo, self.foundation_level_of(r.storey)) {
                 let x = lage.tief.entry(gr).or_insert(h);
@@ -1194,16 +1204,8 @@ impl Model {
     /// ohne die Stücke in oder an der Platte eines anderen Gebäudes, der
     /// Haustrennwand (H-245a, VOB). Ist kein Stück frei, der ganze Rand.
     fn am_freien_rand(t: &Terrain, f: &SurveyFrame, umrisse: &[ZugUmriss], k: usize) -> Vec<f64> {
-        let (_, b, ring, mein) = &umrisse[k];
-        let nah = |k: &[f64; 4]| {
-            let d = trennwand::AN_DER_WAND;
-            k[0] <= mein[2] + d && mein[0] <= k[2] + d && k[1] <= mein[3] + d && mein[1] <= k[3] + d
-        };
-        let andere: Vec<&[[f64; 2]]> = umrisse
-            .iter()
-            .filter(|(_, x, _, k)| b.is_some() && x.is_some() && x != b && nah(k))
-            .map(|(_, _, r, _)| r.as_slice())
-            .collect();
+        let ring = &umrisse[k].2;
+        let andere = Self::nachbarn(umrisse, k);
         let land = |p: [f64; 2]| f.to_survey(p[0], p[1]);
         let frei = trennwand::freie_strecken(ring, &andere);
         if frei.is_empty() {
@@ -1212,6 +1214,43 @@ impl Model {
         }
         let s: Vec<_> = frei.iter().map(|&(a, b)| (land(a), land(b))).collect();
         t.along_strecken(&s)
+    }
+
+    /// Die Plattenumrisse anderer Gebäude nahe `umrisse[k]`.
+    fn nachbarn(umrisse: &[ZugUmriss], k: usize) -> Vec<&[[f64; 2]]> {
+        let (_, b, _, mein) = &umrisse[k];
+        let nah = |k: &[f64; 4]| {
+            let d = trennwand::AN_DER_WAND;
+            k[0] <= mein[2] + d && mein[0] <= k[2] + d && k[1] <= mein[3] + d && mein[1] <= k[3] + d
+        };
+        umrisse
+            .iter()
+            .filter(|(_, x, _, k)| b.is_some() && x.is_some() && x != b && nah(k))
+            .map(|(_, _, r, _)| r.as_slice())
+            .collect()
+    }
+
+    /// Streifen der Schürze von `umrisse[k]` unter seiner Haustrennwand
+    /// ([`trennwand::unter_der_trennwand`]); leer ohne.
+    fn unter_der_trennwand(&self, umrisse: &[ZugUmriss], k: usize) -> Vec<Vec<[f64; 2]>> {
+        let andere = Self::nachbarn(umrisse, k);
+        if andere.is_empty() {
+            return Vec::new();
+        }
+        let Some(Ok(f)) = self.foundation(umrisse[k].0) else {
+            return Vec::new();
+        };
+        let innen: Vec<[f64; 2]> = match &f.footing {
+            crate::foundation::FootingShape::Ring(i) => i.pts.iter().map(|p| [p.x, p.y]).collect(),
+            crate::foundation::FootingShape::Full(_) => Vec::new(),
+        };
+        trennwand::unter_der_trennwand(&umrisse[k].2, &andere, &innen)
+    }
+
+    /// Streifen der Schürze unter der Haustrennwand des Zugs `run` (mm,
+    /// Grundriss); leer ohne Aufmaß oder Haustrennwand.
+    pub(crate) fn trennwand_streifen(&self, run: RunId) -> Vec<Vec<[f64; 2]>> {
+        self.lage().trennwand.get(&run).cloned().unwrap_or_default()
     }
 
     /// Mit Aufmaß: tiefster Geländepunkt am Plattenrand der Gründung `gr`
