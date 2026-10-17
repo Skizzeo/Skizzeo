@@ -240,6 +240,35 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
     }
 }
 
+/// Stellen je Prüfung in [`grenze_ueber_netz`], höchstens.
+const PROBEN: f64 = 2000.0;
+
+/// Ragt eine Grenze `ringe` (Landeswerte, m) über das Netz hinaus (Jörn
+/// 17.10.)? Geprüft an den Ecken und längs der Kanten jeden Meter, bei
+/// langen Grenzen gröber, höchstens [`PROBEN`] Stellen.
+fn grenze_ueber_netz(t: &Terrain, ringe: &[Vec<(f64, f64)>]) -> bool {
+    let m = t.mesh();
+    if m.netz.dreiecke.is_empty() {
+        return false;
+    }
+    let kanten = || {
+        ringe
+            .iter()
+            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+    };
+    let laenge: f64 = kanten().map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1)).sum();
+    let schritt = (laenge / PROBEN).max(1.0);
+    kanten().any(|(a, b)| {
+        let n = ((b.0 - a.0).hypot(b.1 - a.1) / schritt).ceil().max(1.0) as usize;
+        (0..n).any(|k| {
+            let s = k as f64 / n as f64;
+            let e = a.0 + (b.0 - a.0) * s - m.bezug.0;
+            let n = a.1 + (b.1 - a.1) * s - m.bezug.1;
+            !m.abfrage.innen(e, n)
+        })
+    })
+}
+
 /// Schloss und gemessener Wert der gewählten Messpunkte (I5).
 fn schloss(l: &mut GelaendeLeiste, t: &Terrain, z: &Zustand) {
     let mess: Vec<&sk_model::TerrainPoint> = z
@@ -346,6 +375,7 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     l.tippen = z.tippen;
     // aus dem Faden; bis er nach einem Schritt fertig ist, der Stand davor
     l.deckt_nicht = l.hoehen && z.ohne_netz > 0;
+    l.ueber_netz = l.hoehen && grenze_ueber_netz(t, &ringe);
     match z.tippen {
         Some(GelaendeKnopf::Verschieben) => {
             let r = (-WEG, WEG);
@@ -1090,6 +1120,24 @@ mod tests {
         assert!(z.liest() && z.lesen.is_some() && z.hoehen.is_some());
         assert_eq!(z.meldung, ["Maßstab 1:500 erkannt"]);
         assert!(z.fehler.is_some());
+    }
+
+    /// Ragt die Grenze über das Netz hinaus, sagt es eine rote Zeile
+    /// (Jörn 17.10.); liegt sie im Netz, nicht.
+    #[test]
+    fn grenze_ueber_dem_netz() {
+        let (mut m, k) = crate::gelaende_netz::tests::grenze_ueber_netz();
+        assert!(leiste(&m, &Zustand::default()).ueber_netz);
+        let innen = [
+            [k[0] + 2000.0, k[1] + 2000.0],
+            [k[2] - 2000.0, k[1] + 2000.0],
+            [k[2] - 2000.0, k[3] - 2000.0],
+            [k[0] + 2000.0, k[3] - 2000.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.set_parcel_ring(0, &innen));
+        m.commit();
+        assert!(!leiste(&m, &Zustand::default()).ueber_netz);
     }
 
     /// Im offenen Schritt bleibt die Leiste stehen und folgt beim
