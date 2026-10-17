@@ -1194,6 +1194,7 @@ impl App {
         let neu = self.platte.nachziehen(self.scene.model(), sicht);
         self.unterlage_stand();
         self.streifen_pruefen();
+        self.nadeln_merken();
         neu || gelesen
     }
 

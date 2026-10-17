@@ -23,7 +23,8 @@ use std::sync::Mutex;
 /// Hinweis im Paneel bei Abweichungen an Wandseiten, die den Raum nicht
 /// mehr begrenzen (Review #190 H-190d).
 pub const VERWAIST: &str = "Abweichungen von der Raumvorlage gelten nur in diesem Raum. \
-    Abweichungen an Wandseiten, die den Raum nicht mehr begrenzen, wirken nicht.";
+    Abweichungen an Wandseiten, die den Raum nicht mehr begrenzen, wirken nicht; \
+    „Alle Wandseiten …“ nennt sie, ein Klick entfernt sie.";
 
 /// Hinweis unter der Fliesenhöhe, wenn sie über der lichten Höhe liegt:
 /// Gerechnet wird bis zur Decke (Bedienbarkeit, C zu #190).
@@ -78,6 +79,9 @@ pub enum Tun {
     Wahl(Option<AusbauWahl>),
     /// Raumvorlage wählen.
     Nutzung(Guid),
+    /// Abweichung an einer Wandseite entfernen, die den Raum nicht mehr
+    /// begrenzt (Bedienbarkeit, C zu #241).
+    Entfernen(AusbauStelle),
 }
 
 /// Stelle des Knopfs `k` an der Wandseite `seite` (`None`: alle).
@@ -174,6 +178,37 @@ impl Raum {
                 .filter_map(|a| a.stelle.seite())
                 .any(|w| self.name(w).is_none())
         })
+    }
+
+    /// Abweichungen an Wandseiten, die den Raum nicht mehr begrenzen, mit
+    /// Text: „Sockelleiste an Wand AW-014 links“ bzw. „an einer gelöschten
+    /// Wand“.
+    fn verwaiste(&self, m: &Model) -> Vec<(AusbauStelle, String)> {
+        let Some(s) = m.space(self.id) else {
+            return Vec::new();
+        };
+        s.ausbau
+            .iter()
+            .filter_map(|a| Some((a.stelle, a.stelle.seite()?)))
+            .filter(|(_, w)| self.name(*w).is_none())
+            .map(|(st, w)| {
+                let art = match st {
+                    AusbauStelle::Wand(_) => KNOEPFE[WAND as usize].2,
+                    AusbauStelle::Fliesen(_) => KNOEPFE[FLIESEN as usize].2,
+                    _ => KNOEPFE[SOCKEL as usize].2,
+                };
+                let wand = m.elements().iter().find(|(_, e)| e.guid == w.wand);
+                let wo = match wand {
+                    Some((_, e)) if !e.number.is_empty() => {
+                        let seite = if w.links { "links" } else { "rechts" };
+                        format!("an Wand {} {seite}", e.number)
+                    }
+                    Some(_) => "an einer Wand außerhalb des Raums".to_string(),
+                    None => "an einer gelöschten Wand".to_string(),
+                };
+                (st, format!("{art} {wo}"))
+            })
+            .collect()
     }
 
     fn name(&self, w: WandSeite) -> Option<&str> {
@@ -366,6 +401,14 @@ pub fn liste(scene: &Scene, id: ElementId, k: u8) -> Option<Liste> {
             };
             eintrag(&mut v, name.clone(), detail, Tun::Seite(Some(*w)));
         }
+        // Was nicht mehr wirkt, mit Namen und zum Entfernen
+        let verwaist = r.verwaiste(m);
+        if !verwaist.is_empty() {
+            v.push((Zeile::Gruppe("Wirkt nicht".into()), None));
+            for (st, text) in verwaist {
+                eintrag(&mut v, text, "Klick entfernt".into(), Tun::Entfernen(st));
+            }
+        }
         let cur = seite.map_or(Some(0), |w| {
             r.seiten.iter().position(|s| s.0 == w).map(|i| i + 1)
         });
@@ -498,6 +541,22 @@ impl Scene {
         })
     }
 
+    /// Abweichung an der Stelle `st` des Raums `id` entfernen, als ein
+    /// Rückgängig-Schritt; `true`, wenn es sie gab.
+    pub(crate) fn raum_entfernen(&mut self, id: ElementId, st: AusbauStelle) -> bool {
+        if self.model().space_finish(id, st).is_none() {
+            return false;
+        }
+        let leer = AusbauAbweichung {
+            stelle: st,
+            wahl: None,
+            hoehe: None,
+        };
+        self.raeume_aendern("Abweichung entfernt", |m| {
+            m.set_space_finish(id, leer).is_ok()
+        })
+    }
+
     /// Feld „Höhe“ der Wandfliesen im Paneel des Raums.
     pub(crate) fn raum_fliesenhoehe(&mut self, id: ElementId, mm: f64) -> bool {
         self.raum_abweichung(id, FLIESEN, |a| a.hoehe = Some(mm))
@@ -525,7 +584,7 @@ impl App {
                 self.scene.raum_seite_setzen(s.map(|s| (id, s)));
                 self.props_key = None;
             }
-            Tun::Wahl(_) | Tun::Nutzung(_) => {
+            Tun::Wahl(_) | Tun::Nutzung(_) | Tun::Entfernen(_) => {
                 if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
                     self.show_locked(b, Some((id, crate::delete::Act::Field)));
                     return;
@@ -533,6 +592,7 @@ impl App {
                 let neu = match t {
                     Tun::Nutzung(g) => self.scene.raum_nutzung(id, g),
                     Tun::Wahl(w) => self.scene.raum_wahl(id, k, w),
+                    Tun::Entfernen(st) => self.scene.raum_entfernen(id, st),
                     Tun::Seite(_) => false,
                 };
                 if neu {
@@ -628,6 +688,34 @@ mod tests {
             hoehe: None,
         };
         assert!(s.raeume_aendern("Raumbuch ändern", |m| m.set_space_finish(r, a).is_ok()));
+        assert_eq!(hinweis(&s), VERWAIST);
+        // „Alle Wandseiten …“ nennt sie, ein Klick entfernt sie
+        // (Bedienbarkeit, C zu #241); Rückgängig bringt sie zurück
+        let (_, zeilen, tun, _) = liste(&s, r, SEITE).unwrap();
+        assert!(zeilen.contains(&Zeile::Gruppe("Wirkt nicht".into())));
+        let nummer = &s
+            .model()
+            .elements()
+            .iter()
+            .find(|(_, e)| e.guid == wand)
+            .unwrap()
+            .1
+            .number
+            .clone();
+        assert!(zeilen
+            .iter()
+            .any(|z| matches!(z, Zeile::Eintrag { name, .. }
+                if *name == format!("Sockelleiste an Wand {nummer} links"))));
+        assert_eq!(tun.last(), Some(&Tun::Entfernen(a.stelle)));
+        assert!(s.raum_entfernen(r, a.stelle));
+        assert!(s.model().space(r).unwrap().ausbau.is_empty());
+        assert_ne!(hinweis(&s), VERWAIST);
+        assert!(!liste(&s, r, SEITE)
+            .unwrap()
+            .1
+            .contains(&Zeile::Gruppe("Wirkt nicht".into())));
+        assert_eq!(s.undo_label(), Some("Abweichung entfernt"));
+        s.undo();
         assert_eq!(hinweis(&s), VERWAIST);
     }
 

@@ -44,8 +44,8 @@ pub(crate) fn ineinander(m: &crate::Model, hinweise: &mut Vec<String>) {
 }
 
 pub use netz::{
-    hand_geaendert, netz_angenommen, netz_geaendert, netz_herkunft, steil_hinweis, ErdNetz,
-    ANGENOMMEN, DREIECKSPRISMEN, HAND_GEAENDERT, STEIL, STEIL_AB,
+    hand_geaendert, netz_angenommen, netz_geaendert, netz_herkunft, steil_hinweis, versatz,
+    ErdNetz, ANGENOMMEN, DREIECKSPRISMEN, HAND_GEAENDERT, STEIL, STEIL_AB,
 };
 
 /// Bodenkennwerte des Projekts (mm, Grad); stehen am Projekt

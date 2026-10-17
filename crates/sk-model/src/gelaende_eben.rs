@@ -141,6 +141,7 @@ impl Model {
                 code: String::new(),
                 off: false,
                 hand: true,
+                gemessen: None,
             });
         }
         t.breaks.extend(
@@ -1045,6 +1046,7 @@ mod tests {
                     code: String::new(),
                     off: false,
                     hand: false,
+                    gemessen: None,
                 });
             }
             if grenze {
@@ -1099,6 +1101,7 @@ mod tests {
             code: String::new(),
             off: false,
             hand: false,
+            gemessen: None,
         });
         assert!(!t.assumed());
     }

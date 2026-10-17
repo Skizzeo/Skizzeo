@@ -195,7 +195,7 @@ const OHNE: Modifiers = Modifiers {
 /// Knöpfe mit Tooltip (§1.3); „Winkelsprung“ (vormals „90°-Sprung“, G2)
 /// steht im Paneel Werkzeuge (Koordinator 21:45), „Erweiterungen“ dort ab
 /// E6 (Schrittplan .szb).
-const KNOEPFE: [&str; 37] = [
+const KNOEPFE: [&str; 39] = [
     "Gebäude",
     "Innenwand",
     "Wandöffnung",
@@ -209,6 +209,8 @@ const KNOEPFE: [&str; 37] = [
     "Grenze zeichnen",
     "Höhen",
     "Netz",
+    "Schloss offen",
+    "Gemessen zurück",
     "Gelände verschieben",
     "Gelände drehen",
     "An Grenze ausrichten",

@@ -24,6 +24,8 @@ pub const NHN: &str = "±0,00 ü. NHN";
 const FREISCHALTEN: &str = "Dateimenü › Ausbaustufe …";
 /// Hinweis zu den Höhenpunkten (I4a), zwei Zeilen.
 pub const HOEHENPUNKT: [&str; 2] = ["Doppelklick im Grundriss", "setzt einen Höhenpunkt."];
+/// Unter „Schloss offen“, solange es zu ist (I5).
+pub const SCHLOSS: [&str; 2] = ["Gemessene Punkte ziehen", "erst mit offenem Schloss."];
 
 /// Rote Zeile, wenn das Aufmaß eine Baugrube nicht deckt (Bedienbarkeit
 /// 42.5).
@@ -59,6 +61,10 @@ pub enum GelaendeKnopf {
     Flaeche,
     /// Hilfsnetz in 3D ein und aus (Jörns §4.3a, auch Taste N).
     Netz,
+    /// Schloss der gewählten Messpunkte öffnen und schließen (I5, §5 J2 C).
+    Schloss,
+    /// Gewählte geänderte Messpunkte auf die gemessenen Werte zurück (I5).
+    Gemessen,
     /// Dasselbe Werkzeug als „Grenze zeichnen“: ein Grundstück ohne
     /// Lageplan (I2).
     Grenze,
@@ -90,6 +96,8 @@ impl GelaendeKnopf {
             | GelaendeKnopf::AmHaus
             | GelaendeKnopf::Flaeche
             | GelaendeKnopf::Netz
+            | GelaendeKnopf::Schloss
+            | GelaendeKnopf::Gemessen
             | GelaendeKnopf::Grenze
             | GelaendeKnopf::Befestigt
             | GelaendeKnopf::Loeschen
@@ -157,6 +165,12 @@ pub struct GelaendeLeiste {
     pub grenze: bool,
     /// Das Hilfsnetz in 3D ist an (Knopf „Netz“ hervorgehoben).
     pub netz: bool,
+    /// Gewählte Messpunkte (I5): `Some(true)`, wenn ihr Schloss offen ist,
+    /// `None` ohne gewählten Messpunkt.
+    pub schloss: Option<bool>,
+    /// Der erste gewählte geänderte Messpunkt, wie gemessen und jetzt
+    /// („Messpunkt 12: gemessen 24,342 m, jetzt 24,100 m“).
+    pub gemessen: Option<String>,
     /// Höhenlage absolut (sonst über Gelände).
     pub absolut: bool,
     pub zuschnitt: Option<Show>,
@@ -244,6 +258,19 @@ impl Ui {
         // das Hilfsnetz in 3D braucht Punkte (§4.3a)
         if l.hoehen {
             rows.push(Row::Button(Id::Gelaende(K::Netz), "Netz"));
+        }
+        // Messpunkte des Vermessers tragen ein Schloss (I5, §5 J2 C)
+        if let Some(offen) = l.schloss {
+            rows.push(Row::Button(Id::Gelaende(K::Schloss), "Schloss offen"));
+            if !offen {
+                rows.extend(SCHLOSS.map(Row::Hint));
+            }
+        }
+        if let Some(t) = &l.gemessen {
+            let f = self.fonts.regular.as_ref();
+            let z = widgets::wrap(f, t, self.size.font_small, breite);
+            rows.extend(z.into_iter().map(Row::Text));
+            rows.push(Row::Button(Id::Gelaende(K::Gemessen), "Gemessen zurück"));
         }
         if l.uebernehmen {
             rows.push(Row::Button(
@@ -387,6 +414,7 @@ impl Ui {
             GelaendeKnopf::Flaeche => l.zeichnen,
             GelaendeKnopf::Grenze => l.grenze_zeichnen,
             GelaendeKnopf::Netz => l.netz,
+            GelaendeKnopf::Schloss => l.schloss == Some(true),
             GelaendeKnopf::Lageplan
             | GelaendeKnopf::Uebernehmen
             | GelaendeKnopf::Hoehen
@@ -395,6 +423,7 @@ impl Ui {
             | GelaendeKnopf::Befestigt
             | GelaendeKnopf::Loeschen
             | GelaendeKnopf::Hinweise
+            | GelaendeKnopf::Gemessen
             | GelaendeKnopf::Entfernen => false,
         }
     }
@@ -560,6 +589,45 @@ mod tests {
     /// Mit Liberation Sans (gleich breit wie Arial): Jede Beschriftung
     /// passt in ihren Knopf, jede Zeile ins Paneel (Ist-Bild 42.7: „über
     /// Gelände“ und „Einbindung …, frostfrei“ liefen über den Rand).
+    /// Das Schloss steht unter „Netz“, „Gemessen zurück“ nur mit einem
+    /// geänderten Messpunkt (I5).
+    #[test]
+    fn schloss_in_der_leiste() {
+        let t = Theme::dark();
+        let mut ui = Ui::new(1.0, &t);
+        let zeilen = |ui: &Ui| -> (Vec<GelaendeKnopf>, usize) {
+            let rows = ui.rows(Panel::Tools);
+            let k = rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Button(Id::Gelaende(k), _) => Some(*k),
+                    _ => None,
+                })
+                .filter(|k| matches!(k, GelaendeKnopf::Schloss | GelaendeKnopf::Gemessen))
+                .collect();
+            let h = rows
+                .iter()
+                .filter(|r| matches!(r, Row::Hint(h) if SCHLOSS.contains(h)))
+                .count();
+            (k, h)
+        };
+        use GelaendeKnopf as K;
+        ui.gelaende = Some(leiste());
+        assert_eq!(zeilen(&ui), (vec![], 0));
+        ui.gelaende = Some(GelaendeLeiste {
+            schloss: Some(false),
+            ..leiste()
+        });
+        assert_eq!(zeilen(&ui), (vec![K::Schloss], 2));
+        ui.gelaende = Some(GelaendeLeiste {
+            schloss: Some(true),
+            gemessen: Some("Messpunkt 12: gemessen 24,342 m, jetzt 24,100 m".into()),
+            ..leiste()
+        });
+        assert_eq!(zeilen(&ui), (vec![K::Schloss, K::Gemessen], 0));
+        assert!(ui.gelaende_an(K::Schloss));
+    }
+
     #[test]
     fn alles_passt_ins_paneel() {
         let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");

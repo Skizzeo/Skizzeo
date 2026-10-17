@@ -49,6 +49,13 @@ pub struct TerrainPoint {
     /// ebenen Geländes, das Skizzeo beim ersten Werkzeug des Moduls anlegt
     /// (I1), später eigene Höhenpunkte (I4).
     pub hand: bool,
+    /// Ein Messpunkt, den der Nutzer nach dem Öffnen des Schlosses
+    /// verschoben hat (I5, §5 J2 C): Rechts, Hoch und Höhe, wie gemessen
+    /// (Datei `ge`, `gn`, `gh`, ungerundet). `None` bei unverändertem
+    /// Messpunkt und bei eigenen Punkten. Im Kasten, damit der Punkt nur
+    /// 8 Byte größer wird: Jeder Schritt kopiert das ganze Aufmaß (Test
+    /// zu #237, Budget bei 100.000 Punkten).
+    pub gemessen: Option<Box<[f64; 3]>>,
 }
 
 /// Eine Bruchkante aus der Datei (DXF, G1b): Punktnummern im Verlauf, wie
@@ -350,39 +357,76 @@ pub(crate) struct Lage {
     hoch: Option<f64>,
     /// Mittlere Punkthöhe des Aufmaßes (m ü. NHN).
     mittel: Option<f64>,
-    /// Tiefster Geländepunkt am Plattenrand je Gründung (m ü. NHN).
-    tief: HashMap<StoreyId, f64>,
+    /// Tiefster Geländepunkt am Plattenrand je Gründung (m ü. NHN), mit
+    /// ihrem Gebäude für das Bau-Log.
+    tief: HashMap<StoreyId, Tief>,
     /// Je Zug mit Haustrennwand die Streifen der Schürze unter ihr (mm,
     /// Grundriss): Dort rechnet der Graben mit der eigenen Höhe (VOB-Spruch
-    /// zu H-245c, Weg b).
-    trennwand: HashMap<RunId, Vec<Vec<[f64; 2]>>>,
+    /// zu H-245c, Weg b), mit seinem Gebäude.
+    trennwand: HashMap<RunId, Streifen>,
     /// Häuser, die ineinander stehen ([`Model::haeuser_ineinander`]), mit
     /// den Umrissen gerechnet, die die Lage ohnehin braucht: So kostet der
     /// Hinweis beim Zusammenführen der Mengenliste nichts (Review #248).
     ineinander: Vec<(BuildingId, BuildingId)>,
 }
 
+/// Tiefster Punkt am freien Rand einer Gründung (m ü. NHN) mit ihrem
+/// Gebäude. Eine Gründung ist ein Geschoss genau eines Gebäudes.
+type Tief = (Option<BuildingId>, f64);
+/// Streifen unter der Haustrennwand eines Zugs (mm) mit seinem Gebäude.
+type Streifen = (Option<BuildingId>, Vec<Vec<[f64; 2]>>);
+
 /// Was an Gelände und Lage die Erdmengen aller Häuser trägt, für das
 /// Bau-Log (Review B-245d): ±0,00 ungerundet, je Gründung der tiefste Punkt
 /// am freien Rand und die Streifen unter den Haustrennwänden. Die beiden
 /// hängen an den Umrissen der Nachbarn: Rückt die Wand eines Hauses an ein
 /// anderes heran, ändern sich dessen Einbindetiefe und Graben, obwohl der
-/// Schritt nur das eine Haus nennt.
+/// Schritt nur das eine Haus nennt. Sie gehören je einem Gebäude, und nur
+/// dessen Mengen hängen an ihnen ([`Gelaendestand::abweichend`], B-245f).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Gelaendestand {
     nhn: Option<f64>,
     lage: Option<Arc<Lage>>,
 }
 
+impl Gelaendestand {
+    /// Gebäude, deren Einbindetiefe oder Haustrennwand gegen `o` anders
+    /// liegt (in beliebiger Folge, auch doppelt); `None`: alle, weil ±0,00
+    /// anders liegt oder nur einer ein Aufmaß hat. Ein Haus, das am Hang
+    /// nur seine eigene Wand rückt, nennt so nur sich (Review B-245f);
+    /// linear in Gründungen und Haustrennwänden.
+    pub(crate) fn abweichend(&self, o: &Gelaendestand) -> Option<Vec<Option<BuildingId>>> {
+        if self.nhn != o.nhn {
+            return None;
+        }
+        let (a, b) = match (&self.lage, &o.lage) {
+            (Some(a), Some(b)) => (a, b),
+            (None, None) => return Some(Vec::new()),
+            _ => return None,
+        };
+        let mut out = Vec::new();
+        if Arc::ptr_eq(a, b) {
+            return Some(out);
+        }
+        for (x, y) in [(a, b), (b, a)] {
+            for (gr, v) in &x.tief {
+                if y.tief.get(gr) != Some(v) {
+                    out.push(v.0);
+                }
+            }
+            for (run, v) in &x.trennwand {
+                if y.trennwand.get(run) != Some(v) {
+                    out.push(v.0);
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
 impl PartialEq for Gelaendestand {
     fn eq(&self, o: &Gelaendestand) -> bool {
-        self.nhn == o.nhn
-            && match (&self.lage, &o.lage) {
-                (Some(a), Some(b)) => {
-                    Arc::ptr_eq(a, b) || (a.tief == b.tief && a.trennwand == b.trennwand)
-                }
-                (a, b) => a.is_none() && b.is_none(),
-            }
+        self.abweichend(o).is_some_and(|v| v.is_empty())
     }
 }
 
@@ -483,8 +527,9 @@ fn punkte_gleich(a: &[TerrainPoint], b: &[TerrainPoint]) -> bool {
             code: _,
             off,
             hand,
+            gemessen,
         } = p;
-        (*e, *n, *h, *off, *hand)
+        (*e, *n, *h, *off, *hand, gemessen.as_deref().copied())
     };
     a.len() == b.len()
         && a.iter().zip(b).all(|(p, q)| zahlen(p) == zahlen(q))
@@ -965,11 +1010,11 @@ impl Model {
     }
 
     /// [`Model::put_survey`] für ein Aufmaß, das sich vom jetzigen höchstens
-    /// in Lage und Höhe der Punkte `geaendert` unterscheidet oder sie neu
-    /// anhängt (Ziehen, Heben, Setzen): ohne Gang über alle Punkte. Bleibt
-    /// die Lage, bleibt das Netz (Review #234 B-234a); sonst rechnet es,
-    /// wo die Szene es will, ein Faden neu, bis dahin gilt das alte
-    /// vorläufig (B-234b).
+    /// in Lage, Höhe und gemessenen Werten der Punkte `geaendert`
+    /// unterscheidet oder sie neu anhängt (Ziehen, Heben, Setzen, „Gemessen
+    /// zurück“): ohne Gang über alle Punkte. Bleibt die Lage, bleibt das
+    /// Netz (Review #234 B-234a); sonst rechnet es, wo die Szene es will,
+    /// ein Faden neu, bis dahin gilt das alte vorläufig (B-234b).
     pub(super) fn put_survey_punkte(&mut self, mut t: Terrain, geaendert: &[usize]) -> bool {
         let Some(alt) = self.terrain().filter(|a| a.points.len() <= t.points.len()) else {
             return self.put_survey(Some(t));
@@ -986,7 +1031,7 @@ impl Model {
                     return true;
                 };
                 let b = &t.points[i];
-                (lage(a), a.h.to_bits()) != (lage(b), b.h.to_bits())
+                (lage(a), a.h.to_bits()) != (lage(b), b.h.to_bits()) || a.gemessen != b.gemessen
             })
             .collect();
         neu.sort_unstable();
@@ -1174,13 +1219,13 @@ impl Model {
             if aufmass.is_some() {
                 let streifen = self.unter_der_trennwand(&umrisse, k);
                 if !streifen.is_empty() {
-                    lage.trennwand.insert(*id, streifen);
+                    lage.trennwand.insert(*id, (*b, streifen));
                 }
             }
             let lo = along.iter().copied().reduce(f64::min);
             if let (Some(h), Some(gr)) = (lo, self.foundation_level_of(r.storey)) {
-                let x = lage.tief.entry(gr).or_insert(h);
-                *x = x.min(h);
+                let x = lage.tief.entry(gr).or_insert((*b, h));
+                x.1 = x.1.min(h);
             }
             if let Some(b) = *b {
                 hoch.push((b, along.into_iter().reduce(f64::max)));
@@ -1356,7 +1401,11 @@ impl Model {
     /// Streifen der Schürze unter der Haustrennwand des Zugs `run` (mm,
     /// Grundriss); leer ohne Aufmaß oder Haustrennwand.
     pub(crate) fn trennwand_streifen(&self, run: RunId) -> Vec<Vec<[f64; 2]>> {
-        self.lage().trennwand.get(&run).cloned().unwrap_or_default()
+        self.lage()
+            .trennwand
+            .get(&run)
+            .map(|t| t.1.clone())
+            .unwrap_or_default()
     }
 
     /// Mit Aufmaß: tiefster Geländepunkt am Plattenrand der Gründung `gr`
@@ -1365,7 +1414,7 @@ impl Model {
     pub(super) fn terrain_low_survey(&self, gr: StoreyId) -> Option<f64> {
         self.terrain()?;
         let lage = self.lage();
-        Some((lage.tief.get(&gr)? - self.nhn_aus(&lage)?) * 1000.0)
+        Some((lage.tief.get(&gr)?.1 - self.nhn_aus(&lage)?) * 1000.0)
     }
 
     /// Abtrag und Auftrag des Aufmaßes über dem Umriss `outline` (Modell,
@@ -1513,6 +1562,7 @@ impl Terrain {
                 code: p.code.clone(),
                 off: false,
                 hand: false,
+                gemessen: None,
             })
             .collect();
         let codes = t.code_table();
@@ -1737,7 +1787,13 @@ impl Model {
     pub(super) fn terrain_nhn_merken(&mut self) {
         if self.terrain().is_some_and(|t| t.href == HeightRef::High) {
             if let Some(h) = self.terrain_nhn() {
-                let h = (h * 1000.0).round() / 1000.0;
+                // + 0,0 macht aus −0 eine 0 (Test B-237a)
+                let h = (h * 1000.0).round() / 1000.0 + 0.0;
+                // ohne [location] gilt 0,00 (gelaende_eben); eine Null zu
+                // schreiben änderte nur die Datei (Test B-237a)
+                if h == 0.0 && self.location().nhn.is_none() {
+                    return;
+                }
                 let l = Location {
                     nhn: Some(h),
                     ..self.location().normalized()
