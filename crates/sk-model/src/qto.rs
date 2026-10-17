@@ -2814,11 +2814,11 @@ impl Schedule {
         out.hinweise = self
             .hinweise
             .iter()
+            // ein Satz bleibt, solange ein Paar mit ihm bleibt (Gelände zu
+            // #256: gleiche Namen und Nummern)
             .filter(|h| {
-                !self
-                    .ineinander
-                    .iter()
-                    .any(|x| x.satz == **h && !out.ineinander.contains(x))
+                let satz = |x: &crate::qto_earth::Ineinander| x.satz == **h;
+                !self.ineinander.iter().any(satz) || out.ineinander.iter().any(satz)
             })
             .cloned()
             .collect();
