@@ -248,13 +248,25 @@ impl App {
         self.props_key = None;
     }
 
-    /// Befehl aus dem Kontextmenü am Ablauf.
-    pub(crate) fn drain_action(&mut self, a: Action) {
+    /// Befehl aus dem Kontextmenü am Ablauf oder am Höhenpunkt (I5b).
+    pub(crate) fn werkzeug_action(&mut self, a: Action) {
         match a {
             Action::AddDrain => self.drain_button(Id::PropsDrainAdd),
             Action::DeleteDrain => self.drain_button(Id::PropsDrainDelete),
+            Action::Schloss => self.schloss_umschalten(),
             _ => {}
         }
+    }
+
+    /// Rechtsklick auf einen gewählten Höhenpunkt oder einen Ablauf: dessen
+    /// Kontextmenü statt dem des Bauteils darunter.
+    pub(crate) fn open_werkzeug_context(&mut self, x: f64, y: f64) -> bool {
+        self.open_punkt_context(x, y) || self.open_drain_context(x, y)
+    }
+
+    pub(crate) fn close_context(&mut self) {
+        self.context = None;
+        self.context_dirty = true;
     }
 
     /// Rechtsklick auf einen Ablauf des gewählten Flachdachs im Grundriss:

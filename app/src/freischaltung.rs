@@ -412,6 +412,7 @@ impl Eingang for crate::delete::Action {
         use crate::delete::Action;
         match self {
             Action::Quantity => Some(Modul::Mengen),
+            Action::Schloss => Some(Modul::Gelaende),
             Action::ShowInModel
             | Action::ChangeType
             | Action::Properties

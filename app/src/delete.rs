@@ -40,6 +40,8 @@ pub enum Link {
     /// Bündig zusammengeschoben (W-11): die Wand mit ihren Nachbarn in der
     /// Flucht zu einer vereinen.
     Merge(ElementId),
+    /// Schloss der gewählten Messpunkte öffnen (Hinweis am Cursor, I5b).
+    Schloss,
 }
 
 /// Wörter für die nicht gelöschten Bauteile einer gemischten Auswahl:
@@ -590,6 +592,9 @@ pub enum Action {
     /// hinzufügen bzw. den gewählten löschen.
     AddDrain,
     DeleteDrain,
+    /// Nur am Höhenpunkt (I5b): das Schloss der gewählten Messpunkte
+    /// öffnen bzw. schließen, wie „Schloss offen“ in der Leiste.
+    Schloss,
 }
 
 /// Breite des Kontextmenüs (dip).
@@ -601,7 +606,8 @@ const CONTEXT_W: f32 = 240.0;
 /// abgesetzt in `ui.danger` „Gebäude löschen …“.
 #[derive(Clone, Debug)]
 pub struct ContextMenu {
-    pub target: ElementId,
+    /// Das Bauteil; `None` am Höhenpunkt, der keines ist.
+    pub target: Option<ElementId>,
     items: Vec<(MenuItem, Option<Action>)>,
     /// Links oben im Fenster (Pixel, ohne Schatten).
     x: f32,
@@ -738,7 +744,7 @@ impl ContextMenu {
             ));
         }
         ContextMenu {
-            target,
+            target: Some(target),
             items,
             x: 0.0,
             y: 0.0,
@@ -785,7 +791,7 @@ impl ContextMenu {
             ..MenuItem::default()
         };
         ContextMenu {
-            target: roof,
+            target: Some(roof),
             items: vec![
                 (row("Ablauf hinzufügen", true), Some(Action::AddDrain)),
                 (row("Ablauf löschen", can_delete), Some(Action::DeleteDrain)),
@@ -798,6 +804,32 @@ impl ContextMenu {
             hover: None,
             pressed: false,
             refusal: (!can_delete).then(|| "Ein Dach mit Gefälle braucht einen Ablauf".into()),
+        }
+        .at(x, y, win, t, s)
+    }
+
+    /// Rechtsklick auf einen gewählten Messpunkt (I5b): „Schloss öffnen“,
+    /// solange es zu ist (`zu`), sonst „Schloss schließen“.
+    pub fn for_punkt(zu: bool, x: f64, y: f64, win: (u32, u32, u32), t: &Theme, s: f32) -> Self {
+        let label = if zu {
+            "Schloss öffnen"
+        } else {
+            "Schloss schließen"
+        };
+        let item = MenuItem {
+            label: label.into(),
+            enabled: true,
+            ..MenuItem::default()
+        };
+        ContextMenu {
+            target: None,
+            items: vec![(item, Some(Action::Schloss))],
+            x: 0.0,
+            y: 0.0,
+            sel: None,
+            hover: None,
+            pressed: false,
+            refusal: None,
         }
         .at(x, y, win, t, s)
     }
@@ -1272,5 +1304,20 @@ mod tests {
         let vorher = a.rect;
         a.corner(1200.0, Some(700.0), 32.0, 1.0);
         assert_eq!(a.rect, vorher, "nur die Entdecken-Karte");
+    }
+
+    /// Kontextmenü am Messpunkt (I5b): eine Zeile, die sagt, was der Klick
+    /// tut; ohne Bauteil, im Fenster.
+    #[test]
+    fn schloss_am_punkt() {
+        let t = Theme::dark();
+        let zu = ContextMenu::for_punkt(true, 1430.0, 890.0, (1440, 900, 32), &t, 1.0);
+        let auf = ContextMenu::for_punkt(false, 300.0, 300.0, (1440, 900, 32), &t, 1.0);
+        let zeile = |l: &str| vec![(l.to_string(), true, Some(Action::Schloss))];
+        assert_eq!(zu.actions(), zeile("Schloss öffnen"));
+        assert_eq!(auf.actions(), zeile("Schloss schließen"));
+        assert!(zu.target.is_none());
+        let r = zu.rect(&t, 1.0);
+        assert!(r.x + r.w <= 1440.0 && r.y + r.h <= 900.0, "{r:?}");
     }
 }
