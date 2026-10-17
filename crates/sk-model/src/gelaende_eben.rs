@@ -300,7 +300,7 @@ impl Model {
         };
         let mut neue = idx
             .iter()
-            .filter_map(|&i| t.points.get(i).map(|p| p.nr.clone()));
+            .filter_map(|&i| t.points.get(i).map(|p| p.nr.to_string()));
         let namen: Vec<String> = vorhanden
             .into_iter()
             .map(|v| v.or_else(|| neue.next()))
