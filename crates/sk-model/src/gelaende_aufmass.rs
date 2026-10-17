@@ -26,8 +26,9 @@ mod trennwand;
 
 /// Eine Strecke in Landeswerten.
 type Strecke = ((f64, f64), (f64, f64));
-/// Plattenumriss eines Wandzugs (mm, Grundriss) und sein Gebäude.
-type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>);
+/// Plattenumriss eines Wandzugs (mm, Grundriss), sein Gebäude und sein
+/// Rechteck (`[x0, y0, x1, y1]`).
+type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>, [f64; 4]);
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -789,7 +790,7 @@ impl Model {
         // je Zug mit Gebäude: Gebäude und höchster Punkt am Umriss
         let mut hoch: Vec<(BuildingId, Option<f64>)> = Vec::new();
         let umrisse = self.umrisse_der_zuege();
-        for (k, (id, b, _)) in umrisse.iter().enumerate() {
+        for (k, (id, b, ..)) in umrisse.iter().enumerate() {
             let Some(r) = self.runs.get(*id) else {
                 continue;
             };
@@ -841,15 +842,26 @@ impl Model {
         Some((t.height(e, n)? - nhn) * 1000.0)
     }
 
-    /// Plattenumriss je Wandzug mit Gründung (mm, Grundriss) und sein
-    /// Gebäude.
+    /// Plattenumriss je Wandzug mit Gründung (mm, Grundriss), sein
+    /// Gebäude und sein Rechteck, einmal je Rechnung statt je Paar (Review
+    /// B-245c).
     fn umrisse_der_zuege(&self) -> Vec<ZugUmriss> {
         self.runs
             .iter()
             .filter_map(|(id, r)| {
-                let ring = self.plate_outline(id)?;
-                let ring = ring.iter().map(|p| [p.x, p.y]).collect();
-                Some((id, self.building_of(r.storey), ring))
+                let ring: Vec<[f64; 2]> =
+                    self.plate_outline(id)?.iter().map(|p| [p.x, p.y]).collect();
+                let kasten = ring
+                    .iter()
+                    .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
+                        [
+                            k[0].min(p[0]),
+                            k[1].min(p[1]),
+                            k[2].max(p[0]),
+                            k[3].max(p[1]),
+                        ]
+                    });
+                Some((id, self.building_of(r.storey), ring, kasten))
             })
             .collect()
     }
@@ -858,28 +870,15 @@ impl Model {
     /// ohne die Stücke in oder an der Platte eines anderen Gebäudes, der
     /// Haustrennwand (H-245a, VOB). Ist kein Stück frei, der ganze Rand.
     fn am_freien_rand(t: &Terrain, f: &SurveyFrame, umrisse: &[ZugUmriss], k: usize) -> Vec<f64> {
-        let (_, b, ring) = &umrisse[k];
-        let kasten = |r: &[[f64; 2]]| {
-            r.iter()
-                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |k, p| {
-                    [
-                        k[0].min(p[0]),
-                        k[1].min(p[1]),
-                        k[2].max(p[0]),
-                        k[3].max(p[1]),
-                    ]
-                })
-        };
-        let mein = kasten(ring);
-        let nah = |r: &[[f64; 2]]| {
-            let k = kasten(r);
+        let (_, b, ring, mein) = &umrisse[k];
+        let nah = |k: &[f64; 4]| {
             let d = trennwand::AN_DER_WAND;
             k[0] <= mein[2] + d && mein[0] <= k[2] + d && k[1] <= mein[3] + d && mein[1] <= k[3] + d
         };
         let andere: Vec<&[[f64; 2]]> = umrisse
             .iter()
-            .filter(|(_, x, r)| b.is_some() && x.is_some() && x != b && nah(r))
-            .map(|(.., r)| r.as_slice())
+            .filter(|(_, x, _, k)| b.is_some() && x.is_some() && x != b && nah(k))
+            .map(|(_, _, r, _)| r.as_slice())
             .collect();
         let land = |p: [f64; 2]| f.to_survey(p[0], p[1]);
         let frei = trennwand::freie_strecken(ring, &andere);
