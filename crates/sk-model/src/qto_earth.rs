@@ -91,6 +91,8 @@ pub struct Boden {
     /// Zuschalten, in neuen Projekten aus; sonst Füllsand bis UK Dämmung).
     /// Die Dicke bleibt, wenn sie aus ist. Dateien ohne Schalter haben sie.
     pub tragschicht: f64,
+    /// Ob die kapillarbrechende Schicht eingebaut wird (`[soil]
+    /// capillary_on`); aus heißt keine Kiesposition, die Dicke bleibt.
     pub kies: bool,
     /// Böschungswinkel β, wenn die Baugrube tiefer ist als
     /// [`SENKRECHT_BIS`] (DIN 4124: 45° nichtbindig oder weich bindig, 60°
@@ -168,6 +170,27 @@ impl Boden {
 /// Bis zu dieser Tiefe (mm ab Gelände) darf die Baugrube ohne Böschung
 /// und ohne Verbau senkrecht sein (DIN 4124, 4.2.3).
 pub const SENKRECHT_BIS: f64 = 1250.0;
+
+/// Was im Rechenweg unter der Platte ausgehoben wird: Dämmung und
+/// kapillarbrechende Schicht, soweit vorhanden (VOB V-268a).
+pub(crate) fn ausgehoben_fuer(daemmung: bool, kies: bool) -> &'static str {
+    match (daemmung, kies) {
+        (true, true) => "Dämmung und Schicht",
+        (true, false) => "Dämmung",
+        (false, true) => "Schicht",
+        (false, false) => "Platte",
+    }
+}
+
+/// Bis wohin im Rechenweg aufgefüllt wird: UK der untersten eingebauten
+/// Lage unter der Platte (VOB V-268a).
+pub(crate) fn aufgefuellt_bis(daemmung: bool, kies: bool) -> &'static str {
+    match (daemmung, kies) {
+        (_, true) => "UK Schicht",
+        (true, false) => "UK Dämmung",
+        (false, false) => "UK Platte",
+    }
+}
 
 /// Rechenweg des Planums, wenn die kapillarbrechende Schicht aus ist.
 pub const NICHT_EINGEBAUT: &str = "; Kapillarbrechende Schicht: nicht eingebaut (Bodenkennwerte)";
@@ -462,11 +485,7 @@ pub fn erd_mengen(
     // gewachsenen Boden
     let bett = innen * (z_s.min(z_n) - z_p).max(0.0);
     if bett > 0.0 {
-        let wofuer = if z_b < z_s {
-            "Dämmung und Schicht"
-        } else {
-            "Schicht"
-        };
+        let wofuer = ausgehoben_fuer(z_b < z_s, boden.kies);
         menge(
             EXCAVATION,
             bett,
@@ -494,7 +513,12 @@ pub fn erd_mengen(
         menge(
             FILL,
             innen * auf_h,
-            format!("{} m² × {} bis UK Schicht", zahl(innen, 1e6), breite(auf_h)),
+            format!(
+                "{} m² × {} bis {}",
+                zahl(innen, 1e6),
+                breite(auf_h),
+                aufgefuellt_bis(z_b < z_s, boden.kies)
+            ),
         );
     }
     // Arbeitsraum: Baugrube außerhalb des Plattenumrisses

@@ -565,11 +565,7 @@ pub(super) fn mengen(
         );
     }
     if bett > 0.0 {
-        let wofuer = if z_b < z_s {
-            "Dämmung und Schicht"
-        } else {
-            "Schicht"
-        };
+        let wofuer = super::ausgehoben_fuer(z_b < z_s, boden.kies);
         menge(
             EXCAVATION,
             bett,
@@ -597,8 +593,9 @@ pub(super) fn mengen(
             FILL,
             auf,
             format!(
-                "{} m² bis UK Schicht, im Mittel {}{verfahren}",
+                "{} m² bis {}, im Mittel {}{verfahren}",
                 zahl(innen_fl, 1e6),
+                super::aufgefuellt_bis(z_b < z_s, boden.kies),
                 mittel(auf, innen_fl)
             ),
         );

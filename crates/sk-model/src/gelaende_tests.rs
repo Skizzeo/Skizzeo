@@ -210,6 +210,15 @@ fn kiesschicht_als_schalter() {
     assert!(mengen(&m, SUBGRADE).iter().any(|a| a
         .formula
         .contains("Kapillarbrechende Schicht: nicht eingebaut")));
+    // die Rechenwege nennen keine Schicht mehr (VOB V-268a)
+    for k in [crate::qto_earth::EXCAVATION, crate::qto_earth::FILL] {
+        for a in mengen(&m, k) {
+            assert!(!a.formula.contains("Schicht"), "{}", a.formula);
+        }
+    }
+    assert_eq!(crate::qto_earth::ausgehoben_fuer(true, false), "Dämmung");
+    assert_eq!(crate::qto_earth::aufgefuellt_bis(true, false), "UK Dämmung");
+    assert_eq!(crate::qto_earth::aufgefuellt_bis(false, false), "UK Platte");
     let text = crate::szo::write(&m);
     assert!(
         text.contains("\n[soil] key=project capillary_on=0\n"),
