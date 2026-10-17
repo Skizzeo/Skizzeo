@@ -1946,9 +1946,23 @@ pub(crate) mod tests {
         let ohne = koerper_mit(&g, keys, false, false);
         assert_eq!(mit.triangles.len(), ohne.triangles.len());
         let fein = |s: &Solid| s.edges.iter().filter(|e| e.kind == edge_kind::FINE).count();
-        assert!(fein(&mit) > 0);
-        assert_eq!(fein(&ohne), 0);
-        assert_eq!(mit.edges.len() - fein(&mit), ohne.edges.len());
+        // fein sind ohne Höhenlinien nur die Fugen zwischen den Schichten
+        // am Haus (#261)
+        let grube = bodenaufbau::grube(
+            &g.aufbau,
+            &|p| g.hoehe(p),
+            &|a, b| g.teilung(a, b),
+            g.unten,
+            schluessel(keys),
+        );
+        let fugen = grube
+            .edges
+            .iter()
+            .filter(|e| e.kind == edge_kind::FINE)
+            .count();
+        assert!(fein(&mit) > fugen);
+        assert_eq!(fein(&ohne), fugen);
+        assert_eq!(mit.edges.len() - fein(&mit), ohne.edges.len() - fugen);
         let (lo, hi) = g.hoehen().unwrap();
         assert!(lo < hi);
         for p in g.dreiecke.iter().flatten() {
