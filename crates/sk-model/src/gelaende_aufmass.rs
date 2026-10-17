@@ -354,6 +354,30 @@ pub(crate) struct Lage {
     trennwand: HashMap<RunId, Vec<Vec<[f64; 2]>>>,
 }
 
+/// Was an Gelände und Lage die Erdmengen aller Häuser trägt, für das
+/// Bau-Log (Review B-245d): ±0,00 ungerundet, je Gründung der tiefste Punkt
+/// am freien Rand und die Streifen unter den Haustrennwänden. Die beiden
+/// hängen an den Umrissen der Nachbarn: Rückt die Wand eines Hauses an ein
+/// anderes heran, ändern sich dessen Einbindetiefe und Graben, obwohl der
+/// Schritt nur das eine Haus nennt.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Gelaendestand {
+    nhn: Option<f64>,
+    lage: Option<Arc<Lage>>,
+}
+
+impl PartialEq for Gelaendestand {
+    fn eq(&self, o: &Gelaendestand) -> bool {
+        self.nhn == o.nhn
+            && match (&self.lage, &o.lage) {
+                (Some(a), Some(b)) => {
+                    Arc::ptr_eq(a, b) || (a.tief == b.tief && a.trennwand == b.trennwand)
+                }
+                (a, b) => a.is_none() && b.is_none(),
+            }
+    }
+}
+
 /// Platz für die [`Lage`] im Modell mit dem Stand, zu dem sie gehört.
 /// Der Stand steigt mit jeder Änderung außer an Geschosshöhen, an Höhe und
 /// Einbindung einer Gründung, am Versatz und an der festen Höhe von ±0,00:
@@ -1075,6 +1099,19 @@ impl Model {
     pub fn terrain_nhn(&self) -> Option<f64> {
         self.terrain()?;
         self.nhn_aus(&self.lage())
+    }
+
+    /// [`Gelaendestand`] jetzt; ohne Aufmaß leer, dann trägt das Gelände
+    /// keine Erdmengen anderer Häuser.
+    pub(crate) fn gelaendestand(&self) -> Gelaendestand {
+        if self.terrain().is_none() {
+            return Gelaendestand::default();
+        }
+        let lage = self.lage();
+        Gelaendestand {
+            nhn: self.nhn_aus(&lage),
+            lage: Some(lage),
+        }
     }
 
     /// ±0,00 in m ü. NHN aus der gemerkten [`Lage`], mit fester Höhe oder

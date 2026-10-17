@@ -11,8 +11,11 @@
 //! heißt alle. Jede Änderung ohne Schritt (Laden, Zurücksetzen, Import)
 //! ist unbekannt, also ebenfalls alle. Ebenso ein Schritt, nach dem ±0,00
 //! ([`Model::terrain_nhn`]) ungerundet anders liegt: Daran hängen die
-//! Erdmengen aller Häuser (Kosten B-246a).
+//! Erdmengen aller Häuser (Kosten B-246a). Und einer, nach dem die
+//! Einbindetiefe einer Gründung oder die Haustrennwand anders liegt: Die
+//! hängen auch an den Umrissen der Nachbarn (Review B-245d).
 
+use super::gelaende_aufmass::Gelaendestand;
 use super::*;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,9 +46,10 @@ pub(crate) struct BauLog {
     ab: u64,
     /// Je Schritt der Stand danach und seine Gebäude.
     schritte: VecDeque<(u64, Gebaeude)>,
-    /// ±0,00 nach dem letzten Schritt, ungerundet; `None`: nicht bekannt
-    /// (neu oder nach einer Änderung ohne Schritt).
-    nhn: Option<Option<f64>>,
+    /// ±0,00, Einbindetiefen und Haustrennwände nach dem letzten Schritt,
+    /// ungerundet; `None`: nicht bekannt (neu oder nach einer Änderung
+    /// ohne Schritt).
+    gelaende: Option<Gelaendestand>,
 }
 
 impl Default for BauLog {
@@ -68,7 +72,7 @@ impl BauLog {
             stand: 0,
             ab: 0,
             schritte: VecDeque::new(),
-            nhn: None,
+            gelaende: None,
         }
     }
 
@@ -83,19 +87,22 @@ impl BauLog {
         self.stand += 1;
         self.ab = self.stand;
         self.schritte.clear();
-        self.nhn = None;
+        self.gelaende = None;
     }
 
     /// Abgeschlossener oder verworfener Schritt, Rückgängig oder
-    /// Wiederholen mit den Gebäuden aus [`gebaeude`] und ±0,00 danach.
-    /// Liegt ±0,00 anders als nach dem letzten Schritt, gilt er für alle,
-    /// auch unter der Rundung von `[location] nhn` (Kosten B-246a); ohne
-    /// bekannten Wert davor, wenn es jetzt einen gibt.
-    pub(crate) fn schritt(&mut self, g: Gebaeude, nhn: Option<f64>) {
-        let gleich = match self.nhn.replace(nhn) {
-            Some(vorher) => vorher == nhn,
-            None => nhn.is_none(),
+    /// Wiederholen mit den Gebäuden aus [`gebaeude`] und dem
+    /// [`Gelaendestand`] danach. Liegt ±0,00 anders als nach dem letzten
+    /// Schritt, gilt er für alle, auch unter der Rundung von `[location]
+    /// nhn` (Kosten B-246a); ebenso, wenn eine Einbindetiefe oder eine
+    /// Haustrennwand anders liegt (B-245d); ohne bekannten Stand davor,
+    /// wenn es jetzt ein Aufmaß gibt.
+    pub(crate) fn schritt(&mut self, g: Gebaeude, gelaende: Gelaendestand) {
+        let gleich = match &self.gelaende {
+            Some(vorher) => *vorher == gelaende,
+            None => gelaende == Gelaendestand::default(),
         };
+        self.gelaende = Some(gelaende);
         let g = g.filter(|_| gleich);
         if g.as_deref().is_some_and(|g| g.is_empty()) {
             return;
@@ -302,5 +309,75 @@ mod tests {
             new: st,
         };
         assert_eq!(gebaeude(&m, &[c]), None);
+    }
+
+    /// Wand an Wand mit Aufmaß und fester Höhe von ±0,00 (Review B-245d):
+    /// Rückt die Haustrennwand von A ab oder heran, ändern sich Graben und
+    /// Einbindetiefe von B, ohne dass ±0,00 sich rührt. Ändert sich eine
+    /// Erdmenge oder Gründung von B, nennt das Log B oder alle.
+    #[test]
+    fn haustrennwand_nennt_den_nachbarn() {
+        let mut geprueft = 0;
+        for d in [-50.0, -20.0, 20.0, 50.0] {
+            let mut m = Model::new();
+            let mut haeuser = Vec::new();
+            for (x0, versatz) in [(0.0, 500.0), (8630.0, 1500.0)] {
+                let b = m.add_building(1);
+                let pts = [
+                    vec3(x0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 0.0, 0.0),
+                    vec3(x0 + 8000.0, 10000.0, 0.0),
+                    vec3(x0, 10000.0, 0.0),
+                ];
+                let run = m.build_from_polygon(b, &pts).unwrap();
+                m.begin("Gelände");
+                assert!(m.set_terrain_offset_of(b, versatz));
+                m.commit();
+                haeuser.push((b, run));
+            }
+            let mut l = *m.location();
+            l.nhn = Some(52.3);
+            m.begin("Lage");
+            m.put_location(l);
+            m.commit();
+            m.begin("Fläche");
+            assert!(m.seed_flat_terrain(&[]));
+            m.commit();
+            let [(a, run), (b, _)] = haeuser[..] else {
+                unreachable!()
+            };
+            let von_b = |m: &Model| -> Vec<(String, f64)> {
+                let mut v: Vec<(String, f64)> = crate::qto::schedule(m)
+                    .auto
+                    .iter()
+                    .filter(|r| r.building == Some(b) && r.key.starts_with("earth."))
+                    .map(|r| (r.key.to_string(), r.value))
+                    .collect();
+                v.extend(
+                    m.ground_bases()
+                        .iter()
+                        .filter(|g| g.building == Some(b))
+                        .map(|g| ("Einbindetiefe".to_string(), g.embedment)),
+                );
+                v
+            };
+            let (nhn, vorher, stand) = (m.terrain_nhn(), von_b(&m), m.bau_stand());
+            let Some(neu) = m.chain(run).unwrap().with_segment_moved(1, d) else {
+                continue;
+            };
+            m.begin("Wand");
+            m.set_run_points(run, &neu.points);
+            m.commit();
+            assert_eq!(m.terrain_nhn(), nhn, "{d}");
+            let gemerkt = m.gebaeude_seit(stand);
+            if von_b(&m) != vorher {
+                geprueft += 1;
+                assert!(
+                    gemerkt.as_ref().is_none_or(|g| g.contains(&Some(b))),
+                    "{d}: {gemerkt:?}, A {a:?}"
+                );
+            }
+        }
+        assert!(geprueft > 0, "Graben oder Gründung von B ändert sich");
     }
 }
