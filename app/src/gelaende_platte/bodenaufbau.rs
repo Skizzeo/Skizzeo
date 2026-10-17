@@ -734,13 +734,17 @@ pub(crate) fn grube(
             ts.sort_by(f64::total_cmp);
             ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
             teile.extend(ts[1..ts.len() - 1].iter().map(|&t| lerp(a, b, t)));
-            for w in ts.windows(2) {
-                let (p, q) = (lerp(a, b, w[0]), lerp(a, b, w[1]));
-                let st = |x: P2| {
+            // je Stelle einmal der Stapel, ihn teilen sich die Nachbarn
+            let st: Vec<(P2, Stapel)> = ts
+                .iter()
+                .map(|&t| {
+                    let x = lerp(a, b, t);
                     let top = hoehe(x).unwrap_or(h.t);
-                    h.stapel(Lage::Aussen(abstand(&h.platte, x)), top, unten)
-                };
-                wand(&mut s, (p, &st(p)), (q, &st(q)), h.f, keys);
+                    (x, h.stapel(Lage::Aussen(abstand(&h.platte, x)), top, unten))
+                })
+                .collect();
+            for w in st.windows(2) {
+                wand(&mut s, (w[0].0, &w[0].1), (w[1].0, &w[1].1), h.f, keys);
             }
         }
         let ring = h.stapel(Lage::Ring, h.t, unten);
