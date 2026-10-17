@@ -420,7 +420,7 @@ impl App {
         let nr = |i: usize| {
             m.terrain()
                 .and_then(|t| t.points.get(i))
-                .map_or_else(String::new, |p| p.nr.clone())
+                .map_or_else(String::new, |p| p.nr.to_string())
         };
         std::sync::Arc::new(
             m.terrain_spots()
@@ -712,7 +712,7 @@ impl App {
                 .model()
                 .terrain()
                 .and_then(|t| t.points.get(neu[0]))
-                .map(|p| p.nr.clone());
+                .map(|p| p.nr.to_string());
             self.platte.punkte.gewaehlt = nr.into_iter().collect();
             self.punkte_fertig();
         } else {
@@ -938,7 +938,7 @@ impl App {
         };
         self.platte.punkte.gewaehlt = idx
             .iter()
-            .filter_map(|&i| t.points.get(i).map(|p| p.nr.clone()))
+            .filter_map(|&i| t.points.get(i).map(|p| p.nr.to_string()))
             .collect();
     }
 

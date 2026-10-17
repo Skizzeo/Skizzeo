@@ -494,7 +494,7 @@ mod tests {
         assert!((t.parcel_area() - flaeche).abs() < 0.5);
         let mut ohne = t.points.clone();
         for p in &mut ohne {
-            p.nr = format!("x{}", p.nr);
+            p.nr = format!("x{}", p.nr).into();
         }
         assert!(plan.fit_to(&ohne).is_none());
     }
