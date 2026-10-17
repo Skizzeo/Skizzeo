@@ -114,6 +114,7 @@ impl App {
             .ava
             .as_ref()
             .filter(|_| blatt == cards::Blatt::Ava);
+        let lv = ava.is_some();
         let bytes = match self.quantity.kosten.as_ref().filter(|_| kosten) {
             // Blatt AVA: das LV des gewählten Loses (ka-4-fach §3.6)
             _ if ava.is_some() => ava.map(|a| a.csv()).unwrap_or_default(),
@@ -133,6 +134,8 @@ impl App {
                 &e,
             );
             surface.message(&m, true);
+        } else if lv {
+            self.lv_warnen();
         }
     }
 
@@ -157,7 +160,23 @@ impl App {
         if let Err(e) = document::tabelle_schreiben(&path, &bytes) {
             let m = meldung::Meldung::aus_io("PDF nicht gespeichert", "PDF speichern", &path, &e);
             surface.message(&m, true);
+        } else {
+            self.lv_warnen();
         }
+    }
+
+    /// Nach dem Speichern eines LV in der Statuszeile, was das Dokument
+    /// nicht sagt (VOB V-248c): Häuser, die ineinander stehen.
+    fn lv_warnen(&mut self) {
+        let Some(m) = self
+            .quantity
+            .ava
+            .as_ref()
+            .and_then(|a| a.warnung_beim_ausgeben())
+        else {
+            return;
+        };
+        self.status(m, NOTICE_TIME);
     }
 }
 

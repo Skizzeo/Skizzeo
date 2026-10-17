@@ -57,6 +57,20 @@ impl AvaView {
         self.lv.as_deref().map(|lv| lv.kopf.los.as_str())
     }
 
+    /// Warnung nach dem Speichern des gewählten LV, wenn Häuser ineinander
+    /// stehen (VOB V-248c): „LV Rohbau gespeichert. Achtung: Gebäude 1
+    /// (GB-01) und Gebäude 2 (GB-02) stehen ineinander …“.
+    pub fn warnung_beim_ausgeben(&self) -> Option<crate::meldung::Meldung> {
+        let lv = self.lv.as_deref()?;
+        let w = lv.warnungen_beim_ausgeben();
+        (!w.is_empty()).then(|| {
+            crate::meldung::Meldung::mit(
+                "LV {} gespeichert. Achtung: {}",
+                &[&lv.kopf.los, &w.join(" · ")],
+            )
+        })
+    }
+
     pub(super) fn knopf_rect(&self, t: &Theme, fonts: &Fonts) -> Rect {
         self.knopf_lage(t, fonts).0
     }

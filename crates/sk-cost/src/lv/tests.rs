@@ -746,3 +746,56 @@ fn kurztext_je_dicke_ersetzt_dicke_nach_raumbuch() {
         "Trittschalldämmung, d = 12,5 mm"
     );
 }
+
+/// Zwei Häuser 8 × 10 m, das zweite `abstand` (mm) rechts vom ersten.
+fn zwei_haeuser(abstand: f64) -> Model {
+    let mut m = Model::with_seed(5);
+    for x0 in [0.0, abstand] {
+        let b = m.add_building(1);
+        let pts = [
+            sk_math::vec3(x0, 0.0, 0.0),
+            sk_math::vec3(x0 + 8000.0, 0.0, 0.0),
+            sk_math::vec3(x0 + 8000.0, 10000.0, 0.0),
+            sk_math::vec3(x0, 10000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+    }
+    m
+}
+
+/// Häuser, die ineinander stehen (VOB V-248c): Das Prüfen des LV warnt
+/// bei der Datei, im Projekt wie je Haus; im Dokument (Kopf, Positionen,
+/// Zusammenstellung) steht der Satz nicht. Nebeneinander warnt nichts.
+#[test]
+fn haeuser_ineinander_warnen_nur_im_pruefen() {
+    let ineinander = sk_model::qto_earth::INEINANDER;
+    for (abstand, warnt) in [(7800.0, true), (20000.0, false)] {
+        let m = zwei_haeuser(abstand);
+        let k = lesen::katalog(&m, None);
+        let s = qto::schedule(&m);
+        let mut umfaenge = vec![Umfang::projekt()];
+        umfaenge.extend(m.buildings().iter().map(|(b, _)| Umfang::gebaeude(b)));
+        for u in &umfaenge {
+            let lv = lesen::lv(&m, &s, &k, u, &wahl(false, true));
+            assert!(lv.anzahl() > 0, "{abstand}");
+            let w: Vec<_> = lv
+                .befunde
+                .iter()
+                .filter(|b| b.satz.ends_with(ineinander))
+                .collect();
+            assert_eq!(w.len(), usize::from(warnt), "{abstand}: {:#?}", lv.befunde);
+            for b in &w {
+                assert_eq!((b.schwere, &b.ort), (Schwere::Warnung, &Ort::Datei));
+                assert!(b
+                    .satz
+                    .starts_with("Gebäude 1 (GB-01) und Gebäude 2 (GB-02) "));
+            }
+            assert_eq!(
+                lv.warnungen_beim_ausgeben(),
+                w.iter().map(|b| b.satz.as_str()).collect::<Vec<_>>()
+            );
+            let dokument = format!("{:?}", (&lv.kopf, &lv.titel, &lv.zusammenstellung));
+            assert!(!dokument.contains("ineinander"), "{abstand}");
+        }
+    }
+}

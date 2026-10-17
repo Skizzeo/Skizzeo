@@ -1678,3 +1678,53 @@ fn geschosse_nur_bei_neuem_stand() {
     v.sync(&mut t, None);
     assert!(!Rc::ptr_eq(&b, &v.geschosse), "andere Szene");
 }
+
+/// Zwei Häuser 8 × 10 m, das zweite `abstand` (mm) rechts vom ersten.
+fn zwei_haeuser(abstand: f64) -> Scene {
+    let mut m = sk_model::Model::with_seed(5);
+    for x0 in [0.0, abstand] {
+        let b = m.add_building(1);
+        let pts = [
+            sk_math::vec3(x0, 0.0, 0.0),
+            sk_math::vec3(x0 + 8000.0, 0.0, 0.0),
+            sk_math::vec3(x0 + 8000.0, 10000.0, 0.0),
+            sk_math::vec3(x0, 10000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+    }
+    Scene::with_model(m)
+}
+
+/// Häuser ineinander (VOB V-248c): Das Prüfen zählt und nennt die Warnung,
+/// nach dem Speichern steht sie in der Statuszeile; die Tabelle selbst
+/// nennt sie nicht. Nebeneinander: keine Warnung.
+#[test]
+fn haeuser_ineinander_warnen_beim_ausgeben() {
+    for (abstand, warnt) in [(7800.0, true), (20000.0, false)] {
+        let mut s = zwei_haeuser(abstand);
+        let mut v = AvaView::new();
+        (v.w, v.h) = (1400, 900);
+        v.sync(&mut s, None);
+        let lv = v.lv().expect("LV");
+        let satz = lv
+            .befunde
+            .iter()
+            .find(|b| b.satz.ends_with(sk_model::qto_earth::INEINANDER))
+            .map(|b| b.satz.clone());
+        assert_eq!(satz.is_some(), warnt, "{abstand}");
+        let gezeigt = pruefen(s.model(), lv);
+        let m = v.warnung_beim_ausgeben();
+        match satz {
+            Some(satz) => {
+                assert!(gezeigt.iter().any(|z| z.text == satz), "{abstand}");
+                assert_eq!(
+                    m.as_ref().map(|m| m.as_str()),
+                    Some(format!("LV Rohbau gespeichert. Achtung: {satz}").as_str())
+                );
+            }
+            None => assert!(m.is_none(), "{abstand}"),
+        }
+        let csv = String::from_utf8(v.csv()).unwrap();
+        assert!(!csv.contains("ineinander"), "{abstand}");
+    }
+}

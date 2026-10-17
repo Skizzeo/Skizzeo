@@ -233,6 +233,22 @@ impl Lv {
             .count();
         (self.befunde.len() - h, h)
     }
+
+    /// Was das Programm beim Ausgeben des LV warnt, ohne es ins Dokument
+    /// zu schreiben (VOB V-248c): Häuser, die ineinander stehen.
+    pub fn warnungen_beim_ausgeben(&self) -> Vec<&str> {
+        self.befunde
+            .iter()
+            .filter(|b| b.schwere == Schwere::Warnung && ineinander(b))
+            .map(|b| b.satz.as_str())
+            .collect()
+    }
+}
+
+/// Der Hinweis der Mengenliste „… stehen ineinander“ (H-245-geo-a), bei
+/// der Datei.
+fn ineinander(b: &Befund) -> bool {
+    b.ort == Ort::Datei && b.satz.ends_with(sk_model::qto_earth::INEINANDER)
 }
 
 /// „haus.szo“ → „Haus“: Bauvorhaben ohne `Project.site`.
@@ -1134,6 +1150,14 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
             Some(n) => vorbemerkung_angenommen(&n),
             None => vorbemerkung_netz(sk_model::qto_earth::netz_herkunft(m).as_deref()),
         });
+    }
+    // Häuser, die ineinander stehen, melden einen Zeichenfehler, keine
+    // Leistung: nicht ins Dokument (VOB/A § 7 (1)), aber als Warnung im
+    // Prüfen, solange die Mengenliste sie nennt (VOB V-248c)
+    for f in b.befunde.iter().filter(|f| ineinander(f)) {
+        if !befunde.iter().any(|x| x.satz == f.satz) {
+            befunde.push(Befund::warnung(f.regel, f.satz.clone(), Ort::Datei));
+        }
     }
     for t in k
         .lose
