@@ -253,7 +253,14 @@ impl Gelaende {
         let linien: Vec<(f64, Vec<P2>, bool)> = stufe
             .map_or(Vec::new(), |s| m.terrain_contours(s))
             .into_iter()
-            .map(|(z, p, _)| ((z - h0) * 1000.0, p, (z - z.round()).abs() < 1e-6))
+            .map(|(z, mut p, zu)| {
+                // eine geschlossene Linie nennt ihren ersten Punkt nicht
+                // noch einmal: ohne ihn fehlte das letzte Stück
+                if zu && p.len() > 2 {
+                    p.push(p[0]);
+                }
+                ((z - h0) * 1000.0, p, (z - z.round()).abs() < 1e-6)
+            })
             .collect();
         let mut g = Gelaende::roh(dreiecke, ringe, show, tief - m.plate_settings().thick);
         g.am_haus(m);
@@ -2184,6 +2191,42 @@ mod tests {
         assert!(n <= PUNKT_KOTEN && k == n, "{n} {k}");
         let (n, k) = aufmass(45);
         assert!(n > PUNKT_KOTEN && k == 0, "{n} {k}");
+    }
+
+    /// Eine geschlossene Höhenlinie bleibt geschlossen (Jörn 17.10.): Um
+    /// eine Kuppe fehlte das Stück vom letzten zum ersten Punkt, in 3D wie
+    /// im Grundriss.
+    #[test]
+    fn hoehenlinie_um_kuppe_geschlossen() {
+        let mut m = Model::with_seed(7);
+        let mut text = String::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                let h = if (i, j) == (2, 2) { 10.6 } else { 10.0 };
+                text.push_str(&format!("{} {} {} {h}\n", i * 5 + j + 1, 10 * j, 10 * i));
+            }
+        }
+        let (t, ..) = sk_model::Terrain::lesen(text.as_bytes(), "x.txt", "2026-10-17", 32).unwrap();
+        m.begin("Aufmaß");
+        assert!(m.import_terrain(t));
+        m.commit();
+        let h0 = m.terrain_nhn().unwrap();
+        let g = Gelaende::aus(&m).unwrap();
+        for z in [10.25, 10.5] {
+            let z = (z - h0) * 1000.0;
+            let mut enden: Vec<[i64; 2]> = g
+                .stuecke
+                .iter()
+                .filter(|s| (s.0 - z).abs() < 1e-6)
+                .flat_map(|s| s.1)
+                .map(|q| [q[0].round() as i64, q[1].round() as i64])
+                .collect();
+            assert!(enden.len() >= 8, "{z}: {}", enden.len());
+            enden.sort_unstable();
+            for k in enden.chunk_by(|a, b| a == b) {
+                assert_eq!(k.len(), 2, "{z}: offenes Ende {:?}", k[0]);
+            }
+        }
     }
 
     /// Höhenzahlen (Ist-Bilder zu #202): je 40 m eine, die erste nach 20 m,
