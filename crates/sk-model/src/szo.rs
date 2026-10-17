@@ -856,10 +856,16 @@ fn write_known(m: &Model) -> String {
             .filter(|(_, (v, d))| v != d)
             .map(|((k, ..), (v, _))| (*k, v))
             .collect();
-        if !ab.is_empty() || alte {
+        // ohne kapillarbrechende Schicht `capillary_on=0`; Dateien davor
+        // haben sie
+        let ohne_kies = !p.soil.kies;
+        if !ab.is_empty() || alte || ohne_kies {
             let mut line = Line::new("soil").word("key", "project");
             for (k, v) in ab {
                 line = line.num(k, v);
+            }
+            if ohne_kies {
+                line = line.num(crate::qto_earth::Boden::SCHALTER, 0.0);
             }
             line.finish(&mut out);
         }
@@ -1788,6 +1794,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         *w = boden_wert(p, i);
     }
     let mut boden = project.soil.werte();
+    let mut kies = true;
     match recs("soil").as_slice() {
         [] => {
             for (b, w) in boden.iter_mut().zip(legacy) {
@@ -1804,11 +1811,23 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     *b = w;
                 }
             }
+            kies = gelaende::bereich(
+                r,
+                crate::qto_earth::Boden::SCHALTER,
+                "Kapillarbrechende Schicht eingebaut",
+                (0.0, 1.0),
+                "",
+                &mut hints,
+            )
+            .is_none_or(|v| v != 0.0);
             project.soil_info = true;
         }
         [_, r, ..] => return Err(err(r.line, "[soil] doppelt")),
     }
-    project.soil = crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default();
+    project.soil = crate::qto_earth::Boden {
+        kies,
+        ..crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default()
+    };
     project.soil_legacy = legacy;
     gelaende::read_project(&mut project, &|k| recs(k).as_slice(), &lines, &mut hints)?;
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`

@@ -184,6 +184,48 @@ fn bodenkennwerte_im_projekt() {
     );
 }
 
+/// Kapillarbrechende Schicht als Schalter (Jörn 17.10., VOB B-BA-5/6):
+/// aus ohne Kiesposition, in der Datei `capillary_on=0`, die Dicke bleibt;
+/// Dateien ohne Schlüssel haben sie, neue Projekte nicht.
+#[test]
+fn kiesschicht_als_schalter() {
+    use crate::qto_earth::{Boden, GRAVEL, SUBGRADE};
+    let (mut m, ..) = haus();
+    let mengen = |m: &Model, k: &str| -> Vec<crate::qto::AutoMenge> {
+        crate::qto::schedule(m)
+            .auto
+            .into_iter()
+            .filter(|a| a.key == k)
+            .collect()
+    };
+    assert!(m.project().soil.kies);
+    assert!(mengen(&m, GRAVEL).iter().map(|a| a.value).sum::<f64>() > 0.0);
+    let leer = crate::szo::write(&m);
+    let aus = Boden {
+        kies: false,
+        ..Boden::default()
+    };
+    let t = schritt(&mut m, |m| m.set_soil(aus));
+    assert!(mengen(&m, GRAVEL).is_empty());
+    assert!(mengen(&m, SUBGRADE).iter().any(|a| a
+        .formula
+        .contains("Kapillarbrechende Schicht: nicht eingebaut")));
+    let text = crate::szo::write(&m);
+    assert!(
+        text.contains("\n[soil] key=project capillary_on=0\n"),
+        "{text}"
+    );
+    let back = crate::szo::read(&text, crate::GuidGen::with_seed(1)).unwrap();
+    assert_eq!(back.model.project().soil, aus);
+    assert_eq!(back.model.project().soil.tragschicht, 150.0);
+    assert_eq!(crate::szo::write(&back.model), text);
+    m.apply(&t, Direction::Undo);
+    assert!(m.project().soil.kies);
+    assert_eq!(crate::szo::write(&m), leer);
+    // neue Projekte ohne Schicht
+    assert!(!Model::new().project().soil.kies);
+}
+
 /// Regel 113: Bodenkennwerte an `[project]` (ältere Dateien) gelten als
 /// Rückfall und bleiben bytegleich; die erste Änderung zieht sie in
 /// einem Rückgängig-Schritt nach `[soil]` um. Steht beides in der

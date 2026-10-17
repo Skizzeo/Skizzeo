@@ -40,11 +40,6 @@ pub(crate) const UEBERSTAND: f64 = 500.0;
 /// (mm, Jörn 17.10.: ca. 80 cm).
 pub(crate) const AUSKOFFERUNG: f64 = 800.0;
 
-/// Kies unter der Dämmung (Dicke „Tragschicht“ der Bodenkennwerte) oder
-/// Füllsand bis UK Dämmung. Jörns Vorgabe vom 17.10.: Füllsand; die Karte
-/// dazu steht aus.
-const KIES_UNTER_DER_DAEMMUNG: bool = false;
-
 /// So weit reicht der gewachsene Boden unter die tiefste Schürze und
 /// Auskofferung (mm), damit er im Schnitt darunter zu sehen ist.
 pub(crate) const UNTER_GRUENDUNG: f64 = 500.0;
@@ -379,11 +374,8 @@ impl Aufbau {
         let (t, s, f) = (g.terrain_z, g.slab_bottom_z, g.footing_bottom_z);
         let n = t - o;
         let b = g.insulation_bottom_z.min(s);
-        let p = if KIES_UNTER_DER_DAEMMUNG {
-            b - boden.tragschicht.max(0.0)
-        } else {
-            b
-        };
+        // Kies unter der Dämmung nur, wenn er eingebaut wird (Bodenkennwerte)
+        let p = b - boden.schicht();
         let ka = (t - AUSKOFFERUNG).min(p);
         let tan = boden.boeschung.clamp(1.0, 89.0).to_radians().tan();
         let w = if b < n {

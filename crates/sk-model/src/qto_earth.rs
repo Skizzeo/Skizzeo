@@ -86,8 +86,12 @@ pub struct Boden {
     pub rand: f64,
     /// Arbeitsraum um den Plattenumriss (DIN 4124: mindestens 0,50 m).
     pub arbeitsraum: f64,
-    /// Kapillarbrechende Schicht unter der Platte innerhalb der Schürze.
+    /// Kapillarbrechende Schicht unter der Platte innerhalb der Schürze:
+    /// Dicke, und ob sie eingebaut wird (Jörn 17.10.: eine Position zum
+    /// Zuschalten, in neuen Projekten aus; sonst Füllsand bis UK Dämmung).
+    /// Die Dicke bleibt, wenn sie aus ist. Dateien ohne Schalter haben sie.
     pub tragschicht: f64,
+    pub kies: bool,
     /// Böschungswinkel β, wenn die Baugrube tiefer ist als
     /// [`SENKRECHT_BIS`] (DIN 4124: 45° nichtbindig oder weich bindig, 60°
     /// steif bindig, 80° Fels).
@@ -101,6 +105,7 @@ impl Default for Boden {
             rand: 1500.0,
             arbeitsraum: 500.0,
             tragschicht: 150.0,
+            kies: true,
             boeschung: 45.0,
         }
     }
@@ -117,6 +122,20 @@ impl Boden {
         ("slope", "Böschungswinkel", 30.0, 90.0),
     ];
 
+    /// Schlüssel des Schalters an `[soil]`: steht nur als `0`, wenn die
+    /// kapillarbrechende Schicht aus ist.
+    pub const SCHALTER: &'static str = "capillary_on";
+
+    /// Dicke der kapillarbrechenden Schicht, wie sie eingebaut wird (0, wenn
+    /// sie aus ist).
+    pub fn schicht(&self) -> f64 {
+        if self.kies {
+            self.tragschicht.max(0.0)
+        } else {
+            0.0
+        }
+    }
+
     /// Die Werte in der Reihenfolge von [`Boden::FELDER`].
     pub fn werte(&self) -> [f64; 5] {
         [
@@ -128,8 +147,8 @@ impl Boden {
         ]
     }
 
-    /// Aus Werten in der Reihenfolge von [`Boden::FELDER`]; `None`, wenn
-    /// einer außerhalb seines Bereichs liegt.
+    /// Aus Werten in der Reihenfolge von [`Boden::FELDER`], die Schicht
+    /// eingebaut; `None`, wenn einer außerhalb seines Bereichs liegt.
     pub fn aus_werten(w: [f64; 5]) -> Option<Boden> {
         let ok = w
             .iter()
@@ -140,6 +159,7 @@ impl Boden {
             rand: w[1],
             arbeitsraum: w[2],
             tragschicht: w[3],
+            kies: true,
             boeschung: w[4],
         })
     }
@@ -148,6 +168,9 @@ impl Boden {
 /// Bis zu dieser Tiefe (mm ab Gelände) darf die Baugrube ohne Böschung
 /// und ohne Verbau senkrecht sein (DIN 4124, 4.2.3).
 pub const SENKRECHT_BIS: f64 = 1250.0;
+
+/// Rechenweg des Planums, wenn die kapillarbrechende Schicht aus ist.
+pub const NICHT_EINGEBAUT: &str = "; Kapillarbrechende Schicht: nicht eingebaut (Bodenkennwerte)";
 
 /// Kostengruppe der Erdarbeiten (DIN 276: 311 Herstellung der Baugrube).
 pub const KG: u16 = 311;
@@ -387,7 +410,7 @@ pub fn erd_mengen(
     };
     let o = boden.oberboden.max(0.0);
     let a = boden.arbeitsraum.max(0.0);
-    let g = boden.tragschicht.max(0.0);
+    let g = boden.schicht();
     let (fl, u) = (b.slab_area, b.slab_perimeter);
     let ring = b.footing_area.min(fl).max(0.0);
     let innen = (fl - ring).max(0.0);
@@ -465,7 +488,7 @@ pub fn erd_mengen(
         );
         aushub += graben;
     }
-    planum(innen, g, &mut menge);
+    planum(innen, g, boden.kies, &mut menge);
     let auf_h = (z_p - z_n).max(0.0);
     if auf_h > 0.0 && innen > 0.0 {
         menge(
@@ -551,13 +574,15 @@ fn oberboden(b: &ErdBasis, x_ob: f64, o: f64, menge: &mut dyn FnMut(&'static str
 }
 
 /// Planum und kapillarbrechende Schicht innerhalb der Schürze (`innen`
-/// mm², Schicht `g` mm).
-fn planum(innen: f64, g: f64, menge: &mut dyn FnMut(&'static str, f64, String)) {
+/// mm², Schicht `g` mm). Ist sie nicht eingebaut, gibt es keine
+/// Kiesposition, auch keine mit 0; das Planum sagt es (VOB B-BA-5).
+fn planum(innen: f64, g: f64, kies: bool, menge: &mut dyn FnMut(&'static str, f64, String)) {
     if innen > 0.0 {
+        let ohne = if kies { "" } else { NICHT_EINGEBAUT };
         menge(
             SUBGRADE,
             innen,
-            format!("innerhalb der Frostschürze {} m²", zahl(innen, 1e6)),
+            format!("innerhalb der Frostschürze {} m²{ohne}", zahl(innen, 1e6)),
         );
     }
     if g > 0.0 && innen > 0.0 {
