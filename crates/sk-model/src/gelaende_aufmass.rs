@@ -32,8 +32,6 @@ type Strecke = ((f64, f64), (f64, f64));
 type ZugUmriss = (RunId, Option<BuildingId>, Vec<[f64; 2]>, [f64; 4]);
 /// Ein Haus mit seiner Guid, für eine feste Reihenfolge.
 type Haus = (Guid, BuildingId);
-/// Rechteck, Haus und Umriss eines Zugs für [`Model::haeuser_ineinander`].
-type HausUmriss<'a> = ([f64; 4], Haus, &'a [[f64; 2]]);
 
 /// Ein Messpunkt wie gelesen: Rechts- und Hochwert und Höhe in m.
 #[derive(Clone, Debug, PartialEq)]
@@ -1209,15 +1207,17 @@ impl Model {
         // je Zug mit Gebäude: Gebäude und höchster Punkt am Umriss
         let mut hoch: Vec<(BuildingId, Option<f64>)> = Vec::new();
         let umrisse = self.umrisse_der_zuege();
-        lage.ineinander = self.ineinander_rechnen(&umrisse);
+        let nahe = Self::nahe_umrisse(&umrisse);
+        lage.ineinander = self.ineinander_rechnen(&umrisse, &nahe);
         for (k, (id, b, ..)) in umrisse.iter().enumerate() {
             let Some(r) = self.runs.get(*id) else {
                 continue;
             };
-            let along =
-                aufmass.map_or_else(Vec::new, |(t, f)| Self::am_freien_rand(t, &f, &umrisse, k));
+            let along = aufmass.map_or_else(Vec::new, |(t, f)| {
+                Self::am_freien_rand(t, &f, &umrisse, k, &nahe[k])
+            });
             if aufmass.is_some() {
-                let streifen = self.unter_der_trennwand(&umrisse, k);
+                let streifen = self.unter_der_trennwand(&umrisse, k, &nahe[k]);
                 if !streifen.is_empty() {
                     lage.trennwand.insert(*id, (*b, streifen));
                 }
@@ -1300,25 +1300,35 @@ impl Model {
         self.lage().ineinander.clone()
     }
 
-    /// [`Model::haeuser_ineinander`] aus den Umrissen der Züge.
-    fn ineinander_rechnen(&self, umrisse: &[ZugUmriss]) -> Vec<(BuildingId, BuildingId)> {
-        let mut umrisse: Vec<HausUmriss> = umrisse
+    /// [`Model::haeuser_ineinander`] aus den Umrissen der Züge, Paare nur
+    /// unter den nahen Umrissen ([`Model::nahe_umrisse`]).
+    fn ineinander_rechnen(
+        &self,
+        umrisse: &[ZugUmriss],
+        nahe: &[Vec<usize>],
+    ) -> Vec<(BuildingId, BuildingId)> {
+        let haeuser: Vec<Option<Haus>> = umrisse
             .iter()
-            .filter_map(|(_, b, ring, k)| {
+            .map(|(_, b, ..)| {
                 let b = (*b)?;
-                Some((*k, (self.building(b)?.guid, b), ring.as_slice()))
+                Some((self.building(b)?.guid, b))
             })
             .collect();
-        // nach links geordnet: Kandidaten nur bis zum rechten Rand
-        umrisse.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
         let mut paare: Vec<(Haus, Haus)> = Vec::new();
-        for (i, (k, b, ring)) in umrisse.iter().enumerate() {
-            for (l, c, andere) in &umrisse[i + 1..] {
-                if l[0] > k[2] {
-                    break;
-                }
-                let paar = if b.0 < c.0 { (*b, *c) } else { (*c, *b) };
+        for (i, kand) in nahe.iter().enumerate() {
+            let Some(b) = haeuser[i] else {
+                continue;
+            };
+            let (_, _, ring, k) = &umrisse[i];
+            for &j in kand.iter().filter(|&&j| j > i) {
+                let Some(c) = haeuser[j] else {
+                    continue;
+                };
+                let (_, _, andere, l) = &umrisse[j];
+                let paar = if b.0 < c.0 { (b, c) } else { (c, b) };
                 if b.1 != c.1
+                    && l[0] <= k[2]
+                    && k[0] <= l[2]
                     && l[1] <= k[3]
                     && k[1] <= l[3]
                     && !paare.contains(&paar)
@@ -1332,12 +1342,47 @@ impl Model {
         paare.into_iter().map(|(b, c)| (b.1, c.1)).collect()
     }
 
+    /// Je Umriss die Umrisse, deren Rechteck bis [`trennwand::AN_DER_WAND`]
+    /// an seines heranreicht, aufsteigend: ein Gang nach dem linken Rand
+    /// geordnet statt jeder mit jedem (Review B-245g, 1000 Häuser 11,5 ms
+    /// Lage statt 6,0 ms auf main davor). Das Gebäude prüft [`Model::nachbarn`].
+    fn nahe_umrisse(umrisse: &[ZugUmriss]) -> Vec<Vec<usize>> {
+        let d = trennwand::AN_DER_WAND;
+        let mut ord: Vec<usize> = (0..umrisse.len()).collect();
+        ord.sort_by(|&a, &b| umrisse[a].3[0].total_cmp(&umrisse[b].3[0]));
+        let mut nahe = vec![Vec::new(); umrisse.len()];
+        for (i, &a) in ord.iter().enumerate() {
+            let ka = &umrisse[a].3;
+            for &b in &ord[i + 1..] {
+                let kb = &umrisse[b].3;
+                if kb[0] > ka[2] + d {
+                    break;
+                }
+                if kb[1] <= ka[3] + d && ka[1] <= kb[3] + d {
+                    nahe[a].push(b);
+                    nahe[b].push(a);
+                }
+            }
+        }
+        for v in &mut nahe {
+            v.sort_unstable();
+        }
+        nahe
+    }
+
     /// Geländehöhen (Landeswerte) am freien Plattenrand von `umrisse[k]`:
     /// ohne die Stücke in oder an der Platte eines anderen Gebäudes, der
     /// Haustrennwand (H-245a, VOB). Ist kein Stück frei, der ganze Rand.
-    fn am_freien_rand(t: &Terrain, f: &SurveyFrame, umrisse: &[ZugUmriss], k: usize) -> Vec<f64> {
+    /// Nachbarn nur unter den Umrissen `kand` ([`Model::nahe_umrisse`]).
+    fn am_freien_rand(
+        t: &Terrain,
+        f: &SurveyFrame,
+        umrisse: &[ZugUmriss],
+        k: usize,
+        kand: &[usize],
+    ) -> Vec<f64> {
         let ring = &umrisse[k].2;
-        let nb = Self::nachbarn(umrisse, k);
+        let nb = Self::nachbarn(umrisse, k, kand);
         let andere: Vec<&[[f64; 2]]> = nb.iter().map(|r| r.as_ref()).collect();
         let land = |p: [f64; 2]| f.to_survey(p[0], p[1]);
         let frei = trennwand::freie_strecken(ring, &andere);
@@ -1354,7 +1399,12 @@ impl Model {
     /// Platten zwischen ihnen mit dem Fugenstreifen; dann zählt das Rechteck des
     /// anderen, nicht sein Umriss: Neben der schrägen Wand eines gedrehten
     /// Nachbarn liegt sonst der eigene Rand im Fugenstreifen (VOB H-245e).
-    fn nachbarn(umrisse: &[ZugUmriss], k: usize) -> Vec<Cow<'_, [[f64; 2]]>> {
+    /// Gesucht wird unter den Umrissen `kand`, aufsteigend.
+    fn nachbarn<'a>(
+        umrisse: &'a [ZugUmriss],
+        k: usize,
+        kand: &[usize],
+    ) -> Vec<Cow<'a, [[f64; 2]]>> {
         let (_, b, _, mein) = &umrisse[k];
         let d = trennwand::AN_DER_WAND;
         let nah = |k: &[f64; 4]| {
@@ -1367,8 +1417,8 @@ impl Model {
                 || k[1] - mein[3] > -1.0
                 || mein[1] - k[3] > -1.0
         };
-        umrisse
-            .iter()
+        kand.iter()
+            .filter_map(|&j| umrisse.get(j))
             .filter(|(_, x, _, k)| b.is_some() && x.is_some() && x != b && nah(k))
             .map(|(_, _, r, k)| {
                 if getrennt(k) {
@@ -1382,8 +1432,13 @@ impl Model {
 
     /// Streifen der Schürze von `umrisse[k]` unter seiner Haustrennwand
     /// ([`trennwand::unter_der_trennwand`]); leer ohne.
-    fn unter_der_trennwand(&self, umrisse: &[ZugUmriss], k: usize) -> Vec<Vec<[f64; 2]>> {
-        let nb = Self::nachbarn(umrisse, k);
+    fn unter_der_trennwand(
+        &self,
+        umrisse: &[ZugUmriss],
+        k: usize,
+        kand: &[usize],
+    ) -> Vec<Vec<[f64; 2]>> {
+        let nb = Self::nachbarn(umrisse, k, kand);
         let andere: Vec<&[[f64; 2]]> = nb.iter().map(|r| r.as_ref()).collect();
         if andere.is_empty() {
             return Vec::new();
@@ -2002,8 +2057,9 @@ impl Model {
         let b = self.level_building()?;
         let mut hoehen: Vec<f64> = Vec::new();
         let umrisse = self.umrisse_der_zuege();
+        let alle: Vec<usize> = (0..umrisse.len()).collect();
         for k in (0..umrisse.len()).filter(|&k| umrisse[k].1 == Some(b)) {
-            let along = Self::am_freien_rand(t, &f, &umrisse, k);
+            let along = Self::am_freien_rand(t, &f, &umrisse, k, &alle);
             hoehen.extend(along.into_iter().map(|h| (h - h0) * 1000.0));
         }
         let lo = hoehen.iter().copied().reduce(f64::min)?;
@@ -3039,5 +3095,50 @@ mod tests {
         let k = t.netz_schluessel();
         t.breaks.clear();
         assert_ne!(k, t.netz_schluessel());
+    }
+
+    /// Nahe Umrisse über den geordneten Gang wie jeder mit jedem (Review
+    /// B-245g): Wand an Wand, knapp getrennt, mit Fuge, weit weg, versetzt
+    /// und gedreht.
+    #[test]
+    fn nahe_umrisse_wie_jeder_mit_jedem() {
+        let mut m = Model::with_seed(9);
+        let mut x0 = 0.0;
+        for (i, spalt) in [0.0, 10.0, 630.0, 2000.0, 0.0, 15000.0, 5.0]
+            .into_iter()
+            .enumerate()
+        {
+            for zeile in 0..3 {
+                let b = m.add_building(1);
+                let y0 = zeile as f64 * (10000.0 + spalt) + (i % 2) as f64 * 3000.0;
+                let (w, dreh) = (8000.0, if i == 4 { 0.3 } else { 0.0 });
+                let p = |dx: f64, dy: f64| {
+                    let (c, s) = (f64::cos(dreh), f64::sin(dreh));
+                    vec3(x0 + c * dx - s * dy, y0 + s * dx + c * dy, 0.0)
+                };
+                let pts = [p(0.0, 0.0), p(w, 0.0), p(w, 10000.0), p(0.0, 10000.0)];
+                m.build_from_polygon(b, &pts).unwrap();
+            }
+            x0 += 8000.0 + spalt;
+        }
+        let u = m.umrisse_der_zuege();
+        let d = trennwand::AN_DER_WAND;
+        let nahe = Model::nahe_umrisse(&u);
+        let mut paare = 0;
+        for (k, (.., mein)) in u.iter().enumerate() {
+            let soll: Vec<usize> = (0..u.len())
+                .filter(|&j| j != k)
+                .filter(|&j| {
+                    let o = &u[j].3;
+                    o[0] <= mein[2] + d
+                        && mein[0] <= o[2] + d
+                        && o[1] <= mein[3] + d
+                        && mein[1] <= o[3] + d
+                })
+                .collect();
+            paare += soll.len();
+            assert_eq!(nahe[k], soll, "{k}");
+        }
+        assert!(paare > 20, "{paare}");
     }
 }
