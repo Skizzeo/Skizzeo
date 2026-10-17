@@ -15,15 +15,19 @@ use std::fmt::Write;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Obj {
     pub obj: String,
+    /// Name der MTL-Datei, ohne Leerraum: `mtllib` trennt Dateien am
+    /// Leerzeichen (Review B-258b).
+    pub mtl_datei: String,
     pub mtl: String,
     pub bilder: Vec<(String, Vec<u8>)>,
 }
 
 /// Die OBJ-Datei mit ihrer MTL-Datei `{stamm}.mtl` und den Bildern
-/// `{stamm}_{Material}.png`, alle neben der OBJ-Datei.
+/// `{stamm}_{Material}.png`, alle neben der OBJ-Datei; im Stamm wird
+/// Leerraum zu `_` ([`ohne_leerraum`]).
 pub fn schreiben(s: &Szene, lage: &Lage, stamm: &str) -> Obj {
     let namen = material_namen(s);
-    let mtl = format!("{stamm}.mtl");
+    let mtl = format!("{}.mtl", ohne_leerraum(stamm));
     let mut o = String::new();
     let _ = writeln!(o, "# Skizzeo, {}", s.name);
     let _ = writeln!(o, "# Einheit m, {} oben", achse(lage));
@@ -106,6 +110,7 @@ pub fn schreiben(s: &Szene, lage: &Lage, stamm: &str) -> Obj {
     }
     Obj {
         obj: o,
+        mtl_datei: mtl,
         mtl: m,
         bilder,
     }
@@ -219,6 +224,8 @@ mod tests {
             hoehe: 1000.0,
         });
         let r = schreiben(&s, &Lage::default(), "Mein Haus");
+        assert!(r.obj.contains("\nmtllib Mein_Haus.mtl\n"), "{}", r.obj);
+        assert_eq!(r.mtl_datei, "Mein_Haus.mtl");
         assert!(
             r.mtl.contains("map_Kd Mein_Haus_Ziegel__rot.png\n"),
             "{}",

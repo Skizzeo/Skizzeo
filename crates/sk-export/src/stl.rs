@@ -8,6 +8,7 @@
 //! dünner werden als eine Düse breit ist ([`MIN_DICKE`]).
 
 use crate::{kreuz, laenge, punkt, sub, Szene, P3};
+use std::collections::HashMap;
 
 /// Dünner als das (mm im Druck) druckt eine übliche 0,4-mm-Düse nicht
 /// sicher: zwei Bahnen.
@@ -71,18 +72,26 @@ fn druck(s: &Szene, massstab: f64) -> (Vec<(P3, [P3; 3])>, DruckBericht) {
     let lo = s.rahmen().map_or([0.0; 3], |r| r.0);
     let mut tris = Vec::with_capacity(s.dreiecke());
     let mut duenn: Vec<(String, f64)> = Vec::new();
+    // Stelle je Name in `duenn`: Teile gleichen Namens bleiben eine Zeile
+    // (Review B-258a: nicht in der ganzen Liste suchen)
+    let mut wo: HashMap<String, usize> = HashMap::new();
     s.je_knoten(|pfad, kn| {
+        let mut am_duennsten: Option<f64> = None;
         for n in &kn.netze {
             for d in &n.dreiecke {
                 tris.push((d.n, d.p.map(|p| sub(p, lo).map(|c| c * k))));
             }
-            if let Some(t) = dicke(n).map(|t| t * k) {
-                if t < MIN_DICKE {
-                    let name = pfad.join(" / ");
-                    match duenn.iter_mut().find(|(p, _)| *p == name) {
-                        Some((_, alt)) => *alt = alt.min(t),
-                        None => duenn.push((name, t)),
-                    }
+            if let Some(t) = dicke(n).map(|t| t * k).filter(|t| *t < MIN_DICKE) {
+                am_duennsten = Some(am_duennsten.map_or(t, |a| a.min(t)));
+            }
+        }
+        if let Some(t) = am_duennsten {
+            let name = pfad.join(" / ");
+            match wo.get(&name) {
+                Some(&i) => duenn[i].1 = duenn[i].1.min(t),
+                None => {
+                    wo.insert(name.clone(), duenn.len());
+                    duenn.push((name, t));
                 }
             }
         }
@@ -158,6 +167,24 @@ mod tests {
         assert_eq!(r.duenn.len(), 3);
         let (_, r) = binaer(&s, 100.0);
         assert!(r.duenn.is_empty());
+    }
+
+    #[test]
+    fn duenne_teile_gleichen_namens_eine_zeile() {
+        let mut s = probe::szene();
+        let g = s.knoten.iter_mut().find(|k| k.name == "Gebäude 1").unwrap();
+        let mut w = crate::Knoten::neu("AW-001");
+        w.netze.push(probe::wuerfel([4000.0, 0.0, 0.0], 500.0, 0));
+        g.kinder[0].kinder.push(w);
+        let (_, r) = binaer(&s, 500.0);
+        let aw: Vec<f64> = (r.duenn.iter())
+            .filter(|d| d.0 == "Gebäude 1 / Erdgeschoss / AW-001")
+            .map(|d| d.1)
+            .collect();
+        assert_eq!(r.duenn.len(), 3);
+        // die dünnere der beiden Wände, wie DE-001 (Würfel 0,5 m)
+        assert_eq!(aw.len(), 1);
+        assert!((aw[0] - r.duenn[0].1).abs() < 1e-9, "{:?}", r.duenn);
     }
 
     #[test]

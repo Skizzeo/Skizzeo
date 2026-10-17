@@ -140,10 +140,7 @@ impl App {
                 let r = sk_export::obj::schreiben(&szene, &lage(oben, utm), &stamm);
                 let mut d = vec![
                     (path.clone(), r.obj.into_bytes()),
-                    (
-                        path.with_file_name(format!("{stamm}.mtl")),
-                        r.mtl.into_bytes(),
-                    ),
+                    (path.with_file_name(&r.mtl_datei), r.mtl.into_bytes()),
                 ];
                 for (name, png) in r.bilder {
                     d.push((path.with_file_name(name), png));
