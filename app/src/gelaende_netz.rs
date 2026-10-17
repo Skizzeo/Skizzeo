@@ -41,7 +41,7 @@ use sk_render::{DashPattern, Helper};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
-mod gitter;
+pub(crate) mod gitter;
 
 /// Abstand der Höhenlinien im Grundriss (m); volle Meter sind
 /// Hauptlinien, nur sie stehen in 3D. Gäbe er zu viele Stücke, gilt der
@@ -1756,6 +1756,45 @@ pub(crate) mod tests {
         assert!(m.import_terrain(t));
         m.commit();
         m
+    }
+
+    /// Kanten, die nur ein Dreieck hat, mit Punkten auf 0,001 mm
+    /// verschweißt (offen; ein dichter Körper hat keine).
+    /// Kanten, die nur ein Dreieck hat (Punkte auf 0,001 mm verschweißt).
+    fn offene_kanten(s: &Solid) -> Vec<[Vec3; 2]> {
+        let k = |p: Vec3| [p.x, p.y, p.z].map(|v| (v * 1000.0).round() as i64);
+        let mut n: HashMap<_, (i32, [Vec3; 2])> = HashMap::new();
+        for t in &s.triangles {
+            for i in 0..3 {
+                let (p, q) = (t.p[i], t.p[(i + 1) % 3]);
+                let (a, b) = (k(p), k(q));
+                if a == b {
+                    continue;
+                }
+                n.entry(if a < b { (a, b) } else { (b, a) })
+                    .or_insert((0, [p, q]))
+                    .0 += 1;
+            }
+        }
+        n.into_values().filter(|e| e.0 == 1).map(|e| e.1).collect()
+    }
+
+    /// Der Export bleibt mit der Grube des Bodenaufbaus dicht (Gelände
+    /// G-261c): in der Reichweite des Hauses hat jede Kante zwei Dreiecke.
+    /// Der Ring weiter außen ist schon auf main offen (Geländeplanung).
+    #[test]
+    fn export_mit_grube_dicht() {
+        let m = lindenhof();
+        for show in [Show::All, Show::Parcel] {
+            let mut g = Gelaende::aus(&m).unwrap();
+            g.show = show;
+            assert_eq!(g.aufbau.haeuser.len(), 1);
+            let k = g.aufbau.haeuser[0].kasten;
+            let drin = |p: Vec3| p.x >= k[0] && p.y >= k[1] && p.x <= k[2] && p.y <= k[3];
+            let offen = offene_kanten(&export_koerper(g, [10, 11]));
+            let nah: Vec<_> = offen.iter().filter(|e| drin(e[0]) || drin(e[1])).collect();
+            assert!(nah.is_empty(), "{show:?}: {nah:?}");
+        }
     }
 
     fn flaeche(d: &[[Vec3; 3]]) -> f64 {

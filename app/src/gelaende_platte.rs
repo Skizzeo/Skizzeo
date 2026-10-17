@@ -245,7 +245,10 @@ impl Platte {
                 self.platten = e.build();
                 self.eingabe = Some(Arc::new(e));
             }
-            let ba = Bodenaufbau::aus(m);
+            // mit Aufmaß hat das Gelände ihn schon (Review H-261c)
+            let ba = g
+                .as_ref()
+                .map_or_else(|| Bodenaufbau::aus(m), |g| g.aufbau.clone());
             let anders = *self.aufbau != ba;
             if anders {
                 self.aufbau = Arc::new(ba);
@@ -307,7 +310,9 @@ impl Platte {
             let u = abbild.map(|a| (a.key, a.linien(&kopie)));
             let l = u.as_ref().map_or(&[][..], |u| &u.1[..]);
             let g = Gelaende::aus(&kopie).map(|g| g.mit_unterlage(l));
-            let ba = Bodenaufbau::aus(&kopie);
+            let ba = g
+                .as_ref()
+                .map_or_else(|| Bodenaufbau::aus(&kopie), |g| g.aufbau.clone());
             let r = if alt.as_deref() == Some(&e) && ohne && g.is_none() && *alt_ba == ba {
                 Ergebnis::Gleich
             } else {
@@ -1303,7 +1308,12 @@ pub(crate) fn export_koerper(m: &Model, keys: [u16; 2]) -> Option<Solid> {
         .fold(f64::INFINITY, f64::min);
     let mut s = Solid::default();
     for p in &plates {
-        s.append(&koerper(p, boden, [keys[0], keys[1], keys[0]]));
+        s.append(&koerper(
+            p,
+            boden,
+            [keys[0], keys[1], keys[0]],
+            &Bodenaufbau::default(),
+        ));
     }
     (!s.triangles.is_empty()).then_some(s)
 }

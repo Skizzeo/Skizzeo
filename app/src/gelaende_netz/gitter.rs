@@ -5,13 +5,14 @@
 //! Häuser.
 
 /// Rechteck: x, y von, x, y bis.
-pub(super) type Kasten = [f64; 4];
+pub(crate) type Kasten = [f64; 4];
 
 /// Höchstens so viele Felder je Richtung.
 const MAX_FELDER: usize = 1024;
 
 /// Rechtecke und je Feld die Stellen, deren Rechteck es trifft.
-pub(super) struct Gitter {
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Gitter {
     kaesten: Vec<Kasten>,
     /// Ecke des Rasters und Kantenlänge eines Felds (mm).
     lo: [f64; 2],
@@ -32,7 +33,7 @@ impl Gitter {
     /// Raster über `kaesten`: ein Feld ist etwa so groß wie das mittlere
     /// Rechteck, mindestens so groß, dass auf jedes Rechteck ein Feld
     /// kommt, und höchstens [`MAX_FELDER`] je Richtung.
-    pub(super) fn neu(kaesten: Vec<Kasten>) -> Gitter {
+    pub(crate) fn neu(kaesten: Vec<Kasten>) -> Gitter {
         let gueltig = |k: &Kasten| k.iter().all(|v| v.is_finite()) && k[0] <= k[2] && k[1] <= k[3];
         let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
         let (mut n, mut mittel) = (0usize, 0.0);
@@ -124,7 +125,7 @@ impl Gitter {
 
     /// Stellen der Rechtecke, die `k` treffen (Rand eingeschlossen),
     /// aufsteigend und ohne doppelte, nach `out`.
-    pub(super) fn bei(&self, k: &Kasten, out: &mut Vec<u32>) {
+    pub(crate) fn bei(&self, k: &Kasten, out: &mut Vec<u32>) {
         out.clear();
         let Some((x0, x1, y0, y1)) = self.spanne(k) else {
             return;

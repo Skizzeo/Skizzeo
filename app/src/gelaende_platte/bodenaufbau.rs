@@ -21,11 +21,13 @@
 //! Betonieren da.
 
 use crate::draw_table::{fill_kind, LineLook, MatLook};
+use crate::gelaende_netz::gitter::Gitter;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::qto_earth::SENKRECHT_BIS;
 use sk_model::solid::{right_of, SectionFrame};
-use sk_model::{edge_kind, material, FootingShape, GroundBasis, Model, Solid};
+use sk_model::{edge_kind, material, BuildingId, FootingShape, GroundBasis, Model, Solid};
 use sk_ui::theme::Theme;
+use std::collections::HashMap;
 
 type P2 = [f64; 2];
 
@@ -181,15 +183,26 @@ pub(crate) struct Aufbau {
     w: f64,
     k: f64,
     /// Reichweite im Grundriss (x0, y0, x1, y1).
-    kasten: [f64; 4],
+    pub(crate) kasten: [f64; 4],
 }
 
 /// Die Gründungen des Projekts mit ihrem Aufbau und die Dicke des
 /// gewachsenen Oberbodens.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Bodenaufbau {
     pub(crate) haeuser: Vec<Aufbau>,
     oberboden: f64,
+    /// Raster über der Reichweite der Häuser (`Aufbau::kasten`): Eine
+    /// Stelle prüft nur die Häuser in ihrer Nähe (Review B-261a, sonst je
+    /// Stelle alle Häuser, das Netz der Platten bei 4000 Häusern 0,8 s).
+    raster: Gitter,
+}
+
+/// Gleich, wenn die Häuser gleich sind; das Raster folgt aus ihnen.
+impl PartialEq for Bodenaufbau {
+    fn eq(&self, o: &Bodenaufbau) -> bool {
+        self.haeuser == o.haeuser && self.oberboden == o.oberboden
+    }
 }
 
 fn flach(r: &[Vec3]) -> Vec<P2> {
@@ -234,15 +247,26 @@ impl Bodenaufbau {
         m.lesend(|| {
             let boden = m.project().soil;
             let andecken = m.site_soil().spread.max(0.0);
+            // die Umrisse je Gebäude, einmal gesammelt (Review B-261b:
+            // sonst je Gründung alle Umrisse)
             let umrisse = m.plate_outlines();
-            let haeuser = m
+            let mut je_haus: HashMap<BuildingId, Vec<&[Vec3]>> = HashMap::new();
+            for (b, r) in &umrisse {
+                je_haus.entry(*b).or_default().push(r);
+            }
+            let haeuser: Vec<Aufbau> = m
                 .ground_bases()
                 .iter()
-                .filter_map(|g| Aufbau::neu(m, g, &boden, andecken, &umrisse))
+                .filter_map(|g| {
+                    let u = g.building.and_then(|b| je_haus.get(&b));
+                    Aufbau::neu(m, g, &boden, andecken, u.map_or(&[][..], |u| &u[..]))
+                })
                 .collect();
+            let raster = Gitter::neu(haeuser.iter().map(|h| h.kasten).collect());
             Bodenaufbau {
                 haeuser,
                 oberboden: boden.oberboden.max(0.0),
+                raster,
             }
         })
     }
@@ -256,9 +280,21 @@ impl Bodenaufbau {
             .fold(unten, f64::min)
     }
 
+    /// Die Häuser, in deren Reichweite `q` liegt (aus dem Raster).
+    fn bei(&self, q: P2) -> impl Iterator<Item = &Aufbau> {
+        let mut nah = Vec::new();
+        self.raster.bei(&[q[0], q[1], q[0], q[1]], &mut nah);
+        nah.into_iter()
+            .filter_map(|i| self.haeuser.get(i as usize))
+            .filter(move |h| {
+                let k = h.kasten;
+                q[0] >= k[0] && q[1] >= k[1] && q[0] <= k[2] && q[1] <= k[3]
+            })
+    }
+
     /// Liegt `q` auf dem Außenumriss eines Hauses (1 mm)?
     pub(crate) fn am_haus(&self, q: P2) -> bool {
-        self.haeuser.iter().any(|h| abstand(&h.haus, q) < 1.0)
+        self.bei(q).any(|h| abstand(&h.haus, q) < 1.0)
     }
 
     /// Schichten an der Stelle `q` außerhalb der Häuser mit OK Gelände
@@ -276,12 +312,7 @@ impl Bodenaufbau {
     /// Das Haus, in dessen Reichweite `q` liegt, mit dem kleinsten Abstand
     /// zur Platte.
     fn naechstes(&self, q: P2) -> Option<(&Aufbau, f64)> {
-        self.haeuser
-            .iter()
-            .filter(|h| {
-                let k = h.kasten;
-                q[0] >= k[0] && q[1] >= k[1] && q[0] <= k[2] && q[1] <= k[3]
-            })
+        self.bei(q)
             .map(|h| (h, abstand(&h.platte, q)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }
@@ -319,7 +350,7 @@ impl Aufbau {
         g: &GroundBasis,
         boden: &sk_model::qto_earth::Boden,
         andecken: f64,
-        umrisse: &[(sk_model::BuildingId, Vec<Vec3>)],
+        umrisse: &[&[Vec3]],
     ) -> Option<Aufbau> {
         let fu = m.foundation(g.run)?.ok()?;
         let platte = flach(&polygon::to_ccw(&g.outline));
@@ -335,8 +366,7 @@ impl Aufbau {
         ];
         let haus = umrisse
             .iter()
-            .filter(|(b, _)| Some(*b) == g.building)
-            .map(|(_, r)| flach(&polygon::to_ccw(r)))
+            .map(|r| flach(&polygon::to_ccw(r)))
             .find(|r| drin(r, innen_pt))
             .unwrap_or_else(|| platte.clone());
         let innen = match &fu.footing {
@@ -652,6 +682,25 @@ fn wand(
     s.edge(pa(ab), pb(ab));
 }
 
+/// Die Punkte von `a` nach `b` (in ihrer Höhe), dazwischen die aus `teile`,
+/// die auf der Strecke liegen, der Reihe nach.
+fn auf_kante(a: Vec3, b: Vec3, teile: &[P2]) -> Vec<Vec3> {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let l2 = dx * dx + dy * dy;
+    let mut ts: Vec<f64> = teile
+        .iter()
+        .filter(|q| sk_math::dist_to_segment((q[0], q[1]), (a.x, a.y), (b.x, b.y)) < 1e-6)
+        .map(|q| ((q[0] - a.x) * dx + (q[1] - a.y) * dy) / l2.max(1e-18))
+        .filter(|&t| t > 1e-9 && t < 1.0 - 1e-9)
+        .collect();
+    ts.sort_by(f64::total_cmp);
+    ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+    let mut out = vec![a];
+    out.extend(ts.into_iter().map(|t| a + (b - a) * t));
+    out.push(b);
+    out
+}
+
 /// Waagerechte Fläche nach oben aus Dreiecken.
 fn deckel(s: &mut Solid, p: [Vec3; 3]) {
     s.triangles.push(sk_model::solid::Tri {
@@ -682,7 +731,9 @@ pub(crate) fn grube(
     };
     let lerp = |a: P2, b: P2, t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
     for h in &ba.haeuser {
-        // am Haus nach innen gerichtet: die Kanten rückwärts
+        // am Haus nach innen gerichtet: die Kanten rückwärts; die Teilstellen
+        // bekommt auch die Sohle, damit der Körper dicht ist (Export)
+        let mut teile: Vec<P2> = Vec::new();
         let n = h.haus.len();
         for i in 0..n {
             let (a, b) = (h.haus[(i + 1) % n], h.haus[i]);
@@ -690,6 +741,7 @@ pub(crate) fn grube(
             ts.extend([0.0, 1.0]);
             ts.sort_by(f64::total_cmp);
             ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+            teile.extend(ts[1..ts.len() - 1].iter().map(|&t| lerp(a, b, t)));
             for w in ts.windows(2) {
                 let (p, q) = (lerp(a, b, w[0]), lerp(a, b, w[1]));
                 let st = |x: P2| {
@@ -709,7 +761,9 @@ pub(crate) fn grube(
                 let m = c0.len();
                 for i in 0..m {
                     let j = (i + 1) % m;
-                    deckel(&mut s, [c0[i], c0[j], c1[map[j]]]);
+                    for w in auf_kante(c0[i], c0[j], &teile).windows(2) {
+                        deckel(&mut s, [w[0], w[1], c1[map[j]]]);
+                    }
                     if map[i] != map[j] {
                         deckel(&mut s, [c0[i], c1[map[j]], c1[map[i]]]);
                     }
@@ -770,6 +824,60 @@ mod tests {
         let ba = Bodenaufbau::aus(m);
         assert_eq!(ba.haeuser.len(), 1);
         ba.haeuser[0].clone()
+    }
+
+    /// Über das Raster dieselben Häuser wie über alle (Review B-261a): 3 × 3
+    /// Häuser zu 10 × 8 m, 12 m auseinander, die Reichweiten überlappen.
+    #[test]
+    fn raster_wie_alle_haeuser() {
+        let mut m = Model::with_seed(3);
+        for i in 0..9 {
+            let b = m.add_building(1);
+            let (ox, oy) = ((i % 3) as f64 * 22_000.0, (i / 3) as f64 * 20_000.0);
+            let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+            let pts = [
+                p(0.0, 0.0),
+                p(10_000.0, 0.0),
+                p(10_000.0, 8_000.0),
+                p(0.0, 8_000.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+        }
+        let ba = Bodenaufbau::aus(&m);
+        assert_eq!(ba.haeuser.len(), 9);
+        let alle = |q: P2| {
+            ba.haeuser
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| {
+                    let k = h.kasten;
+                    q[0] >= k[0] && q[1] >= k[1] && q[0] <= k[2] && q[1] <= k[3]
+                })
+                .map(|(i, h)| (i, abstand(&h.platte, q)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|x| x.0)
+        };
+        let (mut nah, mut am) = (0, 0);
+        for i in -20..90 {
+            for j in -20..80 {
+                let q = [i as f64 * 777.0, j as f64 * 733.0];
+                let r = ba.naechstes(q).map(|(h, _)| h as *const Aufbau);
+                let a = alle(q).map(|i| &ba.haeuser[i] as *const Aufbau);
+                assert_eq!(r, a, "{q:?}");
+                nah += usize::from(r.is_some());
+                let brute = ba.haeuser.iter().any(|h| abstand(&h.haus, q) < 1.0);
+                assert_eq!(ba.am_haus(q), brute, "{q:?}");
+            }
+        }
+        // auf den Kanten der Häuser
+        for h in &ba.haeuser {
+            for w in h.haus.windows(2) {
+                let q = [(w[0][0] + w[1][0]) / 2.0, (w[0][1] + w[1][1]) / 2.0];
+                assert!(ba.am_haus(q));
+                am += 1;
+            }
+        }
+        assert!(nah > 100 && am > 0);
     }
 
     /// Platte über dem gewachsenen Boden: 80 cm ausgekoffert, Füllsand bis
