@@ -1859,9 +1859,17 @@ fn ohne_auto(
         ohne[*i].menge = drei(*summe, einheit);
         return;
     }
+    // die Bedeutung bis zur Erläuterung („: Fläche / Achsabstand …“, „;
+    // am Flachdach gilt …“, „(Homogenbereich B1)“): ein Satz für Menschen
     let text = sk_model::qto::auto_schluessel()
         .find(|(key, ..)| *key == a.key)
-        .map_or(a.key, |(_, _, t)| t)
+        .map_or("Automatikmenge", |(_, _, t)| {
+            [": ", "; ", " ("]
+                .iter()
+                .filter_map(|x| t.find(x))
+                .min()
+                .map_or(t, |i| &t[..i])
+        })
         .to_string();
     let gruppe = a.key.split_once('.').map_or(a.key, |(g, _)| g);
     let gewerk = k
@@ -1889,14 +1897,14 @@ fn ohne_auto(
 }
 
 /// „Ohne Bauleistung: Graben der Frostschürze im eingebauten Füllsand
-/// (SP-001), 7,024 m³, keine Bauleistung mit auto=earth.trench_sand im
-/// Katalog, die Menge bleibt ohne Preis“ (K-280a).
+/// (SP-001), 7,024 m³: Der Katalog hat dafür keine Bauleistung, die Menge
+/// bleibt ohne Preis“ (K-280a). Ohne den Schlüssel: Sätze für Menschen.
 pub fn ohne_auto_text(o: &OhneZeile) -> String {
-    let OhneHerkunft::Automatik { key, text } = &o.herkunft else {
+    let OhneHerkunft::Automatik { text, .. } = &o.herkunft else {
         return String::new();
     };
     format!(
-        "Ohne Bauleistung: {text} ({}), {} {}, keine Bauleistung mit auto={key} im Katalog, die Menge bleibt ohne Preis",
+        "Ohne Bauleistung: {text} ({}), {} {}: Der Katalog hat dafür keine Bauleistung, die Menge bleibt ohne Preis",
         o.nummer,
         crate::lv::menge_deutsch(o.menge),
         o.einheit.zeichen()

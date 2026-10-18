@@ -466,7 +466,7 @@ fn erdmenge_ohne_bauleistung_im_katalog() {
         assert!(w81[0].starts_with("Ohne Bauleistung: "), "{w81:?}");
         assert!(
             w81[0].ends_with(
-                "47,365 m³, keine Bauleistung mit auto=earth.sand im Katalog, die Menge bleibt ohne Preis"
+                "(SP-001), 47,365 m³: Der Katalog hat dafür keine Bauleistung, die Menge bleibt ohne Preis"
             ),
             "{w81:?}"
         );
@@ -487,7 +487,7 @@ fn erdmenge_ohne_bauleistung_im_katalog() {
                     .filter(|f| {
                         f.regel == 81
                             && f.schwere == sk_cost::befund::Schwere::Fehler
-                            && f.satz.contains("auto=earth.")
+                            && f.satz.contains("Der Katalog hat dafür keine Bauleistung")
                     })
                     .count()
             })
