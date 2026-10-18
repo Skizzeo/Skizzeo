@@ -90,7 +90,7 @@ impl App {
         self.ext.bib = self.ext.ablage.bibliothek();
         if let Some(c) = self.catalog.as_mut() {
             c.set_ext(&self.ext.bib.defs);
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
         }
         self.ext_sync();
         let z = ev::zeilen(

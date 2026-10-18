@@ -625,12 +625,8 @@ struct App {
     recent_on: bool,
     /// Beenden bestätigt: die Schleife endet.
     quit: bool,
-    /// Einstellungsfenster (E5), was es sich für die Sitzung merkt, und ob
-    /// sein Bild bzw. sein Aufklapper neu zu zeichnen ist.
-    prefs: Option<prefs::Prefs>,
-    prefs_mem: prefs::Memory,
-    prefs_dirty: bool,
-    prefs_popup_dirty: bool,
+    /// Einstellungsfenster (E5) und sein Zustand in der App (T4).
+    einst: zustand::Einstellfenster,
     /// Stand der Vorschau im Fenster „Muster“ (Lage, Szene), `None` = aus.
     pattern_preview: Option<([i32; 4], pattern_view::Input)>,
     /// Einstellungsdatei (Ort, Stand beim Laden).
@@ -1495,7 +1491,7 @@ impl App {
 
     /// Ein Fenster liegt vorn (Einstellungen, Bauteilkatalog, Baustoffe).
     fn modal(&self) -> bool {
-        self.prefs.is_some()
+        self.einst.fenster.is_some()
             || self.catalog.is_some()
             || self.materials.is_some()
             || self.verwaltung.is_some()
@@ -1518,7 +1514,7 @@ impl App {
         c.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
         c.set_ext(&self.ext.bib.defs);
         self.catalog = Some(c);
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -1546,8 +1542,8 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
-                self.prefs_popup_dirty = true;
+                self.einst.bild_neu = true;
+                self.einst.aufklapper_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -1595,8 +1591,8 @@ impl App {
                 self.redraw = true;
             }
         }
-        self.prefs_dirty |= out.repaint || out.closed;
-        self.prefs_popup_dirty |= out.popup || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
+        self.einst.aufklapper_neu |= out.popup || out.closed;
         if let Some(h) = out.highlight {
             self.highlight(h);
         } else if out.closed {
@@ -1645,7 +1641,7 @@ impl App {
         );
         m.set_rahmen(self.rolle() == sk_cost::Rolle::Nutzer, self.ui.frei);
         self.materials = Some(m);
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -1767,7 +1763,7 @@ impl App {
             v.sperren();
         }
         self.verwaltung = Some(v);
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -1800,7 +1796,7 @@ impl App {
         let mut v = verwaltung::Verwaltung::open(self.scene.fertig(), self.company.as_ref(), None);
         if v.ablauf_im_haus(g) {
             self.verwaltung = Some(v);
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
             self.overlay_dirty = true;
         }
     }
@@ -1827,7 +1823,7 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
+                self.einst.bild_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -1899,7 +1895,7 @@ impl App {
                     self.redraw = true;
                 }
             }
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
             self.sync_caption(surface);
             return true;
         }
@@ -1947,7 +1943,7 @@ impl App {
                     }
                 }
             }
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
         }
         let mut entwurf = out.entwurf;
         if let Some(stand) = out.zurueck {
@@ -1959,11 +1955,11 @@ impl App {
                 v.zuruecknehmen(stand, r.map_err(|m| m.to_string()));
                 entwurf |= v.entwurf_faellig();
             }
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
         }
         if entwurf || out.freigeben || out.entwurf_verwerfen || out.satz_verwerfen.is_some() {
             self.verwaltung_entwurf(&out, entwurf);
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
         }
         if out.closed {
             if let Some(m) = self.verwaltung.take().and_then(|v| v.beim_schliessen()) {
@@ -1980,12 +1976,12 @@ impl App {
                 self.redraw = true;
             }
         }
-        self.prefs_dirty |= out.repaint || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
         if let Some(g) = out.open_type {
             // Typpflege bleibt im Bauteilkatalog (paket-ka3a §3)
             self.verwaltung = None;
             self.overlay_dirty = true;
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
             self.open_catalog();
             if let Some(c) = self.catalog.as_mut() {
                 c.show_guid(g);
@@ -2020,7 +2016,7 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
+                self.einst.bild_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -2069,7 +2065,7 @@ impl App {
                 self.redraw = true;
             }
         }
-        self.prefs_dirty |= out.repaint || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
         if out.pick_company {
             self.pick_company(surface);
         }
@@ -2131,8 +2127,8 @@ impl App {
         if let Some(v) = self.materials.as_mut() {
             v.set_company(self.company.as_ref());
         }
-        self.prefs_dirty = true;
-        self.prefs_popup_dirty = true;
+        self.einst.bild_neu = true;
+        self.einst.aufklapper_neu = true;
     }
 
     /// Einstellungsfenster öffnen; ist es offen, bleibt es (es liegt ohnehin
@@ -2147,15 +2143,15 @@ impl App {
         self.ui.hover = None;
         self.title.hover = None;
         let p = prefs::Prefs::open(&mut self.scene, &self.theme)
-            .with_memory(&self.prefs_mem)
+            .with_memory(&self.einst.merk)
             .with_vorgaben(self.settings.vorgaben)
             .with_firmenstil(self.settings.firmenstil())
             .with_pattern_error(self.renderer.pattern_error());
-        self.prefs = Some(p);
-        if let (Some(p), Some(c)) = (self.prefs.as_mut(), &self.company) {
+        self.einst.fenster = Some(p);
+        if let (Some(p), Some(c)) = (self.einst.fenster.as_mut(), &self.company) {
             p.set_company_presets(c.library().presets.clone());
         }
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -2186,8 +2182,8 @@ impl App {
         self.mark_keys = [None; MARKS];
         self.room_keys = Default::default();
         self.overlay_dirty = true;
-        self.prefs_dirty = true;
-        self.prefs_popup_dirty = true;
+        self.einst.bild_neu = true;
+        self.einst.aufklapper_neu = true;
         self.redraw = true;
         self.refresh_cursor();
     }
@@ -2208,9 +2204,9 @@ impl App {
             Event::CloseRequested { ask } => {
                 // Wie OK, danach fragt „Beenden“ nach dem Projekt
                 if ask {
-                    if let Some(mut p) = self.prefs.take() {
+                    if let Some(mut p) = self.einst.fenster.take() {
                         p.ok(&mut self.scene, &self.theme, &mut self.settings);
-                        self.prefs_mem = p.memory();
+                        self.einst.merk = p.memory();
                     }
                     self.paint_prefs();
                 }
@@ -2221,8 +2217,8 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
-                self.prefs_popup_dirty = true;
+                self.einst.bild_neu = true;
+                self.einst.aufklapper_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -2246,7 +2242,7 @@ impl App {
             _ => {}
         }
         let win = self.prefs_win();
-        let Some(p) = self.prefs.as_mut() else {
+        let Some(p) = self.einst.fenster.as_mut() else {
             return false;
         };
         let mut cx = prefs::Ctx {
@@ -2258,12 +2254,12 @@ impl App {
         };
         let out = p.handle(&e, &mut cx);
         if out.closed {
-            self.prefs_mem = p.memory();
-            self.prefs = None;
+            self.einst.merk = p.memory();
+            self.einst.fenster = None;
             self.overlay_dirty = true;
         }
         if out.moved {
-            if let Some(p) = &self.prefs {
+            if let Some(p) = &self.einst.fenster {
                 let (x, y) = p.origin(&self.theme, &win);
                 self.renderer.move_overlay(OVERLAY_PREFS, x, y);
                 self.redraw = true;
@@ -2273,8 +2269,8 @@ impl App {
         if out.save_preset {
             self.save_pattern_preset();
         }
-        self.prefs_dirty |= out.repaint || out.closed;
-        self.prefs_popup_dirty |= out.popup || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
+        self.einst.aufklapper_neu |= out.popup || out.closed;
         if out.theme {
             self.theme_changed();
         }
@@ -2289,7 +2285,7 @@ impl App {
 
     /// Einstellungsfenster und Aufklapper zeichnen oder ausblenden.
     fn paint_prefs(&mut self) {
-        self.prefs_dirty = false;
+        self.einst.bild_neu = false;
         self.paint_prefs_popup();
         let win = self.prefs_win();
         if let Some(v) = self.verwaltung.as_mut() {
@@ -2338,7 +2334,7 @@ impl App {
             self.redraw = true;
             return;
         }
-        let Some(p) = self.prefs.as_mut() else {
+        let Some(p) = self.einst.fenster.as_mut() else {
             self.renderer.set_overlay(OVERLAY_PREFS, 0, 0, 0, 0, &[]);
             self.sync_pattern_preview();
             return;
@@ -2365,7 +2361,8 @@ impl App {
     fn sync_pattern_preview(&mut self) {
         let win = self.prefs_win();
         let pv = self
-            .prefs
+            .einst
+            .fenster
             .as_mut()
             .and_then(|p| p.pattern_preview(&self.theme, &win, &self.scene));
         let Some(mut pv) = pv else {
@@ -2408,7 +2405,8 @@ impl App {
         }
         self.pattern_preview = Some((pv.at, pv.input));
         let fade = self
-            .prefs
+            .einst
+            .fenster
             .as_ref()
             .map_or(0.0, |p| p.pattern_fade(&self.theme));
         self.renderer.set_preview_fade(fade);
@@ -2418,7 +2416,7 @@ impl App {
     /// „Als Vorlage speichern …“: in den Firmenkatalog schreiben und das
     /// Ergebnis im Fuß des Fensters „Muster“ zeigen.
     fn save_pattern_preset(&mut self) {
-        let Some(p) = self.prefs.as_mut() else {
+        let Some(p) = self.einst.fenster.as_mut() else {
             return;
         };
         let Some((name, pattern, base)) = p.take_save_preset() else {
@@ -2439,17 +2437,18 @@ impl App {
         if let Some(c) = &self.company {
             p.set_company_presets(c.library().presets.clone());
         }
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
     }
 
     fn paint_prefs_popup(&mut self) {
-        self.prefs_popup_dirty = false;
+        self.einst.aufklapper_neu = false;
         self.redraw = true;
         let win = self.prefs_win();
         let img = match self.catalog.as_mut() {
             Some(cat) => cat.paint_popup(&self.theme, &self.ui.fonts, &win, self.scene.model()),
             None => self
-                .prefs
+                .einst
+                .fenster
                 .as_mut()
                 .and_then(|p| p.paint_popup(&self.theme, &self.ui.fonts, &win, &self.scene)),
         };
@@ -3618,7 +3617,7 @@ impl App {
         if self.ext.fenster.is_some() && self.handle_ext_fenster(e, surface) {
             return !self.quit;
         }
-        if self.prefs.is_some() && self.handle_prefs(e, surface) {
+        if self.einst.fenster.is_some() && self.handle_prefs(e, surface) {
             return !self.quit;
         }
         if self.catalog.is_some() && self.handle_catalog(e, surface) {
@@ -4469,7 +4468,7 @@ impl App {
             || self.confirm.is_some()
             || self.context.is_some()
             || self.type_menu.is_some()
-            || self.prefs.as_ref().is_some_and(|p| p.busy())
+            || self.einst.fenster.as_ref().is_some_and(|p| p.busy())
             || self.catalog.as_ref().is_some_and(|c| c.busy())
             || self.materials.as_ref().is_some_and(|v| v.busy())
             || self.verwaltung.as_ref().is_some_and(|v| v.busy())
@@ -5735,7 +5734,7 @@ impl App {
     /// Gewünschter Hinweis an der Maus: über dem Fuß einer gekoppelten
     /// OG-Wand (A52).
     fn tip_wanted(&self) -> Option<String> {
-        if let Some(p) = &self.prefs {
+        if let Some(p) = &self.einst.fenster {
             return p.tip(&self.scene);
         }
         if let Some(c) = &self.catalog {
@@ -7296,11 +7295,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         recent: settings.recent.clone(),
         recent_on: settings.path.is_some(),
         quit: false,
-        prefs: None,
-        prefs_mem: prefs::Memory::default(),
-        prefs_dirty: false,
+        einst: zustand::Einstellfenster::default(),
         pattern_preview: None,
-        prefs_popup_dirty: false,
         settings,
         company,
         catalog: None,
@@ -7661,7 +7657,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let dlg_wait = match (&a.catalog, &a.materials) {
                 (Some(c), _) => c.wait(&a.theme),
                 (None, Some(v)) => v.wait(&a.theme),
-                (None, None) => a.prefs.as_ref().and_then(|p| p.wait()),
+                (None, None) => a.einst.fenster.as_ref().and_then(|p| p.wait()),
             };
             let tip_wait = match (a.tip_wait(), a.pill_wait()) {
                 (Some(x), Some(y)) => Some(x.min(y)),
@@ -7734,15 +7730,15 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
         a.sync_wheel();
-        if a.prefs.as_mut().is_some_and(|p| p.tick()) {
-            a.prefs_dirty = true;
+        if a.einst.fenster.as_mut().is_some_and(|p| p.tick()) {
+            a.einst.bild_neu = true;
         }
         let theme = &a.theme;
         if a.catalog.as_mut().is_some_and(|c| c.tick(theme)) {
-            a.prefs_dirty = true;
+            a.einst.bild_neu = true;
         }
         if a.materials.as_mut().is_some_and(|v| v.tick(theme)) {
-            a.prefs_dirty = true;
+            a.einst.bild_neu = true;
         }
         // Wände wachsen nach einem Typwechsel (K3b)
         if a.scene.growing() {
@@ -7785,9 +7781,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.props_dirty && a.w > 0 {
             a.paint_props();
         }
-        if a.prefs_dirty && a.w > 0 {
+        if a.einst.bild_neu && a.w > 0 {
             a.paint_prefs();
-        } else if a.prefs_popup_dirty && a.w > 0 {
+        } else if a.einst.aufklapper_neu && a.w > 0 {
             a.paint_prefs_popup();
         }
         if a.type_menu_dirty && a.w > 0 {
@@ -7805,7 +7801,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.w > 0 {
             a.paint_buttons(&surface);
         }
-        let cursor = match (&a.prefs, &a.catalog) {
+        let cursor = match (&a.einst.fenster, &a.catalog) {
             _ if a.projektdaten.as_ref().is_some_and(|d| d.ueber_feld()) => {
                 sk_platform::Cursor::IBeam
             }
