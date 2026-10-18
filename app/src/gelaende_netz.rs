@@ -644,54 +644,147 @@ impl Gelaende {
     /// Die Dreiecke ohne die Häuser: Ein Dreieck, das ein Haus berührt,
     /// wird an den Geraden der Hauskanten in konvexe Stücke geteilt, die
     /// Stücke im Haus fallen weg. Je Dreieck zählen nur die Häuser an
-    /// seinem Rechteck.
+    /// seinem Rechteck. Wo eine Gerade eine Kante zu einem Dreieck kreuzt,
+    /// das sie nicht oder anders teilt, bekommt dieses den Punkt auch,
+    /// sonst stünde dort eine offene Kante (Gelände G-261e, im Export des
+    /// Lindenhofs 24).
     fn ohne_haus(&self, d: Vec<[Vec3; 3]>) -> Vec<[Vec3; 3]> {
         if self.haus.is_empty() {
             return d;
         }
-        let mut out = Vec::with_capacity(d.len());
         let mut nah = Vec::new();
-        for t in d {
-            let ecken = t.map(|p| [p.x, p.y]);
-            self.haeuser.bei(&kasten(&ecken), &mut nah);
-            if nah.is_empty() {
-                out.push(t);
+        let mut out = Vec::with_capacity(d.len());
+        // je geteiltes Dreieck: Nummer, seine Dreiecke in `out`, Stücke
+        let mut geteilt: Vec<(usize, std::ops::Range<usize>, Vec<Vec<P2>>)> = Vec::new();
+        // je Kante die Ecken der Stücke innen auf ihr, je Dreieck
+        let mut auf: HashMap<[u64; 4], Vec<(usize, Vec<P2>)>> = HashMap::new();
+        for (j, t) in d.iter().enumerate() {
+            let Some(stuecke) = self.stuecke_ohne_haus(t, &mut nah) else {
+                out.push(*t);
                 continue;
+            };
+            let ecken = t.map(|p| [p.x, p.y]);
+            let seiten = seiten(&ecken);
+            let mut je: [Vec<P2>; 3] = Default::default();
+            for (v, g) in je.iter_mut().zip(&seiten) {
+                v.extend(stuecke.iter().flatten().filter(|q| g.innen(**q)));
             }
-            let mut stuecke = vec![ecken.to_vec()];
-            for &h in &nah {
-                let r = &self.haus[h as usize].0;
-                for i in 0..r.len() {
-                    let (c, e) = (r[i], r[(i + 1) % r.len()]);
-                    let k = kasten(&[c, e]);
-                    stuecke = stuecke
-                        .into_iter()
-                        .flat_map(|s| {
-                            if ueberlappt(&k, &kasten(&s)) {
-                                halbieren(s, c, e)
-                            } else {
-                                vec![s]
-                            }
-                        })
-                        .collect();
-                }
-            }
-            for s in stuecke {
-                let m = s.iter().fold([0.0, 0.0], |m, p| [m[0] + p[0], m[1] + p[1]]);
-                let k = s.len() as f64;
-                if self.in_einem(&nah, [m[0] / k, m[1] / k]) {
+            for (i, mut v) in je.into_iter().enumerate() {
+                if v.is_empty() {
                     continue;
                 }
-                let p: Vec<Vec3> = s.iter().map(|q| vec3(q[0], q[1], ebene(&t, *q))).collect();
-                for i in 1..p.len() - 1 {
-                    let d = [p[0], p[i], p[i + 1]];
-                    if (d[1] - d[0]).cross(d[2] - d[0]).z > 1e-3 {
-                        out.push(d);
-                    }
+                v.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+                v.dedup_by(|a, b| (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-9);
+                let k = kante_von(ecken[i], ecken[(i + 1) % 3]);
+                auf.entry(k).or_default().push((j, v));
+            }
+            let von = out.len();
+            for s in &stuecke {
+                faechern(t, s, false, &mut out);
+            }
+            geteilt.push((j, von..out.len(), stuecke));
+        }
+        // wo beide Dreiecke einer Kante sie gleich teilen, ist nichts zu tun
+        let gleich = |a: &[P2], b: &[P2]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-6)
+        };
+        let auf: HashMap<[u64; 4], Vec<P2>> = auf
+            .into_iter()
+            .filter(|(_, v)| !(v.len() == 2 && gleich(&v[0].1, &v[1].1)))
+            .map(|(k, v)| (k, v.into_iter().flat_map(|x| x.1).collect()))
+            .collect();
+        if auf.is_empty() {
+            return out;
+        }
+        // die Dreiecke daneben neu, mit den Punkten auf ihren Kanten: die
+        // geteilten aus ihren Stücken, die übrigen über das Raster der Kanten
+        let kanten: Vec<[u64; 4]> = auf.keys().copied().collect();
+        let raster = Gitter::neu(
+            kanten
+                .iter()
+                .map(|k| {
+                    let [x0, y0, x1, y1] = k.map(f64::from_bits);
+                    kasten(&[[x0, y0], [x1, y1]])
+                })
+                .collect(),
+        );
+        let mut neu = Vec::with_capacity(out.len());
+        let mut geteilt = geteilt.into_iter().peekable();
+        let mut i = 0;
+        let mut treffer = Vec::new();
+        for (j, t) in d.iter().enumerate() {
+            let ecken = t.map(|p| [p.x, p.y]);
+            let eigene = [0, 1, 2].map(|k| kante_von(ecken[k], ecken[(k + 1) % 3]));
+            let (alt, stuecke) = match geteilt.next_if(|x| x.0 == j) {
+                Some((_, r, s)) => (r, Some(s)),
+                None => (i..i + 1, None),
+            };
+            i = alt.end;
+            let fehlt = if stuecke.is_none() {
+                raster.bei(&kasten(&ecken), &mut treffer);
+                treffer
+                    .iter()
+                    .any(|&k| eigene.contains(&kanten[k as usize]))
+            } else {
+                eigene.iter().any(|k| auf.contains_key(k))
+            };
+            if !fehlt {
+                neu.extend_from_slice(&out[alt]);
+                continue;
+            }
+            let seiten = seiten(&ecken);
+            let Some(stuecke) = stuecke else {
+                let (s, mehr) = mit_punkten(ecken.to_vec(), &seiten, &eigene, &auf);
+                if mehr {
+                    faechern(t, &s, true, &mut neu);
+                } else {
+                    neu.push(*t);
                 }
+                continue;
+            };
+            for s in stuecke {
+                let (s, mehr) = mit_punkten(s, &seiten, &eigene, &auf);
+                faechern(t, &s, mehr, &mut neu);
             }
         }
-        out
+        neu
+    }
+
+    /// Die Stücke des Dreiecks `t` an den Geraden der Kanten der Häuser an
+    /// seinem Rechteck, ohne die im Haus; `None` ohne Haus daran.
+    fn stuecke_ohne_haus(&self, t: &[Vec3; 3], nah: &mut Vec<u32>) -> Option<Vec<Vec<P2>>> {
+        let ecken = t.map(|p| [p.x, p.y]);
+        self.haeuser.bei(&kasten(&ecken), nah);
+        if nah.is_empty() {
+            return None;
+        }
+        let mut stuecke = vec![ecken.to_vec()];
+        for &h in nah.iter() {
+            let r = &self.haus[h as usize].0;
+            for i in 0..r.len() {
+                let (c, e) = (r[i], r[(i + 1) % r.len()]);
+                let k = kasten(&[c, e]);
+                stuecke = stuecke
+                    .into_iter()
+                    .flat_map(|s| {
+                        if ueberlappt(&k, &kasten(&s)) {
+                            halbieren(s, c, e)
+                        } else {
+                            vec![s]
+                        }
+                    })
+                    .collect();
+            }
+        }
+        stuecke.retain(|s| {
+            let m = s.iter().fold([0.0, 0.0], |m, p| [m[0] + p[0], m[1] + p[1]]);
+            let k = s.len() as f64;
+            !self.in_einem(nah, [m[0] / k, m[1] / k])
+        });
+        Some(stuecke)
     }
 
     /// Höhe des Netzes an `p`; `None` außerhalb. Gefragt werden nur die
@@ -942,6 +1035,125 @@ fn ebene(t: &[Vec3; 3], p: P2) -> f64 {
     let l1 = ((t[1].x - p[0]) * (t[2].y - p[1]) - (t[1].y - p[1]) * (t[2].x - p[0])) / d;
     let l2 = ((t[2].x - p[0]) * (t[0].y - p[1]) - (t[2].y - p[1]) * (t[0].x - p[0])) / d;
     l1 * t[0].z + l2 * t[1].z + (1.0 - l1 - l2) * t[2].z
+}
+
+/// Strecke `a`→`b` zum schnellen Prüfen vieler Punkte: Abstand über die
+/// Normale, Anteil über die Richtung.
+struct Gerade {
+    a: P2,
+    f: P2,
+    l2: f64,
+    n: P2,
+}
+
+impl Gerade {
+    fn durch(a: P2, b: P2) -> Gerade {
+        let f = [b[0] - a[0], b[1] - a[1]];
+        let l2 = f[0] * f[0] + f[1] * f[1];
+        let l = l2.sqrt().max(f64::MIN_POSITIVE);
+        Gerade {
+            a,
+            f,
+            l2,
+            n: [-f[1] / l, f[0] / l],
+        }
+    }
+
+    fn anteil(&self, q: P2) -> f64 {
+        ((q[0] - self.a[0]) * self.f[0] + (q[1] - self.a[1]) * self.f[1]) / self.l2
+    }
+
+    fn innen(&self, q: P2) -> bool {
+        let s = self.anteil(q);
+        self.auf_linie(q) && s > 1e-9 && s < 1.0 - 1e-9
+    }
+
+    /// Auf der Strecke, die Enden eingeschlossen.
+    fn auf(&self, q: P2) -> bool {
+        let s = self.anteil(q);
+        self.auf_linie(q) && s > -1e-9 && s < 1.0 + 1e-9
+    }
+
+    fn auf_linie(&self, q: P2) -> bool {
+        let quer = (q[0] - self.a[0]) * self.n[0] + (q[1] - self.a[1]) * self.n[1];
+        self.l2 > 0.0 && quer.abs() <= 1e-6
+    }
+}
+
+/// Das konvexe Stück `s` des Dreiecks `t` auf dessen Ebene in Dreiecke
+/// nach `out`; `mitte`: aus der Mitte gefächert, weil Punkte auf seinen
+/// Seiten liegen (kein Dreieck liegt dann flach auf einer Seite), sonst
+/// von der ersten Ecke.
+fn faechern(t: &[Vec3; 3], s: &[P2], mitte: bool, out: &mut Vec<[Vec3; 3]>) {
+    let p: Vec<Vec3> = s.iter().map(|q| vec3(q[0], q[1], ebene(t, *q))).collect();
+    let mut dazu = |d: [Vec3; 3]| {
+        if (d[1] - d[0]).cross(d[2] - d[0]).z > 1e-3 {
+            out.push(d);
+        }
+    };
+    if mitte {
+        let k = p.len() as f64;
+        let m = p
+            .iter()
+            .fold(vec3(0.0, 0.0, 0.0), |m, q| m + *q * (1.0 / k));
+        for i in 0..p.len() {
+            dazu([m, p[i], p[(i + 1) % p.len()]]);
+        }
+    } else {
+        for i in 1..p.len().saturating_sub(1) {
+            dazu([p[0], p[i], p[i + 1]]);
+        }
+    }
+}
+
+/// Schlüssel einer Kante, in beiden Richtungen gleich.
+fn kante_von(a: P2, b: P2) -> [u64; 4] {
+    let (a, b) = if a.map(f64::to_bits) <= b.map(f64::to_bits) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    [a[0], a[1], b[0], b[1]].map(f64::to_bits)
+}
+
+/// Die drei Seiten des Dreiecks mit den Ecken `e`, Seite `i` von Ecke `i`.
+fn seiten(e: &[P2; 3]) -> [Gerade; 3] {
+    [0, 1, 2].map(|i| Gerade::durch(e[i], e[(i + 1) % 3]))
+}
+
+/// Das Stück `s` eines Dreiecks mit den Seiten `seiten` (Schlüssel
+/// `kanten`), auf jeder Seite des Stücks, die auf einer Seite des Dreiecks
+/// liegt, mit den Punkten `auf` dieser Kante dazwischen; `true`, wenn
+/// welche dazukamen.
+fn mit_punkten(
+    s: Vec<P2>,
+    seiten: &[Gerade; 3],
+    kanten: &[[u64; 4]; 3],
+    auf: &HashMap<[u64; 4], Vec<P2>>,
+) -> (Vec<P2>, bool) {
+    let mut neu = Vec::with_capacity(s.len());
+    let mut mehr = false;
+    for k in 0..s.len() {
+        let (a, b) = (s[k], s[(k + 1) % s.len()]);
+        neu.push(a);
+        let Some(punkte) = (0..3)
+            .find(|&i| seiten[i].auf(a) && seiten[i].auf(b))
+            .and_then(|i| auf.get(&kanten[i]))
+        else {
+            continue;
+        };
+        let g = Gerade::durch(a, b);
+        let mut ts: Vec<(f64, P2)> = punkte
+            .iter()
+            .filter(|q| g.innen(**q))
+            .map(|q| (g.anteil(*q), *q))
+            .collect();
+        ts.sort_by(|x, y| x.0.total_cmp(&y.0));
+        ts.dedup_by(|x, y| (x.0 - y.0).abs() < 1e-12);
+        mehr |= !ts.is_empty();
+        neu.extend(ts.into_iter().map(|x| x.1));
+    }
+    (neu, mehr)
 }
 
 /// Ring `r` mit dem Dreieck `t` (gegen den Uhrzeigersinn) geschnitten
@@ -1895,9 +2107,10 @@ pub(crate) mod tests {
         n.into_values().filter(|e| e.0 == 1).map(|e| e.1).collect()
     }
 
-    /// Der Export bleibt mit der Grube des Bodenaufbaus dicht (Gelände
-    /// G-261c): in der Reichweite des Hauses hat jede Kante zwei Dreiecke.
-    /// Der Ring weiter außen ist schon auf main offen (Geländeplanung).
+    /// Der Export ist mit der Grube des Bodenaufbaus dicht (Gelände
+    /// G-261c), jede Kante hat zwei Dreiecke, auch dort, wo die Geraden der
+    /// Hauskanten ein Dreieck am Haus teilen und das daneben nicht (G-261e:
+    /// vorher 24 offene Kanten etwa 3,5 m um das Haus).
     #[test]
     fn export_mit_grube_dicht() {
         let m = lindenhof();
@@ -1905,11 +2118,8 @@ pub(crate) mod tests {
             let mut g = Gelaende::aus(&m).unwrap();
             g.show = show;
             assert_eq!(g.aufbau.haeuser.len(), 1);
-            let k = g.aufbau.haeuser[0].kasten;
-            let drin = |p: Vec3| p.x >= k[0] && p.y >= k[1] && p.x <= k[2] && p.y <= k[3];
             let offen = offene_kanten(&export_koerper(g, [10, 11]));
-            let nah: Vec<_> = offen.iter().filter(|e| drin(e[0]) || drin(e[1])).collect();
-            assert!(nah.is_empty(), "{show:?}: {nah:?}");
+            assert!(offen.is_empty(), "{show:?}: {offen:?}");
         }
     }
 

@@ -112,6 +112,7 @@ mod wheel_view;
 mod window_kit;
 mod windows;
 mod zahnrad_app;
+mod zustand;
 
 use ansicht_linien::level_guide;
 use camera::{fit_perspective, Camera};
@@ -653,12 +654,8 @@ struct App {
     /// Typ-Liste am Chip (K3) und ob ihr Bild neu zu zeichnen ist.
     type_menu: Option<type_menu::TypeMenu>,
     type_menu_dirty: bool,
-    /// Eingelesene Erweiterungen (E6) und ihre offene Liste; der Ordner
-    /// und das Fenster „Erweiterungen“ (E5).
-    ext_bib: ext_werkzeug::Bibliothek,
-    ext_ablage: ext_ablage::Ablage,
-    ext_fenster: Option<ext_verwaltung::Fenster>,
-    ext_liste: Option<auswahl::Auswahl>,
+    /// Erweiterungen: Bibliothek, Ordner, Fenster und Liste (T4).
+    ext: zustand::Erweiterungen,
     /// Stand (Revision, Farbschema), für den der Chip im Werkzeug gilt.
     tool_chip_key: Option<(u64, u64)>,
     /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
@@ -1509,7 +1506,7 @@ impl App {
             || self.materials.is_some()
             || self.verwaltung.is_some()
             || self.projektdaten.is_some()
-            || self.ext_fenster.is_some()
+            || self.ext.fenster.is_some()
     }
 
     /// Bauteilkatalog öffnen (K3); er liegt vorn wie das Einstellungsfenster.
@@ -1525,7 +1522,7 @@ impl App {
         self.title.hover = None;
         let mut c = catalog_view::Catalog::open(self.scene.fertig(), self.company.as_ref());
         c.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
-        c.set_ext(&self.ext_bib.defs);
+        c.set_ext(&self.ext.bib.defs);
         self.catalog = Some(c);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
@@ -3624,7 +3621,7 @@ impl App {
         if self.projektdaten.is_some() && self.handle_projektdaten(e) {
             return !self.quit;
         }
-        if self.ext_fenster.is_some() && self.handle_ext_fenster(e, surface) {
+        if self.ext.fenster.is_some() && self.handle_ext_fenster(e, surface) {
             return !self.quit;
         }
         if self.prefs.is_some() && self.handle_prefs(e, surface) {
@@ -3677,7 +3674,7 @@ impl App {
         if self.type_menu.is_some() && self.handle_type_menu(e, surface) {
             return !self.quit;
         }
-        if self.ext_liste.is_some() && self.handle_ext_liste(e) {
+        if self.ext.liste.is_some() && self.handle_ext_liste(e) {
             return !self.quit;
         }
         // Baumpanel (Paket 4) nimmt Maus und Rad über sich
@@ -4602,7 +4599,7 @@ impl App {
             help::Topic::Draw | help::Topic::InnerWall if self.tool.ext.is_some() => {
                 help::Topic::Ext
             }
-            _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
+            _ if ctx.window.is_none() && self.ext.fenster.is_some() => self.ext_thema(),
             help::Topic::Drag if self.edit.eigenes_thema() => self.edit.thema(),
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
@@ -6077,8 +6074,11 @@ impl App {
     fn paint_input_pill(&mut self, vw: f64, vh: f64, th: u32, scale: f32) {
         let s = scale as f64;
         let rev = self.theme.rev;
-        let tool = self.tool.label().map(|(ends, text)| {
-            let i = self.tool.input();
+        // Wand oder Grenze und Fläche im Gelände (Jörn 18.10.)
+        let wand = self.tool.label();
+        let von_wand = wand.is_some();
+        let tool = wand.or_else(|| self.flaeche_pille()).map(|(ends, text)| {
+            let i = self.band_eingabe(von_wand);
             let key = (
                 text,
                 i.is_some(),
@@ -6142,13 +6142,21 @@ impl App {
                     self.input_swap = Some(Instant::now());
                 }
             }
-            let c = match (ends.is_some(), self.tool.input(), self.edit.input()) {
+            let c = match (
+                ends.is_some(),
+                self.band_eingabe(von_wand),
+                self.edit.input(),
+            ) {
                 _ if from_nord => match self.nord.input() {
                     Some(i) => i.paint(&self.ui.fonts, ["Nord", ""], scale, &self.theme),
                     None => flush_pick::paint_label(&self.ui.fonts, &key.0, scale, &self.theme),
                 },
                 (true, Some(i), _) => {
-                    i.paint(&self.ui.fonts, self.tool.labels(), scale, &self.theme)
+                    let felder = match von_wand {
+                        true => self.tool.labels(),
+                        false => gelaende_flaeche_app::FELDER,
+                    };
+                    i.paint(&self.ui.fonts, felder, scale, &self.theme)
                 }
                 (false, _, Some(i)) => i.paint(
                     &self.ui.fonts,
@@ -6167,33 +6175,13 @@ impl App {
         let (w, h) = self.renderer.overlay_size(OVERLAY_INPUT);
         let (pw, ph) = (w as f64, h as f64);
         let at = match ends {
-            Some([p, q]) => {
+            Some(ends) => {
                 // Außenseite: links der Zeichenrichtung (Bezugsseite rechts:
-                // rechts), im Bild gemessen
-                let d = vec3(q.x - p.x, q.y - p.y, 0.0);
-                let side = if self.tool.ref_side == sk_model::RefSide::Right {
-                    -1.0
-                } else {
-                    1.0
-                };
-                let n = vec3(-d.y, d.x, 0.0).normalized() * side;
-                let mid = (p + q) * 0.5;
-                let a = self.cam.project(mid, vw, vh);
-                let b = self.cam.project(mid + n * 100.0, vw, vh);
-                a.map(|a| {
-                    let dir = b.map_or((0.0, -1.0), |b| {
-                        let (x, y) = (b.0 - a.0, b.1 - a.1);
-                        let l = (x * x + y * y).sqrt();
-                        if l > 1e-6 {
-                            (x / l, y / l)
-                        } else {
-                            (0.0, -1.0)
-                        }
-                    });
-                    // Abstand bis zum Rand der Pille in Richtung `dir`
-                    let reach = 12.0 * s + (pw * 0.5 * dir.0.abs()).max(ph * 0.5 * dir.1.abs());
-                    (a.0 + dir.0 * reach, a.1 + dir.1 * reach + th as f64)
-                })
+                // rechts)
+                let rechts = von_wand && self.tool.ref_side == sk_model::RefSide::Right;
+                let seite = if rechts { -1.0 } else { 1.0 };
+                measure_input::am_band(&self.cam, ends, seite, (vw, vh), (pw, ph), s)
+                    .map(|(x, y)| (x, y + th as f64))
             }
             None if from_nord => nord
                 .and_then(|(p, _)| self.cam.project(p, vw, vh))
@@ -7318,10 +7306,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         tool_type: [None, None],
         type_menu: None,
         type_menu_dirty: false,
-        ext_bib,
-        ext_ablage,
-        ext_fenster: None,
-        ext_liste: None,
+        ext: zustand::Erweiterungen {
+            bib: ext_bib,
+            ablage: ext_ablage,
+            fenster: None,
+            liste: None,
+        },
         tool_chip_key: None,
         w,
         h,

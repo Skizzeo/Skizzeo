@@ -29,7 +29,7 @@ impl App {
             self.ext_sync();
             return;
         }
-        let again = self.ext_liste.as_ref().is_some_and(|l| l.knopf == id);
+        let again = self.ext.liste.as_ref().is_some_and(|l| l.knopf == id);
         self.ext_liste_zu();
         if !again {
             self.ext_liste_auf(id);
@@ -80,10 +80,10 @@ impl App {
             }
             _ => {
                 let mut zeilen = Vec::new();
-                for (g, ix) in self.ext_bib.gruppen() {
+                for (g, ix) in self.ext.bib.gruppen() {
                     zeilen.push(Zeile::Gruppe(g.to_string()));
                     for i in ix {
-                        let d = &self.ext_bib.defs[i];
+                        let d = &self.ext.bib.defs[i];
                         zeilen.push(Zeile::Eintrag {
                             name: anzeige(d.name(), MAX),
                             detail: format!("{} · Version {}", d.key, d.version),
@@ -103,7 +103,7 @@ impl App {
             _ => Panel::Tools,
         };
         let panel = self.ui.rect(panel, self.w, top);
-        self.ext_liste = Some(Auswahl::new(
+        self.ext.liste = Some(Auswahl::new(
             knopf,
             titel,
             zeilen,
@@ -122,7 +122,7 @@ impl App {
     }
 
     pub(crate) fn ext_liste_zu(&mut self) {
-        if let Some(l) = self.ext_liste.take() {
+        if let Some(l) = self.ext.liste.take() {
             if self.ui.set_chip_open(l.knopf, false) {
                 self.dirty_buttons.push(l.knopf);
             }
@@ -132,7 +132,7 @@ impl App {
 
     /// Eintrag `i` der offenen Liste: Bauteil zum Setzen bzw. Typ.
     fn ext_waehlen(&mut self, i: usize) {
-        let Some(knopf) = self.ext_liste.as_ref().map(|l| l.knopf) else {
+        let Some(knopf) = self.ext.liste.as_ref().map(|l| l.knopf) else {
             return;
         };
         self.ext_liste_zu();
@@ -149,12 +149,13 @@ impl App {
             }
             _ => {
                 let order: Vec<usize> = self
-                    .ext_bib
+                    .ext
+                    .bib
                     .gruppen()
                     .into_iter()
                     .flat_map(|g| g.1)
                     .collect();
-                let Some(d) = order.get(i).and_then(|&i| self.ext_bib.defs.get(i)) else {
+                let Some(d) = order.get(i).and_then(|&i| self.ext.bib.defs.get(i)) else {
                     return;
                 };
                 self.ext_start(d.clone());
@@ -178,7 +179,7 @@ impl App {
     /// „Einfügen“ im Bauteilkatalog: das Bauteil aus dem Ordner, sonst
     /// das, welches das Projekt mitbringt.
     pub(crate) fn ext_start_key(&mut self, key: &str) {
-        let d = self.ext_bib.defs.iter().find(|d| d.key == key).cloned();
+        let d = self.ext.bib.defs.iter().find(|d| d.key == key).cloned();
         let d = d.or_else(|| self.scene.model().ext_def(key).cloned());
         if let Some(d) = d {
             self.ext_start(d);
@@ -188,7 +189,7 @@ impl App {
 
     /// Offene Liste: nimmt Maus und Tasten; ein Klick daneben schließt sie.
     pub(crate) fn handle_ext_liste(&mut self, e: Event) -> bool {
-        let Some(l) = self.ext_liste.as_mut() else {
+        let Some(l) = self.ext.liste.as_mut() else {
             return false;
         };
         match e {
@@ -253,12 +254,13 @@ impl App {
     pub(crate) fn ext_sync(&mut self) {
         let g = self.ext_geschoss();
         let offen = self
-            .ext_liste
+            .ext
+            .liste
             .as_ref()
             .is_some_and(|l| l.knopf == Id::ExtTyp);
         let scene = &mut self.scene;
         let panel = self.tool.ext.as_ref().map(|m| panel(m, &g, offen, scene));
-        let knopf = !self.ext_bib.defs.is_empty();
+        let knopf = !self.ext.bib.defs.is_empty();
         if panel != self.ui.ext_tool || knopf != self.ui.ext_knopf {
             self.ui.ext_tool = panel;
             self.ui.ext_knopf = knopf;
@@ -361,7 +363,7 @@ impl App {
 
     /// Liste zeichnen (im Platz der Typ-Liste, die dann zu ist).
     pub(crate) fn ext_liste_bild(&self) -> Option<(sk_paint::Canvas, i32, i32)> {
-        let l = self.ext_liste.as_ref()?;
+        let l = self.ext.liste.as_ref()?;
         Some(l.paint(&self.theme, &self.ui.fonts))
     }
 }
