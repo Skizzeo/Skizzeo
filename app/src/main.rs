@@ -654,16 +654,10 @@ struct App {
     ext: zustand::Erweiterungen,
     /// Stand (Revision, Farbschema), für den der Chip im Werkzeug gilt.
     tool_chip_key: Option<(u64, u64)>,
-    /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
-    /// Animation (ms seit dem Start), angefangene Mausradrasten, ein Druck
-    /// auf den Bogen (das Loslassen gehört ihm) und der Höhenversatz des
-    /// Grundrisses beim Wechsel (Pixel nach unten).
-    wheel: wheel::Wheel,
-    wheel_view: wheel_view::WheelView,
+    /// Geschossbogen im Grundriss (E18) und was die App über ihn weiß (T4).
+    bogen: zustand::Geschossbogen,
+    /// Uhr der Animationen (ms seit dem Start).
     clock: Instant,
-    wheel_acc: f64,
-    wheel_press: bool,
-    view_shift: f32,
     /// Schnittbild waagerecht: Versatz (Pixel), Stauchung, Achse (Pixel).
     view_squeeze: (f32, f32, f32),
     /// Blatt wenden beim Spiegeln (E19): Beginn und Achse (Pixel).
@@ -1278,7 +1272,7 @@ impl App {
         let i = self.scene.active_cut();
         self.sect.lines[i].ensure(&self.scene);
         self.sect.lines[i].mirror();
-        if !self.wheel.instant() && self.w > 0 {
+        if !self.bogen.rad.instant() && self.w > 0 {
             // Achse: Mitte des Gebäudes im Bild
             let (vw, vh, _) = self.view_size();
             let c = self
@@ -1321,7 +1315,7 @@ impl App {
         // Der Knopf „Schnitt“ öffnet den zuletzt benutzten Schnitt (zuerst
         // A); der Bogen blättert dort durch die Schnitte, im Grundriss durch
         // die Geschosse
-        self.wheel.set_track(if v == ViewKind::Section {
+        self.bogen.rad.set_track(if v == ViewKind::Section {
             wheel::Track::Cuts
         } else {
             wheel::Track::Levels
@@ -1377,7 +1371,7 @@ impl App {
             },
             ViewKind::Plan => plan_camera(
                 &self.ui,
-                &self.wheel,
+                &self.bogen.rad,
                 self.scene.bounds(),
                 self.w,
                 self.h,
@@ -1388,7 +1382,7 @@ impl App {
                 let flip = self.sect.lines.get(i).is_some_and(|l| l.flip);
                 section_camera(
                     &self.ui,
-                    &self.wheel,
+                    &self.bogen.rad,
                     self.scene.bounds(),
                     (self.w, self.h, self.top()),
                     section::view_dir(i, flip),
@@ -2169,8 +2163,8 @@ impl App {
     /// Renderer-Stil, alle Paneele und Bilder neu.
     fn theme_changed(&mut self) {
         self.scene.set_theme(&self.theme);
-        self.wheel.set_theme(&self.theme);
-        self.wheel_view.forget();
+        self.bogen.rad.set_theme(&self.theme);
+        self.bogen.bild.forget();
         self.renderer.set_style(style(&self.theme.env));
         // Die Sonne setzt ihr Licht beim nächsten Bild wieder (S4)
         self.licht = None;
@@ -3128,7 +3122,7 @@ impl App {
             // Im Grundriss derselbe Wechsel wie am Geschossbogen (E18)
             Id::Storey(st) if self.ui.view == ViewKind::Plan => {
                 let t = self.now();
-                self.wheel.select(&mut self.scene, st, t);
+                self.bogen.rad.select(&mut self.scene, st, t);
             }
             Id::Storey(st) => {
                 if self.scene.set_active_storey(st) {
@@ -3949,7 +3943,7 @@ impl App {
                     self.model_hover(None);
                 }
                 let t = self.now();
-                self.redraw |= self.wheel.set_hover(None, t);
+                self.redraw |= self.bogen.rad.set_hover(None, t);
                 self.dirty_title.extend(self.title.hover.take());
                 let out = self.ui.handle(&e, self.w, self.top());
                 self.apply_ui(&out);
@@ -3986,7 +3980,7 @@ impl App {
                 };
                 let t = self.now();
                 // der Knopf „Blickrichtung“ leuchtet unter der Maus
-                self.redraw |= self.wheel.set_hover(part, t);
+                self.redraw |= self.bogen.rad.set_hover(part, t);
                 let over_ui = if busy {
                     false
                 } else if part.is_some() {
@@ -4118,24 +4112,24 @@ impl App {
                 ..
             } if y >= th && self.wheel_hit(x, y).is_some() => {
                 self.shortcuts.cancel_alt();
-                self.wheel_press = true;
+                self.bogen.druck = true;
                 let t = self.now();
                 let input = self.tool.is_active();
                 match self.wheel_hit(x, y) {
                     Some(wheel::Part::Up) => {
-                        self.wheel.click_arrow(&mut self.scene, true, input, t)
+                        self.bogen.rad.click_arrow(&mut self.scene, true, input, t)
                     }
                     Some(wheel::Part::Down) => {
-                        self.wheel.click_arrow(&mut self.scene, false, input, t)
+                        self.bogen.rad.click_arrow(&mut self.scene, false, input, t)
                     }
                     Some(wheel::Part::Mirror) => self.mirror_cut(),
-                    _ => self.wheel.click_band(&mut self.scene, t),
+                    _ => self.bogen.rad.click_band(&mut self.scene, t),
                 }
             }
             Event::MouseUp {
                 button: MouseButton::Left,
                 ..
-            } if self.wheel_press => self.wheel_press = false,
+            } if self.bogen.druck => self.bogen.druck = false,
             Event::MouseDown { button, x, y, .. } => {
                 self.shortcuts.cancel_alt();
                 if y < th {
@@ -4295,14 +4289,14 @@ impl App {
             Event::Wheel { delta, x, y, .. }
                 if y >= th && !self.ui.dialog && self.wheel_hit(x, y).is_some() =>
             {
-                if self.wheel_acc * delta < 0.0 {
-                    self.wheel_acc = 0.0;
+                if self.bogen.rasten * delta < 0.0 {
+                    self.bogen.rasten = 0.0;
                 }
-                self.wheel_acc += delta;
-                let n = self.wheel_acc.trunc();
-                self.wheel_acc -= n;
+                self.bogen.rasten += delta;
+                let n = self.bogen.rasten.trunc();
+                self.bogen.rasten -= n;
                 let t = self.now();
-                self.wheel.scroll(&mut self.scene, n as i32, t);
+                self.bogen.rad.scroll(&mut self.scene, n as i32, t);
             }
             Event::Wheel { y, .. } => {
                 if y >= th && !self.ui.dialog && !self.tuer_rad(&e) {
@@ -4363,7 +4357,7 @@ impl App {
             } if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) => {
                 let t = self.now();
                 let (view, input) = (self.ui.view, self.tool.is_active());
-                self.wheel.key(&mut self.scene, view, key, input, t);
+                self.bogen.rad.key(&mut self.scene, view, key, input, t);
             }
             Event::Key {
                 key, down, mods, ..
@@ -4929,7 +4923,10 @@ impl App {
                 let bounds = self.screen_bounds(&anchor);
                 let win = (self.w as f32, self.h as f32, self.top() as f32);
                 let views = self.ui.rect(Panel::Views, self.w, self.top());
-                let above = self.wheel.top_in(self.ui.view, &self.ui, self.w, self.h);
+                let above = self
+                    .bogen
+                    .rad
+                    .top_in(self.ui.view, &self.ui, self.w, self.h);
                 if let Some(h) = self.hint.as_mut() {
                     h.place(size, bounds, win, s);
                     // Entdecken-Karte: unten rechts, über dem Bogen
@@ -6518,7 +6515,7 @@ impl App {
                 self.tree_select(ids);
                 if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) {
                     let t = self.now();
-                    self.wheel.go_to_level(&mut self.scene, sid, t);
+                    self.bogen.rad.go_to_level(&mut self.scene, sid, t);
                 } else {
                     self.scene.set_active_storey(sid);
                 }
@@ -6818,7 +6815,8 @@ impl App {
             .filter(|t| !t.shown)
             .map(|t| TIP_DELAY.saturating_sub(t.since.elapsed()));
         let hud = self
-            .wheel
+            .bogen
+            .rad
             .hint_wait(self.now())
             .map(std::time::Duration::from_millis);
         let notice = self
@@ -6882,9 +6880,9 @@ impl App {
             || self.modal()
             || self.save_dlg.is_some()
             || self.confirm.is_some();
-        if !self.wheel.visible(self.ui.view, false) {
+        if !self.bogen.rad.visible(self.ui.view, false) {
             wheel_view::Show::Off
-        } else if !self.wheel.visible(self.ui.view, blocked) {
+        } else if !self.bogen.rad.visible(self.ui.view, blocked) {
             wheel_view::Show::Blocked
         } else {
             wheel_view::Show::On
@@ -6896,16 +6894,17 @@ impl App {
         if self.wheel_show() != wheel_view::Show::On {
             return None;
         }
-        self.wheel_view
-            .hit(&self.wheel, &self.ui, self.w, self.h, x, y)
+        self.bogen
+            .bild
+            .hit(&self.bogen.rad, &self.ui, self.w, self.h, x, y)
     }
 
     /// Maus über einer Spitze, die wechseln kann: Zeiger „Hand“.
     fn wheel_hand(&self) -> bool {
         let input = self.tool.is_active();
-        match self.wheel.hover {
-            Some(wheel::Part::Up) => self.wheel.arrow_enabled(&self.scene, true, input),
-            Some(wheel::Part::Down) => self.wheel.arrow_enabled(&self.scene, false, input),
+        match self.bogen.rad.hover {
+            Some(wheel::Part::Up) => self.bogen.rad.arrow_enabled(&self.scene, true, input),
+            Some(wheel::Part::Down) => self.bogen.rad.arrow_enabled(&self.scene, false, input),
             Some(wheel::Part::Mirror) => true,
             _ => false,
         }
@@ -6916,14 +6915,14 @@ impl App {
     /// nachführen.
     fn sync_wheel(&mut self) {
         let t = self.now();
-        self.wheel.tick(&mut self.scene, t);
+        self.bogen.rad.tick(&mut self.scene, t);
         // Grundriss (Geschosse) oder Schnitt (Schnittrad)
-        let plan = self.wheel.visible(self.ui.view, false);
-        if self.wheel.take_started().is_some() {
-            if plan && self.wheel.animating(t) && self.w > 0 {
+        let plan = self.bogen.rad.visible(self.ui.view, false);
+        if self.bogen.rad.take_started().is_some() {
+            if plan && self.bogen.rad.animating(t) && self.w > 0 {
                 self.renderer.capture_scene();
                 // Die Zeit läuft ab dem ersten Bild mit dem neuen Grundriss
-                self.wheel.wait_for_first_frame();
+                self.bogen.rad.wait_for_first_frame();
             }
             if plan && self.ui.view == ViewKind::Section {
                 // Anderer Schnitt: eigene Lage und Blickrichtung
@@ -6937,10 +6936,10 @@ impl App {
             self.overlay_dirty = true;
             self.refresh_cursor();
         }
-        self.view_shift = 0.0;
+        self.bogen.versatz = 0.0;
         self.view_squeeze = (0.0, 1.0, 0.0);
         let turn = self.turn.filter(|_| self.ui.view == ViewKind::Section);
-        match self.wheel.progress(t).filter(|_| plan) {
+        match self.bogen.rad.progress(t).filter(|_| plan) {
             Some((e, sw)) => {
                 let slide = wheel::SLIDE * self.ui.dpi();
                 if let (wheel::Stop::Cut(a), wheel::Stop::Cut(b)) = (sw.from, sw.to) {
@@ -6953,7 +6952,7 @@ impl App {
                     // Nach oben: das alte Geschoss sinkt weg, das neue kommt von oben
                     let dir = sw.steps.signum() as f32;
                     self.renderer.set_snapshot(1.0 - e, dir * slide * e);
-                    self.view_shift = -dir * slide * (1.0 - e);
+                    self.bogen.versatz = -dir * slide * (1.0 - e);
                 }
                 self.redraw = true;
             }
@@ -6992,13 +6991,13 @@ impl App {
         }
         let show = self.wheel_show();
         if show != wheel_view::Show::On {
-            self.wheel.set_hover(None, t);
+            self.bogen.rad.set_hover(None, t);
         }
         if self.w > 0 {
             let input = self.tool.is_active();
-            let changed = self.wheel_view.sync(
+            let changed = self.bogen.bild.sync(
                 &mut self.renderer,
-                &self.wheel,
+                &self.bogen.rad,
                 &self.scene,
                 &self.ui,
                 &self.theme,
@@ -7007,7 +7006,7 @@ impl App {
                 show,
                 input,
             );
-            self.redraw |= changed || self.wheel_view.fading(show);
+            self.redraw |= changed || self.bogen.bild.fading(show);
         }
     }
 
@@ -7346,12 +7345,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         room_keys: Default::default(),
         stempel: Default::default(),
         panel_px: Vec::new(),
-        wheel,
-        wheel_view: wheel_view::WheelView::new(OVERLAY_WHEEL),
+        bogen: zustand::Geschossbogen::new(wheel, wheel_view::WheelView::new(OVERLAY_WHEEL)),
         clock: Instant::now(),
-        wheel_acc: 0.0,
-        wheel_press: false,
-        view_shift: 0.0,
         view_squeeze: (0.0, 1.0, 0.0),
         turn: None,
         picking: picking::Picking::default(),
@@ -7608,7 +7603,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     loop {
         let mut tagged = Vec::new();
         if let Some((left, up)) = a.auto_switch {
-            if !a.wheel.animating(a.now()) && a.ui.view == ViewKind::Plan {
+            if !a.bogen.rad.animating(a.now()) && a.ui.view == ViewKind::Plan {
                 if left == 0 {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
@@ -7617,13 +7612,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 }
                 // Wie nach einer Pause: Nachbargrundrisse vorbereitet
                 a.scene.prepare_neighbor_plans();
-                let up = if a.wheel.arrow_enabled(&a.scene, up, false) {
+                let up = if a.bogen.rad.arrow_enabled(&a.scene, up, false) {
                     up
                 } else {
                     !up
                 };
                 let t = a.now();
-                a.wheel.click_arrow(&mut a.scene, up, false, t);
+                a.bogen.rad.click_arrow(&mut a.scene, up, false, t);
                 a.auto_switch = Some((left - 1, up));
             }
         }
@@ -7635,7 +7630,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if !a.redraw
             && !a.overlay_dirty
             && !a.nav.is_animating()
-            && !a.wheel.animating(a.now())
+            && !a.bogen.rad.animating(a.now())
             && a.auto_switch.is_none()
             && a.fly.is_none()
             && !a.scene.growing()
@@ -8223,8 +8218,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             view.patterns = draw_table::pattern_mode(a.ui.view, a.theme.env.patterns_3d);
             // Geschosswechsel: der neue Grundriss gleitet an seinen Platz
-            if a.view_shift != 0.0 {
-                view = view.shifted(a.view_shift, (a.h - th) as f32);
+            if a.bogen.versatz != 0.0 {
+                view = view.shifted(a.bogen.versatz, (a.h - th) as f32);
             }
             // Schnittwechsel gleitet seitlich, Spiegeln wendet das Blatt
             let (dx, k, axis) = a.view_squeeze;
@@ -8246,7 +8241,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             // Tiefen-Durchgang auf der Grafikkarte, aus dem Bild davor
             let schatten_ms = a.renderer.take_shadow_pass_ms().map_or(0.0, |m| m.1);
             let shown_at = a.now();
-            a.wheel.shown(shown_at);
+            a.bogen.rad.shown(shown_at);
             let t_draw = Instant::now();
             if let Some(path) = &screenshot {
                 let px = a.renderer.read_pixels(a.w, a.h);
