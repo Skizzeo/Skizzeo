@@ -319,6 +319,11 @@ impl Eingang for Blatt {
     }
 }
 
+/// Stufe, die eine gesperrte Karte der Kartenleiste zeigt (`Karten::set_frei`).
+pub fn stufe_der_karte(b: Blatt) -> &'static str {
+    b.modul().map_or("", Modul::ab)
+}
+
 impl Eingang for Topic {
     fn modul(self) -> Option<Modul> {
         match self {
@@ -489,7 +494,7 @@ mod tests {
             // Blatt wie beim Start: erst gemerkt, dann freigeschaltet
             let mut q = crate::cards::Karten::new(crate::cards::Blatt::Mengen);
             q.merken(crate::cards::Blatt::Kosten);
-            q.set_frei(f.blaetter());
+            q.set_frei(f.blaetter(), stufe_der_karte);
             let blatt = if w == "ultimate" {
                 crate::cards::Blatt::Kosten
             } else {

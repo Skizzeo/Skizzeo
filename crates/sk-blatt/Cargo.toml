@@ -1,0 +1,11 @@
+[package]
+name = "sk-blatt"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sk-cost = { path = "../sk-cost" }
+sk-model = { path = "../sk-model" }
+sk-paint = { path = "../sk-paint" }
+sk-ui = { path = "../sk-ui" }

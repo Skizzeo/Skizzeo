@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 sk-math = { path = "../crates/sk-math" }
 sk-model = { path = "../crates/sk-model" }
+sk-blatt = { path = "../crates/sk-blatt" }
 sk-cost = { path = "../crates/sk-cost" }
 sk-ifc = { path = "../crates/sk-ifc" }
 sk-export = { path = "../crates/sk-export" }

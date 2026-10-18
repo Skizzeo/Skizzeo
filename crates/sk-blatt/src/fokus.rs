@@ -217,7 +217,7 @@ mod tests {
     fn gruendung_nimmt_nur_erdarbeiten_mit() {
         use sk_model::element::Category;
         let m = sk_model::szo::read_with(
-            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            include_str!("../../sk-cost/referenz/rh1-standardhaus.szo"),
             sk_model::GuidGen::with_seed(1),
             &sk_cost::lesen::ABSCHNITTE_SZO,
         )
