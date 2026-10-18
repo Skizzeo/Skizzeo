@@ -38,7 +38,7 @@ use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame, Tri, NO_LAYER};
 use sk_model::{edge_kind, BuildingId, LevelKind, Model, Show, Solid, UnderlayKind};
 use sk_render::{DashPattern, Helper};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 pub(crate) mod gitter;
@@ -253,8 +253,15 @@ impl Gelaende {
         // geglättet (Jörn 17.10.): Ersetzte Dreiecke bleiben eben, ihre
         // Kanten gerade, so schließt das Planungsgelände ohne Spalt an
         let (glatt, je) = m.terrain_triangles_smooth(&weg, GLATT_HOECHSTENS);
+        // Die ebenen Dreiecke teilen sich die Zwischenpunkte auf ihren
+        // Kanten mit den geglätteten daneben, am Rand des Netzes liegen sie
+        // auf seinen geraden Kanten. Naht, Flächen, Wände und der Rand
+        // bekommen sie auch, sonst stünde dort ein T-Stoß (Review H-276a:
+        // mit „fein“ im Export 198 offene Kanten, ohne Flächen 96 am Rand).
+        let mut zwischen = Vec::new();
         if je > 1 {
-            dreiecke = glatt;
+            let roh = std::mem::replace(&mut dreiecke, glatt);
+            zwischen = kantenpunkte(&roh, &dreiecke, &weg, &m.terrain_border(), je);
             let mal = |v: &[bool]| -> Vec<bool> {
                 v.iter().flat_map(|&w| std::iter::repeat_n(w, je)).collect()
             };
@@ -273,13 +280,15 @@ impl Gelaende {
         .into_iter()
         .map(|[a, b]| (a, b))
         .collect();
+        let rand = strecken_mit_punkten(rand, &zwischen);
         if !ur.is_empty() {
             let mut k = 0;
             dreiecke.retain(|_| {
                 k += 1;
                 !weg[k - 1]
             });
-            dreiecke.extend(plan.seam.iter().flat_map(|x| x.1.iter().copied()));
+            let naht: Vec<[Vec3; 3]> = plan.seam.iter().flat_map(|x| x.1.iter().copied()).collect();
+            dreiecke.extend(mit_kantenpunkten(naht, &zwischen));
         }
         // Höhenlinien auf dem geglätteten Gelände je Dreieck, nicht die des
         // Aufmaßes: Die lägen neben oder unter der runden Fläche
@@ -289,7 +298,7 @@ impl Gelaende {
         } else {
             None
         };
-        dreiecke.extend(plan.triangles.iter().copied());
+        dreiecke.extend(mit_kantenpunkten(plan.triangles.clone(), &zwischen));
         let tief = dreiecke
             .iter()
             .flatten()
@@ -369,7 +378,7 @@ impl Gelaende {
         g.ur = ur;
         g.schraffen = plan.hatch.clone();
         g.umrisse = plan.outlines.clone();
-        g.waende = plan.walls.clone();
+        g.waende = mit_kantenpunkten(plan.walls.clone(), &zwischen);
         g.rand = Some(rand);
         g.marken = t
             .points
@@ -1123,6 +1132,140 @@ fn ebene(t: &[Vec3; 3], p: P2) -> f64 {
     let l1 = ((t[1].x - p[0]) * (t[2].y - p[1]) - (t[1].y - p[1]) * (t[2].x - p[0])) / d;
     let l2 = ((t[2].x - p[0]) * (t[0].y - p[1]) - (t[2].y - p[1]) * (t[0].x - p[0])) / d;
     l1 * t[0].z + l2 * t[1].z + (1.0 - l1 - l2) * t[2].z
+}
+
+/// Abstand (mm), bis zu dem ein Punkt auf einer Kante liegt.
+const AUF_DER_KANTE: f64 = 1e-4;
+
+/// Anteil von `q` auf der Strecke `a`→`b` im Raum, wenn er echt innen
+/// darauf liegt.
+fn auf_strecke(a: Vec3, b: Vec3, q: Vec3) -> Option<f64> {
+    let d = b - a;
+    let l2 = d.dot(d);
+    if l2 <= 0.0 {
+        return None;
+    }
+    let s = (q - a).dot(d) / l2;
+    let innen = s * l2.sqrt() > AUF_DER_KANTE && (1.0 - s) * l2.sqrt() > AUF_DER_KANTE;
+    (innen && (a + d * s - q).length() < AUF_DER_KANTE).then_some(s)
+}
+
+/// Die Punkte der Glättung `glatt` (je Dreieck `je`) auf den Kanten der
+/// Dreiecke `roh` mit `fest` und auf den Kanten des Rands `rand`, ohne
+/// deren Ecken.
+fn kantenpunkte(
+    roh: &[[Vec3; 3]],
+    glatt: &[[Vec3; 3]],
+    fest: &[bool],
+    rand: &[[Vec3; 2]],
+    je: usize,
+) -> Vec<Vec3> {
+    let schluessel = |a: Vec3, b: Vec3| {
+        let (a, b) = ([a.x, a.y].map(f64::to_bits), [b.x, b.y].map(f64::to_bits));
+        if a <= b {
+            [a, b]
+        } else {
+            [b, a]
+        }
+    };
+    let am_rand: HashSet<_> = rand.iter().map(|k| schluessel(k[0], k[1])).collect();
+    let mut out = Vec::new();
+    for (i, t) in roh.iter().enumerate() {
+        let fest = fest.get(i).copied().unwrap_or(false);
+        let kanten: Vec<[Vec3; 2]> = (0..3)
+            .map(|k| [t[k], t[(k + 1) % 3]])
+            .filter(|k| fest || am_rand.contains(&schluessel(k[0], k[1])))
+            .collect();
+        let Some(teile) = glatt
+            .get(i * je..(i + 1) * je)
+            .filter(|_| !kanten.is_empty())
+        else {
+            continue;
+        };
+        out.extend(teile.iter().flatten().filter(|q: &&Vec3| {
+            kanten
+                .iter()
+                .any(|k| auf_strecke(k[0], k[1], **q).is_some())
+        }));
+    }
+    out.sort_by(|a: &Vec3, b: &Vec3| {
+        a.x.total_cmp(&b.x)
+            .then(a.y.total_cmp(&b.y))
+            .then(a.z.total_cmp(&b.z))
+    });
+    out.dedup();
+    out
+}
+
+/// Raster über die Punkte `p`.
+fn punktraster(p: &[Vec3]) -> Gitter {
+    let e = AUF_DER_KANTE;
+    Gitter::neu(
+        p.iter()
+            .map(|q| [q.x - e, q.y - e, q.x + e, q.y + e])
+            .collect(),
+    )
+}
+
+/// Die Punkte `nah` aus `p`, die echt innen auf `a`→`b` liegen, der Reihe
+/// nach.
+fn auf_der_strecke(a: Vec3, b: Vec3, p: &[Vec3], nah: &[u32]) -> Vec<Vec3> {
+    let mut auf: Vec<(f64, Vec3)> = nah
+        .iter()
+        .map(|&j| p[j as usize])
+        .filter_map(|q| Some((auf_strecke(a, b, q)?, q)))
+        .collect();
+    auf.sort_by(|x, y| x.0.total_cmp(&y.0));
+    auf.into_iter().map(|x| x.1).collect()
+}
+
+/// Die Strecken `s`, an den Punkten `p` darauf geteilt.
+fn strecken_mit_punkten(s: Vec<(Vec3, Vec3)>, p: &[Vec3]) -> Vec<(Vec3, Vec3)> {
+    if p.is_empty() {
+        return s;
+    }
+    let raster = punktraster(p);
+    let mut nah = Vec::new();
+    let mut out = Vec::with_capacity(s.len());
+    for (a, b) in s {
+        raster.bei(&kasten(&[[a.x, a.y], [b.x, b.y]]), &mut nah);
+        let mut von = a;
+        for q in auf_der_strecke(a, b, p, &nah) {
+            out.push((von, q));
+            von = q;
+        }
+        out.push((von, b));
+    }
+    out
+}
+
+/// Die Dreiecke `d` mit den Punkten `p`, die auf ihren Kanten liegen,
+/// aus der Mitte gefächert; ohne solche bleibt ein Dreieck, wie es ist.
+fn mit_kantenpunkten(d: Vec<[Vec3; 3]>, p: &[Vec3]) -> Vec<[Vec3; 3]> {
+    if p.is_empty() {
+        return d;
+    }
+    let raster = punktraster(p);
+    let mut out = Vec::with_capacity(d.len());
+    let mut nah = Vec::new();
+    for t in d {
+        raster.bei(&kasten(&t.map(|q| [q.x, q.y])), &mut nah);
+        let mut ring = Vec::with_capacity(3 + nah.len());
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            ring.push(a);
+            ring.extend(auf_der_strecke(a, b, p, &nah));
+        }
+        if ring.len() == 3 {
+            out.push(t);
+            continue;
+        }
+        let m = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
+        for k in 0..ring.len() {
+            out.push([m, ring[k], ring[(k + 1) % ring.len()]]);
+        }
+    }
+    out
 }
 
 /// Die beiden Enden einer senkrechten Wand im Grundriss (die Ecken am
@@ -2331,6 +2474,27 @@ pub(crate) mod tests {
         }
     }
 
+    /// Geglättet ist der Export dicht (Review H-276a): Der Rand des Netzes
+    /// bekommt die Zwischenpunkte seiner geraden Kanten (vorher mit „fein“
+    /// 96 offene Kanten bei „alles“), und eine Schicht der Grube, die nur
+    /// an einem Ende dünner als 0,5 mm ist, fehlt der Wand nicht mehr (mit
+    /// „sehr fein“ am Haus 3).
+    #[test]
+    fn export_geglaettet_dicht() {
+        let mut m = lindenhof();
+        for glatt in [sk_model::Glaettung::Fein, sk_model::Glaettung::SehrFein] {
+            m.begin("Glätten");
+            assert!(m.set_terrain_smoothing(glatt));
+            m.commit();
+            for show in [Show::All, Show::Parcel] {
+                let mut g = Gelaende::aus(&m).unwrap();
+                g.show = show;
+                let offen = offene_kanten(&export_koerper(g, [10, 11]));
+                assert!(offen.is_empty(), "{glatt:?} {show:?}: {offen:?}");
+            }
+        }
+    }
+
     /// Mit Geländeflächen ist der Export dicht (G-275a: mit den ersten
     /// beiden vorher 191 offene Kanten, T-Stöße der Stücke gegen die
     /// Dreiecke daneben und untereinander): eine über, eine unter dem
@@ -2356,15 +2520,23 @@ pub(crate) mod tests {
         }
         let plan = m.planned_terrain().unwrap();
         assert!(!plan.walls.is_empty() && !plan.seam.is_empty());
-        for show in [Show::All, Show::Parcel] {
-            let mut g = Gelaende::aus(&m).unwrap();
-            g.show = show;
-            let offen = offene_kanten(&export_koerper(g, [10, 11]));
-            assert!(
-                offen.is_empty(),
-                "{show:?}: {} offen, {offen:?}",
-                offen.len()
-            );
+        // auch geglättet (Review H-276a: mit „fein“ vorher 198 bzw. 90
+        // offene Kanten, die Nachbarn haben Zwischenpunkte auf der Kante)
+        use sk_model::Glaettung;
+        for glatt in [Glaettung::Aus, Glaettung::Fein, Glaettung::SehrFein] {
+            m.begin("Glätten");
+            m.set_terrain_smoothing(glatt);
+            m.commit();
+            for show in [Show::All, Show::Parcel] {
+                let mut g = Gelaende::aus(&m).unwrap();
+                g.show = show;
+                let offen = offene_kanten(&export_koerper(g, [10, 11]));
+                assert!(
+                    offen.is_empty(),
+                    "{glatt:?} {show:?}: {} offen, {offen:?}",
+                    offen.len()
+                );
+            }
         }
     }
 
