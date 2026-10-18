@@ -187,7 +187,7 @@ SZO 4
 [projectinfo] key=project kind="Neubau Einfamilienhaus" projno="R7/26" site="Haus Rundlauf" place="Musterweg 1\n27777 Ganderkesee" client="Max Mustermann" clientaddr="Phantasiestraße 7\n12345 Irgendwo" author="Test und Abnahme" authoraddr="Denkmalsweg 18b\n27777 Ganderkesee"
 [soil] key=project topsoil=250 slope=60
 [terrainplate] key=project thick=900 margin=2000
-[terrain] src="höhen aufmaß.csv" read=2026-10-12 crs=utm32 hsys=DHHN2016 href=abs
+[terrain] src="höhen aufmaß.csv" read=2026-10-12 crs=utm32 hsys=DHHN2016 href=abs smooth=fein
 [tpoint] nr=1 e=472580.214 n=5878890.637 h=28.337 code=GR
 [tpoint] nr=2 e=472604.035 n=5878893.562 h=28.624 code=GR
 [tpoint] nr=3 e=472600.548 n=5878926.885 h=29.71 code=GR off=1
