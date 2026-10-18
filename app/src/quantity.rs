@@ -359,7 +359,8 @@ impl QuantityWindow {
 
     /// Freischaltung: die Kartenleiste zeigt nur die freien Blätter.
     pub fn set_frei(&mut self, f: crate::freischaltung::Freischaltung) {
-        self.karten.set_frei(f.blaetter());
+        self.karten
+            .set_frei(f.blaetter(), crate::freischaltung::stufe_der_karte);
         self.dirty = true;
     }
 

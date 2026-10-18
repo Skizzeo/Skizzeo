@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "sk-blatt"
+version = "0.2.0"
+dependencies = [
+ "sk-cost",
+ "sk-model",
+ "sk-paint",
+ "sk-ui",
+]
+
+[[package]]
 name = "sk-cost"
 version = "0.2.0"
 dependencies = [
@@ -88,6 +98,7 @@ dependencies = [
 name = "skizzeo"
 version = "0.2.0"
 dependencies = [
+ "sk-blatt",
  "sk-cost",
  "sk-export",
  "sk-ifc",

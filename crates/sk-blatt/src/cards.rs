@@ -9,7 +9,6 @@
 //! Die Wohnfläche steht als zweite Karte neben den Mengen (Jörn 13.10.
 //! 02:14: „als gesonderte Rubrik in Mengen-Auswertung“).
 
-use crate::freischaltung::{Eingang, Modul};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, Fonts};
@@ -95,7 +94,7 @@ const N: usize = Blatt::ALLE.len();
 
 pub struct Karten {
     pub aktiv: Blatt,
-    /// Freie Blätter von links (Freischaltung): eine bis drei Karten.
+    /// Freie Blätter von links: eine bis drei Karten.
     n: usize,
     hover: Option<Blatt>,
     zahlen: [String; N],
@@ -103,6 +102,9 @@ pub struct Karten {
     glimm: [Option<Instant>; N],
     /// Laufender Wechsel: voriges Blatt und Beginn.
     wechsel: Option<(Blatt, Instant)>,
+    /// Text je Blatt, den eine gesperrte Karte statt ihrer Zahl zeigt. Die
+    /// App gibt ihn mit `set_frei`.
+    stufen: [&'static str; N],
 }
 
 impl Karten {
@@ -114,6 +116,7 @@ impl Karten {
             zahlen: Default::default(),
             glimm: [None; N],
             wechsel: None,
+            stufen: [""; N],
         }
     }
 
@@ -147,11 +150,12 @@ impl Karten {
             .then_some(blatt_top - (HEIGHT - PAD_TOP - 6.0) * s)
     }
 
-    /// Die ersten `n` Blätter sind frei (Freischaltung, mindestens eins),
-    /// die übrigen stehen blass mit ihrer Stufe da; ein gesperrtes aktives
-    /// Blatt fällt auf das erste zurück.
-    pub fn set_frei(&mut self, n: usize) {
+    /// Die ersten `n` Blätter sind frei (mindestens eins),
+    /// die übrigen stehen blass mit ihrer Stufe `stufe` da; ein gesperrtes
+    /// aktives Blatt fällt auf das erste zurück.
+    pub fn set_frei(&mut self, n: usize, stufe: impl Fn(Blatt) -> &'static str) {
         self.n = n.clamp(1, Blatt::ALLE.len());
+        self.stufen = Blatt::ALLE.map(stufe);
         if !self.ist_frei(self.aktiv) {
             (self.aktiv, self.wechsel) = (Blatt::Mengen, None);
         }
@@ -357,7 +361,7 @@ impl Karten {
                 let zahl = if frei {
                     self.zahl(b)
                 } else {
-                    b.modul().map_or("", Modul::ab)
+                    self.stufen[b.index()]
                 };
                 let zahl = widgets::ellipsize(Some(f), zahl, 12.5 * s, w - 32.0 * s);
                 f.draw(
@@ -496,7 +500,8 @@ mod tests {
         );
         // Nur Mengen frei (Pro): Mengen und Wohnfläche, Kosten fällt auf
         // Mengen zurück und lässt sich nicht wählen
-        k.set_frei(2);
+        k.set_frei(2, |b| if b == Blatt::Ava { "Ultimate" } else { "" });
+        assert_eq!(k.stufen[Blatt::Ava.index()], "Ultimate");
         assert_eq!(k.aktiv, Blatt::Mengen);
         assert_eq!(
             k.hit(x0, top, s, breit, zweite, y),
@@ -510,7 +515,7 @@ mod tests {
             k.blaetter().collect::<Vec<_>>(),
             [Blatt::Mengen, Blatt::Wohnflaeche]
         );
-        k.set_frei(4);
+        k.set_frei(4, |_| "");
         assert!(k.waehlen(Blatt::Ava, now, false));
         // Schmal (Notiz Kopf, ist-mengen-schmal, Hinweis L: 960 und 720 px
         // bei 150 %): die Karten teilen sich die Breite und bleiben im
