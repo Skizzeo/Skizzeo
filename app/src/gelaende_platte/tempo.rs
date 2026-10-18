@@ -195,11 +195,14 @@ fn messen(n: usize) -> Zeiten {
         warten(&mut pl);
         k += 1;
     }
-    // im Faden nach einem Schritt
+    // im Faden nach einem Schritt: Bestwert wie oben, ohne die Zeit, die
+    // der Faden auf eine CPU wartete (L-271a: aus drei Läufen im Volllauf
+    // einmal über 100 ms, einzeln 60 bis 67 ms)
     let kopie = m.clone();
-    let (mut koerper, mut faden) = (f64::INFINITY, f64::INFINITY);
-    for _ in 0..3 {
-        let t0 = Instant::now();
+    let (start, mut koerper, mut faden, mut k) = (Instant::now(), f64::INFINITY, f64::INFINITY, 0);
+    while k < 7 || start.elapsed() < Duration::from_millis(300) {
+        k += 1;
+        let t0 = Uhr::an();
         let e = kopie.terrain_plate_input();
         let g = Gelaende::aus(&kopie);
         let p = e.build();
@@ -207,10 +210,10 @@ fn messen(n: usize) -> Zeiten {
         let ba = g
             .as_ref()
             .map_or_else(|| super::Bodenaufbau::aus(&kopie), |g| g.aufbau.clone());
-        let t1 = Instant::now();
+        let t1 = Uhr::an();
         let netz = netz_der_sicht(&p, g.as_ref(), persp, &ba);
-        koerper = koerper.min(ms(t1));
-        faden = faden.min(ms(t0));
+        koerper = koerper.min(t1.ms());
+        faden = faden.min(t0.ms());
         assert!(!netz.faces.is_empty());
     }
     Zeiten {
