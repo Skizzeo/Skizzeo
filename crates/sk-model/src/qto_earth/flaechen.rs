@@ -18,6 +18,7 @@
 //! Nummer und Geschoss sind die des Trägers, damit Hinweise und Sortierung
 //! einen Ort haben. Verfüllung und Abfuhr bleiben an ihrem Haus.
 
+use super::ueberdeckung::Randflaeche;
 use super::{eckzahl, zahl, Boden, ErdZone, SCHLUESSEL};
 use super::{BACKFILL, CUT, DISPOSAL, EMBANK, EMBANK_SUPPLY, SURPLUS, TOPSOIL, TOPSOIL_SITE};
 use super::{KG, KG_ANDECKEN, KG_GELAENDE, SPREAD, SPREAD_SLOPE, TOPSOIL_REMOVE, TOPSOIL_SUPPLY};
@@ -697,6 +698,8 @@ fn gleiche_flaechen(alt: &[Gerechnet], p: &[TerrainPatch]) -> bool {
 struct Zone {
     haus: Vec<[f64; 2]>,
     baufeld: Option<Vec<[f64; 2]>>,
+    /// Höfe im Baufeld, die sein Rand nicht deckt (B-288-geo-a).
+    hoefe: Vec<Vec<[f64; 2]>>,
     grube: Option<Grube>,
     rechteck: [f64; 4],
     bits: Vec<u64>,
@@ -723,13 +726,19 @@ fn rechnen(
         [e - mesh.bezug.0, n - mesh.bezug.1]
     };
     let ring = |pts: &[Vec3]| pts.iter().map(|p| im_netz(p.x, p.y)).collect::<Vec<_>>();
-    let baufelder: Vec<Option<Vec<Vec3>>> = gr
+    let baufelder: Vec<Option<Randflaeche>> = gr
         .iter()
         .map(|g| {
             let x = g.zone.baufeld.max(0.0);
             // mit schmaler Nische überdeckt sich der versetzte Umriss
-            super::ueberdeckung::gefuellt(&g.outline, x)
-                .or_else(|| sk_math::flaeche::versatz(&g.outline, &vec![-x; g.outline.len()]))
+            super::ueberdeckung::gefuellt(&g.outline, x).or_else(|| {
+                sk_math::flaeche::versatz(&g.outline, &vec![-x; g.outline.len()]).map(|aussen| {
+                    Randflaeche {
+                        aussen,
+                        hoefe: Vec::new(),
+                    }
+                })
+            })
         })
         .collect();
     let zonen: Vec<Zone> = gr
@@ -737,7 +746,9 @@ fn rechnen(
         .zip(&baufelder)
         .map(|(g, bf)| {
             let haus = ring(&g.outline);
-            let baufeld = bf.as_ref().map(|b| ring(b));
+            let baufeld = bf.as_ref().map(|b| ring(&b.aussen));
+            let hoefe: Vec<Vec<[f64; 2]>> =
+                bf.iter().flat_map(|b| &b.hoefe).map(|h| ring(h)).collect();
             let grube = (g.zone.sohle.len() >= 3).then(|| Grube {
                 sohle: ring(&g.zone.sohle),
                 platte: haus.clone(),
@@ -756,9 +767,14 @@ fn rechnen(
                 grube.as_ref().map_or(0, |g| g.b.to_bits()),
             ];
             bits.extend(alle().flat_map(|p| p.map(f64::to_bits)));
+            for h in &hoefe {
+                bits.push(h.len() as u64);
+                bits.extend(h.iter().flat_map(|p| p.map(f64::to_bits)));
+            }
             Zone {
                 haus,
                 baufeld,
+                hoefe,
                 grube,
                 rechteck,
                 bits,
@@ -803,6 +819,10 @@ fn rechnen(
                     baufeld: nah
                         .iter()
                         .filter_map(|&i| zonen[i].baufeld.clone())
+                        .collect(),
+                    baufeld_hoefe: nah
+                        .iter()
+                        .flat_map(|&i| zonen[i].hoefe.iter().cloned())
                         .collect(),
                     gruben: nah.iter().filter_map(|&i| zonen[i].grube.clone()).collect(),
                 };
@@ -906,11 +926,13 @@ fn rechnen(
                 return false;
             };
             let flach = |v: &[Vec3]| v.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>();
-            let feld = Zerlegt::neu(&flach(bf));
+            let feld = Zerlegt::neu(&flach(&bf.aussen));
+            let hoefe: Vec<Zerlegt> = bf.hoefe.iter().map(|h| Zerlegt::neu(&flach(h))).collect();
             let sohle = Zerlegt::neu(&flach(&g.zone.sohle));
             flaechen.iter().any(|x| {
                 let z = &x.plan.zerlegt;
-                z.ueberlappung(&feld) - z.ueberlappung(&sohle) > 100.0
+                let im_hof: f64 = hoefe.iter().map(|h| z.ueberlappung(h)).sum();
+                z.ueberlappung(&feld) - im_hof - z.ueberlappung(&sohle) > 100.0
             })
         })
         .collect();

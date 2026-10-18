@@ -45,6 +45,9 @@ pub struct Zonen {
     /// Baufelder um die Häuser (samt Haus): Dort ist der Oberboden schon
     /// abgetragen (311).
     pub baufeld: Vec<Vec<[f64; 2]>>,
+    /// Höfe in den Baufeldern, die ihr Rand umschließt, aber nicht deckt:
+    /// Dort liegt der Oberboden noch.
+    pub baufeld_hoefe: Vec<Vec<[f64; 2]>>,
     /// Baugruben, in denen bis N schon ausgehoben ist (B3).
     pub gruben: Vec<Grube>,
 }
@@ -303,6 +306,7 @@ impl Planung {
     pub fn erdbau(&self, u: &Abfrage, a: &Aufbau, z: &Zonen) -> Erdbau {
         let haus: Vec<[[f64; 2]; 3]> = z.haus.iter().flat_map(|r| ohren(r)).collect();
         let baufeld: Vec<[[f64; 2]; 3]> = z.baufeld.iter().flat_map(|r| ohren(r)).collect();
+        let hoefe: Vec<[[f64; 2]; 3]> = z.baufeld_hoefe.iter().flat_map(|r| ohren(r)).collect();
         let gruben: Vec<(Vec<Dreieck>, Vec<Dreieck>, f64)> = z
             .gruben
             .iter()
@@ -327,6 +331,9 @@ impl Planung {
             }
             for t in &baufeld {
                 im_feld.dazu(sum(Some(*t), f64::NAN), s.vz);
+            }
+            for t in &hoefe {
+                im_feld.dazu(sum(Some(*t), f64::NAN), -s.vz);
             }
             for ((sohle, platte, b), je) in gruben.iter().zip(&mut je_grube) {
                 let mut g = Summe::default();
@@ -527,6 +534,7 @@ mod tests {
             // Baufeld 1 m um das Haus, dazu bis über den Rand des Bausteins
             baufeld: vec![vec![[1.0, 1.0], [12.0, 1.0], [12.0, 5.0], [1.0, 5.0]]],
             gruben: Vec::new(),
+            ..Zonen::default()
         };
         let ohne = quadrat(&u, 11.0).erdbau(&u, &GRUEN, &Zonen::default());
         let e = quadrat(&u, 11.0).erdbau(&u, &GRUEN, &z);
@@ -537,6 +545,18 @@ mod tests {
         // im Baufeld: 9 × 4 in der Fläche, 1,5 × 4 auf der Böschung, ohne Haus
         assert!((e.im_baufeld - (36.0 + 6.0 - 4.0)).abs() < 1e-6, "{e:?}");
         assert!((e.oberboden_flaeche() - (169.0 - 4.0 - 38.0)).abs() < 1e-6);
+        // ein Hof 2 × 2 m im Baufeld, den sein Rand nicht deckt: dort liegt
+        // der Oberboden noch (B-288-geo-a)
+        let mit_hof = Zonen {
+            baufeld_hoefe: vec![rechteck(7.0, 2.0, 9.0, 4.0)],
+            ..z
+        };
+        let h = quadrat(&u, 11.0).erdbau(&u, &GRUEN, &mit_hof);
+        assert!((e.im_baufeld - h.im_baufeld - 4.0).abs() < 1e-6, "{h:?}");
+        assert_eq!(
+            (h.abtrag, h.auftrag, h.flaeche),
+            (e.abtrag, e.auftrag, e.flaeche)
+        );
     }
 
     #[test]
@@ -552,6 +572,7 @@ mod tests {
                 platte: rechteck(2.0, 2.0, 8.0, 8.0),
                 b,
             }],
+            ..Zonen::default()
         };
         let ring = 100.0 - 36.0;
         // Abtrag 1 m: Q = 8,80 über B, bis N schon ausgehoben

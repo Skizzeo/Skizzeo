@@ -1004,6 +1004,45 @@ mod tests {
         }
     }
 
+    /// C-Haus 16 × 14 m mit Hof 12 × 10 m hinter einer Einfahrt 2 m breit:
+    /// Der Abtrag schließt die Einfahrt, der Hof dahinter bleibt frei und
+    /// zählt nicht zum Oberboden (B-288-geo-a).
+    #[test]
+    fn oberboden_innenhof_frei() {
+        let c = [
+            (0.0, 0.0),
+            (16.0, 0.0),
+            (16.0, 14.0),
+            (9.0, 14.0),
+            (9.0, 12.0),
+            (14.0, 12.0),
+            (14.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 12.0),
+            (7.0, 12.0),
+            (7.0, 14.0),
+            (0.0, 14.0),
+        ]
+        .map(|(x, y)| sk_math::vec3(x * 1e3, y * 1e3, 0.0));
+        let mut b = basis(0.0);
+        b.outline = c.to_vec();
+        b.slab_area = 100.0e6;
+        b.slab_perimeter = 108_000.0;
+        let mut ob = Vec::new();
+        erd_mengen(&b, &Boden::default(), |k, x, t| {
+            if k == TOPSOIL {
+                ob.push((x, t));
+            }
+        });
+        // um das Haus 19 × 17 m, ohne den Hof 9 × 7 m
+        assert!(
+            (ob[0].0 / 1e9 - 260.0 * 0.3).abs() < 1e-6,
+            "{}",
+            ob[0].0 / 1e9
+        );
+        assert!(ob[0].1.contains("(Nische gefüllt)"), "{}", ob[0].1);
+    }
+
     #[test]
     fn gelaende_auf_ok_platte() {
         let v = mengen(&basis(0.0), &Boden::default());
