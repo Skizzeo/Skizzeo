@@ -678,15 +678,9 @@ struct App {
     quantity: quantity::QuantityWindow,
     geschoss: geschossfenster::GeschossFenster,
     ifc: Option<ifc_vorschau::fenster::IfcFenster>,
-    /// Baumpanel (Paket 4) und sein Zustand in der App: Hover kommt aus dem
-    /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann bleiben
-    /// die Äste), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
-    tree: tree_panel::TreePanel,
-    hover_from_tree: bool,
-    in_tree: bool,
-    tree_picked: bool,
-    tree_primary: Option<sk_model::ElementId>,
-    tree_props: bool,
+    /// Baumpanel (Paket 4) und sein Zustand in der App (T4).
+    baum: zustand::Baum,
+    /// Gesehene Entdecken-Hinweise.
     hints_seen: std::collections::BTreeSet<String>,
     /// Der Hover kommt aus der Liste (dann zeigt das Modell den Umriss);
     /// ein Hover im Modell selbst zeigt nur die Zeile in der Liste.
@@ -3069,7 +3063,7 @@ impl App {
 
     /// Hover im Modell: die Liste zeigt die Zeile (nur bei offenem Mengenfenster).
     fn model_hover(&mut self, hit: Option<sk_model::ElementId>) {
-        if !self.quantity.open && self.tree.collapsed {
+        if !self.quantity.open && self.baum.panel.collapsed {
             return;
         }
         if std::mem::take(&mut self.hover_from_list) {
@@ -4090,7 +4084,7 @@ impl App {
                 self.oeffnung_move(&tool_ev, vw, vh, sc);
                 // Bauteil unter der Maus: Mengenliste und Baum zeigen seine
                 // Zeile (B7, Paket 4)
-                if self.quantity.open || !self.tree.collapsed {
+                if self.quantity.open || !self.baum.panel.collapsed {
                     let free = !busy
                         && !outside
                         && !self.tool.enabled
@@ -5035,7 +5029,8 @@ impl App {
             delete::Link::Unlock(id) => {
                 let s = self.ui.scale;
                 let m = self.scene.model();
-                self.tree
+                self.baum
+                    .panel
                     .flash_lock(m, m.lock_source(id), &self.theme, s, Instant::now());
                 self.redraw = true;
             }
@@ -5794,12 +5789,14 @@ impl App {
             return Some(t);
         }
         // Baumpanel: blasses Symbol mit Begründung, sonst die Zeile
-        if self.in_tree {
+        if self.baum.maus {
             let m = self.scene.model();
             let faded = self
                 .mouse_at
-                .and_then(|(x, _)| self.tree.faded_tip(m, x, &self.theme, self.ui.scale));
-            return faded.or_else(|| self.tree.tip(m)).filter(|t| !t.is_empty());
+                .and_then(|(x, _)| self.baum.panel.faded_tip(m, x, &self.theme, self.ui.scale));
+            return faded
+                .or_else(|| self.baum.panel.tip(m))
+                .filter(|t| !t.is_empty());
         }
         self.chain_tip()
     }
@@ -6064,7 +6061,7 @@ impl App {
 
     /// Abschnitte `[baum]` und `[hinweise]` für `einstellungen.txt`.
     fn panel_settings(&self) -> String {
-        self.tree.settings_line() + &hints::line(&self.hints_seen)
+        self.baum.panel.settings_line() + &hints::line(&self.hints_seen)
     }
 
     /// Pille am Gummiband bzw. am gezogenen Band (Paket 8): Live-Länge oder
@@ -6331,14 +6328,14 @@ impl App {
         let m = (z.panel_margin * s).round();
         let y = v.y + v.h + m;
         let avail = (self.h as f32 - m - y).max(0.0);
-        let min = self.tree.min_height(z, s);
-        let h = if self.tree.collapsed {
+        let min = self.baum.panel.min_height(z, s);
+        let h = if self.baum.panel.collapsed {
             min
         } else if self.ui.has_props() {
             let rh = (z.tree_row_h * s).round();
             // Eigenschaften in natürlicher Höhe, höchstens 55 % der Spalte
             let props = self.ui.props_natural_height().min(0.55 * avail);
-            let want = match self.tree.split {
+            let want = match self.baum.panel.split {
                 Some(d) => (d * s).round(),
                 None => avail - m - props,
             };
@@ -6358,15 +6355,15 @@ impl App {
         let now = Instant::now();
         let s = self.ui.scale;
         let props = self.ui.has_props();
-        let animate = props != self.tree_props;
-        self.tree_props = props;
-        self.tree.divider = props;
+        let animate = props != self.baum.eigenschaften;
+        self.baum.eigenschaften = props;
+        self.baum.panel.divider = props;
         let r = self.tree_rect();
-        self.tree.place(r, &self.theme, now, animate);
-        if self.tree.growing(now, &self.theme) {
+        self.baum.panel.place(r, &self.theme, now, animate);
+        if self.baum.panel.growing(now, &self.theme) {
             self.redraw = true;
         }
-        let h = self.tree.height(now, &self.theme);
+        let h = self.baum.panel.height(now, &self.theme);
         let m = (self.theme.size.panel_margin * s).round();
         // Platz der Eigenschaften unter dem Baum (nach dem Übergang); mehr
         // Inhalt rollt
@@ -6390,30 +6387,37 @@ impl App {
         }
         // Beim Ziehen nicht neu bauen (Leistung), danach einmal
         if !self.edit.is_dragging() {
-            self.tree.sync(&self.scene, &self.picking, &self.theme, s);
+            self.baum
+                .panel
+                .sync(&self.scene, &self.picking, &self.theme, s);
         }
         // Auswahl im Modell: Ast auf und hinrollen, leer: alle Karten zu (auch beim ersten Bild)
         let p = self.picking.primary();
-        if p != self.tree_primary && !self.tree_picked {
+        if p != self.baum.zuletzt && !self.baum.gewaehlt {
             match p {
-                Some(id) => self.tree.reveal(self.scene.model(), id, &self.theme, s),
-                None => self.tree.fold(),
+                Some(id) => self
+                    .baum
+                    .panel
+                    .reveal(self.scene.model(), id, &self.theme, s),
+                None => self.baum.panel.fold(),
             }
         }
-        self.tree_primary = p;
-        self.tree_picked = false;
+        self.baum.zuletzt = p;
+        self.baum.gewaehlt = false;
         // Befehlszeile (Bildvergleiche): überfahrene Zeile leuchtet im Modell
-        let cli = self.tree.cli_hover.is_some();
-        if let Some(a) = self.tree.apply_cli(self.scene.model()) {
+        let cli = self.baum.panel.cli_hover.is_some();
+        if let Some(a) = self.baum.panel.apply_cli(self.scene.model()) {
             self.tree_action(a);
         }
         if cli {
-            let ids = self.tree.hover_ids();
+            let ids = self.baum.panel.hover_ids();
             self.picking.set_hover(None, ids);
             self.hover_from_list = true;
-            self.tree.sync(&self.scene, &self.picking, &self.theme, s);
+            self.baum
+                .panel
+                .sync(&self.scene, &self.picking, &self.theme, s);
         }
-        let out = self.tree.render(
+        let out = self.baum.panel.render(
             &self.theme,
             &self.ui.fonts,
             &self.scene,
@@ -6469,34 +6473,35 @@ impl App {
         }
         let s = self.ui.scale;
         let out = self
-            .tree
+            .baum
+            .panel
             .handle(&e, &self.scene, &self.picking, &self.theme, s);
         // Zeile unter der Maus: ihre Bauteile leuchten im Modell
-        let ids = self.tree.hover_ids();
-        if !ids.is_empty() || self.hover_from_tree {
+        let ids = self.baum.panel.hover_ids();
+        if !ids.is_empty() || self.baum.hover {
             if self.picking.set_hover(None, ids.clone()) {
                 self.redraw = true;
             }
-            self.hover_from_tree = !ids.is_empty();
-            self.hover_from_list = self.hover_from_tree;
+            self.baum.hover = !ids.is_empty();
+            self.hover_from_list = self.baum.hover;
         }
         if out.relayout {
-            self.tree.dirty = true;
+            self.baum.panel.dirty = true;
         }
         if let Some(a) = out.action {
             self.tree_action(a);
         }
         if let Event::MouseMove { x, y, .. } = e {
             if out.consumed {
-                if !self.in_tree {
+                if !self.baum.maus {
                     // Modell, Paneele und Titelleiste: die Maus ist weg
-                    self.in_tree = true;
+                    self.baum.maus = true;
                     self.handle_inner(Event::MouseLeave, surface);
                     self.dirty_title.extend(self.title.hover.take());
                 }
                 self.mouse_at = Some((x, y));
             } else {
-                self.in_tree = false;
+                self.baum.maus = false;
             }
         }
         out.consumed
@@ -6506,7 +6511,7 @@ impl App {
     fn tree_action(&mut self, a: tree_panel::Action) {
         use tree_panel::Action as A;
         // Wechselt die Auswahl dadurch (Klick, Löschen, Auge), bleiben die Äste
-        self.tree_picked = true;
+        self.baum.gewaehlt = true;
         match a {
             A::Select(ids) => self.tree_select(ids),
             A::Plate => self.platte_waehlen(),
@@ -6563,7 +6568,7 @@ impl App {
                 }
             }
         }
-        self.tree.dirty = true;
+        self.baum.panel.dirty = true;
     }
 
     /// Auswahl aus dem Baum: Hauptfenster und Mengenliste folgen.
@@ -7356,12 +7361,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         picking: picking::Picking::default(),
         quantity: quantity::QuantityWindow::new(),
         hover_from_list: false,
-        tree: tree_panel::TreePanel::new(),
-        hover_from_tree: false,
-        in_tree: false,
-        tree_picked: false,
-        tree_primary: None,
-        tree_props: false,
+        baum: zustand::Baum::new(),
         hints_seen: Default::default(),
         fly: None,
         quantity_busy: false,
@@ -7497,7 +7497,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             Some("gewerk") => sk_model::tree::Tab::Trade,
             _ => sk_model::tree::Tab::Tree,
         };
-        a.tree.tab = tab;
+        a.baum.panel.tab = tab;
     }
     if let Some(v) = arg("--sperren") {
         let ids = numbers(&a, &v);
@@ -7511,9 +7511,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.picking.selected = numbers(&a, &v);
         a.sync_props();
     }
-    a.tree.cli_open = arg("--aufklappen").unwrap_or_default();
-    a.tree.cli_hover = arg("--ueberfahren").and_then(|v| v.into_iter().next());
-    a.tree.cli_isolate = arg("--baum-isolieren").and_then(|v| v.into_iter().next());
+    a.baum.panel.cli_open = arg("--aufklappen").unwrap_or_default();
+    a.baum.panel.cli_hover = arg("--ueberfahren").and_then(|v| v.into_iter().next());
+    a.baum.panel.cli_isolate = arg("--baum-isolieren").and_then(|v| v.into_iter().next());
     // `--sperrhinweis AW-005,AW-001`: Sperre beim Ziehen von AW-001
     if let Some(ids) = arg("--sperrhinweis").map(|v| numbers(&a, &v)) {
         if let Some(&id) = ids.first() {
@@ -7594,7 +7594,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     a.quantity.blatt_wahl = a.settings.lv_blatt();
     // Baumpanel: Karte, zugeklappt, Grenze (Paket 4)
     let panel = a.settings.panel.clone();
-    a.tree.load_settings(&panel);
+    a.baum.panel.load_settings(&panel);
     a.hints_seen = hints::seen(&panel);
     surface.layout().set_width_dip(a.theme.size.qto_window_w);
     a.geschoss.wanted = surface.layout().levels_open();
@@ -7650,8 +7650,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && a.erase_flash.is_none()
             && a.card_fade.is_none()
             && a.flush_anim.is_none()
-            && !a.tree.is_growing()
-            && !a.tree.needs_paint()
+            && !a.baum.panel.is_growing()
+            && !a.baum.panel.needs_paint()
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
