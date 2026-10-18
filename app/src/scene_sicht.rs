@@ -4,10 +4,17 @@
 //! Baum ausgeblendet, nur in dieser Ansicht; Baum, Mengen, Kosten und IFC
 //! bleiben. Die Szene setzt sie, sobald sie das Netz einer Ansicht baut
 //! oder in ihr sucht ([`Scene::sicht_fuer`]).
+//!
+//! Ebenso die Bauphase in 3D und Schnitt ([`Bauphase::verborgen`]): bis zu
+//! den Gräben kein Bauteil, in der Gründung nur Platte, Schürze und
+//! Dämmung.
 
 use super::Scene;
+use crate::gelaende_platte::bauphase::Bauphase;
 use crate::ui::ViewKind;
 use sk_model::view::Visibility;
+use sk_model::Category;
+use std::collections::BTreeSet;
 
 /// Platz der Ansicht in [`sk_model::SICHT_VIEWS`].
 pub fn platz(v: ViewKind) -> usize {
@@ -23,19 +30,52 @@ pub fn platz(v: ViewKind) -> usize {
 }
 
 impl Scene {
+    /// Arten, die die Ansicht `view` dazu ausblendet: ihre Schnelloption,
+    /// in 3D und Schnitt dazu die der Bauphase.
+    fn ansicht_cats(&self, view: ViewKind) -> BTreeSet<Category> {
+        let mut cats = self.model.view_hidden(platz(view)).clone();
+        cats.extend(self.bauphase(view).verborgen());
+        cats
+    }
+
     /// Die Schnelloption der Ansicht `view` in die Sichtbarkeit, sofort und
     /// ohne Übergang (Wechsel der Ansicht, Öffnen); `true`, wenn sich die
     /// Sichtbarkeit änderte und das Netz neu muss.
     pub fn sicht_fuer(&mut self, view: ViewKind) -> bool {
-        let cats = self.model.view_hidden(platz(view));
-        if self.model.visibility().view_cat == *cats {
+        let cats = self.ansicht_cats(view);
+        if self.model.visibility().view_cat == cats {
             return false;
         }
         let v = Visibility {
-            view_cat: cats.clone(),
+            view_cat: cats,
             ..self.model.visibility().clone()
         };
         self.set_vis(v)
+    }
+
+    /// Bauphase der Ansicht `view`: in 3D und Schnitt die gewählte,
+    /// sonst der fertige Stand.
+    pub fn bauphase(&self, view: ViewKind) -> Bauphase {
+        match view {
+            ViewKind::Persp | ViewKind::Section => self.bauphase,
+            _ => Bauphase::Fertig,
+        }
+    }
+
+    /// Wählt die Bauphase für 3D und Schnitt; in der gezeigten Ansicht
+    /// `view` gleiten die Bauteile aus bzw. ein wie beim Ausblenden im
+    /// Baum. `true`, wenn sie sich änderte.
+    pub fn set_bauphase(&mut self, view: ViewKind, ph: Bauphase) -> bool {
+        if self.bauphase == ph {
+            return false;
+        }
+        self.bauphase = ph;
+        let v = Visibility {
+            view_cat: self.ansicht_cats(view),
+            ..self.model.visibility().clone()
+        };
+        self.fade_vis(v);
+        true
     }
 
     /// Blendet die Ansicht `view` die Dachentwässerung aus?
@@ -52,7 +92,7 @@ impl Scene {
         }
         self.model.set_view_drain_hidden(platz(view), hide);
         let v = Visibility {
-            view_cat: self.model.view_hidden(platz(view)).clone(),
+            view_cat: self.ansicht_cats(view),
             ..self.model.visibility().clone()
         };
         self.fade_vis(v);

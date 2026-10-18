@@ -727,6 +727,7 @@ mod tests {
                     Some(plane),
                     keys,
                     &gp::bodenaufbau::Bodenaufbau::aus(h.model()),
+                    Default::default(),
                 ),
             );
             r.set_helpers(&linien(&h, ViewKind::Section, Some(plane)));
@@ -819,6 +820,7 @@ mod tests {
                     None,
                     keys,
                     &gp::bodenaufbau::Bodenaufbau::aus(h.model()),
+                    Default::default(),
                 ),
             );
             let px = bild(r, h, sun, cam);

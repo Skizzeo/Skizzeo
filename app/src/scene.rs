@@ -554,6 +554,9 @@ pub struct Scene {
     kennung: u64,
     /// Deckendicke über den Geschossen je Modellstand ([`schnitt`]).
     decken: schnitt::Decken,
+    /// Bauphase in 3D und Schnitt ([`Scene::bauphase`]); nur Ansicht, nicht
+    /// in der Datei.
+    bauphase: crate::gelaende_platte::bauphase::Bauphase,
     /// Rolle dieser Sitzung für Kostenoperationen (KA-3b1): `Nutzer`, wenn
     /// der Firmenkatalog ein Verwaltungskennwort hat und es hier nicht
     /// eingegeben ist; sonst `Admin`. Die App setzt sie.
@@ -937,6 +940,7 @@ impl Scene {
             model,
             kennung: SZENEN.fetch_add(1, Ordering::Relaxed),
             decken: Default::default(),
+            bauphase: Default::default(),
             undo: Vec::new(),
             serial: 0,
             redo: Vec::new(),

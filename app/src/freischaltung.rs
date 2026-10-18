@@ -383,6 +383,7 @@ pub(crate) fn hilfe_zeile(t: Topic, beschriftung: &str) -> Option<Modul> {
         (Topic::Rooms, "Mengen") => Some(Modul::Mengen),
         (Topic::Einlesen, "Firmenkatalog" | "Preise") => Some(Modul::Kosten),
         (Topic::Gelaende, "Erdmengen") => Some(Modul::Kosten),
+        (Topic::Tree, "Bauphasen") => Some(Modul::Gelaende),
         (
             Topic::Gelaende,
             "Ablauf" | "Lageplan" | "Höhen" | "Lage" | "Höhenlage" | "Geländeflächen"
@@ -413,7 +414,7 @@ impl Eingang for crate::delete::Action {
         use crate::delete::Action;
         match self {
             Action::Quantity => Some(Modul::Mengen),
-            Action::Schloss => Some(Modul::Gelaende),
+            Action::Schloss | Action::Bauphase(_) => Some(Modul::Gelaende),
             Action::ShowInModel
             | Action::ChangeType
             | Action::Properties
@@ -421,6 +422,16 @@ impl Eingang for crate::delete::Action {
             | Action::DeleteBuilding
             | Action::AddDrain
             | Action::DeleteDrain => None,
+        }
+    }
+}
+
+impl Eingang for crate::gelaende_platte::phasenleiste::Teil {
+    fn modul(self) -> Option<Modul> {
+        use crate::gelaende_platte::phasenleiste::Teil;
+        match self {
+            Teil::Feld(_) | Teil::Leiste => Some(Modul::Gelaende),
+            Teil::Menge => Some(Modul::Mengen),
         }
     }
 }

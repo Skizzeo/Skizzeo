@@ -5,9 +5,14 @@
 //! „Dachentwässerung ausblenden“ seiner Ansicht (Jörn 12.10.), die von
 //! Grundriss, Schnitt und 3D dazu den Schalter „Ausbau innen“ (Raumbuch
 //! RB4), Grundriss und 3D die Zeile „Bemaßung“ ([`crate::bemassung`]).
+//! Links neben dem Zahnrad von 3D und Schnitt steht die Phasenleiste
+//! ([`phasenleiste`]); ihr Bild nimmt den Platz der Schnitthöhe, die nur
+//! der Grundriss hat.
 //! Hier die Verdrahtung in der App: Wahl, Lage, Ereignisse, Tasten,
 //! Tooltip und Bilder.
 
+use crate::gelaende_platte::bauphase::Bauphase;
+use crate::gelaende_platte::phasenleiste;
 use crate::scene::scene_ausbau::platz as ausbau_platz;
 use crate::ui::{Panel, ViewKind};
 use crate::{
@@ -29,6 +34,9 @@ pub(crate) struct Zahnraeder {
     /// der Ansichten.
     pub sicht: sicht_zahnrad::Schalter,
     pub sicht_bild: Option<sicht_zahnrad::Bild>,
+    /// Phasenleiste in 3D und Schnitt.
+    pub phasen: phasenleiste::Schalter,
+    pub phasen_bild: Option<phasenleiste::Bild>,
 }
 
 impl App {
@@ -163,6 +171,105 @@ impl App {
         out.consumed
     }
 
+    /// Zeigt die Ansicht die Phasenleiste? 3D und Schnitt, mit dem
+    /// Geländemodul.
+    fn phasen_zeigt(&self) -> bool {
+        sicht_zahnrad::zeigt(self.ui.view) && !self.ui.frei.gesperrt(phasenleiste::Teil::Leiste)
+    }
+
+    /// Lage der Phasenleiste (Skalierung `sc`).
+    fn phasen_lage(&self, sc: f64) -> phasenleiste::Lage {
+        let rechts = self.ui.rect(Panel::Views, self.w, self.top()).x;
+        phasenleiste::lage(rechts, sc as f32, &self.theme)
+    }
+
+    /// Ereignis an der Phasenleiste (nur in 3D und Schnitt); `true`, wenn
+    /// sie es genommen hat.
+    fn phasen_handle(&mut self, ev: &Event, sc: f64) -> bool {
+        if !self.phasen_zeigt() {
+            if self.zahnrad.phasen.hover.take().is_some() {
+                self.redraw = true;
+            }
+            return false;
+        }
+        let lage = self.phasen_lage(sc);
+        let jetzt = self.scene.bauphase(self.ui.view);
+        let out = self.zahnrad.phasen.handle(ev, &lage, jetzt);
+        self.redraw |= out.redraw;
+        if let Some(p) = out.phase {
+            self.bauphase_setzen(p);
+        }
+        out.consumed
+    }
+
+    /// Mausrad über der Phasenleiste (Fensterkoordinaten): eine Phase
+    /// weiter oder zurück statt zu zoomen; `true`, wenn sie es nahm.
+    pub(crate) fn phasen_rad(&mut self, ev: &Event) -> bool {
+        let Event::Wheel { delta, x, y, mods } = *ev else {
+            return false;
+        };
+        let th = self.top() as f64;
+        let sc = self.view_size().2;
+        let ev = Event::Wheel {
+            delta,
+            x,
+            y: y - th,
+            mods,
+        };
+        self.phasen_handle(&ev, sc)
+    }
+
+    /// Rechtsklick in 3D und Schnitt, wo kein Bauteil liegt (Gelände,
+    /// Baugrube, Leere): Kontextmenü mit den acht Bauphasen. `false`
+    /// sonst; dann öffnet das Bauteil sein Menü.
+    pub(crate) fn open_phasen_context(&mut self, x: f64, y: f64) -> bool {
+        let top = self.top();
+        let th = top as f64;
+        if y < th
+            || !self.phasen_zeigt()
+            || self.ui.dialog
+            || self.tool.is_active()
+            || self.edit.is_dragging()
+            || self.nav.is_dragging()
+            || self.ui.over(x, y, self.w, top)
+            || self.wheel_hit(x, y).is_some()
+        {
+            return false;
+        }
+        let (vw, vh, _) = self.view_size();
+        let (view, plane) = (self.ui.view, self.plane());
+        let cam = &self.cam;
+        if crate::selection::pick_at(&mut self.scene, cam, view, plane, x, y - th, vw, vh).is_some()
+        {
+            return false;
+        }
+        self.close_type_menu(false);
+        let jetzt = self.scene.bauphase(view);
+        let (win, s) = ((self.w, self.h, top), self.ui.scale);
+        self.context = Some(crate::delete::ContextMenu::for_bauphase(
+            jetzt,
+            x,
+            y,
+            win,
+            &self.theme,
+            s,
+        ));
+        self.context_dirty = true;
+        self.tip = None;
+        self.redraw = true;
+        true
+    }
+
+    /// In die Bauphase `p` wechseln (3D und Schnitt zugleich): Die
+    /// Bauteile gleiten aus bzw. ein, das Gelände folgt im nächsten Bild.
+    pub(crate) fn bauphase_setzen(&mut self, p: Bauphase) {
+        if self.scene.set_bauphase(self.ui.view, p) {
+            self.upload_model();
+            self.sync_props();
+            self.redraw = true;
+        }
+    }
+
     /// Häkchen „Maßketten zeigen“ bzw. „Maßbezugspunkte zeigen“ der
     /// gezeigten Ansicht umschalten (Ansichtszustand ohne Schritt).
     fn mass_anwenden(&mut self, ketten: bool, punkte: bool) {
@@ -220,6 +327,7 @@ impl App {
         self.zahnrad.schatten.reset();
         self.zahnrad.schnitt.reset();
         self.zahnrad.sicht.reset();
+        self.zahnrad.phasen = Default::default();
         self.scene.sicht_fuer(self.ui.view)
     }
 
@@ -236,14 +344,19 @@ impl App {
 
     /// Ereignis an den Zahnrädern der Ansicht; `true`, wenn eins es nahm.
     pub(crate) fn zahnrad_handle(&mut self, ev: &Event, sc: f64) -> bool {
-        self.ansicht_handle(ev, sc) | self.schnitt_handle(ev, sc) | self.sicht_handle(ev, sc)
+        self.ansicht_handle(ev, sc)
+            | self.schnitt_handle(ev, sc)
+            | self.sicht_handle(ev, sc)
+            | self.phasen_handle(ev, sc)
     }
 
     /// Ob ein offenes Feld der Zahnräder die Taste `key` nimmt: Esc schließt,
-    /// die Eingabe der Schnitthöhe nimmt die Tasten, die sie bearbeitet.
+    /// die Eingabe der Schnitthöhe nimmt die Tasten, die sie bearbeitet; in
+    /// einer Bauphase führt Esc zurück zum fertigen Stand.
     pub(crate) fn zahnrad_will(&self, key: Key) -> bool {
         let esc = key == Key::Escape;
-        (esc && (self.zahnrad.schatten.offen || self.zahnrad.sicht.offen))
+        let phase = self.phasen_zeigt() && self.scene.bauphase(self.ui.view).offen();
+        (esc && (self.zahnrad.schatten.offen || self.zahnrad.sicht.offen || phase))
             || self.zahnrad.schnitt.nimmt(key)
             || (esc && self.zahnrad.schnitt.offen)
     }
@@ -266,6 +379,10 @@ impl App {
             self.redraw = true;
             return;
         }
+        if key == Key::Escape && self.phasen_zeigt() {
+            self.bauphase_setzen(Bauphase::Fertig);
+            return;
+        }
         let mut out = grundriss_schnitt::Ausgang::default();
         self.zahnrad.schnitt.key(key, mods, &mut out);
         self.schnitt_anwenden(out);
@@ -278,14 +395,21 @@ impl App {
         match self.zahnrad.schnitt.hover {
             Some(grundriss_schnitt::Teil::Wert) => Some(sk_platform::Cursor::IBeam),
             Some(_) => Some(sk_platform::Cursor::Hand),
-            None => (self.zahnrad.schatten.hover.is_some() || self.zahnrad.sicht.hover.is_some())
-                .then_some(sk_platform::Cursor::Hand)
-                .or_else(|| self.edit.masse.cursor()),
+            None => (self.zahnrad.schatten.hover.is_some()
+                || self.zahnrad.sicht.hover.is_some()
+                || matches!(self.zahnrad.phasen.hover, Some(phasenleiste::Teil::Feld(_))))
+            .then_some(sk_platform::Cursor::Hand)
+            .or_else(|| self.edit.masse.cursor()),
         }
     }
 
     /// Tooltip an den Zahnrädern und an den Maßketten.
     pub(crate) fn zahnrad_tip(&self) -> Option<String> {
+        match self.zahnrad.phasen.hover {
+            Some(phasenleiste::Teil::Feld(p)) => return Some(p.tip().into()),
+            Some(_) => return Some(phasenleiste::TIP.into()),
+            None => {}
+        }
         match (self.zahnrad.schnitt.hover, self.zahnrad.sicht.hover) {
             (Some(grundriss_schnitt::Teil::Zahnrad), _) => {
                 return Some(grundriss_schnitt::TIP.into())
@@ -392,5 +516,49 @@ impl App {
             }
             self.zahnrad.schnitt_bild = bild;
         }
+        self.phasen_bild(th, scale);
+    }
+
+    /// Bild der Phasenleiste hochladen, wenn es sich geändert hat; es nimmt
+    /// den Platz der Schnitthöhe (nur im Grundriss), die Zeile mit der
+    /// Menge nur ohne offenes Feld am Zahnrad und mit den Mengen.
+    fn phasen_bild(&mut self, th: u32, scale: f32) {
+        let ph = self.scene.bauphase(self.ui.view);
+        let menge_frei = !self.ui.frei.gesperrt(phasenleiste::Teil::Menge);
+        let bild = if self.phasen_zeigt() {
+            let menge = (ph.offen() && menge_frei && !self.zahnrad.sicht.offen)
+                .then(|| {
+                    let s = self.scene.schedule();
+                    let auto: Vec<(&str, f64)> = s.auto.iter().map(|a| (a.key, a.value)).collect();
+                    ph.menge(&auto)
+                })
+                .flatten();
+            Some(phasenleiste::Bild {
+                phase: ph,
+                hover: self.zahnrad.phasen.hover,
+                menge,
+                rechts: self.ui.rect(Panel::Views, self.w, th).x.to_bits(),
+                scale: scale.to_bits(),
+            })
+        } else {
+            None
+        };
+        if bild == self.zahnrad.phasen_bild {
+            return;
+        }
+        match &bild {
+            Some(b) => {
+                let (c, x, y) = phasenleiste::malen(b, &self.ui.fonts, &self.theme);
+                let px = c.to_premul_rgba8();
+                let (w, h) = (c.width as u32, c.height as u32);
+                self.renderer
+                    .set_overlay(OVERLAY_SCHNITT, x, y + th as i32, w, h, &px);
+            }
+            None if self.zahnrad.schnitt_bild.is_none() => {
+                self.renderer.set_overlay(OVERLAY_SCHNITT, 0, 0, 0, 0, &[])
+            }
+            None => {}
+        }
+        self.zahnrad.phasen_bild = bild;
     }
 }

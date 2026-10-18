@@ -232,6 +232,7 @@ Datum, Uhrzeit | Leiste oben im 3D-Fenster: Feld anklicken, Zahl + **Enter**; Kn
 Karten | rechte Spalte: Baum, Bauteil, Gewerk
 Ausblenden | Auge je Zeile; unten „Alles zeigen“; die Dachentwässerung schneller im Zahnrad der Ansicht (Navigation)
 Isolieren | Symbol beim Überfahren der Zeile; **Esc** oder „Beenden“ zeigt wieder alles
+Bauphasen | in 3D und Schnitt links neben dem Zahnrad: „1“ bis „8“ zeigt das Haus vom Urgelände über Mutterboden ab, ausgekoffert, Füllsand, Gräben, Gründung und Rohbau bis fertig, darunter die Menge des Schritts; Mausrad über der Leiste blättert, Rechtsklick neben das Haus nennt alle Phasen, **Esc** führt zurück zu „Fertig“. Nur Ansicht: Mengen und Datei bleiben
 Sperren | Schloss je Zeile; Gesperrtes hat keine Griffe
 Auswählen | Klick, mehrere mit **Umschalt** oder **Strg**; Doppelklick holt ins Bild
 Aufklappen | Auswahl im Modell klappt ihren Ast auf, Abwählen im Modell klappt alle Karten wieder zu, im Baum bleiben sie offen

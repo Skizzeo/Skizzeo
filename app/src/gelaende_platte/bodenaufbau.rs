@@ -19,7 +19,12 @@
 //! Striche), in 3D die Wände und Sohlen der Aussparung in den Farben der
 //! Schichten: Bei ausgeblendetem Gebäude steht der Stand vor dem
 //! Betonieren da.
+//!
+//! In den Bauphasen ([`Bauphase`]) fehlen die Schichten, die noch nicht
+//! eingebaut sind; in 3D steht dann um jedes Haus statt Gelände und
+//! Aussparung die Baugrube als Fläche ([`decke`]).
 
+use super::bauphase::{self, Bauphase};
 use crate::draw_table::{fill_kind, LineLook, MatLook};
 use crate::gelaende_netz::gitter::Gitter;
 use sk_math::{polygon, vec3, Vec3};
@@ -342,11 +347,11 @@ impl Bodenaufbau {
         self.bei(q).any(|h| abstand(&h.haus, q) < 1.0)
     }
 
-    /// Schichten an der Stelle `q` außerhalb der Häuser mit OK Gelände
-    /// `top`, von `unten` an.
-    fn aussen(&self, q: P2, top: f64, unten: f64) -> Stapel {
+    /// Schichten in der Phase `ph` an der Stelle `q` außerhalb der Häuser
+    /// mit OK Gelände `top`, von `unten` an.
+    fn aussen(&self, ph: Bauphase, q: P2, top: f64, unten: f64) -> Stapel {
         match self.naechstes(q) {
-            Some((h, d)) => h.stapel(Lage::Aussen(d), top, unten),
+            Some((h, d)) => h.stapel_in(ph, Lage::Aussen(d), top, unten),
             None => schichten(
                 unten,
                 [top - self.oberboden, f64::MIN, f64::MIN, f64::MIN, top],
@@ -474,13 +479,21 @@ impl Aufbau {
         }
     }
 
-    /// Schichten einer Lage, außen unter OK Gelände `top`.
+    /// Schichten einer Lage im fertigen Stand, außen unter OK Gelände `top`.
     fn stapel(&self, lage: Lage, top: f64, unten: f64) -> Stapel {
+        self.stapel_in(Bauphase::Fertig, lage, top, unten)
+    }
+
+    /// Schichten einer Lage in der Phase `ph`: im Bestand der gewachsene
+    /// Boden mit Oberboden, dann im Baufeld ohne Oberboden, ausgekoffert,
+    /// mit Füllsand, ab den Gräben im Haus wie fertig; Verfüllung und
+    /// angedeckter Oberboden erst im fertigen Stand.
+    fn stapel_in(&self, ph: Bauphase, lage: Lage, top: f64, unten: f64) -> Stapel {
         let nie = f64::MIN;
+        let on = top - self.oberboden;
         let ziele = match lage {
             Lage::Aussen(d) => {
-                let on = top - self.oberboden;
-                if d > self.baufeld {
+                if d > self.baufeld || ph == Bauphase::Bestand {
                     [on, nie, nie, nie, top]
                 } else {
                     let oa = (top - self.andecken).max(on);
@@ -499,9 +512,22 @@ impl Aufbau {
                     } else {
                         boeschung
                     };
-                    [sohle.min(on), sand.min(oa), nie, oa, top]
+                    match ph {
+                        Bauphase::Mutterboden => [on, nie, nie, nie, nie],
+                        Bauphase::Ausgekoffert => [sohle.min(on), nie, nie, nie, nie],
+                        Bauphase::Fertig => [sohle.min(on), sand.min(oa), nie, oa, top],
+                        _ => [sohle.min(on), sand.min(oa), nie, nie, nie],
+                    }
                 }
             }
+            // im Haus vor dem Füllsand: Bestand, ohne Oberboden, ausgekoffert
+            _ if ph == Bauphase::Bestand => [on, nie, nie, nie, top],
+            _ if ph == Bauphase::Mutterboden => [on, nie, nie, nie, nie],
+            _ if ph == Bauphase::Ausgekoffert => [self.ka, nie, nie, nie, nie],
+            // Füllsand vor den Gräben: unter der Schürze bis UK Dämmung,
+            // innen bis UK Kies
+            Lage::Ring if ph == Bauphase::Fuellsand => [self.ka, self.b, nie, nie, nie],
+            Lage::Kern if ph == Bauphase::Fuellsand => [self.ka, self.p, nie, nie, nie],
             Lage::Rand => [self.ka.min(self.b), self.b, nie, nie, nie],
             Lage::Ring => [self.ka.min(self.f), self.f, nie, nie, nie],
             Lage::Kern => [self.ka.min(self.p), self.p, self.b, nie, nie],
@@ -573,6 +599,7 @@ pub(crate) fn schnitt(
     oben: &[(P2, P2)],
     unten: f64,
     keys: [u16; SCHICHTEN],
+    ph: Bauphase,
 ) -> Solid {
     let mut s = Solid {
         edge_kind: edge_kind::FINE,
@@ -591,17 +618,18 @@ pub(crate) fn schnitt(
         }
         let z = |u: f64| a[1] + (b[1] - a[1]) * (u - a[0]) / (b[0] - a[0]);
         for (u0, u1) in stuetzen(ba, a[0], b[0], &grund) {
-            let st0 = ba.aussen(grund(u0), z(u0), unten);
-            let st1 = ba.aussen(grund(u1), z(u1), unten);
+            let st0 = ba.aussen(ph, grund(u0), z(u0), unten);
+            let st1 = ba.aussen(ph, grund(u1), z(u1), unten);
             // zwischen zwei Stützstellen gilt das Haus der Mitte
             let (st0, st1) = match ba.naechstes(grund((u0 + u1) * 0.5)) {
                 Some((h, _)) => {
                     let d = |u: f64| Lage::Aussen(eckabstand(&h.platte, grund(u)));
-                    (h.stapel(d(u0), z(u0), unten), h.stapel(d(u1), z(u1), unten))
+                    let st = |u: f64| h.stapel_in(ph, d(u), z(u), unten);
+                    (st(u0), st(u1))
                 }
                 None => (st0, st1),
             };
-            streifen(&mut s, f, (u0, &st0), (u1, &st1), keys, false);
+            streifen(&mut s, f, (u0, &st0), (u1, &st1), keys, ph.offen());
         }
     }
     // in den Häusern
@@ -629,7 +657,7 @@ pub(crate) fn schnitt(
             let mut vorher: Option<f64> = None;
             for w in us.windows(2) {
                 let lage = h.lage(grund((w[0] + w[1]) * 0.5));
-                let st = h.stapel(lage, h.t, unten);
+                let st = h.stapel_in(ph, lage, h.t, unten);
                 streifen(&mut s, f, (w[0], &st), (w[1], &st), keys, true);
                 // senkrecht zur Nachbarschicht, wo die Aussparung springt
                 let top = oberste(&st).map_or(unten, |i| st[i].1);
@@ -840,6 +868,103 @@ pub(crate) fn grube(
                 let c = sohle(&h.platte);
                 for t in polygon::triangulate(&c) {
                     deckel(&mut s, t.map(|x| c[x]));
+                }
+            }
+        }
+    }
+    s
+}
+
+/// Raster der Baugrube in 3D (mm) und höchstens so viele Zellen je Feld;
+/// bei großen Feldern wird das Raster gröber.
+const RASTER: f64 = 100.0;
+const ZELLEN: f64 = 60_000.0;
+
+impl Bodenaufbau {
+    /// Felder um die Häuser, in denen in den offenen Phasen die Baugrube
+    /// statt des Geländes steht: die Reichweite der Häuser, überlappende
+    /// vereint.
+    pub(crate) fn felder(&self) -> Vec<[f64; 4]> {
+        bauphase::vereint(self.haeuser.iter().map(|h| h.kasten).collect())
+    }
+
+    /// Oberkante und oberste Schicht an `q` in der Phase `ph`: im Haus aus
+    /// seinem Aufbau, sonst unter OK Gelände `hoehe` (`None`: dort ist kein
+    /// Gelände).
+    fn oben_in(
+        &self,
+        ph: Bauphase,
+        q: P2,
+        hoehe: &dyn Fn(P2) -> Option<f64>,
+        unten: f64,
+    ) -> Option<(f64, usize)> {
+        let st = match self.bei(q).find(|h| drin(&h.haus, q)) {
+            Some(h) => h.stapel_in(ph, h.lage(q), h.t, unten),
+            None => self.aussen(ph, q, hoehe(q)?, unten),
+        };
+        let i = oberste(&st)?;
+        Some((st[i].1, i))
+    }
+}
+
+/// Die Baugrube in 3D in einer offenen Phase `ph`: je Feld
+/// ([`Bodenaufbau::felder`]) ein Raster über Haus und Umgebung in der Höhe
+/// der obersten Schicht, je Zelle in deren Farbe; der gewachsene
+/// Oberboden in `gras` wie das Gelände daneben. `hoehe`: OK Gelände
+/// außerhalb der Häuser, `None` neben dem Gelände (dort keine Zelle).
+pub(crate) fn decke(
+    ba: &Bodenaufbau,
+    ph: Bauphase,
+    hoehe: &dyn Fn(P2) -> Option<f64>,
+    unten: f64,
+    keys: [u16; SCHICHTEN],
+    gras: u16,
+) -> Solid {
+    let mut s = Solid {
+        edge_kind: edge_kind::VIEW,
+        ..Solid::default()
+    };
+    for r in ba.felder() {
+        let (w, h) = (r[2] - r[0], r[3] - r[1]);
+        let schritt = RASTER.max((w * h / ZELLEN).sqrt());
+        let (nx, ny) = ((w / schritt).ceil() as usize, (h / schritt).ceil() as usize);
+        let (dx, dy) = (w / nx as f64, h / ny as f64);
+        let punkt = |i: usize, j: usize| [r[0] + i as f64 * dx, r[1] + j as f64 * dy];
+        let knoten: Vec<Option<Vec3>> = (0..=ny)
+            .flat_map(|j| (0..=nx).map(move |i| (i, j)))
+            .map(|(i, j)| {
+                let q = punkt(i, j);
+                let (z, _) = ba.oben_in(ph, q, hoehe, unten)?;
+                Some(vec3(q[0], q[1], z))
+            })
+            .collect();
+        let k = |i: usize, j: usize| knoten[j * (nx + 1) + i];
+        for j in 0..ny {
+            for i in 0..nx {
+                let (Some(a), Some(b), Some(c), Some(d)) =
+                    (k(i, j), k(i + 1, j), k(i + 1, j + 1), k(i, j + 1))
+                else {
+                    continue;
+                };
+                let m = [r[0] + (i as f64 + 0.5) * dx, r[1] + (j as f64 + 0.5) * dy];
+                let Some((_, oben)) = ba.oben_in(ph, m, hoehe, unten) else {
+                    continue;
+                };
+                s.mat = if oben == SCHICHTEN - 1 {
+                    gras
+                } else {
+                    keys[oben]
+                };
+                for t in [[a, b, c], [a, c, d]] {
+                    let n = (t[1] - t[0]).cross(t[2] - t[0]).normalized();
+                    s.triangles.push(sk_model::solid::Tri {
+                        p: t,
+                        n,
+                        mat: s.mat,
+                        uv: [[0.0; 2]; 3],
+                        elem: s.elem,
+                        layer: sk_model::solid::NO_LAYER,
+                    });
                 }
             }
         }
@@ -1092,7 +1217,7 @@ mod tests {
         ];
         let unten = ba.unten(h.t - 500.0);
         let keys = [1, 2, 3, 4, 5];
-        let s = schnitt(&ba, &f, &oben, unten, keys);
+        let s = schnitt(&ba, &f, &oben, unten, keys, Bauphase::Fertig);
         let mats: std::collections::BTreeSet<u16> =
             s.triangles.iter().map(|t| t.mat & !material::CUT).collect();
         let mut soll: std::collections::BTreeSet<u16> = [1, 2, 4, 5].into();
@@ -1146,6 +1271,148 @@ mod tests {
             .expect("Wand vorn");
         assert!(w.n.y > 0.5);
     }
+
+    /// Bauphasen (Jörn 18.10.): je Phase fehlt, was noch nicht eingebaut
+    /// ist; hinter dem Baufeld bleibt das Gelände, ab den Gräben ist das
+    /// Haus innen wie fertig, Verfüllung und angedeckter Oberboden kommen
+    /// erst zum Schluss.
+    #[test]
+    fn schichten_je_phase() {
+        let m = haus(300.0);
+        let h = aufbau(&m);
+        let tief = -10_000.0;
+        let dicke = |st: &Stapel, i: usize| st[i].1 - st[i].0;
+        let oben = |st: &Stapel| oberste(st).map(|i| (i, st[i].1));
+        let st = |ph: Bauphase, l: Lage| h.stapel_in(ph, l, h.t, tief);
+        let fern = Lage::Aussen(h.baufeld + 1.0);
+        let nah = Lage::Aussen(0.0);
+        for ph in Bauphase::ALLE {
+            assert_eq!(st(ph, fern), h.stapel(fern, h.t, tief), "{ph:?}");
+            if ph != Bauphase::Fertig {
+                assert_eq!(dicke(&st(ph, nah), VERFUELLUNG), 0.0, "{ph:?}");
+            }
+        }
+        // Bestand: überall gewachsener Boden mit Oberboden, auch im Haus
+        for l in [nah, Lage::Kern, Lage::Ring, Lage::Rand] {
+            let b = st(Bauphase::Bestand, l);
+            assert_eq!(b[BODEN].1, h.n);
+            assert_eq!(oben(&b), Some((OBERBODEN, h.t)));
+        }
+        // Mutterboden ab: im Baufeld auf OK gewachsener Boden
+        for l in [nah, Lage::Kern] {
+            assert_eq!(oben(&st(Bauphase::Mutterboden, l)), Some((BODEN, h.n)));
+        }
+        // ausgekoffert: Sohle 0,80 m unter OK Gelände, auch im Haus
+        for l in [nah, Lage::Kern, Lage::Ring] {
+            assert_eq!(oben(&st(Bauphase::Ausgekoffert, l)), Some((BODEN, h.ka)));
+        }
+        // Füllsand: unter der Schürze bis UK Dämmung, innen bis UK Kies,
+        // außen am Haus bis zur Böschung, ohne Oberboden darauf
+        assert_eq!(
+            oben(&st(Bauphase::Fuellsand, Lage::Ring)),
+            Some((SAND, h.b))
+        );
+        assert_eq!(
+            oben(&st(Bauphase::Fuellsand, Lage::Kern)),
+            Some((SAND, h.p))
+        );
+        let a = st(Bauphase::Fuellsand, nah);
+        assert_eq!(oben(&a), Some((SAND, h.t - 200.0)));
+        assert_eq!(dicke(&a, OBERBODEN), 0.0);
+        // Gräben bis Rohbau: im Haus wie fertig, außen wie im Füllsand
+        for ph in [Bauphase::Graeben, Bauphase::Gruendung, Bauphase::Rohbau] {
+            for l in [Lage::Kern, Lage::Ring, Lage::Rand] {
+                assert_eq!(st(ph, l), h.stapel(l, h.t, tief), "{ph:?} {l:?}");
+            }
+            assert_eq!(st(ph, nah), a);
+        }
+        assert_eq!(oben(&st(Bauphase::Graeben, Lage::Ring)), Some((SAND, h.f)));
+    }
+
+    /// In einer offenen Phase steht in 3D statt Gelände und Aussparung die
+    /// Baugrube: Die Platte ist um das Haus ausgeschnitten, das Raster
+    /// schließt die Lücke ohne Überlappung; im Haus die Sohle der
+    /// Auskofferung, hinter dem Baufeld Rasen auf OK Gelände.
+    #[test]
+    fn baugrube_in_3d() {
+        let m = haus(300.0);
+        let ba = Bodenaufbau::aus(&m);
+        let h = ba.haeuser[0].clone();
+        let plates = m.terrain_plates();
+        let keys = [40, 41, 42];
+        let schichten = schluessel(keys);
+        let flaeche = |s: &MeshFlaeche| s.0;
+        let oben = |mesh: &Solid| -> MeshFlaeche {
+            let tris: Vec<_> = mesh.triangles.iter().filter(|t| t.n.z > 0.1).collect();
+            let a: f64 = tris
+                .iter()
+                .map(|t| {
+                    let (u, v) = (t.p[1] - t.p[0], t.p[2] - t.p[0]);
+                    (u.x * v.y - u.y * v.x) * 0.5
+                })
+                .sum();
+            MeshFlaeche(a)
+        };
+        let fertig = super::super::netz_solid(&plates, keys, &ba, Bauphase::Fertig);
+        let aus = super::super::netz_solid(&plates, keys, &ba, Bauphase::Ausgekoffert);
+        // fertig: Rasen ohne das Haus, die Grube schließt es; ausgekoffert
+        // deckt das Raster Haus und Umgebung: Grundriss der Platte samt Haus
+        let platte: f64 = plates.iter().map(|p| p.area()).sum();
+        let haus = sk_math::polygon::signed_area(&raum(&h.haus, 0.0));
+        assert!(
+            (flaeche(&oben(&aus)) - (platte + haus)).abs() < 1.0,
+            "{}",
+            flaeche(&oben(&aus))
+        );
+        assert!(flaeche(&oben(&fertig)) >= platte - 1.0);
+        let unten = ba.unten(-10_000.0);
+        let d = decke(
+            &ba,
+            Bauphase::Ausgekoffert,
+            &|_| Some(h.t),
+            unten,
+            schichten,
+            keys[0],
+        );
+        let mitte = [5_000.0, 4_000.0];
+        let im_haus = d.triangles.iter().find(|t| {
+            let c = (t.p[0] + t.p[1] + t.p[2]) * (1.0 / 3.0);
+            (c.x - mitte[0]).abs() < 100.0 && (c.y - mitte[1]).abs() < 100.0
+        });
+        let t = im_haus.expect("Raster im Haus");
+        assert!(t.p.iter().all(|p| p.z == h.ka) && t.mat == schichten[BODEN]);
+        let rand = d
+            .triangles
+            .iter()
+            .find(|t| t.p.iter().all(|p| p.x < h.kasten[0] + 1.5 * RASTER))
+            .expect("Rand des Felds");
+        assert!(rand.p.iter().all(|p| p.z == h.t) && rand.mat == keys[0]);
+        // Füllsand: oben im Kern Sand auf UK Kies
+        let d = decke(
+            &ba,
+            Bauphase::Fuellsand,
+            &|_| Some(h.t),
+            unten,
+            schichten,
+            keys[0],
+        );
+        assert!(d
+            .triangles
+            .iter()
+            .any(|t| t.mat == schichten[SAND] && t.p.iter().all(|p| p.z == h.p)));
+        // Gräben: unter der Schürze auf UK Schürze
+        let d = decke(
+            &ba,
+            Bauphase::Graeben,
+            &|_| Some(h.t),
+            unten,
+            schichten,
+            keys[0],
+        );
+        assert!(d.triangles.iter().any(|t| t.p.iter().all(|p| p.z == h.f)));
+    }
+
+    struct MeshFlaeche(f64);
 }
 
 /// Ist-Bilder (Mesa unter Xvfb, wie [`crate::gpu_probe`]): Schnitt an der
@@ -1189,7 +1456,15 @@ mod gpu {
         let mut pl = Platte::default();
         let m = s.model();
         pl.im_bild(m);
-        let sicht: Sicht = (v, ebene, s.table().terrain, false, false, false);
+        let sicht: Sicht = (
+            v,
+            ebene,
+            s.table().terrain,
+            false,
+            false,
+            false,
+            Bauphase::Fertig,
+        );
         let key = netz_key(pl.fassung, &sicht);
         let netz = loop {
             if let Some(n) = pl.netz_zur_sicht(key, sicht) {

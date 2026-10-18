@@ -31,6 +31,7 @@
 //! sich ändert, gestrichelt unter oder über der Geländelinie.
 
 use crate::draw_table::{DrawTable, Stroke};
+use crate::gelaende_platte::bauphase::{self, Bauphase};
 use crate::gelaende_platte::bodenaufbau::{self, schluessel, Bodenaufbau};
 use crate::ui::ViewKind;
 use gitter::{ueberlappt, Gitter, Kasten};
@@ -1637,6 +1638,46 @@ pub(crate) fn koerper_mit(g: &Gelaende, keys: [u16; 3], netz: bool, linien: bool
     })
 }
 
+/// Körper in 3D wie [`koerper_mit`] in der Bauphase `ph`: in einer offenen
+/// Phase um die Häuser statt Gelände, Linien darauf und Aussparung die
+/// Baugrube ([`bodenaufbau::decke`]).
+pub(crate) fn koerper_in(
+    g: &Gelaende,
+    keys: [u16; 3],
+    netz: bool,
+    linien: bool,
+    ph: Bauphase,
+) -> Solid {
+    if !ph.offen() {
+        return koerper_mit(g, keys, netz, linien);
+    }
+    let felder = g.aufbau.felder();
+    let mut s = koerper_und_grube(g, keys, netz, linien, Solid::default);
+    let im_feld = |p: Vec3| felder.iter().any(|r| bauphase::im_feld(r, [p.x, p.y]));
+    for t in std::mem::take(&mut s.triangles) {
+        if t.n.z <= 0.1 {
+            s.triangles.push(t);
+            continue;
+        }
+        for teil in bauphase::ausserhalb(&t.p, &felder) {
+            for i in 1..teil.len() - 1 {
+                s.triangles.push(Tri {
+                    p: [teil[0], teil[i], teil[i + 1]],
+                    ..t
+                });
+            }
+        }
+    }
+    s.edges.retain(|e| !im_feld((e.a + e.b) * 0.5));
+    let dz = if g.show == Show::Fade { HEBEN } else { 0.0 };
+    let hoehe = |p: P2| g.hoehe(p).map(|z| z + dz);
+    let k = schluessel(keys);
+    s.append(&bodenaufbau::decke(
+        &g.aufbau, ph, &hoehe, g.unten, k, keys[0],
+    ));
+    s
+}
+
 /// Am Haus die Aussparung im Bodenaufbau, im Zuschnitt (Fade: um das
 /// Grundstück gehoben).
 fn grube(g: &Gelaende, keys: [u16; 3]) -> Solid {
@@ -1893,13 +1934,24 @@ fn rand_an_grenze(s: &mut Solid, g: &Gelaende, r: &[P2], unten: f64, aussen: boo
 /// des Bodenaufbaus unter der Geländelinie, unter dem Haus bis zur
 /// Aussparung ([`bodenaufbau::schnitt`]); `keys` wie im Körper.
 pub(crate) fn kappen(g: &Gelaende, f: &SectionFrame, p0: Vec3, keys: [u16; 3]) -> Solid {
+    kappen_in(g, f, p0, keys, Bauphase::Fertig)
+}
+
+/// [`kappen`] in der Bauphase `ph`.
+pub(crate) fn kappen_in(
+    g: &Gelaende,
+    f: &SectionFrame,
+    p0: Vec3,
+    keys: [u16; 3],
+    ph: Bauphase,
+) -> Solid {
     let oben: Vec<(P2, P2)> = g
         .profil(f, p0)
         .into_iter()
         .filter(|s| s.2)
         .map(|(a, b, _)| (a, b))
         .collect();
-    bodenaufbau::schnitt(&g.aufbau, f, &oben, g.unten, schluessel(keys))
+    bodenaufbau::schnitt(&g.aufbau, f, &oben, g.unten, schluessel(keys), ph)
 }
 
 /// Linien in Grundriss, Schnitt und Ansicht samt Lageplan und Punktmarken

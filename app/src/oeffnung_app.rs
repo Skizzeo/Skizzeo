@@ -236,6 +236,10 @@ impl App {
     /// Breiten statt zu zoomen, mit Strg zoomt es weiter. `true`, wenn das
     /// Werkzeug es nahm.
     pub(crate) fn tuer_rad(&mut self, ev: &Event) -> bool {
+        // über der Phasenleiste blättert das Rad die Bauphasen
+        if self.phasen_rad(ev) {
+            return true;
+        }
         let Event::Wheel { delta, mods, .. } = *ev else {
             return false;
         };

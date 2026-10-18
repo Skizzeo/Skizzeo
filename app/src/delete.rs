@@ -595,6 +595,9 @@ pub enum Action {
     /// Nur am Höhenpunkt (I5b): das Schloss der gewählten Messpunkte
     /// öffnen bzw. schließen, wie „Schloss offen“ in der Leiste.
     Schloss,
+    /// Rechtsklick neben die Bauteile in 3D und Schnitt: die Bauphase
+    /// zeigen, wie ein Klick auf ihr Feld der Phasenleiste.
+    Bauphase(crate::gelaende_platte::bauphase::Bauphase),
 }
 
 /// Breite des Kontextmenüs (dip).
@@ -824,6 +827,42 @@ impl ContextMenu {
         ContextMenu {
             target: None,
             items: vec![(item, Some(Action::Schloss))],
+            x: 0.0,
+            y: 0.0,
+            sel: None,
+            hover: None,
+            pressed: false,
+            refusal: None,
+        }
+        .at(x, y, win, t, s)
+    }
+
+    /// Rechtsklick neben die Bauteile in 3D und Schnitt: die acht
+    /// Bauphasen, die gezeigte mit Haken (wie die Phasenleiste).
+    pub fn for_bauphase(
+        jetzt: crate::gelaende_platte::bauphase::Bauphase,
+        x: f64,
+        y: f64,
+        win: (u32, u32, u32),
+        t: &Theme,
+        s: f32,
+    ) -> Self {
+        use crate::gelaende_platte::bauphase::Bauphase;
+        let items = Bauphase::ALLE
+            .into_iter()
+            .map(|p| {
+                let item = MenuItem {
+                    label: format!("{} {}", p.nr(), p.name()),
+                    shortcut: if p == jetzt { "✓" } else { "" }.into(),
+                    enabled: true,
+                    ..MenuItem::default()
+                };
+                (item, Some(Action::Bauphase(p)))
+            })
+            .collect();
+        ContextMenu {
+            target: None,
+            items,
             x: 0.0,
             y: 0.0,
             sel: None,
