@@ -700,6 +700,9 @@ struct Zone {
     baufeld: Option<Vec<[f64; 2]>>,
     /// Höfe im Baufeld, die sein Rand nicht deckt (B-288-geo-a).
     hoefe: Vec<Vec<[f64; 2]>>,
+    /// Teile, deren Vereinigung das Baufeld ist, für die Vereinigung mit
+    /// anderen (H-288-geo-b).
+    teile: Vec<Vec<[f64; 2]>>,
     grube: Option<Grube>,
     rechteck: [f64; 4],
     bits: Vec<u64>,
@@ -749,6 +752,14 @@ fn rechnen(
             let baufeld = bf.as_ref().map(|b| ring(&b.aussen));
             let hoefe: Vec<Vec<[f64; 2]>> =
                 bf.iter().flat_map(|b| &b.hoefe).map(|h| ring(h)).collect();
+            let teile: Vec<Vec<[f64; 2]>> = if bf.is_some() {
+                super::ueberdeckung::teile(&g.outline, g.zone.baufeld.max(0.0))
+                    .iter()
+                    .map(|t| ring(t))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let grube = (g.zone.sohle.len() >= 3).then(|| Grube {
                 sohle: ring(&g.zone.sohle),
                 platte: haus.clone(),
@@ -775,6 +786,7 @@ fn rechnen(
                 haus,
                 baufeld,
                 hoefe,
+                teile,
                 grube,
                 rechteck,
                 bits,
@@ -814,16 +826,11 @@ fn rechnen(
                 None
             }
             Some((planung, _)) => {
+                let (baufeld, baufeld_hoefe) = baufelder_vereint(&zonen, nah);
                 let z = Zonen {
                     haus: nah.iter().map(|&i| zonen[i].haus.clone()).collect(),
-                    baufeld: nah
-                        .iter()
-                        .filter_map(|&i| zonen[i].baufeld.clone())
-                        .collect(),
-                    baufeld_hoefe: nah
-                        .iter()
-                        .flat_map(|&i| zonen[i].hoefe.iter().cloned())
-                        .collect(),
+                    baufeld,
+                    baufeld_hoefe,
                     gruben: nah.iter().filter_map(|&i| zonen[i].grube.clone()).collect(),
                 };
                 let a = Aufbau {
@@ -961,6 +968,46 @@ fn rechnen(
         ueberlappt,
         teil: Arc::new(Teil { s, weniger, keil }),
     }
+}
+
+/// Die Baufelder der Gründungen `nah` als Ringe und Höfe, die sich nicht
+/// decken: Decken sich zwei, ihre Vereinigung, sonst wie sie sind. Sonst
+/// zählte `erdbau` die Überdeckung je Baufeld als schon abgetragen
+/// (H-288-geo-b).
+fn baufelder_vereint(zonen: &[Zone], nah: &[usize]) -> (Vec<Vec<[f64; 2]>>, Vec<Vec<[f64; 2]>>) {
+    let felder: Vec<(&Zone, [f64; 4])> = nah
+        .iter()
+        .filter_map(|&i| {
+            let z = &zonen[i];
+            z.baufeld.as_ref().map(|b| (z, rechteck(b)))
+        })
+        .collect();
+    let decken = (0..felder.len())
+        .any(|i| (i + 1..felder.len()).any(|j| treffen(&felder[i].1, &felder[j].1)));
+    if !decken {
+        return (
+            felder
+                .iter()
+                .filter_map(|(z, _)| z.baufeld.clone())
+                .collect(),
+            felder
+                .iter()
+                .flat_map(|(z, _)| z.hoefe.iter().cloned())
+                .collect(),
+        );
+    }
+    let teile: Vec<Vec<Vec3>> = felder
+        .iter()
+        .flat_map(|(z, _)| &z.teile)
+        .map(|t| t.iter().map(|p| sk_math::vec3(p[0], p[1], 0.0)).collect())
+        .collect();
+    // im Netz in m: 1 µm
+    let a = sk_math::flaeche::anordnung(&teile, 1e-6);
+    let flach = |r: &[Vec3]| r.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>();
+    (
+        a.aussen.iter().map(|r| flach(&r.punkte)).collect(),
+        a.bereiche.iter().map(|b| flach(&b.rand.punkte)).collect(),
+    )
 }
 
 /// Hinweis `h` an die Zeile `r` anhängen, je Hinweis eine Zeile.
@@ -1101,6 +1148,50 @@ mod tests {
         assert!(nah(wert(&v, DISPOSAL), d - eigen / 0.9));
         let e = v.iter().find(|r| r.key == EMBANK_SUPPLY).unwrap();
         assert!(e.hinweis.contains("eingebaut 0,90"), "{}", e.hinweis);
+    }
+
+    /// Zwei Häuser mit 1 m Abstand, eine Fläche über beiden Baufeldern: Wo
+    /// sich die Baufelder decken, ist der Oberboden einmal abgetragen, nicht
+    /// je Baufeld (H-288-geo-b).
+    #[test]
+    fn baufelder_naher_haeuser_einmal() {
+        let mut m = haus();
+        m.begin("Haus 2");
+        let b = m.add_building(1);
+        let pts = [
+            sk_math::vec3(18000.0, 6000.0, 0.0),
+            sk_math::vec3(18000.0, 14000.0, 0.0),
+            sk_math::vec3(28000.0, 14000.0, 0.0),
+            sk_math::vec3(28000.0, 6000.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        m.commit();
+        // Platten als Rechtecke (m), nach x
+        let mut r: Vec<[f64; 4]> = m
+            .ground_bases()
+            .iter()
+            .map(|g| {
+                g.outline
+                    .iter()
+                    .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |r, p| {
+                        [r[0].min(p.x), r[1].min(p.y), r[2].max(p.x), r[3].max(p.y)]
+                    })
+            })
+            .map(|r| r.map(|v| v / 1000.0))
+            .collect();
+        r.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let x = 1.5;
+        assert!(r[1][0] - r[0][2] < 2.0 * x, "{r:?}");
+        assert_eq!((r[0][1], r[0][3]), (r[1][1], r[1][3]));
+        // Vereinigung der Baufelder: ein Rechteck über beide
+        let vereint = (r[1][2] - r[0][0] + 2.0 * x) * (r[0][3] - r[0][1] + 2.0 * x);
+        let v = mit(&m, &[flaeche(rechteck(2e3, 2e3, 33e3, 18e3), 100.0)]);
+        let ob = wert(&v, TOPSOIL_SITE);
+        assert!(
+            nah(ob, (31.0 * 16.0 - vereint) * 0.3),
+            "{ob} {}",
+            (31.0 * 16.0 - vereint) * 0.3
+        );
     }
 
     /// Zwei Häuser geben Boden in das Gelände anteilig zu ihrem Überschuss,

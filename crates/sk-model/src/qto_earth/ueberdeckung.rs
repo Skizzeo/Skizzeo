@@ -232,6 +232,32 @@ pub fn gefuellt_ring(umriss: &[Vec3], x: f64) -> Option<f64> {
 /// mit Innenhof hinter einer schmalen Einfahrt), bleibt er ein Hof. Leer,
 /// wenn sich nichts vereinigen lässt.
 fn vereinigt(u: &[Vec3], x: f64) -> Randflaeche {
+    let a = sk_math::flaeche::anordnung(&streifen(u, x), 1e-3);
+    let Some(aussen) = a
+        .aussen
+        .into_iter()
+        .max_by(|p, q| p.flaeche().total_cmp(&q.flaeche()))
+    else {
+        return Randflaeche::default();
+    };
+    // Die Bereiche sind die umschlossenen, nicht gedeckten Flächen. Alle
+    // Teile hängen am Umriss, die Vereinigung ist also zusammenhängend und
+    // jeder Bereich ein Hof in ihrem Außenrand.
+    let hoefe = a
+        .bereiche
+        .into_iter()
+        .map(|b| to_ccw(&b.rand.punkte))
+        .collect();
+    Randflaeche {
+        aussen: to_ccw(&aussen.punkte),
+        hoefe,
+    }
+}
+
+/// Die Teile von [`vereinigt`]: Umriss `u` (gegen den Uhrzeigersinn), je
+/// Kante der Streifen außen davor, je Ecke nach außen das Viereck bis zur
+/// Gehrung.
+fn streifen(u: &[Vec3], x: f64) -> Vec<Vec<Vec3>> {
     let n = u.len();
     let d: Vec<Vec3> = (0..n)
         .map(|i| (u[(i + 1) % n] - u[i]).normalized())
@@ -254,25 +280,24 @@ fn vereinigt(u: &[Vec3], x: f64) -> Randflaeche {
             teile.push(vec![a, a + nh, m, a + ni]);
         }
     }
-    let a = sk_math::flaeche::anordnung(&teile, 1e-3);
-    let Some(aussen) = a
-        .aussen
-        .into_iter()
-        .max_by(|p, q| p.flaeche().total_cmp(&q.flaeche()))
-    else {
-        return Randflaeche::default();
-    };
-    // Die Bereiche sind die umschlossenen, nicht gedeckten Flächen. Alle
-    // Teile hängen am Umriss, die Vereinigung ist also zusammenhängend und
-    // jeder Bereich ein Hof in ihrem Außenrand.
-    let hoefe = a
-        .bereiche
-        .into_iter()
-        .map(|b| to_ccw(&b.rand.punkte))
-        .collect();
-    Randflaeche {
-        aussen: to_ccw(&aussen.punkte),
-        hoefe,
+    teile
+}
+
+/// Teile, deren Vereinigung der Rand um `umriss` (mm), `x` breit, ist:
+/// der versetzte Umriss, oder wo er sich selbst überdeckt, die Teile wie
+/// in [`gefuellt`]. Für die Vereinigung der Ränder mehrerer Häuser
+/// (H-288-geo-b).
+pub fn teile(umriss: &[Vec3], x: f64) -> Vec<Vec<Vec3>> {
+    if umriss.len() < 3 {
+        return Vec::new();
+    }
+    let u = to_ccw(umriss);
+    if x <= 0.0 {
+        return vec![u];
+    }
+    match versatz(&u, &vec![-x; u.len()]).filter(|v| is_simple(v)) {
+        Some(v) => vec![v],
+        None => streifen(&u, x),
     }
 }
 
