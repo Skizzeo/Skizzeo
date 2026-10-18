@@ -207,7 +207,8 @@ impl HeightSystem {
     }
 }
 
-/// Rand des Netzes (E9): beschnitten (Vorgabe) oder wie gemessen.
+/// Rand des Netzes (E9): beschnitten (Vorgabe) oder wie gemessen. Ein
+/// angenommenes Gelände ([`Terrain::assumed`]) behält immer seine Hülle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Trim {
     #[default]
@@ -703,7 +704,7 @@ impl Terrain {
     fn netz_schluessel(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.trim as u8).hash(&mut h);
+        self.rand_beschnitten().hash(&mut h);
         for (c, b) in &self.codes {
             (c, *b as u8).hash(&mut h);
         }
@@ -731,6 +732,14 @@ impl Terrain {
             .0
             .get()
             .is_some_and(|(k, _)| *k == self.netz_schluessel())
+    }
+
+    /// Lange Randkanten abtragen? Nur bei einem Aufmaß mit Rand „auto“: Die
+    /// Ecken einer angenommenen Platte liegen weit auseinander, um Punkte
+    /// dicht an Grenze und Haus; beschnitten liefe ihr Rand keilförmig von
+    /// den Ecken zu ihnen hinein (Jörn 18.10.).
+    fn rand_beschnitten(&self) -> bool {
+        self.trim == Trim::Auto && !self.assumed()
     }
 
     fn vernetzen(&self) -> TerrainMesh {
@@ -777,9 +786,10 @@ impl Terrain {
             .filter(|&[a, b]| da.insert([a.min(b), a.max(b)]))
             .map(|[a, b]| [nach[a], nach[b]])
             .collect();
-        let rand = match self.trim {
-            Trim::Auto => Rand::Beschnitten,
-            Trim::Hull => Rand::Huelle,
+        let rand = if self.rand_beschnitten() {
+            Rand::Beschnitten
+        } else {
+            Rand::Huelle
         };
         let netz = netz(&lage, &bruch, rand);
         let mut hinweise = pr.hinweise;
@@ -893,6 +903,7 @@ impl Terrain {
     /// Datei und Rand.
     fn netz_gleich(&self, o: &Terrain) -> bool {
         self.trim == o.trim
+            && self.rand_beschnitten() == o.rand_beschnitten()
             && self.codes == o.codes
             && punkte_gleich(&self.points, &o.points)
             && self.breaks == o.breaks
@@ -906,6 +917,7 @@ impl Terrain {
             || self.codes != o.codes
             || self.breaks != o.breaks
             || self.points.len() != o.points.len()
+            || self.rand_beschnitten() != o.rand_beschnitten()
         {
             return None;
         }

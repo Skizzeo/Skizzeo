@@ -35,6 +35,9 @@ use std::time::Instant;
 #[path = "grundriss/fang.rs"]
 mod fang;
 use fang::{FangStand, Nachbar, Ziel};
+#[path = "spur.rs"]
+pub(crate) mod spur;
+use spur::{cross2, perp, Line};
 
 /// Vorschauhöhe ohne Geschoss (EG mit OK +2,855).
 pub const WALL_HEIGHT: f64 = 2855.0;
@@ -66,13 +69,6 @@ enum SnapKind {
     Edge,
     /// Wandfläche oder freies Wandende im aktiven Geschoss (G1).
     Wand,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Line {
-    origin: Vec3,
-    dir: Vec3,
-    from_start: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -138,25 +134,6 @@ pub const LABELS: [&str; 2] = ["Länge", "Winkel"];
 pub struct Outcome {
     pub redraw: bool,
     pub commit: Option<WallChain>,
-}
-
-fn perp(d: Vec3) -> Vec3 {
-    vec3(-d.y, d.x, 0.0)
-}
-
-fn cross2(a: Vec3, b: Vec3) -> f64 {
-    a.x * b.y - a.y * b.x
-}
-
-/// Richtungen ohne Dubletten (auch gegenläufige gelten als gleich).
-fn push_dir(dirs: &mut Vec<Vec3>, d: Vec3) {
-    let d = vec3(d.x, d.y, 0.0).normalized();
-    if d.length() < 0.5 {
-        return;
-    }
-    if dirs.iter().all(|e| cross2(*e, d).abs() > 1e-3) {
-        dirs.push(d);
-    }
 }
 
 impl WallTool {
@@ -421,62 +398,19 @@ impl WallTool {
 
     /// Spurlinien vom Startpunkt aus.
     fn start_lines(&self) -> Vec<Line> {
-        if self.points.len() < 2 {
-            return Vec::new();
-        }
-        let s = self.points[0];
-        let mut dirs = Vec::new();
-        push_dir(&mut dirs, self.points[1] - s);
-        push_dir(&mut dirs, perp(self.points[1] - s));
-        push_dir(&mut dirs, Vec3::X);
-        push_dir(&mut dirs, Vec3::Y);
-        dirs.into_iter()
-            .map(|dir| Line {
-                origin: s,
-                dir,
-                from_start: true,
-            })
-            .collect()
+        spur::start_lines(&self.points)
     }
 
     /// Richtungen vom letzten Punkt aus: entlang und rechtwinklig zur letzten Wand,
     /// beim ersten Segment entlang der Achsen und der Wandfläche am Anfang; mit
     /// 45°-Sprung auch die Diagonalen dazu (G2).
     fn last_lines(&self) -> Vec<Line> {
-        let Some(&last) = self.points.last() else {
-            return Vec::new();
-        };
         // Zwei Ecken eines Rechtecks liegen nie auf einer Achse
         if self.ext_art() == Some(Art::Rechteck) {
             return Vec::new();
         }
         let schraeg = self.sprung45 && self.ext.is_none() && self.ortho != self.shift;
-        let mut dirs = Vec::new();
-        let mut kreuz = |d: Vec3| {
-            push_dir(&mut dirs, d);
-            push_dir(&mut dirs, perp(d));
-            let d = vec3(d.x, d.y, 0.0);
-            if schraeg && d.length() > 1e-9 {
-                let d = d.normalized();
-                push_dir(&mut dirs, d + perp(d));
-                push_dir(&mut dirs, d - perp(d));
-            }
-        };
-        if self.points.len() >= 2 {
-            kreuz(last - self.points[self.points.len() - 2]);
-        } else {
-            if let Some(d) = self.start_dir {
-                kreuz(d);
-            }
-            kreuz(Vec3::X);
-        }
-        dirs.into_iter()
-            .map(|dir| Line {
-                origin: last,
-                dir,
-                from_start: false,
-            })
-            .collect()
+        spur::last_lines(&self.points, self.start_dir, schraeg)
     }
 
     /// Berechnet den gefangenen Cursorpunkt neu (nach Mausbewegung oder Kamerawechsel).
@@ -576,14 +510,8 @@ impl WallTool {
         let mut lasts = self.last_lines();
 
         // Winkelsprung: Punkt auf die passendste Richtung vom letzten Punkt zwingen
-        if ortho && !lasts.is_empty() {
-            let last = lasts[0].origin;
-            let v = raw - last;
-            let best = *lasts
-                .iter()
-                .max_by(|a, b| a.dir.dot(v).abs().total_cmp(&b.dir.dot(v).abs()))
-                .unwrap();
-            lasts = vec![best];
+        if ortho {
+            lasts = spur::passendste(&lasts, raw).into_iter().collect();
         }
 
         // 2. Wandende oder Wandfläche im aktiven Geschoss (G1)
@@ -619,29 +547,18 @@ impl WallTool {
         }
 
         // 4. Schnitt von Richtung am letzten Punkt mit Spurlinie vom Start
-        let mut best: Option<(f64, Cursor)> = None;
-        for l in &lasts {
-            for s in &starts {
-                let c = cross2(l.dir, s.dir);
-                if c.abs() < 1e-9 {
-                    continue;
-                }
-                let t = cross2(s.origin - l.origin, s.dir) / c;
-                let x = l.origin + l.dir * t;
-                let d = px(x);
-                if d < thr && best.as_ref().is_none_or(|b| d < b.0) {
-                    best = Some((
-                        d,
-                        Cursor {
-                            pos: x,
-                            kind: SnapKind::Crossing,
-                            guides: vec![*l, *s],
-                            ziel: None,
-                        },
-                    ));
-                }
-            }
-        }
+        let mut best: Option<(f64, Cursor)> =
+            spur::kreuzung(&lasts, &starts, &px, thr).map(|(d, x, ls)| {
+                (
+                    d,
+                    Cursor {
+                        pos: x,
+                        kind: SnapKind::Crossing,
+                        guides: ls.to_vec(),
+                        ziel: None,
+                    },
+                )
+            });
         // Richtung am letzten Punkt trifft eine Hintergrundkante
         for l in &lasts {
             for &(a, b) in &self.snaps {
@@ -698,9 +615,8 @@ impl WallTool {
 
         if ortho && !lasts.is_empty() {
             let l = lasts[0];
-            let pos = l.origin + l.dir * (raw - l.origin).dot(l.dir);
             return Some(Cursor {
-                pos,
+                pos: spur::lot(&l, raw),
                 kind: SnapKind::Line,
                 guides: vec![l],
                 ziel: None,
@@ -708,23 +624,14 @@ impl WallTool {
         }
 
         // 5. Einzelne Linie in Reichweite
-        let mut best: Option<(f64, Cursor)> = None;
-        for l in lasts.iter().chain(starts.iter()) {
-            let p = l.origin + l.dir * (raw - l.origin).dot(l.dir);
-            let d = px(p);
-            if d < thr && best.as_ref().is_none_or(|b| d < b.0) {
-                best = Some((
-                    d,
-                    Cursor {
-                        pos: p,
-                        kind: SnapKind::Line,
-                        guides: vec![*l],
-                        ziel: None,
-                    },
-                ));
-            }
-        }
-        Some(best.map_or_else(|| free(raw), |b| b.1))
+        let alle: Vec<Line> = lasts.iter().chain(&starts).copied().collect();
+        let einzeln = spur::naechste(&alle, raw, &px, thr).map(|(pos, l)| Cursor {
+            pos,
+            kind: SnapKind::Line,
+            guides: vec![l],
+            ziel: None,
+        });
+        Some(einzeln.unwrap_or_else(|| free(raw)))
     }
 
     /// Verarbeitet ein Ereignis (Mauskoordinaten relativ zur 3D-Ansicht).
