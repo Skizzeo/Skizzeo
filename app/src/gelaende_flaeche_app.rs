@@ -3,8 +3,9 @@
 //! einem Klick im Grundriss und ihre Eigenschaften im Paneel (Höhe,
 //! Böschung, befestigt, löschen; dazu Andecken und Faktor des Grundstücks).
 //!
-//! Das Werkzeug setzt Ecken mit Klicks im Grundriss (es schaltet dorthin); ein Klick auf die
-//! erste Ecke, ein zweiter Klick auf die letzte oder Enter schließt die
+//! Das Werkzeug setzt Ecken mit Klicks im Grundriss oder in 3D auf dem
+//! Gelände (Jörn 17.10.; aus Schnitt und Ansicht schaltet es in den
+//! Grundriss); ein Klick auf die erste Ecke, ein zweiter Klick auf die letzte oder Enter schließt die
 //! Fläche, Rücktaste oder Strg+Z nimmt die letzte Ecke zurück, Esc verwirft. Die neue
 //! Fläche liegt eben auf der Höhe des Geländes in ihrer Mitte, mit der
 //! Böschung nach Vorgabe; Höhe und Böschung stellt man danach im Paneel.
@@ -23,7 +24,7 @@ pub(crate) mod punkte;
 use crate::camera::Camera;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, Id, Props, Section, ViewKind};
 use crate::App;
-use sk_math::vec3;
+use sk_math::{vec3, Vec3};
 use sk_model::{
     HouseStrip, Model, PatchHeight, SiteSoil, TerrainPatch, PATCH_SLOPE, PATCH_SLOPE_RANGE,
     PATCH_XY_MAX, STRIP_FALL_RANGE, STRIP_WIDTH, STRIP_WIDTH_RANGE,
@@ -38,6 +39,10 @@ use fang::{Fang, Ziele};
 const STEP: f64 = 10.0;
 /// So nah (Bildpunkte) an der ersten Ecke schließt ein Klick die Fläche.
 const SCHLIESSEN_PX: f64 = 10.0;
+/// In 3D folgen die gezeichneten Kanten dem Gelände in Stücken bis zu
+/// dieser Länge (mm), je Kante höchstens [`LEGEN_MAX`].
+const LEGEN: f64 = 500.0;
+const LEGEN_MAX: usize = 200;
 /// Schritte im Rückgängig.
 pub const LABEL_NEU: &str = "Geländefläche";
 pub const LABEL_AENDERN: &str = "Geländefläche ändern";
@@ -69,13 +74,13 @@ pub const KREUZT: &str = "Die Kanten der Fläche kreuzen sich; bitte anders schl
 pub const ZU_WENIG: &str = "Eine Fläche braucht mindestens drei Ecken.";
 /// Statuszeile, solange das Werkzeug an ist (Bedienbarkeit, später zu
 /// #189: die Zeile war leer, Esc nirgends genannt).
-pub const ZEICHNEN: &str = "Fläche zeichnen: Ecken im Grundriss klicken (mit Strg ohne Fang); die \
-    erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
+pub const ZEICHNEN: &str = "Fläche zeichnen: Ecken im Grundriss oder in 3D klicken (mit Strg ohne \
+    Fang); die erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
 /// Alle Ecken auf einer Linie (H-189d).
 pub const OHNE_INHALT: &str = "Die Ecken liegen auf einer Linie; die Fläche hat keinen Inhalt.";
 /// Dieselben Sätze für „Grenze zeichnen“ (I2).
-pub const GRENZE: &str = "Grenze zeichnen: Ecken im Grundriss klicken (mit Strg ohne Fang); die \
-    erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
+pub const GRENZE: &str = "Grenze zeichnen: Ecken im Grundriss oder in 3D klicken (mit Strg ohne \
+    Fang); die erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
 pub const GRENZE_ZU_WENIG: &str = "Eine Grenze braucht mindestens drei Ecken.";
 pub const GRENZE_KREUZT: &str = "Die Kanten der Grenze kreuzen sich; bitte anders schließen.";
 pub const GRENZE_OHNE_INHALT: &str =
@@ -109,6 +114,23 @@ pub struct Ausgang {
     pub commit: Option<Vec<[f64; 2]>>,
     /// Der Umriss lässt sich nicht bauen: Satz für die Statuszeile.
     pub fehler: Option<&'static str>,
+}
+
+/// Wo der Boden unter der Maus liegt: im Grundriss die Ebene auf 0, in 3D
+/// das Gelände (Jörn 17.10.: Grenze auch in 3D zeichnen).
+pub struct Boden<'a> {
+    /// Punkt unter dem Bildpunkt des Ereignisses.
+    pub treff: Option<Vec3>,
+    /// Höhe (mm) an einer Stelle, für die Ecken im Bild.
+    pub hoehe: &'a dyn Fn([f64; 2]) -> f64,
+}
+
+/// Bildpunkt eines Ereignisses der Maus.
+fn bildpunkt(e: &Event) -> Option<(f64, f64)> {
+    match *e {
+        Event::MouseMove { x, y, .. } | Event::MouseDown { x, y, .. } => Some((x, y)),
+        _ => None,
+    }
 }
 
 /// Werkzeug „Fläche zeichnen“, mit `grenze` „Grenze zeichnen“.
@@ -167,14 +189,15 @@ impl Werkzeug {
         }
     }
 
-    /// Bodenpunkt unter dem Bildpunkt: an einem Fangziel bis [`fang::FANG_PX`]
-    /// Bildpunkte, sonst auf [`STEP`] gerundet. Mit gehaltener Strg-Taste
-    /// ohne Fang, nur im Raster (Bedienbarkeit, später zu #198: sonst half
-    /// nur Zoomen).
+    /// Bodenpunkt `treff` unter dem Bildpunkt: an einem Fangziel bis
+    /// [`fang::FANG_PX`] Bildpunkte, sonst auf [`STEP`] gerundet. Mit
+    /// gehaltener Strg-Taste ohne Fang, nur im Raster (Bedienbarkeit,
+    /// später zu #198: sonst half nur Zoomen).
     #[allow(clippy::too_many_arguments)]
     fn boden(
         &mut self,
         cam: &Camera,
+        treff: Option<Vec3>,
         x: f64,
         y: f64,
         w: f64,
@@ -182,12 +205,13 @@ impl Werkzeug {
         scale: f64,
         mods: Modifiers,
     ) -> Option<[f64; 2]> {
-        let Some(g) = cam.ground_point(x, y, w, h) else {
+        let Some(g) = treff else {
             self.fang = None;
             return None;
         };
+        // die Weite des Fangs in der Höhe des Treffers
         let tol = cam
-            .ground_point(x + fang::FANG_PX * scale, y, w, h)
+            .plane_point(x + fang::FANG_PX * scale, y, w, h, g.z)
             .map_or(0.0, |n| (n.x - g.x).hypot(n.y - g.y));
         self.fang = (!mods.ctrl)
             .then(|| self.ziele.fangen([g.x, g.y], tol))
@@ -279,16 +303,37 @@ impl Werkzeug {
         self.fang = None;
     }
 
-    /// Ereignis der Ansicht (Koordinaten ohne Titelleiste).
+    /// Ereignis im Grundriss (Koordinaten ohne Titelleiste).
+    #[cfg(test)]
     pub fn handle(&mut self, e: &Event, cam: &Camera, w: f64, h: f64, scale: f64) -> Ausgang {
+        let treff = bildpunkt(e).and_then(|(x, y)| cam.ground_point(x, y, w, h));
+        let boden = Boden {
+            treff,
+            hoehe: &|_| 0.0,
+        };
+        self.handle_auf(e, cam, w, h, scale, &boden)
+    }
+
+    /// Ereignis der Ansicht auf dem Boden `boden` (Koordinaten ohne
+    /// Titelleiste).
+    pub fn handle_auf(
+        &mut self,
+        e: &Event,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        boden: &Boden,
+    ) -> Ausgang {
         let mut out = Ausgang::default();
         if !self.aktiv {
             return out;
         }
+        let treff = boden.treff;
         match *e {
             Event::MouseMove { x, y, mods } => {
                 let vor = self.fang;
-                let p = self.boden(cam, x, y, w, h, scale, mods);
+                let p = self.boden(cam, treff, x, y, w, h, scale, mods);
                 if p != self.maus || vor != self.fang {
                     out.redraw = !self.ecken.is_empty() || vor != self.fang;
                     self.maus = p;
@@ -302,13 +347,13 @@ impl Werkzeug {
                 mods,
             } => {
                 out.consumed = true;
-                let Some(p) = self.boden(cam, x, y, w, h, scale, mods) else {
+                let Some(p) = self.boden(cam, treff, x, y, w, h, scale, mods) else {
                     return out;
                 };
-                // Klick auf die erste Ecke (am Bildschirm) oder noch einmal
-                // auf die letzte schließt
+                // Klick auf die erste Ecke (am Bildschirm, in 3D auf ihrer
+                // Höhe) oder noch einmal auf die letzte schließt
                 let am_anfang = self.ecken.first().is_some_and(|a| {
-                    cam.project(vec3(a[0], a[1], 0.0), w, h)
+                    cam.project(vec3(a[0], a[1], (boden.hoehe)(*a)), w, h)
                         .is_some_and(|q| (q.0 - x).hypot(q.1 - y) < SCHLIESSEN_PX * scale)
                 });
                 if self.ecken.len() >= 3 && (am_anfang || self.ecken.last() == Some(&p)) {
@@ -344,15 +389,22 @@ impl Werkzeug {
     }
 
     /// Gesetzte Kanten, Gummiband zur Maus und zurück zur ersten Ecke, in
-    /// Höhe `z` (mm).
-    pub fn linien(&self, z: f64, scale: f32, theme: &Theme) -> Vec<Helper> {
+    /// der Höhe `hoehe` (mm); mit `legen` folgen die Kanten dem Gelände in
+    /// Stücken bis [`LEGEN`] (in 3D).
+    pub fn linien(
+        &self,
+        hoehe: &dyn Fn([f64; 2]) -> f64,
+        legen: bool,
+        scale: f32,
+        theme: &Theme,
+    ) -> Vec<Helper> {
         let col = &theme.interact;
         let mut pts: Vec<[f64; 2]> = self.ecken.clone();
         if let (Some(m), false) = (self.maus, self.ecken.is_empty()) {
             pts.push(m);
         }
         let mut out = Vec::new();
-        let p = |q: [f64; 2]| [q[0] as f32, q[1] as f32, z as f32 + 1.0];
+        let p = |q: [f64; 2]| [q[0] as f32, q[1] as f32, hoehe(q) as f32 + 2.0];
         let linie = |a, b, color, dash: f32| Helper {
             a: p(a),
             b: p(b),
@@ -363,11 +415,25 @@ impl Werkzeug {
             occlude: false,
             round: false,
         };
+        // eine Kante in Stücken, die auf dem Gelände liegen
+        let kante = |out: &mut Vec<Helper>, a: [f64; 2], b: [f64; 2], color, dash: f32| {
+            let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+            let n = if legen {
+                ((l / LEGEN).ceil() as usize).clamp(1, LEGEN_MAX)
+            } else {
+                1
+            };
+            let bei = |i: usize| {
+                let s = i as f64 / n as f64;
+                [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s]
+            };
+            out.extend((0..n).map(|i| linie(bei(i), bei(i + 1), color, dash)));
+        };
         for s in pts.windows(2) {
-            out.push(linie(s[0], s[1], col.draw, 0.0));
+            kante(&mut out, s[0], s[1], col.draw, 0.0);
         }
         if pts.len() >= 3 {
-            out.push(linie(pts[pts.len() - 1], pts[0], col.guide, 6.0));
+            kante(&mut out, pts[pts.len() - 1], pts[0], col.guide, 6.0);
         }
         if let Some(&a) = self.ecken.first() {
             let mut m = linie(a, a, col.track, 0.0);
@@ -416,6 +482,12 @@ pub fn flaeche_bei(m: &Model, p: [f64; 2]) -> Option<usize> {
         .rev()
         .find(|(_, f)| f.contains(p))
         .map(|(i, _)| i)
+}
+
+/// Zeichnet das Werkzeug in dieser Sicht? Im Grundriss und in 3D (Jörn
+/// 17.10.).
+fn zeichnet_in(view: ViewKind) -> bool {
+    matches!(view, ViewKind::Plan | ViewKind::Persp)
 }
 
 /// Kann ein Klick das Gelände wählen? Nur in 3D, wo es gezeichnet ist: im
@@ -697,7 +769,7 @@ impl App {
     /// (ein Schritt) und ist dann gewählt.
     pub(crate) fn flaeche_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
         // ohne Werkzeug die Höhenpunkte (I4), dann die Griffe der Grenze (I3)
-        if !self.platte.leiste.werkzeug.aktiv || self.ui.view != ViewKind::Plan {
+        if !self.platte.leiste.werkzeug.aktiv || !zeichnet_in(self.ui.view) {
             if self.punkte_handle(ev, vw, vh, sc) {
                 self.grenz_handle(&Event::MouseLeave, vw, vh, sc);
                 // ein Höhenpunkt gewählt: die Ecke der Grenze nicht mehr
@@ -710,11 +782,42 @@ impl App {
         }
         let vor = self.platte.leiste.werkzeug.ecken().len();
         let rev = self.scene.model().revision();
-        let scene = &self.scene;
-        let w = &mut self.platte.leiste.werkzeug;
-        w.ziele_fuer(rev, || fang::ziele(scene));
-        let out = w.handle(ev, &self.cam, vw, vh, sc);
+        let drei_d = self.ui.view == ViewKind::Persp;
+        let treff = bildpunkt(ev).and_then(|(x, y)| {
+            if drei_d {
+                self.boden_3d(x, y, vw, vh)
+            } else {
+                self.cam.ground_point(x, y, vw, vh)
+            }
+        });
+        let out = {
+            let scene = &self.scene;
+            let hoehe = griffe::hoehe_im_bild(scene.model(), drei_d);
+            let boden = Boden {
+                treff,
+                hoehe: &hoehe,
+            };
+            let w = &mut self.platte.leiste.werkzeug;
+            w.ziele_fuer(rev, || fang::ziele(scene));
+            w.handle_auf(ev, &self.cam, vw, vh, sc, &boden)
+        };
         self.flaeche_ausgang(out, vor)
+    }
+
+    /// Punkt auf dem Gelände unter dem Bildpunkt in 3D (Jörn 17.10.: Grenze
+    /// auch in 3D zeichnen); daneben, ausgeblendet oder ohne Netz die Ebene
+    /// in der Höhe des Bezugsgebäudes, wie die ebene Platte.
+    fn boden_3d(&mut self, x: f64, y: f64, vw: f64, vh: f64) -> Option<Vec3> {
+        let m = self.scene.model();
+        let (o, d) = self.cam.ray(x, y, vw, vh);
+        let netz = (!self.scene.terrain_hidden())
+            .then(|| self.platte.gelaende_im_bild(m))
+            .flatten();
+        if let Some(p) = netz.and_then(|g| g.treffpunkt(o, d)) {
+            return Some(p);
+        }
+        let z = m.terrain_z_of(m.level_building());
+        self.cam.plane_point(x, y, vw, vh, z)
     }
 
     /// Mausbewegung an Nordpfeil und Werkzeug „Fläche zeichnen“; `true`,
@@ -728,24 +831,26 @@ impl App {
                         || self.platte.griffe.busy()
                         || self.platte.punkte.busy()
                 }
-                // Höhenpunkte (I4c) und Griffe der Grenze (I3b) in 3D
-                ViewKind::Persp => self.platte.punkte.busy() || self.platte.griffe.busy(),
+                // Höhenpunkte (I4c), Griffe der Grenze (I3b) und Zeichnen
+                // in 3D
+                ViewKind::Persp => {
+                    self.platte.leiste.werkzeug.aktiv
+                        || self.platte.punkte.busy()
+                        || self.platte.griffe.busy()
+                }
                 _ => false,
             }
     }
 
-    /// Tasten beim Zeichnen, nur im Grundriss (H-189g); Strg+D an den
-    /// Höhenpunkten auch in 3D (I4c).
+    /// Tasten beim Zeichnen, im Grundriss (H-189g) und in 3D (Jörn
+    /// 17.10.); Strg+D an den Höhenpunkten auch in 3D (I4c).
     pub(crate) fn flaeche_taste(&mut self, key: Key, mods: Modifiers) -> bool {
         let mut out = Ausgang::default();
         let vor = self.platte.leiste.werkzeug.ecken().len();
         if self.netz_taste(key, mods) {
             return true;
         }
-        if self.ui.view == ViewKind::Persp {
-            return self.punkte_taste(key, mods);
-        }
-        if self.ui.view != ViewKind::Plan {
+        if !zeichnet_in(self.ui.view) {
             return false;
         }
         if !self.platte.leiste.werkzeug.aktiv {
@@ -924,12 +1029,13 @@ impl App {
     }
 
     /// Nach einem Wechsel der Sicht: Nordpfeil nur, wo er geht, das
-    /// Werkzeug „Fläche zeichnen“ nur im Grundriss (H-189g).
+    /// Werkzeug „Fläche zeichnen“ nur im Grundriss (H-189g) und in 3D (Jörn
+    /// 17.10.); gesetzte Ecken bleiben beim Wechsel zwischen beiden.
     pub(crate) fn sicht_werkzeuge(&mut self) {
         if !self.tool_allowed() {
             self.nord.set_aktiv(false);
         }
-        if self.ui.view != ViewKind::Plan && self.platte.leiste.werkzeug.aktiv {
+        if !zeichnet_in(self.ui.view) && self.platte.leiste.werkzeug.aktiv {
             self.platte.leiste.werkzeug.set_aktiv(false);
             self.platte.leiste.neu = true;
             self.gelaende_sync();
@@ -1034,8 +1140,9 @@ impl App {
                 let an = w.aktiv;
                 let zeile = w.zeile();
                 if an {
-                    // gezeichnet wird im Grundriss, wo der Klick den Boden trifft
-                    if self.ui.view != ViewKind::Plan {
+                    // gezeichnet wird im Grundriss oder in 3D, wo der Klick
+                    // den Boden trifft
+                    if !zeichnet_in(self.ui.view) {
                         self.set_view(ViewKind::Plan);
                     }
                     self.tool.set_enabled(false);
@@ -1180,7 +1287,11 @@ impl App {
     pub(crate) fn flaeche_linien(&self, scale: f32) -> Vec<Helper> {
         let m = self.scene.model();
         let z = m.terrain_z();
-        let mut out = self.platte.leiste.werkzeug.linien(z, scale, &self.theme);
+        // in 3D auf dem Gelände wie die Grenze, im Grundriss auf OK Gelände
+        let drei_d = self.ui.view == ViewKind::Persp;
+        let hoehe = griffe::hoehe_im_bild(m, drei_d);
+        let w = &self.platte.leiste.werkzeug;
+        let mut out = w.linien(&hoehe, drei_d, scale, &self.theme);
         out.extend(self.grenz_linien(scale, &self.theme));
         out.extend(self.punkte_linien(z, scale, &self.theme));
         out.extend(self.netz_marken(scale, &self.theme));
@@ -1391,6 +1502,63 @@ mod tests {
         assert_eq!(o.commit.map(|r| r.len()), Some(3));
         w.umschalten(true);
         assert!(!w.aktiv, "derselbe Knopf schaltet aus");
+    }
+
+    /// In 3D (Jörn 17.10.): Die Ecken liegen, wo der Strahl den Boden in
+    /// seiner Höhe trifft, nicht auf 0; die erste Ecke schließt dort, wo sie
+    /// auf ihrer Höhe im Bild steht. Die Kanten folgen dem Gelände in
+    /// Stücken.
+    #[test]
+    fn grenze_in_3d() {
+        let cam = Camera::looking_at(
+            vec3(10000.0, -20000.0, 15000.0),
+            vec3(10000.0, 7000.0, 0.0),
+            45.0,
+        );
+        let (w0, h0) = (800.0, 800.0);
+        let hoch = |_: [f64; 2]| 1500.0;
+        let mut w = Werkzeug::default();
+        w.umschalten(true);
+        let klick3 = |w: &mut Werkzeug, p: [f64; 2], z: f64| {
+            let (x, y) = cam.project(vec3(p[0], p[1], z), w0, h0).unwrap();
+            let boden = Boden {
+                treff: cam.plane_point(x, y, w0, h0, 1500.0),
+                hoehe: &hoch,
+            };
+            let ev = Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: Modifiers::default(),
+            };
+            w.handle_auf(&ev, &cam, w0, h0, 1.0, &boden)
+        };
+        let ecken = [
+            [2000.0, 2000.0],
+            [18000.0, 2000.0],
+            [18000.0, 12000.0],
+            [2000.0, 12000.0],
+        ];
+        for p in ecken {
+            klick3(&mut w, p, 1500.0);
+        }
+        assert_eq!(w.ecken(), &ecken);
+        // auf 0 neben die erste Ecke geklickt: eine weitere Ecke, kein Schluss
+        let o = klick3(&mut w, [2000.0, 2000.0], 0.0);
+        assert!(o.commit.is_none() && w.ecken().len() == 5);
+        w.key(Key::Backspace, OHNE, &mut Ausgang::default());
+        let l = w.linien(&|p| p[0] / 10.0, true, 1.0, &Theme::dark());
+        // 16 m in Stücken bis 0,50 m, auf der Höhe der Stelle
+        let unten: Vec<_> = l
+            .iter()
+            .filter(|h| h.a[1] == 2000.0 && h.b[1] == 2000.0 && h.a != h.b)
+            .collect();
+        assert_eq!(unten.len(), 32);
+        assert!(unten
+            .iter()
+            .all(|h| (h.a[2] - (h.a[0] / 10.0 + 2.0)).abs() < 1e-3));
+        let o = klick3(&mut w, [2000.0, 2000.0], 1500.0);
+        assert_eq!(o.commit, Some(ecken.to_vec()));
     }
 
     /// Beim Zeichnen nimmt Strg+Z die letzte Ecke; Strg+Y, Strg+Umschalt+Z
@@ -1756,14 +1924,14 @@ mod tests {
         klick(&mut w, &cam, punkt(9100.0, 8100.0));
         assert_eq!(w.ecken(), &[[9003.0, 8001.0]]);
         assert_eq!(w.fang.map(|f| f.1), Some(Fang::Ecke));
-        let l = w.linien(0.0, 1.0, &Theme::dark());
+        let l = w.linien(&|_| 0.0, false, 1.0, &Theme::dark());
         assert!(l.iter().any(|h| h.width == 12.0 && !h.round), "Quadrat");
         klick(&mut w, &cam, punkt(7000.4, 4880.0));
         // auf der Kante, ungerundet (H-198c)
         let k = w.ecken()[1];
         assert!(k[1] == 5000.0 && (k[0] - 7000.4).abs() < 0.1, "{k:?}");
         assert_eq!(w.fang.map(|f| f.1), Some(Fang::Kante));
-        let l = w.linien(0.0, 1.0, &Theme::dark());
+        let l = w.linien(&|_| 0.0, false, 1.0, &Theme::dark());
         assert!(l.iter().any(|h| h.width == 10.0 && h.round), "Punkt");
         assert!(!l.iter().any(|h| h.width == 12.0), "kein Quadrat");
         klick(&mut w, &cam, punkt(12004.0, 12996.0));

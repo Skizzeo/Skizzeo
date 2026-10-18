@@ -15,6 +15,7 @@
 pub mod abfrage;
 pub mod codes;
 pub mod dxf;
+pub mod glatt;
 pub mod inflate;
 pub mod krypto;
 pub mod lageplan;

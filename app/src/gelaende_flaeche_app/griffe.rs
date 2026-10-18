@@ -269,6 +269,24 @@ fn ort(g: Griff, ringe: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
     Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
 }
 
+/// Höhe (mm) an einer Stelle, wie Grenze und Zeichnen sie zeigen: mit
+/// `drei_d` auf dem Gelände, sonst auf OK Gelände.
+pub(super) fn hoehe_im_bild(m: &sk_model::Model, drei_d: bool) -> impl Fn([f64; 2]) -> f64 + '_ {
+    let (b, z) = (m.level_building(), m.terrain_z());
+    // ±0,00 und die Höhe ohne Aufmaß einmal vorab, nicht je Punkt
+    // (Review H-253b); sonst wie `terrain_z_at`
+    let nhn = m.terrain_nhn();
+    let ohne = m.terrain_z_of(b);
+    move |p| {
+        if drei_d {
+            nhn.and_then(|h| m.terrain_z_survey_with(h, p[0], p[1]))
+                .unwrap_or(ohne)
+        } else {
+            z
+        }
+    }
+}
+
 /// Satz der Statuszeile zum Griff.
 fn satz(g: Griff) -> &'static str {
     match g {
@@ -294,21 +312,7 @@ impl App {
     /// Höhe der Grenze an einer Stelle (mm): in 3D auf dem Gelände wie ihre
     /// Linie dort, im Grundriss auf OK Gelände.
     fn grenz_hoehe(&self) -> impl Fn([f64; 2]) -> f64 + '_ {
-        let m = self.scene.model();
-        let drei_d = self.ui.view == ViewKind::Persp;
-        let (b, z) = (m.level_building(), m.terrain_z());
-        // ±0,00 und die Höhe ohne Aufmaß einmal vorab, nicht je Punkt
-        // (Review H-253b); sonst wie `terrain_z_at`
-        let nhn = m.terrain_nhn();
-        let ohne = m.terrain_z_of(b);
-        move |p| {
-            if drei_d {
-                nhn.and_then(|h| m.terrain_z_survey_with(h, p[0], p[1]))
-                    .unwrap_or(ohne)
-            } else {
-                z
-            }
-        }
+        hoehe_im_bild(self.scene.model(), self.ui.view == ViewKind::Persp)
     }
 
     /// Griff unter dem Bildpunkt.

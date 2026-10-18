@@ -142,6 +142,9 @@ pub use qto::{
     PerimeterQto, SlabQto, SoffitQto, SupportQto, TerraceQto, Umfang, WallQto,
 };
 pub use roof::FlatRoof;
+/// Stufe des Glättens im Gelände (Jörn 17.10.); die App braucht so keine
+/// eigene Kante zu `sk-gelaende`.
+pub use sk_gelaende::glatt::Glaettung;
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri, NO_LAYER};
 pub use terrace::{AttikaPiece, CopingPath, TerraceOutline, TerracePlan, COPING_DRIP};
