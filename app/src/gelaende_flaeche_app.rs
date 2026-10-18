@@ -12,6 +12,14 @@
 //! Beim Zeichnen rastet der Punkt an Ecken und Kanten von Haus, Flächen
 //! und Grenzen ([`fang`], H-189a).
 //!
+//! Wie bei der Außenwand (Jörn 18.10.: ein immer wiederkehrender Ablauf):
+//! Am Gummiband steht seine Länge; eine Ziffer öffnet die Eingabe „Länge“,
+//! Tab das Feld „Winkel“ gegen die vorige Kante, Enter setzt die Ecke
+//! genau. Spurlinien durch die erste Ecke und die letzte fangen
+//! rechtwinklig und achsparallel ([`crate::wall_tool::spur`]); R schaltet
+//! den Winkelsprung in 90°-Schritten ein (Vorgabe aus, Grenzen laufen
+//! selten rechtwinklig), Umschalt kehrt ihn kurz um.
+//!
 //! Dasselbe Werkzeug zeichnet als „Grenze zeichnen“ ein Grundstück (I2):
 //! Der geschlossene Umriss wird ein Flurstück im Gelände
 //! ([`sk_model::Model::add_parcel`]), auch ohne Lageplan.
@@ -22,6 +30,8 @@ pub(crate) mod netz;
 pub(crate) mod punkte;
 
 use crate::camera::Camera;
+use crate::measure_input::{opens, InputOutcome, MeasureInput};
+use crate::ui::MeasureKind;
 use crate::ui::{Field, FieldRow, GelaendeFeld, GelaendeKnopf, Id, Props, Section, ViewKind};
 use crate::App;
 use sk_math::{vec3, Vec3};
@@ -33,6 +43,7 @@ use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
+use crate::wall_tool::spur::{self, Line};
 use fang::{Fang, Ziele};
 
 /// Raster der Ecken (mm).
@@ -75,12 +86,14 @@ pub const ZU_WENIG: &str = "Eine Fläche braucht mindestens drei Ecken.";
 /// Statuszeile, solange das Werkzeug an ist (Bedienbarkeit, später zu
 /// #189: die Zeile war leer, Esc nirgends genannt).
 pub const ZEICHNEN: &str = "Fläche zeichnen: Ecken im Grundriss oder in 3D klicken (mit Strg ohne \
-    Fang); die erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
+    Fang) oder Länge tippen, Tab Winkel; R Winkelsprung; die erste Ecke oder Enter schließt, \
+    Rücktaste nimmt die letzte, Esc bricht ab.";
 /// Alle Ecken auf einer Linie (H-189d).
 pub const OHNE_INHALT: &str = "Die Ecken liegen auf einer Linie; die Fläche hat keinen Inhalt.";
 /// Dieselben Sätze für „Grenze zeichnen“ (I2).
 pub const GRENZE: &str = "Grenze zeichnen: Ecken im Grundriss oder in 3D klicken (mit Strg ohne \
-    Fang); die erste Ecke oder Enter schließt, Rücktaste nimmt die letzte, Esc bricht ab.";
+    Fang) oder Länge tippen, Tab Winkel; R Winkelsprung; die erste Ecke oder Enter schließt, \
+    Rücktaste nimmt die letzte, Esc bricht ab.";
 pub const GRENZE_ZU_WENIG: &str = "Eine Grenze braucht mindestens drei Ecken.";
 pub const GRENZE_KREUZT: &str = "Die Kanten der Grenze kreuzen sich; bitte anders schließen.";
 pub const GRENZE_OHNE_INHALT: &str =
@@ -148,6 +161,21 @@ pub struct Werkzeug {
     stand: Option<u64>,
     /// Woran der Punkt unter der Maus gerastet ist.
     fang: Option<([f64; 2], Fang)>,
+    /// Spurlinien, auf denen der Punkt unter der Maus liegt.
+    spuren: Vec<Line>,
+    /// Getippte Länge und Winkel.
+    eingabe: Option<MeasureInput>,
+    /// Winkelsprung an (R), Umschalt gedrückt kehrt ihn um.
+    pub sprung: bool,
+    shift: bool,
+}
+
+/// Felder der Pille beim Zeichnen, wie bei der Wand.
+pub const FELDER: [&str; 2] = crate::wall_tool::LABELS;
+
+/// Ecke (mm) als Punkt der Draufsicht.
+fn v(p: [f64; 2]) -> Vec3 {
+    vec3(p[0], p[1], 0.0)
 }
 
 impl Werkzeug {
@@ -157,6 +185,8 @@ impl Werkzeug {
         self.ecken.clear();
         self.maus = None;
         self.fang = None;
+        self.spuren.clear();
+        self.eingabe = None;
         if !on {
             self.ziele = Ziele::default();
             self.stand = None;
@@ -205,6 +235,7 @@ impl Werkzeug {
         scale: f64,
         mods: Modifiers,
     ) -> Option<[f64; 2]> {
+        self.spuren.clear();
         let Some(g) = treff else {
             self.fang = None;
             return None;
@@ -216,8 +247,156 @@ impl Werkzeug {
         self.fang = (!mods.ctrl)
             .then(|| self.ziele.fangen([g.x, g.y], tol))
             .flatten();
+        if let Some(f) = self.fang {
+            return Some(f.0);
+        }
         let r = |v: f64| (v / STEP).round() * STEP + 0.0;
-        Some(self.fang.map_or([r(g.x), r(g.y)], |f| f.0))
+        if mods.ctrl {
+            return Some([r(g.x), r(g.y)]);
+        }
+        Some(self.spur(v([g.x, g.y]), tol).unwrap_or([r(g.x), r(g.y)]))
+    }
+
+    /// Der Punkt `roh` auf den Spurlinien, wie bei der Wand: am Schnitt
+    /// einer Richtung der letzten Ecke mit einer Spurlinie der ersten, mit
+    /// Winkelsprung auf der passendsten Richtung, sonst auf einer Linie bis
+    /// `tol` (mm) daneben. Hält die Linien für das Bild fest.
+    fn spur(&mut self, roh: Vec3, tol: f64) -> Option<[f64; 2]> {
+        let pts: Vec<Vec3> = self.ecken.iter().copied().map(v).collect();
+        let starts = spur::start_lines(&pts);
+        let mut lasts = spur::last_lines(&pts, None, false);
+        if self.sprung != self.shift {
+            lasts = spur::passendste(&lasts, roh).into_iter().collect();
+        }
+        let px = |q: Vec3| (q - roh).length();
+        let (p, linien) = if let Some((_, x, ls)) = spur::kreuzung(&lasts, &starts, &px, tol) {
+            (x, ls.to_vec())
+        } else if let (true, [l]) = (self.sprung != self.shift, lasts.as_slice()) {
+            (spur::lot(l, roh), vec![*l])
+        } else {
+            let alle: Vec<Line> = lasts.iter().chain(&starts).copied().collect();
+            let (p, l) = spur::naechste(&alle, roh, &px, tol)?;
+            (p, vec![l])
+        };
+        self.spuren = linien;
+        // auf 1 µm, ohne das Rauschen aus Schnitt und Lot
+        let r = |v: f64| (v * 1000.0).round() / 1000.0 + 0.0;
+        Some([r(p.x), r(p.y)])
+    }
+
+    /// Richtung der vorigen Kante, bei der ersten die Waagerechte.
+    fn richtung(&self) -> Vec3 {
+        match self.ecken.as_slice() {
+            [.., a, b] if a != b => (v(*b) - v(*a)).normalized(),
+            _ => Vec3::X,
+        }
+    }
+
+    /// Ecke aus getippter Länge und Winkel (gegen die vorige Kante, plus
+    /// nach links); ohne Winkel in Richtung der Maus. `None` ohne gültige
+    /// Länge.
+    fn getippt(&self) -> Option<[f64; 2]> {
+        let i = self.eingabe.as_ref().filter(|i| i.error.is_none())?;
+        let len = i.value(0)?.ok()?;
+        let last = v(*self.ecken.last()?);
+        let dir = match i.value(1) {
+            Some(Ok(a)) => {
+                let (s, c) = a.to_radians().sin_cos();
+                let b = self.richtung();
+                vec3(b.x * c - b.y * s, b.x * s + b.y * c, 0.0)
+            }
+            _ => match self.maus.map(|m| v(m) - last) {
+                Some(m) if m.length() > 1e-6 => m.normalized(),
+                _ => self.richtung(),
+            },
+        };
+        let p = last + dir * len;
+        Some([p.x, p.y])
+    }
+
+    /// Ende des Gummibands: die getippte Ecke oder die Maus.
+    fn band_ende(&self) -> Option<[f64; 2]> {
+        self.getippt().or(self.maus)
+    }
+
+    /// Offene Maßeingabe.
+    pub fn eingabe(&self) -> Option<&MeasureInput> {
+        self.eingabe.as_ref()
+    }
+
+    /// Pille am Gummiband in der Höhe `hoehe` (mm): Anfang und Ende und der
+    /// Text, die Länge oder die Eingabe. Ohne Ecke keine.
+    pub fn pille(&self, hoehe: &dyn Fn([f64; 2]) -> f64) -> Option<([Vec3; 2], String)> {
+        if !self.aktiv {
+            return None;
+        }
+        let a = *self.ecken.last()?;
+        let b = self.band_ende()?;
+        let text = match &self.eingabe {
+            Some(i) => i.text(FELDER),
+            None if a == b => return None,
+            None => crate::ui::live_length_text((v(b) - v(a)).length()),
+        };
+        let p = |q: [f64; 2]| vec3(q[0], q[1], hoehe(q));
+        Some(([p(a), p(b)], text))
+    }
+
+    /// Ecke `p` setzen, wie ein Klick: auf der ersten schließt sie ab drei
+    /// Ecken, auf der letzten tut sie nichts.
+    fn setzen(&mut self, p: [f64; 2], out: &mut Ausgang) {
+        let am_anfang = self
+            .ecken
+            .first()
+            .is_some_and(|a| (v(*a) - v(p)).length() < 1.0);
+        if am_anfang && self.ecken.len() >= 3 {
+            self.schliessen(out);
+        } else if am_anfang {
+            out.fehler = Some(if self.grenze {
+                GRENZE_ZU_WENIG
+            } else {
+                ZU_WENIG
+            });
+        } else if self.ecken.last() != Some(&p) {
+            self.ecken.push(p);
+            out.redraw = true;
+        }
+    }
+
+    /// Taste für die Maßeingabe: eine Ziffer öffnet sie ab der ersten
+    /// Ecke, sonst geht die Taste an die offene Eingabe. `true`, wenn
+    /// verbraucht.
+    fn eingabe_taste(&mut self, key: Key, mods: Modifiers, out: &mut Ausgang) -> bool {
+        let Some(i) = self.eingabe.as_mut() else {
+            let Key::Char(ch) = key else {
+                return false;
+            };
+            if self.ecken.is_empty() || !opens(ch, MeasureKind::Length, mods) {
+                return false;
+            }
+            let mut i = MeasureInput::new(MeasureKind::Length, Some(MeasureKind::Angle));
+            i.push(ch);
+            self.eingabe = Some(i);
+            out.redraw = true;
+            return true;
+        };
+        match i.key(key, mods) {
+            InputOutcome::Ignored => return false,
+            InputOutcome::Changed | InputOutcome::Refused => {}
+            InputOutcome::Emptied | InputOutcome::Escape => self.eingabe = None,
+            InputOutcome::EnterEmpty => {
+                self.eingabe = None;
+                self.schliessen(out);
+            }
+            InputOutcome::Enter => {
+                if let Some(p) = self.getippt() {
+                    self.eingabe = None;
+                    let r = |v: f64| (v * 1000.0).round() / 1000.0 + 0.0;
+                    self.setzen([r(p[0]), r(p[1])], out);
+                }
+            }
+        }
+        out.redraw = true;
+        true
     }
 
     pub fn ecken(&self) -> &[[f64; 2]] {
@@ -240,6 +419,9 @@ impl Werkzeug {
     /// Esc: erst die gesetzten Ecken, dann das Werkzeug. `true`, wenn
     /// etwas geschlossen wurde.
     pub fn escape(&mut self) -> bool {
+        if self.eingabe.take().is_some() {
+            return true;
+        }
         if !self.ecken.is_empty() {
             self.ecken.clear();
             return true;
@@ -256,8 +438,17 @@ impl Werkzeug {
     /// nichts, statt aufs Modell zu wirken (Review #189 B1). `true`, wenn
     /// verbraucht.
     pub fn key(&mut self, key: Key, mods: Modifiers, out: &mut Ausgang) -> bool {
+        if self.aktiv && key == Key::Char('R') && !mods.ctrl && self.eingabe.is_none() {
+            self.sprung = !self.sprung;
+            self.spuren.clear();
+            out.redraw = true;
+            return true;
+        }
         if !self.zeichnet() {
             return false;
+        }
+        if self.eingabe_taste(key, mods, out) {
+            return true;
         }
         match key {
             Key::Backspace => {}
@@ -271,6 +462,7 @@ impl Werkzeug {
             _ => return false,
         }
         self.ecken.pop();
+        self.spuren.clear();
         out.redraw = true;
         true
     }
@@ -301,6 +493,7 @@ impl Werkzeug {
         out.commit = Some(std::mem::take(&mut self.ecken));
         self.maus = None;
         self.fang = None;
+        self.spuren.clear();
     }
 
     /// Ereignis im Grundriss (Koordinaten ohne Titelleiste).
@@ -333,6 +526,7 @@ impl Werkzeug {
         match *e {
             Event::MouseMove { x, y, mods } => {
                 let vor = self.fang;
+                self.shift = mods.shift;
                 let p = self.boden(cam, treff, x, y, w, h, scale, mods);
                 if p != self.maus || vor != self.fang {
                     out.redraw = !self.ecken.is_empty() || vor != self.fang;
@@ -347,6 +541,11 @@ impl Werkzeug {
                 mods,
             } => {
                 out.consumed = true;
+                // ein Klick verwirft die getippte Zahl, wie bei der Wand
+                if self.eingabe.take().is_some() {
+                    out.redraw = true;
+                }
+                self.shift = mods.shift;
                 let Some(p) = self.boden(cam, treff, x, y, w, h, scale, mods) else {
                     return out;
                 };
@@ -381,6 +580,7 @@ impl Werkzeug {
                 // (Review #198 B1)
                 let fang = self.fang.take().is_some();
                 let maus = self.maus.take().is_some();
+                self.spuren.clear();
                 out.redraw = fang || (maus && !self.ecken.is_empty());
             }
             _ => {}
@@ -400,7 +600,7 @@ impl Werkzeug {
     ) -> Vec<Helper> {
         let col = &theme.interact;
         let mut pts: Vec<[f64; 2]> = self.ecken.clone();
-        if let (Some(m), false) = (self.maus, self.ecken.is_empty()) {
+        if let (Some(m), false) = (self.band_ende(), self.ecken.is_empty()) {
             pts.push(m);
         }
         let mut out = Vec::new();
@@ -434,6 +634,17 @@ impl Werkzeug {
         }
         if pts.len() >= 3 {
             kante(&mut out, pts[pts.len() - 1], pts[0], col.guide, 6.0);
+        }
+        // Spurlinien vom Ursprung bis über die Maus hinaus, die der ersten
+        // Ecke in der Farbe der Spur (wie bei der Wand)
+        if let (Some(m), None) = (self.maus, &self.eingabe) {
+            for g in &self.spuren {
+                let t = (v(m) - g.origin).dot(g.dir);
+                let weiter = g.origin + g.dir * (t + t.signum() * (0.15 * t.abs()).max(1000.0));
+                let color = if g.from_start { col.track } else { col.guide };
+                let a = [g.origin.x, g.origin.y];
+                kante(&mut out, a, [weiter.x, weiter.y], color, 6.0);
+            }
         }
         if let Some(&a) = self.ecken.first() {
             let mut m = linie(a, a, col.track, 0.0);
@@ -802,6 +1013,26 @@ impl App {
             w.handle_auf(ev, &self.cam, vw, vh, sc, &boden)
         };
         self.flaeche_ausgang(out, vor)
+    }
+
+    /// Pille am Gummiband beim Zeichnen von Grenze und Fläche, in 3D auf
+    /// dem Gelände: Länge oder Eingabe wie bei der Wand (Jörn 18.10.).
+    pub(crate) fn flaeche_pille(&self) -> Option<([Vec3; 2], String)> {
+        let w = &self.platte.leiste.werkzeug;
+        if !w.aktiv || !zeichnet_in(self.ui.view) {
+            return None;
+        }
+        let hoehe = griffe::hoehe_im_bild(self.scene.model(), self.ui.view == ViewKind::Persp);
+        w.pille(&hoehe)
+    }
+
+    /// Offene Maßeingabe am Gummiband: der Wand (`wand`) oder von Grenze
+    /// und Fläche.
+    pub(crate) fn band_eingabe(&self, wand: bool) -> Option<&crate::measure_input::MeasureInput> {
+        match wand {
+            true => self.tool.input(),
+            false => self.platte.leiste.werkzeug.eingabe(),
+        }
     }
 
     /// Punkt auf dem Gelände unter dem Bildpunkt in 3D (Jörn 17.10.: Grenze
@@ -1934,8 +2165,9 @@ mod tests {
         let l = w.linien(&|_| 0.0, false, 1.0, &Theme::dark());
         assert!(l.iter().any(|h| h.width == 10.0 && h.round), "Punkt");
         assert!(!l.iter().any(|h| h.width == 12.0), "kein Quadrat");
-        klick(&mut w, &cam, punkt(12004.0, 12996.0));
-        assert_eq!(w.ecken()[2], [12000.0, 13000.0]);
+        // weit weg von den Spurlinien der beiden Ecken
+        klick(&mut w, &cam, punkt(14004.0, 9996.0));
+        assert_eq!(w.ecken()[2], [14000.0, 10000.0]);
         assert_eq!(w.fang, None);
         // gerastet aus der Ansicht: Gummiband und Marke gehen beide weg
         // (Review #198 B1)
@@ -1988,5 +2220,119 @@ mod tests {
             [0.0, 6000.0],
         ];
         assert!(innen(&l, mitte(&l)), "{:?}", mitte(&l));
+    }
+
+    fn ziehen(w: &mut Werkzeug, cam: &Camera, p: Vec3, mods: Modifiers) {
+        let (x, y) = cam.project(p, 800.0, 800.0).unwrap();
+        w.handle(&Event::MouseMove { x, y, mods }, cam, 800.0, 800.0, 1.0);
+    }
+
+    fn tippen(w: &mut Werkzeug, text: &str) -> Ausgang {
+        let mut out = Ausgang::default();
+        for ch in text.chars() {
+            let key = match ch {
+                '\t' => Key::Tab,
+                '\n' => Key::Enter,
+                c => Key::Char(c),
+            };
+            assert!(w.key(key, OHNE, &mut out), "{ch:?} verbraucht");
+        }
+        out
+    }
+
+    /// Wie bei der Außenwand (Jörn 18.10.): eine Ziffer öffnet „Länge“,
+    /// Enter setzt die Ecke in Richtung der Maus; Tab „Winkel“ gegen die
+    /// vorige Kante, plus nach links. Am Band steht die Länge, beim Tippen
+    /// die Eingabe; Esc schließt erst die Eingabe, ein Klick verwirft sie.
+    #[test]
+    fn laenge_und_winkel_tippen() {
+        let (cam, _, _) = kamera();
+        let mut w = Werkzeug::default();
+        w.umschalten(true);
+        // ohne Ecke öffnet eine Ziffer nichts
+        let mut out = Ausgang::default();
+        assert!(!w.key(Key::Char('5'), OHNE, &mut out));
+        klick(&mut w, &cam, punkt(2000.0, 2000.0));
+        ziehen(&mut w, &cam, punkt(6000.0, 2400.0), OHNE);
+        let (ends, text) = w.pille(&|_| 0.0).unwrap();
+        assert_eq!(ends[0], punkt(2000.0, 2000.0));
+        assert!(text.ends_with(" m"), "{text}");
+        tippen(&mut w, "5");
+        assert!(w.pille(&|_| 0.0).unwrap().1.contains("Länge"));
+        tippen(&mut w, "\n");
+        assert!(w.eingabe().is_none());
+        let [a, b] = [w.ecken()[0], w.ecken()[1]];
+        assert!(((b[0] - a[0]).hypot(b[1] - a[1]) - 5000.0).abs() < 0.01);
+        // in Richtung der Maus
+        assert!(((b[1] - a[1]) / (b[0] - a[0]) - 0.1).abs() < 1e-3, "{b:?}");
+        tippen(&mut w, "3\t90\n");
+        let c = w.ecken()[2];
+        let quer = [-(b[1] - a[1]) / 5000.0, (b[0] - a[0]) / 5000.0];
+        assert!((c[0] - b[0] - 3000.0 * quer[0]).abs() < 0.01, "{c:?}");
+        assert!((c[1] - b[1] - 3000.0 * quer[1]).abs() < 0.01, "{c:?}");
+        // Esc schließt erst die Eingabe, die Ecken bleiben
+        tippen(&mut w, "4");
+        assert!(w.escape());
+        assert!(w.eingabe().is_none() && w.ecken().len() == 3);
+        // ein Klick verwirft die Zahl und setzt die Ecke der Maus
+        tippen(&mut w, "4");
+        klick(&mut w, &cam, punkt(1000.0, 7000.0));
+        assert!(w.eingabe().is_none());
+        assert_eq!(w.ecken().len(), 4);
+        // leeres Enter schließt die Grenze
+        let o = tippen(&mut w, "\n");
+        assert_eq!(o.commit.map(|r| r.len()), Some(4));
+    }
+
+    /// Spurlinien wie bei der Wand: Die Maus nahe der Ecke, die rechtwinklig
+    /// zur letzten Kante und zur ersten Ecke liegt, rastet genau dort; mit
+    /// Strg nicht.
+    #[test]
+    fn spurlinien_fangen_rechtwinklig() {
+        let (cam, _, _) = kamera();
+        let mut w = Werkzeug::default();
+        w.umschalten(true);
+        for p in [(2000.0, 2000.0), (8000.0, 2000.0), (8000.0, 6000.0)] {
+            klick(&mut w, &cam, punkt(p.0, p.1));
+        }
+        ziehen(&mut w, &cam, punkt(2050.0, 6040.0), OHNE);
+        assert_eq!(w.maus, Some([2000.0, 6000.0]));
+        assert_eq!(w.spuren.len(), 2);
+        assert!(w.spuren.iter().any(|l| l.from_start));
+        // eine einzelne Linie: auf die Waagerechte durch die letzte Ecke
+        ziehen(&mut w, &cam, punkt(5000.0, 6040.0), OHNE);
+        assert_eq!(w.maus.map(|m| m[1]), Some(6000.0));
+        assert_eq!(w.spuren.len(), 1);
+        let strg = Modifiers { ctrl: true, ..OHNE };
+        ziehen(&mut w, &cam, punkt(2050.0, 6040.0), strg);
+        assert_eq!(w.maus, Some([2050.0, 6040.0]));
+        assert!(w.spuren.is_empty());
+        // weit weg von allen Linien: frei, im Raster
+        ziehen(&mut w, &cam, punkt(4321.0, 4567.0), OHNE);
+        assert_eq!(w.maus, Some([4320.0, 4570.0]));
+    }
+
+    /// Der Winkelsprung ist aus, R schaltet ihn ein: Die Kante läuft dann
+    /// längs oder quer zur vorigen; Umschalt kehrt ihn kurz um.
+    #[test]
+    fn winkelsprung_mit_r() {
+        let (cam, _, _) = kamera();
+        let mut w = Werkzeug::default();
+        w.umschalten(true);
+        klick(&mut w, &cam, punkt(2000.0, 2000.0));
+        klick(&mut w, &cam, punkt(8000.0, 2000.0));
+        ziehen(&mut w, &cam, punkt(9000.0, 5000.0), OHNE);
+        assert_eq!(w.maus, Some([9000.0, 5000.0]));
+        let mut out = Ausgang::default();
+        assert!(w.key(Key::Char('R'), OHNE, &mut out) && w.sprung);
+        ziehen(&mut w, &cam, punkt(9000.0, 5000.0), OHNE);
+        assert_eq!(w.maus, Some([8000.0, 5000.0]), "quer zur ersten Kante");
+        let umschalt = Modifiers {
+            shift: true,
+            ..OHNE
+        };
+        ziehen(&mut w, &cam, punkt(9000.0, 5000.0), umschalt);
+        assert_eq!(w.maus, Some([9000.0, 5000.0]));
+        assert!(w.key(Key::Char('R'), OHNE, &mut out) && !w.sprung);
     }
 }

@@ -6077,8 +6077,11 @@ impl App {
     fn paint_input_pill(&mut self, vw: f64, vh: f64, th: u32, scale: f32) {
         let s = scale as f64;
         let rev = self.theme.rev;
-        let tool = self.tool.label().map(|(ends, text)| {
-            let i = self.tool.input();
+        // Wand oder Grenze und Fläche im Gelände (Jörn 18.10.)
+        let wand = self.tool.label();
+        let von_wand = wand.is_some();
+        let tool = wand.or_else(|| self.flaeche_pille()).map(|(ends, text)| {
+            let i = self.band_eingabe(von_wand);
             let key = (
                 text,
                 i.is_some(),
@@ -6142,13 +6145,21 @@ impl App {
                     self.input_swap = Some(Instant::now());
                 }
             }
-            let c = match (ends.is_some(), self.tool.input(), self.edit.input()) {
+            let c = match (
+                ends.is_some(),
+                self.band_eingabe(von_wand),
+                self.edit.input(),
+            ) {
                 _ if from_nord => match self.nord.input() {
                     Some(i) => i.paint(&self.ui.fonts, ["Nord", ""], scale, &self.theme),
                     None => flush_pick::paint_label(&self.ui.fonts, &key.0, scale, &self.theme),
                 },
                 (true, Some(i), _) => {
-                    i.paint(&self.ui.fonts, self.tool.labels(), scale, &self.theme)
+                    let felder = match von_wand {
+                        true => self.tool.labels(),
+                        false => gelaende_flaeche_app::FELDER,
+                    };
+                    i.paint(&self.ui.fonts, felder, scale, &self.theme)
                 }
                 (false, _, Some(i)) => i.paint(
                     &self.ui.fonts,
@@ -6167,33 +6178,13 @@ impl App {
         let (w, h) = self.renderer.overlay_size(OVERLAY_INPUT);
         let (pw, ph) = (w as f64, h as f64);
         let at = match ends {
-            Some([p, q]) => {
+            Some(ends) => {
                 // Außenseite: links der Zeichenrichtung (Bezugsseite rechts:
-                // rechts), im Bild gemessen
-                let d = vec3(q.x - p.x, q.y - p.y, 0.0);
-                let side = if self.tool.ref_side == sk_model::RefSide::Right {
-                    -1.0
-                } else {
-                    1.0
-                };
-                let n = vec3(-d.y, d.x, 0.0).normalized() * side;
-                let mid = (p + q) * 0.5;
-                let a = self.cam.project(mid, vw, vh);
-                let b = self.cam.project(mid + n * 100.0, vw, vh);
-                a.map(|a| {
-                    let dir = b.map_or((0.0, -1.0), |b| {
-                        let (x, y) = (b.0 - a.0, b.1 - a.1);
-                        let l = (x * x + y * y).sqrt();
-                        if l > 1e-6 {
-                            (x / l, y / l)
-                        } else {
-                            (0.0, -1.0)
-                        }
-                    });
-                    // Abstand bis zum Rand der Pille in Richtung `dir`
-                    let reach = 12.0 * s + (pw * 0.5 * dir.0.abs()).max(ph * 0.5 * dir.1.abs());
-                    (a.0 + dir.0 * reach, a.1 + dir.1 * reach + th as f64)
-                })
+                // rechts)
+                let rechts = von_wand && self.tool.ref_side == sk_model::RefSide::Right;
+                let seite = if rechts { -1.0 } else { 1.0 };
+                measure_input::am_band(&self.cam, ends, seite, (vw, vh), (pw, ph), s)
+                    .map(|(x, y)| (x, y + th as f64))
             }
             None if from_nord => nord
                 .and_then(|(p, _)| self.cam.project(p, vw, vh))
