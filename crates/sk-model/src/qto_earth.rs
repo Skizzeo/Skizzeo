@@ -123,6 +123,15 @@ pub(crate) fn baufelder_teilen(m: &crate::Model, gr: &[&Gruendung], o: f64) -> V
         .collect()
 }
 
+/// Die Oberbodenzeile `r` um `weniger` (mm³) gekürzt, mit dem Rechenweg
+/// `text` aus [`baufelder_teilen`] und der Restmenge am Schluss (VOB
+/// V-285a).
+pub(crate) fn oberboden_kuerzen(r: &mut AutoMenge, weniger: f64, text: &str) {
+    r.value -= weniger;
+    r.formula += text;
+    r.formula += &format!("; = {} m³", zahl(r.value, 1e9));
+}
+
 pub use netz::{
     hand_geaendert, netz_angenommen, netz_geaendert, netz_herkunft, steil_hinweis, versatz,
     ErdNetz, ANGENOMMEN, DREIECKSPRISMEN, HAND_GEAENDERT, STEIL, STEIL_AB,
@@ -1144,6 +1153,9 @@ mod tests {
                         zahl(streifen / 2.0, 1e9)
                     );
                     assert!(zwei[0].1.contains(&text), "{} / {text}", zwei[0].1);
+                    // V-285a: am Schluss die Restmenge
+                    let rest = format!("; = {} m³", zahl(zwei[0].0, 1e9));
+                    assert!(zwei[0].1.ends_with(&rest), "{} / {rest}", zwei[0].1);
                 }
             }
         }

@@ -13,8 +13,8 @@
 //! (Sutherland–Hodgman), mit Einschluss und Ausschluss über die Nachbarn.
 
 use sk_math::flaeche::versatz;
-use sk_math::polygon::{signed_area, to_ccw, triangulate};
-use sk_math::Vec3;
+use sk_math::polygon::{is_simple, signed_area, to_ccw, triangulate};
+use sk_math::{vec3, Vec3};
 
 /// Ein Rand für [`anteile`]: Umriss der Platte und wie weit der Rand über
 /// ihn hinausreicht (mm).
@@ -140,22 +140,61 @@ fn mit_anderen(
     x
 }
 
-/// Der Umriss des Randes, gegen den Uhrzeigersinn; leer, wenn er sich
-/// nicht versetzen lässt.
+/// Der Umriss des Randes, gegen den Uhrzeigersinn. Hat der Umriss eine
+/// Nische oder einen Rücksprung, schmaler als zweimal der Rand, kehrt sich
+/// beim Versetzen eine Kante um (oder zwei Kanten laufen ineinander); dann
+/// ist der Rand die Vereinigung aus Umriss, einem Streifen je Kante und
+/// der Gehrung je Ecke: Er füllt die Nische, wie auf der Baustelle
+/// (B-285-geo-a, sonst gab das Haus still nichts ab).
 fn versetzt(r: &Rand) -> Vec<P> {
     if r.umriss.len() < 3 {
         return Vec::new();
     }
     let u = to_ccw(r.umriss);
     let v = if r.versatz > 0.0 {
-        match versatz(&u, &vec![-r.versatz; u.len()]) {
+        match versatz(&u, &vec![-r.versatz; u.len()]).filter(|v| is_simple(v)) {
             Some(v) => v,
-            None => return Vec::new(),
+            None => vereinigt(&u, r.versatz),
         }
     } else {
         u
     };
     v.iter().map(|p| [p.x, p.y]).collect()
+}
+
+/// Der Umriss `u` (gegen den Uhrzeigersinn) um `x` nach außen, als
+/// Vereinigung: Umriss, je Kante der Streifen außen davor, je Ecke nach
+/// außen das Viereck bis zur Gehrung. Leer, wenn sich nichts vereinigen
+/// lässt.
+fn vereinigt(u: &[Vec3], x: f64) -> Vec<Vec3> {
+    let n = u.len();
+    let d: Vec<Vec3> = (0..n)
+        .map(|i| (u[(i + 1) % n] - u[i]).normalized())
+        .collect();
+    // außen ist rechts der Kante
+    let aussen = |v: Vec3| vec3(v.y, -v.x, 0.0) * x;
+    let mut teile = vec![u.to_vec()];
+    for i in 0..n {
+        let (a, b) = (u[i], u[(i + 1) % n]);
+        if (b - a).length() > 0.0 {
+            teile.push(vec![a, a + aussen(d[i]), b + aussen(d[i]), b]);
+        }
+        let h = (i + n - 1) % n;
+        let (nh, ni) = (aussen(d[h]), aussen(d[i]));
+        let kreuz = d[h].x * d[i].y - d[h].y * d[i].x;
+        let cos = d[h].dot(d[i]);
+        if kreuz > 1e-9 && cos > -1.0 + 1e-9 {
+            // Gehrung: Schnitt der beiden versetzten Kanten
+            let m = a + (nh + ni) * (1.0 / (1.0 + cos));
+            teile.push(vec![a, a + nh, m, a + ni]);
+        }
+    }
+    sk_math::flaeche::anordnung(&teile, 1e-3)
+        .aussen
+        .into_iter()
+        .max_by(|p, q| p.flaeche().total_cmp(&q.flaeche()))
+        .map(|r| to_ccw(&r.punkte))
+        .unwrap_or_default()
 }
 
 /// Die Stücke `stuecke`, geschnitten mit jedem der Dreiecke `ds` (gegen
@@ -372,6 +411,80 @@ mod tests {
                 let b = v[j].ab.iter().find(|x| x.0 == i).unwrap().1;
                 assert!((a - b).abs() < 1e-6 * a);
             }
+        }
+    }
+
+    /// Haus 8 × 10 m mit Eingangsnische 1 m tief, schmaler als zweimal der
+    /// Rand, Nachbar 1 m daneben (B-285-geo-a): Der Rand füllt die Nische,
+    /// und die Summe ist die Vereinigung, ausgezählt auf einem Raster. Bei
+    /// rechten Winkeln ist der Rand auf Gehrung das Rechteck um jedes
+    /// Teilrechteck des Hauses, um den Rand vergrößert.
+    #[test]
+    fn nische_schmaler_als_rand() {
+        let x = 1500.0;
+        for breite in [1500.0, 2500.0, 3500.0, 5000.0] {
+            let (n0, n1) = (4000.0 - breite / 2.0, 4000.0 + breite / 2.0);
+            // Nische unten, vom Nachbarn weg und zu ihm hin gedreht
+            let nischenhaus = vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(n0, 0.0, 0.0),
+                vec3(n0, 1000.0, 0.0),
+                vec3(n1, 1000.0, 0.0),
+                vec3(n1, 0.0, 0.0),
+                vec3(8000.0, 0.0, 0.0),
+                vec3(8000.0, 10000.0, 0.0),
+                vec3(0.0, 10000.0, 0.0),
+            ];
+            let teile = [
+                [0.0, 1000.0, 8000.0, 10000.0],
+                [0.0, 0.0, n0, 1000.0],
+                [n1, 0.0, 8000.0, 1000.0],
+                [9000.0, 0.0, 17000.0, 10000.0],
+            ];
+            let nachbar = rechteck(9000.0, 0.0, 8000.0, 10000.0);
+            let r = [
+                Rand {
+                    umriss: &nischenhaus,
+                    versatz: x,
+                },
+                Rand {
+                    umriss: &nachbar,
+                    versatz: x,
+                },
+            ];
+            let v = anteile(&r, |_, _| true);
+            assert!(!v[0].ab.is_empty() && !v[1].ab.is_empty(), "{breite}");
+            let n = 1500;
+            let (x0, y0, w) = (-x, -x, 17000.0 + 2.0 * x);
+            let h = w / n as f64;
+            let mut drin = 0usize;
+            for i in 0..n {
+                for j in 0..n {
+                    let (px, py) = (x0 + (i as f64 + 0.5) * h, y0 + (j as f64 + 0.5) * h);
+                    if teile.iter().any(|t| {
+                        px >= t[0] - x && px <= t[2] + x && py >= t[1] - x && py <= t[3] + x
+                    }) {
+                        drin += 1;
+                    }
+                }
+            }
+            let raster = drin as f64 * h * h;
+            // eine schmale Nische ist gefüllt: das Haus allein wie ohne sie
+            let voll = (8000.0 + 2.0 * x) * (10000.0 + 2.0 * x);
+            if breite < 2.0 * x {
+                assert!(
+                    (v[0].flaeche - voll).abs() < 1e-6 * voll,
+                    "{breite}: {}",
+                    v[0].flaeche
+                );
+            } else {
+                assert!(v[0].flaeche < voll - 1e5, "{breite}");
+            }
+            assert!(
+                (summe(&v) - raster).abs() < 2e-3 * raster,
+                "{breite}: {} {raster}",
+                summe(&v)
+            );
         }
     }
 

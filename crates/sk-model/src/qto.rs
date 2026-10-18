@@ -2504,8 +2504,7 @@ fn zusammenfuehren_im_gang(
         for r in mengen {
             let mut r = r.clone();
             if r.key == crate::qto_earth::TOPSOIL && ab > 0.0 {
-                r.value -= ab * o;
-                r.formula += &text;
+                crate::qto_earth::oberboden_kuerzen(&mut r, ab * o, &text);
             }
             sched.auto.push(r);
         }
