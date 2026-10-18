@@ -410,6 +410,11 @@ pub struct PlannedTerrain {
     pub replaced: Vec<u32>,
     /// Gegen den Uhrzeigersinn, wie das Urgelände.
     pub triangles: Vec<[Vec3; 3]>,
+    /// Dreiecke des Urgeländes neben den ersetzten, auf der gemeinsamen
+    /// Kante mit den Ecken der Stücke daneben neu geteilt, in ihrer Ebene:
+    /// Nummer und Dreiecke an ihrer Stelle (G-275a, sonst offene Kanten im
+    /// Export). Sie bleiben Urgelände, nicht in `replaced`.
+    pub seam: Vec<(u32, Vec<[Vec3; 3]>)>,
     /// Je Dreieck: auf einer befestigten Fläche.
     pub paved: Vec<bool>,
     /// Böschungsschraffen vom Kopf zum Fuß, je Stück; `true` lang.
@@ -521,6 +526,11 @@ impl Model {
         PlannedTerrain {
             replaced: o.ersetzt.clone(),
             triangles: o.dreiecke.iter().map(|(d, _)| d.map(im_modell)).collect(),
+            seam: o
+                .naht
+                .iter()
+                .map(|(t, d)| (*t, d.iter().map(|d| d.map(im_modell)).collect()))
+                .collect(),
             paved: o
                 .dreiecke
                 .iter()
