@@ -48,18 +48,42 @@ impl Anteil {
     }
 }
 
+/// Ein Rand als Fläche: der Außenrand gegen den Uhrzeigersinn und die
+/// Höfe, die er umschließt, aber nicht deckt (gegen den Uhrzeigersinn).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Randflaeche {
+    pub aussen: Vec<Vec3>,
+    pub hoefe: Vec<Vec<Vec3>>,
+}
+
+impl Randflaeche {
+    /// Fläche ohne die Höfe (mm²).
+    pub fn flaeche(&self) -> f64 {
+        signed_area(&self.aussen).abs()
+            - self.hoefe.iter().map(|h| signed_area(h).abs()).sum::<f64>()
+    }
+}
+
 /// Unter dieser Fläche (mm²) überdeckt sich nichts.
 const LEER: f64 = 1.0;
 
 type P = [f64; 2];
+
+/// Ein Stück einer Fläche mit Vorzeichen: der Außenrand zählt +1, ein Hof
+/// darin −1. Schnitte multiplizieren die Vorzeichen; so bleibt jedes
+/// Integral über die Fläche eine Summe über Stücke ohne Löcher.
+type Stueck = (Vec<P>, f64);
 
 /// Die Anteile der Ränder `raender` an ihrer Vereinigung, in derselben
 /// Reihenfolge. `teilen(i, j)` sagt, ob sich die Ränder `i` und `j`
 /// überdecken dürfen; zwei Häuser, die ineinander stehen, werden nicht
 /// gekürzt (VOB Spruch zu #245/#248), dort steht der Hinweis.
 pub fn anteile(raender: &[Rand], teilen: impl Fn(usize, usize) -> bool) -> Vec<Anteil> {
-    let flaechen: Vec<Vec<P>> = raender.iter().map(versetzt).collect();
-    let kaesten: Vec<[f64; 4]> = flaechen.iter().map(|f| kasten(f)).collect();
+    let flaechen: Vec<Vec<Stueck>> = raender.iter().map(versetzt).collect();
+    let kaesten: Vec<[f64; 4]> = flaechen
+        .iter()
+        .map(|f| f.first().map_or([0.0; 4], |s| kasten(&s.0)))
+        .collect();
     // Nachbarn: Kästen, die sich berühren, nach x sortiert durchlaufen
     // (viele Häuser: nicht jedes gegen jedes)
     let mut folge: Vec<usize> = (0..flaechen.len())
@@ -78,30 +102,33 @@ pub fn anteile(raender: &[Rand], teilen: impl Fn(usize, usize) -> bool) -> Vec<A
             }
         }
     }
-    let dreiecke: Vec<Vec<[P; 3]>> = flaechen
+    let dreiecke: Vec<Vec<([P; 3], f64)>> = flaechen
         .iter()
         .zip(&nachbarn)
         .map(|(f, nb)| {
             if nb.is_empty() {
                 return Vec::new();
             }
-            let v: Vec<Vec3> = f.iter().map(|p| sk_math::vec3(p[0], p[1], 0.0)).collect();
-            triangulate(&v)
-                .into_iter()
-                .map(|t| t.map(|k| f[k]))
+            f.iter()
+                .flat_map(|(s, v)| {
+                    let pts: Vec<Vec3> = s.iter().map(|p| sk_math::vec3(p[0], p[1], 0.0)).collect();
+                    triangulate(&pts)
+                        .into_iter()
+                        .map(move |t| (t.map(|k| s[k]), *v))
+                })
                 .collect()
         })
         .collect();
     let mut out = Vec::with_capacity(raender.len());
     for (i, f) in flaechen.iter().enumerate() {
         let mut a = Anteil {
-            flaeche: if f.is_empty() { 0.0 } else { flaeche(f) },
+            flaeche: gesamt(f),
             ab: Vec::new(),
         };
         let nachbarn = &mut nachbarn[i];
         nachbarn.sort_unstable();
         for &j in nachbarn.iter() {
-            let mit_j = schneiden(std::slice::from_ref(f), &dreiecke[j]);
+            let mit_j = schneiden(f, &dreiecke[j]);
             if gesamt(&mit_j) <= LEER {
                 continue;
             }
@@ -122,11 +149,11 @@ pub fn anteile(raender: &[Rand], teilen: impl Fn(usize, usize) -> bool) -> Vec<A
 /// Summe über die Teilmengen S von `andere[ab..]` (dazu schon `tiefe`
 /// gewählte) von (−1)^|S| / ((|S| + 1)(|S| + 2)) · |`stuecke` ∩ S|.
 fn mit_anderen(
-    stuecke: &[Vec<P>],
+    stuecke: &[Stueck],
     andere: &[usize],
     ab: usize,
     tiefe: usize,
-    dreiecke: &[Vec<[P; 3]>],
+    dreiecke: &[Vec<([P; 3], f64)>],
 ) -> f64 {
     let s = tiefe as f64;
     let vorzeichen = if tiefe.is_multiple_of(2) { 1.0 } else { -1.0 };
@@ -145,28 +172,43 @@ fn mit_anderen(
 /// beim Versetzen eine Kante um (oder zwei Kanten laufen ineinander); dann
 /// ist der Rand die Vereinigung aus Umriss, einem Streifen je Kante und
 /// der Gehrung je Ecke: Er füllt die Nische, wie auf der Baustelle
-/// (B-285-geo-a, sonst gab das Haus still nichts ab).
-fn versetzt(r: &Rand) -> Vec<P> {
+/// (B-285-geo-a, sonst gab das Haus still nichts ab). Schließt der Rand
+/// dabei einen Hof ein, den er nicht deckt, zählt der Hof nicht mit
+/// (B-285-geo-b).
+fn versetzt(r: &Rand) -> Vec<Stueck> {
     if r.umriss.len() < 3 {
         return Vec::new();
     }
     let u = to_ccw(r.umriss);
-    let v = if r.versatz > 0.0 {
+    let f = if r.versatz > 0.0 {
         match versatz(&u, &vec![-r.versatz; u.len()]).filter(|v| is_simple(v)) {
-            Some(v) => v,
+            Some(v) => Randflaeche {
+                aussen: v,
+                hoefe: Vec::new(),
+            },
             None => vereinigt(&u, r.versatz),
         }
     } else {
-        u
+        Randflaeche {
+            aussen: u,
+            hoefe: Vec::new(),
+        }
     };
-    v.iter().map(|p| [p.x, p.y]).collect()
+    if f.aussen.len() < 3 {
+        return Vec::new();
+    }
+    let flach = |v: &[Vec3]| v.iter().map(|p| [p.x, p.y]).collect::<Vec<P>>();
+    std::iter::once((flach(&f.aussen), 1.0))
+        .chain(f.hoefe.iter().map(|h| (flach(h), -1.0)))
+        .collect()
 }
 
 /// Der Umriss `u` (gegen den Uhrzeigersinn) um `x` nach außen, als
 /// Vereinigung: Umriss, je Kante der Streifen außen davor, je Ecke nach
-/// außen das Viereck bis zur Gehrung. Leer, wenn sich nichts vereinigen
-/// lässt.
-fn vereinigt(u: &[Vec3], x: f64) -> Vec<Vec3> {
+/// außen das Viereck bis zur Gehrung. Schließt sie einen Hof ein (ein Haus
+/// mit Innenhof hinter einer schmalen Einfahrt), bleibt er ein Hof. Leer,
+/// wenn sich nichts vereinigen lässt.
+fn vereinigt(u: &[Vec3], x: f64) -> Randflaeche {
     let n = u.len();
     let d: Vec<Vec3> = (0..n)
         .map(|i| (u[(i + 1) % n] - u[i]).normalized())
@@ -189,22 +231,36 @@ fn vereinigt(u: &[Vec3], x: f64) -> Vec<Vec3> {
             teile.push(vec![a, a + nh, m, a + ni]);
         }
     }
-    sk_math::flaeche::anordnung(&teile, 1e-3)
+    let a = sk_math::flaeche::anordnung(&teile, 1e-3);
+    let Some(aussen) = a
         .aussen
         .into_iter()
         .max_by(|p, q| p.flaeche().total_cmp(&q.flaeche()))
-        .map(|r| to_ccw(&r.punkte))
-        .unwrap_or_default()
+    else {
+        return Randflaeche::default();
+    };
+    // Die Bereiche sind die umschlossenen, nicht gedeckten Flächen. Alle
+    // Teile hängen am Umriss, die Vereinigung ist also zusammenhängend und
+    // jeder Bereich ein Hof in ihrem Außenrand.
+    let hoefe = a
+        .bereiche
+        .into_iter()
+        .map(|b| to_ccw(&b.rand.punkte))
+        .collect();
+    Randflaeche {
+        aussen: to_ccw(&aussen.punkte),
+        hoefe,
+    }
 }
 
 /// Die Stücke `stuecke`, geschnitten mit jedem der Dreiecke `ds` (gegen
 /// den Uhrzeigersinn): wieder Stücke, zusammen ihr Schnitt mit der Fläche
-/// der Dreiecke.
-fn schneiden(stuecke: &[Vec<P>], ds: &[[P; 3]]) -> Vec<Vec<P>> {
+/// der Dreiecke; die Vorzeichen multiplizieren sich.
+fn schneiden(stuecke: &[Stueck], ds: &[([P; 3], f64)]) -> Vec<Stueck> {
     let mut out = Vec::new();
-    for s in stuecke {
+    for (s, vs) in stuecke {
         let k = kasten(s);
-        for d in ds {
+        for (d, vd) in ds {
             if !beruehrt(&k, &kasten(d)) {
                 continue;
             }
@@ -216,7 +272,7 @@ fn schneiden(stuecke: &[Vec<P>], ds: &[[P; 3]]) -> Vec<Vec<P>> {
                 }
             }
             if r.len() >= 3 && flaeche(&r) > 0.0 {
-                out.push(r);
+                out.push((r, vs * vd));
             }
         }
     }
@@ -247,8 +303,8 @@ fn flaeche(s: &[P]) -> f64 {
     signed_area(&v)
 }
 
-fn gesamt(stuecke: &[Vec<P>]) -> f64 {
-    stuecke.iter().map(|s| flaeche(s)).sum()
+fn gesamt(stuecke: &[Stueck]) -> f64 {
+    stuecke.iter().map(|(s, v)| v * flaeche(s)).sum()
 }
 
 fn kasten(s: &[P]) -> [f64; 4] {
@@ -546,5 +602,104 @@ mod tests {
         );
         assert!((v[1].summe_ab() - ub / 2.0).abs() < 1e-6 * ub);
         assert!((abstand(&l, &b) - 1000.0).abs() < 1e-9);
+    }
+
+    /// C-Haus 16 × 14 m mit Hof 12 × 10 m hinter einer Einfahrt `e` breit
+    /// in der oberen Wand; als Rechtecke [x0, y0, x1, y1] (mm).
+    fn c_haus(e: f64) -> (Vec<Vec3>, Vec<[f64; 4]>) {
+        let (l, r) = (8000.0 - e / 2.0, 8000.0 + e / 2.0);
+        let u = [
+            (0.0, 0.0),
+            (16000.0, 0.0),
+            (16000.0, 14000.0),
+            (r, 14000.0),
+            (r, 12000.0),
+            (14000.0, 12000.0),
+            (14000.0, 2000.0),
+            (2000.0, 2000.0),
+            (2000.0, 12000.0),
+            (l, 12000.0),
+            (l, 14000.0),
+            (0.0, 14000.0),
+        ]
+        .map(|(x, y)| vec3(x, y, 0.0))
+        .to_vec();
+        let teile = vec![
+            [0.0, 0.0, 16000.0, 2000.0],
+            [0.0, 2000.0, 2000.0, 14000.0],
+            [14000.0, 2000.0, 16000.0, 14000.0],
+            [2000.0, 12000.0, l, 14000.0],
+            [r, 12000.0, 14000.0, 14000.0],
+        ];
+        (u, teile)
+    }
+
+    /// Schließt der Rand die Einfahrt eines Hauses mit Innenhof, bleibt der
+    /// Hof dahinter frei: Er zählt nicht zum Rand, und eine Garage darin
+    /// gibt nur ab, was sich wirklich deckt (B-285-geo-b, B-288-geo-a).
+    #[test]
+    fn innenhof_hinter_schmaler_einfahrt() {
+        let x = 1500.0;
+        // Rechteck: alle Punkte bis x (Maximumnorm) um die Teile, wie
+        // Streifen und Gehrung bei rechten Winkeln
+        let drin = |t: &[[f64; 4]], px: f64, py: f64| {
+            t.iter()
+                .any(|t| px >= t[0] - x && px <= t[2] + x && py >= t[1] - x && py <= t[3] + x)
+        };
+        // Garage im Hof, 1 m vor der oberen Wand: ihr Rand deckt sich mit dem
+        // des Hauses nur in einem Streifen
+        let garage = rechteck(6000.0, 7000.0, 4000.0, 4000.0);
+        let garage_teile = [[6000.0, 7000.0, 10000.0, 11000.0]];
+        for e in [1000.0, 2000.0, 2900.0, 3100.0, 5000.0] {
+            let (c, teile) = c_haus(e);
+            let allein = anteile(
+                &[Rand {
+                    umriss: &c,
+                    versatz: x,
+                }],
+                |_, _| true,
+            );
+            let mit = anteile(
+                &[
+                    Rand {
+                        umriss: &c,
+                        versatz: x,
+                    },
+                    Rand {
+                        umriss: &garage,
+                        versatz: x,
+                    },
+                ],
+                |_, _| true,
+            );
+            let n = 1200;
+            let (x0, y0, w) = (-x, -x, 16000.0 + 2.0 * x);
+            let h = w / n as f64;
+            let (mut nur_c, mut beide) = (0usize, 0usize);
+            for i in 0..n {
+                for j in 0..n {
+                    let (px, py) = (x0 + (i as f64 + 0.5) * h, y0 + (j as f64 + 0.5) * h);
+                    let ic = drin(&teile, px, py);
+                    nur_c += ic as usize;
+                    beide += (ic || drin(&garage_teile, px, py)) as usize;
+                }
+            }
+            let (nur_c, beide) = (nur_c as f64 * h * h, beide as f64 * h * h);
+            assert!(
+                (allein[0].flaeche - nur_c).abs() < 2e-3 * nur_c,
+                "{e}: {} {nur_c}",
+                allein[0].flaeche
+            );
+            if e < 2.0 * x {
+                // um das Haus 19 × 17 m, ohne den Hof 9 × 7 m
+                assert!((allein[0].flaeche - 260e6).abs() < 1e-6 * 260e6, "{e}");
+            }
+            assert!(
+                (summe(&mit) - beide).abs() < 2e-3 * beide,
+                "{e}: {} {beide}",
+                summe(&mit)
+            );
+            assert!(!mit[1].ab.is_empty(), "{e}");
+        }
     }
 }
