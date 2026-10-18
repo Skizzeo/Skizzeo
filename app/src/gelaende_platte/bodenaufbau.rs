@@ -226,6 +226,64 @@ fn abstand(r: &[P2], q: P2) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
+/// Abstand außerhalb der Platte, wie die Mengen den Umriss versetzen
+/// (Sohle der Auskofferung, [`sk_model::qto_earth`]): An einer
+/// ausspringenden Ecke gilt der größere Abstand zu den Geraden ihrer beiden
+/// Kanten, Überstand und Böschung bleiben dort eckig statt rund.
+fn eckabstand(r: &[P2], q: P2) -> f64 {
+    let n = r.len();
+    if n < 3 {
+        return abstand(r, q);
+    }
+    let flaeche: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (r[i], r[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    let (mut d, mut ecke) = (f64::INFINITY, None);
+    for i in 0..n {
+        let (a, b) = (r[i], r[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 {
+            ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2
+        } else {
+            0.0
+        };
+        let tc = t.clamp(0.0, 1.0);
+        let x = (q[0] - a[0] - tc * dx).hypot(q[1] - a[1] - tc * dy);
+        if x < d {
+            d = x;
+            ecke = if t <= 0.0 {
+                Some(i)
+            } else if t >= 1.0 {
+                Some((i + 1) % n)
+            } else {
+                None
+            };
+        }
+    }
+    let Some(v) = ecke else {
+        return d;
+    };
+    let (a, c, b) = (r[(v + n - 1) % n], r[v], r[(v + 1) % n]);
+    let kreuz = (c[0] - a[0]) * (b[1] - c[1]) - (c[1] - a[1]) * (b[0] - c[0]);
+    if kreuz * flaeche <= 0.0 {
+        return d;
+    }
+    let gerade = |p: P2, e: P2| {
+        let (dx, dy) = (e[0] - p[0], e[1] - p[1]);
+        let l = dx.hypot(dy);
+        if l > 0.0 {
+            ((q[0] - p[0]) * dy - (q[1] - p[1]) * dx).abs() / l
+        } else {
+            d
+        }
+    };
+    gerade(a, c).max(gerade(c, b))
+}
+
 impl Bodenaufbau {
     /// Aus dem Modell: Gründungen ([`Model::ground_bases`]), Bodenkennwerte
     /// des Projekts und „Oberboden andecken“ des Grundstücks.
@@ -299,7 +357,7 @@ impl Bodenaufbau {
     /// zur Platte.
     fn naechstes(&self, q: P2) -> Option<(&Aufbau, f64)> {
         self.bei(q)
-            .map(|h| (h, abstand(&h.platte, q)))
+            .map(|h| (h, eckabstand(&h.platte, q)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 }
@@ -405,7 +463,7 @@ impl Aufbau {
     /// Wo `q` zur Gründung liegt.
     fn lage(&self, q: P2) -> Lage {
         if !drin(&self.haus, q) {
-            Lage::Aussen(abstand(&self.platte, q))
+            Lage::Aussen(eckabstand(&self.platte, q))
         } else if !drin(&self.platte, q) {
             Lage::Rand
         } else if self.innen.as_ref().is_some_and(|(r, _)| drin(r, q)) {
@@ -537,7 +595,7 @@ pub(crate) fn schnitt(
             // zwischen zwei Stützstellen gilt das Haus der Mitte
             let (st0, st1) = match ba.naechstes(grund((u0 + u1) * 0.5)) {
                 Some((h, _)) => {
-                    let d = |u: f64| Lage::Aussen(abstand(&h.platte, grund(u)));
+                    let d = |u: f64| Lage::Aussen(eckabstand(&h.platte, grund(u)));
                     (h.stapel(d(u0), z(u0), unten), h.stapel(d(u1), z(u1), unten))
                 }
                 None => (st0, st1),
@@ -602,7 +660,7 @@ fn stuetzen(ba: &Bodenaufbau, a: f64, b: f64, grund: &dyn Fn(f64) -> P2) -> Vec<
         let Some((h, _)) = ba.naechstes(grund((w[0] + w[1]) * 0.5)) else {
             continue;
         };
-        let d = |u: f64| abstand(&h.platte, grund(u));
+        let d = |u: f64| eckabstand(&h.platte, grund(u));
         for k in h.knicke() {
             let (mut x, mut y) = (w[0], w[1]);
             if (d(x) - k) * (d(y) - k) >= 0.0 {
@@ -721,7 +779,10 @@ pub(crate) fn grube(
                 .map(|&t| {
                     let x = lerp(a, b, t);
                     let top = hoehe(x).unwrap_or(h.t);
-                    (x, h.stapel(Lage::Aussen(abstand(&h.platte, x)), top, unten))
+                    (
+                        x,
+                        h.stapel(Lage::Aussen(eckabstand(&h.platte, x)), top, unten),
+                    )
                 })
                 .collect();
             for w in st.windows(2) {
@@ -831,7 +892,7 @@ mod tests {
                     let k = h.kasten;
                     q[0] >= k[0] && q[1] >= k[1] && q[0] <= k[2] && q[1] <= k[3]
                 })
-                .map(|(i, h)| (i, abstand(&h.platte, q)))
+                .map(|(i, h)| (i, eckabstand(&h.platte, q)))
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|x| x.0)
         };
@@ -881,7 +942,7 @@ mod tests {
                 for j in 0..ny {
                     let q = [k[0] + (i as f64 + 0.5) * z, k[1] + (j as f64 + 0.5) * z];
                     let lage = if !drin(&h.platte, q) {
-                        Lage::Aussen(abstand(&h.platte, q))
+                        Lage::Aussen(eckabstand(&h.platte, q))
                     } else if h.innen.as_ref().is_some_and(|(r, _)| drin(r, q)) {
                         Lage::Kern
                     } else {
@@ -911,6 +972,36 @@ mod tests {
                 menge(q::EXCAVATION) + menge(q::TRENCH),
                 "Aushub",
             );
+        }
+    }
+
+    /// An der ausspringenden Ecke bleibt der Abstand eckig wie der Versatz
+    /// der Mengen, an der einspringenden und an der Kante wie gemessen.
+    #[test]
+    fn ecken_wie_versatz() {
+        // L-Form gegen den Uhrzeigersinn und gedreht im Uhrzeigersinn
+        let l = vec![
+            [0.0, 0.0],
+            [4000.0, 0.0],
+            [4000.0, 2000.0],
+            [2000.0, 2000.0],
+            [2000.0, 4000.0],
+            [0.0, 4000.0],
+        ];
+        let mut r = l.clone();
+        r.reverse();
+        for p in [&l, &r] {
+            assert!((eckabstand(p, [4500.0, -500.0]) - 500.0).abs() < 1e-9);
+            assert!((eckabstand(p, [4300.0, -500.0]) - 500.0).abs() < 1e-9);
+            assert!((eckabstand(p, [2000.0, -500.0]) - 500.0).abs() < 1e-9);
+            // einspringende Ecke (2000, 2000): Abstand zur Ecke
+            let q = [2300.0, 2400.0];
+            assert!(
+                (eckabstand(p, q) - 500.0).abs() < 1e-9,
+                "{}",
+                eckabstand(p, q)
+            );
+            assert!(eckabstand(p, [4500.0, -500.0]) < abstand(p, [4500.0, -500.0]));
         }
     }
 

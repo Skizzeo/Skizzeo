@@ -230,11 +230,12 @@ fn abnahme_ka3a4_je_m2_rh() {
     let mut v = Verwaltung::open(&s, Some(&c), None);
     v.waehlen(Knoten::Firmenwerte);
     assert!(v.eingeben(&Feld::Wert("wage".into()), "65"));
-    // netto mit Lohn 60 (Werk) und 65, aus Abnahme KA-0 und KA-3a2
+    // netto mit Lohn 60 (Werk) und 65, aus Abnahme KA-0 und KA-3a2, seit
+    // Stand 20 mit der Sandplatte
     let soll = [
-        ("RH-1", 7_600_172, 7_894_053),
-        ("RH-2", 8_291_878, 8_609_501),
-        ("RH-3", 8_164_041, 8_477_328),
+        ("RH-1", 7_979_422, 8_280_660),
+        ("RH-2", 8_671_128, 8_996_108),
+        ("RH-3", 8_543_291, 8_863_935),
     ];
     for ((name, text), (n, n60, n65)) in haeuser().into_iter().zip(soll) {
         assert_eq!(name, n);

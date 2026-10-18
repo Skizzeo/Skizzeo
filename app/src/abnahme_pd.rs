@@ -58,8 +58,8 @@ fn abnahme_pd_neu_spaeter_ohne_spur() {
 #[test]
 fn abnahme_pd_alte_datei_umzug_ein_schritt() {
     let alt = RH1.replacen(
-        "iwset=3ZTJrDtor3KfcH2vccNFkY\n",
-        "iwset=3ZTJrDtor3KfcH2vccNFkY site=\"Haus Meier\" client=\"Meier\"\n",
+        "iwset=3ZTJrDtor3KfcH2vccNFkY sandplatte=1\n",
+        "iwset=3ZTJrDtor3KfcH2vccNFkY sandplatte=1 site=\"Haus Meier\" client=\"Meier\"\n",
         1,
     );
     assert_ne!(alt, RH1);

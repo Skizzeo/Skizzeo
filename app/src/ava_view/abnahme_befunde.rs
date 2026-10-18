@@ -93,11 +93,12 @@ fn abnahme_befunde_regeln_und_zaehlung() {
     // Seit Werksbestand Stand 9 (Los 4 Dach) haben Dachterrasse und
     // Attikablech Werksleistungen: keine Befunde der Rechnung, Katalog ohne
     // Befunde, je Los nur die zwei Kopf-Hinweise (Regel 0); seit Stand 18
-    // auch Los 6 Außenanlagen, seit Stand 19 die Lose 7 bis 10 des Ausbaus
+    // auch Los 6 Außenanlagen, seit Stand 19 die Lose 7 bis 10 des Ausbaus;
+    // Netto seit Stand 20 mit der Sandplatte
     for (name, text, netto_soll) in [
-        (haeuser()[0].0, haeuser()[0].1, 7_600_172),
-        (haeuser()[1].0, haeuser()[1].1, 8_291_878),
-        (haeuser()[2].0, haeuser()[2].1, 8_164_041),
+        (haeuser()[0].0, haeuser()[0].1, 7_979_422),
+        (haeuser()[1].0, haeuser()[1].1, 8_671_128),
+        (haeuser()[2].0, haeuser()[2].1, 8_543_291),
     ] {
         let (netto, ist) = stand(text);
         assert_eq!(netto, netto_soll, "{name}: Netto");
