@@ -306,6 +306,36 @@ impl MeasureInput {
     }
 }
 
+/// Mitte der Pille (`pw` × `ph` Bildpunkte) am Gummiband `ends`: neben
+/// seiner Mitte, auf der Außenseite (`seite` 1: links der
+/// Zeichenrichtung, −1: rechts), im Bild gemessen; `s` Bildpunkte je dip.
+pub fn am_band(
+    cam: &crate::camera::Camera,
+    [p, q]: [sk_math::Vec3; 2],
+    seite: f64,
+    (vw, vh): (f64, f64),
+    (pw, ph): (f64, f64),
+    s: f64,
+) -> Option<(f64, f64)> {
+    let d = sk_math::vec3(q.x - p.x, q.y - p.y, 0.0);
+    let n = sk_math::vec3(-d.y, d.x, 0.0).normalized() * seite;
+    let mid = (p + q) * 0.5;
+    let a = cam.project(mid, vw, vh)?;
+    let b = cam.project(mid + n * 100.0, vw, vh);
+    let dir = b.map_or((0.0, -1.0), |b| {
+        let (x, y) = (b.0 - a.0, b.1 - a.1);
+        let l = (x * x + y * y).sqrt();
+        if l > 1e-6 {
+            (x / l, y / l)
+        } else {
+            (0.0, -1.0)
+        }
+    });
+    // Abstand bis zum Rand der Pille in Richtung `dir`
+    let reach = 12.0 * s + (pw * 0.5 * dir.0.abs()).max(ph * 0.5 * dir.1.abs());
+    Some((a.0 + dir.0 * reach, a.1 + dir.1 * reach))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
