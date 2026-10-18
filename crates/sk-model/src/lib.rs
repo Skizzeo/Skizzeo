@@ -142,6 +142,8 @@ pub use qto::{
     PerimeterQto, SlabQto, SoffitQto, SupportQto, TerraceQto, Umfang, WallQto,
 };
 pub use roof::FlatRoof;
+#[doc(hidden)]
+pub use sk_gelaende::auf_cpu_gewartet;
 /// Stufe des Glättens im Gelände (Jörn 17.10.); die App braucht so keine
 /// eigene Kante zu `sk-gelaende`.
 pub use sk_gelaende::glatt::Glaettung;

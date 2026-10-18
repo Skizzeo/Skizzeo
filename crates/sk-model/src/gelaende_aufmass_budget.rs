@@ -7,6 +7,7 @@
 //! OK EG und OK Gelände ziehen bei 1000 und 4000 Häusern.
 
 use super::*;
+use sk_gelaende::auf_cpu_gewartet;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -20,15 +21,6 @@ fn budget(ms: f64) -> f64 {
 
 fn ms_seit(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
-}
-
-/// Wie lange dieser Faden bisher lauffähig auf eine CPU gewartet hat, in
-/// ms (Linux: zweites Feld von /proc/thread-self/schedstat; sonst 0).
-fn auf_cpu_gewartet() -> f64 {
-    std::fs::read_to_string("/proc/thread-self/schedstat")
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
-        .map_or(0.0, |ns| ns / 1e6)
 }
 
 /// ms seit `t0` ohne die Zeit, die der Faden seit `w0`
