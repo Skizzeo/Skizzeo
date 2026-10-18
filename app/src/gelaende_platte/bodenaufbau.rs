@@ -40,11 +40,6 @@ pub(crate) const UEBERSTAND: f64 = 500.0;
 /// (mm, Jörn 17.10.: ca. 80 cm).
 pub(crate) const AUSKOFFERUNG: f64 = 800.0;
 
-/// Kies unter der Dämmung (Dicke „Tragschicht“ der Bodenkennwerte) oder
-/// Füllsand bis UK Dämmung. Jörns Vorgabe vom 17.10.: Füllsand; die Karte
-/// dazu steht aus.
-const KIES_UNTER_DER_DAEMMUNG: bool = false;
-
 /// So weit reicht der gewachsene Boden unter die tiefste Schürze und
 /// Auskofferung (mm), damit er im Schnitt darunter zu sehen ist.
 pub(crate) const UNTER_GRUENDUNG: f64 = 500.0;
@@ -379,11 +374,8 @@ impl Aufbau {
         let (t, s, f) = (g.terrain_z, g.slab_bottom_z, g.footing_bottom_z);
         let n = t - o;
         let b = g.insulation_bottom_z.min(s);
-        let p = if KIES_UNTER_DER_DAEMMUNG {
-            b - boden.tragschicht.max(0.0)
-        } else {
-            b
-        };
+        // Kies unter der Dämmung nur, wenn er eingebaut wird (Bodenkennwerte)
+        let p = b - boden.schicht();
         let ka = (t - AUSKOFFERUNG).min(p);
         let tan = boden.boeschung.clamp(1.0, 89.0).to_radians().tan();
         let w = if b < n {
@@ -742,13 +734,17 @@ pub(crate) fn grube(
             ts.sort_by(f64::total_cmp);
             ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
             teile.extend(ts[1..ts.len() - 1].iter().map(|&t| lerp(a, b, t)));
-            for w in ts.windows(2) {
-                let (p, q) = (lerp(a, b, w[0]), lerp(a, b, w[1]));
-                let st = |x: P2| {
+            // je Stelle einmal der Stapel, ihn teilen sich die Nachbarn
+            let st: Vec<(P2, Stapel)> = ts
+                .iter()
+                .map(|&t| {
+                    let x = lerp(a, b, t);
                     let top = hoehe(x).unwrap_or(h.t);
-                    h.stapel(Lage::Aussen(abstand(&h.platte, x)), top, unten)
-                };
-                wand(&mut s, (p, &st(p)), (q, &st(q)), h.f, keys);
+                    (x, h.stapel(Lage::Aussen(abstand(&h.platte, x)), top, unten))
+                })
+                .collect();
+            for w in st.windows(2) {
+                wand(&mut s, (w[0].0, &w[0].1), (w[1].0, &w[1].1), h.f, keys);
             }
         }
         let ring = h.stapel(Lage::Ring, h.t, unten);

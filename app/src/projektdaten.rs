@@ -314,6 +314,10 @@ fn boden_wert(k: usize, text: &str) -> Result<f64, ()> {
 /// Feld des Böschungswinkels (Bodenkennwert 4).
 const BOESCHUNG: usize = BODEN + 4;
 
+/// Feld der Kiesschicht (Bodenkennwert 3): davor der Haken, ob sie
+/// eingebaut wird (Jörn 17.10.); Haken und Bezeichnung schalten ihn.
+const KIES: usize = BODEN + 3;
+
 /// Die andere Form neben dem Böschungswinkel (VOB-Prüfung G3): „= 1:n“ mit
 /// zwei Stellen, bei 90° „= senkrecht“; `None` ohne gültige Zahl.
 fn boeschung_neben(text: &str) -> Option<String> {
@@ -453,6 +457,8 @@ pub enum Ziel {
     Feld(usize),
     /// ▾ an der Projektart.
     Pfeil,
+    /// Haken „Kiesschicht eingebaut“ samt Bezeichnung.
+    Kies,
     /// Zeile der offenen Vorschlagsliste.
     Vorschlag(usize),
     /// „Später“ bzw. „Abbrechen“.
@@ -482,6 +488,8 @@ struct Lage {
     gruppen: [f32; 5],
     knoepfe: [Rect; 2],
     schliessen: Rect,
+    /// Haken vor der Kiesschicht, mit ihrer Bezeichnung.
+    kies: Rect,
     h: f32,
 }
 
@@ -508,6 +516,8 @@ pub struct Maske {
     /// Gruppe „Baugrund (Erdarbeiten)“ zeigen: Sie gehört zu Mengen
     /// (Review #120 B2). Versteckt bleiben ihre Werte, wie sie sind.
     boden: bool,
+    /// Kapillarbrechende Schicht eingebaut ([`Boden::kies`]).
+    kies: bool,
 }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -560,6 +570,7 @@ impl Maske {
             rollen: 0.0,
             sicht: Cell::new(f32::INFINITY),
             boden: true,
+            kies: p.soil.kies,
         }
     }
 
@@ -677,7 +688,10 @@ impl Maske {
             }
         }
         Project {
-            soil: Boden::aus_werten(boden).unwrap_or(self.basis.soil),
+            soil: Boden {
+                kies: self.kies,
+                ..Boden::aus_werten(boden).unwrap_or(self.basis.soil)
+            },
             kind: w(0),
             site: w(1),
             place: w(2),
@@ -870,6 +884,7 @@ impl Maske {
         for g in &mut l.gruppen {
             *g -= d;
         }
+        l.kies.y -= d;
         for k in &mut l.knoepfe {
             k.y -= voll - h;
         }
@@ -924,11 +939,15 @@ impl Maske {
             knoepfe[i] = rect(x * s, ky * s, KNOPF_W[i] * s, KNOPF_H * s);
             x -= 10.0;
         }
+        // vom Ende der linken Spalte bis vor das Feld der Kiesschicht
+        let k = felder[KIES];
+        let links = (FELD_X + FELDER[KIES - 1].breite + 30.0) * s;
         Lage {
             felder,
             gruppen,
             knoepfe,
             schliessen: rect((W - PAD - 20.0) * s, 17.0 * s, 20.0 * s, 20.0 * s),
+            kies: Rect::new(links, k.y, k.x - 4.0 * s - links, k.h),
             h: h * s,
         }
     }
@@ -999,6 +1018,9 @@ impl Maske {
         let f0 = l.felder[0];
         if f0.contains(lx, ly) && lx >= (f0.x + f0.w - 26.0 * s) as f64 {
             return Some(Ziel::Pfeil);
+        }
+        if self.gezeigt(KIES) && l.kies.contains(lx, ly) {
+            return Some(Ziel::Kies);
         }
         l.felder
             .iter()
@@ -1113,6 +1135,10 @@ impl Maske {
         match p {
             Ziel::Links | Ziel::Schliessen => Some(Antwort::Verwerfen),
             Ziel::Uebernehmen => Some(Antwort::Uebernehmen(Box::new(self.projekt()))),
+            Ziel::Kies => {
+                self.kies = !self.kies;
+                None
+            }
             _ => None,
         }
     }
@@ -1342,6 +1368,16 @@ impl Maske {
                 x0
             };
             widgets::text(&mut c, regular, f.name, fpx, lbl_x, lbl_y, u.text_dim);
+            if i == KIES {
+                let k = (t.size.checkbox * s).round();
+                let kr = Rect::new(
+                    (lbl_x - 8.0 * s - k).round(),
+                    (r.y + (r.h - k) * 0.5).round(),
+                    k,
+                    k,
+                );
+                widgets::checkbox(&mut c, kr, self.kies, self.hover == Some(Ziel::Kies), s, t);
+            }
             let ex = r.x + r.w + 6.0 * s;
             widgets::text(&mut c, regular, f.einheit, fpx, ex, lbl_y, u.text_dim);
             if let Some(n) = (i == BOESCHUNG)
@@ -1577,6 +1613,39 @@ mod tests {
         m.fokus_auf(UTM + 2);
         m.key(Key::Tab, Modifiers::default());
         assert_eq!(m.fokus(), 0);
+    }
+
+    /// Haken vor der Kiesschicht (Jörn 17.10.): ein Klick auf ihn oder die
+    /// Bezeichnung schaltet sie, die Dicke bleibt; ohne Mengen kein Haken.
+    #[test]
+    fn kiesschicht_mit_haken() {
+        let t = Theme::dark();
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let mut m = Maske::new(&ohne(), false, None);
+        assert!(m.kies);
+        let s = 1.0;
+        let r = m.rect(s, 1200, 2000, 0);
+        let k = m.sicht_lage(s).kies;
+        let f = m.sicht_lage(s).felder[KIES];
+        assert!(k.x + k.w < f.x && k.y == f.y);
+        let (x, y) = ((r.x + k.x + 4.0) as f64, (r.y + k.y + k.h * 0.5) as f64);
+        let klick = |m: &mut Maske| {
+            m.press(r, s, &fonts, &t, x, y);
+            assert_eq!(m.release(r, s, x, y), None);
+        };
+        klick(&mut m);
+        let b = m.projekt().soil;
+        assert!(!b.kies);
+        assert_eq!(b.tragschicht, 150.0);
+        klick(&mut m);
+        assert!(m.projekt().soil.kies);
+        let stufe = |w: &str| Freischaltung::stufe(w).unwrap();
+        let ohne_mengen = Maske::new(&ohne(), false, None).mit_frei(stufe("basis"));
+        assert_ne!(ohne_mengen.ziel(r, s, x, y), Some(Ziel::Kies));
     }
 
     /// Review #120 B2: Ohne Mengen fehlt „Baugrund (Erdarbeiten)“. Tab

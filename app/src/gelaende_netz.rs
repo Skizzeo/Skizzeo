@@ -1289,6 +1289,34 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
 /// Körper in 3D wie [`koerper_mit_netz`]; ohne `linien` keine Höhenlinien
 /// darauf (Jörn 17.10.: mit den Höhenfarben stören sie).
 pub(crate) fn koerper_mit(g: &Gelaende, keys: [u16; 3], netz: bool, linien: bool) -> Solid {
+    // Die Grube des Bodenaufbaus rechnet bei vielen Häusern ein zweiter
+    // Faden neben dem Netz (Test T-261a: bei 1000 Häusern 10 bis 17 ms)
+    if g.aufbau.haeuser.len() < 64 {
+        return koerper_und_grube(g, keys, netz, linien, || grube(g, keys));
+    }
+    std::thread::scope(|sc| {
+        let h = sc.spawn(|| grube(g, keys));
+        koerper_und_grube(g, keys, netz, linien, || h.join().expect("Grube"))
+    })
+}
+
+/// Am Haus die Aussparung im Bodenaufbau, im Zuschnitt (Fade: um das
+/// Grundstück gehoben).
+fn grube(g: &Gelaende, keys: [u16; 3]) -> Solid {
+    let dz = if g.show == Show::Fade { HEBEN } else { 0.0 };
+    let hoehe = |p: P2| g.hoehe(p).map(|z| z + dz);
+    let teilung = |a: P2, b: P2| g.teilung(a, b);
+    bodenaufbau::grube(&g.aufbau, &hoehe, &teilung, g.unten, schluessel(keys))
+}
+
+/// [`koerper_mit`] mit der Grube aus `grube`.
+fn koerper_und_grube(
+    g: &Gelaende,
+    keys: [u16; 3],
+    netz: bool,
+    linien: bool,
+    grube: impl FnOnce() -> Solid,
+) -> Solid {
     let mut s = Solid {
         mat: keys[0],
         edge_kind: edge_kind::VIEW,
@@ -1350,13 +1378,7 @@ pub(crate) fn koerper_mit(g: &Gelaende, keys: [u16; 3], netz: bool, linien: bool
             }
         }
     }
-    // Am Haus die Aussparung im Bodenaufbau, im Zuschnitt (Fade: um das
-    // Grundstück gehoben)
-    let dz = if g.show == Show::Fade { HEBEN } else { 0.0 };
-    let hoehe = |p: P2| g.hoehe(p).map(|z| z + dz);
-    let teilung = |a: P2, b: P2| g.teilung(a, b);
-    let aussparung = bodenaufbau::grube(&g.aufbau, &hoehe, &teilung, unten, schluessel(keys));
-    s.append(&aussparung);
+    s.append(&grube());
     // Umriss jeder Geländefläche als Kante
     for r in &g.umrisse {
         for i in 0..r.len() {
