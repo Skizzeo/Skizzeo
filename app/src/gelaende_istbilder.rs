@@ -15,6 +15,11 @@
 //! geschlossenen Höhenlinien (Jörn 17.10., Test B-257a):
 //!
 //! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_hoehen -- --ignored`
+//!
+//! Eine Fläche mit senkrechtem Rand, deren Wände am Haus enden, mit der
+//! Grube, die dort springt (Test T-279a):
+//!
+//! `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_wand_am_haus -- --ignored`
 
 use super::*;
 use crate::freischaltung::Freischaltung;
@@ -33,6 +38,20 @@ const CSV: &[u8] =
 /// Beispiels, östlich eine befestigte Terrasse 15 cm unter ±0,00, südlich
 /// ein Garten 40 cm darunter.
 fn lindenhof() -> Model {
+    let mut m = haus_auf_aufmass();
+    let r = |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let mut terrasse = TerrainPatch::flat(r(17000.0, 7000.0, 21000.0, 12000.0), -150.0);
+    terrasse.paved = true;
+    m.begin("Flächen");
+    assert!(m.add_site_patch(terrasse).is_some());
+    let garten = TerrainPatch::flat(r(7000.0, 1000.0, 15000.0, 5000.0), -400.0);
+    assert!(m.add_site_patch(garten).is_some());
+    m.commit();
+    m
+}
+
+/// Das Haus des Beispiels auf seinem Aufmaß, ohne Flächen.
+fn haus_auf_aufmass() -> Model {
     let mut m = Model::with_seed(7);
     let b = m.add_building(1);
     let pts = [
@@ -45,14 +64,6 @@ fn lindenhof() -> Model {
     let (t, ..) = Terrain::lesen(CSV, "hoehenaufmass-lindenhof-7.csv", "2026-10-12", 32).unwrap();
     m.begin("Aufmaß");
     assert!(m.import_terrain(t));
-    m.commit();
-    let r = |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-    let mut terrasse = TerrainPatch::flat(r(17000.0, 7000.0, 21000.0, 12000.0), -150.0);
-    terrasse.paved = true;
-    m.begin("Flächen");
-    assert!(m.add_site_patch(terrasse).is_some());
-    let garten = TerrainPatch::flat(r(7000.0, 1000.0, 15000.0, 5000.0), -400.0);
-    assert!(m.add_site_patch(garten).is_some());
     m.commit();
     m
 }
@@ -259,6 +270,70 @@ mod gpu {
         ab(
             &bild(&mut r, &mut s, &mut pl, ViewKind::Persp, None, &cam3),
             "ist-427-3d.png",
+        );
+    }
+
+    /// Eine Fläche 60 cm über dem Gelände mit senkrechtem Rand über die
+    /// Südostecke des Hauses (x 13 bis 20 m, y 3 bis 8 m): Ihre Wände enden
+    /// an der Süd- und an der Ostwand, im Haus steht keine, und die Grube
+    /// springt dort mit dem Gelände (Test T-279a). Von Südosten und näher
+    /// an der Ostwand.
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_wand_am_haus() {
+        let Some(ziel) = ziel() else {
+            return;
+        };
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png_gepackt(W, H, px)).unwrap();
+        };
+        let mut m = haus_auf_aufmass();
+        let ring = vec![
+            [13000.0, 3000.0],
+            [20000.0, 3000.0],
+            [20000.0, 8000.0],
+            [13000.0, 8000.0],
+        ];
+        let mut f = TerrainPatch::flat(ring, m.terrain_z_at(None, 16500.0, 5500.0) + 600.0);
+        f.slopes = vec![0.0];
+        m.begin("Fläche");
+        assert!(m.add_site_patch(f).is_some());
+        m.commit();
+        assert!(!m.planned_terrain().unwrap().walls.is_empty());
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let mut s = Scene::with_model(m);
+        let mut pl = Platte::default();
+        for (mitte, blick, weit, n) in [
+            (
+                vec3(16000.0, 6000.0, 0.0),
+                vec3(1.0, -1.0, 0.6),
+                26000.0,
+                "ist-279-wand-am-haus-3d.png",
+            ),
+            (
+                vec3(17000.0, 7000.0, 0.0),
+                vec3(1.0, -0.35, 0.35),
+                9000.0,
+                "ist-279-wand-am-haus-ost.png",
+            ),
+        ] {
+            let cam = Camera::looking_at(mitte + blick.normalized() * weit, mitte, 45.0);
+            ab(
+                &bild(&mut r, &mut s, &mut pl, ViewKind::Persp, None, &cam),
+                n,
+            );
+        }
+        // Schnitt bei y 7 m nach Norden durch Haus und Fläche: Wand am
+        // Ostrand und die Grube mit dem Sprung an der Ostwand
+        let rahmen = Some((vec3(5000.0, 6500.0, -3000.0), vec3(23000.0, 7500.0, 4000.0)));
+        let schnitt = ViewKind::Section;
+        let cam = crate::fit_parallel(schnitt, rahmen, f64::from(W), f64::from(H));
+        let ebene = Some((vec3(0.0, 7000.0, 0.0), vec3(0.0, -1.0, 0.0)));
+        ab(
+            &bild(&mut r, &mut s, &mut pl, schnitt, ebene, &cam),
+            "ist-279-wand-am-haus-schnitt.png",
         );
     }
 

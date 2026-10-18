@@ -660,7 +660,9 @@ fn wand(
     for i in 0..SCHICHTEN {
         let (a0, a1) = (sa[i].0.max(ab), sa[i].1.max(ab));
         let (b0, b1) = (sb[i].0.max(ab), sb[i].1.max(ab));
-        if (a1 - a0).max(b1 - b0) <= 0.5 {
+        // nur, was an beiden Enden fehlt; eine dünne Schicht an einem Ende
+        // fehlte sonst der Wand daneben (offen im Export)
+        if (a1 - a0).max(b1 - b0) <= 1e-6 {
             continue;
         }
         s.mat = keys[i];
