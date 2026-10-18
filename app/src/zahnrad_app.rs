@@ -37,6 +37,9 @@ pub(crate) struct Zahnraeder {
     /// Phasenleiste in 3D und Schnitt.
     pub phasen: phasenleiste::Schalter,
     pub phasen_bild: Option<phasenleiste::Bild>,
+    /// Mengenzeile der Phasenleiste je Berechnung der Liste und Phase
+    /// (Review B-286a): je Bild nur der Vergleich.
+    pub phasen_menge: Option<(u64, Bauphase, Option<String>)>,
 }
 
 impl App {
@@ -527,11 +530,7 @@ impl App {
         let menge_frei = !self.ui.frei.gesperrt(phasenleiste::Teil::Menge);
         let bild = if self.phasen_zeigt() {
             let menge = (ph.offen() && menge_frei && !self.zahnrad.sicht.offen)
-                .then(|| {
-                    let s = self.scene.schedule();
-                    let auto: Vec<(&str, f64)> = s.auto.iter().map(|a| (a.key, a.value)).collect();
-                    ph.menge(&auto)
-                })
+                .then(|| self.phasen_menge(ph))
                 .flatten();
             Some(phasenleiste::Bild {
                 phase: ph,
@@ -560,5 +559,27 @@ impl App {
             None => {}
         }
         self.zahnrad.phasen_bild = bild;
+    }
+
+    /// Zeile mit der Menge der Phase `ph` (Review B-286a): neu nur, wenn
+    /// sich die Phase oder die Liste geändert hat, je Bild sonst nur der
+    /// Vergleich. Nach einer Änderung rechnet sie die Liste wie das
+    /// Mengenblatt, nie während eines offenen Schritts; dann bleibt die
+    /// alte Zeile.
+    fn phasen_menge(&mut self, ph: Bauphase) -> Option<String> {
+        let s = &mut self.scene;
+        let neu = s.schedule_stale() && !s.model().in_step();
+        let gleich = self
+            .zahnrad
+            .phasen_menge
+            .as_ref()
+            .is_some_and(|(r, p, _)| *r == s.schedule_runs() && *p == ph);
+        if neu || !gleich {
+            let auto: Vec<(&str, f64)> =
+                s.schedule().auto.iter().map(|a| (a.key, a.value)).collect();
+            let text = ph.menge(&auto);
+            self.zahnrad.phasen_menge = Some((self.scene.schedule_runs(), ph, text));
+        }
+        self.zahnrad.phasen_menge.as_ref().and_then(|x| x.2.clone())
     }
 }
