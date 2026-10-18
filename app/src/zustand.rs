@@ -38,3 +38,13 @@ impl Baum {
         }
     }
 }
+
+/// Einstellungsfenster (E5), was es sich für die Sitzung merkt, und ob sein
+/// Bild bzw. sein Aufklapper neu zu zeichnen ist.
+#[derive(Default)]
+pub(crate) struct Einstellfenster {
+    pub(crate) fenster: Option<crate::prefs::Prefs>,
+    pub(crate) merk: crate::prefs::Memory,
+    pub(crate) bild_neu: bool,
+    pub(crate) aufklapper_neu: bool,
+}

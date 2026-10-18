@@ -9,7 +9,7 @@ impl App {
         use crate::help::Window;
         let window = if self.card.is_some() {
             Some(Window::Backups)
-        } else if let Some(p) = &self.prefs {
+        } else if let Some(p) = &self.einst.fenster {
             Some(if p.pattern_open() {
                 Window::Patterns
             } else {
