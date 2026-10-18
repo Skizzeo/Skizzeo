@@ -38,6 +38,9 @@ pub struct Gruendung {
     pub vorlage: AutoMenge,
     pub outline: Vec<Vec3>,
     pub zone: ErdZone,
+    /// Was das Baufeld an die Baufelder daneben abgibt (mm²,
+    /// [`super::baufelder_teilen`], H-280-geo-a).
+    pub abgegeben: f64,
 }
 
 /// Hinweis, solange der Böschungskeil der Baugrube nicht exakt zählt
@@ -560,7 +563,7 @@ pub(crate) fn gelaende_mengen(
             .map(|g| {
                 let x = g.zone.baufeld.max(0.0);
                 let u = sk_math::polygon::perimeter(&g.outline);
-                (u * x + eckzahl(&g.outline) * x * x) / 1e6
+                (u * x + eckzahl(&g.outline) * x * x - g.abgegeben) / 1e6
             })
             .sum();
         let rest = (feld - s.im_baufeld).max(0.0);
