@@ -563,7 +563,9 @@ pub(crate) fn gelaende_mengen(
             .map(|g| {
                 let x = g.zone.baufeld.max(0.0);
                 let u = sk_math::polygon::perimeter(&g.outline);
-                (u * x + eckzahl(&g.outline) * x * x - g.abgegeben) / 1e6
+                let ring = super::ueberdeckung::gefuellt_ring(&g.outline, x)
+                    .unwrap_or(u * x + eckzahl(&g.outline) * x * x);
+                (ring - g.abgegeben) / 1e6
             })
             .sum();
         let rest = (feld - s.im_baufeld).max(0.0);
@@ -725,7 +727,9 @@ fn rechnen(
         .iter()
         .map(|g| {
             let x = g.zone.baufeld.max(0.0);
-            sk_math::flaeche::versatz(&g.outline, &vec![-x; g.outline.len()])
+            // mit schmaler Nische überdeckt sich der versetzte Umriss
+            super::ueberdeckung::gefuellt(&g.outline, x)
+                .or_else(|| sk_math::flaeche::versatz(&g.outline, &vec![-x; g.outline.len()]))
         })
         .collect();
     let zonen: Vec<Zone> = gr

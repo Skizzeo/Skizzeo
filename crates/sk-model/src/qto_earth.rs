@@ -809,13 +809,20 @@ fn prisma(fl: f64, u: f64, t: f64, x0: f64, k: f64, h: f64) -> f64 {
 /// Dicke `o`, auch am Hang: VOB-Prüfung G2 Frage 4).
 fn oberboden(b: &ErdBasis, x_ob: f64, o: f64, menge: &mut dyn FnMut(&'static str, f64, String)) {
     let (fl, u, t) = (b.slab_area, b.slab_perimeter, eckzahl(&b.outline));
-    let ob_flaeche = fl + u * x_ob + t * x_ob * x_ob;
+    // eine Nische schmaler als zweimal der Abtrag zählt nur einmal
+    let gefuellt = ueberdeckung::gefuellt_ring(&b.outline, x_ob);
+    let ob_flaeche = fl + gefuellt.unwrap_or(u * x_ob + t * x_ob * x_ob);
     if o > 0.0 {
+        let nische = if gefuellt.is_some() {
+            " (Nische gefüllt)"
+        } else {
+            ""
+        };
         menge(
             TOPSOIL,
             ob_flaeche * o,
             format!(
-                "Platte {} m² + Abtrag um die Platte {} m: {} m² × {} m",
+                "Platte {} m² + Abtrag um die Platte {} m{nische}: {} m² × {} m",
                 zahl(fl, 1e6),
                 zahl(x_ob, 1e3),
                 zahl(ob_flaeche, 1e6),
@@ -934,6 +941,69 @@ mod tests {
     /// 0,30 + Boden 0,50) über Platte und Überstand 0,50 m; Füllsand bis UK
     /// Schicht bzw. UK Platte, über dem gewachsenen Boden mit Böschung; der
     /// Graben liegt ganz im Füllsand.
+    /// Haus 10 × 8 m mit Nische `w` m breit und `t` m tief, von oben.
+    fn u_haus(w: f64, t: f64) -> Vec<Vec3> {
+        let (l, r) = (5.0 - w / 2.0, 5.0 + w / 2.0);
+        [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 8.0),
+            (r, 8.0),
+            (r, 8.0 - t),
+            (l, 8.0 - t),
+            (l, 8.0),
+            (0.0, 8.0),
+        ]
+        .map(|(x, y)| sk_math::vec3(x * 1e3, y * 1e3, 0.0))
+        .to_vec()
+    }
+
+    /// Eine Nische schmaler als zweimal der Abtrag (1,50 m) ist auf der
+    /// Baustelle zu; der Oberboden zählt sie einmal, nicht die Streifen der
+    /// Nischenwände übereinander: der tiefe Schlitz (Geometrie zu #285) und
+    /// die flache Nische (VOB B-OB-1). Breitere Nischen rechnen wie bisher
+    /// mit Umfang und Ecken.
+    #[test]
+    fn oberboden_schlitz_einmal() {
+        for (w, t) in [0.5, 1.5, 2.01, 2.5, 2.9, 3.0, 3.5, 5.0]
+            .into_iter()
+            .flat_map(|w| [(w, 4.0), (w, 1.0)])
+        {
+            let mut b = basis(0.0);
+            b.outline = u_haus(w, t);
+            b.slab_area = (80.0 - t * w) * 1e6;
+            b.slab_perimeter = (36.0 + 2.0 * t) * 1e3;
+            let mut ob = Vec::new();
+            erd_mengen(&b, &Boden::default(), |k, x, t| {
+                if k == TOPSOIL {
+                    ob.push((x, t));
+                }
+            });
+            assert_eq!(ob.len(), 1, "{w}");
+            // um das Rechteck 13 × 11 m, ohne den offenen Teil der Nische
+            let flaeche = 143.0 - (w - 3.0).max(0.0) * t;
+            assert!(
+                (ob[0].0 / 1e9 - flaeche * 0.3).abs() < 1e-6,
+                "{w} × {t}: {}",
+                ob[0].0 / 1e9
+            );
+            // genau 3 m: die Schlitzsohle schrumpft auf null, beides gleich
+            if w != 3.0 {
+                assert_eq!(
+                    ob[0].1.contains("(Nische gefüllt)"),
+                    w < 3.0,
+                    "{w}: {}",
+                    ob[0].1
+                );
+            }
+            if w >= 3.0 {
+                // wie bisher Platte + U x + Σ x²
+                let alt = 80.0 - t * w + (36.0 + 2.0 * t) * 1.5 + 4.0 * 2.25;
+                assert!((ob[0].0 / 1e9 - alt * 0.3).abs() < 1e-6, "{w}");
+            }
+        }
+    }
+
     #[test]
     fn gelaende_auf_ok_platte() {
         let v = mengen(&basis(0.0), &Boden::default());

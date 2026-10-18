@@ -162,6 +162,29 @@ fn versetzt(r: &Rand) -> Vec<P> {
     v.iter().map(|p| [p.x, p.y]).collect()
 }
 
+/// Der Rand um `umriss` (mm), `x` breit, gegen den Uhrzeigersinn, aber nur,
+/// wenn sich der versetzte Umriss selbst überdeckt: bei einer Nische oder
+/// einem Rücksprung schmaler als `2 x`. Dann ist er die Vereinigung wie in
+/// [`anteile`], und das Haus zählt die Nische einmal. Sonst `None`; dann
+/// ist der versetzte Umriss einfach, und seine Fläche ist Platte
+/// `+ U x + Σ tan(α/2) x²`.
+pub fn gefuellt(umriss: &[Vec3], x: f64) -> Option<Vec<Vec3>> {
+    if umriss.len() < 3 || x <= 0.0 {
+        return None;
+    }
+    let u = to_ccw(umriss);
+    if versatz(&u, &vec![-x; u.len()]).is_some_and(|v| is_simple(&v)) {
+        return None;
+    }
+    Some(vereinigt(&u, x)).filter(|v| v.len() >= 3)
+}
+
+/// Fläche des Rands um `umriss` ohne die Platte (mm²), `x` breit, wenn
+/// sich der versetzte Umriss selbst überdeckt (siehe [`gefuellt`]).
+pub fn gefuellt_ring(umriss: &[Vec3], x: f64) -> Option<f64> {
+    gefuellt(umriss, x).map(|v| (signed_area(&v).abs() - signed_area(umriss).abs()).max(0.0))
+}
+
 /// Der Umriss `u` (gegen den Uhrzeigersinn) um `x` nach außen, als
 /// Vereinigung: Umriss, je Kante der Streifen außen davor, je Ecke nach
 /// außen das Viereck bis zur Gehrung. Leer, wenn sich nichts vereinigen
