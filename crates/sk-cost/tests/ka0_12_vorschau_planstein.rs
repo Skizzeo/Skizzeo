@@ -6,7 +6,9 @@
 //! Lohn 65 €/h → 75.844,69 €. Mit Los 4 Dach (Stand 9, Dachterrasse und
 //! Attikablech): 75.953,63 → 89.187,32 €, Lohn 65 €/h → 78.889,33 €. Mit
 //! der Dämmung auf der Attika der Dachterrasse (1,781 m² × 27,00 €/m², Jörn
-//! 10.10. 16:07): 76.001,72 → 89.235,41 €, Lohn 65 €/h → 78.940,53 €.
+//! 10.10. 16:07): 76.001,72 → 89.235,41 €, Lohn 65 €/h → 78.940,53 €. Mit
+//! der Sandplatte (Stand 20, Jörn 18.10.): 79.794,22 → 93.027,91 €, Lohn
+//! 65 €/h → 82.806,60 €.
 
 use sk_cost::{lesen, vorschau_kosten, Dez, Op, Rolle, Umfang};
 use sk_model::{qto, szo, Guid, GuidGen};
@@ -37,11 +39,11 @@ fn ka0_12_vorschau_planstein_99() {
         quelle: "Abnahme 12".into(),
         eingabe: String::new(),
     };
-    assert_eq!(netto(&[stein]), Some((7_600_172, 8_923_541)));
+    assert_eq!(netto(&[stein]), Some((7_979_422, 9_302_791)));
     let lohn = Op::FirmenwertSetzen {
         schluessel: "wage".into(),
         wert: Dez::ganz(65),
     };
-    assert_eq!(netto(&[lohn]), Some((7_600_172, 7_894_053)));
+    assert_eq!(netto(&[lohn]), Some((7_979_422, 8_280_660)));
     assert_eq!((m.revision(), m.ext_revision()), rev, "Modell unverändert");
 }

@@ -105,7 +105,7 @@ fn a338_fundament_zeigt_seine_positionen_mit_erdarbeiten() {
         .any(|a| a.auto.is_some_and(|k| k.starts_with("site.")))));
     assert!(auto >= 5, "Erdarbeiten am Fundament: {auto}");
     assert!(
-        v.zeilen().iter().any(|z| z.text.contains("Baugrube")),
+        v.zeilen().iter().any(|z| z.text.contains("Auskofferung")),
         "{:?}",
         v.zeilen().iter().map(|z| &z.text).collect::<Vec<_>>()
     );
@@ -286,14 +286,14 @@ fn a340_klick_in_der_liste_waehlt_die_gruendung_und_isoliert_nicht() {
     let i = v
         .zeilen()
         .iter()
-        .position(|z| z.text.contains("Baugrube"))
+        .position(|z| z.text.contains("Auskofferung"))
         .expect("Erdarbeiten");
     let z = &v.zeilen()[i];
     assert!(
         z.elements.contains(&platte) && z.elements.contains(&fs),
         "Erdarbeiten hängen an der ganzen Gründung"
     );
-    v.springe(|x| x.text.contains("Baugrube"));
+    v.springe(|x| x.text.contains("Auskofferung"));
     let (_, y, h) = v
         .sichtbar()
         .into_iter()

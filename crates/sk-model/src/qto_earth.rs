@@ -6,10 +6,14 @@
 //! Höhen relativ zu ±0,00 (OK Sohlplatte), nach oben positiv:
 //! OK Gelände → (Oberboden) → gewachsener Boden → UK Platte → (innerhalb
 //! der Frostschürze: Perimeterdämmung, kapillarbrechende Schicht) → UK
-//! Schürze. Die Baugrube reicht bis UK Platte und um den Arbeitsraum über
-//! den Plattenumriss hinaus; innerhalb der Schürze wird für Dämmung und
-//! Schicht tiefer ausgehoben. Die Frostschürze ist erdgeschalt, ihr Graben
-//! so breit wie sie selbst.
+//! Schürze. Gebaut wird auf einer Sandplatte (Jörn 17./18.10.): ausgekoffert
+//! [`AUSKOFFERUNG`] ab OK Gelände, Oberboden eingeschlossen, tiefer, wenn
+//! die Gründung tiefer liegt, [`UEBERSTAND`] über die Platte hinaus; darin
+//! Füllsand bis UK Dämmung (innerhalb der Schürze bis UK Schicht), darüber
+//! Verfüllung. Die Gräben der Schürze werden danach aus dem Füllsand und
+//! darunter aus dem gewachsenen Boden gehoben, so breit wie die Schürze.
+//! Die Darstellung (`app/src/gelaende_platte/bodenaufbau.rs`) rechnet mit
+//! derselben [`Sandplatte`].
 
 use crate::foundation::Foundation;
 use crate::qto::AutoMenge;
@@ -171,19 +175,60 @@ impl Boden {
 /// und ohne Verbau senkrecht sein (DIN 4124, 4.2.3).
 pub const SENKRECHT_BIS: f64 = 1250.0;
 
-/// Was im Rechenweg unter der Platte ausgehoben wird: Dämmung und
-/// kapillarbrechende Schicht, soweit vorhanden (VOB V-268a).
-pub(crate) fn ausgehoben_fuer(daemmung: bool, kies: bool) -> &'static str {
-    match (daemmung, kies) {
-        (true, true) => "Dämmung und Schicht",
-        (true, false) => "Dämmung",
-        (false, true) => "Schicht",
-        (false, false) => "Platte",
+/// Tiefe der Auskofferung unter OK Gelände, Oberboden eingeschlossen (mm;
+/// Jörn 18.10.: 0,80 m ab OK Gelände). Fest und ohne Feld, wie
+/// [`UEBERSTAND`] (Jörn 18.10.: keine Einstellungsfelder, wo ein fester
+/// Wert reicht); der Rechenweg nennt beide.
+pub const AUSKOFFERUNG: f64 = 800.0;
+
+/// Überstand der Sandplatte über die Außenkante der Schürze (mm); liegt die
+/// Platte im gewachsenen Boden, mindestens der Arbeitsraum.
+pub const UEBERSTAND: f64 = 500.0;
+
+/// Reicht die Schürze nicht mindestens so weit (mm) unter die Sohle der
+/// Auskofferung, zählt ihr Graben ganz zum Füllsand: keine Position für
+/// Kubikzentimeter aus der Rundung der Geländehöhe.
+const GRABEN_AB: f64 = 1.0;
+
+/// Sandplatte einer Gründung (mm, z zu ±0,00), wie Mengen und Darstellung
+/// sie teilen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sandplatte {
+    /// Sohle der Auskofferung: [`AUSKOFFERUNG`] unter OK Gelände, tiefer
+    /// bis UK Schicht, nie über dem gewachsenen Boden.
+    pub ka: f64,
+    /// So weit reicht die Sohle über die Platte.
+    pub w: f64,
+    /// Rücklauf der Wand der Auskofferung je mm Höhe (0: senkrecht bis
+    /// [`SENKRECHT_BIS`]).
+    pub k: f64,
+    /// Böschung der Sandplatte über dem gewachsenen Boden: Fall je mm
+    /// waagerecht.
+    pub tan: f64,
+}
+
+impl Sandplatte {
+    /// Aus OK Gelände `t`, OK gewachsener Boden `n`, UK Dämmung `b` (ohne
+    /// Dämmung UK Platte) und UK Schicht `p` (ohne Schicht `b`).
+    pub fn neu(t: f64, n: f64, b: f64, p: f64, boden: &Boden) -> Sandplatte {
+        let ka = (t - AUSKOFFERUNG).min(p).min(n);
+        let tan = boden.boeschung.clamp(1.0, 89.0).to_radians().tan();
+        let w = if b < n {
+            UEBERSTAND.max(boden.arbeitsraum)
+        } else {
+            UEBERSTAND
+        };
+        let k = if t - ka > SENKRECHT_BIS {
+            1.0 / tan
+        } else {
+            0.0
+        };
+        Sandplatte { ka, w, k, tan }
     }
 }
 
-/// Bis wohin im Rechenweg aufgefüllt wird: UK der untersten eingebauten
-/// Lage unter der Platte (VOB V-268a).
+/// Bis wohin im Rechenweg innerhalb der Schürze Füllsand kommt: UK der
+/// untersten eingebauten Lage unter der Platte (VOB V-268a).
 pub(crate) fn aufgefuellt_bis(daemmung: bool, kies: bool) -> &'static str {
     match (daemmung, kies) {
         (_, true) => "UK Schicht",
@@ -203,14 +248,23 @@ pub const KG_GELAENDE: u16 = 511;
 pub const KG_ANDECKEN: u16 = 571;
 
 /// Schlüssel der Erdmengen (`[service] auto=`), Einheit und Bedeutung.
-pub const SCHLUESSEL: [(&str, &str, &str); 18] = [
+pub const SCHLUESSEL: [(&str, &str, &str); 20] = [
     (TOPSOIL, "m3", "Oberboden abtragen und seitlich lagern"),
     (
         EXCAVATION,
         "m3",
-        "Baugrube ausheben bis UK Platte bzw. Dämmung",
+        "Auskofferung im gewachsenen Boden (Homogenbereich B1)",
     ),
-    (TRENCH, "m3", "Graben der Frostschürze ausheben"),
+    (
+        TRENCH,
+        "m3",
+        "Graben der Frostschürze im gewachsenen Boden (Homogenbereich B1)",
+    ),
+    (
+        TRENCH_SAND,
+        "m3",
+        "Graben der Frostschürze im eingebauten Füllsand",
+    ),
     (
         SUBGRADE,
         "m2",
@@ -218,9 +272,14 @@ pub const SCHLUESSEL: [(&str, &str, &str); 18] = [
     ),
     (GRAVEL, "m3", "kapillarbrechende Schicht unter der Platte"),
     (
+        SAND,
+        "m3",
+        "Füllsand der Sandplatte liefern, einbauen, verdichten",
+    ),
+    (
         FILL,
         "m3",
-        "Auffüllung bis UK Schicht, wenn die Platte höher liegt",
+        "Auffüllung Schotter (Bodenaufbau vor der Sandplatte, nicht mehr gerechnet)",
     ),
     (BACKFILL, "m3", "Arbeitsraum verfüllen"),
     (DISPOSAL, "m3", "überschüssigen Aushub laden und abfahren"),
@@ -271,6 +330,8 @@ pub const SCHLUESSEL: [(&str, &str, &str); 18] = [
 pub const TOPSOIL: &str = "earth.topsoil";
 pub const EXCAVATION: &str = "earth.excavation";
 pub const TRENCH: &str = "earth.trench";
+pub const TRENCH_SAND: &str = "earth.trench_sand";
+pub const SAND: &str = "earth.sand";
 pub const SUBGRADE: &str = "earth.subgrade";
 pub const GRAVEL: &str = "earth.gravel";
 pub const FILL: &str = "earth.fill";
@@ -294,10 +355,12 @@ pub const SPREAD_SLOPE: &str = "earth.spread_slope";
 pub struct ErdZone {
     /// Abtrag um die Platte (mm): das Baufeld.
     pub baufeld: f64,
-    /// Sohle der Baugrube (Platte samt Arbeitsraum) gegen den
+    /// Sohle der Auskofferung (Platte samt Überstand) gegen den
     /// Uhrzeigersinn; leer, wenn nichts ausgehoben wird.
     pub sohle: Vec<Vec3>,
-    /// Höhe der Sohle (UK Platte, mm über ±0,00).
+    /// OK Sandplatte um die Platte (UK Dämmung, mm über ±0,00): Darüber
+    /// wird bis zum gewachsenen Boden verfüllt, ein Abtrag der
+    /// Geländeflächen mindert dort die Verfüllung.
     pub b: f64,
     /// Die Böschung über dem Sohlrand ist mit dabei (dort angenähert).
     pub keil: bool,
@@ -327,6 +390,10 @@ pub struct ErdBasis {
     /// Mit Höhenaufmaß das Netz (G2): Die Mengen kommen aus seinen
     /// Dreiecken statt aus der Ebene in `terrain_z`.
     pub netz: Option<ErdNetz>,
+    /// Oberboden andecken des Grundstücks (mm): Um die Platte reicht der
+    /// Füllsand höchstens bis unter den angedeckten Oberboden, wie in der
+    /// Darstellung.
+    pub andecken: f64,
 }
 
 impl ErdBasis {
@@ -344,6 +411,7 @@ impl ErdBasis {
             footing_area: g.footing_area,
             aufmass: g.terrain_nhn.map(|h| h + g.terrain_z / 1000.0),
             netz: None,
+            andecken: crate::model::SiteSoil::default().spread,
         }
     }
 
@@ -352,6 +420,7 @@ impl ErdBasis {
         let netz = g.terrain_nhn.and_then(|_| ErdNetz::neu(m, g.run));
         ErdBasis {
             netz,
+            andecken: m.site_soil().spread,
             ..ErdBasis::aus(g)
         }
     }
@@ -371,6 +440,7 @@ impl ErdBasis {
             footing_area: f.footing_area(),
             aufmass: None,
             netz: None,
+            andecken: crate::model::SiteSoil::default().spread,
         }
     }
 }
@@ -432,109 +502,190 @@ pub fn erd_mengen(
         }
     };
     let o = boden.oberboden.max(0.0);
-    let a = boden.arbeitsraum.max(0.0);
     let g = boden.schicht();
     let (fl, u) = (b.slab_area, b.slab_perimeter);
     let ring = b.footing_area.min(fl).max(0.0);
     let innen = (fl - ring).max(0.0);
     let t = eckzahl(&b.outline);
+    let pr = |x0: f64, k: f64, h: f64| prisma(fl, u, t, x0, k, h);
     // gewachsener Boden unter dem Oberboden
     let z_n = b.terrain_z - o;
     let z_s = b.slab_bottom_z;
     let z_b = b.insulation_bottom_z.min(z_s);
     let z_p = z_b - g;
-    // Baugrube bis UK Platte; Böschung, wenn sie tiefer reicht als 1,25 m
-    let h = (z_n - z_s).max(0.0);
-    let boeschung = b.terrain_z - z_s > SENKRECHT_BIS && boden.boeschung > 0.0;
-    let k = if boeschung {
-        1.0 / boden.boeschung.clamp(1.0, 90.0).to_radians().tan()
-    } else {
-        0.0
-    };
-    let x_oben = a + k * h;
-    // Oberboden über das Baufeld, mindestens über die ganze Baugrube
-    let x_ob = boden.rand.max(x_oben);
-    let grube = h * fl
-        + u * (a * h + k * h * h / 2.0)
-        + t * (a * a * h + a * k * h * h + k * k * h * h * h / 3.0);
+    let z_f = b.footing_bottom_z;
+    let sp = Sandplatte::neu(b.terrain_z, z_n, z_b, z_p, boden);
+    let ka = sp.ka;
+    // Auskofferung im gewachsenen Boden bis zur Sohle, Überstand um die
+    // Platte; geböscht, wenn sie tiefer reicht als 1,25 m
+    let h = z_n - ka;
+    let grube = pr(sp.w, sp.k, h);
+    let boeschung = sp.k > 0.0 && h > 0.0;
+    // Sandplatte über dem gewachsenen Boden: läuft ab dem Überstand in der
+    // Böschung aus, höchstens bis unter den angedeckten Oberboden
+    let auf_h = (z_b - z_n).max(0.0);
+    let auf_c = auf_h.min(o - b.andecken.clamp(0.0, o));
+    let x_ob = boden
+        .rand
+        .max(sp.w + sp.k * h)
+        .max(UEBERSTAND + auf_h / sp.tan);
     let breite = |x: f64| format!("{} m", zahl(x, 1e3));
+    let bis = if z_b < z_s {
+        "UK Dämmung"
+    } else {
+        "UK Platte"
+    };
 
     oberboden(b, x_ob, o, &mut menge);
     let mut aushub = 0.0;
     if grube > 0.0 {
-        let wie = if boeschung {
-            format!(
-                "Platte {} m² + Arbeitsraum {}, Böschung {}°, Tiefe {}",
-                zahl(fl, 1e6),
-                breite(a),
-                boden.boeschung.round(),
-                breite(h)
-            )
+        let wand = if boeschung {
+            format!(", Böschung {}°", boden.boeschung.round())
         } else {
-            format!(
-                "Platte {} m² + Arbeitsraum {} × Tiefe {}",
-                zahl(fl, 1e6),
-                breite(a),
-                breite(h)
-            )
+            String::new()
         };
-        menge(EXCAVATION, grube, wie);
-        aushub += grube;
-    }
-    // Dämmung und Schicht innerhalb der Schürze, soweit unter dem
-    // gewachsenen Boden
-    let bett = innen * (z_s.min(z_n) - z_p).max(0.0);
-    if bett > 0.0 {
-        let wofuer = ausgehoben_fuer(z_b < z_s, boden.kies);
+        // VOB B-BA-1: der Oberboden steht gesondert, hier nur der Boden
         menge(
             EXCAVATION,
-            bett,
+            grube,
             format!(
-                "für {wofuer} {} m² × {}",
-                zahl(innen, 1e6),
-                breite(z_s.min(z_n) - z_p)
+                "Auskofferung {} ab OK Gelände = Oberboden {} (gesondert) + Boden {}: Platte {} \
+                 m² + Überstand {}{wand}",
+                breite(b.terrain_z - ka),
+                breite(o),
+                breite(h),
+                zahl(fl, 1e6),
+                breite(sp.w)
             ),
         );
-        aushub += bett;
+        aushub += grube;
     }
-    let graben_h = (z_s.min(z_n) - b.footing_bottom_z).max(0.0);
-    let graben = ring * graben_h;
-    if graben > 0.0 {
+    // Füllsand (VOB B-BA-2): innerhalb der Schürze bis UK Schicht, unter
+    // der Schürze und um die Platte bis UK Dämmung; die Gräben werden danach
+    // aus ihm ausgehoben
+    let kern = innen * (z_p - ka).max(0.0);
+    if kern > 0.0 {
         menge(
-            TRENCH,
-            graben,
-            format!("Ring {} m² × {}", zahl(ring, 1e6), breite(graben_h)),
-        );
-        aushub += graben;
-    }
-    planum(innen, g, boden.kies, &mut menge);
-    let auf_h = (z_p - z_n).max(0.0);
-    if auf_h > 0.0 && innen > 0.0 {
-        menge(
-            FILL,
-            innen * auf_h,
+            SAND,
+            kern,
             format!(
-                "{} m² × {} bis {}",
+                "innerhalb der Schürze {} m² × {} bis {}",
                 zahl(innen, 1e6),
-                breite(auf_h),
+                breite(z_p - ka),
                 aufgefuellt_bis(z_b < z_s, boden.kies)
             ),
         );
     }
-    // Arbeitsraum: Baugrube außerhalb des Plattenumrisses
-    let verfuellen = (grube - fl * h).max(0.0);
+    let unter = ring * (z_b - ka).max(0.0);
+    if unter > 0.0 {
+        menge(
+            SAND,
+            unter,
+            format!(
+                "unter der Schürze {} m² × {} bis {bis}",
+                zahl(ring, 1e6),
+                breite(z_b - ka)
+            ),
+        );
+    }
+    let sand_h = z_b.min(z_n) - ka;
+    let um = pr(sp.w, sp.k, sand_h) - fl * sand_h.max(0.0);
+    if um > 0.0 {
+        let oben = if z_b < z_n {
+            bis
+        } else {
+            "OK gewachsener Boden"
+        };
+        menge(
+            SAND,
+            um,
+            format!(
+                "um die Platte, Überstand {}, {} bis {oben}",
+                breite(sp.w),
+                breite(sand_h)
+            ),
+        );
+    }
+    // bis zum Überstand voll, dahinter die Böschung (wie im Netz)
+    let auftrag = pr(UEBERSTAND + (auf_h - auf_c) / sp.tan, 1.0 / sp.tan, auf_c) - fl * auf_c;
+    let a_ue = pr(UEBERSTAND, 0.0, 1.0) - fl;
+    if auftrag > 0.0 {
+        let oben = if auf_c < auf_h {
+            "unter den angedeckten Oberboden"
+        } else {
+            bis
+        };
+        menge(
+            SAND,
+            a_ue * auf_c,
+            format!(
+                "über dem gewachsenen Boden um die Platte {} m² (Überstand {}) × {} bis {oben}",
+                zahl(a_ue, 1e6),
+                breite(UEBERSTAND),
+                breite(auf_c)
+            ),
+        );
+        menge(
+            SAND,
+            auftrag - a_ue * auf_c,
+            format!(
+                "Böschung {}° der Sandplatte, Höhe bis {}",
+                boden.boeschung.round(),
+                breite(auf_c)
+            ),
+        );
+    }
+    // Gräben der Schürze ab OK Sandplatte (VOB B-BA-3): erst im Füllsand,
+    // unter der Sohle der Auskofferung im gewachsenen Boden
+    let unten = if ka - z_f > GRABEN_AB { ka } else { z_f };
+    let im_sand = ring * (z_b - unten).max(0.0);
+    if im_sand > 0.0 {
+        menge(
+            TRENCH_SAND,
+            im_sand,
+            format!(
+                "Ring {} m² × {} ab OK Sandplatte",
+                zahl(ring, 1e6),
+                breite(z_b - unten)
+            ),
+        );
+        aushub += im_sand;
+    }
+    let graben = ring * (unten - z_f);
+    if graben > 0.0 {
+        menge(
+            TRENCH,
+            graben,
+            format!(
+                "Ring {} m² × {} unter der Sohle der Auskofferung",
+                zahl(ring, 1e6),
+                breite(ka - z_f)
+            ),
+        );
+        aushub += graben;
+    }
+    planum(innen, g, boden.kies, &mut menge);
+    // über der Sandplatte bis OK gewachsener Boden, außerhalb der Platte
+    let ueber = z_n - z_b;
+    let verfuellen = if ueber > 0.0 {
+        pr(sp.w, sp.k, h) - pr(sp.w, sp.k, z_b - ka) - fl * ueber
+    } else {
+        0.0
+    };
     if verfuellen > 0.0 {
         menge(
             BACKFILL,
             verfuellen,
             format!(
-                "Baugrube {} m³ − Platte {} m² × {}",
+                "über der Sandplatte: Auskofferung {} m³ bis {bis} {} m³ − Platte {} m² × {}",
                 zahl(grube, 1e9),
+                zahl(pr(sp.w, sp.k, z_b - ka), 1e9),
                 zahl(fl, 1e6),
-                breite(h)
+                breite(ueber)
             ),
         );
     }
+    let verfuellen = verfuellen.max(0.0);
     let abfuhr = aushub - verfuellen;
     if abfuhr > 0.0 {
         menge(
@@ -549,8 +700,8 @@ pub fn erd_mengen(
     }
     if boeschung {
         // Schräge Fläche: Umfang auf halber Höhe × Böschungslänge
-        let x_m = a + k * h / 2.0;
-        let lang = h / boden.boeschung.clamp(1.0, 90.0).to_radians().sin();
+        let x_m = sp.w + sp.k * h / 2.0;
+        let lang = h / sp.tan.atan().sin();
         let flaeche = (u + 2.0 * t * x_m) * lang;
         menge(
             SLOPE,
@@ -562,19 +713,37 @@ pub fn erd_mengen(
             ),
         );
     }
-    let sohle = if grube <= 0.0 {
-        Vec::new()
-    } else if a > 0.0 {
-        sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()]).unwrap_or_default()
-    } else {
-        b.outline.clone()
-    };
     ErdZone {
         baufeld: x_ob,
-        sohle,
-        b: z_s,
-        keil: boeschung && h > 0.0,
+        sohle: if grube > 0.0 {
+            sohle(&b.outline, sp.w)
+        } else {
+            Vec::new()
+        },
+        b: z_b,
+        keil: boeschung,
     }
+}
+
+/// Sohle der Auskofferung: der Plattenumriss um `w` versetzt.
+fn sohle(outline: &[Vec3], w: f64) -> Vec<Vec3> {
+    if w > 0.0 {
+        sk_math::flaeche::versatz(outline, &vec![-w; outline.len()]).unwrap_or_default()
+    } else {
+        outline.to_vec()
+    }
+}
+
+/// Raum über einem Umriss mit Fläche `fl`, Umfang `u` und Eckzahl `t`, um
+/// `x0` nach außen versetzt und je mm Höhe um `k` breiter, über die Höhe
+/// `h` (mm³): ∫ A(x0 + k·y) dy mit A(x) = fl + u·x + t·x²; 0 für `h` ≤ 0.
+fn prisma(fl: f64, u: f64, t: f64, x0: f64, k: f64, h: f64) -> f64 {
+    if h <= 0.0 {
+        return 0.0;
+    }
+    fl * h
+        + u * (x0 * h + k * h * h / 2.0)
+        + t * (x0 * x0 * h + x0 * k * h * h + k * k * h * h * h / 3.0)
 }
 
 /// Oberboden über das Baufeld, `x_ob` um die Platte (waagerechte Fläche ×
@@ -669,6 +838,7 @@ mod tests {
             footing_area: ring,
             aufmass: None,
             netz: None,
+            andecken: 200.0,
         }
     }
 
@@ -701,78 +871,174 @@ mod tests {
         assert!((eckzahl(&l) - 4.0).abs() < 1e-9);
     }
 
-    /// Gelände = OK Platte: Oberboden 0,30 und Platte 0,20 ergeben keine
-    /// Baugrube, nur Schicht, Graben und Auffüllung bis UK Schicht.
+    /// Gelände = OK Platte: Auskofferung 0,80 m ab OK Gelände (Oberboden
+    /// 0,30 + Boden 0,50) über Platte und Überstand 0,50 m; Füllsand bis UK
+    /// Schicht bzw. UK Platte, über dem gewachsenen Boden mit Böschung; der
+    /// Graben liegt ganz im Füllsand.
     #[test]
     fn gelaende_auf_ok_platte() {
         let v = mengen(&basis(0.0), &Boden::default());
+        let m3 = |k| wert(&v, k) / 1e9;
         // Baufeld 1,50 m um die Platte
         let oben = 80.0 + 36.0 * 1.5 + 4.0 * 2.25; // m²
-        assert!((wert(&v, TOPSOIL) / 1e9 - oben * 0.3).abs() < 1e-9);
-        // gewachsener Boden −300 unter UK Platte −200: keine Baugrube
-        assert_eq!(wert(&v, BACKFILL), 0.0);
-        // Schicht −200 … −350, davon unter −300 ausheben: 0,05 m
-        let innen = (10.0 - 0.7) * (8.0 - 0.7);
-        assert!((wert(&v, EXCAVATION) / 1e9 - innen * 0.05).abs() < 1e-9);
-        // Graben −300 … −800
+        assert!((m3(TOPSOIL) - oben * 0.3).abs() < 1e-9);
+        // Sohle −0,80, gewachsen −0,30: 0,50 m über Platte + 0,50 m
+        let sohle = 80.0 + 36.0 * 0.5 + 4.0 * 0.25;
+        assert!((m3(EXCAVATION) - sohle * 0.5).abs() < 1e-9);
+        let innen = 9.3 * 7.3;
         let ring = 80.0 - innen;
-        assert!((wert(&v, TRENCH) / 1e9 - ring * 0.5).abs() < 1e-9);
-        assert!((wert(&v, GRAVEL) / 1e9 - innen * 0.15).abs() < 1e-9);
-        assert_eq!(wert(&v, FILL), 0.0);
+        // innen bis UK Schicht −0,35, unter der Schürze bis UK Platte −0,20,
+        // um die Platte bis N, darüber 0,10 m mit Böschung 45°
+        let auf = 36.0 * (0.5 * 0.1 + 0.01 / 2.0) + 4.0 * (0.025 + 0.005 + 0.001 / 3.0);
+        let sand = innen * 0.45 + ring * 0.6 + (sohle - 80.0) * 0.5 + auf;
+        assert!((m3(SAND) - sand).abs() < 1e-9, "{}", m3(SAND));
+        assert!((m3(TRENCH_SAND) - ring * 0.6).abs() < 1e-9);
+        assert_eq!(m3(TRENCH), 0.0);
+        assert!((m3(GRAVEL) - innen * 0.15).abs() < 1e-9);
+        assert_eq!(m3(FILL), 0.0);
+        assert_eq!(m3(BACKFILL), 0.0);
         assert!((wert(&v, SUBGRADE) / 1e6 - innen).abs() < 1e-9);
-        assert_eq!(wert(&v, SLOPE), 0.0);
-        let aushub = innen * 0.05 + ring * 0.5;
-        assert!((wert(&v, DISPOSAL) / 1e9 - aushub).abs() < 1e-9);
+        assert_eq!(m3(SLOPE), 0.0);
+        assert!((m3(DISPOSAL) - (sohle * 0.5 + ring * 0.6)).abs() < 1e-9);
     }
 
-    /// Platte 0,50 m unter Gelände: Baugrube mit Arbeitsraum, Verfüllung
-    /// außerhalb der Platte.
+    /// Platte 0,50 m unter Gelände: Die Auskofferung reicht bis UK Schicht,
+    /// tiefer als 0,80 m; über der Sandplatte Verfüllung, der Graben unter
+    /// der Sohle im gewachsenen Boden.
     #[test]
     fn platte_tiefer() {
         let v = mengen(&basis(500.0), &Boden::default());
-        // gewachsen +200, UK Platte −200: 0,40 m
-        let grube = 0.4 * 80.0 + 36.0 * 0.5 * 0.4 + 4.0 * 0.25 * 0.4;
-        let innen = 9.3 * 7.3;
-        let ring = 80.0 - innen;
-        assert!((wert(&v, EXCAVATION) / 1e9 - (grube + innen * 0.15)).abs() < 1e-9);
-        assert!((wert(&v, TRENCH) / 1e9 - ring * 0.6).abs() < 1e-9);
-        let verf = grube - 80.0 * 0.4;
-        assert!((wert(&v, BACKFILL) / 1e9 - verf).abs() < 1e-9);
-        let aushub = grube + innen * 0.15 + ring * 0.6;
-        assert!((wert(&v, DISPOSAL) / 1e9 - (aushub - verf)).abs() < 1e-9);
+        let m3 = |k| wert(&v, k) / 1e9;
+        // gewachsen +0,20, Sohle −0,35: 0,55 m
+        let sohle = 80.0 + 36.0 * 0.5 + 4.0 * 0.25;
+        let ring = 80.0 - 9.3 * 7.3;
+        assert!((m3(EXCAVATION) - sohle * 0.55).abs() < 1e-9);
+        assert!((m3(SAND) - (ring + sohle - 80.0) * 0.15).abs() < 1e-9);
+        assert!((m3(TRENCH_SAND) - ring * 0.15).abs() < 1e-9);
+        assert!((m3(TRENCH) - ring * 0.45).abs() < 1e-9);
+        let verf = sohle * 0.4 - 80.0 * 0.4;
+        assert!((m3(BACKFILL) - verf).abs() < 1e-9);
+        let aushub = sohle * 0.55 + ring * 0.6;
+        assert!((m3(DISPOSAL) - (aushub - verf)).abs() < 1e-9);
     }
 
-    /// Platte 0,40 m über Gelände: Auffüllung bis UK Schicht.
+    /// Platte 0,40 m über Gelände: ausgekoffert 0,80 m ab OK Gelände, der
+    /// Füllsand reicht um die Platte bis unter den angedeckten Oberboden
+    /// (0,10 m über dem gewachsenen Boden) und läuft dort in der Böschung
+    /// aus; keine Auffüllung Schotter mehr.
     #[test]
     fn platte_hoeher() {
         let v = mengen(&basis(-400.0), &Boden::default());
+        let m3 = |k| wert(&v, k) / 1e9;
+        let sohle = 80.0 + 36.0 * 0.5 + 4.0 * 0.25;
         let innen = 9.3 * 7.3;
-        // gewachsen −700, UK Schicht −350
-        assert!((wert(&v, FILL) / 1e9 - innen * 0.35).abs() < 1e-9);
-        assert_eq!(wert(&v, EXCAVATION), 0.0);
-        assert!((wert(&v, TRENCH) / 1e9 - (80.0 - innen) * 0.1).abs() < 1e-9);
+        let ring = 80.0 - innen;
+        // Sohle −1,20, gewachsen −0,70, UK Schicht −0,35, UK Platte −0,20
+        assert!((m3(EXCAVATION) - sohle * 0.5).abs() < 1e-9);
+        // voll bis 0,90 m vor der Platte, dann 0,10 m Böschung
+        let auf = 36.0 * (0.9 * 0.1 + 0.01 / 2.0) + 4.0 * (0.81 * 0.1 + 0.9 * 0.01 + 0.001 / 3.0);
+        let sand = innen * 0.85 + ring + (sohle - 80.0) * 0.5 + auf;
+        assert!((m3(SAND) - sand).abs() < 1e-9, "{}", m3(SAND));
+        assert_eq!(m3(FILL), 0.0);
+        assert!((m3(TRENCH_SAND) - ring * 0.6).abs() < 1e-9);
+        assert_eq!(m3(TRENCH), 0.0);
+        // das Baufeld reicht bis zum Fuß der Böschung, 1,00 m
+        let oben = 80.0 + 36.0 * 1.5 + 4.0 * 2.25;
+        assert!((m3(TOPSOIL) - oben * 0.3).abs() < 1e-9);
     }
 
-    /// Über 1,25 m Tiefe: Böschung, die Baugrube wird oben breiter.
+    /// Über 1,25 m Tiefe ab OK Gelände: Die Wand der Auskofferung wird
+    /// geböscht, die Grube oben breiter.
     #[test]
     fn boeschung_ab_125() {
         let b = basis(1_500.0);
         let v = mengen(&b, &Boden::default());
-        // gewachsen +1200, UK −200: h = 1,40 m, k = 1 (45°)
-        let (h, a, k) = (1.4, 0.5, 1.0);
+        // gewachsen +1,20, Sohle −0,35: h = 1,55 m, k = 1 (45°)
+        let (h, w, k) = (1.55, 0.5, 1.0);
         let grube = h * 80.0
-            + 36.0 * (a * h + k * h * h / 2.0)
-            + 4.0 * (a * a * h + a * k * h * h + k * k * h * h * h / 3.0);
-        let innen = 9.3 * 7.3;
-        assert!((wert(&v, EXCAVATION) / 1e9 - (grube + innen * 0.15)).abs() < 1e-6);
+            + 36.0 * (w * h + k * h * h / 2.0)
+            + 4.0 * (w * w * h + w * k * h * h + k * k * h * h * h / 3.0);
+        assert!((wert(&v, EXCAVATION) / 1e9 - grube).abs() < 1e-6);
         assert!(wert(&v, SLOPE) > 0.0);
-        // Die Baugrube reicht oben 1,90 m über die Platte, weiter als das
-        // Baufeld: Oberboden bis zu ihrem Rand
-        let x = a + k * h;
+        // Die Auskofferung reicht oben 2,05 m über die Platte, weiter als
+        // das Baufeld: Oberboden bis zu ihrem Rand
+        let x = w + k * h;
         let oben = 80.0 + 36.0 * x + 4.0 * x * x;
         assert!((wert(&v, TOPSOIL) / 1e9 - oben * 0.3).abs() < 1e-6);
-        let senkrecht = mengen(&basis(1_000.0), &Boden::default());
+        let senkrecht = mengen(&basis(800.0), &Boden::default());
         assert_eq!(wert(&senkrecht, SLOPE), 0.0);
+    }
+
+    /// VOB B-BA-4: Je Haus geht die Bilanz auf, auf 1 ‰: Aushub
+    /// (Auskofferung und beide Gräben) = Füllsand + Kies + Verfüllung +
+    /// Bauwerk unter dem gewachsenen Boden (innerhalb der Schürze ab UK
+    /// Dämmung, die Schürze ab ihrer UK); die Abfuhr ist Aushub minus
+    /// Verfüllung. Die Platte liegt dabei im gewachsenen Boden.
+    #[test]
+    fn mengenbilanz_je_haus() {
+        let mut n = 0;
+        for t in [100.0, 500.0, 1_200.0, 1_500.0, 3_000.0] {
+            for daemmung in [0.0, 120.0] {
+                for kies in [true, false] {
+                    for arbeitsraum in [500.0, 800.0] {
+                        let mut b = basis(t);
+                        b.insulation_bottom_z = b.slab_bottom_z - daemmung;
+                        let boden = Boden {
+                            kies,
+                            arbeitsraum,
+                            ..Boden::default()
+                        };
+                        let v = mengen(&b, &boden);
+                        let m = |k| wert(&v, k);
+                        let z_n = t - boden.oberboden;
+                        let ring = b.footing_area;
+                        let innen = b.slab_area - ring;
+                        let bauwerk = innen * (z_n - b.insulation_bottom_z)
+                            + ring * (z_n - b.footing_bottom_z);
+                        let aushub = m(EXCAVATION) + m(TRENCH) + m(TRENCH_SAND);
+                        let rein = m(SAND) + m(GRAVEL) + m(BACKFILL) + bauwerk;
+                        assert!(
+                            (aushub - rein).abs() <= 1e-3 * aushub,
+                            "{t} {daemmung} {kies} {arbeitsraum}: {aushub} ≠ {rein}"
+                        );
+                        let abfuhr = aushub - m(BACKFILL);
+                        assert!((m(DISPOSAL) - abfuhr).abs() <= 1e-6 * abfuhr);
+                        assert_eq!(m(FILL), 0.0);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 40);
+    }
+
+    /// Der Rechenweg der Auskofferung nennt OK Gelände und den Oberboden
+    /// (VOB B-BA-1), Füllsand und Gräben nennen, wo sie liegen.
+    #[test]
+    fn rechenweg_der_sandplatte() {
+        let mut v: Vec<(&str, String)> = Vec::new();
+        erd_mengen(&basis(0.0), &Boden::default(), |k, _, f| v.push((k, f)));
+        let text = |k: &str| {
+            v.iter()
+                .filter(|x| x.0 == k)
+                .map(|x| x.1.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            text(EXCAVATION),
+            [
+                "Auskofferung 0,80 m ab OK Gelände = Oberboden 0,30 m (gesondert) + Boden 0,50 m: \
+                 Platte 80,00 m² + Überstand 0,50 m"
+            ]
+        );
+        assert_eq!(
+            text(TRENCH_SAND),
+            ["Ring 12,11 m² × 0,60 m ab OK Sandplatte"]
+        );
+        assert_eq!(
+            text(SAND)[0],
+            "innerhalb der Schürze 67,89 m² × 0,45 m bis UK Schicht"
+        );
     }
 
     /// Bereiche der Bodenkennwerte; die Vorgabe liegt darin.

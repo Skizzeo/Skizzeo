@@ -799,9 +799,14 @@ fn write_known(m: &Model) -> String {
             m.layer_set(defaults.exterior_wall).map(|s| s.guid),
         )
         .guid("iwset", m.layer_set(defaults.interior_wall).map(|s| s.guid));
+    let mut line = line;
+    // mit Gründung `sandplatte=1`: Die Erdmengen sind schon mit der
+    // Sandplatte gerechnet (VOB B-BA-6); ohne meldet das Öffnen es
+    if !m.ground_bases().is_empty() {
+        line = line.num(SANDPLATTE, 1.0);
+    }
     // Bauvorhaben, Bauherr, Aufsteller nur, wenn gesetzt (BIM §3.12); seit
     // `[projectinfo]` nur die alten, bis zur ersten Änderung (Regel 110)
-    let mut line = line;
     let alt = if p.info {
         [&p.legacy[0], &p.legacy[1], &p.legacy[2]]
     } else {
@@ -1465,6 +1470,15 @@ fn foreign(
     f
 }
 
+/// Schlüssel an `[project]`: Die Erdmengen der Datei sind mit der Sandplatte
+/// gerechnet (Jörn 18.10.); steht, sobald es eine Gründung gibt.
+const SANDPLATTE: &str = "sandplatte";
+
+/// Hinweis beim Öffnen einer Datei mit Gründung von vor der Sandplatte (VOB
+/// B-BA-6): Ein schon versandtes LV weicht sonst still von der Datei ab.
+pub const SANDPLATTE_NEU: &str = "Bodenaufbau nach Sandplatte neu gerechnet (Auskofferung \
+     0,80 m ab OK Gelände, Füllsand bis UK Dämmung), Erdmengen geändert";
+
 /// Liest eine `.szo`-Datei. Neue Laufzeit-Kennungen, Guids aus der Datei; neue
 /// Guids kommen aus `guids`. Bei einem Fehler wird nichts übernommen.
 pub fn read(text: &str, guids: GuidGen) -> Result<Loaded, LoadError> {
@@ -1795,6 +1809,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     }
     let mut boden = project.soil.werte();
     let mut kies = true;
+    let sandplatte = p.opt(SANDPLATTE).is_some();
     match recs("soil").as_slice() {
         [] => {
             for (b, w) in boden.iter_mut().zip(legacy) {
@@ -2813,6 +2828,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
     }
     hints.extend(model.check());
+    if !sandplatte && !model.ground_bases().is_empty() {
+        hints.push(SANDPLATTE_NEU.into());
+    }
     alien.sort_unstable();
     model.foreign = foreign(&model, &by, &lines, &alien);
     model.ext.declare(ext);

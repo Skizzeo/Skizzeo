@@ -1,7 +1,7 @@
 SZK 1
-# Skizzeo-Werksbestand Stammdaten, Stand 19 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Skizzeo-Werksbestand Stammdaten, Stand 20 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=19 date=2026-10-15 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=20 date=2026-10-18 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -106,6 +106,7 @@ SZK 1
 [article] guid=1S7bUW0010080100000010 name="Tapetenkleister" format="Paket 0,5 kg" unit=m2 price=0.2 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW0010080100000011 name="Übergangsprofil Aluminium eloxiert, Höhenausgleich bis 15mm" format="Länge 0,9–2,7 m" unit=m price=9 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW0010080100000012 name="Abschluss- und Übergangsprofil Edelstahl für Fliesen 10–12mm" format="Länge 2,5 m" unit=m price=8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000013 name="Füllsand 0/2 verdichtungsfähig, frei Baustelle" grade="0/2" unit=m3 price=18 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [service] guid=1S7bUW0010080200000001 short="Bodenplatte Stb C25/30 XC2 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=10 unit=m3 basis=volume hours=0.6 cats=groundslab mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
 [service] guid=1S7bUW0010080200000002 short="Frostschürze Stb C25/30 b=30-45cm erdgeschalt" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=20 unit=m3 basis=volume hours=1 cats=stripfooting mat=32Ino7hAj08ufHFYBJxPyP
 [service] guid=1S7bUW0010080200000003 short="Stb-Decke Ortbeton C25/30 XC1 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=30 unit=m3 basis=volume hours=0.6 cats=floor mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
@@ -129,8 +130,8 @@ SZK 1
 [service] guid=1S7bUW001008020000000L short="Untersichtdämmung MW 035 d=120mm A1 zwischen Lattung, über Kopf" trade=1S7Wf_00100800000004Uf title=1S7bUW001008030000000G pos=30 unit=m2 basis=area hours=0.2 cats=soffitinsulation mat=0isiJXaEH68fAGDc36vC$0
 [service] guid=1S7bUW001008020000000M short="Untersichtdämmung MW-Platte 035 d=120mm zwischen Lattung, über Kopf" trade=1S7Wf_00100800000004Uf title=1S7bUW001008030000000G pos=40 unit=m2 basis=area hours=0.2 cats=soffitinsulation mat=2dv8rsAYH3ovLj1KIg1$Mo
 [service] guid=1S7bUW001008020000000N short="Oberboden bis 30cm abtragen, seitlich lagern" trade=1S7Wf_00100800000004UG title=1S7bUW001008030000000B pos=10 unit=m3 basis=auto hours=0.12 equip=6 kg=311 auto=earth.topsoil
-[service] guid=1S7bUW001008020000000O short="Baugrube ausheben Homogenbereich B1, seitlich lagern" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=20 unit=m3 basis=auto hours=0.08 equip=8 kg=311 auto=earth.excavation
-[service] guid=1S7bUW001008020000000P short="Graben Frostschürze ausheben, Wände senkrecht, Sohle eben" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=30 unit=m3 basis=auto hours=0.3 equip=12 kg=311 auto=earth.trench
+[service] guid=1S7bUW001008020000000O short="Auskofferung ausheben Homogenbereich B1, seitlich lagern" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=20 unit=m3 basis=auto hours=0.08 equip=8 kg=311 auto=earth.excavation
+[service] guid=1S7bUW001008020000000P short="Graben Frostschürze ausheben Homogenbereich B1, Wände senkrecht" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=30 unit=m3 basis=auto hours=0.3 equip=12 kg=311 auto=earth.trench
 [service] guid=1S7bUW001008020000000Q short="Planum herstellen, ±2cm, verdichten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=40 unit=m2 basis=auto hours=0.03 equip=1.2 kg=311 auto=earth.subgrade
 [service] guid=1S7bUW001008020000000R short="Kapillarbrechende Schicht Kies 16/32 einbauen, verdichten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=50 unit=m3 basis=auto hours=0.25 equip=5 kg=325 auto=earth.gravel
 [service] guid=1S7bUW001008020000000S short="Auffüllung Schotter 0/32 lagenweise einbauen, verdichten" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=60 unit=m3 basis=auto hours=0.2 equip=5 kg=311 auto=earth.fill
@@ -227,6 +228,8 @@ SZK 1
 [service] guid=1S7bUW001008020000001t short="Dispersionsanstrich Wand Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=10 unit=m2 basis=area hours=0.12 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=wall
 [service] guid=1S7bUW001008020000001u short="Dispersionsanstrich Decke Klasse 2, Grundierung und 2 Anstriche" trade=1S7Wf_00100800000004Ux title=1S7bUW001008030000000V pos=20 unit=m2 basis=area hours=0.15 cats=space mat=0lj3cQqGWQ6dtTsi7U71v_ side=ceiling
 [service] guid=1S7bUW001008020000001v short="Raufasertapete mittel kleben, auf Stoß, mit Kleister" trade=1S7Wf_00100800000004U_ title=1S7bUW001008030000000W pos=10 unit=m2 basis=area hours=0.15 cats=space mat=130mvbD3iKVDEasFK7hWhc
+[service] guid=1S7bUW001008020000001w short="Füllsand Sandplatte liefern, in Lagen einbauen, verdichten n. Vorgabe" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=25 unit=m3 basis=auto hours=0.2 equip=5 kg=311 auto=earth.sand
+[service] guid=1S7bUW001008020000001x short="Graben Frostschürze im eingebauten Füllsand ausheben, Sohle eben" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=35 unit=m3 basis=auto hours=0.3 equip=12 kg=311 auto=earth.trench_sand
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -316,6 +319,7 @@ SZK 1
 [svcpart] guid=1S7bUW001008040000001N service=1S7bUW001008020000001u nr=1 art=1S7bUW001008010000000_ qty=1
 [svcpart] guid=1S7bUW001008040000001O service=1S7bUW001008020000001v nr=1 art=1S7bUW001008010000000$ qty=1.1
 [svcpart] guid=1S7bUW001008040000001P service=1S7bUW001008020000001v nr=2 art=1S7bUW0010080100000010 qty=1
+[svcpart] guid=1S7bUW001008040000001Q service=1S7bUW001008020000001w nr=1 art=1S7bUW0010080100000013 qty=1.2
 [svcfollow] guid=1S7bUW0010080500000001 service=1S7bUW0010080200000001 nr=1 follow=1S7bUW0010080200000005
 [svcfollow] guid=1S7bUW0010080500000002 service=1S7bUW0010080200000001 nr=2 follow=1S7bUW0010080200000006
 [svcfollow] guid=1S7bUW0010080500000003 service=1S7bUW0010080200000002 nr=1 follow=1S7bUW0010080200000006
@@ -402,6 +406,7 @@ SZK 1
 [origin] key=1S7bUW0010080100000010 rec=article kind=factory status=confirmed date=2026-10-15 source="Kleister 4–6 € je 25–30 m²" conf=rough
 [origin] key=1S7bUW0010080100000011 rec=article kind=factory status=confirmed date=2026-10-15 source="Übergangsprofil Alu 6–15 €/m netto (kosten/rb7-schluessel.md: room.transition)" conf=rough
 [origin] key=1S7bUW0010080100000012 rec=article kind=factory status=confirmed date=2026-10-15 source="Fliesenprofil Edelstahl 5–12 €/m netto" conf=rough
+[origin] key=1S7bUW0010080100000013 rec=article kind=factory status=confirmed date=2026-10-18 source="Material 12–25 €/m³ lose" conf=rough
 [origin] key=1S7bUW0010080200000002 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt, Einbau in den Graben" conf=rough
 [origin] key=1S7bUW0010080200000004 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Baubetrieb 0,8–1,0 h/m², Systemschalung 0,4–0,6" conf=rough
 [origin] key=1S7bUW0010080200000005 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
@@ -513,3 +518,5 @@ SZK 1
 [origin] key=1S7bUW001008020000001t rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Wandanstrich 6–12 €/m²; 0,10–0,14 h/m²" conf=rough
 [origin] key=1S7bUW001008020000001u rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Deckenanstrich 8–14 €/m²; über Kopf 0,12–0,18 h/m²" conf=rough
 [origin] key=1S7bUW001008020000001v rec=service kind=factory status=confirmed date=2026-10-15 source="Aufwandswert: Raufaser tapezieren 7–12 €/m²; 0,12–0,18 h/m²" conf=rough
+[origin] key=1S7bUW001008020000001w rec=service kind=factory status=confirmed date=2026-10-18 source="Aufwandswert: wie E60 0,20 h/m³; Sand lose → fest 1,15–1,25" conf=rough
+[origin] key=1S7bUW001008020000001x rec=service kind=factory status=confirmed date=2026-10-18 source="Aufwandswert: wie E30" conf=rough

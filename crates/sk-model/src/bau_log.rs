@@ -324,14 +324,24 @@ mod tests {
     /// Wand an Wand mit Aufmaß und fester Höhe von ±0,00 (Review B-245d):
     /// Rückt die Haustrennwand von A ab oder heran, ändern sich Graben und
     /// Einbindetiefe von B, ohne dass ±0,00 sich rührt. Ändert sich eine
-    /// Erdmenge oder Gründung von B, nennt das Log B oder alle.
+    /// Erdmenge oder Gründung von B, nennt das Log B oder alle. Die Platten
+    /// trennen sich nach Guid: Je nachdem, welches Haus zuerst entsteht, hat
+    /// A oder B das Gelände zwischen ihnen; beide Reihenfolgen mit festen
+    /// Kennungen (mit Kennungen aus der Uhr wackelte der Test, #280).
     #[test]
     fn haustrennwand_nennt_den_nachbarn() {
         let mut geprueft = 0;
-        for d in [-50.0, -20.0, 20.0, 50.0] {
-            let mut m = Model::new();
+        for (b_zuerst, d) in [false, true]
+            .into_iter()
+            .flat_map(|z| [-50.0, -20.0, 20.0, 50.0].map(|d| (z, d)))
+        {
+            let mut m = Model::with_seed(1);
             let mut haeuser = Vec::new();
-            for (x0, versatz) in [(0.0, 500.0), (8630.0, 1500.0)] {
+            let mut reihe = [(0.0, 500.0), (8630.0, 1500.0)];
+            if b_zuerst {
+                reihe.reverse();
+            }
+            for (x0, versatz) in reihe {
                 let b = m.add_building(1);
                 let pts = [
                     vec3(x0, 0.0, 0.0),
@@ -345,6 +355,9 @@ mod tests {
                 m.commit();
                 haeuser.push((b, run));
             }
+            if b_zuerst {
+                haeuser.reverse();
+            }
             let mut l = *m.location();
             l.nhn = Some(52.3);
             m.begin("Lage");
@@ -356,6 +369,19 @@ mod tests {
             let [(a, run), (b, _)] = haeuser[..] else {
                 unreachable!()
             };
+            // B 40 cm tiefer gegründet: Seit der Sandplatte liegt UK Schürze
+            // bei 0,80 m Einbindung genau auf der Sohle der Auskofferung, ihr
+            // Graben läge ganz im Füllsand, und A rührte B nicht (#280)
+            let gr = m
+                .storeys()
+                .iter()
+                .find(|(_, s)| s.kind == crate::LevelKind::Foundation && s.building == Some(b))
+                .map(|(id, _)| id)
+                .unwrap();
+            let uk = m.storey(gr).unwrap().elevation;
+            m.begin("Tiefer");
+            assert!(m.set_foundation_bottom_of(gr, uk - 400.0));
+            m.commit();
             let von_b = |m: &Model| -> Vec<(String, f64)> {
                 let mut v: Vec<(String, f64)> = crate::qto::schedule(m)
                     .auto

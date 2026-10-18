@@ -256,7 +256,7 @@ pub fn bauvorhaben_aus_datei(datei: &str) -> String {
 }
 
 /// Menge deutsch mit 3 Stellen: „1.234,500“.
-fn menge_deutsch(d: Dez) -> String {
+pub(crate) fn menge_deutsch(d: Dez) -> String {
     let milli = runden(d.0 as i128, (Dez::SKALA / 1000) as i128);
     let (vz, milli) = if milli < 0 {
         ("-", -milli)
@@ -1080,6 +1080,7 @@ pub fn lv_im_umfang(m: &Model, b: &Kostenblatt, rang: &Dickenrang, k: &Katalog, 
                 )
             }
             OhneHerkunft::Erweiterung { .. } => crate::rechnung::ohne_ext_text(m, o),
+            OhneHerkunft::Automatik { .. } => crate::rechnung::ohne_auto_text(o),
         };
         befunde.push(Befund::fehler(
             81,

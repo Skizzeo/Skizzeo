@@ -69,7 +69,7 @@ SZO 4
 [layer] set=2$6TN9pv91oRMXaTMzh9E2 mat=0cU68u_sHBQAgaftFB11Cl t=175 fn=loadbearing core=1
 [layerset] guid=3ZTJrDtor3KfcH2vccNFkY name="IW 17,5 Gasbeton" code="IW-17,5" cat=interior changed=1 note=""
 [layer] set=3ZTJrDtor3KfcH2vccNFkY mat=0cU68u_sHBQAgaftFB11Cl t=175 fn=loadbearing core=1
-[project] guid=0o8lLd4Lf9Nv0Ig1DL_NUx name="Projekt" storey=1sCw8dxm55c8auPkGUop1R wallset=2$6TN9pv91oRMXaTMzh9E2 iwset=3ZTJrDtor3KfcH2vccNFkY
+[project] guid=0o8lLd4Lf9Nv0Ig1DL_NUx name="Projekt" storey=1sCw8dxm55c8auPkGUop1R wallset=2$6TN9pv91oRMXaTMzh9E2 iwset=3ZTJrDtor3KfcH2vccNFkY sandplatte=1
 [building] guid=1w3BxMPELBw9G7aLVP_Tva name="Gebäude 1" number="GB-01"
 [storey] guid=0aHZJtB0nE6gQK63vixY1n building=1w3BxMPELBw9G7aLVP_Tva name="Obergeschoss" short="OG" kind=storey elev=2855 h=2855
 [storey] guid=1sCw8dxm55c8auPkGUop1R building=1w3BxMPELBw9G7aLVP_Tva name="Erdgeschoss" short="EG" kind=storey elev=0 h=2855

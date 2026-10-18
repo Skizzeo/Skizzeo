@@ -43,7 +43,7 @@ SZO 3
 [layerset] guid=33i8p9bQ580uop$jCXCU6X name="AW 31,5 Gasbeton + WDVS"
 [layer] set=33i8p9bQ580uop$jCXCU6X mat=12CxwGcUj3XhA5jt$AC$qq t=140 fn=insulation core=0
 [layer] set=33i8p9bQ580uop$jCXCU6X mat=2zxC9RDpf9rQz3f2Vk9Woq t=175 fn=loadbearing core=1
-[project] guid=1IdSD4DhD7TwFpZMQHPcDY name="Projekt" storey=0HJgS9oH17bRaSiLiNLHP_ wallset=33i8p9bQ580uop$jCXCU6X iwset=2bI2Vt9ej8GAcbFzlgyhUb
+[project] guid=1IdSD4DhD7TwFpZMQHPcDY name="Projekt" storey=0HJgS9oH17bRaSiLiNLHP_ wallset=33i8p9bQ580uop$jCXCU6X iwset=2bI2Vt9ej8GAcbFzlgyhUb sandplatte=1
 [building] guid=3L4B407Dv32AlA9zBuPijm name="Gebäude 1" number="GB-01"
 [storey] guid=0HJgS9oH17bRaSiLiNLHP_ building=3L4B407Dv32AlA9zBuPijm name="Erdgeschoss" short="EG" kind=storey elev=0 h=2855
 [storey] guid=2829jD9yr7LA51A3$iNcYj building=3L4B407Dv32AlA9zBuPijm name="Obergeschoss" short="OG" kind=storey elev=2855 h=2855

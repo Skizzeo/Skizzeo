@@ -1120,14 +1120,20 @@ mod tests {
                     }
                 }
             }
-            // ab Wand an Wand; dort rechnet der Graben unter der
-            // Haustrennwand mit der eigenen Höhe (VOB-Spruch zu H-245c)
+            // ab Wand an Wand bleiben die Mengen im Umriss; dort rechnet der
+            // Graben unter der Haustrennwand mit der eigenen Höhe (VOB-Spruch
+            // zu H-245c). Auskofferung, Sandplatte und Oberboden reichen über
+            // den Umriss hinaus und sehen das Nachbarhaus 1 m tiefer, gleich
+            // bleiben sie erst mit Abstand (Sandplatte, Jörn 18.10.)
             if spalt >= 2.0 * 315.0 {
                 let nachher = erde(&m);
-                assert_eq!(vorher.len(), nachher.len(), "{fall}");
-                for (x, y) in vorher.iter().zip(&nachher) {
-                    assert_eq!(x.0, y.0, "{fall}");
-                    assert!((x.1 - y.1).abs() < 1e6, "{fall}: {} {} → {}", x.0, x.1, y.1);
+                im_umriss_gleich(&vorher, &nachher, &fall);
+                if spalt >= 3000.0 {
+                    assert_eq!(vorher.len(), nachher.len(), "{fall}");
+                    for (x, y) in vorher.iter().zip(&nachher) {
+                        assert_eq!(x.0, y.0, "{fall}");
+                        assert!((x.1 - y.1).abs() < 1e6, "{fall}: {} {} → {}", x.0, x.1, y.1);
+                    }
                 }
             }
         }
@@ -1473,11 +1479,39 @@ mod tests {
                 assert!((a.0 - b.0).abs() < 1e-6, "{fall}: OK {} → {}", a.0, b.0);
                 assert!((a.1 - b.1).abs() < 1e-6, "{fall}: UK {} → {}", a.1, b.1);
             }
-            let e1 = erde(&m);
-            assert_eq!(e0.len(), e1.len(), "{fall}");
-            for (x, y) in e0.iter().zip(&e1) {
-                assert!((x.1 - y.1).abs() < 1e6, "{fall}: {} {} → {}", x.0, x.1, y.1);
+            im_umriss_gleich(&e0, &erde(&m), &fall);
+        }
+    }
+
+    /// Die Mengen im Umriss der Gründung (Gräben, Kies) je Haus vorher und
+    /// nachher gleich, auf 1 dm³; Auskofferung und Sandplatte reichen über
+    /// den Umriss hinaus zum Nachbarn.
+    fn im_umriss_gleich(vorher: &[(String, f64)], nachher: &[(String, f64)], fall: &str) {
+        let umriss = |v: &[(String, f64)]| -> std::collections::BTreeMap<String, f64> {
+            let mut s = std::collections::BTreeMap::new();
+            for (k, x) in v {
+                let im = [
+                    crate::qto_earth::TRENCH,
+                    crate::qto_earth::TRENCH_SAND,
+                    crate::qto_earth::GRAVEL,
+                ]
+                .iter()
+                .any(|e| k.ends_with(&format!(" {e}")));
+                if im {
+                    *s.entry(k.clone()).or_insert(0.0) += x;
+                }
             }
+            s
+        };
+        let (a, b) = (umriss(vorher), umriss(nachher));
+        assert!(!a.is_empty(), "{fall}");
+        assert_eq!(
+            a.keys().collect::<Vec<_>>(),
+            b.keys().collect::<Vec<_>>(),
+            "{fall}"
+        );
+        for (k, x) in &a {
+            assert!((x - b[k]).abs() < 1e6, "{fall}: {k} {x} → {}", b[k]);
         }
     }
 
@@ -2291,7 +2325,7 @@ mod tests {
                 assert_eq!(n(&a), n(&b), "{neu:?} {dz}");
                 let (a, b) = (erdmengen(&a), erdmengen(&b));
                 assert_eq!(a.len(), b.len());
-                assert!(a.iter().any(|x| x.0.contains("earth.fill")));
+                assert!(a.iter().any(|x| x.0.contains("earth.sand")));
                 for (x, y) in a.iter().zip(&b) {
                     assert_eq!(x.0, y.0);
                     let d = (x.1 - y.1).abs();

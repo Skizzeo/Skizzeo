@@ -1,10 +1,10 @@
 //! Bodenaufbau unter und um die Gründung (Jörn 17.10.): statt einer
 //! einzigen Erdreichfläche die Schichten, wie sie vor Ort eingebaut werden.
-//! Nur Darstellung; die Mengen rechnet `sk_model::qto_earth` aus denselben
-//! Bodenkennwerten.
+//! Nur Darstellung; die Mengen rechnet `sk_model::qto_earth` mit derselben
+//! [`Sandplatte`].
 //!
 //! So wie gebaut wird (Jörn 17.10.): Oberboden im Baufeld abgeschoben, der
-//! Boden [`AUSKOFFERUNG`] unter OK Gelände ausgekoffert (tiefer, wenn die
+//! Boden [`sk_model::qto_earth::AUSKOFFERUNG`] unter OK Gelände ausgekoffert (tiefer, wenn die
 //! Gründung tiefer liegt), [`UEBERSTAND`] über die Außenkante der Schürze
 //! hinaus, bei Platten unter dem gewachsenen Boden mindestens im
 //! Arbeitsraum; die Wände über 1,25 m Tiefe geböscht. Darin Füllsand,
@@ -23,22 +23,13 @@
 use crate::draw_table::{fill_kind, LineLook, MatLook};
 use crate::gelaende_netz::gitter::Gitter;
 use sk_math::{polygon, vec3, Vec3};
-use sk_model::qto_earth::SENKRECHT_BIS;
+use sk_model::qto_earth::{Sandplatte, UEBERSTAND};
 use sk_model::solid::{right_of, SectionFrame};
 use sk_model::{edge_kind, material, BuildingId, FootingShape, GroundBasis, Model, Solid};
 use sk_ui::theme::Theme;
 use std::collections::HashMap;
 
 type P2 = [f64; 2];
-
-/// Überstand der Sandplatte über die Außenkante der Schürze (mm). Fest,
-/// bis die Mengen die Sandplatte rechnen und ein Feld unter „Baugrund“
-/// kommt.
-pub(crate) const UEBERSTAND: f64 = 500.0;
-
-/// Tiefe der Auskofferung unter OK Gelände, Mutterboden eingeschlossen
-/// (mm, Jörn 17.10.: ca. 80 cm).
-pub(crate) const AUSKOFFERUNG: f64 = 800.0;
 
 /// So weit reicht der gewachsene Boden unter die tiefste Schürze und
 /// Auskofferung (mm), damit er im Schnitt darunter zu sehen ist.
@@ -235,6 +226,65 @@ fn abstand(r: &[P2], q: P2) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
+/// Abstand außerhalb der Platte, wie die Mengen den Umriss versetzen
+/// (Sohle der Auskofferung, [`sk_model::qto_earth`]): An einer
+/// ausspringenden Ecke gilt der größere Abstand zu den Geraden ihrer beiden
+/// Kanten, Überstand und Böschung bleiben dort eckig statt rund.
+fn eckabstand(r: &[P2], q: P2) -> f64 {
+    let n = r.len();
+    if n < 3 {
+        return abstand(r, q);
+    }
+    let (mut d, mut ecke) = (f64::INFINITY, None);
+    for i in 0..n {
+        let (a, b) = (r[i], r[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 {
+            ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2
+        } else {
+            0.0
+        };
+        let tc = t.clamp(0.0, 1.0);
+        let x = (q[0] - a[0] - tc * dx).hypot(q[1] - a[1] - tc * dy);
+        if x < d {
+            d = x;
+            ecke = if t <= 0.0 {
+                Some(i)
+            } else if t >= 1.0 {
+                Some((i + 1) % n)
+            } else {
+                None
+            };
+        }
+    }
+    let Some(v) = ecke else {
+        return d;
+    };
+    let (a, c, b) = (r[(v + n - 1) % n], r[v], r[(v + 1) % n]);
+    let kreuz = (c[0] - a[0]) * (b[1] - c[1]) - (c[1] - a[1]) * (b[0] - c[0]);
+    // Umlaufsinn erst hier: die meisten Stellen liegen an einer Kante
+    let flaeche: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (r[i], r[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    if kreuz * flaeche <= 0.0 {
+        return d;
+    }
+    let gerade = |p: P2, e: P2| {
+        let (dx, dy) = (e[0] - p[0], e[1] - p[1]);
+        let l = dx.hypot(dy);
+        if l > 0.0 {
+            ((q[0] - p[0]) * dy - (q[1] - p[1]) * dx).abs() / l
+        } else {
+            d
+        }
+    };
+    gerade(a, c).max(gerade(c, b))
+}
+
 impl Bodenaufbau {
     /// Aus dem Modell: Gründungen ([`Model::ground_bases`]), Bodenkennwerte
     /// des Projekts und „Oberboden andecken“ des Grundstücks.
@@ -308,7 +358,7 @@ impl Bodenaufbau {
     /// zur Platte.
     fn naechstes(&self, q: P2) -> Option<(&Aufbau, f64)> {
         self.bei(q)
-            .map(|h| (h, abstand(&h.platte, q)))
+            .map(|h| (h, eckabstand(&h.platte, q)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 }
@@ -376,18 +426,8 @@ impl Aufbau {
         let b = g.insulation_bottom_z.min(s);
         // Kies unter der Dämmung nur, wenn er eingebaut wird (Bodenkennwerte)
         let p = b - boden.schicht();
-        let ka = (t - AUSKOFFERUNG).min(p);
-        let tan = boden.boeschung.clamp(1.0, 89.0).to_radians().tan();
-        let w = if b < n {
-            UEBERSTAND.max(boden.arbeitsraum)
-        } else {
-            UEBERSTAND
-        };
-        let k = if t - ka > SENKRECHT_BIS {
-            1.0 / tan
-        } else {
-            0.0
-        };
+        // dieselbe Sandplatte wie die Mengen (qto_earth)
+        let Sandplatte { ka, w, k, tan } = Sandplatte::neu(t, n, b, p, boden);
         let reichweite = (w + (n - ka).max(0.0) * k).max(UEBERSTAND + (b - n).max(0.0) / tan);
         let baufeld = boden.rand.max(0.0).max(reichweite);
         let mut kasten = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
@@ -424,7 +464,7 @@ impl Aufbau {
     /// Wo `q` zur Gründung liegt.
     fn lage(&self, q: P2) -> Lage {
         if !drin(&self.haus, q) {
-            Lage::Aussen(abstand(&self.platte, q))
+            Lage::Aussen(eckabstand(&self.platte, q))
         } else if !drin(&self.platte, q) {
             Lage::Rand
         } else if self.innen.as_ref().is_some_and(|(r, _)| drin(r, q)) {
@@ -556,7 +596,7 @@ pub(crate) fn schnitt(
             // zwischen zwei Stützstellen gilt das Haus der Mitte
             let (st0, st1) = match ba.naechstes(grund((u0 + u1) * 0.5)) {
                 Some((h, _)) => {
-                    let d = |u: f64| Lage::Aussen(abstand(&h.platte, grund(u)));
+                    let d = |u: f64| Lage::Aussen(eckabstand(&h.platte, grund(u)));
                     (h.stapel(d(u0), z(u0), unten), h.stapel(d(u1), z(u1), unten))
                 }
                 None => (st0, st1),
@@ -621,7 +661,7 @@ fn stuetzen(ba: &Bodenaufbau, a: f64, b: f64, grund: &dyn Fn(f64) -> P2) -> Vec<
         let Some((h, _)) = ba.naechstes(grund((w[0] + w[1]) * 0.5)) else {
             continue;
         };
-        let d = |u: f64| abstand(&h.platte, grund(u));
+        let d = |u: f64| eckabstand(&h.platte, grund(u));
         for k in h.knicke() {
             let (mut x, mut y) = (w[0], w[1]);
             if (d(x) - k) * (d(y) - k) >= 0.0 {
@@ -744,7 +784,10 @@ pub(crate) fn grube(
                 .map(|&t| {
                     let x = lerp(a, b, t);
                     let top = hoehe(x).unwrap_or(h.t);
-                    (x, h.stapel(Lage::Aussen(abstand(&h.platte, x)), top, unten))
+                    (
+                        x,
+                        h.stapel(Lage::Aussen(eckabstand(&h.platte, x)), top, unten),
+                    )
                 })
                 .collect();
             // springt das Gelände an einer Stelle, je Seite ihr Stapel
@@ -807,6 +850,7 @@ pub(crate) fn grube(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sk_model::qto_earth::AUSKOFFERUNG;
     use sk_model::Model;
 
     /// Haus 10 × 8 m, Gelände 30 cm unter ±0,00: Platte 20 cm, Schürze
@@ -860,7 +904,7 @@ mod tests {
                     let k = h.kasten;
                     q[0] >= k[0] && q[1] >= k[1] && q[0] <= k[2] && q[1] <= k[3]
                 })
-                .map(|(i, h)| (i, abstand(&h.platte, q)))
+                .map(|(i, h)| (i, eckabstand(&h.platte, q)))
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|x| x.0)
         };
@@ -885,6 +929,92 @@ mod tests {
             }
         }
         assert!(nah > 100 && am > 0);
+    }
+
+    /// Mengen und Darstellung rechnen dieselbe Sandplatte: Über die Stapel
+    /// eines feinen Rasters summiert ergeben Füllsand (samt dem Graben, der
+    /// aus ihm gehoben wird), Kies, Verfüllung bis zum gewachsenen Boden und
+    /// der ausgehobene gewachsene Boden die Erdmengen, auf 0,5 %: über, im
+    /// und tief im Gelände (mit Böschung).
+    #[test]
+    fn mengen_wie_darstellung() {
+        use sk_model::qto_earth as q;
+        for gelaende in [300.0, -600.0, -1_500.0] {
+            let m = haus(gelaende);
+            let h = aufbau(&m);
+            let s = sk_model::qto::schedule(&m);
+            let menge =
+                |k: &str| -> f64 { s.auto.iter().filter(|a| a.key == k).map(|a| a.value).sum() };
+            let tief = h.ka.min(h.f) - 1.0;
+            let z = 25.0;
+            let [mut sand, mut kies, mut verf, mut aushub] = [0.0; 4];
+            let k = h.kasten;
+            let (nx, ny) = (((k[2] - k[0]) / z) as usize, ((k[3] - k[1]) / z) as usize);
+            for i in 0..nx {
+                for j in 0..ny {
+                    let q = [k[0] + (i as f64 + 0.5) * z, k[1] + (j as f64 + 0.5) * z];
+                    let lage = if !drin(&h.platte, q) {
+                        Lage::Aussen(eckabstand(&h.platte, q))
+                    } else if h.innen.as_ref().is_some_and(|(r, _)| drin(r, q)) {
+                        Lage::Kern
+                    } else {
+                        Lage::Ring
+                    };
+                    let st = h.stapel(lage, h.t, tief);
+                    sand += st[SAND].1 - st[SAND].0;
+                    kies += st[KIES].1 - st[KIES].0;
+                    verf += (st[VERFUELLUNG].1.min(h.n) - st[VERFUELLUNG].0).max(0.0);
+                    aushub += (h.n - st[BODEN].1).max(0.0);
+                }
+            }
+            let a = z * z;
+            let nah = |ist: f64, soll: f64, was: &str| {
+                assert!(
+                    (ist - soll).abs() <= 5e-3 * soll.max(1e9),
+                    "{gelaende} {was}: Darstellung {} m³, Mengen {} m³",
+                    ist / 1e9,
+                    soll / 1e9
+                );
+            };
+            nah(sand * a + menge(q::TRENCH_SAND), menge(q::SAND), "Füllsand");
+            nah(kies * a, menge(q::GRAVEL), "Kies");
+            nah(verf * a, menge(q::BACKFILL), "Verfüllung");
+            nah(
+                aushub * a,
+                menge(q::EXCAVATION) + menge(q::TRENCH),
+                "Aushub",
+            );
+        }
+    }
+
+    /// An der ausspringenden Ecke bleibt der Abstand eckig wie der Versatz
+    /// der Mengen, an der einspringenden und an der Kante wie gemessen.
+    #[test]
+    fn ecken_wie_versatz() {
+        // L-Form gegen den Uhrzeigersinn und gedreht im Uhrzeigersinn
+        let l = vec![
+            [0.0, 0.0],
+            [4000.0, 0.0],
+            [4000.0, 2000.0],
+            [2000.0, 2000.0],
+            [2000.0, 4000.0],
+            [0.0, 4000.0],
+        ];
+        let mut r = l.clone();
+        r.reverse();
+        for p in [&l, &r] {
+            assert!((eckabstand(p, [4500.0, -500.0]) - 500.0).abs() < 1e-9);
+            assert!((eckabstand(p, [4300.0, -500.0]) - 500.0).abs() < 1e-9);
+            assert!((eckabstand(p, [2000.0, -500.0]) - 500.0).abs() < 1e-9);
+            // an der einspringenden Ecke (2000, 2000) die nähere Kante
+            let q = [2300.0, 2400.0];
+            assert!(
+                (eckabstand(p, q) - 300.0).abs() < 1e-9,
+                "{}",
+                eckabstand(p, q)
+            );
+            assert!(eckabstand(p, [4500.0, -500.0]) < abstand(p, [4500.0, -500.0]));
+        }
     }
 
     /// Platte über dem gewachsenen Boden: 80 cm ausgekoffert, Füllsand bis

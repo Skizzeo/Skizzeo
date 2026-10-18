@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 66] = [
+pub const ARTIKEL: [WerkArtikel; 67] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -410,6 +410,11 @@ pub const ARTIKEL: [WerkArtikel; 66] = [
         "m",
         "Abschluss- und Übergangsprofil Edelstahl für Fliesen 10–12mm",
     ),
+    a(
+        "1S7bUW0010080100000013",
+        "m3",
+        "Füllsand 0/2 verdichtungsfähig, frei Baustelle",
+    ),
 ];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
@@ -507,7 +512,7 @@ pub const ARTEN: [&str; 13] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 121] = [
+pub const LEISTUNGEN: [WerkLeistung; 123] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -650,13 +655,13 @@ pub const LEISTUNGEN: [WerkLeistung; 121] = [
         "1S7bUW001008020000000O",
         "m3",
         "auto",
-        "Baugrube ausheben Homogenbereich B1, seitlich lagern",
+        "Auskofferung ausheben Homogenbereich B1, seitlich lagern",
     ),
     l(
         "1S7bUW001008020000000P",
         "m3",
         "auto",
-        "Graben Frostschürze ausheben, Wände senkrecht, Sohle eben",
+        "Graben Frostschürze ausheben Homogenbereich B1, Wände senkrecht",
     ),
     l(
         "1S7bUW001008020000000Q",
@@ -1233,6 +1238,18 @@ pub const LEISTUNGEN: [WerkLeistung; 121] = [
         "m2",
         "area",
         "Raufasertapete mittel kleben, auf Stoß, mit Kleister",
+    ),
+    l(
+        "1S7bUW001008020000001w",
+        "m3",
+        "auto",
+        "Füllsand Sandplatte liefern, in Lagen einbauen, verdichten n. Vorgabe",
+    ),
+    l(
+        "1S7bUW001008020000001x",
+        "m3",
+        "auto",
+        "Graben Frostschürze im eingebauten Füllsand ausheben, Sohle eben",
     ),
 ];
 

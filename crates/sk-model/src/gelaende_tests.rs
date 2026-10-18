@@ -48,12 +48,13 @@ fn neues_haus_steht_bei_null_und_frostfrei() {
     assert_eq!(m.ground_bases().len(), 1);
 }
 
-/// Erdmengen aus der Gründung des Modells: höher gesetzt kommt
-/// Auffüllung statt Aushub, tiefer gesetzt eine Baugrube mit
-/// Arbeitsraum; die Perimeterdämmung ändert die Erdmengen nicht.
+/// Erdmengen aus der Gründung des Modells: Ausgekoffert wird immer 0,80 m
+/// ab OK Gelände; höher gesetzt kommt mehr Füllsand und keine Verfüllung,
+/// tiefer gesetzt Verfüllung über der Sandplatte (Jörn 18.10.); die
+/// Perimeterdämmung ändert die Erdmengen nicht.
 #[test]
 fn erdmengen_folgen_dem_gelaende() {
-    use crate::qto_earth::{BACKFILL, EXCAVATION, FILL, GRAVEL};
+    use crate::qto_earth::{BACKFILL, EXCAVATION, FILL, GRAVEL, SAND, TRENCH, TRENCH_SAND};
     let (mut m, _, _, slab) = haus();
     let summe = |m: &Model, k: &str| -> f64 {
         crate::qto::schedule(m)
@@ -64,28 +65,49 @@ fn erdmengen_folgen_dem_gelaende() {
             .sum()
     };
     let kies = summe(&m, GRAVEL);
+    let sand = summe(&m, SAND);
     schritt(&mut m, |m| m.set_terrain_offset(400.0));
-    assert!(summe(&m, FILL) > 0.0);
-    assert_eq!(summe(&m, EXCAVATION), 0.0);
+    assert!(summe(&m, SAND) > sand);
+    assert!(summe(&m, EXCAVATION) > 0.0);
+    assert_eq!(summe(&m, BACKFILL), 0.0);
     schritt(&mut m, |m| m.set_terrain_offset(-600.0));
-    assert_eq!(summe(&m, FILL), 0.0);
-    let grube = summe(&m, EXCAVATION);
     assert!(summe(&m, BACKFILL) > 0.0);
     // Die Dämmung baut sich nach unten auf (Jörn 11.10.): Das Haus bleibt,
-    // innerhalb der Schürze wird um ihre Dicke tiefer ausgehoben
-    let f = m.foundation(m.run_of(slab).unwrap()).unwrap().unwrap();
-    let innen = f.slab_area() - f.footing_area();
+    // die Gründung liegt um ihre Dicke tiefer im Boden, die Schürze so
+    // weit, wie sie mitgeht (Bilanz VOB B-BA-4)
+    let run = m.run_of(slab).unwrap();
+    let lage = |m: &Model| {
+        let g = m.ground_basis(run).unwrap();
+        (
+            g.insulation_bottom_z.min(g.slab_bottom_z),
+            g.footing_bottom_z,
+        )
+    };
+    let (b0, f0) = lage(&m);
+    let rest = |m: &Model| {
+        summe(m, EXCAVATION) + summe(m, TRENCH) + summe(m, TRENCH_SAND)
+            - summe(m, SAND)
+            - summe(m, GRAVEL)
+            - summe(m, BACKFILL)
+    };
+    let vorher = rest(&m);
+    let f = m.foundation(run).unwrap().unwrap();
+    let (fl, ring) = (f.slab_area(), f.footing_area());
     schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
     assert_eq!(m.terrain_offset(), -600.0);
-    assert!((summe(&m, EXCAVATION) - (grube + innen * 120.0)).abs() < 1.0);
+    let (b1, f1) = lage(&m);
+    assert!((b0 - b1 - 120.0).abs() < 1e-6);
+    let soll = vorher + (fl - ring) * (b0 - b1) + ring * (f0 - f1);
+    assert!((rest(&m) - soll).abs() < 1e-3 * soll, "{} {soll}", rest(&m));
     assert!((summe(&m, GRAVEL) - kies).abs() < 1.0);
+    assert_eq!(summe(&m, FILL), 0.0);
 }
 
 /// Zwei Gebäude auf verschiedener Geländehöhe: Jedes rechnet seine
 /// Erdmengen mit dem eigenen Versatz.
 #[test]
 fn erdmengen_je_gebaeude() {
-    use crate::qto_earth::{EXCAVATION, FILL};
+    use crate::qto_earth::{EXCAVATION, FILL, SAND};
     let (mut m, _, gr, _) = haus();
     let b1 = m.storey(gr).unwrap().building.unwrap();
     m.begin("Gebäude");
@@ -107,12 +129,12 @@ fn erdmengen_je_gebaeude() {
             .map(|a| a.value)
             .sum()
     };
-    // b1 auf Gelände: Bett der Schicht unter dem gewachsenen Boden
+    // beide 0,80 m ab OK Gelände ausgekoffert, b2 0,40 m höher mit mehr
+    // Füllsand
     assert!(summe(b1, EXCAVATION) > 0.0);
-    assert_eq!(summe(b1, FILL), 0.0);
-    // b2 0,40 m höher: Auffüllung statt Aushub
-    assert_eq!(summe(b2, EXCAVATION), 0.0);
-    assert!(summe(b2, FILL) > 0.0);
+    assert!((summe(b2, EXCAVATION) - summe(b1, EXCAVATION)).abs() < 1e6);
+    assert!(summe(b2, SAND) > summe(b1, SAND) + 1e9);
+    assert_eq!(summe(b1, FILL) + summe(b2, FILL), 0.0);
 }
 
 /// Bodenkennwerte (Erdarbeiten): ändern die Automatikmengen, stehen in
@@ -211,12 +233,11 @@ fn kiesschicht_als_schalter() {
         .formula
         .contains("Kapillarbrechende Schicht: nicht eingebaut")));
     // die Rechenwege nennen keine Schicht mehr (VOB V-268a)
-    for k in [crate::qto_earth::EXCAVATION, crate::qto_earth::FILL] {
+    for k in [crate::qto_earth::EXCAVATION, crate::qto_earth::SAND] {
         for a in mengen(&m, k) {
             assert!(!a.formula.contains("Schicht"), "{}", a.formula);
         }
     }
-    assert_eq!(crate::qto_earth::ausgehoben_fuer(true, false), "Dämmung");
     assert_eq!(crate::qto_earth::aufgefuellt_bis(true, false), "UK Dämmung");
     assert_eq!(crate::qto_earth::aufgefuellt_bis(false, false), "UK Platte");
     let text = crate::szo::write(&m);
