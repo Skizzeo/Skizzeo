@@ -875,8 +875,9 @@ pub(crate) fn grube(
     s
 }
 
-/// Raster der Baugrube in 3D (mm) und höchstens so viele Zellen je Feld;
-/// bei großen Feldern wird das Raster gröber.
+/// Raster der Baugrube in 3D (mm) und höchstens so viele Zellen über alle
+/// Felder zusammen (Review B-286b); bei großen oder vielen Feldern wird das
+/// Raster gröber.
 const RASTER: f64 = 100.0;
 const ZELLEN: f64 = 60_000.0;
 
@@ -924,9 +925,11 @@ pub(crate) fn decke(
         edge_kind: edge_kind::VIEW,
         ..Solid::default()
     };
-    for r in ba.felder() {
+    let felder = ba.felder();
+    let flaeche: f64 = felder.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1])).sum();
+    let schritt = RASTER.max((flaeche / ZELLEN).sqrt());
+    for r in felder {
         let (w, h) = (r[2] - r[0], r[3] - r[1]);
-        let schritt = RASTER.max((w * h / ZELLEN).sqrt());
         let (nx, ny) = ((w / schritt).ceil() as usize, (h / schritt).ceil() as usize);
         let (dx, dy) = (w / nx as f64, h / ny as f64);
         let punkt = |i: usize, j: usize| [r[0] + i as f64 * dx, r[1] + j as f64 * dy];
@@ -1336,6 +1339,44 @@ mod tests {
     /// Baugrube: Die Platte ist um das Haus ausgeschnitten, das Raster
     /// schließt die Lücke ohne Überlappung; im Haus die Sohle der
     /// Auskofferung, hinter dem Baufeld Rasen auf OK Gelände.
+    /// Viele getrennte Felder teilen sich die Zellen der Decke (Review
+    /// B-286b): 100 Häuser 10 × 8 m im Raster 15 m bekommen zusammen kaum
+    /// mehr Dreiecke als ein Feld allein, nicht je Feld das feine Raster.
+    #[test]
+    fn decke_bei_vielen_feldern() {
+        let mut m = Model::with_seed(3);
+        for i in 0..100 {
+            let b = m.add_building(1);
+            let (ox, oy) = ((i % 64) as f64 * 15_000.0, (i / 64) as f64 * 15_000.0);
+            let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+            let pts = [
+                p(0.0, 0.0),
+                p(10_000.0, 0.0),
+                p(10_000.0, 8_000.0),
+                p(0.0, 8_000.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+        }
+        let ba = Bodenaufbau::aus(&m);
+        assert!(ba.felder().len() >= 50, "{}", ba.felder().len());
+        let t = ba.haeuser[0].t;
+        let d = decke(
+            &ba,
+            Bauphase::Ausgekoffert,
+            &|_| Some(t),
+            ba.unten(-10_000.0),
+            schluessel([40, 41, 42]),
+            40,
+        );
+        // Zellen über alle Felder, je Feld eine Reihe mehr durchs Aufrunden
+        let grenze = 2.0 * ZELLEN * 1.25;
+        assert!(
+            (d.triangles.len() as f64) < grenze,
+            "{} Dreiecke",
+            d.triangles.len()
+        );
+    }
+
     #[test]
     fn baugrube_in_3d() {
         let m = haus(300.0);

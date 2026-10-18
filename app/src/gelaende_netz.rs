@@ -1666,13 +1666,30 @@ pub(crate) fn koerper_in(
     }
     let felder = g.aufbau.felder();
     let mut s = koerper_und_grube(g, keys, netz, linien, Solid::default);
-    let im_feld = |p: Vec3| felder.iter().any(|r| bauphase::im_feld(r, [p.x, p.y]));
+    // je Dreieck nur die Felder in seiner Nähe (Review B-286b)
+    let gitter = Gitter::neu(felder.clone());
+    let mut nah = Vec::new();
+    let mut im_feld = |p: Vec3| {
+        gitter.bei(&[p.x, p.y, p.x, p.y], &mut nah);
+        nah.iter()
+            .any(|&i| bauphase::im_feld(&felder[i as usize], [p.x, p.y]))
+    };
+    s.edges.retain(|e| !im_feld((e.a + e.b) * 0.5));
+    let mut nah = Vec::new();
+    let mut hier = Vec::new();
     for t in std::mem::take(&mut s.triangles) {
         if t.n.z <= 0.1 {
             s.triangles.push(t);
             continue;
         }
-        for teil in bauphase::ausserhalb(&t.p, &felder) {
+        gitter.bei(&kasten(&t.p.map(|p| [p.x, p.y])), &mut nah);
+        if nah.is_empty() {
+            s.triangles.push(t);
+            continue;
+        }
+        hier.clear();
+        hier.extend(nah.iter().map(|&i| felder[i as usize]));
+        for teil in bauphase::ausserhalb(&t.p, &hier) {
             for i in 1..teil.len() - 1 {
                 s.triangles.push(Tri {
                     p: [teil[0], teil[i], teil[i + 1]],
@@ -1681,7 +1698,6 @@ pub(crate) fn koerper_in(
             }
         }
     }
-    s.edges.retain(|e| !im_feld((e.a + e.b) * 0.5));
     let dz = if g.show == Show::Fade { HEBEN } else { 0.0 };
     let hoehe = |p: P2| g.hoehe(p).map(|z| z + dz);
     let k = schluessel(keys);

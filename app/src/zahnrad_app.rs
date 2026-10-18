@@ -564,8 +564,8 @@ impl App {
     /// Zeile mit der Menge der Phase `ph` (Review B-286a): neu nur, wenn
     /// sich die Phase oder die Liste geändert hat, je Bild sonst nur der
     /// Vergleich. Nach einer Änderung rechnet sie die Liste wie das
-    /// Mengenblatt, nie während eines offenen Schritts; dann bleibt die
-    /// alte Zeile.
+    /// Mengenblatt, während eines offenen Schritts nur beim Wechsel der
+    /// Phase; sonst bleibt dann die alte Zeile.
     fn phasen_menge(&mut self, ph: Bauphase) -> Option<String> {
         let s = &mut self.scene;
         let neu = s.schedule_stale() && !s.model().in_step();
