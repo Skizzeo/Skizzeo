@@ -1796,12 +1796,7 @@ mod tests {
         // auf eine CPU wartete (Linux: zweites Feld von
         // /proc/thread-self/schedstat): Unter Volllast lag ein einzelner
         // Lauf sonst über dem Budget (H-237b)
-        let gewartet = || {
-            std::fs::read_to_string("/proc/thread-self/schedstat")
-                .ok()
-                .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
-                .map_or(0.0, |ns| ns / 1e6)
-        };
+        let gewartet = crate::auf_cpu_gewartet;
         let mut ms = f64::INFINITY;
         let mut a = None;
         for _ in 0..3 {

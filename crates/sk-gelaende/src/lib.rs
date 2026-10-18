@@ -30,3 +30,16 @@ pub mod seite;
 pub mod volumen;
 
 pub use netz::{netz, Netz, Rand};
+
+/// Wie lange dieser Faden bisher lauffähig auf eine CPU gewartet hat, in
+/// ms (Linux: zweites Feld von /proc/thread-self/schedstat; sonst 0). Für
+/// die Zeittests: Ziehen sie die Wartezeit ab, verdrängen die nebeneinander
+/// laufenden Tests sie nicht über ihr Budget (eine Fassung für alle,
+/// Review H-282a).
+#[doc(hidden)]
+pub fn auf_cpu_gewartet() -> f64 {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
+        .map_or(0.0, |ns| ns / 1e6)
+}

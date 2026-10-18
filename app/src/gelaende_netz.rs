@@ -674,8 +674,11 @@ impl Gelaende {
         }
         let mut nah = Vec::new();
         let mut out = Vec::with_capacity(d.len());
-        // je geteiltes Dreieck: Nummer, seine Dreiecke in `out`, Stücke
-        let mut geteilt: Vec<(usize, std::ops::Range<usize>, Vec<Vec<P2>>)> = Vec::new();
+        // je geteiltes Dreieck: Nummer und seine Dreiecke in `out`; die
+        // Stücke rechnet der zweite Gang nur für die wenigen Dreiecke an
+        // einer Kante mit Punkten neu, statt alle aufzuheben (Gelände
+        // aufmass_im_budget: bei 1000 Häusern 16 statt 9 ms)
+        let mut geteilt: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
         // je Kante die Ecken der Stücke innen auf ihr, je Dreieck
         let mut auf: HashMap<[u64; 4], Vec<(usize, Vec<P2>)>> = HashMap::new();
         for (j, t) in d.iter().enumerate() {
@@ -702,7 +705,7 @@ impl Gelaende {
             for s in &stuecke {
                 faechern(t, s, false, &mut out);
             }
-            geteilt.push((j, von..out.len(), stuecke));
+            geteilt.push((j, von..out.len()));
         }
         // wo beide Dreiecke einer Kante sie gleich teilen, ist nichts zu tun
         let gleich = |a: &[P2], b: &[P2]| {
@@ -738,12 +741,12 @@ impl Gelaende {
         for (j, t) in d.iter().enumerate() {
             let ecken = t.map(|p| [p.x, p.y]);
             let eigene = [0, 1, 2].map(|k| kante_von(ecken[k], ecken[(k + 1) % 3]));
-            let (alt, stuecke) = match geteilt.next_if(|x| x.0 == j) {
-                Some((_, r, s)) => (r, Some(s)),
-                None => (i..i + 1, None),
+            let (alt, ist_geteilt) = match geteilt.next_if(|x| x.0 == j) {
+                Some((_, r)) => (r, true),
+                None => (i..i + 1, false),
             };
             i = alt.end;
-            let fehlt = if stuecke.is_none() {
+            let fehlt = if !ist_geteilt {
                 raster.bei(&kasten(&ecken), &mut treffer);
                 treffer
                     .iter()
@@ -756,7 +759,10 @@ impl Gelaende {
                 continue;
             }
             let seiten = seiten(&ecken);
-            let Some(stuecke) = stuecke else {
+            let Some(stuecke) = ist_geteilt
+                .then(|| self.stuecke_ohne_haus(t, &mut nah))
+                .flatten()
+            else {
                 let (s, mehr) = mit_punkten(ecken.to_vec(), &seiten, &eigene, &auf);
                 if mehr {
                     faechern(t, &s, true, &mut neu);
@@ -781,22 +787,25 @@ impl Gelaende {
         if nah.is_empty() {
             return None;
         }
+        let ganz = kasten(&ecken);
         let mut stuecke = vec![ecken.to_vec()];
+        let mut neu = Vec::new();
         for &h in nah.iter() {
             let r = &self.haus[h as usize].0;
             for i in 0..r.len() {
                 let (c, e) = (r[i], r[(i + 1) % r.len()]);
                 let k = kasten(&[c, e]);
-                stuecke = stuecke
-                    .into_iter()
-                    .flat_map(|s| {
-                        if ueberlappt(&k, &kasten(&s)) {
-                            halbieren(s, c, e)
-                        } else {
-                            vec![s]
-                        }
-                    })
-                    .collect();
+                if !ueberlappt(&k, &ganz) {
+                    continue;
+                }
+                for s in stuecke.drain(..) {
+                    if ueberlappt(&k, &kasten(&s)) {
+                        halbieren(s, c, e, &mut neu);
+                    } else {
+                        neu.push(s);
+                    }
+                }
+                std::mem::swap(&mut stuecke, &mut neu);
             }
         }
         stuecke.retain(|s| {
@@ -1045,11 +1054,13 @@ fn kasten(p: &[P2]) -> Kasten {
 }
 
 /// Konvexes Vieleck `s` an der Geraden durch `c`→`e` geteilt (beide Teile
-/// im gleichen Umlaufsinn); liegt es ganz auf einer Seite, bleibt es.
-fn halbieren(s: Vec<P2>, c: P2, e: P2) -> Vec<Vec<P2>> {
+/// im gleichen Umlaufsinn) nach `out`; liegt es ganz auf einer Seite,
+/// bleibt es.
+fn halbieren(s: Vec<P2>, c: P2, e: P2, out: &mut Vec<Vec<P2>>) {
     let l = (e[0] - c[0]).hypot(e[1] - c[1]);
     if l < 1e-9 {
-        return vec![s];
+        out.push(s);
+        return;
     }
     let seite = |p: P2| {
         let d = ((e[0] - c[0]) * (p[1] - c[1]) - (e[1] - c[1]) * (p[0] - c[0])) / l;
@@ -1059,10 +1070,15 @@ fn halbieren(s: Vec<P2>, c: P2, e: P2) -> Vec<Vec<P2>> {
             d
         }
     };
-    let d: Vec<f64> = s.iter().map(|p| seite(*p)).collect();
-    if d.iter().all(|x| *x >= 0.0) || d.iter().all(|x| *x <= 0.0) {
-        return vec![s];
+    let (links_da, rechts_da) = s.iter().fold((false, false), |(l, r), p| {
+        let d = seite(*p);
+        (l || d > 0.0, r || d < 0.0)
+    });
+    if !(links_da && rechts_da) {
+        out.push(s);
+        return;
     }
+    let d: Vec<f64> = s.iter().map(|p| seite(*p)).collect();
     let (mut links, mut rechts) = (Vec::new(), Vec::new());
     for i in 0..s.len() {
         let j = (i + 1) % s.len();
@@ -1078,10 +1094,7 @@ fn halbieren(s: Vec<P2>, c: P2, e: P2) -> Vec<Vec<P2>> {
             rechts.push(x);
         }
     }
-    [links, rechts]
-        .into_iter()
-        .filter(|v| v.len() >= 3)
-        .collect()
+    out.extend([links, rechts].into_iter().filter(|v| v.len() >= 3));
 }
 
 /// Punkt im Ring (gerade-ungerade, Umlaufsinn beliebig).

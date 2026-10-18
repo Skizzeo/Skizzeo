@@ -8,7 +8,7 @@
 use super::*;
 use crate::gelaende_app::{leiste, Zustand};
 use crate::scene::Scene;
-use sk_model::{Crs, Terrain, TerrainPoint};
+use sk_model::{auf_cpu_gewartet, Crs, Terrain, TerrainPoint};
 use std::time::{Duration, Instant};
 
 /// `n` Häuser 10 × 8 m im Raster zu 15 m, je eines ein Gebäude, auf einem
@@ -62,15 +62,6 @@ fn bestwert(mut f: impl FnMut()) -> f64 {
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
-}
-
-/// Wie lange dieser Faden bisher lauffähig auf eine CPU gewartet hat, in
-/// ms (Linux: zweites Feld von /proc/thread-self/schedstat; sonst 0).
-fn auf_cpu_gewartet() -> f64 {
-    std::fs::read_to_string("/proc/thread-self/schedstat")
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
-        .map_or(0.0, |ns| ns / 1e6)
 }
 
 /// Uhr für ein Bild im UI-Faden: Wanduhr ohne die Zeit, in der der Faden
