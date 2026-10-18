@@ -1679,6 +1679,13 @@ mod tests {
             }
         }
         assert!(t.points.len() > n0);
+        // Skizzeos eigene Codes zählen als Gelände, die Netzprüfung meldet
+        // sie nicht als unbekannt (Geometrie H-264-geo-g)
+        for c in [AN_DER_GRENZE, UM_DIE_GRENZE] {
+            assert!(t.points.iter().any(|p| p.code.as_str() == c), "{c}");
+        }
+        let h = &t.mesh().hinweise;
+        assert!(!h.iter().any(|h| h.contains("Unbekannte")), "{h:?}");
         let b = bis(&m);
         assert!(
             b[0] <= -20000.0 - rand * 0.99 && b[1] <= -15000.0 - rand * 0.99,

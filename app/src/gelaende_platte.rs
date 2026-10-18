@@ -823,6 +823,7 @@ pub(crate) fn netz(
                 ba,
                 &|_| None,
                 &teilung,
+                &|_, _| None,
                 unten,
                 schichten,
             ));
