@@ -217,7 +217,7 @@ fn grund(b: &Kostenblatt) -> Vec<String> {
         .iter()
         .filter_map(|o| match &o.herkunft {
             OhneHerkunft::Erweiterung { name, grund, .. } => Some(format!("{name}: {grund}")),
-            OhneHerkunft::Schicht { .. } => None,
+            OhneHerkunft::Schicht { .. } | OhneHerkunft::Automatik { .. } => None,
         })
         .collect()
 }

@@ -220,6 +220,14 @@ pub enum OhneHerkunft {
         /// Bauleistung in m“).
         grund: String,
     },
+    /// Automatikmenge `key` ohne Bauleistung im Katalog, z. B. Füllsand in
+    /// einer Projektkopie von Stand 19 (Review #280 K-280a): Menge ohne
+    /// Preis statt still weggelassen, nie mit Werkspreis ersetzt.
+    Automatik {
+        key: &'static str,
+        /// Bedeutung des Schlüssels aus [`sk_model::qto::auto_schluessel`].
+        text: String,
+    },
 }
 
 /// Schicht einer Zeile ohne Bauleistung (siehe [`OhneZeile::schicht`]).
@@ -249,7 +257,7 @@ impl OhneZeile {
                 dicke: *dicke,
                 bezuege,
             }),
-            OhneHerkunft::Erweiterung { .. } => None,
+            OhneHerkunft::Erweiterung { .. } | OhneHerkunft::Automatik { .. } => None,
         }
     }
 }
@@ -1141,7 +1149,7 @@ pub fn kosten_mit(
     let ext = ext_ansaetze(m, s, k, &mut sammel, &mut index, &mut lose_gemeldet);
     ohne.extend(ext.ohne);
     // Automatikmengen (Erdarbeiten, Bauvorbereitung), nach den Bauteilen
-    befunde.extend(auto_ansaetze(m, s, k, &mut sammel, &mut index));
+    befunde.extend(auto_ansaetze(m, s, k, &mut sammel, &mut index, &mut ohne));
     // Befunde der benutzten Typen, je einmal
     let mut schluessel: Vec<&Schluessel> = typen.keys().collect();
     // alle Felder des Schlüssels, sonst entschiede bei Gleichstand die
@@ -1612,13 +1620,16 @@ fn ext_ansaetze(
 /// mit demselben `auto=` ein Ansatz an der Sohlplatte des Gebäudes, KG der
 /// Bauleistung, sonst die der Menge. Keine Zuordnung und keine
 /// Folgepositionen. Eine ausgemusterte Bauleistung rechnet nicht: So
-/// schaltet ein Projekt eine Automatikposition ab (Op `Ausmustern`).
+/// schaltet ein Projekt eine Automatikposition ab (Op `Ausmustern`). Hat
+/// der Katalog für eine Menge > 0 gar keine Bauleistung mit ihrem `auto=`,
+/// wird sie eine Zeile ohne Bauleistung mit Warnung 81 (K-280a).
 fn auto_ansaetze(
     m: &Model,
     s: &Schedule,
     k: &Katalog,
     sammel: &mut Vec<Sammel>,
     index: &mut Tafel<PosKey, usize>,
+    ohne: &mut Vec<OhneZeile>,
 ) -> Vec<Befund> {
     let mut befunde = Vec::new();
     // schon gemeldet; je Raum mit eigenem Sockelbaustoff ein Hinweis, die
@@ -1634,6 +1645,9 @@ fn auto_ansaetze(
     // Erdmengen aus einem Aufmaß mit Punkten von Hand (VOB-Spruch zu I4)
     let mut aus_netz: Option<Ort> = None;
     let mut steil: Option<(String, Ort)> = None;
+    // Zeilen ohne Bauleistung je Träger und Schlüssel: Stelle in `ohne` und
+    // ungerundete Summe der Teilmengen (K-280a)
+    let mut roh: HashMap<(ElementId, &'static str), (usize, i128)> = HashMap::new();
     // Hinweise, die keine Zeile tragen kann, für die Datei (VOB-Prüfung G3
     // D2)
     for h in &s.hinweise {
@@ -1683,6 +1697,15 @@ fn auto_ansaetze(
                 .material
                 .and_then(|x| m.material(x))
                 .map(|x| x.name.as_str());
+            // gar keine Bauleistung, auch keine ausgemusterte: Menge ohne
+            // Preis, nie still und nie mit Werkspreis (K-280a)
+            let keine = !k
+                .leistungen
+                .iter()
+                .any(|l| l.auto.as_deref() == Some(a.key));
+            if keine {
+                ohne_auto(k, a, ohne, &mut roh);
+            }
             if let (true, Some(name)) = (andere, name) {
                 let ort = m
                     .element(a.element)
@@ -1786,6 +1809,15 @@ fn auto_ansaetze(
             );
         }
     }
+    let mut stellen: Vec<usize> = roh.values().map(|(i, _)| *i).collect();
+    stellen.sort_unstable();
+    for i in stellen {
+        let o = &ohne[i];
+        let ort = m
+            .element(o.element)
+            .map_or(Ort::Datei, |e| Ort::Bauteil(e.guid));
+        befunde.push(Befund::warnung(81, ohne_auto_text(o), ort));
+    }
     if let Some(ort) = erde_aus_mittel {
         befunde.push(Befund::hinweis(0, ERDE_AUS_MITTEL, ort));
     }
@@ -1803,6 +1835,72 @@ fn auto_ansaetze(
         befunde.push(Befund::hinweis(0, h, ort));
     }
     befunde
+}
+
+/// Zeile ohne Bauleistung für die Automatikmenge `a` (K-280a): Einheit und
+/// Kurztext aus dem Schlüssel, Gewerk einer Bauleistung derselben Gruppe
+/// (`earth.`), KG der Menge. Teilmengen desselben Trägers (Füllsand in und
+/// außerhalb der Schürze) werden eine Zeile, gerundet wie eine Position.
+fn ohne_auto(
+    k: &Katalog,
+    a: &sk_model::qto::AutoMenge,
+    ohne: &mut Vec<OhneZeile>,
+    roh: &mut HashMap<(ElementId, &'static str), (usize, i128)>,
+) {
+    let Some(einheit) = Einheit::aus(a.unit) else {
+        return;
+    };
+    let menge = a.value.round() as i128;
+    if menge <= 0 {
+        return;
+    }
+    if let Some((i, summe)) = roh.get_mut(&(a.element, a.key)) {
+        *summe += menge;
+        ohne[*i].menge = drei(*summe, einheit);
+        return;
+    }
+    let text = sk_model::qto::auto_schluessel()
+        .find(|(key, ..)| *key == a.key)
+        .map_or(a.key, |(_, _, t)| t)
+        .to_string();
+    let gruppe = a.key.split_once('.').map_or(a.key, |(g, _)| g);
+    let gewerk = k
+        .leistungen
+        .iter()
+        .find(|l| {
+            l.auto
+                .as_deref()
+                .and_then(|x| x.split_once('.'))
+                .is_some_and(|(g, _)| g == gruppe)
+        })
+        .map(|l| l.gewerk);
+    roh.insert((a.element, a.key), (ohne.len(), menge));
+    ohne.push(OhneZeile {
+        element: a.element,
+        nummer: a.number.clone(),
+        geschoss: a.storey,
+        gebaeude: a.building,
+        gewerk,
+        kg: a.kg,
+        einheit,
+        menge: drei(menge, einheit),
+        herkunft: OhneHerkunft::Automatik { key: a.key, text },
+    });
+}
+
+/// „Ohne Bauleistung: Graben der Frostschürze im eingebauten Füllsand
+/// (SP-001), 7,024 m³, keine Bauleistung mit auto=earth.trench_sand im
+/// Katalog, die Menge bleibt ohne Preis“ (K-280a).
+pub fn ohne_auto_text(o: &OhneZeile) -> String {
+    let OhneHerkunft::Automatik { key, text } = &o.herkunft else {
+        return String::new();
+    };
+    format!(
+        "Ohne Bauleistung: {text} ({}), {} {}, keine Bauleistung mit auto={key} im Katalog, die Menge bleibt ohne Preis",
+        o.nummer,
+        crate::lv::menge_deutsch(o.menge),
+        o.einheit.zeichen()
+    )
 }
 
 /// Hinweis, wenn Erdmengen aus dem angenommenen Gelände kommen (Marke

@@ -266,6 +266,11 @@ impl Bau<'_> {
                     });
                     format!("{bauteil} · {name} ({grund})")
                 }
+                // „Füllsand … · keine Bauleistung im Katalog“ (K-280a); der
+                // Fuß „Ohne Preis“ nimmt den Teil vor „ · “
+                OhneHerkunft::Automatik { text, .. } => {
+                    format!("{text} · keine Bauleistung im Katalog")
+                }
             };
             let mut z = Zeile::neu(Art::Ohne, ebene, text);
             z.gruppe = gruppe.to_string();

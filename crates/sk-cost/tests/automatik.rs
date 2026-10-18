@@ -411,3 +411,115 @@ fn erdmengen_aus_aufmass_mit_punkten_von_hand() {
         .as_deref()
         .is_some_and(|v| v.contains("davon 1 Punkt von Hand ergänzt (H1)")));
 }
+
+/// Kopie oder Firmenkatalog von Stand 19 kennt `earth.sand` und
+/// `earth.trench_sand` nicht (Review #280 K-280a): Füllsand und Graben im
+/// Füllsand stehen als Zeilen ohne Preis mit Warnung 81 und als Fehler im
+/// LV, nie still und nie mit dem Werkspreis.
+#[test]
+fn erdmenge_ohne_bauleistung_im_katalog() {
+    use sk_cost::lv::{lv_aus, LvWahl};
+    use sk_cost::rechnung::OhneHerkunft;
+    const E25: &str = "1S7bUW001008020000001w";
+    const E35: &str = "1S7bUW001008020000001x";
+    let stand19: String = include_str!("../werk.szk")
+        .lines()
+        .filter(|l| !l.contains(E25) && !l.contains(E35))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let lib = sk_model::read_szk_with(&stand19, &lesen::ABSCHNITTE_SZK).unwrap();
+    let rh1 = || {
+        szo::read_with(RH1, GuidGen::with_seed(1), &lesen::ABSCHNITTE_SZO)
+            .unwrap()
+            .model
+    };
+    let firma = rh1();
+    let mut kopie = rh1();
+    sk_cost::op::kopie_anlegen(&mut kopie, Some(&lib));
+    for m in [firma, kopie] {
+        let k = lesen::katalog(&m, Some(&lib));
+        let b = lesen::kosten(&m, &qto::schedule(&m), &k, &Umfang::projekt());
+        // 79.794,22 € mit E25 und E35, ohne sie fehlen genau deren GP
+        assert_eq!(b.netto.0, 7_775_521, "{:?}", k.quelle);
+        let ohne: Vec<(&str, String)> = b
+            .ohne
+            .iter()
+            .filter_map(|o| match &o.herkunft {
+                OhneHerkunft::Automatik { key, .. } => Some((*key, o.menge.text())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ohne,
+            [
+                ("earth.sand", "47.365".to_string()),
+                ("earth.trench_sand", "7.024".to_string())
+            ]
+        );
+        let w81: Vec<&str> = b
+            .befunde
+            .iter()
+            .filter(|f| f.regel == 81)
+            .map(|f| f.satz.as_str())
+            .collect();
+        assert_eq!(w81.len(), 2, "{w81:?}");
+        assert!(w81[0].starts_with("Ohne Bauleistung: "), "{w81:?}");
+        assert!(
+            w81[0].ends_with(
+                "47,365 m³, keine Bauleistung mit auto=earth.sand im Katalog, die Menge bleibt ohne Preis"
+            ),
+            "{w81:?}"
+        );
+        // im Los der Erdarbeiten, als Fehler: Das LV ist unvollständig
+        let fehler: usize = k
+            .lose
+            .iter()
+            .map(|los| {
+                let w = LvWahl {
+                    los: los.guid,
+                    untertitel: false,
+                    preise: true,
+                    heute: None,
+                };
+                lv_aus(&m, &b, &k, &w)
+                    .befunde
+                    .iter()
+                    .filter(|f| {
+                        f.regel == 81
+                            && f.schwere == sk_cost::befund::Schwere::Fehler
+                            && f.satz.contains("auto=earth.")
+                    })
+                    .count()
+            })
+            .sum();
+        assert_eq!(fehler, 2);
+    }
+}
+
+/// Eine ausgemusterte Bauleistung schaltet ihre Automatikmenge ab und
+/// bleibt still (K-280a): keine Zeile ohne Preis, keine Warnung 81.
+#[test]
+fn ausgemusterte_erdmenge_bleibt_still() {
+    use sk_cost::op::{ausfuehren_folge, Herkunft, HerkunftArt, Op, Rolle, SatzId};
+    use sk_cost::rechnung::OhneHerkunft;
+    let mut m = szo::read_with(RH1, GuidGen::with_seed(1), &lesen::ABSCHNITTE_SZO)
+        .unwrap()
+        .model;
+    let ops = ["1S7bUW001008020000001w", "1S7bUW001008020000001x"].map(|g| Op::Ausmustern {
+        satz: SatzId::neu("service", g),
+    });
+    m.begin("Ausmustern");
+    let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-18", "11:00");
+    ausfuehren_folge(&mut m, None, Rolle::Nutzer, &h, &ops).expect("ausgemustert");
+    m.commit();
+    let b = blatt(&m);
+    assert!(
+        !b.ohne
+            .iter()
+            .any(|o| matches!(o.herkunft, OhneHerkunft::Automatik { .. })),
+        "{:?}",
+        b.ohne
+    );
+    assert!(!b.befunde.iter().any(|f| f.regel == 81), "{:?}", b.befunde);
+    assert_eq!(b.netto.0, 7_775_521);
+}
