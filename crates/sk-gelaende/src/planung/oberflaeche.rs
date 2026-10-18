@@ -163,6 +163,7 @@ pub fn oberflaeche(u: &Abfrage, planungen: &[&Planung]) -> Oberflaeche {
     // gleich, und der Export hat keinen T-Stoß
     for d in verteilt(teile.len(), |r| {
         let mut v = Vec::new();
+        let mut nah: Vec<[f64; 2]> = Vec::new();
         for (t, stuecke) in &teile[r] {
             let mut q: Vec<[f64; 2]> = stuecke.iter().flat_map(|s| s.0.iter().copied()).collect();
             for j in 0..3 {
@@ -171,8 +172,18 @@ pub fn oberflaeche(u: &Abfrage, planungen: &[&Planung]) -> Oberflaeche {
                 }
             }
             q.extend(bei(*t));
+            // nach x sortiert, jeder Punkt einmal: Je Stück kommen nur die
+            // Punkte in seinem Rahmen an seine Kanten (H-276b)
+            q.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+            q.dedup();
             for (ring, h, e) in stuecke {
-                let (ring, mehr) = mit_punkten(ring, &q);
+                let [x0, y0, x1, y1] = rahmen(ring);
+                let r = 1e-6 * (x1 - x0).max(y1 - y0).max(1.0);
+                let i = q.partition_point(|p| p[0] < x0 - r);
+                let j = q.partition_point(|p| p[0] <= x1 + r);
+                nah.clear();
+                nah.extend(q[i..j].iter().filter(|p| p[1] >= y0 - r && p[1] <= y1 + r));
+                let (ring, mehr) = mit_punkten(ring, &nah);
                 for d in faechern(&ring, e, mehr) {
                     v.push((d, *h));
                 }
@@ -290,10 +301,10 @@ fn mit_punkten(ring: &[[f64; 2]], q: &[[f64; 2]]) -> (Vec<[f64; 2]>, bool) {
 }
 
 /// Das konvexe Stück `ring` auf der Ebene `e` in Dreiecke: von der ersten
-/// Ecke, mit Punkten auf den Kanten (`aus_der_mitte`) oder drei Ecken in
-/// einer Linie aus der Mitte, sonst fiele dort ein flaches Dreieck weg und
-/// die Kante stünde offen.
-fn faechern(ring: &[[f64; 2]], e: &Bezug, aus_der_mitte: bool) -> Vec<[[f64; 3]; 3]> {
+/// Ecke; mit Punkten auf den Kanten (`geteilt`) oder drei Ecken in einer
+/// Linie von einer Ecke, an deren Kanten keiner liegt, sonst aus der
+/// Mitte. Ein flaches Dreieck fiele weg, und die Kante stünde offen.
+fn faechern(ring: &[[f64; 2]], e: &Bezug, geteilt: bool) -> Vec<[[f64; 3]; 3]> {
     let n = ring.len();
     let z = |q: [f64; 2]| [q[0], q[1], an(e, q[0], q[1])];
     let p: Vec<[f64; 3]> = ring.iter().map(|&q| z(q)).collect();
@@ -307,10 +318,20 @@ fn faechern(ring: &[[f64; 2]], e: &Bezug, aus_der_mitte: bool) -> Vec<[[f64; 3];
             out.push(d);
         }
     };
-    if n > 3 && (aus_der_mitte || (0..n).any(flach)) {
-        let m = z(mitte(ring));
-        for i in 0..n {
-            dazu([m, p[i], p[(i + 1) % n]]);
+    if n > 3 && (geteilt || (0..n).any(flach)) {
+        // von einer Ecke, deren Nachbarn auch Ecken sind: Dann liegt kein
+        // Punkt auf einer Kante an ihr, und kein Dreieck des Fächers ist
+        // flach (H-276b: zwei Dreiecke weniger als aus der Mitte)
+        let ecke = |i: usize| !flach(i) && !flach((i + 1) % n) && !flach((i + n - 1) % n);
+        if let Some(a) = (0..n).find(|&i| ecke(i)) {
+            for k in 1..n - 1 {
+                dazu([p[a], p[(a + k) % n], p[(a + k + 1) % n]]);
+            }
+        } else {
+            let m = z(mitte(ring));
+            for i in 0..n {
+                dazu([m, p[i], p[(i + 1) % n]]);
+            }
         }
     } else {
         for i in 1..n.saturating_sub(1) {
