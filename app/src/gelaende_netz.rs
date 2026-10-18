@@ -201,11 +201,11 @@ impl Gelaende {
     }
 
     /// Trifft der Sehstrahl von `o` in Richtung `d` die Oberfläche? Ein
-    /// Klick in 3D wählt so das Gelände wie die Platte (I1).
+    /// Klick in 3D wählt so das Gelände wie die Platte (I1). Über das
+    /// Raster wie [`Gelaende::treffpunkt`], nicht über alle Dreiecke
+    /// (Review H-264c).
     pub(crate) fn getroffen(&self, o: Vec3, d: Vec3) -> bool {
-        self.dreiecke
-            .iter()
-            .any(|t| sk_math::ray_triangle(o, d, t[0], t[1], t[2]).is_some())
+        self.treffpunkt(o, d).is_some()
     }
 
     /// Der nächste Punkt, in dem der Sehstrahl von `o` in Richtung `d` die
@@ -1827,6 +1827,7 @@ pub(crate) mod tests {
                     let d = d.normalized();
                     let (a, b) = (g.treffpunkt(o, d), alle(o, d));
                     assert_eq!(a, b, "{o:?} {d:?}");
+                    assert_eq!(g.getroffen(o, d), b.is_some(), "{o:?} {d:?}");
                     treffer += usize::from(a.is_some());
                     n += 1;
                 }
