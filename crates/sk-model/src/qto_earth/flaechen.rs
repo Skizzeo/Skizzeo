@@ -970,11 +970,14 @@ fn rechnen(
     }
 }
 
+/// Ein Ring im Netz (m).
+type Ring = Vec<[f64; 2]>;
+
 /// Die Baufelder der Gründungen `nah` als Ringe und Höfe, die sich nicht
 /// decken: Decken sich zwei, ihre Vereinigung, sonst wie sie sind. Sonst
 /// zählte `erdbau` die Überdeckung je Baufeld als schon abgetragen
 /// (H-288-geo-b).
-fn baufelder_vereint(zonen: &[Zone], nah: &[usize]) -> (Vec<Vec<[f64; 2]>>, Vec<Vec<[f64; 2]>>) {
+fn baufelder_vereint(zonen: &[Zone], nah: &[usize]) -> (Vec<Ring>, Vec<Ring>) {
     let felder: Vec<(&Zone, [f64; 4])> = nah
         .iter()
         .filter_map(|&i| {
