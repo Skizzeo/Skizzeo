@@ -21,6 +21,7 @@ use sk_math::Vec3;
 
 mod flaechen;
 mod netz;
+pub mod ueberdeckung;
 pub(crate) use flaechen::{gelaende_mengen, planungen, Merker as FlaechenMerker};
 pub use flaechen::{
     Gruendung, AUSSERHALB, BEFESTIGT, GANZ_AUSSERHALB, GRUNDSTUECK, GRUNDSTUECK_SCHLUESSEL, KEIL,
@@ -71,6 +72,55 @@ pub(crate) fn ineinander(m: &crate::Model) -> Vec<Ineinander> {
     // mehrere Paare nach Nummer gelesen (VOB H-256a)
     paare.sort_by_cached_key(|x| (nummer(x.haeuser.0), nummer(x.haeuser.1)));
     paare
+}
+
+/// Je Gründung in `gr` die Fläche (mm²), die ihr Baufeld an die Baufelder
+/// daneben abgibt, und der Rechenweg dazu für den Oberboden der Dicke `o`
+/// (mm), je Nachbar eine Zeile „; − Überdeckung mit … (Abstand … m): …
+/// m³“ (H-280-geo-a, VOB 18.10. 15:05): Liegen zwei Häuser näher, als ihre
+/// Baufelder breit sind, zählt das Projekt die Vereinigung, und jedes Haus
+/// gibt die Hälfte der Überdeckung ab ([`ueberdeckung::anteile`]). Häuser,
+/// die ineinander stehen ([`crate::Model::haeuser_ineinander`]), werden
+/// nicht gekürzt; dort steht der Hinweis [`INEINANDER`].
+pub(crate) fn baufelder_teilen(m: &crate::Model, gr: &[&Gruendung], o: f64) -> Vec<(f64, String)> {
+    let ineinander = m.haeuser_ineinander();
+    let haus = |i: usize| gr[i].vorlage.building;
+    let raender: Vec<ueberdeckung::Rand> = gr
+        .iter()
+        .map(|g| ueberdeckung::Rand {
+            umriss: &g.outline,
+            versatz: g.zone.baufeld.max(0.0),
+        })
+        .collect();
+    let anteile = ueberdeckung::anteile(&raender, |i, j| match (haus(i), haus(j)) {
+        (Some(a), Some(b)) => !ineinander.contains(&(a, b)) && !ineinander.contains(&(b, a)),
+        _ => true,
+    });
+    let name = |i: usize, von: usize| match haus(i) {
+        Some(b) if haus(von) != Some(b) => m
+            .building(b)
+            .map_or_else(String::new, |x| format!("{} ({})", x.name, x.number)),
+        _ => format!("Sohlplatte {}", gr[i].vorlage.number),
+    };
+    anteile
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let mut text = String::new();
+            if o > 0.0 {
+                for &(j, f) in &a.ab {
+                    let d = ueberdeckung::abstand(&gr[i].outline, &gr[j].outline);
+                    text += &format!(
+                        "; − Überdeckung mit {} (Abstand {} m): {} m³",
+                        name(j, i),
+                        zahl(d, 1e3),
+                        zahl(f * o, 1e9)
+                    );
+                }
+            }
+            (a.summe_ab(), text)
+        })
+        .collect()
 }
 
 pub use netz::{
@@ -1010,6 +1060,93 @@ mod tests {
             }
         }
         assert_eq!(n, 40);
+    }
+
+    /// Zwei Häuser 8 × 10 m nebeneinander (Sonde #280, H-280-geo-a): Der
+    /// Oberboden zählt die Vereinigung der Baufelder (1,50 m um die
+    /// Platte), mit und ohne Netz. Jedes Haus gibt die Hälfte des
+    /// Streifens ab und nennt sie im Rechenweg; mit dem Netz andecken die
+    /// Baufelder ebenso nur einmal.
+    #[test]
+    fn oberboden_zweier_haeuser_einmal() {
+        use crate::Model;
+        use sk_math::vec3;
+        fn modell(haeuser: &[f64], netz: bool) -> Model {
+            let mut m = Model::with_seed(5);
+            for &x in haeuser {
+                let b = m.add_building(1);
+                let pts = [
+                    vec3(x, 0.0, 0.0),
+                    vec3(x + 8000.0, 0.0, 0.0),
+                    vec3(x + 8000.0, 10000.0, 0.0),
+                    vec3(x, 10000.0, 0.0),
+                ];
+                m.build_from_polygon(b, &pts).unwrap();
+                m.begin("G");
+                m.set_terrain_offset_of(b, 500.0);
+                m.commit();
+            }
+            if netz {
+                m.begin("F");
+                assert!(m.seed_flat_terrain(&[]));
+                m.commit();
+            }
+            m
+        }
+        let ob = |m: &Model| -> Vec<(f64, String)> {
+            crate::qto::schedule(m)
+                .auto
+                .iter()
+                .filter(|a| a.key == TOPSOIL)
+                .map(|a| (a.value, a.formula.clone()))
+                .collect()
+        };
+        // Plattenumriss als Rechteck [x0, y0, x1, y1]
+        let rahmen = |g: &crate::GroundBasis| {
+            g.outline
+                .iter()
+                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |r, p| {
+                    [r[0].min(p.x), r[1].min(p.y), r[2].max(p.x), r[3].max(p.y)]
+                })
+        };
+        let (o, x) = (Boden::default().oberboden, Boden::default().rand);
+        for netz in [false, true] {
+            let ein = ob(&modell(&[0.0], netz));
+            assert_eq!(ein.len(), 1);
+            for spalt in [0.0, 315.0, 630.0, 1500.0, 2500.0, 4000.0] {
+                let m = modell(&[0.0, 8000.0 + spalt], netz);
+                let zwei = ob(&m);
+                assert_eq!(zwei.len(), 2);
+                let mut r: Vec<[f64; 4]> = m.ground_bases().iter().map(rahmen).collect();
+                r.sort_by(|a, b| a[0].total_cmp(&b[0]));
+                let d = r[1][0] - r[0][2];
+                // ineinander: nichts gekürzt, dort steht der Hinweis
+                let streifen = if m.haeuser_ineinander().is_empty() {
+                    (2.0 * x - d).max(0.0) * (r[0][3] - r[0][1] + 2.0 * x) * o
+                } else {
+                    assert!(d <= 0.0, "{spalt}");
+                    0.0
+                };
+                let summe = zwei[0].0 + zwei[1].0;
+                assert!(
+                    (summe - (2.0 * ein[0].0 - streifen)).abs() < 1e-6 * ein[0].0,
+                    "{netz} {spalt}: {summe} {}",
+                    2.0 * ein[0].0 - streifen
+                );
+                for (v, f) in &zwei {
+                    assert!((v - (ein[0].0 - streifen / 2.0)).abs() < 1e-6 * ein[0].0);
+                    assert_eq!(f.contains("− Überdeckung mit"), streifen > 0.0, "{f}");
+                }
+                if streifen > 0.0 {
+                    let text = format!(
+                        "(Abstand {} m): {} m³",
+                        zahl(d, 1e3),
+                        zahl(streifen / 2.0, 1e9)
+                    );
+                    assert!(zwei[0].1.contains(&text), "{} / {text}", zwei[0].1);
+                }
+            }
+        }
     }
 
     /// Der Rechenweg der Auskofferung nennt OK Gelände und den Oberboden

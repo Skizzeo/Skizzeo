@@ -2489,10 +2489,30 @@ fn zusammenfuehren_im_gang(
             s.index(),
         )
     });
+    // Baufelder naher Häuser, die sich überdecken, zählen einmal
+    // (H-280-geo-a): Jedes Haus gibt die Hälfte ab, am Oberboden steht es
+    // im Rechenweg
+    let boden = model.project().soil;
+    let o = boden.oberboden.max(0.0);
+    let geteilt = crate::qto_earth::baufelder_teilen(
+        model,
+        &platten.iter().map(|x| &x.2).collect::<Vec<_>>(),
+        o,
+    );
     let mut gruende: Vec<crate::qto_earth::Gruendung> = Vec::with_capacity(platten.len());
-    for (_, mengen, g) in platten {
-        sched.auto.extend(mengen.iter().cloned());
-        gruende.push(g.clone());
+    for ((_, mengen, g), (ab, text)) in platten.into_iter().zip(geteilt) {
+        for r in mengen {
+            let mut r = r.clone();
+            if r.key == crate::qto_earth::TOPSOIL && ab > 0.0 {
+                r.value -= ab * o;
+                r.formula += &text;
+            }
+            sched.auto.push(r);
+        }
+        gruende.push(crate::qto_earth::Gruendung {
+            abgegeben: ab,
+            ..g.clone()
+        });
     }
     // Geländeflächen (G3b) mit der Bilanz über alle Gründungen, in fester
     // Reihenfolge wie der Träger: nach Speichern und Öffnen verteilt sie
@@ -2501,7 +2521,6 @@ fn zusammenfuehren_im_gang(
     if flaechen {
         gruende.sort_by_cached_key(|g| model.element(g.vorlage.element).map(rang));
     }
-    let boden = model.project().soil;
     crate::qto_earth::gelaende_mengen(
         model,
         &gruende,
@@ -2648,6 +2667,7 @@ fn platten_mengen(
             vorlage: vorlage.clone(),
             outline: g.outline.clone(),
             zone,
+            abgegeben: 0.0,
         };
         let b = gebaeude_von(run);
         // ohne Gebäude zählt jede Platte für sich
