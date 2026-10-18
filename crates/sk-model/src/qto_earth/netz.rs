@@ -496,7 +496,7 @@ pub(super) fn mengen(
 ) -> Option<ErdZone> {
     let o = boden.oberboden.max(0.0);
     let a = boden.arbeitsraum.max(0.0);
-    let g = boden.tragschicht.max(0.0);
+    let g = boden.schicht();
     let fl = b.slab_area;
     let z_s = b.slab_bottom_z;
     let z_b = b.insulation_bottom_z.min(z_s);
@@ -565,11 +565,7 @@ pub(super) fn mengen(
         );
     }
     if bett > 0.0 {
-        let wofuer = if z_b < z_s {
-            "Dämmung und Schicht"
-        } else {
-            "Schicht"
-        };
+        let wofuer = super::ausgehoben_fuer(z_b < z_s, boden.kies);
         menge(
             EXCAVATION,
             bett,
@@ -591,14 +587,15 @@ pub(super) fn mengen(
             )),
         );
     }
-    super::planum(innen_fl, g, menge);
+    super::planum(innen_fl, g, boden.kies, menge);
     if auf > 0.0 {
         menge(
             FILL,
             auf,
             format!(
-                "{} m² bis UK Schicht, im Mittel {}{verfahren}",
+                "{} m² bis {}, im Mittel {}{verfahren}",
                 zahl(innen_fl, 1e6),
+                super::aufgefuellt_bis(z_b < z_s, boden.kies),
                 mittel(auf, innen_fl)
             ),
         );

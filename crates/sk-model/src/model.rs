@@ -556,6 +556,9 @@ impl Model {
         if let Some(id) = m.type_by_guid(ETICS_TYPE_GUID) {
             m.defaults.exterior_wall = id;
         }
+        // ohne kapillarbrechende Schicht (Jörn 17.10.), Tests mit festem
+        // Startwert behalten sie
+        m.project.soil.kies = false;
         m
     }
 
