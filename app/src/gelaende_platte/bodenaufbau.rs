@@ -235,12 +235,6 @@ fn eckabstand(r: &[P2], q: P2) -> f64 {
     if n < 3 {
         return abstand(r, q);
     }
-    let flaeche: f64 = (0..n)
-        .map(|i| {
-            let (a, b) = (r[i], r[(i + 1) % n]);
-            a[0] * b[1] - b[0] * a[1]
-        })
-        .sum();
     let (mut d, mut ecke) = (f64::INFINITY, None);
     for i in 0..n {
         let (a, b) = (r[i], r[(i + 1) % n]);
@@ -269,6 +263,13 @@ fn eckabstand(r: &[P2], q: P2) -> f64 {
     };
     let (a, c, b) = (r[(v + n - 1) % n], r[v], r[(v + 1) % n]);
     let kreuz = (c[0] - a[0]) * (b[1] - c[1]) - (c[1] - a[1]) * (b[0] - c[0]);
+    // Umlaufsinn erst hier: die meisten Stellen liegen an einer Kante
+    let flaeche: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (r[i], r[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
     if kreuz * flaeche <= 0.0 {
         return d;
     }
@@ -994,10 +995,10 @@ mod tests {
             assert!((eckabstand(p, [4500.0, -500.0]) - 500.0).abs() < 1e-9);
             assert!((eckabstand(p, [4300.0, -500.0]) - 500.0).abs() < 1e-9);
             assert!((eckabstand(p, [2000.0, -500.0]) - 500.0).abs() < 1e-9);
-            // einspringende Ecke (2000, 2000): Abstand zur Ecke
+            // an der einspringenden Ecke (2000, 2000) die nähere Kante
             let q = [2300.0, 2400.0];
             assert!(
-                (eckabstand(p, q) - 500.0).abs() < 1e-9,
+                (eckabstand(p, q) - 300.0).abs() < 1e-9,
                 "{}",
                 eckabstand(p, q)
             );
