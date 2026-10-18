@@ -240,20 +240,30 @@ impl Gelaende {
                 *w = true;
             }
         }
+        // die Dreiecke daneben mit den Ecken der Stücke auf der Kante: Sie
+        // bleiben Urgelände (Höhenlinien und -zahlen wie bisher), aber ohne
+        // T-Stoß (G-275a)
+        let mut naht = vec![false; dreiecke.len()];
+        for (i, _) in &plan.seam {
+            if let (Some(w), Some(n)) = (weg.get_mut(*i as usize), naht.get_mut(*i as usize)) {
+                *w = true;
+                *n = true;
+            }
+        }
         // geglättet (Jörn 17.10.): Ersetzte Dreiecke bleiben eben, ihre
         // Kanten gerade, so schließt das Planungsgelände ohne Spalt an
         let (glatt, je) = m.terrain_triangles_smooth(&weg, GLATT_HOECHSTENS);
         if je > 1 {
             dreiecke = glatt;
-            weg = weg
-                .iter()
-                .flat_map(|&w| std::iter::repeat_n(w, je))
-                .collect();
+            let mal = |v: &[bool]| -> Vec<bool> {
+                v.iter().flat_map(|&w| std::iter::repeat_n(w, je)).collect()
+            };
+            (weg, naht) = (mal(&weg), mal(&naht));
         }
         let ur: Vec<[Vec3; 3]> = dreiecke
             .iter()
-            .zip(&weg)
-            .filter_map(|(d, w)| w.then_some(*d))
+            .zip(weg.iter().zip(&naht))
+            .filter_map(|(d, (w, n))| (*w && !*n).then_some(*d))
             .collect();
         let rand: Vec<(Vec3, Vec3)> = if ur.is_empty() {
             m.terrain_border()
@@ -269,6 +279,7 @@ impl Gelaende {
                 k += 1;
                 !weg[k - 1]
             });
+            dreiecke.extend(plan.seam.iter().flat_map(|x| x.1.iter().copied()));
         }
         // Höhenlinien auf dem geglätteten Gelände je Dreieck, nicht die des
         // Aufmaßes: Die lägen neben oder unter der runden Fläche
@@ -2123,6 +2134,43 @@ pub(crate) mod tests {
         }
     }
 
+    /// Mit Geländeflächen ist der Export dicht (G-275a: mit den ersten
+    /// beiden vorher 191 offene Kanten, T-Stöße der Stücke gegen die
+    /// Dreiecke daneben und untereinander): eine über, eine unter dem
+    /// Gelände, mit Böschung, und eine dritte mit senkrechtem Rand über der
+    /// ersten (Wände, an ihren Ecken drei Höhen an einer Stelle).
+    #[test]
+    fn export_mit_flaechen_dicht() {
+        let mut m = lindenhof();
+        for (dz, [x0, y0], [w, h], senkrecht) in [
+            (600.0, [9_000.0, 1_000.0], [6_000.0, 3_000.0], false),
+            (-400.0, [1_000.0, 1_000.0], [6_000.0, 3_000.0], false),
+            (300.0, [12_000.0, 2_000.0], [4_000.0, 3_500.0], true),
+        ] {
+            let z = m.terrain_z_at(None, x0 + w / 2.0, y0 + h / 2.0) + dz;
+            let r = vec![[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]];
+            let mut f = sk_model::TerrainPatch::flat(r, z);
+            if senkrecht {
+                f.slopes = vec![0.0];
+            }
+            m.begin("Fläche");
+            assert!(m.add_site_patch(f).is_some());
+            m.commit();
+        }
+        let plan = m.planned_terrain().unwrap();
+        assert!(!plan.walls.is_empty() && !plan.seam.is_empty());
+        for show in [Show::All, Show::Parcel] {
+            let mut g = Gelaende::aus(&m).unwrap();
+            g.show = show;
+            let offen = offene_kanten(&export_koerper(g, [10, 11]));
+            assert!(
+                offen.is_empty(),
+                "{show:?}: {} offen, {offen:?}",
+                offen.len()
+            );
+        }
+    }
+
     fn flaeche(d: &[[Vec3; 3]]) -> f64 {
         d.iter()
             .map(|t| (t[1] - t[0]).cross(t[2] - t[0]).z.abs() / 2.0)
@@ -2762,7 +2810,8 @@ pub(crate) mod tests {
             .any(|p| (p.z - z).abs() < 1e-6 && (p.x - 12_000.0).abs() < 3_000.0));
         // der Rand bleibt der Rand des Netzes: die geteilten Kanten am
         // ersetzten Bereich sind keiner (sonst Seiten und Kanten mitten im
-        // Gelände)
+        // Gelände); seit G-275a haben sie keinen T-Stoß mehr, so findet
+        // auch die Suche über die Dreiecke nur den Rand
         let lang = |r: &[(Vec3, Vec3)]| -> f64 {
             r.iter()
                 .map(|(a, b)| ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt())
@@ -2770,7 +2819,11 @@ pub(crate) mod tests {
         };
         let soll = lang(&randkanten(&ohne.dreiecke));
         assert!((lang(g.rand.as_ref().unwrap()) - soll).abs() < 1.0);
-        assert!(lang(&randkanten(&g.dreiecke)) > soll + 1_000.0);
+        let ueber_dreiecke = lang(&randkanten(&g.dreiecke));
+        assert!(
+            (ueber_dreiecke - soll).abs() < 1.0,
+            "{ueber_dreiecke} {soll}"
+        );
         // mit Böschung keine Stufe: Wände nur an den Füßen, die die
         // Planung im Meter tastet (Review #183 H-183g, wenige cm)
         for t in &g.waende {

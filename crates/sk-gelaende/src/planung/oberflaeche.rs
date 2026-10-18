@@ -47,6 +47,11 @@ pub struct Oberflaeche {
     /// Kanten der Stücke auf dem Rand des Netzes, in seinem Umlauf (Inneres
     /// links), auf ihrer Höhe.
     pub rand: Vec<[[f64; 3]; 2]>,
+    /// Dreiecke des Urgeländes neben den ersetzten, die bleiben, aber auf
+    /// der gemeinsamen Kante Ecken der Stücke daneben haben: ihre Nummer
+    /// und sie neu mit diesen Punkten, in ihrer Ebene, aufsteigend (G-275a:
+    /// sonst ein T-Stoß, im Export eine offene Kante).
+    pub naht: Vec<(u32, Vec<[[f64; 3]; 3]>)>,
 }
 
 /// Unter dieser Fläche (m²) gilt ein Stück als leer.
@@ -126,31 +131,191 @@ pub fn oberflaeche(u: &Abfrage, planungen: &[&Planung]) -> Oberflaeche {
             .ok()
             .map(|j| teile[j].1.as_slice())
     };
+    // erst Wände und Rand, dabei je Dreieck die Punkte, die es auf seinen
+    // Kanten noch braucht: wo sich die Höhen an einer Wand kreuzen, und bei
+    // einem Dreieck, das bleibt, die Ecken der Stücke daneben (G-275a)
     let mut out = Oberflaeche::default();
-    for o in verteilt(teile.len(), |r| {
+    let mut punkte: Vec<(u32, [f64; 2])> = Vec::new();
+    for (o, p) in verteilt(teile.len(), |r| {
         let mut out = Oberflaeche::default();
+        let mut p = Vec::new();
         for (t, stuecke) in &teile[r] {
             out.ersetzt.push(*t);
-            kanten(u, *t, stuecke, &von, &mut out);
+            kanten(u, *t, stuecke, &von, &mut out, &mut p);
+        }
+        (out, p)
+    }) {
+        out.ersetzt.extend(o.ersetzt);
+        out.waende.extend(o.waende);
+        out.rand.extend(o.rand);
+        punkte.extend(p);
+    }
+    senkrecht_teilen(&mut out.waende);
+    punkte.sort_by_key(|x| x.0);
+    let punkte = &punkte;
+    let bei = |t: u32| {
+        let a = punkte.partition_point(|x| x.0 < t);
+        let b = punkte.partition_point(|x| x.0 <= t);
+        punkte[a..b].iter().map(|x| x.1)
+    };
+    // dann die Stücke, auf ihren Kanten mit den Ecken der Stücke daneben,
+    // im Dreieck und über seine Kanten: So teilen beide Seiten jede Kante
+    // gleich, und der Export hat keinen T-Stoß
+    for d in verteilt(teile.len(), |r| {
+        let mut v = Vec::new();
+        for (t, stuecke) in &teile[r] {
+            let mut q: Vec<[f64; 2]> = stuecke.iter().flat_map(|s| s.0.iter().copied()).collect();
+            for j in 0..3 {
+                if let Some(s) = u.nachbar(*t, j).and_then(&von) {
+                    q.extend(s.iter().flat_map(|s| s.0.iter().copied()));
+                }
+            }
+            q.extend(bei(*t));
             for (ring, h, e) in stuecke {
-                let p: Vec<[f64; 3]> = ring
-                    .iter()
-                    .map(|q| [q[0], q[1], an(e, q[0], q[1])])
-                    .collect();
-                for i in 1..p.len().saturating_sub(1) {
-                    let d = [p[0], p[i], p[i + 1]];
-                    if flaeche(&d.map(|q| [q[0], q[1]])) > LEER {
-                        out.dreiecke.push((d, *h));
-                    }
+                let (ring, mehr) = mit_punkten(ring, &q);
+                for d in faechern(&ring, e, mehr) {
+                    v.push((d, *h));
                 }
             }
         }
-        out
+        v
     }) {
-        out.ersetzt.extend(o.ersetzt);
-        out.dreiecke.extend(o.dreiecke);
-        out.waende.extend(o.waende);
-        out.rand.extend(o.rand);
+        out.dreiecke.extend(d);
+    }
+    // die Dreiecke daneben, die bleiben, mit den Punkten auf ihren Kanten
+    let mut naht: Vec<u32> = punkte.iter().map(|x| x.0).collect();
+    naht.dedup();
+    for t in naht.into_iter().filter(|&t| von(t).is_none()) {
+        let d = u.punkte_von(t);
+        let mut ring: Vec<[f64; 2]> = d.iter().map(|q| [q[0], q[1]]).collect();
+        if kreuz(ring[0], ring[1], ring[2]) < 0.0 {
+            ring.reverse();
+        }
+        let q: Vec<[f64; 2]> = bei(t).collect();
+        let (ring, mehr) = mit_punkten(&ring, &q);
+        if mehr {
+            out.naht.push((t, faechern(&ring, &ebene_durch(&d), true)));
+        }
+    }
+    out
+}
+
+/// Die senkrechten Kanten der Wände an jeder Höhe, auf der an derselben
+/// Stelle eine andere Wand eine Ecke hat: Treffen sich an einer Stelle drei
+/// Höhen (Böschung auf Böschung, Wände an einer Ecke), stieße sonst die
+/// lange Kante der einen an die beiden kurzen der anderen (G-275a). Stellen
+/// auf 1 nm gleich.
+fn senkrecht_teilen(waende: &mut Vec<[[f64; 3]; 3]>) {
+    let k = |p: &[f64; 3]| [p[0], p[1]].map(|v| (v * 1e9).round() as i64);
+    let mut hoehen: HashMap<[i64; 2], Vec<f64>> = HashMap::new();
+    for w in waende.iter() {
+        for p in w {
+            hoehen.entry(k(p)).or_default().push(p[2]);
+        }
+    }
+    let mut mehr = false;
+    for z in hoehen.values_mut() {
+        z.sort_by(f64::total_cmp);
+        z.dedup_by(|x, y| (*x - *y).abs() < GLEICH);
+        mehr |= z.len() > 2;
+    }
+    if !mehr {
+        return;
+    }
+    let mut neu = Vec::with_capacity(waende.len());
+    for w in waende.drain(..) {
+        // die senkrechte Kante i → i + 1 und die Höhen dazwischen
+        let teil = (0..3).find_map(|i| {
+            let (a, b) = (w[i], w[(i + 1) % 3]);
+            if k(&a) != k(&b) {
+                return None;
+            }
+            let (lo, hi) = (a[2].min(b[2]), a[2].max(b[2]));
+            let mut z: Vec<f64> = hoehen[&k(&a)]
+                .iter()
+                .copied()
+                .filter(|&z| z > lo + GLEICH && z < hi - GLEICH)
+                .collect();
+            if a[2] > b[2] {
+                z.reverse();
+            }
+            (!z.is_empty()).then_some((i, z))
+        });
+        let Some((i, z)) = teil else {
+            neu.push(w);
+            continue;
+        };
+        let (a, b, c) = (w[i], w[(i + 1) % 3], w[(i + 2) % 3]);
+        let mut von = a;
+        for z in z.into_iter().chain([b[2]]) {
+            let bis = if z == b[2] { b } else { [a[0], a[1], z] };
+            neu.push([von, bis, c]);
+            von = bis;
+        }
+    }
+    *waende = neu;
+}
+
+/// Das konvexe Stück `ring` mit den Punkten `q`, die innen auf seinen
+/// Kanten liegen, dazwischen; `true`, wenn welche dazukamen. Die Punkte
+/// bleiben, wie sie sind, so sind sie in beiden Stücken an der Kante gleich.
+fn mit_punkten(ring: &[[f64; 2]], q: &[[f64; 2]]) -> (Vec<[f64; 2]>, bool) {
+    let mut neu = Vec::with_capacity(ring.len());
+    let mut mehr = false;
+    let n = ring.len();
+    for k in 0..n {
+        let (a, b) = (ring[k], ring[(k + 1) % n]);
+        neu.push(a);
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let l2 = d[0] * d[0] + d[1] * d[1];
+        if l2 < LEER {
+            continue;
+        }
+        let l = l2.sqrt();
+        let mut ts: Vec<(f64, [f64; 2])> = q
+            .iter()
+            .filter_map(|&p| {
+                let w = [p[0] - a[0], p[1] - a[1]];
+                let s = (w[0] * d[0] + w[1] * d[1]) / l2;
+                let quer = (w[0] * d[1] - w[1] * d[0]) / l;
+                (quer.abs() < 1e-9 && s > 1e-9 && s < 1.0 - 1e-9).then_some((s, p))
+            })
+            .collect();
+        ts.sort_by(|x, y| x.0.total_cmp(&y.0));
+        ts.dedup_by(|x, y| (x.0 - y.0).abs() < 1e-12);
+        mehr |= !ts.is_empty();
+        neu.extend(ts.into_iter().map(|x| x.1));
+    }
+    (neu, mehr)
+}
+
+/// Das konvexe Stück `ring` auf der Ebene `e` in Dreiecke: von der ersten
+/// Ecke, mit Punkten auf den Kanten (`aus_der_mitte`) oder drei Ecken in
+/// einer Linie aus der Mitte, sonst fiele dort ein flaches Dreieck weg und
+/// die Kante stünde offen.
+fn faechern(ring: &[[f64; 2]], e: &Bezug, aus_der_mitte: bool) -> Vec<[[f64; 3]; 3]> {
+    let n = ring.len();
+    let z = |q: [f64; 2]| [q[0], q[1], an(e, q[0], q[1])];
+    let p: Vec<[f64; 3]> = ring.iter().map(|&q| z(q)).collect();
+    let flach =
+        |i: usize| flaeche(&[ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]]).abs() <= LEER;
+    let mut out = Vec::with_capacity(n);
+    // auch winzige Dreiecke eines Stücks über LEER: Fehlten sie, stünden
+    // ihre Kanten offen
+    let mut dazu = |d: [[f64; 3]; 3]| {
+        if flaeche(&d.map(|q| [q[0], q[1]])) > LEER * LEER {
+            out.push(d);
+        }
+    };
+    if n > 3 && (aus_der_mitte || (0..n).any(flach)) {
+        let m = z(mitte(ring));
+        for i in 0..n {
+            dazu([m, p[i], p[(i + 1) % n]]);
+        }
+    } else {
+        for i in 1..n.saturating_sub(1) {
+            dazu([p[0], p[i], p[i + 1]]);
+        }
     }
     out
 }
@@ -191,13 +356,17 @@ type Stueck = (Vec<[f64; 2]>, Herkunft, Bezug);
 /// `von`) vom Dreieck mit der kleineren Nummer, gegen ein Dreieck, das
 /// bleibt, gegen dessen Urgelände. Eine Kante wird an den Ecken der Stücke
 /// auf ihr geteilt; je Abschnitt gilt draußen das Stück an seiner Mitte.
-/// Kanten auf dem Rand des Netzes kommen in [`Oberflaeche::rand`].
+/// Kanten auf dem Rand des Netzes kommen in [`Oberflaeche::rand`]. Nach
+/// `punkte` kommen je Dreieck die Punkte, die seine Stücke oder es selbst
+/// auf den Kanten noch brauchen: wo sich die Höhen an einer Wand kreuzen,
+/// und für ein Dreieck daneben, das bleibt, die Enden der Kanten der Stücke.
 fn kanten<'a>(
     u: &Abfrage,
     t: u32,
     stuecke: &[Stueck],
     von: &impl Fn(u32) -> Option<&'a [Stueck]>,
     out: &mut Oberflaeche,
+    punkte: &mut Vec<(u32, [f64; 2])>,
 ) {
     let d3 = u.punkte_von(t);
     let ecken = d3.map(|q| [q[0], q[1]]);
@@ -243,15 +412,19 @@ fn kanten<'a>(
                         let ee = ebene_durch(&u.punkte_von(nb));
                         let zi = [an(e, a[0], a[1]), an(e, b[0], b[1])];
                         let zj = [an(&ee, a[0], a[1]), an(&ee, b[0], b[1])];
-                        wand(a, b, zi, zj, &mut out.waende);
+                        punkte.extend([(nb, a), (nb, b)]);
+                        if let Some(c) = wand(a, b, zi, zj, &mut out.waende) {
+                            punkte.extend([(t, c), (nb, c)]);
+                        }
                         continue;
                     }
                 },
                 None => stuecke,
             };
             let innen = kante.is_none();
-            // Teilpunkte: Ecken der Stücke draußen auf der Kante
-            let mut ts = vec![0.0, 1.0];
+            // Teilpunkte: Ecken der Stücke draußen auf der Kante, wie sie
+            // sind (in den Stücken dieselben Punkte)
+            let mut ts = vec![(0.0, a), (1.0, b)];
             for (j, (rj, _, _)) in draussen.iter().enumerate() {
                 if innen && j == i {
                     continue;
@@ -261,18 +434,18 @@ fn kanten<'a>(
                     let s = (w[0] * d[0] + w[1] * d[1]) / l2;
                     let quer = (w[0] * d[1] - w[1] * d[0]) / l;
                     if quer.abs() < 1e-9 && s > 1e-9 && s < 1.0 - 1e-9 {
-                        ts.push(s);
+                        ts.push((s, *q));
                     }
                 }
             }
-            ts.sort_by(f64::total_cmp);
-            ts.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
+            ts.sort_by(|x, y| x.0.total_cmp(&y.0));
+            ts.dedup_by(|x, y| (x.0 - y.0).abs() < 1e-12);
             // draußen ist rechts der Kante (Stücke gegen den Uhrzeigersinn)
             let o = [d[1] / l * 1e-7, -d[0] / l * 1e-7];
             for w in ts.windows(2) {
                 let pt = |s: f64| [a[0] + d[0] * s, a[1] + d[1] * s];
-                let (pa, pb) = (pt(w[0]), pt(w[1]));
-                let m = pt((w[0] + w[1]) / 2.0);
+                let (pa, pb) = (w[0].1, w[1].1);
+                let m = pt((w[0].0 + w[1].0) / 2.0);
                 let q = [m[0] + o[0], m[1] + o[1]];
                 let Some((j, (_, _, ee))) = draussen
                     .iter()
@@ -287,7 +460,12 @@ fn kanten<'a>(
                 }
                 let zi = [an(e, pa[0], pa[1]), an(e, pb[0], pb[1])];
                 let zj = [an(ee, pa[0], pa[1]), an(ee, pb[0], pb[1])];
-                wand(pa, pb, zi, zj, &mut out.waende);
+                if let Some(c) = wand(pa, pb, zi, zj, &mut out.waende) {
+                    punkte.push((t, c));
+                    if let Some(Some(nb)) = kante.map(|j| u.nachbar(t, j)) {
+                        punkte.push((nb, c));
+                    }
+                }
             }
         }
     }
@@ -295,11 +473,18 @@ fn kanten<'a>(
 
 /// Wand über der Strecke `a`→`b` zwischen den Höhen `zi` (links, innen)
 /// und `zj` (rechts) an ihren Enden; die Normale zeigt zur tieferen Seite.
-/// Kreuzen sich die Höhen, zwei Dreiecke mit je eigener Seite.
-fn wand(a: [f64; 2], b: [f64; 2], zi: [f64; 2], zj: [f64; 2], out: &mut Vec<[[f64; 3]; 3]>) {
+/// Kreuzen sich die Höhen, zwei Dreiecke mit je eigener Seite; dann der
+/// Punkt, an dem sie sich kreuzen (die Stücke beider Seiten brauchen ihn).
+fn wand(
+    a: [f64; 2],
+    b: [f64; 2],
+    zi: [f64; 2],
+    zj: [f64; 2],
+    out: &mut Vec<[[f64; 3]; 3]>,
+) -> Option<[f64; 2]> {
     let (da, db) = (zi[0] - zj[0], zi[1] - zj[1]);
     if da.abs() < GLEICH && db.abs() < GLEICH {
-        return;
+        return None;
     }
     let p = |q: [f64; 2], z: f64| [q[0], q[1], z];
     // links höher: Normale nach rechts (draußen)
@@ -312,7 +497,8 @@ fn wand(a: [f64; 2], b: [f64; 2], zi: [f64; 2], zj: [f64; 2], out: &mut Vec<[[f6
             u[2] * v[0] - u[0] * v[2],
             u[0] * v[1] - u[1] * v[0],
         ];
-        if n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < LEER * LEER {
+        // (auch eine winzige Wand: Fehlte sie, stünden ihre Kanten offen)
+        if n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < (LEER * LEER).powi(2) {
             return;
         }
         out.push(if rechts { d } else { [d[0], d[2], d[1]] });
@@ -329,7 +515,7 @@ fn wand(a: [f64; 2], b: [f64; 2], zi: [f64; 2], zj: [f64; 2], out: &mut Vec<[[f6
         if hi[0] - lo[0] > GLEICH {
             dazu(out, [p(a, lo[0]), p(b, hi[1]), p(a, hi[0])], rechts);
         }
-        return;
+        return None;
     }
     // die Höhen kreuzen sich bei s
     let s = da / (da - db);
@@ -339,6 +525,7 @@ fn wand(a: [f64; 2], b: [f64; 2], zi: [f64; 2], zj: [f64; 2], out: &mut Vec<[[f6
     let (lo_b, hi_b) = (zi[1].min(zj[1]), zi[1].max(zj[1]));
     dazu(out, [p(a, lo_a), p(c, zc), p(a, hi_a)], da > 0.0);
     dazu(out, [p(c, zc), p(b, lo_b), p(b, hi_b)], db > 0.0);
+    Some(c)
 }
 
 /// Kreuzprodukt (b − a) × (c − a).
@@ -730,8 +917,10 @@ mod tests {
         }
     }
 
-    /// Die neuen Dreiecke decken genau die ersetzten.
+    /// Die neuen Dreiecke decken genau die ersetzten, und das Netz hat
+    /// keinen T-Stoß ([`ohne_t_stoss`]).
     fn deckt(u: &Abfrage, o: &Oberflaeche) {
+        ohne_t_stoss(u, o);
         let alt: f64 = o
             .ersetzt
             .iter()
@@ -748,6 +937,57 @@ mod tests {
                 - (d[1][1] - d[0][1]) * (d[2][0] - d[0][0]);
             assert!(a2 > 0.0, "gegen den Uhrzeigersinn");
         }
+    }
+
+    /// Mit den Dreiecken, die bleiben, den neu geteilten daneben und den
+    /// Wänden hat jede Kante zwei Dreiecke, außer am Rand des Netzes: Kein
+    /// Punkt liegt mitten auf der Kante eines anderen Dreiecks (G-275a, im
+    /// Export sonst eine offene Kante). Punkte auf 1 nm verschweißt.
+    fn ohne_t_stoss(u: &Abfrage, o: &Oberflaeche) {
+        let naht: Vec<u32> = o.naht.iter().map(|x| x.0).collect();
+        let bleibt =
+            |t: &u32| o.ersetzt.binary_search(t).is_err() && naht.binary_search(t).is_err();
+        let mut d: Vec<[[f64; 3]; 3]> = u
+            .nummern_unter(&rechteck(-1e3, -1e3, 1e3, 1e3))
+            .iter()
+            .filter(|t| bleibt(t))
+            .map(|&t| u.punkte_von(t))
+            .collect();
+        d.extend(o.dreiecke.iter().map(|x| x.0));
+        d.extend(o.naht.iter().flat_map(|x| x.1.iter().copied()));
+        d.extend(o.waende.iter().copied());
+        let k = |p: [f64; 3]| p.map(|v| (v * 1e9).round() as i64);
+        let mut n = HashMap::new();
+        for t in &d {
+            for i in 0..3 {
+                let (p, q) = (t[i], t[(i + 1) % 3]);
+                let (a, b) = (k(p), k(q));
+                if a != b {
+                    n.entry(if a < b { (a, b) } else { (b, a) })
+                        .or_insert((0u32, [p, q]))
+                        .0 += 1;
+                }
+            }
+        }
+        let rand: Vec<[[f64; 3]; 2]> = u.randkanten().map(|x| x.1).collect();
+        let am_rand = |p: [f64; 3]| {
+            rand.iter().any(|[a, b]| {
+                let (a, b) = ([a[0], a[1]], [b[0], b[1]]);
+                let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+                kreuz(a, b, [p[0], p[1]]).abs() < 1e-9 * l
+            })
+        };
+        let offen: Vec<[[f64; 3]; 2]> = n
+            .into_values()
+            .filter(|(c, [p, q])| *c == 1 && !(am_rand(*p) && am_rand(*q)))
+            .map(|x| x.1)
+            .collect();
+        assert!(
+            offen.is_empty(),
+            "{} offen: {:?}",
+            offen.len(),
+            &offen[..offen.len().min(6)]
+        );
     }
 
     #[test]
