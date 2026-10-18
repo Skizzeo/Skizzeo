@@ -1294,7 +1294,7 @@ impl App {
     /// abgewählt und neu zu rechnen (geladene Dateien beginnen alle bei
     /// Revision 0, sonst zeigte B die Platte von A).
     pub(crate) fn baum_neu(&mut self) {
-        self.tree.reset();
+        self.baum.panel.reset();
         self.platte = Platte::default();
         // die Kacheln des alten Projekts (Review #139 N3)
         self.renderer.set_unterlage(&[]);
