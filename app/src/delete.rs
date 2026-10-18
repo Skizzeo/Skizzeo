@@ -1359,4 +1359,29 @@ mod tests {
         let r = zu.rect(&t, 1.0);
         assert!(r.x + r.w <= 1440.0 && r.y + r.h <= 900.0, "{r:?}");
     }
+
+    /// Rechtsklick ins Leere in 3D und Schnitt: die acht Bauphasen, die
+    /// gezeigte mit Häkchen, jede Zeile springt in ihre Phase.
+    #[test]
+    fn menue_der_bauphasen() {
+        use crate::gelaende_platte::bauphase::Bauphase;
+        let t = Theme::dark();
+        let m =
+            ContextMenu::for_bauphase(Bauphase::Fuellsand, 300.0, 300.0, (1440, 900, 32), &t, 1.0);
+        let a = m.actions();
+        assert_eq!(a.len(), 8);
+        for (i, (text, an, act)) in a.iter().enumerate() {
+            let p = Bauphase::ALLE[i];
+            assert_eq!(*text, format!("{} {}", p.nr(), p.name()));
+            assert!(*an);
+            assert_eq!(*act, Some(Action::Bauphase(p)));
+        }
+        let haken: Vec<_> = m
+            .items
+            .iter()
+            .filter(|(it, _)| it.shortcut == "✓")
+            .collect();
+        assert_eq!(haken.len(), 1);
+        assert_eq!(haken[0].1, Some(Action::Bauphase(Bauphase::Fuellsand)));
+    }
 }

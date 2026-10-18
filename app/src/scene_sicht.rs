@@ -133,6 +133,32 @@ pub(crate) mod tests {
     use sk_model::{Category, ElementId, Model};
     use sk_render::MeshData;
 
+    /// Die Bauphase gilt für 3D und Schnitt zusammen, Grundriss und
+    /// Ansichten zeigen immer „Fertig“; vor der Gründung ist kein Bauteil zu
+    /// sehen, in „Gründung“ nur Platte, Schürze und Dämmung.
+    #[test]
+    fn bauphase_fuer_3d_und_schnitt() {
+        use crate::gelaende_platte::bauphase::Bauphase;
+        let mut s = Scene::with_model(Model::with_seed(1));
+        assert!(s.set_bauphase(ViewKind::Persp, Bauphase::Ausgekoffert));
+        assert!(!s.set_bauphase(ViewKind::Persp, Bauphase::Ausgekoffert));
+        assert_eq!(s.bauphase(ViewKind::Section), Bauphase::Ausgekoffert);
+        assert_eq!(s.bauphase(ViewKind::Plan), Bauphase::Fertig);
+        let cats = s.ansicht_cats(ViewKind::Persp);
+        assert!(cats.contains(&Category::ExteriorWall) && cats.contains(&Category::GroundSlab));
+        assert!(!s
+            .ansicht_cats(ViewKind::Plan)
+            .contains(&Category::ExteriorWall));
+        s.set_bauphase(ViewKind::Persp, Bauphase::Gruendung);
+        let cats = s.ansicht_cats(ViewKind::Persp);
+        assert!(cats.contains(&Category::ExteriorWall) && !cats.contains(&Category::GroundSlab));
+        assert!(!cats.contains(&Category::StripFooting));
+        s.set_bauphase(ViewKind::Persp, Bauphase::Fertig);
+        assert!(!s
+            .ansicht_cats(ViewKind::Persp)
+            .contains(&Category::ExteriorWall));
+    }
+
     /// Prüfhaus 10 × 8 m, EG und OG, Flachdach auf dem OG mit vier
     /// Regenfallrohren; aktiv ist die Ebene Flachdach.
     pub(crate) fn haus() -> Scene {
