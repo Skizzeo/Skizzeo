@@ -1933,6 +1933,7 @@ fn rand_an_grenze(s: &mut Solid, g: &Gelaende, r: &[P2], unten: f64, aussen: boo
 /// Schnittflächen mit der Ebene (zeigen in Richtung `f.n`): die Schichten
 /// des Bodenaufbaus unter der Geländelinie, unter dem Haus bis zur
 /// Aussparung ([`bodenaufbau::schnitt`]); `keys` wie im Körper.
+#[cfg(test)]
 pub(crate) fn kappen(g: &Gelaende, f: &SectionFrame, p0: Vec3, keys: [u16; 3]) -> Solid {
     kappen_in(g, f, p0, keys, Bauphase::Fertig)
 }

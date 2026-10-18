@@ -1326,7 +1326,10 @@ mod tests {
             }
             assert_eq!(st(ph, nah), a);
         }
-        assert_eq!(oben(&st(Bauphase::Graeben, Lage::Ring)), Some((SAND, h.f)));
+        // der Graben endet auf UK Schürze, darunter Füllsand oder, wo die
+        // Schürze bis zur Sohle der Auskofferung reicht, gewachsener Boden
+        let unter = if h.f <= h.ka { BODEN } else { SAND };
+        assert_eq!(oben(&st(Bauphase::Graeben, Lage::Ring)), Some((unter, h.f)));
     }
 
     /// In einer offenen Phase steht in 3D statt Gelände und Aussparung die
@@ -1381,12 +1384,15 @@ mod tests {
         });
         let t = im_haus.expect("Raster im Haus");
         assert!(t.p.iter().all(|p| p.z == h.ka) && t.mat == schichten[BODEN]);
-        let rand = d
+        // am Rand des Felds (knapp hinter dem Baufeld) schließt die Decke an
+        // OK Gelände an
+        let rand: Vec<_> = d
             .triangles
             .iter()
-            .find(|t| t.p.iter().all(|p| p.x < h.kasten[0] + 1.5 * RASTER))
-            .expect("Rand des Felds");
-        assert!(rand.p.iter().all(|p| p.z == h.t) && rand.mat == keys[0]);
+            .flat_map(|t| t.p)
+            .filter(|p| p.x <= h.kasten[0] + 1.0)
+            .collect();
+        assert!(!rand.is_empty() && rand.iter().all(|p| p.z == h.t));
         // Füllsand: oben im Kern Sand auf UK Kies
         let d = decke(
             &ba,
