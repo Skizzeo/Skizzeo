@@ -94,7 +94,7 @@ const N: usize = Blatt::ALLE.len();
 
 pub struct Karten {
     pub aktiv: Blatt,
-    /// Freie Blätter von links (Freischaltung): eine bis drei Karten.
+    /// Freie Blätter von links: eine bis drei Karten.
     n: usize,
     hover: Option<Blatt>,
     zahlen: [String; N],
@@ -102,8 +102,8 @@ pub struct Karten {
     glimm: [Option<Instant>; N],
     /// Laufender Wechsel: voriges Blatt und Beginn.
     wechsel: Option<(Blatt, Instant)>,
-    /// Stufe je Blatt, die eine gesperrte Karte statt ihrer Zahl zeigt. Die
-    /// Freischaltung kennt nur die App, sie gibt den Text mit `set_frei`.
+    /// Text je Blatt, den eine gesperrte Karte statt ihrer Zahl zeigt. Die
+    /// App gibt ihn mit `set_frei`.
     stufen: [&'static str; N],
 }
 
@@ -150,7 +150,7 @@ impl Karten {
             .then_some(blatt_top - (HEIGHT - PAD_TOP - 6.0) * s)
     }
 
-    /// Die ersten `n` Blätter sind frei (Freischaltung, mindestens eins),
+    /// Die ersten `n` Blätter sind frei (mindestens eins),
     /// die übrigen stehen blass mit ihrer Stufe `stufe` da; ein gesperrtes
     /// aktives Blatt fällt auf das erste zurück.
     pub fn set_frei(&mut self, n: usize, stufe: impl Fn(Blatt) -> &'static str) {

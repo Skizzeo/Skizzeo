@@ -280,7 +280,9 @@ fn bausteingrenze_kosten() {
             if !in_kosten && !im_modell && (wort(&z, "ext_put") || wort(&z, "ext_remove")) {
                 fehler.push(format!("{stelle}  (ext_put/ext_remove nur in sk-cost)"));
             }
-            if rel.starts_with("crates/") && !in_kosten && z.contains("sk_cost::") {
+            // sk-blatt trägt die Blätter der App und folgt ihren Regeln (§8)
+            let blatt = rel.starts_with("crates/sk-blatt/");
+            if rel.starts_with("crates/") && !in_kosten && !blatt && z.contains("sk_cost::") {
                 fehler.push(format!("{stelle}  (kein sk_cost in crates/)"));
             }
             if in_kosten {
