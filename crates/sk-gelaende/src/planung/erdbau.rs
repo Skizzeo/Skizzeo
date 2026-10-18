@@ -43,7 +43,9 @@ pub struct Zonen {
     /// Häuser (Platten): darunter zählt kein Baustein.
     pub haus: Vec<Vec<[f64; 2]>>,
     /// Baufelder um die Häuser (samt Haus): Dort ist der Oberboden schon
-    /// abgetragen (311).
+    /// abgetragen (311). Sie dürfen sich nicht decken, sonst zählt die
+    /// Überdeckung je Baufeld; decken sich zwei, gehört ihre Vereinigung
+    /// hierher.
     pub baufeld: Vec<Vec<[f64; 2]>>,
     /// Höfe in den Baufeldern, die ihr Rand umschließt, aber nicht deckt:
     /// Dort liegt der Oberboden noch.
