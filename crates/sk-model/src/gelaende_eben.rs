@@ -1827,6 +1827,62 @@ mod tests {
         }
     }
 
+    /// Ohne Haus, die Grenze gezeichnet, dann der erste Höhenpunkt im
+    /// Grundstück: Die Platte reicht weiter ganz bis zum Rechteck um die
+    /// Grenze. Mit den dichten Punkten an der Grenze und der Platte um den
+    /// Punkt beschnitt das Netz ihren Rand vorher keilförmig von den Ecken
+    /// her (Jörn 18.10.: 156 von 164 Stellen am Rand ohne Netz).
+    #[test]
+    fn erster_punkt_in_der_grenze() {
+        let mut m = Model::with_seed(3);
+        let z = m.terrain_z();
+        let ring = [
+            [1500.0, 500.0],
+            [8500.0, 1200.0],
+            [9300.0, 6200.0],
+            [5000.0, 8000.0],
+            [800.0, 5500.0],
+        ];
+        m.begin("Grenze");
+        assert!(m.add_parcel(&ring));
+        m.commit();
+        m.begin("Punkt");
+        assert_eq!(
+            m.add_terrain_points(&[[5000.0, 4000.0, z - 1000.0]]).len(),
+            1
+        );
+        m.commit();
+        let t = m.terrain().unwrap();
+        assert!(t.assumed());
+        // das Rechteck um die Grenze im Abstand der Platte: jede Stelle an
+        // seinem Rand liegt im Netz
+        let k = [-2200.0, -2500.0, 12300.0, 11000.0];
+        let f = m.survey_frame().unwrap();
+        let netz = t.mesh();
+        let mut fehlt = Vec::new();
+        for i in 0..=40 {
+            let s = f64::from(i) / 40.0;
+            let x = k[0] + 50.0 + (k[2] - k[0] - 100.0) * s;
+            let y = k[1] + 50.0 + (k[3] - k[1] - 100.0) * s;
+            for q in [
+                [k[0] + 50.0, y],
+                [k[2] - 50.0, y],
+                [x, k[1] + 50.0],
+                [x, k[3] - 50.0],
+            ] {
+                let (e, n) = f.to_survey(q[0], q[1]);
+                if !netz.abfrage.innen(e - netz.bezug.0, n - netz.bezug.1) {
+                    fehlt.push(q);
+                }
+            }
+        }
+        assert!(
+            fehlt.is_empty(),
+            "{} Stellen ohne Netz: {fehlt:?}",
+            fehlt.len()
+        );
+    }
+
     /// Eine gezeichnete Grenze hält das Gelände (Jörn 17.10.): Mit den
     /// ersten Punkten kommen Punkte an ihre Ecken und Viertelpunkte in der
     /// Höhe der Platte, ihr Ring wird Bruchkante. Ein tiefer Punkt mitten
