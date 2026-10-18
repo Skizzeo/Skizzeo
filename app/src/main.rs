@@ -112,6 +112,7 @@ mod wheel_view;
 mod window_kit;
 mod windows;
 mod zahnrad_app;
+mod zustand;
 
 use ansicht_linien::level_guide;
 use camera::{fit_perspective, Camera};
@@ -653,12 +654,8 @@ struct App {
     /// Typ-Liste am Chip (K3) und ob ihr Bild neu zu zeichnen ist.
     type_menu: Option<type_menu::TypeMenu>,
     type_menu_dirty: bool,
-    /// Eingelesene Erweiterungen (E6) und ihre offene Liste; der Ordner
-    /// und das Fenster „Erweiterungen“ (E5).
-    ext_bib: ext_werkzeug::Bibliothek,
-    ext_ablage: ext_ablage::Ablage,
-    ext_fenster: Option<ext_verwaltung::Fenster>,
-    ext_liste: Option<auswahl::Auswahl>,
+    /// Erweiterungen: Bibliothek, Ordner, Fenster und Liste (T4).
+    ext: zustand::Erweiterungen,
     /// Stand (Revision, Farbschema), für den der Chip im Werkzeug gilt.
     tool_chip_key: Option<(u64, u64)>,
     /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
@@ -1509,7 +1506,7 @@ impl App {
             || self.materials.is_some()
             || self.verwaltung.is_some()
             || self.projektdaten.is_some()
-            || self.ext_fenster.is_some()
+            || self.ext.fenster.is_some()
     }
 
     /// Bauteilkatalog öffnen (K3); er liegt vorn wie das Einstellungsfenster.
@@ -1525,7 +1522,7 @@ impl App {
         self.title.hover = None;
         let mut c = catalog_view::Catalog::open(self.scene.fertig(), self.company.as_ref());
         c.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
-        c.set_ext(&self.ext_bib.defs);
+        c.set_ext(&self.ext.bib.defs);
         self.catalog = Some(c);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
@@ -3624,7 +3621,7 @@ impl App {
         if self.projektdaten.is_some() && self.handle_projektdaten(e) {
             return !self.quit;
         }
-        if self.ext_fenster.is_some() && self.handle_ext_fenster(e, surface) {
+        if self.ext.fenster.is_some() && self.handle_ext_fenster(e, surface) {
             return !self.quit;
         }
         if self.prefs.is_some() && self.handle_prefs(e, surface) {
@@ -3677,7 +3674,7 @@ impl App {
         if self.type_menu.is_some() && self.handle_type_menu(e, surface) {
             return !self.quit;
         }
-        if self.ext_liste.is_some() && self.handle_ext_liste(e) {
+        if self.ext.liste.is_some() && self.handle_ext_liste(e) {
             return !self.quit;
         }
         // Baumpanel (Paket 4) nimmt Maus und Rad über sich
@@ -4602,7 +4599,7 @@ impl App {
             help::Topic::Draw | help::Topic::InnerWall if self.tool.ext.is_some() => {
                 help::Topic::Ext
             }
-            _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
+            _ if ctx.window.is_none() && self.ext.fenster.is_some() => self.ext_thema(),
             help::Topic::Drag if self.edit.eigenes_thema() => self.edit.thema(),
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
@@ -7318,10 +7315,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         tool_type: [None, None],
         type_menu: None,
         type_menu_dirty: false,
-        ext_bib,
-        ext_ablage,
-        ext_fenster: None,
-        ext_liste: None,
+        ext: zustand::Erweiterungen {
+            bib: ext_bib,
+            ablage: ext_ablage,
+            fenster: None,
+            liste: None,
+        },
         tool_chip_key: None,
         w,
         h,

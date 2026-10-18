@@ -16,16 +16,16 @@ const FILTER: [(&str, &str); 2] = [("Bauteil (*.szb)", "*.szb"), ("Alle Dateien 
 impl App {
     /// Fenster „Erweiterungen“ öffnen (Dateimenü › Erweiterungen …).
     pub(crate) fn ext_fenster_auf(&mut self) {
-        if self.ext_fenster.is_some() {
+        if self.ext.fenster.is_some() {
             return;
         }
         self.ext_liste_zu();
         let z = ev::zeilen(
-            &self.ext_ablage,
+            &self.ext.ablage,
             self.scene.model(),
             self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
         );
-        self.ext_fenster = Some(Fenster::new(z));
+        self.ext.fenster = Some(Fenster::new(z));
         self.tip = None;
         self.overlay_dirty = true;
     }
@@ -33,7 +33,8 @@ impl App {
     /// Thema der Hilfe bei offenem Fenster (E9): beim Einlesen eigenes.
     pub(crate) fn ext_thema(&self) -> crate::help::Topic {
         match self
-            .ext_fenster
+            .ext
+            .fenster
             .as_ref()
             .is_some_and(Fenster::beim_einlesen)
         {
@@ -59,7 +60,7 @@ impl App {
         frage_zur_datei(
             datei,
             text,
-            &self.ext_ablage,
+            &self.ext.ablage,
             self.scene.model(),
             self.company.as_ref().map(|c| c.library()),
             self.ui.frei,
@@ -67,16 +68,16 @@ impl App {
     }
 
     pub(crate) fn ext_frage_zeigen(&mut self, f: Frage) {
-        match self.ext_fenster.as_mut() {
+        match self.ext.fenster.as_mut() {
             Some(w) => w.frage(f),
             None => {
                 self.ext_liste_zu();
                 let z = ev::zeilen(
-                    &self.ext_ablage,
+                    &self.ext.ablage,
                     self.scene.model(),
                     self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
                 );
-                self.ext_fenster = Some(Fenster::mit_frage(z, f));
+                self.ext.fenster = Some(Fenster::mit_frage(z, f));
             }
         }
         self.tip = None;
@@ -86,18 +87,18 @@ impl App {
     /// Ordner neu gelesen oder geändert: Werkzeug, Katalog und Liste folgen;
     /// `key` wird in der Liste gewählt, `satz` steht im Fuß.
     fn ext_nach_tat(&mut self, key: Option<&str>, satz: String) {
-        self.ext_bib = self.ext_ablage.bibliothek();
+        self.ext.bib = self.ext.ablage.bibliothek();
         if let Some(c) = self.catalog.as_mut() {
-            c.set_ext(&self.ext_bib.defs);
+            c.set_ext(&self.ext.bib.defs);
             self.prefs_dirty = true;
         }
         self.ext_sync();
         let z = ev::zeilen(
-            &self.ext_ablage,
+            &self.ext.ablage,
             self.scene.model(),
             self.ui.frei.frei(crate::freischaltung::Modul::Kosten),
         );
-        if let Some(w) = self.ext_fenster.as_mut() {
+        if let Some(w) = self.ext.fenster.as_mut() {
             w.setze_zeilen(z, key);
             w.meldung = Some(satz);
         }
@@ -122,7 +123,7 @@ impl App {
     }
 
     fn ext_fehler(&mut self, text: String) {
-        match self.ext_fenster.as_mut() {
+        match self.ext.fenster.as_mut() {
             Some(w) => {
                 w.meldung = Some(text);
                 self.overlay_dirty = true;
@@ -134,11 +135,11 @@ impl App {
     pub(crate) fn ext_antwort(&mut self, a: Antwort, surface: &Surface) {
         match a {
             Antwort::Zu => {
-                self.ext_fenster = None;
+                self.ext.fenster = None;
                 self.overlay_dirty = true;
             }
             Antwort::Einlesen => self.ext_einlesen(surface),
-            Antwort::Schalten(key, an) => match self.ext_ablage.schalten(&key, an) {
+            Antwort::Schalten(key, an) => match self.ext.ablage.schalten(&key, an) {
                 Ok(()) => {
                     let wort = if an { "eingeschaltet" } else { "ausgeschaltet" };
                     let name = self.ext_name(&key);
@@ -147,7 +148,7 @@ impl App {
                 Err(e) => self.ext_fehler(e),
             },
             Antwort::Aktualisieren(key) => {
-                let Some(e) = self.ext_ablage.eintrag(&key) else {
+                let Some(e) = self.ext.ablage.eintrag(&key) else {
                     return;
                 };
                 let d = e.def.clone();
@@ -213,7 +214,8 @@ impl App {
 
     fn ext_name(&self, key: &str) -> String {
         let d = self
-            .ext_ablage
+            .ext
+            .ablage
             .eintrag(key)
             .map(|e| &e.def)
             .or_else(|| self.scene.model().ext_def(key));
@@ -226,7 +228,7 @@ impl App {
                 let v = *v;
                 let key = v.def.key.clone();
                 let name = anzeige(v.def.name(), 60);
-                if let Err(e) = self.ext_ablage.schreiben(&v.def, v.hinweise.clone()) {
+                if let Err(e) = self.ext.ablage.schreiben(&v.def, v.hinweise.clone()) {
                     self.ext_fehler(format!("„{name}“ nicht eingelesen: {e}"));
                     return;
                 }
@@ -241,8 +243,8 @@ impl App {
                         Err(e) => satz.push_str(&format!(" Projekt unverändert: {e}")),
                     }
                 }
-                if self.ext_fenster.is_none() {
-                    self.ext_fenster = Some(Fenster::new(Vec::new()));
+                if self.ext.fenster.is_none() {
+                    self.ext.fenster = Some(Fenster::new(Vec::new()));
                 }
                 self.ext_nach_tat(Some(&key), satz);
             }
@@ -260,7 +262,7 @@ impl App {
             }
             Tat::Entfernen(key) => {
                 let name = self.ext_name(&key);
-                match self.ext_ablage.entfernen(&key) {
+                match self.ext.ablage.entfernen(&key) {
                     Ok(()) => self.ext_nach_tat(None, format!("„{name}“ entfernt.")),
                     Err(e) => self.ext_fehler(e),
                 }
@@ -271,7 +273,7 @@ impl App {
     /// Offenes Fenster: `true`, wenn es das Ereignis genommen hat.
     pub(crate) fn handle_ext_fenster(&mut self, e: Event, surface: &Surface) -> bool {
         let (s, th) = (self.title.scale, self.title.height());
-        let Some(w) = self.ext_fenster.as_mut() else {
+        let Some(w) = self.ext.fenster.as_mut() else {
             return false;
         };
         let r = w.rect(s, self.w, self.h, th);
@@ -325,7 +327,7 @@ impl App {
 
     /// Fenster samt Abdunkeln zeichnen oder ausblenden.
     pub(crate) fn paint_ext_fenster(&mut self) {
-        let Some(w) = &self.ext_fenster else {
+        let Some(w) = &self.ext.fenster else {
             self.renderer.set_overlay(OVERLAY_EXT, 0, 0, 0, 0, &[]);
             self.renderer
                 .set_overlay(OVERLAY_EXT_SCRIM, 0, 0, 0, 0, &[]);
