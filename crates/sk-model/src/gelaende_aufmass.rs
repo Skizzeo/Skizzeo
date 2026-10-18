@@ -567,6 +567,9 @@ pub struct Terrain {
     pub codes: Vec<(String, Bedeutung)>,
     /// Zeilen der Datei, die nicht zählen, roh (Regel 72).
     pub raw: Vec<String>,
+    /// Geglättet in Darstellung und Export (Jörn 17.10.); die Mengen
+    /// bleiben am Netz des Aufmaßes.
+    pub glatt: sk_gelaende::glatt::Glaettung,
     /// Die `[terrain]`-Zeile der Datei, roh, wenn ein Wert darin nicht galt
     /// (Regel 72, Review #123 W45 B5); neue Werte im Kopf ersetzen sie.
     pub head_raw: Option<String>,
@@ -623,9 +626,9 @@ impl PartialEq for Terrain {
         self.mesh.nur_vorlaeufig() == o.mesh.nur_vorlaeufig()
             && (
                 &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href,
-                self.local,
+                self.local, self.glatt,
             ) == (
-                &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
+                &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local, o.glatt,
             )
             && punkte_gleich(&self.points, &o.points)
             && (&self.boundaries, &self.codes, &self.raw) == (&o.boundaries, &o.codes, &o.raw)
@@ -654,6 +657,7 @@ impl Terrain {
             underlay: None,
             codes: Vec::new(),
             raw: Vec::new(),
+            glatt: Default::default(),
             head_raw: None,
             mesh: Merker::default(),
         }
@@ -1039,9 +1043,10 @@ impl Terrain {
     /// Gleiche Werte in der `[terrain]`-Zeile.
     fn kopf_gleich(&self, o: &Terrain) -> bool {
         (
-            &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href, self.local,
+            &self.src, &self.read, self.crs, self.hsys, self.trim, self.show, self.href,
+            self.local, self.glatt,
         ) == (
-            &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local,
+            &o.src, &o.read, o.crs, o.hsys, o.trim, o.show, o.href, o.local, o.glatt,
         )
     }
 }
@@ -2074,6 +2079,20 @@ impl Model {
     }
 
     /// Zuschnitt setzen (im offenen Schritt, §4.5).
+    /// Glättung in Darstellung und Export (Jörn 17.10.; im offenen
+    /// Schritt). `false` ohne Aufmaß oder wenn sie schon so ist.
+    pub fn set_terrain_smoothing(&mut self, g: sk_gelaende::glatt::Glaettung) -> bool {
+        let Some(t) = self.terrain() else {
+            return false;
+        };
+        if t.glatt == g {
+            return false;
+        }
+        let mut t = t.clone();
+        t.glatt = g;
+        self.put_survey(Some(t))
+    }
+
     pub fn set_terrain_show(&mut self, show: Show) -> bool {
         let Some(t) = self.terrain() else {
             return false;
@@ -2222,6 +2241,51 @@ impl Model {
             .iter()
             .map(|d| d.map(|i| p[i as usize]))
             .collect()
+    }
+
+    /// Dreiecke des Geländes wie [`Model::terrain_triangles`], geglättet
+    /// wie eingestellt ([`Terrain::glatt`], höchstens so fein, dass es
+    /// nicht mehr als `hoechstens` Dreiecke werden), und wie viele je
+    /// Dreieck des Netzes: Dreieck `i` wird zu `i * je .. (i + 1) * je`.
+    /// `fest[i]`: Dreieck `i` bleibt eben, seine Kanten gerade.
+    pub fn terrain_triangles_smooth(
+        &self,
+        fest: &[bool],
+        hoechstens: usize,
+    ) -> (Vec<[Vec3; 3]>, usize) {
+        use sk_gelaende::glatt::{glaetten, Glaettung};
+        let (Some(t), Some(f), Some(h0)) =
+            (self.terrain(), self.survey_frame(), self.terrain_nhn())
+        else {
+            return (Vec::new(), 1);
+        };
+        let m = t.mesh();
+        let n = m.netz.dreiecke.len();
+        let g = [t.glatt, Glaettung::Fein, Glaettung::Aus]
+            .into_iter()
+            .filter(|g| g.teile() <= t.glatt.teile())
+            .find(|g| n * (g.teile() * g.teile()) as usize <= hoechstens)
+            .unwrap_or(Glaettung::Aus);
+        if g == Glaettung::Aus {
+            return (self.terrain_triangles(), 1);
+        }
+        let glatt = glaetten(&m.netz, g.teile(), fest);
+        let p: Vec<Vec3> = glatt
+            .netz
+            .punkte
+            .iter()
+            .map(|q| {
+                let [x, y] = f.to_model(q[0] + m.bezug.0, q[1] + m.bezug.1);
+                sk_math::vec3(x, y, (q[2] - h0) * 1000.0)
+            })
+            .collect();
+        let d = glatt
+            .netz
+            .dreiecke
+            .iter()
+            .map(|d| d.map(|i| p[i as usize]))
+            .collect();
+        (d, glatt.je)
     }
 
     /// Abstand der Höhenlinien (m) für den Wunsch `wunsch`: er selbst, oder

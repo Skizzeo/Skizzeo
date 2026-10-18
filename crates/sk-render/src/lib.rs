@@ -586,6 +586,8 @@ pub struct Renderer {
     /// des Rasens (0 = keiner), Gelände G0.
     ground_z: Option<f32>,
     grass: i32,
+    /// Höhenfarben auf dem Gelände, `None` = aus.
+    hoehenfarben: Option<Hoehenfarben>,
     /// Konnte der Treiber die Karte nicht anlegen: Meldung (einmal
     /// abzuholen), danach ohne Schatten.
     shadow_failed: bool,
@@ -712,6 +714,44 @@ void main() {
 /// Höchstens so viele Gelände-Rechtecke (Gebäude) kennt der Shader.
 pub const TERRAIN_BOXES: usize = 16;
 
+/// Farben der Höhenstufen von tief nach hoch (Jörn 17.10.): Blau über
+/// Grün und Gelb zu Rotbraun; dazwischen gemischt ([`hoehenfarbe`]).
+pub const HOEHENFARBEN: [[f32; 3]; 6] = [
+    [0.16, 0.38, 0.66],
+    [0.18, 0.60, 0.50],
+    [0.50, 0.74, 0.30],
+    [0.93, 0.85, 0.36],
+    [0.89, 0.56, 0.24],
+    [0.66, 0.29, 0.20],
+];
+
+/// Farbe bei `t` (0 tief bis 1 hoch) zwischen den [`HOEHENFARBEN`], wie
+/// der Shader sie mischt (Legende der Leiste).
+pub fn hoehenfarbe(t: f32) -> [f32; 3] {
+    let n = (HOEHENFARBEN.len() - 1) as f32;
+    let t = t.clamp(0.0, 1.0) * n;
+    let k = (t.floor() as usize).min(HOEHENFARBEN.len() - 2);
+    let f = t - k as f32;
+    let (a, b) = (HOEHENFARBEN[k], HOEHENFARBEN[k + 1]);
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * f)
+}
+
+/// Höhenfarben auf den Flächen eines Darstellungsschlüssels (Gelände in
+/// 3D): `n` Stufen zu je `stufe` mm ab `z0` (mm, Modell), jede in der
+/// Farbe ihrer Mitte ([`hoehenfarbe`]), mit kräftigerem Licht als der
+/// Rest des Bildes, damit Hänge sich abheben.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hoehenfarben {
+    pub key: u16,
+    pub z0: f32,
+    pub stufe: f32,
+    pub n: u32,
+}
+
+/// Umgebungslicht auf den Höhenfarben, höchstens: weniger als sonst
+/// (0,84), so trennt das Licht Hänge von der Ebene.
+const HOEHEN_UMGEBUNG: f32 = 0.45;
+
 const FACE_VS: &str = r#"#version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_normal;
@@ -801,6 +841,18 @@ float terrain_at(vec2 p) {
 }
 // Rasen (Gelände G0): Schlüssel der Fläche, 0 = keiner
 uniform int u_grass;
+// Höhenfarben: Schlüssel (0 = aus), Unterkante der ersten Stufe, Stufe
+// (mm), Zahl der Stufen; Farben tief bis hoch; Umgebungslicht darauf
+uniform int u_hypso;
+uniform vec3 u_hypso_z;
+uniform vec3 u_hypso_rgb[6];
+uniform float u_hypso_ambient;
+vec3 hypso_rgb(float z) {
+    float i = clamp(floor((z - u_hypso_z.x) / u_hypso_z.y), 0.0, u_hypso_z.z - 1.0);
+    float t = (i + 0.5) / u_hypso_z.z * 5.0;
+    int k = int(min(floor(t), 4.0));
+    return mix(u_hypso_rgb[k], u_hypso_rgb[k + 1], t - float(k));
+}
 // Ohne Ganzzahl-Bitrechnung (läuft auch ohne die Muster, Review 3q)
 float grass_hash(vec2 p) {
     vec2 q = fract(p * vec2(0.1031, 0.1030));
@@ -905,7 +957,10 @@ void main() {
     float grass_w = fwidth(v_model.x) + fwidth(v_model.y);
     if (u_drawing == 0) {
         vec3 c = look(cut ? 1 : 0).rgb;
-        if (!cut && u_grass > 0 && (v_key & 0x7FFF) == u_grass) {
+        bool hypso = !cut && u_hypso > 0 && (v_key & 0x7FFF) == u_hypso;
+        if (hypso) {
+            c = hypso_rgb(v_model.z);
+        } else if (!cut && u_grass > 0 && (v_key & 0x7FFF) == u_grass) {
             c = grass_rgb(c, v_model.xy, grass_w);
         }
         // Muster ohne Darstellung in 3D: Mischfarbe statt der Ansichtsfläche
@@ -922,7 +977,8 @@ void main() {
         float d = max(dot(n, u_light), 0.0);
         // Schatten der Sonne (S5): nur besonnte Seiten lesen die Karte
         if (d > 0.0) d *= sun_share(v_model - u_shadow_c, n);
-        o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), u_alpha);
+        float amb = hypso ? min(u_ambient, u_hypso_ambient) : u_ambient;
+        o_color = vec4(c * (amb + (1.0 - amb) * d), u_alpha);
         return;
     }
     vec4 bg = look(2);
@@ -1903,6 +1959,7 @@ impl Renderer {
                 terrain_grid: (0, [0.0; 4], 0),
                 ground_z: None,
                 grass: 0,
+                hoehenfarben: None,
                 shadow_failed: shadow_error.is_some(),
                 shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
                 shadow_query: 0,
@@ -2630,6 +2687,7 @@ impl Renderer {
                 let drawing = view.paper.is_some();
                 gl.glUniform1i(loc(gl, q, c"u_drawing"), drawing as GLint);
                 gl.glUniform1i(loc(gl, q, c"u_grass"), 0);
+                gl.glUniform1i(loc(gl, q, c"u_hypso"), 0);
                 gl.glUniform1i(loc(gl, q, c"u_paper_shade"), 0);
                 gl.glUniform1i(loc(gl, q, c"u_patterns"), view.patterns as GLint);
                 let ink = looks.pattern_ink;
@@ -3037,6 +3095,7 @@ impl Renderer {
             gl.glUniform1i(loc(gl, p, c"u_below"), below);
             self.terrain_uniforms(gl, p);
             gl.glUniform1i(loc(gl, p, c"u_grass"), self.grass);
+            self.hoehen_uniforms(gl, p);
             if let Some(pc) = view.paper {
                 gl.glUniform3f(loc(gl, p, c"u_paper_rgb"), pc[0], pc[1], pc[2]);
             }
@@ -3718,6 +3777,30 @@ impl Renderer {
         self.grass = i32::from(key);
     }
 
+    /// Höhenfarben auf dem Gelände in 3D statt des Rasens (Jörn 17.10.),
+    /// `None` = aus.
+    pub fn set_hoehenfarben(&mut self, h: Option<Hoehenfarben>) {
+        self.hoehenfarben = h;
+    }
+
+    fn hoehen_uniforms(&self, gl: &Gl, p: GLuint) {
+        let h = self
+            .hoehenfarben
+            .filter(|h| h.key > 0 && h.n > 0 && h.stufe > 0.0);
+        unsafe {
+            let Some(h) = h else {
+                gl.glUniform1i(loc(gl, p, c"u_hypso"), 0);
+                return;
+            };
+            gl.glUniform1i(loc(gl, p, c"u_hypso"), i32::from(h.key));
+            gl.glUniform3f(loc(gl, p, c"u_hypso_z"), h.z0, h.stufe, h.n as f32);
+            let rgb: Vec<f32> = HOEHENFARBEN.iter().flatten().copied().collect();
+            let n = HOEHENFARBEN.len() as GLint;
+            gl.glUniform3fv(loc(gl, p, c"u_hypso_rgb[0]"), n, rgb.as_ptr());
+            gl.glUniform1f(loc(gl, p, c"u_hypso_ambient"), HOEHEN_UMGEBUNG);
+        }
+    }
+
     /// OK Gelände aus dem Aufmaß als Raster (Gelände G1): gilt vor den
     /// Rechtecken je Gebäude ([`Renderer::set_terrain_boxes`]); hochgeladen
     /// nur, wenn ein anderes Gitter kommt. `None` ohne Aufmaß.
@@ -3777,6 +3860,19 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Höhenfarben: die Enden sind die erste und letzte Farbe, dazwischen
+    /// gemischt wie im Shader.
+    #[test]
+    fn hoehenfarbe_mischt() {
+        let gleich = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-6);
+        assert!(gleich(hoehenfarbe(0.0), HOEHENFARBEN[0]));
+        assert!(gleich(hoehenfarbe(1.0), HOEHENFARBEN[5]));
+        assert!(gleich(hoehenfarbe(-1.0), HOEHENFARBEN[0]));
+        let (a, b) = (HOEHENFARBEN[0], HOEHENFARBEN[1]);
+        let mitte = [0, 1, 2].map(|i| (a[i] + b[i]) / 2.0);
+        assert!(gleich(hoehenfarbe(0.1), mitte));
+    }
 
     #[test]
     fn feine_kante_im_shader() {

@@ -33,6 +33,7 @@ use crate::model::{
 };
 use crate::Model;
 use sk_gelaende::codes::Bedeutung;
+use sk_gelaende::glatt::Glaettung;
 
 /// Abschnitte des Aufmaßes.
 pub(super) const SECTIONS: [&str; 5] = ["terrain", "tpoint", "tline", "tcode", "underlay"];
@@ -139,6 +140,9 @@ fn kopf(t: &Terrain, out: &mut String) {
     if t.href == HeightRef::Abs {
         l = l.word("href", "abs");
     }
+    if t.glatt != Glaettung::Aus {
+        l = l.word("smooth", t.glatt.key());
+    }
     if let Some(f) = t.local {
         l = l
             .flag("local", true)
@@ -218,6 +222,12 @@ pub(super) fn read<'r>(
                 None | Some("high") => {}
                 Some("abs") => t.href = HeightRef::Abs,
                 Some(v) => falsch.push(format!("„href={v}“")),
+            }
+            if let Some(v) = r.opt("smooth") {
+                match Glaettung::ALLE.into_iter().find(|g| g.key() == v) {
+                    Some(g) => t.glatt = g,
+                    None => falsch.push(format!("„smooth={v}“")),
+                }
             }
             if r.opt("local") == Some("1") {
                 let z = |k: &str| {
@@ -374,6 +384,7 @@ mod tests {
     use crate::model::{Crs, HeightRef, Terrain, TerrainLine, TerrainPoint};
     use crate::GuidGen;
     use sk_gelaende::codes::Bedeutung;
+    use sk_gelaende::glatt::Glaettung;
 
     fn aufmass() -> Terrain {
         let mut t = Terrain::new(Crs::Utm(32));
@@ -604,6 +615,7 @@ mod tests {
             ("href=abs", "href=tief"),
             ("href=abs", "href=abs trim=eng"),
             ("href=abs", "href=abs show=bunt"),
+            ("href=abs", "href=abs smooth=rund"),
             ("href=abs", "href=abs local=1 e0=x n0=0 rot=0"),
             ("crs=utm32 hsys=DHHN2016", "crs=utm99 hsys=x"),
         ] {
@@ -621,5 +633,29 @@ mod tests {
         let neu = write(&l);
         assert!(!neu.contains("utm99"), "{neu}");
         assert!(neu.contains("[terrain] src=\"höhen aufmaß.csv\" read=2026-10-12 crs=local"));
+    }
+
+    /// Die Glättung (Jörn 17.10.) steht im Kopf, nur wenn sie an ist, und
+    /// kommt beim Lesen zurück.
+    #[test]
+    fn glaettung_in_der_datei() {
+        let load = |t: &str| read(t, GuidGen::with_seed(99)).unwrap();
+        let mut m = house();
+        m.begin("Aufmaß");
+        m.set_terrain(Some(aufmass()));
+        m.commit();
+        assert!(!write(&m).contains("smooth="));
+        for g in [Glaettung::Fein, Glaettung::SehrFein] {
+            m.begin("Glätten");
+            assert!(m.set_terrain_smoothing(g));
+            assert!(!m.set_terrain_smoothing(g), "schon so");
+            m.commit();
+            let text = write(&m);
+            assert!(text.contains(&format!(" smooth={}", g.key())), "{text}");
+            let l = load(&text);
+            assert!(l.hints.is_empty(), "{:?}", l.hints);
+            assert_eq!(l.model.terrain().unwrap().glatt, g);
+            assert_eq!(write(&l.model), text);
+        }
     }
 }
