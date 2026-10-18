@@ -195,7 +195,7 @@ fn budget_grossgebaeude() {
     // Lastspitzen-Abschnitt soll nicht alle Proben treffen (Review zu
     // #148, H3; die Grenze bleibt 8 ms). Ohne die Zeit, die der Faden auf
     // eine CPU wartete: Unter Parallellast kippte es sonst (Test L-274a).
-    let mut zug = |m: &mut Model, dz: f64| {
+    let zug = |m: &mut Model, dz: f64| {
         let top = m.storey(eg).unwrap().top();
         m.begin("Geschoss ziehen");
         assert!(m.set_storey_top(eg, top + dz));
