@@ -1,10 +1,10 @@
 //! Bodenaufbau unter und um die Gründung (Jörn 17.10.): statt einer
 //! einzigen Erdreichfläche die Schichten, wie sie vor Ort eingebaut werden.
-//! Nur Darstellung; die Mengen rechnet `sk_model::qto_earth` aus denselben
-//! Bodenkennwerten.
+//! Nur Darstellung; die Mengen rechnet `sk_model::qto_earth` mit derselben
+//! [`Sandplatte`].
 //!
 //! So wie gebaut wird (Jörn 17.10.): Oberboden im Baufeld abgeschoben, der
-//! Boden [`AUSKOFFERUNG`] unter OK Gelände ausgekoffert (tiefer, wenn die
+//! Boden [`sk_model::qto_earth::AUSKOFFERUNG`] unter OK Gelände ausgekoffert (tiefer, wenn die
 //! Gründung tiefer liegt), [`UEBERSTAND`] über die Außenkante der Schürze
 //! hinaus, bei Platten unter dem gewachsenen Boden mindestens im
 //! Arbeitsraum; die Wände über 1,25 m Tiefe geböscht. Darin Füllsand,
@@ -23,22 +23,13 @@
 use crate::draw_table::{fill_kind, LineLook, MatLook};
 use crate::gelaende_netz::gitter::Gitter;
 use sk_math::{polygon, vec3, Vec3};
-use sk_model::qto_earth::SENKRECHT_BIS;
+use sk_model::qto_earth::{Sandplatte, UEBERSTAND};
 use sk_model::solid::{right_of, SectionFrame};
 use sk_model::{edge_kind, material, BuildingId, FootingShape, GroundBasis, Model, Solid};
 use sk_ui::theme::Theme;
 use std::collections::HashMap;
 
 type P2 = [f64; 2];
-
-/// Überstand der Sandplatte über die Außenkante der Schürze (mm). Fest,
-/// bis die Mengen die Sandplatte rechnen und ein Feld unter „Baugrund“
-/// kommt.
-pub(crate) const UEBERSTAND: f64 = 500.0;
-
-/// Tiefe der Auskofferung unter OK Gelände, Mutterboden eingeschlossen
-/// (mm, Jörn 17.10.: ca. 80 cm).
-pub(crate) const AUSKOFFERUNG: f64 = 800.0;
 
 /// So weit reicht der gewachsene Boden unter die tiefste Schürze und
 /// Auskofferung (mm), damit er im Schnitt darunter zu sehen ist.
@@ -376,18 +367,8 @@ impl Aufbau {
         let b = g.insulation_bottom_z.min(s);
         // Kies unter der Dämmung nur, wenn er eingebaut wird (Bodenkennwerte)
         let p = b - boden.schicht();
-        let ka = (t - AUSKOFFERUNG).min(p);
-        let tan = boden.boeschung.clamp(1.0, 89.0).to_radians().tan();
-        let w = if b < n {
-            UEBERSTAND.max(boden.arbeitsraum)
-        } else {
-            UEBERSTAND
-        };
-        let k = if t - ka > SENKRECHT_BIS {
-            1.0 / tan
-        } else {
-            0.0
-        };
+        // dieselbe Sandplatte wie die Mengen (qto_earth)
+        let Sandplatte { ka, w, k, tan } = Sandplatte::neu(t, n, b, p, boden);
         let reichweite = (w + (n - ka).max(0.0) * k).max(UEBERSTAND + (b - n).max(0.0) / tan);
         let baufeld = boden.rand.max(0.0).max(reichweite);
         let mut kasten = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
@@ -796,6 +777,7 @@ pub(crate) fn grube(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sk_model::qto_earth::AUSKOFFERUNG;
     use sk_model::Model;
 
     /// Haus 10 × 8 m, Gelände 30 cm unter ±0,00: Platte 20 cm, Schürze
@@ -874,6 +856,62 @@ mod tests {
             }
         }
         assert!(nah > 100 && am > 0);
+    }
+
+    /// Mengen und Darstellung rechnen dieselbe Sandplatte: Über die Stapel
+    /// eines feinen Rasters summiert ergeben Füllsand (samt dem Graben, der
+    /// aus ihm gehoben wird), Kies, Verfüllung bis zum gewachsenen Boden und
+    /// der ausgehobene gewachsene Boden die Erdmengen, auf 0,5 %: über, im
+    /// und tief im Gelände (mit Böschung).
+    #[test]
+    fn mengen_wie_darstellung() {
+        use sk_model::qto_earth as q;
+        for gelaende in [300.0, -600.0, -1_500.0] {
+            let m = haus(gelaende);
+            let h = aufbau(&m);
+            let s = sk_model::qto::schedule(&m);
+            let menge =
+                |k: &str| -> f64 { s.auto.iter().filter(|a| a.key == k).map(|a| a.value).sum() };
+            let tief = h.ka.min(h.f) - 1.0;
+            let z = 25.0;
+            let [mut sand, mut kies, mut verf, mut aushub] = [0.0; 4];
+            let k = h.kasten;
+            let (nx, ny) = (((k[2] - k[0]) / z) as usize, ((k[3] - k[1]) / z) as usize);
+            for i in 0..nx {
+                for j in 0..ny {
+                    let q = [k[0] + (i as f64 + 0.5) * z, k[1] + (j as f64 + 0.5) * z];
+                    let lage = if !drin(&h.platte, q) {
+                        Lage::Aussen(abstand(&h.platte, q))
+                    } else if h.innen.as_ref().is_some_and(|(r, _)| drin(r, q)) {
+                        Lage::Kern
+                    } else {
+                        Lage::Ring
+                    };
+                    let st = h.stapel(lage, h.t, tief);
+                    sand += st[SAND].1 - st[SAND].0;
+                    kies += st[KIES].1 - st[KIES].0;
+                    verf += (st[VERFUELLUNG].1.min(h.n) - st[VERFUELLUNG].0).max(0.0);
+                    aushub += (h.n - st[BODEN].1).max(0.0);
+                }
+            }
+            let a = z * z;
+            let nah = |ist: f64, soll: f64, was: &str| {
+                assert!(
+                    (ist - soll).abs() <= 5e-3 * soll.max(1e9),
+                    "{gelaende} {was}: Darstellung {} m³, Mengen {} m³",
+                    ist / 1e9,
+                    soll / 1e9
+                );
+            };
+            nah(sand * a + menge(q::TRENCH_SAND), menge(q::SAND), "Füllsand");
+            nah(kies * a, menge(q::GRAVEL), "Kies");
+            nah(verf * a, menge(q::BACKFILL), "Verfüllung");
+            nah(
+                aushub * a,
+                menge(q::EXCAVATION) + menge(q::TRENCH),
+                "Aushub",
+            );
+        }
     }
 
     /// Platte über dem gewachsenen Boden: 80 cm ausgekoffert, Füllsand bis

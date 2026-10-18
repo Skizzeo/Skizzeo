@@ -30,8 +30,12 @@ struct Soll {
     ohne: &'static [(&'static str, i64)],
 }
 
-/// Erdarbeiten aus der Gründung (Werksbestand Stand 8, Gelände = OK Platte,
-/// Bodenkennwerte ab Werk), in allen drei Häusern gleich: 1.864,05 €.
+/// Erdarbeiten aus der Gründung (Werksbestand Stand 20, Sandplatte nach
+/// Jörn 18.10., Gelände = OK Platte, Bodenkennwerte ab Werk), in allen
+/// Häusern gleich: 5.656,55 € (Stand 8 ohne Sandplatte: 1.864,05 €).
+/// Auskofferung 0,80 m ab OK Gelände über Platte und Überstand 0,50 m,
+/// Füllsand bis UK Schicht bzw. UK Platte und 0,08 m über dem gewachsenen
+/// Boden, Graben ganz im Füllsand, Abfuhr = Auskofferung + Graben.
 const ERDE: &[Zeile] = &[
     (
         "Oberboden bis 30cm abtragen, seitlich lagern",
@@ -41,17 +45,24 @@ const ERDE: &[Zeile] = &[
         0,
     ),
     (
-        "Baugrube ausheben Homogenbereich B1, seitlich lagern",
-        4752,
+        "Auskofferung ausheben Homogenbereich B1, seitlich lagern",
+        49500,
         1280,
-        6083,
+        63360,
         0,
     ),
     (
-        "Graben Frostschürze ausheben, Wände senkrecht, Sohle eben",
-        6055,
+        "Füllsand Sandplatte liefern, in Lagen einbauen, verdichten n. Vorgabe",
+        47365,
+        3860,
+        182829,
+        102308,
+    ),
+    (
+        "Graben Frostschürze im eingebauten Füllsand ausheben, Sohle eben",
+        7024,
         3000,
-        18165,
+        21072,
         0,
     ),
     ("Planum herstellen, ±2cm, verdichten", 67890, 300, 20367, 0),
@@ -64,9 +75,9 @@ const ERDE: &[Zeile] = &[
     ),
     (
         "Aushub laden, abfahren, entsorgen BM-0 (früher Z0)",
-        10807,
+        56524,
         2980,
-        32205,
+        168442,
         0,
     ),
 ];
@@ -154,11 +165,11 @@ const DT_ZULAGEN: [Zeile; 2] = [
 
 const RH1: Soll = Soll {
     datei: include_str!("../referenz/rh1-standardhaus.szo"),
-    netto: 7600172,
-    material: 3282292,
+    netto: 7979422,
+    material: 3384600,
     geruest: GERUEST_2G,
     geschosse: &[
-        ("Gründung", 2242615),
+        ("Gründung", 2621865),
         ("Erdgeschoss", 3006138),
         ("Obergeschoss", 2351416),
     ],
@@ -286,11 +297,11 @@ const RH1: Soll = Soll {
 
 const RH2: Soll = Soll {
     datei: include_str!("../referenz/rh2-mehrschalig.szo"),
-    netto: 8291878,
-    material: 3694694,
+    netto: 8671128,
+    material: 3797002,
     geruest: GERUEST_2G,
     geschosse: &[
-        ("Gründung", 2242615),
+        ("Gründung", 2621865),
         ("Erdgeschoss", 3034024),
         ("Obergeschoss", 3015257),
     ],
@@ -386,11 +397,11 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 8164041,
-    material: 3598137,
+    netto: 8543291,
+    material: 3700445,
     geruest: GERUEST_2G,
     geschosse: &[
-        ("Gründung", 2243845),
+        ("Gründung", 2623095),
         ("Erdgeschoss", 3103128),
         ("Obergeschoss", 2817043),
     ],
@@ -571,8 +582,8 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 10464655,
-    material: 4659537,
+    netto: 10843905,
+    material: 4761845,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -581,7 +592,7 @@ const RH5: Soll = Soll {
         0,
     ),
     geschosse: &[
-        ("Gründung", 2264725),
+        ("Gründung", 2643975),
         ("Erdgeschoss", 3340491),
         ("Obergeschoss", 2879023),
         ("Flachdach", 1980410),
@@ -1276,8 +1287,9 @@ fn abfangung_bleibt_beim_teilruecksprung() {
 /// selbst, gleich `kosten` vor und nach der Ausführung; Modell, `revision`,
 /// `ext_revision` bleiben. Lohn 65 €/h auf RH-1: 60.089,83 → 62.501,62
 /// (Einstellungen §3 KA-2 Punkt 8), mit Stand 9 75.953,63 → 78.889,33, mit
-/// der Dämmung auf der Attika der Dachterrasse 76.001,72 → 78.940,53; eine
-/// Zuordnung rechnet auf einer Kopie.
+/// der Dämmung auf der Attika der Dachterrasse 76.001,72 → 78.940,53, mit
+/// der Sandplatte (Stand 20) 79.794,22 → 82.806,60; eine Zuordnung rechnet
+/// auf einer Kopie.
 #[test]
 fn vorschau_mit_summe_vorher_nachher() {
     use sk_cost::{Herkunft, HerkunftArt, Op, Rolle};
@@ -1298,14 +1310,14 @@ fn vorschau_mit_summe_vorher_nachher() {
         &u,
     )
     .expect("Vorschau");
-    assert_eq!(p.netto, Some((Cent(7_600_172), Cent(7_894_053))));
+    assert_eq!(p.netto, Some((Cent(7_979_422), Cent(8_280_660))));
     assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
     // gleich der Ausführung
     let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
     m.begin("Lohn");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
     m.commit();
-    assert_eq!(blatt(&m, &u).netto, Cent(7_894_053));
+    assert_eq!(blatt(&m, &u).netto, Cent(8_280_660));
     // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
     // der Kopie
     let k = lesen::katalog(&m, None);
@@ -1341,7 +1353,7 @@ fn vorschau_mit_summe_vorher_nachher() {
     .expect("Vorschau Zuordnung");
     assert_eq!(m.revision(), rev);
     let (vorher, nachher) = p.netto.expect("Summen");
-    assert_eq!(vorher, Cent(7_894_053));
+    assert_eq!(vorher, Cent(8_280_660));
     m.begin("Zuordnen");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
     m.commit();

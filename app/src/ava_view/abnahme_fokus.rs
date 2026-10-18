@@ -72,7 +72,7 @@ fn a341_lv_isoliert_auf_das_bauteil() {
         .iter()
         .flat_map(|t| &t.positionen)
         .filter(|x| soll.contains(&x.oz))
-        .any(|x| x.kurztext.contains("Baugrube"));
+        .any(|x| x.kurztext.contains("Auskofferung"));
     assert!(erde, "{soll:?}");
     // Titel nur über verknüpften Positionen, ohne Summe
     for (i, z) in v.zeilen.iter().enumerate() {

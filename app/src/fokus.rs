@@ -112,7 +112,7 @@ impl Fokus {
 
 /// Bauteile, an denen eine Ansatzzeile in der Geometrie hängt: das
 /// Bauteil, bei einer Automatikmenge der Gründung die ganze Gründung (ein
-/// Klick auf „Baugrube ausheben“ zeigt Platte und Frostschürze).
+/// Klick auf „Auskofferung ausheben“ zeigt Platte und Frostschürze).
 pub fn bauteile(m: &Model, a: &Ansatz) -> Vec<ElementId> {
     if a.formel.is_some() {
         let g = sk_model::qto::gruendung_von(m, a.element);

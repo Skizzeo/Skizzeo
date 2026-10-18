@@ -82,7 +82,7 @@ SZO 4
 [layer] set=2$6TN9pv91oRMXaTMzh9E2 mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
 [layerset] guid=3ZTJrDtor3KfcH2vccNFkY name="IW 17,5 Porenbeton" code="IW-17,5" cat=interior changed=1 note=""
 [layer] set=3ZTJrDtor3KfcH2vccNFkY mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
-[project] guid=1CiUefbzfAnP3Cq9sUDxmY name="Projekt" storey=3ICFwxXz19ExFM2tl4bjYN wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY
+[project] guid=1CiUefbzfAnP3Cq9sUDxmY name="Projekt" storey=3ICFwxXz19ExFM2tl4bjYN wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY sandplatte=1
 [building] guid=3NDuaZn3b6EB0mCcCo3rUp name="Gebäude 1" number="GB-01"
 [storey] guid=1A3rOVvQP2Rf2XAaT96MuO building=3NDuaZn3b6EB0mCcCo3rUp name="Gründung" short="GR" kind=foundation elev=-800 h=800
 [storey] guid=1OS1li2PDB3BOkTzkFfElC building=3NDuaZn3b6EB0mCcCo3rUp name="Obergeschoss" short="OG" kind=storey elev=2855 h=2855

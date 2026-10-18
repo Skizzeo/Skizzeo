@@ -2735,7 +2735,7 @@ mod tests {
     fn lindenhof_schuerze_und_erdmengen() {
         use crate::qto_earth::{AUS_AUFMASS, STEIL};
         use crate::qto_earth::{BACKFILL, DISPOSAL, EXCAVATION, FILL, GRAVEL, SLOPE, SUBGRADE};
-        use crate::qto_earth::{TOPSOIL, TRENCH};
+        use crate::qto_earth::{SAND, TOPSOIL, TRENCH, TRENCH_SAND};
         let (mut m, _) = lindenhof_haus();
         let gr = m.foundation_level().unwrap();
         let uk = |m: &Model| m.storey(gr).unwrap().elevation;
@@ -2795,14 +2795,20 @@ mod tests {
                 .map(|a| a.value)
                 .sum::<f64>()
         };
+        // seit der Sandplatte (Jörn 18.10.): Auskofferung 0,80 m ab OK
+        // Gelände über Platte und Überstand, Füllsand bis UK Platte statt
+        // Auffüllung, der Graben erst im Füllsand, darunter im gewachsenen
+        // Boden; Aushub 49,325 + 9,404 + 2,792 = Abfuhr 61,520
         for (k, soll, teiler) in [
             (TOPSOIL, 42.9, 1e9),
-            (EXCAVATION, 0.044, 1e9),
-            (TRENCH, 8.762, 1e9),
+            (EXCAVATION, 49.325, 1e9),
+            (SAND, 64.138, 1e9),
+            (TRENCH_SAND, 9.404, 1e9),
+            (TRENCH, 2.792, 1e9),
             (SUBGRADE, 67.89, 1e6),
             (GRAVEL, 10.184, 1e9),
-            (FILL, 8.549, 1e9),
-            (DISPOSAL, 8.806, 1e9),
+            (FILL, 0.0, 1e9),
+            (DISPOSAL, 61.520, 1e9),
         ] {
             assert!(
                 (summe(k) / teiler - soll).abs() < 0.001,
@@ -2824,12 +2830,13 @@ mod tests {
             crate::qto_earth::netz_herkunft(&m).as_deref(),
             Some("Höhenaufmaß hoehenaufmass-lindenhof-7.csv vom 12.10.2026, 200 Dreiecke")
         );
-        // exakt: keine Marke für den Hinweis (VOB-Prüfung A3); 2,8 %
+        // exakt: keine Marke für den Hinweis (VOB-Prüfung A3), nur die
+        // Böschung der Sandplatte ist am Gelände angenähert; 2,8 %
         // Gefälle: kein Hinweis nach DIN 4124 (A4)
-        assert!(s
-            .auto
-            .iter()
-            .all(|a| !a.formula.contains(AUS_AUFMASS) && !a.formula.contains(STEIL)));
+        assert!(s.auto.iter().all(|a| {
+            (!a.formula.contains(AUS_AUFMASS) || a.formula.starts_with("Böschung"))
+                && !a.formula.contains(STEIL)
+        }));
         assert!(!ansatz(TOPSOIL).contains("Aufmaß"));
         // Verschieben: die Schürze folgt dem tiefsten Punkt
         m.begin("Verschieben");
@@ -2966,9 +2973,11 @@ mod tests {
             }
             for (k, _, f) in &netz {
                 let boe = f.starts_with("Böschung");
+                // die Sandplatte über dem gewachsenen Boden hat ihre
+                // Böschung auch ohne die der Auskofferung
                 assert_eq!(
                     f.contains(AUS_AUFMASS),
-                    boeschung && (boe || *k == BACKFILL),
+                    boe || (boeschung && *k == BACKFILL),
                     "{k}: {f}"
                 );
                 if matches!(*k, EXCAVATION | BACKFILL) && !boe {

@@ -237,19 +237,22 @@ fn abnahme_a324_perimeterdaemmung() {
 }
 
 /// A325 Erdarbeiten: RH-1 rechnet die Mengen aus der Gründung wie
-/// sollwerte-referenzhaeuser §0; ein Haus 1,50 m im Gelände bekommt
-/// Böschung und Verfüllung, eines 0,60 m darüber Auffüllung statt Aushub;
-/// das Nachbarhaus bleibt.
+/// sollwerte-referenzhaeuser §0, seit Jörn 18.10. mit der Sandplatte
+/// (Auskofferung 0,80 m ab OK Gelände, Füllsand, Graben im Füllsand); ein
+/// Haus 1,50 m im Gelände bekommt Böschung und Verfüllung, eines 0,60 m
+/// darüber mehr Füllsand und keine Verfüllung; das Nachbarhaus bleibt.
 #[test]
 fn abnahme_a325_erdarbeiten() {
     let rh1 = mengen(&laden(RH1), None);
     for (k, soll) in [
         ("earth.topsoil", 42_900_000_000),
-        ("earth.excavation", 4_752_000_000),
-        ("earth.trench", 6_055_000_000),
+        ("earth.excavation", 49_500_000_000),
+        ("earth.sand", 47_365_000_000),
+        ("earth.trench_sand", 7_023_800_000),
+        ("earth.trench", 0),
         ("earth.subgrade", 67_890_000),
         ("earth.gravel", 10_183_500_000),
-        ("earth.disposal", 10_807_000_000),
+        ("earth.disposal", 56_523_800_000),
     ] {
         let ist = summe(&rh1, k);
         assert!((ist - soll).abs() <= 1_000_000, "{k}: {ist} statt {soll}");
@@ -263,7 +266,12 @@ fn abnahme_a325_erdarbeiten() {
     assert_eq!(mengen(&m, Some(h1.0)), m1, "Nachbarhaus bleibt");
     schritt(&mut m, |m| m.set_terrain_offset_of(h2.0, 600.0));
     let hoch = mengen(&m, Some(h2.0));
-    assert!(summe(&hoch, "earth.fill") > 0, "Auffüllung");
+    assert!(
+        summe(&hoch, "earth.sand") > summe(&tief, "earth.sand"),
+        "mehr Füllsand"
+    );
+    assert_eq!(summe(&hoch, "earth.backfill"), 0, "keine Verfüllung");
+    assert_eq!(summe(&hoch, "earth.fill"), 0);
     assert_eq!(summe(&hoch, "earth.slope"), 0);
     assert_eq!(mengen(&m, Some(h1.0)), m1, "Nachbarhaus bleibt");
 }

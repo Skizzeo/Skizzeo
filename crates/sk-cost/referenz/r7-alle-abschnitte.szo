@@ -183,7 +183,7 @@ SZO 4
 [spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=tiles type=0To0be8vhKGD0dmVbnjnk9 h=1200
 [spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=tiles wall=194UBgWWnDPPovBzCK95sJ side=r h=2400
 [spacefinish] space=1dIrSPIIL5SulaBsBPBA7K at=skirting wall=0$yXEJb9zDfQ7qcijPd1BB side=r type=none
-[project] guid=2YaOeyxqn6WPcq0HPeUvj0 name="Projekt" storey=2raHMuYTD64hQ6K56DbC_u wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY topsoil=250 slope=60
+[project] guid=2YaOeyxqn6WPcq0HPeUvj0 name="Projekt" storey=2raHMuYTD64hQ6K56DbC_u wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY sandplatte=1 topsoil=250 slope=60
 [projectinfo] key=project kind="Neubau Einfamilienhaus" projno="R7/26" site="Haus Rundlauf" place="Musterweg 1\n27777 Ganderkesee" client="Max Mustermann" clientaddr="Phantasiestraße 7\n12345 Irgendwo" author="Test und Abnahme" authoraddr="Denkmalsweg 18b\n27777 Ganderkesee"
 [soil] key=project topsoil=250 slope=60
 [terrainplate] key=project thick=900 margin=2000

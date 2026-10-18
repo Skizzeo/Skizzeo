@@ -2557,7 +2557,7 @@ pub fn lv_zeilen(lv: &Lv) -> Vec<Zeile> {
 }
 
 /// Wie [`lv_zeilen`], die Bauteile einer Automatikmenge mit der ganzen
-/// Gründung (ein Klick auf „Baugrube ausheben“ zeigt Platte und
+/// Gründung (ein Klick auf „Auskofferung ausheben“ zeigt Platte und
 /// Frostschürze) und, auf eine Auswahl isoliert, nur die Positionen, die an
 /// ihr hängen, ohne die Summen der Titel (Jörn 10.10.).
 pub fn lv_zeilen_mit(

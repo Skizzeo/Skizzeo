@@ -5,11 +5,12 @@
 //! Ansatz nennt das Verfahren, A3 die Marke [`AUS_AUFMASS`] nur an der
 //! Böschung, A4 Hinweis bei Gelände steiler als 1:10.
 //!
-//! N = Gelände − Oberboden; Baugrube = Platte plus Arbeitsraum (Sohle),
-//! innen = innerhalb der Frostschürze, Ring = Schürze. Alles in mm.
+//! N = Gelände − Oberboden; Baugrube = Auskofferung der Sandplatte, Platte
+//! plus Überstand (Sohle), innen = innerhalb der Frostschürze, Ring =
+//! Schürze. Alles in mm.
 
-use super::{zahl, Boden, AUS_AUFMASS, BACKFILL, DISPOSAL, EXCAVATION, FILL, SENKRECHT_BIS, SLOPE};
-use super::{ErdBasis, ErdZone, TRENCH};
+use super::{zahl, Boden, AUS_AUFMASS, BACKFILL, DISPOSAL, EXCAVATION, SAND, SENKRECHT_BIS, SLOPE};
+use super::{ErdBasis, ErdZone, Sandplatte, GRABEN_AB, TRENCH, TRENCH_SAND, UEBERSTAND};
 use crate::{Model, RunId, SurveyFrame, TerrainMesh};
 use sk_gelaende::volumen::Erdmenge;
 use sk_math::Vec3;
@@ -345,14 +346,9 @@ impl ErdNetz {
         [e - self.mesh.bezug.0, n - self.mesh.bezug.1]
     }
 
-    /// Gelände über `umriss` gegen die Höhe `z` über ±0,00: Fläche im Netz
-    /// (mm²), darüber und darunter (mm³), größtes Gefälle.
-    fn menge(&self, umriss: &[Vec3], z: f64) -> Erdmenge {
-        self.mengen(umriss, &[z])[0]
-    }
-
-    /// [`ErdNetz::menge`] je Höhe in `zs`, der Umriss einmal geschnitten
-    /// (Review #164 H-164b).
+    /// Gelände über `umriss` gegen die Höhen `zs` über ±0,00: Fläche im
+    /// Netz (mm²), darüber und darunter (mm³), größtes Gefälle; der Umriss
+    /// einmal geschnitten (Review #164 H-164b).
     fn mengen<const N: usize>(&self, umriss: &[Vec3], zs: &[f64; N]) -> [Erdmenge; N] {
         let r: Vec<[f64; 2]> = umriss.iter().map(|&p| self.im_netz(p)).collect();
         let bezuege = zs.map(|z| [self.h0 + z / 1000.0, 0.0, 0.0]);
@@ -402,33 +398,60 @@ pub(super) fn ecken_tan(pts: &[Vec3]) -> Vec<f64> {
         .collect()
 }
 
-/// Böschung über dem Sohlrand (Auflage A3, Empfehlung der VOB-Prüfung
-/// Frage 3): je Randstück mit seiner örtlichen Tiefe h(s) = N − UK Platte,
-/// nur wo das Gelände mehr als 1,25 m über UK Platte liegt. Der Keil ist
-/// ∮ k·h²/2 ds plus je Ecke tan(φ/2)·k²·h³/3, die schräge Fläche
-/// (∮ h ds + Σ tan(φ/2)·k·h²)/sin β. Angenähert bleibt, dass das Gelände
-/// über die Breite der Böschung weiter steigt (G5).
+/// Keil vor einem Rand (Auflage A3, Empfehlung der VOB-Prüfung Frage 3):
+/// je Randstück mit seiner örtlichen Höhe h(s) aus der Geländehöhe, nur wo
+/// h über `schwelle` liegt. Der Keil ist ∮ k·h²/2 ds plus je Ecke
+/// tan(φ/2)·k²·h³/3 mit k = cot β, die schräge Fläche (∮ h ds + Σ
+/// tan(φ/2)·k·h²)/sin β. Angenähert bleibt, dass das Gelände über die
+/// Breite des Keils weiter steigt oder fällt (G5).
 #[derive(Default)]
-struct Boeschung {
-    keil: f64,
+struct Keil {
+    voll: f64,
+    /// Der Teil bis zur Höhe `deckel` über dem Rand.
+    unter: f64,
     flaeche: f64,
-    /// Länge des Sohlrands mit Böschung, größte Tiefe dort.
+    /// Länge des Rands mit Keil, größte Höhe dort.
     lang: f64,
     tief: f64,
 }
 
-fn boeschung(n: &ErdNetz, sohle: &[Vec3], z_s: f64, o: f64, beta: f64) -> Boeschung {
-    let mut b = Boeschung::default();
-    let beta = beta.clamp(1.0, 90.0).to_radians();
+/// ∫ min(h, d)² ds über eine Strecke der Länge `l`, auf der h linear von
+/// `h0` nach `h1` läuft.
+fn quadrat(h0: f64, h1: f64, l: f64, d: f64) -> f64 {
+    let voll = |a: f64, b: f64, l: f64| l * (a * a + a * b + b * b) / 3.0;
+    if h0 <= d && h1 <= d {
+        return voll(h0, h1, l);
+    }
+    if h0 >= d && h1 >= d {
+        return l * d * d;
+    }
+    let t = (d - h0) / (h1 - h0);
+    if h0 < d {
+        voll(h0, d, l * t) + l * (1.0 - t) * d * d
+    } else {
+        l * t * d * d + voll(d, h1, l * (1.0 - t))
+    }
+}
+
+/// Keil vor dem Ring `rand` (gegen den Uhrzeigersinn, nach außen); `h`
+/// macht aus der Geländehöhe über ±0,00 die Höhe des Keils am Rand.
+fn keil(
+    n: &ErdNetz,
+    rand: &[Vec3],
+    h: &dyn Fn(f64) -> f64,
+    schwelle: f64,
+    beta: f64,
+    deckel: f64,
+) -> Keil {
+    let mut b = Keil::default();
+    let beta = beta.clamp(1.0, 89.0).to_radians();
     let (k, sin) = (1.0 / beta.tan(), beta.sin());
-    // h = N − z_s; Gelände − z_s > 1,25 m
-    let schwelle = SENKRECHT_BIS - o;
-    let m = sohle.len();
+    let m = rand.len();
     for i in 0..m {
-        let p = n.profil(sohle[i], sohle[(i + 1) % m]);
+        let p = n.profil(rand[i], rand[(i + 1) % m]);
         for w in p.windows(2) {
-            let (mut s0, mut h0) = (w[0][0], w[0][1] - o - z_s);
-            let (mut s1, mut h1) = (w[1][0], w[1][1] - o - z_s);
+            let (mut s0, mut h0) = (w[0][0], h(w[0][1]));
+            let (mut s1, mut h1) = (w[1][0], h(w[1][1]));
             if h0 <= schwelle && h1 <= schwelle {
                 continue;
             }
@@ -441,41 +464,60 @@ fn boeschung(n: &ErdNetz, sohle: &[Vec3], z_s: f64, o: f64, beta: f64) -> Boesch
                 h1 = schwelle;
             }
             let l = s1 - s0;
-            b.keil += k * l * (h0 * h0 + h0 * h1 + h1 * h1) / 6.0;
+            b.voll += k * quadrat(h0, h1, l, f64::INFINITY) / 2.0;
+            b.unter += k * quadrat(h0, h1, l, deckel) / 2.0;
             b.flaeche += l * (h0 + h1) / 2.0 / sin;
             b.lang += l;
             b.tief = b.tief.max(h0).max(h1);
         }
     }
-    for (p, tan) in sohle.iter().zip(ecken_tan(sohle)) {
-        let Some(h) = n.hoehe(*p).map(|g| g - o - z_s) else {
+    for (p, tan) in rand.iter().zip(ecken_tan(rand)) {
+        let Some(h) = n.hoehe(*p).map(h) else {
             continue;
         };
         if h > schwelle {
-            b.keil += tan * k * k * h * h * h / 3.0;
+            b.voll += tan * k * k * h * h * h / 3.0;
+            b.unter += tan * k * k * h.min(deckel).powi(3) / 3.0;
             b.flaeche += tan * k * h * h / sin;
         }
     }
     b
 }
 
-/// Sohle der Baugrube (Platte um den Arbeitsraum versetzt), ihre Fläche
-/// und die Menge über ihr; `None`, wenn das Netz sie nicht ganz deckt oder
-/// der Arbeitsraum sich nicht versetzen lässt.
-fn baugrube(b: &ErdBasis, n: &ErdNetz, boden: &Boden) -> Option<(Vec<Vec3>, f64, Erdmenge)> {
+/// Höhen der Gründung unter der Platte: UK Dämmung (ohne UK Platte), UK
+/// Schicht und die Sandplatte, mit dem Gelände in mittlerer Höhe.
+fn lage(b: &ErdBasis, boden: &Boden) -> (f64, f64, Sandplatte) {
+    let z_b = b.insulation_bottom_z.min(b.slab_bottom_z);
+    let z_p = z_b - boden.schicht();
+    let n = b.terrain_z - boden.oberboden.max(0.0);
+    (z_b, z_p, Sandplatte::neu(b.terrain_z, n, z_b, z_p, boden))
+}
+
+/// So hoch über dem gewachsenen Boden reicht der Füllsand um die Platte
+/// höchstens: bis unter den angedeckten Oberboden.
+fn deckel(b: &ErdBasis, boden: &Boden) -> f64 {
     let o = boden.oberboden.max(0.0);
-    let a = boden.arbeitsraum.max(0.0);
-    let sohle = if a > 0.0 {
-        sk_math::flaeche::versatz(&b.outline, &vec![-a; b.outline.len()])?
+    o - b.andecken.clamp(0.0, o)
+}
+
+/// Sohle der Auskofferung (Platte um den Überstand versetzt), ihre Fläche
+/// und die Mengen über ihr gegen die Sohle, UK Dämmung und [`deckel`]
+/// darunter; `None`, wenn das
+/// Netz sie nicht ganz deckt oder der Überstand sich nicht versetzen lässt.
+fn baugrube(b: &ErdBasis, n: &ErdNetz, boden: &Boden) -> Option<(Vec<Vec3>, f64, [Erdmenge; 3])> {
+    let o = boden.oberboden.max(0.0);
+    let (z_b, _, sp) = lage(b, boden);
+    let sohle = if sp.w > 0.0 {
+        sk_math::flaeche::versatz(&b.outline, &vec![-sp.w; b.outline.len()])?
     } else {
         b.outline.clone()
     };
     let sohle_fl = sk_math::polygon::area(&sohle);
-    let grube = n.menge(&sohle, b.slab_bottom_z + o);
-    if sohle_fl <= 0.0 || grube.flaeche < sohle_fl * (1.0 - 1e-6) {
+    let e = n.mengen(&sohle, &[sp.ka + o, z_b + o, z_b - deckel(b, boden) + o]);
+    if sohle_fl <= 0.0 || e[0].flaeche < sohle_fl * (1.0 - 1e-6) {
         return None;
     }
-    Some((sohle, sohle_fl, grube))
+    Some((sohle, sohle_fl, e))
 }
 
 /// Das Netz `n` deckt die Baugrube; sonst rechnen die Erdmengen mit der
@@ -484,10 +526,15 @@ pub(super) fn deckt(b: &ErdBasis, n: &ErdNetz, boden: &Boden) -> bool {
     baugrube(b, n, boden).is_some()
 }
 
-/// Erdmengen der Gründung über das Netz `n`, dazu Baufeld und Baugrube.
-/// `None`, wenn das Netz die Baugrube nicht ganz deckt oder der
-/// Arbeitsraum sich nicht versetzen lässt; dann rechnet
-/// [`super::erd_mengen`] mit der mittleren Höhe.
+/// Erdmengen der Gründung über das Netz `n`, dazu Baufeld und Baugrube,
+/// mit der Sandplatte wie in der Ebene ([`super::erd_mengen`]): Je Stelle
+/// (N gewachsener Boden) wird bis zur Sohle ausgekoffert, (N − Sohle)⁺;
+/// Füllsand kommt bis UK Dämmung bzw. UK Schicht, unter der Sohle
+/// zusätzlich (Sohle − N)⁺, wo das Gelände tiefer liegt; die Gräben gehen
+/// ab OK Sandplatte, im gewachsenen Boden (min(N, Sohle) − UK Schürze)⁺.
+/// `None`, wenn das Netz die Baugrube nicht ganz deckt oder der Überstand
+/// sich nicht versetzen lässt; dann rechnet [`super::erd_mengen`] mit der
+/// mittleren Höhe.
 pub(super) fn mengen(
     b: &ErdBasis,
     n: &ErdNetz,
@@ -495,41 +542,86 @@ pub(super) fn mengen(
     menge: &mut dyn FnMut(&'static str, f64, String),
 ) -> Option<ErdZone> {
     let o = boden.oberboden.max(0.0);
-    let a = boden.arbeitsraum.max(0.0);
     let g = boden.schicht();
     let fl = b.slab_area;
     let z_s = b.slab_bottom_z;
-    let z_b = b.insulation_bottom_z.min(z_s);
-    let z_p = z_b - g;
     let z_f = b.footing_bottom_z;
-    let (sohle, sohle_fl, grube) = baugrube(b, n, boden)?;
-    let [platte, platte_f] = n.mengen(&b.outline, &[z_s + o, z_f + o]).map(|e| e.ueber);
-    let (innen_fl, i_p, i_s, i_f) = if n.innen.len() >= 3 {
-        let [i_p, i_s, i_f] = n.mengen(&n.innen, &[z_p + o, z_s + o, z_f + o]);
-        (sk_math::polygon::area(&n.innen), i_p, i_s.ueber, i_f.ueber)
+    let (z_b, z_p, sp) = lage(b, boden);
+    let ka = sp.ka;
+    let (sohle, sohle_fl, [grube, grube_b, grube_c]) = baugrube(b, n, boden)?;
+    let c = deckel(b, boden);
+    let [platte, platte_b, platte_f, platte_c] =
+        n.mengen(&b.outline, &[ka + o, z_b + o, z_f + o, z_b - c + o]);
+    let (innen_fl, [innen, innen_f]) = if n.innen.len() >= 3 {
+        let e = n.mengen(&n.innen, &[ka + o, z_f + o]);
+        (sk_math::polygon::area(&n.innen), e)
     } else {
-        (0.0, Erdmenge::default(), 0.0, 0.0)
+        (0.0, [Erdmenge::default(); 2])
     };
     let ring_fl = (fl - innen_fl).max(0.0);
-    // ∫innen (min(z_s, N) − z_p)⁺ = ∫(N − z_p)⁺ − ∫(N − z_s)⁺, ebenso der Ring
-    let bett = (i_p.ueber - i_s).max(0.0);
-    let mut graben = (platte_f - platte) - (i_f - i_s);
+    // über dem gewachsenen Boden bis zum Überstand, darüber hinaus der
+    // Keil; je Stelle (min(UK Dämmung, N + c) − N)⁺ = (UK Dämmung − N)⁺ −
+    // (UK Dämmung − c − N)⁺, im Keil ebenso
+    let ueberstand = if (sp.w - UEBERSTAND).abs() < 1e-9 {
+        None
+    } else {
+        sk_math::flaeche::versatz(&b.outline, &vec![-UEBERSTAND; b.outline.len()])
+    };
+    let auf_innen = match &ueberstand {
+        Some(r) => {
+            let [b_, c_] = n.mengen(r, &[z_b + o, z_b - c + o]);
+            b_.unter - c_.unter
+        }
+        None => grube_b.unter - grube_c.unter,
+    };
+    let beta = boden.boeschung;
+    let rand = ueberstand.as_deref().unwrap_or(&sohle);
+    let auf_keil = keil(n, rand, &|gl| z_b - (gl - o), 0.0, beta, f64::INFINITY);
+    let auf_ueber = keil(n, rand, &|gl| z_b - c - (gl - o), 0.0, beta, f64::INFINITY);
+    let auf_keil_v = (auf_keil.voll - auf_ueber.voll).max(0.0);
+    // Auskofferung: Keil ab der Sohle, wo das Gelände mehr als 1,25 m über
+    // ihr liegt; bis UK Dämmung Füllsand, darüber Verfüllung
+    let bo = keil(
+        n,
+        &sohle,
+        &|gl| gl - o - ka,
+        SENKRECHT_BIS - o,
+        beta,
+        z_b - ka,
+    );
+    // Graben im gewachsenen Boden: ∫ring (min(N, Sohle) − UK Schürze)⁺
+    let mut graben = if ka - z_f > GRABEN_AB {
+        (platte_f.ueber - platte.ueber) - (innen_f.ueber - innen.ueber)
+    } else {
+        0.0
+    };
     // unter der Haustrennwand mit der eigenen Höhe statt dem Netz
     let h = n.ok - o;
     for q in &n.trennwand {
-        let [s, f] = n.mengen(q, &[z_s + o, z_f + o]).map(|e| e.ueber);
-        let eigen = (h - z_f).max(0.0) - (h - z_s).max(0.0);
+        if ka - z_f <= GRABEN_AB {
+            break;
+        }
+        let [s, f] = n.mengen(q, &[ka + o, z_f + o]).map(|e| e.ueber);
+        let eigen = (h - z_f).max(0.0) - (h - ka).max(0.0);
         graben += sk_math::polygon::area(q) * eigen - (f - s);
     }
     let graben = graben.max(0.0);
-    let auf = i_p.unter;
-    let bo = boeschung(n, &sohle, z_s, o, boden.boeschung);
+    let im_sand = (ring_fl * (z_b - z_f) - graben).max(0.0);
     let verfahren = n.aufmass.clone();
     let breite = |x: f64| format!("{} m", zahl(x, 1e3));
+    let bis = if z_b < z_s {
+        "UK Dämmung"
+    } else {
+        "UK Platte"
+    };
 
-    // Oberboden über das Baufeld, mindestens bis zum Rand der Böschung
-    let beta = boden.boeschung.clamp(1.0, 90.0).to_radians();
-    let x_ob = boden.rand.max(a + bo.tief / beta.tan());
+    // Oberboden über das Baufeld, mindestens bis zum Rand der Auskofferung
+    // und der Sandplatte
+    let tan = sp.tan;
+    let x_ob = boden
+        .rand
+        .max(sp.w + bo.tief / tan)
+        .max(UEBERSTAND + auf_keil.tief / tan);
     super::oberboden(b, x_ob, o, menge);
     // Hinweis A4 am ersten Aushub, wenn es einen gibt
     let mut steil = (grube.steil > STEIL_AB).then(|| {
@@ -540,40 +632,123 @@ pub(super) fn mengen(
     });
     let mut steil_dazu = |s: String| s + &steil.take().unwrap_or_default();
     if grube.ueber > 0.0 {
+        // VOB B-BA-1: der Oberboden steht gesondert, hier nur der Boden
         menge(
             EXCAVATION,
             grube.ueber,
             steil_dazu(format!(
-                "Sohle {} m² (Platte + Arbeitsraum {}) bis UK Platte, im Mittel {}{verfahren}",
+                "Auskofferung {} ab OK Gelände im Mittel = Oberboden {} (gesondert) + Boden: Sohle \
+                 {} m² (Platte + Überstand {}), im Mittel {}{verfahren}",
+                breite(b.terrain_z - ka),
+                breite(o),
                 zahl(sohle_fl, 1e6),
-                breite(a),
+                breite(sp.w),
                 mittel(grube.ueber, sohle_fl)
             )),
         );
     }
-    if bo.keil > 0.0 {
+    if bo.voll > 0.0 {
         menge(
             EXCAVATION,
-            bo.keil,
+            bo.voll,
             format!(
                 "Böschung {}° auf {} Sohlrand, Tiefe bis {}{AUS_AUFMASS}, Böschung am Gelände \
                  angenähert",
-                boden.boeschung.round(),
+                beta.round(),
                 breite(bo.lang),
                 breite(bo.tief)
             ),
         );
     }
-    if bett > 0.0 {
-        let wofuer = super::ausgehoben_fuer(z_b < z_s, boden.kies);
+    // Füllsand (VOB B-BA-2)
+    let kern = innen_fl * (z_p - ka).max(0.0) + innen.unter;
+    if kern > 0.0 {
         menge(
-            EXCAVATION,
-            bett,
+            SAND,
+            kern,
             format!(
-                "für {wofuer} {} m², im Mittel {}{verfahren}",
+                "innerhalb der Schürze {} m² bis {}, im Mittel {}{verfahren}",
                 zahl(innen_fl, 1e6),
-                mittel(bett, innen_fl)
+                super::aufgefuellt_bis(z_b < z_s, boden.kies),
+                mittel(kern, innen_fl)
             ),
+        );
+    }
+    let unter = ring_fl * (z_b - ka).max(0.0) + (platte.unter - innen.unter).max(0.0);
+    if unter > 0.0 {
+        menge(
+            SAND,
+            unter,
+            format!(
+                "unter der Schürze {} m² bis {bis}, im Mittel {}{verfahren}",
+                zahl(ring_fl, 1e6),
+                mittel(unter, ring_fl)
+            ),
+        );
+    }
+    let um_fl = sohle_fl - fl;
+    let um = ((grube.ueber - grube_b.ueber) - (platte.ueber - platte_b.ueber)).max(0.0);
+    if um > 0.0 {
+        menge(
+            SAND,
+            um,
+            format!(
+                "um die Platte {} m² (Überstand {}) bis {bis}, im Mittel {}{verfahren}",
+                zahl(um_fl, 1e6),
+                breite(sp.w),
+                mittel(um, um_fl)
+            ),
+        );
+    }
+    if bo.unter > 0.0 {
+        menge(
+            SAND,
+            bo.unter,
+            format!(
+                "Böschung {}°: Füllsand bis {bis}{AUS_AUFMASS}, Böschung am Gelände angenähert",
+                beta.round()
+            ),
+        );
+    }
+    let auf = (auf_innen - (platte_b.unter - platte_c.unter)).max(0.0);
+    if auf > 0.0 {
+        let fl_auf = sk_math::polygon::area(rand) - fl;
+        menge(
+            SAND,
+            auf,
+            format!(
+                "über dem gewachsenen Boden um die Platte {} m² (Überstand {}) bis {bis}, \
+                 höchstens unter den angedeckten Oberboden, im Mittel {}{verfahren}",
+                zahl(fl_auf, 1e6),
+                breite(UEBERSTAND),
+                mittel(auf, fl_auf)
+            ),
+        );
+    }
+    if auf_keil_v > 0.0 {
+        menge(
+            SAND,
+            auf_keil_v,
+            format!(
+                "Böschung {}° der Sandplatte auf {} Rand, Höhe bis {}{AUS_AUFMASS}, Böschung am \
+                 Gelände angenähert",
+                beta.round(),
+                breite(auf_keil.lang),
+                breite(auf_keil.tief.min(c))
+            ),
+        );
+    }
+    // Gräben der Schürze ab OK Sandplatte (VOB B-BA-3)
+    if im_sand > 0.0 {
+        menge(
+            TRENCH_SAND,
+            im_sand,
+            steil_dazu(format!(
+                "Ring {} m² ab OK Sandplatte bis UK Schürze bzw. Sohle der Auskofferung, im \
+                 Mittel {}{verfahren}",
+                zahl(ring_fl, 1e6),
+                mittel(im_sand, ring_fl)
+            )),
         );
     }
     if graben > 0.0 {
@@ -581,43 +756,32 @@ pub(super) fn mengen(
             TRENCH,
             graben,
             steil_dazu(format!(
-                "Ring {} m² bis UK Schürze, im Mittel {}{verfahren}",
+                "Ring {} m² unter der Sohle der Auskofferung bis UK Schürze, im Mittel \
+                 {}{verfahren}",
                 zahl(ring_fl, 1e6),
                 mittel(graben, ring_fl)
             )),
         );
     }
     super::planum(innen_fl, g, boden.kies, menge);
-    if auf > 0.0 {
-        menge(
-            FILL,
-            auf,
-            format!(
-                "{} m² bis {}, im Mittel {}{verfahren}",
-                zahl(innen_fl, 1e6),
-                super::aufgefuellt_bis(z_b < z_s, boden.kies),
-                mittel(auf, innen_fl)
-            ),
-        );
-    }
-    // Arbeitsraum: Baugrube samt Böschung außerhalb der Platte; die
-    // Böschung ist angenähert, die Abfuhr nicht (sie steht in Aushub und
+    // über der Sandplatte bis OK gewachsener Boden, außerhalb der Platte;
+    // im Keil angenähert, die Abfuhr nicht (sie steht in Aushub und
     // Verfüllung gleich)
-    let gesamt = grube.ueber + bo.keil;
-    let verfuellen = (gesamt - platte).max(0.0);
+    let ueber = (grube_b.ueber - platte_b.ueber).max(0.0);
+    let verfuellen = ueber + (bo.voll - bo.unter).max(0.0);
     if verfuellen > 0.0 {
-        let marke = if bo.keil > 0.0 { AUS_AUFMASS } else { "" };
+        let marke = if bo.voll > 0.0 { AUS_AUFMASS } else { "" };
         menge(
             BACKFILL,
             verfuellen,
             format!(
-                "Baugrube {} m³ − Platte {} m³ bis UK Platte{verfahren}{marke}",
-                zahl(gesamt, 1e9),
-                zahl(platte, 1e9)
+                "über der Sandplatte: Sohle {} m³ − Platte {} m³ über {bis}{verfahren}{marke}",
+                zahl(grube_b.ueber + bo.voll - bo.unter, 1e9),
+                zahl(platte_b.ueber, 1e9)
             ),
         );
     }
-    let aushub = gesamt + bett + graben;
+    let aushub = grube.ueber + bo.voll + graben + im_sand;
     let abfuhr = aushub - verfuellen;
     if abfuhr > 0.0 {
         menge(
@@ -644,8 +808,8 @@ pub(super) fn mengen(
     Some(ErdZone {
         baufeld: x_ob,
         sohle: if grube.ueber > 0.0 { sohle } else { Vec::new() },
-        b: z_s,
-        keil: bo.keil > 0.0,
+        b: z_b,
+        keil: bo.voll > 0.0,
     })
 }
 

@@ -116,9 +116,10 @@ fn rh4_gleich_rh1_plus_erweiterungen() {
     assert_eq!(g + b4.ausgleich_geschoss.0, b4.netto.0);
     assert_eq!(k + b4.ausgleich_kg.0, b4.netto.0);
     println!("RH-4 netto {} (RH-1 {})", b4.netto.0, b1.netto.0);
-    // Werksstand 12 mit der Dämmung auf der Attika der Dachterrasse (A70):
-    // RH-1 76.001,72 €, RH-4 83.268,90 €
+    // Werksstand 20 mit der Sandplatte: RH-1 79.794,22 €, RH-4 87.061,40 €
+    // (Stand 12 mit der Dämmung auf der Attika der Dachterrasse, A70:
+    // RH-1 76.001,72 €, RH-4 83.268,90 €)
     // (Stand 9 ohne: 75.953,63 und 83.220,81; Stand 8: 73.035,98 und 80.303,16)
-    assert_eq!(b1.netto.0, 7_600_172, "RH-1 netto");
-    assert_eq!(b4.netto.0, 8_326_890, "RH-4 netto");
+    assert_eq!(b1.netto.0, 7_979_422, "RH-1 netto");
+    assert_eq!(b4.netto.0, 8_706_140, "RH-4 netto");
 }

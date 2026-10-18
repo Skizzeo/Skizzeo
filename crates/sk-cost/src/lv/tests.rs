@@ -61,11 +61,11 @@ fn fall_1_rohbau_mit_preisen() {
     let nrs: Vec<&str> = o.iter().map(|x| x.0.as_str()).collect();
     assert_eq!(nrs, ["01", "02", "03", "04", "05", "06", "07"]);
     let titel = |nr: &str| o.iter().find(|x| x.0 == nr).unwrap().1.clone();
-    // Erdarbeiten aus der Gründung (Gelände = OK Platte: keine Baugrube
-    // mit Arbeitsraum, keine Verfüllung)
+    // Erdarbeiten aus der Gründung (Gelände = OK Platte: Auskofferung
+    // 0,80 m, Füllsand, der Graben ganz im Füllsand, keine Verfüllung)
     assert_eq!(
         titel("02"),
-        ["02.0010", "02.0020", "02.0030", "02.0040", "02.0050", "02.0080"]
+        ["02.0010", "02.0020", "02.0025", "02.0035", "02.0040", "02.0050", "02.0080"]
     );
     assert_eq!(
         titel("03"),

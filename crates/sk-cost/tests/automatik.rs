@@ -50,7 +50,7 @@ fn automatikposition_aus_der_gruendung() {
             AUSHUB,
             "Aushub",
             20,
-            "unit=m3 basis=auto auto=earth.trench equip=12",
+            "unit=m3 basis=auto auto=earth.trench_sand equip=12",
         ),
     ]);
     let s = qto::schedule(&m);
@@ -177,7 +177,12 @@ fn erdmengen_aus_dem_aufmass_geben_hinweis() {
     use sk_cost::lv::{lv_aus, vorbemerkung_netz, LvWahl};
     use sk_cost::rechnung::ERDE_AUS_MITTEL;
     use sk_model::qto_earth::DREIECKSPRISMEN;
-    let aushub = leistung(AUSHUB, "Aushub", 20, "unit=m3 basis=auto auto=earth.trench");
+    let aushub = leistung(
+        AUSHUB,
+        "Aushub",
+        20,
+        "unit=m3 basis=auto auto=earth.trench_sand",
+    );
     let mit_aufmass = |punkte: [&str; 4]| {
         let mut z = vec![aushub.clone()];
         z.push(
@@ -310,7 +315,7 @@ fn erdmengen_aus_angenommenem_gelaende() {
         AUSHUB,
         "Aushub",
         20,
-        "unit=m3 basis=auto auto=earth.trench",
+        "unit=m3 basis=auto auto=earth.trench_sand",
     )];
     z.extend(
         [
@@ -365,7 +370,7 @@ fn erdmengen_aus_aufmass_mit_punkten_von_hand() {
         AUSHUB,
         "Aushub",
         20,
-        "unit=m3 basis=auto auto=earth.trench",
+        "unit=m3 basis=auto auto=earth.trench_sand",
     )];
     z.extend(
         [
