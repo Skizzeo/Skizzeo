@@ -10,3 +10,31 @@ pub(crate) struct Erweiterungen {
     pub(crate) fenster: Option<crate::ext_verwaltung::Fenster>,
     pub(crate) liste: Option<crate::auswahl::Auswahl>,
 }
+
+/// Baumpanel (Paket 4) und was die App über ihn weiß.
+pub(crate) struct Baum {
+    pub(crate) panel: crate::tree_panel::TreePanel,
+    /// Der Hover kommt aus dem Baum.
+    pub(crate) hover: bool,
+    /// Die Maus steht über dem Baum.
+    pub(crate) maus: bool,
+    /// Die Auswahl kam aus dem Baum, dann bleiben die Äste.
+    pub(crate) gewaehlt: bool,
+    /// Zuletzt gesehene Auswahl.
+    pub(crate) zuletzt: Option<sk_model::ElementId>,
+    /// Zuletzt gesehen: Eigenschaften offen (dann rückt der Baum animiert).
+    pub(crate) eigenschaften: bool,
+}
+
+impl Baum {
+    pub(crate) fn new() -> Self {
+        Self {
+            panel: crate::tree_panel::TreePanel::new(),
+            hover: false,
+            maus: false,
+            gewaehlt: false,
+            zuletzt: None,
+            eigenschaften: false,
+        }
+    }
+}
