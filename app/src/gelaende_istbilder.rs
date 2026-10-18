@@ -186,7 +186,15 @@ mod gpu {
         r.set_sun(None);
         let m = s.model();
         pl.im_bild(m);
-        let sicht: Sicht = (v, ebene, s.table().terrain, false, false, linien);
+        let sicht: Sicht = (
+            v,
+            ebene,
+            s.table().terrain,
+            false,
+            false,
+            linien,
+            Default::default(),
+        );
         let key = netz_key(pl.fassung, &sicht);
         let netz = loop {
             if let Some(n) = pl.netz_zur_sicht(key, sicht) {

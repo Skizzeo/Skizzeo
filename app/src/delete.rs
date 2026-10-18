@@ -595,6 +595,9 @@ pub enum Action {
     /// Nur am Höhenpunkt (I5b): das Schloss der gewählten Messpunkte
     /// öffnen bzw. schließen, wie „Schloss offen“ in der Leiste.
     Schloss,
+    /// Rechtsklick neben die Bauteile in 3D und Schnitt: die Bauphase
+    /// zeigen, wie ein Klick auf ihr Feld der Phasenleiste.
+    Bauphase(crate::gelaende_platte::bauphase::Bauphase),
 }
 
 /// Breite des Kontextmenüs (dip).
@@ -824,6 +827,42 @@ impl ContextMenu {
         ContextMenu {
             target: None,
             items: vec![(item, Some(Action::Schloss))],
+            x: 0.0,
+            y: 0.0,
+            sel: None,
+            hover: None,
+            pressed: false,
+            refusal: None,
+        }
+        .at(x, y, win, t, s)
+    }
+
+    /// Rechtsklick neben die Bauteile in 3D und Schnitt: die acht
+    /// Bauphasen, die gezeigte mit Haken (wie die Phasenleiste).
+    pub fn for_bauphase(
+        jetzt: crate::gelaende_platte::bauphase::Bauphase,
+        x: f64,
+        y: f64,
+        win: (u32, u32, u32),
+        t: &Theme,
+        s: f32,
+    ) -> Self {
+        use crate::gelaende_platte::bauphase::Bauphase;
+        let items = Bauphase::ALLE
+            .into_iter()
+            .map(|p| {
+                let item = MenuItem {
+                    label: format!("{} {}", p.nr(), p.name()),
+                    shortcut: if p == jetzt { "✓" } else { "" }.into(),
+                    enabled: true,
+                    ..MenuItem::default()
+                };
+                (item, Some(Action::Bauphase(p)))
+            })
+            .collect();
+        ContextMenu {
+            target: None,
+            items,
             x: 0.0,
             y: 0.0,
             sel: None,
@@ -1319,5 +1358,30 @@ mod tests {
         assert!(zu.target.is_none());
         let r = zu.rect(&t, 1.0);
         assert!(r.x + r.w <= 1440.0 && r.y + r.h <= 900.0, "{r:?}");
+    }
+
+    /// Rechtsklick ins Leere in 3D und Schnitt: die acht Bauphasen, die
+    /// gezeigte mit Häkchen, jede Zeile springt in ihre Phase.
+    #[test]
+    fn menue_der_bauphasen() {
+        use crate::gelaende_platte::bauphase::Bauphase;
+        let t = Theme::dark();
+        let m =
+            ContextMenu::for_bauphase(Bauphase::Fuellsand, 300.0, 300.0, (1440, 900, 32), &t, 1.0);
+        let a = m.actions();
+        assert_eq!(a.len(), 8);
+        for (i, (text, an, act)) in a.iter().enumerate() {
+            let p = Bauphase::ALLE[i];
+            assert_eq!(*text, format!("{} {}", p.nr(), p.name()));
+            assert!(*an);
+            assert_eq!(*act, Some(Action::Bauphase(p)));
+        }
+        let haken: Vec<_> = m
+            .items
+            .iter()
+            .filter(|(it, _)| it.shortcut == "✓")
+            .collect();
+        assert_eq!(haken.len(), 1);
+        assert_eq!(haken[0].1, Some(Action::Bauphase(Bauphase::Fuellsand)));
     }
 }

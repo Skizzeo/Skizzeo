@@ -9,7 +9,9 @@
 //! Abstand ums Haus. Mit Höhenaufmaß steht statt der Platte das echte
 //! Gelände da ([`crate::gelaende_netz`], G1).
 
+pub(crate) mod bauphase;
 pub(crate) mod bodenaufbau;
+pub(crate) mod phasenleiste;
 
 use crate::draw_table::{fallback_look, DrawTable, MatLook, Stroke};
 use crate::gelaende_app::unterlage::{Schluessel, Striche};
@@ -17,6 +19,7 @@ use crate::gelaende_netz::{self, Gelaende};
 use crate::selection::de;
 use crate::ui::{kote_text, Field, FieldRow, Props, Section, ViewKind};
 use crate::App;
+use bauphase::Bauphase;
 use bodenaufbau::Bodenaufbau;
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame};
@@ -67,18 +70,36 @@ pub(crate) fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)>
 
 /// Was das Netz außer den Platten bestimmt: Ansicht, Schnittebene,
 /// Schlüssel von Rasen und Erdreich, ausgeblendet, Hilfsnetz in 3D
-/// (Jörns §4.3a), Höhenlinien in 3D (Jörn 17.10.).
-pub(crate) type Sicht = (ViewKind, Option<(Vec3, Vec3)>, [u16; 3], bool, bool, bool);
+/// (Jörns §4.3a), Höhenlinien in 3D (Jörn 17.10.), Bauphase in 3D und
+/// Schnitt ([`bauphase`]).
+pub(crate) type Sicht = (
+    ViewKind,
+    Option<(Vec3, Vec3)>,
+    [u16; 3],
+    bool,
+    bool,
+    bool,
+    Bauphase,
+);
 
 /// Was im Renderer liegt: Fassung der Platten und die [`Sicht`], die
 /// Schnittebene als Bits.
-type NetzKey = (u64, ViewKind, Option<[u64; 6]>, [u16; 3], bool, bool, bool);
+type NetzKey = (
+    u64,
+    ViewKind,
+    Option<[u64; 6]>,
+    [u16; 3],
+    bool,
+    bool,
+    bool,
+    Bauphase,
+);
 
 /// Fassung, Ziffernhöhe, Zeichentabelle und Farben der Höhenzahlen.
 type ZahlenKey = (u64, u64, u64, u64);
 
 fn netz_key(fassung: u64, s: &Sicht) -> NetzKey {
-    (fassung, s.0, s.1.map(bits), s.2, s.3, s.4, s.5)
+    (fassung, s.0, s.1.map(bits), s.2, s.3, s.4, s.5, s.6)
 }
 
 /// Neue Platten, ihre Eingaben, das Gelände und ihr Netz zur Sicht beim
@@ -706,8 +727,15 @@ fn at(q: Vec3, z: f64) -> Vec3 {
 
 /// Körper einer Platte in 3D bis hinunter auf `bot` (den Boden): Rasen
 /// oben, Erdreich unten und an den Seiten; Kanten am oberen und unteren
-/// Rand und senkrecht dort, wo der Rand die Richtung wechselt.
-fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3], ba: &Bodenaufbau) -> Solid {
+/// Rand und senkrecht dort, wo der Rand die Richtung wechselt. Rasen nur
+/// außerhalb der `felder` (dort steht in einer Bauphase die Baugrube).
+fn koerper(
+    p: &TerrainPlate,
+    bot: f64,
+    keys: [u16; 3],
+    ba: &Bodenaufbau,
+    felder: &[[f64; 4]],
+) -> Solid {
     let top = p.top;
     let up = vec3(0.0, 0.0, 1.0);
     let mut s = Solid {
@@ -716,13 +744,19 @@ fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3], ba: &Bodenaufbau) -> Soli
         ..Solid::default()
     };
     for q in &p.pieces {
-        s.quad(
-            at(q[0], top),
-            at(q[1], top),
-            at(q[2], top),
-            at(q[3], top),
-            up,
-        );
+        if felder.is_empty() {
+            s.quad(
+                at(q[0], top),
+                at(q[1], top),
+                at(q[2], top),
+                at(q[3], top),
+                up,
+            );
+            continue;
+        }
+        for t in bauphase::ausserhalb(&q.map(|v| at(v, top)), felder) {
+            s.cap(&t, top, true);
+        }
     }
     s.mat = keys[1];
     for q in &p.pieces {
@@ -763,9 +797,12 @@ fn koerper(p: &TerrainPlate, bot: f64, keys: [u16; 3], ba: &Bodenaufbau) -> Soli
         if ba.am_haus([m.x, m.y]) {
             continue;
         }
+        let oben = !felder.iter().any(|r| bauphase::im_feld(r, [m.x, m.y]));
         let d = (b - a).normalized();
         s.quad(at(a, bot), at(b, bot), at(b, top), at(a, top), right_of(d));
-        s.edge(at(a, top), at(b, top));
+        if oben {
+            s.edge(at(a, top), at(b, top));
+        }
         s.edge(at(a, bot), at(b, bot));
         // Ecke am Anfang: die Kante davor läuft in eine andere Richtung
         let davor = davor(a);
@@ -801,41 +838,64 @@ fn boden(plates: &[TerrainPlate], ba: &Bodenaufbau) -> f64 {
 
 /// Netz der Platten: in 3D die Körper, alle bis auf die tiefste
 /// Unterkante (dort liegt der Boden, keine Platte schwebt), am Haus die
-/// Aussparung im Bodenaufbau; im Schnitt die Schichten des Bodenaufbaus
-/// (ihr Umriss kommt aus [`linien`]); sonst leer.
+/// Aussparung im Bodenaufbau, in einer offenen Bauphase `ph` um die Häuser
+/// die Baugrube; im Schnitt die Schichten des Bodenaufbaus (ihr Umriss
+/// kommt aus [`linien`]); sonst leer.
 pub(crate) fn netz(
     plates: &[TerrainPlate],
     view: ViewKind,
     plane: Option<(Vec3, Vec3)>,
     keys: [u16; 3],
     ba: &Bodenaufbau,
+    ph: Bauphase,
 ) -> MeshData {
-    let mut s = Solid::default();
-    let unten = boden(plates, ba);
-    let schichten = bodenaufbau::schluessel(keys);
     match (view, plane) {
         (ViewKind::Persp, _) if !plates.is_empty() => {
-            for p in plates {
-                s.append(&koerper(p, unten, keys, ba));
-            }
-            let teilung = |_: [f64; 2], _: [f64; 2]| Vec::new();
-            s.append(&bodenaufbau::grube(
-                ba,
-                &|_| None,
-                &teilung,
-                &|_, _| None,
-                unten,
-                schichten,
-            ));
+            crate::scene::mesh_of(&netz_solid(plates, keys, ba, ph))
         }
         (ViewKind::Section, Some((p0, n))) => {
             let f = SectionFrame::new(p0, n);
             let oben: Vec<_> = plates.iter().flat_map(|p| oben(p, &f, p0)).collect();
-            s.append(&bodenaufbau::schnitt(ba, &f, &oben, unten, schichten));
+            let (unten, schichten) = (boden(plates, ba), bodenaufbau::schluessel(keys));
+            let s = bodenaufbau::schnitt(ba, &f, &oben, unten, schichten, ph);
+            crate::scene::mesh_of(&s)
         }
-        _ => {}
+        _ => crate::scene::mesh_of(&Solid::default()),
     }
-    crate::scene::mesh_of(&s)
+}
+
+/// Körper der Platten in 3D zu [`netz`]: im fertigen Stand mit der
+/// Aussparung, in einer offenen Phase um die Häuser die Baugrube.
+fn netz_solid(plates: &[TerrainPlate], keys: [u16; 3], ba: &Bodenaufbau, ph: Bauphase) -> Solid {
+    let mut s = Solid::default();
+    let unten = boden(plates, ba);
+    let schichten = bodenaufbau::schluessel(keys);
+    let felder = if ph.offen() { ba.felder() } else { Vec::new() };
+    for p in plates {
+        s.append(&koerper(p, unten, keys, ba, &felder));
+    }
+    if ph.offen() {
+        let hoehe = |q: [f64; 2]| {
+            plates
+                .iter()
+                .find(|p| p.pieces.iter().any(|v| im_stueck(v, q)))
+                .map(|p| p.top)
+        };
+        s.append(&bodenaufbau::decke(
+            ba, ph, &hoehe, unten, schichten, keys[0],
+        ));
+    } else {
+        let teilung = |_: [f64; 2], _: [f64; 2]| Vec::new();
+        s.append(&bodenaufbau::grube(
+            ba,
+            &|_| None,
+            &teilung,
+            &|_, _| None,
+            unten,
+            schichten,
+        ));
+    }
+    s
 }
 
 /// Netz zur Sicht: mit Aufmaß das Gelände (Körper in 3D, Schnittflächen im
@@ -846,19 +906,28 @@ fn netz_der_sicht(
     s: Sicht,
     ba: &Bodenaufbau,
 ) -> MeshData {
-    let (view, plane, keys, hidden, hilfsnetz, linien) = s;
+    let (view, plane, keys, hidden, hilfsnetz, linien, ph) = s;
     match (g, view, plane) {
         _ if hidden => MeshData::default(),
         (Some(g), ViewKind::Persp, _) => {
-            crate::scene::mesh_of(&gelaende_netz::koerper_mit(g, keys, hilfsnetz, linien))
+            crate::scene::mesh_of(&gelaende_netz::koerper_in(g, keys, hilfsnetz, linien, ph))
         }
         (Some(g), ViewKind::Section, Some((p0, n))) => {
             let f = SectionFrame::new(p0, n);
-            crate::scene::mesh_of(&gelaende_netz::kappen(g, &f, p0, keys))
+            crate::scene::mesh_of(&gelaende_netz::kappen_in(g, &f, p0, keys, ph))
         }
         (Some(_), ..) => MeshData::default(),
-        (None, ..) => netz(p, view, plane, keys, ba),
+        (None, ..) => netz(p, view, plane, keys, ba, ph),
     }
+}
+
+/// Liegt `q` im Stück `v` der Platte (konvex, gegen den Uhrzeigersinn,
+/// zwei Ecken können zusammenfallen)?
+fn im_stueck(v: &[Vec3; 4], q: [f64; 2]) -> bool {
+    (0..4).all(|i| {
+        let (a, b) = (v[i], v[(i + 1) % 4]);
+        (b.x - a.x) * (q[1] - a.y) - (b.y - a.y) * (q[0] - a.x) >= -1e-6
+    })
 }
 
 /// Linien der Platten in Ansicht und Schnitt (ersetzen die Geländelinie):
@@ -1041,6 +1110,7 @@ impl App {
             self.scene.terrain_hidden(),
             self.ui.view == ViewKind::Persp && self.netz_an(),
             !self.platte.leiste.linien_aus,
+            self.scene.bauphase(self.ui.view),
         )
     }
 
@@ -1363,6 +1433,7 @@ pub(crate) fn export_koerper(m: &Model, keys: [u16; 2]) -> Option<Solid> {
             boden,
             [keys[0], keys[1], keys[0]],
             &Bodenaufbau::default(),
+            &[],
         ));
     }
     (!s.triangles.is_empty()).then_some(s)
@@ -1394,7 +1465,15 @@ mod tests {
     }
 
     /// Sicht der Tests: 3D, Rasen, Erdreich und blasser Rasen 40 bis 42.
-    const SICHT: Sicht = (ViewKind::Persp, None, [40, 41, 42], false, false, true);
+    const SICHT: Sicht = (
+        ViewKind::Persp,
+        None,
+        [40, 41, 42],
+        false,
+        false,
+        true,
+        Bauphase::Fertig,
+    );
 
     /// Erste Wand des Modells um `d` verschieben, ein geschlossener Schritt.
     fn wand_schieben(s: &mut crate::scene::Scene, d: f64) {
@@ -1521,14 +1600,22 @@ mod tests {
         assert_eq!(pl.fassung, f0 + 1);
         let (k, n) = pl.fertig.take().expect("Netz aus dem Faden");
         assert_eq!(k, netz_key(pl.fassung, &SICHT));
-        let soll = netz(&pl.platten, SICHT.0, SICHT.1, SICHT.2, &pl.aufbau);
+        let soll = netz(&pl.platten, SICHT.0, SICHT.1, SICHT.2, &pl.aufbau, SICHT.6);
         assert_eq!(n.faces, soll.faces);
         assert_eq!(n.edges, soll.edges);
         // ausgeblendet: leeres Netz
         wand_schieben(&mut s, 500.0);
         pl.nachziehen(
             s.model(),
-            (ViewKind::Persp, None, [40, 41, 42], true, false, true),
+            (
+                ViewKind::Persp,
+                None,
+                [40, 41, 42],
+                true,
+                false,
+                true,
+                Bauphase::Fertig,
+            ),
         );
         assert!(pl.warten());
         assert!(pl.fertig.take().unwrap().1.faces.is_empty());
@@ -1640,7 +1727,15 @@ mod tests {
         assert!((breit(&l[k]) - 2.0 * breit(&vorher[k])).abs() < 1e-3);
         // Körper und Schnitt kommen aus einem Faden; der Körper bleibt für
         // den Rückweg gemerkt (#129 B4)
-        let persp: Sicht = (ViewKind::Persp, None, [1, 2, 3], false, false, true);
+        let persp: Sicht = (
+            ViewKind::Persp,
+            None,
+            [1, 2, 3],
+            false,
+            false,
+            true,
+            Bauphase::Fertig,
+        );
         let key = netz_key(pl.fassung, &persp);
         pl.fertig = None;
         assert!(pl.netz_zur_sicht(key, persp).is_none());
@@ -1661,7 +1756,15 @@ mod tests {
             n.faces,
             netz_der_sicht(&[], g.as_ref(), persp, &Bodenaufbau::default()).faces
         );
-        let grund: Sicht = (ViewKind::Plan, None, [1, 2, 3], false, false, true);
+        let grund: Sicht = (
+            ViewKind::Plan,
+            None,
+            [1, 2, 3],
+            false,
+            false,
+            true,
+            Bauphase::Fertig,
+        );
         let leer = pl.netz_zur_sicht(netz_key(pl.fassung, &grund), grund);
         assert!(leer.unwrap().faces.is_empty(), "Grundriss ohne Faden");
         let wieder = pl.netz_zur_sicht(key, persp).expect("gemerkt");
@@ -1806,7 +1909,7 @@ mod tests {
         let m = haus();
         let p = m.terrain_plates();
         let keys = [40, 41, 42];
-        let s = koerper(&p[0], p[0].bottom, keys, &Bodenaufbau::default());
+        let s = koerper(&p[0], p[0].bottom, keys, &Bodenaufbau::default(), &[]);
         let flaeche = |k: u16| -> f64 {
             s.triangles
                 .iter()
@@ -1823,9 +1926,11 @@ mod tests {
             .count();
         assert_eq!(senkrecht, 8);
         for v in [ViewKind::Plan, ViewKind::Front] {
-            assert!(netz(&p, v, None, keys, &Bodenaufbau::aus(&m))
-                .faces
-                .is_empty());
+            assert!(
+                netz(&p, v, None, keys, &Bodenaufbau::aus(&m), Bauphase::Fertig)
+                    .faces
+                    .is_empty()
+            );
         }
     }
 
@@ -1847,7 +1952,14 @@ mod tests {
         // Flächen
         let mut leer = Bodenaufbau::aus(&m);
         leer.haeuser.clear();
-        let n = netz(&p, ViewKind::Section, Some(plane), [40, 41, 42], &leer);
+        let n = netz(
+            &p,
+            ViewKind::Section,
+            Some(plane),
+            [40, 41, 42],
+            &leer,
+            Bauphase::Fertig,
+        );
         assert_eq!(n.faces.len(), 2 * 2 * 6);
         let oberboden = bodenaufbau::schluessel([40, 41, 42])[bodenaufbau::OBERBODEN];
         assert!(n.faces.iter().all(|v| {
@@ -1856,7 +1968,14 @@ mod tests {
         }));
         // mit der Gründung des Hauses auch die Schichten darunter
         let ba = Bodenaufbau::aus(&m);
-        let mit = netz(&p, ViewKind::Section, Some(plane), [40, 41, 42], &ba);
+        let mit = netz(
+            &p,
+            ViewKind::Section,
+            Some(plane),
+            [40, 41, 42],
+            &ba,
+            Bauphase::Fertig,
+        );
         assert!(mit.faces.len() > n.faces.len());
         let theme = Theme::dark();
         let t = DrawTable::resolve(&m, &theme);

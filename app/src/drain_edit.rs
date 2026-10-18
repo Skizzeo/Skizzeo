@@ -254,6 +254,7 @@ impl App {
             Action::AddDrain => self.drain_button(Id::PropsDrainAdd),
             Action::DeleteDrain => self.drain_button(Id::PropsDrainDelete),
             Action::Schloss => self.schloss_umschalten(),
+            Action::Bauphase(p) => self.bauphase_setzen(p),
             // die Aktionen am Bauteil nimmt `context_action`; eine neue
             // Aktion fällt so dem Compiler auf (Review H-250c)
             Action::ShowInModel
@@ -266,9 +267,12 @@ impl App {
     }
 
     /// Rechtsklick auf einen gewählten Höhenpunkt oder einen Ablauf: dessen
-    /// Kontextmenü statt dem des Bauteils darunter.
+    /// Kontextmenü statt dem des Bauteils darunter; neben die Bauteile in 3D
+    /// und Schnitt die Bauphasen.
     pub(crate) fn open_werkzeug_context(&mut self, x: f64, y: f64) -> bool {
-        self.open_punkt_context(x, y) || self.open_drain_context(x, y)
+        self.open_punkt_context(x, y)
+            || self.open_drain_context(x, y)
+            || self.open_phasen_context(x, y)
     }
 
     pub(crate) fn close_context(&mut self) {
