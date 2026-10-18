@@ -38,7 +38,7 @@ use sk_math::{polygon, vec3, Vec3};
 use sk_model::solid::{right_of, SectionFrame, Tri, NO_LAYER};
 use sk_model::{edge_kind, BuildingId, LevelKind, Model, Show, Solid, UnderlayKind};
 use sk_render::{DashPattern, Helper};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 pub(crate) mod gitter;
@@ -253,8 +253,15 @@ impl Gelaende {
         // geglättet (Jörn 17.10.): Ersetzte Dreiecke bleiben eben, ihre
         // Kanten gerade, so schließt das Planungsgelände ohne Spalt an
         let (glatt, je) = m.terrain_triangles_smooth(&weg, GLATT_HOECHSTENS);
+        // Die ebenen Dreiecke teilen sich die Zwischenpunkte auf ihren
+        // Kanten mit den geglätteten daneben, am Rand des Netzes liegen sie
+        // auf seinen geraden Kanten. Naht, Flächen, Wände und der Rand
+        // bekommen sie auch, sonst stünde dort ein T-Stoß (Review H-276a:
+        // mit „fein“ im Export 198 offene Kanten, ohne Flächen 96 am Rand).
+        let mut zwischen = Vec::new();
         if je > 1 {
-            dreiecke = glatt;
+            let roh = std::mem::replace(&mut dreiecke, glatt);
+            zwischen = kantenpunkte(&roh, &dreiecke, &weg, &m.terrain_border(), je);
             let mal = |v: &[bool]| -> Vec<bool> {
                 v.iter().flat_map(|&w| std::iter::repeat_n(w, je)).collect()
             };
@@ -273,13 +280,15 @@ impl Gelaende {
         .into_iter()
         .map(|[a, b]| (a, b))
         .collect();
+        let rand = strecken_mit_punkten(rand, &zwischen);
         if !ur.is_empty() {
             let mut k = 0;
             dreiecke.retain(|_| {
                 k += 1;
                 !weg[k - 1]
             });
-            dreiecke.extend(plan.seam.iter().flat_map(|x| x.1.iter().copied()));
+            let naht: Vec<[Vec3; 3]> = plan.seam.iter().flat_map(|x| x.1.iter().copied()).collect();
+            dreiecke.extend(mit_kantenpunkten(naht, &zwischen));
         }
         // Höhenlinien auf dem geglätteten Gelände je Dreieck, nicht die des
         // Aufmaßes: Die lägen neben oder unter der runden Fläche
@@ -289,7 +298,7 @@ impl Gelaende {
         } else {
             None
         };
-        dreiecke.extend(plan.triangles.iter().copied());
+        dreiecke.extend(mit_kantenpunkten(plan.triangles.clone(), &zwischen));
         let tief = dreiecke
             .iter()
             .flatten()
@@ -369,7 +378,7 @@ impl Gelaende {
         g.ur = ur;
         g.schraffen = plan.hatch.clone();
         g.umrisse = plan.outlines.clone();
-        g.waende = plan.walls.clone();
+        g.waende = mit_kantenpunkten(plan.walls.clone(), &zwischen);
         g.rand = Some(rand);
         g.marken = t
             .points
@@ -812,6 +821,83 @@ impl Gelaende {
         })
     }
 
+    /// Die Höhe an `p` auf der Seite zu `q` hin, wo das Netz an `p`
+    /// springt (Wand einer Geländefläche über die Hauskante), sonst
+    /// `None`. `p`→`q` liegt in einem Dreieck (zwischen zwei Teilstellen).
+    fn sprung(&self, p: P2, q: P2) -> Option<f64> {
+        if self.waende.is_empty() {
+            return None;
+        }
+        let z = self.hoehe(p)?;
+        let m = lerp2(p, q, 0.5);
+        let mut nah = Vec::new();
+        let e = 1e-3;
+        self.netz
+            .bei(&[m[0] - e, m[1] - e, m[0] + e, m[1] + e], &mut nah);
+        let t = nah
+            .iter()
+            .map(|&i| &self.dreiecke[i as usize])
+            .find(|t| baryzentrisch(t, m).is_some())?;
+        let s = ebene(t, p);
+        ((s - z).abs() > 1e-6).then_some(s)
+    }
+
+    /// Die Wände der Geländeflächen ohne die Häuser (dort ist auch kein
+    /// Gelände): Eine Wand über eine Hauskante endet senkrecht auf ihr,
+    /// die Teile im Haus fallen weg (Geometrie H-276-geo-a: vorher 4 bis 20
+    /// offene Kanten im Export, wo die Böschung einer Fläche ins Haus
+    /// reicht). Dazu die Stellen auf den Hauskanten, an denen eine Wand
+    /// endet: Dort springt das Gelände, die Grube hat je Seite eine Höhe.
+    fn waende_ohne_haus(&self) -> (Vec<[Vec3; 3]>, Vec<P2>) {
+        let (mut out, mut stellen) = (Vec::with_capacity(self.waende.len()), Vec::new());
+        let mut nah = Vec::new();
+        for t in &self.waende {
+            // senkrecht: im Grundriss die Strecke a→b
+            let [a, b] = fusslinie(t);
+            self.haeuser.bei(&kasten(&[a, b]), &mut nah);
+            if nah.is_empty() {
+                out.push(*t);
+                continue;
+            }
+            let mut ts = vec![0.0, 1.0];
+            for &h in &nah {
+                ts.extend(schnitte(&self.haus[h as usize].0, a, b));
+            }
+            ts.sort_by(f64::total_cmp);
+            ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+            let g = Gerade::durch(a, b);
+            let von = out.len();
+            for w in ts.windows(2) {
+                if self.in_einem(&nah, lerp2(a, b, (w[0] + w[1]) / 2.0)) {
+                    continue;
+                }
+                let mut v = t.to_vec();
+                if w[0] > 0.0 {
+                    v = abschneiden(&v, |p| g.anteil([p.x, p.y]) - w[0]);
+                }
+                if w[1] < 1.0 {
+                    v = abschneiden(&v, |p| w[1] - g.anteil([p.x, p.y]));
+                }
+                for i in 1..v.len().saturating_sub(1) {
+                    out.push([v[0], v[i], v[i + 1]]);
+                }
+            }
+            let auf_haus = |p: P2| {
+                nah.iter().any(|&h| {
+                    let r = &self.haus[h as usize].0;
+                    (0..r.len()).any(|i| Gerade::durch(r[i], r[(i + 1) % r.len()]).auf(p))
+                })
+            };
+            for p in out[von..].iter().flatten() {
+                let q = [p.x, p.y];
+                if auf_haus(q) {
+                    stellen.push(q);
+                }
+            }
+        }
+        (out, stellen)
+    }
+
     /// Teilstellen der Strecke `a`→`b` (0 bis 1, mit den Enden) an jeder
     /// Netzkante, damit ein Rand genau auf dem Netz liegt.
     pub(crate) fn teilung(&self, a: P2, b: P2) -> Vec<f64> {
@@ -1046,6 +1132,246 @@ fn ebene(t: &[Vec3; 3], p: P2) -> f64 {
     let l1 = ((t[1].x - p[0]) * (t[2].y - p[1]) - (t[1].y - p[1]) * (t[2].x - p[0])) / d;
     let l2 = ((t[2].x - p[0]) * (t[0].y - p[1]) - (t[2].y - p[1]) * (t[0].x - p[0])) / d;
     l1 * t[0].z + l2 * t[1].z + (1.0 - l1 - l2) * t[2].z
+}
+
+/// Abstand (mm), bis zu dem ein Punkt auf einer Kante liegt.
+const AUF_DER_KANTE: f64 = 1e-4;
+
+/// Anteil von `q` auf der Strecke `a`→`b` im Raum, wenn er echt innen
+/// darauf liegt.
+fn auf_strecke(a: Vec3, b: Vec3, q: Vec3) -> Option<f64> {
+    let d = b - a;
+    let l2 = d.dot(d);
+    if l2 <= 0.0 {
+        return None;
+    }
+    let s = (q - a).dot(d) / l2;
+    let innen = s * l2.sqrt() > AUF_DER_KANTE && (1.0 - s) * l2.sqrt() > AUF_DER_KANTE;
+    (innen && (a + d * s - q).length() < AUF_DER_KANTE).then_some(s)
+}
+
+/// Die Punkte der Glättung `glatt` (je Dreieck `je`) auf den Kanten der
+/// Dreiecke `roh` mit `fest` und auf den Kanten des Rands `rand`, ohne
+/// deren Ecken.
+fn kantenpunkte(
+    roh: &[[Vec3; 3]],
+    glatt: &[[Vec3; 3]],
+    fest: &[bool],
+    rand: &[[Vec3; 2]],
+    je: usize,
+) -> Vec<Vec3> {
+    let schluessel = |a: Vec3, b: Vec3| {
+        let (a, b) = ([a.x, a.y].map(f64::to_bits), [b.x, b.y].map(f64::to_bits));
+        if a <= b {
+            [a, b]
+        } else {
+            [b, a]
+        }
+    };
+    let am_rand: HashSet<_> = rand.iter().map(|k| schluessel(k[0], k[1])).collect();
+    let mut out = Vec::new();
+    for (i, t) in roh.iter().enumerate() {
+        let fest = fest.get(i).copied().unwrap_or(false);
+        let kanten: Vec<[Vec3; 2]> = (0..3)
+            .map(|k| [t[k], t[(k + 1) % 3]])
+            .filter(|k| fest || am_rand.contains(&schluessel(k[0], k[1])))
+            .collect();
+        let Some(teile) = glatt
+            .get(i * je..(i + 1) * je)
+            .filter(|_| !kanten.is_empty())
+        else {
+            continue;
+        };
+        out.extend(teile.iter().flatten().filter(|q: &&Vec3| {
+            kanten
+                .iter()
+                .any(|k| auf_strecke(k[0], k[1], **q).is_some())
+        }));
+    }
+    out.sort_by(|a: &Vec3, b: &Vec3| {
+        a.x.total_cmp(&b.x)
+            .then(a.y.total_cmp(&b.y))
+            .then(a.z.total_cmp(&b.z))
+    });
+    out.dedup();
+    out
+}
+
+/// Raster über die Punkte `p`.
+fn punktraster(p: &[Vec3]) -> Gitter {
+    let e = AUF_DER_KANTE;
+    Gitter::neu(
+        p.iter()
+            .map(|q| [q.x - e, q.y - e, q.x + e, q.y + e])
+            .collect(),
+    )
+}
+
+/// Die Punkte `nah` aus `p`, die echt innen auf `a`→`b` liegen, der Reihe
+/// nach.
+fn auf_der_strecke(a: Vec3, b: Vec3, p: &[Vec3], nah: &[u32]) -> Vec<Vec3> {
+    let mut auf: Vec<(f64, Vec3)> = nah
+        .iter()
+        .map(|&j| p[j as usize])
+        .filter_map(|q| Some((auf_strecke(a, b, q)?, q)))
+        .collect();
+    auf.sort_by(|x, y| x.0.total_cmp(&y.0));
+    auf.into_iter().map(|x| x.1).collect()
+}
+
+/// Die Strecken `s`, an den Punkten `p` darauf geteilt.
+fn strecken_mit_punkten(s: Vec<(Vec3, Vec3)>, p: &[Vec3]) -> Vec<(Vec3, Vec3)> {
+    if p.is_empty() {
+        return s;
+    }
+    let raster = punktraster(p);
+    let mut nah = Vec::new();
+    let mut out = Vec::with_capacity(s.len());
+    for (a, b) in s {
+        raster.bei(&kasten(&[[a.x, a.y], [b.x, b.y]]), &mut nah);
+        let mut von = a;
+        for q in auf_der_strecke(a, b, p, &nah) {
+            out.push((von, q));
+            von = q;
+        }
+        out.push((von, b));
+    }
+    out
+}
+
+/// Die Dreiecke `d` mit den Punkten `p`, die auf ihren Kanten liegen,
+/// aus der Mitte gefächert; ohne solche bleibt ein Dreieck, wie es ist.
+fn mit_kantenpunkten(d: Vec<[Vec3; 3]>, p: &[Vec3]) -> Vec<[Vec3; 3]> {
+    if p.is_empty() {
+        return d;
+    }
+    let raster = punktraster(p);
+    let mut out = Vec::with_capacity(d.len());
+    let mut nah = Vec::new();
+    for t in d {
+        raster.bei(&kasten(&t.map(|q| [q.x, q.y])), &mut nah);
+        let mut ring = Vec::with_capacity(3 + nah.len());
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            ring.push(a);
+            ring.extend(auf_der_strecke(a, b, p, &nah));
+        }
+        if ring.len() == 3 {
+            out.push(t);
+            continue;
+        }
+        let m = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
+        for k in 0..ring.len() {
+            out.push([m, ring[k], ring[(k + 1) % ring.len()]]);
+        }
+    }
+    out
+}
+
+/// Die beiden Enden einer senkrechten Wand im Grundriss (die Ecken am
+/// weitesten auseinander).
+fn fusslinie(t: &[Vec3; 3]) -> [P2; 2] {
+    let p = t.map(|p| [p.x, p.y]);
+    [(0, 1), (1, 2), (2, 0)]
+        .into_iter()
+        .map(|(i, j)| [p[i], p[j]])
+        .max_by(|x, y| abstand(x[0], x[1]).total_cmp(&abstand(y[0], y[1])))
+        .unwrap_or([p[0], p[1]])
+}
+
+/// Das konvexe Vieleck `v` ohne den Teil mit `f < 0` (Sutherland-Hodgman);
+/// Ecken mit `f` nahe 0 bleiben, wie sie sind.
+fn abschneiden(v: &[Vec3], f: impl Fn(Vec3) -> f64) -> Vec<Vec3> {
+    let d: Vec<f64> = v
+        .iter()
+        .map(|p| {
+            let x = f(*p);
+            if x.abs() < 1e-9 {
+                0.0
+            } else {
+                x
+            }
+        })
+        .collect();
+    let mut out = Vec::with_capacity(v.len() + 1);
+    for i in 0..v.len() {
+        let j = (i + 1) % v.len();
+        if d[i] >= 0.0 {
+            out.push(v[i]);
+        }
+        if d[i] * d[j] < 0.0 {
+            out.push(v[i] + (v[j] - v[i]) * (d[i] / (d[i] - d[j])));
+        }
+    }
+    if out.len() < 3 {
+        out.clear();
+    }
+    out
+}
+
+/// Senkrechte Kanten der Dreiecke in `bereiche` an den `stellen` an jeder
+/// Höhe teilen, die dort eine Ecke dieser Dreiecke hat: Wo eine Wand einer
+/// Geländefläche an einer Hauskante endet, stoßen die Wände der Grube mit
+/// den Schichten beider Seiten und die Wand selbst an einer Senkrechten
+/// zusammen (H-276-geo-a).
+fn senkrecht_teilen(t: &mut Vec<Tri>, bereiche: &[std::ops::Range<usize>], stellen: &[P2]) {
+    if stellen.is_empty() {
+        return;
+    }
+    let k = |x: f64, y: f64| [(x * 1e4).round() as i64, (y * 1e4).round() as i64];
+    let mut hoehen: HashMap<[i64; 2], Vec<f64>> = stellen
+        .iter()
+        .map(|p| (k(p[0], p[1]), Vec::new()))
+        .collect();
+    let drin = |i: usize| bereiche.iter().any(|r| r.contains(&i));
+    for (_, d) in t.iter().enumerate().filter(|(i, _)| drin(*i)) {
+        for p in &d.p {
+            if let Some(z) = hoehen.get_mut(&k(p.x, p.y)) {
+                z.push(p.z);
+            }
+        }
+    }
+    for z in hoehen.values_mut() {
+        z.sort_by(f64::total_cmp);
+        z.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    }
+    let mut neu = Vec::with_capacity(t.len());
+    for (i, d) in t.drain(..).enumerate() {
+        let kante = (0..3).find(|&j| {
+            let (a, b) = (d.p[j], d.p[(j + 1) % 3]);
+            k(a.x, a.y) == k(b.x, b.y)
+        });
+        let zs = kante
+            .filter(|_| drin(i))
+            .and_then(|j| Some((j, hoehen.get(&{ k(d.p[j].x, d.p[j].y) })?)));
+        let Some((j, zs)) = zs else {
+            neu.push(d);
+            continue;
+        };
+        let (a, b, c) = (d.p[j], d.p[(j + 1) % 3], d.p[(j + 2) % 3]);
+        let (lo, hi) = (a.z.min(b.z), a.z.max(b.z));
+        let mut q: Vec<Vec3> = zs
+            .iter()
+            .filter(|&&z| z > lo + 1e-6 && z < hi - 1e-6)
+            .map(|&z| vec3(a.x, a.y, z))
+            .collect();
+        if q.is_empty() {
+            neu.push(d);
+            continue;
+        }
+        if a.z > b.z {
+            q.reverse();
+        }
+        q.insert(0, a);
+        q.push(b);
+        for w in q.windows(2) {
+            neu.push(Tri {
+                p: [w[0], w[1], c],
+                ..d
+            });
+        }
+    }
+    *t = neu;
 }
 
 /// Strecke `a`→`b` zum schnellen Prüfen vieler Punkte: Abstand über die
@@ -1317,7 +1643,15 @@ fn grube(g: &Gelaende, keys: [u16; 3]) -> Solid {
     let dz = if g.show == Show::Fade { HEBEN } else { 0.0 };
     let hoehe = |p: P2| g.hoehe(p).map(|z| z + dz);
     let teilung = |a: P2, b: P2| g.teilung(a, b);
-    bodenaufbau::grube(&g.aufbau, &hoehe, &teilung, g.unten, schluessel(keys))
+    let sprung = |a: P2, b: P2| g.sprung(a, b).map(|z| z + dz);
+    bodenaufbau::grube(
+        &g.aufbau,
+        &hoehe,
+        &teilung,
+        &sprung,
+        g.unten,
+        schluessel(keys),
+    )
 }
 
 /// [`koerper_mit`] mit der Grube aus `grube`.
@@ -1352,14 +1686,17 @@ fn koerper_und_grube(
             dreieck(&mut s, t.map(|p| heben(p, HEBEN)), normale(&t));
         }
     }
-    // Boden, Rand und Wände in Erdreich
+    // Boden, Rand und Wände in Erdreich; die Wände ohne die Häuser
     s.mat = keys[1];
-    for t in &g.waende {
+    let (waende, stellen) = g.waende_ohne_haus();
+    let w0 = s.triangles.len();
+    for t in &waende {
         let m = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
         if g.zeigen(g.innen([m.x, m.y])).is_some() {
             dreieck(&mut s, *t, normale(t));
         }
     }
+    let w1 = s.triangles.len();
     let unten = g.unten;
     let down = vec3(0.0, 0.0, -1.0);
     for t in &ganz {
@@ -1389,7 +1726,10 @@ fn koerper_und_grube(
             }
         }
     }
+    let g0 = s.triangles.len();
     s.append(&grube());
+    let g1 = s.triangles.len();
+    senkrecht_teilen(&mut s.triangles, &[w0..w1, g0..g1], &stellen);
     // Umriss jeder Geländefläche als Kante
     for r in &g.umrisse {
         for i in 0..r.len() {
@@ -2134,6 +2474,27 @@ pub(crate) mod tests {
         }
     }
 
+    /// Geglättet ist der Export dicht (Review H-276a): Der Rand des Netzes
+    /// bekommt die Zwischenpunkte seiner geraden Kanten (vorher mit „fein“
+    /// 96 offene Kanten bei „alles“), und eine Schicht der Grube, die nur
+    /// an einem Ende dünner als 0,5 mm ist, fehlt der Wand nicht mehr (mit
+    /// „sehr fein“ am Haus 3).
+    #[test]
+    fn export_geglaettet_dicht() {
+        let mut m = lindenhof();
+        for glatt in [sk_model::Glaettung::Fein, sk_model::Glaettung::SehrFein] {
+            m.begin("Glätten");
+            assert!(m.set_terrain_smoothing(glatt));
+            m.commit();
+            for show in [Show::All, Show::Parcel] {
+                let mut g = Gelaende::aus(&m).unwrap();
+                g.show = show;
+                let offen = offene_kanten(&export_koerper(g, [10, 11]));
+                assert!(offen.is_empty(), "{glatt:?} {show:?}: {offen:?}");
+            }
+        }
+    }
+
     /// Mit Geländeflächen ist der Export dicht (G-275a: mit den ersten
     /// beiden vorher 191 offene Kanten, T-Stöße der Stücke gegen die
     /// Dreiecke daneben und untereinander): eine über, eine unter dem
@@ -2159,16 +2520,152 @@ pub(crate) mod tests {
         }
         let plan = m.planned_terrain().unwrap();
         assert!(!plan.walls.is_empty() && !plan.seam.is_empty());
-        for show in [Show::All, Show::Parcel] {
-            let mut g = Gelaende::aus(&m).unwrap();
-            g.show = show;
-            let offen = offene_kanten(&export_koerper(g, [10, 11]));
-            assert!(
-                offen.is_empty(),
-                "{show:?}: {} offen, {offen:?}",
-                offen.len()
-            );
+        // auch geglättet (Review H-276a: mit „fein“ vorher 198 bzw. 90
+        // offene Kanten, die Nachbarn haben Zwischenpunkte auf der Kante)
+        use sk_model::Glaettung;
+        for glatt in [Glaettung::Aus, Glaettung::Fein, Glaettung::SehrFein] {
+            m.begin("Glätten");
+            m.set_terrain_smoothing(glatt);
+            m.commit();
+            for show in [Show::All, Show::Parcel] {
+                let mut g = Gelaende::aus(&m).unwrap();
+                g.show = show;
+                let offen = offene_kanten(&export_koerper(g, [10, 11]));
+                assert!(
+                    offen.is_empty(),
+                    "{glatt:?} {show:?}: {} offen, {offen:?}",
+                    offen.len()
+                );
+            }
         }
+    }
+
+    /// Rechteck oder L (`l`) mit Mitte `c`, Breite `w`, Höhe `h`, um
+    /// `grad` gedreht.
+    fn ring_gedreht(c: P2, [w, h]: [f64; 2], grad: f64, l: bool) -> Vec<P2> {
+        let (s, k) = grad.to_radians().sin_cos();
+        let r: Vec<P2> = if l {
+            vec![
+                [0.0, 0.0],
+                [w, 0.0],
+                [w, h / 2.0],
+                [w / 2.0, h / 2.0],
+                [w / 2.0, h],
+                [0.0, h],
+            ]
+        } else {
+            vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]
+        };
+        r.iter()
+            .map(|p| {
+                let (x, y) = (p[0] - w / 2.0, p[1] - h / 2.0);
+                [c[0] + x * k - y * s, c[1] + x * s + y * k]
+            })
+            .collect()
+    }
+
+    /// Auch wo die Böschung einer Fläche ins Haus reicht oder die Fläche
+    /// selbst, ist der Export dicht (Geometrie H-276-geo-a: in diesen
+    /// zehn Fällen der Sonde vorher 4 bis 20 offene Kanten, Wände der
+    /// Flächen im Haus und die Grube ohne den Sprung an der Hauskante),
+    /// auch mit senkrechtem Rand am Haus.
+    #[test]
+    fn export_mit_flaechen_am_haus_dicht() {
+        // je Fläche: Mitte, Breite und Höhe, Drehung, dz, senkrecht, L
+        type F = (P2, [f64; 2], f64, f64, bool, bool);
+        let eins = |grad, dz| {
+            (
+                [12_000.0, 2_500.0],
+                [6_000.0, 3_000.0],
+                grad,
+                dz,
+                false,
+                false,
+            )
+        };
+        let am_haus = |grad, senkrecht| {
+            (
+                [12_000.0, 4_800.0],
+                [6_000.0, 2_000.0],
+                grad,
+                200.0,
+                senkrecht,
+                false,
+            )
+        };
+        let zwei = |grad| {
+            vec![
+                (
+                    [5_000.0, 2_500.0],
+                    [6_000.0, 3_000.0],
+                    grad,
+                    -400.0,
+                    false,
+                    false,
+                ),
+                (
+                    [11_000.0, 2_500.0],
+                    [6_000.0, 3_000.0],
+                    grad,
+                    600.0,
+                    false,
+                    false,
+                ),
+            ]
+        };
+        let mut faelle: Vec<Vec<F>> = vec![
+            vec![eins(20.0, 600.0)],
+            vec![eins(45.0, 600.0)],
+            vec![eins(45.0, -400.0)],
+            zwei(20.0),
+            zwei(45.0),
+            vec![(
+                [12_000.0, 3_000.0],
+                [6_000.0, 4_000.0],
+                45.0,
+                400.0,
+                false,
+                true,
+            )],
+        ];
+        for grad in [0.0, 10.0, 20.0, 45.0] {
+            faelle.push(vec![am_haus(grad, false)]);
+            faelle.push(vec![am_haus(grad, true)]);
+        }
+        let mut waende = 0;
+        for fl in &faelle {
+            let mut m = lindenhof();
+            for &(c, wh, grad, dz, senkrecht, l) in fl {
+                let z = m.terrain_z_at(None, c[0], c[1]) + dz;
+                let mut f = sk_model::TerrainPatch::flat(ring_gedreht(c, wh, grad, l), z);
+                if senkrecht {
+                    f.slopes = vec![0.0];
+                }
+                m.begin("Fläche");
+                assert!(m.add_site_patch(f).is_some());
+                m.commit();
+            }
+            for show in [Show::All, Show::Parcel] {
+                let mut g = Gelaende::aus(&m).unwrap();
+                g.show = show;
+                let (w, _) = g.waende_ohne_haus();
+                // vorher Wände im Haus, jetzt keine
+                let im_haus = |t: &[Vec3; 3]| {
+                    let m = (t[0] + t[1] + t[2]) * (1.0 / 3.0);
+                    g.im_haus([m.x, m.y])
+                };
+                waende += usize::from(g.waende.iter().any(im_haus));
+                assert!(!w.iter().any(im_haus), "{fl:?}");
+                let offen = offene_kanten(&export_koerper(g, [10, 11]));
+                assert!(
+                    offen.is_empty(),
+                    "{fl:?} {show:?}: {} offen, {offen:?}",
+                    offen.len()
+                );
+            }
+        }
+        // bis auf den senkrechten Rand ohne Drehung reichen Wände ins Haus
+        assert_eq!(waende, 2 * 13);
     }
 
     fn flaeche(d: &[[Vec3; 3]]) -> f64 {
@@ -2282,13 +2779,7 @@ pub(crate) mod tests {
         let fein = |s: &Solid| s.edges.iter().filter(|e| e.kind == edge_kind::FINE).count();
         // fein sind ohne Höhenlinien nur die Fugen zwischen den Schichten
         // am Haus (#261)
-        let grube = bodenaufbau::grube(
-            &g.aufbau,
-            &|p| g.hoehe(p),
-            &|a, b| g.teilung(a, b),
-            g.unten,
-            schluessel(keys),
-        );
+        let grube = grube(&g, keys);
         let fugen = grube
             .edges
             .iter()
@@ -2315,13 +2806,7 @@ pub(crate) mod tests {
         assert_eq!(ohne.triangles.len(), mit.triangles.len());
         let zahl = |s: &Solid, k: u8| s.edges.iter().filter(|e| e.kind == k).count();
         // fein sind auch die Fugen zwischen den Schichten am Haus
-        let grube = bodenaufbau::grube(
-            &g.aufbau,
-            &|p| g.hoehe(p),
-            &|a, b| g.teilung(a, b),
-            g.unten,
-            schluessel(keys),
-        );
+        let grube = grube(&g, keys);
         let fugen = zahl(&grube, edge_kind::FINE);
         let meter = zahl(&ohne, edge_kind::FINE) - fugen;
         assert!(meter > 0);

@@ -38,3 +38,36 @@ impl Baum {
         }
     }
 }
+
+/// Einstellungsfenster (E5), was es sich für die Sitzung merkt, und ob sein
+/// Bild bzw. sein Aufklapper neu zu zeichnen ist.
+#[derive(Default)]
+pub(crate) struct Einstellfenster {
+    pub(crate) fenster: Option<crate::prefs::Prefs>,
+    pub(crate) merk: crate::prefs::Memory,
+    pub(crate) bild_neu: bool,
+    pub(crate) aufklapper_neu: bool,
+}
+
+/// Geschossbogen im Grundriss (E18), seine Bilder, angefangene
+/// Mausradrasten, ein Druck auf den Bogen (das Loslassen gehört ihm) und der
+/// Höhenversatz des Grundrisses beim Wechsel (Pixel nach unten).
+pub(crate) struct Geschossbogen {
+    pub(crate) rad: crate::wheel::Wheel,
+    pub(crate) bild: crate::wheel_view::WheelView,
+    pub(crate) rasten: f64,
+    pub(crate) druck: bool,
+    pub(crate) versatz: f32,
+}
+
+impl Geschossbogen {
+    pub(crate) fn new(rad: crate::wheel::Wheel, bild: crate::wheel_view::WheelView) -> Self {
+        Self {
+            rad,
+            bild,
+            rasten: 0.0,
+            druck: false,
+            versatz: 0.0,
+        }
+    }
+}

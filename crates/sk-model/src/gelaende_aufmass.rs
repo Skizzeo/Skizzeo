@@ -664,9 +664,14 @@ impl Terrain {
         }
     }
 
-    /// Codetabelle: Vorgabe mit den abweichenden Codes.
+    /// Codetabelle: Vorgabe mit den Codes, die Skizzeo an die Grenze
+    /// setzt (Gelände; sonst meldete die Netzprüfung sie bei jeder Grenze
+    /// als unbekannt, Geometrie H-264-geo-g), und den abweichenden.
     pub fn code_table(&self) -> Codetabelle {
         let mut t = Codetabelle::default();
+        for c in [gelaende_eben::AN_DER_GRENZE, gelaende_eben::UM_DIE_GRENZE] {
+            t.setze(c, Bedeutung::Gelaende);
+        }
         for (c, b) in &self.codes {
             t.setze(c, *b);
         }

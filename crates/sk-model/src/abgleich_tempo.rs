@@ -46,6 +46,15 @@ fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
+/// Wie lange dieser Faden bisher lauffähig auf eine CPU gewartet hat, in
+/// ms (Linux: zweites Feld von /proc/thread-self/schedstat; sonst 0).
+fn auf_cpu_gewartet() -> f64 {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
+        .map_or(0.0, |ns| ns / 1e6)
+}
+
 /// Abgleich über das ganze Modell auf einer Kopie: Was er hinzufügt und
 /// entfernt (Terrassen, Flachdächer) und ob die Zahl der Bauteile bleibt.
 fn ganz(m: &Model) -> ((usize, usize), (usize, usize), bool) {
@@ -192,14 +201,15 @@ fn budget_grossgebaeude() {
     // Einmal aufwärmen, dann Bestwert aus mindestens sieben Zügen über
     // mindestens 300 ms: Die Tests laufen nebeneinander, und ein kurzer
     // Lastspitzen-Abschnitt soll nicht alle Proben treffen (Review zu
-    // #148, H3; die Grenze bleibt 8 ms)
+    // #148, H3; die Grenze bleibt 8 ms). Ohne die Zeit, die der Faden auf
+    // eine CPU wartete: Unter Parallellast kippte es sonst (Test L-274a).
     let mut zug = |dz: f64| {
         let top = m.storey(eg).unwrap().top();
         m.begin("Geschoss ziehen");
         assert!(m.set_storey_top(eg, top + dz));
-        let t = Instant::now();
+        let (t, w) = (Instant::now(), auf_cpu_gewartet());
         assert!(m.commit().is_some());
-        ms(t)
+        (ms(t) - (auf_cpu_gewartet() - w)).max(0.0)
     };
     zug(100.0);
     let start = Instant::now();

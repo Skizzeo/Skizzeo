@@ -22,6 +22,23 @@ fn ms_seit(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
+/// Wie lange dieser Faden bisher lauffähig auf eine CPU gewartet hat, in
+/// ms (Linux: zweites Feld von /proc/thread-self/schedstat; sonst 0).
+fn auf_cpu_gewartet() -> f64 {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
+        .map_or(0.0, |ns| ns / 1e6)
+}
+
+/// ms seit `t0` ohne die Zeit, die der Faden seit `w0`
+/// ([`auf_cpu_gewartet`]) auf eine CPU wartete: Unter der Last der
+/// nebeneinander laufenden Tests verdrängt ihn sonst ein anderer, ohne
+/// dass er mehr Arbeit hätte (Test L-274a).
+fn ms_ohne_warten(t0: Instant, w0: f64) -> f64 {
+    (ms_seit(t0) - (auf_cpu_gewartet() - w0)).max(0.0)
+}
+
 /// `n` Häuser 10 × 8 m im Raster zu 15 m, je Haus ein Gebäude, und ein
 /// gewelltes örtliches Aufmaß (Punkte alle 20 m), das alle überdeckt.
 fn haeuser_am_hang(n: usize) -> (Model, Terrain) {
@@ -415,9 +432,9 @@ fn netz_der_datei_im_budget() {
 fn bestwert(ziel: f64, mut f: impl FnMut(usize)) -> f64 {
     let mut best = f64::INFINITY;
     for k in 0..15 {
-        let t0 = Instant::now();
+        let (t0, w0) = (Instant::now(), auf_cpu_gewartet());
         f(k);
-        best = best.min(ms_seit(t0));
+        best = best.min(ms_ohne_warten(t0, w0));
         if best < ziel {
             break;
         }
@@ -464,9 +481,9 @@ fn punkte_aendern_im_budget() {
     let i = m.add_terrain_points(&[[-3000.0, -3000.0, 0.0]])[0];
     m.commit();
     // das Netz mit dem neuen Punkt, wie es der Faden brächte
-    let t0 = Instant::now();
+    let (t0, w0) = (Instant::now(), auf_cpu_gewartet());
     let fertig = m.netz_auftrag().expect("Auftrag").rechnen();
-    let neubau = ms_seit(t0);
+    let neubau = ms_ohne_warten(t0, w0);
     m.begin("Netz");
     assert!(m.netz_einsetzen(fertig));
     m.commit();

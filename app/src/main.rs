@@ -625,12 +625,8 @@ struct App {
     recent_on: bool,
     /// Beenden bestätigt: die Schleife endet.
     quit: bool,
-    /// Einstellungsfenster (E5), was es sich für die Sitzung merkt, und ob
-    /// sein Bild bzw. sein Aufklapper neu zu zeichnen ist.
-    prefs: Option<prefs::Prefs>,
-    prefs_mem: prefs::Memory,
-    prefs_dirty: bool,
-    prefs_popup_dirty: bool,
+    /// Einstellungsfenster (E5) und sein Zustand in der App (T4).
+    einst: zustand::Einstellfenster,
     /// Stand der Vorschau im Fenster „Muster“ (Lage, Szene), `None` = aus.
     pattern_preview: Option<([i32; 4], pattern_view::Input)>,
     /// Einstellungsdatei (Ort, Stand beim Laden).
@@ -658,16 +654,10 @@ struct App {
     ext: zustand::Erweiterungen,
     /// Stand (Revision, Farbschema), für den der Chip im Werkzeug gilt.
     tool_chip_key: Option<(u64, u64)>,
-    /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
-    /// Animation (ms seit dem Start), angefangene Mausradrasten, ein Druck
-    /// auf den Bogen (das Loslassen gehört ihm) und der Höhenversatz des
-    /// Grundrisses beim Wechsel (Pixel nach unten).
-    wheel: wheel::Wheel,
-    wheel_view: wheel_view::WheelView,
+    /// Geschossbogen im Grundriss (E18) und was die App über ihn weiß (T4).
+    bogen: zustand::Geschossbogen,
+    /// Uhr der Animationen (ms seit dem Start).
     clock: Instant,
-    wheel_acc: f64,
-    wheel_press: bool,
-    view_shift: f32,
     /// Schnittbild waagerecht: Versatz (Pixel), Stauchung, Achse (Pixel).
     view_squeeze: (f32, f32, f32),
     /// Blatt wenden beim Spiegeln (E19): Beginn und Achse (Pixel).
@@ -1282,7 +1272,7 @@ impl App {
         let i = self.scene.active_cut();
         self.sect.lines[i].ensure(&self.scene);
         self.sect.lines[i].mirror();
-        if !self.wheel.instant() && self.w > 0 {
+        if !self.bogen.rad.instant() && self.w > 0 {
             // Achse: Mitte des Gebäudes im Bild
             let (vw, vh, _) = self.view_size();
             let c = self
@@ -1325,7 +1315,7 @@ impl App {
         // Der Knopf „Schnitt“ öffnet den zuletzt benutzten Schnitt (zuerst
         // A); der Bogen blättert dort durch die Schnitte, im Grundriss durch
         // die Geschosse
-        self.wheel.set_track(if v == ViewKind::Section {
+        self.bogen.rad.set_track(if v == ViewKind::Section {
             wheel::Track::Cuts
         } else {
             wheel::Track::Levels
@@ -1381,7 +1371,7 @@ impl App {
             },
             ViewKind::Plan => plan_camera(
                 &self.ui,
-                &self.wheel,
+                &self.bogen.rad,
                 self.scene.bounds(),
                 self.w,
                 self.h,
@@ -1392,7 +1382,7 @@ impl App {
                 let flip = self.sect.lines.get(i).is_some_and(|l| l.flip);
                 section_camera(
                     &self.ui,
-                    &self.wheel,
+                    &self.bogen.rad,
                     self.scene.bounds(),
                     (self.w, self.h, self.top()),
                     section::view_dir(i, flip),
@@ -1495,7 +1485,7 @@ impl App {
 
     /// Ein Fenster liegt vorn (Einstellungen, Bauteilkatalog, Baustoffe).
     fn modal(&self) -> bool {
-        self.prefs.is_some()
+        self.einst.fenster.is_some()
             || self.catalog.is_some()
             || self.materials.is_some()
             || self.verwaltung.is_some()
@@ -1518,7 +1508,7 @@ impl App {
         c.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
         c.set_ext(&self.ext.bib.defs);
         self.catalog = Some(c);
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -1546,8 +1536,8 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
-                self.prefs_popup_dirty = true;
+                self.einst.bild_neu = true;
+                self.einst.aufklapper_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -1595,8 +1585,8 @@ impl App {
                 self.redraw = true;
             }
         }
-        self.prefs_dirty |= out.repaint || out.closed;
-        self.prefs_popup_dirty |= out.popup || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
+        self.einst.aufklapper_neu |= out.popup || out.closed;
         if let Some(h) = out.highlight {
             self.highlight(h);
         } else if out.closed {
@@ -1645,7 +1635,7 @@ impl App {
         );
         m.set_rahmen(self.rolle() == sk_cost::Rolle::Nutzer, self.ui.frei);
         self.materials = Some(m);
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -1767,7 +1757,7 @@ impl App {
             v.sperren();
         }
         self.verwaltung = Some(v);
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -1800,7 +1790,7 @@ impl App {
         let mut v = verwaltung::Verwaltung::open(self.scene.fertig(), self.company.as_ref(), None);
         if v.ablauf_im_haus(g) {
             self.verwaltung = Some(v);
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
             self.overlay_dirty = true;
         }
     }
@@ -1827,7 +1817,7 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
+                self.einst.bild_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -1899,7 +1889,7 @@ impl App {
                     self.redraw = true;
                 }
             }
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
             self.sync_caption(surface);
             return true;
         }
@@ -1947,7 +1937,7 @@ impl App {
                     }
                 }
             }
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
         }
         let mut entwurf = out.entwurf;
         if let Some(stand) = out.zurueck {
@@ -1959,11 +1949,11 @@ impl App {
                 v.zuruecknehmen(stand, r.map_err(|m| m.to_string()));
                 entwurf |= v.entwurf_faellig();
             }
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
         }
         if entwurf || out.freigeben || out.entwurf_verwerfen || out.satz_verwerfen.is_some() {
             self.verwaltung_entwurf(&out, entwurf);
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
         }
         if out.closed {
             if let Some(m) = self.verwaltung.take().and_then(|v| v.beim_schliessen()) {
@@ -1980,12 +1970,12 @@ impl App {
                 self.redraw = true;
             }
         }
-        self.prefs_dirty |= out.repaint || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
         if let Some(g) = out.open_type {
             // Typpflege bleibt im Bauteilkatalog (paket-ka3a §3)
             self.verwaltung = None;
             self.overlay_dirty = true;
-            self.prefs_dirty = true;
+            self.einst.bild_neu = true;
             self.open_catalog();
             if let Some(c) = self.catalog.as_mut() {
                 c.show_guid(g);
@@ -2020,7 +2010,7 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
+                self.einst.bild_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -2069,7 +2059,7 @@ impl App {
                 self.redraw = true;
             }
         }
-        self.prefs_dirty |= out.repaint || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
         if out.pick_company {
             self.pick_company(surface);
         }
@@ -2131,8 +2121,8 @@ impl App {
         if let Some(v) = self.materials.as_mut() {
             v.set_company(self.company.as_ref());
         }
-        self.prefs_dirty = true;
-        self.prefs_popup_dirty = true;
+        self.einst.bild_neu = true;
+        self.einst.aufklapper_neu = true;
     }
 
     /// Einstellungsfenster öffnen; ist es offen, bleibt es (es liegt ohnehin
@@ -2147,15 +2137,15 @@ impl App {
         self.ui.hover = None;
         self.title.hover = None;
         let p = prefs::Prefs::open(&mut self.scene, &self.theme)
-            .with_memory(&self.prefs_mem)
+            .with_memory(&self.einst.merk)
             .with_vorgaben(self.settings.vorgaben)
             .with_firmenstil(self.settings.firmenstil())
             .with_pattern_error(self.renderer.pattern_error());
-        self.prefs = Some(p);
-        if let (Some(p), Some(c)) = (self.prefs.as_mut(), &self.company) {
+        self.einst.fenster = Some(p);
+        if let (Some(p), Some(c)) = (self.einst.fenster.as_mut(), &self.company) {
             p.set_company_presets(c.library().presets.clone());
         }
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
         self.overlay_dirty = true;
     }
 
@@ -2173,8 +2163,8 @@ impl App {
     /// Renderer-Stil, alle Paneele und Bilder neu.
     fn theme_changed(&mut self) {
         self.scene.set_theme(&self.theme);
-        self.wheel.set_theme(&self.theme);
-        self.wheel_view.forget();
+        self.bogen.rad.set_theme(&self.theme);
+        self.bogen.bild.forget();
         self.renderer.set_style(style(&self.theme.env));
         // Die Sonne setzt ihr Licht beim nächsten Bild wieder (S4)
         self.licht = None;
@@ -2186,8 +2176,8 @@ impl App {
         self.mark_keys = [None; MARKS];
         self.room_keys = Default::default();
         self.overlay_dirty = true;
-        self.prefs_dirty = true;
-        self.prefs_popup_dirty = true;
+        self.einst.bild_neu = true;
+        self.einst.aufklapper_neu = true;
         self.redraw = true;
         self.refresh_cursor();
     }
@@ -2208,9 +2198,9 @@ impl App {
             Event::CloseRequested { ask } => {
                 // Wie OK, danach fragt „Beenden“ nach dem Projekt
                 if ask {
-                    if let Some(mut p) = self.prefs.take() {
+                    if let Some(mut p) = self.einst.fenster.take() {
                         p.ok(&mut self.scene, &self.theme, &mut self.settings);
-                        self.prefs_mem = p.memory();
+                        self.einst.merk = p.memory();
                     }
                     self.paint_prefs();
                 }
@@ -2221,8 +2211,8 @@ impl App {
             | Event::Maximized(_)
             | Event::Focus(_)
             | Event::Redraw => {
-                self.prefs_dirty = true;
-                self.prefs_popup_dirty = true;
+                self.einst.bild_neu = true;
+                self.einst.aufklapper_neu = true;
                 return false;
             }
             Event::MouseMove { x, y, .. } => {
@@ -2246,7 +2236,7 @@ impl App {
             _ => {}
         }
         let win = self.prefs_win();
-        let Some(p) = self.prefs.as_mut() else {
+        let Some(p) = self.einst.fenster.as_mut() else {
             return false;
         };
         let mut cx = prefs::Ctx {
@@ -2258,12 +2248,12 @@ impl App {
         };
         let out = p.handle(&e, &mut cx);
         if out.closed {
-            self.prefs_mem = p.memory();
-            self.prefs = None;
+            self.einst.merk = p.memory();
+            self.einst.fenster = None;
             self.overlay_dirty = true;
         }
         if out.moved {
-            if let Some(p) = &self.prefs {
+            if let Some(p) = &self.einst.fenster {
                 let (x, y) = p.origin(&self.theme, &win);
                 self.renderer.move_overlay(OVERLAY_PREFS, x, y);
                 self.redraw = true;
@@ -2273,8 +2263,8 @@ impl App {
         if out.save_preset {
             self.save_pattern_preset();
         }
-        self.prefs_dirty |= out.repaint || out.closed;
-        self.prefs_popup_dirty |= out.popup || out.closed;
+        self.einst.bild_neu |= out.repaint || out.closed;
+        self.einst.aufklapper_neu |= out.popup || out.closed;
         if out.theme {
             self.theme_changed();
         }
@@ -2289,7 +2279,7 @@ impl App {
 
     /// Einstellungsfenster und Aufklapper zeichnen oder ausblenden.
     fn paint_prefs(&mut self) {
-        self.prefs_dirty = false;
+        self.einst.bild_neu = false;
         self.paint_prefs_popup();
         let win = self.prefs_win();
         if let Some(v) = self.verwaltung.as_mut() {
@@ -2338,7 +2328,7 @@ impl App {
             self.redraw = true;
             return;
         }
-        let Some(p) = self.prefs.as_mut() else {
+        let Some(p) = self.einst.fenster.as_mut() else {
             self.renderer.set_overlay(OVERLAY_PREFS, 0, 0, 0, 0, &[]);
             self.sync_pattern_preview();
             return;
@@ -2365,7 +2355,8 @@ impl App {
     fn sync_pattern_preview(&mut self) {
         let win = self.prefs_win();
         let pv = self
-            .prefs
+            .einst
+            .fenster
             .as_mut()
             .and_then(|p| p.pattern_preview(&self.theme, &win, &self.scene));
         let Some(mut pv) = pv else {
@@ -2408,7 +2399,8 @@ impl App {
         }
         self.pattern_preview = Some((pv.at, pv.input));
         let fade = self
-            .prefs
+            .einst
+            .fenster
             .as_ref()
             .map_or(0.0, |p| p.pattern_fade(&self.theme));
         self.renderer.set_preview_fade(fade);
@@ -2418,7 +2410,7 @@ impl App {
     /// „Als Vorlage speichern …“: in den Firmenkatalog schreiben und das
     /// Ergebnis im Fuß des Fensters „Muster“ zeigen.
     fn save_pattern_preset(&mut self) {
-        let Some(p) = self.prefs.as_mut() else {
+        let Some(p) = self.einst.fenster.as_mut() else {
             return;
         };
         let Some((name, pattern, base)) = p.take_save_preset() else {
@@ -2439,17 +2431,18 @@ impl App {
         if let Some(c) = &self.company {
             p.set_company_presets(c.library().presets.clone());
         }
-        self.prefs_dirty = true;
+        self.einst.bild_neu = true;
     }
 
     fn paint_prefs_popup(&mut self) {
-        self.prefs_popup_dirty = false;
+        self.einst.aufklapper_neu = false;
         self.redraw = true;
         let win = self.prefs_win();
         let img = match self.catalog.as_mut() {
             Some(cat) => cat.paint_popup(&self.theme, &self.ui.fonts, &win, self.scene.model()),
             None => self
-                .prefs
+                .einst
+                .fenster
                 .as_mut()
                 .and_then(|p| p.paint_popup(&self.theme, &self.ui.fonts, &win, &self.scene)),
         };
@@ -3129,7 +3122,7 @@ impl App {
             // Im Grundriss derselbe Wechsel wie am Geschossbogen (E18)
             Id::Storey(st) if self.ui.view == ViewKind::Plan => {
                 let t = self.now();
-                self.wheel.select(&mut self.scene, st, t);
+                self.bogen.rad.select(&mut self.scene, st, t);
             }
             Id::Storey(st) => {
                 if self.scene.set_active_storey(st) {
@@ -3618,7 +3611,7 @@ impl App {
         if self.ext.fenster.is_some() && self.handle_ext_fenster(e, surface) {
             return !self.quit;
         }
-        if self.prefs.is_some() && self.handle_prefs(e, surface) {
+        if self.einst.fenster.is_some() && self.handle_prefs(e, surface) {
             return !self.quit;
         }
         if self.catalog.is_some() && self.handle_catalog(e, surface) {
@@ -3950,7 +3943,7 @@ impl App {
                     self.model_hover(None);
                 }
                 let t = self.now();
-                self.redraw |= self.wheel.set_hover(None, t);
+                self.redraw |= self.bogen.rad.set_hover(None, t);
                 self.dirty_title.extend(self.title.hover.take());
                 let out = self.ui.handle(&e, self.w, self.top());
                 self.apply_ui(&out);
@@ -3987,7 +3980,7 @@ impl App {
                 };
                 let t = self.now();
                 // der Knopf „Blickrichtung“ leuchtet unter der Maus
-                self.redraw |= self.wheel.set_hover(part, t);
+                self.redraw |= self.bogen.rad.set_hover(part, t);
                 let over_ui = if busy {
                     false
                 } else if part.is_some() {
@@ -4119,24 +4112,24 @@ impl App {
                 ..
             } if y >= th && self.wheel_hit(x, y).is_some() => {
                 self.shortcuts.cancel_alt();
-                self.wheel_press = true;
+                self.bogen.druck = true;
                 let t = self.now();
                 let input = self.tool.is_active();
                 match self.wheel_hit(x, y) {
                     Some(wheel::Part::Up) => {
-                        self.wheel.click_arrow(&mut self.scene, true, input, t)
+                        self.bogen.rad.click_arrow(&mut self.scene, true, input, t)
                     }
                     Some(wheel::Part::Down) => {
-                        self.wheel.click_arrow(&mut self.scene, false, input, t)
+                        self.bogen.rad.click_arrow(&mut self.scene, false, input, t)
                     }
                     Some(wheel::Part::Mirror) => self.mirror_cut(),
-                    _ => self.wheel.click_band(&mut self.scene, t),
+                    _ => self.bogen.rad.click_band(&mut self.scene, t),
                 }
             }
             Event::MouseUp {
                 button: MouseButton::Left,
                 ..
-            } if self.wheel_press => self.wheel_press = false,
+            } if self.bogen.druck => self.bogen.druck = false,
             Event::MouseDown { button, x, y, .. } => {
                 self.shortcuts.cancel_alt();
                 if y < th {
@@ -4296,14 +4289,14 @@ impl App {
             Event::Wheel { delta, x, y, .. }
                 if y >= th && !self.ui.dialog && self.wheel_hit(x, y).is_some() =>
             {
-                if self.wheel_acc * delta < 0.0 {
-                    self.wheel_acc = 0.0;
+                if self.bogen.rasten * delta < 0.0 {
+                    self.bogen.rasten = 0.0;
                 }
-                self.wheel_acc += delta;
-                let n = self.wheel_acc.trunc();
-                self.wheel_acc -= n;
+                self.bogen.rasten += delta;
+                let n = self.bogen.rasten.trunc();
+                self.bogen.rasten -= n;
                 let t = self.now();
-                self.wheel.scroll(&mut self.scene, n as i32, t);
+                self.bogen.rad.scroll(&mut self.scene, n as i32, t);
             }
             Event::Wheel { y, .. } => {
                 if y >= th && !self.ui.dialog && !self.tuer_rad(&e) {
@@ -4364,7 +4357,7 @@ impl App {
             } if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) => {
                 let t = self.now();
                 let (view, input) = (self.ui.view, self.tool.is_active());
-                self.wheel.key(&mut self.scene, view, key, input, t);
+                self.bogen.rad.key(&mut self.scene, view, key, input, t);
             }
             Event::Key {
                 key, down, mods, ..
@@ -4469,7 +4462,7 @@ impl App {
             || self.confirm.is_some()
             || self.context.is_some()
             || self.type_menu.is_some()
-            || self.prefs.as_ref().is_some_and(|p| p.busy())
+            || self.einst.fenster.as_ref().is_some_and(|p| p.busy())
             || self.catalog.as_ref().is_some_and(|c| c.busy())
             || self.materials.as_ref().is_some_and(|v| v.busy())
             || self.verwaltung.as_ref().is_some_and(|v| v.busy())
@@ -4930,7 +4923,10 @@ impl App {
                 let bounds = self.screen_bounds(&anchor);
                 let win = (self.w as f32, self.h as f32, self.top() as f32);
                 let views = self.ui.rect(Panel::Views, self.w, self.top());
-                let above = self.wheel.top_in(self.ui.view, &self.ui, self.w, self.h);
+                let above = self
+                    .bogen
+                    .rad
+                    .top_in(self.ui.view, &self.ui, self.w, self.h);
                 if let Some(h) = self.hint.as_mut() {
                     h.place(size, bounds, win, s);
                     // Entdecken-Karte: unten rechts, über dem Bogen
@@ -5735,7 +5731,7 @@ impl App {
     /// Gewünschter Hinweis an der Maus: über dem Fuß einer gekoppelten
     /// OG-Wand (A52).
     fn tip_wanted(&self) -> Option<String> {
-        if let Some(p) = &self.prefs {
+        if let Some(p) = &self.einst.fenster {
             return p.tip(&self.scene);
         }
         if let Some(c) = &self.catalog {
@@ -6519,7 +6515,7 @@ impl App {
                 self.tree_select(ids);
                 if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) {
                     let t = self.now();
-                    self.wheel.go_to_level(&mut self.scene, sid, t);
+                    self.bogen.rad.go_to_level(&mut self.scene, sid, t);
                 } else {
                     self.scene.set_active_storey(sid);
                 }
@@ -6819,7 +6815,8 @@ impl App {
             .filter(|t| !t.shown)
             .map(|t| TIP_DELAY.saturating_sub(t.since.elapsed()));
         let hud = self
-            .wheel
+            .bogen
+            .rad
             .hint_wait(self.now())
             .map(std::time::Duration::from_millis);
         let notice = self
@@ -6883,9 +6880,9 @@ impl App {
             || self.modal()
             || self.save_dlg.is_some()
             || self.confirm.is_some();
-        if !self.wheel.visible(self.ui.view, false) {
+        if !self.bogen.rad.visible(self.ui.view, false) {
             wheel_view::Show::Off
-        } else if !self.wheel.visible(self.ui.view, blocked) {
+        } else if !self.bogen.rad.visible(self.ui.view, blocked) {
             wheel_view::Show::Blocked
         } else {
             wheel_view::Show::On
@@ -6897,16 +6894,17 @@ impl App {
         if self.wheel_show() != wheel_view::Show::On {
             return None;
         }
-        self.wheel_view
-            .hit(&self.wheel, &self.ui, self.w, self.h, x, y)
+        self.bogen
+            .bild
+            .hit(&self.bogen.rad, &self.ui, self.w, self.h, x, y)
     }
 
     /// Maus über einer Spitze, die wechseln kann: Zeiger „Hand“.
     fn wheel_hand(&self) -> bool {
         let input = self.tool.is_active();
-        match self.wheel.hover {
-            Some(wheel::Part::Up) => self.wheel.arrow_enabled(&self.scene, true, input),
-            Some(wheel::Part::Down) => self.wheel.arrow_enabled(&self.scene, false, input),
+        match self.bogen.rad.hover {
+            Some(wheel::Part::Up) => self.bogen.rad.arrow_enabled(&self.scene, true, input),
+            Some(wheel::Part::Down) => self.bogen.rad.arrow_enabled(&self.scene, false, input),
             Some(wheel::Part::Mirror) => true,
             _ => false,
         }
@@ -6917,14 +6915,14 @@ impl App {
     /// nachführen.
     fn sync_wheel(&mut self) {
         let t = self.now();
-        self.wheel.tick(&mut self.scene, t);
+        self.bogen.rad.tick(&mut self.scene, t);
         // Grundriss (Geschosse) oder Schnitt (Schnittrad)
-        let plan = self.wheel.visible(self.ui.view, false);
-        if self.wheel.take_started().is_some() {
-            if plan && self.wheel.animating(t) && self.w > 0 {
+        let plan = self.bogen.rad.visible(self.ui.view, false);
+        if self.bogen.rad.take_started().is_some() {
+            if plan && self.bogen.rad.animating(t) && self.w > 0 {
                 self.renderer.capture_scene();
                 // Die Zeit läuft ab dem ersten Bild mit dem neuen Grundriss
-                self.wheel.wait_for_first_frame();
+                self.bogen.rad.wait_for_first_frame();
             }
             if plan && self.ui.view == ViewKind::Section {
                 // Anderer Schnitt: eigene Lage und Blickrichtung
@@ -6938,10 +6936,10 @@ impl App {
             self.overlay_dirty = true;
             self.refresh_cursor();
         }
-        self.view_shift = 0.0;
+        self.bogen.versatz = 0.0;
         self.view_squeeze = (0.0, 1.0, 0.0);
         let turn = self.turn.filter(|_| self.ui.view == ViewKind::Section);
-        match self.wheel.progress(t).filter(|_| plan) {
+        match self.bogen.rad.progress(t).filter(|_| plan) {
             Some((e, sw)) => {
                 let slide = wheel::SLIDE * self.ui.dpi();
                 if let (wheel::Stop::Cut(a), wheel::Stop::Cut(b)) = (sw.from, sw.to) {
@@ -6954,7 +6952,7 @@ impl App {
                     // Nach oben: das alte Geschoss sinkt weg, das neue kommt von oben
                     let dir = sw.steps.signum() as f32;
                     self.renderer.set_snapshot(1.0 - e, dir * slide * e);
-                    self.view_shift = -dir * slide * (1.0 - e);
+                    self.bogen.versatz = -dir * slide * (1.0 - e);
                 }
                 self.redraw = true;
             }
@@ -6993,13 +6991,13 @@ impl App {
         }
         let show = self.wheel_show();
         if show != wheel_view::Show::On {
-            self.wheel.set_hover(None, t);
+            self.bogen.rad.set_hover(None, t);
         }
         if self.w > 0 {
             let input = self.tool.is_active();
-            let changed = self.wheel_view.sync(
+            let changed = self.bogen.bild.sync(
                 &mut self.renderer,
-                &self.wheel,
+                &self.bogen.rad,
                 &self.scene,
                 &self.ui,
                 &self.theme,
@@ -7008,7 +7006,7 @@ impl App {
                 show,
                 input,
             );
-            self.redraw |= changed || self.wheel_view.fading(show);
+            self.redraw |= changed || self.bogen.bild.fading(show);
         }
     }
 
@@ -7296,11 +7294,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         recent: settings.recent.clone(),
         recent_on: settings.path.is_some(),
         quit: false,
-        prefs: None,
-        prefs_mem: prefs::Memory::default(),
-        prefs_dirty: false,
+        einst: zustand::Einstellfenster::default(),
         pattern_preview: None,
-        prefs_popup_dirty: false,
         settings,
         company,
         catalog: None,
@@ -7350,12 +7345,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         room_keys: Default::default(),
         stempel: Default::default(),
         panel_px: Vec::new(),
-        wheel,
-        wheel_view: wheel_view::WheelView::new(OVERLAY_WHEEL),
+        bogen: zustand::Geschossbogen::new(wheel, wheel_view::WheelView::new(OVERLAY_WHEEL)),
         clock: Instant::now(),
-        wheel_acc: 0.0,
-        wheel_press: false,
-        view_shift: 0.0,
         view_squeeze: (0.0, 1.0, 0.0),
         turn: None,
         picking: picking::Picking::default(),
@@ -7612,7 +7603,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     loop {
         let mut tagged = Vec::new();
         if let Some((left, up)) = a.auto_switch {
-            if !a.wheel.animating(a.now()) && a.ui.view == ViewKind::Plan {
+            if !a.bogen.rad.animating(a.now()) && a.ui.view == ViewKind::Plan {
                 if left == 0 {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
@@ -7621,13 +7612,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 }
                 // Wie nach einer Pause: Nachbargrundrisse vorbereitet
                 a.scene.prepare_neighbor_plans();
-                let up = if a.wheel.arrow_enabled(&a.scene, up, false) {
+                let up = if a.bogen.rad.arrow_enabled(&a.scene, up, false) {
                     up
                 } else {
                     !up
                 };
                 let t = a.now();
-                a.wheel.click_arrow(&mut a.scene, up, false, t);
+                a.bogen.rad.click_arrow(&mut a.scene, up, false, t);
                 a.auto_switch = Some((left - 1, up));
             }
         }
@@ -7639,7 +7630,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if !a.redraw
             && !a.overlay_dirty
             && !a.nav.is_animating()
-            && !a.wheel.animating(a.now())
+            && !a.bogen.rad.animating(a.now())
             && a.auto_switch.is_none()
             && a.fly.is_none()
             && !a.scene.growing()
@@ -7661,7 +7652,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let dlg_wait = match (&a.catalog, &a.materials) {
                 (Some(c), _) => c.wait(&a.theme),
                 (None, Some(v)) => v.wait(&a.theme),
-                (None, None) => a.prefs.as_ref().and_then(|p| p.wait()),
+                (None, None) => a.einst.fenster.as_ref().and_then(|p| p.wait()),
             };
             let tip_wait = match (a.tip_wait(), a.pill_wait()) {
                 (Some(x), Some(y)) => Some(x.min(y)),
@@ -7734,15 +7725,15 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
         a.sync_wheel();
-        if a.prefs.as_mut().is_some_and(|p| p.tick()) {
-            a.prefs_dirty = true;
+        if a.einst.fenster.as_mut().is_some_and(|p| p.tick()) {
+            a.einst.bild_neu = true;
         }
         let theme = &a.theme;
         if a.catalog.as_mut().is_some_and(|c| c.tick(theme)) {
-            a.prefs_dirty = true;
+            a.einst.bild_neu = true;
         }
         if a.materials.as_mut().is_some_and(|v| v.tick(theme)) {
-            a.prefs_dirty = true;
+            a.einst.bild_neu = true;
         }
         // Wände wachsen nach einem Typwechsel (K3b)
         if a.scene.growing() {
@@ -7785,9 +7776,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.props_dirty && a.w > 0 {
             a.paint_props();
         }
-        if a.prefs_dirty && a.w > 0 {
+        if a.einst.bild_neu && a.w > 0 {
             a.paint_prefs();
-        } else if a.prefs_popup_dirty && a.w > 0 {
+        } else if a.einst.aufklapper_neu && a.w > 0 {
             a.paint_prefs_popup();
         }
         if a.type_menu_dirty && a.w > 0 {
@@ -7805,7 +7796,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.w > 0 {
             a.paint_buttons(&surface);
         }
-        let cursor = match (&a.prefs, &a.catalog) {
+        let cursor = match (&a.einst.fenster, &a.catalog) {
             _ if a.projektdaten.as_ref().is_some_and(|d| d.ueber_feld()) => {
                 sk_platform::Cursor::IBeam
             }
@@ -8227,8 +8218,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             view.patterns = draw_table::pattern_mode(a.ui.view, a.theme.env.patterns_3d);
             // Geschosswechsel: der neue Grundriss gleitet an seinen Platz
-            if a.view_shift != 0.0 {
-                view = view.shifted(a.view_shift, (a.h - th) as f32);
+            if a.bogen.versatz != 0.0 {
+                view = view.shifted(a.bogen.versatz, (a.h - th) as f32);
             }
             // Schnittwechsel gleitet seitlich, Spiegeln wendet das Blatt
             let (dx, k, axis) = a.view_squeeze;
@@ -8250,7 +8241,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             // Tiefen-Durchgang auf der Grafikkarte, aus dem Bild davor
             let schatten_ms = a.renderer.take_shadow_pass_ms().map_or(0.0, |m| m.1);
             let shown_at = a.now();
-            a.wheel.shown(shown_at);
+            a.bogen.rad.shown(shown_at);
             let t_draw = Instant::now();
             if let Some(path) = &screenshot {
                 let px = a.renderer.read_pixels(a.w, a.h);
