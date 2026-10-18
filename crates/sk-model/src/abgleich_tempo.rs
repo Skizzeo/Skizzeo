@@ -3,6 +3,7 @@
 
 use crate::txn::{Change, Key};
 use crate::{BuildingId, Category, ElementKind, Model, StoreyId};
+use sk_gelaende::auf_cpu_gewartet;
 use sk_math::vec3;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -44,15 +45,6 @@ fn haeuser_mit(n: usize, je_haus: bool, geschosse: u8) -> (Model, Vec<BuildingId
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
-}
-
-/// Wie lange dieser Faden bisher lauffähig auf eine CPU gewartet hat, in
-/// ms (Linux: zweites Feld von /proc/thread-self/schedstat; sonst 0).
-fn auf_cpu_gewartet() -> f64 {
-    std::fs::read_to_string("/proc/thread-self/schedstat")
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
-        .map_or(0.0, |ns| ns / 1e6)
 }
 
 /// Abgleich über das ganze Modell auf einer Kopie: Was er hinzufügt und
