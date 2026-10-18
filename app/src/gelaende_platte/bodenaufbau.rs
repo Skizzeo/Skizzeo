@@ -709,11 +709,13 @@ fn deckel(s: &mut Solid, p: [Vec3; 3]) {
 /// die Ebene der Erdmengen) bis UK Schürze, ihre Sohle unter der Schürze,
 /// die Wände innen an der Schürze und oben die kapillarbrechende Schicht;
 /// je Schicht in ihrer Farbe. `teilung`: Teilstellen einer Kante (0 bis
-/// 1), an denen sich das Netz knickt.
+/// 1), an denen sich das Netz knickt; `sprung(p, q)`: die Höhe an `p` zu
+/// `q` hin, wo das Gelände an `p` springt (Wand einer Geländefläche).
 pub(crate) fn grube(
     ba: &Bodenaufbau,
     hoehe: &dyn Fn(P2) -> Option<f64>,
     teilung: &dyn Fn(P2, P2) -> Vec<f64>,
+    sprung: &dyn Fn(P2, P2) -> Option<f64>,
     unten: f64,
     keys: [u16; SCHICHTEN],
 ) -> Solid {
@@ -743,8 +745,15 @@ pub(crate) fn grube(
                     (x, h.stapel(Lage::Aussen(abstand(&h.platte, x)), top, unten))
                 })
                 .collect();
+            // springt das Gelände an einer Stelle, je Seite ihr Stapel
+            let seite = |(x, st): &(P2, Stapel), y: P2| {
+                sprung(*x, y).map_or(*st, |top| {
+                    h.stapel(Lage::Aussen(abstand(&h.platte, *x)), top, unten)
+                })
+            };
             for w in st.windows(2) {
-                wand(&mut s, (w[0].0, &w[0].1), (w[1].0, &w[1].1), h.f, keys);
+                let (sa, sb) = (seite(&w[0], w[1].0), seite(&w[1], w[0].0));
+                wand(&mut s, (w[0].0, &sa), (w[1].0, &sb), h.f, keys);
             }
         }
         let ring = h.stapel(Lage::Ring, h.t, unten);
@@ -982,7 +991,14 @@ mod tests {
         let ba = Bodenaufbau::aus(&m);
         let h = &ba.haeuser[0];
         let keys = [1, 2, 3, 4, 5];
-        let s = grube(&ba, &|_| None, &|_, _| Vec::new(), -10_000.0, keys);
+        let s = grube(
+            &ba,
+            &|_| None,
+            &|_, _| Vec::new(),
+            &|_, _| None,
+            -10_000.0,
+            keys,
+        );
         let oben: Vec<_> = s.triangles.iter().filter(|t| t.n.z > 0.5).collect();
         let kern = if h.b > h.p { 3 } else { 2 };
         assert!(oben
