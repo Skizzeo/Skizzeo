@@ -87,6 +87,10 @@ pub(crate) struct Zustand {
     /// Hilfsnetz in 3D ausgeschaltet; sonst ist es bei offener Leiste an
     /// und bleibt aus, bis man es wieder einschaltet (Jörns §4.3a).
     pub(crate) netz_aus: bool,
+    /// Höhenlinien in 3D ausgeschaltet; Höhenfarben statt Rasen an (Jörn
+    /// 17.10.). Beides gilt auch bei geschlossener Leiste.
+    pub(crate) linien_aus: bool,
+    pub(crate) hoehenfarben: bool,
     /// Die gewählten Höhenpunkte (Nummern), aus der Wahl der Punkte für das
     /// Schloss (I5); [`App::gelaende_sync`] gleicht sie ab.
     pub(crate) wahl: Vec<String>,
@@ -200,6 +204,25 @@ impl Zustand {
     }
 }
 
+/// Satz, wenn das Gelände gröber geglättet wird als eingestellt, weil es
+/// sonst mehr als [`gelaende_netz::GLATT_HOECHSTENS`] Dreiecke wären.
+fn glatt_grob(t: &Terrain) -> Option<String> {
+    use sk_model::Glaettung as G;
+    if t.glatt == G::Aus {
+        return None;
+    }
+    let n = t.mesh().netz.dreiecke.len();
+    let passt =
+        |g: G| n * (g.teile() * g.teile()) as usize <= crate::gelaende_netz::GLATT_HOECHSTENS;
+    match t.glatt {
+        _ if passt(t.glatt) => None,
+        G::SehrFein if passt(G::Fein) => {
+            Some("Zu viele Dreiecke für „feiner“, das Gelände ist fein geglättet.".into())
+        }
+        _ => Some("Zu viele Dreiecke zum Glätten, das Gelände bleibt eckig.".into()),
+    }
+}
+
 /// Statuszeile, wenn ein Lageplan oder ein Aufmaß bei geschlossener Leiste
 /// fertig gelesen ist (43.4).
 pub const GELESEN_PLAN: &str = "Lageplan gelesen; mehr unter „Gelände“";
@@ -230,6 +253,11 @@ pub(crate) fn knopf_name(k: GelaendeKnopf) -> &'static str {
         GelaendeKnopf::AmHaus => "Gelände ans Haus",
         GelaendeKnopf::Flaeche => "Fläche zeichnen",
         GelaendeKnopf::Netz => "Netz",
+        GelaendeKnopf::Linien => "Höhenlinien im Gelände",
+        GelaendeKnopf::Farben => "Höhenfarben",
+        GelaendeKnopf::Glatt(sk_model::Glaettung::Aus) => "Glätten aus",
+        GelaendeKnopf::Glatt(sk_model::Glaettung::Fein) => "Glätten fein",
+        GelaendeKnopf::Glatt(sk_model::Glaettung::SehrFein) => "Glätten feiner",
         GelaendeKnopf::Schloss => "Schloss offen",
         GelaendeKnopf::Gemessen => "Gemessen zurück",
         GelaendeKnopf::Grenze => "Grenze zeichnen",
@@ -367,6 +395,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
     l.aufmass = true;
     l.hoehen = !t.points.is_empty();
     l.netz = l.hoehen && !z.netz_aus;
+    l.linien = l.hoehen && !z.linien_aus;
+    l.farben = l.hoehen && z.hoehenfarben;
     schloss(&mut l, t, z);
     l.angenommen = t.assumed();
     l.grenze = !ringe.is_empty();
@@ -436,6 +466,8 @@ pub(crate) fn leiste(m: &Model, z: &Zustand) -> GelaendeLeiste {
         let t = de(s, 2);
         t.trim_end_matches('0').trim_end_matches(',').to_string()
     };
+    l.glatt = t.glatt;
+    l.glatt_grob = glatt_grob(t);
     // nur eine Grenze, keine Höhen: keine Zeile zu Höhenlinien
     l.hoehenlinien = match m.terrain_contour_step(wunsch) {
         _ if !l.hoehen => None,
@@ -573,6 +605,8 @@ impl App {
             K::Hoehen => z.hoehen_wanted = true,
             K::Hinweise => z.alle = !z.alle,
             K::Netz => z.netz_aus = !z.netz_aus,
+            K::Linien => z.linien_aus = !z.linien_aus,
+            K::Farben => z.hoehenfarben = !z.hoehenfarben,
             K::Schloss => self.schloss_umschalten(),
             K::Gemessen => self.punkte_gemessen(),
             K::Verschieben | K::Drehen => z.tippen = (z.tippen != Some(k)).then_some(k),
@@ -587,6 +621,9 @@ impl App {
             }
             K::Zuschnitt(s) => {
                 self.gelaende_schritt("Umgebung zeigen", |m| m.set_terrain_show(s));
+            }
+            K::Glatt(g) => {
+                self.gelaende_schritt("Gelände glätten", |m| m.set_terrain_smoothing(g));
             }
             K::AmHaus | K::Flaeche | K::Grenze | K::Befestigt | K::Loeschen => {
                 self.flaeche_knopf(k)
@@ -1025,7 +1062,10 @@ impl App {
         }
         z.neu = false;
         z.stand = Some(m.revision());
-        let soll = z.offen.then(|| leiste(m, z));
+        let mut soll = z.offen.then(|| leiste(m, z));
+        if let Some(l) = soll.as_mut().filter(|l| l.farben) {
+            l.legende = self.hoehenlegende();
+        }
         if soll != self.ui.gelaende {
             self.ui.gelaende = soll;
             self.overlay_dirty = true;
@@ -1246,6 +1286,15 @@ mod tests {
             ..Zustand::default()
         };
         assert!(!leiste(&m, &aus).netz);
+        // Höhenlinien an, Höhenfarben aus, bis man sie umschaltet (Jörn 17.10.)
+        assert!(l.linien && !l.farben);
+        let um = Zustand {
+            linien_aus: true,
+            hoehenfarben: true,
+            ..Zustand::default()
+        };
+        let u = leiste(&m, &um);
+        assert!(!u.linien && u.farben);
         assert_eq!(l.felder.len(), 1);
         assert_eq!(l.felder[0].field, Field::Gelaende(GelaendeFeld::Versatz));
         // Ohne Lage liegt das Grundstück mittig unter dem Haus; ±0,00 liegt

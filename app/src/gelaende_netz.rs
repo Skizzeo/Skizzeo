@@ -48,6 +48,11 @@ pub(crate) mod gitter;
 /// gröbere aus [`Model::terrain_contour_step`] (Review #121, Auflage H1).
 pub(crate) const STUFE: f64 = 0.25;
 
+/// Höchstens so viele Dreiecke hat das geglättete Gelände; mehr hieße
+/// beim Ziehen und Drehen spürbar längere Rechenzeit. Darüber wird
+/// gröber geglättet, notfalls gar nicht (die Leiste sagt es).
+pub(crate) const GLATT_HOECHSTENS: usize = 1_500_000;
+
 /// Netz und Höhenlinien vorab rechnen, beim Öffnen eines Projekts, wo
 /// ohnehin gewartet wird; sonst entstünden sie träge im ersten Bild
 /// (Review #123 W45 H5: 0,3 s bei 100.000 Punkten). Beide bleiben am
@@ -196,11 +201,11 @@ impl Gelaende {
     }
 
     /// Trifft der Sehstrahl von `o` in Richtung `d` die Oberfläche? Ein
-    /// Klick in 3D wählt so das Gelände wie die Platte (I1).
+    /// Klick in 3D wählt so das Gelände wie die Platte (I1). Über das
+    /// Raster wie [`Gelaende::treffpunkt`], nicht über alle Dreiecke
+    /// (Review H-264c).
     pub(crate) fn getroffen(&self, o: Vec3, d: Vec3) -> bool {
-        self.dreiecke
-            .iter()
-            .any(|t| sk_math::ray_triangle(o, d, t[0], t[1], t[2]).is_some())
+        self.treffpunkt(o, d).is_some()
     }
 
     /// Der nächste Punkt, in dem der Sehstrahl von `o` in Richtung `d` die
@@ -235,6 +240,16 @@ impl Gelaende {
                 *w = true;
             }
         }
+        // geglättet (Jörn 17.10.): Ersetzte Dreiecke bleiben eben, ihre
+        // Kanten gerade, so schließt das Planungsgelände ohne Spalt an
+        let (glatt, je) = m.terrain_triangles_smooth(&weg, GLATT_HOECHSTENS);
+        if je > 1 {
+            dreiecke = glatt;
+            weg = weg
+                .iter()
+                .flat_map(|&w| std::iter::repeat_n(w, je))
+                .collect();
+        }
         let ur: Vec<[Vec3; 3]> = dreiecke
             .iter()
             .zip(&weg)
@@ -255,6 +270,14 @@ impl Gelaende {
                 !weg[k - 1]
             });
         }
+        // Höhenlinien auf dem geglätteten Gelände je Dreieck, nicht die des
+        // Aufmaßes: Die lägen neben oder unter der runden Fläche
+        let glatt_linien = if je > 1 {
+            let s = m.terrain_contour_step(STUFE);
+            s.map(|s| hoehenstuecke(&dreiecke, h0, s))
+        } else {
+            None
+        };
         dreiecke.extend(plan.triangles.iter().copied());
         let tief = dreiecke
             .iter()
@@ -309,11 +332,14 @@ impl Gelaende {
             let voll = frei([q.x, q.y])?;
             Some(([q.x, q.y], 0.0, q.z, nhn_text(q.z / 1000.0 + h0), voll))
         }));
-        let mut linien: Vec<(f64, [P2; 2], bool)> = linien
-            .iter()
-            .flat_map(|(z, p, haupt)| p.windows(2).map(move |w| (*z, [w[0], w[1]], *haupt)))
-            .filter(|(_, w, _)| ur.is_empty() || !im_plan(lerp2(w[0], w[1], 0.5)))
-            .collect();
+        let mut linien: Vec<(f64, [P2; 2], bool)> = match glatt_linien {
+            Some(l) => l,
+            None => linien
+                .iter()
+                .flat_map(|(z, p, haupt)| p.windows(2).map(move |w| (*z, [w[0], w[1]], *haupt)))
+                .filter(|(_, w, _)| ur.is_empty() || !im_plan(lerp2(w[0], w[1], 0.5)))
+                .collect(),
+        };
         if let Some(s) = stufe {
             linien.extend(hoehenstuecke(&plan.triangles, h0, s));
         }
@@ -515,6 +541,13 @@ impl Gelaende {
             })
             .collect();
         self
+    }
+
+    /// Tiefste und höchste Höhe der Dreiecke (mm), `None` ohne Dreiecke.
+    pub(crate) fn hoehen(&self) -> Option<(f64, f64)> {
+        let mut z = self.dreiecke.iter().flatten().map(|p| p.z);
+        let a = z.next()?;
+        Some(z.fold((a, a), |(lo, hi), z| (lo.min(z), hi.max(z))))
     }
 
     /// Quader um das Netz bis zur Unterkante des Rands.
@@ -1248,7 +1281,14 @@ pub(crate) fn koerper(g: &Gelaende, keys: [u16; 3]) -> Solid {
 /// Körper in 3D wie `koerper`, mit `netz` dazu das Hilfsnetz (Jörns §4.3a): die Kanten
 /// des Dreiecksnetzes fein auf dem Rasen, die vollen Meter kräftig. Als
 /// Kanten des Körpers bleiben sie hinter Hügeln und Häusern verdeckt.
+#[cfg_attr(not(test), allow(dead_code))] // 3D-Export (#258)
 pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Solid {
+    koerper_mit(g, keys, netz, true)
+}
+
+/// Körper in 3D wie [`koerper_mit_netz`]; ohne `linien` keine Höhenlinien
+/// darauf (Jörn 17.10.: mit den Höhenfarben stören sie).
+pub(crate) fn koerper_mit(g: &Gelaende, keys: [u16; 3], netz: bool, linien: bool) -> Solid {
     let mut s = Solid {
         mat: keys[0],
         edge_kind: edge_kind::VIEW,
@@ -1337,7 +1377,7 @@ pub(crate) fn koerper_mit_netz(g: &Gelaende, keys: [u16; 3], netz: bool) -> Soli
     } else {
         edge_kind::FINE
     };
-    for &(z, [a, b], innen, haupt) in &g.stuecke {
+    for &(z, [a, b], innen, haupt) in g.stuecke.iter().filter(|_| linien) {
         if !haupt || (g.show == Show::Parcel && !innen) {
             continue;
         }
@@ -1999,6 +2039,7 @@ pub(crate) mod tests {
                     let d = d.normalized();
                     let (a, b) = (g.treffpunkt(o, d), alle(o, d));
                     assert_eq!(a, b, "{o:?} {d:?}");
+                    assert_eq!(g.getroffen(o, d), b.is_some(), "{o:?} {d:?}");
                     treffer += usize::from(a.is_some());
                     n += 1;
                 }
@@ -2125,6 +2166,74 @@ pub(crate) mod tests {
 
     /// Mit Hilfsnetz (§4.3a) liegt jede Kante des Netzes einmal fein auf
     /// dem Körper, nicht im Haus, und die vollen Meter werden kräftig;
+    /// Geglättet (Jörn 17.10.): je Dreieck 4 bzw. 16, die Messpunkte
+    /// bleiben Ecken, die Höhenlinien folgen der runden Fläche; der Körper
+    /// bleibt geschlossen wie ohne Glätten.
+    #[test]
+    fn geglaettet() {
+        use sk_model::Glaettung;
+        let mut m = lindenhof();
+        let eckig = Gelaende::aus(&m).unwrap();
+        let ecken: std::collections::HashSet<[u64; 3]> = eckig
+            .dreiecke
+            .iter()
+            .flatten()
+            .map(|p| [p.x, p.y, p.z].map(f64::to_bits))
+            .collect();
+        for (g, je) in [(Glaettung::Fein, 4), (Glaettung::SehrFein, 16)] {
+            m.begin("Glätten");
+            assert!(m.set_terrain_smoothing(g));
+            m.commit();
+            let rund = Gelaende::aus(&m).unwrap();
+            assert_eq!(rund.dreiecke.len(), eckig.dreiecke.len() * je);
+            let alle: std::collections::HashSet<[u64; 3]> = rund
+                .dreiecke
+                .iter()
+                .flatten()
+                .map(|p| [p.x, p.y, p.z].map(f64::to_bits))
+                .collect();
+            assert!(ecken.is_subset(&alle), "Messpunkte bleiben Ecken");
+            assert!(!rund.stuecke.is_empty());
+            let k = koerper(&rund, [10, 11, 12]);
+            assert!(k.triangles.len() > rund.dreiecke.len());
+        }
+    }
+
+    /// Ohne Höhenlinien (Jörn 17.10.) fehlen nur ihre Kanten; die Höhen
+    /// reichen vom tiefsten bis zum höchsten Punkt des Netzes.
+    #[test]
+    fn koerper_ohne_hoehenlinien() {
+        let m = lindenhof();
+        let g = Gelaende::aus(&m).unwrap();
+        let keys = [10, 11, 12];
+        let mit = koerper_mit(&g, keys, false, true);
+        let ohne = koerper_mit(&g, keys, false, false);
+        assert_eq!(mit.triangles.len(), ohne.triangles.len());
+        let fein = |s: &Solid| s.edges.iter().filter(|e| e.kind == edge_kind::FINE).count();
+        // fein sind ohne Höhenlinien nur die Fugen zwischen den Schichten
+        // am Haus (#261)
+        let grube = bodenaufbau::grube(
+            &g.aufbau,
+            &|p| g.hoehe(p),
+            &|a, b| g.teilung(a, b),
+            g.unten,
+            schluessel(keys),
+        );
+        let fugen = grube
+            .edges
+            .iter()
+            .filter(|e| e.kind == edge_kind::FINE)
+            .count();
+        assert!(fein(&mit) > fugen);
+        assert_eq!(fein(&ohne), fugen);
+        assert_eq!(mit.edges.len() - fein(&mit), ohne.edges.len() - fugen);
+        let (lo, hi) = g.hoehen().unwrap();
+        assert!(lo < hi);
+        for p in g.dreiecke.iter().flatten() {
+            assert!(p.z >= lo && p.z <= hi);
+        }
+    }
+
     /// Rasen und Erdreich bleiben gleich.
     #[test]
     fn hilfsnetz_im_koerper() {
